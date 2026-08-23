@@ -50,7 +50,7 @@ A Model Context Protocol (MCP) server that gives Claude full control over Spotif
 | Layer | Choice | Reason |
 |---|---|---|
 | Language | TypeScript | MCP SDK is TypeScript-first; strong typing for Spotify response shapes |
-| Runtime | Node.js 22+ | Native fetch, no polyfills needed |
+| Runtime | Node.js 22.9+ (`--env-file-if-exists`) | Native fetch, no polyfills needed |
 | MCP SDK | `@modelcontextprotocol/sdk` | Official SDK, handles protocol framing |
 | HTTP client | Native `fetch` | No dependencies; Spotify API is simple REST |
 | Token storage | `~/.spotify-mcp/tokens.json` (path overridable via `SPOTIFY_MCP_TOKEN_FILE`) | Local file, user-owned, outside repo |
@@ -110,7 +110,7 @@ Spotify Web API (api.spotify.com)
 ## 3. Authentication
 
 ### Flow
-1. User runs `npx spotify-mcp auth` (or `npm run auth` locally)
+1. User runs `npm run auth` locally (or `SPOTIFY_CLIENT_ID=… npx spotify-mcp auth` once 1.0.0 publishes to npm)
 2. Server starts a temporary HTTP listener on `127.0.0.1:8888`
 3. Opens `https://accounts.spotify.com/authorize` in the browser with PKCE
 4. User approves; Spotify redirects to `127.0.0.1:8888/callback`
@@ -1048,11 +1048,10 @@ SPOTIFY_REDIRECT_URI=http://127.0.0.1:8888/callback
 {
   "mcpServers": {
     "spotify": {
-      "command": "npx",
-      "args": ["-y", "spotify-mcp"],
+      "command": "node",
+      "args": ["/path/to/spotify-mcp-server/dist/index.js"],
       "env": {
-        "SPOTIFY_CLIENT_ID": "your_client_id",
-        "SPOTIFY_CLIENT_SECRET": "your_client_secret"
+        "SPOTIFY_CLIENT_ID": "your_client_id"
       }
     }
   }
@@ -1064,8 +1063,8 @@ SPOTIFY_REDIRECT_URI=http://127.0.0.1:8888/callback
 # 1. Create a Spotify app at developer.spotify.com
 #    Add redirect URI: http://127.0.0.1:8888/callback
 
-# 2. Run auth flow
-SPOTIFY_CLIENT_ID=xxx SPOTIFY_CLIENT_SECRET=yyy npx spotify-mcp auth
+# 2. Run auth flow (PKCE — the client secret is never used)
+npm run auth   # or: SPOTIFY_CLIENT_ID=xxx npm run auth
 
 # 3. Add to claude_desktop_config.json (above)
 

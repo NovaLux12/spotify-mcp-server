@@ -1,7 +1,7 @@
 {
   "name": "spotify-mcp",
-  "version": "0.1.4",
-  "description": "MCP server for the Spotify Web API — use Claude to manage playlists, control playback, and get recommendations",
+  "version": "1.0.0",
+  "description": "The definitive Spotify MCP server - full non-deprecated Web API coverage, paginated everything, podcast-first, tested end to end",
   "type": "module",
   "bin": {
     "spotify-mcp": "dist/index.js"
@@ -20,7 +20,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/calebWei/SpotifyMCP.git"
+    "url": "git+https://github.com/NovaLux12/spotify-mcp-server.git"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "latest",
@@ -34,9 +34,9 @@
   },
   "scripts": {
     "build": "tsc && node scripts/add-shebang.js",
-    "dev": "node --env-file=.env --import tsx/esm src/index.ts",
-    "auth": "node --env-file=.env --import tsx/esm src/index.ts auth",
-    "start": "node --env-file=.env dist/index.js",
+    "dev": "node --env-file-if-exists=.env --import tsx/esm src/index.ts",
+    "auth": "node --env-file-if-exists=.env --import tsx/esm src/index.ts auth",
+    "start": "node --env-file-if-exists=.env dist/index.js",
     "test": "node --import tsx --test 'tests/*.test.ts'"
   }
 }

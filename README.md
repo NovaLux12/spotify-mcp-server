@@ -41,6 +41,11 @@ Also exposed: **7 MCP resources** (profile, player state, queue, top tracks/arti
 
 ## Quick setup
 
+> **Note on `npx`:** the `spotify-mcp` package on npm is still at **0.1.4** —
+> the pre-rewrite release. Everything from the deprecation cleanup onward
+> (all 50 tools, tests, pagination) is only in this repo until 1.0.0
+> publishes. Until then prefer the clone-based flows below over `npx`.
+
 ### 1. Create a Spotify app
 
 Each user needs their own Spotify app to get a Client ID — this is how Spotify identifies which app is making API requests.
@@ -146,6 +151,56 @@ export SPOTIFY_CLIENT_ID=your_client_id_here
 
 Or add it to `.mcp.json` in your project root — same `command`/`args`/`env` shape as above.
 
+### Command for AI agents
+
+Any coding agent (Claude Code, OpenClaw, Cursor, Aider, …) can install,
+build, authenticate and register the server in one paste. Give it your
+Client ID and let it run:
+
+```bash
+git clone https://github.com/NovaLux12/spotify-mcp-server.git && cd spotify-mcp-server \
+  && npm ci && npm run build \
+  && SPOTIFY_CLIENT_ID=your_client_id_here npm run auth
+```
+
+Then point your host's MCP config at `<repo>/dist/index.js` with
+`SPOTIFY_CLIENT_ID` in its env (shapes below). Agents should finish by
+calling the `get_me` tool once — it proves auth, scopes and transport in a
+single round-trip.
+
+### OpenClaw
+
+Add to `mcp.servers` in `~/.openclaw/openclaw.json`:
+
+```json
+"spotify": {
+  "command": "node",
+  "args": ["/path/to/spotify-mcp-server/dist/index.js"],
+  "cwd": "/path/to/spotify-mcp-server",
+  "env": { "SPOTIFY_CLIENT_ID": "your_client_id_here" }
+}
+```
+
+Then restart the OpenClaw gateway so it respawns the server. Headless box?
+Run the auth step with `SPOTIFY_HEADLESS=1` on any machine with a browser
+(see above) — tokens land in `~/.spotify-mcp/tokens.json` either way.
+
+### When things go wrong: install the doctor skill
+
+This repo ships [`skills/spotify-mcp-doctor/SKILL.md`](skills/spotify-mcp-doctor/SKILL.md) —
+a procedural diagnostic your agent can execute instead of you re-reading
+this README. It walks the real failure modes in order: wiring → binary →
+app credentials → token freshness → error classification (Premium vs
+dev-mode allowlist vs market gating vs deprecations). Install:
+
+```bash
+cp -r skills/spotify-mcp-doctor ~/.openclaw/workspace/skills/   # OpenClaw
+# or drop it into .claude/skills/ for Claude Code projects
+```
+
+Then just ask your agent: *"Spotify tools are failing — run the spotify
+doctor skill."*
+
 ## Usage
 
 Once connected, you can ask Claude things like:
@@ -183,7 +238,7 @@ npm run auth   # authenticate with Spotify
 npm run dev    # run from source (no build needed)
 ```
 
-Requires Node 20+ (`--env-file` flag). On older Node, use `npx dotenv-cli` or export `SPOTIFY_CLIENT_ID` in your shell.
+Requires Node 22.9+ (`--env-file-if-exists` support). No `.env` file is needed — env vars come from your host config or the command line.
 
 ## Testing
 
