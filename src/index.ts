@@ -36,9 +36,27 @@ async function startMcpServer(): Promise<void> {
   await server.connect(transport);
 }
 
-const command = process.argv[2];
+const HELP = `spotify-mcp — MCP server for the Spotify Web API
 
-if (command === 'auth') {
+Usage:
+  spotify-mcp            Start the MCP server over stdio (this is the default)
+  spotify-mcp auth       Run the OAuth PKCE flow and save tokens
+  spotify-mcp --help     Show this message
+  spotify-mcp --version  Print the version
+
+Environment:
+  SPOTIFY_CLIENT_ID        Required (from developer.spotify.com dashboard)
+  SPOTIFY_HEADLESS         Set to 1 for browserless paste-flow auth
+  SPOTIFY_MCP_TOKEN_FILE   Token file override (default ~/.spotify-mcp/tokens.json)
+`;
+ const command = process.argv[2];
+ 
+if (command === '--help' || command === '-h') {
+  console.log(HELP);
+} else if (command === '--version' || command === '-v') {
+  const { createRequire } = await import('node:module');
+  console.log('spotify-mcp ' + createRequire(import.meta.url)('../package.json').version);
+} else if (command === 'auth') {
   runAuthFlow().catch((err: unknown) => {
     console.error('Auth failed:', err instanceof Error ? err.message : err);
     process.exit(1);
