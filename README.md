@@ -32,6 +32,13 @@ Most Spotify MCP servers are thin wrappers. This one is built to be the default:
 
 Also exposed: **7 MCP resources** (profile, player state, queue, top tracks/artists, recently played, playlists) and **4 prompt templates** (DJ set, mood playlist, taste summary, discovery alternative).
 
+## Requirements & limitations
+
+- **Spotify Premium is required for playback control** (play, pause, skip, seek, volume, shuffle, repeat, queue, transfer). Free accounts can authenticate and use search/catalog/library/playlist tools, but every playback command will fail with a Premium-required error from Spotify.
+- `fetch_all` pagination walks up to **500 items** per call (protects against runaway loops); beyond that, use `limit`/`offset` paging.
+- Audiobook tools are market-gated by Spotify to US, UK, Canada, Ireland, New Zealand, and Australia.
+- Spotify's developer mode allows up to 5 authorised users per app until extended quota is granted.
+
 ## Quick setup
 
 ### 1. Create a Spotify app
