@@ -110,7 +110,7 @@ Spotify Web API (api.spotify.com)
 ## 3. Authentication
 
 ### Flow
-1. User runs `npm run auth` locally (or `SPOTIFY_CLIENT_ID=… npx spotify-mcp auth` once 1.0.0 publishes to npm)
+1. User runs `npm run auth` locally (or `SPOTIFY_CLIENT_ID=… npx -y @novalux12/spotify-mcp@latest auth`)
 2. Server starts a temporary HTTP listener on `127.0.0.1:8888`
 3. Opens `https://accounts.spotify.com/authorize` in the browser with PKCE
 4. User approves; Spotify redirects to `127.0.0.1:8888/callback`

@@ -41,11 +41,6 @@ Also exposed: **7 MCP resources** (profile, player state, queue, top tracks/arti
 
 ## Quick setup
 
-> **Note on `npx`:** the `spotify-mcp` package on npm is still at **0.1.4** —
-> the pre-rewrite release. Everything from the deprecation cleanup onward
-> (all 50 tools, tests, pagination) is only in this repo until 1.0.0
-> publishes. Until then prefer the clone-based flows below over `npx`.
-
 ### 1. Create a Spotify app
 
 Each user needs their own Spotify app to get a Client ID — this is how Spotify identifies which app is making API requests.
@@ -63,13 +58,13 @@ Run the command below once to log in to your Spotify account. Replace `your_clie
 
 **macOS / Linux:**
 ```bash
-SPOTIFY_CLIENT_ID=your_client_id_here npx spotify-mcp@latest auth
+SPOTIFY_CLIENT_ID=your_client_id_here npx -y @novalux12/spotify-mcp@latest auth
 ```
 
 **Headless / remote hosts** (no browser on the machine running the MCP server):
 
 ```bash
-SPOTIFY_HEADLESS=1 SPOTIFY_CLIENT_ID=your_client_id_here npx spotify-mcp@latest auth
+SPOTIFY_HEADLESS=1 SPOTIFY_CLIENT_ID=your_client_id_here npx -y @novalux12/spotify-mcp@latest auth
 ```
 
 The auth URL is printed; complete the flow in any browser (e.g. on your laptop), then paste the redirect URL back into the prompt. Useful for homelabs, CI, and agent runtimes.
@@ -106,12 +101,12 @@ state are extracted and exchanged server-side. Works across machines.
 
 **Windows (Command Prompt):**
 ```cmd
-set SPOTIFY_CLIENT_ID=your_client_id_here && npx spotify-mcp@latest auth
+set SPOTIFY_CLIENT_ID=your_client_id_here && npx -y @novalux12/spotify-mcp@latest auth
 ```
 
 **Windows (PowerShell):**
 ```powershell
-$env:SPOTIFY_CLIENT_ID="your_client_id_here"; npx spotify-mcp@latest auth
+$env:SPOTIFY_CLIENT_ID="your_client_id_here"; npx -y @novalux12/spotify-mcp@latest auth
 ```
 
 ### 3. Configure Claude Desktop
@@ -128,7 +123,7 @@ Add the `mcpServers` block (replace `your_client_id_here` with your Client ID):
   "mcpServers": {
     "spotify": {
       "command": "npx",
-      "args": ["-y", "spotify-mcp@latest"],
+      "args": ["-y", "@novalux12/spotify-mcp@latest"],
       "env": {
         "SPOTIFY_CLIENT_ID": "your_client_id_here"
       }
@@ -144,7 +139,7 @@ Fully quit and restart Claude Desktop. A hammer icon in the chat input confirms 
 If you use Claude Code, add the server without editing JSON by hand:
 
 ```bash
-claude mcp add spotify -- npx -y spotify-mcp@latest
+claude mcp add spotify -- npx -y @novalux12/spotify-mcp@latest
 # then set SPOTIFY_CLIENT_ID in your shell or MCP env:
 export SPOTIFY_CLIENT_ID=your_client_id_here
 ```
@@ -213,7 +208,7 @@ Once connected, you can ask Claude things like:
 
 ## Troubleshooting
 
-- **"Not authenticated" on first tool call** — run `npx spotify-mcp@latest auth` (or `npm run auth` from a clone) and complete the browser flow. Tokens are stored at `~/.spotify-mcp/tokens.json` and refreshed automatically.
+- **"Not authenticated" on first tool call** — run `npx -y @novalux12/spotify-mcp@latest auth` (or `npm run auth` from a clone) and complete the browser flow. Tokens are stored at `~/.spotify-mcp/tokens.json` and refreshed automatically.
 - **Redirect URI mismatch** — the Spotify app's redirect URI must be *exactly* `http://127.0.0.1:8888/callback` (no trailing slash). Save the app settings and retry.
 - **Port 8888 busy** — another process is holding the callback port; stop it or pick a free port via `SPOTIFY_REDIRECT_URI=http://127.0.0.1:8888/callback` with a different port and matching Dashboard setting.
 - **Headless / Docker** — set `SPOTIFY_HEADLESS=1` before `auth`; paste the redirect URL back when prompted (see above).
