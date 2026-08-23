@@ -1,6 +1,36 @@
 # SpotifyMCP
 
-An MCP server that wraps the Spotify Web API, letting AI assistants (like Claude) create and manage playlists, search for music, control playback, and get personalized recommendations.
+An MCP server that wraps the Spotify Web API, letting AI assistants (like Claude) control playback, search the full catalog including podcasts and audiobooks, manage your library and playlists, and understand your listening taste.
+
+## Why this one
+
+Most Spotify MCP servers are thin wrappers. This one is built to be the default:
+
+- **Complete API surface** — every non-deprecated Spotify Web API endpoint callable with a standard developer token is covered by a tool (playback, search, catalog, audiobooks, personalization, library, playlists, following).
+- **Honest about deprecations** — Spotify removed recommendations, related artists, audio features/analysis, genre seeds, and featured playlists from new apps. Servers still exposing those ship tools that fail at runtime; this one doesn't.
+- **Tested** — full unit suite over the client (token refresh, rate limiting, pagination) and every tool handler, plus an end-to-end MCP protocol smoke test. Many alternatives have zero tests.
+- **Paginated everything** — `fetch_all` on library and playlist listings walks every page (capped at 500 items) instead of silently truncating at one page of 50.
+- **Podcasts are first-class** — episodes work everywhere: now-playing, queue, search-and-play. Several competitors can't see podcasts at all.
+- **Device-aware playback** — list devices, transfer playback, and target any command at a specific device for multi-room setups.
+- **Robust auth** — PKCE flow with silent refresh, persistent mode-600 token cache, headless paste-flow (`SPOTIFY_HEADLESS=1`) for servers and containers.
+
+## Features
+
+**Playback (15 tools)** — now playing / currently-playing polls, play (by URI, or `play_from_search` to play straight from a name), pause, skip, previous, seek, volume, shuffle, repeat, queue view/add, device list, transfer playback.
+
+**Search & catalog** — unified search across tracks/artists/albums/playlists/shows/episodes; deep lookups for tracks, artists, artist albums, albums, album tracks, shows, show episodes, episodes, and your profile (`get_me`).
+
+**Audiobooks** — titles, chapters, chapter lookup, and your saved audiobooks (market-gated by Spotify to US/UK/CA/IE/NZ/AU).
+
+**Personalization** — top tracks and artists across three time ranges, recently played.
+
+**Library** — saved tracks/albums/shows/episodes with optional full pagination; unified save/remove/check via `/me/library` URIs.
+
+**Playlists** — full CRUD plus item management (add/remove/reorder), cover art retrieval and custom cover upload (`ugc-image-upload` scope required for upload).
+
+**Following** — followed-artists list and follow-state checks.
+
+Also exposed: **7 MCP resources** (profile, player state, queue, top tracks/artists, recently played, playlists) and **4 prompt templates** (DJ set, mood playlist, taste summary, discovery alternative).
 
 ## Quick setup
 
@@ -147,3 +177,10 @@ npm run dev    # run from source (no build needed)
 ```
 
 Requires Node 20+ (`--env-file` flag). On older Node, use `npx dotenv-cli` or export `SPOTIFY_CLIENT_ID` in your shell.
+
+## Testing
+
+```bash
+npm test   # node:test runner — unit tests for the client and every tool module, plus an MCP protocol smoke test
+```
+

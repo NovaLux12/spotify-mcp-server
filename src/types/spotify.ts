@@ -161,71 +161,6 @@ export interface SpotifyAlbumFull {
   };
 }
 
-// Audio features (GET /audio-features/{id})
-export interface AudioFeatures {
-  id: string;
-  acousticness: number;
-  danceability: number;
-  energy: number;
-  instrumentalness: number;
-  key: number;
-  liveness: number;
-  loudness: number;
-  mode: number;
-  speechiness: number;
-  tempo: number;
-  time_signature: number;
-  valence: number;
-  duration_ms: number;
-}
-
-// Audio analysis types (GET /audio-analysis/{id})
-export interface AudioAnalysisTrack {
-  duration: number;
-  loudness: number;
-  tempo: number;
-  time_signature: number;
-  key: number;
-  mode: number;
-  end_of_fade_in: number;
-  start_of_fade_out: number;
-}
-
-export interface AudioAnalysisSection {
-  start: number;
-  duration: number;
-  tempo: number;
-  key: number;
-  mode: number;
-  loudness: number;
-  time_signature: number;
-}
-
-export interface AudioAnalysisInterval {
-  start: number;
-  duration: number;
-  confidence: number;
-}
-
-export interface AudioAnalysisSegment {
-  start: number;
-  duration: number;
-  confidence: number;
-  loudness_start: number;
-  loudness_max: number;
-  pitches: number[];
-  timbre: number[];
-}
-
-export interface AudioAnalysis {
-  track: AudioAnalysisTrack;
-  sections: AudioAnalysisSection[];
-  bars: AudioAnalysisInterval[];
-  beats: AudioAnalysisInterval[];
-  tatums: AudioAnalysisInterval[];
-  segments: AudioAnalysisSegment[];
-}
-
 // Simplified show for search results
 export interface SpotifyShowSimple {
   id: string;
@@ -289,6 +224,63 @@ export interface SpotifyEpisodeFull {
     name: string;
     uri: string;
   };
+}
+
+// Simplified chapter in an audiobook's chapter listing
+export interface SpotifyChapterSimple {
+  id: string;
+  name: string;
+  uri: string;
+  chapter_number: number;
+  duration_ms: number;
+  release_date: string;
+  explicit: boolean;
+  description: string;
+  is_playable: boolean;
+}
+
+// Full chapter (GET /chapters/{id})
+export interface SpotifyChapterFull extends SpotifyChapterSimple {
+  html_description: string;
+  languages: string[];
+  images: SpotifyImage[];
+  audio_preview_url: string | null;
+  resume_point?: {
+    fully_played: boolean;
+    resume_position_ms: number;
+  };
+}
+
+// Simplified audiobook (saved library listing; GET /audiobooks/{id} base object)
+export interface SpotifyAudiobookSimple {
+  id: string;
+  name: string;
+  uri: string;
+  authors: { name: string }[];
+  narrators: { name: string }[];
+  publisher?: string;
+  edition?: string;
+  total_chapters: number;
+  description: string;
+  explicit: boolean;
+  media_type: string;
+  languages: string[];
+}
+
+// Full audiobook (GET /audiobooks/{id})
+export interface SpotifyAudiobookFull extends SpotifyAudiobookSimple {
+  images: SpotifyImage[];
+  copyrights: { text: string; type: string }[];
+  chapters?: {
+    items: SpotifyChapterSimple[];
+    total: number;
+  };
+}
+
+// Saved audiobook item (from GET /me/audiobooks)
+export interface SavedAudiobookItem {
+  added_at: string;
+  audiobook: SpotifyAudiobookSimple;
 }
 
 // Paged response wrapper
@@ -384,6 +376,9 @@ export interface UserProfile {
   display_name: string | null;
   uri: string;
   external_urls: { spotify: string };
+  email?: string | null;
+  country?: string;
+  product?: string;
 }
 
 // Playlist item (from GET /playlists/{id}/items)

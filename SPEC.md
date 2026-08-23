@@ -53,7 +53,7 @@ A Model Context Protocol (MCP) server that gives Claude full control over Spotif
 | Runtime | Node.js 22+ | Native fetch, no polyfills needed |
 | MCP SDK | `@modelcontextprotocol/sdk` | Official SDK, handles protocol framing |
 | HTTP client | Native `fetch` | No dependencies; Spotify API is simple REST |
-| Token storage | `~/.spotify-mcp/tokens.json` | Local file, user-owned, outside repo |
+| Token storage | `~/.spotify-mcp/tokens.json` (path overridable via `SPOTIFY_MCP_TOKEN_FILE`) | Local file, user-owned, outside repo |
 | Auth callback server | Node.js built-in `http` | No Express needed; handles one redirect then closes |
 | Browser launch | `open` package | Opens auth URL in default browser cross-platform |
 
@@ -140,6 +140,7 @@ playlist-modify-private
 ```
 
 > Note: `streaming` is **not** included — that scope is for the browser-based Spotify Web Playback SDK, not the Web API. Playback control via the Web API requires `user-modify-playback-state` (already included above).
+> Note: `ugc-image-upload` is **not** requested by default. It is only needed for `upload_playlist_cover`; users who want playlist cover uploads must enable it on their Spotify developer dashboard app and re-run auth.
 
 ### PKCE implementation notes
 
@@ -167,6 +168,7 @@ playlist-modify-private
 ```
 SPOTIFY_CLIENT_ID      — from developer.spotify.com app dashboard
 SPOTIFY_REDIRECT_URI   — http://127.0.0.1:8888/callback (default)
+SPOTIFY_MCP_TOKEN_FILE — optional; overrides the token storage path (default ~/.spotify-mcp/tokens.json)
 ```
 
 > Note: `SPOTIFY_CLIENT_SECRET` is **not used** with the PKCE flow. Only `SPOTIFY_CLIENT_ID` is needed in code. The client secret exists in the Spotify dashboard but is never sent by this application.
@@ -317,6 +319,7 @@ Quick reference for all endpoints used. All paths are relative to `https://api.s
 | Tool | Method | Path |
 |---|---|---|
 | `get_now_playing` | GET | `/me/player` — returns 204 (no body) when nothing is playing; handle gracefully |
+| `get_currently_playing` | GET | `/me/player/currently-playing` |
 | `play` | PUT | `/me/player/play` |
 | `pause` | PUT | `/me/player/pause` |
 | `skip_next` | POST | `/me/player/next` |
@@ -329,22 +332,24 @@ Quick reference for all endpoints used. All paths are relative to `https://api.s
 | `add_to_queue` | POST | `/me/player/queue` |
 | `get_devices` | GET | `/me/player/devices` |
 | `transfer_playback` | PUT | `/me/player` |
+| `play_from_search` | GET + PUT | `/search`, then `/me/player/play` — combined helper |
 | `search` | GET | `/search` |
+| `get_me` | GET | `/me` |
 | `get_track` | GET | `/tracks/{id}` |
 | `get_artist` | GET | `/artists/{id}` |
 | `get_artist_albums` | GET | `/artists/{id}/albums` |
 | `get_album` | GET | `/albums/{id}` |
-| `get_audio_features` | GET | `/audio-features/{id}` |
-| `get_audio_analysis` | GET | `/audio-analysis/{id}` |
+| `get_album_tracks` | GET | `/albums/{id}/tracks` |
 | `get_show` | GET | `/shows/{id}` |
+| `get_show_episodes` | GET | `/shows/{id}/episodes` |
 | `get_episode` | GET | `/episodes/{id}` |
+| `get_audiobook` | GET | `/audiobooks/{id}` |
+| `get_audiobook_chapters` | GET | `/audiobooks/{id}/chapters` |
+| `get_chapter` | GET | `/chapters/{id}` |
+| `get_saved_audiobooks` | GET | `/me/audiobooks` — market-gated to US/UK/CA/IE/NZ/AU |
 | `get_top_tracks` | GET | `/me/top/tracks` |
 | `get_top_artists` | GET | `/me/top/artists` |
 | `get_recently_played` | GET | `/me/player/recently-played` |
-| `get_recommendations` | GET | `/recommendations` |
-| `get_related_artists` | GET | `/artists/{id}/related-artists` |
-| `get_available_genres` | GET | `/recommendations/available-genre-seeds` |
-| `get_featured_playlists` | GET | `/browse/featured-playlists` |
 | `get_saved_tracks` | GET | `/me/tracks` |
 | `get_saved_albums` | GET | `/me/albums` |
 | `get_saved_shows` | GET | `/me/shows` |
@@ -355,13 +360,13 @@ Quick reference for all endpoints used. All paths are relative to `https://api.s
 | `get_user_playlists` | GET | `/me/playlists` |
 | `get_playlist` (metadata) | GET | `/playlists/{id}` |
 | `get_playlist` (items) | GET | `/playlists/{id}/items` |
-| `create_playlist` | POST | `/users/{user_id}/playlists` — requires calling `GET /me` first to get `user_id` |
+| `create_playlist` | POST | `/me/playlists` |
 | `add_to_playlist` | POST | `/playlists/{id}/items` |
 | `remove_from_playlist` | DELETE | `/playlists/{id}/items` |
 | `update_playlist` | PUT | `/playlists/{id}` |
 | `reorder_playlist_items` | PUT | `/playlists/{id}/items` |
-| `follow_artist` | PUT | `/me/following?type=artist` |
-| `unfollow_artist` | DELETE | `/me/following?type=artist` |
+| `get_playlist_cover` | GET | `/playlists/{id}/images` |
+| `upload_playlist_cover` | PUT | `/playlists/{id}/images` — base64 JPEG; requires optional `ugc-image-upload` scope |
 | `get_followed_artists` | GET | `/me/following?type=artist` — cursor-based pagination: `after` is the artist ID of the last returned item, not a numeric offset |
 | `check_following_artists` | GET | `/me/library/contains` — pass `spotify:artist:{id}` URIs |
 
@@ -377,6 +382,13 @@ All tools return a structured result object. Errors surface as MCP tool errors w
 Get the currently playing track or episode and full playback state.
 
 **Returns:** track/episode name, artists, album, album art URL, progress ms, duration ms, is_playing, shuffle_state, repeat_state, device name/type, volume. Returns a "Nothing is currently playing" message when the API responds with 204 No Content (do not attempt to parse a body from 204 responses).
+
+---
+
+#### `get_currently_playing`
+Lightweight poll of what is playing right now — the item, progress, and playing state only (no full playback context).
+
+**Returns:** track/episode name, artists/show, progress ms, is_playing. Returns a "Nothing is currently playing" message when the API responds with 204 No Content.
 
 ---
 
@@ -495,6 +507,18 @@ Move playback to a different device.
 
 ---
 
+#### `play_from_search`
+Search for a track or episode by name and start playing it — combines `search` and `play` into one call.
+
+**Inputs:**
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `query` | string | yes | Search text, e.g. a song title or podcast episode name |
+| `type` | `"track"` \| `"episode"` | no | What to search for. Default: `"track"` |
+| `device_id` | string | no | Target device; uses active device if omitted |
+
+---
+
 ### 5.2 Search
 
 #### `search`
@@ -519,7 +543,7 @@ Get full details for a track by URI or ID.
 
 **Inputs:** `id` (string, required)
 
-**Returns:** name, artists, album, duration_ms, explicit, URI. (Audio features are a separate call — use `get_audio_features` for those.)
+**Returns:** name, artists, album, duration_ms, explicit, URI.
 
 ---
 
@@ -553,29 +577,24 @@ Get album details and track list.
 
 ---
 
-#### `get_audio_features`
-Get high-level audio characteristics for a track — single summary values.
+#### `get_album_tracks`
+List an album's tracks with pagination.
 
-**Inputs:** `id` (string, required)
+**Inputs:**
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `id` | string | yes | Album ID |
+| `limit` | number | no | 1–50. Default: 20 |
+| `offset` | number | no | Pagination offset |
 
-**Returns:** acousticness, danceability, energy, instrumentalness, key, liveness, loudness, mode, speechiness, tempo (BPM), time_signature, valence.
+**Returns:** track name, artists, duration_ms, URI; plus total track count.
 
 ---
 
-#### `get_audio_analysis`
-Get a detailed time-domain structural breakdown of a track — beat-by-beat granularity.
+#### `get_me`
+Get the current user's Spotify profile.
 
-**Inputs:** `id` (string, required)
-
-**Returns:**
-- **Track-level**: duration, loudness, tempo, time_signature, key, mode, fade_in/fade_out durations
-- **Sections**: large structural divisions, each with its own tempo, key, loudness, time_signature, and duration
-- **Bars**: time intervals representing musical measures (start, duration, confidence)
-- **Beats**: individual beat positions with confidence scores
-- **Tatums**: lowest regular pulse units (subdivisions of beats)
-- **Segments**: roughly consistent sound units, each with a 12-element pitch chroma vector (note dominance) and 12 timbre coefficients (sound quality/texture)
-
-> Useful for deep music description: identifying song structure, key changes, breakdown sections, and sonic texture.
+**Returns:** display name, user ID, email (requires `user-read-email`), country and subscription level (require `user-read-private`), URI.
 
 ---
 
@@ -602,6 +621,20 @@ Get full details for a podcast episode.
 | `market` | string | no | |
 
 **Returns:** name, description, duration_ms, release_date, explicit, languages, resume_point (position_ms + fully_played), audio_preview_url, show name, URI.
+
+---
+
+#### `get_show_episodes`
+List a podcast show's episodes with pagination. Resume positions require the `user-read-playback-position` scope.
+
+**Inputs:**
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `id` | string | yes | Show ID |
+| `limit` | number | no | 1–50. Default: 20 |
+| `offset` | number | no | Pagination offset |
+
+**Returns:** episode name, description, duration_ms, release_date, resume_point, URI; plus total episode count.
 
 ---
 
@@ -637,72 +670,6 @@ Get recently played tracks with timestamps.
 
 ---
 
-#### `get_recommendations`
-Generate track recommendations from seeds with fine-grained audio attribute tuning.
-
-**Inputs:**
-| Field | Type | Required | Description |
-|---|---|---|---|
-| `seed_tracks` | string[] | no | Up to 5 track IDs |
-| `seed_artists` | string[] | no | Up to 5 artist IDs |
-| `seed_genres` | string[] | no | Up to 5 genre strings (from `get_available_genres`) |
-| `limit` | number | no | 1–100. Default: 20 |
-| `market` | string | no | ISO 3166-1 alpha-2 country code |
-
-> Note: total seeds (tracks + artists + genres) must be between 1 and 5.
-
-**Audio attribute tuning** — each of the 15 attributes below accepts `min_*`, `max_*`, and `target_*` variants (e.g., `target_energy`, `min_energy`, `max_energy`). All are optional.
-
-| Attribute | Range | Description |
-|---|---|---|
-| `acousticness` | 0.0–1.0 | Confidence the track is acoustic |
-| `danceability` | 0.0–1.0 | How suitable for dancing (rhythm, tempo stability, beat strength) |
-| `duration_ms` | integer | Track length in milliseconds |
-| `energy` | 0.0–1.0 | Perceptual intensity and activity (fast, loud, noisy = high) |
-| `instrumentalness` | 0.0–1.0 | Likelihood of no vocals; >0.5 = probably instrumental |
-| `key` | 0–11 | Pitch class (0=C, 1=C♯/D♭, 2=D, … 11=B) |
-| `liveness` | 0.0–1.0 | Probability of live audience presence; >0.8 = likely live |
-| `loudness` | −60–0 dB | Overall loudness; typical tracks fall between −60 and 0 |
-| `mode` | 0 or 1 | Modality: 0=minor, 1=major |
-| `speechiness` | 0.0–1.0 | Presence of spoken words; >0.66 = likely speech-only |
-| `tempo` | BPM | Estimated tempo in beats per minute |
-| `time_signature` | 3–7 | Estimated time signature (beats per bar) |
-| `valence` | 0.0–1.0 | Musical positiveness; high = happy/euphoric, low = sad/angry |
-
-**Returns:** list of recommended tracks with name, artists, album, duration_ms, URI.
-
----
-
-#### `get_related_artists`
-Get artists similar to a given artist.
-
-**Inputs:** `id` (string, required)
-
-**Returns:** up to 20 related artists with name, genres, URI.
-
----
-
-#### `get_available_genres`
-Get the list of genre strings usable as recommendation seeds.
-
-**Returns:** array of genre strings (e.g., `"acoustic"`, `"ambient"`, `"black-metal"`).
-
----
-
-#### `get_featured_playlists`
-Get Spotify's editorially curated featured playlists.
-
-**Inputs:**
-| Field | Type | Required | Description |
-|---|---|---|---|
-| `locale` | string | no | BCP 47 language tag (e.g., `"en_US"`) for localized message and playlist names |
-| `limit` | number | no | 1–50. Default: 20 |
-| `offset` | number | no | Pagination offset |
-
-**Returns:** localized editorial message (e.g., "Good morning"), list of playlists with id, name, description, track count, URI.
-
----
-
 ### 5.5 Library
 
 > **Feb 2026 note**: Save, remove, and check operations now use the unified `/me/library` endpoints which accept **Spotify URIs** (e.g., `spotify:track:abc123`) rather than bare IDs. The tools below reflect this.
@@ -716,27 +683,28 @@ Get tracks saved in the user's Liked Songs.
 | `limit` | number | no | 1–50. Default: 20 |
 | `offset` | number | no | Pagination offset. Default: 0 |
 | `market` | string | no | |
+| `fetch_all` | boolean | no | Fetch every page (up to 500 liked songs) instead of a single page |
 
 ---
 
 #### `get_saved_albums`
 Get albums saved in the user's library.
 
-**Inputs:** `limit`, `offset`, `market` (all optional)
+**Inputs:** `limit`, `offset`, `market`, `fetch_all` (all optional — `fetch_all` retrieves every page, capped at 500 albums)
 
 ---
 
 #### `get_saved_shows`
 Get podcast shows saved in the user's library.
 
-**Inputs:** `limit`, `offset` (optional)
+**Inputs:** `limit`, `offset`, `fetch_all` (all optional — `fetch_all` retrieves every page, capped at 500 shows)
 
 ---
 
 #### `get_saved_episodes`
 Get podcast episodes saved in the user's library.
 
-**Inputs:** `limit`, `offset`, `market` (all optional)
+**Inputs:** `limit`, `offset`, `market`, `fetch_all` (all optional — `fetch_all` retrieves every page, capped at 500 episodes)
 
 **Returns:** list of episodes with name, show name, duration_ms, release_date, resume_point, URI.
 
@@ -779,7 +747,7 @@ Check whether items are saved in the user's library. Replaces type-specific chec
 #### `get_user_playlists`
 List the current user's playlists.
 
-**Inputs:** `limit` (1–50, default 20), `offset` (optional)
+**Inputs:** `limit` (1–50, default 20), `offset`, `fetch_all` (all optional — `fetch_all` retrieves every page, capped at 500 playlists)
 
 **Returns:** id, name, description, track count, is_public, is_collaborative, owner, URI.
 
@@ -796,6 +764,7 @@ Get a playlist's metadata and its items. Makes two calls: `GET /playlists/{id}` 
 | `id` | string | yes | Playlist ID |
 | `limit` | number | no | Items per page, 1–100. Default: 50 |
 | `offset` | number | no | Pagination offset for items |
+| `fetch_all` | boolean | no | Fetch every page of items (up to 500) instead of a single page |
 
 **Returns:** name, description, owner, is_public, is_collaborative, total item count, URI; plus paginated items (track/episode name, artists/show, duration_ms, added_at, URI).
 
@@ -804,7 +773,7 @@ Get a playlist's metadata and its items. Makes two calls: `GET /playlists/{id}` 
 #### `create_playlist`
 Create a new playlist for the current user.
 
-Uses `POST /users/{user_id}/playlists`. The `user_id` must be obtained from `GET /me` — cache it after the first call since it doesn't change within a session.
+Uses a single call to `POST /me/playlists` for the current user — no `user_id` round-trip needed.
 
 **Inputs:**
 | Field | Type | Required | Description |
@@ -868,21 +837,27 @@ Move a range of items within a playlist. Uses `PUT /playlists/{id}/items`.
 
 ---
 
+#### `get_playlist_cover`
+Get a playlist's cover image URLs.
+
+**Inputs:** `playlist_id` (string, required)
+
+**Returns:** array of image objects (url, width, height).
+
+---
+
+#### `upload_playlist_cover`
+Replace a playlist's cover image with a base64-encoded JPEG (max 256 KB decoded). Requires the optional `ugc-image-upload` scope on the Spotify developer dashboard app (plus `playlist-modify-public`/`playlist-modify-private`) — without it Spotify rejects the upload with 403.
+
+**Inputs:**
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `playlist_id` | string | yes | |
+| `jpeg_base64` | string | yes | Base64-encoded JPEG file contents |
+
+---
+
 ### 5.7 Following
-
-#### `follow_artist`
-Follow one or more artists.
-
-**Inputs:** `ids` (string[], required, max 50)
-
----
-
-#### `unfollow_artist`
-Unfollow one or more artists.
-
-**Inputs:** `ids` (string[], required, max 50)
-
----
 
 #### `get_followed_artists`
 Get all artists the user follows.
@@ -900,6 +875,48 @@ Check if the user follows specific artists. Uses the unified `GET /me/library/co
 
 ---
 
+### 5.8 Audiobooks
+
+> Audiobook content is market-gated: it is only available in US, UK, Canada, Ireland, New Zealand, and Australia.
+
+#### `get_audiobook`
+Get full details for an audiobook.
+
+**Inputs:**
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `id` | string | yes | Audiobook ID |
+| `market` | string | no | ISO 3166-1 alpha-2 country code |
+
+**Returns:** name, authors, narrators, description, publisher, total_chapters, media_type, URI, first page of chapters.
+
+---
+
+#### `get_audiobook_chapters`
+List an audiobook's chapters with pagination. Resume positions require the `user-read-playback-position` scope.
+
+**Inputs:** `id` (string, required), `limit` (1–50, default 20), `offset` (optional)
+
+**Returns:** chapter name, description, duration_ms, release_date, resume_point, URI; plus total chapter count.
+
+---
+
+#### `get_chapter`
+Get full details for a single audiobook chapter.
+
+**Inputs:** `id` (string, required), `market` (optional)
+
+**Returns:** name, description, duration_ms, release_date, explicit, resume_point, audiobook name, URI.
+
+---
+
+#### `get_saved_audiobooks`
+Get audiobooks saved in the user's library.
+
+**Inputs:** `limit` (1–50, default 20), `offset` (optional)
+
+---
+
 ## 5. Resources
 
 MCP Resources expose read-only data as URIs Claude can reference.
@@ -913,7 +930,6 @@ MCP Resources expose read-only data as URIs Claude can reference.
 | `spotify://me/playlists` | All user playlists (names + IDs) |
 | `spotify://player/state` | Current playback state |
 | `spotify://player/queue` | Current queue |
-| `spotify://genres` | All seedable genre strings |
 
 ---
 
@@ -975,6 +991,7 @@ Known limitations to document and handle:
 | **Token expiry** | Access tokens expire after 1 hour; refresh tokens are long-lived |
 | **Redirect URI** | Must use `http://127.0.0.1` for local development — not `http://localhost` |
 | **Market sensitivity** | Some tracks/albums are region-restricted; `market` param controls availability filtering |
+| **Fetch-all cap** | `fetch_all` pagination (`client.getAllPages`) walks offset pages up to a maximum of 500 items per call |
 
 ---
 
@@ -987,13 +1004,14 @@ spotify-mcp/
 │   ├── auth.ts               # OAuth flow, token storage, refresh logic
 │   ├── client.ts             # SpotifyClient — fetch wrapper, rate limiting, token injection
 │   ├── tools/
-│   │   ├── playback.ts       # play, pause, skip_next, skip_previous, seek, set_volume, set_shuffle, set_repeat, get_now_playing, get_queue, add_to_queue, get_devices, transfer_playback
+│   │   ├── audiobooks.ts     # get_audiobook, get_audiobook_chapters, get_chapter, get_saved_audiobooks
+│   │   ├── playback.ts       # play, pause, skip_next, skip_previous, seek, set_volume, set_shuffle, set_repeat, get_now_playing, get_currently_playing, play_from_search, get_queue, add_to_queue, get_devices, transfer_playback
 │   │   ├── search.ts         # search
-│   │   ├── catalog.ts        # get_track, get_artist, get_artist_albums, get_album, get_audio_features, get_audio_analysis, get_show, get_episode
-│   │   ├── personalization.ts # get_top_tracks, get_top_artists, get_recently_played, get_recommendations, get_related_artists, get_available_genres, get_featured_playlists
+│   │   ├── catalog.ts        # get_me, get_track, get_artist, get_artist_albums, get_album, get_album_tracks, get_show, get_show_episodes, get_episode
+│   │   ├── personalization.ts # get_top_tracks, get_top_artists, get_recently_played
 │   │   ├── library.ts        # get_saved_tracks, get_saved_albums, get_saved_shows, get_saved_episodes, save_items, remove_saved_items, check_saved_items
-│   │   ├── playlists.ts      # get_user_playlists, get_playlist, create_playlist, add_to_playlist, remove_from_playlist, update_playlist, reorder_playlist_items
-│   │   └── following.ts      # follow_artist, unfollow_artist, get_followed_artists, check_following_artists
+│   │   ├── playlists.ts      # get_user_playlists, get_playlist, create_playlist, add_to_playlist, remove_from_playlist, update_playlist, reorder_playlist_items, get_playlist_cover, upload_playlist_cover
+│   │   └── following.ts      # get_followed_artists, check_following_artists
 │   ├── resources/
 │   │   └── index.ts          # MCP resource handlers
 │   ├── prompts/
@@ -1019,7 +1037,7 @@ SPOTIFY_REDIRECT_URI=http://127.0.0.1:8888/callback
 ```
 
 ### Token storage
-`~/.spotify-mcp/tokens.json` — created on first auth, file permissions set to 600 (owner read/write only).
+`~/.spotify-mcp/tokens.json` by default (path overridable via the `SPOTIFY_MCP_TOKEN_FILE` environment variable) — created on first auth, file permissions set to 600 (owner read/write only).
 
 ---
 
@@ -1068,3 +1086,4 @@ SPOTIFY_CLIENT_ID=xxx SPOTIFY_CLIENT_SECRET=yyy npx spotify-mcp auth
 | **Phase 6** | Following (follow_artist, unfollow_artist, get_followed_artists, check_following_artists via unified `/me/library/contains`) |
 | **Phase 7** | MCP Resources + Prompts |
 | **Phase 8** | Package for npm (`spotify-mcp`) + README polish |
+| **Phase 9** | Deprecation cleanup + coverage completion (2026-08): removed deprecated endpoints (audio features/analysis, recommendations, related artists, genres, featured playlists, follow/unfollow artist); create_playlist moved to `POST /me/playlists`; added album tracks, show episodes, get_me, audiobook family, get_currently_playing, play_from_search, playlist cover get/upload; fetch_all pagination via client.getAllPages; SPOTIFY_MCP_TOKEN_FILE override |

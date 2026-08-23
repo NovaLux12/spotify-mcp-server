@@ -7,6 +7,8 @@ import type {
   GetDevicesResponse,
   SpotifyTrack,
   SpotifyEpisode,
+  SpotifyEpisodeSimple,
+  SearchResponse,
 } from '../types/spotify.js';
 
 function formatDuration(ms: number): string {
@@ -14,9 +16,15 @@ function formatDuration(ms: number): string {
   const seconds = Math.floor((ms % 60000) / 1000);
   return `${minutes}:${seconds.toString().padStart(2, '0')}`;
 }
+// GET /me/player/currently-playing (subset we display)
+interface CurrentlyPlayingResponse {
+  item: SpotifyTrack | SpotifyEpisode | null;
+  progress_ms: number | null;
+  is_playing: boolean;
+}
 
-function formatItem(item: SpotifyTrack | SpotifyEpisode): string {
-  if (item.type === 'track') {
+function formatItem(item: SpotifyTrack | SpotifyEpisode | SpotifyEpisodeSimple): string {
+  if ('artists' in item) {
     const artists = item.artists.map((a) => a.name).join(', ');
     return `"${item.name}" by ${artists} (${formatDuration(item.duration_ms)})`;
   } else {
@@ -63,6 +71,71 @@ export function registerPlaybackTools(server: McpServer, client: SpotifyClient):
       lines.push(`URI: ${item.uri}`);
 
       return { content: [{ type: 'text', text: lines.join('\n') }] };
+    },
+  );
+
+  // get_currently_playing
+  server.tool(
+    'get_currently_playing',
+    'Lightweight poll of what is playing right now: the item, progress, and playing state',
+    {},
+    async () => {
+      const cp = await client.get<CurrentlyPlayingResponse>('/me/player/currently-playing');
+
+      if (!cp || !cp.item) {
+        return { content: [{ type: 'text', text: 'Nothing is currently playing.' }] };
+      }
+
+      const lines = [
+        `${cp.is_playing ? 'Playing' : 'Paused'}: ${formatItem(cp.item)}`,
+        `Progress: ${formatDuration(cp.progress_ms ?? 0)} / ${formatDuration(cp.item.duration_ms)}`,
+        `URI: ${cp.item.uri}`,
+      ];
+
+      return { content: [{ type: 'text', text: lines.join('\n') }] };
+    },
+  );
+
+  // play_from_search
+  server.tool(
+    'play_from_search',
+    "Search Spotify by name and immediately play the best match. Works for songs and podcast episodes — no URI needed.",
+    {
+      query: z.string().describe('Search text, e.g. a song title or podcast episode name'),
+      search_type: z
+        .enum(['track', 'episode'])
+        .default('track')
+        .describe("What to search for: 'track' (song) or 'episode' (podcast episode)"),
+      device_id: z.string().optional().describe('Target device ID; uses active device if omitted'),
+    },
+    async (args) => {
+      const results = await client.get<SearchResponse>('/search', {
+        q: args.query,
+        type: args.search_type,
+        limit: '5',
+      });
+
+      let match: SpotifyTrack | SpotifyEpisodeSimple | undefined;
+      if (args.search_type === 'track') {
+        match = results?.tracks?.items[0];
+      } else {
+        match = results?.episodes?.items[0];
+      }
+
+      if (!match) {
+        return { content: [{ type: 'text', text: `No results found for ${args.query}` }] };
+      }
+
+      const path = args.device_id
+        ? `/me/player/play?device_id=${encodeURIComponent(args.device_id)}`
+        : '/me/player/play';
+      await client.put(path, { uris: [match.uri] });
+
+      const detail =
+        'artists' in match
+          ? formatItem(match) + ` from the album "${match.album.name}"`
+          : formatItem(match);
+      return { content: [{ type: 'text', text: `Now playing: ${detail}` }] };
     },
   );
 

@@ -8,6 +8,7 @@ import { registerCatalogTools } from './tools/catalog.js';
 import { registerPersonalizationTools } from './tools/personalization.js';
 import { registerLibraryTools } from './tools/library.js';
 import { registerFollowingTools } from './tools/following.js';
+import { registerAudiobookTools } from './tools/audiobooks.js';
 import { registerPlaylistTools } from './tools/playlists.js';
 import { registerResources } from './resources/index.js';
 import { registerPrompts } from './prompts/index.js';
@@ -26,6 +27,7 @@ async function startMcpServer(): Promise<void> {
   registerPersonalizationTools(server, client);
   registerLibraryTools(server, client);
   registerFollowingTools(server, client);
+  registerAudiobookTools(server, client);
   registerPlaylistTools(server, client);
   registerResources(server, client);
   registerPrompts(server);

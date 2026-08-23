@@ -19,22 +19,38 @@ export function registerLibraryTools(server: McpServer, client: SpotifyClient): 
   // get_saved_tracks
   server.tool(
     'get_saved_tracks',
-    "Get tracks saved in the user's Liked Songs",
+    "Get tracks saved in the user's Liked Songs. Set fetch_all=true to retrieve the entire collection (capped at 500 items).",
     {
       limit: z.number().int().min(1).max(50).optional().describe('1–50. Default: 20'),
       offset: z.number().int().min(0).optional().describe('Pagination offset. Default: 0'),
       market: z.string().optional().describe('ISO 3166-1 alpha-2 country code'),
+      fetch_all: z
+        .boolean()
+        .optional()
+        .describe(
+          'Fetch all pages instead of one page (ignores limit/offset; capped at 500 items)',
+        ),
     },
     async (args) => {
-      const params: Record<string, string> = { limit: String(args.limit ?? 20) };
-      if (args.offset !== undefined) params.offset = String(args.offset);
+      const params: Record<string, string> = {};
+      if (!args.fetch_all) params.limit = String(args.limit ?? 20);
+      if (!args.fetch_all && args.offset !== undefined) params.offset = String(args.offset);
       if (args.market) params.market = args.market;
 
-      const result = await client.get<SpotifyPaged<SavedTrackItem>>('/me/tracks', params);
-      if (!result) throw new Error('Could not retrieve saved tracks');
+      let items: SavedTrackItem[];
+      let header: string;
+      if (args.fetch_all) {
+        items = await client.getAllPages<SavedTrackItem>('/me/tracks', params);
+        header = `Liked Songs (${items.length} fetched, capped at 500):`;
+      } else {
+        const result = await client.get<SpotifyPaged<SavedTrackItem>>('/me/tracks', params);
+        if (!result) throw new Error('Could not retrieve saved tracks');
+        items = result.items;
+        header = `Liked Songs (${result.total} total, showing ${items.length}):`;
+      }
 
-      const lines = [`Liked Songs (${result.total} total, showing ${result.items.length}):`];
-      for (const item of result.items) {
+      const lines = [header];
+      for (const item of items) {
         const artists = item.track.artists.map((a) => a.name).join(', ');
         lines.push(
           `  • "${item.track.name}" by ${artists} (${formatDuration(item.track.duration_ms)}) | URI: ${item.track.uri}`,
@@ -47,22 +63,38 @@ export function registerLibraryTools(server: McpServer, client: SpotifyClient): 
   // get_saved_albums
   server.tool(
     'get_saved_albums',
-    "Get albums saved in the user's library",
+    "Get albums saved in the user's library. Set fetch_all=true to retrieve the entire collection (capped at 500 items).",
     {
       limit: z.number().int().min(1).max(50).optional().describe('1–50. Default: 20'),
       offset: z.number().int().min(0).optional().describe('Pagination offset. Default: 0'),
       market: z.string().optional().describe('ISO 3166-1 alpha-2 country code'),
+      fetch_all: z
+        .boolean()
+        .optional()
+        .describe(
+          'Fetch all pages instead of one page (ignores limit/offset; capped at 500 items)',
+        ),
     },
     async (args) => {
-      const params: Record<string, string> = { limit: String(args.limit ?? 20) };
-      if (args.offset !== undefined) params.offset = String(args.offset);
+      const params: Record<string, string> = {};
+      if (!args.fetch_all) params.limit = String(args.limit ?? 20);
+      if (!args.fetch_all && args.offset !== undefined) params.offset = String(args.offset);
       if (args.market) params.market = args.market;
 
-      const result = await client.get<SpotifyPaged<SavedAlbumItem>>('/me/albums', params);
-      if (!result) throw new Error('Could not retrieve saved albums');
+      let items: SavedAlbumItem[];
+      let header: string;
+      if (args.fetch_all) {
+        items = await client.getAllPages<SavedAlbumItem>('/me/albums', params);
+        header = `Saved albums (${items.length} fetched, capped at 500):`;
+      } else {
+        const result = await client.get<SpotifyPaged<SavedAlbumItem>>('/me/albums', params);
+        if (!result) throw new Error('Could not retrieve saved albums');
+        items = result.items;
+        header = `Saved albums (${result.total} total, showing ${items.length}):`;
+      }
 
-      const lines = [`Saved albums (${result.total} total, showing ${result.items.length}):`];
-      for (const item of result.items) {
+      const lines = [header];
+      for (const item of items) {
         const artists = item.album.artists.map((a) => a.name).join(', ');
         lines.push(
           `  • "${item.album.name}" by ${artists} (${item.album.total_tracks} tracks, ${item.album.release_date}) | URI: ${item.album.uri}`,
@@ -75,20 +107,36 @@ export function registerLibraryTools(server: McpServer, client: SpotifyClient): 
   // get_saved_shows
   server.tool(
     'get_saved_shows',
-    "Get podcast shows saved in the user's library",
+    "Get podcast shows saved in the user's library. Set fetch_all=true to retrieve the entire collection (capped at 500 items).",
     {
       limit: z.number().int().min(1).max(50).optional().describe('1–50. Default: 20'),
       offset: z.number().int().min(0).optional().describe('Pagination offset. Default: 0'),
+      fetch_all: z
+        .boolean()
+        .optional()
+        .describe(
+          'Fetch all pages instead of one page (ignores limit/offset; capped at 500 items)',
+        ),
     },
     async (args) => {
-      const params: Record<string, string> = { limit: String(args.limit ?? 20) };
-      if (args.offset !== undefined) params.offset = String(args.offset);
+      const params: Record<string, string> = {};
+      if (!args.fetch_all) params.limit = String(args.limit ?? 20);
+      if (!args.fetch_all && args.offset !== undefined) params.offset = String(args.offset);
 
-      const result = await client.get<SpotifyPaged<SavedShowItem>>('/me/shows', params);
-      if (!result) throw new Error('Could not retrieve saved shows');
+      let items: SavedShowItem[];
+      let header: string;
+      if (args.fetch_all) {
+        items = await client.getAllPages<SavedShowItem>('/me/shows', params);
+        header = `Saved shows (${items.length} fetched, capped at 500):`;
+      } else {
+        const result = await client.get<SpotifyPaged<SavedShowItem>>('/me/shows', params);
+        if (!result) throw new Error('Could not retrieve saved shows');
+        items = result.items;
+        header = `Saved shows (${result.total} total, showing ${items.length}):`;
+      }
 
-      const lines = [`Saved shows (${result.total} total, showing ${result.items.length}):`];
-      for (const item of result.items) {
+      const lines = [header];
+      for (const item of items) {
         lines.push(
           `  • "${item.show.name}" by ${item.show.publisher} (${item.show.total_episodes} episodes) | URI: ${item.show.uri}`,
         );
@@ -100,22 +148,38 @@ export function registerLibraryTools(server: McpServer, client: SpotifyClient): 
   // get_saved_episodes
   server.tool(
     'get_saved_episodes',
-    "Get podcast episodes saved in the user's library",
+    "Get podcast episodes saved in the user's library. Set fetch_all=true to retrieve the entire collection (capped at 500 items).",
     {
       limit: z.number().int().min(1).max(50).optional().describe('1–50. Default: 20'),
       offset: z.number().int().min(0).optional().describe('Pagination offset. Default: 0'),
       market: z.string().optional().describe('ISO 3166-1 alpha-2 country code'),
+      fetch_all: z
+        .boolean()
+        .optional()
+        .describe(
+          'Fetch all pages instead of one page (ignores limit/offset; capped at 500 items)',
+        ),
     },
     async (args) => {
-      const params: Record<string, string> = { limit: String(args.limit ?? 20) };
-      if (args.offset !== undefined) params.offset = String(args.offset);
+      const params: Record<string, string> = {};
+      if (!args.fetch_all) params.limit = String(args.limit ?? 20);
+      if (!args.fetch_all && args.offset !== undefined) params.offset = String(args.offset);
       if (args.market) params.market = args.market;
 
-      const result = await client.get<SpotifyPaged<SavedEpisodeItem>>('/me/episodes', params);
-      if (!result) throw new Error('Could not retrieve saved episodes');
+      let items: SavedEpisodeItem[];
+      let header: string;
+      if (args.fetch_all) {
+        items = await client.getAllPages<SavedEpisodeItem>('/me/episodes', params);
+        header = `Saved episodes (${items.length} fetched, capped at 500):`;
+      } else {
+        const result = await client.get<SpotifyPaged<SavedEpisodeItem>>('/me/episodes', params);
+        if (!result) throw new Error('Could not retrieve saved episodes');
+        items = result.items;
+        header = `Saved episodes (${result.total} total, showing ${items.length}):`;
+      }
 
-      const lines = [`Saved episodes (${result.total} total, showing ${result.items.length}):`];
-      for (const item of result.items) {
+      const lines = [header];
+      for (const item of items) {
         lines.push(
           `  • "${item.episode.name}" — ${item.episode.show.name} (${formatDuration(item.episode.duration_ms)}, ${item.episode.release_date}) | URI: ${item.episode.uri}`,
         );

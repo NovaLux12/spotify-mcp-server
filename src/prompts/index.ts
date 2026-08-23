@@ -11,7 +11,7 @@ export function registerPrompts(server: McpServer): void {
         role: 'user',
         content: {
           type: 'text',
-          text: 'Act as a DJ. Use get_top_artists and get_top_tracks to understand my music taste, then use get_recommendations to find a great set of songs that match my taste. Queue them up using add_to_queue one by one. Aim for a cohesive set of 5–10 tracks.',
+          text: 'Act as a DJ. Use get_top_artists and get_recently_played to understand my music taste and what I have been listening to lately, then use search to find tracks that fit that vibe. Queue them up using add_to_queue one by one. Aim for a cohesive set of 5–10 tracks that flows well.',
         },
       }],
     }),
@@ -29,7 +29,7 @@ export function registerPrompts(server: McpServer): void {
         role: 'user',
         content: {
           type: 'text',
-          text: `Create a playlist for this mood: "${args.mood}". Use search and get_recommendations to find 15–20 tracks that fit the vibe. Then use create_playlist to make a new playlist with a fitting name and description, and add_to_playlist to fill it with the tracks you found.`,
+          text: `Create a playlist for this mood: "${args.mood}". Use search to find 15–20 tracks that fit the vibe (search several related keywords, artists, and genres to get good variety). Then use create_playlist to make a new playlist with a fitting name and description, and add_to_playlist to fill it with the tracks you found.`,
         },
       }],
     }),
@@ -53,13 +53,13 @@ export function registerPrompts(server: McpServer): void {
   // discover_weekly_alternative — personalized discovery based on top tracks
   server.prompt(
     'discover_weekly_alternative',
-    "Based on my top tracks, recommend 20 songs I probably haven't heard.",
+    "Based on my top tracks and recently played songs, find 20 lesser-known songs I probably haven't heard.",
     async () => ({
       messages: [{
         role: 'user',
         content: {
           type: 'text',
-          text: "Generate a personalised discovery playlist for me. Use get_top_tracks (short_term) to find my recent favourites, then use get_recommendations seeded with those tracks to find 20 songs I probably haven't heard. Focus on variety — mix up the energy levels and moods while staying within my taste. Present the list with track names, artists, and URIs so I can play them.",
+          text: "Generate a personalised discovery list for me. Use get_top_tracks (short_term) and get_recently_played to learn my recent favourites, then use search to find 20 lesser-known tracks in the same artistic space — dig beyond each favourite artist's biggest hits (deep cuts, B-sides, similar smaller artists). IMPORTANT: explicitly exclude every track that appears in my top tracks or recently played, and skip each artist's most-streamed signature songs so the picks feel fresh. Focus on variety — mix up energy levels and moods while staying within my taste. Present the list with track names, artists, and URIs so I can play them.",
         },
       }],
     }),

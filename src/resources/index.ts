@@ -9,7 +9,6 @@ import type {
   SpotifyEpisode,
   RecentlyPlayedResponse,
   UserProfile,
-  AvailableGenreSeedsResponse,
   SpotifyArtistFull,
 } from '../types/spotify.js';
 
@@ -207,23 +206,4 @@ export function registerResources(server: McpServer, client: SpotifyClient): voi
     },
   );
 
-  // spotify://genres — all seedable genre strings
-  server.resource(
-    'genres',
-    'spotify://genres',
-    { description: 'All available genre seeds for recommendations' },
-    async () => {
-      const result = await client.get<AvailableGenreSeedsResponse>(
-        '/recommendations/available-genre-seeds',
-      );
-      if (!result) throw new Error('Could not retrieve genre seeds');
-      return {
-        contents: [{
-          uri: 'spotify://genres',
-          text: `Available genre seeds (${result.genres.length}):\n${result.genres.join(', ')}`,
-          mimeType: 'text/plain',
-        }],
-      };
-    },
-  );
 }

@@ -4,33 +4,6 @@ import type { SpotifyClient } from '../client.js';
 import type { FollowedArtistsResponse } from '../types/spotify.js';
 
 export function registerFollowingTools(server: McpServer, client: SpotifyClient): void {
-  // follow_artist
-  server.tool(
-    'follow_artist',
-    'Follow one or more artists. Max 50.',
-    {
-      ids: z.array(z.string()).min(1).max(50).describe('Spotify artist IDs to follow'),
-    },
-    async (args) => {
-      await client.put('/me/following?type=artist', { ids: args.ids });
-      return { content: [{ type: 'text', text: `Now following ${args.ids.length} artist(s).` }] };
-    },
-  );
-
-  // unfollow_artist
-  server.tool(
-    'unfollow_artist',
-    'Unfollow one or more artists. Max 50.',
-    {
-      ids: z.array(z.string()).min(1).max(50).describe('Spotify artist IDs to unfollow'),
-    },
-    async (args) => {
-      await client.delete('/me/following?type=artist', { ids: args.ids });
-      return {
-        content: [{ type: 'text', text: `Unfollowed ${args.ids.length} artist(s).` }],
-      };
-    },
-  );
 
   // get_followed_artists
   server.tool(

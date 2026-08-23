@@ -1,0 +1,499 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { registerPlaybackTools } from '../src/tools/playback.js';
+
+// ---------------------------------------------------------------- fixtures
+
+type ToolContent = { content: Array<{ type: string; text: string }> };
+
+type RegisteredTool = {
+  name: string;
+  description: string;
+  schema: Record<string, { safeParse(value: unknown): { success: boolean } }>;
+  handler: (args: Record<string, unknown>) => Promise<ToolContent>;
+};
+
+type Call = { method: string; path: string; params?: Record<string, string>; body?: unknown };
+
+interface ClientOptions {
+  getResponse?: (path: string, params?: Record<string, string>) => unknown;
+}
+
+function trackFixture(overrides: Partial<Record<string, unknown>> = {}) {
+  return {
+    id: 'trk1',
+    name: 'Bohemian Rhapsody',
+    uri: 'spotify:track:trk1',
+    type: 'track',
+    duration_ms: 355000,
+    explicit: false,
+    artists: [{ id: 'art1', name: 'Queen', uri: 'spotify:artist:art1' }],
+    album: {
+      id: 'alb1',
+      name: 'A Night at the Opera',
+      uri: 'spotify:album:alb1',
+      images: [{ url: 'https://example.com/art.jpg', height: 640, width: 640 }],
+    },
+    ...overrides,
+  };
+}
+
+function episodeFixture(overrides: Partial<Record<string, unknown>> = {}) {
+  return {
+    id: 'ep1',
+    name: 'Episode One',
+    uri: 'spotify:episode:ep1',
+    type: 'episode',
+    duration_ms: 1800000,
+    explicit: false,
+    description: 'The first episode',
+    release_date: '2026-01-01',
+    show: { id: 'shw1', name: 'Great Podcast', uri: 'spotify:show:shw1' },
+    ...overrides,
+  };
+}
+
+function playbackStateFixture(item: unknown) {
+  return {
+    is_playing: true,
+    progress_ms: 185000,
+    shuffle_state: true,
+    repeat_state: 'track',
+    timestamp: 1750000000000,
+    device: {
+      id: 'dev1',
+      name: 'Living Room',
+      type: 'Computer',
+      is_active: true,
+      is_private_session: false,
+      is_restricted: false,
+      volume_percent: 42,
+      supports_volume: true,
+    },
+    item,
+    currently_playing_type: item && (item as { type: string }).type === 'track' ? 'track' : 'episode',
+    context: null,
+  };
+}
+
+function makeHarness(opts: ClientOptions = {}) {
+  const calls: Call[] = [];
+  const client = {
+    get: async (path: string, params?: Record<string, string>) => {
+      calls.push(params === undefined ? { method: 'GET', path } : { method: 'GET', path, params });
+      return opts.getResponse ? opts.getResponse(path, params) : null;
+    },
+    post: async (path: string) => {
+      calls.push({ method: 'POST', path });
+      return null;
+    },
+    put: async (path: string, body?: unknown) => {
+      calls.push({ method: 'PUT', path, body });
+    },
+    delete: async (path: string) => {
+      calls.push({ method: 'DELETE', path });
+    },
+    getAllPages: async () => [],
+  };
+  const registered: RegisteredTool[] = [];
+  const server = {
+    tool: (
+      name: string,
+      description: string,
+      schema: RegisteredTool['schema'],
+      handler: RegisteredTool['handler'],
+    ) => registered.push({ name, description, schema, handler }),
+  };
+  registerPlaybackTools(
+    server as unknown as Parameters<typeof registerPlaybackTools>[0],
+    client as unknown as Parameters<typeof registerPlaybackTools>[1],
+  );
+  return { registered, calls };
+}
+
+function findTool(registered: RegisteredTool[], name: string): RegisteredTool {
+  const tool = registered.find((t) => t.name === name);
+  assert.ok(tool, `expected tool ${name} to be registered`);
+  return tool;
+}
+
+async function invoke(tool: RegisteredTool, args: Record<string, unknown> = {}) {
+  return (tool.handler as (a: Record<string, unknown>) => Promise<ToolContent>)(args);
+}
+
+function text(result: ToolContent): string {
+  return result.content.map((c) => c.text).join('\n');
+}
+
+// ------------------------------------------------------------ get_now_playing
+
+test('get_now_playing renders full track state', async () => {
+  const state = playbackStateFixture(trackFixture());
+  const { registered, calls } = makeHarness({
+    getResponse: (path) => (path === '/me/player' ? state : undefined),
+  });
+
+  const result = await invoke(findTool(registered, 'get_now_playing'));
+
+  assert.deepEqual(calls, [{ method: 'GET', path: '/me/player' }]);
+  const out = text(result);
+  assert.match(out, /Now playing: "Bohemian Rhapsody" by Queen/);
+  assert.match(out, /Album: A Night at the Opera/);
+  assert.match(out, /Art: https:\/\/example\.com\/art\.jpg/);
+  // progress 185000ms -> 3:05, duration 355000ms -> 5:55
+  assert.match(out, /Progress: 3:05 \/ 5:55/);
+  assert.match(out, /Device: Living Room \(Computer\)/);
+  assert.match(out, /Volume: 42%/);
+  assert.match(out, /Shuffle: on \| Repeat: track/);
+  assert.match(out, /URI: spotify:track:trk1/);
+});
+
+test('get_now_playing formats paused episode payload via show.name path', async () => {
+  const ep = episodeFixture();
+  const state = playbackStateFixture(ep);
+  state.is_playing = false;
+  state.device.volume_percent = null;
+  const { registered } = makeHarness({
+    getResponse: (path) => (path === '/me/player' ? state : undefined),
+  });
+
+  const out = text(await invoke(findTool(registered, 'get_now_playing')));
+
+  assert.match(out, /Now paused: "Episode One"/);
+  assert.match(out, /Show: Great Podcast/);
+  assert.match(out, /Progress: 3:05 \/ 30:00/);
+});
+
+test('get_now_playing returns friendly message on 204/null response', async () => {
+  const { registered, calls } = makeHarness(); // get -> null
+
+  const out = text(await invoke(findTool(registered, 'get_now_playing')));
+
+  assert.equal(calls.length, 1);
+  assert.equal(text(await invoke(findTool(registered, 'get_now_playing'))), 'Nothing is currently playing.');
+});
+
+// ------------------------------------------------------ get_currently_playing
+
+test('get_currently_playing renders compact track summary', async () => {
+  const { registered, calls } = makeHarness({
+    getResponse: (path) =>
+      path === '/me/player/currently-playing'
+        ? { item: trackFixture(), progress_ms: 60000, is_playing: true }
+        : undefined,
+  });
+
+  const out = text(await invoke(findTool(registered, 'get_currently_playing')));
+
+  assert.equal(calls[0].path, '/me/player/currently-playing');
+  assert.match(out, /^Playing: "Bohemian Rhapsody" by Queen \(5:55\)$/m);
+  assert.match(out, /Progress: 1:00 \/ 5:55/);
+  assert.match(out, /URI: spotify:track:trk1/);
+});
+
+test('get_currently_playing formats episode with em dash and show name', async () => {
+  const { registered } = makeHarness({
+    getResponse: (path) =>
+      path === '/me/player/currently-playing'
+        ? { item: episodeFixture(), progress_ms: 30000, is_playing: false }
+        : undefined,
+  });
+
+  const out = text(await invoke(findTool(registered, 'get_currently_playing')));
+
+  assert.match(out, /^Paused: "Episode One" — Great Podcast \(30:00\)$/m);
+});
+
+test('get_currently_playing handles 204/null and null progress', async () => {
+  const { registered } = makeHarness({
+    getResponse: (path) =>
+      path === '/me/player/currently-playing'
+        ? { item: trackFixture(), progress_ms: null, is_playing: false }
+        : undefined,
+  });
+  const tool = findTool(registered, 'get_currently_playing');
+
+  const outWithProgress = text(await invoke(tool));
+  assert.match(outWithProgress, /Progress: 0:00 \/ 5:55/);
+
+  const { registered: emptyRegistered } = makeHarness();
+  const outEmpty = text(await invoke(findTool(emptyRegistered, 'get_currently_playing')));
+  assert.equal(outEmpty, 'Nothing is currently playing.');
+});
+
+// ----------------------------------------------------------------------- play
+
+test('play maps context_uri, offset, position_ms into request body', async () => {
+  const { registered, calls } = makeHarness();
+  await invoke(findTool(registered, 'play'), {
+    context_uri: 'spotify:album:alb1',
+    offset: 3,
+    position_ms: 45000,
+  });
+
+  assert.deepEqual(calls, [
+    {
+      method: 'PUT',
+      path: '/me/player/play',
+      body: { context_uri: 'spotify:album:alb1', offset: { position: 3 }, position_ms: 45000 },
+    },
+  ]);
+});
+
+test('play sends ad-hoc uris list', async () => {
+  const { registered, calls } = makeHarness();
+  await invoke(findTool(registered, 'play'), {
+    uris: ['spotify:track:a', 'spotify:track:b'],
+  });
+
+  assert.equal(calls[0].method, 'PUT');
+  assert.deepEqual((calls[0].body as { uris: string[] }).uris, ['spotify:track:a', 'spotify:track:b']);
+  assert.equal((calls[0].body as Record<string, unknown>).context_uri, undefined);
+});
+
+test('play omits body entirely when no arguments given', async () => {
+  const { registered, calls } = makeHarness();
+  const result = await invoke(findTool(registered, 'play'), {});
+
+  assert.deepEqual(calls, [{ method: 'PUT', path: '/me/player/play', body: undefined }]);
+  assert.equal(text(result), 'Playback started.');
+});
+
+test('play forwards device_id as encoded query parameter', async () => {
+  const { registered, calls } = makeHarness();
+  await invoke(findTool(registered, 'play'), { device_id: 'dev with space' });
+
+  assert.equal(calls[0].path, '/me/player/play?device_id=dev%20with%20space');
+});
+
+// ---------------------------------------------------- transport-style controls
+
+test('seek sends position_ms and optional device_id in query string', async () => {
+  const { registered, calls } = makeHarness();
+  const tool = findTool(registered, 'seek');
+
+  await invoke(tool, { position_ms: 90000 });
+  await invoke(tool, { position_ms: 125000, device_id: 'dev9' });
+
+  assert.deepEqual(
+    calls.map((c) => c.path),
+    ['/me/player/seek?position_ms=90000', '/me/player/seek?position_ms=125000&device_id=dev9'],
+  );
+  assert.ok(calls.every((c) => c.method === 'PUT'));
+});
+
+test('seek rejects negative position_ms via zod schema', () => {
+  const { registered } = makeHarness();
+  const schema = findTool(registered, 'seek').schema;
+  assert.equal(schema.position_ms.safeParse(-1).success, false);
+  assert.equal(schema.position_ms.safeParse(0).success, true);
+});
+
+test('set_volume validates range 0–100 and forwards query params', async () => {
+  const { registered, calls } = makeHarness();
+  const tool = findTool(registered, 'set_volume');
+
+  // zod rejects out-of-range values
+  assert.equal(tool.schema.volume_percent.safeParse(101).success, false);
+  assert.equal(tool.schema.volume_percent.safeParse(-1).success, false);
+  assert.equal(tool.schema.volume_percent.safeParse(100).success, true);
+
+  const result = await invoke(tool, { volume_percent: 50, device_id: 'dev1' });
+
+  assert.equal(calls[0].method, 'PUT');
+  assert.equal(calls[0].path, '/me/player/volume?volume_percent=50&device_id=dev1');
+  assert.match(text(result), /Volume set to 50%/);
+});
+
+test('set_repeat rejects bogus mode and forwards valid ones', async () => {
+  const { registered, calls } = makeHarness();
+  const tool = findTool(registered, 'set_repeat');
+
+  assert.equal(tool.schema.state.safeParse('bogus').success, false);
+  assert.equal(tool.schema.state.safeParse('off').success, true);
+  assert.equal(tool.schema.state.safeParse('context').success, true);
+  assert.equal(tool.schema.state.safeParse('track').success, true);
+
+  await invoke(tool, { state: 'context' });
+
+  assert.equal(calls[0].method, 'PUT');
+  assert.equal(calls[0].path, '/me/player/repeat?state=context');
+});
+
+test('set_shuffle serialises boolean state into query string', async () => {
+  const { registered, calls } = makeHarness();
+  const tool = findTool(registered, 'set_shuffle');
+
+  const result = await invoke(tool, { state: true });
+
+  assert.equal(calls[0].method, 'PUT');
+  assert.equal(calls[0].path, '/me/player/shuffle?state=true');
+  assert.equal(text(result), 'Shuffle on.');
+});
+
+// ----------------------------------------------------------- queue & transfer
+
+test('add_to_queue posts uri and optional device_id as query params', async () => {
+  const { registered, calls } = makeHarness();
+
+  await invoke(findTool(registered, 'add_to_queue'), { uri: 'spotify:track:abc' });
+  await invoke(findTool(registered, 'add_to_queue'), { uri: 'spotify:episode:xyz', device_id: 'd1' });
+
+  assert.deepEqual(
+    calls.map((c) => ({ method: c.method, path: c.path })),
+    [
+      { method: 'POST', path: '/me/player/queue?uri=spotify%3Atrack%3Aabc' },
+      { method: 'POST', path: '/me/player/queue?uri=spotify%3Aepisode%3Axyz&device_id=d1' },
+    ],
+  );
+});
+
+test('transfer_playback wraps device id in device_ids array', async () => {
+  const { registered, calls } = makeHarness();
+
+  const result = await invoke(findTool(registered, 'transfer_playback'), {
+    device_id: 'dev2',
+    play: true,
+  });
+
+  assert.equal(calls[0].method, 'PUT');
+  assert.equal(calls[0].path, '/me/player');
+  assert.deepEqual(calls[0].body, { device_ids: ['dev2'], play: true });
+  assert.match(text(result), /transferred to device dev2/);
+
+  const { registered: r2, calls: c2 } = makeHarness();
+  await invoke(findTool(r2, 'transfer_playback'), { device_id: 'dev2' });
+  assert.deepEqual(c2[0].body, { device_ids: ['dev2'] }); // play omitted when unset
+});
+
+// ---------------------------------------------------------------- get_devices
+
+test('get_devices lists devices with active marker, volume, and ids', async () => {
+  const { registered, calls } = makeHarness({
+    getResponse: (path) =>
+      path === '/me/player/devices'
+        ? {
+            devices: [
+              {
+                id: 'dev1',
+                name: 'Living Room',
+                type: 'Computer',
+                is_active: true,
+                is_private_session: false,
+                is_restricted: false,
+                volume_percent: 42,
+                supports_volume: true,
+              },
+              {
+                id: null,
+                name: 'Speaker',
+                type: 'Speaker',
+                is_active: false,
+                is_private_session: false,
+                is_restricted: false,
+                volume_percent: null,
+                supports_volume: false,
+              },
+            ],
+          }
+        : undefined,
+  });
+
+  const out = text(await invoke(findTool(registered, 'get_devices')));
+
+  assert.equal(calls[0].path, '/me/player/devices');
+  assert.match(out, /Devices:/);
+  assert.match(out, /• Living Room \(Computer\) \[ACTIVE\], volume: 42% — ID: dev1/);
+  assert.match(out, /• Speaker \(Speaker\) — ID: n\/a/); // null id and volume rendered safely
+});
+
+test('get_devices reports helpful message when list is empty or null', async () => {
+  const { registered } = makeHarness({
+    getResponse: (path) => (path === '/me/player/devices' ? { devices: [] } : undefined),
+  });
+  assert.match(text(await invoke(findTool(registered, 'get_devices'))), /No devices found/);
+
+  const { registered: nullReg } = makeHarness(); // null (204) response
+  assert.match(text(await invoke(findTool(nullReg, 'get_devices'))), /No devices found/);
+});
+
+// ----------------------------------------------------------- play_from_search
+
+test('play_from_search searches with limit 5 then plays first track result', async () => {
+  const match = trackFixture();
+  const { registered, calls } = makeHarness({
+    getResponse: (path, params) => {
+      if (path !== '/search') return undefined;
+      return {
+        tracks: { items: [match, trackFixture({ id: 'trk2', name: 'Other' })], total: 2 },
+        params,
+      };
+    },
+  });
+
+  const result = await invoke(findTool(registered, 'play_from_search'), {
+    query: 'bohemian rhapsody',
+    search_type: 'track',
+  });
+
+  const searchCall = calls.find((c) => c.path === '/search');
+  assert.ok(searchCall, 'expected a call to /search');
+  assert.deepEqual(searchCall.params, { q: 'bohemian rhapsody', type: 'track', limit: '5' });
+
+  const playCall = calls.find((c) => c.path === '/me/player/play');
+  assert.ok(playCall, 'expected a PUT to /me/player/play');
+  assert.equal(playCall.method, 'PUT');
+  assert.deepEqual(playCall.body, { uris: ['spotify:track:trk1'] });
+
+  const out = text(result);
+  assert.match(out, /Now playing: "Bohemian Rhapsody" by Queen/);
+  assert.match(out, /from the album "A Night at the Opera"/);
+});
+
+test('play_from_search plays first episode result for search_type episode', async () => {
+  const ep = { ...episodeFixture() };
+  const { registered, calls } = makeHarness({
+    getResponse: (path) =>
+      path === '/search'
+        ? { episodes: { items: [{ ...ep, show: { ...ep.show } }] }, total: 1 }
+        : undefined,
+  });
+
+  const result = await invoke(findTool(registered, 'play_from_search'), {
+    query: 'episode one',
+    search_type: 'episode',
+  });
+
+  const searchCall = calls.find((c) => c.path === '/search');
+  assert.equal(searchCall?.params?.type, 'episode');
+
+  const playCall = calls.find((c) => c.path === '/me/player/play');
+  assert.deepEqual(playCall?.body, { uris: ['spotify:episode:ep1'] });
+  assert.match(text(result), /"Episode One" — Great Podcast/);
+  assert.doesNotMatch(text(result), /from the album/); // episodes have no album clause
+});
+
+test('play_from_search targets requested device in play url', async () => {
+  const { registered, calls } = makeHarness({
+    getResponse: (path) => (path === '/search' ? { tracks: { items: [trackFixture()], total: 1 } } : undefined),
+  });
+
+
+  await invoke(findTool(registered, 'play_from_search'), {
+    query: 'x',
+    search_type: 'track',
+    device_id: 'dev7',
+  });
+  assert.ok(calls.some((c) => c.path === '/me/player/play?device_id=dev7'));
+});
+
+test('play_from_search zero results returns normal content, not an exception', async () => {
+  const { registered, calls } = makeHarness({
+    getResponse: (path) => (path === '/search' ? { tracks: { items: [], total: 0 } } : undefined),
+  });
+  const result =
+    await invoke(findTool(registered, 'play_from_search'), { query: 'zzzznope', search_type: 'track' });
+
+  assert.equal(calls.some((c) => c.path === '/me/player/play'), false); // nothing played
+  assert.match(text(result), /^No results found for zzzznope$/);
+});

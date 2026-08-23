@@ -2,7 +2,7 @@ import { createHash, randomBytes } from 'crypto';
 import { createServer } from 'http';
 import { mkdir, writeFile, readFile, chmod } from 'fs/promises';
 import { homedir } from 'os';
-import { join } from 'path';
+import { join, dirname } from 'path';
 import { createInterface } from 'readline/promises';
 import { stdin as input, stdout as output } from 'process';
 import open from 'open';
@@ -38,9 +38,12 @@ function base64url(buffer: Buffer): string {
     .replace(/=/g, '');
 }
 
-function getTokenPath(): string {
-  return join(homedir(), '.spotify-mcp', 'tokens.json');
-}
+/**
+ * Resolved token-file path. Override with SPOTIFY_MCP_TOKEN_FILE (e.g. to
+ * point tests at a temp file); defaults to ~/.spotify-mcp/tokens.json.
+ */
+export const TOKEN_FILE =
+  process.env.SPOTIFY_MCP_TOKEN_FILE ?? join(homedir(), '.spotify-mcp', 'tokens.json');
 
 /**
  * Returns true when SPOTIFY_HEADLESS=1 is set, indicating the auth flow
@@ -55,9 +58,8 @@ export function isHeadlessMode(): boolean {
 }
 
 export async function loadTokens(): Promise<TokenData> {
-  const tokenPath = getTokenPath();
   try {
-    const data = await readFile(tokenPath, 'utf8');
+    const data = await readFile(TOKEN_FILE, 'utf8');
     return JSON.parse(data) as TokenData;
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
@@ -68,15 +70,13 @@ export async function loadTokens(): Promise<TokenData> {
 }
 
 export async function saveTokens(tokens: TokenData): Promise<void> {
-  const tokenPath = getTokenPath();
-  const dir = join(homedir(), '.spotify-mcp');
-  await mkdir(dir, { recursive: true });
-  await writeFile(tokenPath, JSON.stringify(tokens, null, 2), 'utf8');
-  // Restrict to owner read/write only (ignored on Windows)
+  await mkdir(dirname(TOKEN_FILE), { recursive: true });
+  // Restrict to owner read/write only on creation (mode ignored on Windows)
+  await writeFile(TOKEN_FILE, JSON.stringify(tokens, null, 2), { encoding: 'utf8', mode: 0o600 });
   try {
-    await chmod(tokenPath, 0o600);
+    await chmod(TOKEN_FILE, 0o600);
   } catch {
-    // chmod may fail on Windows — that's acceptable
+    // chmod may fail on Windows — that's acceptable; also tightens pre-existing files
   }
 }
 

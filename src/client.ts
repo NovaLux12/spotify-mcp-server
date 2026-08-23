@@ -1,5 +1,5 @@
 import { loadTokens, saveTokens } from './auth.js';
-import type { TokenData } from './types/spotify.js';
+import type { TokenData, SpotifyPaged } from './types/spotify.js';
 
 const BASE_URL = 'https://api.spotify.com/v1';
 
@@ -131,26 +131,33 @@ export class SpotifyClient {
     url: string,
     body?: unknown,
     retryCount = 0,
+    contentType?: string,
   ): Promise<Response> {
     await this.ensureValidToken();
 
     const headers: Record<string, string> = {
       Authorization: `Bearer ${this.tokens!.access_token}`,
     };
-    if (body !== undefined) {
+    if (contentType !== undefined) {
+      headers['Content-Type'] = contentType;
+    } else if (body !== undefined) {
       headers['Content-Type'] = 'application/json';
     }
 
     const res = await fetch(url, {
       method,
       headers,
-      body: body !== undefined ? JSON.stringify(body) : undefined,
+      body: body === undefined
+        ? undefined
+        : contentType !== undefined
+          ? String(body)
+          : JSON.stringify(body),
     });
 
     // Token expired mid-flight — refresh and retry once
     if (res.status === 401 && retryCount === 0) {
       await this.doRefreshTokens();
-      return this.rawRequest(method, url, body, retryCount + 1);
+      return this.rawRequest(method, url, body, retryCount + 1, contentType);
     }
 
     // Rate limited — wait and retry once
@@ -158,7 +165,7 @@ export class SpotifyClient {
       const retryAfter = parseInt(res.headers.get('Retry-After') ?? '1', 10);
       this._rateLimitUntil = Date.now() + retryAfter * 1000;
       await sleep(retryAfter * 1000);
-      return this.rawRequest(method, url, body, retryCount + 1);
+      return this.rawRequest(method, url, body, retryCount + 1, contentType);
     }
 
     if (!res.ok) {
@@ -201,6 +208,39 @@ export class SpotifyClient {
     });
   }
 
+  /**
+   * Walk an offset-paginated list endpoint (responses shaped like
+   * SpotifyPaged: items[], total, limit, offset, next) and accumulate every
+   * item, going through the same rate-limited request queue as get().
+   *
+   * Stops when offset + returned items reach `total`, or once `maxItems`
+   * (default 500) have been collected. Cursor-paginated endpoints (e.g.
+   * followed artists, which use a `after` cursor instead of offset/total)
+   * are NOT supported by this helper.
+   */
+  async getAllPages<T>(
+    path: string,
+    params?: Record<string, string>,
+    opts?: { maxItems?: number },
+  ): Promise<T[]> {
+    const maxItems = opts?.maxItems ?? 500;
+    const all: T[] = [];
+    let offset = 0;
+    // Loop bound is the server-reported total; maxItems caps iterations too.
+    for (;;) {
+      const pageParams = { ...params, offset: String(offset) };
+      const page = await this.get<SpotifyPaged<T>>(path, pageParams);
+      if (!page || !Array.isArray(page.items)) break;
+      all.push(...page.items);
+      if (all.length >= maxItems) return all.slice(0, maxItems);
+      const total = typeof page.total === 'number' ? page.total : all.length;
+      const limit = typeof page.limit === 'number' && page.limit > 0 ? page.limit : page.items.length;
+      offset += limit;
+      if (offset >= total || page.items.length === 0) break;
+    }
+    return all;
+  }
+
   async post<T>(path: string, body?: unknown): Promise<T | null> {
     const url = this.buildUrl(path);
     return this.enqueue(async () => {
@@ -213,6 +253,16 @@ export class SpotifyClient {
   async put(path: string, body?: unknown): Promise<void> {
     const url = this.buildUrl(path);
     await this.enqueue(() => this.rawRequest('PUT', url, body));
+  }
+
+  /**
+   * PUT with a pre-encoded body (e.g. base64 JPEG for playlist cover upload)
+   * and an explicit Content-Type. Goes through the same rate-limited queue,
+   * token-refresh and retry handling as put().
+   */
+  async putRaw(path: string, body: string, contentType = 'image/jpeg'): Promise<void> {
+    const url = this.buildUrl(path);
+    await this.enqueue(() => this.rawRequest('PUT', url, body, 0, contentType));
   }
 
   async delete(path: string, body?: unknown): Promise<void> {
