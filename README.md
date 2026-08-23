@@ -170,8 +170,8 @@ This is a personal project, not affiliated with or endorsed by Spotify. It is pr
 ## Development
 
 ```bash
-git clone https://github.com/calebWei/SpotifyMCP.git
-cd SpotifyMCP
+git clone https://github.com/NovaLux12/spotify-mcp-server.git
+cd spotify-mcp-server
 npm install
 npm run build
 ```
@@ -191,3 +191,11 @@ Requires Node 20+ (`--env-file` flag). On older Node, use `npx dotenv-cli` or ex
 npm test   # node:test runner — unit tests for the client and every tool module, plus an MCP protocol smoke test
 ```
 
+## Acknowledgements
+
+- [calebWei/SpotifyMCP](https://github.com/calebWei/SpotifyMCP) — original auth flow and playback scaffolding this project grew from.
+- [varunneal/spotify-mcp](https://github.com/varunneal/spotify-mcp) — the reference implementation used as the quality bar for tool coverage and ergonomics.
+
+## License
+
+[MIT](LICENSE) © Carme99 and NovaLux12 contributors.
