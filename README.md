@@ -24,7 +24,7 @@ Most Spotify MCP servers are thin wrappers. This one is built to be the default:
 
 **Personalization** — top tracks and artists across three time ranges, recently played.
 
-**Library** — saved tracks/albums/shows/episodes with optional full pagination; unified save/remove/check via `/me/library` URIs.
+**Library** — saved tracks/albums/shows/episodes with optional full pagination; save/remove/check partitioned by type to `/me/tracks|albums|shows|episodes(/contains)` (bare IDs).
 
 **Playlists** — full CRUD plus item management (add/remove/reorder), cover art retrieval and custom cover upload (`ugc-image-upload` scope required for upload).
 

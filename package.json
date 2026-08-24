@@ -1,10 +1,16 @@
 {
   "name": "@novalux12/spotify-mcp",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "The definitive Spotify MCP server - full non-deprecated Web API coverage, paginated everything, podcast-first, tested end to end",
   "type": "module",
   "bin": {
     "spotify-mcp": "dist/index.js"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=22.9"
   },
   "files": [
     "dist"
