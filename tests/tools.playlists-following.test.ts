@@ -535,7 +535,7 @@ describe('get_followed_artists', () => {
 });
 
 describe('check_following_artists', () => {
-  it('converts bare IDs to spotify:artist:{id} URIs against /me/library/contains', async () => {
+  it('sends bare IDs to /me/following/contains with type=artist', async () => {
     const h = harness(() => [true, false, true], registerFollowingTools);
 
     const out = await h.invoke('check_following_artists', { ids: ['aa', 'bb', 'cc'] });
@@ -543,8 +543,8 @@ describe('check_following_artists', () => {
     assert.deepEqual(wireCalls(h.client.calls), [
       {
         method: 'GET',
-        path: '/me/library/contains',
-        arg: { uris: 'spotify:artist:aa,spotify:artist:bb,spotify:artist:cc' },
+        path: '/me/following/contains',
+        arg: { type: 'artist', ids: 'aa,bb,cc' },
       },
     ]);
 

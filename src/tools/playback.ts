@@ -63,9 +63,13 @@ export function registerPlaybackTools(server: McpServer, client: SpotifyClient):
 
       const progress = progress_ms ?? 0;
       lines.push(`Progress: ${formatDuration(progress)} / ${formatDuration(item.duration_ms)}`);
-      lines.push(`Device: ${device.name} (${device.type})`);
-      if (device.volume_percent !== null) {
-        lines.push(`Volume: ${device.volume_percent}%`);
+      if (device) {
+        lines.push(`Device: ${device.name} (${device.type})`);
+        if (device.volume_percent !== null && device.volume_percent !== undefined) {
+          lines.push(`Volume: ${device.volume_percent}%`);
+        }
+      } else {
+        lines.push('Device: none active');
       }
       lines.push(`Shuffle: ${shuffle_state ? 'on' : 'off'} | Repeat: ${repeat_state}`);
       lines.push(`URI: ${item.uri}`);
@@ -151,6 +155,9 @@ export function registerPlaybackTools(server: McpServer, client: SpotifyClient):
       device_id: z.string().optional().describe('Target device ID; uses active device if omitted'),
     },
     async (args) => {
+      if (args.context_uri && args.uris && args.uris.length > 0) {
+        throw new Error('Provide either context_uri or uris, not both.');
+      }
       const path = args.device_id
         ? `/me/player/play?device_id=${encodeURIComponent(args.device_id)}`
         : '/me/player/play';

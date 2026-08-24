@@ -12,11 +12,14 @@ import { registerAudiobookTools } from './tools/audiobooks.js';
 import { registerPlaylistTools } from './tools/playlists.js';
 import { registerResources } from './resources/index.js';
 import { registerPrompts } from './prompts/index.js';
+import { createRequire } from 'node:module';
+
+const { version } = createRequire(import.meta.url)('../package.json') as { version: string };
 
 async function startMcpServer(): Promise<void> {
   const server = new McpServer({
     name: 'spotify-mcp',
-    version: '1.0.0',
+    version,
   });
 
   const client = new SpotifyClient();

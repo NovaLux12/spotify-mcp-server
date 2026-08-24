@@ -23,6 +23,7 @@ const SCOPES = [
   'user-library-read',
   'user-library-modify',
   'user-follow-read',
+  'ugc-image-upload',
   'user-follow-modify',
   'playlist-read-private',
   'playlist-read-collaborative',

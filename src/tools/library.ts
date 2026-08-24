@@ -15,6 +15,23 @@ function formatDuration(ms: number): string {
   return `${minutes}:${seconds.toString().padStart(2, '0')}`;
 }
 
+const SAVED_URI_TYPES = ['track', 'album', 'show', 'episode'] as const;
+type SavedUriType = (typeof SAVED_URI_TYPES)[number];
+
+function partitionSavedUris(uris: string[]): Record<SavedUriType, string[]> {
+  const buckets: Record<SavedUriType, string[]> = { track: [], album: [], show: [], episode: [] };
+  for (const uri of uris) {
+    const match = /^spotify:(track|album|show|episode):([^:]+)$/.exec(uri);
+    if (!match) {
+      throw new Error(
+        `Unsupported URI type: ${uri} (supported: spotify:track:, spotify:album:, spotify:show:, spotify:episode:)`,
+      );
+    }
+    buckets[match[1] as SavedUriType].push(match[2]);
+  }
+  return buckets;
+}
+
 export function registerLibraryTools(server: McpServer, client: SpotifyClient): void {
   // get_saved_tracks
   server.tool(
@@ -40,6 +57,7 @@ export function registerLibraryTools(server: McpServer, client: SpotifyClient): 
       let items: SavedTrackItem[];
       let header: string;
       if (args.fetch_all) {
+        params.limit = '50';
         items = await client.getAllPages<SavedTrackItem>('/me/tracks', params);
         header = `Liked Songs (${items.length} fetched, capped at 500):`;
       } else {
@@ -84,6 +102,7 @@ export function registerLibraryTools(server: McpServer, client: SpotifyClient): 
       let items: SavedAlbumItem[];
       let header: string;
       if (args.fetch_all) {
+        params.limit = '50';
         items = await client.getAllPages<SavedAlbumItem>('/me/albums', params);
         header = `Saved albums (${items.length} fetched, capped at 500):`;
       } else {
@@ -126,6 +145,7 @@ export function registerLibraryTools(server: McpServer, client: SpotifyClient): 
       let items: SavedShowItem[];
       let header: string;
       if (args.fetch_all) {
+        params.limit = '50';
         items = await client.getAllPages<SavedShowItem>('/me/shows', params);
         header = `Saved shows (${items.length} fetched, capped at 500):`;
       } else {
@@ -134,11 +154,11 @@ export function registerLibraryTools(server: McpServer, client: SpotifyClient): 
         items = result.items;
         header = `Saved shows (${result.total} total, showing ${items.length}):`;
       }
-
       const lines = [header];
+
       for (const item of items) {
         lines.push(
-          `  • "${item.show.name}" by ${item.show.publisher} (${item.show.total_episodes} episodes) | URI: ${item.show.uri}`,
+          `  • "${item.show.name}" by ${item.show.publisher ?? 'unknown publisher'} (${item.show.total_episodes} episodes) | URI: ${item.show.uri}`,
         );
       }
       return { content: [{ type: 'text', text: lines.join('\n') }] };
@@ -169,6 +189,7 @@ export function registerLibraryTools(server: McpServer, client: SpotifyClient): 
       let items: SavedEpisodeItem[];
       let header: string;
       if (args.fetch_all) {
+        params.limit = '50';
         items = await client.getAllPages<SavedEpisodeItem>('/me/episodes', params);
         header = `Saved episodes (${items.length} fetched, capped at 500):`;
       } else {
@@ -200,22 +221,40 @@ export function registerLibraryTools(server: McpServer, client: SpotifyClient): 
         .describe('Spotify URIs to save (e.g. ["spotify:track:abc", "spotify:album:xyz"])'),
     },
     async (args) => {
-      await client.put('/me/library', { uris: args.uris });
-      return { content: [{ type: 'text', text: `Saved ${args.uris.length} item(s) to library.` }] };
+      const buckets = partitionSavedUris(args.uris);
+      const counts: string[] = [];
+      let saved = 0;
+      for (const type of SAVED_URI_TYPES) {
+        const ids = buckets[type];
+        if (ids.length === 0) continue;
+        await client.put(`/me/${type}s`, { ids });
+        counts.push(`${ids.length} ${type}${ids.length === 1 ? '' : 's'}`);
+        saved += ids.length;
+      }
+      return {
+        content: [{ type: 'text', text: `Saved ${saved} item(s) to library (${counts.join(', ')}).` }],
+      };
     },
   );
 
   // remove_saved_items
   server.tool(
     'remove_saved_items',
-    "Remove one or more items from the user's library. Max 50.",
+    "Remove one or more items from the user's library. Accepts track, album, show, and episode URIs (e.g. spotify:track:abc). Max 50.",
     {
       uris: z.array(z.string()).min(1).max(50).describe('Spotify URIs to remove'),
     },
     async (args) => {
-      await client.delete('/me/library', { uris: args.uris });
+      const buckets = partitionSavedUris(args.uris);
+      let removed = 0;
+      for (const type of SAVED_URI_TYPES) {
+        const ids = buckets[type];
+        if (ids.length === 0) continue;
+        await client.delete(`/me/${type}s`, { ids });
+        removed += ids.length;
+      }
       return {
-        content: [{ type: 'text', text: `Removed ${args.uris.length} item(s) from library.` }],
+        content: [{ type: 'text', text: `Removed ${removed} item(s) from library.` }],
       };
     },
   );
@@ -223,23 +262,30 @@ export function registerLibraryTools(server: McpServer, client: SpotifyClient): 
   // check_saved_items
   server.tool(
     'check_saved_items',
-    "Check whether items are saved in the user's library. Returns a boolean per URI. Max 40.",
+    "Check whether items are saved in the user's library. Returns a boolean per URI. Accepts track, album, show, and episode URIs. Max 40.",
     {
       uris: z
         .array(z.string())
         .min(1)
         .max(40)
         .describe(
-          'Spotify URIs to check (accepts tracks, albums, shows, episodes, artists, playlists)',
+          'Spotify URIs to check (accepts tracks, albums, shows, episodes)',
         ),
     },
     async (args) => {
-      const result = await client.get<boolean[]>('/me/library/contains', {
-        uris: args.uris.join(','),
-      });
-      if (!result) throw new Error('Could not check saved items');
+      const buckets = partitionSavedUris(args.uris);
+      const savedByUri = new Map<string, boolean>();
+      for (const type of SAVED_URI_TYPES) {
+        const ids = buckets[type];
+        if (ids.length === 0) continue;
+        const contains = await client.get<boolean[]>(`/me/${type}s/contains`, {
+          ids: ids.join(','),
+        });
+        if (!contains) throw new Error(`Could not check saved ${type}s`);
+        ids.forEach((id, i) => savedByUri.set(`spotify:${type}:${id}`, contains[i] ?? false));
+      }
 
-      const lines = args.uris.map((uri, i) => `  ${result[i] ? '✓' : '✗'} ${uri}`);
+      const lines = args.uris.map((uri, i) => `  ${savedByUri.get(uri) ? '✓' : '✗'} ${uri}`);
       return { content: [{ type: 'text', text: `Library check:\n${lines.join('\n')}` }] };
     },
   );

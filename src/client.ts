@@ -246,6 +246,11 @@ export class SpotifyClient {
     return this.enqueue(async () => {
       const res = await this.rawRequest('POST', url, body);
       if (res.status === 204) return null;
+      const contentType = res.headers.get('content-type') ?? '';
+      if (!contentType.includes('application/json')) {
+        await res.text(); // drain body; endpoint returns non-JSON payload (e.g. queue ID as text/plain)
+        return null;
+      }
       return res.json() as Promise<T>;
     });
   }

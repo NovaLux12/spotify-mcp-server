@@ -274,8 +274,8 @@ describe('get_saved_* fetch_all mode (getAllPages switch)', () => {
     assert.deepEqual(methods, ['GET_ALL_PAGES']);
     assert.equal(h.client.calls[0].path, '/me/tracks');
 
-    // limit/offset must NOT be sent; market survives.
-    assert.deepEqual(h.client.calls[0].arg, { market: 'US' });
+    // fetch_all now forces limit=50; offset is dropped, market survives.
+    assert.deepEqual(h.client.calls[0].arg, { market: 'US', limit: '50' });
 
     const text = out.content[0].text;
     assert.match(text, /^Liked Songs \(3 fetched, capped at 500\):/);
@@ -294,7 +294,7 @@ describe('get_saved_* fetch_all mode (getAllPages switch)', () => {
       });
       const out = await h.invoke(tool, { fetch_all: true, limit: 1, offset: 9 });
       assert.deepEqual(h.client.calls.map((c) => c.method), ['GET_ALL_PAGES'], tool);
-      assert.deepEqual(h.client.calls[0].arg, {}, `${tool} should send no paging params`);
+      assert.deepEqual(h.client.calls[0].arg, { limit: '50' }, `${tool} should send limit=50 and no paging offset`);
       assert.match(out.content[0].text, /0 fetched, capped at 500/);
     }
   });
@@ -312,9 +312,10 @@ describe('save_items / remove_saved_items / check_saved_items', () => {
     const out = await h.invoke('save_items', { uris });
 
     assert.deepEqual(wireCalls(h.client.calls), [
-      { method: 'PUT', path: '/me/library', arg: { uris } },
+      { method: 'PUT', path: '/me/tracks', arg: { ids: ['abc'] } },
+      { method: 'PUT', path: '/me/albums', arg: { ids: ['xyz'] } },
     ]);
-    assert.match(out.content[0].text, /Saved 2 item\(s\) to library\./);
+    assert.match(out.content[0].text, /Saved 2 item\(s\) to library/);
   });
 
   it('remove_saved_items sends URIs in the DELETE body to /me/library', async () => {
@@ -323,13 +324,13 @@ describe('save_items / remove_saved_items / check_saved_items', () => {
     const out = await h.invoke('remove_saved_items', { uris: ['spotify:show:r1'] });
 
     assert.deepEqual(wireCalls(h.client.calls), [
-      { method: 'DELETE', path: '/me/library', arg: { uris: ['spotify:show:r1'] } },
+      { method: 'DELETE', path: '/me/shows', arg: { ids: ['r1'] } },
     ]);
     assert.match(out.content[0].text, /Removed 1 item\(s\) from library\./);
   });
 
   it('check_saved_items joins URIs comma-separated against /me/library/contains', async () => {
-    const h = harness(() => [true, false]);
+    const h = harness((path) => (path === '/me/tracks/contains' ? [true] : [false]));
 
     const out = await h.invoke('check_saved_items', {
       uris: ['spotify:track:yep', 'spotify:album:nope'],
@@ -338,8 +339,13 @@ describe('save_items / remove_saved_items / check_saved_items', () => {
     assert.deepEqual(wireCalls(h.client.calls), [
       {
         method: 'GET',
-        path: '/me/library/contains',
-        arg: { uris: 'spotify:track:yep,spotify:album:nope' },
+        path: '/me/tracks/contains',
+        arg: { ids: 'yep' },
+      },
+      {
+        method: 'GET',
+        path: '/me/albums/contains',
+        arg: { ids: 'nope' },
       },
     ]);
 
@@ -351,7 +357,7 @@ describe('save_items / remove_saved_items / check_saved_items', () => {
   });
 
   it('check_saved_items reports ✗ for false results without flipping order', async () => {
-    const h = harness(() => [false, true]);
+    const h = harness((path) => (path === '/me/tracks/contains' ? [true] : [false]));
     const out = await h.invoke('check_saved_items', {
       uris: ['spotify:episode:first', 'spotify:track:second'],
     });

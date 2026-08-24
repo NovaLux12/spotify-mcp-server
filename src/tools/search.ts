@@ -122,7 +122,7 @@ export function registerSearchTools(server: McpServer, client: SpotifyClient): v
         lines.push(`SHOWS (${shows.total} total):`);
         for (const s of shows.items) {
           lines.push(
-            `  • "${s.name}" by ${s.publisher} (${s.total_episodes} episodes) | URI: ${s.uri}`,
+            `  • "${s.name}" by ${s.publisher ?? 'unknown publisher'} (${s.total_episodes} episodes) | URI: ${s.uri}`,
           );
         }
         lines.push('');

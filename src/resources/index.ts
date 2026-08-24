@@ -66,8 +66,11 @@ export function registerResources(server: McpServer, client: SpotifyClient): voi
       } else {
         lines.push(`${is_playing ? 'Playing' : 'Paused'}: "${item.name}" (${item.show.name})`);
       }
-      lines.push(`Progress: ${formatDuration(progress_ms ?? 0)} / ${formatDuration(item.duration_ms)}`);
-      lines.push(`Device: ${device.name} (${device.type})`);
+      if (device) {
+        lines.push(`Device: ${device.name} (${device.type})`);
+      } else {
+        lines.push('Device: none active');
+      }
       lines.push(`Shuffle: ${shuffle_state ? 'on' : 'off'} | Repeat: ${repeat_state}`);
       lines.push(`URI: ${item.uri}`);
       return {
@@ -144,7 +147,7 @@ export function registerResources(server: McpServer, client: SpotifyClient): voi
       });
       if (!result) throw new Error('Could not retrieve top artists');
       const lines = result.items.map((artist, i) => {
-        const genres = artist.genres.length ? artist.genres.join(', ') : 'no genres';
+        const genres = Array.isArray(artist.genres) && artist.genres.length > 0 ? artist.genres.join(', ') : 'no genres';
         return `  ${i + 1}. ${artist.name} — ${genres} | URI: ${artist.uri}`;
       });
       return {

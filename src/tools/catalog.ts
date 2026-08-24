@@ -51,7 +51,10 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
       const artist = await client.get<SpotifyArtistFull>(`/artists/${encodeURIComponent(args.id)}`);
       if (!artist) throw new Error('Artist not found');
 
-      const genres = artist.genres.length ? artist.genres.join(', ') : 'none listed';
+      const genres =
+        Array.isArray(artist.genres) && artist.genres.length > 0
+          ? artist.genres.join(', ')
+          : 'none listed';
       const lines = [
         `Artist: ${artist.name}`,
         `Genres: ${genres}`,
@@ -186,7 +189,7 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
       if (!show) throw new Error('Show not found');
 
       const lines = [
-        `"${show.name}" by ${show.publisher}`,
+        `"${show.name}" by ${show.publisher ?? 'unknown publisher'}`,
         show.description,
         `Episodes: ${show.total_episodes} | Explicit: ${show.explicit ? 'yes' : 'no'}`,
         `Languages: ${show.languages.join(', ')} | Media type: ${show.media_type}`,

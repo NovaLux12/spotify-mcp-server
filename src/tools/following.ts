@@ -70,9 +70,9 @@ export function registerFollowingTools(server: McpServer, client: SpotifyClient)
       ids: z.array(z.string()).min(1).max(50).describe('Spotify artist IDs to check'),
     },
     async (args) => {
-      const uris = args.ids.map((id) => `spotify:artist:${id}`);
-      const result = await client.get<boolean[]>('/me/library/contains', {
-        uris: uris.join(','),
+      const result = await client.get<boolean[]>('/me/following/contains', {
+        type: 'artist',
+        ids: args.ids.join(','),
       });
       if (!result) throw new Error('Could not check following status');
 
