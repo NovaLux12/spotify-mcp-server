@@ -1158,3 +1158,39 @@ describe('find_duplicates_in_playlist (#63)', () => {
     assert.match(textOf(out), /Positions \(0-based\): 0, 2/);
   });
 });
+
+describe('create_playlist dry_run (issue #79)', () => {
+  it('previews without any client call when dry_run=true', async () => {
+    const h = harness();
+
+    const out = await h.invoke('create_playlist', {
+      name: 'Focus',
+      description: 'Deep work',
+      public: true,
+      dry_run: true,
+    });
+
+    assert.equal(h.client.calls.length, 0, 'dry run must not call the API');
+    assert.match(textOf(out), /\[dry run\] create_playlist/);
+    assert.match(textOf(out), /"Focus"/);
+  });
+});
+
+describe('get_playlist_items / get_playlist_cover id alias (issue #80)', () => {
+  it('accepts { id } in place of playlist_id on both read tools', async () => {
+    const h = harness((path: string) => (path.endsWith('/images') ? [] : { items: [], total: 0 }));
+
+    await h.invoke('get_playlist_items', { id: 'pl1' });
+    await h.invoke('get_playlist_cover', { id: 'pl1' });
+
+    const paths = wireCalls(h.client.calls).map((c: { path: string }) => c.path);
+    assert.ok(paths.some((p: string) => p.startsWith('/playlists/pl1/items')), paths.join(','));
+    assert.ok(paths.some((p: string) => p === '/playlists/pl1/images'), paths.join(','));
+  });
+
+  it('rejects calls with neither playlist_id nor id', async () => {
+    const h = harness();
+    await assert.rejects(() => h.invoke('get_playlist_items', {}), /playlist_id/);
+    await assert.rejects(() => h.invoke('get_playlist_cover', {}), /playlist_id/);
+  });
+});
