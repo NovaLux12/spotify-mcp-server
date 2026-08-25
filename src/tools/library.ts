@@ -426,7 +426,7 @@ export function registerLibraryTools(server: McpServer, client: SpotifyClient): 
   // save_items
   server.tool(
     'save_items',
-    "Save one or more items to the user's library. Accepts track, album, show, episode, and audiobook URIs (e.g. spotify:track:abc). Max 50. Set dry_run=true to preview.",
+    "Legacy per-type variant (kept for grandfathered app credentials that lack unified /me/library access). Prefer save_to_library. Save one or more items to the user's library. Accepts track, album, show, episode, and audiobook URIs (e.g. spotify:track:abc). Max 50. Set dry_run=true to preview.",
     {
       uris: z
         .array(z.string())
@@ -462,7 +462,7 @@ export function registerLibraryTools(server: McpServer, client: SpotifyClient): 
   // remove_saved_items
   server.tool(
     'remove_saved_items',
-    "Remove one or more items from the user's library. Accepts track, album, show, episode, and audiobook URIs (e.g. spotify:track:abc). Max 50. Set dry_run=true to preview.",
+    "Legacy per-type variant (kept for grandfathered app credentials that lack unified /me/library access). Prefer remove_from_library. Remove one or more items from the user's library. Accepts track, album, show, episode, and audiobook URIs (e.g. spotify:track:abc). Max 50. Set dry_run=true to preview.",
     {
       uris: z.array(z.string()).min(1).max(50).describe('Spotify URIs to remove'),
       dry_run: z
@@ -495,7 +495,7 @@ export function registerLibraryTools(server: McpServer, client: SpotifyClient): 
   // check_saved_items
   server.tool(
     'check_saved_items',
-    "Check whether items are saved in the user's library. Returns a boolean per URI. Accepts track, album, show, episode, and audiobook URIs. Max 50.",
+    "Legacy per-type variant (kept for grandfathered app credentials that lack unified /me/library access). Prefer check_in_library. Check whether items are saved in the user's library. Returns a boolean per URI. Accepts track, album, show, episode, and audiobook URIs. Max 50.",
     {
       uris: z
         .array(z.string())
@@ -534,7 +534,7 @@ export function registerLibraryTools(server: McpServer, client: SpotifyClient): 
   // save_to_library (#37)
   server.tool(
     'save_to_library',
-    "Save one or more items to the user's library via Spotify's unified library endpoint, in a single request. Accepts track, album, episode, show, audiobook, user, and playlist URIs in any mix. Max 40. Set dry_run=true to preview.",
+    "Preferred. Accepts the widest URI mix (track, album, episode, show, audiobook, user, playlist) in one request. Save one or more items to the user's library via Spotify's unified library endpoint. Max 40. Set dry_run=true to preview.",
     {
       uris: z
         .array(z.string())
@@ -562,7 +562,7 @@ export function registerLibraryTools(server: McpServer, client: SpotifyClient): 
   // remove_from_library (#37)
   server.tool(
     'remove_from_library',
-    "Remove one or more items from the user's library via Spotify's unified library endpoint, in a single request. Accepts track, album, episode, show, audiobook, user, and playlist URIs in any mix. Max 40. Set dry_run=true to preview.",
+    "Preferred. Accepts the widest URI mix (track, album, episode, show, audiobook, user, playlist) in one request. Remove one or more items from the user's library via Spotify's unified library endpoint. Max 40. Set dry_run=true to preview.",
     {
       uris: z
         .array(z.string())
@@ -595,7 +595,7 @@ export function registerLibraryTools(server: McpServer, client: SpotifyClient): 
   // check_in_library (#37)
   server.tool(
     'check_in_library',
-    "Check whether items are saved in or followed by the user. Returns a boolean per URI via Spotify's unified endpoint. Accepts track, album, episode, show, audiobook, artist, user, and playlist URIs in any mix. Max 40.",
+    "Preferred. Accepts the widest URI mix (track, album, episode, show, audiobook, artist, user, playlist) in one request. Check whether items are saved in or followed by the user. Returns a boolean per URI via Spotify's unified endpoint. Max 40. To follow/unfollow artists use follow_artists/unfollow_artists.",
     {
       uris: z
         .array(z.string())
