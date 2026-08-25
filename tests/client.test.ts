@@ -95,6 +95,39 @@ function nextTick(): Promise<void> {
   return promise;
 }
 
+/**
+ * Drain the event loop until `check()` turns true, with a generous guard
+ * against a permanently-stalled chain. Pure draining: no mocked-clock
+ * movement, so it can never accidentally fire a pending backoff sleep.
+ */
+async function waitFor(check: () => boolean): Promise<void> {
+  let guard = 0;
+  while (!check() && guard++ < 10_000) {
+    await nextTick();
+  }
+}
+
+/**
+ * Wrap the current globalThis.setTimeout with a pass-through recorder so a
+ * test observes exactly when the client schedules its backoff sleep (and with
+ * which delay) instead of guessing with fixed-size clock ticks. Must be
+ * installed AFTER mock timers are enabled; restore() before the test ends.
+ */
+function spyOnSetTimeout(): { delays: number[]; restore: () => void } {
+  const inner = globalThis.setTimeout;
+  const delays: number[] = [];
+  globalThis.setTimeout = ((fn: (...args: never[]) => void, ms?: number, ...rest: unknown[]) => {
+    delays.push(ms ?? 0);
+    return inner(fn as never, ms ?? 0, ...(rest as []));
+  }) as unknown as typeof setTimeout;
+  return {
+    delays,
+    restore: () => {
+      globalThis.setTimeout = inner;
+    },
+  };
+}
+
 /** Seed a valid token fixture into the temp token file. */
 async function seedTokens(
   overrides: Partial<{ access_token: string; refresh_token: string; expires_at: number }> = {},
@@ -291,20 +324,26 @@ describe('SpotifyClient', () => {
       // Mock only setTimeout so the Retry-After sleep is virtual.
       t.mock.timers.enable({ apis: ['setTimeout'] });
 
+      // Pass-through spy: observe exactly when the backoff sleep is scheduled
+      // and with which delay, independent of real-world scheduler speed.
+      const timer = spyOnSetTimeout();
+      t.after(() => timer.restore());
+
       let settled = false;
       const pending = new SpotifyClient()
         .get<{ after429: boolean }>('/me')
         .finally(() => {
           settled = true;
         });
-      // Drive by yielding + advancing the mocked clock until settled: the
-      // sleep is only scheduled after several async hops, so a fixed number
-      // of upfront yields is not enough.
-      for (let i = 0; !settled && i < 100; i++) {
-        await nextTick();
-        t.mock.timers.tick(200);
-      }
-      assert.ok(settled, 'request settled within the tick budget');
+      // Drain (without moving the mocked clock) until the client schedules
+      // its backoff sleep, then verify it honoured Retry-After=1s...
+      await waitFor(() => timer.delays.length > 0 || settled);
+      assert.equal(timer.delays.length, 1, 'exactly one backoff sleep scheduled');
+      assert.equal(timer.delays[0], 1000, 'Retry-After=1s honoured');
+      // ...then advance past it and drain until the retry resolves.
+      t.mock.timers.tick(1000);
+      await waitFor(() => settled);
+      assert.ok(settled, 'request settled after virtual backoff');
 
       const result = await pending;
       assert.deepEqual(result, { after429: true });
@@ -322,6 +361,10 @@ describe('SpotifyClient', () => {
       };
 
       t.mock.timers.enable({ apis: ['setTimeout'] });
+      // Pass-through spy: observe exactly when the backoff sleep is scheduled
+      // without having to tick the clock while waiting for it.
+      const timer = spyOnSetTimeout();
+      t.after(() => timer.restore());
       let settled = false;
       const pending = new SpotifyClient()
         .get('/me')
@@ -329,21 +372,18 @@ describe('SpotifyClient', () => {
           settled = true;
         });
 
-      // Wait for the backoff sleep to be scheduled (small steps so we cannot
-      // accidentally fire the full 1s backoff while waiting)...
-      for (let i = 0; apiCount === 0 && !settled && i < 100; i++) {
-        await nextTick();
-        t.mock.timers.tick(50);
-      }
+      // Wait (pure event-loop draining, zero clock movement) until the client
+      // schedules its default backoff sleep...
+      await waitFor(() => timer.delays.length > 0 || settled);
+      assert.equal(timer.delays.length, 1, 'exactly one backoff sleep scheduled');
+      assert.equal(timer.delays[0], 1000, 'default backoff is 1s');
       // ...then confirm a sub-second advance does NOT release the retry...
       t.mock.timers.tick(400);
       await nextTick();
       assert.equal(apiCount, 1, 'retry must not fire before ~1s of backoff');
       // ...and that advancing past 1s completes it.
-      for (let i = 0; !settled && i < 100; i++) {
-        await nextTick();
-        t.mock.timers.tick(200);
-      }
+      t.mock.timers.tick(600);
+      await waitFor(() => settled);
       assert.ok(settled, 'request settled after full backoff');
       await pending;
       assert.equal(apiCount, 2);
