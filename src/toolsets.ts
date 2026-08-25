@@ -76,7 +76,7 @@ export function resolveToolsets(spec: string | undefined): { sets: Set<string>; 
   const sets = new Set<string>();
   const unknown: string[] = [];
   for (const token of tokens) {
-    if (known[token]) sets.add(token);
+    if (Object.hasOwn(known, token)) sets.add(token);
     else unknown.push(token);
   }
   return { sets, unknown };

@@ -75,6 +75,14 @@ describe('resolveToolsets', () => {
     assert.deepEqual([...sets], ['catalog']);
     assert.deepEqual(unknown.sort(), ['bogus', 'nonsense']);
   });
+
+  it('does not treat Object.prototype names as known sets', () => {
+    const { sets, unknown } = resolveToolsets('constructor,toString,valueOf,playback');
+    assert.deepEqual([...sets], ['playback']);
+    // Tokens are lowercased during parsing, so unknown names come back
+    // normalized.
+    assert.deepEqual(unknown.sort(), ['constructor', 'tostring', 'valueof']);
+  });
 });
 
 describe('isActive', () => {
