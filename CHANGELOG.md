@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > from [Conventional Commits](https://www.conventionalcommits.org/). Entries below v1.0.4 were
 > backfilled by hand from git history.
 
+## [1.4.0](https://github.com/NovaLux12/spotify-mcp-server/compare/v1.3.0...v1.4.0) (2026-08-25)
+
+
+### Features
+
+* **#110:** dry_run coverage for all mutating playlist tools ([edd3515](https://github.com/NovaLux12/spotify-mcp-server/commit/edd3515d59928ac89b7c63e20b1cb374c5eb171d))
+* **podcast:** podcast session composer tools ([#112](https://github.com/NovaLux12/spotify-mcp-server/issues/112) idea 3) ([609f6ec](https://github.com/NovaLux12/spotify-mcp-server/commit/609f6ec116df8be0a9d9f18265cf91f1b5f06df2))
+* **resources:** RFC-6570 resource templates over single-get catalog endpoints ([a4ccf46](https://github.com/NovaLux12/spotify-mcp-server/commit/a4ccf46d676ebf2c7216ee9c2167030b01cd0f2f))
+* **scenes:** named playback scenes + in-process wind-down fade ([#112](https://github.com/NovaLux12/spotify-mcp-server/issues/112) ideas 7+12) ([12ebd99](https://github.com/NovaLux12/spotify-mcp-server/commit/12ebd994bb45474b203d6b6c46ac0878b67b7f1a))
+* **tools:** audiobook chapter copilot ([#112](https://github.com/NovaLux12/spotify-mcp-server/issues/112) idea 4) ([e7e88ac](https://github.com/NovaLux12/spotify-mcp-server/commit/e7e88ac06116b928d79c5fe97d50efb8988754a9))
+* wire wave-4 modules into server startup ([ce8d0e4](https://github.com/NovaLux12/spotify-mcp-server/commit/ce8d0e488c4a22780828ddda18170aa78a58ee25))
+
 ## [1.3.0](https://github.com/NovaLux12/spotify-mcp-server/compare/v1.2.1...v1.3.0) (2026-08-25)
 
 
