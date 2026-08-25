@@ -51,6 +51,7 @@ export async function appendHistory(record: MutationRecord): Promise<void> {
       ...(record.snapshot_id !== undefined ? { snapshot_id: record.snapshot_id } : {}),
     }) + '\n';
   const file = historyFilePath();
-  await mkdir(dirname(file), { recursive: true });
-  await appendFile(file, line, 'utf8');
+  await mkdir(dirname(file), { recursive: true, mode: 0o700 });
+  // Listening-history metadata is personal; keep it owner-only like tokens.json.
+  await appendFile(file, line, { encoding: 'utf8', mode: 0o600 });
 }
