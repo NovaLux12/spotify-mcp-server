@@ -51,14 +51,48 @@ const ARTIST_ALBUMS_PAGE_LIMIT = 10;
 const ARTIST_ALBUMS_MAX_PAGES = 5;
 
 export function registerTemplateResources(server: McpServer, client: SpotifyClient): void {
+  /**
+   * Argument completions (#111): for templates whose {id} space is cheaply
+   * enumerable from the user's own library, a suggester returns candidate IDs.
+   * The SDK wires these into completion/complete automatically when the
+   * ResourceTemplate carries a `complete` map. Absent suggester = no completions.
+   */
+  /** First N saved-item IDs from a saved-library listing endpoint. */
+  const savedIdSuggestions = async (
+    path: '/me/shows' | '/me/episodes',
+    unwrap: (row: { show?: { id: string }; episode?: { id: string } }) => string | undefined,
+    n: number,
+  ): Promise<string[]> => {
+    try {
+      const rows = await client.getAllPages<{ show?: { id: string }; episode?: { id: string } }>(path, {
+        limit: '20',
+      });
+      return rows
+        .map((r) => unwrap(r))
+        .filter((id): id is string => typeof id === 'string')
+        .slice(0, n);
+    } catch {
+      return [];
+    }
+  };
+
   /** Register `render` at `pattern` and at its `{+qs}` query-absorbing twin. */
   const registerTemplatePair = (
     name: string,
     pattern: string,
     description: string,
     render: (rawUrl: string) => Promise<ResourceContents>,
+    completeId?: () => Promise<string[]>,
   ): void => {
-    server.resource(name, new ResourceTemplate(pattern, { list: undefined }), { description }, async (uri: URL) =>
+    const templateOpts = completeId
+      ? {
+          list: undefined as undefined,
+          complete: {
+            id: async (): Promise<string[]> => completeId(),
+          },
+        }
+      : ({ list: undefined } as const);
+    server.resource(name, new ResourceTemplate(pattern, templateOpts), { description }, async (uri: URL) =>
       render(uri.href),
     );
     server.resource(
@@ -200,6 +234,7 @@ export function registerTemplateResources(server: McpServer, client: SpotifyClie
       ].filter((line) => line !== '');
       return text(uri, lines.join('\n'));
     },
+    () => savedIdSuggestions('/me/shows', (r) => r.show?.id, 10),
   );
 
   // spotify://episode/{id} — GET /episodes/{id}; optional ?market passthrough.
@@ -233,5 +268,6 @@ export function registerTemplateResources(server: McpServer, client: SpotifyClie
       lines.push(`ID: ${episode.id}\nURI: ${episode.uri}`);
       return text(uri, lines.join('\n'));
     },
+    () => savedIdSuggestions('/me/episodes', (r) => r.episode?.id, 10),
   );
 }
