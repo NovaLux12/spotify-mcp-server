@@ -22,9 +22,9 @@ jobs:
       contents: read
       id-token: write # npm provenance / trusted publishing (OIDC)
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: "22.x"
           cache: npm
@@ -54,7 +54,7 @@ jobs:
       contents: read
       id-token: write # GitHub OIDC auth for the MCP Registry
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Sync server.json version from tag
         run: |
@@ -62,9 +62,12 @@ jobs:
           jq --arg v "$VERSION" '.version = $v | .packages[0].version = $v' \
             server.json > server.tmp && mv server.tmp server.json
 
-      - name: Install mcp-publisher
+      - name: Install mcp-publisher (version-pinned, checksum-verified)
         run: |
-          curl -L "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz" | tar xz mcp-publisher
+          MCP_PUBLISHER_VERSION=v1.8.1
+          curl -sSL -o mcp-publisher.tar.gz "https://github.com/modelcontextprotocol/registry/releases/download/${MCP_PUBLISHER_VERSION}/mcp-publisher_linux_amd64.tar.gz"
+          echo "a06c9096dcb9727c13555b6be26c7effa707b01f06a4c561ba7a3635443cf2cc  mcp-publisher.tar.gz" | sha256sum -c -
+          tar xz mcp-publisher -f mcp-publisher.tar.gz
 
       - name: Authenticate to MCP Registry
         run: ./mcp-publisher login github-oidc
