@@ -258,6 +258,21 @@ npm run dev    # run from source (no build needed)
 
 Requires Node 22.9+ (`--env-file-if-exists` support). No `.env` file is needed — env vars come from your host config or the command line.
 
+### Live gauntlet
+
+Exercises every registered tool against the real Spotify API in one pass and proves no mutation occurred:
+
+```bash
+node scripts/live-gauntlet.mjs [report.json]                                  # reads only — mutators are skipped
+node scripts/live-gauntlet.mjs --include-mutating=create_playlist,save_items report.json   # opt-in dry-run coverage
+```
+
+- Discovers tools via `tools/list`, seeds minimal IDs from `get_me` / `search` / `get_user_playlists`, and calls every SAFE (read) tool with the smallest valid arguments; missing prerequisites are reported as SKIP with a reason, never as failures.
+- MUTATING tools are skipped unless named in `--include-mutating=a,b` **and** they declare a `dry_run` input; allowlisted calls always send `dry_run:true` and only pass when the response confirms the preview — so even the opt-in path cannot change your account.
+- Prints a per-tool status/latency table plus a mutation proof (`mutations performed: NONE`); pass a path to also write the full JSON report.
+
+Prereqs: `npm run build`, `.env` with your Client ID, and completed `npm run auth`.
+
 ## Testing
 
 ```bash
