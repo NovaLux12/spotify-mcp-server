@@ -289,7 +289,7 @@ describe('get_playlist (metadata + items two-call flow)', () => {
       assert.fail(`unexpected path: ${path}`);
     });
 
-    const out = await h.invoke('get_playlist', { id: 'pl1' });
+    const out = await h.invoke('get_playlist', { playlist_id: 'pl1' });
 
     // Exactly two upstream calls: metadata + first items page.
     assert.deepEqual(
@@ -550,7 +550,7 @@ describe('add_to_playlist / remove_from_playlist / update_playlist / reorder_pla
   it('update_playlist PUTs only provided fields to /playlists/{id}', async () => {
     const h = harness();
 
-    await h.invoke('update_playlist', { id: 'pl', name: 'New Name', public: false });
+    await h.invoke('update_playlist', { playlist_id: 'pl', name: 'New Name', public: false });
     assert.deepEqual(wireCalls(h.client.calls).slice(0, 1), [
       { method: 'PUT', path: '/playlists/pl', arg: { name: 'New Name', public: false } },
     ]);
@@ -1192,6 +1192,71 @@ describe('get_playlist_items / get_playlist_cover id alias (issue #80)', () => {
     const h = harness();
     await assert.rejects(() => h.invoke('get_playlist_items', {}), /playlist_id/);
     await assert.rejects(() => h.invoke('get_playlist_cover', {}), /playlist_id/);
+  });
+});
+
+describe('#110 playlist_id naming standardisation', () => {
+  const readResponder = (path: string) => {
+    if (path.endsWith('/images')) return [];
+    if (path.endsWith('/items')) return { items: [], total: 0 };
+    const id = path.split('/')[2];
+    return playlistSimple(id, 'PL');
+  };
+
+  it('accepts canonical playlist_id on every tool that previously required id', async () => {
+    const h = harness(readResponder);
+    await h.invoke('get_playlist', { playlist_id: 'pl1' });
+    await h.invoke('update_playlist', { playlist_id: 'pl1', name: 'X' });
+    await h.invoke('get_playlist_items', { playlist_id: 'pl1' });
+    await h.invoke('get_playlist_cover', { playlist_id: 'pl1' });
+
+    assert.ok(h.client.calls.length >= 3, 'every invocation should reach the API');
+    assert.ok(h.client.calls.every((c) => c.path.startsWith('/playlists/pl1')));
+  });
+
+  it('keeps the legacy id alias working on all four tools', async () => {
+    const h = harness(readResponder);
+    await h.invoke('get_playlist', { id: 'pl2' });
+    await h.invoke('update_playlist', { id: 'pl2', name: 'Y' });
+    await h.invoke('get_playlist_items', { id: 'pl2' });
+    await h.invoke('get_playlist_cover', { id: 'pl2' });
+
+    assert.ok(h.client.calls.every((c) => c.path.startsWith('/playlists/pl2')));
+  });
+
+  it('accepts id and playlist_id together when they agree', async () => {
+    const h = harness(readResponder);
+    await h.invoke('get_playlist_items', { playlist_id: 'pl3', id: 'pl3' });
+    assert.equal(h.client.calls.length, 1);
+    assert.equal(h.client.calls[0].path, '/playlists/pl3/items');
+  });
+
+  it('rejects conflicting id and playlist_id values before any API call', async () => {
+    for (const tool of ['get_playlist', 'update_playlist', 'get_playlist_items', 'get_playlist_cover']) {
+      const h = harness();
+      await assert.rejects(
+        () => h.invoke(tool, { playlist_id: 'aaa', id: 'bbb' }),
+        /Conflicting values: playlist_id \("aaa"\) and id \("bbb"\)/,
+        `${tool} must reject conflicting ids`,
+      );
+      assert.equal(h.client.calls.length, 0, `${tool} must not call the API on conflict`);
+    }
+  });
+
+  it('error when neither parameter is supplied names both accepted params', async () => {
+    for (const tool of ['get_playlist', 'update_playlist', 'get_playlist_items', 'get_playlist_cover']) {
+      const h = harness();
+      await assert.rejects(
+        () => h.invoke(tool, {}),
+        /playlist_id/,
+        `${tool} missing-id error must name playlist_id`,
+      );
+      await assert.rejects(
+        () => h.invoke(tool, {}),
+        /\bid\b/,
+        `${tool} missing-id error must name id`,
+      );
+    }
   });
 });
 

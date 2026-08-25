@@ -77,6 +77,24 @@ function withSnapshot(text: string, snapshotId: string | undefined): string {
   return snapshotId ? `${text}\nSnapshot ID: ${snapshotId}` : text;
 }
 
+// #110 finding 1: the canonical playlist-ID parameter across every playlist
+// tool is `playlist_id`. Tools that historically exposed `id` (get_playlist,
+// get_playlist_items, get_playlist_cover, update_playlist) keep it as a
+// documented back-compat alias. Supplying both is allowed only when they
+// agree; conflicting values are rejected before any API round-trip.
+function resolvePlaylistId(playlistId: string | undefined, legacyId: string | undefined): string {
+  if (playlistId !== undefined && legacyId !== undefined && playlistId !== legacyId) {
+    throw new Error(
+      `Conflicting values: playlist_id ("${playlistId}") and id ("${legacyId}") differ — pass only one.`,
+    );
+  }
+  const raw = playlistId ?? legacyId;
+  if (!raw) {
+    throw new Error('Provide the playlist as playlist_id (or pass it as id)');
+  }
+  return raw;
+}
+
 export function registerPlaylistTools(server: McpServer, client: SpotifyClient): void {
   // get_user_playlists
   server.tool(
@@ -161,7 +179,9 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
     "Get a playlist's metadata (including cover image) and items",
     {
       ...sharedListFields,
-      id: z.string().describe('Playlist ID'),
+      // #110: canonical `playlist_id`; `id` retained as a documented alias.
+      playlist_id: z.string().optional().describe('Playlist ID'),
+      id: z.string().optional().describe("Alias for playlist_id"),
       limit: z
         .number()
         .int()
@@ -183,7 +203,7 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
         ),
     },
     async (args) => {
-      const id = encodeURIComponent(args.id);
+      const id = encodeURIComponent(resolvePlaylistId(args.playlist_id, args.id));
       const itemLimit = String(args.limit ?? 50);
       const itemParams: Record<string, string> = { limit: itemLimit };
       if (args.offset !== undefined) itemParams.offset = String(args.offset);
@@ -282,9 +302,9 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
         .describe("Comma-separated item types beyond the default 'track', e.g. 'track,episode'"),
     },
     async (args) => {
-      const rawId = args.playlist_id ?? args.id;
-      if (!rawId) throw new Error('Provide the playlist as playlist_id (or id)');
-      const id = encodeURIComponent(rawId);
+      const id = encodeURIComponent(
+        resolvePlaylistId(args.playlist_id, args.id),
+      );
       const params: Record<string, string> = { limit: String(args.limit ?? 100) };
       if (args.offset !== undefined) params.offset = String(args.offset);
       if (args.market !== undefined) params.market = args.market;
@@ -339,10 +359,8 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
       id: z.string().optional().describe("Alias for playlist_id, matching get_playlist"),
     },
     async (args) => {
-      const rawId = args.playlist_id ?? args.id;
-      if (!rawId) throw new Error('Provide the playlist as playlist_id (or id)');
       const images = await client.get<SpotifyImage[]>(
-        `/playlists/${encodeURIComponent(rawId)}/images`,
+        `/playlists/${encodeURIComponent(resolvePlaylistId(args.playlist_id, args.id))}/images`,
       );
       if (!images || images.length === 0) {
         return {
@@ -628,7 +646,9 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
       description: "Update a playlist's name, description, or visibility",
       inputSchema: z
         .object({
-          id: z.string().describe('Playlist ID'),
+          // #110: canonical `playlist_id`; legacy `id` retained as an alias.
+          playlist_id: z.string().optional().describe('Playlist ID'),
+          id: z.string().optional().describe("Alias for playlist_id"),
           name: z.string().optional().describe('New name'),
           description: z.string().optional().describe('New description'),
           public: z.boolean().optional().describe('New public state'),
@@ -647,6 +667,7 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
         }),
     },
     async (args) => {
+      const playlistId = resolvePlaylistId(args.playlist_id, args.id);
       if (args.dry_run) {
         const changes = [
           ...(args.name !== undefined ? [`name → "${args.name}"`] : []),
@@ -655,7 +676,7 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
           ...(args.collaborative !== undefined ? [`collaborative → ${args.collaborative}`] : []),
         ];
         return {
-          content: [{ type: 'text', text: describeDryRun('update playlist', args.id, changes) }],
+          content: [{ type: 'text', text: describeDryRun('update playlist', playlistId, changes) }],
         };
       }
       const body: Record<string, unknown> = {};
@@ -670,7 +691,7 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
         );
       }
 
-      await client.put(`/playlists/${encodeURIComponent(args.id)}`, body);
+      await client.put(`/playlists/${encodeURIComponent(playlistId)}`, body);
       return { content: [{ type: 'text', text: 'Playlist updated.' }] };
     },
   );
