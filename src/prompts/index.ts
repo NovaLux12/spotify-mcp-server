@@ -199,4 +199,52 @@ export function registerPrompts(server: McpServer): void {
       }],
     }),
   );
+
+  // triage_liked_songs — walk the saved-tracks backlog into bucket
+  // playlists (#112 idea 8).
+  server.prompt(
+    'triage_liked_songs',
+    'Triage your Liked Songs backlog into era- or genre-bucket playlists.',
+    {
+      bucket_by: z.enum(['decade', 'genre', 'artist']).optional()
+        .describe("Bucketing key: 'decade' (album release era), 'genre' (sidecar artist tags), or 'artist' (primary artist) (default: 'decade')"),
+      batch_size: z.coerce.number().int().positive().max(100).optional()
+        .describe('Max URIs per add_to_playlist call; playlists are filled per pass of this size (default 100)'),
+      confirm: z.enum(['true', 'false']).optional()
+        .describe("When 'true', present a plan and ask before any playlist is created or modified (default: 'true')"),
+    },
+    async (rawArgs) => {
+      const args = {
+        bucket_by: rawArgs.bucket_by ?? 'decade',
+        batch_size: rawArgs.batch_size ?? 100,
+        confirm: rawArgs.confirm ?? 'true',
+      };
+      const guard = args.confirm === 'true'
+        ? 'CONFIRM-FIRST MODE: present the plan above and STOP for my approval before any create_playlist or add_to_playlist call goes through; attach a dry_run=true preview next to every planned write.'
+        : 'AUTO MODE: proceed without waiting for approval, but still run each planned write once with dry_run=true before doing it for real.';
+      const bucketing =
+        args.bucket_by === 'decade'
+          ? 'Call get_album once per distinct album ID from step 1 (cache lookups; do not re-fetch), read each release_date, and assign the track to a decade bucket such as "Liked · 2010s".'
+          : args.bucket_by === 'genre'
+            ? 'Call library_genre_report to see which of my artists carry sidecar genre tags, then filter_by_genre once per tag to collect matching saved-track URIs into genre buckets such as "Liked · Jazz". If the report comes back empty, ask ME for an artist-to-genre mapping on this first pass instead of guessing.'
+            : 'Group tracks by their primary artist name straight from the saved-track data (no extra lookups), one bucket per major artist such as "Liked · Queen".';
+      return {
+        messages: [{
+          role: 'user',
+          content: {
+            type: 'text',
+            text: [
+              `Triage my Liked Songs backlog into playlists, bucketed by ${args.bucket_by}.`,
+              '1. Page through get_saved_tracks with fetch_all=true and collect every liked track URI.',
+              `2. ${bucketing}`,
+              '3. Present a plan: one proposed playlist per bucket worth a full pass plus a catch-all "Liked · Everything Else", each with its track count.',
+              `4. Once approved, check get_user_playlists for existing names to reuse, create any missing playlists with create_playlist, then fill them with add_to_playlist in batches of at most ${Math.min(args.batch_size, 100)} URIs.`,
+              guard,
+              '5. Finish with per-playlist counts (tracks added, duplicates skipped) and remind me that undo is remove_from_playlist with those same URIs.',
+            ].join('\n'),
+          },
+        }],
+      };
+    },
+  );
 }
