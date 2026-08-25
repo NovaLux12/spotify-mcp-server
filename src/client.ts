@@ -37,6 +37,10 @@ export class SpotifyApiError extends Error {
     // Set only on rate-limit errors after retries were exhausted (#56) so
     // agents can make an informed wait-vs-abort decision.
     public readonly retryAfterSec?: number,
+    // Spotify's error.reason when present (e.g. 'QUOTA_EXCEEDED' since the
+    // July-2026 per-account quota change) so callers can distinguish quota
+    // walls from momentary burst limits (#108).
+    public readonly reason?: string,
   ) {
     super(message);
     this.name = 'SpotifyApiError';
@@ -296,13 +300,52 @@ export class SpotifyClient {
       return this.rawRequest(method, url, body, retryCount + 1, contentType);
     }
 
-    // Rate limited — wait and retry once
+    // Rate limited — differentiate a quota wall from a burst limit (#108).
     if (res.status === 429 && retryCount === 0) {
       // Parse defensively: a garbage header must not yield NaN, which would
       // permanently poison _rateLimitUntil and disable backoff.
       const raw = Number.parseInt(res.headers.get('Retry-After') ?? '', 10);
       const retryAfter = Number.isFinite(raw) && raw >= 0 ? raw : 1;
       this._rateLimitUntil = Date.now() + retryAfter * 1000;
+
+      // Read the body for error.reason (July-2026: 'QUOTA_EXCEEDED' when the
+      // per-developer-account quota is exhausted — retrying sooner than
+      // Retry-After is pointless, and sleeping inside the serialized queue
+      // would head-of-line-block every other request for that duration).
+      let reason: string | undefined;
+      let spotifyMsg: string | undefined;
+      try {
+        const errBody = (await res.json()) as {
+          error?: { message?: string; reason?: string };
+        };
+        reason = errBody.error?.reason;
+        spotifyMsg = errBody.error?.message;
+      } catch {
+        // body wasn't JSON — header-only handling below still applies
+      }
+
+      const BURST_SLEEP_CAP_SEC = 10;
+      if (reason === 'QUOTA_EXCEEDED') {
+        throw new SpotifyApiError(
+          429,
+          `Spotify developer-account quota exceeded — no further requests until the quota window resets${retryAfter ? ` (Retry-After: ${retryAfter}s)` : ''}${spotifyMsg ? ` — ${spotifyMsg}` : ''}`,
+          retryAfter,
+          reason,
+        );
+      }
+
+      if (retryAfter > BURST_SLEEP_CAP_SEC) {
+        // Too long to sleep inside the queue: fail fast with the wait time;
+        // _rateLimitUntil already makes subsequent enqueued requests reject
+        // until the window passes.
+        throw new SpotifyApiError(
+          429,
+          `Rate limited — Retry-After ${retryAfter}s exceeds the in-queue wait cap (${BURST_SLEEP_CAP_SEC}s); retry later.`,
+          retryAfter,
+          reason,
+        );
+      }
+
       this._lastThrottle = { retryAfterSec: retryAfter, waitedMs: retryAfter * 1000, at: Date.now() };
       await sleep(retryAfter * 1000);
       return this.rawRequest(method, url, body, retryCount + 1, contentType);
@@ -319,13 +362,15 @@ export class SpotifyClient {
       // insufficient OAuth scope, a deprecated endpoint, regional restriction,
       // or a control failure (issues #6 etc.).
       let message: string;
+      let reason: string | undefined;
       try {
         const errBody = (await res.json()) as {
           error?: { message?: string; reason?: string };
         };
         const spotifyMsg = errBody.error?.message;
+        reason = errBody.error?.reason;
         if (spotifyMsg && spotifyMsg.trim().length > 0) {
-          message = spotifyMsg;
+          message = reason ? `${spotifyMsg} (reason: ${reason})` : spotifyMsg;
         } else {
           message = genericMessageFor(res.status);
         }

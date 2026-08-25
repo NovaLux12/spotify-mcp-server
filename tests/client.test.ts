@@ -391,6 +391,68 @@ describe('SpotifyClient', () => {
       await pending;
       assert.equal(apiCount, 2);
     });
+    it('throws immediately with reason on QUOTA_EXCEEDED (issue #108)', async (t) => {
+      await seedTokens();
+      let apiCount = 0;
+      responder = () => {
+        apiCount++;
+        return jsonResponse(
+          { error: { status: 429, message: 'Too many requests', reason: 'QUOTA_EXCEEDED' } },
+          429,
+          { 'Retry-After': '3600' },
+        );
+      };
+
+      t.mock.timers.enable({ apis: ['setTimeout'] });
+      const timer = spyOnSetTimeout();
+      t.after(() => timer.restore());
+
+      await assert.rejects(
+        new SpotifyClient().get('/me'),
+        (err: unknown) => {
+          const e = err as SpotifyApiError;
+          return (
+            e instanceof SpotifyApiError &&
+            e.status === 429 &&
+            e.reason === 'QUOTA_EXCEEDED' &&
+            e.retryAfterSec === 3600 &&
+            /quota exceeded/i.test(e.message)
+          );
+        },
+      );
+      // No in-queue sleep may have been scheduled for a quota wall.
+      assert.equal(timer.delays.length, 0, 'no backoff sleep for QUOTA_EXCEEDED');
+      assert.equal(apiCount, 1, 'no retry after quota exhaustion');
+    });
+
+    it('fails fast without sleeping when Retry-After exceeds the burst cap (issue #108)', async (t) => {
+      await seedTokens();
+      let apiCount = 0;
+      responder = () => {
+        apiCount++;
+        return new Response('', { status: 429, headers: { 'Retry-After': '45' } });
+      };
+
+      t.mock.timers.enable({ apis: ['setTimeout'] });
+      const timer = spyOnSetTimeout();
+      t.after(() => timer.restore());
+
+      await assert.rejects(
+        new SpotifyClient().get('/me'),
+        (err: unknown) => {
+          const e = err as SpotifyApiError;
+          return (
+            e instanceof SpotifyApiError &&
+            e.status === 429 &&
+            e.retryAfterSec === 45 &&
+            /retry later/i.test(e.message)
+          );
+        },
+      );
+      assert.equal(timer.delays.length, 0, 'no in-queue sleep beyond the cap');
+      assert.equal(apiCount, 1);
+    });
+
   });
 
   // -------------------------------------------------------------------------
