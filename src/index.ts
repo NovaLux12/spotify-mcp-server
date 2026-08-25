@@ -16,6 +16,10 @@ import { registerPlaylistOpsTools } from './tools/playlistops.js';
 import { registerLibraryInsightsTools } from './tools/libraryinsights.js';
 import { registerFreshnessTools } from './tools/freshness.js';
 import { registerSearchDeepTool } from './tools/searchdive.js';
+import { registerPodcastSessionTools } from './tools/podcastsession.js';
+import { registerAudiobookCopilotTools } from './tools/audiobookcopilot.js';
+import { registerScenesTools } from './tools/scenes.js';
+import { registerTemplateResources } from './resources/templates.js';
 import { registerResources } from './resources/index.js';
 import { registerPrompts } from './prompts/index.js';
 import { TOOLSETS, resolveToolsets, isActive, toolsetEnvHelp } from './toolsets.js';
@@ -80,6 +84,12 @@ async function startMcpServer(): Promise<void> {
   if (isActive('library', activeSets)) registerLibraryInsightsTools(server, client);
   if (isActive('following', activeSets)) registerFreshnessTools(server, client);
   if (isActive('search', activeSets)) registerSearchDeepTool(server, client);
+  // Wave-4 (#112): podcast sessions, audiobook copilot, scenes + wind-down.
+  if (isActive('library', activeSets)) registerPodcastSessionTools(server, client);
+  if (isActive('audiobooks', activeSets)) registerAudiobookCopilotTools(server, client);
+  if (isActive('playback', activeSets)) registerScenesTools(server, client);
+  // Resource templates ride with the resources set.
+  if (isActive('resources', activeSets)) registerTemplateResources(server, client);
   if (isActive('resources', activeSets)) registerResources(server, client);
   if (isActive('prompts', activeSets)) registerPrompts(server);
 
