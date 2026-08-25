@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import type { SpotifyClient } from '../client.js';
+import { SpotifyApiError, type SpotifyClient } from '../client.js';
 import { getConfig } from '../config.js';
 import {
   ResponseFormat,
@@ -251,19 +251,30 @@ export function registerPlaylistDnaTools(server: McpServer, client: SpotifyClien
 
       const walked: Array<{ id: string; name: string; items: ItemRows }> = [];
       let cappedWalk = false;
+      let unreadable = 0;
       for (const pl of others) {
         if (walked.length >= cap) {
           cappedWalk = true;
           break;
         }
-        walked.push({
-          id: pl.id,
-          name: pl.name,
-          items: await client.getAllPages<PlaylistItemObject>(
-            `/playlists/${encodeURIComponent(pl.id)}/items`,
-            { limit: '100' },
-          ),
-        });
+        // Collaborative/followed playlists the token cannot read items for
+        // return 403 — skip them rather than failing the whole analysis.
+        try {
+          walked.push({
+            id: pl.id,
+            name: pl.name,
+            items: await client.getAllPages<PlaylistItemObject>(
+              `/playlists/${encodeURIComponent(pl.id)}/items`,
+              { limit: '100' },
+            ),
+          });
+        } catch (err) {
+          if (err instanceof SpotifyApiError && err.status === 403) {
+            unreadable++;
+            continue;
+          }
+          throw err;
+        }
       }
       if (rawTotal !== null && rawTotal > listings.length) cappedWalk = true;
 
