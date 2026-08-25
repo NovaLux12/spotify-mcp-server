@@ -7,9 +7,12 @@ area:tools:
   - changed-files:
       - any-glob-to-any-file: src/tools/**
 
-area:auth/client:
+area:auth:
   - changed-files:
       - any-glob-to-any-file: src/auth.ts
+
+area:client:
+  - changed-files:
       - any-glob-to-any-file: src/client.ts
 
 area:ci:
