@@ -108,7 +108,7 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
         .boolean()
         .optional()
         .describe(
-          `Fetch every page (up to ${getConfig().fetchAllCap} playlists) instead of a single page`,
+          `Fetch every playlist (up to ${getConfig().fetchAllCap}), continuing FROM offset rather than restarting at 0. limit is the page size. Note: library tools' fetch_all instead ignores offset — contracts differ between modules (#110).`,
         ),
     },
     async (args) => {
@@ -143,12 +143,16 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
       const shown = view.items;
 
       if (fmt === 'json') {
-        return textResult(jsonText({ total, items }), listStructuredContent(shown, paginationInfo({
+        // #110: json text ≡ structuredContent payload — both carry the
+        // max_results-truncated view plus identical pagination info.
+        const pagination = paginationInfo({
           total,
           offset: args.offset ?? 0,
           limit: args.limit ?? 20,
           returned: shown.length,
-        })));
+        });
+        const payload = { total, items: shown, pagination };
+        return textResult(jsonText(payload), listStructuredContent(shown, pagination));
       }
 
       const lines = [`Your playlists (${total} total, showing ${shown.length}):`];
@@ -199,7 +203,7 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
         .boolean()
         .optional()
         .describe(
-          `Fetch all items across pages (up to ${getConfig().fetchAllCap}) instead of a single page`,
+          `Fetch all items across pages (up to ${getConfig().fetchAllCap}), continuing FROM offset. limit is the page size. Note: library tools' fetch_all ignores offset — contracts differ between modules (#110).`,
         ),
     },
     async (args) => {
@@ -241,7 +245,11 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
 
       // #51: json mode hands the raw API objects straight to the caller.
       if (args.response_format === 'json') {
-        return textResult(jsonText({ playlist: metadata, items: items ?? null }));
+        const payload = { playlist: metadata, items: items ?? null };
+        return {
+          content: [{ type: 'text', text: jsonText(payload) }],
+          structuredContent: payload,
+        };
       }
 
       const lines = [`"${metadata.name}" by ${owner}`];
@@ -486,6 +494,13 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
           type: 'text',
           text: `Created playlist "${args.name}"\nID: ${result.id}\nURI: ${result.uri}\nURL: ${result.external_urls.spotify}`,
         }],
+        structuredContent: {
+          ok: true,
+          id: result.id,
+          uri: result.uri,
+          url: result.external_urls.spotify,
+          name: args.name,
+        },
       };
     },
   );
@@ -692,7 +707,22 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
       }
 
       await client.put(`/playlists/${encodeURIComponent(playlistId)}`, body);
-      return { content: [{ type: 'text', text: 'Playlist updated.' }] };
+      return {
+        content: [{
+          type: 'text',
+          text: `Playlist updated.${args.name !== undefined ? ` Name: "${args.name}".` : ''}`,
+        }],
+        structuredContent: {
+          ok: true,
+          playlist_id: args.id,
+          changed: {
+            ...(args.name !== undefined ? { name: args.name } : {}),
+            ...(args.description !== undefined ? { description: args.description } : {}),
+            ...(args.public !== undefined ? { public: args.public } : {}),
+            ...(args.collaborative !== undefined ? { collaborative: args.collaborative } : {}),
+          },
+        },
+      };
     },
   );
 
