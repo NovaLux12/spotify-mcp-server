@@ -13,6 +13,9 @@ import { registerAudiobookTools } from './tools/audiobooks.js';
 import { registerPlaylistTools } from './tools/playlists.js';
 import { registerUsersTools } from './tools/users.js';
 import { registerPlaylistOpsTools } from './tools/playlistops.js';
+import { registerLibraryInsightsTools } from './tools/libraryinsights.js';
+import { registerFreshnessTools } from './tools/freshness.js';
+import { registerSearchDeepTool } from './tools/searchdive.js';
 import { registerResources } from './resources/index.js';
 import { registerPrompts } from './prompts/index.js';
 import { TOOLSETS, resolveToolsets, isActive, toolsetEnvHelp } from './toolsets.js';
@@ -73,6 +76,10 @@ async function startMcpServer(): Promise<void> {
   if (isActive('users', activeSets)) registerUsersTools(server, client);
   // Playlist power ops (#96): merge/diff/overlap — part of the playlists set.
   if (isActive('playlists', activeSets)) registerPlaylistOpsTools(server, client);
+  // Differentiation wave (#112): library insights, freshness radar, deep search.
+  if (isActive('library', activeSets)) registerLibraryInsightsTools(server, client);
+  if (isActive('following', activeSets)) registerFreshnessTools(server, client);
+  if (isActive('search', activeSets)) registerSearchDeepTool(server, client);
   if (isActive('resources', activeSets)) registerResources(server, client);
   if (isActive('prompts', activeSets)) registerPrompts(server);
 
