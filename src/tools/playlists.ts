@@ -4,6 +4,7 @@ import type { SpotifyClient } from '../client.js';
 import { getConfig } from '../config.js';
 import {
   DryRun,
+  describeDryRun,
   batchSummary,
   listStructuredContent,
   paginationInfo,
@@ -368,6 +369,7 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
     {
       playlist_id: z.string().describe('Playlist ID'),
       jpeg_base64: z.string().min(1).describe('Base64-encoded JPEG file contents (max 256 KB decoded)'),
+      dry_run: DryRun,
     },
     async (args) => {
       // Validate before spending the round-trip: JPEG magic bytes in base64
@@ -379,6 +381,16 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
         throw new Error('Decoded JPEG exceeds the 256 KB limit for playlist covers');
       }
 
+      if (args.dry_run) {
+        return {
+          content: [{
+            type: 'text',
+            text: describeDryRun('upload cover image', args.playlist_id, [
+              `Upload ${Math.round(Buffer.from(args.jpeg_base64, 'base64').length / 1024)} KB JPEG cover`,
+            ]),
+          }],
+        };
+      }
       await client.putRaw(
         `/playlists/${encodeURIComponent(args.playlist_id)}/images`,
         args.jpeg_base64,
@@ -477,9 +489,32 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
         .min(0)
         .optional()
         .describe('Insert at index; appends if omitted'),
+      dry_run: DryRun,
     },
     async (args) => {
       const id = encodeURIComponent(args.playlist_id);
+      // #110: preview honors check_duplicates reads (safe) but makes no writes.
+      if (args.dry_run) {
+        let wouldAdd = args.uris;
+        if (args.check_duplicates) {
+          const existing = await client.getAllPages<PlaylistItemObject>(
+            `/playlists/${id}/items`,
+            { limit: '100' },
+          );
+          const present = new Set<string>();
+          for (const item of existing) {
+            if (item.item?.uri) present.add(item.item.uri);
+          }
+          wouldAdd = args.uris.filter((u) => !present.has(u));
+        }
+        return {
+          content: [{
+            type: 'text',
+            text: describeDryRun('add to playlist', args.playlist_id, wouldAdd),
+          }],
+          structuredContent: { ok: true, dry_run: true, changes: wouldAdd, skipped: args.uris.length - wouldAdd.length },
+        };
+      }
 
       // #63: opt-in duplicate guard — pre-fetch what the playlist already
       // contains and silently skip URIs that are already present.
@@ -545,8 +580,20 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
         .string()
         .optional()
         .describe('Apply the removal against this playlist version instead of the latest'),
+      dry_run: DryRun,
     },
     async (args) => {
+      if (args.dry_run) {
+        const targets = args.uris.map((entry) =>
+          typeof entry === 'string' ? entry : `${entry.uri} @ ${entry.positions.join(',')}`,
+        );
+        return {
+          content: [{
+            type: 'text',
+            text: describeDryRun('remove from playlist', args.playlist_id, targets),
+          }],
+        };
+      }
       const tracks = args.uris.map((entry) =>
         typeof entry === 'string'
           ? { uri: entry }
@@ -586,6 +633,7 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
           description: z.string().optional().describe('New description'),
           public: z.boolean().optional().describe('New public state'),
           collaborative: z.boolean().optional().describe('New collaborative state'),
+          dry_run: DryRun,
         })
         .superRefine((args, ctx) => {
           if (args.public === true && args.collaborative === true) {
@@ -599,6 +647,17 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
         }),
     },
     async (args) => {
+      if (args.dry_run) {
+        const changes = [
+          ...(args.name !== undefined ? [`name → "${args.name}"`] : []),
+          ...(args.description !== undefined ? [`description → "${args.description}"`] : []),
+          ...(args.public !== undefined ? [`public → ${args.public}`] : []),
+          ...(args.collaborative !== undefined ? [`collaborative → ${args.collaborative}`] : []),
+        ];
+        return {
+          content: [{ type: 'text', text: describeDryRun('update playlist', args.id, changes) }],
+        };
+      }
       const body: Record<string, unknown> = {};
       if (args.name !== undefined) body.name = args.name;
       if (args.description !== undefined) body.description = args.description;
@@ -619,7 +678,7 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
   // reorder_playlist_items
   server.tool(
     'reorder_playlist_items',
-    'Move a range of items within a playlist',
+    'Move a range of items within a playlist. Spotify semantics: when insert_before > range_start, the effective destination shifts down by range_length because the moved range is lifted out first (e.g. moving [2] to insert_before=4 lands it AT index 3).',
     {
       playlist_id: z.string().describe('Playlist ID'),
       range_start: z.number().int().min(0).describe('Index of the first item to move'),
@@ -630,8 +689,22 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
         .optional()
         .describe('Number of items to move. Default: 1'),
       insert_before: z.number().int().min(0).describe('Index to insert the range before'),
+      dry_run: DryRun,
     },
     async (args) => {
+      if (args.dry_run) {
+        const moved = args.range_length ?? 1;
+        return {
+          content: [{
+            type: 'text',
+            text: describeDryRun(
+              'reorder playlist items',
+              args.playlist_id,
+              [`Move ${moved} item(s) from index ${args.range_start} toward insert_before=${args.insert_before} (lift-then-insert semantics)`],
+            ),
+          }],
+        };
+      }
       const body: Record<string, unknown> = {
         range_start: args.range_start,
         insert_before: args.insert_before,
@@ -665,8 +738,21 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
         .array(z.string())
         .min(1)
         .describe('Complete ordered list of track or episode URIs the playlist should contain'),
+      dry_run: DryRun,
     },
     async (args) => {
+      if (args.dry_run) {
+        return {
+          content: [{
+            type: 'text',
+            text: describeDryRun(
+              'replace playlist items',
+              args.playlist_id,
+              [`Overwrite ALL existing items with ${args.uris.length} URI(s), sent in chunks of ≤100`],
+            ),
+          }],
+        };
+      }
       const id = encodeURIComponent(args.playlist_id);
       let snapshotId: string | undefined;
       let requestCount = 0;
