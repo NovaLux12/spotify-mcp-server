@@ -8,7 +8,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
  */
 const TimeRange = z
   .enum(['short_term', 'medium_term', 'long_term'])
-  .default('medium_term')
+  .optional()
   .describe('Spotify time range: short_term (4 weeks), medium_term (6 months), long_term (all time)');
 
 export function registerPrompts(server: McpServer): void {
@@ -53,10 +53,11 @@ export function registerPrompts(server: McpServer): void {
     {
       time_range: z
         .enum(['short_term', 'medium_term', 'long_term', 'all'])
-        .default('all')
+        .optional()
         .describe("Which range(s) of listening history to analyze; 'all' compares short, medium, and long term"),
     },
-    async (args) => {
+    async (rawArgs) => {
+      const args = { ...rawArgs, time_range: rawArgs.time_range ?? 'all' };
       const ranges = args.time_range === 'all'
         ? ['short_term', 'medium_term', 'long_term']
         : [args.time_range];
@@ -81,9 +82,11 @@ export function registerPrompts(server: McpServer): void {
     'discover_weekly_alternative',
     "Based on my top tracks and recently played songs, find lesser-known songs I probably haven't heard.",
     {
-      size: z.coerce.number().int().positive().max(50).default(20).describe('How many discovery picks to return'),
+      size: z.coerce.number().int().positive().max(50).optional().describe('How many discovery picks to return (default 20)'),
     },
-    async (args) => ({
+    async (rawArgs) => {
+      const args = { ...rawArgs, size: rawArgs.size ?? 20 };
+      return ({
       messages: [{
         role: 'user',
         content: {
@@ -91,7 +94,8 @@ export function registerPrompts(server: McpServer): void {
           text: `Generate a personalised discovery list of ${args.size} songs for me. Use get_top_tracks (short_term) and get_recently_played to learn my recent favourites, then use search to find ${args.size} lesser-known tracks in the same artistic space — dig beyond each favourite artist's biggest hits (deep cuts, B-sides, similar smaller artists). IMPORTANT: explicitly exclude every track that appears in my top tracks or recently played, and skip each artist's most-streamed signature songs so the picks feel fresh. Focus on variety — mix up energy levels and moods while staying within my taste. Present the list with track names, artists, and URIs so I can play them.`,
         },
       }],
-    }),
+    });
+  }
   );
 
   // playlist_audit — dedupe / dead-track health check for one playlist (#60).
@@ -118,9 +122,11 @@ export function registerPrompts(server: McpServer): void {
     'Write a recap of recent listening: top tracks/artists plus recently-played context.',
     {
       time_range: TimeRange,
-      size: z.coerce.number().int().positive().max(50).default(10).describe('How many top tracks/artists to feature'),
+      size: z.coerce.number().int().positive().max(50).optional().describe('How many top tracks/artists to feature (default 10)'),
     },
-    async (args) => ({
+    async (rawArgs) => {
+      const args = { ...rawArgs, time_range: rawArgs.time_range ?? 'medium_term', size: rawArgs.size ?? 10 };
+      return ({
       messages: [{
         role: 'user',
         content: {
@@ -128,7 +134,8 @@ export function registerPrompts(server: McpServer): void {
           text: `Give me a listening recap for my ${args.time_range} history. Call get_top_tracks (time_range=${args.time_range}, limit=${args.size}), get_top_artists (time_range=${args.time_range}, limit=${args.size}), and get_recently_played (limit=50). Then write an engaging recap: my ${args.size} most-played tracks and artists, patterns across genres/moods/eras, how recently-played confirms or diverges from the charts, one "on repeat" callout, and one "you might be burning out on" callout based on repetition. End with three concrete follow-up suggestions (e.g. a playlist to revisit or an album to try) using real URIs.`,
         },
       }],
-    }),
+    });
+  }
   );
 
   // migrate_library — turn saved albums into a playlist (#60).
@@ -136,10 +143,12 @@ export function registerPrompts(server: McpServer): void {
     'migrate_library',
     'Collect tracks from your saved albums into a single playlist.',
     {
-      playlist_name: z.string().default('My Saved Albums').describe('Name for the destination playlist'),
-      include_singles: z.enum(['true', 'false']).default('false').describe("Also include tracks from singles/EPs, not just full albums ('true'/'false')"),
+      playlist_name: z.string().optional().describe('Name for the destination playlist (default: My Saved Albums)'),
+      include_singles: z.enum(['true', 'false']).optional().describe("Also include tracks from singles/EPs, not just full albums ('true'/'false')"),
     },
-    async (args) => ({
+    async (rawArgs) => {
+      const args = { ...rawArgs, playlist_name: rawArgs.playlist_name ?? 'My Saved Albums', include_singles: rawArgs.include_singles ?? 'false' };
+      return ({
       messages: [{
         role: 'user',
         content: {
@@ -147,7 +156,8 @@ export function registerPrompts(server: McpServer): void {
           text: `Migrate my saved albums into one playlist. Use get_saved_albums with fetch_all=true to list everything saved. For each album${args.include_singles === 'true' ? '' : ' whose album_type is "album" (skip "single")'}, fetch its tracks with get_album_tracks. Collect ALL track URIs into one deduplicated ordered list (album by album, preserving track order). Check whether a playlist named "${args.playlist_name}" already exists via get_user_playlists — if it does, reuse its ID, otherwise create it with create_playlist (description "Tracks migrated from my saved albums"). Add the URIs to it with add_to_playlist in batches of at most 100. Finish with counts: albums walked, unique tracks added, duplicates skipped.`,
         },
       }],
-    }),
+    });
+  }
   );
 
   // podcast_catchup — new episodes since a date across followed shows (#60).
@@ -156,9 +166,11 @@ export function registerPrompts(server: McpServer): void {
     'List new podcast episodes published since a date across your saved shows, and queue them if asked.',
     {
       since: z.string().describe('Only include episodes released on or after this date (YYYY-MM-DD)'),
-      max_per_show: z.coerce.number().int().positive().max(10).default(3).describe('Max episodes to list per show'),
+      max_per_show: z.coerce.number().int().positive().max(10).optional().describe('Max episodes to list per show (default 3)'),
     },
-    async (args) => ({
+    async (rawArgs) => {
+      const args = { ...rawArgs, max_per_show: rawArgs.max_per_show ?? 3 };
+      return ({
       messages: [{
         role: 'user',
         content: {
@@ -166,7 +178,8 @@ export function registerPrompts(server: McpServer): void {
           text: `Catch me up on podcasts since ${args.since}. Call get_saved_shows (fetch_all=true), then for each show call get_show_episodes (limit=${Math.max(args.max_per_show * 3, 10)}). Keep only episodes whose release_date is >= ${args.since}, newest first, capped at ${args.max_per_show} per show. Present grouped by show: episode title, release date, duration, description snippet, and episode URI/ID. Flag anything longer than 90 minutes as a "long listen". At the end ask whether I want any of them queued now via add_to_queue or played directly — do not start playback unprompted.`,
         },
       }],
-    }),
+    });
+  }
   );
 
   // artist_deep_dive — guided discography tour for one artist (#60).
