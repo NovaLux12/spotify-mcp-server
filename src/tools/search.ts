@@ -1,7 +1,11 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
-import type { SearchResponse, SpotifyAudiobookSimple } from '../types/spotify.js';
+import type {
+  SearchResponse,
+  SpotifyAudiobookSimple,
+  SpotifyPlaylistSimple,
+} from '../types/spotify.js';
 import {
   ResponseFormat,
   MaxResults,
@@ -59,13 +63,15 @@ export function registerSearchTools(server: McpServer, client: SpotifyClient): v
             'Pass e.g. ["artist"] for an artist-only search. ' +
             '"audiobook" is only available in the US, UK, CA, IE, NZ and AU markets.',
         ),
+      // Feb 2026: Spotify reduced the /search limit maximum from 50 to 10
+      // (400 "Invalid limit" above 10) and the default from 20 to 5.
       limit: z
         .number()
         .int()
         .min(1)
-        .max(50)
+        .max(10)
         .optional()
-        .describe('Results per type, 1–50. Default: 5'),
+        .describe('Results per type, 1–10. Default: 5'),
       offset: z
         .number()
         .int()
@@ -190,8 +196,13 @@ export function registerSearchTools(server: McpServer, client: SpotifyClient): v
 
       const playlists = sectionItems(all, 'playlists');
       if (playlists) {
-        emit('PLAYLISTS', { items: playlists.items, total: playlists.total }, (p) =>
-          `"${p.name}" by ${p.owner.display_name ?? p.owner.id} (${p.tracks.total} tracks) | URI: ${p.uri}`,
+        // Feb 2026: curated playlists are filtered to null per-slot; drop them
+        // before rendering. Track count moved from `tracks.total` to `items.total`.
+        const playlistRows = playlists.items.filter(
+          (p): p is SpotifyPlaylistSimple => p !== null,
+        );
+        emit('PLAYLISTS', { items: playlistRows, total: playlists.total }, (p) =>
+          `"${p.name}" by ${p.owner.display_name ?? p.owner.id} (${p.items?.total ?? 0} tracks) | URI: ${p.uri}`,
         );
       }
 

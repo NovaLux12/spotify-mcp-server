@@ -194,7 +194,7 @@ export function registerPrompts(server: McpServer): void {
         role: 'user',
         content: {
           type: 'text',
-          text: `Deep-dive into the artist "${args.artist}". Resolve the name with search (types=["artist"]) and confirm with get_artist (genres, followers, popularity). Then call get_artist_albums and pick a representative tour: their most recent album, one breakout/earlier album, and one fan favourite (highest-popularity). For each chosen album pull tracks with get_album_tracks, and enrich 2–3 signature songs with get_artist_top_tracks cross-referencing. Write up: who they are in two sentences, the era-by-era story of the albums you toured, a "start here" 8-track mini-playlist with URIs, and one deep cut worth hearing. Offer to create this as a playlist via create_playlist/add_to_playlist if I want to keep it.`,
+          text: `Deep-dive into the artist "${args.artist}". Resolve the name with search (types=["artist"]) and confirm with get_artist (genres, images). Then call get_artist_albums and pick a representative tour: their most recent album, one breakout/earlier album, and one fan favourite (use track order and your judgement — popularity fields are no longer exposed by the API). For each chosen album pull tracks with get_album_tracks. Write up: who they are in two sentences, the era-by-era story of the albums you toured, a "start here" 8-track mini-playlist with URIs, and one deep cut worth hearing. Offer to create this as a playlist via create_playlist/add_to_playlist if I want to keep it.`,
         },
       }],
     }),

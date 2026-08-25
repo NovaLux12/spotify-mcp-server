@@ -25,7 +25,7 @@ Most Spotify MCP servers are thin wrappers. This one is built to be the default:
 
 **Playback (15 tools)** — now playing / currently-playing polls, play (by URI, or `play_from_search` to play straight from a name), pause, skip, previous, seek, volume, shuffle, repeat, queue view/add, device list, transfer playback.
 
-**Search & catalog** — unified search across tracks/artists/albums/playlists/shows/episodes/audiobooks; deep lookups for tracks, artists, artist albums, albums, album tracks, shows, show episodes, episodes, your profile (`get_me`), an artist's top tracks, and available markets; plus batch `get_several_*` lookups (up to 20–50 IDs per single call) for tracks, albums, artists, episodes, shows, audiobooks and chapters.
+**Search & catalog** — unified search across tracks/artists/albums/playlists/shows/episodes/audiobooks (limit capped at 10 per Spotify's Feb 2026 change); deep lookups for tracks, artists, artist albums, albums, album tracks, shows, show episodes, episodes, and your profile (`get_me`); plus batch `get_several_*` lookups for tracks, albums, artists, episodes, shows, audiobooks and chapters — these and the artist top-tracks / available-markets lookups were removed by Spotify's February 2026 Web API changes and fail with an explanatory message on newer app registrations (they still work with credentials from a grandfathered pre-Nov-2024 app).
 
 **Audiobooks** — titles, chapters, chapter lookup, and your saved audiobooks (market-gated by Spotify to US/UK/CA/IE/NZ/AU).
 

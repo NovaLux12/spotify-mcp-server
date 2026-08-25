@@ -452,7 +452,6 @@ test('get_episode forwards market param and renders full episode payload', async
   assert.match(out, /Duration: 30:00 \| Released: 2026-01-01/);
   assert.match(out, /Explicit: yes \| Languages: en/);
   assert.match(out, /Resume point: Resume at 1:05/); // 65000ms
-  assert.match(out, /Preview: https:\/\/example\.com\/preview\.mp3/);
 });
 
 test('get_episode marks fully played resume points', async () => {
@@ -1203,4 +1202,20 @@ test('get_audiobook_chapters json mode returns the raw chapter page (#51)', asyn
   const parsed = JSON.parse(result.content[0].text);
   assert.equal(parsed.items[0].chapter_number, 1);
   assert.equal(parsed.total, 1);
+});
+
+test('get_several_tracks explains the Feb 2026 removal on 403 instead of a raw error (issue #85)', async () => {
+  const { registered } = makeHarness(registerCatalogTools, {
+    getError: (path) => (path.startsWith('/tracks?') || path === '/tracks' ? new SpotifyApiError(403, 'Forbidden') : undefined),
+  });
+
+  await assert.rejects(
+    invoke(findTool(registered, 'get_several_tracks'), { ids: ['trk1', 'trk2'] }),
+    (err: Error) => {
+      assert.match(err.message, /403/);
+      assert.match(err.message, /February 2026/);
+      assert.match(err.message, /grandfathered/);
+      return true;
+    },
+  );
 });

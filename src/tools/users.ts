@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import type { SpotifyClient } from '../client.js';
+import { SpotifyApiError, type SpotifyClient } from '../client.js';
 import type {
   SpotifyPaged,
   SpotifyPlaylistSimple,
@@ -79,15 +79,27 @@ export function registerUsersTools(server: McpServer, client: SpotifyClient): vo
   // get_user_profile
   server.tool(
     'get_user_profile',
-    "Get any Spotify user's public profile (display name, follower count, profile image)",
+    "Get any Spotify user's public profile (display name, follower count, profile image). Removed by Spotify's February 2026 Web API changes — unavailable for newer app registrations",
     {
       user_id: z.string().min(1).describe('Spotify user ID'),
       response_format: ResponseFormat,
     },
     async (args) => {
-      const user = await client.get<PublicUserProfile>(
-        `/users/${encodeURIComponent(args.user_id)}`,
-      );
+      // Feb 2026: GET /users/{id} was removed (403 for newer registrations).
+      let user: PublicUserProfile | null;
+      try {
+        user = await client.get<PublicUserProfile>(
+          `/users/${encodeURIComponent(args.user_id)}`,
+        );
+      } catch (err) {
+        if (err instanceof SpotifyApiError && err.status === 403) {
+          throw new Error(
+            `Spotify returned 403 for the user-profile lookup: ${err.message}. GET /users/{id} was removed by Spotify's February 2026 Web API changes; run with credentials from a grandfathered (pre-Nov-2024) app if you need it.`,
+            { cause: err },
+          );
+        }
+        throw err;
+      }
       if (!user) throw new Error(`User "${args.user_id}" not found`);
 
       const name = user.display_name ?? user.id;
@@ -115,7 +127,7 @@ export function registerUsersTools(server: McpServer, client: SpotifyClient): vo
   // get_user_playlists_by_id
   server.tool(
     'get_user_playlists_by_id',
-    "List another Spotify user's public playlists (paginated). Output is capped by max_results (default: SPOTIFY_MCP_MAX_ITEMS).",
+    "List another Spotify user's public playlists (paginated). Removed by Spotify's February 2026 Web API changes — unavailable for newer app registrations. Output is capped by max_results (default: SPOTIFY_MCP_MAX_ITEMS).",
     {
       user_id: z.string().min(1).describe('Spotify user ID'),
       limit: z.number().int().min(1).max(50).optional().describe('1–50. Default: 20'),
@@ -127,10 +139,23 @@ export function registerUsersTools(server: McpServer, client: SpotifyClient): vo
       const params: Record<string, string> = { limit: String(args.limit ?? 20) };
       if (args.offset !== undefined) params.offset = String(args.offset);
 
-      const result = await client.get<SpotifyPaged<SpotifyPlaylistSimple>>(
-        `/users/${encodeURIComponent(args.user_id)}/playlists`,
-        params,
-      );
+      // Feb 2026: GET /users/{id}/playlists was removed (403 for newer
+      // registrations).
+      let result: SpotifyPaged<SpotifyPlaylistSimple> | null;
+      try {
+        result = await client.get<SpotifyPaged<SpotifyPlaylistSimple>>(
+          `/users/${encodeURIComponent(args.user_id)}/playlists`,
+          params,
+        );
+      } catch (err) {
+        if (err instanceof SpotifyApiError && err.status === 403) {
+          throw new Error(
+            `Spotify returned 403 for the user-playlists lookup: ${err.message}. GET /users/{id}/playlists was removed by Spotify's February 2026 Web API changes; run with credentials from a grandfathered (pre-Nov-2024) app if you need it.`,
+            { cause: err },
+          );
+        }
+        throw err;
+      }
       if (!result) throw new Error(`Could not retrieve playlists for user "${args.user_id}"`);
 
       // Same defensive guard as issue #3 — items/total can be missing on
@@ -140,7 +165,7 @@ export function registerUsersTools(server: McpServer, client: SpotifyClient): vo
 
       const detailed = args.response_format === 'detailed';
       const renderLine = (pl: SpotifyPlaylistSimple): string => {
-        const trackCount = pl.tracks?.total ?? 0;
+        const trackCount = pl.items?.total ?? 0;
         const owner = pl.owner.display_name ?? pl.owner.id;
         let line = `  • "${pl.name}" by ${owner} (${trackCount} tracks) | ID: ${pl.id} | URI: ${pl.uri}`;
         if (detailed && pl.description) line += ` | ${pl.description}`;

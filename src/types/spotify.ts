@@ -167,7 +167,8 @@ export interface SpotifyShowSimple {
   name: string;
   uri: string;
   description: string;
-  publisher: string;
+  // Feb 2026: publisher removed from Show payloads for new app registrations.
+  publisher?: string;
   total_episodes: number;
 }
 
@@ -193,7 +194,8 @@ export interface SpotifyShowFull {
   name: string;
   uri: string;
   description: string;
-  publisher: string;
+  // Feb 2026: publisher removed from Show payloads for new app registrations.
+  publisher?: string;
   explicit: boolean;
   total_episodes: number;
   languages: string[];
@@ -214,7 +216,6 @@ export interface SpotifyEpisodeFull {
   explicit: boolean;
   description: string;
   languages: string[];
-  audio_preview_url: string | null;
   resume_point?: {
     fully_played: boolean;
     resume_position_ms: number;
@@ -244,7 +245,6 @@ export interface SpotifyChapterFull extends SpotifyChapterSimple {
   html_description: string;
   languages: string[];
   images: SpotifyImage[];
-  audio_preview_url: string | null;
   resume_point?: {
     fully_played: boolean;
     resume_position_ms: number;
@@ -305,14 +305,16 @@ export interface RecentlyPlayedResponse {
   next: string | null;
 }
 
-// Simplified playlist for search results
+// Simplified playlist (search rows and /me/playlists listings).
+// Feb 2026: `tracks` renamed to paged `items`; search rows may also be null
+// (curated playlists filtered per-slot).
 export interface SpotifyPlaylistSimple {
   id: string;
   name: string;
   uri: string;
   description: string | null;
   owner: { display_name: string | null; id: string };
-  tracks: { total: number };
+  items?: { total: number } | null;
 }
 
 // Search response (GET /search)
@@ -320,7 +322,7 @@ export interface SearchResponse {
   tracks?: { items: SpotifyTrack[]; total: number };
   artists?: { items: SpotifyArtistFull[]; total: number };
   albums?: { items: SpotifyAlbumItem[]; total: number };
-  playlists?: { items: SpotifyPlaylistSimple[]; total: number };
+  playlists?: { items: (SpotifyPlaylistSimple | null)[]; total: number };
   shows?: { items: SpotifyShowSimple[]; total: number };
   episodes?: { items: SpotifyEpisodeSimple[]; total: number };
 }

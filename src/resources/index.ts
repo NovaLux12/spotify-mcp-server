@@ -240,7 +240,7 @@ export function registerResources(server: McpServer, client: SpotifyClient): voi
         return text('spotify://me/playlists', 'No playlists found.');
       }
       const lines = playlists.map((pl) => {
-        const trackCount = pl.tracks?.total ?? 0;
+        const trackCount = pl.items?.total ?? 0;
         return `  • "${pl.name}" (${trackCount} tracks) | ID: ${pl.id} | URI: ${pl.uri}`;
       });
       return text('spotify://me/playlists', `Playlists (${playlists.length} total):\n${lines.join('\n')}`);
@@ -293,7 +293,7 @@ export function registerResources(server: McpServer, client: SpotifyClient): voi
     (items) => {
       if (items.length === 0) return 'No saved shows.';
       const lines = items.map(({ added_at, show }) =>
-        `  • "${show.name}" — ${show.publisher} (${show.total_episodes} episodes, added ${added_at.slice(0, 10)}) | ID: ${show.id}`,
+        `  • "${show.name}" — ${show.publisher ?? 'unknown publisher'} (${show.total_episodes} episodes, added ${added_at.slice(0, 10)}) | ID: ${show.id}`,
       );
       return `Saved shows (${items.length}):\n${lines.join('\n')}`;
     },
