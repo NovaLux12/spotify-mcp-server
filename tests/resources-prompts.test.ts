@@ -199,7 +199,7 @@ test('saved albums/shows/episodes walk pages and support ?format=json (#59)', as
 
 test('playlist/{id}/tracks template serves prose pagination and raw json (#59)', async () => {
   const page = {
-    items: [{ track }, { track: null }],
+    items: [{ item: track }, { item: null }],
     total: 3,
     limit: 2,
     offset: 0,
@@ -207,9 +207,9 @@ test('playlist/{id}/tracks template serves prose pagination and raw json (#59)',
   };
   const client = await connect(makeClientStub({
     getResponse: (path, params) => {
-      if (path !== '/playlists/pl1/tracks') return undefined;
+      if (path !== '/playlists/pl1/items') return undefined;
       if ((params?.offset ?? '0') === '100') {
-        return { ...page, offset: 100, items: [{ track: { ...track, id: 'trk3' } }] };
+        return { ...page, offset: 100, items: [{ item: { ...track, id: "trk3" } }] };
       }
       return page;
     },

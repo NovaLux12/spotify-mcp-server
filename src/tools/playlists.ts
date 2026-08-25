@@ -61,7 +61,7 @@ interface PlaylistWithImages extends SpotifyPlaylistSimple {
 // get_playlist_items. Returns null for unavailable items (null track), which
 // callers render or skip as they see fit.
 function formatPlaylistItem(item: PlaylistItemObject): string | null {
-  const track = item.track;
+  const track = item.item;
   if (!track) return null;
   if (track.type === 'track') {
     const artists = track.artists.map((a) => a.name).join(', ');
@@ -492,7 +492,7 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
         );
         const present = new Set<string>();
         for (const item of existing) {
-          if (item.track?.uri) present.add(item.track.uri);
+          if (item.item?.uri) present.add(item.item.uri);
         }
         toAdd = [];
         for (const uri of args.uris) {
@@ -720,7 +720,7 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
 
       let position = 0;
       for (const item of items) {
-        const track = item.track;
+        const track = item.item;
         if (track?.uri) {
           const artists =
             'artists' in track && Array.isArray(track.artists)
