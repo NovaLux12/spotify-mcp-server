@@ -1194,3 +1194,36 @@ describe('get_playlist_items / get_playlist_cover id alias (issue #80)', () => {
     await assert.rejects(() => h.invoke('get_playlist_cover', {}), /playlist_id/);
   });
 });
+
+describe('dry_run coverage for mutating playlist tools (issue #110)', () => {
+  it('remove_from_playlist dry_run lists targets with zero mutating calls', async () => {
+    const h = harness();
+    const out = await h.invoke('remove_from_playlist', {
+      playlist_id: 'pl1',
+      uris: ['spotify:track:a', { uri: 'spotify:track:b', positions: [3, 7] }],
+      dry_run: true,
+    });
+    const mut = wireCalls(h.client.calls).filter((c) => c.method === 'DELETE');
+    assert.equal(mut.length, 0);
+    assert.match(textOf(out), /\[dry run\] remove from playlist/);
+    assert.match(textOf(out), /spotify:track:b @ 3,7/);
+  });
+
+  it('replace_playlist_items dry_run previews the overwrite without calls', async () => {
+    const h = harness();
+    const out = await h.invoke('replace_playlist_items', {
+      playlist_id: 'pl2',
+      uris: ['spotify:track:x', 'spotify:track:y'],
+      dry_run: true,
+    });
+    assert.equal(h.client.calls.length, 0);
+    assert.match(textOf(out), /Overwrite ALL existing items with 2 URI/);
+  });
+
+  it('update_playlist dry_run echoes changed fields', async () => {
+    const h = harness((_p, _b) => ({ id: 'pl3' }));
+    const out = await h.invoke('update_playlist', { id: 'pl3', name: 'New Name', public: false, dry_run: true });
+    assert.equal(h.client.calls.length, 0);
+    assert.match(textOf(out), /name → "New Name"/);
+  });
+});
