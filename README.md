@@ -230,14 +230,15 @@ This is a personal project, not affiliated with or endorsed by Spotify. It is pr
 
 ## Publishing & distribution
 
-Releases are cut by [release-please](https://github.com/googleapis/release-please) (merge its version-bump PR; it tags the release). The `v*` tag then triggers [`publish.yml`](.github/workflows/publish.yml), which:
+Releases are cut by [release-please](https://github.com/googleapis/release-please): merge its version-bump PR and it creates the release + `v*` tag. **GitHub suppresses workflow triggers from `GITHUB_TOKEN` events**, so the tag alone does not start [`publish.yml`](.github/workflows/publish.yml) — re-fire it after merging:
 
-1. Runs typecheck + tests, builds, and publishes [`@novalux12/spotify-mcp`](https://www.npmjs.com/package/@novalux12/spotify-mcp) to npm (`--access public`; set the `NPM_TOKEN` repo secret, or enable npm trusted publishing and add `--provenance`).
-2. Syncs `server.json`'s version from the tag and publishes the server metadata to the official [MCP Registry](https://registry.modelcontextprotocol.io) via GitHub OIDC — no secrets needed.
+```bash
+git pull && git tag -d vX.Y.Z; git tag vX.Y.Z "$(git rev-list -n1 origin/main)" && git push origin vX.Y.Z
+```
+
+The workflow then runs typecheck + tests, builds, publishes [`@novalux12/spotify-mcp`](https://www.npmjs.com/package/@novalux12/spotify-mcp) to npm (`NPM_TOKEN` repo secret), and publishes the server metadata to the official [MCP Registry](https://registry.modelcontextprotocol.io) via GitHub OIDC (no secrets needed). The npm package carries `mcpName`, required by the registry's validation.
 
 [Smithery](https://smithery.ai) discovers the server via the root [`smithery.yaml`](smithery.yaml); claiming the package on Smithery is a one-time manual step for a maintainer.
-
-One-time maintainer setup: add an `NPM_TOKEN` secret (automation token with 2FA bypass, or trusted publishing on npmjs.com → package settings → Publishing access → GitHub Actions, repository `NovaLux12/spotify-mcp-server`, workflow `publish.yml`).
 
 ## Development
 
