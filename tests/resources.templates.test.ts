@@ -364,3 +364,41 @@ test('?market passes through to show and episode endpoints; absent market omits 
   await mcp.readResource({ uri: 'spotify://episode/ep1' });
   assert.deepEqual(calls[3], { method: 'GET', path: '/episodes/ep1' });
 });
+
+test('show/episode templates expose argument completions from saved library (#111)', async () => {
+  // The stub server records ResourceTemplate objects; assert the complete map
+  // exists and returns saved IDs through the client.
+  const savedShow = { added_at: '', show: { id: 'shw9', name: 'S' } };
+  const savedEp = { added_at: '', episode: { id: 'ep9', name: 'E' } };
+  const { registered } = await (async () => {
+    const names: Array<{ name: string; template: unknown }> = [];
+    const server = {
+      resource: (name: string, template: unknown) => {
+        names.push({ name, template });
+      },
+    };
+    const client = {
+      get: async () => null,
+      getAllPages: async (path: string) =>
+        path === '/me/shows' ? [savedShow] : path === '/me/episodes' ? [savedEp] : [],
+    };
+    registerTemplateResources(
+      server as unknown as Parameters<typeof registerTemplateResources>[0],
+      client as unknown as Parameters<typeof registerTemplateResources>[1],
+    );
+    return { registered: names };
+  })();
+
+  // The SDK stores completions on the private _callbacks map; access through
+  // the public completeCallback(variable) accessor instead.
+  const idCompleter = (name: string) => {
+    const t = registered.find((r) => r.name === name)!.template as {
+      completeCallback: (v: string) => (() => Promise<string[]>) | undefined;
+    };
+    return t.completeCallback('id');
+  };
+
+  assert.deepEqual(await idCompleter('show')?.(), ['shw9']);
+  assert.deepEqual(await idCompleter('episode')?.(), ['ep9']);
+  assert.equal(idCompleter('album'), undefined, 'albums have no cheap enumerable source');
+});
