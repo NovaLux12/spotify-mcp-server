@@ -9,6 +9,7 @@
   "publishConfig": {
     "access": "public"
   },
+  "mcpName": "io.github.NovaLux12/spotify-mcp-server",
   "engines": {
     "node": ">=22.9"
   },
