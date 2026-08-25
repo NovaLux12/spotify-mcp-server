@@ -1,0 +1,20 @@
+# PR labeler rules — used by .github/workflows/labeler.yml (actions/labeler@v5)
+area:docs:
+  - changed-files:
+      - any-glob-to-any-file: docs/**
+
+area:tools:
+  - changed-files:
+      - any-glob-to-any-file: src/tools/**
+
+area:auth:
+  - changed-files:
+      - any-glob-to-any-file: src/auth.ts
+
+area:client:
+  - changed-files:
+      - any-glob-to-any-file: src/client.ts
+
+area:ci:
+  - changed-files:
+      - any-glob-to-any-file: .github/**
