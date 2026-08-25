@@ -9,6 +9,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > from [Conventional Commits](https://www.conventionalcommits.org/). Entries below v1.0.4 were
 > backfilled by hand from git history.
 
+## [1.3.0](https://github.com/NovaLux12/spotify-mcp-server/compare/v1.2.1...v1.3.0) (2026-08-25)
+
+
+### Features
+
+* **#112:** handoff tool — lossless device move preserving track position ([1c6bc57](https://github.com/NovaLux12/spotify-mcp-server/commit/1c6bc574196d7c96186f36f3e254784d5b551717))
+* **#95:** add TOOLSETS registry with resolveToolsets/isActive/toolsetEnvHelp ([6efdf0e](https://github.com/NovaLux12/spotify-mcp-server/commit/6efdf0e921a1cbe5b6235d381e1d5a5bbda00600))
+* **#95:** wire SPOTIFY_MCP_TOOLSETS into server startup ([df02eaa](https://github.com/NovaLux12/spotify-mcp-server/commit/df02eaac5c00e21490dbbb5b6fdc403c014ce669))
+* codify live gauntlet — full-tool live sweep with mutation proof ([f384cf9](https://github.com/NovaLux12/spotify-mcp-server/commit/f384cf985dbf18b56169777c0ed7dde07eba1c5d))
+* **library-insights:** sidecar genre tags + library report/filter tools ([#112](https://github.com/NovaLux12/spotify-mcp-server/issues/112) idea 1) ([bfab550](https://github.com/NovaLux12/spotify-mcp-server/commit/bfab5505429c93df247be484fe2a8a39f7e0fe9d))
+* **search:** add search_deep paged search tool ([128dcef](https://github.com/NovaLux12/spotify-mcp-server/commit/128dcef3c3318e39943a1621c8cc35bc91352405))
+* **tools:** add merge_playlists, diff_playlists, overlap_playlists ([#96](https://github.com/NovaLux12/spotify-mcp-server/issues/96)) ([d551bfd](https://github.com/NovaLux12/spotify-mcp-server/commit/d551bfdd91d191bd5c402be3a8a22bf3ec1e3ced))
+* whats_new freshness radar tool ([#112](https://github.com/NovaLux12/spotify-mcp-server/issues/112) idea 2) ([84b3643](https://github.com/NovaLux12/spotify-mcp-server/commit/84b364310cc0d5a56138f1d335395035bd4609a1))
+
+
+### Bug Fixes
+
+* **#108:** differentiate QUOTA_EXCEEDED from burst 429s; cap in-queue sleep ([9d8865f](https://github.com/NovaLux12/spotify-mcp-server/commit/9d8865f544827fcc8ec709d2a73b720043ff6bfe))
+* **#95:** use Object.hasOwn for known-set lookup; add prototype-name test ([4c9b7b2](https://github.com/NovaLux12/spotify-mcp-server/commit/4c9b7b26b9dadf5033036c5e8347e774a67ea4e0))
+* **#96:** adopt Feb-2026 playlist item shape ('item'); wire into playlists toolset ([8859967](https://github.com/NovaLux12/spotify-mcp-server/commit/885996724b972bee01f8bb54c80f1e1f25ff52ce))
+* **ci:** pin @modelcontextprotocol/sdk; idempotent npm publish ([68e8a2a](https://github.com/NovaLux12/spotify-mcp-server/commit/68e8a2a88a6342437d1e83fa8e8b04d455137069))
+* **platform:** artist-albums limit hard-capped at 10 (Feb 2026) ([ced75fa](https://github.com/NovaLux12/spotify-mcp-server/commit/ced75fadd55b31b4157aeff67b8b12ea14ec026c))
+* **platform:** playlist items nest under 'item', not 'track' (Feb 2026) ([675e400](https://github.com/NovaLux12/spotify-mcp-server/commit/675e400ed2fd11f4cb1085b570bb598a4861eed8))
+* **security:** supply-chain + file-permission hardening (SecReview findings) ([9342533](https://github.com/NovaLux12/spotify-mcp-server/commit/9342533bba3d85117fd62cc5a29686764949b3b2))
+
 ## [1.2.1](https://github.com/NovaLux12/spotify-mcp-server/compare/v1.2.0...v1.2.1) (2026-08-25)
 
 
