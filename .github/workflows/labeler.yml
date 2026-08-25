@@ -11,4 +11,4 @@ jobs:
     steps:
       # Official actions/labeler only — pull_request_target runs with access to
       # secrets, so no third-party labeling actions may be introduced here.
-      - uses: actions/labeler@v5
+      - uses: actions/labeler@v7
