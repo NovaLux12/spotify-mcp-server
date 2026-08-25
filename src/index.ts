@@ -14,6 +14,7 @@ import { registerPlaylistTools } from './tools/playlists.js';
 import { registerUsersTools } from './tools/users.js';
 import { registerResources } from './resources/index.js';
 import { registerPrompts } from './prompts/index.js';
+import { TOOLSETS, resolveToolsets, isActive, toolsetEnvHelp } from './toolsets.js';
 import { createRequire } from 'node:module';
 
 const { version } = createRequire(import.meta.url)('../package.json') as { version: string };
@@ -27,6 +28,16 @@ async function startMcpServer(): Promise<void> {
     name: 'spotify-mcp',
     version,
   });
+
+  // Toolset segmentation (#95): SPOTIFY_MCP_TOOLSETS=playlists,player,... trims
+  // the registered surface for clients that cap tool counts. Default: all.
+  const { sets: activeSets, unknown } = resolveToolsets(process.env.SPOTIFY_MCP_TOOLSETS);
+  if (unknown.length > 0) {
+    console.error(`[spotify-mcp] unknown toolset(s) ignored: ${unknown.join(', ')} — ${toolsetEnvHelp()}`);
+  }
+  if (activeSets.size < Object.keys(TOOLSETS).length) {
+    console.error(`[spotify-mcp] active toolsets: ${[...activeSets].sort().join(', ')}`);
+  }
 
   const client = new SpotifyClient();
 
@@ -50,17 +61,17 @@ async function startMcpServer(): Promise<void> {
     }
   });
 
-  registerPlaybackTools(server, client);
-  registerSearchTools(server, client);
-  registerCatalogTools(server, client);
-  registerPersonalizationTools(server, client);
-  registerLibraryTools(server, client);
-  registerFollowingTools(server, client);
-  registerAudiobookTools(server, client);
-  registerPlaylistTools(server, client);
-  registerUsersTools(server, client);
-  registerResources(server, client);
-  registerPrompts(server);
+  if (isActive('playback', activeSets)) registerPlaybackTools(server, client);
+  if (isActive('search', activeSets)) registerSearchTools(server, client);
+  if (isActive('catalog', activeSets)) registerCatalogTools(server, client);
+  if (isActive('personalization', activeSets)) registerPersonalizationTools(server, client);
+  if (isActive('library', activeSets)) registerLibraryTools(server, client);
+  if (isActive('following', activeSets)) registerFollowingTools(server, client);
+  if (isActive('audiobooks', activeSets)) registerAudiobookTools(server, client);
+  if (isActive('playlists', activeSets)) registerPlaylistTools(server, client);
+  if (isActive('users', activeSets)) registerUsersTools(server, client);
+  if (isActive('resources', activeSets)) registerResources(server, client);
+  if (isActive('prompts', activeSets)) registerPrompts(server);
 
   const transport = new StdioServerTransport();
   await server.connect(transport);
