@@ -3,6 +3,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
 import { getConfig } from '../config.js';
 import {
+  DryRun,
   batchSummary,
   listStructuredContent,
   paginationInfo,
@@ -254,7 +255,10 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
     "List a playlist's items on a single page. Use market to relink tracks and flag unavailable ones, and fields/additional_types to trim the payload.",
     {
       ...sharedListFields,
-      playlist_id: z.string().describe('Playlist ID'),
+      // Issue #80: accept `id` as an alias so the read tools share
+      // get_playlist's parameter convention.
+      playlist_id: z.string().optional().describe("Playlist ID (or pass it as 'id')"),
+      id: z.string().optional().describe("Alias for playlist_id, matching get_playlist"),
       limit: z
         .number()
         .int()
@@ -277,7 +281,9 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
         .describe("Comma-separated item types beyond the default 'track', e.g. 'track,episode'"),
     },
     async (args) => {
-      const id = encodeURIComponent(args.playlist_id);
+      const rawId = args.playlist_id ?? args.id;
+      if (!rawId) throw new Error('Provide the playlist as playlist_id (or id)');
+      const id = encodeURIComponent(rawId);
       const params: Record<string, string> = { limit: String(args.limit ?? 100) };
       if (args.offset !== undefined) params.offset = String(args.offset);
       if (args.market !== undefined) params.market = args.market;
@@ -327,11 +333,15 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
     "Get a playlist's cover image URLs",
     {
       ...sharedListFields,
-      playlist_id: z.string().describe('Playlist ID'),
+      // Issue #80: same `id` alias as get_playlist_items.
+      playlist_id: z.string().optional().describe("Playlist ID (or pass it as 'id')"),
+      id: z.string().optional().describe("Alias for playlist_id, matching get_playlist"),
     },
     async (args) => {
+      const rawId = args.playlist_id ?? args.id;
+      if (!rawId) throw new Error('Provide the playlist as playlist_id (or id)');
       const images = await client.get<SpotifyImage[]>(
-        `/playlists/${encodeURIComponent(args.playlist_id)}/images`,
+        `/playlists/${encodeURIComponent(rawId)}/images`,
       );
       if (!images || images.length === 0) {
         return {
@@ -386,7 +396,8 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
   server.registerTool(
     'create_playlist',
     {
-      description: 'Create a new playlist for the current user',
+      description:
+        'Create a new playlist for the current user. Set dry_run=true to preview without creating.',
       inputSchema: z
         .object({
           name: z.string().describe('Playlist name'),
@@ -396,6 +407,7 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
             .boolean()
             .optional()
             .describe('Whether the playlist is collaborative. Default: false'),
+          dry_run: DryRun,
         })
         .superRefine((args, ctx) => {
           if (args.public === true && args.collaborative === true) {
@@ -415,6 +427,22 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
         collaborative: args.collaborative ?? false,
       };
       if (args.description) body.description = args.description;
+
+      // Issue #79: preview mode matches the destructive tools (#57).
+      if (args.dry_run) {
+        const visibility = args.collaborative ? 'collaborative' : args.public ? 'public' : 'private';
+        const changes = [
+          `Would create ${visibility} playlist "${args.name}"` +
+            (args.description ? ` — "${args.description}"` : ''),
+        ];
+        return {
+          content: [{
+            type: 'text',
+            text: `[dry run] create_playlist — nothing was changed.\n${changes.join('\n')}`,
+          }],
+          structuredContent: { ok: true, dry_run: true, changes },
+        };
+      }
 
       const result = await client.post<{
         id: string;

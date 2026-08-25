@@ -17,6 +17,7 @@ import {
   listStructuredContent,
   batchSummary,
   describeDryRun,
+  DryRun,
 } from '../shaping.js';
 import type { ResponseFormatValue, PaginationInfo } from '../shaping.js';
 import { getConfig } from '../config.js';
@@ -425,17 +426,21 @@ export function registerLibraryTools(server: McpServer, client: SpotifyClient): 
   // save_items
   server.tool(
     'save_items',
-    "Save one or more items to the user's library. Accepts track, album, show, episode, and audiobook URIs (e.g. spotify:track:abc). Max 50.",
+    "Save one or more items to the user's library. Accepts track, album, show, episode, and audiobook URIs (e.g. spotify:track:abc). Max 50. Set dry_run=true to preview.",
     {
       uris: z
         .array(z.string())
         .min(1)
         .max(50)
         .describe('Spotify URIs to save (e.g. ["spotify:track:abc", "spotify:album:xyz"])'),
+      dry_run: DryRun,
       response_format: ResponseFormat,
     },
     async (args) => {
-      const buckets = partitionSavedUris(args.uris);
+      const buckets = partitionSavedUris(args.uris); // validates even in preview mode
+      if (args.dry_run) {
+        return dryRunOut(args.response_format, 'save_items', 'user library', args.uris);
+      }
       const counts: string[] = [];
       let saved = 0;
       for (const type of SAVED_URI_TYPES) {
@@ -529,17 +534,21 @@ export function registerLibraryTools(server: McpServer, client: SpotifyClient): 
   // save_to_library (#37)
   server.tool(
     'save_to_library',
-    "Save one or more items to the user's library via Spotify's unified library endpoint, in a single request. Accepts track, album, episode, show, audiobook, user, and playlist URIs in any mix. Max 40.",
+    "Save one or more items to the user's library via Spotify's unified library endpoint, in a single request. Accepts track, album, episode, show, audiobook, user, and playlist URIs in any mix. Max 40. Set dry_run=true to preview.",
     {
       uris: z
         .array(z.string())
         .min(1)
         .max(40)
         .describe('Spotify URIs to save (e.g. ["spotify:track:abc", "spotify:user:xyz"])'),
+      dry_run: DryRun,
       response_format: ResponseFormat,
     },
     async (args) => {
-      validateLibraryUris(args.uris, LIBRARY_SAVE_TYPES);
+      validateLibraryUris(args.uris, LIBRARY_SAVE_TYPES); // validates even in preview mode
+      if (args.dry_run) {
+        return dryRunOut(args.response_format, 'save_to_library', 'user library', args.uris);
+      }
       await client.put(`/me/library?${new URLSearchParams(libraryUrisParam(args.uris)).toString()}`);
       return mutationOut(
         args.response_format,
