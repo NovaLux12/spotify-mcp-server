@@ -46,21 +46,34 @@ Do not guess endpoint paths, query parameter names, or response field names. Loo
 - Use **exponential backoff** for repeated failures.
 - Never retry immediately in a tight loop.
 
-## Deprecated Endpoints
+## Spotify API Deprecations
 
-Do not use deprecated endpoints. Prefer the current equivalents:
+The OpenAPI schema flags several endpoint families as deprecated. For this project they fall into two buckets — check here before wrapping anything:
 
-| Deprecated | Use instead |
+Playlist item management targets `/playlists/{id}/items` (the `/tracks` variants are the legacy path); every playlist tool in this server already uses `/items`.
+
+### Blocked for post-Nov-2024 apps — not used here
+
+These fail at runtime on app registrations created after November 2024. Never wrap them; this server deliberately ships no tools for them:
+
+| Endpoint | Status |
 |---|---|
-| `GET/POST/DELETE /playlists/{id}/tracks` | `GET/POST/DELETE /playlists/{id}/items` |
-| `PUT /me/tracks`, `PUT /me/albums`, etc. | `PUT /me/library` (unified) |
-| `DELETE /me/tracks`, `DELETE /me/albums`, etc. | `DELETE /me/library` (unified) |
-| `GET /me/tracks/contains`, `GET /me/albums/contains`, etc. | `GET /me/library/contains` (unified) |
-| `PUT/DELETE /me/following` (type-specific) | `PUT /me/library` / `DELETE /me/library` |
-| `GET /browse/categories` | Deprecated — avoid |
-| `GET /browse/new-releases` | Removed — do not use |
-| `GET /artists/{id}/top-tracks` | Removed — do not use |
-| Batch `GET /albums`, `GET /artists`, `GET /episodes`, `GET /shows` | Removed — use individual ID endpoints |
+| `GET /recommendations`, `GET /recommendations/available-genre-seeds` | Blocked for post-Nov-2024 apps |
+| `GET /artists/{id}/related-artists` | Blocked for post-Nov-2024 apps |
+| `GET /audio-features/{id}`, `GET /audio-analysis/{id}` | Blocked for post-Nov-2024 apps |
+| `GET /browse/categories`, `GET /browse/new-releases`, featured playlists | Blocked/removed — do not use |
+| Lyrics endpoints | Not available via the Web API — do not use |
+
+### Schema-flagged deprecated but verified operational — wrapped with graceful 403 handling
+
+Verified live against the 2026 schema for this project's app registration. Kept during transition; each wrapper catches Spotify's 403 and degrades gracefully rather than surfacing a raw failure:
+
+| Endpoint | Wrapped by |
+|---|---|
+| `GET /artists/{id}/top-tracks` | `get_artist_top_tracks` (#38) |
+| Batch `GET /albums?ids=` / `/artists?ids=` / `/episodes?ids=` / `/shows?ids=` / `/audiobooks?ids=` / `/chapters?ids=` | `get_several_*` tools (#43) |
+| Per-type library writes `PUT/DELETE /me/tracks|albums|shows|episodes` and `GET /me/{type}s/contains` | `save_items` / `remove_saved_items` / `check_saved_items`; prefer the unified `/me/library` tools (`save_to_library` / `remove_from_library` / `check_in_library`, #37) for new work |
+| `PUT/DELETE /me/following?type=artist`, `GET /me/following/contains` | `follow_artists` / `unfollow_artists` / `check_following_artists` |
 
 ## Error Handling
 

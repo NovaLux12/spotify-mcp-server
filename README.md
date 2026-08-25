@@ -11,7 +11,7 @@ An MCP server that wraps the Spotify Web API, letting AI assistants (like Claude
 
 Most Spotify MCP servers are thin wrappers. This one is built to be the default:
 
-- **Complete API surface** — every non-deprecated Spotify Web API endpoint callable with a standard developer token is covered by a tool (playback, search, catalog, audiobooks, personalization, library, playlists, following).
+- **Complete API surface** — every non-deprecated Spotify Web API endpoint callable with a standard developer token is covered by a tool (playback, search, catalog, audiobooks, personalization, library, playlists, following, users).
 - **Honest about deprecations** — Spotify removed recommendations, related artists, audio features/analysis, genre seeds, and featured playlists from new apps. Servers still exposing those ship tools that fail at runtime; this one doesn't.
 - **Tested** — full unit suite over the client (token refresh, rate limiting, pagination) and every tool handler, plus an end-to-end MCP protocol smoke test. Many alternatives have zero tests.
 - **Paginated everything** — `fetch_all` on library and playlist listings walks every page (capped at 500 items) instead of silently truncating at one page of 50.
@@ -21,21 +21,23 @@ Most Spotify MCP servers are thin wrappers. This one is built to be the default:
 
 ## Features
 
-50 tools across 8 modules:
+69 tools across 9 modules:
 
 **Playback (15 tools)** — now playing / currently-playing polls, play (by URI, or `play_from_search` to play straight from a name), pause, skip, previous, seek, volume, shuffle, repeat, queue view/add, device list, transfer playback.
 
-**Search & catalog** — unified search across tracks/artists/albums/playlists/shows/episodes; deep lookups for tracks, artists, artist albums, albums, album tracks, shows, show episodes, episodes, and your profile (`get_me`).
+**Search & catalog** — unified search across tracks/artists/albums/playlists/shows/episodes/audiobooks; deep lookups for tracks, artists, artist albums, albums, album tracks, shows, show episodes, episodes, your profile (`get_me`), an artist's top tracks, and available markets; plus batch `get_several_*` lookups (up to 20–50 IDs per single call) for tracks, albums, artists, episodes, shows, audiobooks and chapters.
 
 **Audiobooks** — titles, chapters, chapter lookup, and your saved audiobooks (market-gated by Spotify to US/UK/CA/IE/NZ/AU).
 
 **Personalization** — top tracks and artists across three time ranges, recently played.
 
-**Library** — saved tracks/albums/shows/episodes with optional full pagination; save/remove/check partitioned by type to `/me/tracks|albums|shows|episodes(/contains)` (bare IDs).
+**Library** — saved tracks/albums/shows/episodes with optional full pagination; save/remove/check partitioned by type to `/me/tracks|albums|shows|episodes(/contains)` (bare IDs), plus unified `/me/library` tools accepting any mix of track/album/show/episode/audiobook/artist/user/playlist URIs in one request.
 
 **Playlists** — full CRUD plus item management (add/remove/reorder), cover art retrieval and custom cover upload (`ugc-image-upload` scope required for upload).
 
 **Following** — followed-artists list and follow-state checks.
+
+**Users** — any Spotify user's public profile and their public playlists.
 
 Also exposed: **MCP resources** — 11 fixed URIs (profile, player state, queue, top tracks/artists, recently played, playlists, saved albums/shows/episodes, rate-limit status) plus a paginated `spotify://playlist/{id}/tracks` template; every URI accepts `?format=json` for raw machine-readable output. And **9 prompt templates** (DJ set, mood playlist, taste summary, discovery alternative, playlist audit, listening recap, library migration, podcast catch-up, artist deep dive).
 
@@ -85,6 +87,8 @@ SPOTIFY_HEADLESS=1 SPOTIFY_CLIENT_ID=your_client_id_here npx -y @novalux12/spoti
 ```
 
 The auth URL is printed; complete the flow in any browser (e.g. on your laptop), then paste the redirect URL back into the prompt. Useful for homelabs, CI, and agent runtimes. The default flow runs a local HTTP callback server on `127.0.0.1:8888` and opens the browser via the `open` package; `SPOTIFY_HEADLESS=1` replaces both with the paste flow, so it works across machines.
+
+**Verify the setup:** run `SPOTIFY_CLIENT_ID=your_client_id_here npx -y @novalux12/spotify-mcp@latest doctor` — it prints the resolved configuration, checks the token cache's state and expiry, then probes Spotify with a live authenticated request. Exit code 0 means you are ready to connect your MCP host.
 
 ### 3. Connect your MCP host
 
@@ -204,7 +208,7 @@ Once connected, you can ask Claude things like:
 - **"Not authenticated" on first tool call** — the token cache is missing or unreadable. Run `npx -y @novalux12/spotify-mcp@latest auth` (or `npm run auth` from a clone) and complete the browser flow. Tokens are stored at `~/.spotify-mcp/tokens.json` and refreshed automatically afterwards.
 - **Auth loop — login succeeds but the next call asks again** — usually one of: (a) the Spotify app's redirect URI doesn't *exactly* match `http://127.0.0.1:8888/callback` (or your `SPOTIFY_REDIRECT_URI`) — no trailing slash, correct scheme; (b) the server process can't write the token file — check the directory exists and is writable, or set `SPOTIFY_MCP_TOKEN_FILE` to a writable path; (c) `SPOTIFY_MCP_TOKEN_FILE` differs between the auth command and the server process — use the same value for both.
 - **Error page mentioning S256 / code challenge during authorization** — Spotify failed to establish the PKCE session, typically because the browser is signed into a different account than the one you're authorizing, or a blocker interfered. Open a private/incognito window, log in to Spotify directly at spotify.com first, then retry the auth URL in that same window.
-- **Port 8888 already in use** — another process holds the fixed callback listener. Free the port (stop or reconfigure the other process), or bypass the listener entirely by authenticating with `SPOTIFY_HEADLESS=1` — the paste flow never opens a port. Do not try to move auth to a different port: the callback server always binds `127.0.0.1:8888`, so a custom-port `SPOTIFY_REDIRECT_URI` sends Spotify's redirect somewhere nothing is listening.
+- **Port already in use** — another process holds the callback listener's port (`8888` by default). Free the port (stop or reconfigure the other process), point `SPOTIFY_REDIRECT_URI` at a different free loopback port — the local callback server binds whatever host and port your redirect URI specifies — or bypass the listener entirely by authenticating with `SPOTIFY_HEADLESS=1`; the paste flow never opens a port.
 
 ### Playback problems
 

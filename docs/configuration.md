@@ -42,11 +42,13 @@ Overrides the redirect URL sent to Spotify during authentication. It must
 match a Redirect URI configured in your Spotify app settings character for
 character — Spotify rejects the login otherwise.
 
-Note that the local callback listener always binds `127.0.0.1:8888`
-(hardcoded in the browser flow), so this value should normally stay at the
-default `http://127.0.0.1:8888/callback`. Changing the port does not move the
-listener — Spotify would then redirect your browser to a port nothing is
-listening on and authentication would hang.
+The local callback listener derives its bind port and route path from this
+value (default `http://127.0.0.1:8888/callback`), so an override such as
+`http://127.0.0.1:9000/callback` is honored end-to-end. The host must be a
+loopback address (`localhost`, `127.0.0.0/8` or `::1`) — the callback server
+binds loopback only, and Spotify requires loopback redirect URIs for
+native-app flows. Whatever you set here must also match your Spotify app
+settings character for character.
 
 ### `SPOTIFY_MCP_TOKEN_FILE`
 
