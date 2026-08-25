@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > from [Conventional Commits](https://www.conventionalcommits.org/). Entries below v1.0.4 were
 > backfilled by hand from git history.
 
+## [1.2.0](https://github.com/NovaLux12/spotify-mcp-server/compare/v1.1.1...v1.2.0) (2026-08-25)
+
+
+### Features
+
+* **distribution:** MCP Registry publishing, Smithery manifest, npm release wiring ([7cc7b79](https://github.com/NovaLux12/spotify-mcp-server/commit/7cc7b79c8edd49620c0a70c14cd2489c30fd1476))
+
+
+### Bug Fixes
+
+* **platform:** align with Spotify's February 2026 Web API changes ([6b66d35](https://github.com/NovaLux12/spotify-mcp-server/commit/6b66d35ffa978ebf14f2eb3d4a66a68217f000b9))
+* **tools:** dry_run previews for create/save tools; id alias for playlist reads ([32b1c2d](https://github.com/NovaLux12/spotify-mcp-server/commit/32b1c2d2acef42468408736a9d71c4ef93002c3d))
+
 ## [1.1.1](https://github.com/NovaLux12/spotify-mcp-server/compare/v1.1.0...v1.1.1) (2026-08-25)
 
 
