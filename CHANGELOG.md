@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > from [Conventional Commits](https://www.conventionalcommits.org/). Entries below v1.0.4 were
 > backfilled by hand from git history.
 
+## [1.1.0](https://github.com/NovaLux12/spotify-mcp-server/compare/v1.0.3...v1.1.0) (2026-08-25)
+
+
+### Features
+
+* best-in-class MCP experience ([#51](https://github.com/NovaLux12/spotify-mcp-server/issues/51)-[#62](https://github.com/NovaLux12/spotify-mcp-server/issues/62), [#63](https://github.com/NovaLux12/spotify-mcp-server/issues/63)-[#65](https://github.com/NovaLux12/spotify-mcp-server/issues/65)) ([b5bea4a](https://github.com/NovaLux12/spotify-mcp-server/commit/b5bea4a554a12b34b33129d1e84d59d499c5c057))
+* endpoint parity — wrap remaining live Web API surface ([#34](https://github.com/NovaLux12/spotify-mcp-server/issues/34)-[#50](https://github.com/NovaLux12/spotify-mcp-server/issues/50), [#67](https://github.com/NovaLux12/spotify-mcp-server/issues/67)) ([d08daab](https://github.com/NovaLux12/spotify-mcp-server/commit/d08daab548afea4689b5e6f84c2a8d8dcc309538))
+
+
+### Bug Fixes
+
+* **prompts:** advertise optional args without relying on zod .default() required-flag semantics ([a26674d](https://github.com/NovaLux12/spotify-mcp-server/commit/a26674d320c3de3ce0bdf2b08683d7aa9624d58b))
+* v1.0.4 bug+security batch ([#11](https://github.com/NovaLux12/spotify-mcp-server/issues/11)-[#30](https://github.com/NovaLux12/spotify-mcp-server/issues/30), [#66](https://github.com/NovaLux12/spotify-mcp-server/issues/66)) ([1d420d0](https://github.com/NovaLux12/spotify-mcp-server/commit/1d420d0f28630c3000e98ad24d451df7f7e1477b))
+
 ## [Unreleased]
 
 Full audit of the server completed on 2026-08-25. Findings are filed as GitHub issues under three epics:
