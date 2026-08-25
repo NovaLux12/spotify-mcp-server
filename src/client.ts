@@ -170,6 +170,16 @@ export class SpotifyClient {
     }).catch(() => undefined);
   }
 
+  /**
+   * Post-mutation bookkeeping (#54/#64): drop every cached read (a mutation
+   * may affect any previously cached object) and record the mutation in the
+   * opt-in history JSONL. Never fails the underlying mutation.
+   */
+  private afterMutation(method: string, path: string, response: unknown): void {
+    this.cache?.clear();
+    void this.recordMutation(method, path, response);
+  }
+
   private getTokens(): Promise<TokenData> {
     if (!this.loadPromise) {
       this.loadPromise = loadTokens().then(
@@ -331,7 +341,16 @@ export class SpotifyClient {
 
   async get<T>(path: string, params?: Record<string, string>): Promise<T | null> {
     const url = this.buildUrl(path, params);
-    return this.enqueue(async () => {
+    // TTL cache for immutable catalog reads (#54): keyed on the API-relative
+    // URL; volatile paths (/me/player*, /me/top*, recently-played) bypass.
+    const relative = url.startsWith(BASE_URL) ? url.slice(BASE_URL.length) : url;
+    const cacheable = this.cache !== null && !shouldBypassCache('GET', relative);
+    const key = cacheable ? cacheKey('GET', relative) : '';
+    if (cacheable) {
+      const hit = this.cache!.get(key);
+      if (hit !== undefined) return hit as T;
+    }
+    const result = await this.enqueue(async () => {
       const res = await this.rawRequest('GET', url);
       if (res.status === 204) return null;
       try {
@@ -346,6 +365,8 @@ export class SpotifyClient {
         throw err;
       }
     });
+    if (cacheable && result !== null) this.cache!.set(key, result);
+    return result;
   }
 
   /**
@@ -416,18 +437,22 @@ export class SpotifyClient {
 
   async post<T>(path: string, body?: unknown): Promise<T | null> {
     const url = this.buildUrl(path);
-    return this.enqueue(async () => {
+    const result = await this.enqueue(async () => {
       const res = await this.rawRequest('POST', url, body);
       return this.jsonOrNull<T>(res);
     });
+    this.afterMutation('POST', path, result);
+    return result;
   }
 
   async put<T>(path: string, body?: unknown): Promise<T | null> {
     const url = this.buildUrl(path);
-    return this.enqueue(async () => {
+    const result = await this.enqueue(async () => {
       const res = await this.rawRequest('PUT', url, body);
       return this.jsonOrNull<T>(res);
     });
+    this.afterMutation('PUT', path, result);
+    return result;
   }
 
   /**
@@ -438,13 +463,16 @@ export class SpotifyClient {
   async putRaw(path: string, body: string, contentType = 'image/jpeg'): Promise<void> {
     const url = this.buildUrl(path);
     await this.enqueue(() => this.rawRequest('PUT', url, body, 0, contentType));
+    this.afterMutation('PUT', path, null);
   }
 
   async delete<T>(path: string, body?: unknown): Promise<T | null> {
     const url = this.buildUrl(path);
-    return this.enqueue(async () => {
+    const result = await this.enqueue(async () => {
       const res = await this.rawRequest('DELETE', url, body);
       return this.jsonOrNull<T>(res);
     });
+    this.afterMutation('DELETE', path, result);
+    return result;
   }
 }

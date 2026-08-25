@@ -9,29 +9,143 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > from [Conventional Commits](https://www.conventionalcommits.org/). Entries below v1.0.4 were
 > backfilled by hand from git history.
 
-## [1.1.0](https://github.com/NovaLux12/spotify-mcp-server/compare/v1.0.3...v1.1.0) (2026-08-25)
+## [1.1.0] — 2026-08-25
 
+Audit-closure release shipping every finding from the 2026-08-25 full audit,
+organised into three epics: [#31 — endpoint parity](https://github.com/NovaLux12/spotify-mcp-server/issues/31),
+[#32 — MCP experience](https://github.com/NovaLux12/spotify-mcp-server/issues/32),
+[#33 — bug + security batch](https://github.com/NovaLux12/spotify-mcp-server/issues/33).
+Registered tools grew from ~50 to 69; the test suite grew from 123 to 346 tests;
+resources from 7 fixed URIs to 11 plus a paginated playlist template with JSON
+variants; prompts from 4 to 9.
 
-### Features
+### Security
 
-* best-in-class MCP experience ([#51](https://github.com/NovaLux12/spotify-mcp-server/issues/51)-[#62](https://github.com/NovaLux12/spotify-mcp-server/issues/62), [#63](https://github.com/NovaLux12/spotify-mcp-server/issues/63)-[#65](https://github.com/NovaLux12/spotify-mcp-server/issues/65)) ([b5bea4a](https://github.com/NovaLux12/spotify-mcp-server/commit/b5bea4a554a12b34b33129d1e84d59d499c5c057))
-* endpoint parity — wrap remaining live Web API surface ([#34](https://github.com/NovaLux12/spotify-mcp-server/issues/34)-[#50](https://github.com/NovaLux12/spotify-mcp-server/issues/50), [#67](https://github.com/NovaLux12/spotify-mcp-server/issues/67)) ([d08daab](https://github.com/NovaLux12/spotify-mcp-server/commit/d08daab548afea4689b5e6f84c2a8d8dcc309538))
+- **Reflected HTML injection (XSS) in the OAuth callback error page fixed (#19)** —
+  every interpolated value (`error`, `error_description`, state) is HTML-escaped
+  before being rendered into the response ([#19](https://github.com/NovaLux12/spotify-mcp-server/issues/19)).
+- **Fetch timeouts on every outbound HTTP call (#11)** — raw API requests and token
+  exchange/refresh now carry an `AbortSignal.timeout` (default 30 s, override with
+  `SPOTIFY_REQUEST_TIMEOUT_MS`), so a hung connection can no longer stall the
+  serialized request queue indefinitely ([#11](https://github.com/NovaLux12/spotify-mcp-server/issues/11)).
 
+### Added — endpoint parity (#34–#50, #67)
 
-### Bug Fixes
+- `follow_artists` / `unfollow_artists` — complete the artist-follow loop using the
+  already-granted `user-follow-modify` scope; up to 50 IDs per call via query params
+  ([#34](https://github.com/NovaLux12/spotify-mcp-server/issues/34),
+  [#35](https://github.com/NovaLux12/spotify-mcp-server/issues/35)).
+- Library tools accept `spotify:audiobook:` URIs, routed to `/me/audiobooks` with
+  ids as query params ([#36](https://github.com/NovaLux12/spotify-mcp-server/issues/36)).
+- New unified-library tools `save_to_library` / `remove_from_library` /
+  `check_in_library` on the non-deprecated `/me/library` endpoints (any mix of
+  track/album/episode/show/audiobook URIs; contains also covers artist); legacy
+  per-type tools kept working ([#37](https://github.com/NovaLux12/spotify-mcp-server/issues/37)).
+- `get_artist_top_tracks` with market support and graceful 403 handling
+  ([#38](https://github.com/NovaLux12/spotify-mcp-server/issues/38));
+  `get_available_markets` ([#49](https://github.com/NovaLux12/spotify-mcp-server/issues/49)).
+- `get_several_*` batch family — tracks, albums, artists, episodes, shows,
+  audiobooks, chapters — with per-type caps (50, albums 20) and automatic chunking
+  through the rate-limited queue ([#43](https://github.com/NovaLux12/spotify-mcp-server/issues/43)).
+- `get_user_profile` and paginated `get_user_playlists_by_id` in a new users module
+  ([#39](https://github.com/NovaLux12/spotify-mcp-server/issues/39),
+  [#40](https://github.com/NovaLux12/spotify-mcp-server/issues/40)).
+- `replace_playlist_items` (atomic overwrite, >100 URIs chunked as PUT + appends)
+  ([#41](https://github.com/NovaLux12/spotify-mcp-server/issues/41)); standalone
+  paginated `get_playlist_items` on the non-deprecated `/items` path with
+  `market`/`fields`/`additional_types` ([#42](https://github.com/NovaLux12/spotify-mcp-server/issues/42)).
+- Playlist mutation precision: returned `snapshot_id` surfaced on add/remove/reorder/
+  replace; optional `snapshot_id` input targets a specific version on removal; per-URI
+  `positions[]` removes a single occurrence of duplicated tracks
+  ([#50](https://github.com/NovaLux12/spotify-mcp-server/issues/50)).
+- Search: `audiobook` type added (US/UK/CA/IE/NZ/AU markets)
+  ([#44](https://github.com/NovaLux12/spotify-mcp-server/issues/44)), `offset`
+  param and limit cap raised to the API maximum of 50
+  ([#45](https://github.com/NovaLux12/spotify-mcp-server/issues/45)),
+  `include_external=audio` passthrough ([#46](https://github.com/NovaLux12/spotify-mcp-server/issues/46)).
+- Parameter completeness: `market` + `offset` on artist-albums, `market` on album
+  and album-tracks lookups, `offset` on top tracks/artists
+  ([#47](https://github.com/NovaLux12/spotify-mcp-server/issues/47));
+  `market` and `additional_types` exposed on now-playing/currently-playing reads
+  ([#48](https://github.com/NovaLux12/spotify-mcp-server/issues/48)).
 
-* **prompts:** advertise optional args without relying on zod .default() required-flag semantics ([a26674d](https://github.com/NovaLux12/spotify-mcp-server/commit/a26674d320c3de3ce0bdf2b08683d7aa9624d58b))
-* v1.0.4 bug+security batch ([#11](https://github.com/NovaLux12/spotify-mcp-server/issues/11)-[#30](https://github.com/NovaLux12/spotify-mcp-server/issues/30), [#66](https://github.com/NovaLux12/spotify-mcp-server/issues/66)) ([1d420d0](https://github.com/NovaLux12/spotify-mcp-server/commit/1d420d0f28630c3000e98ad24d451df7f7e1477b))
+### Added — MCP experience (#51–#62, #63–#65)
 
-## [Unreleased]
+- Shared `response_format` option (`concise` | `detailed` | `json`) on every tool;
+  `json` returns the raw API object, `detailed` surfaces fields the prose drops
+  (popularity, release dates, restrictions, publishers…)
+  ([#51](https://github.com/NovaLux12/spotify-mcp-server/issues/51)).
+- Machine-readable `structuredContent` with pagination info (`total`,
+  `next_offset`) on all list-type outputs
+  ([#52](https://github.com/NovaLux12/spotify-mcp-server/issues/52)).
+- Truncation controls: shared `max_results` param with an `SPOTIFY_MCP_MAX_ITEMS`
+  env default and a "(N more — pass offset or fetch_all)" footer
+  ([#53](https://github.com/NovaLux12/spotify-mcp-server/issues/53)).
+- Cross-request TTL cache (~5 min LRU) for immutable catalog reads, bypassed for
+  player/top/recently-played/mutations — fewer 429s in agentic loops
+  ([#54](https://github.com/NovaLux12/spotify-mcp-server/issues/54)).
+- Fetch-all cap configurable via `SPOTIFY_MCP_FETCH_ALL_CAP` instead of hardcoded
+  500 ([#55](https://github.com/NovaLux12/spotify-mcp-server/issues/55)).
+- Rate-limit visibility: post-throttle status lines, enriched errors carrying
+  `retryAfterSec` after retry exhaustion, and a `spotify://me/rate-limit` resource
+  ([#56](https://github.com/NovaLux12/spotify-mcp-server/issues/56)).
+- `dry_run` mode on destructive operations (removals, unfollows, playback overwrites):
+  validates inputs and previews exactly what would change with zero mutating calls
+  ([#57](https://github.com/NovaLux12/spotify-mcp-server/issues/57)).
+- Confirmation-friendly batch summaries on mutations ("N items affected: uri0,
+  uri1…") ([#58](https://github.com/NovaLux12/spotify-mcp-server/issues/58)).
+- Resources: saved albums/shows/episodes, templated paginated
+  `spotify://playlist/{id}/tracks`, and `?format=json` variants for programmatic
+  consumers ([#59](https://github.com/NovaLux12/spotify-mcp-server/issues/59)).
+- Prompts: five new (`playlist_audit`, `listening_recap`, `migrate_library`,
+  `podcast_catchup`, `artist_deep_dive`) referencing real tool names; existing
+  prompts parameterized with optional `time_range`/`size` args
+  ([#60](https://github.com/NovaLux12/spotify-mcp-server/issues/60)).
+- Consolidated `SPOTIFY_MCP_*` config family documented in README +
+  docs/configuration.md + fresh `.env.example`
+  ([#61](https://github.com/NovaLux12/spotify-mcp-server/issues/61)).
+- `spotify-mcp doctor` subcommand: resolved config, token expiry/state, live
+  authenticated `/me` probe ([#62](https://github.com/NovaLux12/spotify-mcp-server/issues/62)).
+- Duplicate-aware playlists: `find_duplicates_in_playlist` (exact-URI and relinked
+  name+artist grouping with positions) and opt-in `check_duplicates` pre-check on
+  `add_to_playlist` ([#63](https://github.com/NovaLux12/spotify-mcp-server/issues/63)).
+- Opt-in session history JSONL under `~/.spotify-mcp/history` recording
+  who/what/snapshot_id for mutations (strict field whitelist, never tokens);
+  enabled via `SPOTIFY_MCP_HISTORY` ([#64](https://github.com/NovaLux12/spotify-mcp-server/issues/64)).
+- MCP progress notifications emitted per page during multi-page walks so hosts no
+  longer show long fetches as hung ([#65](https://github.com/NovaLux12/spotify-mcp-server/issues/65)).
 
-Full audit of the server completed on 2026-08-25. Findings are filed as GitHub issues under three epics:
+### Fixed
 
-- **[#31 — Feature parity](https://github.com/NovaLux12/spotify-mcp-server/issues/31):** wrap every remaining live Spotify Web API endpoint.
-- **[#32 — Best-in-class MCP experience](https://github.com/NovaLux12/spotify-mcp-server/issues/32):** caching, response shaping, safety, resources, and prompts.
-- **[#33 — Bug + security batch](https://github.com/NovaLux12/spotify-mcp-server/issues/33):** confirmed bug fixes and hardening from the security audit.
-
-Repository polish batch also in progress: CI workflow, community health files, and architecture documentation.
+- Shows library saves/removes sent IDs as a JSON body where `/me/shows` requires
+  `?ids=` query params — writes silently no-op'd (#12).
+- Rejected token-load promise cached forever, pinning "Not authenticated" after
+  successful re-auth until restart (#13).
+- Callback server ignored the port in `SPOTIFY_REDIRECT_URI` and always bound 8888 (#14).
+- `get_recently_played` crashed on null track entries (#15); search formatter
+  crashed on null items[] rows (#16).
+- Pagination: `fetch_all` restarted near offset 0 when resuming mid-list (#17);
+  `getAllPages` truncated to one page when responses omitted `total` (#22);
+  offset-resume math made absolute by the #67 refactor onto `getAllPages`.
+- `spotify://player/state` resource crashed on non-track/non-episode items such as
+  ads (#18); `spotify://me/playlists` claimed all playlists but returned one page —
+  now fully paginated (#27).
+- Garbage `Retry-After` headers produced NaN, permanently disabling backoff —
+  parsed defensively with sane fallback (#20).
+- `client.get()` threw a raw SyntaxError on non-JSON 200 bodies — now throws a
+  descriptive `SpotifyApiError`, consistent with `post()` (#21).
+- `play` accepted >100 uris and empty-uris bypassed the context mutual-exclusion
+  check (#23); numeric offset validated against artist contexts (#24).
+- `remove_from_playlist` rejected at the schema level above the API's 100-URI cap (#25).
+- `public=true` + `collaborative=true` combination rejected up front (#26).
+- `play_from_search` forwarded no market and could play null rows — market passed
+  through, nulls skipped (#28).
+- Audiobook/chapter/show/episode lookups gained market fallback for market-gated
+  accounts (#29).
+- Code hygiene: unreachable not-found guards removed or made ID-bearing, dead
+  deprecated-endpoint types deleted, catalog errors preserve status + Spotify's own
+  message instead of generic replacements (#30).
+- `check_saved_items` cap raised from 40 to the API maximum of 50 (#66).
 
 ## [1.0.3] — 2026-08-24
 
@@ -88,7 +202,8 @@ Initial scoped-npm publication as `@novalux12/spotify-mcp` (`bcffd3f`; launch-pr
 - Premium requirement, pagination cap, and audiobook market gating disclosed in docs (`8636d2f`).
 - Rebrand as NovaLux12/spotify-mcp-server with MIT license and acknowledgements (`e9c3567`).
 
-[Unreleased]: https://github.com/NovaLux12/spotify-mcp-server/compare/v1.0.3...HEAD
+[Unreleased]: https://github.com/NovaLux12/spotify-mcp-server/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/NovaLux12/spotify-mcp-server/compare/v1.0.3...v1.1.0
 [1.0.3]: https://github.com/NovaLux12/spotify-mcp-server/compare/v1.0.2...v1.0.3
 [1.0.2]: https://github.com/NovaLux12/spotify-mcp-server/compare/v1.0.1...v1.0.2
 [1.0.1]: https://github.com/NovaLux12/spotify-mcp-server/compare/v1.0.0...v1.0.1
