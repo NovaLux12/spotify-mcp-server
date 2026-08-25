@@ -284,7 +284,7 @@ describe('get_playlist (metadata + items two-call flow)', () => {
         };
       }
       if (path === '/playlists/pl1/items') {
-        return { items: [{ track: playableTrack('t1', 'Highway') }], total: 1 };
+        return { items: [{ item: playableTrack('t1', 'Highway') }], total: 1 };
       }
       assert.fail(`unexpected path: ${path}`);
     });
@@ -332,7 +332,7 @@ describe('get_playlist (metadata + items two-call flow)', () => {
     const h = harness((path) =>
       path === '/playlists/pl3'
         ? { ...playlistSimple('pl3', 'X'), images: null }
-        : { items: [{ track: playableTrack('t9', 'Nine') }], total: 30 },
+        : { items: [{ item: playableTrack('t9', 'Nine') }], total: 30 },
     );
     const out = await h.invoke('get_playlist', { id: 'pl3', limit: 10, offset: 20 });
 
@@ -661,9 +661,9 @@ describe('get_playlist_items', () => {
       assert.equal(path, '/playlists/pl2/items');
       return {
         items: [
-          { track: playableTrack('t1', 'One') },
+          { item: playableTrack('t1', 'One') },
           {
-            track: {
+            item: {
               type: 'episode',
               name: 'Episode One',
               uri: 'spotify:episode:e1',
@@ -671,7 +671,7 @@ describe('get_playlist_items', () => {
               show: { name: 'Show' },
             },
           },
-          { track: null },
+          { item: null },
         ],
         total: 30,
         limit: 10,
@@ -955,7 +955,7 @@ describe('playlist listings shaping (#51/#52/#53)', () => {
   });
 
   it('get_playlist_items truncates to max_results and reports next_offset in structuredContent', async () => {
-    const items = Array.from({ length: 5 }, (_, i) => ({ track: playableTrack(`t${i}`, `T${i}`) }));
+    const items = Array.from({ length: 5 }, (_, i) => ({ item: playableTrack(`t${i}`, `T${i}`) }));
     const h = harness(() => ({ items, total: 40, limit: 100, offset: 0 }));
 
     const out = await h.invoke('get_playlist_items', { playlist_id: 'pl', max_results: 3 });
@@ -977,7 +977,7 @@ describe('playlist listings shaping (#51/#52/#53)', () => {
   });
 
   it('get_playlist_items response_format=json returns the raw API page', async () => {
-    const page = { items: [{ track: playableTrack('t1', 'One') }], total: 1, limit: 100, offset: 0 };
+    const page = { items: [{ item: playableTrack('t1', 'One') }], total: 1, limit: 100, offset: 0 };
     const h = harness(() => page);
 
     const out = await h.invoke('get_playlist_items', { playlist_id: 'pl', response_format: 'json' });
@@ -1006,8 +1006,8 @@ describe('playlist listings shaping (#51/#52/#53)', () => {
 
 describe('add_to_playlist check_duplicates (#63)', () => {
   const existingItems = [
-    { track: playableTrack('t1', 'Already There') },
-    { track: playableTrack('t2', 'Also There') },
+    { item: playableTrack('t1', 'Already There') },
+    { item: playableTrack('t2', 'Also There') },
   ];
 
   it('skips URIs already present and POSTs only the remainder', async () => {
@@ -1073,11 +1073,11 @@ describe('add_to_playlist check_duplicates (#63)', () => {
 describe('find_duplicates_in_playlist (#63)', () => {
   it('groups exact-URI repeats with their positions', async () => {
     const items = [
-      { track: playableTrack('t1', 'Song A') },
-      { track: playableTrack('t2', 'Song B') },
-      { track: playableTrack('t1', 'Song A') }, // exact repeat of t1
-      { track: playableTrack('t3', 'Song C') },
-      { track: playableTrack('t1', 'Song A') }, // third occurrence
+      { item: playableTrack('t1', 'Song A') },
+      { item: playableTrack('t2', 'Song B') },
+      { item: playableTrack('t1', 'Song A') }, // exact repeat of t1
+      { item: playableTrack('t3', 'Song C') },
+      { item: playableTrack('t1', 'Song A') }, // third occurrence
     ];
     const h = harness((_path, params) => {
       // Single page carries everything; the walk must stop after it.
@@ -1105,9 +1105,9 @@ describe('find_duplicates_in_playlist (#63)', () => {
       artists: [{ name: 'The Artist' }],
     });
     const items = [
-      { track: relinked('original') },
-      { track: playableTrack('other', 'Different Song') },
-      { track: relinked('relinked-gb') },
+      { item: relinked('original') },
+      { item: playableTrack('other', 'Different Song') },
+      { item: relinked('relinked-gb') },
     ];
     const h = harness(() => ({ items, total: items.length, limit: 100, offset: 0 }));
 
@@ -1122,7 +1122,7 @@ describe('find_duplicates_in_playlist (#63)', () => {
 
   it('does not double-report single-URI identity repeats as relinked groups', async () => {
     const same = () => playableTrack('t1', 'Only One URI');
-    const items = [{ track: same() }, { track: same() }];
+    const items = [{ item: same() }, { item: same() }];
     const h = harness(() => ({ items, total: items.length, limit: 100, offset: 0 }));
 
     const out = await h.invoke('find_duplicates_in_playlist', { playlist_id: 'pl' });
@@ -1135,8 +1135,8 @@ describe('find_duplicates_in_playlist (#63)', () => {
 
   it('reports no duplicates for a clean playlist', async () => {
     const items = [
-      { track: playableTrack('t1', 'A') },
-      { track: playableTrack('t2', 'B') },
+      { item: playableTrack('t1', 'A') },
+      { item: playableTrack('t2', 'B') },
     ];
     const h = harness(() => ({ items, total: items.length, limit: 100, offset: 0 }));
 
@@ -1147,9 +1147,9 @@ describe('find_duplicates_in_playlist (#63)', () => {
 
   it('keeps unavailable (null-track) items occupying positions', async () => {
     const items = [
-      { track: playableTrack('t1', 'A') },
+      { item: playableTrack('t1', 'A') },
       { track: null },
-      { track: playableTrack('t1', 'A') },
+      { item: playableTrack('t1', 'A') },
     ];
     const h = harness(() => ({ items, total: items.length, limit: 100, offset: 0 }));
 

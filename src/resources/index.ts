@@ -347,16 +347,16 @@ export function registerResources(server: McpServer, client: SpotifyClient): voi
   const renderPlaylistTracks = async (rawUrl: string): Promise<ResourceContents> => {
     const req = parsePlaylistTracksUri(new URL(rawUrl));
     if (!req) throw new Error(`Malformed playlist tracks URI: ${rawUrl}`);
-    const result = await client.get<SpotifyPaged<{ track: SpotifyTrack | null }>>(
-      `/playlists/${req.id}/tracks`,
+    const result = await client.get<SpotifyPaged<{ item: SpotifyTrack | null }>>(
+      `/playlists/${req.id}/items`,
       { offset: String(req.offset), limit: String(req.limit) },
     );
     if (!result) throw new Error(`Could not retrieve playlist ${req.id}`);
     const uri = `spotify://playlist/${req.id}/tracks`;
     if (req.jsonFormat) return json(uri, result);
-    const entries = result.items.filter((it): it is { track: SpotifyTrack } => it.track !== null);
+    const entries = result.items.filter((it): it is { item: SpotifyTrack } => it.item != null);
     const header = `Playlist ${req.id} — ${result.total ?? entries.length} tracks (showing ${entries.length} at offset ${req.offset}):`;
-    const lines = entries.map(({ track }, i) => {
+    const lines = entries.map(({ item: track }, i) => {
       const artists = track.artists.map((a) => a.name).join(', ');
       return `  ${req.offset + i + 1}. "${track.name}" by ${artists} | URI: ${track.uri}`;
     });

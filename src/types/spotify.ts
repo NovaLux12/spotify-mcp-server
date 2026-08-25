@@ -360,9 +360,11 @@ export interface UserProfile {
 }
 
 // Playlist item (from GET /playlists/{id}/items)
+// One row of GET /playlists/{id}/items. Feb 2026 renamed the nested playable
+// from `track` to `item` (rows for episodes use episode objects here too).
 export interface PlaylistItemObject {
   added_at: string;
-  track: SpotifyTrack | SpotifyEpisode | null;
+  item?: SpotifyTrack | SpotifyEpisode | null;
 }
 
 export interface PlaylistItemsResponse {
