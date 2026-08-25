@@ -10,6 +10,7 @@ import { registerLibraryTools } from './tools/library.js';
 import { registerFollowingTools } from './tools/following.js';
 import { registerAudiobookTools } from './tools/audiobooks.js';
 import { registerPlaylistTools } from './tools/playlists.js';
+import { registerUsersTools } from './tools/users.js';
 import { registerResources } from './resources/index.js';
 import { registerPrompts } from './prompts/index.js';
 import { createRequire } from 'node:module';
@@ -32,6 +33,7 @@ async function startMcpServer(): Promise<void> {
   registerFollowingTools(server, client);
   registerAudiobookTools(server, client);
   registerPlaylistTools(server, client);
+  registerUsersTools(server, client);
   registerResources(server, client);
   registerPrompts(server);
 

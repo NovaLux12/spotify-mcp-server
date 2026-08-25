@@ -1,7 +1,15 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
-import type { SearchResponse } from '../types/spotify.js';
+import type { SearchResponse, SpotifyAudiobookSimple } from '../types/spotify.js';
+
+// Spotify's search endpoint returns an `audiobooks` key when `type=audiobook`
+// is requested (issue #44), but the shared SearchResponse interface does not
+// carry it yet. Widen locally so the formatter can render that section
+// without touching src/types/spotify.ts.
+type SearchResults = SearchResponse & {
+  audiobooks?: { items: SpotifyAudiobookSimple[]; total: number };
+};
 
 function formatDuration(ms: number): string {
   const minutes = Math.floor(ms / 60000);
@@ -15,10 +23,10 @@ function formatDuration(ms: number): string {
 // This helper pulls a section's items out as a guaranteed non-empty array
 // OR returns \`null\` for 'section not present' — which is what the caller
 // checks before formatting.
-function sectionItems<K extends keyof SearchResponse>(
-  results: SearchResponse,
+function sectionItems<K extends keyof SearchResults>(
+  results: SearchResults,
   key: K,
-): NonNullable<SearchResponse[K]> | null {
+): NonNullable<SearchResults[K]> | null {
   const section = results[key] as { items?: unknown[] } | undefined;
   if (!Array.isArray(section?.items)) return null;
   // Spotify can return literal `null` entries inside `items[]` for content
@@ -27,40 +35,55 @@ function sectionItems<K extends keyof SearchResponse>(
   const items = section!.items.filter(Boolean);
   if (items.length === 0) return null;
   section!.items = items;
-  return section as NonNullable<SearchResponse[K]>;
+  return section as NonNullable<SearchResults[K]>;
 }
 
 export function registerSearchTools(server: McpServer, client: SpotifyClient): void {
   server.tool(
     'search',
-    "Search Spotify's catalog for tracks, artists, albums, playlists, shows, or episodes. Pass `types` as an array (e.g. `[\"artist\"]`) to search a single kind — no track/album fallback noise.",
+    "Search Spotify's catalog for tracks, artists, albums, playlists, shows, episodes, or audiobooks. Pass `types` as an array (e.g. `[\"artist\"]`) to search a single kind — no track/album fallback noise.",
     {
       query: z.string().describe('Search query'),
       types: z
-        .array(z.enum(['track', 'artist', 'album', 'playlist', 'show', 'episode']))
+        .array(z.enum(['track', 'artist', 'album', 'playlist', 'show', 'episode', 'audiobook']))
         .optional()
         .describe(
           'Content types to search, as an array. Default: ["track","artist","album"]. ' +
-            'Pass e.g. ["artist"] for an artist-only search.',
+            'Pass e.g. ["artist"] for an artist-only search. ' +
+            '"audiobook" is only available in the US, UK, CA, IE, NZ and AU markets.',
         ),
       limit: z
         .number()
         .int()
         .min(1)
-        .max(10)
+        .max(50)
         .optional()
-        .describe('Results per type, 1–10. Default: 5'),
+        .describe('Results per type, 1–50. Default: 5'),
+      offset: z
+        .number()
+        .int()
+        .min(0)
+        .max(1000)
+        .optional()
+        .describe('Index of the first result to return, 0–1000. Use with limit to page through results'),
+      include_external: z
+        .enum(['audio'])
+        .optional()
+        .describe('Pass "audio" to include externally-hosted audio items marked as playable'),
       market: z.string().optional().describe('ISO 3166-1 alpha-2 country code'),
     },
     async (args) => {
       const types = args.types ?? ['track', 'artist', 'album'];
       const limit = args.limit ?? 5;
+      const offset = args.offset ?? 0;
 
       const params: Record<string, string> = {
         q: args.query,
         type: types.join(','),
         limit: String(limit),
       };
+      if (args.offset !== undefined) params.offset = String(args.offset);
+      if (args.include_external) params.include_external = args.include_external;
       if (args.market) params.market = args.market;
 
       const results = await client.get<SearchResponse>('/search', params);
@@ -144,9 +167,37 @@ export function registerSearchTools(server: McpServer, client: SpotifyClient): v
         }
         lines.push('');
       }
+      const audiobooks = sectionItems(results as SearchResults, 'audiobooks');
+      if (audiobooks) {
+        lines.push(`AUDIOBOOKS (${audiobooks.total} total):`);
+        for (const ab of audiobooks.items) {
+          const authors = ab.authors.map((a) => a.name).join(', ');
+          lines.push(
+            `  • "${ab.name}" by ${authors} (${ab.publisher ?? 'unknown publisher'}, ${ab.total_chapters} chapters) | URI: ${ab.uri}`,
+          );
+        }
+        lines.push('');
+      }
 
-      const output = lines.join('\n').trim();
-      return { content: [{ type: 'text', text: output || 'No results found.' }] };
+      // Issue #45: surface the next offset so agents can keep paging without
+      // recomputing it from per-section totals.
+      const all: SearchResults = results as SearchResults;
+      const maxTotal = Math.max(
+        0,
+        ...[all.tracks, all.artists, all.albums, all.playlists, all.shows, all.episodes, all.audiobooks].map(
+          (s) => s?.total ?? 0,
+        ),
+      );
+      if (limit + offset < maxTotal) {
+        lines.push(`Next page: offset=${offset + limit}`);
+      }
+
+      // Only the header line means every section was absent or empty —
+      // Spotify returned a body with no usable results.
+      if (lines.length === 1) {
+        return { content: [{ type: 'text', text: 'No results found.' }] };
+      }
+      return { content: [{ type: 'text', text: lines.join('\n').trim() }] };
     },
   );
 }

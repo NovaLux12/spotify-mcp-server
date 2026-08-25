@@ -32,14 +32,31 @@ function formatItem(item: SpotifyTrack | SpotifyEpisode | SpotifyEpisodeSimple):
   }
 }
 
+const marketSchema = z
+  .string()
+  .optional()
+  .describe('ISO 3166-1 alpha-2 country code — localises item names; defaults to the account market');
+
+const additionalTypesSchema = z
+  .array(z.enum(['track', 'episode']))
+  .default(['track', 'episode'])
+  .describe("Item types to include in the response. Default: ['track', 'episode']");
+
 export function registerPlaybackTools(server: McpServer, client: SpotifyClient): void {
   // get_now_playing
   server.tool(
     'get_now_playing',
     'Get the currently playing track or episode and full playback state',
-    {},
-    async () => {
-      const state = await client.get<PlaybackState>('/me/player');
+    {
+      market: marketSchema,
+      additional_types: additionalTypesSchema,
+    },
+    async (args) => {
+      const types = args.additional_types ?? ['track', 'episode'];
+      const params: Record<string, string> = { additional_types: types.join(',') };
+      if (args.market !== undefined) params.market = args.market;
+
+      const state = await client.get<PlaybackState>('/me/player', params);
 
       if (!state || !state.item) {
         return { content: [{ type: 'text', text: 'Nothing is currently playing.' }] };
@@ -82,9 +99,19 @@ export function registerPlaybackTools(server: McpServer, client: SpotifyClient):
   server.tool(
     'get_currently_playing',
     'Lightweight poll of what is playing right now: the item, progress, and playing state',
-    {},
-    async () => {
-      const cp = await client.get<CurrentlyPlayingResponse>('/me/player/currently-playing');
+    {
+      market: marketSchema,
+      additional_types: additionalTypesSchema,
+    },
+    async (args) => {
+      const types = args.additional_types ?? ['track', 'episode'];
+      const params: Record<string, string> = { additional_types: types.join(',') };
+      if (args.market !== undefined) params.market = args.market;
+
+      const cp = await client.get<CurrentlyPlayingResponse>(
+        '/me/player/currently-playing',
+        params,
+      );
 
       if (!cp || !cp.item) {
         return { content: [{ type: 'text', text: 'Nothing is currently playing.' }] };

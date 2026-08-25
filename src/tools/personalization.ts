@@ -21,6 +21,8 @@ const timeRangeSchema = z
 
 const limitSchema = (max = 50) =>
   z.number().int().min(1).max(max).optional().describe(`1–${max}. Default: 20`);
+const offsetSchema = () =>
+  z.number().int().min(0).optional().describe('Start position (0-based). Default: 0');
 
 export function registerPersonalizationTools(server: McpServer, client: SpotifyClient): void {
   // get_top_tracks
@@ -30,11 +32,13 @@ export function registerPersonalizationTools(server: McpServer, client: SpotifyC
     {
       time_range: timeRangeSchema,
       limit: limitSchema(50),
+      offset: offsetSchema(),
     },
     async (args) => {
       const params: Record<string, string> = {
         time_range: args.time_range ?? 'medium_term',
         limit: String(args.limit ?? 20),
+        offset: String(args.offset ?? 0),
       };
       const result = await client.get<SpotifyPaged<SpotifyTrack>>('/me/top/tracks', params);
       if (!result) throw new Error('Could not retrieve top tracks');
@@ -70,11 +74,13 @@ export function registerPersonalizationTools(server: McpServer, client: SpotifyC
     {
       time_range: timeRangeSchema,
       limit: limitSchema(50),
+      offset: offsetSchema(),
     },
     async (args) => {
       const params: Record<string, string> = {
         time_range: args.time_range ?? 'medium_term',
         limit: String(args.limit ?? 20),
+        offset: String(args.offset ?? 0),
       };
       const result = await client.get<SpotifyPaged<SpotifyArtistFull>>('/me/top/artists', params);
       if (!result) throw new Error('Could not retrieve top artists');

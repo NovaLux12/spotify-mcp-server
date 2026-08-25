@@ -80,4 +80,41 @@ export function registerFollowingTools(server: McpServer, client: SpotifyClient)
       return { content: [{ type: 'text', text: `Following check:\n${lines.join('\n')}` }] };
     },
   );
+
+  // follow_artists
+  server.tool(
+    'follow_artists',
+    'Follow one or more artists (1–50 IDs). Requires user-follow-modify.',
+    {
+      ids: z.array(z.string()).min(1).max(50).describe('Spotify artist IDs to follow'),
+    },
+    async (args) => {
+      // Spotify takes ids/type as query parameters on PUT /me/following,
+      // not a request body.
+      await client.put(`/me/following?type=artist&ids=${args.ids.join(',')}`);
+      return {
+        content: [
+          { type: 'text', text: `Followed ${args.ids.length} artist(s).` },
+        ],
+      };
+    },
+  );
+
+  // unfollow_artists
+  server.tool(
+    'unfollow_artists',
+    'Unfollow one or more artists (1–50 IDs). Requires user-follow-modify.',
+    {
+      ids: z.array(z.string()).min(1).max(50).describe('Spotify artist IDs to unfollow'),
+    },
+    async (args) => {
+      // Symmetric with follow_artists: query parameters, no body.
+      await client.delete(`/me/following?type=artist&ids=${args.ids.join(',')}`);
+      return {
+        content: [
+          { type: 'text', text: `Unfollowed ${args.ids.length} artist(s).` },
+        ],
+      };
+    },
+  );
 }

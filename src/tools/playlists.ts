@@ -4,6 +4,7 @@ import type { SpotifyClient } from '../client.js';
 import type {
   SpotifyPaged,
   SpotifyPlaylistSimple,
+  PlaylistItemObject,
   PlaylistItemsResponse,
   SpotifyImage,
 } from '../types/spotify.js';
@@ -21,6 +22,25 @@ const FETCH_ALL_CAP = 500;
 // images (unlike the simplified playlists in paged listings)
 interface PlaylistWithImages extends SpotifyPlaylistSimple {
   images?: SpotifyImage[] | null;
+}
+
+// One-line human description of a playlist item, shared by get_playlist and
+// get_playlist_items. Returns null for unavailable items (null track), which
+// callers render or skip as they see fit.
+function formatPlaylistItem(item: PlaylistItemObject): string | null {
+  const track = item.track;
+  if (!track) return null;
+  if (track.type === 'track') {
+    const artists = track.artists.map((a) => a.name).join(', ');
+    return `"${track.name}" by ${artists} (${formatDuration(track.duration_ms)}) | URI: ${track.uri}`;
+  }
+  return `"${track.name}" — ${track.show.name} (${formatDuration(track.duration_ms)}) | URI: ${track.uri}`;
+}
+
+// Appends the snapshot_id Spotify returns from playlist mutations so agents
+// can pin versions in concurrent-edit workflows.
+function withSnapshot(text: string, snapshotId: string | undefined): string {
+  return snapshotId ? `${text}\nSnapshot ID: ${snapshotId}` : text;
 }
 
 export function registerPlaylistTools(server: McpServer, client: SpotifyClient): void {
@@ -46,16 +66,18 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
 
       let total = result.total;
       const items = [...result.items];
-      if (args.fetch_all) {
-        while (items.length < Math.min(total, FETCH_ALL_CAP)) {
-          const page = await client.get<SpotifyPaged<SpotifyPlaylistSimple>>('/me/playlists', {
-            limit,
-            offset: String(items.length),
-          });
-          if (!page || page.items.length === 0) break;
-          items.push(...page.items);
-          total = page.total;
-        }
+      if (args.fetch_all && items.length < Math.min(total, FETCH_ALL_CAP)) {
+        // Resume from the absolute position we have already collected rather
+        // than restarting at offset 0; pagination logic lives in the client.
+        const rest = await client.getAllPages<SpotifyPlaylistSimple>(
+          '/me/playlists',
+          { limit },
+          {
+            maxItems: FETCH_ALL_CAP - items.length,
+            initialOffset: (args.offset ?? 0) + items.length,
+          },
+        );
+        items.push(...rest);
         if (items.length > FETCH_ALL_CAP) items.length = FETCH_ALL_CAP;
       }
 
@@ -140,23 +162,69 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
         lines.push(`\nTracks (${items.total} total, showing ${items.items.length}):`);
         let trackNum = (args.offset ?? 0) + 1;
         for (const item of items.items) {
-          if (!item.track) { trackNum++; continue; }
-          if (item.track.type === 'track') {
-            const artists = item.track.artists.map((a) => a.name).join(', ');
-            lines.push(
-              `  ${trackNum}. "${item.track.name}" by ${artists} (${formatDuration(item.track.duration_ms)}) | URI: ${item.track.uri}`,
-            );
-          } else {
-            lines.push(
-              `  ${trackNum}. "${item.track.name}" — ${item.track.show.name} (${formatDuration(item.track.duration_ms)}) | URI: ${item.track.uri}`,
-            );
-          }
+          const description = formatPlaylistItem(item);
+          if (description) lines.push(`  ${trackNum}. ${description}`);
           trackNum++;
         }
       } else {
         lines.push('\nPlaylist is empty.');
       }
 
+      return { content: [{ type: 'text', text: lines.join('\n') }] };
+    },
+  );
+
+  // get_playlist_items
+  server.tool(
+    'get_playlist_items',
+    "List a playlist's items on a single page. Use market to relink tracks and flag unavailable ones, and fields/additional_types to trim the payload.",
+    {
+      playlist_id: z.string().describe('Playlist ID'),
+      limit: z
+        .number()
+        .int()
+        .min(1)
+        .max(100)
+        .optional()
+        .describe('Items per page, 1–100. Default: 100'),
+      offset: z.number().int().min(0).optional().describe('Pagination offset. Default: 0'),
+      market: z
+        .string()
+        .optional()
+        .describe("ISO 3166-1 alpha-2 country code, e.g. 'GB'; relinks tracks to that market and flags unavailable ones"),
+      fields: z
+        .string()
+        .optional()
+        .describe("Comma-separated list of response fields to keep, e.g. 'total,items(track(name,uri))'"),
+      additional_types: z
+        .string()
+        .optional()
+        .describe("Comma-separated item types beyond the default 'track', e.g. 'track,episode'"),
+    },
+    async (args) => {
+      const id = encodeURIComponent(args.playlist_id);
+      const params: Record<string, string> = { limit: String(args.limit ?? 100) };
+      if (args.offset !== undefined) params.offset = String(args.offset);
+      if (args.market !== undefined) params.market = args.market;
+      if (args.fields !== undefined) params.fields = args.fields;
+      if (args.additional_types !== undefined) {
+        params.additional_types = args.additional_types;
+      }
+
+      const page = await client.get<PlaylistItemsResponse>(`/playlists/${id}/items`, params);
+      if (!page) throw new Error(`Could not retrieve items for playlist ${args.playlist_id}`);
+
+      const lines = [`Playlist items (${page.total} total, showing ${page.items.length}):`];
+      let position = (args.offset ?? 0) + 1;
+      for (const item of page.items) {
+        const description = formatPlaylistItem(item);
+        if (description) {
+          lines.push(`  ${position}. ${description}`);
+        } else {
+          lines.push(`  ${position}. [unavailable in this market]`);
+        }
+        position++;
+      }
       return { content: [{ type: 'text', text: lines.join('\n') }] };
     },
   );
@@ -286,26 +354,65 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
       const body: Record<string, unknown> = { uris: args.uris };
       if (args.position !== undefined) body.position = args.position;
 
-      await client.post(`/playlists/${encodeURIComponent(args.playlist_id)}/items`, body);
+      const res = await client.post<{ snapshot_id?: string }>(
+        `/playlists/${encodeURIComponent(args.playlist_id)}/items`,
+        body,
+      );
       return {
-        content: [{ type: 'text', text: `Added ${args.uris.length} item(s) to playlist.` }],
+        content: [{
+          type: 'text',
+          text: withSnapshot(`Added ${args.uris.length} item(s) to playlist.`, res?.snapshot_id),
+        }],
       };
     },
+
   );
 
   // remove_from_playlist
+  // A bare URI removes every occurrence of that item; supplying positions[]
+  // ({ uri, positions: [i] }) targets specific occurrences instead — the only
+  // way to de-duplicate a playlist containing repeats.
   server.tool(
     'remove_from_playlist',
-    'Remove tracks or episodes from a playlist. Max 100 URIs per call.',
+    'Remove tracks or episodes from a playlist. Max 100 entries per call.',
     {
       playlist_id: z.string().describe('Playlist ID'),
-      uris: z.array(z.string()).min(1).max(100).describe('URIs to remove'),
+      uris: z
+        .array(
+          z.union([
+            z.string(),
+            z.object({
+              uri: z.string(),
+              positions: z.array(z.number().int().min(0)).min(1),
+            }),
+          ]),
+        )
+        .min(1)
+        .max(100)
+        .describe('URIs to remove; use { uri, positions } to target specific occurrences of a repeated URI'),
+      snapshot_id: z
+        .string()
+        .optional()
+        .describe('Apply the removal against this playlist version instead of the latest'),
     },
     async (args) => {
-      const tracks = args.uris.map((uri) => ({ uri }));
-      await client.delete(`/playlists/${encodeURIComponent(args.playlist_id)}/items`, { tracks });
+      const tracks = args.uris.map((entry) =>
+        typeof entry === 'string'
+          ? { uri: entry }
+          : { uri: entry.uri, positions: entry.positions },
+      );
+      const body: Record<string, unknown> = { tracks };
+      if (args.snapshot_id !== undefined) body.snapshot_id = args.snapshot_id;
+
+      const res = await client.delete<{ snapshot_id?: string }>(
+        `/playlists/${encodeURIComponent(args.playlist_id)}/items`,
+        body,
+      );
       return {
-        content: [{ type: 'text', text: `Removed ${args.uris.length} item(s) from playlist.` }],
+        content: [{
+          type: 'text',
+          text: withSnapshot(`Removed ${tracks.length} item(s) from playlist.`, res?.snapshot_id),
+        }],
       };
     },
   );
@@ -376,8 +483,58 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
       };
       if (args.range_length !== undefined) body.range_length = args.range_length;
 
-      await client.put(`/playlists/${encodeURIComponent(args.playlist_id)}/items`, body);
-      return { content: [{ type: 'text', text: 'Playlist items reordered.' }] };
+      const res = await client.put<{ snapshot_id?: string }>(
+        `/playlists/${encodeURIComponent(args.playlist_id)}/items`,
+        body,
+      );
+      return {
+        content: [{
+          type: 'text',
+          text: withSnapshot('Playlist items reordered.', res?.snapshot_id),
+        }],
+      };
+    },
+  );
+  // replace_playlist_items
+  // PUT /playlists/{id}/items atomically overwrites the entire playlist but
+  // accepts at most 100 URIs per call — and each PUT replaces the whole
+  // playlist, so sequential PUTs would leave only the last chunk behind.
+  // The first chunk therefore performs the atomic replacement and any
+  // remainder is appended chunk-by-chunk via POST through the same
+  // serialised client queue.
+  server.tool(
+    'replace_playlist_items',
+    'Replace ALL items in a playlist with the supplied URIs, overwriting the current contents. Lists longer than 100 URIs are sent in chunks internally (replace + appends).',
+    {
+      playlist_id: z.string().describe('Playlist ID'),
+      uris: z
+        .array(z.string())
+        .min(1)
+        .describe('Complete ordered list of track or episode URIs the playlist should contain'),
+    },
+    async (args) => {
+      const id = encodeURIComponent(args.playlist_id);
+      let snapshotId: string | undefined;
+      let requestCount = 0;
+      for (let start = 0; start < args.uris.length; start += 100) {
+        const chunk = { uris: args.uris.slice(start, start + 100) };
+        const res =
+          start === 0
+            ? await client.put<{ snapshot_id?: string }>(`/playlists/${id}/items`, chunk)
+            : await client.post<{ snapshot_id?: string }>(`/playlists/${id}/items`, chunk);
+        requestCount++;
+        if (res?.snapshot_id) snapshotId = res.snapshot_id;
+      }
+
+      return {
+        content: [{
+          type: 'text',
+          text: withSnapshot(
+            `Replaced playlist contents with ${args.uris.length} item(s) across ${requestCount} request(s).`,
+            snapshotId,
+          ),
+        }],
+      };
     },
   );
 }

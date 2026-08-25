@@ -15,16 +15,22 @@ function formatDuration(ms: number): string {
   return `${minutes}:${seconds.toString().padStart(2, '0')}`;
 }
 
-const SAVED_URI_TYPES = ['track', 'album', 'show', 'episode'] as const;
+const SAVED_URI_TYPES = ['track', 'album', 'show', 'episode', 'audiobook'] as const;
 type SavedUriType = (typeof SAVED_URI_TYPES)[number];
 
 function partitionSavedUris(uris: string[]): Record<SavedUriType, string[]> {
-  const buckets: Record<SavedUriType, string[]> = { track: [], album: [], show: [], episode: [] };
+  const buckets: Record<SavedUriType, string[]> = {
+    track: [],
+    album: [],
+    show: [],
+    episode: [],
+    audiobook: [],
+  };
   for (const uri of uris) {
-    const match = /^spotify:(track|album|show|episode):([^:]+)$/.exec(uri);
+    const match = /^spotify:(track|album|show|episode|audiobook):([^:]+)$/.exec(uri);
     if (!match) {
       throw new Error(
-        `Unsupported URI type: ${uri} (supported: spotify:track:, spotify:album:, spotify:show:, spotify:episode:)`,
+        `Unsupported URI type: ${uri} (supported: spotify:track:, spotify:album:, spotify:show:, spotify:episode:, spotify:audiobook:)`,
       );
     }
     buckets[match[1] as SavedUriType].push(match[2]);
@@ -32,12 +38,50 @@ function partitionSavedUris(uris: string[]): Record<SavedUriType, string[]> {
   return buckets;
 }
 
-// Save/Remove Shows take `ids` ONLY as a query parameter (#12): when
+// Shows AND audiobooks take `ids` ONLY as a query parameter (#12, #36): when
 // `?ids=` is present any JSON body IDs are ignored, so the body form used by
-// tracks/albums/episodes is a silent no-op for shows.
+// tracks/albums/episodes is a silent no-op for these types.
+const IDS_AS_QUERY: Record<SavedUriType, boolean> = {
+  track: false,
+  album: false,
+  show: true,
+  episode: false,
+  audiobook: true,
+};
+
 function savedItemsPath(type: SavedUriType, ids: string[]): string {
-  if (type !== 'show') return `/me/${type}s`;
-  return `/me/shows?ids=${encodeURIComponent(ids.join(','))}`;
+  if (!IDS_AS_QUERY[type]) return `/me/${type}s`;
+  return `/me/${type}s?ids=${encodeURIComponent(ids.join(','))}`;
+}
+
+// Unified library endpoints (#37): the modern path accepting any mix of URI
+// types — including artist/user/playlist follow state on contains — in a
+// single request against /me/library instead of per-type bucket loops.
+const LIBRARY_URI_RE = /^spotify:(track|album|episode|show|audiobook|artist|user|playlist):([^:]+)$/;
+const LIBRARY_SAVE_TYPES = [
+  'track',
+  'album',
+  'episode',
+  'show',
+  'audiobook',
+  'user',
+  'playlist',
+] as const;
+const LIBRARY_CHECK_TYPES = [...LIBRARY_SAVE_TYPES, 'artist'] as const;
+
+function validateLibraryUris(uris: string[], supported: readonly string[]): void {
+  for (const uri of uris) {
+    const match = LIBRARY_URI_RE.exec(uri);
+    if (!match || !supported.includes(match[1])) {
+      throw new Error(
+        `Unsupported URI type: ${uri} (supported: ${supported.map((t) => `spotify:${t}:`).join(', ')})`,
+      );
+    }
+  }
+}
+
+function libraryUrisParam(uris: string[]): Record<string, string> {
+  return { uris: uris.join(',') };
 }
 
 export function registerLibraryTools(server: McpServer, client: SpotifyClient): void {
@@ -220,7 +264,7 @@ export function registerLibraryTools(server: McpServer, client: SpotifyClient): 
   // save_items
   server.tool(
     'save_items',
-    "Save one or more items to the user's library. Accepts track, album, show, and episode URIs (e.g. spotify:track:abc). Max 50.",
+    "Save one or more items to the user's library. Accepts track, album, show, episode, and audiobook URIs (e.g. spotify:track:abc). Max 50.",
     {
       uris: z
         .array(z.string())
@@ -235,7 +279,7 @@ export function registerLibraryTools(server: McpServer, client: SpotifyClient): 
       for (const type of SAVED_URI_TYPES) {
         const ids = buckets[type];
         if (ids.length === 0) continue;
-        await client.put(savedItemsPath(type, ids), type === 'show' ? undefined : { ids });
+        await client.put(savedItemsPath(type, ids), IDS_AS_QUERY[type] ? undefined : { ids });
         counts.push(`${ids.length} ${type}${ids.length === 1 ? '' : 's'}`);
         saved += ids.length;
       }
@@ -248,7 +292,7 @@ export function registerLibraryTools(server: McpServer, client: SpotifyClient): 
   // remove_saved_items
   server.tool(
     'remove_saved_items',
-    "Remove one or more items from the user's library. Accepts track, album, show, and episode URIs (e.g. spotify:track:abc). Max 50.",
+    "Remove one or more items from the user's library. Accepts track, album, show, episode, and audiobook URIs (e.g. spotify:track:abc). Max 50.",
     {
       uris: z.array(z.string()).min(1).max(50).describe('Spotify URIs to remove'),
     },
@@ -258,7 +302,7 @@ export function registerLibraryTools(server: McpServer, client: SpotifyClient): 
       for (const type of SAVED_URI_TYPES) {
         const ids = buckets[type];
         if (ids.length === 0) continue;
-        await client.delete(savedItemsPath(type, ids), type === 'show' ? undefined : { ids });
+        await client.delete(savedItemsPath(type, ids), IDS_AS_QUERY[type] ? undefined : { ids });
         removed += ids.length;
       }
       return {
@@ -270,14 +314,14 @@ export function registerLibraryTools(server: McpServer, client: SpotifyClient): 
   // check_saved_items
   server.tool(
     'check_saved_items',
-    "Check whether items are saved in the user's library. Returns a boolean per URI. Accepts track, album, show, and episode URIs. Max 50.",
+    "Check whether items are saved in the user's library. Returns a boolean per URI. Accepts track, album, show, episode, and audiobook URIs. Max 50.",
     {
       uris: z
         .array(z.string())
         .min(1)
         .max(50)
         .describe(
-          'Spotify URIs to check (accepts tracks, albums, shows, episodes)',
+          'Spotify URIs to check (accepts tracks, albums, shows, episodes, audiobooks)',
         ),
     },
     async (args) => {
@@ -294,6 +338,73 @@ export function registerLibraryTools(server: McpServer, client: SpotifyClient): 
       }
 
       const lines = args.uris.map((uri, i) => `  ${savedByUri.get(uri) ? '✓' : '✗'} ${uri}`);
+      return { content: [{ type: 'text', text: `Library check:\n${lines.join('\n')}` }] };
+    },
+  );
+
+  // save_to_library (#37)
+  server.tool(
+    'save_to_library',
+    "Save one or more items to the user's library via Spotify's unified library endpoint, in a single request. Accepts track, album, episode, show, audiobook, user, and playlist URIs in any mix. Max 40.",
+    {
+      uris: z
+        .array(z.string())
+        .min(1)
+        .max(40)
+        .describe('Spotify URIs to save (e.g. ["spotify:track:abc", "spotify:user:xyz"])'),
+    },
+    async (args) => {
+      validateLibraryUris(args.uris, LIBRARY_SAVE_TYPES);
+      await client.put(`/me/library?${new URLSearchParams(libraryUrisParam(args.uris)).toString()}`);
+      return {
+        content: [{ type: 'text', text: `Saved ${args.uris.length} item(s) to library.` }],
+      };
+    },
+  );
+
+  // remove_from_library (#37)
+  server.tool(
+    'remove_from_library',
+    "Remove one or more items from the user's library via Spotify's unified library endpoint, in a single request. Accepts track, album, episode, show, audiobook, user, and playlist URIs in any mix. Max 40.",
+    {
+      uris: z
+        .array(z.string())
+        .min(1)
+        .max(40)
+        .describe('Spotify URIs to remove'),
+    },
+    async (args) => {
+      validateLibraryUris(args.uris, LIBRARY_SAVE_TYPES);
+      await client.delete(
+        `/me/library?${new URLSearchParams(libraryUrisParam(args.uris)).toString()}`,
+      );
+      return {
+        content: [{ type: 'text', text: `Removed ${args.uris.length} item(s) from library.` }],
+      };
+    },
+  );
+
+  // check_in_library (#37)
+  server.tool(
+    'check_in_library',
+    "Check whether items are saved in or followed by the user. Returns a boolean per URI via Spotify's unified endpoint. Accepts track, album, episode, show, audiobook, artist, user, and playlist URIs in any mix. Max 40.",
+    {
+      uris: z
+        .array(z.string())
+        .min(1)
+        .max(40)
+        .describe(
+          'Spotify URIs to check (accepts tracks, albums, episodes, shows, audiobooks, artists, users, playlists)',
+        ),
+    },
+    async (args) => {
+      validateLibraryUris(args.uris, LIBRARY_CHECK_TYPES);
+      const contains = await client.get<boolean[]>(
+        '/me/library/contains',
+        libraryUrisParam(args.uris),
+      );
+      if (!contains) throw new Error('Could not check library state');
+      const lines = args.uris.map((uri, i) => `  ${contains[i] ? '✓' : '✗'} ${uri}`);
       return { content: [{ type: 'text', text: `Library check:\n${lines.join('\n')}` }] };
     },
   );

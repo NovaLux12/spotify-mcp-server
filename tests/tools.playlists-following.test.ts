@@ -12,6 +12,7 @@ import { z } from 'zod';
 import assert from 'node:assert/strict';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../src/client.js';
+import type { SpotifyPaged } from '../src/types/spotify.js';
 import { registerPlaylistTools } from '../src/tools/playlists.js';
 import { registerFollowingTools } from '../src/tools/following.js';
 
@@ -60,17 +61,40 @@ function makeStubClient(responder: Responder = () => null) {
       calls.push({ method: 'POST', path, arg: body });
       return respond(path, body) as T | null;
     },
-    async put(path: string, body?: unknown): Promise<void> {
+    async put<T>(path: string, body?: unknown): Promise<T | null> {
       calls.push({ method: 'PUT', path, arg: body });
-      await respond(path, body);
+      return respond(path, body) as T | null;
     },
     async putRaw(path: string, body: string, contentType?: string): Promise<void> {
       calls.push({ method: 'PUT_RAW', path, arg: body, extra: contentType });
       await respond(path, body);
     },
-    async delete(path: string, body?: unknown): Promise<void> {
+    async delete<T>(path: string, body?: unknown): Promise<T | null> {
       calls.push({ method: 'DELETE', path, arg: body });
-      await respond(path, body);
+      return respond(path, body) as T | null;
+    },
+    // Mirrors SpotifyClient.getAllPages over the stubbed get() so fetch_all
+    // refactors (issue #67) are exercised against real pagination semantics.
+    async getAllPages<T>(
+      path: string,
+      params?: Record<string, string>,
+      opts?: { maxItems?: number; initialOffset?: number },
+    ): Promise<T[]> {
+      const maxItems = opts?.maxItems ?? 500;
+      const all: T[] = [];
+      let offset = opts?.initialOffset ?? 0;
+      for (;;) {
+        const page = await this.get<SpotifyPaged<T>>(path, { ...params, offset: String(offset) });
+        if (!page || !Array.isArray(page.items)) break;
+        all.push(...page.items);
+        if (all.length >= maxItems) return all.slice(0, maxItems);
+        const limit =
+          typeof page.limit === 'number' && page.limit > 0 ? page.limit : page.items.length;
+        offset += limit;
+        if (page.items.length === 0 || page.items.length < limit) break;
+        if (typeof page.total === 'number' && offset >= page.total) break;
+      }
+      return all;
     },
   };
   return client;
@@ -197,6 +221,28 @@ describe('get_user_playlists', () => {
     }));
     const out = await h.invoke('get_user_playlists', {});
     assert.match(textOf(out), /"Mix" by uid42 \(3 tracks\) \| ID: p1 \| URI: spotify:playlist:p1/);
+  });
+
+  it('#67 fetch_all resumes pagination from the absolute offset via getAllPages', async () => {
+    // First page (offset 40) yields one playlist of a claimed 43 total; the
+    // follow-up walk must continue at absolute offset 41, not restart at 0.
+    const h = harness((path, params) => {
+      assert.equal(path, '/me/playlists');
+      if (h.client.calls.length === 1) {
+        assert.deepEqual(params, { limit: '20', offset: '40' });
+        return { items: [playlistSimple('p40', 'First')], total: 43 };
+      }
+      assert.deepEqual(params, { limit: '20', offset: '41' });
+      return {
+        items: [playlistSimple('p41', 'Second'), playlistSimple('p42', 'Third')],
+        total: 43,
+      };
+    });
+
+    const out = await h.invoke('get_user_playlists', { fetch_all: true, offset: 40 });
+
+    assert.equal(h.client.calls.length, 2);
+    assert.match(textOf(out), /Your playlists \(43 total, showing 3\):/);
   });
 });
 
@@ -556,6 +602,206 @@ describe('add_to_playlist / remove_from_playlist / update_playlist / reorder_pla
 
     await assert.rejects(
       () => h.invoke('add_to_playlist', { playlist_id: 'pl', uris: tooMany }),
+      (err: unknown) => err instanceof z.ZodError,
+    );
+    assert.equal(h.client.calls.length, 0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// get_playlist_items (#42)
+// ---------------------------------------------------------------------------
+
+describe('get_playlist_items', () => {
+  it('GETs /playlists/{id}/items forwarding market/fields/additional_types and default limit 100', async () => {
+    const h = harness((path) => {
+      assert.equal(path, '/playlists/pl1/items');
+      return { items: [], total: 0, limit: 100, offset: 0 };
+    });
+
+    await h.invoke('get_playlist_items', {
+      playlist_id: 'pl1',
+      market: 'GB',
+      fields: 'total,items(track(name,uri))',
+      additional_types: 'track,episode',
+    });
+    assert.deepEqual(h.client.calls[0].arg, {
+      limit: '100',
+      market: 'GB',
+      fields: 'total,items(track(name,uri))',
+      additional_types: 'track,episode',
+    });
+  });
+
+  it('forwards explicit limit and offset and numbers rows from the absolute offset', async () => {
+    const h = harness((path) => {
+      assert.equal(path, '/playlists/pl2/items');
+      return {
+        items: [
+          { track: playableTrack('t1', 'One') },
+          {
+            track: {
+              type: 'episode',
+              name: 'Episode One',
+              uri: 'spotify:episode:e1',
+              duration_ms: 100000,
+              show: { name: 'Show' },
+            },
+          },
+          { track: null },
+        ],
+        total: 30,
+        limit: 10,
+        offset: 20,
+      };
+    });
+
+    const out = await h.invoke('get_playlist_items', { playlist_id: 'pl2', limit: 10, offset: 20 });
+
+    assert.deepEqual(h.client.calls[0].arg, { limit: '10', offset: '20' });
+    const text = textOf(out);
+    assert.match(text, /Playlist items \(30 total, showing 3\):/);
+    assert.match(text, /21\. "One" by Artist t1 \(3:20\) \| URI: spotify:track:t1/);
+    assert.match(text, /22\. "Episode One" — Show \(1:40\) \| URI: spotify:episode:e1/);
+    assert.match(text, /23\. \[unavailable in this market\]/);
+  });
+
+  it('rejects out-of-range limits before any client call', async () => {
+    const h = harness();
+    await assert.rejects(
+      () => h.invoke('get_playlist_items', { playlist_id: 'pl', limit: 101 }),
+      (err: unknown) => err instanceof z.ZodError,
+    );
+    await assert.rejects(
+      () => h.invoke('get_playlist_items', { playlist_id: 'pl', limit: 0 }),
+      (err: unknown) => err instanceof z.ZodError,
+    );
+    assert.equal(h.client.calls.length, 0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// replace_playlist_items (#41)
+// ---------------------------------------------------------------------------
+
+describe('replace_playlist_items', () => {
+  it('atomically PUTs the URI list when it fits in a single request', async () => {
+    const h = harness();
+    const uris = ['spotify:track:a', 'spotify:episode:b'];
+
+    const out = await h.invoke('replace_playlist_items', { playlist_id: 'pl', uris });
+
+    assert.deepEqual(wireCalls(h.client.calls), [
+      { method: 'PUT', path: '/playlists/pl/items', arg: { uris } },
+    ]);
+    assert.match(textOf(out), /Replaced playlist contents with 2 item\(s\) across 1 request\(s\)\./);
+  });
+
+  it('chunks longer lists: one atomic PUT followed by POST appends of at most 100 URIs', async () => {
+    const h = harness();
+    const uris = Array.from({ length: 250 }, (_, i) => `spotify:track:t${i}`);
+
+    const out = await h.invoke('replace_playlist_items', { playlist_id: 'pl', uris });
+
+    // A second PUT would wipe the first chunk — appends must be POSTs.
+    assert.deepEqual(wireCalls(h.client.calls), [
+      { method: 'PUT', path: '/playlists/pl/items', arg: { uris: uris.slice(0, 100) } },
+      { method: 'POST', path: '/playlists/pl/items', arg: { uris: uris.slice(100, 200) } },
+      { method: 'POST', path: '/playlists/pl/items', arg: { uris: uris.slice(200) } },
+    ]);
+    assert.match(textOf(out), /Replaced playlist contents with 250 item\(s\) across 3 request\(s\)\./);
+  });
+
+  it('surfaces the snapshot_id from the final chunk response', async () => {
+    const h = harness((_path, body) =>
+      JSON.stringify(body).includes('t0') ? { snapshot_id: 'snap-put' } : { snapshot_id: 'snap-post' },
+    );
+    const uris = Array.from({ length: 150 }, (_, i) => `spotify:track:t${i}`);
+
+    const out = await h.invoke('replace_playlist_items', { playlist_id: 'pl', uris });
+
+    assert.match(textOf(out), /Snapshot ID: snap-post$/);
+  });
+
+  it('rejects an empty URI list before any client call', async () => {
+    const h = harness();
+    await assert.rejects(
+      () => h.invoke('replace_playlist_items', { playlist_id: 'pl', uris: [] }),
+      (err: unknown) => err instanceof z.ZodError,
+    );
+    assert.equal(h.client.calls.length, 0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Mutation snapshot precision (#50)
+// ---------------------------------------------------------------------------
+
+describe('#50 snapshot precision on playlist mutations', () => {
+  it('add_to_playlist surfaces the returned snapshot_id', async () => {
+    const h = harness(() => ({ snapshot_id: 'snap-add' }));
+
+    const out = await h.invoke('add_to_playlist', {
+      playlist_id: 'pl',
+      uris: ['spotify:track:a'],
+    });
+    assert.match(textOf(out), /^Added 1 item\(s\) to playlist\.\nSnapshot ID: snap-add$/);
+  });
+
+  it('remove_from_playlist sends positions[] objects and optional snapshot_id', async () => {
+    const h = harness();
+
+    const out = await h.invoke('remove_from_playlist', {
+      playlist_id: 'pl',
+      uris: ['spotify:track:a', { uri: 'spotify:track:b', positions: [2, 7] }],
+      snapshot_id: 'snap-base',
+    });
+
+    assert.deepEqual(h.client.calls[0].arg, {
+      tracks: [{ uri: 'spotify:track:a' }, { uri: 'spotify:track:b', positions: [2, 7] }],
+      snapshot_id: 'snap-base',
+    });
+    assert.match(textOf(out), /^Removed 2 item\(s\) from playlist\.$/);
+  });
+
+  it('remove_from_playlist surfaces the new snapshot_id after removal', async () => {
+    const h = harness(() => ({ snapshot_id: 'snap-del' }));
+
+    const out = await h.invoke('remove_from_playlist', {
+      playlist_id: 'pl',
+      uris: ['spotify:track:a'],
+    });
+    assert.match(textOf(out), /Snapshot ID: snap-del$/);
+  });
+
+  it('reorder_playlist_items surfaces the returned snapshot_id', async () => {
+    const h = harness(() => ({ snapshot_id: 'snap-reorder' }));
+
+    const out = await h.invoke('reorder_playlist_items', {
+      playlist_id: 'pl',
+      range_start: 0,
+      insert_before: 2,
+    });
+    assert.match(textOf(out), /^Playlist items reordered\.\nSnapshot ID: snap-reorder$/);
+  });
+
+  it('positions entries must be non-negative integers and non-empty', async () => {
+    const h = harness();
+
+    await assert.rejects(
+      () =>
+        h.invoke('remove_from_playlist', {
+          playlist_id: 'pl',
+          uris: [{ uri: 'spotify:track:a', positions: [-1] }],
+        }),
+      (err: unknown) => err instanceof z.ZodError,
+    );
+    await assert.rejects(
+      () =>
+        h.invoke('remove_from_playlist', {
+          playlist_id: 'pl',
+          uris: [{ uri: 'spotify:track:a', positions: [] }],
+        }),
       (err: unknown) => err instanceof z.ZodError,
     );
     assert.equal(h.client.calls.length, 0);

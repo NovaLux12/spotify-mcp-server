@@ -289,28 +289,37 @@ export class SpotifyClient {
     return all;
   }
 
+  // Parse a successful response body as JSON, or null for 204 / non-JSON
+  // payloads. Non-JSON bodies are drained so the connection can be reused.
+  private async jsonOrNull<T>(res: Response): Promise<T | null> {
+    if (res.status === 204) return null;
+    const contentType = res.headers.get('content-type') ?? '';
+    if (!contentType.includes('application/json')) {
+      await res.text(); // endpoint returns a non-JSON payload (e.g. queue ID as text/plain)
+      return null;
+    }
+    return (await res.json()) as T;
+  }
+
   async post<T>(path: string, body?: unknown): Promise<T | null> {
     const url = this.buildUrl(path);
     return this.enqueue(async () => {
       const res = await this.rawRequest('POST', url, body);
-      if (res.status === 204) return null;
-      const contentType = res.headers.get('content-type') ?? '';
-      if (!contentType.includes('application/json')) {
-        await res.text(); // drain body; endpoint returns non-JSON payload (e.g. queue ID as text/plain)
-        return null;
-      }
-      return res.json() as Promise<T>;
+      return this.jsonOrNull<T>(res);
     });
   }
 
-  async put(path: string, body?: unknown): Promise<void> {
+  async put<T>(path: string, body?: unknown): Promise<T | null> {
     const url = this.buildUrl(path);
-    await this.enqueue(() => this.rawRequest('PUT', url, body));
+    return this.enqueue(async () => {
+      const res = await this.rawRequest('PUT', url, body);
+      return this.jsonOrNull<T>(res);
+    });
   }
 
   /**
-   * PUT with a pre-encoded body (e.g. base64 JPEG for playlist cover upload)
-   * and an explicit Content-Type. Goes through the same rate-limited queue,
+   * PUT a raw string body (used for cover image uploads) with an explicit
+   * Content-Type. Goes through the same rate-limited queue,
    * token-refresh and retry handling as put().
    */
   async putRaw(path: string, body: string, contentType = 'image/jpeg'): Promise<void> {
@@ -318,8 +327,11 @@ export class SpotifyClient {
     await this.enqueue(() => this.rawRequest('PUT', url, body, 0, contentType));
   }
 
-  async delete(path: string, body?: unknown): Promise<void> {
+  async delete<T>(path: string, body?: unknown): Promise<T | null> {
     const url = this.buildUrl(path);
-    await this.enqueue(() => this.rawRequest('DELETE', url, body));
+    return this.enqueue(async () => {
+      const res = await this.rawRequest('DELETE', url, body);
+      return this.jsonOrNull<T>(res);
+    });
   }
 }

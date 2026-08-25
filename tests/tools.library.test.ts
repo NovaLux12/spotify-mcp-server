@@ -367,6 +367,45 @@ describe('save_items / remove_saved_items / check_saved_items', () => {
     assert.match(text, /✗ spotify:episode:first/);
     assert.match(text, /✓ spotify:track:second/);
   });
+
+  it('save_items routes audiobook ids via PUT /me/audiobooks?ids= (#36)', async () => {
+    const h = harness();
+
+    const out = await h.invoke('save_items', {
+      uris: ['spotify:track:abc', 'spotify:audiobook:a1', 'spotify:audiobook:a2'],
+    });
+
+    assert.deepEqual(wireCalls(h.client.calls), [
+      { method: 'PUT', path: '/me/tracks', arg: { ids: ['abc'] } },
+      // Audiobooks take ids ONLY as a query param, like shows (#12, #36).
+      { method: 'PUT', path: '/me/audiobooks?ids=a1%2Ca2', arg: undefined },
+    ]);
+    assert.match(out.content[0].text, /Saved 3 item\(s\) to library.*2 audiobooks/);
+  });
+
+  it('remove_saved_items sends audiobook ids as DELETE ?ids= query param (#36)', async () => {
+    const h = harness();
+
+    const out = await h.invoke('remove_saved_items', { uris: ['spotify:audiobook:a1'] });
+
+    assert.deepEqual(wireCalls(h.client.calls), [
+      { method: 'DELETE', path: '/me/audiobooks?ids=a1', arg: undefined },
+    ]);
+    assert.match(out.content[0].text, /Removed 1 item\(s\) from library\./);
+  });
+
+  it('check_saved_items checks audiobooks via GET /me/audiobooks/contains (#36)', async () => {
+    const h = harness((path) => (path === '/me/audiobooks/contains' ? [true] : [false]));
+
+    const out = await h.invoke('check_saved_items', {
+      uris: ['spotify:audiobook:hitchhikers'],
+    });
+
+    assert.deepEqual(wireCalls(h.client.calls), [
+      { method: 'GET', path: '/me/audiobooks/contains', arg: { ids: 'hitchhikers' } },
+    ]);
+    assert.match(out.content[0].text, /✓ spotify:audiobook:hitchhikers/);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -404,5 +443,129 @@ describe('zod schema bounds (50/50/50)', () => {
     assert.equal(h.shape('save_items').safeParse({ uris: [] }).success, false);
     assert.equal(h.shape('remove_saved_items').safeParse({ uris: [] }).success, false);
     assert.equal(h.shape('check_saved_items').safeParse({ uris: [] }).success, false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Unified library endpoints (#37): save_to_library / remove_from_library /
+// check_in_library against PUT|DELETE /me/library and GET /me/library/contains
+// ---------------------------------------------------------------------------
+
+describe('unified library tools (save_to_library / remove_from_library / check_in_library)', () => {
+  it('save_to_library sends full URIs comma-separated as ?uris= on PUT /me/library', async () => {
+    const h = harness();
+    const uris = [
+      'spotify:track:abc',
+      'spotify:album:xyz',
+      'spotify:audiobook:a1',
+      'spotify:user:wanda',
+      'spotify:playlist:p1',
+    ];
+
+    const out = await h.invoke('save_to_library', { uris });
+
+    assert.deepEqual(wireCalls(h.client.calls), [
+      {
+        method: 'PUT',
+        path: `/me/library?uris=${encodeURIComponent(uris.join(','))}`,
+        arg: undefined,
+      },
+    ]);
+    assert.match(out.content[0].text, /Saved 5 item\(s\) to library\./);
+  });
+
+  it('remove_from_library sends full URIs comma-separated as ?uris= on DELETE /me/library', async () => {
+    const h = harness();
+    const uris = ['spotify:show:s1', 'spotify:episode:e1', 'spotify:user:wanda'];
+
+    const out = await h.invoke('remove_from_library', { uris });
+
+    assert.deepEqual(wireCalls(h.client.calls), [
+      {
+        method: 'DELETE',
+        path: `/me/library?uris=${encodeURIComponent(uris.join(','))}`,
+        arg: undefined,
+      },
+    ]);
+    assert.match(out.content[0].text, /Removed 3 item\(s\) from library\./);
+  });
+
+  it('check_in_library queries /me/library/contains once, accepting artist/user/playlist URIs in order', async () => {
+    const h = harness(() => [true, false, true]);
+    const uris = ['spotify:artist:art1', 'spotify:user:wanda', 'spotify:playlist:p1'];
+
+    const out = await h.invoke('check_in_library', { uris });
+
+    assert.deepEqual(wireCalls(h.client.calls), [
+      { method: 'GET', path: '/me/library/contains', arg: { uris: uris.join(',') } },
+    ]);
+    const text = out.content[0].text;
+    assert.match(text, /✓ spotify:artist:art1/);
+    assert.match(text, /✗ spotify:user:wanda/);
+    assert.match(text, /✓ spotify:playlist:p1/);
+    // Input order preserved in output.
+    assert.ok(
+      text.indexOf('art1') < text.indexOf('wanda') && text.indexOf('wanda') < text.indexOf('p1'),
+    );
+  });
+
+  it('rejects artist URIs on save/remove — PUT/DELETE /me/library do not accept artists', async () => {
+    const h = harness();
+    await assert.rejects(
+      h.invoke('save_to_library', { uris: ['spotify:artist:x'] }),
+      /Unsupported URI type: spotify:artist:x/,
+    );
+    await assert.rejects(
+      h.invoke('remove_from_library', { uris: ['spotify:artist:x'] }),
+      /Unsupported URI type/,
+    );
+    // …but the same URI is fine on contains.
+    const h2 = harness(() => [true]);
+    await h2.invoke('check_in_library', { uris: ['spotify:artist:x'] });
+  });
+
+  it('rejects non-spotify URIs with a helpful message listing supported types', async () => {
+    const h = harness();
+    await assert.rejects(
+      h.invoke('check_in_library', { uris: ['https://open.spotify.com/track/x'] }),
+      /Unsupported URI type.*supported:/i,
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Zod-enforced max bounds for unified tools (API caps at 40 URIs)
+// ---------------------------------------------------------------------------
+
+describe('zod schema bounds for unified tools (40 max)', () => {
+  it('save_to_library accepts 40 URIs and rejects 41', () => {
+    const h = harness();
+    const shape = h.shape('save_to_library');
+    const forty = Array.from({ length: 40 }, (_, i) => `spotify:track:id${i}`);
+    assert.equal(shape.safeParse({ uris: forty }).success, true);
+    assert.equal(shape.safeParse({ uris: [...forty, 'x'] }).success, false);
+  });
+
+  it('remove_from_library accepts 40 URIs and rejects 41', () => {
+    const h = harness();
+    const shape = h.shape('remove_from_library');
+    const forty = Array.from({ length: 40 }, (_, i) => `spotify:track:id${i}`);
+    assert.equal(shape.safeParse({ uris: forty }).success, true);
+    assert.equal(shape.safeParse({ uris: [...forty, 'x'] }).success, false);
+  });
+
+  it('check_in_library accepts 40 URIs and rejects 41', () => {
+    const h = harness();
+    const shape = h.shape('check_in_library');
+    const forty = Array.from({ length: 40 }, (_, i) => `spotify:artist:id${i}`);
+    assert.equal(shape.safeParse({ uris: forty }).success, true);
+    assert.equal(shape.safeParse({ uris: [...forty, 'x'] }).success, false);
+  });
+
+  it('all three reject empty URI arrays (min 1)', () => {
+    const h = harness();
+    assert.equal(h.shape('save_to_library').safeParse({ uris: [] }).success, false);
+    assert.equal(h.shape('remove_from_library').safeParse({ uris: [] }).success, false);
+    assert.equal(h.shape('check_in_library').safeParse({ uris: [] }).success, false);
   });
 });

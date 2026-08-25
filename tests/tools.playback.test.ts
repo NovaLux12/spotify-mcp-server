@@ -135,7 +135,9 @@ test('get_now_playing renders full track state', async () => {
 
   const result = await invoke(findTool(registered, 'get_now_playing'));
 
-  assert.deepEqual(calls, [{ method: 'GET', path: '/me/player' }]);
+  assert.deepEqual(calls, [
+    { method: 'GET', path: '/me/player', params: { additional_types: 'track,episode' } },
+  ]);
   const out = text(result);
   assert.match(out, /Now playing: "Bohemian Rhapsody" by Queen/);
   assert.match(out, /Album: A Night at the Opera/);
@@ -219,6 +221,53 @@ test('get_currently_playing handles 204/null and null progress', async () => {
   const { registered: emptyRegistered } = makeHarness();
   const outEmpty = text(await invoke(findTool(emptyRegistered, 'get_currently_playing')));
   assert.equal(outEmpty, 'Nothing is currently playing.');
+});
+
+// ------------------------------------------- player-state read params (#48)
+
+test('get_now_playing forwards default additional_types and omits market when not supplied', async () => {
+  const { registered, calls } = makeHarness();
+  await invoke(findTool(registered, 'get_now_playing'));
+  const call = calls.find((c) => c.path === '/me/player');
+  assert.deepEqual(call?.params, { additional_types: 'track,episode' });
+});
+
+test('get_now_playing forwards explicit market and additional_types override', async () => {
+  const { registered, calls } = makeHarness();
+  await invoke(findTool(registered, 'get_now_playing'), {
+    market: 'GB',
+    additional_types: ['episode'],
+  });
+  const call = calls.find((c) => c.path === '/me/player');
+  assert.deepEqual(call?.params, { additional_types: 'episode', market: 'GB' });
+});
+
+test('get_currently_playing forwards default additional_types to the endpoint', async () => {
+  const { registered, calls } = makeHarness({
+    getResponse: () => ({ item: trackFixture(), progress_ms: null, is_playing: false }),
+  });
+  await invoke(findTool(registered, 'get_currently_playing'));
+  const call = calls.find((c) => c.path === '/me/player/currently-playing');
+  assert.deepEqual(call?.params, { additional_types: 'track,episode' });
+});
+
+test('get_currently_playing forwards explicit market and additional_types override', async () => {
+  const { registered, calls } = makeHarness({
+    getResponse: () => ({ item: trackFixture(), progress_ms: null, is_playing: false }),
+  });
+  await invoke(findTool(registered, 'get_currently_playing'), {
+    market: 'US',
+    additional_types: ['track'],
+  });
+  const call = calls.find((c) => c.path === '/me/player/currently-playing');
+  assert.deepEqual(call?.params, { additional_types: 'track', market: 'US' });
+});
+
+test('additional_types rejects values outside track/episode via zod schema', () => {
+  const { registered } = makeHarness();
+  const schema = findTool(registered, 'get_now_playing').schema;
+  assert.equal(schema.additional_types.safeParse(['track']).success, true);
+  assert.equal(schema.additional_types.safeParse(['album']).success, false);
 });
 
 // ----------------------------------------------------------------------- play
