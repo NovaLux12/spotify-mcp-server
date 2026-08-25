@@ -243,7 +243,7 @@ test('rate-limit resource reports never throttled by default (#56/#59)', async (
 
 // ---------------------------------------------------------------- prompts
 
-test('all nine prompts are registered (#60)', async () => {
+test('all ten prompts are registered (#60, #112)', async () => {
   const client = await connect(makeClientStub());
   const prompts = await client.listPrompts();
   assert.deepEqual(
@@ -258,6 +258,7 @@ test('all nine prompts are registered (#60)', async () => {
       'playlist_audit',
       'playlist_from_mood',
       'podcast_catchup',
+      'triage_liked_songs',
     ],
   );
 });
@@ -288,6 +289,19 @@ test('prompt time_range argument flows into generated instructions (#60)', async
   const body = textOf(recap.messages[0]);
   assert.match(body, /time_range=long_term/);
   assert.match(body, /limit=25\)/);
+});
+
+test('triage_liked_songs is registered and its schema rejects a bogus bucket_by (#112)', async () => {
+  const client = await connect(makeClientStub());
+  const prompts = await client.listPrompts();
+  assert.ok(
+    prompts.prompts.some((p) => p.name === 'triage_liked_songs'),
+    'triage_liked_songs prompt should be registered',
+  );
+  // Enum validation happens at the SDK layer before the handler runs.
+  await assert.rejects(
+    client.getPrompt({ name: 'triage_liked_songs', arguments: { bucket_by: 'bogus' } }),
+  );
 });
 
 // Static lookup table of every tool registered by src/tools/*.
@@ -340,7 +354,7 @@ test('every prompt only references tool names that are actually registered', asy
       'fetch_all', 'max_per_show', 'time_range',
       'short_term', 'medium_term', 'long_term',
       'album_type', 'release_date', 'playlist_name', 'include_singles',
-      'max_results',
+      'max_results', 'dry_run',
     ];
     const referenced = [...body.matchAll(/\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b/g)]
       .map((m) => m[0])
