@@ -20,8 +20,14 @@ function sectionItems<K extends keyof SearchResponse>(
   key: K,
 ): NonNullable<SearchResponse[K]> | null {
   const section = results[key] as { items?: unknown[] } | undefined;
-  const items = Array.isArray(section?.items) ? section!.items : [];
-  return items.length > 0 ? (section as NonNullable<SearchResponse[K]>) : null;
+  if (!Array.isArray(section?.items)) return null;
+  // Spotify can return literal `null` entries inside `items[]` for content
+  // unavailable in the market (issue #16) — strip them and write the filtered
+  // array back so every formatter loop below iterates only valid rows.
+  const items = section!.items.filter(Boolean);
+  if (items.length === 0) return null;
+  section!.items = items;
+  return section as NonNullable<SearchResponse[K]>;
 }
 
 export function registerSearchTools(server: McpServer, client: SpotifyClient): void {

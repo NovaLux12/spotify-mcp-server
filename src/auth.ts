@@ -9,7 +9,36 @@ import open from 'open';
 import type { TokenData } from './types/spotify.js';
 
 const REDIRECT_URI = process.env.SPOTIFY_REDIRECT_URI ?? 'http://127.0.0.1:8888/callback';
-const CALLBACK_PORT = 8888;
+// Derive bind port and route path from SPOTIFY_REDIRECT_URI so an overridden
+// redirect URI (e.g. http://127.0.0.1:9000/callback) is honored end-to-end.
+const REDIRECT_URL = new URL(REDIRECT_URI);
+const CALLBACK_PORT = Number(REDIRECT_URL.port) || 8888;
+const CALLBACK_PATH = REDIRECT_URL.pathname;
+
+/**
+ * True when the host is a loopback address (localhost, 127.0.0.0/8 or ::1).
+ * The OAuth spec requires loopback redirect URIs for native apps, and the
+ * local callback server can only receive traffic on loopback.
+ */
+function isLoopbackHost(hostname: string): boolean {
+  const host = hostname.replace(/^\[|\]$/g, '').toLowerCase();
+  return (
+    host === 'localhost' ||
+    host === '::1' ||
+    host.startsWith('::ffff:127.') ||
+    /^127(\.\d{1,3}){3}$/.test(host)
+  );
+}
+
+/** Escape a value for safe interpolation into an HTML response body. */
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
 
 const SCOPES = [
   'user-read-private',
@@ -207,6 +236,15 @@ export async function runAuthFlow(): Promise<void> {
     console.error('Error: SPOTIFY_CLIENT_ID environment variable is not set.');
     process.exit(1);
   }
+  if (!isLoopbackHost(REDIRECT_URL.hostname)) {
+    console.error(
+      `Error: SPOTIFY_REDIRECT_URI (${REDIRECT_URI}) must point to a loopback host ` +
+        '(localhost, 127.0.0.0/8 or ::1); the local callback server cannot receive ' +
+        'redirects for any other host.'
+    );
+    process.exit(1);
+  }
+
 
   // Generate PKCE values
   const codeVerifier = base64url(randomBytes(32));
@@ -242,7 +280,7 @@ export async function runAuthFlow(): Promise<void> {
     const server = createServer(async (req, res) => {
       const url = new URL(req.url ?? '/', `http://127.0.0.1:${CALLBACK_PORT}`);
 
-      if (url.pathname !== '/callback') {
+      if (url.pathname !== CALLBACK_PATH) {
         res.writeHead(404);
         res.end('Not found');
         return;
@@ -254,7 +292,7 @@ export async function runAuthFlow(): Promise<void> {
 
       if (error) {
         res.writeHead(400, { 'Content-Type': 'text/html' });
-        res.end(`<h1>Authentication failed: ${error}</h1>`);
+        res.end(`<h1>Authentication failed: ${escapeHtml(error)}</h1>`);
         server.close();
         reject(new Error(`Spotify auth error: ${error}`));
         return;

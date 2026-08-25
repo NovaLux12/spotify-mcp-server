@@ -1,7 +1,31 @@
 import { loadTokens, saveTokens } from './auth.js';
-import type { TokenData, SpotifyPaged } from './types/spotify.js';
 
 const BASE_URL = 'https://api.spotify.com/v1';
+import type { TokenData, SpotifyPaged } from './types/spotify.js';
+
+// Per-request timeout in milliseconds. Every outbound HTTP call (API requests,
+// token refresh) carries an AbortSignal.timeout so a hung connection (network
+// change, VPN drop) cannot stall the serialized request queue forever.
+// Override with SPOTIFY_REQUEST_TIMEOUT_MS.
+const REQUEST_TIMEOUT_MS = (() => {
+  const parsed = Number.parseInt(process.env.SPOTIFY_REQUEST_TIMEOUT_MS ?? '', 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 30_000;
+})();
+
+async function fetchWithTimeout(url: string, init: RequestInit): Promise<Response> {
+  try {
+    return await fetch(url, { ...init, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
+  } catch (err) {
+    // We own the signal, so an abort here can only be our own timeout.
+    if (err instanceof Error && (err.name === 'TimeoutError' || err.name === 'AbortError')) {
+      throw new SpotifyApiError(
+        408,
+        `${init.method ?? 'GET'} ${url} timed out after ${Math.round(REQUEST_TIMEOUT_MS / 1000)}s`,
+      );
+    }
+    throw err;
+  }
+}
 
 export class SpotifyApiError extends Error {
   constructor(
@@ -52,12 +76,19 @@ export class SpotifyClient {
   private _rateLimitUntil = 0;
 
   private getTokens(): Promise<TokenData> {
-    if (this.tokens) return Promise.resolve(this.tokens);
     if (!this.loadPromise) {
-      this.loadPromise = loadTokens().then((t) => {
-        this.tokens = t;
-        return t;
-      });
+      this.loadPromise = loadTokens().then(
+        (t) => {
+          this.tokens = t;
+          return t;
+        },
+        (err) => {
+          // Don't cache the rejection — let the next call retry from disk
+          // (e.g. after the user re-runs "spotify-mcp auth").
+          this.loadPromise = null;
+          throw err;
+        },
+      );
     }
     return this.loadPromise;
   }
@@ -80,7 +111,7 @@ export class SpotifyClient {
       client_id: clientId,
     });
 
-    const res = await fetch('https://accounts.spotify.com/api/token', {
+    const res = await fetchWithTimeout('https://accounts.spotify.com/api/token', {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: body.toString(),
@@ -144,7 +175,7 @@ export class SpotifyClient {
       headers['Content-Type'] = 'application/json';
     }
 
-    const res = await fetch(url, {
+    const res = await fetchWithTimeout(url, {
       method,
       headers,
       body: body === undefined
@@ -162,7 +193,10 @@ export class SpotifyClient {
 
     // Rate limited — wait and retry once
     if (res.status === 429 && retryCount === 0) {
-      const retryAfter = parseInt(res.headers.get('Retry-After') ?? '1', 10);
+      // Parse defensively: a garbage header must not yield NaN, which would
+      // permanently poison _rateLimitUntil and disable backoff.
+      const raw = Number.parseInt(res.headers.get('Retry-After') ?? '', 10);
+      const retryAfter = Number.isFinite(raw) && raw >= 0 ? raw : 1;
       this._rateLimitUntil = Date.now() + retryAfter * 1000;
       await sleep(retryAfter * 1000);
       return this.rawRequest(method, url, body, retryCount + 1, contentType);
@@ -204,7 +238,17 @@ export class SpotifyClient {
     return this.enqueue(async () => {
       const res = await this.rawRequest('GET', url);
       if (res.status === 204) return null;
-      return res.json() as Promise<T>;
+      try {
+        return (await res.json()) as T;
+      } catch (err) {
+        if (err instanceof SyntaxError) {
+          // Body was not valid JSON. Best-effort drain so the connection can
+          // be reused, then fail with an actionable error.
+          await res.text().catch(() => undefined);
+          throw new SpotifyApiError(res.status, `GET ${path} returned a non-JSON body`);
+        }
+        throw err;
+      }
     });
   }
 
@@ -213,30 +257,34 @@ export class SpotifyClient {
    * SpotifyPaged: items[], total, limit, offset, next) and accumulate every
    * item, going through the same rate-limited request queue as get().
    *
-   * Stops when offset + returned items reach `total`, or once `maxItems`
-   * (default 500) have been collected. Cursor-paginated endpoints (e.g.
-   * followed artists, which use a `after` cursor instead of offset/total)
-   * are NOT supported by this helper.
+   * Stops when the cursor reaches the server-reported `total`; when a
+   * response omits `total`, keeps walking until a short/empty page is
+   * returned. `maxItems` (default 500) caps collection either way.
+   * `opts.initialOffset` seeds the cursor so callers resuming mid-list
+   * continue from there instead of restarting at offset 0. Cursor-paginated
+   * endpoints (e.g. followed artists, which use an `after` cursor instead of
+   * offset/total) are NOT supported by this helper.
    */
   async getAllPages<T>(
     path: string,
     params?: Record<string, string>,
-    opts?: { maxItems?: number },
+    opts?: { maxItems?: number; initialOffset?: number },
   ): Promise<T[]> {
     const maxItems = opts?.maxItems ?? 500;
     const all: T[] = [];
-    let offset = 0;
-    // Loop bound is the server-reported total; maxItems caps iterations too.
+    let offset = opts?.initialOffset ?? 0;
+    // Loop bound is the server-reported total when present; otherwise walk
+    // until a short page signals the end. maxItems caps iterations too.
     for (;;) {
       const pageParams = { ...params, offset: String(offset) };
       const page = await this.get<SpotifyPaged<T>>(path, pageParams);
       if (!page || !Array.isArray(page.items)) break;
       all.push(...page.items);
       if (all.length >= maxItems) return all.slice(0, maxItems);
-      const total = typeof page.total === 'number' ? page.total : all.length;
       const limit = typeof page.limit === 'number' && page.limit > 0 ? page.limit : page.items.length;
       offset += limit;
-      if (offset >= total || page.items.length === 0) break;
+      if (page.items.length === 0 || page.items.length < limit) break;
+      if (typeof page.total === 'number' && offset >= page.total) break;
     }
     return all;
   }

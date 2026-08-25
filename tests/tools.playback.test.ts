@@ -266,6 +266,58 @@ test('play forwards device_id as encoded query parameter', async () => {
   assert.equal(calls[0].path, '/me/player/play?device_id=dev%20with%20space');
 });
 
+test('play rejects uris arrays over 100 entries via zod max(100)', () => {
+  const { registered } = makeHarness();
+  const play = findTool(registered, 'play');
+  const hundred = Array.from({ length: 100 }, (_, i) => `spotify:track:t${i}`);
+  assert.equal(play.schema.uris.safeParse(hundred).success, true);
+  const hundredOne = Array.from({ length: 101 }, (_, i) => `spotify:track:t${i}`);
+  assert.equal(play.schema.uris.safeParse(hundredOne).success, false);
+});
+
+test('play treats an empty uris array as conflicting with context_uri (issue #23)', async () => {
+  const { registered, calls } = makeHarness();
+  await assert.rejects(
+    invoke(findTool(registered, 'play'), {
+      context_uri: 'spotify:album:alb1',
+      uris: [],
+    }),
+    /Provide either context_uri or uris, not both\./,
+  );
+  assert.equal(calls.some((c) => c.method === 'PUT'), false);
+});
+
+test('play rejects a standalone empty uris array (issue #23)', async () => {
+  const { registered, calls } = makeHarness();
+  await assert.rejects(
+    invoke(findTool(registered, 'play'), { uris: [] }),
+    /uris must contain at least one track\/episode URI\./,
+  );
+  assert.equal(calls.some((c) => c.method === 'PUT'), false);
+});
+
+test('play rejects numeric offset on artist contexts, accepts offset_uri instead (issue #24)', async () => {
+  const { registered, calls } = makeHarness();
+  await assert.rejects(
+    invoke(findTool(registered, 'play'), {
+      context_uri: 'spotify:artist:art1',
+      offset: 2,
+    }),
+    /Numeric offset is not valid for artist contexts/,
+  );
+
+  await invoke(findTool(registered, 'play'), {
+    context_uri: 'spotify:artist:art1',
+    offset_uri: 'spotify:track:trk9',
+  });
+  const put = calls.find((c) => c.method === 'PUT');
+  assert.ok(put, 'expected a PUT for the offset_uri variant');
+  assert.deepEqual(put.body, {
+    context_uri: 'spotify:artist:art1',
+    offset: { uri: 'spotify:track:trk9' },
+  });
+});
+
 // ---------------------------------------------------- transport-style controls
 
 test('seek sends position_ms and optional device_id in query string', async () => {
@@ -419,14 +471,14 @@ test('get_devices reports helpful message when list is empty or null', async () 
 
 // ----------------------------------------------------------- play_from_search
 
-test('play_from_search searches with limit 5 then plays first track result', async () => {
+test('play_from_search searches with limit 10, forwards market, and skips null rows', async () => {
   const match = trackFixture();
   const { registered, calls } = makeHarness({
-    getResponse: (path, params) => {
+    getResponse: (path) => {
       if (path !== '/search') return undefined;
+      // Issue #28: Spotify returns literal null rows inside items[].
       return {
-        tracks: { items: [match, trackFixture({ id: 'trk2', name: 'Other' })], total: 2 },
-        params,
+        tracks: { items: [null, match, trackFixture({ id: 'trk2', name: 'Other' })], total: 2 },
       };
     },
   });
@@ -434,20 +486,43 @@ test('play_from_search searches with limit 5 then plays first track result', asy
   const result = await invoke(findTool(registered, 'play_from_search'), {
     query: 'bohemian rhapsody',
     search_type: 'track',
+    market: 'GB',
   });
 
   const searchCall = calls.find((c) => c.path === '/search');
   assert.ok(searchCall, 'expected a call to /search');
-  assert.deepEqual(searchCall.params, { q: 'bohemian rhapsody', type: 'track', limit: '5' });
+  assert.deepEqual(searchCall.params, {
+    q: 'bohemian rhapsody',
+    type: 'track',
+    limit: '10',
+    market: 'GB',
+  });
 
   const playCall = calls.find((c) => c.path === '/me/player/play');
   assert.ok(playCall, 'expected a PUT to /me/player/play');
   assert.equal(playCall.method, 'PUT');
+  // First NON-NULL track row is played, not the leading null slot.
   assert.deepEqual(playCall.body, { uris: ['spotify:track:trk1'] });
 
   const out = text(result);
   assert.match(out, /Now playing: "Bohemian Rhapsody" by Queen/);
   assert.match(out, /from the album "A Night at the Opera"/);
+});
+
+test('play_from_search omits market param when caller supplies none', async () => {
+  const { registered, calls } = makeHarness({
+    getResponse: (path) =>
+      path === '/search' ? { tracks: { items: [trackFixture()], total: 1 } } : undefined,
+  });
+
+  await invoke(findTool(registered, 'play_from_search'), {
+    query: 'queen',
+    search_type: 'track',
+  });
+
+  const searchCall = calls.find((c) => c.path === '/search');
+  assert.ok(searchCall, 'expected a call to /search');
+  assert.equal(searchCall.params?.market, undefined);
 });
 
 test('play_from_search plays first episode result for search_type episode', async () => {
@@ -495,5 +570,5 @@ test('play_from_search zero results returns normal content, not an exception', a
     await invoke(findTool(registered, 'play_from_search'), { query: 'zzzznope', search_type: 'track' });
 
   assert.equal(calls.some((c) => c.path === '/me/player/play'), false); // nothing played
-  assert.match(text(result), /^No results found for zzzznope$/);
+  assert.match(text(result), /^No playable results found for zzzznope$/);
 });

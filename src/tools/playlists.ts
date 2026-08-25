@@ -216,17 +216,33 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
   );
 
   // create_playlist
-  server.tool(
+  // Spotify forbids public=true together with collaborative=true ("to create
+  // a collaborative playlist you must also set public to false"), so reject
+  // the combination locally with a clear message instead of an upstream 400.
+  server.registerTool(
     'create_playlist',
-    'Create a new playlist for the current user',
     {
-      name: z.string().describe('Playlist name'),
-      description: z.string().optional().describe('Playlist description'),
-      public: z.boolean().optional().describe('Whether the playlist is public. Default: false'),
-      collaborative: z
-        .boolean()
-        .optional()
-        .describe('Whether the playlist is collaborative. Default: false'),
+      description: 'Create a new playlist for the current user',
+      inputSchema: z
+        .object({
+          name: z.string().describe('Playlist name'),
+          description: z.string().optional().describe('Playlist description'),
+          public: z.boolean().optional().describe('Whether the playlist is public. Default: false'),
+          collaborative: z
+            .boolean()
+            .optional()
+            .describe('Whether the playlist is collaborative. Default: false'),
+        })
+        .superRefine((args, ctx) => {
+          if (args.public === true && args.collaborative === true) {
+            ctx.addIssue({
+              code: 'custom',
+              path: ['collaborative'],
+              message:
+                'A playlist cannot be both public and collaborative. Set public to false when collaborative is true.',
+            });
+          }
+        }),
     },
     async (args) => {
       const body: Record<string, unknown> = {
@@ -280,10 +296,10 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
   // remove_from_playlist
   server.tool(
     'remove_from_playlist',
-    'Remove tracks or episodes from a playlist',
+    'Remove tracks or episodes from a playlist. Max 100 URIs per call.',
     {
       playlist_id: z.string().describe('Playlist ID'),
-      uris: z.array(z.string()).min(1).describe('URIs to remove'),
+      uris: z.array(z.string()).min(1).max(100).describe('URIs to remove'),
     },
     async (args) => {
       const tracks = args.uris.map((uri) => ({ uri }));
@@ -295,15 +311,30 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
   );
 
   // update_playlist
-  server.tool(
+  // Same public/collaborative constraint as create_playlist: reject the
+  // forbidden combination before it reaches the API.
+  server.registerTool(
     'update_playlist',
-    "Update a playlist's name, description, or visibility",
     {
-      id: z.string().describe('Playlist ID'),
-      name: z.string().optional().describe('New name'),
-      description: z.string().optional().describe('New description'),
-      public: z.boolean().optional().describe('New public state'),
-      collaborative: z.boolean().optional().describe('New collaborative state'),
+      description: "Update a playlist's name, description, or visibility",
+      inputSchema: z
+        .object({
+          id: z.string().describe('Playlist ID'),
+          name: z.string().optional().describe('New name'),
+          description: z.string().optional().describe('New description'),
+          public: z.boolean().optional().describe('New public state'),
+          collaborative: z.boolean().optional().describe('New collaborative state'),
+        })
+        .superRefine((args, ctx) => {
+          if (args.public === true && args.collaborative === true) {
+            ctx.addIssue({
+              code: 'custom',
+              path: ['collaborative'],
+              message:
+                'A playlist cannot be both public and collaborative. Set public to false when collaborative is true.',
+            });
+          }
+        }),
     },
     async (args) => {
       const body: Record<string, unknown> = {};

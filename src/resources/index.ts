@@ -3,7 +3,6 @@ import type { SpotifyClient } from '../client.js';
 import type {
   PlaybackState,
   SpotifyQueue,
-  SpotifyPaged,
   SpotifyPlaylistSimple,
   SpotifyTrack,
   SpotifyEpisode,
@@ -23,7 +22,10 @@ function formatItem(item: SpotifyTrack | SpotifyEpisode): string {
     const artists = item.artists.map((a) => a.name).join(', ');
     return `"${item.name}" by ${artists} (${formatDuration(item.duration_ms)}) | URI: ${item.uri}`;
   }
-  return `"${item.name}" — ${item.show.name} (${formatDuration(item.duration_ms)}) | URI: ${item.uri}`;
+  if (item.type === 'episode') {
+    return `"${item.name}" — ${item.show.name} (${formatDuration(item.duration_ms)}) | URI: ${item.uri}`;
+  }
+  return `"${(item as { type?: string }).type ?? 'unknown'}" (unsupported item)`;
 }
 
 export function registerResources(server: McpServer, client: SpotifyClient): void {
@@ -63,8 +65,10 @@ export function registerResources(server: McpServer, client: SpotifyClient): voi
         const artists = item.artists.map((a) => a.name).join(', ');
         lines.push(`${is_playing ? 'Playing' : 'Paused'}: "${item.name}" by ${artists}`);
         lines.push(`Album: ${item.album.name}`);
-      } else {
+      } else if (item.type === 'episode') {
         lines.push(`${is_playing ? 'Playing' : 'Paused'}: "${item.name}" (${item.show.name})`);
+      } else {
+        lines.push(`${is_playing ? 'Playing' : 'Paused'}: "${(item as { type?: string }).type ?? 'unknown'}" (unsupported item)`);
       }
       if (device) {
         lines.push(`Device: ${device.name} (${device.type})`);
@@ -191,18 +195,22 @@ export function registerResources(server: McpServer, client: SpotifyClient): voi
     'spotify://me/playlists',
     { description: 'All user playlists (names and IDs)' },
     async () => {
-      const result = await client.get<SpotifyPaged<SpotifyPlaylistSimple>>('/me/playlists', {
+      const playlists = await client.getAllPages<SpotifyPlaylistSimple>('/me/playlists', {
         limit: '50',
       });
-      if (!result) throw new Error('Could not retrieve playlists');
-      const lines = result.items.map((pl) => {
+      if (playlists.length === 0) {
+        return {
+          contents: [{ uri: 'spotify://me/playlists', text: 'No playlists found.', mimeType: 'text/plain' }],
+        };
+      }
+      const lines = playlists.map((pl) => {
         const trackCount = pl.tracks?.total ?? 0;
         return `  • "${pl.name}" (${trackCount} tracks) | ID: ${pl.id} | URI: ${pl.uri}`;
       });
       return {
         contents: [{
           uri: 'spotify://me/playlists',
-          text: `Playlists (${result.total} total):\n${lines.join('\n')}`,
+          text: `Playlists (${playlists.length} total):\n${lines.join('\n')}`,
           mimeType: 'text/plain',
         }],
       };

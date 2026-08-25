@@ -1,12 +1,13 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import type { SpotifyClient } from '../client.js';
+import { SpotifyApiError, type SpotifyClient } from '../client.js';
 import type {
   SpotifyAudiobookFull,
   SpotifyChapterFull,
   SpotifyChapterSimple,
   SpotifyPaged,
   SavedAudiobookItem,
+  UserProfile,
 } from '../types/spotify.js';
 
 const MARKET_NOTE =
@@ -19,6 +20,53 @@ const MARKET_PARAM = z
     `ISO 3166-1 alpha-2 country code. If given, only content available in that market is returned.${MARKET_NOTE}`,
   );
 
+
+let profileCountry: Promise<string | undefined> | null = null;
+
+// The audiobooks API is market-gated (#29): when the caller supplies no
+// market, default to the account's country from /me.
+function resolveProfileCountry(client: SpotifyClient): Promise<string | undefined> {
+  profileCountry ??= client
+    .get<UserProfile>('/me')
+    .then((user) => user?.country)
+    .catch(() => undefined);
+  return profileCountry;
+}
+
+/** Test hook: forget the memoized profile-country lookup. */
+export function resetProfileCountryCache(): void {
+  profileCountry = null;
+}
+
+// GET with `market` defaulting to the profile country. When the market was
+// defaulted (not caller-supplied) and Spotify rejects the lookup, rethrow
+// with a hint while preserving the original error as `cause`.
+async function getWithMarketFallback<T>(
+  client: SpotifyClient,
+  path: string,
+  marketArg: string | undefined,
+  extraParams: Record<string, string> = {},
+): Promise<T | null> {
+  const market = marketArg ?? (await resolveProfileCountry(client));
+  const params: Record<string, string> = { ...extraParams };
+  if (market) params.market = market;
+  try {
+    return await client.get<T>(path, params);
+  } catch (err) {
+    if (
+      !marketArg &&
+      market &&
+      err instanceof SpotifyApiError &&
+      (err.status === 404 || err.status === 400)
+    ) {
+      throw new Error(
+        `Spotify returned ${err.status} for this lookup using market ${market}. Audiobooks are market-gated — retry with an explicit market code if this looks wrong.`,
+        { cause: err },
+      );
+    }
+    throw err;
+  }
+}
 function formatDuration(ms: number): string {
   const minutes = Math.floor(ms / 60000);
   const seconds = Math.floor((ms % 60000) / 1000);
@@ -35,14 +83,12 @@ export function registerAudiobookTools(server: McpServer, client: SpotifyClient)
       market: MARKET_PARAM,
     },
     async (args) => {
-      const params: Record<string, string> = {};
-      if (args.market) params.market = args.market;
-
-      const audiobook = await client.get<SpotifyAudiobookFull>(
+      const audiobook = await getWithMarketFallback<SpotifyAudiobookFull>(
+        client,
         `/audiobooks/${encodeURIComponent(args.id)}`,
-        params,
+        args.market,
       );
-      if (!audiobook) throw new Error('Audiobook not found');
+      if (!audiobook) throw new Error(`Audiobook "${args.id}" not found`);
 
       const authors = audiobook.authors.map((a) => a.name).join(', ');
       const narrators = audiobook.narrators.map((n) => n.name).join(', ') || 'none listed';
@@ -84,17 +130,16 @@ export function registerAudiobookTools(server: McpServer, client: SpotifyClient)
       market: MARKET_PARAM,
     },
     async (args) => {
-      const params: Record<string, string> = {
-        limit: String(args.limit ?? 20),
-        offset: String(args.offset ?? 0),
-      };
-      if (args.market) params.market = args.market;
-
-      const result = await client.get<SpotifyPaged<SpotifyChapterSimple>>(
+      const result = await getWithMarketFallback<SpotifyPaged<SpotifyChapterSimple>>(
+        client,
         `/audiobooks/${encodeURIComponent(args.id)}/chapters`,
-        params,
+        args.market,
+        {
+          limit: String(args.limit ?? 20),
+          offset: String(args.offset ?? 0),
+        },
       );
-      if (!result) throw new Error('Audiobook not found');
+      if (!result) throw new Error(`Audiobook "${args.id}" not found`);
 
       const lines = [`Chapters for audiobook (${result.total} total):`];
       for (const chapter of result.items) {
@@ -116,14 +161,12 @@ export function registerAudiobookTools(server: McpServer, client: SpotifyClient)
       market: MARKET_PARAM,
     },
     async (args) => {
-      const params: Record<string, string> = {};
-      if (args.market) params.market = args.market;
-
-      const chapter = await client.get<SpotifyChapterFull>(
+      const chapter = await getWithMarketFallback<SpotifyChapterFull>(
+        client,
         `/chapters/${encodeURIComponent(args.id)}`,
-        params,
+        args.market,
       );
-      if (!chapter) throw new Error('Chapter not found');
+      if (!chapter) throw new Error(`Chapter "${args.id}" not found`);
 
       const lines = [
         `Chapter ${chapter.chapter_number}: "${chapter.name}"`,

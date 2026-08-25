@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { registerCatalogTools } from '../src/tools/catalog.js';
-import { registerAudiobookTools } from '../src/tools/audiobooks.js';
+import { registerCatalogTools, resetProfileCountryCache as resetCatalogMarketCache } from '../src/tools/catalog.js';
+import { registerAudiobookTools, resetProfileCountryCache as resetAudiobooksMarketCache } from '../src/tools/audiobooks.js';
 
 // ---------------------------------------------------------------- fixtures
 
@@ -310,14 +310,22 @@ test('get_show forwards market param and renders show details with recent episod
   assert.match(out, /"Episode One" \(30:00, 2026-01-01\) \[played\]/);
 });
 
-test('get_show omits market param when not provided', async () => {
+test('get_show defaults market to profile country when not provided (#29)', async () => {
+  resetCatalogMarketCache();
   const { registered, calls } = makeHarness(registerCatalogTools, {
-    getResponse: (path) => (path === '/shows/shw1' ? showSimpleFixture() : undefined),
+    getResponse: (path) => {
+      if (path === '/me') return { country: 'SE' };
+      if (path === '/shows/shw1') return showSimpleFixture();
+      return undefined;
+    },
   });
 
   await invoke(findTool(registered, 'get_show'), { id: 'shw1' });
 
-  assert.deepEqual(calls[0].params, {});
+  // Market-gated lookup is defaulted to the account's country from /me.
+  const meCall = calls.find((c) => c.path === '/me');
+  assert.ok(meCall, 'expected a /me preflight to resolve the account country');
+  assert.deepEqual(calls.find((c) => c.path === '/shows/shw1')!.params, { market: 'SE' });
 });
 
 // --------------------------------------------------------- get_show_episodes
@@ -348,14 +356,23 @@ test('get_show_episodes sends limit, offset, and market params', async () => {
   assert.match(out, /"Episode One" \(30:00, 2026-01-01\) \| URI: spotify:episode:ep1/);
 });
 
-test('get_show_episodes defaults pagination to limit 20 offset 0 without market', async () => {
+test('get_show_episodes defaults pagination and forwards profile-country market', async () => {
+  resetCatalogMarketCache();
   const { registered, calls } = makeHarness(registerCatalogTools, {
-    getResponse: (path) => (path === '/shows/shw1/episodes' ? { items: [], total: 0 } : undefined),
+    getResponse: (path) => {
+      if (path === '/me') return { country: 'FR' };
+      if (path === '/shows/shw1/episodes') return { items: [], total: 0 };
+      return undefined;
+    },
   });
 
   await invoke(findTool(registered, 'get_show_episodes'), { id: 'shw1' });
 
-  assert.deepEqual(calls[0].params, { limit: '20', offset: '0' });
+  assert.deepEqual(calls.find((c) => c.path === '/shows/shw1/episodes')!.params, {
+    limit: '20',
+    offset: '0',
+    market: 'FR',
+  });
 });
 
 test('get_show_episodes description documents user-read-playback-position scope', () => {
@@ -592,14 +609,23 @@ test('get_audiobook_chapters paginates /audiobooks/{id}/chapters', async () => {
   assert.match(out, /\[not playable\]/);
 });
 
-test('get_audiobook_chapters uses default pagination without market', async () => {
+test('get_audiobook_chapters defaults pagination and forwards profile-country market', async () => {
+  resetAudiobooksMarketCache();
   const { registered, calls } = makeHarness(registerAudiobookTools, {
-    getResponse: (path) => (path === '/audiobooks/ab1/chapters' ? { items: [], total: 0 } : undefined),
+    getResponse: (path) => {
+      if (path === '/me') return { country: 'AU' };
+      if (path === '/audiobooks/ab1/chapters') return { items: [], total: 0 };
+      return undefined;
+    },
   });
 
   await invoke(findTool(registered, 'get_audiobook_chapters'), { id: 'ab1' });
 
-  assert.deepEqual(calls[0].params, { limit: '20', offset: '0' });
+  assert.deepEqual(calls.find((c) => c.path === '/audiobooks/ab1/chapters')!.params, {
+    limit: '20',
+    offset: '0',
+    market: 'AU',
+  });
 });
 
 test('get_chapter fetches /chapters/{id} and renders chapter details', async () => {

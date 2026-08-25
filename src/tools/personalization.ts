@@ -132,8 +132,11 @@ export function registerPersonalizationTools(server: McpServer, client: SpotifyC
       );
       if (!result) throw new Error('Could not retrieve recently played tracks');
 
-      const lines = [`Recently played (${result.items.length} tracks):`];
-      for (const item of result.items) {
+      // Spotify returns entries whose `track` is null for removed/unavailable
+      // tracks (issue #15) — skip them instead of crashing on dereference.
+      const items = (result.items ?? []).filter((item) => item?.track);
+      const lines = [`Recently played (${items.length} tracks):`];
+      for (const item of items) {
         const artists = item.track.artists.map((a) => a.name).join(', ');
         const playedAt = new Date(item.played_at).toLocaleString();
         lines.push(

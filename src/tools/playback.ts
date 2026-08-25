@@ -111,23 +111,34 @@ export function registerPlaybackTools(server: McpServer, client: SpotifyClient):
         .default('track')
         .describe("What to search for: 'track' (song) or 'episode' (podcast episode)"),
       device_id: z.string().optional().describe('Target device ID; uses active device if omitted'),
+      market: z
+        .string()
+        .optional()
+        .describe('ISO 3166-1 alpha-2 country code — affects availability/relinking of results; defaults to the account market'),
     },
     async (args) => {
-      const results = await client.get<SearchResponse>('/search', {
+      const params: Record<string, string> = {
         q: args.query,
         type: args.search_type,
-        limit: '5',
-      });
+        limit: '10',
+      };
+      if (args.market) params.market = args.market;
 
-      let match: SpotifyTrack | SpotifyEpisodeSimple | undefined;
-      if (args.search_type === 'track') {
-        match = results?.tracks?.items[0];
-      } else {
-        match = results?.episodes?.items[0];
-      }
+      const results = await client.get<SearchResponse>('/search', params);
+
+      // Spotify can return literal `null` rows inside items[] (issue #28).
+      // Skip them, then prefer a candidate that is actually playable in the
+      // requested market over blindly taking the first row.
+      const rows =
+        (args.search_type === 'track' ? results?.tracks?.items : results?.episodes?.items) ?? [];
+      const candidates = rows.filter(Boolean) as (SpotifyTrack | SpotifyEpisodeSimple)[];
+      // `is_playable` is only present when a market filter resolved playability.
+      const playable = (c: SpotifyTrack | SpotifyEpisodeSimple): boolean =>
+        !('is_playable' in c && c.is_playable === false);
+      const match = candidates.find(playable) ?? candidates[0];
 
       if (!match) {
-        return { content: [{ type: 'text', text: `No results found for ${args.query}` }] };
+        return { content: [{ type: 'text', text: `No playable results found for ${args.query}` }] };
       }
 
       const path = args.device_id
@@ -149,23 +160,64 @@ export function registerPlaybackTools(server: McpServer, client: SpotifyClient):
     'Start or resume playback. Optionally target specific content.',
     {
       context_uri: z.string().optional().describe('Spotify URI for an album, artist, or playlist'),
-      uris: z.array(z.string()).optional().describe('Up to 100 track/episode URIs to play as an ad-hoc queue'),
-      offset: z.number().int().min(0).optional().describe('Index within context to start from'),
+      uris: z
+        .array(z.string())
+        .max(100)
+        .optional()
+        .describe('Up to 100 track/episode URIs to play as an ad-hoc queue'),
+      offset: z
+        .number()
+        .int()
+        .min(0)
+        .optional()
+        .describe(
+          'Index within an album/playlist context to start from. ' +
+            'Ignored for ad-hoc uris; not valid for artist contexts (use offset_uri instead).',
+        ),
+      offset_uri: z
+        .string()
+        .optional()
+        .describe('Track URI inside the context to start from — required for artist contexts, where a numeric index is rejected'),
       position_ms: z.number().int().min(0).optional().describe('Seek position to start at (ms)'),
       device_id: z.string().optional().describe('Target device ID; uses active device if omitted'),
     },
     async (args) => {
-      if (args.context_uri && args.uris && args.uris.length > 0) {
+      // Issue #23: mutual exclusion must hold even for an empty uris array,
+      // and an empty array is never a valid request body.
+      if (args.context_uri && args.uris) {
         throw new Error('Provide either context_uri or uris, not both.');
       }
+      if (args.uris && args.uris.length === 0) {
+        throw new Error('uris must contain at least one track/episode URI.');
+      }
+
+      // Issue #24: offset.position only applies to album/playlist contexts;
+      // it is ignored for ad-hoc uris and invalid for artist contexts.
+      if ((args.offset !== undefined || args.offset_uri !== undefined) && args.uris) {
+        throw new Error('offset is ignored when playing ad-hoc uris — reorder the uris array instead.');
+      }
+      if ((args.offset !== undefined || args.offset_uri !== undefined) && !args.context_uri) {
+        throw new Error('offset requires a context_uri.');
+      }
+
       const path = args.device_id
         ? `/me/player/play?device_id=${encodeURIComponent(args.device_id)}`
         : '/me/player/play';
 
+      const contextUri = args.context_uri;
       const body: Record<string, unknown> = {};
-      if (args.context_uri) body.context_uri = args.context_uri;
+      if (contextUri) body.context_uri = contextUri;
       if (args.uris) body.uris = args.uris;
-      if (args.offset !== undefined) body.offset = { position: args.offset };
+      if (args.offset_uri !== undefined) {
+        body.offset = { uri: args.offset_uri };
+      } else if (args.offset !== undefined) {
+        if (contextUri?.startsWith('spotify:artist:')) {
+          throw new Error(
+            'Numeric offset is not valid for artist contexts — pass offset_uri with a track URI instead.',
+          );
+        }
+        body.offset = { position: args.offset };
+      }
       if (args.position_ms !== undefined) body.position_ms = args.position_ms;
 
       await client.put(path, Object.keys(body).length > 0 ? body : undefined);

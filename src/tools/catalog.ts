@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import type { SpotifyClient } from '../client.js';
+import { SpotifyApiError, type SpotifyClient } from '../client.js';
 import type {
   SpotifyTrack,
   SpotifyArtistFull,
@@ -14,6 +14,52 @@ import type {
   UserProfile,
 } from '../types/spotify.js';
 
+let profileCountry: Promise<string | undefined> | null = null;
+
+// Show/episode lookups are market-gated (#29): when the caller supplies no
+// market, default to the account's country from /me.
+function resolveProfileCountry(client: SpotifyClient): Promise<string | undefined> {
+  profileCountry ??= client
+    .get<UserProfile>('/me')
+    .then((user) => user?.country)
+    .catch(() => undefined);
+  return profileCountry;
+}
+
+/** Test hook: forget the memoized profile-country lookup. */
+export function resetProfileCountryCache(): void {
+  profileCountry = null;
+}
+
+// GET with `market` defaulting to the profile country. When the market was
+// defaulted (not caller-supplied) and Spotify rejects the lookup, rethrow
+// with a hint while preserving the original error as `cause`.
+async function getWithMarketFallback<T>(
+  client: SpotifyClient,
+  path: string,
+  marketArg: string | undefined,
+  extraParams: Record<string, string> = {},
+): Promise<T | null> {
+  const market = marketArg ?? (await resolveProfileCountry(client));
+  const params: Record<string, string> = { ...extraParams };
+  if (market) params.market = market;
+  try {
+    return await client.get<T>(path, params);
+  } catch (err) {
+    if (
+      !marketArg &&
+      market &&
+      err instanceof SpotifyApiError &&
+      (err.status === 404 || err.status === 400)
+    ) {
+      throw new Error(
+        `Spotify returned ${err.status} for this lookup using market ${market}. This endpoint is market-gated — retry with an explicit market code if this looks wrong.`,
+        { cause: err },
+      );
+    }
+    throw err;
+  }
+}
 function formatDuration(ms: number): string {
   const minutes = Math.floor(ms / 60000);
   const seconds = Math.floor((ms % 60000) / 1000);
@@ -28,7 +74,7 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
     { id: z.string().describe('Spotify track ID') },
     async (args) => {
       const track = await client.get<SpotifyTrack>(`/tracks/${encodeURIComponent(args.id)}`);
-      if (!track) throw new Error('Track not found');
+      if (!track) throw new Error(`Track "${args.id}" not found`);
 
       const artists = track.artists.map((a) => a.name).join(', ');
       const lines = [
@@ -49,7 +95,7 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
     { id: z.string().describe('Spotify artist ID') },
     async (args) => {
       const artist = await client.get<SpotifyArtistFull>(`/artists/${encodeURIComponent(args.id)}`);
-      if (!artist) throw new Error('Artist not found');
+      if (!artist) throw new Error(`Artist "${args.id}" not found`);
 
       const genres =
         Array.isArray(artist.genres) && artist.genres.length > 0
@@ -92,7 +138,7 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
         `/artists/${encodeURIComponent(args.id)}/albums`,
         params,
       );
-      if (!result) throw new Error('Artist not found');
+      if (!result) throw new Error(`Artist "${args.id}" not found`);
 
       const lines = [`Albums for artist (${result.total} total):`];
       for (const album of result.items) {
@@ -112,7 +158,7 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
     { id: z.string().describe('Spotify album ID') },
     async (args) => {
       const album = await client.get<SpotifyAlbumFull>(`/albums/${encodeURIComponent(args.id)}`);
-      if (!album) throw new Error('Album not found');
+      if (!album) throw new Error(`Album "${args.id}" not found`);
 
       const artists = album.artists.map((a) => a.name).join(', ');
       const lines = [
@@ -157,7 +203,7 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
         `/albums/${encodeURIComponent(args.id)}/tracks`,
         params,
       );
-      if (!result) throw new Error('Album not found');
+      if (!result) throw new Error(`Album "${args.id}" not found`);
 
       const lines = [`Tracks for album (${result.total} total):`];
       for (const track of result.items) {
@@ -179,14 +225,12 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
       market: z.string().optional().describe('ISO 3166-1 alpha-2 country code'),
     },
     async (args) => {
-      const params: Record<string, string> = {};
-      if (args.market) params.market = args.market;
-
-      const show = await client.get<SpotifyShowFull>(
+      const show = await getWithMarketFallback<SpotifyShowFull>(
+        client,
         `/shows/${encodeURIComponent(args.id)}`,
-        params,
+        args.market,
       );
-      if (!show) throw new Error('Show not found');
+      if (!show) throw new Error(`Show "${args.id}" not found`);
 
       const lines = [
         `"${show.name}" by ${show.publisher ?? 'unknown publisher'}`,
@@ -229,17 +273,16 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
       ),
     },
     async (args) => {
-      const params: Record<string, string> = {
-        limit: String(args.limit ?? 20),
-        offset: String(args.offset ?? 0),
-      };
-      if (args.market) params.market = args.market;
-
-      const result = await client.get<SpotifyPaged<SpotifyEpisodeSimple>>(
+      const result = await getWithMarketFallback<SpotifyPaged<SpotifyEpisodeSimple>>(
+        client,
         `/shows/${encodeURIComponent(args.id)}/episodes`,
-        params,
+        args.market,
+        {
+          limit: String(args.limit ?? 20),
+          offset: String(args.offset ?? 0),
+        },
       );
-      if (!result) throw new Error('Show not found');
+      if (!result) throw new Error(`Show "${args.id}" not found`);
 
       const lines = [`Episodes (${result.total} total):`];
       for (const ep of result.items) {
@@ -261,14 +304,12 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
       market: z.string().optional().describe('ISO 3166-1 alpha-2 country code'),
     },
     async (args) => {
-      const params: Record<string, string> = {};
-      if (args.market) params.market = args.market;
-
-      const episode = await client.get<SpotifyEpisodeFull>(
+      const episode = await getWithMarketFallback<SpotifyEpisodeFull>(
+        client,
         `/episodes/${encodeURIComponent(args.id)}`,
-        params,
+        args.market,
       );
-      if (!episode) throw new Error('Episode not found');
+      if (!episode) throw new Error(`Episode "${args.id}" not found`);
 
       const lines = [
         `"${episode.name}"`,

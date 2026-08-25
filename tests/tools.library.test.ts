@@ -305,26 +305,28 @@ describe('get_saved_* fetch_all mode (getAllPages switch)', () => {
 // ---------------------------------------------------------------------------
 
 describe('save_items / remove_saved_items / check_saved_items', () => {
-  it('save_items sends URIs in the PUT body to /me/library', async () => {
+  it('save_items sends track/album ids in the PUT body but show ids as ?ids= (#12)', async () => {
     const h = harness();
-    const uris = ['spotify:track:abc', 'spotify:album:xyz'];
+    const uris = ['spotify:track:abc', 'spotify:album:xyz', 'spotify:show:r1'];
 
     const out = await h.invoke('save_items', { uris });
 
     assert.deepEqual(wireCalls(h.client.calls), [
       { method: 'PUT', path: '/me/tracks', arg: { ids: ['abc'] } },
       { method: 'PUT', path: '/me/albums', arg: { ids: ['xyz'] } },
+      // Shows take ids ONLY as a query param: any body ids are ignored by Spotify.
+      { method: 'PUT', path: '/me/shows?ids=r1', arg: undefined },
     ]);
-    assert.match(out.content[0].text, /Saved 2 item\(s\) to library/);
+    assert.match(out.content[0].text, /Saved 3 item\(s\) to library/);
   });
 
-  it('remove_saved_items sends URIs in the DELETE body to /me/library', async () => {
+  it('remove_saved_items sends show ids as DELETE ?ids= query param, not body (#12)', async () => {
     const h = harness();
 
     const out = await h.invoke('remove_saved_items', { uris: ['spotify:show:r1'] });
 
     assert.deepEqual(wireCalls(h.client.calls), [
-      { method: 'DELETE', path: '/me/shows', arg: { ids: ['r1'] } },
+      { method: 'DELETE', path: '/me/shows?ids=r1', arg: undefined },
     ]);
     assert.match(out.content[0].text, /Removed 1 item\(s\) from library\./);
   });
@@ -371,7 +373,7 @@ describe('save_items / remove_saved_items / check_saved_items', () => {
 // Zod-enforced max bounds (validation happens at the MCP layer via schema)
 // ---------------------------------------------------------------------------
 
-describe('zod schema bounds (50/50/40)', () => {
+describe('zod schema bounds (50/50/50)', () => {
   it('save_items accepts 50 URIs and rejects 51', () => {
     const h = harness();
     const shape = h.shape('save_items');
@@ -389,12 +391,12 @@ describe('zod schema bounds (50/50/40)', () => {
     assert.equal(shape.safeParse({ uris: [...fifty, 'x'] }).success, false);
   });
 
-  it('check_saved_items accepts 40 URIs and rejects 41', () => {
+  it('check_saved_items accepts 50 URIs and rejects 51 (#66)', () => {
     const h = harness();
     const shape = h.shape('check_saved_items');
-    const forty = Array.from({ length: 40 }, (_, i) => `spotify:track:id${i}`);
-    assert.equal(shape.safeParse({ uris: forty }).success, true);
-    assert.equal(shape.safeParse({ uris: [...forty, 'x'] }).success, false);
+    const fifty = Array.from({ length: 50 }, (_, i) => `spotify:track:id${i}`);
+    assert.equal(shape.safeParse({ uris: fifty }).success, true);
+    assert.equal(shape.safeParse({ uris: [...fifty, 'x'] }).success, false);
   });
 
   it('all three reject empty URI arrays (min 1)', () => {

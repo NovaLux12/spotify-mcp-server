@@ -8,6 +8,7 @@
  */
 
 import { describe, it } from 'node:test';
+import { z } from 'zod';
 import assert from 'node:assert/strict';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../src/client.js';
@@ -30,7 +31,8 @@ type Responder = (path: string, arg: unknown) => unknown;
 interface RegisteredTool {
   name: string;
   description: string;
-  schema: unknown;
+  /** Validates raw args exactly like the MCP SDK would before invoking the handler. */
+  validate: (args: Record<string, unknown>) => Record<string, unknown>;
   handler: (args: Record<string, unknown>) => Promise<{ content: Array<{ type: string; text: string }> }>;
 }
 
@@ -77,13 +79,32 @@ function makeStubClient(responder: Responder = () => null) {
 function harness(responder: Responder = () => null, registerFn: Registrar = registerPlaylistTools) {
   const registered: RegisteredTool[] = [];
   const fakeServer = {
+    // Legacy SDK shape: (name, description, ZodRawShape, handler)
     tool(
       name: string,
       description: string,
-      schema: unknown,
+      schema: z.ZodRawShape,
       handler: RegisteredTool['handler'],
     ) {
-      registered.push({ name, description, schema, handler });
+      registered.push({
+        name,
+        description,
+        validate: (args) => z.object(schema).parse(args),
+        handler,
+      });
+    },
+    // Newer SDK shape: (name, { description, inputSchema: full ZodObject }, handler)
+    registerTool(
+      name: string,
+      config: { description?: string; inputSchema?: z.ZodType },
+      handler: RegisteredTool['handler'],
+    ) {
+      registered.push({
+        name,
+        description: config.description ?? '',
+        validate: (args) => (config.inputSchema as z.ZodType).parse(args),
+        handler,
+      });
     },
   } as unknown as McpServer;
   const client = makeStubClient(responder);
@@ -92,10 +113,12 @@ function harness(responder: Responder = () => null, registerFn: Registrar = regi
   return {
     registered,
     client,
-    invoke: (name: string, args: Record<string, unknown>) => {
+    invoke: async (name: string, args: Record<string, unknown>) => {
       const tool = registered.find((t) => t.name === name);
       assert.ok(tool, `tool "${name}" should be registered`);
-      return tool.handler(args);
+      // Async so schema-validation throws surface as rejections, matching
+      // how the real MCP server surfaces them to assert.rejects.
+      return tool.handler(tool.validate(args));
     },
   };
 }
@@ -390,6 +413,33 @@ describe('create_playlist', () => {
     });
     assert.equal(Object.hasOwn(h.client.calls[0].arg as object, 'description'), false);
   });
+
+  it('#26 rejects public=true + collaborative=true via superRefine, before any client call', async () => {
+    const h = harness(() => ({ id: 'n', uri: 'u', external_urls: { spotify: 's' } }));
+
+    await assert.rejects(
+      () => h.invoke('create_playlist', { name: 'Both', public: true, collaborative: true }),
+      /cannot be both public and collaborative/,
+    );
+    assert.equal(h.client.calls.length, 0, 'invalid combination must never reach the API');
+  });
+
+  it('#26 accepts collaborative=true when public is false', async () => {
+    const h = harness((_path, body) => ({
+      id: 'collab1',
+      uri: 'spotify:playlist:collab1',
+      external_urls: { spotify: 'https://open.spotify.com/playlist/collab1' },
+      ...(body as object),
+    }));
+
+    await h.invoke('create_playlist', { name: 'Shared', public: false, collaborative: true });
+
+    assert.deepEqual(h.client.calls[0].arg, {
+      name: 'Shared',
+      public: false,
+      collaborative: true,
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -476,6 +526,39 @@ describe('add_to_playlist / remove_from_playlist / update_playlist / reorder_pla
       insert_before: 3,
       range_length: 5,
     });
+  });
+
+  it('#25 remove_from_playlist rejects more than 100 uris before any client call', async () => {
+    const h = harness();
+    const tooMany = Array.from({ length: 101 }, (_, i) => `spotify:track:t${i}`);
+
+    await assert.rejects(
+      () => h.invoke('remove_from_playlist', { playlist_id: 'pl', uris: tooMany }),
+      (err: unknown) => err instanceof z.ZodError,
+    );
+    assert.equal(h.client.calls.length, 0, 'over-cap request must never reach the API');
+  });
+
+  it('#25 remove_from_playlist accepts exactly 100 uris', async () => {
+    const h = harness(() => null);
+    const exactly100 = Array.from({ length: 100 }, (_, i) => `spotify:track:t${i}`);
+
+    await h.invoke('remove_from_playlist', { playlist_id: 'pl', uris: exactly100 });
+
+    assert.equal(h.client.calls.length, 1);
+    assert.equal(h.client.calls[0].method, 'DELETE');
+    assert.deepEqual(h.client.calls[0].arg, { tracks: exactly100.map((uri) => ({ uri })) });
+  });
+
+  it('#25 add_to_playlist enforces the same 100-uri cap via schema validation', async () => {
+    const h = harness();
+    const tooMany = Array.from({ length: 101 }, (_, i) => `spotify:track:t${i}`);
+
+    await assert.rejects(
+      () => h.invoke('add_to_playlist', { playlist_id: 'pl', uris: tooMany }),
+      (err: unknown) => err instanceof z.ZodError,
+    );
+    assert.equal(h.client.calls.length, 0);
   });
 });
 

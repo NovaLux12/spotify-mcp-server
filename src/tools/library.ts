@@ -32,6 +32,14 @@ function partitionSavedUris(uris: string[]): Record<SavedUriType, string[]> {
   return buckets;
 }
 
+// Save/Remove Shows take `ids` ONLY as a query parameter (#12): when
+// `?ids=` is present any JSON body IDs are ignored, so the body form used by
+// tracks/albums/episodes is a silent no-op for shows.
+function savedItemsPath(type: SavedUriType, ids: string[]): string {
+  if (type !== 'show') return `/me/${type}s`;
+  return `/me/shows?ids=${encodeURIComponent(ids.join(','))}`;
+}
+
 export function registerLibraryTools(server: McpServer, client: SpotifyClient): void {
   // get_saved_tracks
   server.tool(
@@ -227,7 +235,7 @@ export function registerLibraryTools(server: McpServer, client: SpotifyClient): 
       for (const type of SAVED_URI_TYPES) {
         const ids = buckets[type];
         if (ids.length === 0) continue;
-        await client.put(`/me/${type}s`, { ids });
+        await client.put(savedItemsPath(type, ids), type === 'show' ? undefined : { ids });
         counts.push(`${ids.length} ${type}${ids.length === 1 ? '' : 's'}`);
         saved += ids.length;
       }
@@ -250,7 +258,7 @@ export function registerLibraryTools(server: McpServer, client: SpotifyClient): 
       for (const type of SAVED_URI_TYPES) {
         const ids = buckets[type];
         if (ids.length === 0) continue;
-        await client.delete(`/me/${type}s`, { ids });
+        await client.delete(savedItemsPath(type, ids), type === 'show' ? undefined : { ids });
         removed += ids.length;
       }
       return {
@@ -262,12 +270,12 @@ export function registerLibraryTools(server: McpServer, client: SpotifyClient): 
   // check_saved_items
   server.tool(
     'check_saved_items',
-    "Check whether items are saved in the user's library. Returns a boolean per URI. Accepts track, album, show, and episode URIs. Max 40.",
+    "Check whether items are saved in the user's library. Returns a boolean per URI. Accepts track, album, show, and episode URIs. Max 50.",
     {
       uris: z
         .array(z.string())
         .min(1)
-        .max(40)
+        .max(50)
         .describe(
           'Spotify URIs to check (accepts tracks, albums, shows, episodes)',
         ),
