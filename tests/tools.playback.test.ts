@@ -755,3 +755,29 @@ test('get_queue truncates to max_results with shared footer + pagination structu
   assert.equal(sc.truncated, true);
   assert.equal(sc.remaining, 5);
 });
+
+test('handoff preserves position: transfer, resume at offset, set volume (issue #112)', async () => {
+    const state = playbackStateFixture(trackFixture());
+    const h = makeHarness({ getResponse: (path) => (path === '/me/player' ? state : undefined) });
+
+    await invoke(findTool(h.registered, 'handoff'), { device_id: 'dev2', volume: 30 });
+
+    const puts = h.calls.filter((c) => c.method === 'PUT');
+    assert.equal(puts.length, 3, JSON.stringify(h.calls));
+    assert.deepEqual(puts[0], { method: 'PUT', path: '/me/player', body: { device_ids: ['dev2'] } });
+    assert.equal(puts[1].path, '/me/player/play?device_id=dev2');
+    const playBody = puts[1].body as { position_ms: number };
+    assert.equal(playBody.position_ms, 185000);
+    assert.equal(puts[2].path, '/me/player/volume?volume=30&device_id=dev2');
+  });
+
+
+test('handoff dry_run performs zero calls and lists the steps (issue #112)', async () => {
+    const h = makeHarness({ getResponse: (path) => (path === '/me/player' ? playbackStateFixture(trackFixture()) : undefined) });
+
+    const out = text(await invoke(findTool(h.registered, 'handoff'), { device_id: 'dev2', dry_run: true }));
+
+    assert.equal(h.calls.length, 1, 'only the state read; no mutations');
+    assert.match(out, /\[dry run\] handoff/);
+    assert.match(out, /Resume at 3:05 into/);
+  });

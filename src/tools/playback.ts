@@ -700,4 +700,87 @@ export function registerPlaybackTools(server: McpServer, client: SpotifyClient):
       );
     },
   );
+
+  // handoff (#112 idea 9): move playback to another device preserving track
+  // and position, optionally normalizing volume — raw transfer_playback
+  // restarts the track at 0:00 and ignores the new device's volume scale.
+  server.tool(
+    'handoff',
+    'Move playback to another device preserving the current track and play position (and optionally set the target volume) — a lossless "move to the kitchen speaker"',
+    {
+      device_id: z.string().describe('Target device ID to hand playback off to'),
+      volume: z
+        .number()
+        .int()
+        .min(0)
+        .max(100)
+        .optional()
+        .describe('Volume to set on the target device after transfer, 0–100'),
+      response_format: ResponseFormat,
+      dry_run: DryRun,
+    },
+    async (args) => {
+      const state = await client.get<{
+        is_playing?: boolean;
+        progress_ms?: number | null;
+        item?: { uri?: string } | null;
+        context?: { uri?: string | null } | null;
+      }>('/me/player');
+
+      const progress = typeof state?.progress_ms === 'number' ? state.progress_ms : null;
+      const wasPlaying = state?.is_playing === true;
+      const itemUri = state?.item?.uri;
+      const contextUri = state?.context?.uri ?? undefined;
+      const trackLabel = itemUri ?? 'nothing playing';
+
+      const steps: string[] = [
+        `Transfer playback to device ${args.device_id}${wasPlaying ? '' : ' (paused)'}`,
+      ];
+      if (progress !== null && progress > 0) {
+        steps.push(`Resume at ${formatDuration(progress)} into ${trackLabel}`);
+      }
+      if (args.volume !== undefined) {
+        steps.push(`Set target volume to ${args.volume}`);
+      }
+
+      if (args.dry_run) {
+        return {
+          content: [{ type: 'text', text: describeDryRun('handoff', args.device_id, steps) }],
+          structuredContent: { ok: true, dry_run: true, steps },
+        };
+      }
+
+      // 1) Transfer without forcing play (avoids restarting the track).
+      await client.put('/me/player', { device_ids: [args.device_id] });
+      // 2) Resume at the captured position if something was mid-flight.
+      if (itemUri && progress !== null && progress > 0 && wasPlaying) {
+        const playBody: Record<string, unknown> = {
+          position_ms: progress,
+          ...(contextUri ? { context_uri: contextUri, offset: { uri: itemUri } } : { uris: [itemUri] }),
+        };
+        await client.put(`/me/player/play?device_id=${encodeURIComponent(args.device_id)}`, playBody);
+      }
+      // 3) Optional volume normalization on the target.
+      if (args.volume !== undefined) {
+        await client.put(
+          `/me/player/volume?${new URLSearchParams({ volume: String(args.volume), device_id: args.device_id })}`,
+        );
+      }
+
+      return mutationResult(
+        args.response_format,
+        {
+          action: 'handoff',
+          device_id: args.device_id,
+          resumed_at_ms: progress,
+          was_playing: wasPlaying,
+          volume: args.volume,
+        },
+        `Handed off to device ${args.device_id}` +
+          (progress !== null && progress > 0 ? ` at ${formatDuration(progress)}` : '') +
+          (args.volume !== undefined ? ` (volume ${args.volume})` : '') +
+          '.',
+      );
+    },
+  );
 }
