@@ -4,7 +4,10 @@ import { registerSearchTools } from '../src/tools/search.js';
 
 // ---------------------------------------------------------------- fixtures
 
-type ToolContent = { content: Array<{ type: string; text: string }> };
+type ToolContent = {
+  content: Array<{ type: string; text: string }>;
+  structuredContent?: Record<string, unknown>;
+};
 
 type RegisteredTool = {
   name: string;
@@ -281,4 +284,58 @@ test('search returns friendly message on null response and empty item lists', as
     text(await invoke(findTool(blank.registered, 'search'), { query: 'zzz' })),
     /No results found\./,
   );
+});
+
+// ----------------------------------------------- shared shaping (#51/#52/#53)
+
+test('search json mode returns the raw API object as parseable JSON (#51)', async () => {
+  const api = { tracks: { total: 1, items: [trackFixture()] } };
+  const { registered } = makeHarness({ getResponse: () => api });
+  const result = await invoke(findTool(registered, 'search'), {
+    query: 'bohemian',
+    types: ['track'],
+    response_format: 'json',
+  });
+  assert.deepEqual(JSON.parse(text(result)), api);
+  assert.deepEqual(result.structuredContent, api);
+});
+
+test('search truncates each section to max_results with footer + structuredContent (#52/#53)', async () => {
+  const fiveTracks = Array.from({ length: 5 }, (_, i) =>
+    trackFixture({ name: `Song ${i}`, uri: `spotify:track:s${i}` }),
+  );
+  const { registered } = makeHarness({
+    getResponse: () => ({ tracks: { total: 12, items: fiveTracks } }),
+  });
+  const result = await invoke(findTool(registered, 'search'), {
+    query: 'song',
+    types: ['track'],
+    max_results: 2,
+  });
+  const out = text(result);
+  assert.match(out, /TRACKS \(12 total\):/);
+  assert.match(out, /\(3 more — pass offset or fetch_all\)/);
+  const sc = result.structuredContent as {
+    query: string;
+    sections: Record<string, { items: unknown[]; total: number; next_offset: number | null }>;
+  };
+  assert.equal(sc.query, 'song');
+  assert.equal(sc.sections.tracks.items.length, 2);
+  assert.equal(sc.sections.tracks.total, 12);
+  // next_offset follows API-level continuation (offset 0 + full page of 5)
+  assert.equal(sc.sections.tracks.next_offset, 5);
+});
+
+test('search detailed mode surfaces popularity fields (#51)', async () => {
+  const { registered } = makeHarness({
+    getResponse: () => ({
+      tracks: { total: 1, items: [trackFixture({ popularity: 97 })] },
+      artists: { total: 1, items: [artistFixture({ popularity: 80 })] },
+    }),
+  });
+  const out = text(
+    await invoke(findTool(registered, 'search'), { query: 'q', response_format: 'detailed' }),
+  );
+  assert.match(out, /Popularity: 97/);
+  assert.match(out, /Popularity: 80/);
 });

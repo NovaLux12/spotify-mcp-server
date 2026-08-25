@@ -13,7 +13,9 @@
  *   - Error mapping: structured {error:{message}} bodies win; missing bodies
  *     fall back to per-status generic messages (403/404/503).
  *   - 204 No Content on GET returns null (never parses empty JSON).
- *   - getAllPages: full walk, maxItems cap, malformed-page break.
+ *   - getAllPages: full walk, explicit maxItems cap, configured fetch-all
+ *     cap (SPOTIFY_MCP_FETCH_ALL_CAP via initConfig), malformed-page break,
+ *     per-page progress events (#65).
  *   - Queue serialization: overlapping calls dispatch sequentially.
  *
  * Run with: node --import tsx --test tests/client.test.ts
@@ -39,6 +41,7 @@ process.env.SPOTIFY_CLIENT_ID = 'test-client-id';
 
 const { SpotifyClient, SpotifyApiError } = await import('../src/client.ts');
 const { TOKEN_FILE } = await import('../src/auth.ts');
+const { initConfig } = await import('../src/config.ts');
 
 // Guard the isolation contract: if TOKEN_FILE ever resolved outside tmpdir
 // (e.g. a static import racing ahead of the env var), fail loudly instead of
@@ -537,7 +540,8 @@ describe('SpotifyClient', () => {
       assert.deepEqual(offsets, ['0', '3'], 'walk stops once the cap is reached');
     });
 
-    it('applies the implicit 500-item cap when no maxItems option is given', async () => {
+    it('applies the configured fetch-all cap when no maxItems option is given', async () => {
+      // Default config: DEFAULT_FETCH_ALL_CAP = 500 (SPOTIFY_MCP_FETCH_ALL_CAP unset).
       await seedTokens();
       responder = (url) => {
         const params = new URL(url).searchParams;
@@ -550,6 +554,32 @@ describe('SpotifyClient', () => {
       const all = await client.getAllPages<{ id: number }>('/me/tracks');
       assert.equal(all.length, 500);
       assert.equal(all[499].id, 499);
+    });
+
+    it('honours SPOTIFY_MCP_FETCH_ALL_CAP bound through initConfig (#55)', async () => {
+      await seedTokens();
+      responder = (url) => {
+        const params = new URL(url).searchParams;
+        const offset = Number(params.get('offset') ?? 0);
+        const items = Array.from({ length: 100 }, (_, i) => ({ id: offset + i }));
+        return jsonResponse({ items, total: 100_000, limit: 100, offset });
+      };
+
+      initConfig({ ...process.env, SPOTIFY_MCP_FETCH_ALL_CAP: '7' });
+      try {
+        // The cap binds at SpotifyClient construction time from getConfig().
+        const client = new SpotifyClient();
+        const all = await client.getAllPages<{ id: number }>('/me/tracks');
+        assert.equal(all.length, 7);
+        assert.equal(all[6].id, 6);
+        assert.deepEqual(
+          apiCalls().map((c) => new URL(c.url).searchParams.get('offset')),
+          ['0'],
+          'a single full page covers the cap; no follow-up offset',
+        );
+      } finally {
+        initConfig(); // restore the process-wide snapshot for later tests
+      }
     });
 
     it('breaks cleanly when a page is malformed (items missing)', async () => {
@@ -640,6 +670,78 @@ describe('SpotifyClient', () => {
       assert.equal(results[0].status, 'rejected');
       assert.equal(results[1].status, 'fulfilled', 'failure did not poison the queue');
       assert.equal(apiCalls().length, 2);
+    });
+  });
+  // -------------------------------------------------------------------------
+  // 9. getAllPages progress reporting (#65)
+  // -------------------------------------------------------------------------
+
+  describe('getAllPages progress reporting', () => {
+    interface RecordedProgress {
+      walkId: number;
+      page: number;
+      fetched: number;
+      total?: number;
+    }
+
+    it('emits one PageProgress event per page with a shared walkId', async () => {
+      await seedTokens();
+      responder = (url) => {
+        const offset = Number(new URL(url).searchParams.get('offset') ?? 0);
+        return jsonResponse({ items: [{ id: offset }], total: 3, limit: 1, offset });
+      };
+
+      const events: RecordedProgress[] = [];
+      const client = new SpotifyClient();
+      client.setProgressReporter((info) => events.push({ ...info }));
+
+      await client.getAllPages<{ id: number }>('/me/tracks');
+
+      assert.equal(events.length, 3, 'one event per fetched page');
+      assert.ok(events.every((e) => e.walkId === events[0].walkId), 'one walkId across the walk');
+      assert.deepEqual(events.map((e) => e.page), [1, 2, 3]);
+      assert.deepEqual(events.map((e) => e.fetched), [1, 2, 3]);
+      assert.ok(events.every((e) => e.total === 3), 'server-reported total is forwarded');
+    });
+
+    it('uses fresh monotonic walkIds for successive walks on one client', async () => {
+      await seedTokens();
+      responder = () => jsonResponse({ items: [{ id: 0 }], total: 1, limit: 1, offset: 0 });
+
+      const events: RecordedProgress[] = [];
+      const client = new SpotifyClient();
+      client.setProgressReporter((info) => events.push({ ...info }));
+
+      await client.getAllPages('/me/tracks');
+      await client.getAllPages('/me/tracks');
+
+      assert.equal(events.length, 2);
+      assert.ok(events[1].walkId > events[0].walkId, 'walkIds increase monotonically');
+    });
+
+    it('a throwing reporter never breaks the walk', async () => {
+      await seedTokens();
+      responder = (url) => {
+        const offset = Number(new URL(url).searchParams.get('offset') ?? 0);
+        return jsonResponse({ items: [{ id: offset }], total: 2, limit: 1, offset });
+      };
+
+      const client = new SpotifyClient();
+      client.setProgressReporter(() => {
+        throw new Error('reporter exploded');
+      });
+
+      const all = await client.getAllPages<{ id: number }>('/me/tracks');
+      assert.deepEqual(all.map((i) => i.id), [0, 1], 'walk completed despite reporter throw');
+    });
+
+    it('works with no reporter installed (default null)', async () => {
+      await seedTokens();
+      responder = () => jsonResponse({ items: [{ id: 0 }], total: 1, limit: 1, offset: 0 });
+
+      const client = new SpotifyClient();
+      const all = await client.getAllPages('/me/tracks');
+      assert.deepEqual(all, [{ id: 0 }]);
     });
   });
 });

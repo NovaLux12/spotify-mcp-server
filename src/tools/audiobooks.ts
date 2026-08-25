@@ -10,6 +10,16 @@ import type {
   UserProfile,
 } from '../types/spotify.js';
 
+import {
+  ResponseFormat,
+  sharedListFields,
+  resolveMaxResults,
+  truncateItems,
+  paginationInfo,
+  listStructuredContent,
+  type ResponseFormatValue,
+} from '../shaping.js';
+
 const MARKET_NOTE =
   ' Audiobooks are only available in the US, UK, Canada, Ireland, New Zealand and Australia markets.';
 
@@ -73,6 +83,80 @@ function formatDuration(ms: number): string {
   return `${minutes}:${seconds.toString().padStart(2, '0')}`;
 }
 
+// Thin presentation glue over src/shaping.ts primitives (#51/#52/#53), kept
+// identical to the catalog module's helpers.
+
+type ShapedToolResult = {
+  [key: string]: unknown;
+  content: Array<{ type: 'text'; text: string }>;
+  structuredContent?: Record<string, unknown>;
+};
+
+/** #51 json mode: raw API payload as parseable JSON text plus structuredContent. */
+function jsonResult(raw: Record<string, unknown>): ShapedToolResult {
+  return { content: [{ type: 'text', text: JSON.stringify(raw) }], structuredContent: raw };
+}
+
+/**
+ * Single-object rendering (#51): concise keeps the existing prose verbatim;
+ * detailed appends fields the prose drops.
+ */
+function renderSingle(
+  fmt: ResponseFormatValue | undefined,
+  raw: Record<string, unknown>,
+  concise: string[],
+): ShapedToolResult {
+  if (fmt === 'json') return jsonResult(raw);
+  return { content: [{ type: 'text', text: concise.join('\n') }] };
+}
+
+/**
+ * List rendering (#52/#53): truncates to max_results, appends the shared
+ * footer, and emits structuredContent with pagination info.
+ */
+function renderList<T>(
+  fmt: ResponseFormatValue | undefined,
+  pageItems: readonly T[],
+  opts: {
+    header: string;
+    line: (item: T, index: number) => string;
+    maxResults?: number;
+    total?: number | null;
+    offset?: number;
+    limit?: number | null;
+    continuable?: boolean;
+  },
+): ShapedToolResult {
+  const cap = resolveMaxResults(opts.maxResults);
+  const trunc = truncateItems(pageItems, cap);
+  const lines = [opts.header];
+  trunc.items.forEach((item, i) => lines.push(opts.line(item, i)));
+  if (trunc.footer) lines.push('', `(${trunc.footer})`);
+  const continuable = opts.continuable !== false;
+  const pagination = paginationInfo({
+    total: opts.total ?? trunc.total,
+    offset: opts.offset,
+    limit: opts.limit ?? null,
+    returned: trunc.items.length,
+  });
+  if (!continuable) {
+    pagination.next_offset = null;
+  } else if (!trunc.truncated && pagination.next_offset !== null) {
+    const left =
+      pagination.total !== null ? pagination.total - pagination.next_offset : null;
+    lines.push(
+      '',
+      `More pages available — pass offset=${pagination.next_offset}${
+        left !== null ? ` (${left} items left)` : ''
+      }`,
+    );
+  }
+  return {
+    content: [{ type: 'text', text: lines.join('\n') }],
+    structuredContent: listStructuredContent(trunc.items, pagination),
+  };
+}
+
 export function registerAudiobookTools(server: McpServer, client: SpotifyClient): void {
   // get_audiobook
   server.tool(
@@ -81,6 +165,7 @@ export function registerAudiobookTools(server: McpServer, client: SpotifyClient)
     {
       id: z.string().describe('Spotify audiobook ID'),
       market: MARKET_PARAM,
+      response_format: ResponseFormat,
     },
     async (args) => {
       const audiobook = await getWithMarketFallback<SpotifyAudiobookFull>(
@@ -109,7 +194,7 @@ export function registerAudiobookTools(server: McpServer, client: SpotifyClient)
         }
       }
 
-      return { content: [{ type: 'text', text: lines.join('\n') }] };
+      return renderSingle(args.response_format, audiobook as unknown as Record<string, unknown>, lines);
     },
   );
 
@@ -128,6 +213,7 @@ export function registerAudiobookTools(server: McpServer, client: SpotifyClient)
         .describe('Results per page, 1–50. Default: 20'),
       offset: z.number().int().min(0).optional().describe('Index of the first chapter to return. Default: 0'),
       market: MARKET_PARAM,
+      ...sharedListFields,
     },
     async (args) => {
       const result = await getWithMarketFallback<SpotifyPaged<SpotifyChapterSimple>>(
@@ -141,14 +227,20 @@ export function registerAudiobookTools(server: McpServer, client: SpotifyClient)
       );
       if (!result) throw new Error(`Audiobook "${args.id}" not found`);
 
-      const lines = [`Chapters for audiobook (${result.total} total):`];
-      for (const chapter of result.items) {
-        const playable = chapter.is_playable ? '' : ' [not playable]';
-        lines.push(
-          `  ${chapter.chapter_number}. "${chapter.name}" (${formatDuration(chapter.duration_ms)}, ${chapter.release_date})${playable} | URI: ${chapter.uri}`,
-        );
+      if (args.response_format === 'json') {
+        return jsonResult(result as unknown as Record<string, unknown>);
       }
-      return { content: [{ type: 'text', text: lines.join('\n') }] };
+      return renderList(args.response_format, result.items, {
+        header: `Chapters for audiobook (${result.total} total):`,
+        line: (chapter) => {
+          const playable = chapter.is_playable ? '' : ' [not playable]';
+          return `  ${chapter.chapter_number}. "${chapter.name}" (${formatDuration(chapter.duration_ms)}, ${chapter.release_date})${playable} | URI: ${chapter.uri}`;
+        },
+        total: result.total,
+        offset: args.offset,
+        limit: args.limit ?? 20,
+        maxResults: args.max_results,
+      });
     },
   );
 
@@ -159,6 +251,7 @@ export function registerAudiobookTools(server: McpServer, client: SpotifyClient)
     {
       id: z.string().describe('Spotify chapter ID'),
       market: MARKET_PARAM,
+      response_format: ResponseFormat,
     },
     async (args) => {
       const chapter = await getWithMarketFallback<SpotifyChapterFull>(
@@ -184,7 +277,7 @@ export function registerAudiobookTools(server: McpServer, client: SpotifyClient)
 
       lines.push(`URI: ${chapter.uri}`);
 
-      return { content: [{ type: 'text', text: lines.join('\n') }] };
+      return renderSingle(args.response_format, chapter as unknown as Record<string, unknown>, lines);
     },
   );
 
@@ -201,6 +294,7 @@ export function registerAudiobookTools(server: McpServer, client: SpotifyClient)
         .optional()
         .describe('Results per page, 1–50. Default: 20'),
       offset: z.number().int().min(0).optional().describe('Index of the first audiobook to return. Default: 0'),
+      ...sharedListFields,
     },
     async (args) => {
       const params: Record<string, string> = {
@@ -211,14 +305,20 @@ export function registerAudiobookTools(server: McpServer, client: SpotifyClient)
       const result = await client.get<SpotifyPaged<SavedAudiobookItem>>('/me/audiobooks', params);
       if (!result) throw new Error('Could not fetch saved audiobooks');
 
-      const lines = [`Saved audiobooks (${result.total} total):`];
-      for (const item of result.items) {
-        const authors = item.audiobook.authors.map((a) => a.name).join(', ');
-        lines.push(
-          `  • "${item.audiobook.name}" by ${authors} (${item.audiobook.total_chapters} chapters, saved ${item.added_at}) | URI: ${item.audiobook.uri}`,
-        );
+      if (args.response_format === 'json') {
+        return jsonResult(result as unknown as Record<string, unknown>);
       }
-      return { content: [{ type: 'text', text: lines.join('\n') }] };
+      return renderList(args.response_format, result.items, {
+        header: `Saved audiobooks (${result.total} total):`,
+        line: (item) => {
+          const authors = item.audiobook.authors.map((a) => a.name).join(', ');
+          return `  • "${item.audiobook.name}" by ${authors} (${item.audiobook.total_chapters} chapters, saved ${item.added_at}) | URI: ${item.audiobook.uri}`;
+        },
+        total: result.total,
+        offset: args.offset,
+        limit: args.limit ?? 20,
+        maxResults: args.max_results,
+      });
     },
   );
 }

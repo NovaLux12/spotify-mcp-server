@@ -310,3 +310,89 @@ describe('get_user_playlists_by_id', () => {
     });
   }
 });
+
+// ---------------------------------------------------------------------------
+// Shared shaping: response_format (#51), truncation + structuredContent
+// (#52/#53)
+// ---------------------------------------------------------------------------
+
+describe('get_user_profile response_format (#51)', () => {
+  it('json mode returns the raw API user object', async () => {
+    const { invoke } = harness(() => publicProfile());
+    const out = await invoke('get_user_profile', {
+      user_id: 'spotifyuser',
+      response_format: 'json',
+    });
+    const payload = JSON.parse(out.content[0].text);
+    assert.equal(payload.id, 'spotifyuser');
+    assert.equal(payload.display_name, 'Sample User');
+    assert.equal(payload.followers.total, 1234);
+    assert.deepEqual(out.structuredContent, payload);
+    assert.ok(!out.content[0].text.startsWith('User:'));
+  });
+
+  it('concise prose output is unchanged (default)', async () => {
+    const { invoke } = harness(() => publicProfile());
+    const text = textOf(await invoke('get_user_profile', { user_id: 'spotifyuser' }));
+    assert.match(text, /^User: Sample User\nID: spotifyuser/);
+  });
+});
+
+describe('get_user_playlists_by_id shaping (#51/#52/#53)', () => {
+  it('max_results slices the listing and appends the more-footer', async () => {
+    const items = Array.from({ length: 4 }, (_, i) => playlistSimple(`p${i}`, `List ${i}`));
+    const { invoke } = harness(() => ({ items, total: 4, limit: 20, offset: 0 }));
+
+    const out = await invoke('get_user_playlists_by_id', { user_id: 'u', max_results: 2 });
+
+    const text = textOf(out);
+    assert.match(text, /^Playlists owned by u \(4 total, showing 2\):/);
+    assert.match(text, /\(2 more — pass offset or fetch_all\)/);
+    assert.ok(!text.includes('List 2'));
+    const sc = out.structuredContent as { items: unknown[]; pagination: Record<string, unknown> };
+    assert.equal(sc.items.length, 2);
+    assert.equal(sc.pagination.total, 4);
+    assert.equal(sc.pagination.next_offset, 2);
+  });
+
+  it('appends a next-offset hint when the API page is shorter than total', async () => {
+    const { invoke } = harness(() => ({
+      items: [playlistSimple('p1', 'L1'), playlistSimple('p2', 'L2')],
+      total: 8,
+      limit: 2,
+      offset: 0,
+    }));
+    const out = await invoke('get_user_playlists_by_id', { user_id: 'u', limit: 2 });
+    assert.match(textOf(out), /\(More available — pass offset=2 for the next page\)/);
+  });
+
+  it('json mode parses to items + pagination without prose headers', async () => {
+    const { invoke } = harness(() => ({
+      items: [playlistSimple('p1', 'List One')],
+      total: 1,
+      limit: 20,
+      offset: 0,
+    }));
+    const out = await invoke('get_user_playlists_by_id', {
+      user_id: 'u',
+      response_format: 'json',
+    });
+    const payload = JSON.parse(out.content[0].text);
+    assert.equal(payload.items.length, 1);
+    assert.deepEqual(out.structuredContent, payload);
+    assert.ok(!out.content[0].text.startsWith('Playlists owned by'));
+  });
+
+  it('detailed mode appends non-empty descriptions (#51)', async () => {
+    const pl = { ...playlistSimple('p1', 'List One'), description: 'My faves' };
+    const { invoke } = harness(() => ({ items: [pl], total: 1, limit: 20, offset: 0 }));
+    const detailed = textOf(
+      await invoke('get_user_playlists_by_id', { user_id: 'u', response_format: 'detailed' }),
+    );
+    assert.match(detailed, /URI: spotify:playlist:p1 \| My faves/);
+
+    // Null descriptions add nothing in either mode.
+    const concise = textOf(await invoke('get_user_playlists_by_id', { user_id: 'u' }));
+    assert.ok(!concise.includes('| |'));
+  });
+});

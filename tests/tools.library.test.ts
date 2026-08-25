@@ -278,7 +278,7 @@ describe('get_saved_* fetch_all mode (getAllPages switch)', () => {
     assert.deepEqual(h.client.calls[0].arg, { market: 'US', limit: '50' });
 
     const text = out.content[0].text;
-    assert.match(text, /^Liked Songs \(3 fetched, capped at 500\):/);
+    assert.match(text, /^Liked Songs \(3 fetched, showing 3\):/);
     assert.match(text, /"Three" by Artist t3/);
   });
 
@@ -295,7 +295,7 @@ describe('get_saved_* fetch_all mode (getAllPages switch)', () => {
       const out = await h.invoke(tool, { fetch_all: true, limit: 1, offset: 9 });
       assert.deepEqual(h.client.calls.map((c) => c.method), ['GET_ALL_PAGES'], tool);
       assert.deepEqual(h.client.calls[0].arg, { limit: '50' }, `${tool} should send limit=50 and no paging offset`);
-      assert.match(out.content[0].text, /0 fetched, capped at 500/);
+      assert.match(out.content[0].text, /0 fetched, showing 0/);
     }
   });
 });
@@ -567,5 +567,187 @@ describe('zod schema bounds for unified tools (40 max)', () => {
     assert.equal(h.shape('save_to_library').safeParse({ uris: [] }).success, false);
     assert.equal(h.shape('remove_from_library').safeParse({ uris: [] }).success, false);
     assert.equal(h.shape('check_in_library').safeParse({ uris: [] }).success, false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Shared shaping: response_format (#51), truncation + structuredContent
+// (#52/#53), dry_run (#57), batch summaries (#58)
+// ---------------------------------------------------------------------------
+
+describe('response_format json mode returns machine-readable payloads (#51)', () => {
+  it('get_saved_tracks json mode parses to items + pagination', async () => {
+    const h = harness(() => ({
+      items: [savedTrack('t1', 'One')],
+      total: 99,
+      limit: 20,
+      offset: 0,
+      next: null,
+      previous: null,
+    }));
+    const out = await h.invoke('get_saved_tracks', { response_format: 'json' });
+
+    const payload = JSON.parse(out.content[0].text);
+    assert.equal(payload.items.length, 1);
+    assert.equal(payload.items[0].track.uri, 'spotify:track:t1');
+    assert.equal(payload.pagination.total, 99);
+    assert.equal(payload.pagination.offset, 0);
+    assert.equal(payload.pagination.next_offset, 1);
+    assert.deepEqual(out.structuredContent, payload);
+    // No prose header in json mode.
+    assert.ok(!out.content[0].text.startsWith('Liked Songs'));
+  });
+
+  it('mutation json output reports ok/affected/uris', async () => {
+    const h = harness();
+    const out = await h.invoke('save_items', {
+      uris: ['spotify:track:abc'],
+      response_format: 'json',
+    });
+    const payload = JSON.parse(out.content[0].text);
+    assert.equal(payload.ok, true);
+    assert.equal(payload.affected, 1);
+    assert.deepEqual(payload.uris, ['spotify:track:abc']);
+  });
+});
+
+describe('max_results truncation + pagination info (#52/#53)', () => {
+  it('get_saved_tracks slices to max_results and appends the more-footer', async () => {
+    const many = Array.from({ length: 5 }, (_, i) => savedTrack(`t${i}`, `Song ${i}`));
+    const h = harness(() => ({ items: many, total: 5, limit: 50, offset: 0 }));
+
+    const out = await h.invoke('get_saved_tracks', { max_results: 2 });
+
+    const text = out.content[0].text;
+    assert.match(text, /^Liked Songs \(5 total, showing 2\):/);
+    assert.match(text, /\(3 more — pass offset or fetch_all\)/);
+    assert.ok(!text.includes('Song 2'));
+    const sc = out.structuredContent as { items: unknown[]; pagination: Record<string, unknown> };
+    assert.equal(sc.items.length, 2);
+    assert.equal(sc.pagination.next_offset, 2);
+  });
+
+  it('single-page results carry a next-offset hint when the API page is shorter than total', async () => {
+    const h = harness(() => ({
+      items: [savedTrack('t1', 'One'), savedTrack('t2', 'Two')],
+      total: 10,
+      limit: 2,
+      offset: 0,
+    }));
+    const out = await h.invoke('get_saved_tracks', { limit: 2, offset: 0 });
+    assert.match(out.content[0].text, /\(More available — pass offset=2 for the next page\)/);
+  });
+
+  it('fetch_all respects max_results with a max_results-specific footer', async () => {
+    const all = Array.from({ length: 4 }, (_, i) => savedTrack(`t${i}`, `Song ${i}`));
+    const h = harness(() => all);
+    const out = await h.invoke('get_saved_tracks', { fetch_all: true, max_results: 3 });
+    const text = out.content[0].text;
+    assert.match(text, /^Liked Songs \(4 fetched, showing 3\):/);
+    assert.match(text, /\(1 more — pass max_results to raise this call's cap\)/);
+  });
+
+  it('check_saved_items truncates its per-URI listing via max_results', async () => {
+    const h = harness((path) => (path === '/me/tracks/contains' ? [true] : [false]));
+    const out = await h.invoke('check_saved_items', {
+      uris: ['spotify:track:a', 'spotify:album:b', 'spotify:show:c'],
+      max_results: 2,
+    });
+    const text = out.content[0].text;
+    assert.match(text, /✓ spotify:track:a/);
+    assert.match(text, /✗ spotify:album:b/);
+    assert.ok(!text.includes('spotify:show:c'));
+    assert.match(text, /\(1 more — pass offset or fetch_all\)/);
+    const sc = out.structuredContent as { items: Array<{ uri: string; saved: boolean }> };
+    assert.deepEqual(sc.items, [
+      { uri: 'spotify:track:a', saved: true },
+      { uri: 'spotify:album:b', saved: false },
+    ]);
+  });
+
+  it('check_in_library truncates identically and keeps input order', async () => {
+    const h = harness(() => [true, false, true]);
+    const uris = ['spotify:artist:a1', 'spotify:user:wanda', 'spotify:playlist:p1'];
+    const out = await h.invoke('check_in_library', { uris, max_results: 2 });
+    const text = out.content[0].text;
+    assert.ok(!text.includes('p1'));
+    assert.match(text, /\(1 more — pass offset or fetch_all\)/);
+    const sc = out.structuredContent as { pagination: { next_offset: number | null } };
+    assert.equal(sc.pagination.next_offset, 2);
+  });
+});
+
+describe('dry_run previews destructive operations without any mutating call (#57)', () => {
+  it('remove_saved_items dry_run makes zero client calls and previews every URI', async () => {
+    const h = harness();
+    const uris = ['spotify:track:abc', 'spotify:album:xyz'];
+
+    const out = await h.invoke('remove_saved_items', { uris, dry_run: true });
+
+    assert.equal(h.client.calls.length, 0, 'dry_run must not touch the API');
+    const text = out.content[0].text;
+    assert.match(text, /^\[dry run\] remove_saved_items on user library — nothing was changed\./);
+    assert.match(text, /Would affect 2 items:/);
+    for (const uri of uris) assert.ok(text.includes(uri));
+    const sc = out.structuredContent as Record<string, unknown>;
+    assert.equal(sc.dry_run, true);
+    assert.deepEqual(sc.would_affect, uris);
+  });
+
+  it('remove_saved_items dry_run still rejects unsupported URI types before previewing', async () => {
+    const h = harness();
+    await assert.rejects(
+      h.invoke('remove_saved_items', { uris: ['https://not-a-uri'], dry_run: true }),
+      /Unsupported URI type/,
+    );
+    assert.equal(h.client.calls.length, 0);
+  });
+
+  it('remove_from_library dry_run makes zero client calls and previews every URI', async () => {
+    const h = harness();
+    const uris = ['spotify:playlist:p1', 'spotify:user:wanda'];
+
+    const out = await h.invoke('remove_from_library', { uris, dry_run: true });
+    assert.equal(h.client.calls.length, 0, 'dry_run must not touch the API');
+    const text = out.content[0].text;
+    assert.match(text, /^\[dry run\] remove_from_library on user library — nothing was changed\./);
+    for (const uri of uris) assert.ok(text.includes(uri));
+  });
+
+  it('remove_from_library without dry_run still performs the DELETE', async () => {
+    const h = harness();
+    await h.invoke('remove_from_library', { uris: ['spotify:playlist:p1'] });
+    assert.equal(h.client.calls.length, 1);
+    assert.equal(h.client.calls[0].method, 'DELETE');
+  });
+});
+
+describe('confirmation-friendly batch summaries on mutations (#58)', () => {
+  it('save_items echoes "{n} items affected" with the first URIs', async () => {
+    const h = harness();
+    const uris = ['spotify:track:abc', 'spotify:album:xyz', 'spotify:show:r1'];
+    const out = await h.invoke('save_items', { uris });
+    assert.match(
+      out.content[0].text,
+      /3 items affected: spotify:track:abc, spotify:album:xyz, spotify:show:r1/,
+    );
+  });
+
+  it('long batches are abbreviated after three URIs with an ellipsis', async () => {
+    const h = harness();
+    const four = Array.from({ length: 4 }, (_, i) => `spotify:track:id${i}`);
+    const out = await h.invoke('save_to_library', { uris: four });
+    const summaryLine = out.content[0].text.split('\n')[1];
+    assert.equal(
+      summaryLine,
+      '4 items affected: spotify:track:id0, spotify:track:id1, spotify:track:id2…',
+    );
+  });
+
+  it('remove_saved_items echoes the removed count and URIs', async () => {
+    const h = harness();
+    const out = await h.invoke('remove_saved_items', { uris: ['spotify:audiobook:a1'] });
+    assert.match(out.content[0].text, /Removed 1 item\(s\) from library\./);
+    assert.match(out.content[0].text, /1 item affected: spotify:audiobook:a1/);
   });
 });

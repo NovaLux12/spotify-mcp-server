@@ -1,13 +1,45 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
+import { getConfig } from '../config.js';
+import {
+  batchSummary,
+  listStructuredContent,
+  paginationInfo,
+  resolveMaxResults,
+  sharedListFields,
+  truncateItems,
+  type ResponseFormatValue,
+} from '../shaping.js';
 import type {
   SpotifyPaged,
   SpotifyPlaylistSimple,
   PlaylistItemObject,
   PlaylistItemsResponse,
   SpotifyImage,
+  SpotifyTrack,
+  SpotifyEpisode,
 } from '../types/spotify.js';
+
+type TextContent = { type: 'text'; text: string };
+type ToolResult = { content: TextContent[]; structuredContent?: Record<string, unknown> };
+
+/** Build a tool result; attaches structuredContent when provided (#52). */
+function textResult(text: string, structured?: Record<string, unknown>): ToolResult {
+  const content: TextContent[] = [{ type: 'text', text }];
+  return structured ? { content, structuredContent: structured } : { content };
+}
+
+/** Stable identity key over name + artist names for relinked-duplicate grouping (#63). */
+function trackIdentityKey(track: SpotifyTrack | SpotifyEpisode): string {
+  const artists =
+    'artists' in track && Array.isArray(track.artists)
+      ? track.artists.map((a) => a.name.toLowerCase()).sort().join(',')
+      : '';
+  return `${track.name.toLowerCase()}|${artists}`;
+}
+
+const jsonText = (data: unknown): string => JSON.stringify(data, null, 2);
 
 function formatDuration(ms: number): string {
   const minutes = Math.floor(ms / 60000);
@@ -15,8 +47,8 @@ function formatDuration(ms: number): string {
   return `${minutes}:${seconds.toString().padStart(2, '0')}`;
 }
 
-// Hard cap for fetch_all pagination loops
-const FETCH_ALL_CAP = 500;
+// Hard cap for fetch_all pagination loops (SPOTIFY_MCP_FETCH_ALL_CAP, #55)
+const FETCH_ALL_CAP = () => getConfig().fetchAllCap;
 
 // Playlist metadata as returned by GET /playlists/{id}, which includes cover
 // images (unlike the simplified playlists in paged listings)
@@ -49,14 +81,18 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
     'get_user_playlists',
     "List the current user's playlists",
     {
+      ...sharedListFields,
       limit: z.number().int().min(1).max(50).optional().describe('1–50. Default: 20'),
       offset: z.number().int().min(0).optional().describe('Pagination offset. Default: 0'),
       fetch_all: z
         .boolean()
         .optional()
-        .describe('Fetch every page (up to 500 playlists) instead of a single page'),
+        .describe(
+          `Fetch every page (up to ${getConfig().fetchAllCap} playlists) instead of a single page`,
+        ),
     },
     async (args) => {
+      const fmt: ResponseFormatValue = args.response_format;
       const limit = String(args.limit ?? 20);
       const params: Record<string, string> = { limit };
       if (args.offset !== undefined) params.offset = String(args.offset);
@@ -66,30 +102,54 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
 
       let total = result.total;
       const items = [...result.items];
-      if (args.fetch_all && items.length < Math.min(total, FETCH_ALL_CAP)) {
+      if (args.fetch_all && items.length < Math.min(total, FETCH_ALL_CAP())) {
         // Resume from the absolute position we have already collected rather
         // than restarting at offset 0; pagination logic lives in the client.
         const rest = await client.getAllPages<SpotifyPlaylistSimple>(
           '/me/playlists',
           { limit },
           {
-            maxItems: FETCH_ALL_CAP - items.length,
+            maxItems: FETCH_ALL_CAP() - items.length,
             initialOffset: (args.offset ?? 0) + items.length,
           },
         );
         items.push(...rest);
-        if (items.length > FETCH_ALL_CAP) items.length = FETCH_ALL_CAP;
+        if (items.length > FETCH_ALL_CAP()) items.length = FETCH_ALL_CAP();
       }
 
-      const lines = [`Your playlists (${total} total, showing ${items.length}):`];
-      for (const pl of items) {
+      // #53: render at most max_results listings regardless of how many the
+      // page(s) carried back; the footer tells the agent how to continue.
+      const view = truncateItems(items, resolveMaxResults(args.max_results));
+      const shown = view.items;
+
+      if (fmt === 'json') {
+        return textResult(jsonText({ total, items }), listStructuredContent(shown, paginationInfo({
+          total,
+          offset: args.offset ?? 0,
+          limit: args.limit ?? 20,
+          returned: shown.length,
+        })));
+      }
+
+      const lines = [`Your playlists (${total} total, showing ${shown.length}):`];
+      for (const pl of shown) {
         const trackCount = pl.tracks?.total ?? 0;
         const owner = pl.owner.display_name ?? pl.owner.id;
         lines.push(
           `  • "${pl.name}" by ${owner} (${trackCount} tracks) | ID: ${pl.id} | URI: ${pl.uri}`,
         );
+        if (fmt === 'detailed' && pl.description) lines.push(`    Description: ${pl.description}`);
       }
-      return { content: [{ type: 'text', text: lines.join('\n') }] };
+      if (view.footer) lines.push(`(${view.footer})`);
+      return textResult(
+        lines.join('\n'),
+        listStructuredContent(shown, paginationInfo({
+          total,
+          offset: args.offset ?? 0,
+          limit: args.limit ?? 20,
+          returned: shown.length,
+        })),
+      );
     },
   );
 
@@ -98,6 +158,7 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
     'get_playlist',
     "Get a playlist's metadata (including cover image) and items",
     {
+      ...sharedListFields,
       id: z.string().describe('Playlist ID'),
       limit: z
         .number()
@@ -115,7 +176,9 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
       fetch_all: z
         .boolean()
         .optional()
-        .describe('Fetch all items across pages (up to 500) instead of a single page'),
+        .describe(
+          `Fetch all items across pages (up to ${getConfig().fetchAllCap}) instead of a single page`,
+        ),
     },
     async (args) => {
       const id = encodeURIComponent(args.id);
@@ -131,17 +194,17 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
 
       let items = firstPage;
       if (args.fetch_all && firstPage) {
-        const collected = [...firstPage.items];
-        while (collected.length < Math.min(firstPage.total, FETCH_ALL_CAP)) {
-          const page = await client.get<PlaylistItemsResponse>(`/playlists/${id}/items`, {
-            limit: itemLimit,
-            offset: String(collected.length),
-          });
-          if (!page || page.items.length === 0) break;
-          collected.push(...page.items);
-        }
-        if (collected.length > FETCH_ALL_CAP) collected.length = FETCH_ALL_CAP;
-        items = { ...firstPage, items: collected };
+          const collected = [...firstPage.items];
+          while (collected.length < Math.min(firstPage.total, FETCH_ALL_CAP())) {
+            const page = await client.get<PlaylistItemsResponse>(`/playlists/${id}/items`, {
+              limit: itemLimit,
+              offset: String(collected.length),
+            });
+            if (!page || page.items.length === 0) break;
+            collected.push(...page.items);
+          }
+          if (collected.length > FETCH_ALL_CAP()) collected.length = FETCH_ALL_CAP();
+          items = { ...firstPage, items: collected };
       }
 
       // Cover image: prefer the one embedded in the playlist object, else ask
@@ -153,6 +216,12 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
       }
 
       const owner = metadata.owner.display_name ?? metadata.owner.id;
+
+      // #51: json mode hands the raw API objects straight to the caller.
+      if (args.response_format === 'json') {
+        return textResult(jsonText({ playlist: metadata, items: items ?? null }));
+      }
+
       const lines = [`"${metadata.name}" by ${owner}`];
       if (metadata.description) lines.push(`Description: ${metadata.description}`);
       lines.push(`URI: ${metadata.uri}`);
@@ -163,14 +232,19 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
         let trackNum = (args.offset ?? 0) + 1;
         for (const item of items.items) {
           const description = formatPlaylistItem(item);
-          if (description) lines.push(`  ${trackNum}. ${description}`);
+          if (description) {
+            lines.push(`  ${trackNum}. ${description}`);
+            if (args.response_format === 'detailed' && item.added_at) {
+              lines.push(`     Added: ${item.added_at}`);
+            }
+          }
           trackNum++;
         }
       } else {
         lines.push('\nPlaylist is empty.');
       }
 
-      return { content: [{ type: 'text', text: lines.join('\n') }] };
+      return textResult(lines.join('\n'));
     },
   );
 
@@ -179,6 +253,7 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
     'get_playlist_items',
     "List a playlist's items on a single page. Use market to relink tracks and flag unavailable ones, and fields/additional_types to trim the payload.",
     {
+      ...sharedListFields,
       playlist_id: z.string().describe('Playlist ID'),
       limit: z
         .number()
@@ -214,18 +289,35 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
       const page = await client.get<PlaylistItemsResponse>(`/playlists/${id}/items`, params);
       if (!page) throw new Error(`Could not retrieve items for playlist ${args.playlist_id}`);
 
-      const lines = [`Playlist items (${page.total} total, showing ${page.items.length}):`];
+      // #51/#52/#53: truncate to max_results, expose pagination, and offer a
+      // raw-JSON view of the page for programmatic consumers.
+      const fmt: ResponseFormatValue = args.response_format;
+      const view = truncateItems(page.items, resolveMaxResults(args.max_results));
+      const pag = paginationInfo({
+        total: page.total,
+        offset: args.offset ?? 0,
+        limit: args.limit ?? 100,
+        returned: view.items.length,
+      });
+
+      if (fmt === 'json') {
+        return textResult(jsonText(page), listStructuredContent(view.items, pag));
+      }
+
+      const lines = [`Playlist items (${page.total} total, showing ${view.items.length}):`];
       let position = (args.offset ?? 0) + 1;
-      for (const item of page.items) {
+      for (const item of view.items) {
         const description = formatPlaylistItem(item);
         if (description) {
           lines.push(`  ${position}. ${description}`);
+          if (fmt === 'detailed' && item.added_at) lines.push(`     Added: ${item.added_at}`);
         } else {
           lines.push(`  ${position}. [unavailable in this market]`);
         }
         position++;
       }
-      return { content: [{ type: 'text', text: lines.join('\n') }] };
+      if (view.footer) lines.push(`(${view.footer})`);
+      return textResult(lines.join('\n'), listStructuredContent(view.items, pag));
     },
   );
 
@@ -234,6 +326,7 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
     'get_playlist_cover',
     "Get a playlist's cover image URLs",
     {
+      ...sharedListFields,
       playlist_id: z.string().describe('Playlist ID'),
     },
     async (args) => {
@@ -245,13 +338,16 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
           content: [{ type: 'text', text: 'This playlist has no custom cover image.' }],
         };
       }
+      if (args.response_format === 'json') {
+        return textResult(jsonText(images));
+      }
       const lines = [`Cover images (${images.length}):`];
       for (const img of images) {
         const dims =
           img.width != null && img.height != null ? ` (${img.width}x${img.height})` : '';
         lines.push(`  • ${img.url}${dims}`);
       }
-      return { content: [{ type: 'text', text: lines.join('\n') }] };
+      return textResult(lines.join('\n'));
     },
   );
 
@@ -343,6 +439,10 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
     {
       playlist_id: z.string().describe('Playlist ID'),
       uris: z.array(z.string()).min(1).max(100).describe('Track or episode URIs to add'),
+      check_duplicates: z
+        .boolean()
+        .optional()
+        .describe('Skip URIs that are already in the playlist instead of appending them (default: false)'),
       position: z
         .number()
         .int()
@@ -351,21 +451,44 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
         .describe('Insert at index; appends if omitted'),
     },
     async (args) => {
-      const body: Record<string, unknown> = { uris: args.uris };
+      const id = encodeURIComponent(args.playlist_id);
+
+      // #63: opt-in duplicate guard — pre-fetch what the playlist already
+      // contains and silently skip URIs that are already present.
+      let toAdd = args.uris;
+      let skipped = 0;
+      if (args.check_duplicates) {
+        const existing = await client.getAllPages<PlaylistItemObject>(
+          `/playlists/${id}/items`,
+          { limit: '100' },
+        );
+        const present = new Set<string>();
+        for (const item of existing) {
+          if (item.track?.uri) present.add(item.track.uri);
+        }
+        toAdd = [];
+        for (const uri of args.uris) {
+          if (present.has(uri)) skipped++;
+          else toAdd.push(uri);
+        }
+      }
+
+      if (toAdd.length === 0) {
+        return textResult(
+          `All ${args.uris.length} URI(s) already present in playlist — nothing added.`,
+        );
+      }
+
+      const body: Record<string, unknown> = { uris: toAdd };
       if (args.position !== undefined) body.position = args.position;
 
-      const res = await client.post<{ snapshot_id?: string }>(
-        `/playlists/${encodeURIComponent(args.playlist_id)}/items`,
-        body,
-      );
-      return {
-        content: [{
-          type: 'text',
-          text: withSnapshot(`Added ${args.uris.length} item(s) to playlist.`, res?.snapshot_id),
-        }],
-      };
+      const res = await client.post<{ snapshot_id?: string }>(`/playlists/${id}/items`, body);
+      // #58: confirmation-friendly batch echo alongside the snapshot anchor.
+      const lines = [`Added ${toAdd.length} item(s) to playlist.`];
+      if (skipped > 0) lines.push(`Skipped ${skipped} duplicate(s) already in the playlist.`);
+      lines.push(batchSummary(toAdd.length, toAdd));
+      return textResult(withSnapshot(lines.join('\n'), res?.snapshot_id));
     },
-
   );
 
   // remove_from_playlist
@@ -408,12 +531,16 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
         `/playlists/${encodeURIComponent(args.playlist_id)}/items`,
         body,
       );
-      return {
-        content: [{
-          type: 'text',
-          text: withSnapshot(`Removed ${tracks.length} item(s) from playlist.`, res?.snapshot_id),
-        }],
-      };
+      // #58: echo exactly which URIs were touched for the audit trail.
+      return textResult(
+        withSnapshot(
+          `Removed ${tracks.length} item(s) from playlist.\n${batchSummary(
+            tracks.length,
+            tracks.map((t) => t.uri),
+          )}`,
+          res?.snapshot_id,
+        ),
+      );
     },
   );
 
@@ -487,12 +614,11 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
         `/playlists/${encodeURIComponent(args.playlist_id)}/items`,
         body,
       );
-      return {
-        content: [{
-          type: 'text',
-          text: withSnapshot('Playlist items reordered.', res?.snapshot_id),
-        }],
-      };
+      // #58: reorder affects a range rather than URIs; still echo the count.
+      const moved = args.range_length ?? 1;
+      return textResult(
+        withSnapshot(`Playlist items reordered.\n${batchSummary(moved, [])}`, res?.snapshot_id),
+      );
     },
   );
   // replace_playlist_items
@@ -526,15 +652,132 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
         if (res?.snapshot_id) snapshotId = res.snapshot_id;
       }
 
-      return {
-        content: [{
-          type: 'text',
-          text: withSnapshot(
-            `Replaced playlist contents with ${args.uris.length} item(s) across ${requestCount} request(s).`,
-            snapshotId,
-          ),
-        }],
+      // #58: confirmation-friendly batch echo alongside the snapshot anchor.
+      return textResult(
+        withSnapshot(
+          `Replaced playlist contents with ${args.uris.length} item(s) across ${requestCount} request(s).\n${batchSummary(args.uris.length, args.uris)}`,
+          snapshotId,
+        ),
+      );
+    },
+  );
+
+  // find_duplicates_in_playlist (#63)
+  // Pages the whole playlist via getAllPages, then reports two kinds of
+  // duplicates: exact URI repeats, and relinked copies of the same song
+  // (identical normalized name+artist key) under different URIs. Positions
+  // are 0-based API indexes so they can be fed straight back into
+  // remove_from_playlist's { uri, positions } entries.
+  server.tool(
+    'find_duplicates_in_playlist',
+    'Find duplicate tracks in a playlist: repeated URIs plus relinked copies of the same song appearing under different URIs.',
+    {
+      ...sharedListFields,
+      playlist_id: z.string().describe('Playlist ID'),
+    },
+    async (args) => {
+      const id = encodeURIComponent(args.playlist_id);
+      const items = await client.getAllPages<PlaylistItemObject>(`/playlists/${id}/items`, {
+        limit: '100',
+      });
+
+      interface Occurrence {
+        uri: string;
+        position: number;
+        label: string;
+      }
+      const byUri = new Map<string, Occurrence[]>();
+      // Identity key (normalized name+artist) -> distinct URIs -> occurrences
+      const byIdentity = new Map<string, Map<string, Occurrence[]>>();
+
+      let position = 0;
+      for (const item of items) {
+        const track = item.track;
+        if (track?.uri) {
+          const artists =
+            'artists' in track && Array.isArray(track.artists)
+              ? track.artists.map((a) => a.name).join(', ')
+              : ('show' in track && track.show ? track.show.name : '');
+          const occ: Occurrence = {
+            uri: track.uri,
+            position,
+            label: `"${track.name}"${artists ? ` by ${artists}` : ''}`,
+          };
+          const uriOccs = byUri.get(track.uri);
+          if (uriOccs) uriOccs.push(occ);
+          else byUri.set(track.uri, [occ]);
+
+          const key = trackIdentityKey(track);
+          const uriMap = byIdentity.get(key);
+          if (uriMap) {
+            const occs = uriMap.get(track.uri);
+            if (occs) occs.push(occ);
+            else uriMap.set(track.uri, [occ]);
+          } else {
+            byIdentity.set(key, new Map([[track.uri, [occ]]]));
+          }
+        }
+        // Unavailable items still occupy a playlist position.
+        position++;
+      }
+
+      type DupGroup = {
+        kind: 'exact-uri' | 'relinked-name';
+        label: string;
+        uris: string[];
+        positions: number[];
       };
+      const groups: DupGroup[] = [];
+      for (const [uri, occs] of byUri) {
+        if (occs.length > 1) {
+          groups.push({
+            kind: 'exact-uri',
+            label: occs[0].label,
+            uris: [uri],
+            positions: occs.map((o) => o.position),
+          });
+        }
+      }
+      for (const uriMap of byIdentity.values()) {
+        if (uriMap.size < 2) continue; // single-URI repeats are exact-uri groups
+        const occs = [...uriMap.values()].flat();
+        groups.push({
+          kind: 'relinked-name',
+          label: occs[0].label,
+          uris: [...uriMap.keys()],
+          positions: occs.map((o) => o.position),
+        });
+      }
+
+      const view = truncateItems(groups, resolveMaxResults(args.max_results));
+      const pag = paginationInfo({ returned: view.items.length });
+      const extra = { playlist_id: args.playlist_id, scanned: items.length };
+
+      if (args.response_format === 'json') {
+        return textResult(jsonText({ ...extra, groups: view.items }), listStructuredContent(view.items, pag, extra));
+      }
+
+      if (groups.length === 0) {
+        return textResult(`No duplicates found across ${items.length} scanned item(s).`);
+      }
+
+      const lines = [
+        `Found ${groups.length} duplicate group(s) across ${items.length} scanned item(s):`,
+      ];
+      let groupNum = 1;
+      for (const g of view.items) {
+        lines.push(
+          `${groupNum}. ${g.label} — ${g.positions.length} occurrence(s) [${
+            g.kind === 'exact-uri' ? 'same URI' : 'relinked / different URIs'
+          }]`,
+        );
+        lines.push(`   ${g.uris.length === 1 ? 'URI' : 'URIs'}: ${g.uris.join(', ')}`);
+        lines.push(`   Positions (0-based): ${g.positions.join(', ')}`);
+        groupNum++;
+      }
+      if (view.footer) lines.push(`(${view.footer})`);
+      lines.push('Remove specific occurrences with remove_from_playlist using { uri, positions }.');
+      return textResult(lines.join('\n'), listStructuredContent(view.items, pag, extra));
     },
   );
 }

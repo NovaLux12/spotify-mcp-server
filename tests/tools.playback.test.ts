@@ -4,7 +4,10 @@ import { registerPlaybackTools } from '../src/tools/playback.js';
 
 // ---------------------------------------------------------------- fixtures
 
-type ToolContent = { content: Array<{ type: string; text: string }> };
+type ToolContent = {
+  content: Array<{ type: string; text: string }>;
+  structuredContent?: Record<string, unknown>;
+};
 
 type RegisteredTool = {
   name: string;
@@ -617,7 +620,138 @@ test('play_from_search zero results returns normal content, not an exception', a
   });
   const result =
     await invoke(findTool(registered, 'play_from_search'), { query: 'zzzznope', search_type: 'track' });
-
   assert.equal(calls.some((c) => c.path === '/me/player/play'), false); // nothing played
   assert.match(text(result), /^No playable results found for zzzznope$/);
+});
+// --------------------------------------- shared shaping (#51/#52/#53/#57/#58)
+
+test('get_now_playing json mode returns the raw API state as parseable JSON (#51)', async () => {
+  const { registered } = makeHarness({
+    getResponse: () => playbackStateFixture(trackFixture()),
+  });
+  const result = await invoke(findTool(registered, 'get_now_playing'), {
+    response_format: 'json',
+  });
+  const parsed = JSON.parse(text(result)) as { is_playing: boolean; item: { name: string } };
+  assert.equal(parsed.is_playing, true);
+  assert.equal(parsed.item.name, 'Bohemian Rhapsody');
+  assert.deepEqual(result.structuredContent, parsed);
+});
+
+test('set_volume json mode echoes the mutation as machine-readable content (#51/#58)', async () => {
+  const { registered } = makeHarness();
+  const result = await invoke(findTool(registered, 'set_volume'), {
+    volume_percent: 40,
+    response_format: 'json',
+  });
+  const parsed = JSON.parse(text(result)) as Record<string, unknown>;
+  // JSON.stringify drops the undefined device_id
+  assert.deepEqual(parsed, { action: 'set_volume', volume_percent: 40 });
+});
+
+test('play with uris appends a batch-summary audit echo (#58)', async () => {
+  const { registered } = makeHarness();
+  const result = await invoke(findTool(registered, 'play'), {
+    uris: ['spotify:track:a', 'spotify:track:b', 'spotify:track:c', 'spotify:track:d'],
+  });
+  assert.match(text(result), /Playback started\./);
+  assert.match(
+    text(result),
+    /4 items affected: spotify:track:a, spotify:track:b, spotify:track:c…/,
+  );
+});
+
+test('play dry_run previews what would be queued with NO endpoint call (#57)', async () => {
+  const { registered, calls } = makeHarness();
+  const result = await invoke(findTool(registered, 'play'), {
+    context_uri: 'spotify:album:alb1',
+    offset: 3,
+    dry_run: true,
+  });
+  assert.equal(calls.length, 0); // nothing hit the API — not even reads
+  assert.match(
+    text(result),
+    /\[dry run\] start playback on spotify:album:alb1 — nothing was changed\./,
+  );
+  assert.match(text(result), /queue spotify:album:alb1/);
+  assert.match(text(result), /start at index 3/);
+});
+
+test('play dry_run still validates and rejects malformed URIs before any call (#57)', async () => {
+  const { registered, calls } = makeHarness();
+  await assert.rejects(
+    invoke(findTool(registered, 'play'), { uris: ['spotify:track:a', 'garbage'], dry_run: true }),
+    /Invalid Spotify URI/,
+  );
+  assert.equal(calls.length, 0);
+});
+
+test('skip_next dry_run consumes nothing and makes no POST call (#57)', async () => {
+  const { registered, calls } = makeHarness();
+  const result = await invoke(findTool(registered, 'skip_next'), { dry_run: true });
+  assert.equal(calls.length, 0);
+  assert.match(text(result), /\[dry run\] skip to next track on the active device/);
+});
+
+test('add_to_queue dry_run validates track/episode URIs and previews without POSTing (#57)', async () => {
+  const { registered, calls } = makeHarness();
+  const result = await invoke(findTool(registered, 'add_to_queue'), {
+    uri: 'spotify:episode:ep1',
+    dry_run: true,
+  });
+  assert.equal(calls.length, 0);
+  assert.match(text(result), /\[dry run\] add to queue on spotify:episode:ep1/);
+
+  await assert.rejects(
+    invoke(findTool(registered, 'add_to_queue'), { uri: 'spotify:artist:nope', dry_run: true }),
+    /Invalid Spotify track\/episode URI/,
+  );
+});
+
+test('play_from_search dry_run resolves the match read-only but never plays it (#57)', async () => {
+  const { registered, calls } = makeHarness({
+    getResponse: (path) =>
+      path === '/search' ? { tracks: { items: [trackFixture()], total: 1 } } : undefined,
+  });
+  const result = await invoke(findTool(registered, 'play_from_search'), {
+    query: 'bohemian',
+    search_type: 'track', // direct invocation bypasses the zod default
+    dry_run: true,
+  });
+  assert.equal(calls.some((c) => c.method === 'PUT'), false);
+  assert.ok(calls.every((c) => c.method === 'GET'));
+  assert.match(text(result), /\[dry run\] start playback on spotify:track:trk1/);
+});
+
+test('transfer_playback dry_run previews the move without PUT /me/player (#57)', async () => {
+  const { registered, calls } = makeHarness();
+  const result = await invoke(findTool(registered, 'transfer_playback'), {
+    device_id: 'dev2',
+    play: true,
+    dry_run: true,
+  });
+  assert.equal(calls.length, 0);
+  assert.match(text(result), /\[dry run\] transfer playback on dev2/);
+  assert.match(text(result), /force play on arrival/);
+});
+
+test('get_queue truncates to max_results with shared footer + pagination structuredContent (#52/#53)', async () => {
+  const items = Array.from({ length: 8 }, (_, i) =>
+    trackFixture({ name: `Q${i}`, uri: `spotify:track:q${i}` }),
+  );
+  const { registered } = makeHarness({
+    getResponse: () => ({ currently_playing: trackFixture(), queue: items }),
+  });
+  const result = await invoke(findTool(registered, 'get_queue'), { max_results: 3 });
+  assert.match(text(result), /\(5 more — pass offset or fetch_all\)/);
+  const sc = result.structuredContent as {
+    items: unknown[];
+    truncated: boolean;
+    remaining: number;
+    pagination: { total: number };
+  };
+  assert.equal(sc.items.length, 3);
+  assert.equal(sc.pagination.total, 8);
+  assert.equal(sc.truncated, true);
+  assert.equal(sc.remaining, 5);
 });

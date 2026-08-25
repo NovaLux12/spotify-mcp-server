@@ -2,6 +2,13 @@ import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
 import type { SearchResponse, SpotifyAudiobookSimple } from '../types/spotify.js';
+import {
+  ResponseFormat,
+  MaxResults,
+  resolveMaxResults,
+  truncateItems,
+  paginationInfo,
+} from '../shaping.js';
 
 // Spotify's search endpoint returns an `audiobooks` key when `type=audiobook`
 // is requested (issue #44), but the shared SearchResponse interface does not
@@ -71,6 +78,8 @@ export function registerSearchTools(server: McpServer, client: SpotifyClient): v
         .optional()
         .describe('Pass "audio" to include externally-hosted audio items marked as playable'),
       market: z.string().optional().describe('ISO 3166-1 alpha-2 country code'),
+      response_format: ResponseFormat,
+      max_results: MaxResults,
     },
     async (args) => {
       const types = args.types ?? ['track', 'artist', 'album'];
@@ -91,97 +100,125 @@ export function registerSearchTools(server: McpServer, client: SpotifyClient): v
         return { content: [{ type: 'text', text: 'No results found.' }] };
       }
 
+      // json mode (#51): raw API object — every field the prose drops stays
+      // reachable for chaining agents. Spread keeps this a checked literal
+      // assignable to Record<string, unknown> without an unchecked cast.
+      if (args.response_format === 'json') {
+        const raw: Record<string, unknown> = { ...results };
+        return {
+          content: [{ type: 'text', text: JSON.stringify(results) }],
+          structuredContent: raw,
+        };
+      }
+
+      const all = results as SearchResults;
+      const cap = resolveMaxResults(args.max_results);
+      const detailed = args.response_format === 'detailed';
+
       const lines: string[] = [`Search results for "${args.query}":\n`];
+      // Machine-readable sections emitted as structuredContent (#52).
+      const sections: Record<string, unknown> = {};
+      let sawSection = false;
+
+      const emit = <T>(
+        label: string,
+        section: { items: T[]; total: number },
+        row: (item: T) => string,
+      ): void => {
+        sawSection = true;
+        const shaped = truncateItems(section.items, cap);
+        lines.push(`${label} (${section.total} total):`);
+        shaped.items.forEach((item) => lines.push(`  • ${row(item)}`));
+        if (shaped.footer) {
+          lines.push(`  (${shaped.footer})`);
+        }
+        lines.push('');
+        const page = paginationInfo({
+          total: section.total,
+          offset,
+          limit,
+          returned: section.items.length,
+        });
+        sections[label.toLowerCase()] = {
+          items: shaped.items,
+          total: section.total,
+          next_offset: page.next_offset,
+        };
+      };
 
       // Issue #5: when the caller asks for types=["artist"], Spotify returns
       // only the `artists` field in the response. Each section therefore needs
       // an independent optional-chain guard, and \`items\` on each row needs an
       // array guard because some Spotify responses omit `genres` etc.
-      const tracks = sectionItems(results, 'tracks');
+      const tracks = sectionItems(all, 'tracks');
       if (tracks) {
-        lines.push(`TRACKS (${tracks.total} total):`);
-        for (const t of tracks.items) {
+        emit('TRACKS', { items: tracks.items, total: tracks.total }, (t) => {
           const artists = t.artists.map((a) => a.name).join(', ');
-          lines.push(
-            `  • "${t.name}" by ${artists} — ${t.album.name} (${formatDuration(t.duration_ms)}) | URI: ${t.uri}`,
-          );
-        }
-        lines.push('');
+          let line = `"${t.name}" by ${artists} — ${t.album.name} (${formatDuration(t.duration_ms)}) | URI: ${t.uri}`;
+          // /search rows carry popularity even though the shared track type
+          // omits it — narrow with `in` instead of an unchecked cast.
+          if (detailed && 'popularity' in t && typeof t.popularity === 'number') {
+            line += ` | Popularity: ${t.popularity}`;
+          }
+          return line;
+        });
       }
 
-      const artists = sectionItems(results, 'artists');
+      const artists = sectionItems(all, 'artists');
       if (artists) {
-        lines.push(`ARTISTS (${artists.total} total):`);
-        for (const a of artists.items) {
+        emit('ARTISTS', { items: artists.items, total: artists.total }, (a) => {
           const genreList =
             Array.isArray(a.genres) && a.genres.length > 0
               ? a.genres.slice(0, 3).join(', ')
               : null;
           const genres = genreList ? ` — ${genreList}` : '';
-          lines.push(`  • ${a.name}${genres} | URI: ${a.uri}`);
-        }
-        lines.push('');
+          let line = `${a.name}${genres} | URI: ${a.uri}`;
+          if (detailed && 'popularity' in a && typeof a.popularity === 'number') {
+            line += ` | Popularity: ${a.popularity}`;
+          }
+          return line;
+        });
       }
 
-      const albums = sectionItems(results, 'albums');
+      const albums = sectionItems(all, 'albums');
       if (albums) {
-        lines.push(`ALBUMS (${albums.total} total):`);
-        for (const al of albums.items) {
-          const artists = al.artists.map((a) => a.name).join(', ');
-          lines.push(
-            `  • "${al.name}" by ${artists} (${al.release_date}, ${al.total_tracks} tracks) | URI: ${al.uri}`,
-          );
-        }
-        lines.push('');
+        emit('ALBUMS', { items: albums.items, total: albums.total }, (al) => {
+          const albumArtists = al.artists.map((a) => a.name).join(', ');
+          return `"${al.name}" by ${albumArtists} (${al.release_date}, ${al.total_tracks} tracks) | URI: ${al.uri}`;
+        });
       }
 
-      const playlists = sectionItems(results, 'playlists');
+      const playlists = sectionItems(all, 'playlists');
       if (playlists) {
-        lines.push(`PLAYLISTS (${playlists.total} total):`);
-        for (const p of playlists.items) {
-          lines.push(
-            `  • "${p.name}" by ${p.owner.display_name ?? p.owner.id} (${p.tracks.total} tracks) | URI: ${p.uri}`,
-          );
-        }
-        lines.push('');
+        emit('PLAYLISTS', { items: playlists.items, total: playlists.total }, (p) =>
+          `"${p.name}" by ${p.owner.display_name ?? p.owner.id} (${p.tracks.total} tracks) | URI: ${p.uri}`,
+        );
       }
 
-      const shows = sectionItems(results, 'shows');
+      const shows = sectionItems(all, 'shows');
       if (shows) {
-        lines.push(`SHOWS (${shows.total} total):`);
-        for (const s of shows.items) {
-          lines.push(
-            `  • "${s.name}" by ${s.publisher ?? 'unknown publisher'} (${s.total_episodes} episodes) | URI: ${s.uri}`,
-          );
-        }
-        lines.push('');
+        emit('SHOWS', { items: shows.items, total: shows.total }, (s) =>
+          `"${s.name}" by ${s.publisher ?? 'unknown publisher'} (${s.total_episodes} episodes) | URI: ${s.uri}`,
+        );
       }
 
-      const episodes = sectionItems(results, 'episodes');
+      const episodes = sectionItems(all, 'episodes');
       if (episodes) {
-        lines.push(`EPISODES (${episodes.total} total):`);
-        for (const e of episodes.items) {
-          lines.push(
-            `  • "${e.name}" — ${e.show.name} (${formatDuration(e.duration_ms)}, ${e.release_date}) | URI: ${e.uri}`,
-          );
-        }
-        lines.push('');
+        emit('EPISODES', { items: episodes.items, total: episodes.total }, (e) =>
+          `"${e.name}" — ${e.show.name} (${formatDuration(e.duration_ms)}, ${e.release_date}) | URI: ${e.uri}`,
+        );
       }
-      const audiobooks = sectionItems(results as SearchResults, 'audiobooks');
+
+      const audiobooks = sectionItems(all, 'audiobooks');
       if (audiobooks) {
-        lines.push(`AUDIOBOOKS (${audiobooks.total} total):`);
-        for (const ab of audiobooks.items) {
+        emit('AUDIOBOOKS', { items: audiobooks.items, total: audiobooks.total }, (ab) => {
           const authors = ab.authors.map((a) => a.name).join(', ');
-          lines.push(
-            `  • "${ab.name}" by ${authors} (${ab.publisher ?? 'unknown publisher'}, ${ab.total_chapters} chapters) | URI: ${ab.uri}`,
-          );
-        }
-        lines.push('');
+          return `"${ab.name}" by ${authors} (${ab.publisher ?? 'unknown publisher'}, ${ab.total_chapters} chapters) | URI: ${ab.uri}`;
+        });
       }
 
       // Issue #45: surface the next offset so agents can keep paging without
       // recomputing it from per-section totals.
-      const all: SearchResults = results as SearchResults;
       const maxTotal = Math.max(
         0,
         ...[all.tracks, all.artists, all.albums, all.playlists, all.shows, all.episodes, all.audiobooks].map(
@@ -194,10 +231,13 @@ export function registerSearchTools(server: McpServer, client: SpotifyClient): v
 
       // Only the header line means every section was absent or empty —
       // Spotify returned a body with no usable results.
-      if (lines.length === 1) {
+      if (!sawSection) {
         return { content: [{ type: 'text', text: 'No results found.' }] };
       }
-      return { content: [{ type: 'text', text: lines.join('\n').trim() }] };
+      return {
+        content: [{ type: 'text', text: lines.join('\n').trim() }],
+        structuredContent: { query: args.query, types, sections },
+      };
     },
   );
 }

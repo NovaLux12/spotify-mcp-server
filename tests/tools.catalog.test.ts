@@ -6,7 +6,10 @@ import { registerAudiobookTools, resetProfileCountryCache as resetAudiobooksMark
 
 // ---------------------------------------------------------------- fixtures
 
-type ToolContent = { content: Array<{ type: string; text: string }> };
+type ToolContent = {
+  content: Array<{ type: string; text: string }>;
+  structuredContent?: Record<string, unknown>;
+};
 
 type RegisteredTool = {
   name: string;
@@ -644,7 +647,14 @@ test('get_several_tracks chunks beyond 50 into queued calls and merges in order'
     },
   });
 
-  const out = text(await invoke(findTool(registered, 'get_several_tracks'), { ids: severalIds(60) }));
+  // #53: explicit max_results override lifts the default cap so the merged
+  // order across both chunked requests stays fully observable.
+  const out = text(
+    await invoke(findTool(registered, 'get_several_tracks'), {
+      ids: severalIds(60),
+      max_results: 59,
+    }),
+  );
 
   assert.equal(calls.length, 2);
   assert.equal(calls[0].params!.ids.split(',').length, 50);
@@ -653,6 +663,26 @@ test('get_several_tracks chunks beyond 50 into queued calls and merges in order'
   assert.match(out, /URI: spotify:track:id0/);
   assert.match(out, /URI: spotify:track:id49/);
   assert.match(out, /URI: spotify:track:id58/);
+});
+
+test('get_several_tracks truncates merged results to the #53 default cap', async () => {
+  const { registered } = makeHarness(registerCatalogTools, {
+    getResponse: (path, params) =>
+      path === '/tracks' ? { tracks: params!.ids.split(',').map(severalTrack) } : undefined,
+  });
+
+  const result = await invoke(findTool(registered, 'get_several_tracks'), { ids: severalIds(60) });
+
+  assert.match(text(result), /Tracks \(60\):/);
+  assert.match(text(result), /\(10 more — pass offset or fetch_all\)/);
+  assert.ok(!text(result).includes('spotify:track:id59'));
+  assert.deepEqual(result.structuredContent.pagination, {
+    total: 60,
+    offset: 0,
+    limit: null,
+    next_offset: null,
+  });
+  assert.equal(result.structuredContent.items.length, 50);
 });
 
 test('get_several_albums chunks at 20 per request (#43 cap)', async () => {
@@ -990,4 +1020,187 @@ test('get_saved_audiobooks lists /me/audiobooks with default pagination', async 
   assert.deepEqual(calls, [{ method: 'GET', path: '/me/audiobooks', params: { limit: '20', offset: '0' } }]);
   assert.match(out, /Saved audiobooks \(1 total\)/);
   assert.match(out, /"Project Hail Mary" by Andy Weir \(32 chapters, saved 2026-03-01T00:00:00Z\)/);
+});
+
+// --------------------------------------- #51/#52/#53 shared response shaping
+
+test('get_track json mode returns parseable JSON of the raw API object (#51)', async () => {
+  const rawTrack = trackFixture({ popularity: 87, album: { ...albumSimple, release_date: '1975-10-31' } });
+  const { registered } = makeHarness(registerCatalogTools, {
+    getResponse: (path) => (path === '/tracks/trk1' ? rawTrack : undefined),
+  });
+
+  const result = await invoke(findTool(registered, 'get_track'), { id: 'trk1', response_format: 'json' });
+
+  const parsed = JSON.parse(result.content[0].text);
+  assert.equal(parsed.name, 'Bohemian Rhapsody');
+  assert.equal(parsed.popularity, 87);
+  assert.equal(parsed.album.release_date, '1975-10-31');
+  // structuredContent mirrors the same payload for programmatic consumers.
+  assert.equal((result.structuredContent as Record<string, unknown>).name, 'Bohemian Rhapsody');
+});
+
+test('get_track detailed mode appends fields the concise prose drops (#51)', async () => {
+  const rawTrack = trackFixture({ popularity: 87, album: { ...albumSimple, release_date: '1975-10-31' } });
+  const { registered } = makeHarness(registerCatalogTools, {
+    getResponse: (path) => (path === '/tracks/trk1' ? rawTrack : undefined),
+  });
+
+  const out = text(
+    await invoke(findTool(registered, 'get_track'), { id: 'trk1', response_format: 'detailed' }),
+  );
+
+  assert.match(out, /More details:/);
+  assert.match(out, /Released: 1975-10-31/);
+  assert.match(out, /Popularity: 87/);
+});
+
+test('default (concise) get_track output is byte-for-byte unchanged (#51)', async () => {
+  const { registered } = makeHarness(registerCatalogTools, {
+    getResponse: (path) => (path === '/tracks/trk1' ? trackFixture({ popularity: 87 }) : undefined),
+  });
+
+  const out = text(await invoke(findTool(registered, 'get_track'), { id: 'trk1' }));
+
+  assert.equal(
+    out,
+    [
+      '"Bohemian Rhapsody" by Queen',
+      'Album: A Night at the Opera',
+      'Duration: 5:55',
+      'Explicit: no',
+      'URI: spotify:track:trk1',
+    ].join('\n'),
+  );
+  assert.ok(!out.includes('Popularity'));
+});
+
+test('get_artist_albums truncates to max_results with the shared footer math (#53)', async () => {
+  const albums = Array.from({ length: 5 }, (_, i) => ({
+    id: `alb${i}`,
+    name: `Album ${i}`,
+    uri: `spotify:album:alb${i}`,
+    album_type: 'album',
+    release_date: '2026-01-01',
+    total_tracks: 3,
+    artists: [artist],
+  }));
+  const { registered, calls } = makeHarness(registerCatalogTools, {
+    getResponse: (path, params) =>
+      path === '/artists/art1/albums'
+        ? { items: albums, total: 12, limit: params?.limit, offset: params?.offset }
+        : undefined,
+  });
+
+  const result = await invoke(findTool(registered, 'get_artist_albums'), {
+    id: 'art1',
+    max_results: 2,
+  });
+  const out = text(result);
+
+  // Footer math: 5 fetched − 2 shown = 3 more.
+  assert.match(out, /Albums for artist \(12 total\):/);
+  assert.equal(out.match(/• "Album \d+"/g)?.length, 2);
+  assert.match(out, /\(3 more — pass offset or fetch_all\)/);
+  // structuredContent carries the truncated page plus server-side pagination (#52).
+  assert.deepEqual(result.structuredContent!.pagination, {
+    total: 12,
+    offset: 0,
+    limit: 20,
+    next_offset: 2,
+  });
+  assert.equal(result.structuredContent!.items.length, 2);
+  // No extra API calls were made — truncation is local shaping only.
+  assert.equal(calls.length, 1);
+});
+
+test('get_artist_albums json mode returns the raw paged response as JSON (#51)', async () => {
+  const paged = { items: [{ id: 'alb0', name: 'Album 0', uri: 'spotify:album:alb0' }], total: 9 };
+  const { registered, calls } = makeHarness(registerCatalogTools, {
+    getResponse: (path) => (path === '/artists/art1/albums' ? paged : undefined),
+  });
+
+  const result = await invoke(findTool(registered, 'get_artist_albums'), {
+    id: 'art1',
+    response_format: 'json',
+  });
+
+  const parsed = JSON.parse(result.content[0].text);
+  assert.equal(parsed.total, 9);
+  assert.equal(parsed.items[0].id, 'alb0');
+  assert.deepEqual(result.structuredContent, parsed);
+  assert.ok(!text(result).includes('•')); // no prose rendering in json mode
+});
+
+test('list tools advertise the shared shaping params in their schemas (#51/#53)', () => {
+  const { registered } = makeHarness(registerCatalogTools, {});
+
+  for (const name of ['get_track', 'get_me']) {
+    const schema = findTool(registered, name).schema;
+    assert.ok(schema.response_format, `${name} must accept response_format`);
+    assert.ok(schema.response_format.safeParse('json').success);
+    assert.ok(schema.response_format.safeParse('verbose').success === false);
+  }
+  const listSchema = findTool(registered, 'get_artist_albums').schema;
+  assert.ok(listSchema.max_results.safeParse(25).success);
+  assert.ok(listSchema.max_results.safeParse(0).success === false);
+});
+
+test('get_saved_audiobooks emits structuredContent with pagination (#52)', async () => {
+  const savedBook = {
+    added_at: '2026-03-01T00:00:00Z',
+    audiobook: {
+      id: 'ab1',
+      name: 'Project Hail Mary',
+      uri: 'spotify:audiobook:ab1',
+      authors: [{ name: 'Andy Weir' }],
+      total_chapters: 32,
+    },
+  };
+  const { registered } = makeHarness(registerAudiobookTools, {
+    getResponse: (path) =>
+      path === '/me/audiobooks'
+        ? { items: [savedBook], total: 21, limit: '20', offset: '0' }
+        : undefined,
+  });
+
+  const result = await invoke(findTool(registered, 'get_saved_audiobooks'));
+
+  assert.deepEqual(result.structuredContent!.pagination, {
+    total: 21,
+    offset: 0,
+    limit: 20,
+    next_offset: 1,
+  });
+  assert.equal(result.structuredContent!.items.length, 1);
+  assert.match(text(result), /More pages available — pass offset=1 \(20 items left\)/);
+});
+
+test('get_audiobook_chapters json mode returns the raw chapter page (#51)', async () => {
+  const chapters = {
+    items: [
+      {
+        id: 'ch1',
+        name: 'Chapter One',
+        uri: 'spotify:chapter:ch1',
+        chapter_number: 1,
+        duration_ms: 60000,
+        release_date: '2026-01-01',
+        is_playable: true,
+      },
+    ],
+    total: 1,
+  };
+  const { registered } = makeHarness(registerAudiobookTools, {
+    getResponse: (path) => (path === '/audiobooks/ab1/chapters' ? chapters : undefined),
+  });
+
+  const result = await invoke(findTool(registered, 'get_audiobook_chapters'), {
+    id: 'ab1',
+    response_format: 'json',
+  });
+
+  const parsed = JSON.parse(result.content[0].text);
+  assert.equal(parsed.items[0].chapter_number, 1);
+  assert.equal(parsed.total, 1);
 });

@@ -10,6 +10,18 @@ import type {
   SpotifyEpisodeSimple,
   SearchResponse,
 } from '../types/spotify.js';
+import {
+  ResponseFormat,
+  MaxResults,
+  DryRun,
+  resolveMaxResults,
+  truncateItems,
+  paginationInfo,
+  listStructuredContent,
+  batchSummary,
+  describeDryRun,
+  validateUris,
+} from '../shaping.js';
 
 function formatDuration(ms: number): string {
   const minutes = Math.floor(ms / 60000);
@@ -42,6 +54,27 @@ const additionalTypesSchema = z
   .default(['track', 'episode'])
   .describe("Item types to include in the response. Default: ['track', 'episode']");
 
+/**
+ * Emit a mutation result: `json` mode returns a machine-readable echo of what
+ * was done (#51/#58); otherwise the human text is returned unchanged.
+ */
+function mutationResult(
+  format: string | undefined,
+  echo: Record<string, unknown>,
+  text: string,
+): {
+  content: Array<{ type: 'text'; text: string }>;
+  structuredContent?: Record<string, unknown>;
+} {
+  if (format === 'json') {
+    return {
+      content: [{ type: 'text', text: JSON.stringify(echo) }],
+      structuredContent: echo,
+    };
+  }
+  return { content: [{ type: 'text', text }] };
+}
+
 export function registerPlaybackTools(server: McpServer, client: SpotifyClient): void {
   // get_now_playing
   server.tool(
@@ -50,6 +83,7 @@ export function registerPlaybackTools(server: McpServer, client: SpotifyClient):
     {
       market: marketSchema,
       additional_types: additionalTypesSchema,
+      response_format: ResponseFormat,
     },
     async (args) => {
       const types = args.additional_types ?? ['track', 'episode'];
@@ -62,7 +96,15 @@ export function registerPlaybackTools(server: McpServer, client: SpotifyClient):
         return { content: [{ type: 'text', text: 'Nothing is currently playing.' }] };
       }
 
+      if (args.response_format === 'json') {
+        return {
+          content: [{ type: 'text', text: JSON.stringify(state) }],
+          structuredContent: { ...state },
+        };
+      }
+
       const { item, is_playing, progress_ms, shuffle_state, repeat_state, device } = state;
+      const detailed = args.response_format === 'detailed';
 
       const lines: string[] = [];
 
@@ -85,8 +127,14 @@ export function registerPlaybackTools(server: McpServer, client: SpotifyClient):
         if (device.volume_percent !== null && device.volume_percent !== undefined) {
           lines.push(`Volume: ${device.volume_percent}%`);
         }
+        if (detailed && device.id) {
+          lines.push(`Device ID: ${device.id}`);
+        }
       } else {
         lines.push('Device: none active');
+      }
+      if (detailed && state.context?.uri) {
+        lines.push(`Context: ${state.context.uri}`);
       }
       lines.push(`Shuffle: ${shuffle_state ? 'on' : 'off'} | Repeat: ${repeat_state}`);
       lines.push(`URI: ${item.uri}`);
@@ -102,6 +150,7 @@ export function registerPlaybackTools(server: McpServer, client: SpotifyClient):
     {
       market: marketSchema,
       additional_types: additionalTypesSchema,
+      response_format: ResponseFormat,
     },
     async (args) => {
       const types = args.additional_types ?? ['track', 'episode'];
@@ -117,11 +166,21 @@ export function registerPlaybackTools(server: McpServer, client: SpotifyClient):
         return { content: [{ type: 'text', text: 'Nothing is currently playing.' }] };
       }
 
+      if (args.response_format === 'json') {
+        return {
+          content: [{ type: 'text', text: JSON.stringify(cp) }],
+          structuredContent: { ...cp },
+        };
+      }
+
       const lines = [
         `${cp.is_playing ? 'Playing' : 'Paused'}: ${formatItem(cp.item)}`,
         `Progress: ${formatDuration(cp.progress_ms ?? 0)} / ${formatDuration(cp.item.duration_ms)}`,
         `URI: ${cp.item.uri}`,
       ];
+      if (args.response_format === 'detailed' && 'album' in cp.item && cp.item.album?.name) {
+        lines.push(`Album: ${cp.item.album.name}`);
+      }
 
       return { content: [{ type: 'text', text: lines.join('\n') }] };
     },
@@ -142,6 +201,8 @@ export function registerPlaybackTools(server: McpServer, client: SpotifyClient):
         .string()
         .optional()
         .describe('ISO 3166-1 alpha-2 country code — affects availability/relinking of results; defaults to the account market'),
+      response_format: ResponseFormat,
+      dry_run: DryRun,
     },
     async (args) => {
       const params: Record<string, string> = {
@@ -168,16 +229,25 @@ export function registerPlaybackTools(server: McpServer, client: SpotifyClient):
         return { content: [{ type: 'text', text: `No playable results found for ${args.query}` }] };
       }
 
+      const detail =
+        'artists' in match
+          ? formatItem(match) + ` from the album "${match.album.name}"`
+          : formatItem(match);
+
+      // dry_run (#57): the read-only search above resolved the concrete match;
+      // stop here instead of overwriting queue state via PUT /me/player/play.
+      if (args.dry_run) {
+        return {
+          content: [{ type: 'text', text: describeDryRun('start playback', match.uri, [detail]) }],
+        };
+      }
+
       const path = args.device_id
         ? `/me/player/play?device_id=${encodeURIComponent(args.device_id)}`
         : '/me/player/play';
       await client.put(path, { uris: [match.uri] });
 
-      const detail =
-        'artists' in match
-          ? formatItem(match) + ` from the album "${match.album.name}"`
-          : formatItem(match);
-      return { content: [{ type: 'text', text: `Now playing: ${detail}` }] };
+      return mutationResult(args.response_format, { action: 'play', uri: match.uri }, `Now playing: ${detail}`);
     },
   );
 
@@ -207,6 +277,8 @@ export function registerPlaybackTools(server: McpServer, client: SpotifyClient):
         .describe('Track URI inside the context to start from — required for artist contexts, where a numeric index is rejected'),
       position_ms: z.number().int().min(0).optional().describe('Seek position to start at (ms)'),
       device_id: z.string().optional().describe('Target device ID; uses active device if omitted'),
+      response_format: ResponseFormat,
+      dry_run: DryRun,
     },
     async (args) => {
       // Issue #23: mutual exclusion must hold even for an empty uris array,
@@ -247,8 +319,34 @@ export function registerPlaybackTools(server: McpServer, client: SpotifyClient):
       }
       if (args.position_ms !== undefined) body.position_ms = args.position_ms;
 
+      // dry_run (#57): validate URIs/targets and describe exactly what WOULD
+      // be queued without replacing the current playback state.
+      if (args.dry_run) {
+        const candidateUris = args.uris ?? (contextUri ? [contextUri] : []);
+        const { valid, invalid } = validateUris(candidateUris);
+        if (invalid.length > 0) {
+          throw new Error(`Invalid Spotify URI(s): ${invalid.join(', ')}`);
+        }
+        const target = contextUri ?? (valid.length > 0 ? `${valid.length} queued URI(s)` : 'current or active playback');
+        const changes = valid.map((uri) => `queue ${uri}`);
+        if (args.offset_uri) changes.push(`start at ${args.offset_uri}`);
+        if (args.offset !== undefined) changes.push(`start at index ${args.offset}`);
+        if (args.position_ms !== undefined) {
+          changes.push(`seek to ${formatDuration(args.position_ms)} on start`);
+        }
+        return {
+          content: [{ type: 'text', text: describeDryRun('start playback', target, changes) }],
+        };
+      }
+
       await client.put(path, Object.keys(body).length > 0 ? body : undefined);
-      return { content: [{ type: 'text', text: 'Playback started.' }] };
+      // #58: echo the batch so the agent has an audit trail of what was queued.
+      const summary = args.uris ? `\n${batchSummary(args.uris.length, args.uris)}` : '';
+      return mutationResult(
+        args.response_format,
+        { action: 'play', ...body },
+        `Playback started.${summary}`,
+      );
     },
   );
 
@@ -258,13 +356,18 @@ export function registerPlaybackTools(server: McpServer, client: SpotifyClient):
     'Pause playback on the active device',
     {
       device_id: z.string().optional().describe('Target device ID'),
+      response_format: ResponseFormat,
     },
     async (args) => {
       const path = args.device_id
         ? `/me/player/pause?device_id=${encodeURIComponent(args.device_id)}`
         : '/me/player/pause';
       await client.put(path);
-      return { content: [{ type: 'text', text: 'Playback paused.' }] };
+      return mutationResult(
+        args.response_format,
+        { action: 'pause', device_id: args.device_id },
+        'Playback paused.',
+      );
     },
   );
 
@@ -274,13 +377,29 @@ export function registerPlaybackTools(server: McpServer, client: SpotifyClient):
     'Skip to the next track in the queue or context',
     {
       device_id: z.string().optional().describe('Target device ID'),
+      response_format: ResponseFormat,
+      dry_run: DryRun,
     },
     async (args) => {
+      // dry_run (#57): skipping advances past the current queue item — show
+      // what would happen without consuming it (#58-style audit preview).
+      if (args.dry_run) {
+        return {
+          content: [{
+            type: 'text',
+            text: describeDryRun('skip to next track', args.device_id ?? 'the active device', []),
+          }],
+        };
+      }
       const path = args.device_id
         ? `/me/player/next?device_id=${encodeURIComponent(args.device_id)}`
         : '/me/player/next';
       await client.post(path);
-      return { content: [{ type: 'text', text: 'Skipped to next track.' }] };
+      return mutationResult(
+        args.response_format,
+        { action: 'skip_next', device_id: args.device_id },
+        'Skipped to next track.',
+      );
     },
   );
 
@@ -290,13 +409,27 @@ export function registerPlaybackTools(server: McpServer, client: SpotifyClient):
     'Skip to the previous track. If more than 3 seconds in, restarts the current track first.',
     {
       device_id: z.string().optional().describe('Target device ID'),
+      response_format: ResponseFormat,
+      dry_run: DryRun,
     },
     async (args) => {
+      if (args.dry_run) {
+        return {
+          content: [{
+            type: 'text',
+            text: describeDryRun('skip to previous track', args.device_id ?? 'the active device', []),
+          }],
+        };
+      }
       const path = args.device_id
         ? `/me/player/previous?device_id=${encodeURIComponent(args.device_id)}`
         : '/me/player/previous';
       await client.post(path);
-      return { content: [{ type: 'text', text: 'Skipped to previous track.' }] };
+      return mutationResult(
+        args.response_format,
+        { action: 'skip_previous', device_id: args.device_id },
+        'Skipped to previous track.',
+      );
     },
   );
 
@@ -307,12 +440,17 @@ export function registerPlaybackTools(server: McpServer, client: SpotifyClient):
     {
       position_ms: z.number().int().min(0).describe('Position in milliseconds'),
       device_id: z.string().optional().describe('Target device ID'),
+      response_format: ResponseFormat,
     },
     async (args) => {
       const params = new URLSearchParams({ position_ms: String(args.position_ms) });
       if (args.device_id) params.set('device_id', args.device_id);
       await client.put(`/me/player/seek?${params}`);
-      return { content: [{ type: 'text', text: `Seeked to ${formatDuration(args.position_ms)}.` }] };
+      return mutationResult(
+        args.response_format,
+        { action: 'seek', position_ms: args.position_ms, device_id: args.device_id },
+        `Seeked to ${formatDuration(args.position_ms)}.`,
+      );
     },
   );
 
@@ -323,12 +461,17 @@ export function registerPlaybackTools(server: McpServer, client: SpotifyClient):
     {
       volume_percent: z.number().int().min(0).max(100).describe('Volume level 0–100'),
       device_id: z.string().optional().describe('Target device ID'),
+      response_format: ResponseFormat,
     },
     async (args) => {
       const params = new URLSearchParams({ volume_percent: String(args.volume_percent) });
       if (args.device_id) params.set('device_id', args.device_id);
       await client.put(`/me/player/volume?${params}`);
-      return { content: [{ type: 'text', text: `Volume set to ${args.volume_percent}%.` }] };
+      return mutationResult(
+        args.response_format,
+        { action: 'set_volume', volume_percent: args.volume_percent, device_id: args.device_id },
+        `Volume set to ${args.volume_percent}%.`,
+      );
     },
   );
 
@@ -339,12 +482,17 @@ export function registerPlaybackTools(server: McpServer, client: SpotifyClient):
     {
       state: z.boolean().describe('true = shuffle on, false = shuffle off'),
       device_id: z.string().optional().describe('Target device ID'),
+      response_format: ResponseFormat,
     },
     async (args) => {
       const params = new URLSearchParams({ state: String(args.state) });
       if (args.device_id) params.set('device_id', args.device_id);
       await client.put(`/me/player/shuffle?${params}`);
-      return { content: [{ type: 'text', text: `Shuffle ${args.state ? 'on' : 'off'}.` }] };
+      return mutationResult(
+        args.response_format,
+        { action: 'set_shuffle', state: args.state, device_id: args.device_id },
+        `Shuffle ${args.state ? 'on' : 'off'}.`,
+      );
     },
   );
 
@@ -355,12 +503,17 @@ export function registerPlaybackTools(server: McpServer, client: SpotifyClient):
     {
       state: z.enum(['off', 'context', 'track']).describe('Repeat mode'),
       device_id: z.string().optional().describe('Target device ID'),
+      response_format: ResponseFormat,
     },
     async (args) => {
       const params = new URLSearchParams({ state: args.state });
       if (args.device_id) params.set('device_id', args.device_id);
       await client.put(`/me/player/repeat?${params}`);
-      return { content: [{ type: 'text', text: `Repeat set to ${args.state}.` }] };
+      return mutationResult(
+        args.response_format,
+        { action: 'set_repeat', state: args.state, device_id: args.device_id },
+        `Repeat set to ${args.state}.`,
+      );
     },
   );
 
@@ -368,13 +521,27 @@ export function registerPlaybackTools(server: McpServer, client: SpotifyClient):
   server.tool(
     'get_queue',
     'Get the current playback queue',
-    {},
-    async () => {
+    {
+      response_format: ResponseFormat,
+      max_results: MaxResults,
+    },
+    async (args) => {
       const queue = await client.get<SpotifyQueue>('/me/player/queue');
 
       if (!queue) {
         return { content: [{ type: 'text', text: 'No active playback session.' }] };
       }
+
+      if (args.response_format === 'json') {
+        return {
+          content: [{ type: 'text', text: JSON.stringify(queue) }],
+          structuredContent: { ...queue },
+        };
+      }
+
+      const upNext = Array.isArray(queue.queue) ? queue.queue : [];
+      const shaped = truncateItems(upNext, resolveMaxResults(args.max_results));
+      const detailed = args.response_format === 'detailed';
 
       const lines: string[] = [];
 
@@ -384,20 +551,33 @@ export function registerPlaybackTools(server: McpServer, client: SpotifyClient):
         lines.push('Currently playing: nothing');
       }
 
-      if (queue.queue.length === 0) {
+      if (upNext.length === 0) {
         lines.push('\nQueue is empty.');
       } else {
         lines.push('\nUp next:');
-        const shown = queue.queue.slice(0, 20);
-        shown.forEach((item, i) => {
+        shaped.items.forEach((item, i) => {
           lines.push(`  ${i + 1}. ${formatItem(item)}`);
+          if (detailed && item.uri) lines.push(`      URI: ${item.uri}`);
         });
-        if (queue.queue.length > 20) {
-          lines.push(`  ... and ${queue.queue.length - 20} more`);
+        if (shaped.footer) {
+          lines.push(`  (${shaped.footer})`);
         }
       }
 
-      return { content: [{ type: 'text', text: lines.join('\n') }] };
+      const pagination = paginationInfo({
+        total: upNext.length,
+        offset: 0,
+        limit: null,
+        returned: upNext.length,
+      });
+      return {
+        content: [{ type: 'text', text: lines.join('\n') }],
+        structuredContent: listStructuredContent(shaped.items, pagination, {
+          currently_playing: queue.currently_playing,
+          truncated: shaped.truncated,
+          remaining: shaped.remaining,
+        }),
+      };
     },
   );
 
@@ -408,12 +588,31 @@ export function registerPlaybackTools(server: McpServer, client: SpotifyClient):
     {
       uri: z.string().describe('Spotify track or episode URI (e.g. spotify:track:...)'),
       device_id: z.string().optional().describe('Target device ID'),
+      response_format: ResponseFormat,
+      dry_run: DryRun,
     },
     async (args) => {
+      // dry_run (#57): validate the URI and preview the append — no POST.
+      if (args.dry_run) {
+        const { valid, invalid } = validateUris([args.uri], ['track', 'episode']);
+        if (invalid.length > 0) {
+          throw new Error(`Invalid Spotify track/episode URI: ${invalid[0]}`);
+        }
+        return {
+          content: [{
+            type: 'text',
+            text: describeDryRun('add to queue', valid[0], [`append ${valid[0]} to the end of the queue`]),
+          }],
+        };
+      }
       const params = new URLSearchParams({ uri: args.uri });
       if (args.device_id) params.set('device_id', args.device_id);
       await client.post(`/me/player/queue?${params}`);
-      return { content: [{ type: 'text', text: `Added ${args.uri} to queue.` }] };
+      return mutationResult(
+        args.response_format,
+        { action: 'add_to_queue', uri: args.uri, device_id: args.device_id },
+        `Added ${args.uri} to queue.`,
+      );
     },
   );
 
@@ -421,8 +620,11 @@ export function registerPlaybackTools(server: McpServer, client: SpotifyClient):
   server.tool(
     'get_devices',
     'List available Spotify Connect devices',
-    {},
-    async () => {
+    {
+      response_format: ResponseFormat,
+      max_results: MaxResults,
+    },
+    async (args) => {
       const result = await client.get<GetDevicesResponse>('/me/player/devices');
 
       if (!result || result.devices.length === 0) {
@@ -434,13 +636,32 @@ export function registerPlaybackTools(server: McpServer, client: SpotifyClient):
         };
       }
 
-      const lines = result.devices.map((d) => {
+      if (args.response_format === 'json') {
+        return {
+          content: [{ type: 'text', text: JSON.stringify(result) }],
+          structuredContent: { ...result },
+        };
+      }
+
+      const shaped = truncateItems(result.devices, resolveMaxResults(args.max_results));
+
+      const lines = shaped.items.map((d) => {
         const active = d.is_active ? ' [ACTIVE]' : '';
         const volume = d.volume_percent !== null ? `, volume: ${d.volume_percent}%` : '';
         return `• ${d.name} (${d.type})${active}${volume} — ID: ${d.id ?? 'n/a'}`;
       });
+      if (shaped.footer) lines.push(`(${shaped.footer})`);
 
-      return { content: [{ type: 'text', text: `Devices:\n${lines.join('\n')}` }] };
+      const pagination = paginationInfo({
+        total: result.devices.length,
+        offset: 0,
+        limit: null,
+        returned: result.devices.length,
+      });
+      return {
+        content: [{ type: 'text', text: `Devices:\n${lines.join('\n')}` }],
+        structuredContent: listStructuredContent(shaped.items, pagination),
+      };
     },
   );
 
@@ -451,12 +672,32 @@ export function registerPlaybackTools(server: McpServer, client: SpotifyClient):
     {
       device_id: z.string().describe('Target device ID to transfer playback to'),
       play: z.boolean().optional().describe('Force play immediately (default: maintain current state)'),
+      response_format: ResponseFormat,
+      dry_run: DryRun,
     },
     async (args) => {
+      // dry_run (#57): moving playback interrupts whatever is streaming on the
+      // target — preview it instead of issuing PUT /me/player.
+      if (args.dry_run) {
+        return {
+          content: [{
+            type: 'text',
+            text: describeDryRun(
+              'transfer playback',
+              args.device_id,
+              [args.play === undefined ? 'maintain current play state' : `${args.play ? 'force play' : 'stay paused'} on arrival`],
+            ),
+          }],
+        };
+      }
       const body: Record<string, unknown> = { device_ids: [args.device_id] };
       if (args.play !== undefined) body.play = args.play;
       await client.put('/me/player', body);
-      return { content: [{ type: 'text', text: `Playback transferred to device ${args.device_id}.` }] };
+      return mutationResult(
+        args.response_format,
+        { action: 'transfer_playback', device_ids: [args.device_id], play: args.play },
+        `Playback transferred to device ${args.device_id}.`,
+      );
     },
   );
 }

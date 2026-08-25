@@ -4,7 +4,10 @@ import { registerPersonalizationTools } from '../src/tools/personalization.js';
 
 // ---------------------------------------------------------------- fixtures
 
-type ToolContent = { content: Array<{ type: string; text: string }> };
+type ToolContent = {
+  content: Array<{ type: string; text: string }>;
+  structuredContent?: Record<string, unknown>;
+};
 
 type RegisteredTool = {
   name: string;
@@ -148,6 +151,69 @@ test('get_top_artists forwards explicit offset and renders formatted lines', asy
 test('get_top_artists rejects negative offsets but allows deep paging via zod schema', () => {
   const { registered } = makeHarness();
   const schema = findTool(registered, 'get_top_artists').schema.offset;
+
   assert.equal(schema.safeParse(-1).success, false);
   assert.equal(schema.safeParse(50).success, true);
+});
+// ----------------------------------------------- shared shaping (#51/#52/#53)
+
+function pagedTracks(n: number, total = n) {
+  return { items: Array.from({ length: n }, (_, i) => trackFixture(`T${i}`)), total };
+}
+
+test('get_top_tracks json mode returns the raw API payload parseable (#51)', async () => {
+  const api = pagedTracks(2);
+  const { registered } = makeHarness({ getResponse: () => api });
+  const result = await invoke(findTool(registered, 'get_top_tracks'), {
+    response_format: 'json',
+  });
+  assert.deepEqual(JSON.parse(text(result)), api);
+  assert.deepEqual(result.structuredContent, api);
+});
+
+test('get_top_tracks truncates to max_results with shared footer + pagination (#52/#53)', async () => {
+  const { registered } = makeHarness({ getResponse: () => pagedTracks(6, 40) });
+  const result = await invoke(findTool(registered, 'get_top_tracks'), { max_results: 2 });
+  const out = text(result);
+  assert.match(out, /Top tracks \(40 total, showing 2\)/);
+  assert.match(out, /\(4 more — pass offset or fetch_all\)/);
+  const sc = result.structuredContent as {
+    items: unknown[];
+    truncated: boolean;
+    remaining: number;
+    pagination: { total: number; next_offset: number | null };
+  };
+  assert.equal(sc.items.length, 2);
+  // next_offset follows API-level continuation (offset 0 + the full page of
+  // 6), never skipping items that truncation hid from this call.
+  assert.equal(sc.pagination.next_offset, 6);
+  assert.equal(sc.truncated, true);
+  assert.equal(sc.remaining, 4);
+});
+
+test('get_top_artists detailed mode surfaces followers and popularity (#51)', async () => {
+  const artist = { ...artistFixture('Big Band'), followers: { total: 1234 }, popularity: 88 };
+  const { registered } = makeHarness({ getResponse: () => ({ items: [artist], total: 1 }) });
+  const out = text(
+    await invoke(findTool(registered, 'get_top_artists'), { response_format: 'detailed' }),
+  );
+  assert.match(out, /Followers: 1234 \| Popularity: 88/);
+});
+
+test('get_recently_played truncates with footer and exposes the next cursor (#52/#53)', async () => {
+  const items = Array.from({ length: 5 }, (_, i) => ({
+    track: trackFixture(`R${i}`),
+    played_at: '2026-08-01T10:00:00Z',
+    context: null,
+  }));
+  const { registered } = makeHarness({
+    getResponse: () => ({ items, cursors: { before: 'b', after: 'a9' }, next: null }),
+  });
+  const result = await invoke(findTool(registered, 'get_recently_played'), {
+    max_results: 2,
+  });
+  assert.match(text(result), /\(3 more — pass offset or fetch_all\)/);
+  const sc = result.structuredContent as { next_cursor: string | null; truncated: boolean };
+  assert.equal(sc.next_cursor, 'a9');
+  assert.equal(sc.truncated, true);
 });

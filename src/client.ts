@@ -1,4 +1,7 @@
 import { loadTokens, saveTokens } from './auth.js';
+import { LruTtlCache, shouldBypassCache, cacheKey } from './cache.js';
+import { getConfig } from './config.js';
+import { appendHistory } from './history.js';
 
 const BASE_URL = 'https://api.spotify.com/v1';
 import type { TokenData, SpotifyPaged } from './types/spotify.js';
@@ -31,6 +34,9 @@ export class SpotifyApiError extends Error {
   constructor(
     public readonly status: number,
     message: string,
+    // Set only on rate-limit errors after retries were exhausted (#56) so
+    // agents can make an informed wait-vs-abort decision.
+    public readonly retryAfterSec?: number,
   ) {
     super(message);
     this.name = 'SpotifyApiError';
@@ -66,6 +72,27 @@ function genericMessageFor(status: number): string {
   return `Spotify API error ${status}`;
 }
 
+export interface SpotifyClientOptions {
+  /** Fetch-all cap override (#55); defaults to config fetchAllCap. */
+  fetchAllCap?: number;
+  /** TTL cache tuning (#54); omit for defaults. */
+  cache?: { ttlMs?: number; maxEntries?: number };
+  /** Disable the read cache entirely (tests, special flows). */
+  disableCache?: boolean;
+}
+
+/** Per-page event emitted during getAllPages walks (#65). */
+export interface PageProgress {
+  /** Monotonic id of this walk; usable directly as an MCP progressToken. */
+  walkId: number;
+  /** 1-based page number. */
+  page: number;
+  /** Items accumulated so far. */
+  fetched: number;
+  /** Server-reported total when the page carried one. */
+  total?: number;
+}
+
 export class SpotifyClient {
   private tokens: TokenData | null = null;
   private loadPromise: Promise<TokenData> | null = null;
@@ -74,6 +101,74 @@ export class SpotifyClient {
   private _queue: Promise<unknown> = Promise.resolve();
   private _lastRequestTime = 0;
   private _rateLimitUntil = 0;
+  // Last throttling event this client observed (#56).
+  private _lastThrottle: { retryAfterSec: number; waitedMs: number; at: number } | null = null;
+
+  // Immutable-read TTL cache (#54) — null when disabled.
+  readonly cache: LruTtlCache<unknown> | null;
+  private readonly fetchAllCap: number;
+
+  // Long-walk progress reporting (#65); index.ts installs a notifier that
+  // forwards events as MCP progress notifications.
+  private progressReporter: ((info: PageProgress) => void) | null = null;
+  private walkCounter = 0;
+
+  constructor(opts: SpotifyClientOptions = {}) {
+    this.fetchAllCap = opts.fetchAllCap ?? getConfig().fetchAllCap;
+    this.cache = opts.disableCache ? null : new LruTtlCache<unknown>(opts.cache);
+  }
+
+  /**
+   * Install a callback invoked after every page of every getAllPages walk.
+   * Callbacks must not throw meaningful errors — they are wrapped, but treat
+   * them best-effort. Pass null to remove.
+   */
+  setProgressReporter(fn: ((info: PageProgress) => void) | null): void {
+    this.progressReporter = fn;
+  }
+
+  /**
+   * Human status line describing the most recent throttle, e.g.
+   * "rate-limited by Spotify, waited 2s before retrying" — tools append it to
+   * results so agents learn they were throttled (#56). Consumes the notice:
+   * returns null once it has been taken or if no throttle happened since.
+   */
+  takeThrottleNotice(): string | null {
+    const ev = this._lastThrottle;
+    this._lastThrottle = null;
+    if (!ev) return null;
+    return `rate-limited by Spotify, waited ${Math.round(ev.waitedMs / 1000)}s before retrying`;
+  }
+
+  /** Structured rate-limit state for the spotify://me/rate-limit resource. */
+  getRateLimitStatus(): {
+    lastThrottleAt: number | null;
+    retryAfterSec: number | null;
+    cooldownRemainingMs: number;
+  } {
+    return {
+      lastThrottleAt: this._lastThrottle?.at ?? null,
+      retryAfterSec: this._lastThrottle?.retryAfterSec ?? null,
+      cooldownRemainingMs: Math.max(0, this._rateLimitUntil - Date.now()),
+    };
+  }
+
+  /**
+   * Record a completed mutation in the opt-in history JSONL (#64). Only the
+   * whitelisted fields survive serialization; failures are swallowed so a
+   * history problem can never fail the underlying mutation.
+   */
+  private recordMutation(method: string, path: string, response: unknown): Promise<void> {
+    const snapshotId =
+      response !== null && typeof response === 'object' && 'snapshot_id' in response
+        ? String((response as { snapshot_id: unknown }).snapshot_id)
+        : undefined;
+    return appendHistory({
+      method,
+      path,
+      ...(snapshotId !== undefined ? { snapshot_id: snapshotId } : {}),
+    }).catch(() => undefined);
+  }
 
   private getTokens(): Promise<TokenData> {
     if (!this.loadPromise) {
@@ -198,6 +293,7 @@ export class SpotifyClient {
       const raw = Number.parseInt(res.headers.get('Retry-After') ?? '', 10);
       const retryAfter = Number.isFinite(raw) && raw >= 0 ? raw : 1;
       this._rateLimitUntil = Date.now() + retryAfter * 1000;
+      this._lastThrottle = { retryAfterSec: retryAfter, waitedMs: retryAfter * 1000, at: Date.now() };
       await sleep(retryAfter * 1000);
       return this.rawRequest(method, url, body, retryCount + 1, contentType);
     }
@@ -259,7 +355,8 @@ export class SpotifyClient {
    *
    * Stops when the cursor reaches the server-reported `total`; when a
    * response omits `total`, keeps walking until a short/empty page is
-   * returned. `maxItems` (default 500) caps collection either way.
+   * returned. `maxItems` caps collection either way, defaulting to the
+   * configured fetch-all cap (SPOTIFY_MCP_FETCH_ALL_CAP, #55).
    * `opts.initialOffset` seeds the cursor so callers resuming mid-list
    * continue from there instead of restarting at offset 0. Cursor-paginated
    * endpoints (e.g. followed artists, which use an `after` cursor instead of
@@ -270,9 +367,12 @@ export class SpotifyClient {
     params?: Record<string, string>,
     opts?: { maxItems?: number; initialOffset?: number },
   ): Promise<T[]> {
-    const maxItems = opts?.maxItems ?? 500;
+    const maxItems = opts?.maxItems ?? this.fetchAllCap;
     const all: T[] = [];
     let offset = opts?.initialOffset ?? 0;
+    // Monotonic per-walk id; index.ts forwards it as the MCP progressToken.
+    const walkId = ++this.walkCounter;
+    let pageNumber = 0;
     // Loop bound is the server-reported total when present; otherwise walk
     // until a short page signals the end. maxItems caps iterations too.
     for (;;) {
@@ -280,6 +380,19 @@ export class SpotifyClient {
       const page = await this.get<SpotifyPaged<T>>(path, pageParams);
       if (!page || !Array.isArray(page.items)) break;
       all.push(...page.items);
+      const reporter = this.progressReporter;
+      if (reporter !== null) {
+        try {
+          reporter({
+            walkId,
+            page: ++pageNumber,
+            fetched: all.length,
+            ...(typeof page.total === 'number' ? { total: page.total } : {}),
+          });
+        } catch {
+          // Progress is best-effort; a throwing reporter must never break a walk.
+        }
+      }
       if (all.length >= maxItems) return all.slice(0, maxItems);
       const limit = typeof page.limit === 'number' && page.limit > 0 ? page.limit : page.items.length;
       offset += limit;
