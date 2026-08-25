@@ -125,7 +125,7 @@ export function registerPlaylistOpsTools(server: McpServer, client: SpotifyClien
       let unavailable = 0;
       for (const items of sourceLists) {
         for (const item of items) {
-          const track = item.track;
+          const track = item.item;
           if (!track) {
             unavailable++;
             continue;
@@ -249,7 +249,7 @@ export function registerPlaylistOpsTools(server: McpServer, client: SpotifyClien
       const posA = new Map<string, number>();
       const idsA: string[] = [];
       aItems.forEach((item, i) => {
-        const id = item.track?.id;
+        const id = item.item?.id;
         if (!id) return;
         idsA.push(id);
         if (!posA.has(id)) posA.set(id, i);
@@ -257,7 +257,7 @@ export function registerPlaylistOpsTools(server: McpServer, client: SpotifyClien
       const posB = new Map<string, number>();
       const idsB: string[] = [];
       bItems.forEach((item, i) => {
-        const id = item.track?.id;
+        const id = item.item?.id;
         if (!id) return;
         idsB.push(id);
         if (!posB.has(id)) posB.set(id, i);
@@ -346,7 +346,7 @@ export function registerPlaylistOpsTools(server: McpServer, client: SpotifyClien
       const presence = itemLists.map((items) => {
         const ids = new Set<string>();
         for (const item of items) {
-          const id = item.track?.id;
+          const id = item.item?.id;
           if (id) ids.add(id);
         }
         return ids;
@@ -373,9 +373,9 @@ export function registerPlaylistOpsTools(server: McpServer, client: SpotifyClien
         .sort((a, b) => b.count - a.count || a.firstSeen - b.firstSeen);
       for (const entry of shared) {
         for (const items of itemLists) {
-          const hit = items.find((i) => i.track?.id === entry.id);
-          if (hit?.track) {
-            entry.name = hit.track.name;
+          const hit = items.find((i) => i.item?.id === entry.id);
+          if (hit?.item) {
+            entry.name = hit.item.name;
             break;
           }
         }

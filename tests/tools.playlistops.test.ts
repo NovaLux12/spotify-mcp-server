@@ -150,7 +150,7 @@ const textOf = (out: { content: Array<{ text: string }> }) => out.content[0].tex
 const item = (id: string, name = `Track ${id}`) =>
   ({
     added_at: '2026-01-01T00:00:00Z',
-    track: {
+    item: {
       type: 'track',
       id,
       name,
@@ -161,7 +161,7 @@ const item = (id: string, name = `Track ${id}`) =>
   }) as unknown as PlaylistItemObject;
 
 const unavailableItem = (): PlaylistItemObject =>
-  ({ added_at: '2026-01-01T00:00:00Z', track: null }) as unknown as PlaylistItemObject;
+  ({ added_at: "2026-01-01T00:00:00Z", item: null }) as unknown as PlaylistItemObject;
 
 /**
  * Responder serving each playlist's full item list in pages of `pageSize`,

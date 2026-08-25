@@ -12,6 +12,7 @@ import { registerFollowingTools } from './tools/following.js';
 import { registerAudiobookTools } from './tools/audiobooks.js';
 import { registerPlaylistTools } from './tools/playlists.js';
 import { registerUsersTools } from './tools/users.js';
+import { registerPlaylistOpsTools } from './tools/playlistops.js';
 import { registerResources } from './resources/index.js';
 import { registerPrompts } from './prompts/index.js';
 import { TOOLSETS, resolveToolsets, isActive, toolsetEnvHelp } from './toolsets.js';
@@ -70,6 +71,8 @@ async function startMcpServer(): Promise<void> {
   if (isActive('audiobooks', activeSets)) registerAudiobookTools(server, client);
   if (isActive('playlists', activeSets)) registerPlaylistTools(server, client);
   if (isActive('users', activeSets)) registerUsersTools(server, client);
+  // Playlist power ops (#96): merge/diff/overlap — part of the playlists set.
+  if (isActive('playlists', activeSets)) registerPlaylistOpsTools(server, client);
   if (isActive('resources', activeSets)) registerResources(server, client);
   if (isActive('prompts', activeSets)) registerPrompts(server);
 
