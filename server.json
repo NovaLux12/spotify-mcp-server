@@ -1,0 +1,30 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.novalux12/spotify-mcp-server",
+  "title": "Spotify MCP",
+  "description": "The most complete Spotify MCP: playback, library, playlists, search, podcasts and audiobooks.",
+  "repository": {
+    "url": "https://github.com/NovaLux12/spotify-mcp-server",
+    "source": "github"
+  },
+  "version": "1.1.1",
+  "packages": [
+    {
+      "registryType": "npm",
+      "registryBaseUrl": "https://registry.npmjs.org",
+      "identifier": "@novalux12/spotify-mcp",
+      "version": "1.1.1",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "SPOTIFY_CLIENT_ID",
+          "description": "Spotify developer app client ID (from developer.spotify.com/dashboard)",
+          "isRequired": true,
+          "isSecret": false
+        }
+      ]
+    }
+  ]
+}

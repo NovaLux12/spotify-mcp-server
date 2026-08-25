@@ -1,0 +1,6 @@
+# Smithery configuration — https://smithery.ai/docs/concepts/smithery-yaml
+# Smithery builds and hosts this MCP server from this manifest.
+start:
+  command: node
+  args:
+    - dist/index.js

@@ -228,6 +228,17 @@ Once connected, you can ask Claude things like:
 
 This is a personal project, not affiliated with or endorsed by Spotify. It is provided as-is with no warranties or guarantees of any kind. Use it responsibly and in accordance with the [Spotify Developer Terms of Service](https://developer.spotify.com/terms). The author is not responsible for any misuse or consequences arising from use of this software.
 
+## Publishing & distribution
+
+Releases are cut by [release-please](https://github.com/googleapis/release-please) (merge its version-bump PR; it tags the release). The `v*` tag then triggers [`publish.yml`](.github/workflows/publish.yml), which:
+
+1. Runs typecheck + tests, builds, and publishes [`@novalux12/spotify-mcp`](https://www.npmjs.com/package/@novalux12/spotify-mcp) to npm (`--access public`; set the `NPM_TOKEN` repo secret, or enable npm trusted publishing and add `--provenance`).
+2. Syncs `server.json`'s version from the tag and publishes the server metadata to the official [MCP Registry](https://registry.modelcontextprotocol.io) via GitHub OIDC — no secrets needed.
+
+[Smithery](https://smithery.ai) discovers the server via the root [`smithery.yaml`](smithery.yaml); claiming the package on Smithery is a one-time manual step for a maintainer.
+
+One-time maintainer setup: add an `NPM_TOKEN` secret (automation token with 2FA bypass, or trusted publishing on npmjs.com → package settings → Publishing access → GitHub Actions, repository `NovaLux12/spotify-mcp-server`, workflow `publish.yml`).
+
 ## Development
 
 ```bash

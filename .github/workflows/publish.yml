@@ -1,0 +1,68 @@
+name: Publish
+
+# On a version tag: test, build, publish the npm package, then publish the
+# server metadata to the official MCP Registry via GitHub OIDC (no secrets).
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  publish-npm:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # npm provenance / trusted publishing (OIDC)
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22.x"
+          cache: npm
+          registry-url: "https://registry.npmjs.org"
+
+      - run: npm ci
+
+      - run: npx tsc --noEmit
+
+      - run: npm test
+
+      - run: npm run build
+
+      # Trusted publishing: if the package has an automation token configured,
+      # set the NPM_TOKEN repo secret and this env var authenticates it.
+      # If instead you enable trusted publishing (OIDC) on npmjs.com, remove
+      # the NODE_AUTH_TOKEN env and add --provenance to the publish command.
+      - name: Publish to npm
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  publish-mcp-registry:
+    runs-on: ubuntu-latest
+    needs: publish-npm
+    permissions:
+      contents: read
+      id-token: write # GitHub OIDC auth for the MCP Registry
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Sync server.json version from tag
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          jq --arg v "$VERSION" '.version = $v | .packages[0].version = $v' \
+            server.json > server.tmp && mv server.tmp server.json
+
+      - name: Install mcp-publisher
+        run: |
+          curl -L "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz" | tar xz mcp-publisher
+
+      - name: Authenticate to MCP Registry
+        run: ./mcp-publisher login github-oidc
+
+      - name: Publish server to MCP Registry
+        run: ./mcp-publisher publish
