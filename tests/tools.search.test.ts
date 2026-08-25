@@ -160,11 +160,12 @@ test('search rejects a bogus type not in the enum', () => {
   assert.equal(search.schema.types.safeParse(['vinyl']).success, false);
 });
 
-test('search accepts limit up to the API maximum of 50 and rejects beyond it (issue #45)', () => {
+test('search accepts limit up to the API maximum of 10 and rejects beyond it (issue #83; Feb 2026 cap)', () => {
   const { registered } = makeHarness();
   const search = findTool(registered, 'search');
-  assert.equal(search.schema.limit.safeParse(50).success, true);
-  assert.equal(search.schema.limit.safeParse(51).success, false);
+  assert.equal(search.schema.limit.safeParse(10).success, true);
+  assert.equal(search.schema.limit.safeParse(11).success, false);
+  assert.equal(search.schema.limit.safeParse(50).success, false);
   assert.equal(search.schema.limit.safeParse(1).success, true);
   assert.equal(search.schema.limit.safeParse(0).success, false);
 });
@@ -338,4 +339,33 @@ test('search detailed mode surfaces popularity fields (#51)', async () => {
   );
   assert.match(out, /Popularity: 97/);
   assert.match(out, /Popularity: 80/);
+});
+
+test('search drops null playlist rows and reads items.total for track counts (issue #84; Feb 2026)', async () => {
+  const { registered } = makeHarness({
+    getResponse: (path, params) => {
+      if (path !== '/search') return null;
+      const type = new URLSearchParams(params).get('type');
+      if (type !== 'playlist') return null;
+      return {
+        playlists: {
+          total: 9,
+          items: [
+            null,
+            {
+              name: 'Focus Hits',
+              uri: 'spotify:playlist:pl1',
+              owner: { id: 'u1', display_name: 'Owner One' },
+              items: { total: 42 },
+            },
+          ],
+        },
+      };
+    },
+  });
+
+  const out = text(await invoke(findTool(registered, 'search'), { query: 'focus', types: ['playlist'] }));
+  assert.match(out, /"Focus Hits" by Owner One \(42 tracks\)/);
+  // The filtered null slot must not render or crash.
+  assert.doesNotMatch(out, /undefined|by u1 \(0 tracks\)/);
 });

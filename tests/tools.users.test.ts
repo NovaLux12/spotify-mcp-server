@@ -119,7 +119,7 @@ const playlistSimple = (id: string, name: string, trackTotal = 3) => ({
   uri: `spotify:playlist:${id}`,
   description: null,
   owner: { id: `owner-${id}`, display_name: `Owner ${id}` },
-  tracks: { total: trackTotal },
+  items: { total: trackTotal },
 });
 
 // ---------------------------------------------------------------------------

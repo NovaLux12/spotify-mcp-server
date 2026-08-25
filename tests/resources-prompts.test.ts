@@ -350,3 +350,19 @@ test('every prompt only references tool names that are actually registered', asy
     }
   }
 });
+
+test('saved-shows resource falls back to "unknown publisher" when the field is absent (issues #78/#86; Feb 2026)', async () => {
+  const showItem = {
+    added_at: '2026-02-02T00:00:00Z',
+    show: {
+      id: 'shw9', name: 'Publisherless Show', uri: 'spotify:show:shw9',
+      description: '', total_episodes: 4,
+    },
+  };
+  const client = await connect(makeClientStub({
+    getAllPagesResponse: (path) => (path === '/me/shows' ? [showItem] : []),
+  }));
+
+  const shows = firstContent(await client.readResource({ uri: 'spotify://me/saved/shows' }));
+  assert.match(shows.text, /"Publisherless Show" — unknown publisher \(4 episodes/);
+});

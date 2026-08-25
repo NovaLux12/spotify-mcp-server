@@ -109,9 +109,23 @@ async function fetchSeveral<T>(
 
   const merged: T[] = [];
   for (const chunk of chunks) {
-    const res = await client.get<Partial<Record<string, Array<T | null>>>>(`/${kind}`, {
-      ids: chunk.map((id) => encodeURIComponent(id)).join(','),
-    });
+    // Feb 2026: all "Get Several" batch endpoints were removed for app
+    // registrations created after Nov 2024 (403). Fail with an explanation
+    // rather than a raw API error.
+    let res: Partial<Record<string, Array<T | null>>> | null;
+    try {
+      res = await client.get<Partial<Record<string, Array<T | null>>>>(`/${kind}`, {
+        ids: chunk.map((id) => encodeURIComponent(id)).join(','),
+      });
+    } catch (err) {
+      if (err instanceof SpotifyApiError && err.status === 403) {
+        throw new Error(
+          `Spotify returned 403 for the /${kind} batch lookup: ${err.message}. The "Get Several" batch endpoints were removed by Spotify's February 2026 Web API changes and are unavailable for newer app registrations; use the single-item get tools instead, or run with credentials from a grandfathered (pre-Nov-2024) app.`,
+          { cause: err },
+        );
+      }
+      throw err;
+    }
     for (const item of res?.[responseKey] ?? []) {
       if (item != null) merged.push(item);
     }
@@ -562,10 +576,6 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
         lines.push(`Resume point: ${status}`);
       }
 
-      if (episode.audio_preview_url) {
-        lines.push(`Preview: ${episode.audio_preview_url}`);
-      }
-
       lines.push(`URI: ${episode.uri}`);
 
       return renderSingle(args.response_format, episode as unknown as Record<string, unknown>, lines, [
@@ -582,7 +592,6 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
     async (args) => {
       const user = await client.get<UserProfile>('/me');
       if (!user) throw new Error('User profile not found');
-
       const lines = [
         `Display name: ${user.display_name ?? 'not set'}`,
         `User ID: ${user.id}`,
@@ -597,7 +606,7 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
   // get_artist_top_tracks
   server.tool(
     'get_artist_top_tracks',
-    "Get an artist's ten most-played tracks for a market",
+    "Get an artist's ten most-played tracks for a market. Removed by Spotify's February 2026 Web API changes — unavailable for newer app registrations",
     {
       id: z.string().describe('Spotify artist ID'),
       market: z.string().optional().describe(
@@ -642,12 +651,26 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
   // get_available_markets
   server.tool(
     'get_available_markets',
-    'List the country codes of every market where Spotify is available — useful for validating market inputs to other tools',
+    'List the country codes of every market where Spotify is available. Removed by Spotify\u2019s February 2026 Web API changes — unavailable for newer app registrations',
     { ...sharedListFields },
     async (args) => {
-      const data = await client.get<{
+      // Feb 2026: GET /markets was removed (403 for newer app registrations).
+      let data: {
         markets?: Array<{ name?: string; codes?: string[] } | string>;
-      }>('/markets');
+      } | null;
+      try {
+        data = await client.get<{
+          markets?: Array<{ name?: string; codes?: string[] } | string>;
+        }>('/markets');
+      } catch (err) {
+        if (err instanceof SpotifyApiError && err.status === 403) {
+          throw new Error(
+            `Spotify returned 403 for the markets lookup: ${err.message}. GET /markets was removed by Spotify's February 2026 Web API changes; validate market inputs with your account country from get_me, or run with credentials from a grandfathered (pre-Nov-2024) app.`,
+            { cause: err },
+          );
+        }
+        throw err;
+      }
       if (!data?.markets?.length) throw new Error('Available markets list is empty or unavailable');
 
       return renderList(args.response_format, data.markets, {

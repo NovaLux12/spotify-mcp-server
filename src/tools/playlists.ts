@@ -133,7 +133,7 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
 
       const lines = [`Your playlists (${total} total, showing ${shown.length}):`];
       for (const pl of shown) {
-        const trackCount = pl.tracks?.total ?? 0;
+        const trackCount = pl.items?.total ?? 0;
         const owner = pl.owner.display_name ?? pl.owner.id;
         lines.push(
           `  • "${pl.name}" by ${owner} (${trackCount} tracks) | ID: ${pl.id} | URI: ${pl.uri}`,
