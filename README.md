@@ -1,5 +1,10 @@
 # SpotifyMCP
 
+[![CI](https://github.com/NovaLux12/spotify-mcp-server/actions/workflows/ci.yml/badge.svg)](https://github.com/NovaLux12/spotify-mcp-server/actions/workflows/ci.yml)
+[![npm version](https://img.shields.io/npm/v/@novalux12/spotify-mcp)](https://www.npmjs.com/package/@novalux12/spotify-mcp)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+![Node](https://img.shields.io/badge/node-%3E%3D22.9-brightgreen)
+
 An MCP server that wraps the Spotify Web API, letting AI assistants (like Claude) control playback, search the full catalog including podcasts and audiobooks, manage your library and playlists, and understand your listening taste.
 
 ## Why this one
@@ -15,6 +20,8 @@ Most Spotify MCP servers are thin wrappers. This one is built to be the default:
 - **Robust auth** — PKCE flow with silent refresh, persistent mode-600 token cache, headless paste-flow (`SPOTIFY_HEADLESS=1`) for servers and containers.
 
 ## Features
+
+50 tools across 8 modules:
 
 **Playback (15 tools)** — now playing / currently-playing polls, play (by URI, or `play_from_search` to play straight from a name), pause, skip, previous, seek, volume, shuffle, repeat, queue view/add, device list, transfer playback.
 
@@ -39,7 +46,7 @@ Also exposed: **7 MCP resources** (profile, player state, queue, top tracks/arti
 - Audiobook tools are market-gated by Spotify to US, UK, Canada, Ireland, New Zealand, and Australia.
 - Spotify's developer mode allows up to 5 authorised users per app until extended quota is granted.
 
-## Quick setup
+## Installation
 
 ### 1. Create a Spotify app
 
@@ -61,44 +68,6 @@ Run the command below once to log in to your Spotify account. Replace `your_clie
 SPOTIFY_CLIENT_ID=your_client_id_here npx -y @novalux12/spotify-mcp@latest auth
 ```
 
-**Headless / remote hosts** (no browser on the machine running the MCP server):
-
-```bash
-SPOTIFY_HEADLESS=1 SPOTIFY_CLIENT_ID=your_client_id_here npx -y @novalux12/spotify-mcp@latest auth
-```
-
-The auth URL is printed; complete the flow in any browser (e.g. on your laptop), then paste the redirect URL back into the prompt. Useful for homelabs, CI, and agent runtimes.
-
-### Headless authentication (browserless hosts)
-
-If you're running this MCP server on a host that doesn't have a browser
-(e.g., a cloud VM, a Docker container, a remote server), set the
-`SPOTIFY_HEADLESS=1` environment variable. The auth flow will skip the
-local HTTP callback server and instead prompt you to paste the
-redirect URL after authorizing the app in your browser.
-
-#### Steps
-
-1. Set `SPOTIFY_HEADLESS=1` in your environment
-2. Run the server — it will print a URL to authorize the app
-3. Open the URL in a browser on a different machine
-4. After authorizing, your browser will redirect to the redirect URI
-5. Copy the full URL from the address bar
-6. Paste it back into the server prompt
-
-#### Why
-
-The default auth flow opens a browser via the `open` package and runs a
-local HTTP callback server on `127.0.0.1:8888`. That breaks when the MCP
-server runs on a headless host (homelab, CI, agent runtime) where there
-is no browser to `open()`, and the `127.0.0.1:8888` callback can't be
-reached from the user's machine.
-
-`SPOTIFY_HEADLESS=1` switches to a paste-URL flow: the auth URL is
-printed to stdout, the operator completes the flow in any browser (their
-laptop, phone), then pastes the full redirect URL back. The code +
-state are extracted and exchanged server-side. Works across machines.
-
 **Windows (Command Prompt):**
 ```cmd
 set SPOTIFY_CLIENT_ID=your_client_id_here && npx -y @novalux12/spotify-mcp@latest auth
@@ -109,7 +78,17 @@ set SPOTIFY_CLIENT_ID=your_client_id_here && npx -y @novalux12/spotify-mcp@lates
 $env:SPOTIFY_CLIENT_ID="your_client_id_here"; npx -y @novalux12/spotify-mcp@latest auth
 ```
 
-### 3. Configure Claude Desktop
+**Headless / remote hosts** (no browser on the machine running the MCP server):
+
+```bash
+SPOTIFY_HEADLESS=1 SPOTIFY_CLIENT_ID=your_client_id_here npx -y @novalux12/spotify-mcp@latest auth
+```
+
+The auth URL is printed; complete the flow in any browser (e.g. on your laptop), then paste the redirect URL back into the prompt. Useful for homelabs, CI, and agent runtimes. The default flow runs a local HTTP callback server on `127.0.0.1:8888` and opens the browser via the `open` package; `SPOTIFY_HEADLESS=1` replaces both with the paste flow, so it works across machines.
+
+### 3. Connect your MCP host
+
+#### Claude Desktop
 
 Open your `claude_desktop_config.json`:
 
@@ -134,7 +113,11 @@ Add the `mcpServers` block (replace `your_client_id_here` with your Client ID):
 
 Fully quit and restart Claude Desktop. A hammer icon in the chat input confirms the server is connected.
 
-### Alternative: Claude Code
+#### Generic MCP hosts
+
+The server speaks MCP over stdio, so any spec-compliant host works with the same shape: command `npx`, arguments `-y @novalux12/spotify-mcp@latest`, with `SPOTIFY_CLIENT_ID` in the environment. Adapt the JSON above to your host's config format — most use an identical `command`/`args`/`env` structure under an `mcpServers` or `servers` key. If your host cannot pass environment variables, authenticate once beforehand; the token cache at `~/.spotify-mcp/tokens.json` persists across restarts.
+
+#### Claude Code
 
 If you use Claude Code, add the server without editing JSON by hand:
 
@@ -146,24 +129,7 @@ export SPOTIFY_CLIENT_ID=your_client_id_here
 
 Or add it to `.mcp.json` in your project root — same `command`/`args`/`env` shape as above.
 
-### Command for AI agents
-
-Any coding agent (Claude Code, OpenClaw, Cursor, Aider, …) can install,
-build, authenticate and register the server in one paste. Give it your
-Client ID and let it run:
-
-```bash
-git clone https://github.com/NovaLux12/spotify-mcp-server.git && cd spotify-mcp-server \
-  && npm ci && npm run build \
-  && SPOTIFY_CLIENT_ID=your_client_id_here npm run auth
-```
-
-Then point your host's MCP config at `<repo>/dist/index.js` with
-`SPOTIFY_CLIENT_ID` in its env (shapes below). Agents should finish by
-calling the `get_me` tool once — it proves auth, scopes and transport in a
-single round-trip.
-
-### OpenClaw
+#### OpenClaw
 
 Add to `mcp.servers` in `~/.openclaw/openclaw.json`:
 
@@ -176,11 +142,21 @@ Add to `mcp.servers` in `~/.openclaw/openclaw.json`:
 }
 ```
 
-Then restart the OpenClaw gateway so it respawns the server. Headless box?
-Run the auth step with `SPOTIFY_HEADLESS=1` on any machine with a browser
-(see above) — tokens land in `~/.spotify-mcp/tokens.json` either way.
+Then restart the OpenClaw gateway so it respawns the server. Headless box? Run the auth step with `SPOTIFY_HEADLESS=1` on any machine with a browser (see above) — tokens land in `~/.spotify-mcp/tokens.json` either way.
 
-### When things go wrong: install the doctor skill
+#### Command for AI agents
+
+Any coding agent (Claude Code, OpenClaw, Cursor, Aider, …) can install, build, authenticate and register the server in one paste. Give it your Client ID and let it run:
+
+```bash
+git clone https://github.com/NovaLux12/spotify-mcp-server.git && cd spotify-mcp-server \
+  && npm ci && npm run build \
+  && SPOTIFY_CLIENT_ID=your_client_id_here npm run auth
+```
+
+Then point your host's MCP config at `<repo>/dist/index.js` with `SPOTIFY_CLIENT_ID` in its env (shapes above). Agents should finish by calling the `get_me` tool once — it proves auth, scopes and transport in a single round-trip.
+
+### Install the doctor skill
 
 This repo ships [`skills/spotify-mcp-doctor/SKILL.md`](skills/spotify-mcp-doctor/SKILL.md) —
 a procedural diagnostic your agent can execute instead of you re-reading
@@ -193,8 +169,20 @@ cp -r skills/spotify-mcp-doctor ~/.openclaw/workspace/skills/   # OpenClaw
 # or drop it into .claude/skills/ for Claude Code projects
 ```
 
-Then just ask your agent: *"Spotify tools are failing — run the spotify
-doctor skill."*
+Then just ask your agent: *"Spotify tools are failing — run the spotify doctor skill."*
+
+## Configuration
+
+All settings come from environment variables — no config file required:
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `SPOTIFY_CLIENT_ID` | none (required) | OAuth Client ID of your Spotify app |
+| `SPOTIFY_REDIRECT_URI` | `http://127.0.0.1:8888/callback` | OAuth redirect URI; must match your dashboard setting exactly |
+| `SPOTIFY_MCP_TOKEN_FILE` | `~/.spotify-mcp/tokens.json` | Token cache location (mode 600) |
+| `SPOTIFY_HEADLESS` | unset | Set to `1` for browserless paste-flow auth |
+
+Full details, examples, and override scenarios: [docs/configuration.md](docs/configuration.md). See also [`.env.example`](.env.example).
 
 ## Usage
 
@@ -208,10 +196,26 @@ Once connected, you can ask Claude things like:
 
 ## Troubleshooting
 
-- **"Not authenticated" on first tool call** — run `npx -y @novalux12/spotify-mcp@latest auth` (or `npm run auth` from a clone) and complete the browser flow. Tokens are stored at `~/.spotify-mcp/tokens.json` and refreshed automatically.
-- **Redirect URI mismatch** — the Spotify app's redirect URI must be *exactly* `http://127.0.0.1:8888/callback` (no trailing slash). Save the app settings and retry.
-- **Port 8888 busy** — another process is holding the callback port; stop it or pick a free port via `SPOTIFY_REDIRECT_URI=http://127.0.0.1:8888/callback` with a different port and matching Dashboard setting.
-- **Headless / Docker** — set `SPOTIFY_HEADLESS=1` before `auth`; paste the redirect URL back when prompted (see above).
+### Auth problems
+
+- **"Not authenticated" on first tool call** — the token cache is missing or unreadable. Run `npx -y @novalux12/spotify-mcp@latest auth` (or `npm run auth` from a clone) and complete the browser flow. Tokens are stored at `~/.spotify-mcp/tokens.json` and refreshed automatically afterwards.
+- **Auth loop — login succeeds but the next call asks again** — usually one of: (a) the Spotify app's redirect URI doesn't *exactly* match `http://127.0.0.1:8888/callback` (or your `SPOTIFY_REDIRECT_URI`) — no trailing slash, correct scheme; (b) the server process can't write the token file — check the directory exists and is writable, or set `SPOTIFY_MCP_TOKEN_FILE` to a writable path; (c) `SPOTIFY_MCP_TOKEN_FILE` differs between the auth command and the server process — use the same value for both.
+- **Error page mentioning S256 / code challenge during authorization** — Spotify failed to establish the PKCE session, typically because the browser is signed into a different account than the one you're authorizing, or a blocker interfered. Open a private/incognito window, log in to Spotify directly at spotify.com first, then retry the auth URL in that same window.
+- **Port 8888 already in use** — another process holds the fixed callback listener. Free the port (stop or reconfigure the other process), or bypass the listener entirely by authenticating with `SPOTIFY_HEADLESS=1` — the paste flow never opens a port. Do not try to move auth to a different port: the callback server always binds `127.0.0.1:8888`, so a custom-port `SPOTIFY_REDIRECT_URI` sends Spotify's redirect somewhere nothing is listening.
+
+### Playback problems
+
+- **"Premium required" errors on play/pause/skip/seek/volume/shuffle/repeat/queue/transfer** — Spotify reserves playback control for Premium accounts. Free accounts can still use search, catalog lookups, library, and playlist management tools. There is no workaround at the API level.
+- **Audiobook tools return empty results or errors** — Spotify gates audiobooks by market to US, UK, Canada, Ireland, New Zealand, and Australia. Check your profile's country (`get_me` returns it); outside those markets the endpoints will not return data regardless of account type.
+
+## Documentation
+
+- [ARCHITECTURE.md](ARCHITECTURE.md) — how the server is structured: client, transports, tool modules.
+- [CHANGELOG.md](CHANGELOG.md) — release history and notable changes.
+- [CONTRIBUTING.md](CONTRIBUTING.md) — development setup, conventions, PR expectations.
+- [SPEC.md](SPEC.md) — the tool/resource/prompt specification this implementation follows.
+- [SECURITY.md](SECURITY.md) — security policy and how to report vulnerabilities.
+- [docs/configuration.md](docs/configuration.md) — environment variable reference.
 
 ## Disclaimer
 
