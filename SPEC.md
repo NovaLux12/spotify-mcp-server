@@ -137,10 +137,11 @@ playlist-read-private
 playlist-read-collaborative
 playlist-modify-public
 playlist-modify-private
+ugc-image-upload
 ```
 
 > Note: `streaming` is **not** included — that scope is for the browser-based Spotify Web Playback SDK, not the Web API. Playback control via the Web API requires `user-modify-playback-state` (already included above).
-> Note: `ugc-image-upload` is **not** requested by default. It is only needed for `upload_playlist_cover`; users who want playlist cover uploads must enable it on their Spotify developer dashboard app and re-run auth.
+> Note: `ugc-image-upload` IS requested by default (needed for `upload_playlist_cover`), but Spotify additionally requires enabling it on the developer-dashboard app — otherwise uploads fail with 403.
 
 ### PKCE implementation notes
 

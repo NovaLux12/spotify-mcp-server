@@ -10,7 +10,7 @@ with README + server.json when the tool surface changes.
 - MCP Registry name: `io.github.NovaLux12/spotify-mcp-server` (listed, v1.2.1)
 - Transport: stdio (`npx @novalux12/spotify-mcp` after `npm i -g`, or via client config)
 - Auth: OAuth PKCE (S256) browser flow or headless mode; tokens at `~/.spotify-mcp/tokens.json` (0600)
-- Surface: ~60 tools / 9 modules + prompts + resources; aligned with Spotify's post-Feb-2026 API
+- Surface: 69 tools / 9 modules + resources + prompts (toolsets can trim); aligned with Spotify's post-Feb-2026 API
 - Tests: 352+ node:test suite, CI on Node 22
 
 ## Short blurb (directories)
