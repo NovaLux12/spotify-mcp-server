@@ -37,7 +37,7 @@ Most Spotify MCP servers are thin wrappers. This one is built to be the default:
 
 **Following** — followed-artists list and follow-state checks.
 
-Also exposed: **7 MCP resources** (profile, player state, queue, top tracks/artists, recently played, playlists) and **4 prompt templates** (DJ set, mood playlist, taste summary, discovery alternative).
+Also exposed: **MCP resources** — 11 fixed URIs (profile, player state, queue, top tracks/artists, recently played, playlists, saved albums/shows/episodes, rate-limit status) plus a paginated `spotify://playlist/{id}/tracks` template; every URI accepts `?format=json` for raw machine-readable output. And **9 prompt templates** (DJ set, mood playlist, taste summary, discovery alternative, playlist audit, listening recap, library migration, podcast catch-up, artist deep dive).
 
 ## Requirements & limitations
 
@@ -177,12 +177,15 @@ All settings come from environment variables — no config file required:
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `SPOTIFY_CLIENT_ID` | none (required) | OAuth Client ID of your Spotify app |
+| `SPOTIFY_CLIENT_ID` | none (required) | OAuth Client ID of your Spotify app; used for login and token refresh |
 | `SPOTIFY_REDIRECT_URI` | `http://127.0.0.1:8888/callback` | OAuth redirect URI; must match your dashboard setting exactly |
 | `SPOTIFY_MCP_TOKEN_FILE` | `~/.spotify-mcp/tokens.json` | Token cache location (mode 600) |
 | `SPOTIFY_HEADLESS` | unset | Set to `1` for browserless paste-flow auth |
-
-Full details, examples, and override scenarios: [docs/configuration.md](docs/configuration.md). See also [`.env.example`](.env.example).
+| `SPOTIFY_REQUEST_TIMEOUT_MS` | `30000` | Per-request HTTP timeout (ms) for API calls and token refresh |
+| `SPOTIFY_MCP_MAX_ITEMS` | `50` | Default per-call item cap for list-type tools (`max_results` overrides per call) |
+| `SPOTIFY_MCP_FETCH_ALL_CAP` | `500` | Hard cap on `fetch_all=true` pagination walks |
+| `SPOTIFY_MCP_HISTORY` | unset | Set to `1` to log one JSONL line per agent-driven mutation (undo/audit trail) |
+| `SPOTIFY_MCP_HISTORY_DIR` | `~/.spotify-mcp/history` | Directory for the mutation JSONL log (`mutations.jsonl`) |
 
 ## Usage
 

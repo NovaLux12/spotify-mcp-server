@@ -1,13 +1,24 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import type { SpotifyClient } from '../client.js';
+import { SpotifyApiError, type SpotifyClient } from '../client.js';
 import type {
   SpotifyAudiobookFull,
   SpotifyChapterFull,
   SpotifyChapterSimple,
   SpotifyPaged,
   SavedAudiobookItem,
+  UserProfile,
 } from '../types/spotify.js';
+
+import {
+  ResponseFormat,
+  sharedListFields,
+  resolveMaxResults,
+  truncateItems,
+  paginationInfo,
+  listStructuredContent,
+  type ResponseFormatValue,
+} from '../shaping.js';
 
 const MARKET_NOTE =
   ' Audiobooks are only available in the US, UK, Canada, Ireland, New Zealand and Australia markets.';
@@ -19,10 +30,131 @@ const MARKET_PARAM = z
     `ISO 3166-1 alpha-2 country code. If given, only content available in that market is returned.${MARKET_NOTE}`,
   );
 
+
+let profileCountry: Promise<string | undefined> | null = null;
+
+// The audiobooks API is market-gated (#29): when the caller supplies no
+// market, default to the account's country from /me.
+function resolveProfileCountry(client: SpotifyClient): Promise<string | undefined> {
+  profileCountry ??= client
+    .get<UserProfile>('/me')
+    .then((user) => user?.country)
+    .catch(() => undefined);
+  return profileCountry;
+}
+
+/** Test hook: forget the memoized profile-country lookup. */
+export function resetProfileCountryCache(): void {
+  profileCountry = null;
+}
+
+// GET with `market` defaulting to the profile country. When the market was
+// defaulted (not caller-supplied) and Spotify rejects the lookup, rethrow
+// with a hint while preserving the original error as `cause`.
+async function getWithMarketFallback<T>(
+  client: SpotifyClient,
+  path: string,
+  marketArg: string | undefined,
+  extraParams: Record<string, string> = {},
+): Promise<T | null> {
+  const market = marketArg ?? (await resolveProfileCountry(client));
+  const params: Record<string, string> = { ...extraParams };
+  if (market) params.market = market;
+  try {
+    return await client.get<T>(path, params);
+  } catch (err) {
+    if (
+      !marketArg &&
+      market &&
+      err instanceof SpotifyApiError &&
+      (err.status === 404 || err.status === 400)
+    ) {
+      throw new Error(
+        `Spotify returned ${err.status} for this lookup using market ${market}. Audiobooks are market-gated — retry with an explicit market code if this looks wrong.`,
+        { cause: err },
+      );
+    }
+    throw err;
+  }
+}
 function formatDuration(ms: number): string {
   const minutes = Math.floor(ms / 60000);
   const seconds = Math.floor((ms % 60000) / 1000);
   return `${minutes}:${seconds.toString().padStart(2, '0')}`;
+}
+
+// Thin presentation glue over src/shaping.ts primitives (#51/#52/#53), kept
+// identical to the catalog module's helpers.
+
+type ShapedToolResult = {
+  [key: string]: unknown;
+  content: Array<{ type: 'text'; text: string }>;
+  structuredContent?: Record<string, unknown>;
+};
+
+/** #51 json mode: raw API payload as parseable JSON text plus structuredContent. */
+function jsonResult(raw: Record<string, unknown>): ShapedToolResult {
+  return { content: [{ type: 'text', text: JSON.stringify(raw) }], structuredContent: raw };
+}
+
+/**
+ * Single-object rendering (#51): concise keeps the existing prose verbatim;
+ * detailed appends fields the prose drops.
+ */
+function renderSingle(
+  fmt: ResponseFormatValue | undefined,
+  raw: Record<string, unknown>,
+  concise: string[],
+): ShapedToolResult {
+  if (fmt === 'json') return jsonResult(raw);
+  return { content: [{ type: 'text', text: concise.join('\n') }] };
+}
+
+/**
+ * List rendering (#52/#53): truncates to max_results, appends the shared
+ * footer, and emits structuredContent with pagination info.
+ */
+function renderList<T>(
+  fmt: ResponseFormatValue | undefined,
+  pageItems: readonly T[],
+  opts: {
+    header: string;
+    line: (item: T, index: number) => string;
+    maxResults?: number;
+    total?: number | null;
+    offset?: number;
+    limit?: number | null;
+    continuable?: boolean;
+  },
+): ShapedToolResult {
+  const cap = resolveMaxResults(opts.maxResults);
+  const trunc = truncateItems(pageItems, cap);
+  const lines = [opts.header];
+  trunc.items.forEach((item, i) => lines.push(opts.line(item, i)));
+  if (trunc.footer) lines.push('', `(${trunc.footer})`);
+  const continuable = opts.continuable !== false;
+  const pagination = paginationInfo({
+    total: opts.total ?? trunc.total,
+    offset: opts.offset,
+    limit: opts.limit ?? null,
+    returned: trunc.items.length,
+  });
+  if (!continuable) {
+    pagination.next_offset = null;
+  } else if (!trunc.truncated && pagination.next_offset !== null) {
+    const left =
+      pagination.total !== null ? pagination.total - pagination.next_offset : null;
+    lines.push(
+      '',
+      `More pages available — pass offset=${pagination.next_offset}${
+        left !== null ? ` (${left} items left)` : ''
+      }`,
+    );
+  }
+  return {
+    content: [{ type: 'text', text: lines.join('\n') }],
+    structuredContent: listStructuredContent(trunc.items, pagination),
+  };
 }
 
 export function registerAudiobookTools(server: McpServer, client: SpotifyClient): void {
@@ -33,16 +165,15 @@ export function registerAudiobookTools(server: McpServer, client: SpotifyClient)
     {
       id: z.string().describe('Spotify audiobook ID'),
       market: MARKET_PARAM,
+      response_format: ResponseFormat,
     },
     async (args) => {
-      const params: Record<string, string> = {};
-      if (args.market) params.market = args.market;
-
-      const audiobook = await client.get<SpotifyAudiobookFull>(
+      const audiobook = await getWithMarketFallback<SpotifyAudiobookFull>(
+        client,
         `/audiobooks/${encodeURIComponent(args.id)}`,
-        params,
+        args.market,
       );
-      if (!audiobook) throw new Error('Audiobook not found');
+      if (!audiobook) throw new Error(`Audiobook "${args.id}" not found`);
 
       const authors = audiobook.authors.map((a) => a.name).join(', ');
       const narrators = audiobook.narrators.map((n) => n.name).join(', ') || 'none listed';
@@ -63,7 +194,7 @@ export function registerAudiobookTools(server: McpServer, client: SpotifyClient)
         }
       }
 
-      return { content: [{ type: 'text', text: lines.join('\n') }] };
+      return renderSingle(args.response_format, audiobook as unknown as Record<string, unknown>, lines);
     },
   );
 
@@ -82,28 +213,34 @@ export function registerAudiobookTools(server: McpServer, client: SpotifyClient)
         .describe('Results per page, 1–50. Default: 20'),
       offset: z.number().int().min(0).optional().describe('Index of the first chapter to return. Default: 0'),
       market: MARKET_PARAM,
+      ...sharedListFields,
     },
     async (args) => {
-      const params: Record<string, string> = {
-        limit: String(args.limit ?? 20),
-        offset: String(args.offset ?? 0),
-      };
-      if (args.market) params.market = args.market;
-
-      const result = await client.get<SpotifyPaged<SpotifyChapterSimple>>(
+      const result = await getWithMarketFallback<SpotifyPaged<SpotifyChapterSimple>>(
+        client,
         `/audiobooks/${encodeURIComponent(args.id)}/chapters`,
-        params,
+        args.market,
+        {
+          limit: String(args.limit ?? 20),
+          offset: String(args.offset ?? 0),
+        },
       );
-      if (!result) throw new Error('Audiobook not found');
+      if (!result) throw new Error(`Audiobook "${args.id}" not found`);
 
-      const lines = [`Chapters for audiobook (${result.total} total):`];
-      for (const chapter of result.items) {
-        const playable = chapter.is_playable ? '' : ' [not playable]';
-        lines.push(
-          `  ${chapter.chapter_number}. "${chapter.name}" (${formatDuration(chapter.duration_ms)}, ${chapter.release_date})${playable} | URI: ${chapter.uri}`,
-        );
+      if (args.response_format === 'json') {
+        return jsonResult(result as unknown as Record<string, unknown>);
       }
-      return { content: [{ type: 'text', text: lines.join('\n') }] };
+      return renderList(args.response_format, result.items, {
+        header: `Chapters for audiobook (${result.total} total):`,
+        line: (chapter) => {
+          const playable = chapter.is_playable ? '' : ' [not playable]';
+          return `  ${chapter.chapter_number}. "${chapter.name}" (${formatDuration(chapter.duration_ms)}, ${chapter.release_date})${playable} | URI: ${chapter.uri}`;
+        },
+        total: result.total,
+        offset: args.offset,
+        limit: args.limit ?? 20,
+        maxResults: args.max_results,
+      });
     },
   );
 
@@ -114,16 +251,15 @@ export function registerAudiobookTools(server: McpServer, client: SpotifyClient)
     {
       id: z.string().describe('Spotify chapter ID'),
       market: MARKET_PARAM,
+      response_format: ResponseFormat,
     },
     async (args) => {
-      const params: Record<string, string> = {};
-      if (args.market) params.market = args.market;
-
-      const chapter = await client.get<SpotifyChapterFull>(
+      const chapter = await getWithMarketFallback<SpotifyChapterFull>(
+        client,
         `/chapters/${encodeURIComponent(args.id)}`,
-        params,
+        args.market,
       );
-      if (!chapter) throw new Error('Chapter not found');
+      if (!chapter) throw new Error(`Chapter "${args.id}" not found`);
 
       const lines = [
         `Chapter ${chapter.chapter_number}: "${chapter.name}"`,
@@ -141,7 +277,7 @@ export function registerAudiobookTools(server: McpServer, client: SpotifyClient)
 
       lines.push(`URI: ${chapter.uri}`);
 
-      return { content: [{ type: 'text', text: lines.join('\n') }] };
+      return renderSingle(args.response_format, chapter as unknown as Record<string, unknown>, lines);
     },
   );
 
@@ -158,6 +294,7 @@ export function registerAudiobookTools(server: McpServer, client: SpotifyClient)
         .optional()
         .describe('Results per page, 1–50. Default: 20'),
       offset: z.number().int().min(0).optional().describe('Index of the first audiobook to return. Default: 0'),
+      ...sharedListFields,
     },
     async (args) => {
       const params: Record<string, string> = {
@@ -168,14 +305,20 @@ export function registerAudiobookTools(server: McpServer, client: SpotifyClient)
       const result = await client.get<SpotifyPaged<SavedAudiobookItem>>('/me/audiobooks', params);
       if (!result) throw new Error('Could not fetch saved audiobooks');
 
-      const lines = [`Saved audiobooks (${result.total} total):`];
-      for (const item of result.items) {
-        const authors = item.audiobook.authors.map((a) => a.name).join(', ');
-        lines.push(
-          `  • "${item.audiobook.name}" by ${authors} (${item.audiobook.total_chapters} chapters, saved ${item.added_at}) | URI: ${item.audiobook.uri}`,
-        );
+      if (args.response_format === 'json') {
+        return jsonResult(result as unknown as Record<string, unknown>);
       }
-      return { content: [{ type: 'text', text: lines.join('\n') }] };
+      return renderList(args.response_format, result.items, {
+        header: `Saved audiobooks (${result.total} total):`,
+        line: (item) => {
+          const authors = item.audiobook.authors.map((a) => a.name).join(', ');
+          return `  • "${item.audiobook.name}" by ${authors} (${item.audiobook.total_chapters} chapters, saved ${item.added_at}) | URI: ${item.audiobook.uri}`;
+        },
+        total: result.total,
+        offset: args.offset,
+        limit: args.limit ?? 20,
+        maxResults: args.max_results,
+      });
     },
   );
 }

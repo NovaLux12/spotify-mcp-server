@@ -46,7 +46,7 @@ const FORBIDDEN_TOOLS = [
   'unfollow_artist',
 ];
 
-const EXPECTED_PROMPTS = ['dj', 'playlist_from_mood', 'music_taste_summary', 'discover_weekly_alternative'];
+const EXPECTED_PROMPTS = ['dj', 'playlist_from_mood', 'music_taste_summary', 'discover_weekly_alternative', 'playlist_audit', 'listening_recap', 'migrate_library', 'podcast_catchup', 'artist_deep_dive'];
 
 interface JsonRpcResponse {
   id?: number | string | null;
@@ -207,7 +207,7 @@ describe('MCP stdio smoke (real src/index.ts)', () => {
     console.log(`tools/list total tool count: ${tools.length}`);
   });
 
-  it('exposes the four prompt templates', async () => {
+  it('exposes all prompt templates', async () => {
     const res = await client.request('prompts/list');
     assert.equal(res.error, undefined);
     const prompts = res.result?.prompts as Array<{ name: string }>;
@@ -216,7 +216,7 @@ describe('MCP stdio smoke (real src/index.ts)', () => {
     for (const expected of EXPECTED_PROMPTS) {
       assert.ok(names.has(expected), `expected prompt template "${expected}" in [${[...names].join(', ')}]`);
     }
-    assert.equal(prompts.length, EXPECTED_PROMPTS.length, 'prompts/list should expose exactly four templates');
+    assert.equal(prompts.length, EXPECTED_PROMPTS.length, 'prompts/list should expose every registered template');
   });
 
   it('no longer lists the spotify://genres resource', async () => {

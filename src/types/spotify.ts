@@ -91,7 +91,7 @@ export interface PlaybackState {
   shuffle_state: boolean;
   repeat_state: 'off' | 'context' | 'track';
   timestamp: number;
-  device: SpotifyDevice;
+  device?: SpotifyDevice;
   item: SpotifyTrack | SpotifyEpisode | null;
   currently_playing_type: 'track' | 'episode' | 'ad' | 'unknown';
   context: {
@@ -303,30 +303,6 @@ export interface RecentlyPlayedResponse {
   items: RecentlyPlayedItem[];
   cursors: { before: string; after: string } | null;
   next: string | null;
-}
-
-// Recommendations (GET /recommendations)
-export interface RecommendationsResponse {
-  seeds: Array<{
-    id: string;
-    type: string;
-    href: string;
-    initialPoolSize: number;
-    afterFilteringSize: number;
-    afterRelinkingSize: number;
-  }>;
-  tracks: SpotifyTrack[];
-}
-
-// Available genre seeds
-export interface AvailableGenreSeedsResponse {
-  genres: string[];
-}
-
-// Featured playlists
-export interface FeaturedPlaylistsResponse {
-  message: string;
-  playlists: SpotifyPaged<SpotifyPlaylistSimple>;
 }
 
 // Simplified playlist for search results
