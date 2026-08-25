@@ -230,7 +230,7 @@ test('get_artist_albums sends default include_groups and limit params', async ()
     {
       method: 'GET',
       path: '/artists/art1/albums',
-      params: { include_groups: 'album,single', limit: '20', offset: '0' },
+      params: { include_groups: 'album,single', limit: '10', offset: '0' },
     },
   ]);
   assert.match(out, /Albums for artist \(15 total\)/);
@@ -780,7 +780,7 @@ test('get_artist_albums forwards explicit market and offset without preflight (#
     {
       method: 'GET',
       path: '/artists/art1/albums',
-      params: { include_groups: 'album,single', limit: '20', offset: '100', market: 'US' },
+      params: { include_groups: 'album,single', limit: '10', offset: '100', market: 'US' },
     },
   ]);
 });
@@ -1105,7 +1105,7 @@ test('get_artist_albums truncates to max_results with the shared footer math (#5
   assert.deepEqual(result.structuredContent!.pagination, {
     total: 12,
     offset: 0,
-    limit: 20,
+    limit: 10,
     next_offset: 2,
   });
   assert.equal(result.structuredContent!.items.length, 2);

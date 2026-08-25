@@ -320,13 +320,14 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
         .array(z.enum(['album', 'single', 'appears_on', 'compilation']))
         .optional()
         .describe('Album types to include. Default: ["album","single"]'),
+      // Feb-2026: /artists/{id}/albums hard-caps limit at 10 (400 above).
       limit: z
         .number()
         .int()
         .min(1)
-        .max(50)
+        .max(10)
         .optional()
-        .describe('Results per page, 1–50. Default: 20'),
+        .describe('Results per page, 1–10. Default: 10'),
       offset: z.number().int().min(0).optional().describe('Index of the first album to return. Default: 0'),
       market: z.string().optional().describe(
         'ISO 3166-1 alpha-2 country code. Defaults to the account country; affects album availability.',
@@ -340,7 +341,7 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
         args.market,
         {
           include_groups: (args.include_groups ?? ['album', 'single']).join(','),
-          limit: String(args.limit ?? 20),
+          limit: String(args.limit ?? 10),
           offset: String(args.offset ?? 0),
         },
       );
@@ -357,7 +358,7 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
         },
         total: result.total,
         offset: args.offset,
-        limit: args.limit ?? 20,
+        limit: args.limit ?? 10,
         maxResults: args.max_results,
       });
     },

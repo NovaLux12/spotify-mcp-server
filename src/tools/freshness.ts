@@ -191,7 +191,7 @@ export function registerFreshnessTools(server: McpServer, client: SpotifyClient)
         if (wantAlbums) {
           plan.push('walk GET /me/following?type=artist (cursor-paged)');
           plan.push(
-            `GET /artists/{id}/albums?limit=50 for up to ${getConfig().fetchAllCap} followed artists`,
+            `GET /artists/{id}/albums?limit=10 (Feb-2026 cap) for up to ${getConfig().fetchAllCap} followed artists`,
           );
         }
         if (wantPodcasts) {
@@ -241,9 +241,10 @@ export function registerFreshnessTools(server: McpServer, client: SpotifyClient)
               followTruncatedByCap = true;
               break walk;
             }
+            // Feb-2026: /artists/{id}/albums hard-caps limit at 10 (400 above).
             const res = await client.get<{ items?: SpotifyAlbumItem[] }>(
               `/artists/${encodeURIComponent(artist.id)}/albums`,
-              { limit: '50' },
+              { limit: '10' },
             );
             artistLookups++;
             artistsSeen++;
