@@ -26,7 +26,7 @@ No `.env` file is required — env vars can come from your host config or the co
 npm run auth    # opens a browser, completes Authorization Code + PKCE, stores tokens at ~/.spotify-mcp/tokens.json
 ```
 
-For browserless hosts, see the headless (`SPOTIFY_HEADLESS=1`) instructions in the [README](README.md#headless-authentication-browserless-hosts).
+For browserless hosts, see the headless (`SPOTIFY_HEADLESS=1`) instructions in the [README](README.md#2-authenticate).
 
 Tokens are stored mode-600 at `~/.spotify-mcp/tokens.json` and refreshed automatically. Never commit tokens or `.env`.
 

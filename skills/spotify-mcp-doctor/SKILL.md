@@ -33,7 +33,7 @@ cd <repo> && node --env-file=.env dist/index.js &   # then send stdin line:
 
 Expect one JSON line back naming `serverInfo.name: "spotify-mcp"`. If the
 process exits instantly: run `npm run build` (missing `dist/`) and check
-Node ≥ 20 (`node --version`).
+Node ≥ 22.9 (`node --version`).
 
 ## Probe 3 — App credentials valid? (no user login needed)
 

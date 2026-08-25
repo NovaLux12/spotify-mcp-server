@@ -229,7 +229,7 @@ Initial scoped-npm publication as `@novalux12/spotify-mcp` (`bcffd3f`; launch-pr
 - Premium requirement, pagination cap, and audiobook market gating disclosed in docs (`8636d2f`).
 - Rebrand as NovaLux12/spotify-mcp-server with MIT license and acknowledgements (`e9c3567`).
 
-[Unreleased]: https://github.com/NovaLux12/spotify-mcp-server/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/NovaLux12/spotify-mcp-server/compare/v1.2.1...HEAD
 [1.1.0]: https://github.com/NovaLux12/spotify-mcp-server/compare/v1.0.3...v1.1.0
 [1.0.3]: https://github.com/NovaLux12/spotify-mcp-server/compare/v1.0.2...v1.0.3
 [1.0.2]: https://github.com/NovaLux12/spotify-mcp-server/compare/v1.0.1...v1.0.2
