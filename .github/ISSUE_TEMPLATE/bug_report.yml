@@ -1,0 +1,62 @@
+name: Bug report
+description: Report a broken or incorrect tool behavior
+labels: [bug]
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: A clear summary of what went wrong.
+    validations:
+      required: true
+  - type: dropdown
+    id: tool
+    attributes:
+      label: Affected tool family
+      options:
+        - Playback
+        - Search
+        - Catalog Lookup
+        - Personalization
+        - Library
+        - Playlists
+        - Following
+        - Audiobooks
+        - Other / not tool-specific (auth, install, server startup)
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction steps
+      placeholder: |
+        1. Ask the assistant to ...
+        2. Observe ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Include the exact error message if there is one.
+    validations:
+      required: true
+  - type: input
+    id: client
+    attributes:
+      label: MCP client used
+      description: e.g. Claude Desktop, Claude Code, OpenClaw, Cursor (with version)
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / stderr output
+      description: Paste any relevant logs. Redact tokens and Client IDs before pasting.
+      render: text

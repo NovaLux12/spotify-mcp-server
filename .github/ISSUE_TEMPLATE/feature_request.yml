@@ -1,0 +1,30 @@
+name: Feature request
+description: Suggest an improvement or new capability for the Spotify MCP server
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before filing: this server intentionally wraps **only non-deprecated Spotify Web API endpoints**. Requests for recommendations, related artists, audio features/analysis, genre seeds, featured playlists, browse categories, new releases, or lyrics will be declined — those endpoints are unavailable to standard developer apps.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What are you trying to accomplish, and what is missing or awkward today?
+      placeholder: I want my assistant to ..., but currently there is no way to ...
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed endpoint / behavior
+      description: Which Spotify Web API endpoint(s) would this use, and what should the tool do? Link the official reference documentation if possible.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Other approaches, workarounds, or existing tools you've tried.
+    validations:
+      required: true
