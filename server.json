@@ -1,6 +1,6 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
-  "name": "io.github.novalux12/spotify-mcp-server",
+  "name": "io.github.NovaLux12/spotify-mcp-server",
   "title": "Spotify MCP",
   "description": "The most complete Spotify MCP: playback, library, playlists, search, podcasts and audiobooks.",
   "repository": {
