@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > from [Conventional Commits](https://www.conventionalcommits.org/). Entries below v1.0.4 were
 > backfilled by hand from git history.
 
+## [1.5.0](https://github.com/NovaLux12/spotify-mcp-server/compare/v1.4.0...v1.5.0) (2026-08-25)
+
+
+### Features
+
+* **#111:** argument completions for show/episode resource templates ([90b0197](https://github.com/NovaLux12/spotify-mcp-server/commit/90b0197bffd109df679ca9f47c6d2e512b7d1ac5))
+* **receipts:** mutation receipts with post-mutation verification ([#112](https://github.com/NovaLux12/spotify-mcp-server/issues/112) idea 11) ([1bd6e5c](https://github.com/NovaLux12/spotify-mcp-server/commit/1bd6e5cdc2cb5105f8ba182cf5dc46a9242fc2eb))
+* **tools:** grow_playlist — Playlist DNA co-occurrence curation ([#112](https://github.com/NovaLux12/spotify-mcp-server/issues/112) idea 6) ([d1677a7](https://github.com/NovaLux12/spotify-mcp-server/commit/d1677a7b12880b0c940b0ad985522fac88bb70e5))
+
+
+### Bug Fixes
+
+* **#110:** standardise playlist-ID params on playlist_id with id alias ([4b92dec](https://github.com/NovaLux12/spotify-mcp-server/commit/4b92dec286143cd7c25b74746cb268d0ff5d07dc))
+
 ## [1.4.0](https://github.com/NovaLux12/spotify-mcp-server/compare/v1.3.0...v1.4.0) (2026-08-25)
 
 
