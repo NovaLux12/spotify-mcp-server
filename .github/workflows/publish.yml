@@ -2,10 +2,15 @@ name: Publish
 
 # On a version tag: test, build, publish the npm package, then publish the
 # server metadata to the official MCP Registry via GitHub OIDC (no secrets).
-
+#
+# NOTE: release-please creates tags with GITHUB_TOKEN, and GitHub suppresses
+# workflow triggers from GITHUB_TOKEN events — so the tag push alone will NOT
+# start this workflow. After release-please tags a release, run:
+#   gh workflow run publish.yml --ref v<version>
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
 
 permissions:
   contents: read
