@@ -38,12 +38,17 @@ jobs:
 
       - run: npm run build
 
-      # Trusted publishing: if the package has an automation token configured,
-      # set the NPM_TOKEN repo secret and this env var authenticates it.
-      # If instead you enable trusted publishing (OIDC) on npmjs.com, remove
-      # the NODE_AUTH_TOKEN env and add --provenance to the publish command.
-      - name: Publish to npm
-        run: npm publish --access public
+      # Idempotency: skip when this version is already on npm (re-runs after
+      # a partial failure converge green instead of failing on "cannot
+      # publish over the previously published version").
+      - name: Publish to npm (skip if version already published)
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          if npm view "@novalux12/spotify-mcp@$VERSION" version >/dev/null 2>&1; then
+            echo "@novalux12/spotify-mcp@$VERSION already on npm — skipping"
+          else
+            npm publish --access public
+          fi
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
