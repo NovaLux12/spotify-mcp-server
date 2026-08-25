@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > from [Conventional Commits](https://www.conventionalcommits.org/). Entries below v1.0.4 were
 > backfilled by hand from git history.
 
+## [1.6.0](https://github.com/NovaLux12/spotify-mcp-server/compare/v1.5.0...v1.6.0) (2026-08-25)
+
+
+### Features
+
+* **prompts:** add triage_liked_songs prompt ([#112](https://github.com/NovaLux12/spotify-mcp-server/issues/112) idea 8) ([c26e7a9](https://github.com/NovaLux12/spotify-mcp-server/commit/c26e7a94c3a47c75341d0eb04b25b5967c6599bc))
+
+
+### Bug Fixes
+
+* **#110:** structuredContent contract breaks + explicit fetch_all semantics ([b31ca33](https://github.com/NovaLux12/spotify-mcp-server/commit/b31ca33af5d75d56f22e1f4497de5d9b4dbd57a2))
+
 ## [1.5.0](https://github.com/NovaLux12/spotify-mcp-server/compare/v1.4.0...v1.5.0) (2026-08-25)
 
 

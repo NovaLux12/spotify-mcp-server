@@ -1,6 +1,6 @@
 {
   "name": "@novalux12/spotify-mcp",
-  "version": "1.5.0",
+  "version": "1.6.0",
   "description": "The definitive Spotify MCP server - full non-deprecated Web API coverage, paginated everything, podcast-first, tested end to end",
   "type": "module",
   "bin": {
