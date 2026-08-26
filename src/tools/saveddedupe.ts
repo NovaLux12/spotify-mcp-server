@@ -54,6 +54,10 @@ export interface DuplicateGroup {
   /** Every member uri except the oldest save — the removal candidates. */
   removable_uris: string[];
   suggestion: string;
+  /** Playlist cross-reference (#161): members whose uri is in the target playlist. */
+  in_playlist_count?: number;
+  /** True when at least one member uri appears in the target playlist. */
+  in_playlist?: boolean;
 }
 
 interface AnalysisResult {
@@ -205,11 +209,35 @@ export function findDuplicateGroups(
   return groups;
 }
 
-// ---------------------------------------------------------------------------
-// Core analysis
-// ---------------------------------------------------------------------------
+interface AnalyzeOptions {
+  includeNearDuplicates: boolean;
+  /** Cross-reference duplicate groups against this playlist's tracks (#161). */
+  playlistId?: string;
+}
 
-async function analyze(client: SpotifyClient, includeNearDuplicates: boolean): Promise<AnalysisResult> {
+interface AnalyzeOutcome {
+  analysis: AnalysisResult;
+  /** Resolved target-playlist display name; null when unavailable/unresolved. */
+  playlistName: string | null;
+}
+
+/**
+ * Annotates `groups` in place with in_playlist/in_playlist_count against the
+ * given uri set.
+ */
+function applyPlaylistXref(
+  groups: DuplicateGroup[],
+  memberUris: ReadonlySet<string>,
+): void {
+  for (const g of groups) {
+    const n = g.members.reduce((count, m) => count + (memberUris.has(m.uri) ? 1 : 0), 0);
+    g.in_playlist_count = n;
+    g.in_playlist = n > 0;
+  }
+}
+
+async function analyze(client: SpotifyClient, opts: AnalyzeOptions): Promise<AnalyzeOutcome> {
+  const { includeNearDuplicates, playlistId } = opts;
   const fetchAllCap = getConfig().fetchAllCap;
   const saved = await client.getAllPages<SavedTrackItem>(
     '/me/tracks',
@@ -238,7 +266,30 @@ async function analyze(client: SpotifyClient, includeNearDuplicates: boolean): P
 
   const groups = findDuplicateGroups(members, includeNearDuplicates);
 
-  return {
+  let playlistName: string | null = null;
+  if (playlistId) {
+    const enc = encodeURIComponent(playlistId);
+    // Name is cosmetic (prose suffix) — degrade gracefully when unresolvable.
+    try {
+      const meta = await client.get<{ name?: unknown }>(`/playlists/${enc}`);
+      if (meta && typeof meta.name === 'string') playlistName = meta.name;
+    } catch {
+      /* fall through with no suffix */
+    }
+    const items = await client.getAllPages<{ item?: { uri?: unknown } | null }>(
+      `/playlists/${enc}/items`,
+      { limit: '100' },
+      { maxItems: fetchAllCap },
+    );
+    const memberUris = new Set<string>();
+    for (const row of items) {
+      const uri = row?.item?.uri;
+      if (typeof uri === 'string') memberUris.add(uri);
+    }
+    applyPlaylistXref(groups, memberUris);
+  }
+
+  const analysis: AnalysisResult = {
     ok: true,
     scanned: {
       saved_tracks: members.length,
@@ -253,13 +304,18 @@ async function analyze(client: SpotifyClient, includeNearDuplicates: boolean): P
     },
     groups,
   };
+  return { analysis, playlistName };
 }
 
 // ---------------------------------------------------------------------------
 // Prose rendering
 // ---------------------------------------------------------------------------
 
-function renderProse(result: AnalysisResult, maxResults: number): string {
+function renderProse(
+  result: AnalysisResult,
+  maxResults: number,
+  playlistName?: string | null,
+): string {
   const { scanned, counts, groups } = result;
   const lines: string[] = ['Saved-track duplicates:', ''];
 
@@ -291,7 +347,9 @@ function renderProse(result: AnalysisResult, maxResults: number): string {
   for (const group of t.items) {
     const label = group.kind === 'near_duplicate' ? 'NEAR-DUPLICATE' : 'EXACT';
     const artists = group.artist_names.join(', ') || 'unknown artist';
-    lines.push(`• [${label}] "${group.normalized_name}" — ${artists}`);
+    let header = `• [${label}] "${group.normalized_name}" — ${artists}`;
+    if (playlistName) header += ` · ${group.in_playlist_count ?? 0} in playlist "${playlistName}"`;
+    lines.push(header);
     group.members.forEach((m, i) => {
       const marker = i === 0 ? 'keep' : 'remove';
       const album = m.album_name ? ` | album: ${m.album_name}` : '';
@@ -316,7 +374,9 @@ export function registerSavedDedupeTools(server: McpServer, client: SpotifyClien
     'Read-only duplicate detection over your saved (liked) tracks: flags the same recording '
       + 'saved more than once — double re-adds (exact matches within ±2s duration) and, on '
       + 'opt-in, remasters/re-recordings of the same song (near duplicates). Lists each group '
-      + 'oldest save first with a keep-one-remove-the-rest suggestion. Never mutates your library.',
+      + 'oldest save first with a keep-one-remove-the-rest suggestion. Optionally '
+      + 'cross-references each group against a playlist (playlist_id) to show which '
+      + 'duplicates are already in it. Never mutates your library.',
     {
       response_format: ResponseFormat,
       max_results: MaxResults,
@@ -328,12 +388,22 @@ export function registerSavedDedupeTools(server: McpServer, client: SpotifyClien
           'Also report same-song groups whose durations differ by more than ±2s '
             + '(remasters/re-recordings). Default false.',
         ),
+      playlist_id: z
+        .string()
+        .optional()
+        .describe(
+          'Spotify playlist ID to cross-reference: each duplicate group is flagged with '
+            + 'how many of its tracks are already in that playlist.',
+        ),
     },
     async (args) => {
       const rf = args.response_format;
-      const result = await analyze(client, args.include_near_duplicates);
+      const { analysis, playlistName } = await analyze(client, {
+        includeNearDuplicates: args.include_near_duplicates,
+        playlistId: args.playlist_id,
+      });
       const maxResults = resolveMaxResults(args.max_results, getConfig().maxItems);
-      return shapeResult(rf, renderProse(result, maxResults), result);
+      return shapeResult(rf, renderProse(analysis, maxResults, playlistName), analysis);
     },
   );
 }

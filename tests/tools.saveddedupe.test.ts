@@ -163,6 +163,8 @@ interface Payload {
     members: Array<{ uri: string; added_at: string; duration_ms: number }>;
     removable_uris: string[];
     suggestion: string;
+    in_playlist_count?: number;
+    in_playlist?: boolean;
   }>;
 }
 const payloadOf = (out: InvokeOut): Payload =>
@@ -408,5 +410,94 @@ describe('find_duplicate_saved_tracks cap enforcement', () => {
       assert.equal(p.scanned.saved_tracks, bigLibrary.length);
     }
     void out;
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Playlist cross-reference (#161)
+// ---------------------------------------------------------------------------
+
+/** Responder serving /me/tracks plus a target playlist (name + nested items). */
+function playlistLibraryResponder(
+  tracks: SavedTrackItem[],
+  opts: { id?: string; name?: string | null; itemUris?: string[] } = {},
+) {
+  const pid = opts.id ?? 'pl1';
+  const name = opts.name === undefined ? 'Road Trip' : opts.name;
+  const base = libraryResponder(tracks);
+  return (path: string, params?: Record<string, string>) => {
+    if (path === `/playlists/${pid}`) {
+      return name === null ? null : { id: pid, name };
+    }
+    if (path === `/playlists/${pid}/items`) {
+      const limit = Number(params?.limit ?? 100);
+      const offset = Number(params?.offset ?? 0);
+      const rows = (opts.itemUris ?? []).map((uri) => ({ item: { uri } }));
+      return { items: rows.slice(offset, offset + limit), total: rows.length, limit, offset };
+    }
+    return base(path, params);
+  };
+}
+
+const xrefDupes = [
+  savedTrack({ id: 'dupe1', name: 'Same Song', artistNames: ['Duo'], durationMs: 200_000, addedAt: '2026-01-01T00:00:00Z' }),
+  savedTrack({ id: 'other', name: 'Unrelated', artistNames: ['Trio'], durationMs: 180_000, addedAt: '2026-01-02T00:00:00Z' }),
+  savedTrack({ id: 'dupe2', name: 'same SONG!', artistNames: ['duo'], durationMs: 201_500, addedAt: '2026-02-01T00:00:00Z' }),
+];
+
+describe('find_duplicate_saved_tracks playlist cross-reference', () => {
+  it('flags groups and counts members present in the playlist', async () => {
+    const h = harness(playlistLibraryResponder(xrefDupes, {
+      itemUris: ['spotify:track:dupe2', 'spotify:track:zzz'],
+    }));
+    const out = await h.invoke('find_duplicate_saved_tracks', { playlist_id: 'pl1' });
+    const p = payloadOf(out);
+    assert.equal(p.groups.length, 1);
+    assert.equal(p.groups[0].in_playlist, true);
+    assert.equal(p.groups[0].in_playlist_count, 1);
+    // Name fetch + items walk both happened.
+    assert.ok(h.client.calls.some((c) => c.path === '/playlists/pl1'));
+    assert.ok(h.client.calls.some((c) => c.path === '/playlists/pl1/items'));
+  });
+
+  it('leaves the flag false when no member uri is in the playlist', async () => {
+    const out = await harness(
+      playlistLibraryResponder(xrefDupes, { itemUris: ['spotify:track:zzz'] }),
+    ).invoke('find_duplicate_saved_tracks', { playlist_id: 'pl1' });
+    const p = payloadOf(out);
+    assert.equal(p.groups.length, 1);
+    assert.equal(p.groups[0].in_playlist, false);
+    assert.equal(p.groups[0].in_playlist_count, 0);
+  });
+
+  it('renders a per-group prose suffix with the resolved playlist name', async () => {
+    const out = await harness(
+      playlistLibraryResponder(xrefDupes, { itemUris: ['spotify:track:dupe1'] }),
+    ).invoke('find_duplicate_saved_tracks', { playlist_id: 'pl1' });
+    assert.match(textOf(out), /· 1 in playlist "Road Trip"/);
+  });
+
+  it('omits cross-reference fields (and playlist calls) when playlist_id is absent', async () => {
+    const h = harness(playlistLibraryResponder(xrefDupes, { itemUris: ['spotify:track:dupe2'] }));
+    const out = await h.invoke('find_duplicate_saved_tracks');
+    const p = payloadOf(out);
+    assert.equal(p.groups.length, 1);
+    assert.equal(p.groups[0].in_playlist, undefined);
+    assert.equal(p.groups[0].in_playlist_count, undefined);
+    for (const call of h.client.calls) {
+      assert.match(call.path, /^\/me\/tracks/);
+    }
+  });
+
+  it('degrades gracefully when the playlist name cannot be resolved', async () => {
+    const out = await harness(
+      playlistLibraryResponder(xrefDupes, { name: null, itemUris: ['spotify:track:dupe2'] }),
+    ).invoke('find_duplicate_saved_tracks', { playlist_id: 'pl1' });
+    const p = payloadOf(out);
+    // Flags still computed from the items walk...
+    assert.equal(p.groups[0].in_playlist, true);
+    assert.equal(p.groups[0].in_playlist_count, 1);
+    // ...but no suffix without the name.
+    assert.doesNotMatch(textOf(out), /in playlist/);
   });
 });
