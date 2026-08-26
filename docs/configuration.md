@@ -8,8 +8,11 @@ Every environment variable read by `@novalux12/spotify-mcp` — set in your MCP 
 | --- | --- | --- |
 | `SPOTIFY_CLIENT_ID` | none (required) | OAuth Client ID of your Spotify app; used for login and token refresh. |
 | `SPOTIFY_REDIRECT_URI` | `http://127.0.0.1:8888/callback` | OAuth redirect URI; must match your Spotify app settings exactly. |
-| `SPOTIFY_MCP_TOKEN_FILE` | `~/.spotify-mcp/tokens.json` | Path of the persistent token cache (written with mode 600). |
-| `SPOTIFY_HEADLESS` | unset | Set to `1` to use the browserless paste-flow authentication. |
+| `SPOTIFY_MCP_TOKEN_FILE` | `~/.spotify-mcp/tokens.json` | Path of the persistent token cache (written with mode 600). Precedence: `SPOTIFY_MCP_TOKEN_FILE` > `SPOTIFY_MCP_PROFILE` > default. |
+| `SPOTIFY_MCP_PROFILE` | unset | Profile name for multi-account token storage (`~/.spotify-mcp/tokens.<profile>.json`); `auth --profile <name>` is the CLI equivalent. |
+| `SPOTIFY_SCOPES` | unset (all 17 default scopes) | Space- or comma-separated OAuth scopes to request at auth time; token-level read-only when write scopes omitted. |
+| `SPOTIFY_MCP_MARKET` | unset (account country) | Default ISO 3166-1 alpha-2 market for market-gated lookups; precedence: explicit arg > this env > account country. |
+| `SPOTIFY_HEADLESS` | unset | Set to `1`/`true`/`yes`/`on` (case-insensitive) to use the browserless paste-flow authentication. |
 | `SPOTIFY_REQUEST_TIMEOUT_MS` | `30000` | Per-request HTTP timeout in ms for every API call and token refresh. |
 | `SPOTIFY_MCP_MAX_ITEMS` | `50` | Default per-call item cap for list-type tools; `max_results` overrides per call. |
 | `SPOTIFY_MCP_FETCH_ALL_CAP` | `500` | Hard cap on `fetch_all=true` pagination walks. |

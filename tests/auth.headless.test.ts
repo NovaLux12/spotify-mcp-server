@@ -44,13 +44,15 @@ describe('isHeadlessMode (SPOTIFY_HEADLESS env var gate)', () => {
   });
 
   it('returns false for non-"1" values (e.g. "true", "yes", "0")', () => {
-    for (const v of ['true', 'yes', '0', 'on', '']) {
+    // #232: isHeadlessMode now aligns with truthyEnv (1/true/yes/on case-insensitive)
+    // So "true", "yes", "on" (and case variants) are truthy; "0", "" are falsy.
+    for (const v of ['true', 'TRUE', 'yes', 'YES', 'on', 'ON', 'True', 'Yes', 'On']) {
       process.env.SPOTIFY_HEADLESS = v;
-      assert.equal(
-        isHeadlessMode(),
-        false,
-        `SPOTIFY_HEADLESS=${JSON.stringify(v)} should NOT enable headless mode`,
-      );
+      assert.equal(isHeadlessMode(), true, `SPOTIFY_HEADLESS=${JSON.stringify(v)} should enable headless mode (truthyEnv)`);
+    }
+    for (const v of ['0', '', 'false', 'no', 'off', '  ']) {
+      process.env.SPOTIFY_HEADLESS = v;
+      assert.equal(isHeadlessMode(), false, `SPOTIFY_HEADLESS=${JSON.stringify(v)} should NOT enable headless mode`);
     }
   });
 });

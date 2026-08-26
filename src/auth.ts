@@ -40,7 +40,7 @@ function escapeHtml(value: string): string {
     .replace(/'/g, '&#39;');
 }
 
-const SCOPES = [
+export const DEFAULT_SCOPES_LIST: readonly string[] = [
   'user-read-private',
   'user-read-email',
   'user-read-playback-state',
@@ -58,7 +58,124 @@ const SCOPES = [
   'playlist-read-collaborative',
   'playlist-modify-public',
   'playlist-modify-private',
-].join(' ');
+];
+
+const DEFAULT_SCOPES = DEFAULT_SCOPES_LIST.join(' ');
+
+/** Known Spotify scope vocab — mirrors src/config.ts KNOWN_SPOTIFY_SCOPES. */
+const KNOWN_SCOPES = new Set<string>([
+  ...DEFAULT_SCOPES_LIST,
+  'app-remote-control',
+  'streaming',
+]);
+
+/**
+ * Parse SPOTIFY_SCOPES / --scopes CLI flag: space- or comma-separated, validated,
+ * de-duplicated. Returns null when not set.
+ */
+export function parseScopesString(raw: string | undefined): string[] | null {
+  if (!raw || raw.trim() === '') return null;
+  const parts = raw
+    .split(/[\s,]+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const deduped: string[] = [];
+  const seen = new Set<string>();
+  for (const s of parts) {
+    if (seen.has(s)) continue;
+    if (!KNOWN_SCOPES.has(s)) {
+      throw new Error(
+        `Unknown scope "${s}". Known scopes: ${[...KNOWN_SCOPES].sort().join(', ')}`,
+      );
+    }
+    seen.add(s);
+    deduped.push(s);
+  }
+  if (deduped.length === 0) return null;
+  return deduped;
+}
+
+/** Resolve scopes for the current auth flow: CLI --scopes > SPOTIFY_SCOPES env > default. */
+export function resolveScopes(cliScopes?: string): string {
+  // CLI takes precedence
+  if (cliScopes !== undefined) {
+    const parsed = parseScopesString(cliScopes);
+    if (parsed) return parsed.join(' ');
+  }
+  const envParsed = parseScopesString(process.env.SPOTIFY_SCOPES);
+  if (envParsed) return envParsed.join(' ');
+  return DEFAULT_SCOPES;
+}
+
+/** Parse --profile / --scopes from process.argv (auth subcommand). */
+export function parseAuthArgs(argv: string[] = process.argv.slice(2)): {
+  profile?: string;
+  scopes?: string;
+} {
+  const result: { profile?: string; scopes?: string } = {};
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] === '--profile' && i + 1 < argv.length) {
+      result.profile = argv[i + 1];
+      i++;
+    } else if (argv[i].startsWith('--profile=')) {
+      result.profile = argv[i].slice('--profile='.length);
+    } else if (argv[i] === '--scopes' && i + 1 < argv.length) {
+      result.scopes = argv[i + 1];
+      i++;
+    } else if (argv[i].startsWith('--scopes=')) {
+      result.scopes = argv[i].slice('--scopes='.length);
+    }
+  }
+  return result;
+}
+
+function validateProfileName(name: string): string {
+  const trimmed = name.trim();
+  if (!/^[A-Za-z0-9._-]+$/.test(trimmed)) {
+    throw new Error(`Invalid --profile "${trimmed}": must match [A-Za-z0-9._-]+`);
+  }
+  if (trimmed === '.' || trimmed === '..') {
+    throw new Error(`Invalid --profile "${trimmed}"`);
+  }
+  return trimmed;
+}
+
+/**
+ * Resolve token file path. Precedence: SPOTIFY_MCP_TOKEN_FILE > --profile / SPOTIFY_MCP_PROFILE > default.
+ * Exported as function for dynamic resolution (tests + multi-profile).
+ */
+export function getTokenFile(cliProfile?: string): string {
+  if (process.env.SPOTIFY_MCP_TOKEN_FILE) return process.env.SPOTIFY_MCP_TOKEN_FILE;
+  const profile = cliProfile ?? process.env.SPOTIFY_MCP_PROFILE;
+  if (profile) {
+    const validated = validateProfileName(profile);
+    return join(homedir(), '.spotify-mcp', `tokens.${validated}.json`);
+  }
+  return join(homedir(), '.spotify-mcp', 'tokens.json');
+}
+
+/**
+ * Resolved token-file path. Override with SPOTIFY_MCP_TOKEN_FILE (e.g. to
+ * point tests at a temp file); defaults to ~/.spotify-mcp/tokens.json.
+ * For profile-aware resolution, use getTokenFile().
+ */
+export const TOKEN_FILE = getTokenFile();
+
+function truthyEnv(raw: string | undefined): boolean {
+  return ['1', 'true', 'yes', 'on'].includes((raw ?? '').trim().toLowerCase());
+}
+
+/**
+ * Returns true when SPOTIFY_HEADLESS is truthy, indicating the auth flow
+ * should skip the local HTTP callback server and the `open()` browser step,
+ * and instead prompt the operator to paste the redirect URL.
+ *
+ * Exported for testability (the env-var check is the gate for the whole
+ * paste-URL flow).
+ */
+export function isHeadlessMode(): boolean {
+  return truthyEnv(process.env.SPOTIFY_HEADLESS);
+}
 
 function base64url(buffer: Buffer): string {
   return buffer
@@ -68,28 +185,10 @@ function base64url(buffer: Buffer): string {
     .replace(/=/g, '');
 }
 
-/**
- * Resolved token-file path. Override with SPOTIFY_MCP_TOKEN_FILE (e.g. to
- * point tests at a temp file); defaults to ~/.spotify-mcp/tokens.json.
- */
-export const TOKEN_FILE =
-  process.env.SPOTIFY_MCP_TOKEN_FILE ?? join(homedir(), '.spotify-mcp', 'tokens.json');
-
-/**
- * Returns true when SPOTIFY_HEADLESS=1 is set, indicating the auth flow
- * should skip the local HTTP callback server and the `open()` browser step,
- * and instead prompt the operator to paste the redirect URL.
- *
- * Exported for testability (the env-var check is the gate for the whole
- * paste-URL flow).
- */
-export function isHeadlessMode(): boolean {
-  return process.env.SPOTIFY_HEADLESS === '1';
-}
-
 export async function loadTokens(): Promise<TokenData> {
+  const tokenFile = getTokenFile(parseAuthArgs().profile);
   try {
-    const data = await readFile(TOKEN_FILE, 'utf8');
+    const data = await readFile(tokenFile, 'utf8');
     return JSON.parse(data) as TokenData;
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
@@ -108,13 +207,14 @@ export async function loadTokens(): Promise<TokenData> {
  * truncated or half-written tokens.json behind.
  */
 export async function saveTokens(tokens: TokenData): Promise<void> {
-  await mkdir(dirname(TOKEN_FILE), { recursive: true });
-  const tmpFile = `${TOKEN_FILE}.tmp`;
+  const tokenFile = getTokenFile(parseAuthArgs().profile);
+  await mkdir(dirname(tokenFile), { recursive: true });
+  const tmpFile = `${tokenFile}.tmp`;
   // Restrict to owner read/write only on creation (mode ignored on Windows).
   await writeFile(tmpFile, JSON.stringify(tokens, null, 2), { encoding: 'utf8', mode: 0o600 });
   // rename replaces the destination atomically on POSIX; Node maps this to
   // MoveFileEx(REPLACE_EXISTING) on Windows.
-  await rename(tmpFile, TOKEN_FILE);
+  await rename(tmpFile, tokenFile);
 }
 
 /**
@@ -134,10 +234,20 @@ async function exchangeCodeForTokens(
     client_id: clientId,
     code_verifier: codeVerifier,
   });
+  // Use AbortSignal.timeout so a stalled network doesn't hang auth forever (#232).
+  // Dynamically import getConfig to avoid circular deps at load time.
+  let timeoutMs = 30_000;
+  try {
+    const { getConfig: gc } = await import('./config.js');
+    timeoutMs = gc().spotifyRequestTimeoutMs;
+  } catch {
+    // fallback to default if config not yet initialized
+  }
   const tokenRes = await fetch('https://accounts.spotify.com/api/token', {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: tokenBody.toString(),
+    signal: AbortSignal.timeout(timeoutMs),
   });
   if (!tokenRes.ok) {
     const text = await tokenRes.text();
@@ -147,27 +257,20 @@ async function exchangeCodeForTokens(
     access_token: string;
     refresh_token: string;
     expires_in: number;
-    // Space-separated scopes actually granted. Spotify echoes this back on
-    // success; fall back to what we requested (#111 item 6) so downstream
-    // scope-aware gating always has something to compare against.
     scope?: string;
   };
+  // Fall back to what we requested so downstream scope-aware gating always has something.
+  const fallbackScopes = resolveScopes(parseAuthArgs().scopes);
   return {
     access_token: data.access_token,
     refresh_token: data.refresh_token,
     expires_at: Date.now() + data.expires_in * 1000,
-    scope: data.scope ?? SCOPES,
+    scope: data.scope ?? fallbackScopes,
   };
 }
 
 /**
  * Headless auth flow for MCP servers running without a browser.
- *
- * Set SPOTIFY_HEADLESS=1 to skip the local callback server and `open()` step.
- * The auth URL is printed, the operator completes the flow in any browser,
- * then pastes the redirect URL back. The code + state are extracted and
- * exchanged server-side. Works across machines — useful when the MCP server
- * is remote (e.g. on a homelab) and the user is on a laptop.
  */
 async function runHeadlessAuthFlow(
   authUrl: string,
@@ -181,7 +284,7 @@ async function runHeadlessAuthFlow(
   console.log(`   ${authUrl}`);
   console.log('');
   console.log('2. After approving, your browser will redirect to a URL starting with:');
-  console.log(`   ${REDIRECT_URI}?code=...&state=...`);
+  console.log(`   ${REDIRECT_URI}?code=***&state=...`);
   console.log('');
   console.log('3. Paste the full redirect URL here:');
 
@@ -202,13 +305,6 @@ async function runHeadlessAuthFlow(
 
 /**
  * Parse and validate a pasted redirect URL from the headless auth flow.
- * Pure function — exported for unit testing.
- *
- * Throws on:
- *   - malformed URL
- *   - `error` query param (Spotify returned an OAuth error)
- *   - `state` mismatch (CSRF protection)
- *   - missing `code` query param
  */
 export function parseCallbackUrl(
   pasted: string,
@@ -257,6 +353,25 @@ export async function runAuthFlow(): Promise<void> {
     process.exit(1);
   }
 
+  const authArgs = parseAuthArgs();
+  const effectiveScopes = (() => {
+    try {
+      return resolveScopes(authArgs.scopes);
+    } catch (err) {
+      console.error(`Error: ${err instanceof Error ? err.message : err}`);
+      process.exit(1);
+    }
+  })() as string;
+
+  // Validate profile early so we fail fast
+  if (authArgs.profile) {
+    try {
+      validateProfileName(authArgs.profile);
+    } catch (err) {
+      console.error(`Error: ${err instanceof Error ? err.message : err}`);
+      process.exit(1);
+    }
+  }
 
   // Generate PKCE values
   const codeVerifier = base64url(randomBytes(32));
@@ -270,7 +385,7 @@ export async function runAuthFlow(): Promise<void> {
     response_type: 'code',
     client_id: clientId,
     redirect_uri: REDIRECT_URI,
-    scope: SCOPES,
+    scope: effectiveScopes,
     code_challenge_method: 'S256',
     code_challenge: codeChallenge,
     state,
@@ -278,14 +393,17 @@ export async function runAuthFlow(): Promise<void> {
   const authUrl = `https://accounts.spotify.com/authorize?${authParams}`;
 
   // Headless mode: skip the local callback server and `open()` step.
-  // Useful for MCP servers running without a browser (remote hosts, CI,
-  // homelabs, agent runtimes). The operator pastes the redirect URL back.
   if (isHeadlessMode()) {
     const tokens = await runHeadlessAuthFlow(authUrl, codeVerifier, state, clientId);
     await saveTokens(tokens);
-    console.log('Authentication successful! Tokens saved to ~/.spotify-mcp/tokens.json');
+    const tf = getTokenFile(authArgs.profile);
+    console.log(`Authentication successful! Tokens saved to ${tf}`);
     return;
   }
+
+  // Determine server bind host: if redirect is localhost, bind dual-stack (no host arg) so both ::1 and 127.0.0.1 work.
+  // Otherwise bind to the explicit loopback host logic.
+  const isLocalhostRedirect = REDIRECT_URL.hostname.toLowerCase() === 'localhost';
 
   // Start local callback server
   const tokens = await new Promise<TokenData>((resolve, reject) => {
@@ -341,13 +459,20 @@ export async function runAuthFlow(): Promise<void> {
       }
     });
 
-    server.listen(CALLBACK_PORT, '127.0.0.1', () => {
+    const onListening = () => {
       console.log(`Opening Spotify authorization page...`);
       console.log(`If your browser doesn't open, visit:\n${authUrl}`);
       open(authUrl).catch(() => {
         console.log(`Could not open browser automatically. Visit:\n${authUrl}`);
       });
-    });
+    };
+
+    if (isLocalhostRedirect) {
+      // Dual-stack: no host arg lets Node bind to :: (both IPv4 and IPv6) when available.
+      server.listen(CALLBACK_PORT, onListening);
+    } else {
+      server.listen(CALLBACK_PORT, '127.0.0.1', onListening);
+    }
 
     server.on('error', (err) => {
       reject(new Error(`Failed to start callback server: ${err.message}`));
@@ -355,5 +480,6 @@ export async function runAuthFlow(): Promise<void> {
   });
 
   await saveTokens(tokens);
-  console.log('Authentication successful! Tokens saved to ~/.spotify-mcp/tokens.json');
+  const tf = getTokenFile(authArgs.profile);
+  console.log(`Authentication successful! Tokens saved to ${tf}`);
 }
