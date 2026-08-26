@@ -19,13 +19,17 @@ function stubServer(opts: StubOptions = {}) {
   const elicitRequests: Array<{ message: string; requestedSchema: unknown }> = [];
   return {
     elicitRequests,
+    // Mirrors the real McpServer shape: elicitation support is advertised BY
+    // THE CLIENT via server.server.getClientCapabilities() (the accessor the
+    // production code reads — an earlier revision read getServerCapabilities,
+    // which is the server's own declaration and never includes elicitation).
     server: {
-      getServerCapabilities: () => ({ elicitation: {} }),
-      async elicitInput(request: { message: string; requestedSchema: unknown }) {
-        elicitRequests.push(request);
-        if (opts.throwOnElicit) throw new Error('client does not support elicitation');
-        return opts.result;
-      },
+      getClientCapabilities: () => ({ elicitation: { form: {} } }),
+    },
+    async elicitInput(request: { message: string; requestedSchema: unknown }) {
+      elicitRequests.push(request);
+      if (opts.throwOnElicit) throw new Error('client does not support elicitation');
+      return opts.result;
     },
   };
 }
@@ -36,7 +40,7 @@ afterEach(() => {
 
 describe('supportsElicitation', () => {
   it('returns true when capability advertised', () => {
-    assert.equal(supportsElicitation(stubServer().server), true);
+    assert.equal(supportsElicitation(stubServer()), true);
   });
 
   it('returns false when missing or guarded', () => {
@@ -56,63 +60,59 @@ describe('supportsElicitation', () => {
 
 describe('confirmViaElicitation', () => {
   it('accept + confirm=true → confirmed', async () => {
-    const { server } = stubServer({
-      result: { action: 'accept', content: { confirm: true } },
-    });
-    const verdict = await confirmViaElicitation(server, { message: 'Proceed?' });
+    const stub = stubServer({ result: { action: 'accept', content: { confirm: true } } });
+    const verdict = await confirmViaElicitation(stub, { message: 'Proceed?' });
     assert.equal(verdict, 'confirmed');
   });
 
   it('accept + confirm=false → declined', async () => {
-    const { server } = stubServer({ result: { action: 'accept', content: { confirm: false } } });
-    assert.equal(await confirmViaElicitation(server, { message: 'x' }), 'declined');
+    const stub = stubServer({ result: { action: 'accept', content: { confirm: false } } });
+    assert.equal(await confirmViaElicitation(stub, { message: 'x' }), 'declined');
   });
 
   it('decline → declined', async () => {
-    const { server } = stubServer({ result: { action: 'decline' } });
-    assert.equal(await confirmViaElicitation(server, { message: 'x' }), 'declined');
+    const stub = stubServer({ result: { action: 'decline' } });
+    assert.equal(await confirmViaElicitation(stub, { message: 'x' }), 'declined');
   });
 
   it('cancel → declined', async () => {
-    const { server } = stubServer({ result: { action: 'cancel' } });
-    assert.equal(await confirmViaElicitation(server, { message: 'x' }), 'declined');
+    const stub = stubServer({ result: { action: 'cancel' } });
+    assert.equal(await confirmViaElicitation(stub, { message: 'x' }), 'declined');
   });
 
   it('elicit throws → unsupported', async () => {
-    const { server } = stubServer({ throwOnElicit: true });
-    assert.equal(await confirmViaElicitation(server, { message: 'x' }), 'unsupported');
+    const stub = stubServer({ throwOnElicit: true });
+    assert.equal(await confirmViaElicitation(stub, { message: 'x' }), 'unsupported');
   });
 
   it('SPOTIFY_MCP_CONFIRM=never → unsupported without calling elicit', async () => {
     process.env.SPOTIFY_MCP_CONFIRM = 'never';
-    const { server, elicitRequests } = stubServer({
+    const stub = stubServer({
       result: { action: 'accept', content: { confirm: true } },
     });
-    const verdict = await confirmViaElicitation(server, { message: 'x' });
+    const verdict = await confirmViaElicitation(stub, { message: 'x' });
     assert.equal(verdict, 'unsupported');
-    assert.equal(elicitRequests.length, 0);
+    assert.equal(stub.elicitRequests.length, 0);
   });
 
   it('no capability → unsupported without calling elicit', async () => {
     let called = false;
-    const server = {
+    const bareServer = {
       async elicitInput() {
         called = true;
         return { action: 'accept', content: { confirm: true } };
       },
     };
-    assert.equal(await confirmViaElicitation(server, { message: 'x' }), 'unsupported');
+    assert.equal(await confirmViaElicitation(bareServer, { message: 'x' }), 'unsupported');
     assert.equal(called, false);
   });
 
   it('requestedSchema carries single boolean confirm field with label', async () => {
-    const { server, elicitRequests } = stubServer({
-      result: { action: 'decline' },
-    });
-    await confirmViaElicitation(server, { message: 'Big op', confirmLabel: 'Nuke it' });
-    assert.equal(elicitRequests.length, 1);
-    assert.equal(elicitRequests[0].message, 'Big op');
-    const schema = elicitRequests[0].requestedSchema as {
+    const stub = stubServer({ result: { action: 'decline' } });
+    await confirmViaElicitation(stub, { message: 'Big op', confirmLabel: 'Nuke it' });
+    assert.equal(stub.elicitRequests.length, 1);
+    assert.equal(stub.elicitRequests[0].message, 'Big op');
+    const schema = stub.elicitRequests[0].requestedSchema as {
       properties: { confirm: { type: string; title: string } };
       required: string[];
     };

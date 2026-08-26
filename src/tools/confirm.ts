@@ -13,24 +13,34 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 export const REMOVE_ELICIT_THRESHOLD = 10;
 export const REPLACE_ELICIT_THRESHOLD = 50;
 
-interface CapableServer {
-  getServerCapabilities?: () => { elicitation?: unknown } | undefined;
-}
-
-interface ElicitCapableServer extends McpServer {
+interface ElicitCapableServer {
+  server: {
+    getClientCapabilities?: () => { elicitation?: unknown } | undefined;
+  };
   elicitInput: (request: {
     message: string;
     requestedSchema: Record<string, unknown>;
   }) => Promise<unknown>;
 }
 
-/** True when the connected client advertised the elicitation capability. */
+/**
+ * True when the connected client advertised the elicitation capability.
+ *
+ * Elicitation is advertised BY THE CLIENT during initialization — the
+ * accessor is `server.server.getClientCapabilities()` on the inner Server.
+ * An earlier revision read the server's own declared capabilities here,
+ * which are never set, silently disabling prompting in production; the
+ * InMemoryTransport integration test catches that failure mode.
+ */
 export function supportsElicitation(server: unknown): boolean {
-  if (typeof server !== 'object' || server === null || !('getServerCapabilities' in server)) {
-    return false;
-  }
+  if (typeof server !== 'object' || server === null) return false;
   try {
-    return Boolean((server as CapableServer).getServerCapabilities?.()?.elicitation);
+    const inner = (server as ElicitCapableServer).server;
+    const caps =
+      typeof inner?.getClientCapabilities === 'function'
+        ? inner.getClientCapabilities()
+        : undefined;
+    return Boolean(caps?.elicitation);
   } catch {
     return false;
   }
