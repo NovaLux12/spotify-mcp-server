@@ -13,7 +13,7 @@ Most Spotify MCP servers are thin wrappers. This one is built to be the default:
 
 - **Complete API surface** — 94 tools covering every non-deprecated Spotify Web API endpoint callable with a standard developer token (playback, search, catalog, audiobooks, personalization, library, playlists, following, users) *plus* agent-grade extras most servers don't have: listening reports, library hygiene analysis, playlist merge/diff/DNA curation, a podcast session composer, named playback scenes, and an audiobook chapter copilot.
 - **Honest about deprecations** — Spotify removed recommendations, related artists, audio features/analysis, genre seeds, and featured playlists from new apps. Servers still exposing those ship tools that fail at runtime; this one doesn't — and the few legacy endpoints it keeps (batch lookups, public user profiles) detect the 403 and explain it instead of crashing.
-- **Safe by default** — every mutating tool accepts `dry_run=true` to preview exactly what would change without touching your account. Successful mutations return a receipt (post-write refetched state proving what landed), and a follow-up `verify_receipt` call re-checks it in later turns. Opt-in JSONL audit trail (`SPOTIFY_MCP_HISTORY=1`) logs every mutation for undo.
+- **Safe by default** — every mutating tool accepts `dry_run=true` to preview exactly what would change without touching your account. Destructive bulk playlist operations go one step further: removing 10+ items or replacing 50+ triggers an MCP elicitation prompt so a human confirms before anything is deleted (`SPOTIFY_MCP_CONFIRM=never` skips prompting for automation). Successful mutations return a receipt (post-write refetched state proving what landed), and a follow-up `verify_receipt` call re-checks it in later turns. Opt-in JSONL audit trail (`SPOTIFY_MCP_HISTORY=1`) logs every mutation for undo. And `SPOTIFY_MCP_READONLY=1` hides every write-capable module outright — a hard guarantee, not a convention.
 - **Scope-aware hiding** — write-capable modules whose scopes you didn't grant at auth time are hidden from the tool list entirely, instead of sitting there failing with 403 every time your agent tries them.
 - **Right-sized surface** — `SPOTIFY_MCP_TOOLSETS=playback,catalog` trims the registered tools to a subset for hosts that cap tool counts; `SPOTIFY_MCP_ENABLE_TOOLS`/`SPOTIFY_MCP_DISABLE_TOOLS` fine-tune individual modules on top.
 - **Self-diagnosing** — a CLI `doctor` command and an in-server `spotify_doctor` tool classify the real failure modes: missing/expired tokens, scope gaps between your grant and the exposed write tools, Premium-only gating, rate-limit cooldowns.
@@ -25,7 +25,7 @@ Most Spotify MCP servers are thin wrappers. This one is built to be the default:
 
 ## Features
 
-94 tools across 11 modules:
+94 tools across 20 tool modules, plus the top-level `verify_receipt` diagnostic:
 
 **Playback & devices (16 tools)** — now playing / currently-playing polls, play (by URI, or `play_from_search` to play straight from a name), pause, skip, previous, seek, volume, shuffle, repeat, queue view/add, device list, transfer playback, and `handoff` to move mid-track playback to another Spotify Connect device.
 
@@ -49,7 +49,7 @@ Most Spotify MCP servers are thin wrappers. This one is built to be the default:
 
 **Diagnostics & receipts (2 tools)** — `spotify_doctor`, an in-server diagnostic that checks token state, scope gaps versus the write tools actually exposed, Premium-only gating, and rate-limit cooldown without touching the network; and `verify_receipt`.
 
-Every mutating tool accepts `dry_run=true` to preview exactly what would change before touching your account. Successful mutations append a **receipt** to their result — post-write refetched state proving what landed — and `verify_receipt` looks a receipt back up in a later turn. Set `SPOTIFY_MCP_HISTORY=1` to additionally log one JSONL line per mutation for an undo/audit trail. Write-capable modules whose scopes you didn't grant are hidden from the tool list entirely (scope-aware hiding), so agents never see commands that could only fail.
+Every mutating tool accepts `dry_run=true` to preview exactly what would change before touching your account. Successful mutations append a **receipt** to their result — post-write refetched state proving what landed — and `verify_receipt` looks a receipt back up in a later turn. Bulk-destructive playlist operations add a human gate on top: `remove_from_playlist` at 10+ URIs and `replace_playlist_items` at 50+ ask for confirmation via MCP elicitation before executing, and `SPOTIFY_MCP_CONFIRM=never` opts automation out of the prompt. Set `SPOTIFY_MCP_HISTORY=1` to additionally log one JSONL line per mutation for an undo/audit trail. Write-capable modules whose scopes you didn't grant are hidden from the tool list entirely (scope-aware hiding), so agents never see commands that could only fail — and `SPOTIFY_MCP_READONLY=1` hides every write-capable module regardless of scopes.
 
 Also exposed: **MCP resources** — 11 fixed URIs (profile, player state, queue, top tracks/artists, recently played, playlists, saved albums/shows/episodes, rate-limit status), each available bare or with `?format=json` for raw machine-readable output, plus RFC-6570 templates (`spotify://playlist/{id}/tracks` paginated, `spotify://artist/{id}`, `spotify://artist/{id}/albums`, `spotify://album/{id}`, `spotify://show/{id}`, `spotify://episode/{id}`) with argument completions offered for show/episode IDs from your own library. And **10 prompt templates**: DJ set, mood playlist, taste summary, discovery alternative, playlist audit, listening recap, library migration, podcast catch-up, artist deep dive, and liked-songs triage.
 
@@ -209,11 +209,14 @@ All settings come from environment variables — no config file required:
 | `SPOTIFY_MCP_FRESHNESS_STATE` | `~/.spotify-mcp/freshness.json` | Watermark file powering `whats_new`'s `since: 'last-check'` |
 | `SPOTIFY_MCP_SCENES_FILE` | `~/.spotify-mcp/scenes.json` | Location of the playback-scene sidecar written by the scene tools |
 | `SPOTIFY_MCP_GENRE_TAGS_FILE` | `~/.spotify-mcp/genre-tags.json` | Artist→genre-tags sidecar consumed by the library genre tools |
-| `SPOTIFY_MCP_READONLY` | unset | Set to `1` to hide every write-capable module (playback, playlists, library, following) — reads and diagnostics stay available |
+| `SPOTIFY_MCP_READONLY` | unset | Set to `1`/`true`/`yes` to hide every write-capable module (playback + scenes, playlists + power ops, library + insights/sessions/receipts, following, users, audiobooks) along with resources and prompts — search, catalog, and personalization reads plus `spotify_doctor` stay available |
+| `SPOTIFY_MCP_CONFIRM` | unset | Set to `never` to skip the elicitation-gated confirmation on bulk destructive playlist operations (`remove_from_playlist` at 10+ URIs, `replace_playlist_items` at 50+) — for automation and environments without elicitation support |
 
 ### Trim the surface with toolsets
 
 Hosts that cap how many tools they expose can register a subset. Toolsets are coarse (`playback`, `catalog`, `library`, `personalization`, `playlists`, `prompts`, `resources`); module keys are fine-grained (`playback`, `search`, `catalog`, `audiobooks`, `personalization`, `library`, `following`, `playlists`, `users`, `resources`, `prompts`). Precedence: `SPOTIFY_MCP_DISABLE_TOOLS` beats `SPOTIFY_MCP_ENABLE_TOOLS` beats set membership, and scope-aware hiding applies last — a write module whose scopes you never granted stays hidden regardless.
+
+Newer modules ride their parent key rather than adding new ones: `listening_report` under `personalization`, scenes/wind-down under `playback`, `search_deep` under `search`, the audiobook copilot under `audiobooks`, freshness under `following`, merge/diff/overlap/DNA under `playlists`, and library hygiene/genre insights/podcast sessions/receipts under `library`. `spotify_doctor` is unconditional — it always registers so diagnostics survive any trim.
 
 ```bash
 # Car dashboard: playback controls only
