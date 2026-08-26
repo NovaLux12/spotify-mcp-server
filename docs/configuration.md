@@ -18,6 +18,12 @@ on Node 22.9+).
 | `SPOTIFY_MCP_FETCH_ALL_CAP` | `500` | Hard cap on `fetch_all=true` pagination walks. |
 | `SPOTIFY_MCP_HISTORY` | unset | Set to `1` to log one JSONL line per agent-driven mutation. |
 | `SPOTIFY_MCP_HISTORY_DIR` | `~/.spotify-mcp/history` | Directory holding the mutation JSONL log (`mutations.jsonl`). |
+| `SPOTIFY_MCP_TOOLSETS` | unset (all) | Comma-separated toolsets to register: `playback`, `catalog`, `library`, `personalization`, `playlists`, `prompts`, `resources`; `all` or unset registers everything. |
+| `SPOTIFY_MCP_ENABLE_TOOLS` | unset | Comma-separated module keys forced on top of the toolset trim (`disable` wins over `enable` wins over set membership). |
+| `SPOTIFY_MCP_DISABLE_TOOLS` | unset | Comma-separated module keys forced off. |
+| `SPOTIFY_MCP_FRESHNESS_STATE` | `~/.spotify-mcp/freshness.json` | Watermark file powering `whats_new`'s `since: 'last-check'`. |
+| `SPOTIFY_MCP_SCENES_FILE` | `~/.spotify-mcp/scenes.json` | Location of the playback-scene sidecar written by the scene tools. |
+| `SPOTIFY_MCP_GENRE_TAGS_FILE` | `~/.spotify-mcp/genre-tags.json` | Artist→genre-tags sidecar consumed by the library genre tools. |
 
 ## Details
 
@@ -112,6 +118,65 @@ bodies never reach the file.
 
 Overrides where the mutation JSONL lives (default `~/.spotify-mcp/history`,
 file `mutations.jsonl`). Point it at a persistent volume in containers.
+
+### `SPOTIFY_MCP_TOOLSETS`
+
+Trims which modules register at startup for hosts that cap tool counts.
+Toolsets are coarse groups: `playback`, `catalog` (search + catalog +
+audiobooks), `library` (saved items + following), `personalization`,
+`playlists` (playlist tools + user lookups + power ops), `prompts`,
+`resources`. Unset, empty, or `all` registers everything.
+
+```bash
+SPOTIFY_MCP_TOOLSETS=playback,catalog npx -y @novalux12/spotify-mcp@latest
+```
+
+Unknown set names are reported on stderr and ignored.
+
+### `SPOTIFY_MCP_ENABLE_TOOLS` / `SPOTIFY_MCP_DISABLE_TOOLS`
+
+Fine-grained overrides layered on top of the toolset trim. Both take
+comma-separated **module keys** — the registration units, not individual
+tool names: `playback`, `search`, `catalog`, `audiobooks`,
+`personalization`, `library`, `following`, `playlists`, `users`,
+`resources`, `prompts`.
+
+Precedence is `disable` > `enable` > set membership:
+
+```bash
+# library set plus the following module even though it lives in another set
+SPOTIFY_MCP_TOOLSETS=library SPOTIFY_MCP_ENABLE_TOOLS=following
+
+# hide every playlist module everywhere
+SPOTIFY_MCP_DISABLE_TOOLS=playlists
+```
+
+Unknown keys are reported on stderr and ignored. Scope-aware hiding applies
+after both: a write module whose scopes you never granted stays hidden no
+matter what these variables say.
+
+### `SPOTIFY_MCP_FRESHNESS_STATE`
+
+Watermark file used by the `whats_new` tool so `since: 'last-check'`
+resolves without you tracking dates. After a successful non-dry run the
+watermark advances to now. Override the default path when running multiple
+accounts side by side.
+
+### `SPOTIFY_MCP_SCENES_FILE`
+
+The playback-scene sidecar (`save_scene` / `list_scenes` / `delete_scene` /
+`apply_scene`) stores named device/volume/shuffle/repeat/context presets
+here. The file never holds credentials — just playback preferences — but is
+kept owner-only (0600 file, 0700 dir) like the token cache. Missing or
+corrupt files yield an empty store.
+
+### `SPOTIFY_MCP_GENRE_TAGS_FILE`
+
+Artist→genre-tags sidecar in the shape
+`{ "version": 1, "tags": { "<Artist Name>": ["pop", "indie"] } }`.
+`tag_management` writes it; `library_genre_report` and `filter_by_genre`
+read it. Lookups are case-insensitive; the first-seen artist-name spelling
+wins.
 
 ## Not used
 
