@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > from [Conventional Commits](https://www.conventionalcommits.org/). Entries below v1.0.4 were
 > backfilled by hand from git history.
 
+## [1.7.0](https://github.com/NovaLux12/spotify-mcp-server/compare/v1.6.0...v1.7.0) (2026-08-26)
+
+
+### Features
+
+* **analytics:** listening_report tool ([#97](https://github.com/NovaLux12/spotify-mcp-server/issues/97)) ([0acf487](https://github.com/NovaLux12/spotify-mcp-server/commit/0acf4876a91d0ad406cf2b2481605c4654a2f60f))
+* integrate wave-7 — listening analytics + auth hardening; repair lost wiring ([7b9cacc](https://github.com/NovaLux12/spotify-mcp-server/commit/7b9caccb16ffdbb43c173b496a983d976ed54148))
+
+
+### Bug Fixes
+
+* **auth:** atomic token persistence, refresh race guard, failure classification ([#109](https://github.com/NovaLux12/spotify-mcp-server/issues/109)) ([1c31e84](https://github.com/NovaLux12/spotify-mcp-server/commit/1c31e8476494a17df8e9d1facce8e576f200f38a))
+
 ## [1.6.0](https://github.com/NovaLux12/spotify-mcp-server/compare/v1.5.0...v1.6.0) (2026-08-25)
 
 
