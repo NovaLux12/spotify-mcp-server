@@ -29,10 +29,13 @@ export interface SpotifyMcpConfig {
    * SPOTIFY_REQUEST_TIMEOUT_MS.
    */
   spotifyRequestTimeoutMs: number;
+  /** Per-call budget for freshness artist/show lookups (#242). */
+  freshnessBudget: number;
 }
 
 export const DEFAULT_MAX_ITEMS = 50;
 export const DEFAULT_FETCH_ALL_CAP = 500;
+export const DEFAULT_FRESHNESS_BUDGET = 25;
 
 /** Default per-request HTTP timeout when SPOTIFY_REQUEST_TIMEOUT_MS is unset. */
 export const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
@@ -57,6 +60,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): SpotifyMcpConf
     redirectUri: env.SPOTIFY_REDIRECT_URI ?? 'http://127.0.0.1:8888/callback',
     historyEnabled: truthyEnv(env.SPOTIFY_MCP_HISTORY),
     spotifyRequestTimeoutMs: positiveInt(env.SPOTIFY_REQUEST_TIMEOUT_MS, DEFAULT_REQUEST_TIMEOUT_MS),
+    freshnessBudget: positiveInt(env.SPOTIFY_MCP_FRESHNESS_BUDGET, DEFAULT_FRESHNESS_BUDGET),
   };
 }
 

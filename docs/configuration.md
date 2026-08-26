@@ -19,6 +19,7 @@ Every environment variable read by `@novalux12/spotify-mcp` — set in your MCP 
 | `SPOTIFY_MCP_ENABLE_TOOLS` | unset | Comma-separated module keys forced on top of the toolset trim (`disable` wins over `enable` wins over set membership). |
 | `SPOTIFY_MCP_DISABLE_TOOLS` | unset | Comma-separated module keys forced off. |
 | `SPOTIFY_MCP_FRESHNESS_STATE` | `~/.spotify-mcp/freshness.json` | Watermark file powering `whats_new`'s `since: 'last-check'`. |
+| `SPOTIFY_MCP_FRESHNESS_BUDGET` | `25` | Per-call budget for `whats_new` artist/show lookups; `max_artists` overrides per call. |
 | `SPOTIFY_MCP_SCENES_FILE` | `~/.spotify-mcp/scenes.json` | Location of the playback-scene sidecar written by the scene tools. |
 | `SPOTIFY_MCP_GENRE_TAGS_FILE` | `~/.spotify-mcp/genre-tags.json` | Artist→genre-tags sidecar consumed by the library genre tools. |
 | `SPOTIFY_MCP_READONLY` | unset | Set to `1`/`true`/`yes` to hide every write-capable module (plus resources and prompts) — reads and diagnostics stay available. |
@@ -156,12 +157,30 @@ Unknown keys are reported on stderr and ignored. Scope-aware hiding applies
 after both: a write module whose scopes you never granted stays hidden no
 matter what these variables say.
 
+### `SPOTIFY_MCP_FRESHNESS_BUDGET`
+
+Per-call budget for `whats_new` artist album and show episode lookups —
+how many `GET /artists/{id}/albums` / `GET /shows/{id}/episodes` requests
+the walk will make before truncating and reporting the remainder. Default
+`25`; override per call with `max_artists`. The walk is capped at
+`min(SPOTIFY_MCP_FETCH_ALL_CAP, freshness budget)`. `N` followed artists
+means `N+1` API requests (1 follow page + N lookups); a large library can
+exhaust small dev-account quotas in one call — use `dry_run` first to
+preview the cost and keep the budget small. On mid-walk `429
+QUOTA_EXCEEDED` the tool returns partial results with `quota_hit: true`
+and `Retry-After` instead of a bare error. When truncation or a quota hit
+occurs the watermark is held (not advanced) so the next
+`since: 'last-check'` does not permanently skip unreached releases.
+
 ### `SPOTIFY_MCP_FRESHNESS_STATE`
 
 Watermark file used by the `whats_new` tool so `since: 'last-check'`
-resolves without you tracking dates. After a successful non-dry run the
-watermark advances to now. Override the default path when running multiple
-accounts side by side.
+resolves without you tracking dates. After a successful non-truncated,
+non-quota-hit run the watermark advances to today (UTC); truncated or
+quota-hit scans hold the watermark so the next `since: 'last-check'` does
+not permanently skip unreached releases (see `watermark_advanced` /
+`watermark_held` in the response). Override the default path when running
+multiple accounts side by side.
 
 ### `SPOTIFY_MCP_SCENES_FILE`
 
