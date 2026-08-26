@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > from [Conventional Commits](https://www.conventionalcommits.org/). Entries below v1.0.4 were
 > backfilled by hand from git history.
 
+## [1.16.1](https://github.com/NovaLux12/spotify-mcp-server/compare/v1.16.0...v1.16.1) (2026-08-26)
+
+
+### Bug Fixes
+
+* **#111 item 5:** elicitation capability check read the wrong accessor ([9fc51c9](https://github.com/NovaLux12/spotify-mcp-server/commit/9fc51c96704c306a2ce701e313fd48b3f3845df3))
+
 ## [1.16.0](https://github.com/NovaLux12/spotify-mcp-server/compare/v1.15.0...v1.16.0) (2026-08-26)
 
 
