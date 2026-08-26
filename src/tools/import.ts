@@ -11,6 +11,7 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
+import { SpotifyApiError } from '../client.js';
 import { getConfig } from '../config.js';
 import { readFile } from 'node:fs/promises';
 
@@ -169,9 +170,19 @@ export function registerImportTools(server: McpServer, client: SpotifyClient): v
       const parsed = fmt === 'm3u' ? parseM3u(body) : parseCsv(body);
 
       // Existence probe so an unknown target fails before any parsing effort
-      // is reported as success-shaped output.
+      // is reported as success-shaped output. client.get() throws on 404
+      // (SpotifyApiError) rather than returning null, so map that to the
+      // friendly message (see #210).
       const id = encodeURIComponent(args.playlist_id.replace(/^spotify:playlist:/, ''));
-      const meta = await client.get<{ id?: string; name?: string }>(`/playlists/${id}`);
+      let meta: { id?: string; name?: string } | null;
+      try {
+        meta = await client.get<{ id?: string; name?: string }>(`/playlists/${id}`);
+      } catch (e) {
+        if (e instanceof SpotifyApiError && (e as { status?: number }).status === 404) {
+          throw new Error(`Playlist "${args.playlist_id}" not found`);
+        }
+        throw e;
+      }
       if (!meta) throw new Error(`Playlist "${args.playlist_id}" not found`);
 
       const uriMatchesInDocument = body.match(new RegExp(SPOTIFY_URI_RE.source, 'gm'))?.length ?? 0;
