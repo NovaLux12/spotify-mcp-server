@@ -169,7 +169,7 @@ export function registerFollowingTools(server: McpServer, client: SpotifyClient)
   // check_following_artists
   server.tool(
     'check_following_artists',
-    'Check if the user follows specific artists. Returns a boolean per ID. Max 50.',
+    'Check if the user follows specific artists — this tests FOLLOW state, not library-saved state (for that use check_in_library). Rows carry {id, uri, follows}; returns a boolean per ID. Max 50.',
     {
       ids: z.array(z.string()).min(1).max(50).describe('Spotify artist IDs to check'),
       response_format: ResponseFormat,
