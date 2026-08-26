@@ -594,8 +594,7 @@ export function registerLibraryTools(server: McpServer, client: SpotifyClient): 
 
   // check_in_library (#37)
   server.tool(
-    'check_in_library',
-    "Preferred. Accepts the widest URI mix (track, album, episode, show, audiobook, artist, user, playlist) in one request. Check whether items are saved in or followed by the user. Returns a boolean per URI via Spotify's unified endpoint. Max 40. To follow/unfollow artists use follow_artists/unfollow_artists.",
+    "Preferred. Accepts the widest URI mix (track, album, episode, show, audiobook, artist, user, playlist) in one request. Check whether items are saved in or followed by the user — this tests LIBRARY-SAVED/FOLLOWED state, distinct from check_following_artists which only tests artist FOLLOW state. Returns a boolean per URI via Spotify's unified endpoint. Max 40. To follow/unfollow artists use follow_artists/unfollow_artists.",
     {
       uris: z
         .array(z.string())
