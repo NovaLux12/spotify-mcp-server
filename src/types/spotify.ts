@@ -3,6 +3,7 @@ export interface TokenData {
   access_token: string;
   refresh_token: string;
   expires_at: number; // Date.now() + expires_in * 1000
+  scope?: string; // space-separated granted scopes persisted at auth time (#111 item 6); absent in older token files
 }
 
 // Spotify API error body

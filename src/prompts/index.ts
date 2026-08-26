@@ -110,7 +110,7 @@ export function registerPrompts(server: McpServer): void {
         role: 'user',
         content: {
           type: 'text',
-          text: `Audit the playlist "${args.playlist}" for problems. If it was given by name, resolve it first with get_user_playlists; otherwise use its ID/URI directly. Pull every item with get_playlist_items (fetch_all=true). Then report: (1) DUPLICATES — same track appearing more than once (match on track ID, and flag near-duplicates where name + artist + duration match but IDs differ); (2) DEAD TRACKS — entries whose track is null or flagged unavailable/unplayable, including region-restricted relinks; (3) a summary table with counts per issue. For every problem entry give its position and URI so I can act with remove_from_playlist. Do NOT remove anything yet — just present findings and ask which fixes to apply.`,
+          text: `Audit the playlist "${args.playlist}" for problems. If it was given by name, resolve it first with get_user_playlists; otherwise use its ID/URI directly. Pull every item with get_playlist_items (fetch_all=true). Then run find_duplicates_in_playlist and report its groups verbatim as the DUPLICATES section (it also catches relinked copies that ID-matching misses); additionally flag DEAD TRACKS — entries whose track is null or flagged unavailable/unplayable, including region-restricted relinks; (3) a summary table with counts per issue. For every problem entry give its position and URI so I can act with remove_from_playlist. Do NOT remove anything yet — just present findings and ask which fixes to apply.`,
         },
       }],
     }),

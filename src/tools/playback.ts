@@ -574,12 +574,15 @@ export function registerPlaybackTools(server: McpServer, client: SpotifyClient):
         }
       }
 
-      const pagination = paginationInfo({
-        total: upNext.length,
+      // The queue endpoint has no paging — a truncated snapshot must not
+      // advertise a next_offset that would mislead agents (#110 finding 13).
+      const pagination = {
+        total: null as number | null,
         offset: 0,
-        limit: null,
+        limit: null as number | null,
         returned: upNext.length,
-      });
+        next_offset: null,
+      };
       return {
         content: [{ type: 'text', text: lines.join('\n') }],
         structuredContent: listStructuredContent(shaped.items, pagination, {

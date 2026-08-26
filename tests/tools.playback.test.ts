@@ -772,10 +772,13 @@ test('get_queue truncates to max_results with shared footer + pagination structu
     items: unknown[];
     truncated: boolean;
     remaining: number;
-    pagination: { total: number };
+    pagination: { total: number | null; next_offset: number | null };
   };
   assert.equal(sc.items.length, 3);
-  assert.equal(sc.pagination.total, 8);
+  // #110 finding 13: /me/player/queue has no paging — the snapshot must not
+  // advertise a fake total or a next_offset.
+  assert.equal(sc.pagination.total, null);
+  assert.equal(sc.pagination.next_offset, null);
   assert.equal(sc.truncated, true);
   assert.equal(sc.remaining, 5);
 });
