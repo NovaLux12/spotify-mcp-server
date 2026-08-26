@@ -23,6 +23,7 @@ import { registerPlaylistDnaTools } from './tools/playlistdna.js';
 import { registerAnalyticsTools } from './tools/analytics.js';
 import { registerExportTools } from './tools/export.js';
 import { registerImportTools } from './tools/import.js';
+import { registerSmartTools } from './tools/smart.js';
 import { registerSavedDedupeTools } from './tools/saveddedupe.js';
 import { registerBackupTools } from './tools/backup.js';
 import { registerRestoreTools } from './tools/restore.js';
@@ -138,6 +139,8 @@ async function startMcpServer(): Promise<void> {
   // Export (#155), import (#165) + saved-dedupe (#156): portability and hygiene.
   if (!readOnly && isModuleActive('playlists', activeSets, overrides) && !moduleBlockedByScopes('playlists', grantedScopes)) registerExportTools(server, client)
   if (!readOnly && isModuleActive('playlists', activeSets, overrides) && !moduleBlockedByScopes('playlists', grantedScopes)) registerImportTools(server, client)
+  // Smart playlists (#172): rule-based generation from own listening data.
+  if (!readOnly && isModuleActive('playlists', activeSets, overrides) && !moduleBlockedByScopes('playlists', grantedScopes)) registerSmartTools(server, client)
   if (!readOnly && isModuleActive('library', activeSets, overrides) && !moduleBlockedByScopes('library', grantedScopes)) registerSavedDedupeTools(server, client)
   // Differentiation wave (#112): library insights, freshness radar, deep search.
   if (!readOnly && isModuleActive('library', activeSets, overrides) && !moduleBlockedByScopes('library', grantedScopes)) registerLibraryInsightsTools(server, client)
