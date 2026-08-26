@@ -40,6 +40,7 @@ import { registerPlaylistMiscTools } from './tools/playlistmisc.js';
 import { registerPortabilityTools } from './tools/portability.js';
 import { registerQueueOpsTools } from './tools/queueops.js';
 import { registerPlaybackExtTools } from './tools/playbackext.js';
+import { registerPlaybackIntelTools } from './tools/playbackintel.js';
 import { registerSearchHistoryTools } from './tools/searchhistory.js';
 import { registerEpisodeMgmtTools } from './tools/episodemgmt.js';
 import { registerDoctorTool } from './tools/doctortool.js';
@@ -155,6 +156,7 @@ async function startMcpServer(): Promise<void> {
   // playback/queue extensions
   if (!readOnly && isModuleActive('queueops', activeSets, overrides) && !moduleBlockedByScopes('playback', grantedScopes)) registerQueueOpsTools(server, client)
   if (!readOnly && isModuleActive('playbackext', activeSets, overrides) && !moduleBlockedByScopes('playback', grantedScopes)) registerPlaybackExtTools(server, client)
+  if (isModuleActive('playback', activeSets, overrides) && !moduleBlockedByScopes('playback', grantedScopes)) registerPlaybackIntelTools(server, client)
   // spotify_doctor diagnostic (#111): unconditional — must survive toolset trimming.
   registerDoctorTool(server, client);
   if (!readOnly && isModuleActive('following', activeSets, overrides) && !moduleBlockedByScopes('following', grantedScopes)) registerFollowingTools(server, client)
