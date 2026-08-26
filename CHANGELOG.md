@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > from [Conventional Commits](https://www.conventionalcommits.org/). Entries below v1.0.4 were
 > backfilled by hand from git history.
 
+## [1.16.0](https://github.com/NovaLux12/spotify-mcp-server/compare/v1.15.0...v1.16.0) (2026-08-26)
+
+
+### Features
+
+* **#133/#112 follow-up:** direction-aware mutation receipts ([80a8cb9](https://github.com/NovaLux12/spotify-mcp-server/commit/80a8cb9f5d62fd2edfea26c439c287349cea62c9))
+
 ## [1.15.0](https://github.com/NovaLux12/spotify-mcp-server/compare/v1.14.0...v1.15.0) (2026-08-26)
 
 
