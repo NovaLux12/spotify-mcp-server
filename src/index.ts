@@ -125,6 +125,9 @@ async function startMcpServer(): Promise<void> {
   if (!readOnly && isModuleActive('playlists', activeSets, overrides) && !moduleBlockedByScopes('playlists', grantedScopes)) registerPlaylistOpsTools(server, client)
   // Playlist DNA (#112 idea 6): read-only co-occurrence curation.
   if (!readOnly && isModuleActive('playlists', activeSets, overrides) && !moduleBlockedByScopes('playlists', grantedScopes)) registerPlaylistDnaTools(server, client)
+  // Export (#155) + saved-dedupe (#156): portability and library hygiene.
+  if (!readOnly && isModuleActive('playlists', activeSets, overrides)) registerExportTools(server, client)
+  if (!readOnly && isModuleActive('library', activeSets, overrides)) registerSavedDedupeTools(server, client)
   // Differentiation wave (#112): library insights, freshness radar, deep search.
   if (!readOnly && isModuleActive('library', activeSets, overrides) && !moduleBlockedByScopes('library', grantedScopes)) registerLibraryInsightsTools(server, client)
   if (!readOnly && isModuleActive('following', activeSets, overrides) && !moduleBlockedByScopes('following', grantedScopes)) registerFreshnessTools(server, client)
