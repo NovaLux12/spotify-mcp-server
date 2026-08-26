@@ -153,12 +153,14 @@ Totals: 94 registered tools (93 in the 21 modules under `src/tools/`, plus `veri
 
 Inside `SpotifyClient`, the old single FIFO queue is now a **two-lane scheduler** (#133): each enqueued request carries a priority — `normal` for interactive tool calls, `low` for background walks like `getAllPages`. The drain loop picks via `selectNextLaneTask`: a normal task wins unless the oldest low task has been waiting ≥ `LOW_AGING_MS` (**15 s**), in which case it is promoted so bulk pagination can never starve quick reads indefinitely. FIFO order holds within a lane, and pacing (100 ms gap) and rate-limit holds apply to every task regardless of lane.
 
-## Known design tensions
+<details><summary>Resolved design tensions (historical)</summary>
 
-Resolved tensions (verified against the code):
+All previously listed tensions are resolved — kept here as a record:
 
-- ~~Non-atomic token writes~~ — **resolved** (#109 auth hardening): `saveTokens` writes a `.tmp` file with mode `0600` and `rename`s it over `tokens.json`, so a crash mid-write can never leave a truncated sidecar (POSIX rename is atomic).
-- ~~Single-process refresh race~~ — **mitigated** (#109): `doRefreshTokens` re-reads `TOKEN_FILE` before refreshing; if another process already persisted fresher tokens (`expires_at` newer), they are adopted and the network round-trip is skipped entirely. There is still no file lock, so two processes refreshing *simultaneously* can both hit the network, but neither clobbers a fresher sidecar. Refresh failures are also classified: `invalid_grant` → "re-run auth", transient 5xx or network errors ride out on a still-valid access token.
-- ~~Retry budget is per-request, fixed at one~~ — **changed** (#133-era 429 handling): 429s are no longer blindly retried once with an unbounded sleep. `QUOTA_EXCEEDED` throws immediately (sleeping inside the serialized queue would head-of-line-block everything). Burst limits with `Retry-After` > 10 s also fail fast with the wait time surfaced in the error; only small bursts (≤10 s) are slept off in-queue and retried. `_rateLimitUntil` still makes every later enqueued request wait out long windows.
+- ~~Non-atomic token writes~~ — **resolved** (#109): `saveTokens` writes a `.tmp` file with mode `0600` and `rename`s it over `tokens.json` (POSIX rename is atomic).
+- ~~Single-process refresh race~~ — **mitigated** (#109): `doRefreshTokens` re-reads `TOKEN_FILE` before refreshing and adopts a fresher sidecar if present. No file lock, so two simultaneous refreshes can both hit the network, but neither clobbers a fresher file. `invalid_grant` → "re-run auth"; transient 5xx rides out on a still-valid token.
+- ~~Retry budget is per-request, fixed at one~~ — **changed** (#133-era 429 handling): `QUOTA_EXCEEDED` throws immediately; burst limits with `Retry-After` > 10 s fail fast; only small bursts (≤10 s) are slept and retried. `_rateLimitUntil` still gates every later enqueued request.
 
-All previously listed tensions are resolved: atomic token writes + cross-process refresh-race mitigation landed with the auth-hardening work; the retry budget now differentiates QUOTA_EXCEEDED walls from small bursts (immediate throw vs one retry); interactive starvation is addressed by the two-lane scheduler above. Throttle-notice visibility is served centrally by the `spotify://me/rate-limit` resource and `spotify_doctor`'s rate-limit row rather than per-tool prose — `takeThrottleNotice()` remains exported for embedders.
+Interactive starvation is addressed by the two-lane scheduler above. Throttle visibility is served centrally by the `spotify://me/rate-limit` resource and `spotify_doctor` — `takeThrottleNotice()` remains exported for embedders.
+
+</details>

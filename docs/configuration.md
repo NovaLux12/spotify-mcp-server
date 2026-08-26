@@ -1,9 +1,6 @@
 # Configuration reference
 
-Every environment variable read by `@novalux12/spotify-mcp`, with defaults and
-examples. Set them in your MCP host config, on the command line before the
-binary, or in a local `.env` file (picked up automatically by `npm run dev`
-on Node 22.9+).
+Every environment variable read by `@novalux12/spotify-mcp` — set in your MCP host config, on the command line, or in `.env` (picked up by `npm run dev` on Node 22.9+).
 
 ## Summary
 
