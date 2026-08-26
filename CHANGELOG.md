@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > from [Conventional Commits](https://www.conventionalcommits.org/). Entries below v1.0.4 were
 > backfilled by hand from git history.
 
+## [1.14.0](https://github.com/NovaLux12/spotify-mcp-server/compare/v1.13.0...v1.14.0) (2026-08-26)
+
+
+### Features
+
+* **#110 finding 11:** harmonize check-tool output shapes ([9fae097](https://github.com/NovaLux12/spotify-mcp-server/commit/9fae0973f2d92969017fc08539d3ae433af723e1))
+
+
+### Bug Fixes
+
+* drop semantically-wrong saved alias from check_following_artists rows ([6d64784](https://github.com/NovaLux12/spotify-mcp-server/commit/6d6478419f90edcef1718f3f6e40a81e65a52c53))
+* restore the check_in_library tool-name line consumed by the description edit ([b43b0ce](https://github.com/NovaLux12/spotify-mcp-server/commit/b43b0ce07351932ba48895a6e0791e58cb34f4b6))
+
 ## [1.13.0](https://github.com/NovaLux12/spotify-mcp-server/compare/v1.12.0...v1.13.0) (2026-08-26)
 
 
