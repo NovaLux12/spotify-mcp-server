@@ -407,7 +407,7 @@ Quick reference for all endpoints used. All paths are relative to `https://api.s
 
 ## 5. Tools
 
-104 registered tools across twenty-seven tool modules riding nine registration keys (playback, search, catalog, personalization, library, following, audiobooks, playlists, and users), plus the unconditional `spotify_doctor` diagnostic and top-level `verify_receipt`. All tools return a structured result object; errors surface as MCP tool errors with a human-readable message.
+154 registered tools across thirty-eight tool modules riding nine registration keys (playback, search, catalog, personalization, library, following, audiobooks, playlists, and users), plus the unconditional `spotify_doctor` diagnostic and top-level `verify_receipt`. All tools return a structured result object; errors surface as MCP tool errors with a human-readable message.
 
 ### Shared tool contract
 
