@@ -154,14 +154,28 @@ function libraryResponder(tracks: SavedTrackItem[]) {
 type InvokeOut = Awaited<ReturnType<ReturnType<typeof harness>['invoke']>>;
 interface Payload {
   ok: boolean;
-  scanned: { saved_tracks: number; skipped_unplayable: number; fetch_all_cap: number; truncated_by_cap: boolean };
-  counts: { exact_groups: number; near_duplicate_groups: number; removable_tracks: number };
+  scanned: {
+    saved_tracks: number;
+    skipped_unplayable: number;
+    fetch_all_cap: number;
+    truncated_by_cap: boolean;
+    playlist_id?: string;
+    playlist_name?: string | null;
+    playlist_tracks?: number;
+  };
+  counts: {
+    exact_groups: number;
+    near_duplicate_groups: number;
+    removable_tracks: number;
+    groups_with_playlist_overlap: number;
+  };
   groups: Array<{
     kind: 'exact' | 'near_duplicate';
     normalized_name: string;
     artist_names: string[];
     members: Array<{ uri: string; added_at: string; duration_ms: number }>;
     removable_uris: string[];
+    playlist_overlap_uris: string[];
     suggestion: string;
   }>;
 }
@@ -360,6 +374,125 @@ describe('find_duplicate_saved_tracks json mode', () => {
       assert.equal(typeof member.uri, 'string');
       assert.equal(typeof member.duration_ms, 'number');
       assert.equal(typeof member.added_at, 'string');
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #161: playlist cross-reference
+// ---------------------------------------------------------------------------
+
+/** Responder serving a library plus one playlist (meta + items). */
+function libraryAndPlaylistResponder(
+  tracks: SavedTrackItem[],
+  playlistId: string,
+  playlistItems: Array<{ item: { type: string; uri: string } | null }>,
+  playlistName = 'Road Trip',
+): Responder {
+  return (path, params) => {
+    if (path === '/me/tracks') {
+      const limit = Number(params?.limit ?? 50);
+      const offset = Number(params?.offset ?? 0);
+      return {
+        items: tracks.slice(offset, offset + limit),
+        total: tracks.length,
+        limit,
+        offset,
+      };
+    }
+    if (path === `/playlists/${playlistId}`) return { id: playlistId, name: playlistName };
+    if (path === `/playlists/${playlistId}/items`) {
+      const limit = Number(params?.limit ?? 100);
+      const offset = Number(params?.offset ?? 0);
+      return {
+        items: playlistItems.slice(offset, offset + limit),
+        total: playlistItems.length,
+        limit,
+        offset,
+      };
+    }
+    return null;
+  };
+}
+
+describe('find_duplicate_saved_tracks playlist cross-reference (#161)', () => {
+  const dupeLibrary = () => [
+    savedTrack({ id: 'x1', name: 'Overlap Song', artistNames: ['Duo'], durationMs: 200_000, addedAt: '2026-01-01T00:00:00Z' }),
+    savedTrack({ id: 'x2', name: 'Overlap Song', artistNames: ['Duo'], durationMs: 200_500, addedAt: '2026-02-01T00:00:00Z' }),
+    savedTrack({ id: 'y1', name: 'Solo Song', artistNames: ['Trio'], durationMs: 180_000, addedAt: '2026-03-01T00:00:00Z' }),
+  ];
+
+  it('flags duplicate-group members that also appear in the playlist', async () => {
+    const responder = libraryAndPlaylistResponder(dupeLibrary(), 'pl1', [
+      // Only the NEWER save is curated into the playlist.
+      { item: { type: 'track', uri: 'spotify:track:x2' } },
+      { item: { type: 'track', uri: 'spotify:track:y1' } },
+    ]);
+    const out = await harness(responder).invoke('find_duplicate_saved_tracks', {
+      playlist_id: 'pl1',
+    });
+    const p = payloadOf(out);
+    assert.equal(p.scanned.playlist_id, 'pl1');
+    assert.equal(p.scanned.playlist_name, 'Road Trip');
+    assert.equal(p.scanned.playlist_tracks, 2);
+    assert.equal(p.counts.exact_groups, 1);
+    assert.equal(p.counts.groups_with_playlist_overlap, 1);
+    const group = p.groups[0];
+    assert.deepEqual(group.playlist_overlap_uris, ['spotify:track:x2']);
+    // Prose marks the overlapping member and names the playlist.
+    assert.match(textOf(out), /Cross-referenced against "Road Trip" \(2 items\)/);
+    assert.match(textOf(out), /remove:.*\[in playlist\].*spotify:track:x2/);
+    assert.doesNotMatch(textOf(out), /keep:.*\[in playlist\]/);
+  });
+
+  it('skips episodes and unavailable entries when collecting playlist track uris', async () => {
+    const responder = libraryAndPlaylistResponder(dupeLibrary(), 'pl2', [
+      { item: { type: 'episode', uri: 'spotify:episode:ep1' } },
+      { item: null },
+      { item: { type: 'track', uri: 'spotify:track:x1' } },
+    ]);
+    const out = await harness(responder).invoke('find_duplicate_saved_tracks', {
+      playlist_id: 'pl2',
+    });
+    const p = payloadOf(out);
+    // 3 total items walked, but only the track overlaps the dupes.
+    assert.equal(p.scanned.playlist_tracks, 3);
+    assert.deepEqual(p.groups[0].playlist_overlap_uris, ['spotify:track:x1']);
+  });
+
+  it('reports zero overlap when the playlist shares nothing with the dupes', async () => {
+    const responder = libraryAndPlaylistResponder(dupeLibrary(), 'pl3', [
+      { item: { type: 'track', uri: 'spotify:track:elsewhere' } },
+    ]);
+    const out = await harness(responder).invoke('find_duplicate_saved_tracks', {
+      playlist_id: 'pl3',
+    });
+    const p = payloadOf(out);
+    assert.equal(p.counts.groups_with_playlist_overlap, 0);
+    assert.deepEqual(p.groups[0].playlist_overlap_uris, []);
+    assert.match(textOf(out), /0 groups overlap/);
+  });
+
+  it('fails fast with a clear error for an unknown playlist id', async () => {
+    const h = harness(libraryResponder(dupeLibrary()));
+    await assert.rejects(
+      () => h.invoke('find_duplicate_saved_tracks', { playlist_id: 'nope' }),
+      /Playlist "nope" not found/,
+    );
+  });
+
+  it('omits playlist fields entirely when no playlist_id is passed', async () => {
+    const h = harness(libraryResponder(dupeLibrary()));
+    const out = await h.invoke('find_duplicate_saved_tracks');
+    const p = payloadOf(out);
+    assert.equal(p.scanned.playlist_id, undefined);
+    assert.equal(p.scanned.playlist_tracks, undefined);
+    assert.equal(p.counts.groups_with_playlist_overlap, 0);
+    assert.deepEqual(p.groups[0].playlist_overlap_uris, []);
+    assert.doesNotMatch(textOf(out), /Cross-referenced/);
+    // Read-only: only /me/tracks was touched.
+    for (const call of h.client.calls) {
+      assert.equal(call.path, '/me/tracks');
     }
   });
 });
