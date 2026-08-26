@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > from [Conventional Commits](https://www.conventionalcommits.org/). Entries below v1.0.4 were
 > backfilled by hand from git history.
 
+## [1.11.0](https://github.com/NovaLux12/spotify-mcp-server/compare/v1.10.0...v1.11.0) (2026-08-26)
+
+
+### Features
+
+* **#133:** waiter aging — LOW tasks promoted after 15s to prevent walk starvation ([41a2b81](https://github.com/NovaLux12/spotify-mcp-server/commit/41a2b81cb1545517b78ced2d0a5914be7c6f1d00))
+
 ## [1.10.0](https://github.com/NovaLux12/spotify-mcp-server/compare/v1.9.0...v1.10.0) (2026-08-26)
 
 
