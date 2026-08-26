@@ -420,20 +420,45 @@ export function registerPlaybackIntelTools(server: McpServer, client: SpotifyCli
 
   // market_availability — per-entity multi-market check
   server.tool('market_availability',
-    'Check which markets an item is available in — fetches track/episode/album and reports available_markets. 🟢 (1 read). Read-only.',
-    { uri: z.string().min(1).describe('Spotify URI (track/episode/album)'), response_format: ResponseFormat },
+    'Per-entity multi-market preview — checks if a track/episode/album is playable in each of 1-10 given markets (N× GET /{type}/{id}?market=X). Reports per-market available/404 plus full available_markets. 🟡 (N reads, 1-10). Read-only.',
+    { uri: z.string().min(1).describe('Spotify URI (track/episode/album)'), markets: z.array(z.string().min(2).max(5)).min(1).max(10).describe('Market codes to test (1-10, e.g. ["US","JP","DE"])'), response_format: ResponseFormat },
     async (args) => {
       const parsed = parseSpotifyUri(args.uri as string);
       if (!parsed) return textResult(`Invalid URI: ${args.uri}`, { ok:false });
-      let data:any;
-      if (parsed.type==='track') data = await client.get(`/tracks/${parsed.id}`);
-      else if (parsed.type==='episode') data = await client.get(`/episodes/${parsed.id}`);
-      else if (parsed.type==='album') data = await client.get(`/albums/${parsed.id}`);
-      else return textResult(`market_availability supports track/episode/album, not ${parsed.type}`, { ok:false });
-      const markets: string[] = data?.available_markets ?? [];
-      const lines = [`${args.uri} — ${data?.name ?? ''} — available in ${markets.length} market(s): ${markets.slice(0,20).join(', ')}${markets.length>20?` … +${markets.length-20} more`:''}`];
-      const echo:Record<string,unknown>={ ok:true, uri: args.uri, name: data?.name, available_markets: markets, count: markets.length };
-      if (args.response_format==='json') return { content:[{type:'text', text: JSON.stringify(echo,null,2)}], structuredContent: echo };
+      if (!['track','episode','album'].includes(parsed.type)) return textResult(`market_availability supports track/episode/album, not ${parsed.type}`, { ok:false });
+      const markets = args.markets as string[];
+      const perMarket: Array<{ market: string; available: boolean; name?: string }> = [];
+      let fullMarkets: string[] | null = null;
+      let entityName: string | null = null;
+      for (const m of markets) {
+        try {
+          let data: any = null;
+          if (parsed.type==='track') data = await client.get(`/tracks/${parsed.id}`, { market: m });
+          else if (parsed.type==='episode') data = await client.get(`/episodes/${parsed.id}`, { market: m });
+          else if (parsed.type==='album') data = await client.get(`/albums/${parsed.id}`, { market: m });
+          const available = !!data;
+          if (available && entityName === null) entityName = data?.name ?? null;
+          if (available && fullMarkets === null && Array.isArray(data?.available_markets)) fullMarkets = data.available_markets as string[];
+          perMarket.push({ market: m, available, name: data?.name ?? undefined });
+        } catch {
+          perMarket.push({ market: m, available: false });
+        }
+      }
+      if (fullMarkets === null) {
+        try {
+          let data: any = null;
+          if (parsed.type==='track') data = await client.get(`/tracks/${parsed.id}`);
+          else if (parsed.type==='episode') data = await client.get(`/episodes/${parsed.id}`);
+          else data = await client.get(`/albums/${parsed.id}`);
+          if (data) { fullMarkets = data.available_markets ?? []; entityName = data.name ?? entityName; }
+        } catch {}
+      }
+      const availableCount = perMarket.filter(p => p.available).length;
+      const lines = [`${args.uri}${entityName ? ' — "' + entityName + '"' : ''} — ${availableCount}/${markets.length} markets available:`];
+      for (const pm of perMarket) lines.push(`  ${pm.available ? '✓' : '✗'} ${pm.market}${pm.name ? ' — "' + pm.name + '"' : ''}`);
+      if (fullMarkets) lines.push(`Full available_markets: ${fullMarkets.length} (${fullMarkets.slice(0,20).join(', ')}${fullMarkets.length>20?' … +' + (fullMarkets.length-20) + ' more':''})`);
+      const echo: Record<string, unknown> = { ok:true, uri: args.uri, name: entityName, markets_tested: markets, per_market: perMarket, available_count: availableCount, full_available_markets: fullMarkets, full_count: fullMarkets?.length ?? null };
+      if ((args.response_format as string)==='json') return { content:[{type:'text', text: JSON.stringify(echo,null,2)}], structuredContent: echo };
       return { content:[{type:'text', text: lines.join('\n')}], structuredContent: echo };
     });
 }

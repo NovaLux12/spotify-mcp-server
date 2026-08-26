@@ -798,7 +798,7 @@ export function registerPortabilityTools(server: McpServer, client: SpotifyClien
   // library_snapshot_diff — diff two sidecar files locally
   server.tool(
     'library_snapshot_diff',
-    'Diff two portability/library sidecar JSON files (library.json or playlists.json): added/removed counts + samples. Local only.',
+    'Diff two portability/library sidecar JSON files (library.json or playlists.json): added/removed counts + samples. Quota: 🟢 local only (no API).',
     {
       before_path: z.string().describe('Path to before snapshot JSON'),
       after_path: z.string().describe('Path to after snapshot JSON'),
@@ -833,7 +833,7 @@ export function registerPortabilityTools(server: McpServer, client: SpotifyClien
   // history_search — search portability sidecar filenames + mutation history
   server.tool(
     'history_search',
-    'Search local portability/backups for files matching a query (filename substring). Local only.',
+    'Search local portability/backups for files matching a query (filename substring). Quota: 🟢 local only (no API).',
     {
       query: z.string().optional().describe('Substring to match (default: all)'),
       response_format: ResponseFormat,
@@ -853,7 +853,7 @@ export function registerPortabilityTools(server: McpServer, client: SpotifyClien
   // import_from_sidecar — additive restore from sidecar (dry_run defaults true)
   server.tool(
     'import_from_sidecar',
-    'Additive restore from a portability sidecar (library.json / playlists.json): re-adds missing saved items and creates missing playlists. Skips existing. dry_run=true by default.',
+    'Additive restore from a portability sidecar (library.json / playlists.json): re-adds missing saved items and creates missing playlists. Skips existing. dry_run=true by default. Quota: 🟢 local read + 🟡 contains-check + writes when dry_run=false (chunked).',
     {
       input_path: z.string().optional().describe('Path to sidecar JSON (default: <portability>/library.json)'),
       dry_run: z.boolean().optional().default(true).describe('Preview only when true'),
