@@ -23,6 +23,8 @@ import { registerPlaylistDnaTools } from './tools/playlistdna.js';
 import { registerAnalyticsTools } from './tools/analytics.js';
 import { registerExportTools } from './tools/export.js';
 import { registerSavedDedupeTools } from './tools/saveddedupe.js';
+import { registerBackupTools } from './tools/backup.js';
+import { registerRestoreTools } from './tools/restore.js';
 import { registerLibraryHygieneTools } from './tools/libraryhygiene.js';
 import { registerDoctorTool } from './tools/doctortool.js';
 import { verifyReceipt, formatReceipt } from './receipts.js';
@@ -114,6 +116,13 @@ async function startMcpServer(): Promise<void> {
   if (isModuleActive('personalization', activeSets, overrides) && !moduleBlockedByScopes('personalization', grantedScopes)) registerAnalyticsTools(server, client)
   // Library hygiene (#112 idea 5): album completion + consolidation findings.
   if (!readOnly && isModuleActive('library', activeSets, overrides) && !moduleBlockedByScopes('library', grantedScopes)) registerLibraryHygieneTools(server, client)
+  // Library backup (#159) + strictly-additive restore (#160).
+  if (isModuleActive('library', activeSets, overrides)) {
+    if (!readOnly) {
+      registerRestoreTools(server, client)
+    }
+    registerBackupTools(server, client)
+  }
   // spotify_doctor diagnostic (#111): unconditional — must survive toolset trimming.
   registerDoctorTool(server, client);
   if (!readOnly && isModuleActive('following', activeSets, overrides) && !moduleBlockedByScopes('following', grantedScopes)) registerFollowingTools(server, client)
