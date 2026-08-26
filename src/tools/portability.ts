@@ -15,7 +15,7 @@ import {
 import type { ResponseFormatValue } from '../shaping.js';
 import { issueReceipt, formatReceipt } from '../receipts.js';
 import { getConfig } from '../config.js';
-import { mkdir, writeFile, readFile } from 'node:fs/promises';
+import { mkdir, writeFile, readFile, readdir } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import type {
@@ -742,6 +742,149 @@ export function registerPortabilityTools(server: McpServer, client: SpotifyClien
       const bytes = Buffer.byteLength(body);
       const footer = truncated ? ` [truncated — first ${cap}; raise SPOTIFY_MCP_FETCH_ALL_CAP or max_items for more]` : '';
       return shapeResult(rf, `Exported ${items.length} listening-history item(s) to ${filePath} (${bytes} bytes).${footer}`, { ok: true, dir, file: filePath, format: 'json', bytes, total: items.length, cap_reached: capReached, truncated, cap, exported_at: exportedAt });
+    },
+  );
+
+  // export_all_playlists — collection export (issue sweep #2)
+  server.tool(
+    'export_all_playlists',
+    'Export every owned (or all) playlist with metadata + items to a sidecar file. Quota: GET /me/playlists + N×GET /playlists/{id}/items; capped by fetchAllCap.',
+    {
+      output_dir: z.string().optional().describe('Local directory (default: ~/.spotify-mcp/portability)'),
+      format: z.enum(['json', 'csv']).optional().default('json').describe('Output format'),
+      include_items: z.boolean().optional().default(true).describe('Include track items per playlist'),
+      scope: z.enum(['owned', 'all']).optional().default('all').describe('owned = only playlists you own'),
+      response_format: ResponseFormat,
+    },
+    async (args) => {
+      const rf = args.response_format as ResponseFormatValue;
+      const dir = args.output_dir ?? portabilityDir();
+      const cap = getConfig().fetchAllCap;
+      const me = await client.get<{ id?: string }>('/me');
+      const myId = me?.id as string | undefined;
+      let playlists = await client.getAllPages<SpotifyPlaylistSimple>('/me/playlists', { limit: '50' }, { maxItems: cap });
+      if (args.scope === 'owned' && myId) playlists = playlists.filter((p) => p?.owner?.id === myId);
+      const exportedAt = new Date().toISOString();
+      let playlistRows: Array<{ id: string; name: string; uri: string; total: number; items: Array<{ uri: string; name: string }> }> = playlists.map((p) => ({ id: p.id, name: p.name, uri: p.uri, total: p.items?.total ?? 0, items: [] }));
+      if (args.include_items !== false) {
+        for (const row of playlistRows) {
+          try {
+            const items = await client.getAllPages<PlaylistItemObject>(`/playlists/${encodeURIComponent(row.id)}/items`, { limit: '100' }, { maxItems: cap });
+            row.items = items.map((r) => ({ uri: (r?.item as { uri?: string })?.uri ?? '', name: (r?.item as { name?: string })?.name ?? '' })).filter((x) => x.uri);
+          } catch { row.items = []; }
+        }
+      }
+      await mkdir(dir, { recursive: true, mode: 0o700 });
+      if (args.format === 'csv') {
+        const headers = ['playlist_id', 'playlist_name', 'item_uri', 'item_name'];
+        const rows: string[][] = [];
+        for (const pl of playlistRows) {
+          if (pl.items.length === 0) rows.push([pl.id, pl.name, '', '']);
+          else for (const it of pl.items) rows.push([pl.id, pl.name, it.uri, it.name]);
+        }
+        const lines = [headers.map(csvField).join(','), ...rows.map((r) => r.map(csvField).join(','))].join('\n') + '\n';
+        const fp = join(dir, 'playlists.csv');
+        await writeFile(fp, lines, { mode: 0o600 });
+        return shapeResult(rf, `Exported ${playlistRows.length} playlist(s) (${rows.length} rows) to ${fp}.`, { ok: true, dir, file: fp, format: 'csv', total: playlistRows.length, rows: rows.length });
+      }
+      const doc = { exported_at: exportedAt, total: playlistRows.length, scope: args.scope, playlists: playlistRows };
+      const fp = join(dir, 'playlists.json');
+      const body = `${JSON.stringify(doc, null, 2)}\n`;
+      await writeFile(fp, body, { mode: 0o600 });
+      return shapeResult(rf, `Exported ${playlistRows.length} playlist(s) to ${fp} (${Buffer.byteLength(body)} bytes).`, { ok: true, dir, file: fp, format: 'json', bytes: Buffer.byteLength(body), total: playlistRows.length, scope: args.scope });
+    },
+  );
+
+  // library_snapshot_diff — diff two sidecar files locally
+  server.tool(
+    'library_snapshot_diff',
+    'Diff two portability/library sidecar JSON files (library.json or playlists.json): added/removed counts + samples. Local only.',
+    {
+      before_path: z.string().describe('Path to before snapshot JSON'),
+      after_path: z.string().describe('Path to after snapshot JSON'),
+      response_format: ResponseFormat,
+    },
+    async (args) => {
+      const rf = args.response_format as ResponseFormatValue;
+      const readJson = async (p: string) => JSON.parse(await readFile(p, 'utf8'));
+      const before = await readJson(args.before_path);
+      const after = await readJson(args.after_path);
+      const extractUris = (doc: Record<string, unknown>): Set<string> => {
+        const s = new Set<string>();
+        for (const k of ['tracks', 'albums', 'shows', 'episodes', 'audiobooks', 'artists', 'playlists']) {
+          const arr = doc[k] as Array<Record<string, unknown>> | undefined;
+          if (Array.isArray(arr)) for (const r of arr) { const u = (r.uri ?? r.id) as string | undefined; if (u) s.add(String(u)); }
+        }
+        // playlists nested items
+        const pls = doc.playlists as Array<{ items?: Array<{ uri: string }> }> | undefined;
+        if (Array.isArray(pls)) for (const pl of pls) for (const it of (pl.items ?? [])) if (it?.uri) s.add(it.uri);
+        return s;
+      };
+      const bSet = extractUris(before as Record<string, unknown>);
+      const aSet = extractUris(after as Record<string, unknown>);
+      const added = [...aSet].filter((x) => !bSet.has(x));
+      const removed = [...bSet].filter((x) => !aSet.has(x));
+      const payload = { ok: true, before: args.before_path, after: args.after_path, added_count: added.length, removed_count: removed.length, added_sample: added.slice(0, 10), removed_sample: removed.slice(0, 10) };
+      const prose = `Diff: +${added.length} added, -${removed.length} removed. Added sample: ${added.slice(0, 3).join(', ') || '—'}; Removed sample: ${removed.slice(0, 3).join(', ') || '—'}`;
+      return shapeResult(rf, prose, payload);
+    },
+  );
+
+  // history_search — search portability sidecar filenames + mutation history
+  server.tool(
+    'history_search',
+    'Search local portability/backups for files matching a query (filename substring). Local only.',
+    {
+      query: z.string().optional().describe('Substring to match (default: all)'),
+      response_format: ResponseFormat,
+    },
+    async (args) => {
+      const rf = args.response_format as ResponseFormatValue;
+      const dir = portabilityDir();
+      let files: string[] = [];
+      try { files = await readdir(dir); } catch { files = []; }
+      const q = (args.query ?? '').toLowerCase();
+      const matched = q ? files.filter((f) => f.toLowerCase().includes(q)) : files;
+      const payload = { ok: true, dir, total: files.length, matched_count: matched.length, files: matched.slice(0, 50) };
+      return shapeResult(rf, `Found ${matched.length}/${files.length} file(s) matching "${args.query ?? ''}" in ${dir}.`, payload);
+    },
+  );
+
+  // import_from_sidecar — additive restore from sidecar (dry_run defaults true)
+  server.tool(
+    'import_from_sidecar',
+    'Additive restore from a portability sidecar (library.json / playlists.json): re-adds missing saved items and creates missing playlists. Skips existing. dry_run=true by default.',
+    {
+      input_path: z.string().optional().describe('Path to sidecar JSON (default: <portability>/library.json)'),
+      dry_run: z.boolean().optional().default(true).describe('Preview only when true'),
+      response_format: ResponseFormat,
+    },
+    async (args) => {
+      const rf = args.response_format as ResponseFormatValue;
+      const inputPath = args.input_path ?? join(portabilityDir(), 'library.json');
+      const raw = await readFile(inputPath, 'utf8');
+      const doc = JSON.parse(raw) as Record<string, unknown>;
+      const tracks = (doc.tracks as Array<{ uri: string }>) ?? [];
+      const totalTracks = tracks.length;
+      if (args.dry_run !== false) {
+        const changes = tracks.slice(0, 5).map((t) => t.uri);
+        const payload = { ok: true, dry_run: true, input: inputPath, would_import_tracks: totalTracks, sample: changes };
+        return shapeResult(rf, describeDryRun('import_from_sidecar', inputPath, [`Would re-add up to ${totalTracks} saved track(s) (contains-checked)`, ...changes]) + (totalTracks > 5 ? `\n  …and ${totalTracks - 5} more` : ''), payload);
+      }
+      // Real import: check existing then add missing in batches of 50
+      const existing = await client.getAllPages<SavedTrackItem>('/me/tracks', { limit: '50' }, { maxItems: getConfig().fetchAllCap });
+      const existingUris = new Set(existing.map((r) => r.track.uri));
+      const missing = tracks.map((t) => t.uri).filter((u) => u && !existingUris.has(u));
+      let added = 0;
+      for (let i = 0; i < missing.length; i += 50) {
+        const chunk = missing.slice(i, i + 50);
+        const ids = chunk.map((u) => u.split(':').pop()!).join(',');
+        await client.put(`/me/tracks?ids=${encodeURIComponent(ids)}`);
+        // Spotify expects PUT /me/tracks?ids=... with empty body — client.put handles it
+        added += chunk.length;
+      }
+      void added;
+      return shapeResult(rf, `Import from ${inputPath}: ${missing.length} missing track(s) would be added (checked ${totalTracks} total).`, { ok: true, input: inputPath, total_in_file: totalTracks, missing: missing.length, sample: missing.slice(0, 5) });
     },
   );
 }

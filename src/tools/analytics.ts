@@ -244,6 +244,13 @@ function proseDigest(report: ListeningReport, maxNames: number): string {
   return lines.join('\n');
 }
 
+function shapeResultGeneric(rf: ResponseFormatValue, prose: string, payload: Record<string, unknown>): ToolOut {
+  return {
+    content: [{ type: 'text', text: rf === 'json' ? JSON.stringify(payload, null, 2) : prose }],
+    structuredContent: { ...payload },
+  };
+}
+
 function shapeResult(rf: ResponseFormatValue, prose: string, payload: ListeningReport): ToolOut {
   return {
     content: [{ type: 'text', text: rf === 'json' ? JSON.stringify(payload, null, 2) : prose }],
@@ -252,6 +259,96 @@ function shapeResult(rf: ResponseFormatValue, prose: string, payload: ListeningR
 }
 
 export function registerAnalyticsTools(server: McpServer, client: SpotifyClient): void {
+  // listening_streaks — consecutive-day streaks from recently-played
+  server.tool(
+    'listening_streaks',
+    'Compute consecutive-day listening streaks from recently-played history (up to 150 items). Quota: GET /me/player/recently-played cursor walk.',
+    {
+      max_items: z.coerce.number().int().positive().max(150).optional().describe('Max history items to walk (default 150)'),
+      response_format: ResponseFormat,
+    },
+    async (args) => {
+      const rf: ResponseFormatValue = args.response_format ?? 'concise';
+      const walk = await walkRecentlyPlayed(client);
+      const dates = [...new Set(walk.items.map((r) => r.played_at.slice(0, 10)))].sort();
+      if (dates.length === 0) return shapeResultGeneric(rf, 'No listening history — no streaks.', { ok: true, streaks: [], current_streak: 0, longest_streak: 0, dates: [] });
+      const streaks: Array<{ start: string; end: string; length: number }> = [];
+      let curStart = dates[0]; let curLen = 1;
+      for (let i = 1; i < dates.length; i++) {
+        const prev = new Date(dates[i - 1] + 'T00:00:00Z').getTime();
+        const cur = new Date(dates[i] + 'T00:00:00Z').getTime();
+        if (cur - prev === 86400000) curLen++;
+        else { streaks.push({ start: curStart, end: dates[i - 1], length: curLen }); curStart = dates[i]; curLen = 1; }
+      }
+      streaks.push({ start: curStart, end: dates[dates.length - 1], length: curLen });
+      const longest = Math.max(...streaks.map((s) => s.length));
+      const todayStr = new Date().toISOString().slice(0, 10);
+      const current = dates[dates.length - 1] === todayStr ? streaks[streaks.length - 1].length : (dates[dates.length - 1] === new Date(Date.now() - 86400000).toISOString().slice(0, 10) ? streaks[streaks.length - 1].length : 0);
+      const payload = { ok: true, dates_count: dates.length, streaks, longest_streak: longest, current_streak: current };
+      return shapeResultGeneric(rf, `Listening streaks: ${streaks.length} streak(s), longest ${longest} day(s), current ${current} day(s).`, payload);
+    },
+  );
+
+  // top_artists_by_range — expose /me/top/artists across windows with deltas
+  server.tool(
+    'top_artists_by_range',
+    'Top artists for each time window with rank deltas (short vs long). Quota: up to 3× GET /me/top/artists.',
+    {
+      time_range: z.enum(['short_term', 'medium_term', 'long_term', 'all']).optional().default('all').describe('Window or all'),
+      limit: z.coerce.number().int().positive().max(50).optional().default(20).describe('Limit per window'),
+      response_format: ResponseFormat,
+    },
+    async (args) => {
+      const rf: ResponseFormatValue = args.response_format ?? 'concise';
+      const limit = String(args.limit ?? 20);
+      const ranges = args.time_range === 'all' ? (['short_term', 'medium_term', 'long_term'] as const) : [args.time_range as 'short_term' | 'medium_term' | 'long_term'];
+      const results: Record<string, Array<{ id: string; name: string; rank: number }>> = {};
+      for (const tr of ranges) {
+        const res = await client.get<SpotifyPaged<{ id: string; name: string }>>('/me/top/artists', { time_range: tr, limit });
+        results[tr] = (res?.items ?? []).map((a, i) => ({ id: a.id, name: (a as { name?: string }).name ?? a.id, rank: i + 1 }));
+      }
+      const payload: Record<string, unknown> = { ok: true, ranges: results };
+      if (ranges.length === 2) {
+        const [a, b] = ranges;
+        const bMap = new Map(results[b].map((x) => [x.id, x.rank]));
+        const deltas = results[a].map((x) => ({ id: x.id, name: x.name, delta: (bMap.get(x.id) ?? 999) - x.rank }));
+        (payload as Record<string, unknown>).deltas = deltas;
+      }
+      return shapeResultGeneric(rf, `Top artists by range: ${ranges.map((r) => `${r}×${results[r].length}`).join(', ')}.`, payload);
+    },
+  );
+
+  // taste_shift_report — compare short vs long windows
+  server.tool(
+    'taste_shift_report',
+    'Compare short_term vs long_term top artists+tracks: rising/falling + Jaccard similarity. Quota: 4× GET /me/top/*.',
+    {
+      limit: z.coerce.number().int().positive().max(50).optional().default(20).describe('Limit per window'),
+      response_format: ResponseFormat,
+    },
+    async (args) => {
+      const rf: ResponseFormatValue = args.response_format ?? 'concise';
+      const limit = String(args.limit ?? 20);
+      const [stTracks, ltTracks, stArtists, ltArtists] = await Promise.all([
+        client.get<SpotifyPaged<{ id: string; name: string }>>('/me/top/tracks', { time_range: 'short_term', limit }),
+        client.get<SpotifyPaged<{ id: string; name: string }>>('/me/top/tracks', { time_range: 'long_term', limit }),
+        client.get<SpotifyPaged<{ id: string; name: string }>>('/me/top/artists', { time_range: 'short_term', limit }),
+        client.get<SpotifyPaged<{ id: string; name: string }>>('/me/top/artists', { time_range: 'long_term', limit }),
+      ]);
+      const jaccard = (a: Set<string>, b: Set<string>) => { const inter = [...a].filter((x) => b.has(x)).length; const uni = new Set([...a, ...b]).size; return uni === 0 ? 1 : Math.round((inter / uni) * 1000) / 1000; };
+      const stT = new Set((stTracks?.items ?? []).map((t) => t.id));
+      const ltT = new Set((ltTracks?.items ?? []).map((t) => t.id));
+      const stA = new Set((stArtists?.items ?? []).map((a) => a.id));
+      const ltA = new Set((ltArtists?.items ?? []).map((a) => a.id));
+      const payload = {
+        ok: true,
+        tracks: { jaccard: jaccard(stT, ltT), rising: [...stT].filter((x) => !ltT.has(x)).slice(0, 10), falling: [...ltT].filter((x) => !stT.has(x)).slice(0, 10) },
+        artists: { jaccard: jaccard(stA, ltA), rising: [...stA].filter((x) => !ltA.has(x)).slice(0, 10), falling: [...ltA].filter((x) => !stA.has(x)).slice(0, 10) },
+      };
+      return shapeResultGeneric(rf, `Taste shift: tracks Jaccard ${payload.tracks.jaccard}, artists Jaccard ${payload.artists.jaccard}. Rising tracks: ${payload.tracks.rising.slice(0, 3).join(', ') || '—'}.`, payload);
+    },
+  );
+
   server.tool(
     'listening_report',
     'Aggregate listening report: compares your top tracks between two time windows (rising / constant / fading), plus era histogram, discovery ratio, repeat overlap with recently played, and hour-of-day buckets',

@@ -238,6 +238,15 @@ export function registerPrompts(server: McpServer): void {
       };
     },
   );
+  server.prompt('morning_briefing', 'Morning briefing: new releases + listening streak + top track.', async () => ({
+    messages: [{ role: 'user', content: { type: 'text', text: 'Give me a morning briefing: call listening_streaks, get_top_tracks (short_term, limit 5), and get_recently_played (limit 10). Summarize streak, top track, and 3 “play next” suggestions with URIs.' } }],
+  }));
+  server.prompt('weekly_digest', 'Weekly digest: taste shift + streaks + recommendations.', async () => ({
+    messages: [{ role: 'user', content: { type: 'text', text: 'Weekly digest: call taste_shift_report, listening_streaks, and listening_report (medium_term). Write a 7-day roll-up: rising artist, streak summary, library vibe, and one crate-digging pick with URIs.' } }],
+  }));
+  server.prompt('crate_digging', 'Crate dig deep cuts for your top artists.', { depth: z.coerce.number().int().positive().max(5).optional().describe('Deep cuts per artist (default 3)') }, async (rawArgs) => ({
+    messages: [{ role: 'user', content: { type: 'text', text: `Crate digging: for each of your top 5 artists (get_top_artists short_term), find ${(rawArgs as { depth?: number }).depth ?? 3} non-hit deep cuts via search + get_artist_albums + get_album_tracks, skipping each artist's top tracks. Propose a playlist with URIs.` } }],
+  }));
 
   // triage_liked_songs — walk the saved-tracks backlog into bucket
   // playlists (#112 idea 8).

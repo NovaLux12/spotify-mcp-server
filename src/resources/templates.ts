@@ -237,6 +237,47 @@ export function registerTemplateResources(server: McpServer, client: SpotifyClie
     () => savedIdSuggestions('/me/shows', (r) => r.show?.id, 10),
   );
 
+  // spotify://track/{id} — GET /tracks/{id} (?market passthrough)
+  registerTemplatePair(
+    'track',
+    'spotify://track/{id}',
+    "A track's details ('?market=US' passthrough; '?format=json' returns raw API object)",
+    async (rawUrl) => {
+      const match = /spotify:\/\/track\/([^/?#]+)$/.exec(rawUrl.split('?')[0] ?? '');
+      if (!match?.[1]) throw new Error(`Malformed track URI: ${rawUrl}`);
+      const id = match[1];
+      const url = new URL(rawUrl);
+      const uri = `spotify://track/${id}`;
+      const market = url.searchParams.get('market') ?? undefined;
+      const track = await client.get<Record<string, unknown>>(`/tracks/${id}`, market ? { market } : undefined);
+      if (!track) throw new Error(`Could not retrieve track ${id}`);
+      if (wantsJson(url)) return json(uri, track);
+      const name = (track.name as string) ?? id;
+      const artists = ((track.artists as Array<{ name: string }>) ?? []).map((a) => a.name).join(', ');
+      return text(uri, `Track: "${name}" by ${artists}\nID: ${id}\nURI: ${(track.uri as string) ?? `spotify:track:${id}`}`);
+    },
+  );
+
+  // spotify://playlist/{id} — GET /playlists/{id} + health sample
+  registerTemplatePair(
+    'playlist',
+    'spotify://playlist/{id}',
+    "A playlist's metadata + health badge ('?format=json' returns raw API object)",
+    async (rawUrl) => {
+      const match = /spotify:\/\/playlist\/([^/?#]+)$/.exec(rawUrl.split('?')[0] ?? '');
+      if (!match?.[1]) throw new Error(`Malformed playlist URI: ${rawUrl}`);
+      const id = match[1];
+      const url = new URL(rawUrl);
+      const uri = `spotify://playlist/${id}`;
+      const pl = await client.get<Record<string, unknown>>(`/playlists/${id}`);
+      if (!pl) throw new Error(`Could not retrieve playlist ${id}`);
+      if (wantsJson(url)) return json(uri, pl);
+      const name = (pl.name as string) ?? id;
+      const owner = ((pl.owner as { display_name?: string; id?: string })?.display_name ?? (pl.owner as { id?: string })?.id ?? 'unknown');
+      return text(uri, `Playlist: "${name}" by ${owner}\nID: ${id}\nURI: ${(pl.uri as string) ?? `spotify:playlist:${id}`}\nTracks: ${(pl.tracks as { total?: number })?.total ?? 'unknown'}`);
+    },
+  );
+
   // spotify://episode/{id} — GET /episodes/{id}; optional ?market passthrough.
   registerTemplatePair(
     'episode',
