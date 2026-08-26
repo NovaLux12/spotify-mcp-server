@@ -75,6 +75,15 @@ async function startMcpServer(): Promise<void> {
     .then((t) => scopesFor(t.scope))
     .catch(() => scopesFor(undefined));
 
+  // SPOTIFY_MCP_READONLY=1 hides every write-capable module regardless of
+  // granted scopes — for users who want hard guarantees, not conventions.
+  const readOnly = ['1', 'true', 'yes'].includes(
+    (process.env.SPOTIFY_MCP_READONLY ?? '').toLowerCase(),
+  );
+  if (readOnly) {
+    console.error('[spotify-mcp] SPOTIFY_MCP_READONLY is set — write-capable modules are hidden');
+  }
+
   // Forward long-walk pagination progress (#65) as MCP progress
   // notifications. The monotonic walkId doubles as the progressToken;
   // failures are swallowed so notification hiccups never break a walk.
@@ -95,41 +104,41 @@ async function startMcpServer(): Promise<void> {
     }
   });
 
-  if (isModuleActive('playback', activeSets, overrides) && !moduleBlockedByScopes('playback', grantedScopes)) registerPlaybackTools(server, client)
+  if (!readOnly && isModuleActive('playback', activeSets, overrides) && !moduleBlockedByScopes('playback', grantedScopes)) registerPlaybackTools(server, client)
   if (isModuleActive('search', activeSets, overrides) && !moduleBlockedByScopes('search', grantedScopes)) registerSearchTools(server, client)
   if (isModuleActive('catalog', activeSets, overrides) && !moduleBlockedByScopes('catalog', grantedScopes)) registerCatalogTools(server, client)
   if (isModuleActive('personalization', activeSets, overrides) && !moduleBlockedByScopes('personalization', grantedScopes)) registerPersonalizationTools(server, client)
   // Listening analytics (#97): derived taste-profile reporting.
   if (isModuleActive('personalization', activeSets, overrides) && !moduleBlockedByScopes('personalization', grantedScopes)) registerAnalyticsTools(server, client)
   // Library hygiene (#112 idea 5): album completion + consolidation findings.
-  if (isModuleActive('library', activeSets, overrides) && !moduleBlockedByScopes('library', grantedScopes)) registerLibraryHygieneTools(server, client)
+  if (!readOnly && isModuleActive('library', activeSets, overrides) && !moduleBlockedByScopes('library', grantedScopes)) registerLibraryHygieneTools(server, client)
   // spotify_doctor diagnostic (#111): unconditional — must survive toolset trimming.
   registerDoctorTool(server, client);
-  if (isModuleActive('following', activeSets, overrides) && !moduleBlockedByScopes('following', grantedScopes)) registerFollowingTools(server, client)
-  if (isModuleActive('audiobooks', activeSets, overrides) && !moduleBlockedByScopes('audiobooks', grantedScopes)) registerAudiobookTools(server, client)
-  if (isModuleActive('playlists', activeSets, overrides) && !moduleBlockedByScopes('playlists', grantedScopes)) registerPlaylistTools(server, client)
-  if (isModuleActive('users', activeSets, overrides) && !moduleBlockedByScopes('users', grantedScopes)) registerUsersTools(server, client)
-  if (isModuleActive('library', activeSets, overrides) && !moduleBlockedByScopes('library', grantedScopes)) registerLibraryTools(server, client)
+  if (!readOnly && isModuleActive('following', activeSets, overrides) && !moduleBlockedByScopes('following', grantedScopes)) registerFollowingTools(server, client)
+  if (!readOnly && isModuleActive('audiobooks', activeSets, overrides) && !moduleBlockedByScopes('audiobooks', grantedScopes)) registerAudiobookTools(server, client)
+  if (!readOnly && isModuleActive('playlists', activeSets, overrides) && !moduleBlockedByScopes('playlists', grantedScopes)) registerPlaylistTools(server, client)
+  if (!readOnly && isModuleActive('users', activeSets, overrides) && !moduleBlockedByScopes('users', grantedScopes)) registerUsersTools(server, client)
+  if (!readOnly && isModuleActive('library', activeSets, overrides) && !moduleBlockedByScopes('library', grantedScopes)) registerLibraryTools(server, client)
   // Playlist power ops (#96): merge/diff/overlap — part of the playlists set.
-  if (isModuleActive('playlists', activeSets, overrides) && !moduleBlockedByScopes('playlists', grantedScopes)) registerPlaylistOpsTools(server, client)
+  if (!readOnly && isModuleActive('playlists', activeSets, overrides) && !moduleBlockedByScopes('playlists', grantedScopes)) registerPlaylistOpsTools(server, client)
   // Playlist DNA (#112 idea 6): read-only co-occurrence curation.
-  if (isModuleActive('playlists', activeSets, overrides) && !moduleBlockedByScopes('playlists', grantedScopes)) registerPlaylistDnaTools(server, client)
+  if (!readOnly && isModuleActive('playlists', activeSets, overrides) && !moduleBlockedByScopes('playlists', grantedScopes)) registerPlaylistDnaTools(server, client)
   // Differentiation wave (#112): library insights, freshness radar, deep search.
-  if (isModuleActive('library', activeSets, overrides) && !moduleBlockedByScopes('library', grantedScopes)) registerLibraryInsightsTools(server, client)
-  if (isModuleActive('following', activeSets, overrides) && !moduleBlockedByScopes('following', grantedScopes)) registerFreshnessTools(server, client)
+  if (!readOnly && isModuleActive('library', activeSets, overrides) && !moduleBlockedByScopes('library', grantedScopes)) registerLibraryInsightsTools(server, client)
+  if (!readOnly && isModuleActive('following', activeSets, overrides) && !moduleBlockedByScopes('following', grantedScopes)) registerFreshnessTools(server, client)
   if (isModuleActive('search', activeSets, overrides) && !moduleBlockedByScopes('search', grantedScopes)) registerSearchDeepTool(server, client)
   // Wave-4 (#112): podcast sessions, audiobook copilot, scenes + wind-down.
-  if (isModuleActive('library', activeSets, overrides) && !moduleBlockedByScopes('library', grantedScopes)) registerPodcastSessionTools(server, client)
-  if (isModuleActive('audiobooks', activeSets, overrides) && !moduleBlockedByScopes('audiobooks', grantedScopes)) registerAudiobookCopilotTools(server, client)
-  if (isModuleActive('playback', activeSets, overrides) && !moduleBlockedByScopes('playback', grantedScopes)) registerScenesTools(server, client)
+  if (!readOnly && isModuleActive('library', activeSets, overrides) && !moduleBlockedByScopes('library', grantedScopes)) registerPodcastSessionTools(server, client)
+  if (!readOnly && isModuleActive('audiobooks', activeSets, overrides) && !moduleBlockedByScopes('audiobooks', grantedScopes)) registerAudiobookCopilotTools(server, client)
+  if (!readOnly && isModuleActive('playback', activeSets, overrides) && !moduleBlockedByScopes('playback', grantedScopes)) registerScenesTools(server, client)
   // Resource templates ride with the resources set.
-  if (isModuleActive('resources', activeSets, overrides) && !moduleBlockedByScopes('resources', grantedScopes)) registerTemplateResources(server, client)
-  if (isModuleActive('resources', activeSets, overrides) && !moduleBlockedByScopes('resources', grantedScopes)) registerResources(server, client)
-  if (isModuleActive('prompts', activeSets, overrides) && !moduleBlockedByScopes('prompts', grantedScopes)) registerPrompts(server);
+  if (!readOnly && isModuleActive('resources', activeSets, overrides) && !moduleBlockedByScopes('resources', grantedScopes)) registerTemplateResources(server, client)
+  if (!readOnly && isModuleActive('resources', activeSets, overrides) && !moduleBlockedByScopes('resources', grantedScopes)) registerResources(server, client)
+  if (!readOnly && isModuleActive('prompts', activeSets, overrides) && !moduleBlockedByScopes('prompts', grantedScopes)) registerPrompts(server);
 
   // Mutation receipts (#112 idea 11): verify_receipt looks up a stored
   // receipt id and reports post-mutation verification status.
-  if (isModuleActive('library', activeSets, overrides) && !moduleBlockedByScopes('library', grantedScopes)) {
+  if (!readOnly && isModuleActive('library', activeSets, overrides) && !moduleBlockedByScopes('library', grantedScopes)) {
     server.tool(
       'verify_receipt',
       'Verify that a previous mutation actually landed on Spotify by looking up its receipt',

@@ -52,3 +52,18 @@ export function moduleBlockedByScopes(key: string, granted: Set<string>): boolea
   if (!required || required.length === 0) return false;
   return !required.some((scope) => granted.has(scope));
 }
+
+/**
+ * Modules that can mutate user state (#111 item 6): hidden entirely when
+ * SPOTIFY_MCP_READONLY=1 is set, independent of granted scopes.
+ */
+export const WRITE_MODULES: ReadonlySet<string> = new Set([
+  'playback',
+  'playlists',
+  'library',
+  'following',
+]);
+
+export function isWriteModule(key: string): boolean {
+  return WRITE_MODULES.has(key);
+}
