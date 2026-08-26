@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from 'crypto';
 import { createServer } from 'http';
-import { mkdir, writeFile, readFile, chmod } from 'fs/promises';
+import { mkdir, writeFile, readFile, rename } from 'fs/promises';
 import { homedir } from 'os';
 import { join, dirname } from 'path';
 import { createInterface } from 'readline/promises';
@@ -95,19 +95,26 @@ export async function loadTokens(): Promise<TokenData> {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
       throw new Error('Not authenticated. Run "spotify-mcp auth" (or "npm run auth") first.');
     }
+    if (err instanceof SyntaxError) {
+      throw new Error('Saved Spotify tokens are corrupted — run `npm run auth` again.');
+    }
     throw err;
   }
 }
 
+/**
+ * Persist tokens atomically (#109): write to a temp sibling with owner-only
+ * mode, then rename over the target so a crash mid-write can never leave a
+ * truncated or half-written tokens.json behind.
+ */
 export async function saveTokens(tokens: TokenData): Promise<void> {
   await mkdir(dirname(TOKEN_FILE), { recursive: true });
-  // Restrict to owner read/write only on creation (mode ignored on Windows)
-  await writeFile(TOKEN_FILE, JSON.stringify(tokens, null, 2), { encoding: 'utf8', mode: 0o600 });
-  try {
-    await chmod(TOKEN_FILE, 0o600);
-  } catch {
-    // chmod may fail on Windows — that's acceptable; also tightens pre-existing files
-  }
+  const tmpFile = `${TOKEN_FILE}.tmp`;
+  // Restrict to owner read/write only on creation (mode ignored on Windows).
+  await writeFile(tmpFile, JSON.stringify(tokens, null, 2), { encoding: 'utf8', mode: 0o600 });
+  // rename replaces the destination atomically on POSIX; Node maps this to
+  // MoveFileEx(REPLACE_EXISTING) on Windows.
+  await rename(tmpFile, TOKEN_FILE);
 }
 
 /**
