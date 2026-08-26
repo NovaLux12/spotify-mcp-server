@@ -46,8 +46,12 @@ function formatItem(item: SpotifyTrack | SpotifyEpisode | SpotifyEpisodeSimple):
 
 const marketSchema = z
   .string()
+  .regex(/^[A-Za-z]{2}$/, 'market must be a 2-letter ISO 3166-1 alpha-2 country code, e.g. "US"')
+  .transform((code) => code.toUpperCase())
   .optional()
-  .describe('ISO 3166-1 alpha-2 country code — localises item names; defaults to the account market');
+  .describe(
+    'ISO 3166-1 alpha-2 country code — localises item names; lowercase input is uppercased; defaults to the account market',
+  );
 
 const additionalTypesSchema = z
   .array(z.enum(['track', 'episode']))
@@ -79,7 +83,7 @@ export function registerPlaybackTools(server: McpServer, client: SpotifyClient):
   // get_now_playing
   server.tool(
     'get_now_playing',
-    'Get the currently playing track or episode and full playback state',
+    'Full device/session state for what is playing right now — item, progress, plus shuffle/repeat mode, active device, and volume. For a lightweight item+progress poll use get_currently_playing instead.',
     {
       market: marketSchema,
       additional_types: additionalTypesSchema,
@@ -146,7 +150,7 @@ export function registerPlaybackTools(server: McpServer, client: SpotifyClient):
   // get_currently_playing
   server.tool(
     'get_currently_playing',
-    'Lightweight poll of what is playing right now: the item, progress, and playing state',
+    'Lightweight poll of what is playing right now: the item and progress only. For full session state (shuffle/repeat mode, active device, volume) use get_now_playing instead.',
     {
       market: marketSchema,
       additional_types: additionalTypesSchema,
@@ -199,6 +203,8 @@ export function registerPlaybackTools(server: McpServer, client: SpotifyClient):
       device_id: z.string().optional().describe('Target device ID; uses active device if omitted'),
       market: z
         .string()
+        .regex(/^[A-Za-z]{2}$/, 'market must be a 2-letter ISO 3166-1 alpha-2 country code, e.g. "US"')
+        .transform((code) => code.toUpperCase())
         .optional()
         .describe('ISO 3166-1 alpha-2 country code — affects availability/relinking of results; defaults to the account market'),
       response_format: ResponseFormat,
@@ -296,7 +302,11 @@ export function registerPlaybackTools(server: McpServer, client: SpotifyClient):
         throw new Error('offset is ignored when playing ad-hoc uris — reorder the uris array instead.');
       }
       if ((args.offset !== undefined || args.offset_uri !== undefined) && !args.context_uri) {
-        throw new Error('offset requires a context_uri.');
+        throw new Error(
+          args.offset !== undefined
+            ? 'offset requires a context_uri — it selects a position within an album/playlist context and does nothing for ad-hoc uris.'
+            : 'offset_uri requires a context_uri — it starts at a track inside that context (e.g. an artist page) and cannot queue ad-hoc uris; pass uris instead.',
+        );
       }
 
       const path = args.device_id

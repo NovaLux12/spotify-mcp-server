@@ -12,7 +12,7 @@ type ToolContent = {
 type RegisteredTool = {
   name: string;
   description: string;
-  schema: Record<string, { safeParse(value: unknown): { success: boolean } }>;
+  schema: Record<string, { safeParse(value: unknown): { success: boolean; data?: unknown } }>;
   handler: (args: Record<string, unknown>) => Promise<ToolContent>;
 };
 
@@ -235,6 +235,17 @@ test('get_now_playing forwards default additional_types and omits market when no
   assert.deepEqual(call?.params, { additional_types: 'track,episode' });
 });
 
+test('market input is normalised: lowercase is uppercased on the wire, non-2-letter codes rejected (#110)', () => {
+  const { registered } = makeHarness();
+
+  const nowPlaying = findTool(registered, 'get_now_playing');
+  const parsed = nowPlaying.schema.market.safeParse('gb');
+  assert.equal(parsed.success, true);
+  assert.equal(parsed.data, 'GB');
+  assert.equal(nowPlaying.schema.market.safeParse('USA').success, false);
+  assert.equal(nowPlaying.schema.market.safeParse('g').success, false);
+});
+
 test('get_now_playing forwards explicit market and additional_types override', async () => {
   const { registered, calls } = makeHarness();
   await invoke(findTool(registered, 'get_now_playing'), {
@@ -368,6 +379,19 @@ test('play rejects numeric offset on artist contexts, accepts offset_uri instead
     context_uri: 'spotify:artist:art1',
     offset: { uri: 'spotify:track:trk9' },
   });
+});
+
+test('offset vs offset_uri without context_uri produce separate actionable errors (#110)', async () => {
+  const { registered } = makeHarness();
+
+  await assert.rejects(
+    invoke(findTool(registered, 'play'), { offset_uri: 'spotify:track:trk9' }),
+    /offset_uri requires a context_uri/,
+  );
+  await assert.rejects(
+    invoke(findTool(registered, 'play'), { offset: 3 }),
+    /offset requires a context_uri/,
+  );
 });
 
 // ---------------------------------------------------- transport-style controls
