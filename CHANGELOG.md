@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > from [Conventional Commits](https://www.conventionalcommits.org/). Entries below v1.0.4 were
 > backfilled by hand from git history.
 
+## [1.22.0](https://github.com/NovaLux12/spotify-mcp-server/compare/v1.21.0...v1.22.0) (2026-08-26)
+
+
+### Features
+
+* big-release 1.22 — 30 issues, 154 tools (orchestrated) ([#213](https://github.com/NovaLux12/spotify-mcp-server/issues/213)) ([99ecaeb](https://github.com/NovaLux12/spotify-mcp-server/commit/99ecaeb5656d25471fd230a14e357646bc4b6db9))
+
+
+### Bug Fixes
+
+* trio [#195](https://github.com/NovaLux12/spotify-mcp-server/issues/195) docs drift + [#196](https://github.com/NovaLux12/spotify-mcp-server/issues/196) backup scope gate + [#210](https://github.com/NovaLux12/spotify-mcp-server/issues/210) import 404 probe ([#211](https://github.com/NovaLux12/spotify-mcp-server/issues/211)) ([5c25dff](https://github.com/NovaLux12/spotify-mcp-server/commit/5c25dffb7b697fb09a7f8b4610fdfddaca6ef656))
+
 ## [1.21.0](https://github.com/NovaLux12/spotify-mcp-server/compare/v1.20.0...v1.21.0) (2026-08-26)
 
 
