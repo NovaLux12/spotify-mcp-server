@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > from [Conventional Commits](https://www.conventionalcommits.org/). Entries below v1.0.4 were
 > backfilled by hand from git history.
 
+## [1.19.0](https://github.com/NovaLux12/spotify-mcp-server/compare/v1.18.0...v1.19.0) (2026-08-26)
+
+
+### Features
+
+* **dedupe:** optional playlist_id cross-reference in find_duplicate_saved_tracks ([#161](https://github.com/NovaLux12/spotify-mcp-server/issues/161)) ([#163](https://github.com/NovaLux12/spotify-mcp-server/issues/163)) ([7404ade](https://github.com/NovaLux12/spotify-mcp-server/commit/7404ade0de01e43d84e9ccf2be9ddaeeb5851a62))
+* **import:** import_playlist — restore M3U/CSV documents into a playlist ([#165](https://github.com/NovaLux12/spotify-mcp-server/issues/165)) ([#166](https://github.com/NovaLux12/spotify-mcp-server/issues/166)) ([b6752e1](https://github.com/NovaLux12/spotify-mcp-server/commit/b6752e119f0565c2267466e10042019c2fb3a124))
+
 ## [1.18.0](https://github.com/NovaLux12/spotify-mcp-server/compare/v1.17.0...v1.18.0) (2026-08-26)
 
 
