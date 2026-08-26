@@ -296,12 +296,12 @@ export function registerArtistWatchTools(server: McpServer, client: SpotifyClien
       }
       const watchlistSize = entry.artists.length;
       const budget = args.max_artists ?? getConfig().freshnessBudget;
-      const effectiveCap = Math.min(budget, 200);
+      const effectiveCap = Math.min(budget, getConfig().fetchAllCap);
       const truncated = watchlistSize > effectiveCap;
       const artistsToCheck = entry.artists.slice(0, effectiveCap);
 
       if (args.dry_run) {
-        const costEstimate = `${watchlistSize} artists in watchlist "${listName}" \u2192 ${artistsToCheck.length} album lookups (capped at max_artists=${budget}, effective ${effectiveCap}) → ${artistsToCheck.length} requests`;
+        const costEstimate = `${watchlistSize} artists in watchlist "${listName}" \u2192 ${artistsToCheck.length} album lookups (capped at max_artists=${budget}, effective ${effectiveCap} with fetchAllCap=${getConfig().fetchAllCap}) → ${artistsToCheck.length} requests`;
         const prose =
           `[dry run] check_artist_releases preview — no API calls were made and nothing was changed.\n`
           + `Watchlist "${listName}": ${watchlistSize} artists total, would check ${artistsToCheck.length} (cap ${effectiveCap}).\n`
@@ -418,12 +418,12 @@ export function registerArtistWatchTools(server: McpServer, client: SpotifyClien
       }
       const watchlistSize = entry.artists.length;
       const budget = args.max_artists ?? getConfig().freshnessBudget;
-      const effectiveCap = Math.min(budget, 200);
+      const effectiveCap = Math.min(budget, getConfig().fetchAllCap);
       const truncated = watchlistSize > effectiveCap;
       const artistsToCheck = entry.artists.slice(0, effectiveCap);
 
       if (args.dry_run) {
-        const costEstimate = `${watchlistSize} artists in watchlist "${listName}" \u2192 ${artistsToCheck.length} album lookups (capped at max_artists=${budget}) → ${artistsToCheck.length} requests`;
+        const costEstimate = `${watchlistSize} artists in watchlist "${listName}" \u2192 ${artistsToCheck.length} album lookups (capped at max_artists=${budget}, effective ${effectiveCap} with fetchAllCap=${getConfig().fetchAllCap}) → ${artistsToCheck.length} requests`;
         const prose =
           `[dry run] artist_release_digest preview — no API calls were made.\n`
           + `Watchlist "${listName}": ${watchlistSize} artists total, would check ${artistsToCheck.length} (cap ${effectiveCap}).\n`
