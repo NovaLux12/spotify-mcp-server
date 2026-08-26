@@ -24,6 +24,8 @@ on Node 22.9+).
 | `SPOTIFY_MCP_FRESHNESS_STATE` | `~/.spotify-mcp/freshness.json` | Watermark file powering `whats_new`'s `since: 'last-check'`. |
 | `SPOTIFY_MCP_SCENES_FILE` | `~/.spotify-mcp/scenes.json` | Location of the playback-scene sidecar written by the scene tools. |
 | `SPOTIFY_MCP_GENRE_TAGS_FILE` | `~/.spotify-mcp/genre-tags.json` | Artist→genre-tags sidecar consumed by the library genre tools. |
+| `SPOTIFY_MCP_READONLY` | unset | Set to `1`/`true`/`yes` to hide every write-capable module (plus resources and prompts) — reads and diagnostics stay available. |
+| `SPOTIFY_MCP_CONFIRM` | unset | Set to `never` to skip the elicitation-gated confirmation on bulk destructive playlist operations. |
 
 ## Details
 
@@ -141,6 +143,8 @@ tool names: `playback`, `search`, `catalog`, `audiobooks`,
 `personalization`, `library`, `following`, `playlists`, `users`,
 `resources`, `prompts`.
 
+Newer modules ride their parent key rather than adding new ones: `listening_report` under `personalization`, scenes/wind-down under `playback`, `search_deep` under `search`, the audiobook copilot under `audiobooks`, freshness under `following`, merge/diff/overlap/DNA under `playlists`, and library hygiene/genre insights/podcast sessions/receipts under `library`. `spotify_doctor` is unconditional — it always registers so diagnostics survive any trim.
+
 Precedence is `disable` > `enable` > set membership:
 
 ```bash
@@ -177,6 +181,32 @@ Artist→genre-tags sidecar in the shape
 `tag_management` writes it; `library_genre_report` and `filter_by_genre`
 read it. Lookups are case-insensitive; the first-seen artist-name spelling
 wins.
+
+### `SPOTIFY_MCP_READONLY`
+
+Set to `1`, `true`, or `yes` (case-insensitive) for a hard read-only guarantee:
+every write-capable module is hidden from the tool list at startup — playback
+and scenes, playlists and their power ops, library saves plus insights/sessions/
+receipt verification, following, users, audiobooks — along with resources and
+prompts. Search, catalog, personalization reads, and `spotify_doctor` remain
+available. Unlike scope-aware hiding, which depends on what you granted at auth
+time, this hides modules regardless of granted scopes.
+
+```bash
+SPOTIFY_MCP_READONLY=1 npx -y @novalux12/spotify-mcp@latest
+```
+
+### `SPOTIFY_MCP_CONFIRM`
+
+Bulk-destructive playlist operations ask the human operator to confirm via MCP
+elicitation before executing: `remove_from_playlist` at 10 or more URIs and
+`replace_playlist_items` at 50 or more. The prompt only fires when the
+connected client advertised elicitation support; set `SPOTIFY_MCP_CONFIRM=never`
+to skip prompting entirely so automation and readonly contexts are never blocked.
+
+```bash
+SPOTIFY_MCP_CONFIRM=never npx -y @novalux12/spotify-mcp@latest
+```
 
 ## Not used
 
