@@ -246,7 +246,7 @@ test('rate-limit resource reports never throttled by default (#56/#59)', async (
 
 // ---------------------------------------------------------------- prompts
 
-test('all ten prompts are registered (#60, #112)', async () => {
+test('all eleven prompts are registered (#60, #112, #227)', async () => {
   const client = await connect(makeClientStub());
   const prompts = await client.listPrompts();
   assert.deepEqual(
@@ -257,6 +257,7 @@ test('all ten prompts are registered (#60, #112)', async () => {
       'dj',
       'listening_recap',
       'migrate_library',
+      'music_briefing',
       'music_taste_summary',
       'playlist_audit',
       'playlist_from_mood',
@@ -333,6 +334,9 @@ const realToolNames: Record<string, true> = Object.fromEntries([
   'get_user_profile', 'get_user_playlists_by_id',
   // audiobooks
   'get_audiobook', 'get_audiobook_chapters', 'get_chapter', 'get_saved_audiobooks',
+  // radar / freshness / artist-watch (#113-era additions, needed for music_briefing)
+  'show_new_episodes', 'whats_new', 'artist_release_digest', 'check_artist_releases', 'get_artist_discography',
+  'get_recently_played', 'get_followed_artists', 'get_artist_albums', 'get_saved_shows', 'get_show_episodes',
 ].map((name) => [name, true as const]));
 
 test('every prompt only references tool names that are actually registered', async () => {
@@ -355,7 +359,7 @@ test('every prompt only references tool names that are actually registered', asy
     // Non-tool snake_case tokens that legitimately appear in prompt bodies:
     // Spotify API field names, prompt argument names, and time ranges.
     const NOT_TOOLS = [
-      'fetch_all', 'max_per_show', 'time_range',
+      'fetch_all', 'max_per_show', 'max_shows', 'max_artists', 'time_range',
       'short_term', 'medium_term', 'long_term',
       'album_type', 'release_date', 'playlist_name', 'include_singles',
       'max_results', 'dry_run',

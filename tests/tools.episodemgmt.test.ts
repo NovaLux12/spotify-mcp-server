@@ -6,7 +6,7 @@ import { registerEpisodeMgmtTools } from '../src/tools/episodemgmt.js';
 import type { SpotifyClient } from '../src/client.js';
 
 function harness(overrides: { episodes?: any[] } = {}) {
-  const dels: string[] = []; const puts: string[] = [];
+  const dels: string[] = [];
   const episodes = overrides.episodes ?? [
     { episode: { id: 'ep1', uri: 'spotify:episode:ep1', name: 'Ep 1', resume_point: { fully_played: true } }, added_at: '2026-01-01' },
     { episode: { id: 'ep2', uri: 'spotify:episode:ep2', name: 'Ep 2', resume_point: { fully_played: false } }, added_at: '2026-01-02' },
@@ -19,21 +19,26 @@ function harness(overrides: { episodes?: any[] } = {}) {
     },
     async getAllPages() { return episodes; },
     async delete(path: string) { dels.push(path); return null; },
-    async put(path: string) { puts.push(path); return null; },
+    async put(path: string) { return null; },
   } as unknown as SpotifyClient;
   const registered: any[] = [];
   const s = { tool(n: string, _d: string, sch: any, h: any) { registered.push({ name: n, schema: sch, handler: h }); } } as unknown as McpServer;
   registerEpisodeMgmtTools(s, client);
   const invoke = async (name: string, args: any) => {
-    const t = registered.find((r: any) => r.name === name); assert.ok(t);
+    const t = registered.find((r: any) => r.name === name); assert.ok(t, `tool ${name} not found`);
     return t.handler(z.object(t.schema).parse(args));
   };
-  return { registered, dels, puts, invoke };
+  return { registered, dels, invoke };
 }
 
 describe('episodemgmt', () => {
-  it('registers 2 tools', () => {
-    const h = harness(); assert.equal(h.registered.length, 2);
+  it('registers exactly 1 tool (archive_played_episodes)', () => {
+    const h = harness(); assert.equal(h.registered.length, 1);
+    assert.ok(h.registered.some((r: any) => r.name === 'archive_played_episodes'));
+  });
+  it('does not register phantom mark_episode_played', () => {
+    const h = harness();
+    assert.ok(!h.registered.some((r: any) => r.name === 'mark_episode_played'), 'mark_episode_played should be removed');
   });
   it('archive_played_episodes reports no played when none fully_played', async () => {
     const h = harness({ episodes: [{ episode: { id: 'x', uri: 'spotify:episode:x', name: 'X', resume_point: { fully_played: false } }, added_at: '2026-01-01' }] });
@@ -51,21 +56,5 @@ describe('episodemgmt', () => {
     const h = harness({ episodes: many });
     const out = await h.invoke('archive_played_episodes', {});
     assert.match(out.content[0].text, /confirm/i);
-  });
-  it('mark_episode_played dry_run', async () => {
-    const h = harness();
-    const out = await h.invoke('mark_episode_played', { episode_ids: ['ep1', 'ep2'], dry_run: true });
-    assert.match(out.content[0].text, /dry run/i);
-  });
-  it('mark_episode_played requires confirm >10', async () => {
-    const h = harness();
-    const ids = Array.from({ length: 11 }, (_, i) => `ep${i}`);
-    const out = await h.invoke('mark_episode_played', { episode_ids: ids });
-    assert.match(out.content[0].text, /confirm/i);
-  });
-  it('mark_episode_played succeeds with confirm', async () => {
-    const h = harness();
-    const out = await h.invoke('mark_episode_played', { episode_ids: ['ep1'], confirm: true });
-    assert.match(out.content[0].text, /Attempted|marked/i);
   });
 });

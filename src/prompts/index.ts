@@ -200,6 +200,45 @@ export function registerPrompts(server: McpServer): void {
     }),
   );
 
+  // music_briefing — daily/weekly briefing from radar tools (#227).
+  server.prompt(
+    'music_briefing',
+    'Daily or weekly music briefing: new podcast episodes, new releases from followed artists, catalog freshness, and recently played — composed from radar tools.',
+    {
+      interval: z.enum(['daily', 'weekly']).optional().describe('Briefing cadence: daily (default) or weekly'),
+      max_shows: z.coerce.number().int().positive().max(20).optional().describe('Max shows to check for new episodes (default 3)'),
+      max_artists: z.coerce.number().int().positive().max(20).optional().describe('Max followed artists to check for new releases (default 5)'),
+      brief: z.enum(['true', 'false']).optional().describe("When 'true', keep each section to one line (default 'false')"),
+    },
+    async (rawArgs) => {
+      const args = {
+        interval: (rawArgs.interval as string) ?? 'daily',
+        max_shows: (rawArgs.max_shows as number) ?? 3,
+        max_artists: (rawArgs.max_artists as number) ?? 5,
+        brief: (rawArgs.brief as string) ?? 'false',
+      };
+      const horizon = args.interval === 'weekly' ? 'past 7 days' : 'past 24 hours';
+      const detail = args.brief === 'true' ? 'Keep each section to a single concise line.' : 'Give a short paragraph per section with names, dates, and URIs where available.';
+      return {
+        messages: [{
+          role: 'user',
+          content: {
+            type: 'text',
+            text: [
+              `Write my ${args.interval} music briefing for the ${horizon}. Work through these sections in order; if a tool is unavailable (toolset-trimmed), skip that section with a one-line note and continue — never fail the whole briefing for one missing tool.`,
+              `1. New podcast episodes — call show_new_episodes (or get_saved_shows + get_show_episodes if show_new_episodes is unavailable) for up to ${args.max_shows} shows; present as "New podcast episodes" with show, episode title, release date, and URI.`,
+              `2. New releases — call artist_release_digest (or get_followed_artists + get_artist_albums if unavailable) for up to ${args.max_artists} followed artists; present as "New releases" with artist, release name, type, and URI.`,
+              `3. Catalog freshness — call whats_new; present as "Catalog freshness" with a one-line freshness summary.`,
+              `4. You were listening to — call get_recently_played (limit 10); present as "You were listening to" with track/episode, artist/show, and when played.`,
+              `5. Close with a single suggestion line tying the briefing together (e.g. "Try queuing X next" or "Catch up on Y").`,
+              detail,
+            ].join('\n'),
+          },
+        }],
+      };
+    },
+  );
+
   // triage_liked_songs — walk the saved-tracks backlog into bucket
   // playlists (#112 idea 8).
   server.prompt(

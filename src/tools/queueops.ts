@@ -1,11 +1,12 @@
 /**
- * queueops (#194, #202): queue_playlist + queue stubs (reorder/remove/clear).
+ * queueops (#194, #202, #224, #231): queue_playlist + save_queue_as_playlist.
+ * queue_reorder / queue_remove / queue_clear were removed in #231 — those
+ * endpoints do not exist (only GET and POST /me/player/queue are real).
  */
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
 import { DryRun, describeDryRun, parseSpotifyUri, ResponseFormat } from '../shaping.js';
-import { getConfig } from '../config.js';
 import type { SpotifyPaged, SpotifyTrack } from '../types/spotify.js';
 
 type TextContent = { type: 'text'; text: string };
@@ -41,11 +42,9 @@ async function resolveUris(client: SpotifyClient, sourceUri: string, limit: numb
     uris = items.map((t) => t.uri).filter(Boolean).slice(0, limit);
     total = page?.total ?? uris.length;
   } else if (type === 'artist') {
-    // fetch top tracks as proxy (avoids paging albums)
     const top = await client.get<{ tracks: SpotifyTrack[] }>(`/artists/${id}/top-tracks`, { market: 'from_token' });
     uris = (top?.tracks ?? []).map((t) => t.uri).filter(Boolean).slice(0, limit);
     total = uris.length;
-    // fallback: fetch albums if top-tracks empty
     if (uris.length === 0) {
       const albums = await client.get<SpotifyPaged<{ id: string }>>(`/artists/${id}/albums`, { limit: '20' });
       for (const al of (albums?.items ?? []).slice(0, 5)) {
@@ -68,16 +67,22 @@ async function resolveUris(client: SpotifyClient, sourceUri: string, limit: numb
 export function registerQueueOpsTools(server: McpServer, client: SpotifyClient): void {
   server.tool(
     'queue_playlist',
-    'Queue all tracks from a playlist/album/artist URI in order (cap 200). mode=append adds to end; mode=replace notes clear+rebuild fallback.',
+    'Queue all tracks from a playlist/album/artist URI in order (cap 200). mode=append adds to end; mode=replace is not supported — Spotify has no queue-clear endpoint.',
     {
       source_uri: z.string().describe('Source Spotify URI (playlist/album/artist/track/episode)'),
-      mode: z.enum(['append', 'replace']).default('append').describe('append or replace queue'),
+      mode: z.enum(['append', 'replace']).default('append').describe('append: add to end; replace: not supported — returns ok:false with guidance'),
       limit: z.number().int().min(1).max(200).optional().describe('Max tracks to queue (cap 200). Default 100.'),
       dry_run: DryRun,
       response_format: ResponseFormat,
       device_id: z.string().optional().describe('Target device id for queue adds'),
     },
     async (args) => {
+      // #231: mode=replace must refuse — there is no queue-clear endpoint, so
+      // silently appending as "replace" is misleading.
+      if (args.mode === 'replace') {
+        const guidance = 'Spotify Web API has no queue-clear endpoint — mode=replace cannot be honoured. Use mode=append, or create a playlist with the desired order and play it via the play tool with context_uri.';
+        return textResult(guidance, { ok: false, mode: 'replace', guidance, source_uri: args.source_uri });
+      }
       const cap = Math.min(args.limit ?? 100, 200);
       const parsed = parseSpotifyUri(args.source_uri as string);
       if (!parsed) throw new Error(`Invalid Spotify URI: ${args.source_uri}`);
@@ -89,82 +94,126 @@ export function registerQueueOpsTools(server: McpServer, client: SpotifyClient):
         const preview = uris.slice(0, 5);
         return { content: [{ type: 'text', text: describeDryRun('queue_playlist', args.source_uri as string, [`${args.mode} ${uris.length} tracks (source: ${sourceType}, total ${total})`, ...preview]) }] };
       }
-      if (args.mode === 'replace') {
-        // No native clear: attempt best-effort via queue_clear guidance in structuredContent
-      }
       let queued = 0;
       const failed: string[] = [];
       for (const uri of uris) {
         try {
           const params = new URLSearchParams({ uri });
-          if (args.device_id) params.set('device_id', args.device_id);
+          if (args.device_id) params.set('device_id', args.device_id as string);
           await client.post(`/me/player/queue?${params}`);
           queued++;
-        } catch (e) {
+        } catch {
           failed.push(uri);
         }
       }
-      const text = `Queued ${queued}/${uris.length} tracks from ${sourceType} ${args.source_uri} (mode=${args.mode})${failed.length ? ` — ${failed.length} failed` : ''}${args.mode === 'replace' ? ' — note: Spotify has no native queue-clear; queued items were appended (clear+rebuild fallback).' : ''}`;
-      return mutationResult(args.response_format, { ok: true, source_uri: args.source_uri, source_type: sourceType, mode: args.mode, total, queued, failed }, text);
+      const text = `Queued ${queued}/${uris.length} tracks from ${sourceType} ${args.source_uri} (mode=${args.mode})${failed.length ? ` — ${failed.length} failed` : ''}`;
+      return mutationResult(args.response_format as string | undefined, { ok: true, source_uri: args.source_uri, source_type: sourceType, mode: args.mode, total, queued, failed }, text);
     },
   );
 
-  const guidance = 'Spotify Web API has no queue-reorder/remove/clear endpoint. Workaround: create a temporary playlist with the desired order and use playback with context, or use queue_playlist in replace mode (clear+rebuild fallback).';
-
+  // #224: save_queue_as_playlist — capture current queue as durable playlist
   server.tool(
-    'queue_reorder',
-    'Reorder an item in the upcoming queue (proposal stub — Spotify has no reorder endpoint; returns guidance and attempts best-effort if a future endpoint appears).',
+    'save_queue_as_playlist',
+    'Capture the current playback queue as a durable playlist. Reads GET /me/player/queue, creates (or appends to) a playlist, adds URIs in batches of 100 preserving order. Handles mixed track/episode URIs.',
     {
-      uri: z.string().optional().describe('Track/episode URI to move'),
-      position: z.number().int().min(0).optional().describe('Target position in queue (0 = next)'),
-      response_format: ResponseFormat,
+      name: z.string().optional().describe('Name for the new playlist (required when creating; omit when target_playlist_id is given)'),
+      target_playlist_id: z.string().optional().describe('Existing playlist ID to append to (alternative to name — when given, URIs are appended to this playlist)'),
+      description: z.string().optional().describe('Playlist description (when creating a new playlist)'),
+      include_current: z.boolean().default(true).describe('Include the currently-playing track/episode as the first item (default true)'),
+      include_episodes: z.boolean().default(true).describe('Include episodes in the saved playlist (default true — set false for tracks only)'),
       dry_run: DryRun,
-    },
-    async (args) => {
-      if (args.dry_run) return { content: [{ type: 'text', text: describeDryRun('queue_reorder', args.uri ?? 'queue', [guidance]) }] };
-      // Attempt future endpoint; fall back to guidance
-      try {
-        await client.put('/me/player/queue/reorder', { uri: args.uri, position: args.position });
-        return mutationResult(args.response_format, { ok: true, uri: args.uri, position: args.position }, `Reordered ${args.uri} to position ${args.position}.`);
-      } catch (e: any) {
-        const msg = e?.status === 403 || e?.status === 404 ? guidance : `queue_reorder not available: ${e?.message ?? e}. ${guidance}`;
-        return textResult(msg, { ok: false, fallback: 'clear+rebuild', guidance, uri: args.uri, position: args.position });
-      }
-    },
-  );
-
-  server.tool(
-    'queue_remove',
-    'Remove a track from the upcoming queue (proposal stub — falls back to guidance if no endpoint).',
-    {
-      uri: z.string().optional().describe('Track/episode URI to remove'),
       response_format: ResponseFormat,
-      dry_run: DryRun,
     },
     async (args) => {
-      if (args.dry_run) return { content: [{ type: 'text', text: describeDryRun('queue_remove', args.uri ?? 'queue', [guidance]) }] };
-      try {
-        const qs = args.uri ? `?uri=${encodeURIComponent(args.uri)}` : '';
-        await client.delete(`/me/player/queue${qs}`);
-        return mutationResult(args.response_format, { ok: true, uri: args.uri }, `Removed ${args.uri ?? 'next item'} from queue.`);
-      } catch (e: any) {
-        return textResult(`queue_remove not available: ${e?.message ?? e}. ${guidance}`, { ok: false, fallback: 'clear+rebuild', guidance, uri: args.uri });
-      }
-    },
-  );
+      const includeCurrent = (args.include_current as boolean | undefined) ?? true;
+      const includeEpisodes = (args.include_episodes as boolean | undefined) ?? true;
+      const name = args.name as string | undefined;
+      const targetId = args.target_playlist_id as string | undefined;
 
-  server.tool(
-    'queue_clear',
-    'Clear the upcoming queue (proposal stub — Spotify has no clear endpoint; returns guidance).',
-    { response_format: ResponseFormat, dry_run: DryRun },
-    async (args) => {
-      if (args.dry_run) return { content: [{ type: 'text', text: describeDryRun('queue_clear', 'queue', [guidance]) }] };
-      try {
-        await client.delete('/me/player/queue');
-        return mutationResult(args.response_format, { ok: true }, 'Queue cleared.');
-      } catch (e: any) {
-        return textResult(`queue_clear not available: ${e?.message ?? e}. ${guidance}`, { ok: false, fallback: 'clear+rebuild', guidance });
+      if (!name && !targetId) {
+        throw new Error('Provide either name (to create a new playlist) or target_playlist_id (to append to an existing one).');
       }
+
+      // Fetch current queue
+      const queueData = await client.get<{
+        currently_playing?: { uri?: string; type?: string; id?: string } | null;
+        queue?: Array<{ uri?: string; type?: string; id?: string }>;
+      }>('/me/player/queue');
+
+      if (!queueData) {
+        return textResult('Could not read the current queue — is something playing? GET /me/player/queue returned no data.', { ok: false, reason: 'no_queue_data' });
+      }
+
+      const collected: string[] = [];
+      if (includeCurrent && queueData.currently_playing?.uri) {
+        const cur = queueData.currently_playing;
+        const isEpisode = cur.type === 'episode' || cur.uri?.includes(':episode:');
+        if (includeEpisodes || !isEpisode) collected.push(cur.uri!);
+      }
+      for (const item of queueData.queue ?? []) {
+        if (!item?.uri) continue;
+        const isEpisode = item.type === 'episode' || item.uri.includes(':episode:');
+        if (!includeEpisodes && isEpisode) continue;
+        collected.push(item.uri);
+      }
+
+      if (collected.length === 0) {
+        const hint = !includeEpisodes && (queueData.queue ?? []).some((q) => q.type === 'episode')
+          ? ' (queue contained only episodes and include_episodes was false)'
+          : '';
+        return textResult(`Queue is empty — nothing to save${hint}. Start playback or queue some tracks first.`, { ok: true, empty: true, count: 0 });
+      }
+
+      if (args.dry_run) {
+        const preview = collected.slice(0, 5);
+        const target = targetId ? `playlist ${targetId}` : `new playlist "${name}"`;
+        return { content: [{ type: 'text', text: describeDryRun('save_queue_as_playlist', target, [`would save ${collected.length} items from queue`, ...preview]) }] };
+      }
+
+      let playlistId: string;
+      let playlistUrl: string | undefined;
+      let snapshotId: string | undefined;
+
+      if (targetId) {
+        playlistId = targetId;
+      } else {
+        // Create new playlist — need current user id
+        const me = await client.get<{ id: string }>('/me');
+        if (!me?.id) throw new Error('Could not resolve current user id to create playlist');
+        const created = await client.post<{ id: string; external_urls?: { spotify?: string }; snapshot_id?: string }>(
+          `/users/${me.id}/playlists`,
+          { name: name!, description: (args.description as string | undefined) ?? `Saved from queue on ${new Date().toISOString().slice(0, 10)}`, public: false },
+        );
+        if (!created?.id) throw new Error('Failed to create playlist');
+        playlistId = created.id;
+        playlistUrl = created.external_urls?.spotify;
+        snapshotId = created.snapshot_id;
+      }
+
+      // Add URIs in batches of 100
+      let added = 0;
+      let lastSnapshot: string | undefined = snapshotId;
+      for (let i = 0; i < collected.length; i += 100) {
+        const batch = collected.slice(i, i + 100);
+        const res = await client.post<{ snapshot_id?: string }>(`/playlists/${playlistId}/tracks`, { uris: batch });
+        added += batch.length;
+        if (res?.snapshot_id) lastSnapshot = res.snapshot_id;
+      }
+
+      const isNew = !targetId;
+      const text = isNew
+        ? `Saved ${added} items from queue to new playlist "${name}" (${playlistId})${playlistUrl ? ` — ${playlistUrl}` : ''}.`
+        : `Appended ${added} items from queue to playlist ${playlistId}.`;
+
+      return mutationResult(args.response_format as string | undefined, {
+        ok: true,
+        playlist_id: playlistId,
+        playlist_url: playlistUrl,
+        snapshot_id: lastSnapshot,
+        count: added,
+        uris: collected,
+        is_new: isNew,
+      }, text);
     },
   );
 }

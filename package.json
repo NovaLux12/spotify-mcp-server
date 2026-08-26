@@ -10,6 +10,7 @@
     "access": "public"
   },
   "mcpName": "io.github.NovaLux12/spotify-mcp-server",
+  "homepage": "https://github.com/NovaLux12/spotify-mcp-server#readme",
   "engines": {
     "node": ">=22.9"
   },
@@ -18,11 +19,16 @@
   ],
   "keywords": [
     "mcp",
+    "mcp-server",
+    "model-context-protocol",
     "spotify",
     "claude",
     "ai",
     "music",
-    "playlist"
+    "playlist",
+    "podcast",
+    "audiobook",
+    "playback"
   ],
   "license": "MIT",
   "repository": {
