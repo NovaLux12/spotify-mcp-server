@@ -24,6 +24,7 @@ import { registerAnalyticsTools } from './tools/analytics.js';
 import { registerExportTools } from './tools/export.js';
 import { registerImportTools } from './tools/import.js';
 import { registerSmartTools } from './tools/smart.js';
+import { registerShowRadarTools } from './tools/showradar.js';
 import { registerSavedDedupeTools } from './tools/saveddedupe.js';
 import { registerBackupTools } from './tools/backup.js';
 import { registerRestoreTools } from './tools/restore.js';
@@ -141,6 +142,8 @@ async function startMcpServer(): Promise<void> {
   if (!readOnly && isModuleActive('playlists', activeSets, overrides) && !moduleBlockedByScopes('playlists', grantedScopes)) registerImportTools(server, client)
   // Smart playlists (#172): rule-based generation from own listening data.
   if (!readOnly && isModuleActive('playlists', activeSets, overrides) && !moduleBlockedByScopes('playlists', grantedScopes)) registerSmartTools(server, client)
+  // Show episode radar (#173): new-episode radar across saved podcast shows.
+  if (isModuleActive('library', activeSets, overrides) && !moduleBlockedByScopes('library', grantedScopes)) registerShowRadarTools(server, client)
   if (!readOnly && isModuleActive('library', activeSets, overrides) && !moduleBlockedByScopes('library', grantedScopes)) registerSavedDedupeTools(server, client)
   // Differentiation wave (#112): library insights, freshness radar, deep search.
   if (!readOnly && isModuleActive('library', activeSets, overrides) && !moduleBlockedByScopes('library', grantedScopes)) registerLibraryInsightsTools(server, client)
