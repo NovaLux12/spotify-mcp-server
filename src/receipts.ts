@@ -123,10 +123,13 @@ export async function issueReceipt(
       after = [...counts.values()].reduce((a, b) => a + b, 0);
       verified = missing.length === 0;
     } else {
-      const leftovers = [...counts.entries()].filter(([, n]) => n > 0).map(([uri]) => uri);
-      missing = leftovers;
-      after = counts.size - leftovers.length;
-      verified = leftovers.length === 0;
+      // Absence direction: ANY surviving occurrence means the removal is
+      // incomplete; `after` reads as remaining occurrences across the
+      // receipt's uris.
+      const survivors = [...counts.entries()].filter(([, n]) => n > 0);
+      missing = survivors.map(([uri]) => uri);
+      after = survivors.reduce((a, [, n]) => a + n, 0);
+      verified = missing.length === 0;
     }
   } else if (opts.kind === 'library') {
     // /me/library/contains takes ≤50 uris per call; chunk and OR the results.

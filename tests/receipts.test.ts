@@ -256,3 +256,58 @@ describe('formatReceipt', () => {
     );
   });
 });
+
+describe('playlist_items absence direction (#133-era receipts)', () => {
+  it('reports survivors as missing and counts remaining occurrences', async () => {
+    const calls: Array<{ path: string; arg?: Record<string, string> }> = [];
+    const client = {
+      get: async (path: string, arg?: Record<string, string>) => {
+        calls.push({ path, arg });
+        // Page shows uri-keep survived (2 occurrences), uri-gone is absent.
+        return {
+          items: [
+            { item: { uri: 'spotify:track:keep' } },
+            { item: { uri: 'spotify:track:keep' } },
+          ],
+          total: 2,
+          limit: 100,
+          offset: 0,
+          next: null,
+        };
+      },
+    };
+
+    const receipt = await issueReceipt(client, {
+      kind: 'playlist_items',
+      id: 'pl1',
+      uris: ['spotify:track:gone', 'spotify:track:keep'],
+      expectPresent: false,
+    });
+
+    assert.equal(receipt.verified, false);
+    assert.deepEqual(receipt.missing, ['spotify:track:keep']);
+    assert.equal(receipt.after, 2);
+    const prose = formatReceipt(receipt, { expectPresent: false });
+    assert.match(prose, /still-present uris: spotify:track:keep/);
+  });
+
+  it('reports verified when every uri is confirmed absent', async () => {
+    const client = {
+      get: async () => ({
+        items: [],
+        total: 0,
+        limit: 100,
+        offset: 0,
+        next: null,
+      }),
+    };
+    const receipt = await issueReceipt(client, {
+      kind: 'playlist_items',
+      id: 'pl1',
+      uris: ['spotify:track:gone'],
+      expectPresent: false,
+    });
+    assert.equal(receipt.verified, true);
+    assert.equal(receipt.after, 0);
+  });
+});
