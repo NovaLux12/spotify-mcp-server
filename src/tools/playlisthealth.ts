@@ -252,16 +252,34 @@ export function registerPlaylistHealthTools(server: McpServer, client: SpotifyCl
       const encId = encodeURIComponent(playlistId);
       const items = await client.getAllPages<PlaylistItemObject>(`/playlists/${encId}/items`, { limit: '100' }, { maxItems: getConfig().fetchAllCap });
       const unavailable: Array<{ position: number; uri: string }> = [];
-      for (let i=0;i<items.length;i++) { const row = (items[i] as any); if (!row.item) unavailable.push({ position: i, uri: `spotify:track:unavailable:${i}` }); }
-      if (unavailable.length===0) return textResult(`No unavailable items in playlist ${playlistId} (${items.length} tracks).`, { playlist_id: playlistId, total: items.length, unavailable_count: 0, removed: 0 });
+      const orphanedPositions: number[] = [];
+      for (let i=0;i<items.length;i++) {
+        const row = (items[i] as any);
+        const isUnavailable = !row.item && !row.track;
+        if (!isUnavailable) continue;
+        // Unavailable rows have null track/item; Spotify sometimes retains track.uri before nulling
+        const recovered: string | undefined =
+          (typeof row?.track?.uri === 'string' ? row.track.uri : undefined)
+          ?? (typeof row?.item?.uri === 'string' ? row.item.uri : undefined)
+          ?? (typeof row?.uri === 'string' ? row.uri : undefined);
+        if (!recovered) { orphanedPositions.push(i); continue; }
+        unavailable.push({ position: i, uri: recovered });
+      }
+      const totalUnavailable = unavailable.length + orphanedPositions.length;
+      if (totalUnavailable===0) return textResult(`No unavailable items in playlist ${playlistId} (${items.length} tracks).`, { playlist_id: playlistId, total: items.length, unavailable_count: 0, removed: 0 });
+      if (unavailable.length===0 && orphanedPositions.length>0) {
+        return textResult(`Found ${orphanedPositions.length} unavailable item(s) at positions ${orphanedPositions.join(', ')} but no URI is recoverable — Spotify nulled the track object entirely. Remove them manually via the Spotify app or use snapshot-based replacement.`, { ok: false, playlist_id: playlistId, unavailable_count: orphanedPositions.length, orphaned_positions: orphanedPositions, removed: 0, hint: 'No URI recoverable for position-targeted removal; Spotify nulled these track objects' });
+      }
       const toRemove = unavailable.slice(0, args.max_results ?? 100);
-      if (args.dry_run) return textResult(`[dry run] Would remove ${toRemove.length} unavailable item(s) from playlist ${playlistId} at positions ${toRemove.map(r=>r.position).join(', ')}.`, { ok: true, dry_run: true, playlist_id: playlistId, would_remove: toRemove.length, positions: toRemove.map(r=>r.position) });
+      const dryRunExtra = orphanedPositions.length>0 ? ` (${orphanedPositions.length} additional unavailable item(s) at positions ${orphanedPositions.join(', ')} have no recoverable URI and will be skipped)` : '';
+      if (args.dry_run) return textResult(`[dry run] Would remove ${toRemove.length} unavailable item(s) from playlist ${playlistId} at positions ${toRemove.map(r=>r.position).join(', ')}.${dryRunExtra}`, { ok: true, dry_run: true, playlist_id: playlistId, would_remove: toRemove.length, positions: toRemove.map(r=>r.position), ...(orphanedPositions.length>0 ? { orphaned_positions: orphanedPositions, orphaned_count: orphanedPositions.length } : {}) });
       // Use positions targeting: Spotify expects { tracks: [{ uri, positions }] } for precise removal
       const snapshotRes = await client.delete<{ snapshot_id?: string }>(`/playlists/${encId}/items`, { tracks: toRemove.map(r=>({ uri: r.uri, positions: [r.position] })) } as any);
       // Re-scan
       const after = await client.getAllPages<PlaylistItemObject>(`/playlists/${encId}/items`, { limit: '100' }, { maxItems: getConfig().fetchAllCap }).catch(()=>[] as any);
       const remaining = (after as any[]).filter((r:any)=>!r.item).length;
-      return textResult(`Removed ${toRemove.length} unavailable item(s) from playlist ${playlistId}. Remaining unavailable: ${remaining}. Snapshot: ${snapshotRes?.snapshot_id ?? 'n/a'}`, { ok: true, playlist_id: playlistId, removed: toRemove.length, remaining_unavailable: remaining, snapshot_id: snapshotRes?.snapshot_id ?? null, positions_removed: toRemove.map(r=>r.position) });
+      const orphanNote = orphanedPositions.length>0 ? ` (${orphanedPositions.length} unavailable item(s) at positions ${orphanedPositions.join(', ')} had no recoverable URI and were skipped)` : '';
+      return textResult(`Removed ${toRemove.length} unavailable item(s) from playlist ${playlistId}. Remaining unavailable: ${remaining}.${orphanNote} Snapshot: ${snapshotRes?.snapshot_id ?? 'n/a'}`, { ok: true, playlist_id: playlistId, removed: toRemove.length, remaining_unavailable: remaining, snapshot_id: snapshotRes?.snapshot_id ?? null, positions_removed: toRemove.map(r=>r.position), ...(orphanedPositions.length>0 ? { orphaned_positions: orphanedPositions, orphaned_count: orphanedPositions.length } : {}) });
     },
   );
 
