@@ -1093,6 +1093,83 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
   // rest. Deletions run highest-position-first so indices never shift under
   // us; bulk removals are elicitation-gated like other destructive ops; a
   // post-mutation re-scan verifies the playlist is actually clean.
+
+  /**
+   * Shared keep-first/remove-rest scan (#168/#171): over already-paged items,
+   * returns removal occurrences ordered HIGHEST position first plus the
+   * duplicate-group count. Exact URI repeats always count; relinked same-song
+   * copies join only when includeRelinked.
+   */
+  function collectDuplicateRemovals(
+    items: readonly PlaylistItemObject[],
+    includeRelinked: boolean,
+  ): { ordered: Array<{ uri: string; position: number; label: string }>; groups: number } {
+    interface Occurrence {
+      uri: string;
+      position: number;
+      label: string;
+    }
+    const byUri = new Map<string, Occurrence[]>();
+    const byIdentity = new Map<string, Map<string, Occurrence[]>>();
+
+    let position = 0;
+    for (const item of items) {
+      const track = item.item;
+      if (track?.uri) {
+        const artists =
+          'artists' in track && Array.isArray(track.artists)
+            ? track.artists.map((a) => a.name).join(', ')
+            : ('show' in track && track.show ? track.show.name : '');
+        const occ: Occurrence = {
+          uri: track.uri,
+          position,
+          label: `"${track.name}"${artists ? ` by ${artists}` : ''}`,
+        };
+        const uriOccs = byUri.get(track.uri);
+        if (uriOccs) uriOccs.push(occ);
+        else byUri.set(track.uri, [occ]);
+
+        if (includeRelinked) {
+          const key = trackIdentityKey(track);
+          const uriMap = byIdentity.get(key);
+          if (uriMap) {
+            const occs = uriMap.get(track.uri);
+            if (occs) occs.push(occ);
+            else uriMap.set(track.uri, [occ]);
+          } else {
+            byIdentity.set(key, new Map([[track.uri, [occ]]]));
+          }
+        }
+      }
+      // Unavailable items still occupy a playlist position.
+      position++;
+    }
+
+    // Keep-first/remove-rest over positions; a Map keyed by position makes
+    // the exact-uri and relinked passes compose without double-removals.
+    const removals = new Map<number, Occurrence>();
+    let groups = 0;
+    for (const occs of byUri.values()) {
+      if (occs.length > 1) {
+        groups++;
+        for (const occ of occs.slice(1)) removals.set(occ.position, occ);
+      }
+    }
+    if (includeRelinked) {
+      for (const uriMap of byIdentity.values()) {
+        if (uriMap.size < 2) continue;
+        groups++;
+        const all = [...uriMap.values()].flat().sort((a, b) => a.position - b.position);
+        for (const occ of all.slice(1)) removals.set(occ.position, occ);
+      }
+    }
+
+    return {
+      ordered: [...removals.values()].sort((a, b) => b.position - a.position),
+      groups,
+    };
+  }
+
   server.tool(
     'remove_duplicate_playlist_items',
     'Remove duplicate items from a playlist: keeps the first occurrence of each track and removes '
@@ -1120,67 +1197,8 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
         limit: '100',
       });
 
-      interface Occurrence {
-        uri: string;
-        position: number;
-        label: string;
-      }
-      const byUri = new Map<string, Occurrence[]>();
-      const byIdentity = new Map<string, Map<string, Occurrence[]>>();
+      const { ordered, groups } = collectDuplicateRemovals(items, args.include_relinked);
 
-      let position = 0;
-      for (const item of items) {
-        const track = item.item;
-        if (track?.uri) {
-          const artists =
-            'artists' in track && Array.isArray(track.artists)
-              ? track.artists.map((a) => a.name).join(', ')
-              : ('show' in track && track.show ? track.show.name : '');
-          const occ: Occurrence = {
-            uri: track.uri,
-            position,
-            label: `"${track.name}"${artists ? ` by ${artists}` : ''}`,
-          };
-          const uriOccs = byUri.get(track.uri);
-          if (uriOccs) uriOccs.push(occ);
-          else byUri.set(track.uri, [occ]);
-
-          if (args.include_relinked) {
-            const key = trackIdentityKey(track);
-            const uriMap = byIdentity.get(key);
-            if (uriMap) {
-              const occs = uriMap.get(track.uri);
-              if (occs) occs.push(occ);
-              else uriMap.set(track.uri, [occ]);
-            } else {
-              byIdentity.set(key, new Map([[track.uri, [occ]]]));
-            }
-          }
-        }
-        // Unavailable items still occupy a playlist position.
-        position++;
-      }
-
-      // Keep-first/remove-rest over positions; a Set keyed by position makes
-      // the exact-uri and relinked passes compose without double-removals.
-      const removals = new Map<number, Occurrence>();
-      let groups = 0;
-      for (const occs of byUri.values()) {
-        if (occs.length > 1) {
-          groups++;
-          for (const occ of occs.slice(1)) removals.set(occ.position, occ);
-        }
-      }
-      if (args.include_relinked) {
-        for (const uriMap of byIdentity.values()) {
-          if (uriMap.size < 2) continue;
-          groups++;
-          const all = [...uriMap.values()].flat().sort((a, b) => a.position - b.position);
-          for (const occ of all.slice(1)) removals.set(occ.position, occ);
-        }
-      }
-
-      const ordered = [...removals.values()].sort((a, b) => b.position - a.position);
       const preview = ordered
         .slice(0, 20)
         .map((o) => `${o.label} @ position ${o.position} (${o.uri})`);
@@ -1277,6 +1295,155 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
         removed: ordered.length,
         kept: after.length,
         remaining_duplicates: remainingDuplicates,
+        snapshot_id: lastSnapshotId,
+      });
+    },
+  );
+
+  // clean_all_playlists (#171)
+  // Batch cleanup across EVERY playlist in the account. Report-only by
+  // default; apply=true executes keep-first/remove-rest per playlist after a
+  // single global elicitation when the total crosses the bulk threshold.
+  server.tool(
+    'clean_all_playlists',
+    'Scan every playlist in your library for duplicate items (repeated URIs, and on opt-in '
+      + 'same-song copies under different URIs). Reports per-playlist findings by default; '
+      + 'pass apply=true to remove them (keeps the first occurrence of each group). Bulk '
+      + 'removals ask for one confirmation before anything is deleted.',
+    {
+      include_relinked: z
+        .boolean()
+        .optional()
+        .default(false)
+        .describe(
+          'Also count/collapse same-song entries under different URIs (relinks/remasters).',
+        ),
+      apply: z
+        .boolean()
+        .optional()
+        .default(false)
+        .describe(
+          'false (default): report only — nothing is changed. true: execute the cleanup '
+            + 'across all playlists with duplicates.',
+        ),
+      ...sharedListFields,
+    },
+    async (args) => {
+      const playlists = await client.getAllPages<SpotifyPlaylistSimple>('/me/playlists', {
+        limit: '50',
+      });
+
+      interface PlaylistFinding {
+        id: string;
+        name: string;
+        owner: string;
+        scanned: number;
+        duplicate_groups: number;
+        removable_items: number;
+        removals?: Array<{ uri: string; position: number }>; // apply mode only
+      }
+
+      const findings: PlaylistFinding[] = [];
+      let totalRemovable = 0;
+      let playlistsScanned = 0;
+      for (const pl of playlists) {
+        if (!pl?.id) continue;
+        playlistsScanned++;
+        const items = await client.getAllPages<PlaylistItemObject>(
+          `/playlists/${encodeURIComponent(pl.id)}/items`,
+          { limit: '100' },
+        );
+        const { ordered, groups } = collectDuplicateRemovals(items, args.include_relinked);
+        totalRemovable += ordered.length;
+        findings.push({
+          id: pl.id,
+          name: pl.name ?? '(unnamed)',
+          owner: pl.owner?.display_name ?? 'unknown',
+          scanned: items.length,
+          duplicate_groups: groups,
+          removable_items: ordered.length,
+          ...(args.apply && ordered.length > 0 ? { removals: ordered.map((o) => ({ uri: o.uri, position: o.position })) } : {}),
+        });
+      }
+
+      const dirty = findings.filter((f) => f.removable_items > 0);
+      const view = truncateItems(dirty, resolveMaxResults(args.max_results));
+      const pag = paginationInfo({ returned: view.items.length });
+      const extra = {
+        playlists_scanned: playlistsScanned,
+        playlists_with_duplicates: dirty.length,
+        total_removable_items: totalRemovable,
+        applied: args.apply,
+      };
+
+      const renderRow = (f: PlaylistFinding): string =>
+        `• "${f.name}" (${f.owner}) — ${f.duplicate_groups} group(s), ${f.removable_items} removable of ${f.scanned}`;
+
+      if (!args.apply) {
+        if (dirty.length === 0) {
+          return textResult(
+            `Scanned ${playlistsScanned} playlist(s) — no duplicates found. Nothing to clean.`,
+            { ...extra, ok: true, results: findings },
+          );
+        }
+        const lines = [
+          `Scanned ${playlistsScanned} playlist(s); ${dirty.length} contain duplicates — ${totalRemovable} removable item(s):`,
+          '',
+          ...view.items.map(renderRow),
+          ...(view.footer ? [view.footer] : []),
+          '',
+          args.include_relinked
+            ? 'Report only — re-run with apply=true to remove these items.'
+            : 'Report only — re-run with include_relinked=true to widen matching, or apply=true to remove.',
+        ];
+        return textResult(lines.join('\n'), listStructuredContent(view.items, pag, extra));
+      }
+
+      // Apply mode.
+      if (dirty.length === 0) {
+        return textResult(
+          `Scanned ${playlistsScanned} playlist(s) — no duplicates found. Nothing to clean.`,
+          { ...extra, ok: true, removed_total: 0 },
+        );
+      }
+
+      if (totalRemovable >= REMOVE_ELICIT_THRESHOLD) {
+        const verdict = await confirmViaElicitation(server, {
+          message: describeConfirmation('remove duplicates across playlists', `${playlistsScanned} playlists`, [
+            `Remove ${totalRemovable} duplicate item(s) from ${dirty.length} playlist(s):`,
+            ...view.items.slice(0, 10).map(renderRow),
+            ...(dirty.length > 10 ? [`(…and ${dirty.length - 10} more playlists)`] : []),
+          ]),
+        });
+        if (verdict === 'declined') {
+          return textResult('Cancelled — nothing was changed.', { ok: false, cancelled: true });
+        }
+      }
+
+      let removedTotal = 0;
+      let lastSnapshotId: string | undefined;
+      for (const f of findings) {
+        if (!f.removals || f.removals.length === 0) continue;
+        const itemsPath = `/playlists/${encodeURIComponent(f.id)}/items`;
+        for (const r of f.removals) {
+          const res = await client.delete<{ snapshot_id?: string }>(itemsPath, {
+            tracks: [{ uri: r.uri, positions: [r.position] }],
+          });
+          removedTotal++;
+          if (res?.snapshot_id) lastSnapshotId = res.snapshot_id;
+        }
+      }
+
+      const lines = [
+        `Cleaned ${removedTotal} duplicate item(s) from ${dirty.length} playlist(s) `
+          + `(scanned ${playlistsScanned} in total).`,
+        ...view.items.map(renderRow),
+        ...(view.footer ? [view.footer] : []),
+      ];
+      return textResult(withSnapshot(lines.join('\n'), lastSnapshotId), {
+        ...extra,
+        ok: true,
+        removed_total: removedTotal,
         snapshot_id: lastSnapshotId,
       });
     },
