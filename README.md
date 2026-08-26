@@ -11,7 +11,7 @@ An MCP server that wraps the Spotify Web API, letting AI assistants (like Claude
 
 Most Spotify MCP servers are thin wrappers. This one is built to be the default:
 
-- **Complete API surface** — 101 tools covering every non-deprecated Spotify Web API endpoint callable with a standard developer token (playback, search, catalog, audiobooks, personalization, library, playlists, following, users) *plus* agent-grade extras most servers don't have: listening reports, library hygiene and duplicate analysis, playlist merge/diff/DNA curation, full playlist export/import (M3U + CSV), smart rule-based playlist generation, account-wide batch duplicate cleanup, library backup/restore snapshots, a podcast show-episode radar and session composer, named playback scenes, and an audiobook chapter copilot.
+- **Complete API surface** — 104 tools covering every non-deprecated Spotify Web API endpoint callable with a standard developer token (playback, search, catalog, audiobooks, personalization, library, playlists, following, users) *plus* agent-grade extras most servers don't have: listening reports, library hygiene and duplicate analysis, playlist merge/diff/DNA curation, full playlist export/import (M3U + CSV), smart rule-based playlist generation, account-wide batch duplicate cleanup, library backup/restore snapshots, a podcast show-episode radar and session composer, named playback scenes, and an audiobook chapter copilot.
 - **Honest about deprecations** — Spotify removed recommendations, related artists, audio features/analysis, genre seeds, and featured playlists from new apps. Servers still exposing those ship tools that fail at runtime; this one doesn't — and the few legacy endpoints it keeps (batch lookups, public user profiles) detect the 403 and explain it instead of crashing.
 - **Safe by default** — every mutating tool accepts `dry_run=true` to preview exactly what would change without touching your account. Destructive bulk playlist operations go one step further: removing 10+ items or replacing 50+ triggers an MCP elicitation prompt so a human confirms before anything is deleted (`SPOTIFY_MCP_CONFIRM=never` skips prompting for automation). Successful mutations return a receipt (post-write refetched state proving what landed), and a follow-up `verify_receipt` call re-checks it in later turns. Opt-in JSONL audit trail (`SPOTIFY_MCP_HISTORY=1`) logs every mutation for undo. And `SPOTIFY_MCP_READONLY=1` hides every write-capable module outright — a hard guarantee, not a convention.
 - **Scope-aware hiding** — write-capable modules whose scopes you didn't grant at auth time are hidden from the tool list entirely, instead of sitting there failing with 403 every time your agent tries them.
@@ -25,7 +25,7 @@ Most Spotify MCP servers are thin wrappers. This one is built to be the default:
 
 ## Features
 
-101 tools across 27 tool modules, plus the top-level `verify_receipt` diagnostic:
+104 tools across 27 tool modules, plus the top-level `verify_receipt` diagnostic:
 
 **Playback & devices (16 tools)** — now playing / currently-playing polls, play (by URI, or `play_from_search` to play straight from a name), pause, skip, previous, seek, volume, shuffle, repeat, queue view/add, device list, transfer playback, and `handoff` to move mid-track playback to another Spotify Connect device.
 

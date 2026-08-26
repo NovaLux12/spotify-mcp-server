@@ -119,11 +119,11 @@ async function startMcpServer(): Promise<void> {
   if (isModuleActive('personalization', activeSets, overrides) && !moduleBlockedByScopes('personalization', grantedScopes)) registerAnalyticsTools(server, client)
   // Library hygiene (#112 idea 5): album completion + consolidation findings.
   if (!readOnly && isModuleActive('library', activeSets, overrides) && !moduleBlockedByScopes('library', grantedScopes)) registerLibraryHygieneTools(server, client)
-  // Library backup (#159) + strictly-additive restore (#160).
-  if (isModuleActive('library', activeSets, overrides)) {
-    if (!readOnly) {
-      registerRestoreTools(server, client)
-    }
+  // Library backup (#159) + strictly-additive restore (#160). Backup is
+  // read-only (Spotify → local sidecar) so it stays visible in READONLY,
+  // but both still require library scopes like every other library read.
+  if (isModuleActive('library', activeSets, overrides) && !moduleBlockedByScopes('library', grantedScopes)) {
+    if (!readOnly) registerRestoreTools(server, client)
     registerBackupTools(server, client)
   }
   // spotify_doctor diagnostic (#111): unconditional — must survive toolset trimming.
