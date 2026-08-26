@@ -3,14 +3,14 @@
 One-stop copy for claiming/listing the server in directories. Keep in sync
 with README + server.json when the tool surface changes.
 
-## Canonical facts (2026-08-25, v1.2.1)
+## Canonical facts (2026-08-26, v1.9.0)
 
 - npm: `@novalux12/spotify-mcp` — https://www.npmjs.com/package/@novalux12/spotify-mcp
 - Repo: https://github.com/NovaLux12/spotify-mcp-server
-- MCP Registry name: `io.github.NovaLux12/spotify-mcp-server` (listed, v1.2.1)
+- MCP Registry name: `io.github.NovaLux12/spotify-mcp-server`
 - Transport: stdio (`npx @novalux12/spotify-mcp` after `npm i -g`, or via client config)
 - Auth: OAuth PKCE (S256) browser flow or headless mode; tokens at `~/.spotify-mcp/tokens.json` (0600)
-- Surface: 69 tools / 9 modules + resources + prompts (toolsets can trim); aligned with Spotify's post-Feb-2026 API
+- Surface: 94 tools across 11 modules + 11 fixed resource URIs + RFC-6570 templates + 10 prompts (toolsets can trim); aligned with Spotify's post-Feb-2026 API
 - Tests: 352+ node:test suite, CI on Node 22
 
 ## Short blurb (directories)

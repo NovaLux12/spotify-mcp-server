@@ -11,35 +11,47 @@ An MCP server that wraps the Spotify Web API, letting AI assistants (like Claude
 
 Most Spotify MCP servers are thin wrappers. This one is built to be the default:
 
-- **Complete API surface** — every non-deprecated Spotify Web API endpoint callable with a standard developer token is covered by a tool (playback, search, catalog, audiobooks, personalization, library, playlists, following, users).
-- **Honest about deprecations** — Spotify removed recommendations, related artists, audio features/analysis, genre seeds, and featured playlists from new apps. Servers still exposing those ship tools that fail at runtime; this one doesn't.
+- **Complete API surface** — 94 tools covering every non-deprecated Spotify Web API endpoint callable with a standard developer token (playback, search, catalog, audiobooks, personalization, library, playlists, following, users) *plus* agent-grade extras most servers don't have: listening reports, library hygiene analysis, playlist merge/diff/DNA curation, a podcast session composer, named playback scenes, and an audiobook chapter copilot.
+- **Honest about deprecations** — Spotify removed recommendations, related artists, audio features/analysis, genre seeds, and featured playlists from new apps. Servers still exposing those ship tools that fail at runtime; this one doesn't — and the few legacy endpoints it keeps (batch lookups, public user profiles) detect the 403 and explain it instead of crashing.
+- **Safe by default** — every mutating tool accepts `dry_run=true` to preview exactly what would change without touching your account. Successful mutations return a receipt (post-write refetched state proving what landed), and a follow-up `verify_receipt` call re-checks it in later turns. Opt-in JSONL audit trail (`SPOTIFY_MCP_HISTORY=1`) logs every mutation for undo.
+- **Scope-aware hiding** — write-capable modules whose scopes you didn't grant at auth time are hidden from the tool list entirely, instead of sitting there failing with 403 every time your agent tries them.
+- **Right-sized surface** — `SPOTIFY_MCP_TOOLSETS=playback,catalog` trims the registered tools to a subset for hosts that cap tool counts; `SPOTIFY_MCP_ENABLE_TOOLS`/`SPOTIFY_MCP_DISABLE_TOOLS` fine-tune individual modules on top.
+- **Self-diagnosing** — a CLI `doctor` command and an in-server `spotify_doctor` tool classify the real failure modes: missing/expired tokens, scope gaps between your grant and the exposed write tools, Premium-only gating, rate-limit cooldowns.
 - **Tested** — full unit suite over the client (token refresh, rate limiting, pagination) and every tool handler, plus an end-to-end MCP protocol smoke test. Many alternatives have zero tests.
 - **Paginated everything** — `fetch_all` on library and playlist listings walks every page (capped at 500 items) instead of silently truncating at one page of 50.
-- **Podcasts are first-class** — episodes work everywhere: now-playing, queue, search-and-play. Several competitors can't see podcasts at all.
-- **Device-aware playback** — list devices, transfer playback, and target any command at a specific device for multi-room setups.
+- **Podcasts are first-class** — episodes work everywhere: now-playing, queue, search-and-play, and a session composer that packs saved episodes into a commute-length listening block. Several competitors can't see podcasts at all.
+- **Device-aware playback** — list devices, transfer playback, hand off mid-track to another Connect device, target any command at a specific device for multi-room setups, and recall named volume/device/repeat scenes.
 - **Robust auth** — PKCE flow with silent refresh, persistent mode-600 token cache, headless paste-flow (`SPOTIFY_HEADLESS=1`) for servers and containers.
 
 ## Features
 
-69 tools across 9 modules:
+94 tools across 11 modules:
 
-**Playback (15 tools)** — now playing / currently-playing polls, play (by URI, or `play_from_search` to play straight from a name), pause, skip, previous, seek, volume, shuffle, repeat, queue view/add, device list, transfer playback.
+**Playback & devices (16 tools)** — now playing / currently-playing polls, play (by URI, or `play_from_search` to play straight from a name), pause, skip, previous, seek, volume, shuffle, repeat, queue view/add, device list, transfer playback, and `handoff` to move mid-track playback to another Spotify Connect device.
 
-**Search & catalog** — unified search across tracks/artists/albums/playlists/shows/episodes/audiobooks (limit capped at 10 per Spotify's Feb 2026 change); deep lookups for tracks, artists, artist albums, albums, album tracks, shows, show episodes, episodes, and your profile (`get_me`); plus batch `get_several_*` lookups for tracks, albums, artists, episodes, shows, audiobooks and chapters — these and the artist top-tracks / available-markets lookups were removed by Spotify's February 2026 Web API changes and fail with an explanatory message on newer app registrations (they still work with credentials from a grandfathered pre-Nov-2024 app).
+**Scenes & wind-down (6 tools)** — save named playback scenes (device + volume + shuffle/repeat + optional context) to a local sidecar and re-apply them in one call (`save_scene`, `list_scenes`, `delete_scene`, `apply_scene`); `schedule_wind_down` ramps the volume down to a floor over N minutes and then pauses; `cancel_wind_down` stops a running ramp.
 
-**Audiobooks** — titles, chapters, chapter lookup, and your saved audiobooks (market-gated by Spotify to US/UK/CA/IE/NZ/AU).
+**Search & catalog (20 tools)** — unified `search` across tracks/artists/albums/playlists/shows/episodes/audiobooks (limit capped at 10 per Spotify's Feb 2026 change) and `search_deep`, which walks past that cap server-side (up to 5 pages of 10 results per type, deduplicated); deep lookups for tracks, artists, artist albums, albums, album tracks, shows, show episodes, episodes, and your profile (`get_me`); batch `get_several_*` lookups for tracks, albums, artists, episodes, shows, audiobooks and chapters, plus artist top-tracks / available-markets — these were removed by Spotify's February 2026 Web API changes and fail with an explanatory message on newer app registrations (they still work with credentials from a grandfathered pre-Nov-2024 app).
 
-**Personalization** — top tracks and artists across three time ranges, recently played.
+**Audiobooks (7 tools)** — titles, chapters, chapter lookup, and your saved audiobooks (market-gated by Spotify to US/UK/CA/IE/NZ/AU); copilot extras: `list_all_chapters` (every chapter in one complete table, untruncated the way the Spotify app truncates), `jump_to_chapter` (resume the audiobook context at a numbered chapter), and `where_was_i` (which chapter you're on, how far in, time remaining).
 
-**Library** — saved tracks/albums/shows/episodes with optional full pagination; save/remove/check partitioned by type to `/me/tracks|albums|shows|episodes(/contains)` (bare IDs), plus unified `/me/library` tools accepting any mix of track/album/show/episode/audiobook/artist/user/playlist URIs in one request.
+**Personalization & reports (4 tools)** — top tracks and artists across three time ranges, recently played, and `listening_report`: compares your top tracks between two windows (rising / constant / fading) with an era histogram, discovery ratio, repeat overlap against recently played, and hour-of-day buckets.
 
-**Playlists** — full CRUD plus item management (add/remove/reorder), cover art retrieval and custom cover upload (`ugc-image-upload` scope required for upload).
+**Library (14 tools)** — saved tracks/albums/shows/episodes with optional full pagination; save/remove/check partitioned by type to `/me/tracks|albums|shows|episodes(/contains)` (bare IDs), plus unified `/me/library` tools accepting any mix of track/album/show/episode/audiobook URIs in one request; `library_hygiene` flags incomplete albums and consolidation candidates over your liked tracks; genre tools (`library_genre_report`, `filter_by_genre`, `tag_management`) aggregate saved items by user-declared artist tags kept in a local sidecar.
 
-**Following** — followed-artists list and follow-state checks.
+**Playlists (16 tools)** — full CRUD plus item management (add/remove/reorder/replace), cover art retrieval and custom cover upload (`ugc-image-upload` scope required for upload), and `find_duplicates_in_playlist`; power ops: `merge_playlists` (dedupe + append/create), `diff_playlists` (fully paged A/B comparison with position-change detection), `overlap_playlists` (tracks shared across playlists); and `grow_playlist`, which proposes tracks using only your own listening data (co-occurrence across your other playlists — no deprecated recommendations endpoint).
 
-**Users** — any Spotify user's public profile and their public playlists.
+**Following & freshness (5 tools)** — followed-artists list, follow-state checks, follow/unfollow, and `whats_new`: a personal new-releases radar derived from followed artists, with a local watermark so "everything since my last check" just works.
 
-Also exposed: **MCP resources** — 11 fixed URIs (profile, player state, queue, top tracks/artists, recently played, playlists, saved albums/shows/episodes, rate-limit status) plus a paginated `spotify://playlist/{id}/tracks` template; every URI accepts `?format=json` for raw machine-readable output. And **9 prompt templates** (DJ set, mood playlist, taste summary, discovery alternative, playlist audit, listening recap, library migration, podcast catch-up, artist deep dive).
+**Users (2 tools)** — any Spotify user's public profile and their public playlists (both removed by Spotify's February 2026 changes for newer app registrations; they degrade with a clear explanation and keep working for grandfathered credentials).
+
+**Podcast sessions (2 tools)** — `plan_podcast_session` greedy-packs your saved episodes into a session of a given length (skipping fully played ones, resuming partially played ones at their position); `start_podcast_session` queues it on a device.
+
+**Diagnostics & receipts (2 tools)** — `spotify_doctor`, an in-server diagnostic that checks token state, scope gaps versus the write tools actually exposed, Premium-only gating, and rate-limit cooldown without touching the network; and `verify_receipt`.
+
+Every mutating tool accepts `dry_run=true` to preview exactly what would change before touching your account. Successful mutations append a **receipt** to their result — post-write refetched state proving what landed — and `verify_receipt` looks a receipt back up in a later turn. Set `SPOTIFY_MCP_HISTORY=1` to additionally log one JSONL line per mutation for an undo/audit trail. Write-capable modules whose scopes you didn't grant are hidden from the tool list entirely (scope-aware hiding), so agents never see commands that could only fail.
+
+Also exposed: **MCP resources** — 11 fixed URIs (profile, player state, queue, top tracks/artists, recently played, playlists, saved albums/shows/episodes, rate-limit status), each available bare or with `?format=json` for raw machine-readable output, plus RFC-6570 templates (`spotify://playlist/{id}/tracks` paginated, `spotify://artist/{id}`, `spotify://artist/{id}/albums`, `spotify://album/{id}`, `spotify://show/{id}`, `spotify://episode/{id}`) with argument completions offered for show/episode IDs from your own library. And **10 prompt templates**: DJ set, mood playlist, taste summary, discovery alternative, playlist audit, listening recap, library migration, podcast catch-up, artist deep dive, and liked-songs triage.
 
 ## Requirements & limitations
 
@@ -47,6 +59,7 @@ Also exposed: **MCP resources** — 11 fixed URIs (profile, player state, queue,
 - `fetch_all` pagination walks up to **500 items** per call (protects against runaway loops); beyond that, use `limit`/`offset` paging.
 - Audiobook tools are market-gated by Spotify to US, UK, Canada, Ireland, New Zealand, and Australia.
 - Spotify's developer mode allows up to 5 authorised users per app until extended quota is granted.
+- **February 2026 platform caps, handled for you:** `/search` tops out at `limit=10` (default 5) — use `search_deep` to page past it; artist-albums pages top out at `limit=10`, which deep views walk client-side with a bounded page count; playlist item payloads put each row's content under `item`; new app registrations receive no artist genres and no preview URLs — output renders what exists instead of failing on missing fields.
 
 ## Installation
 
@@ -190,6 +203,47 @@ All settings come from environment variables — no config file required:
 | `SPOTIFY_MCP_FETCH_ALL_CAP` | `500` | Hard cap on `fetch_all=true` pagination walks |
 | `SPOTIFY_MCP_HISTORY` | unset | Set to `1` to log one JSONL line per agent-driven mutation (undo/audit trail) |
 | `SPOTIFY_MCP_HISTORY_DIR` | `~/.spotify-mcp/history` | Directory for the mutation JSONL log (`mutations.jsonl`) |
+| `SPOTIFY_MCP_TOOLSETS` | unset (all) | Comma-separated toolsets to register: `playback`, `catalog`, `library`, `personalization`, `playlists`, `prompts`, `resources`; `all` or unset registers everything |
+| `SPOTIFY_MCP_ENABLE_TOOLS` | unset | Comma-separated module keys forced on top of the toolset trim (`disable` wins over `enable` wins over set membership) |
+| `SPOTIFY_MCP_DISABLE_TOOLS` | unset | Comma-separated module keys forced off |
+| `SPOTIFY_MCP_FRESHNESS_STATE` | `~/.spotify-mcp/freshness.json` | Watermark file powering `whats_new`'s `since: 'last-check'` |
+| `SPOTIFY_MCP_SCENES_FILE` | `~/.spotify-mcp/scenes.json` | Location of the playback-scene sidecar written by the scene tools |
+| `SPOTIFY_MCP_GENRE_TAGS_FILE` | `~/.spotify-mcp/genre-tags.json` | Artist→genre-tags sidecar consumed by the library genre tools |
+
+### Trim the surface with toolsets
+
+Hosts that cap how many tools they expose can register a subset. Toolsets are coarse (`playback`, `catalog`, `library`, `personalization`, `playlists`, `prompts`, `resources`); module keys are fine-grained (`playback`, `search`, `catalog`, `audiobooks`, `personalization`, `library`, `following`, `playlists`, `users`, `resources`, `prompts`). Precedence: `SPOTIFY_MCP_DISABLE_TOOLS` beats `SPOTIFY_MCP_ENABLE_TOOLS` beats set membership, and scope-aware hiding applies last — a write module whose scopes you never granted stays hidden regardless.
+
+```bash
+# Car dashboard: playback controls only
+SPOTIFY_MCP_TOOLSETS=playback npx -y @novalux12/spotify-mcp@latest
+
+# Read-only recommender: catalog + taste, nothing that writes
+SPOTIFY_MCP_TOOLSETS=catalog,personalization npx -y @novalux12/spotify-mcp@latest
+```
+
+```json
+{
+  "mcpServers": {
+    "spotify": {
+      "command": "npx",
+      "args": ["-y", "@novalux12/spotify-mcp@latest"],
+      "env": {
+        "SPOTIFY_CLIENT_ID": "your_client_id_here",
+        "SPOTIFY_MCP_TOOLSETS": "playlists,catalog",
+        "SPOTIFY_MCP_DISABLE_TOOLS": "users"
+      }
+    }
+  }
+}
+```
+
+Force a single module back on despite the trim (or off despite an active set) with the override variables:
+
+```bash
+SPOTIFY_MCP_TOOLSETS=library SPOTIFY_MCP_ENABLE_TOOLS=following   # library set + following module
+SPOTIFY_MCP_DISABLE_TOOLS=playlists                               # hide all playlist modules everywhere
+```
 
 ## Usage
 
