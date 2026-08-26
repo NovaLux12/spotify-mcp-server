@@ -308,15 +308,15 @@ describe('check_following_artists shaping (#51/#52/#53)', () => {
 
     const text = textOf(out);
     assert.match(text, /^Following check:/);
-    assert.match(text, /✓ a/);
-    assert.match(text, /✗ b/);
-    assert.ok(!text.includes('\n  ✓ c'));
+    assert.match(text, /✓ spotify:artist:a \(id: a\)/);
+    assert.match(text, /✗ spotify:artist:b \(id: b\)/);
+    assert.ok(!text.includes('✓ c'));
     assert.match(text, /\(1 more — pass offset or fetch_all\)/);
 
     const sc = out.structuredContent as { items: Array<{ id: string; follows: boolean }> };
     assert.deepEqual(sc.items, [
-      { id: 'a', follows: true },
-      { id: 'b', follows: false },
+      { id: 'a', uri: 'spotify:artist:a', follows: true },
+      { id: 'b', uri: 'spotify:artist:b', follows: false },
     ]);
   });
 
@@ -327,7 +327,7 @@ describe('check_following_artists shaping (#51/#52/#53)', () => {
       response_format: 'json',
     });
     const payload = JSON.parse(out.content[0].text);
-    assert.deepEqual(payload.items, [{ id: 'x', follows: false }]);
+    assert.deepEqual(payload.items, [{ id: 'x', uri: 'spotify:artist:x', follows: false }]);
     assert.deepEqual(out.structuredContent, payload);
   });
 });

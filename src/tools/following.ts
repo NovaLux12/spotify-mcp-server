@@ -182,12 +182,23 @@ export function registerFollowingTools(server: McpServer, client: SpotifyClient)
       });
       if (!result) throw new Error('Could not check following status');
 
-      const checks = args.ids.map((id, i) => ({ id, follows: result[i] ?? false }));
+      // #110 finding 11: rows carry a full URI alongside the id so agents
+      // can chain into other tools without reconstructing URIs. `follows`
+      // is the only truthful boolean here — following/contains says nothing
+      // about library-saved state.
+      const checks = args.ids.map((id, i) => ({
+        id,
+        uri: `spotify:artist:${id}`,
+        follows: result[i] ?? false,
+      }));
       const t = truncateItems(checks, cap(args));
       const pagination = paginationInfo({ total: checks.length, returned: t.items.length });
 
       const lines = ['Following check:'];
-      for (const c of t.items) lines.push(`  ${c.follows ? '✓' : '✗'} ${c.id}`);
+      for (const c of t.items) {
+        const mark = c.follows;
+        lines.push(`  ${mark ? '✓' : '✗'} ${c.uri} (id: ${c.id})`);
+      }
       appendPaginationFooters(lines, t, pagination);
       return shapeResult(args.response_format, lines.join('\n'), listStructuredContent(t.items, pagination));
     },
