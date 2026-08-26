@@ -22,10 +22,20 @@ export interface SpotifyMcpConfig {
   redirectUri: string;
   /** Opt-in mutation history JSONL logging (#64). */
   historyEnabled: boolean;
+  /**
+   * Per-request timeout in milliseconds for every outbound HTTP call
+   * (API requests and token refresh) so a hung connection cannot stall the
+   * serialized request queue forever (#109). Override with
+   * SPOTIFY_REQUEST_TIMEOUT_MS.
+   */
+  spotifyRequestTimeoutMs: number;
 }
 
 export const DEFAULT_MAX_ITEMS = 50;
 export const DEFAULT_FETCH_ALL_CAP = 500;
+
+/** Default per-request HTTP timeout when SPOTIFY_REQUEST_TIMEOUT_MS is unset. */
+export const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 
 /** Parse a positive integer env value; anything else falls back to `fallback`. */
 function positiveInt(raw: string | undefined, fallback: number): number {
@@ -46,6 +56,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): SpotifyMcpConf
     headless: truthyEnv(env.SPOTIFY_HEADLESS),
     redirectUri: env.SPOTIFY_REDIRECT_URI ?? 'http://127.0.0.1:8888/callback',
     historyEnabled: truthyEnv(env.SPOTIFY_MCP_HISTORY),
+    spotifyRequestTimeoutMs: positiveInt(env.SPOTIFY_REQUEST_TIMEOUT_MS, DEFAULT_REQUEST_TIMEOUT_MS),
   };
 }
 

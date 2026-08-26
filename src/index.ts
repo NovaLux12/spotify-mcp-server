@@ -19,7 +19,11 @@ import { registerSearchDeepTool } from './tools/searchdive.js';
 import { registerPodcastSessionTools } from './tools/podcastsession.js';
 import { registerAudiobookCopilotTools } from './tools/audiobookcopilot.js';
 import { registerScenesTools } from './tools/scenes.js';
+import { registerPlaylistDnaTools } from './tools/playlistdna.js';
+import { registerAnalyticsTools } from './tools/analytics.js';
+import { verifyReceipt, formatReceipt } from './receipts.js';
 import { registerTemplateResources } from './resources/templates.js';
+import { z } from 'zod';
 import { registerResources } from './resources/index.js';
 import { registerPrompts } from './prompts/index.js';
 import { TOOLSETS, resolveToolsets, isActive, toolsetEnvHelp } from './toolsets.js';
@@ -73,13 +77,17 @@ async function startMcpServer(): Promise<void> {
   if (isActive('search', activeSets)) registerSearchTools(server, client);
   if (isActive('catalog', activeSets)) registerCatalogTools(server, client);
   if (isActive('personalization', activeSets)) registerPersonalizationTools(server, client);
-  if (isActive('library', activeSets)) registerLibraryTools(server, client);
+  // Listening analytics (#97): derived taste-profile reporting.
+  if (isActive('personalization', activeSets)) registerAnalyticsTools(server, client);
   if (isActive('following', activeSets)) registerFollowingTools(server, client);
   if (isActive('audiobooks', activeSets)) registerAudiobookTools(server, client);
   if (isActive('playlists', activeSets)) registerPlaylistTools(server, client);
   if (isActive('users', activeSets)) registerUsersTools(server, client);
+  if (isActive('library', activeSets)) registerLibraryTools(server, client);
   // Playlist power ops (#96): merge/diff/overlap — part of the playlists set.
   if (isActive('playlists', activeSets)) registerPlaylistOpsTools(server, client);
+  // Playlist DNA (#112 idea 6): read-only co-occurrence curation.
+  if (isActive('playlists', activeSets)) registerPlaylistDnaTools(server, client);
   // Differentiation wave (#112): library insights, freshness radar, deep search.
   if (isActive('library', activeSets)) registerLibraryInsightsTools(server, client);
   if (isActive('following', activeSets)) registerFreshnessTools(server, client);
@@ -92,6 +100,23 @@ async function startMcpServer(): Promise<void> {
   if (isActive('resources', activeSets)) registerTemplateResources(server, client);
   if (isActive('resources', activeSets)) registerResources(server, client);
   if (isActive('prompts', activeSets)) registerPrompts(server);
+
+  // Mutation receipts (#112 idea 11): verify_receipt looks up a stored
+  // receipt id and reports post-mutation verification status.
+  if (isActive('library', activeSets)) {
+    server.tool(
+      'verify_receipt',
+      'Verify that a previous mutation actually landed on Spotify by looking up its receipt',
+      { receipt_id: z.string().min(1).describe('Receipt ID from a receipt-bearing mutation result') },
+      async (args) => {
+        const receipt = verifyReceipt(args.receipt_id);
+        if (!receipt) {
+          return { content: [{ type: 'text', text: `Unknown receipt "${args.receipt_id}" — receipts are kept for the most recent 100 mutations.` }] };
+        }
+        return { content: [{ type: 'text', text: formatReceipt(receipt) }], structuredContent: { ...receipt } };
+      },
+    );
+  }
 
   const transport = new StdioServerTransport();
   await server.connect(transport);
