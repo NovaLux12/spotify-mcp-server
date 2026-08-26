@@ -17,7 +17,11 @@ import { once } from 'node:events';
 
 const REPO_ROOT = join(import.meta.dirname, '..');
 
+// Regression guard (#110 follow-up): a description rewrite once consumed
+// this tool's name argument and the suite stayed green — pin the tools most
+// at risk from mechanical edits.
 const REQUIRED_TOOLS = [
+  'check_in_library',
   'get_me',
   'get_album_tracks',
   'get_show_episodes',
