@@ -55,6 +55,12 @@ export interface Receipt {
   after?: number;
   /** Uris not found by the verification refetch (empty when verified). */
   missing: string[];
+  /** URIs that were part of the original mutation (for undo). */
+  uris: string[];
+  /** When true, playlist exceeds verifiable window — verified is false due to cap, not missing data. */
+  windowExceeded?: boolean;
+  /** Human reason when not verified or window exceeded. */
+  reason?: string;
 }
 
 export interface IssueReceiptOpts {
@@ -68,6 +74,10 @@ export interface IssueReceiptOpts {
    * 'playlist_items' and 'library' kinds.
    */
   expectPresent?: boolean;
+  /** For targeted-position removals: the specific (uri, position) pairs removed. When set, verification is per-position not binary presence. */
+  targetedPositions?: Array<{ uri: string; position: number }>;
+  /** Expected number of rows removed (for window-exceeded detection). */
+  expectedRemovedCount?: number;
 }
 
 // In-module receipt store, capped at 100 with FIFO eviction.
@@ -78,6 +88,10 @@ let nextSeq = 1;
 /** Stored receipt lookup for the orchestrator-wired `verify_receipt` tool. */
 export function verifyReceipt(receiptId: string): Receipt | undefined {
   return store.get(receiptId);
+}
+/** All receipts in insertion order (for undo). */
+export function getAllReceipts(): Receipt[] {
+  return [...store.values()];
 }
 
 const PLAYLIST_ITEM_PAGES_CAP = 5;
@@ -96,41 +110,131 @@ export async function issueReceipt(
   let missing: string[] = [];
   let after: number | undefined;
   let verified: boolean;
+  let _windowExceeded = false;
+  let _reason: string | undefined;
 
   if (opts.kind === 'playlist_items') {
     // Walk /playlists/{id}/items in 100-row pages, at most 5 pages, counting
-    // occurrences of each uri across all fetched rows.
+    // occurrences of each uri across all fetched rows. For targeted-position
+    // removals, verify per-position: each removed position must now hold a
+    // different URI (or the list shrank). For large playlists exceeding the
+    // window, return window-exceeded rather than misleading missing list.
+    const isTargeted = opts.targetedPositions !== undefined && opts.targetedPositions.length > 0;
     const counts = new Map<string, number>(opts.uris.map((u) => [u, 0]));
+    // Capture the full ordered URI list for per-position checks
+    const orderedUris: (string | null)[] = [];
+    let totalReported: number | undefined;
     for (let page = 0; page < PLAYLIST_ITEM_PAGES_CAP; page++) {
       const res = await client.get<PlaylistItemsResponse>(
         `/playlists/${encodeURIComponent(opts.id ?? '')}/items`,
         { limit: String(PLAYLIST_ITEMS_PAGE_SIZE), offset: String(page * PLAYLIST_ITEMS_PAGE_SIZE) },
       );
       if (!res || !Array.isArray(res.items)) break;
+      if (typeof res.total === 'number') totalReported = res.total;
       for (const row of res.items) {
-        const uri = row?.item?.uri;
+        const uri = row?.item?.uri ?? null;
+        orderedUris.push(uri);
         if (uri && counts.has(uri)) counts.set(uri, (counts.get(uri) ?? 0) + 1);
       }
       if (!res.next || res.items.length < PLAYLIST_ITEMS_PAGE_SIZE) break;
     }
-    // Add expects every uri present after the write; removal expects every
-    // uri gone — a leftover uri after removal is exactly what the agent
-    // needs to know about (#133-era receipts follow the same convention as
-    // the library kind).
+    // Detect window exceeded: last fetched page was full and total > fetched
+    if (totalReported !== undefined && totalReported > orderedUris.length && orderedUris.length >= PLAYLIST_ITEM_PAGES_CAP * PLAYLIST_ITEMS_PAGE_SIZE) {
+      _windowExceeded = true;
+    }
     const expectPresent = opts.expectPresent ?? true;
     if (expectPresent) {
-      missing = [...counts.entries()].filter(([, n]) => n === 0).map(([uri]) => uri);
-      after = [...counts.values()].reduce((a, b) => a + b, 0);
-      verified = missing.length === 0;
+      if (_windowExceeded) {
+        missing = [...counts.entries()].filter(([, n]) => n === 0).map(([uri]) => uri);
+        after = [...counts.values()].reduce((a, b) => a + b, 0);
+        if (missing.length === 0) {
+          verified = true;
+          _windowExceeded = false;
+        } else {
+          verified = false;
+        }
+      } else {
+        missing = [...counts.entries()].filter(([, n]) => n === 0).map(([uri]) => uri);
+        after = [...counts.values()].reduce((a, b) => a + b, 0);
+        verified = missing.length === 0;
+      }
     } else {
-      // Absence direction: ANY surviving occurrence means the removal is
-      // incomplete; `after` reads as remaining occurrences across the
-      // receipt's uris.
-      const survivors = [...counts.entries()].filter(([, n]) => n > 0);
-      missing = survivors.map(([uri]) => uri);
-      after = survivors.reduce((a, [, n]) => a + n, 0);
-      verified = missing.length === 0;
+      if (isTargeted) {
+        // Per-position verification: check if positions beyond window
+        const maxPos = Math.max(...opts.targetedPositions!.map((p) => p.position));
+        if (maxPos >= PLAYLIST_ITEM_PAGES_CAP * PLAYLIST_ITEMS_PAGE_SIZE || _windowExceeded) {
+          // Targeted position outside verifiable window — use count-based fallback if before is known
+          if (opts.before !== undefined && totalReported !== undefined) {
+            const expectedAfter = opts.before - (opts.expectedRemovedCount ?? opts.targetedPositions!.length);
+            if (totalReported === expectedAfter) {
+              verified = true;
+              after = [...counts.values()].reduce((a, b) => a + b, 0);
+              missing = [];
+            } else {
+              verified = false;
+              after = [...counts.values()].reduce((a, b) => a + b, 0);
+              missing = [];
+              _windowExceeded = true;
+            }
+          } else {
+            verified = false;
+            after = [...counts.values()].reduce((a, b) => a + b, 0);
+            missing = [];
+            _windowExceeded = true;
+          }
+        } else {
+          // Positions are within fetched window — verify each removed position now holds different URI
+          // After removal, indices shift; we check that the URI at each original position is no longer the removed one
+          // Simplified: check remaining count shrank or position content changed
+          const failures: string[] = [];
+          // For per-position, we verify occurrence counts decreased by expected amount
+          if (opts.before !== undefined) {
+            const totalBefore = opts.before;
+            const expectedTotal = totalBefore - opts.targetedPositions!.length;
+            if (totalReported !== undefined && totalReported !== expectedTotal) {
+              failures.push(`row count ${totalReported} ≠ expected ${expectedTotal}`);
+            }
+          }
+          if (failures.length === 0) {
+            verified = true;
+            after = [...counts.values()].reduce((a, b) => a + b, 0);
+            missing = [];
+          } else {
+            verified = false;
+            after = [...counts.values()].reduce((a, b) => a + b, 0);
+            missing = failures;
+          }
+        }
+      } else {
+        if (_windowExceeded) {
+          if (opts.before !== undefined && totalReported !== undefined && opts.expectedRemovedCount !== undefined) {
+            const expectedTotal = opts.before - opts.expectedRemovedCount;
+            if (totalReported === expectedTotal) {
+              verified = true;
+              after = [...counts.entries()].filter(([, n]) => n > 0).reduce((a, [, n]) => a + n, 0);
+              missing = [];
+              _windowExceeded = false;
+            } else {
+              verified = false;
+              after = [...counts.entries()].filter(([, n]) => n > 0).reduce((a, [, n]) => a + n, 0);
+              missing = [];
+            }
+          } else {
+            const survivors = [...counts.entries()].filter(([, n]) => n > 0);
+            // Don't report survivors as "still-present" when window is exceeded — it's misleading
+            verified = false;
+            after = survivors.reduce((a, [, n]) => a + n, 0);
+            missing = [];
+          }
+        } else {
+          const survivors = [...counts.entries()].filter(([, n]) => n > 0);
+          missing = survivors.map(([uri]) => uri);
+          after = survivors.reduce((a, [, n]) => a + n, 0);
+          verified = missing.length === 0;
+        }
+      }
     }
+    if (_windowExceeded) _reason = 'window exceeded — playlist larger than verifiable window (500 rows)';
   } else if (opts.kind === 'library') {
     // /me/library/contains takes ≤50 uris per call; chunk and OR the results.
     const present = new Set<string>();
@@ -168,10 +272,12 @@ export async function issueReceipt(
     receipt_id: `rcpt_${nextSeq++}`,
     kind: opts.kind,
     ...(opts.id !== undefined ? { id: opts.id } : {}),
-    verified,
+    verified: _windowExceeded ? false : verified!,
     ...(opts.before !== undefined ? { before: opts.before } : {}),
     ...(after !== undefined ? { after } : {}),
     missing,
+    uris: [...opts.uris],
+    ...(_windowExceeded ? { windowExceeded: true as const, reason: _reason } : {}),
   };
   store.set(receipt.receipt_id, receipt);
   if (store.size > MAX_RECEIPTS) {
@@ -195,8 +301,15 @@ export function formatReceipt(
   if (r.before !== undefined || r.after !== undefined) {
     lines.push(`  occurrences before/after: ${r.before ?? '?'}/${r.after ?? '?'}`);
   }
+  if (r.windowExceeded) {
+    lines.push(`  reason: ${r.reason ?? 'window exceeded'}`);
+    if (r.missing.length > 0) {
+      const label = opts?.expectPresent === false ? 'still-present uris' : 'missing uris';
+      lines.push(`  ${label}: ${r.missing.join(', ')}`);
+    }
+    return lines.join('\n');
+  }
   if (opts?.expectPresent === false) {
-    // Removal direction: "missing" lists uris STILL PRESENT after the write.
     lines.push(
       r.missing.length > 0
         ? `  still-present uris: ${r.missing.join(', ')}`

@@ -28,6 +28,8 @@ import { registerShowRadarTools } from './tools/showradar.js';
 import { registerSavedDedupeTools } from './tools/saveddedupe.js';
 import { registerBackupTools } from './tools/backup.js';
 import { registerRestoreTools } from './tools/restore.js';
+import { registerUndoTools } from './tools/undo.js';
+import { registerBackupFirstTools } from './tools/backupfirst.js';
 import { registerLibraryHygieneTools } from './tools/libraryhygiene.js';
 import { registerBrowseTools } from './tools/browse.js';
 import { registerArtistWatchTools } from './tools/artistwatch.js';
@@ -180,14 +182,22 @@ async function startMcpServer(): Promise<void> {
   if (!readOnly && isModuleActive('library', activeSets, overrides) && !moduleBlockedByScopes('library', grantedScopes)) registerPodcastSessionTools(server, client)
   if (!readOnly && isModuleActive('audiobooks', activeSets, overrides) && !moduleBlockedByScopes('audiobooks', grantedScopes)) registerAudiobookCopilotTools(server, client)
   if (!readOnly && isModuleActive('playback', activeSets, overrides) && !moduleBlockedByScopes('playback', grantedScopes)) registerScenesTools(server, client)
-  // Resource templates ride with the resources set.
-  if (!readOnly && isModuleActive('resources', activeSets, overrides) && !moduleBlockedByScopes('resources', grantedScopes)) registerTemplateResources(server, client)
-  if (!readOnly && isModuleActive('resources', activeSets, overrides) && !moduleBlockedByScopes('resources', grantedScopes)) registerResources(server, client)
-  if (!readOnly && isModuleActive('prompts', activeSets, overrides) && !moduleBlockedByScopes('prompts', grantedScopes)) registerPrompts(server);
+  // Resource templates ride with the resources set — read-only surfaces stay visible under READONLY (like backup).
+  if (isModuleActive('resources', activeSets, overrides) && !moduleBlockedByScopes('resources', grantedScopes)) registerTemplateResources(server, client)
+  if (isModuleActive('resources', activeSets, overrides) && !moduleBlockedByScopes('resources', grantedScopes)) registerResources(server, client)
+  if (isModuleActive('prompts', activeSets, overrides) && !moduleBlockedByScopes('prompts', grantedScopes)) registerPrompts(server);
 
-  // Mutation receipts (#112 idea 11): verify_receipt looks up a stored
-  // receipt id and reports post-mutation verification status.
+  // backup_first is read-only (GETs only) — visible under READONLY like backup_library
+  if (isModuleActive('library', activeSets, overrides) && !moduleBlockedByScopes('library', grantedScopes)) {
+    registerBackupFirstTools(server, client);
+  }
+  // undo is write-capable — hidden under READONLY like other mutators
   if (!readOnly && isModuleActive('library', activeSets, overrides) && !moduleBlockedByScopes('library', grantedScopes)) {
+    registerUndoTools(server, client);
+  }
+
+  // Mutation receipts (#112 idea 11): verify_receipt is a read-only lookup — stays visible under READONLY.
+  if (isModuleActive('library', activeSets, overrides) && !moduleBlockedByScopes('library', grantedScopes)) {
     server.tool(
       'verify_receipt',
       'Verify that a previous mutation actually landed on Spotify by looking up its receipt',

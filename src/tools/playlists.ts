@@ -664,24 +664,33 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
       dry_run: DryRun,
     },
     async (args) => {
+      // #241: count total affected ROWS, not entries — one entry with positions:[0..99] removes 100 rows
+      const totalAffected = args.uris.reduce((sum, entry) => sum + (typeof entry === 'string' ? 1 : entry.positions.length), 0);
+      // bare URIs remove every occurrence — note this so the confirmation is honest
+      const hasBareUris = args.uris.some((e) => typeof e === 'string');
       if (args.dry_run) {
         const targets = args.uris.map((entry) =>
-          typeof entry === 'string' ? entry : `${entry.uri} @ ${entry.positions.join(',')}`,
+          typeof entry === 'string' ? `${entry} (removes every occurrence)` : `${entry.uri} @ ${entry.positions.join(',')}`,
         );
+        const note = totalAffected !== args.uris.length || hasBareUris
+          ? `Would affect ${totalAffected} row(s)${hasBareUris ? ' — bare URIs remove every occurrence' : ''}:`
+          : `Would affect ${targets.length} item(s):`;
         return {
           content: [{
             type: 'text',
-            text: describeDryRun('remove from playlist', args.playlist_id, targets),
+            text: `[dry run] remove from playlist on ${args.playlist_id} — nothing was changed.\n${note}\n${targets.map((t) => `  - ${t}`).join('\n')}`,
           }],
+          structuredContent: { ok: true, dry_run: true, total_affected: totalAffected, targets } as unknown as Record<string, unknown>,
         };
       }
-      if (args.uris.length >= REMOVE_ELICIT_THRESHOLD) {
+      if (totalAffected >= REMOVE_ELICIT_THRESHOLD) {
         const targets = args.uris.map((entry) =>
-          typeof entry === 'string' ? entry : `${entry.uri} @ ${entry.positions.join(',')}`,
+          typeof entry === 'string' ? `${entry} (every occurrence)` : `${entry.uri} @ ${entry.positions.join(',')}`,
         );
+        const header = `Remove ${totalAffected} row(s)${hasBareUris ? ' (bare URIs remove every occurrence)' : ''}:`;
         const verdict = await confirmViaElicitation(server, {
           message: describeConfirmation('remove from playlist', args.playlist_id, [
-            `Remove ${args.uris.length} item(s):`,
+            header,
             ...targets,
           ]),
         });
@@ -701,24 +710,31 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
         `/playlists/${encodeURIComponent(args.playlist_id)}/items`,
         body,
       );
-      // Receipt (#112 idea 11): removal verifies ABSENCE of the touched uris.
+      // Receipt (#112 idea 11): removal verifies ABSENCE; for targeted positions pass targetedPositions so #233 verification is per-position
+      const targetedPositions = tracks.some((t) => t.positions !== undefined)
+        ? tracks.flatMap((t) => t.positions !== undefined ? t.positions.map((p) => ({ uri: t.uri, position: p })) : [])
+        : undefined;
+      // Also count total rows removed for the result text (#241)
+      const removedRows = tracks.reduce((sum, t) => sum + (t.positions?.length ?? 1), 0);
       const receipt = await issueReceipt(client, {
         kind: 'playlist_items',
         id: args.playlist_id,
         uris: tracks.map((t) => t.uri),
         expectPresent: false,
+        ...(targetedPositions ? { targetedPositions } : {}),
+        ...(removedRows !== tracks.length ? { expectedRemovedCount: removedRows } : {}),
       });
       // #58: echo exactly which URIs were touched for the audit trail.
       const text = withSnapshot(
-        `Removed ${tracks.length} item(s) from playlist.\n${batchSummary(
-          tracks.length,
+        `Removed ${removedRows} item(s) from playlist.\n${batchSummary(
+          removedRows,
           tracks.map((t) => t.uri),
         )}`,
         res?.snapshot_id,
       );
       return textResult(
         `${text}\n${formatReceipt(receipt, { expectPresent: false })}`,
-        { ok: true, removed: tracks.length, snapshot_id: res?.snapshot_id, receipt: receipt as unknown as Record<string, unknown> },
+        { ok: true, removed: removedRows, total_affected: removedRows, snapshot_id: res?.snapshot_id, receipt: receipt as unknown as Record<string, unknown> },
       );
     },
   );

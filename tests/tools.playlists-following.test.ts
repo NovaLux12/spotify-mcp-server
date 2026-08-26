@@ -846,7 +846,7 @@ describe('#50 snapshot precision on playlist mutations', () => {
     });
     assert.match(
       textOf(out),
-      /^Removed 2 item\(s\) from playlist\.\n2 items affected: spotify:track:a, spotify:track:b$/m,
+      /^Removed 3 item\(s\) from playlist\.\n3 items affected: spotify:track:a, spotify:track:b$/m,
     );
   });
 
