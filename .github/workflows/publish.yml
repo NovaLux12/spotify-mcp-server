@@ -7,6 +7,15 @@ name: Publish
 # workflow triggers from GITHUB_TOKEN events — so the tag push alone will NOT
 # start this workflow. After release-please tags a release, run:
 #   gh workflow run publish.yml --ref v<version>
+#
+# Trusted publishing (#113): this workflow is cut over to npm trusted
+# publishing (OIDC). The id-token: *** permission mints a short-lived OIDC
+# token; --provenance attests the build. Once the trusted publisher is
+# configured on npmjs.com (package Settings → Trusted Publishers → GitHub
+# Actions, repo NovaLux12/spotify-mcp-server, workflow publish.yml), the
+# NPM_TOKEN fallback can be removed — npm will accept the OIDC identity alone.
+# Until then both paths are supported: OIDC when the publisher is configured,
+# NPM_TOKEN otherwise (the --provenance flag is harmless with token auth).
 on:
   push:
     tags: ["v*"]
@@ -20,7 +29,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      id-token: write # npm provenance / trusted publishing (OIDC)
+      id-token: *** # npm provenance + trusted publishing (OIDC)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
@@ -41,28 +50,23 @@ jobs:
       # Idempotency: skip when this version is already on npm (re-runs after
       # a partial failure converge green instead of failing on "cannot
       # publish over the previously published version").
-      - name: Publish to npm (skip if version already published)
+      - name: Publish to npm (trusted publishing / NPM_TOKEN fallback)
         run: |
           VERSION="${GITHUB_REF#refs/tags/v}"
           if npm view "@novalux12/spotify-mcp@$VERSION" version >/dev/null 2>&1; then
             echo "@novalux12/spotify-mcp@$VERSION already on npm — skipping"
           else
-            # --provenance generates SLSA provenance via the OIDC identity.
-            # Requires id-token: write (set on this job) and works alongside
-            # NPM_TOKEN auth. To move fully to trusted publishing instead,
-            # remove NODE_AUTH_TOKEN and configure the package on npmjs.com
-            # (Settings → Publishing access → GitHub Actions).
             npm publish --access public --provenance
           fi
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NODE_AUTH_TOKEN: *** secrets.NPM_TOKEN }}
 
   publish-mcp-registry:
     runs-on: ubuntu-latest
     needs: publish-npm
     permissions:
       contents: read
-      id-token: write # GitHub OIDC auth for the MCP Registry
+      id-token: *** # GitHub OIDC auth for the MCP Registry
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 

@@ -57,7 +57,7 @@ const FORBIDDEN_TOOLS = [
   'unfollow_artist',
 ];
 
-const EXPECTED_PROMPTS = ['dj', 'playlist_from_mood', 'music_taste_summary', 'discover_weekly_alternative', 'playlist_audit', 'listening_recap', 'migrate_library', 'podcast_catchup', 'artist_deep_dive', 'triage_liked_songs'];
+const EXPECTED_PROMPTS = ['dj', 'playlist_from_mood', 'music_taste_summary', 'discover_weekly_alternative', 'playlist_audit', 'listening_recap', 'migrate_library', 'podcast_catchup', 'artist_deep_dive', 'triage_liked_songs', 'music_briefing'];
 
 interface JsonRpcResponse {
   id?: number | string | null;
