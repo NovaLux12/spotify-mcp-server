@@ -441,4 +441,121 @@ describe('whats_new', () => {
     })();
     assert.equal((out.structuredContent as { cutoff: string }).cutoff, expectedCutoff);
   });
+
+  // -----------------------------------------------------------------------
+  // #239 — watermark hold on truncated scans
+  // -----------------------------------------------------------------------
+
+  it('holds watermark (does not advance) when scan is truncated by cap', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'freshness-test-'));
+    const statePath = join(dir, 'freshness.json');
+    try {
+      await writeFile(statePath, JSON.stringify({ last_check: '2026-07-01' }, null, 2), { mode: 0o600 });
+      await withEnv({ SPOTIFY_MCP_FRESHNESS_STATE: statePath, SPOTIFY_MCP_FETCH_ALL_CAP: '1' }, async () => {
+        const h = harness((path, params) =>
+          path === '/me/following'
+            ? (params as Record<string, string>)?.after
+              ? followedPage(['b2'], null)
+              : followedPage(['a1', 'b2'], 'cursor-1')
+            : albumsOf((path.match(/^\/artists\/([^/]+)\//)?.[1] ?? ''), [['alb', 'New LP', '2026-08-10']]),
+        );
+        const out = await h.invoke('whats_new', { since: 'last-check', kinds: ['albums'] });
+        const payload = out.structuredContent as {
+          watermark: string | null; watermark_advanced: boolean; watermark_held: boolean; watermark_reason: string;
+        };
+        assert.equal(payload.watermark_advanced, false);
+        assert.equal(payload.watermark_held, true);
+        assert.equal(payload.watermark, null);
+        assert.match(payload.watermark_reason, /truncated by cap/i);
+        assert.match(textOf(out), /watermark held/i);
+        // Watermark file must NOT have been advanced
+        const stored = JSON.parse(await readFile(statePath, 'utf8')) as { last_check: string };
+        assert.equal(stored.last_check, '2026-07-01');
+      });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  // -----------------------------------------------------------------------
+  // #242 — quota budget & dry_run cost disclosure
+  // -----------------------------------------------------------------------
+
+  it('dry_run reports cost_estimate and max_artists without making API calls', async () => {
+    const h = harness(() => { throw new Error('no API call expected'); });
+    const out = await h.invoke('whats_new', { since: '2026-08-01', dry_run: true });
+    assert.equal(h.client.calls.length, 0);
+    const payload = out.structuredContent as { cost_estimate: string; max_artists: number; dry_run: boolean };
+    assert.equal(payload.dry_run, true);
+    assert.ok(typeof payload.cost_estimate === 'string' && payload.cost_estimate.length > 0);
+    assert.match(payload.cost_estimate, /N\+1|N followed artists/i);
+    assert.ok(typeof payload.max_artists === 'number' && payload.max_artists > 0);
+    assert.match(textOf(out), /Cost estimate/i);
+  });
+
+  it('max_artists budget caps lookups independently of fetchAllCap', async () => {
+    await withEnv({ SPOTIFY_MCP_FETCH_ALL_CAP: '500', SPOTIFY_MCP_FRESHNESS_BUDGET: '1' }, async () => {
+      const h = harness((path, params) =>
+        path === '/me/following'
+          ? (params as Record<string, string>)?.after
+            ? followedPage(['b2'], null)
+            : followedPage(['a1', 'b2'], 'cursor-1')
+          : albumsOf((path.match(/^\/artists\/([^/]+)\//)?.[1] ?? ''), [['alb', 'LP', '2026-08-10']]),
+      );
+      const out = await h.invoke('whats_new', { since: '2026-08-01', kinds: ['albums'] });
+      const payload = out.structuredContent as { lookups: { artist_album_calls: number; budget: number; fetch_all_cap: number } };
+      assert.equal(payload.lookups.artist_album_calls, 1);
+      assert.equal(payload.lookups.budget, 1);
+      assert.equal(payload.lookups.fetch_all_cap, 500);
+    });
+  });
+
+  it('per-call max_artists param overrides the env budget', async () => {
+    await withEnv({ SPOTIFY_MCP_FRESHNESS_BUDGET: '25' }, async () => {
+      const h = harness((path, params) =>
+        path === '/me/following'
+          ? (params as Record<string, string>)?.after
+            ? followedPage(['c3'], null)
+            : followedPage(['a1', 'b2'], 'cursor-1')
+          : albumsOf((path.match(/^\/artists\/([^/]+)\//)?.[1] ?? ''), [['alb', 'LP', '2026-08-10']]),
+      );
+      const out = await h.invoke('whats_new', { since: '2026-08-01', kinds: ['albums'], max_artists: 1 });
+      const payload = out.structuredContent as { lookups: { artist_album_calls: number } };
+      assert.equal(payload.lookups.artist_album_calls, 1);
+    });
+  });
+
+  it('mid-walk QUOTA_EXCEEDED returns partial results with quota_hit and holds watermark', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'freshness-test-'));
+    const statePath = join(dir, 'freshness.json');
+    try {
+      await writeFile(statePath, JSON.stringify({ last_check: '2026-07-01' }, null, 2), { mode: 0o600 });
+      await withEnv({ SPOTIFY_MCP_FRESHNESS_STATE: statePath }, async () => {
+        let callCount = 0;
+        const h = harness((path) => {
+          if (path === '/me/following') return followedPage(['a1', 'b2'], null);
+          callCount++;
+          if (callCount === 1) return albumsOf('a1', [['alb1', 'LP One', '2026-08-10']]);
+          // Second artist lookup throws QUOTA_EXCEEDED
+          const err = Object.assign(new Error('quota'), { status: 429, reason: 'QUOTA_EXCEEDED', retryAfterSec: 3600 });
+          throw err;
+        });
+        const out = await h.invoke('whats_new', { since: '2026-08-01', kinds: ['albums'] });
+        const payload = out.structuredContent as {
+          quota_hit: boolean; retry_after: number; counts: { albums: number }; watermark_held: boolean; watermark_advanced: boolean;
+        };
+        assert.equal(payload.quota_hit, true);
+        assert.equal(payload.retry_after, 3600);
+        assert.equal(payload.counts.albums, 1); // partial results preserved
+        assert.equal(payload.watermark_held, true);
+        assert.equal(payload.watermark_advanced, false);
+        assert.match(textOf(out), /Quota exceeded/i);
+        // Watermark must not have been advanced
+        const stored = JSON.parse(await readFile(statePath, 'utf8')) as { last_check: string };
+        assert.equal(stored.last_check, '2026-07-01');
+      });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
 });

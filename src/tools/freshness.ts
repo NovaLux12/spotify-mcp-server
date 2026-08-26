@@ -234,7 +234,7 @@ export function registerFreshnessTools(server: McpServer, client: SpotifyClient)
           plan.push('list saved shows via GET /me/shows');
           plan.push(`GET /shows/{id}/episodes?limit=10 for up to ${freshnessBudget} saved shows (budget max_artists=${freshnessBudget})`);
         }
-        plan.push(`advance watermark to ${todayUtc()} (${watermarkFilePath()})`);
+        plan.push(`advance watermark to ${todayUtc()} (${watermarkFilePath()}) — only if scan completes without cap truncation or quota hit; otherwise watermark held`);
         // Cost estimate line required by #242 — must mention N+1 requests and budget.
         // Since dry_run makes zero API calls, we can only describe the cost model
         // plus the concrete budget cap — the actual followed count is unknown.
