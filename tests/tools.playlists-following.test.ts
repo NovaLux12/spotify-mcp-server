@@ -469,8 +469,10 @@ describe('create_playlist', () => {
       collaborative: false,
     });
 
-    assert.equal(h.client.calls.length, 1, 'must be exactly one POST');
-    const call = h.client.calls[0];
+    // The mutation receipt adds a trailing verification GET — count writes only.
+    const posts = h.client.calls.filter((c) => c.method === 'POST');
+    assert.equal(posts.length, 1, 'must be exactly one POST');
+    const call = posts[0];
     assert.equal(call.method, 'POST');
     assert.equal(call.path, '/me/playlists');
     assert.deepEqual(call.arg, {
@@ -541,7 +543,11 @@ describe('add_to_playlist / remove_from_playlist / update_playlist / reorder_pla
     ]);
 
     await h.invoke('add_to_playlist', { playlist_id: 'pl', uris });
-    assert.deepEqual(h.client.calls[1].arg, { uris }, 'position omitted when not provided');
+    const posts = h.client.calls.filter((c) => c.method === 'POST');
+    assert.deepEqual(wireCalls(posts), [
+      { method: 'POST', path: '/playlists/pl/items', arg: { uris, position: 7 } },
+      { method: 'POST', path: '/playlists/pl/items', arg: { uris } },
+    ]);
   });
 
   it('remove_from_playlist DELETEs wrapped track objects to /playlists/{id}/items', async () => {
@@ -552,13 +558,16 @@ describe('add_to_playlist / remove_from_playlist / update_playlist / reorder_pla
       uris: ['spotify:track:x', 'spotify:track:y'],
     });
 
-    assert.deepEqual(wireCalls(h.client.calls), [
-      {
-        method: 'DELETE',
-        path: '/playlists/pl/items',
-        arg: { tracks: [{ uri: 'spotify:track:x' }, { uri: 'spotify:track:y' }] },
-      },
-    ]);
+    assert.deepEqual(
+      wireCalls(h.client.calls.filter((c) => c.method === 'DELETE')),
+      [
+        {
+          method: 'DELETE',
+          path: '/playlists/pl/items',
+          arg: { tracks: [{ uri: 'spotify:track:x' }, { uri: 'spotify:track:y' }] },
+        },
+      ],
+    );
     assert.match(textOf(out), /Removed 2 item\(s\) from playlist\./);
   });
 
@@ -575,7 +584,13 @@ describe('add_to_playlist / remove_from_playlist / update_playlist / reorder_pla
       description: 'd',
       collaborative: true,
     });
-    assert.deepEqual(h.client.calls[1].arg, { description: 'd', collaborative: true });
+    assert.deepEqual(
+      wireCalls(h.client.calls.filter((c) => c.method === 'PUT')),
+      [
+        { method: 'PUT', path: '/playlists/pl', arg: { name: 'New Name', public: false } },
+        { method: 'PUT', path: '/playlists/pl', arg: { description: 'd', collaborative: true } },
+      ],
+    );
   });
 
   it('update_playlist throws without any client call when no fields given', async () => {
@@ -629,9 +644,9 @@ describe('add_to_playlist / remove_from_playlist / update_playlist / reorder_pla
 
     await h.invoke('remove_from_playlist', { playlist_id: 'pl', uris: exactly100 });
 
-    assert.equal(h.client.calls.length, 1);
-    assert.equal(h.client.calls[0].method, 'DELETE');
-    assert.deepEqual(h.client.calls[0].arg, { tracks: exactly100.map((uri) => ({ uri })) });
+    const deletes = h.client.calls.filter((c) => c.method === 'DELETE');
+    assert.equal(deletes.length, 1);
+    assert.deepEqual(deletes[0].arg, { tracks: exactly100.map((uri) => ({ uri })) });
   });
 
   it('#25 add_to_playlist enforces the same 100-uri cap via schema validation', async () => {
@@ -746,10 +761,15 @@ describe('replace_playlist_items', () => {
 
     const out = await h.invoke('replace_playlist_items', { playlist_id: 'pl', uris });
 
-    assert.deepEqual(wireCalls(h.client.calls), [
+    // The trailing receipt GET is expected after the write — writes only here.
+    assert.deepEqual(wireCalls(h.client.calls.filter((c) => c.method !== 'GET')), [
       { method: 'PUT', path: '/playlists/pl/items', arg: { uris } },
     ]);
     assert.match(textOf(out), /Replaced playlist contents with 2 item\(s\) across 1 request\(s\)\./);
+    assert.deepEqual(
+      wireCalls(h.client.calls.filter((c) => c.method === 'GET')),
+      [{ method: 'GET', path: '/playlists/pl/items', arg: { limit: '100', offset: '0' } }],
+    );
   });
 
   it('chunks longer lists: one atomic PUT followed by POST appends of at most 100 URIs', async () => {
@@ -759,11 +779,16 @@ describe('replace_playlist_items', () => {
     const out = await h.invoke('replace_playlist_items', { playlist_id: 'pl', uris });
 
     // A second PUT would wipe the first chunk — appends must be POSTs.
-    assert.deepEqual(wireCalls(h.client.calls), [
+    assert.deepEqual(wireCalls(h.client.calls.filter((c) => c.method !== 'GET')), [
       { method: 'PUT', path: '/playlists/pl/items', arg: { uris: uris.slice(0, 100) } },
       { method: 'POST', path: '/playlists/pl/items', arg: { uris: uris.slice(100, 200) } },
       { method: 'POST', path: '/playlists/pl/items', arg: { uris: uris.slice(200) } },
     ]);
+    // One verification receipt walk after the final chunk.
+    assert.deepEqual(
+      wireCalls(h.client.calls.filter((c) => c.method === 'GET')),
+      [{ method: 'GET', path: '/playlists/pl/items', arg: { limit: '100', offset: '0' } }],
+    );
     assert.match(textOf(out), /Replaced playlist contents with 250 item\(s\) across 3 request\(s\)\./);
   });
 
@@ -800,14 +825,21 @@ describe('#50 snapshot precision on playlist mutations', () => {
       playlist_id: 'pl',
       uris: ['spotify:track:a'],
     });
-    assert.match(
-      textOf(out),
-      /^Added 1 item\(s\) to playlist\.\n1 item affected: spotify:track:a\nSnapshot ID: snap-add$/,
-    );
+    const text = textOf(out);
+    assert.match(text, /^Added 1 item\(s\) to playlist\.$/m);
+    assert.match(text, /^1 item affected: spotify:track:a$/m);
+    // The receipt walk could not verify (stubbed GET has no items page).
+    assert.match(text, /^Receipt rcpt_\d+: UNVERIFIED \(playlist_items pl\)$/m);
+    assert.match(text, /missing uris: spotify:track:a/);
+    assert.match(text, /^Snapshot ID: snap-add$/m);
   });
 
   it('remove_from_playlist sends positions[] objects and optional snapshot_id', async () => {
-    const h = harness();
+    const h = harness((path) =>
+      path === '/playlists/pl/items' && h.client.calls.length > 1
+        ? { items: [], total: 0, limit: 100, offset: 0 }
+        : null,
+    );
 
     const out = await h.invoke('remove_from_playlist', {
       playlist_id: 'pl',
@@ -819,10 +851,10 @@ describe('#50 snapshot precision on playlist mutations', () => {
       tracks: [{ uri: 'spotify:track:a' }, { uri: 'spotify:track:b', positions: [2, 7] }],
       snapshot_id: 'snap-base',
     });
-    assert.match(
-      textOf(out),
-      /^Removed 2 item\(s\) from playlist\.\n2 items affected: spotify:track:a, spotify:track:b$/,
-    );
+    const text = textOf(out);
+    assert.match(text, /^Removed 2 item\(s\) from playlist\.$/m);
+    assert.match(text, /^2 items affected: spotify:track:a, spotify:track:b$/m);
+    assert.match(text, /^Receipt rcpt_\d+: VERIFIED \(playlist_items pl\)$/m);
   });
 
   it('remove_from_playlist surfaces the new snapshot_id after removal', async () => {
@@ -832,7 +864,7 @@ describe('#50 snapshot precision on playlist mutations', () => {
       playlist_id: 'pl',
       uris: ['spotify:track:a'],
     });
-    assert.match(textOf(out), /Snapshot ID: snap-del$/);
+    assert.match(textOf(out), /^Snapshot ID: snap-del$/m);
   });
 
   it('reorder_playlist_items surfaces the returned snapshot_id', async () => {
@@ -1059,9 +1091,12 @@ describe('add_to_playlist check_duplicates (#63)', () => {
     // First call is the prefetch GET, second the filtered POST.
     assert.equal(h.client.calls[0].method, 'GET');
     assert.equal(h.client.calls[0].path, '/playlists/pl/items');
-    assert.deepEqual(wireCalls(h.client.calls.slice(1)), [
-      { method: 'POST', path: '/playlists/pl/items', arg: { uris: ['spotify:track:new'] } },
-    ]);
+    // Prefetch GET first, then only the filtered POST (plus the trailing
+    // verification GET from the mutation receipt).
+    assert.deepEqual(
+      wireCalls(h.client.calls.filter((c) => c.method === 'POST')),
+      [{ method: 'POST', path: '/playlists/pl/items', arg: { uris: ['spotify:track:new'] } }],
+    );
     const text = textOf(out);
     assert.match(text, /^Added 1 item\(s\) to playlist\./);
     assert.match(text, /Skipped 1 duplicate\(s\) already in the playlist\./);
@@ -1092,9 +1127,14 @@ describe('add_to_playlist check_duplicates (#63)', () => {
 
     await h.invoke('add_to_playlist', { playlist_id: 'pl', uris: ['spotify:track:a'] });
 
-    assert.deepEqual(wireCalls(h.client.calls), [
+    assert.deepEqual(wireCalls(h.client.calls.filter((c) => c.method !== 'GET')), [
       { method: 'POST', path: '/playlists/pl/items', arg: { uris: ['spotify:track:a'] } },
     ]);
+    // Blind append still issues its post-write verification walk.
+    assert.deepEqual(
+      wireCalls(h.client.calls.filter((c) => c.method === 'GET')),
+      [{ method: 'GET', path: '/playlists/pl/items', arg: { limit: '100', offset: '0' } }],
+    );
   });
 });
 
