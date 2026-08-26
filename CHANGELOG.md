@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > from [Conventional Commits](https://www.conventionalcommits.org/). Entries below v1.0.4 were
 > backfilled by hand from git history.
 
+## [1.20.0](https://github.com/NovaLux12/spotify-mcp-server/compare/v1.19.0...v1.20.0) (2026-08-26)
+
+
+### Features
+
+* **playlists:** remove_duplicate_playlist_items — one-shot duplicate cleanup ([#168](https://github.com/NovaLux12/spotify-mcp-server/issues/168)) ([#169](https://github.com/NovaLux12/spotify-mcp-server/issues/169)) ([c14bc10](https://github.com/NovaLux12/spotify-mcp-server/commit/c14bc10d74a26efe6cd02c7153896e2c31ee26bb))
+
 ## [1.19.0](https://github.com/NovaLux12/spotify-mcp-server/compare/v1.18.0...v1.19.0) (2026-08-26)
 
 
