@@ -17,14 +17,11 @@ import { once } from 'node:events';
 
 const REPO_ROOT = join(import.meta.dirname, '..');
 
-// Regression guard (#110 follow-up): a description rewrite once consumed
-// this tool's name argument and the suite stayed green — pin the tools most
-// at risk from mechanical edits.
-// Regression guard (#110 follow-up): a description rewrite once consumed
-// this tool's name argument and the suite stayed green — pin the tools most
-// at risk from mechanical edits. The post-v1.4 differentiators are pinned
-// for the same reason: the v1.5 wiring regression shipped two releases
-// before anyone noticed grow_playlist/verify_receipt were missing.
+// Regression guard (#110 follow-up + v1.5 wiring loss): a description
+// rewrite once consumed this tool's name argument and the suite stayed
+// green; the v1.5 wiring regression shipped two releases before anyone
+// noticed grow_playlist/verify_receipt were missing. Pin the tools most at
+// risk from either failure class.
 const REQUIRED_TOOLS = [
   'check_in_library',
   'get_me',
