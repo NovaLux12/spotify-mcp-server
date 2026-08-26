@@ -21,6 +21,8 @@ import { registerAudiobookCopilotTools } from './tools/audiobookcopilot.js';
 import { registerScenesTools } from './tools/scenes.js';
 import { registerPlaylistDnaTools } from './tools/playlistdna.js';
 import { registerAnalyticsTools } from './tools/analytics.js';
+import { registerExportTools } from './tools/export.js';
+import { registerSavedDedupeTools } from './tools/saveddedupe.js';
 import { registerLibraryHygieneTools } from './tools/libraryhygiene.js';
 import { registerDoctorTool } from './tools/doctortool.js';
 import { verifyReceipt, formatReceipt } from './receipts.js';
