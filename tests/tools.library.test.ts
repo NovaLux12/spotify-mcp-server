@@ -774,3 +774,23 @@ describe('confirmation-friendly batch summaries on mutations (#58)', () => {
     assert.match(out.content[0].text, /1 item affected: spotify:audiobook:a1/);
   });
 });
+
+describe('mutation receipts in json mode (#112 idea 11)', () => {
+  it('json mode keeps the text payload parseable while the receipt rides structuredContent', async () => {
+    const uris = ['spotify:track:rc1'];
+    const h = harness((path) =>
+      path === '/me/library/contains' ? [true] : undefined,
+    );
+
+    const out = await h.invoke('save_to_library', { uris, response_format: 'json' });
+
+    // The text channel must remain valid JSON despite the appended receipt.
+    const parsed = JSON.parse(out.content[0].text) as { ok: boolean; affected: number };
+    assert.equal(parsed.ok, true);
+    assert.equal(parsed.affected, 1);
+    const sc = out.structuredContent as {
+      receipt?: { verified: boolean };
+    };
+    assert.equal(sc.receipt?.verified, true);
+  });
+});

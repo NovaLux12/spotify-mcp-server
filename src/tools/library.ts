@@ -81,9 +81,13 @@ async function mutationOutVerified(
 ): Promise<ToolOut> {
   const base = mutationOut(rf, prose, n, uris);
   const receipt = await issueReceipt(client, { kind, uris: [...uris], ...receiptOpts });
-  const text = `${base.content[0].text}\n${formatReceipt(receipt)}`;
+  // json mode must stay parseable: the receipt rides structuredContent only.
+  const text =
+    rf === 'json'
+      ? base.content[0].text
+      : `${base.content[0].text}\n${formatReceipt(receipt)}`;
   return {
-    content: [{ type: 'text', text: `${base.content[0].text}\n${formatReceipt(receipt)}` }],
+    content: [{ type: 'text', text }],
     structuredContent: {
       ...(base.structuredContent ?? {}),
       receipt: receipt as unknown as Record<string, unknown>,
