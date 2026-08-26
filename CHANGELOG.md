@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > from [Conventional Commits](https://www.conventionalcommits.org/). Entries below v1.0.4 were
 > backfilled by hand from git history.
 
+## [1.8.0](https://github.com/NovaLux12/spotify-mcp-server/compare/v1.7.0...v1.8.0) (2026-08-26)
+
+
+### Features
+
+* **doctor:** spotify_doctor diagnostic tool ([#111](https://github.com/NovaLux12/spotify-mcp-server/issues/111) idea 9) ([310ccb1](https://github.com/NovaLux12/spotify-mcp-server/commit/310ccb1b52cd06f5b68af77308a4b9211ad04584))
+* **tools:** add library_hygiene — album completion & consolidation analysis ([#112](https://github.com/NovaLux12/spotify-mcp-server/issues/112) idea 5) ([ddbcb59](https://github.com/NovaLux12/spotify-mcp-server/commit/ddbcb59585a840a9a80ce66bbd60bad3f45095d8))
+* wire wave-8 — library hygiene, spotify_doctor tool, ergonomics batch ([09ddffc](https://github.com/NovaLux12/spotify-mcp-server/commit/09ddffcd4b02b23c8c30e9a92311cbb21cccedfa))
+
+
+### Bug Fixes
+
+* **#110:** normalize market params, disambiguate now-playing tools, typed additional_types, cursor hint, split play offset errors ([158ab5c](https://github.com/NovaLux12/spotify-mcp-server/commit/158ab5c21efd94740f2f9ed9e3b30972df484d89))
+
 ## [1.7.0](https://github.com/NovaLux12/spotify-mcp-server/compare/v1.6.0...v1.7.0) (2026-08-26)
 
 
