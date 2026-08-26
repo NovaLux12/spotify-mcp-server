@@ -1451,7 +1451,7 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
 
   // Helpers for new exhaustive playlist tools
   async function getAllUris(playlistId: string): Promise<string[]> {
-    const items = await client.getAllPages<PlaylistItemObject>(`/playlists/${encodeURIComponent(playlistId)}/items`, { limit: '100' });
+    const items = await client.getAllPages<PlaylistItemObject>(`/playlists/${encodeURIComponent(playlistId)}/items`, { limit: '100' }, { maxItems: getConfig().fetchAllCap });
     return items.map(i => i.item?.uri).filter((u): u is string => !!u);
   }
   async function replaceWithUris(playlistId: string, uris: string[]): Promise<string | undefined> {
@@ -1543,7 +1543,7 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
 
   // playlist_sort (#287)
   server.tool('playlist_sort', 'Sort a playlist in place by added_at/name/artist/duration/popularity. Quota: 🟢 GET all + PUT/POST.', { playlist_id: z.string(), sort_by: z.enum(['added_asc','added_desc','name_asc','name_desc','artist_asc','duration_asc','duration_desc','popularity_desc']).default('name_asc'), dry_run: DryRun, ...sharedListFields }, async (args) => {
-    const items = await client.getAllPages<PlaylistItemObject>(`/playlists/${encodeURIComponent(args.playlist_id)}/items`, { limit: '100' });
+    const items = await client.getAllPages<PlaylistItemObject>(`/playlists/${encodeURIComponent(args.playlist_id)}/items`, { limit: '100' }, { maxItems: getConfig().fetchAllCap });
     const entries = items.map((row, idx) => ({ uri: row.item?.uri ?? '', name: (row.item as SpotifyTrack | undefined)?.name ?? '', artist: ((row.item as SpotifyTrack | undefined)?.artists?.[0]?.name ?? ''), duration: (row.item as SpotifyTrack | undefined)?.duration_ms ?? 0, added: row.added_at, popularity: (row.item as unknown as { popularity?: number })?.popularity ?? 0, idx })).filter(e => !!e.uri);
     const sorted = [...entries].sort((a,b) => {
       switch(args.sort_by){
