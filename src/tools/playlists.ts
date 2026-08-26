@@ -3,6 +3,12 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
 import { getConfig } from '../config.js';
 import {
+  confirmViaElicitation,
+  describeConfirmation,
+  REMOVE_ELICIT_THRESHOLD,
+  REPLACE_ELICIT_THRESHOLD,
+} from './confirm.js';
+import {
   DryRun,
   describeDryRun,
   batchSummary,
@@ -629,6 +635,20 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
           }],
         };
       }
+      if (args.uris.length >= REMOVE_ELICIT_THRESHOLD) {
+        const targets = args.uris.map((entry) =>
+          typeof entry === 'string' ? entry : `${entry.uri} @ ${entry.positions.join(',')}`,
+        );
+        const verdict = await confirmViaElicitation(server, {
+          message: describeConfirmation('remove from playlist', args.playlist_id, [
+            `Remove ${args.uris.length} item(s):`,
+            ...targets,
+          ]),
+        });
+        if (verdict === 'declined') {
+          return textResult('Cancelled — nothing was changed.', { ok: false, cancelled: true });
+        }
+      }
       const tracks = args.uris.map((entry) =>
         typeof entry === 'string'
           ? { uri: entry }
@@ -805,6 +825,16 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
             ),
           }],
         };
+      }
+      if (args.uris.length >= REPLACE_ELICIT_THRESHOLD) {
+        const verdict = await confirmViaElicitation(server, {
+          message: describeConfirmation('replace playlist items', args.playlist_id, [
+            `Overwrite ALL existing items with ${args.uris.length} URI(s).`,
+          ]),
+        });
+        if (verdict === 'declined') {
+          return textResult('Cancelled — nothing was changed.', { ok: false, cancelled: true });
+        }
       }
       const id = encodeURIComponent(args.playlist_id);
       let snapshotId: string | undefined;
