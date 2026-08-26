@@ -34,8 +34,8 @@ flowchart TD
     end
     MCP --> REG
 
-    MCP --> RES["resources/index.ts: 11 fixed spotify://* URIs<br/>(each + ?format=json twin) + templated playlist-tracks<br/>resources/templates.ts: 5 RFC-6570 templates<br/>(artist / album / show / episode / artist-albums)"]
-    MCP --> PRM["prompts/index.ts<br/>10 prompts (server-only, no client)"]
+    MCP --> RES["resources/index.ts: 16 fixed spotify://* URIs<br/>(each + ?format=json twin) + templated playlist-tracks<br/>resources/templates.ts: 7 RFC-6570 templates<br/>(track / artist / album / show / episode / playlist / artist-albums)"]
+    MCP --> PRM["prompts/index.ts<br/>14 prompts (server-only, no client)"]
 
     REG --> C
     RES --> C
@@ -105,7 +105,7 @@ Each `register*Tools(server, client)` function calls `server.tool(...)` or, for 
 - **Output formatting** — every tool takes a `response_format` parameter (`'concise'` default, `'detailed'`, or `'json'`): concise renders human-readable lines via helpers like `formatDuration(ms)` and `formatItem(track|episode)`; detailed adds context; json returns a machine-readable payload. List tools take `max_results` (default `SPOTIFY_MCP_MAX_ITEMS`) and attach `structuredContent` plus pagination info; destructive ops take `dry_run` and mutations emit batch summaries.
 - **Transport** — the MCP SDK's `StdioServerTransport` carries JSON-RPC between the host (e.g. Claude Desktop) and this process; nothing else listens on the network during normal operation.
 
-Resources follow the same pattern via `server.resource(name, uri|template, { description }, reader)` for **eleven fixed `spotify://` URIs**: profile, player state, player queue, top tracks/artists, recently played, playlists, saved albums/shows/episodes, and rate-limit status. Each fixed URI is registered twice — once bare (exact-string lookup) and once as a `{?format}` template twin sharing the same renderer, where `?format=json` switches the response to raw JSON. On top of those sits the templated `spotify://playlist/{id}/tracks` resource (with a `{+qs}` twin absorbing any query string), paginated via `?offset`/`?limit`. A second registrar (`src/resources/templates.ts`) adds **five RFC-6570 templates** over single-get catalog endpoints (#111): `artist/{id}`, `album/{id}`, `show/{id}`, `episode/{id}`, and `artist/{id}/albums` (each with its own `{+qs}`/`{?format}` twin). Because `/artists/{id}/albums` hard-caps `limit` at 10 on Spotify's side, that template walks up to 5 pages client-side and appends an explicit truncation footer instead of issuing unbounded fetches. The show and episode templates carry **argument completions** — suggesters drawn from the user's own saved shows/episodes wired into the SDK's `completion/complete` via the `ResourceTemplate.complete` map; the other templates have no cheaply enumerable id space and get no completions. Prompts (`server.prompt`) return canned user-message templates referencing real tool names — dj, playlist-from-mood, music-taste summary, discovery alternative, playlist audit, listening recap, library migration, podcast catch-up, artist deep dive, and triage-liked-songs.
+Resources follow the same pattern via `server.resource(name, uri|template, { description }, reader)` for **eleven fixed `spotify://` URIs**: profile, player state, player queue, top tracks/artists, recently played, playlists, saved albums/shows/episodes, and rate-limit status. Each fixed URI is registered twice — once bare (exact-string lookup) and once as a `{?format}` template twin sharing the same renderer, where `?format=json` switches the response to raw JSON. On top of those sits the templated `spotify://playlist/{id}/tracks` resource (with a `{+qs}` twin absorbing any query string), paginated via `?offset`/`?limit`. A second registrar (`src/resources/templates.ts`) adds **five RFC-6570 templates** over single-get catalog endpoints (#111): `artist/{id}`, `album/{id}`, `show/{id}`, `episode/{id}`, and `artist/{id}/albums` (each with its own `{+qs}`/`{?format}` twin). Because `/artists/{id}/albums` hard-caps `limit` at 10 on Spotify's side, that template walks up to 5 pages client-side and appends an explicit truncation footer instead of issuing unbounded fetches. The show and episode templates carry **argument completions** — suggesters drawn from the user's own saved shows/episodes wired into the SDK's `completion/complete` via the `ResourceTemplate.complete` map; the other templates have no cheaply enumerable id space and get no completions. Prompts (`server.prompt`) return canned user-message templates referencing real tool names — dj, playlist-from-mood, music-taste summary, discovery alternative, playlist audit, listening recap, library migration, podcast catch-up, artist deep dive, triage-liked-songs, plus music_briefing, morning_briefing, weekly_digest and crate_digging.
 
 ## Module map
 
@@ -141,13 +141,13 @@ Resources follow the same pattern via `server.resource(name, uri|template, { des
 | `src/tools/following.ts` | 4 tools: followed-artists list, following check, follow/unfollow | ~245 |
 | `src/tools/search.ts` | 1 multi-type search tool | ~243 |
 | `src/shaping.ts` | Shared response plumbing: `ResponseFormat`/`MaxResults`/`DryRun` schemas, truncation, pagination info, `structuredContent` and batch-summary helpers | ~220 |
-| `src/prompts/index.ts` | 10 prompts: dj, playlist-from-mood, music-taste summary, discovery alternative, playlist audit, listening recap, library migration, podcast catch-up, artist deep dive, triage-liked-songs | ~250 |
+| `src/prompts/index.ts` | 14 prompts: dj, playlist-from-mood, music-taste summary, discovery alternative, playlist audit, listening recap, library migration, podcast catch-up, artist deep dive, triage-liked-songs, music_briefing, morning_briefing, weekly_digest, crate_digging | ~320 |
 | `src/tools/users.ts` | 2 tools: arbitrary user profile + that user's public playlists | ~167 |
 | `src/cache.ts` | `LruTtlCache` (TTL + LRU eviction), `shouldBypassCache` policy, order-insensitive cache keys | ~94 |
 | `src/config.ts` | Central loader for the `SPOTIFY_MCP_*` environment family (timeouts, caps, token file, headless, redirect URI, history flags) | ~63 |
 | `src/history.ts` | Opt-in mutation-history JSONL writer (`SPOTIFY_MCP_HISTORY`), strict field whitelist | ~57 |
 
-Totals: 94 registered tools (93 in the 21 modules under `src/tools/`, plus `verify_receipt`) — note that only the modules active for the granted toolset + scopes actually register; 11 fixed resources (each with a `?format=json` twin) plus the templated playlist-tracks resource and 5 RFC-6570 catalog templates (`src/resources/templates.ts`); 10 prompts.
+Totals: 212 registered tools (211 in the 43 modules under `src/tools/`, plus `verify_receipt`) — note that only the modules active for the granted toolset + scopes actually register; 16 fixed resources (each with a `?format=json` twin) plus the templated playlist-tracks resource and 7 RFC-6570 catalog templates (`src/resources/templates.ts`); 14 prompts.
 
 ## Request scheduling
 
