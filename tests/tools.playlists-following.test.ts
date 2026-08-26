@@ -1430,3 +1430,99 @@ describe('elicitation-gated destructive mutations (#111 item 5)', () => {
     assert.match(textOf(out), /\[dry run\] remove from playlist/);
   });
 });
+
+// ---------------------------------------------------------------------------
+// update_playlist visibility elicitation gating (#157)
+// ---------------------------------------------------------------------------
+
+// Answers the current-state GET with a private, non-collaborative playlist.
+const privatePlaylist: Responder = (path) =>
+  path.startsWith('/playlists/')
+    ? { id: 'pl1', name: 'Mix', public: false, collaborative: false }
+    : null;
+
+describe('update_playlist visibility elicitation (#157)', () => {
+  it('flip to public elicits; accept lets the PUT proceed', async () => {
+    const h = harness(privatePlaylist, registerPlaylistTools, accept);
+    const out = await h.invoke('update_playlist', { playlist_id: 'pl1', public: true });
+    const wire = wireCalls(h.client.calls);
+    // Current-state GET first, then exactly one PUT.
+    assert.equal(wire[0].method, 'GET');
+    assert.equal(wire.filter((c) => c.method === 'PUT').length, 1);
+    assert.deepEqual(out.structuredContent && { ok: out.structuredContent.ok }, { ok: true });
+  });
+
+  it('flip to public declined → zero PUTs + cancelled result', async () => {
+    const h = harness(privatePlaylist, registerPlaylistTools, { action: 'decline' });
+    const out = await h.invoke('update_playlist', { playlist_id: 'pl1', public: true });
+    assert.equal(wireCalls(h.client.calls).filter((c) => c.method === 'PUT').length, 0);
+    // Only the current-state GET happened — nothing was written.
+    assert.deepEqual(
+      wireCalls(h.client.calls).map((c) => c.method),
+      ['GET'],
+    );
+    assert.match(textOf(out), /Cancelled — nothing was changed\./);
+    assert.deepEqual(out.structuredContent, { ok: false, cancelled: true });
+  });
+
+  it('cancel verdict behaves like decline → zero PUTs + cancelled result', async () => {
+    const h = harness(privatePlaylist, registerPlaylistTools, { action: 'cancel' });
+    const out = await h.invoke('update_playlist', { playlist_id: 'pl1', public: true });
+    assert.deepEqual(out.structuredContent, { ok: false, cancelled: true });
+    assert.equal(wireCalls(h.client.calls).filter((c) => c.method === 'PUT').length, 0);
+  });
+
+  it('collaborative=true from private elicits; accept PUTs collaborative body', async () => {
+    const h = harness(privatePlaylist, registerPlaylistTools, accept);
+    await h.invoke('update_playlist', { playlist_id: 'pl1', collaborative: true });
+    const puts = wireCalls(h.client.calls).filter((c) => c.method === 'PUT');
+    assert.equal(puts.length, 1);
+    assert.deepEqual(puts[0].arg, { collaborative: true });
+  });
+
+  it('rename-only never elicits even when elicitation would throw', async () => {
+    const h = harness(privatePlaylist, registerPlaylistTools, new Error('must not elicit'));
+    const out = await h.invoke('update_playlist', { playlist_id: 'pl1', name: 'Renamed' });
+    assert.equal(wireCalls(h.client.calls).filter((c) => c.method === 'PUT').length, 1);
+    assert.match(textOf(out), /Playlist updated/);
+  });
+
+  it('public=false never gates and skips the current-state GET entirely', async () => {
+    const h = harness(privatePlaylist, registerPlaylistTools, new Error('must not elicit'));
+    await h.invoke('update_playlist', { playlist_id: 'pl1', public: false });
+    const methods = wireCalls(h.client.calls).map((c) => c.method);
+    // No pre-flight GET for toward-private flips; just the PUT + receipt GET.
+    assert.equal(methods[0], 'PUT');
+  });
+
+  it('already-public → public:true is not a flip and never elicits', async () => {
+    const responder: Responder = (path) =>
+      path.startsWith('/playlists/')
+        ? { id: 'pl1', name: 'Mix', public: true, collaborative: false }
+        : null;
+    const h = harness(responder, registerPlaylistTools, new Error('must not elicit'));
+    await h.invoke('update_playlist', { playlist_id: 'pl1', public: true });
+    assert.equal(wireCalls(h.client.calls).filter((c) => c.method === 'PUT').length, 1);
+  });
+
+  it('SPOTIFY_MCP_CONFIRM=never skips prompting but still PUTs', async () => {
+    const prev = process.env.SPOTIFY_MCP_CONFIRM;
+    process.env.SPOTIFY_MCP_CONFIRM = 'never';
+    try {
+      const h = harness(privatePlaylist, registerPlaylistTools, accept);
+      const out = await h.invoke('update_playlist', { playlist_id: 'pl1', public: true });
+      assert.equal(wireCalls(h.client.calls).filter((c) => c.method === 'PUT').length, 1);
+      assert.match(textOf(out), /Playlist updated/);
+    } finally {
+      if (prev === undefined) delete process.env.SPOTIFY_MCP_CONFIRM;
+      else process.env.SPOTIFY_MCP_CONFIRM = prev;
+    }
+  });
+
+  it('dry_run previews without any elicitation or current-state GET', async () => {
+    const h = harness(undefined, registerPlaylistTools, new Error('must not elicit'));
+    const out = await h.invoke('update_playlist', { playlist_id: 'pl1', public: true, dry_run: true });
+    assert.equal(h.client.calls.length, 0);
+    assert.match(textOf(out), /\[dry run\] update playlist/);
+  });
+});

@@ -59,10 +59,28 @@ function formatDuration(ms: number): string {
 // Hard cap for fetch_all pagination loops (SPOTIFY_MCP_FETCH_ALL_CAP, #55)
 const FETCH_ALL_CAP = () => getConfig().fetchAllCap;
 
+// #157: visibility flips are gated by DIRECTION, not size — any change that
+// makes a playlist more visible (private→public, or enabling collaboration)
+// elicits; toward-private flips never do. The threshold counts how many
+// toward-visible field flips trigger prompting (1 = any single flip).
+export const VISIBILITY_ELICIT_THRESHOLD = 1;
+
 // Playlist metadata as returned by GET /playlists/{id}, which includes cover
 // images (unlike the simplified playlists in paged listings)
 interface PlaylistWithImages extends SpotifyPlaylistSimple {
   images?: SpotifyImage[] | null;
+}
+
+// GET /playlists/{id} exposes the current public/collaborative flags needed
+// to detect toward-visible flips before update_playlist PUTs (#157).
+interface PlaylistVisibility extends PlaylistWithImages {
+  public?: boolean | null;
+  collaborative?: boolean;
+}
+
+// Human label for a possibly-unknown visibility flag in confirmation text.
+function visibilityLabel(v: boolean | null | undefined): string {
+  return v === true ? 'true' : v === false ? 'false' : 'unknown';
 }
 
 // One-line human description of a playlist item, shared by get_playlist and
@@ -757,6 +775,43 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
         throw new Error(
           'Provide at least one field to update (name, description, public, collaborative)',
         );
+      }
+
+      // #157: flipping a playlist toward MORE visible (private→public, or
+      // enabling collaboration) is elicitation-gated. Renames/description
+      // edits and toward-private flips never prompt, and the current-state
+      // GET happens only when a toward-visible flip is possible. Declined or
+      // cancelled → nothing is written; unsupported capability proceeds.
+      const towardPublic = args.public === true;
+      const towardCollaborative = args.collaborative === true;
+      let currentPublic: boolean | null | undefined;
+      let currentCollaborative: boolean | undefined;
+      if (towardPublic || towardCollaborative) {
+        const meta = await client.get<PlaylistVisibility>(
+          `/playlists/${encodeURIComponent(playlistId)}`,
+        );
+        currentPublic = meta?.public;
+        currentCollaborative = meta?.collaborative;
+      }
+      const increasing = [
+        ...(towardPublic && currentPublic !== true
+          ? [`public: ${visibilityLabel(currentPublic)} → true`]
+          : []),
+        ...(towardCollaborative && currentCollaborative !== true
+          ? [`collaborative: ${visibilityLabel(currentCollaborative)} → true`]
+          : []),
+      ];
+      if (increasing.length >= VISIBILITY_ELICIT_THRESHOLD) {
+        const verdict = await confirmViaElicitation(server, {
+          message: describeConfirmation(
+            'make playlist public',
+            args.playlist_id ?? playlistId,
+            increasing,
+          ),
+        });
+        if (verdict === 'declined') {
+          return textResult('Cancelled — nothing was changed.', { ok: false, cancelled: true });
+        }
       }
 
       await client.put(`/playlists/${encodeURIComponent(playlistId)}`, body);
