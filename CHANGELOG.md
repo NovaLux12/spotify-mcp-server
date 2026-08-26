@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > from [Conventional Commits](https://www.conventionalcommits.org/). Entries below v1.0.4 were
 > backfilled by hand from git history.
 
+## [1.21.0](https://github.com/NovaLux12/spotify-mcp-server/compare/v1.20.0...v1.21.0) (2026-08-26)
+
+
+### Features
+
+* **playlists:** clean_all_playlists — account-wide duplicate cleanup ([#171](https://github.com/NovaLux12/spotify-mcp-server/issues/171)) ([#174](https://github.com/NovaLux12/spotify-mcp-server/issues/174)) ([60c2368](https://github.com/NovaLux12/spotify-mcp-server/commit/60c236859e26539d34dfa0d05486f94f0bb29207))
+* **playlists:** create_smart_playlist — rule-based generation from own data ([#172](https://github.com/NovaLux12/spotify-mcp-server/issues/172)) ([#176](https://github.com/NovaLux12/spotify-mcp-server/issues/176)) ([2f6510f](https://github.com/NovaLux12/spotify-mcp-server/commit/2f6510f408a41767110ddf390edfcbd4f7984f18))
+* **shows:** show_new_episodes — radar across saved podcast shows ([#173](https://github.com/NovaLux12/spotify-mcp-server/issues/173)) ([#177](https://github.com/NovaLux12/spotify-mcp-server/issues/177)) ([5b8c261](https://github.com/NovaLux12/spotify-mcp-server/commit/5b8c261ac1e17fd1e45f9635986ed5d3deff058b))
+
 ## [1.20.0](https://github.com/NovaLux12/spotify-mcp-server/compare/v1.19.0...v1.20.0) (2026-08-26)
 
 
