@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > from [Conventional Commits](https://www.conventionalcommits.org/). Entries below v1.0.4 were
 > backfilled by hand from git history.
 
+## [1.13.0](https://github.com/NovaLux12/spotify-mcp-server/compare/v1.12.0...v1.13.0) (2026-08-26)
+
+
+### Features
+
+* elicitation-gated confirmation for destructive playlist ops ([#111](https://github.com/NovaLux12/spotify-mcp-server/issues/111) item 5) ([5abafb7](https://github.com/NovaLux12/spotify-mcp-server/commit/5abafb75a8ec1b3d37a196e5616f7b3b26d8a695))
+
 ## [1.12.0](https://github.com/NovaLux12/spotify-mcp-server/compare/v1.11.0...v1.12.0) (2026-08-26)
 
 
