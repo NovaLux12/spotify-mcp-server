@@ -22,6 +22,7 @@ import { registerScenesTools } from './tools/scenes.js';
 import { registerPlaylistDnaTools } from './tools/playlistdna.js';
 import { registerAnalyticsTools } from './tools/analytics.js';
 import { registerExportTools } from './tools/export.js';
+import { registerImportTools } from './tools/import.js';
 import { registerSavedDedupeTools } from './tools/saveddedupe.js';
 import { registerBackupTools } from './tools/backup.js';
 import { registerRestoreTools } from './tools/restore.js';
@@ -134,8 +135,9 @@ async function startMcpServer(): Promise<void> {
   if (!readOnly && isModuleActive('playlists', activeSets, overrides) && !moduleBlockedByScopes('playlists', grantedScopes)) registerPlaylistOpsTools(server, client)
   // Playlist DNA (#112 idea 6): read-only co-occurrence curation.
   if (!readOnly && isModuleActive('playlists', activeSets, overrides) && !moduleBlockedByScopes('playlists', grantedScopes)) registerPlaylistDnaTools(server, client)
-  // Export (#155) + saved-dedupe (#156): portability and library hygiene.
+  // Export (#155), import (#165) + saved-dedupe (#156): portability and hygiene.
   if (!readOnly && isModuleActive('playlists', activeSets, overrides) && !moduleBlockedByScopes('playlists', grantedScopes)) registerExportTools(server, client)
+  if (!readOnly && isModuleActive('playlists', activeSets, overrides) && !moduleBlockedByScopes('playlists', grantedScopes)) registerImportTools(server, client)
   if (!readOnly && isModuleActive('library', activeSets, overrides) && !moduleBlockedByScopes('library', grantedScopes)) registerSavedDedupeTools(server, client)
   // Differentiation wave (#112): library insights, freshness radar, deep search.
   if (!readOnly && isModuleActive('library', activeSets, overrides) && !moduleBlockedByScopes('library', grantedScopes)) registerLibraryInsightsTools(server, client)
