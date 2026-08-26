@@ -253,4 +253,63 @@ export function registerFollowingTools(server: McpServer, client: SpotifyClient)
       );
     },
   );
+
+  // following_analytics (#297)
+  server.tool(
+    'following_analytics',
+    'Analytics over followed artists: genre/popularity rollups via batch /artists?ids= enrichment. Quota: 🟢 GET /me/following + GET /artists batches.',
+    {
+      group_by: z.enum(['genre', 'popularity', 'followers']).default('genre'),
+      top_n: z.number().int().min(1).max(50).optional().describe('Top N groups to show'),
+      response_format: ResponseFormat,
+      max_results: MaxResults,
+    },
+    async (args) => {
+      const rf = args.response_format;
+      // fetch all followed artists via cursor pagination
+      const all: SpotifyArtistFull[] = [];
+      let after: string | undefined;
+      for (let iter = 0; iter < 20; iter++) {
+        const params: Record<string, string> = { type: 'artist', limit: '50' };
+        if (after) params.after = after;
+        const res = await client.get<FollowedArtistsResponse>('/me/following', params);
+        if (!res?.artists?.items?.length) break;
+        all.push(...res.artists.items);
+        const next = res.artists.cursors?.after ?? null;
+        if (!next || all.length >= getConfig().fetchAllCap) break;
+        after = next;
+        if (res.artists.items.length < 50) break;
+      }
+      if (all.length === 0) return shapeResult(rf, 'No followed artists.', listStructuredContent([], paginationInfo({ total: 0, returned: 0 })));
+      // Enrich in batches of 50 via /artists?ids=
+      const enriched: SpotifyArtistFull[] = [];
+      for (let i = 0; i < all.length; i += 50) {
+        const ids = all.slice(i, i + 50).map(a => a.id).join(',');
+        const batch = await client.get<{ artists: SpotifyArtistFull[] }>('/artists', { ids });
+        if (batch?.artists) enriched.push(...batch.artists.filter(Boolean));
+      }
+      const src = enriched.length ? enriched : all;
+      let groups: Array<{ key: string; count: number }> = [];
+      if (args.group_by === 'genre') {
+        const m = new Map<string, number>();
+        for (const a of src) for (const g of (a.genres ?? [])) m.set(g, (m.get(g) ?? 0) + 1);
+        groups = [...m.entries()].map(([key, count]) => ({ key, count })).sort((a, b) => b.count - a.count);
+      } else if (args.group_by === 'popularity') {
+        const buckets = new Map<string, number>();
+        for (const a of src as Array<SpotifyArtistFull & { popularity?: number }>) { const pop = (a as unknown as { popularity?: number }).popularity ?? 0; const bucket = pop >= 75 ? '75-100' : pop >= 50 ? '50-74' : pop >= 25 ? '25-49' : '0-24'; buckets.set(bucket, (buckets.get(bucket) ?? 0) + 1); }
+        groups = [...buckets.entries()].map(([key, count]) => ({ key, count })).sort((a,b)=>b.count-a.count);
+      } else {
+        const buckets = new Map<string, number>();
+        for (const a of src as Array<SpotifyArtistFull & { followers?: { total: number } }>) { const f = (a as unknown as { followers?: { total: number } }).followers?.total ?? 0; const bucket = f >= 1000000 ? '1M+' : f >= 100000 ? '100K-1M' : f >= 10000 ? '10K-100K' : '<10K'; buckets.set(bucket, (buckets.get(bucket) ?? 0) + 1); }
+        groups = [...buckets.entries()].map(([key, count]) => ({ key, count })).sort((a,b)=>b.count-a.count);
+      }
+      const topN = args.top_n ?? 10;
+      const view = truncateItems(groups, Math.min(topN, cap(args)));
+      const pagination = paginationInfo({ total: groups.length, returned: view.items.length });
+      const lines = [`Following analytics (${src.length} artists, by ${args.group_by}):`];
+      for (const g of view.items) lines.push(`  ${g.key}: ${g.count}`);
+      if (view.footer) lines.push(`(${view.footer})`);
+      return shapeResult(rf, lines.join('\n'), listStructuredContent(view.items, pagination, { total_artists: src.length, group_by: args.group_by }));
+    },
+  );
 }

@@ -1472,4 +1472,192 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
       });
     },
   );
+
+  // Helpers for new exhaustive playlist tools
+  async function getAllUris(playlistId: string): Promise<string[]> {
+    const items = await client.getAllPages<PlaylistItemObject>(`/playlists/${encodeURIComponent(playlistId)}/items`, { limit: '100' }, { maxItems: getConfig().fetchAllCap });
+    return items.map(i => i.item?.uri).filter((u): u is string => !!u);
+  }
+  async function replaceWithUris(playlistId: string, uris: string[]): Promise<string | undefined> {
+    const enc = encodeURIComponent(playlistId);
+    let snap: string | undefined;
+    for (let s = 0; s < uris.length; s += 100) {
+      const chunk = uris.slice(s, s + 100);
+      const res = s === 0 ? await client.put<{ snapshot_id?: string }>(`/playlists/${enc}/items`, { uris: chunk }) : await client.post<{ snapshot_id?: string }>(`/playlists/${enc}/items`, { uris: chunk });
+      if (res?.snapshot_id) snap = res.snapshot_id;
+    }
+    if (uris.length === 0) { const res = await client.put<{ snapshot_id?: string }>(`/playlists/${enc}/items`, { uris: [] }); if (res?.snapshot_id) snap = res.snapshot_id; }
+    return snap;
+  }
+
+  // check_playlist_following (#284) — fan-out capped 5
+  server.tool('check_playlist_following', 'Check if you follow 1–50 playlists (fans out one call per playlist, concurrency 5). Quota: 🟢 1–50 GETs.', { playlist_ids: z.array(z.string()).min(1).max(50), ...sharedListFields }, async (args) => {
+    const results: Array<{ playlist_id: string; following: boolean }> = [];
+    const ids = args.playlist_ids;
+    for (let i = 0; i < ids.length; i += 5) {
+      const batch = ids.slice(i, i + 5);
+      const settled = await Promise.all(batch.map(async (pid) => { try { const r = await client.get<boolean[]>(`/playlists/${encodeURIComponent(pid)}/followers/contains`); return { playlist_id: pid, following: r?.[0] ?? false }; } catch { return { playlist_id: pid, following: false }; } }));
+      results.push(...settled);
+    }
+    const t = truncateItems(results, resolveMaxResults(args.max_results));
+    const pag = paginationInfo({ total: results.length, returned: t.items.length });
+    if (args.response_format === 'json') return textResult(jsonText({ results: t.items }), listStructuredContent(t.items, pag));
+    const lines = [`Playlist following (${results.length} checked, showing ${t.items.length}):`];
+    for (const r of t.items) lines.push(`  ${r.following ? '✓' : '✗'} ${r.playlist_id}`);
+    if (t.footer) lines.push(`(${t.footer})`);
+    return textResult(lines.join('\n'), listStructuredContent(t.items, pag));
+  });
+
+  // clone_playlist_cover (#285)
+  server.tool('clone_playlist_cover', 'Copy cover image from source playlist to target. Quota: 🟢 GET images + PUT images (plus image fetch).', { source_playlist_id: z.string(), target_playlist_id: z.string(), image_index: z.number().int().min(0).optional(), dry_run: DryRun }, async (args) => {
+    const images = await client.get<SpotifyImage[]>(`/playlists/${encodeURIComponent(args.source_playlist_id)}/images`);
+    if (!images || images.length === 0) throw new Error('Source playlist has no custom cover image');
+    const idx = args.image_index ?? 0;
+    if (idx >= images.length) throw new Error(`image_index ${idx} out of range (${images.length} image(s))`);
+    const url = images[idx].url;
+    if (args.dry_run) return textResult(describeDryRun('clone cover', args.target_playlist_id, [`Copy ${url} → ${args.target_playlist_id}`]));
+    const resp = await fetch(url);
+    if (!resp.ok) throw new Error(`Failed to fetch cover image: ${resp.status}`);
+    const buf = Buffer.from(await resp.arrayBuffer());
+    if (buf.length > 256 * 1024) throw new Error('Cover image exceeds 256 KB');
+    const b64 = buf.toString('base64');
+    await client.putRaw(`/playlists/${encodeURIComponent(args.target_playlist_id)}/images`, b64);
+    return textResult(`Cloned cover from ${args.source_playlist_id} → ${args.target_playlist_id} (${Math.round(buf.length/1024)} KB)`);
+  });
+
+  // compare_playlist_covers (#286)
+  server.tool('compare_playlist_covers', 'Compare two playlists covers: URL equality, dimensions. Quota: 🟢 2 GETs.', { playlist_id_a: z.string(), playlist_id_b: z.string(), ...sharedListFields }, async (args) => {
+    const [aImgs, bImgs] = await Promise.all([client.get<SpotifyImage[]>(`/playlists/${encodeURIComponent(args.playlist_id_a)}/images`), client.get<SpotifyImage[]>(`/playlists/${encodeURIComponent(args.playlist_id_b)}/images`)]);
+    const a = aImgs?.[0] ?? null; const b = bImgs?.[0] ?? null;
+    const sameUrl = a?.url === b?.url && !!a;
+    const payload = { a: a ?? null, b: b ?? null, same: sameUrl, a_has_custom: !!a, b_has_custom: !!b };
+    if (args.response_format === 'json') return textResult(jsonText(payload), payload as unknown as Record<string, unknown>);
+    const lines = ['Cover comparison:'];
+    lines.push(`  A (${args.playlist_id_a}): ${a ? `${a.url} ${a.width}x${a.height}` : 'no custom cover (mosaic)'}`);
+    lines.push(`  B (${args.playlist_id_b}): ${b ? `${b.url} ${b.width}x${b.height}` : 'no custom cover (mosaic)'}`);
+    lines.push(`  Same: ${sameUrl ? 'yes' : 'no'}`);
+    return textResult(lines.join('\n'), payload as unknown as Record<string, unknown>);
+  });
+
+  // get_playlist_snapshot (#295)
+  server.tool('get_playlist_snapshot', 'Expose snapshot_id + item count for optimistic concurrency. Quota: 🟢 2 GETs.', { playlist_id: z.string(), ...sharedListFields }, async (args) => {
+    const id = encodeURIComponent(resolvePlaylistId(args.playlist_id, undefined));
+    const [meta, page] = await Promise.all([client.get<{ snapshot_id?: string; name?: string }>(`/playlists/${id}`), client.get<PlaylistItemsResponse>(`/playlists/${id}/items`, { limit: '1' })]);
+    const payload = { playlist_id: args.playlist_id, snapshot_id: meta?.snapshot_id ?? null, total: page?.total ?? 0, name: meta?.name ?? null };
+    if (args.response_format === 'json') return textResult(jsonText(payload), payload as unknown as Record<string, unknown>);
+    return textResult(`Playlist ${args.playlist_id}: snapshot ${payload.snapshot_id ?? 'none'}, ${payload.total} item(s)`, payload as unknown as Record<string, unknown>);
+  });
+
+  // playlist_collab_toggle (#294)
+  server.tool('playlist_collab_toggle', 'Toggle collaborative/public flags (guards public=true && collaborative=true 400). Quota: 🟢 GET + PUT.', { playlist_id: z.string(), collaborative: z.boolean().optional(), public: z.boolean().optional(), dry_run: DryRun }, async (args) => {
+    if (args.collaborative === undefined && args.public === undefined) throw new Error('Provide at least one of collaborative or public');
+    if (args.collaborative === true && args.public === true) throw new Error('A playlist cannot be both public and collaborative');
+    const body: Record<string, unknown> = {};
+    if (args.collaborative !== undefined) body.collaborative = args.collaborative;
+    if (args.public !== undefined) body.public = args.public;
+    if (args.dry_run) return textResult(describeDryRun('collab toggle', args.playlist_id, [JSON.stringify(body)]));
+    // guard via GET to catch contradictory final state
+    const current = await client.get<{ public?: boolean; collaborative?: boolean }>(`/playlists/${encodeURIComponent(args.playlist_id)}`);
+    const finalPublic = args.public !== undefined ? args.public : current?.public;
+    const finalCollab = args.collaborative !== undefined ? args.collaborative : current?.collaborative;
+    if (finalPublic === true && finalCollab === true) throw new Error('Result would be public=true && collaborative=true — Spotify rejects this');
+    await client.put(`/playlists/${encodeURIComponent(args.playlist_id)}`, body);
+    return textResult(`Playlist ${args.playlist_id} updated: ${JSON.stringify(body)}`);
+  });
+
+  // playlist_sort (#287)
+  server.tool('playlist_sort', 'Sort a playlist in place by added_at/name/artist/duration/popularity. Quota: 🟢 GET all + PUT/POST.', { playlist_id: z.string(), sort_by: z.enum(['added_asc','added_desc','name_asc','name_desc','artist_asc','duration_asc','duration_desc','popularity_desc']).default('name_asc'), dry_run: DryRun, ...sharedListFields }, async (args) => {
+    const items = await client.getAllPages<PlaylistItemObject>(`/playlists/${encodeURIComponent(args.playlist_id)}/items`, { limit: '100' }, { maxItems: getConfig().fetchAllCap });
+    const entries = items.map((row, idx) => ({ uri: row.item?.uri ?? '', name: (row.item as SpotifyTrack | undefined)?.name ?? '', artist: ((row.item as SpotifyTrack | undefined)?.artists?.[0]?.name ?? ''), duration: (row.item as SpotifyTrack | undefined)?.duration_ms ?? 0, added: row.added_at, popularity: (row.item as unknown as { popularity?: number })?.popularity ?? 0, idx })).filter(e => !!e.uri);
+    const sorted = [...entries].sort((a,b) => {
+      switch(args.sort_by){
+        case 'added_asc': return (a.added ?? '').localeCompare(b.added ?? '');
+        case 'added_desc': return (b.added ?? '').localeCompare(a.added ?? '');
+        case 'name_asc': return a.name.localeCompare(b.name);
+        case 'name_desc': return b.name.localeCompare(a.name);
+        case 'artist_asc': return a.artist.localeCompare(b.artist);
+        case 'duration_asc': return a.duration - b.duration;
+        case 'duration_desc': return b.duration - a.duration;
+        case 'popularity_desc': return b.popularity - a.popularity;
+        default: return 0;
+      }
+    });
+    const uris = sorted.map(e=>e.uri);
+    if (args.dry_run) return textResult(describeDryRun('sort playlist', args.playlist_id, [`Would sort ${uris.length} items by ${args.sort_by}`, ...uris.slice(0,5)]));
+    const snap = await replaceWithUris(args.playlist_id, uris);
+    return textResult(withSnapshot(`Sorted ${uris.length} item(s) by ${args.sort_by}`, snap));
+  });
+
+  // playlist_shuffle (#288)
+  server.tool('playlist_shuffle', 'Fisher-Yates shuffle a playlist (seeded optional). Quota: 🟢 GET all + PUT/POST.', { playlist_id: z.string(), seed: z.string().optional(), dry_run: DryRun }, async (args) => {
+    const uris = await getAllUris(args.playlist_id);
+    let shuffled = [...uris];
+    let rng = Math.random;
+    if (args.seed) { let h = 0; for (let i=0;i<args.seed.length;i++) h = (h*31 + args.seed.charCodeAt(i))>>>0; let s=h; rng = () => { s = (s*1664525+1013904223)>>>0; return s/0x100000000; }; }
+    for (let i=shuffled.length-1;i>0;i--){ const j=Math.floor(rng()*(i+1)); [shuffled[i],shuffled[j]]=[shuffled[j],shuffled[i]]; }
+    if (args.dry_run) return textResult(describeDryRun('shuffle playlist', args.playlist_id, [`Would shuffle ${uris.length} items`, ...shuffled.slice(0,5)]));
+    const snap = await replaceWithUris(args.playlist_id, shuffled);
+    return textResult(withSnapshot(`Shuffled ${shuffled.length} item(s)`, snap));
+  });
+
+  // playlist_reverse (#289)
+  server.tool('playlist_reverse', 'Reverse a playlist in one atomic replace. Quota: 🟢 GET all + PUT/POST.', { playlist_id: z.string(), dry_run: DryRun }, async (args) => {
+    const uris = await getAllUris(args.playlist_id);
+    const rev = [...uris].reverse();
+    if (args.dry_run) return textResult(describeDryRun('reverse playlist', args.playlist_id, [`Would reverse ${uris.length} items`]));
+    const snap = await replaceWithUris(args.playlist_id, rev);
+    return textResult(withSnapshot(`Reversed ${rev.length} item(s)`, snap));
+  });
+
+  // playlist_union (#290)
+  server.tool('playlist_union', 'Union of 2–10 playlists into target (deduped, first-seen order). Quota: 🟢 N GETs + PUT/POST.', { source_playlist_ids: z.array(z.string()).min(2).max(10), target_playlist_id: z.string().optional(), target_name: z.string().optional(), dedupe: z.boolean().default(true), dry_run: DryRun }, async (args) => {
+    if (!args.target_playlist_id && !args.target_name) throw new Error('Provide target_playlist_id or target_name');
+    const seen = new Set<string>(); const union: string[] = [];
+    for (const pid of args.source_playlist_ids){ const uris = await getAllUris(pid); for (const u of uris) if (!args.dedupe || !seen.has(u)){ seen.add(u); union.push(u); } }
+    if (args.dry_run) return textResult(describeDryRun('union playlists', args.target_playlist_id ?? args.target_name!, [`Would union ${union.length} uri(s) from ${args.source_playlist_ids.length} playlists`]));
+    let targetId = args.target_playlist_id;
+    if (!targetId){ const created = await client.post<{id:string}>(`/me/playlists`, { name: args.target_name, public: false }); if(!created?.id) throw new Error('Could not create playlist'); targetId = created.id; }
+    const snap = await replaceWithUris(targetId!, union);
+    return textResult(withSnapshot(`Union ${union.length} item(s) → ${targetId}`, snap));
+  });
+
+  // playlist_subtract (#291)
+  server.tool('playlist_subtract', 'Remove tracks of B..N from A. Quota: 🟢 N GETs + DELETE or PUT.', { base_playlist_id: z.string(), subtract_playlist_ids: z.array(z.string()).min(1), dry_run: DryRun }, async (args) => {
+    const baseUris = await getAllUris(args.base_playlist_id);
+    const subtractSet = new Set<string>();
+    for (const pid of args.subtract_playlist_ids){ const uris = await getAllUris(pid); for (const u of uris) subtractSet.add(u); }
+    const remaining = baseUris.filter(u => !subtractSet.has(u));
+    const removed = baseUris.length - remaining.length;
+    if (args.dry_run) return textResult(describeDryRun('subtract playlists', args.base_playlist_id, [`Would remove ${removed} item(s), keep ${remaining.length}`]));
+    const snap = await replaceWithUris(args.base_playlist_id, remaining);
+    return textResult(withSnapshot(`Subtract: removed ${removed}, kept ${remaining.length}`, snap));
+  });
+
+  // playlist_symmetric_difference (#292)
+  server.tool('playlist_symmetric_difference', 'Tracks in exactly one of two playlists (XOR). Quota: 🟢 2 GETs.', { playlist_id_a: z.string(), playlist_id_b: z.string(), ...sharedListFields }, async (args) => {
+    const [aUris, bUris] = await Promise.all([getAllUris(args.playlist_id_a), getAllUris(args.playlist_id_b)]);
+    const setA = new Set(aUris); const setB = new Set(bUris);
+    const sym = [...aUris.filter(u=>!setB.has(u)), ...bUris.filter(u=>!setA.has(u))];
+    const uniq = [...new Set(sym)];
+    const view = truncateItems(uniq, resolveMaxResults(args.max_results));
+    const pag = paginationInfo({ total: uniq.length, returned: view.items.length });
+    if (args.response_format === 'json') return textResult(jsonText({ symmetric_difference: view.items, total: uniq.length }), listStructuredContent(view.items, pag));
+    const lines = [`Symmetric difference: ${uniq.length} uri(s) (showing ${view.items.length}):`];
+    for (const u of view.items) lines.push(`  • ${u}`);
+    if (view.footer) lines.push(`(${view.footer})`);
+    return textResult(lines.join('\n'), listStructuredContent(view.items, pag));
+  });
+
+  // playlist_trim (#293)
+  server.tool('playlist_trim', 'Trim playlist to N items (keep first/last/random). Quota: 🟢 GET all + PUT/POST.', { playlist_id: z.string(), keep: z.number().int().min(1).max(500), keep_which: z.enum(['first','last','random']).default('first'), dry_run: DryRun }, async (args) => {
+    const uris = await getAllUris(args.playlist_id);
+    if (uris.length <= args.keep) return textResult(`Playlist already ${uris.length} ≤ ${args.keep} — nothing to trim`);
+    let kept: string[];
+    if (args.keep_which === 'first') kept = uris.slice(0, args.keep);
+    else if (args.keep_which === 'last') kept = uris.slice(-args.keep);
+    else { const shuffled=[...uris]; for(let i=shuffled.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [shuffled[i],shuffled[j]]=[shuffled[j],shuffled[i]];} kept=shuffled.slice(0,args.keep); }
+    if (args.dry_run) return textResult(describeDryRun('trim playlist', args.playlist_id, [`Would trim ${uris.length} → ${kept.length} (${args.keep_which})`]));
+    const snap = await replaceWithUris(args.playlist_id, kept);
+    return textResult(withSnapshot(`Trimmed ${uris.length} → ${kept.length} (${args.keep_which})`, snap));
+  });
 }
