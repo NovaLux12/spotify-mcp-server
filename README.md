@@ -294,6 +294,8 @@ Releases are cut by [release-please](https://github.com/googleapis/release-pleas
 git pull && git tag -d vX.Y.Z; git tag vX.Y.Z "$(git rev-list -n1 origin/main)" && git push origin vX.Y.Z
 ```
 
+After re-firing, check the [Releases page](https://github.com/NovaLux12/spotify-mcp-server/releases) for a stuck **Draft** of the same version and publish it — tag re-creation can leave the release object in draft, which hides it from users.
+
 The workflow then runs typecheck + tests, builds, publishes [`@novalux12/spotify-mcp`](https://www.npmjs.com/package/@novalux12/spotify-mcp) to npm (authenticated with the `NPM_TOKEN` repo secret; publishes carry SLSA provenance via the job's OIDC identity), and publishes the server metadata to the official [MCP Registry](https://registry.modelcontextprotocol.io) via GitHub OIDC (no secrets needed). The npm package carries `mcpName`, required by the registry's validation.
 
 Optional hardening: migrate to [npm trusted publishing](https://docs.npmjs.com/generating-provenance-statements) — configure the package on npmjs.com (Settings → Publishing access → GitHub Actions, repo `NovaLux12/spotify-mcp-server`, workflow `publish.yml`) and remove the `NPM_TOKEN` secret. A GitHub App token for release-please would additionally let tag pushes fire `publish.yml` natively instead of the manual re-fire step above.
