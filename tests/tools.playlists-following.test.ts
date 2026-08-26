@@ -106,7 +106,13 @@ function makeStubClient(responder: Responder = () => null) {
   return client;
 }
 
-function harness(responder: Responder = () => null, registerFn: Registrar = registerPlaylistTools) {
+function harness(
+  responder: Responder = () => null,
+  registerFn: Registrar = registerPlaylistTools,
+  // When set, the stub server advertises elicitation and elicitInput resolves
+  // to this value (or throws when it is an Error instance).
+  elicitResult?: unknown,
+) {
   const registered: RegisteredTool[] = [];
   const fakeServer = {
     // Legacy SDK shape: (name, description, ZodRawShape, handler)
@@ -123,6 +129,15 @@ function harness(responder: Responder = () => null, registerFn: Registrar = regi
         handler,
       });
     },
+    ...(elicitResult !== undefined
+      ? {
+          getServerCapabilities: () => ({ elicitation: {} }),
+          async elicitInput() {
+            if (elicitResult instanceof Error) throw elicitResult;
+            return elicitResult;
+          },
+        }
+      : {}),
     // Newer SDK shape: (name, { description, inputSchema: full ZodObject }, handler)
     registerTool(
       name: string,
@@ -1307,5 +1322,82 @@ describe('dry_run coverage for mutating playlist tools (issue #110)', () => {
     const out = await h.invoke('update_playlist', { id: 'pl3', name: 'New Name', public: false, dry_run: true });
     assert.equal(h.client.calls.length, 0);
     assert.match(textOf(out), /name → "New Name"/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Elicitation-gated destructive playlist mutations (#111 item 5)
+// ---------------------------------------------------------------------------
+
+const accept = { action: 'accept', content: { confirm: true } };
+
+describe('elicitation-gated destructive mutations (#111 item 5)', () => {
+  it('remove_from_playlist with >=10 uris elicits then DELETEs on confirm', async () => {
+    const h = harness(() => ({ snapshot_id: 'snap1' }), registerPlaylistTools, accept);
+    const uris = Array.from({ length: 10 }, (_, i) => `spotify:track:r${i}`);
+    const out = await h.invoke('remove_from_playlist', { playlist_id: 'pl1', uris });
+    assert.equal(wireCalls(h.client.calls).filter((c) => c.method === 'DELETE').length, 1);
+    assert.match(textOf(out), /Removed 10 item\(s\)/);
+  });
+
+  it('remove_from_playlist declining stub → zero DELETEs + cancelled result', async () => {
+    const h = harness(
+      () => ({ snapshot_id: 'snap1' }),
+      registerPlaylistTools,
+      { action: 'decline' },
+    );
+    const uris = Array.from({ length: 12 }, (_, i) => `spotify:track:r${i}`);
+    const out = await h.invoke('remove_from_playlist', { playlist_id: 'pl1', uris });
+    assert.equal(h.client.calls.length, 0);
+    assert.match(textOf(out), /Cancelled — nothing was changed\./);
+    assert.deepEqual(out.structuredContent, { ok: false, cancelled: true });
+  });
+
+  it('remove_from_playlist under threshold never elicits (no capability stub)', async () => {
+    // Default harness has no elicitation support; a throw would surface as
+    // rejection only if elicitInput were called — it must not be.
+    const h = harness(() => ({ snapshot_id: 'snap1' }));
+    const out = await h.invoke('remove_from_playlist', {
+      playlist_id: 'pl1',
+      uris: ['spotify:track:a'],
+    });
+    assert.equal(wireCalls(h.client.calls).filter((c) => c.method === 'DELETE').length, 1);
+    assert.match(textOf(out), /Removed 1 item\(s\)/);
+  });
+
+  it('replace_playlist_items with >=50 uris elicits then PUTs on confirm', async () => {
+    const h = harness(() => ({ snapshot_id: 'snap2' }), registerPlaylistTools, accept);
+    const uris = Array.from({ length: 50 }, (_, i) => `spotify:track:n${i}`);
+    const out = await h.invoke('replace_playlist_items', { playlist_id: 'pl2', uris });
+    assert.equal(wireCalls(h.client.calls).filter((c) => c.method === 'PUT').length, 1);
+    assert.match(textOf(out), /Replaced playlist contents with 50 item/);
+  });
+
+  it('replace_playlist_items declining stub → zero calls + cancelled result', async () => {
+    const h = harness(
+      () => ({ snapshot_id: 'snap2' }),
+      registerPlaylistTools,
+      { action: 'cancel' },
+    );
+    const uris = Array.from({ length: 60 }, (_, i) => `spotify:track:n${i}`);
+    const out = await h.invoke('replace_playlist_items', { playlist_id: 'pl2', uris });
+    assert.equal(h.client.calls.length, 0);
+    assert.deepEqual(out.structuredContent, { ok: false, cancelled: true });
+  });
+
+  it('replace_playlist_items under threshold never elicits', async () => {
+    const h = harness(() => ({ snapshot_id: 'snap3' }));
+    const uris = ['spotify:track:a', 'spotify:track:b'];
+    const out = await h.invoke('replace_playlist_items', { playlist_id: 'pl2', uris });
+    assert.equal(h.client.calls.filter((c) => c.method === 'PUT').length, 1);
+    assert.match(textOf(out), /Replaced playlist contents with 2 item/);
+  });
+
+  it('dry_run preview runs before any elicitation even at scale', async () => {
+    const h = harness(undefined, registerPlaylistTools, new Error('must not elicit'));
+    const uris = Array.from({ length: 15 }, (_, i) => `spotify:track:d${i}`);
+    const out = await h.invoke('remove_from_playlist', { playlist_id: 'pl1', uris, dry_run: true });
+    assert.equal(h.client.calls.length, 0);
+    assert.match(textOf(out), /\[dry run\] remove from playlist/);
   });
 });
