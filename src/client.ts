@@ -90,6 +90,31 @@ export interface PageProgress {
   total?: number;
 }
 
+/**
+ * Lane selection for the two-lane scheduler (#133): the oldest LOW task
+ * waiting >= agingMs is promoted ahead of queued NORMAL tasks so continuous
+ * interactive traffic cannot starve background walks. Pure so tests can pin
+ * the promotion boundary without timers.
+ */
+export interface LaneTask {
+  run: () => Promise<unknown>;
+  resolve: (v: unknown) => void;
+  reject: (e: unknown) => void;
+  enqueuedAt: number;
+}
+
+export function selectNextLaneTask(
+  normal: LaneTask[],
+  low: LaneTask[],
+  now: number,
+  agingMs: number,
+): LaneTask | undefined {
+  if (low.length > 0 && now - low[0].enqueuedAt >= agingMs) {
+    return low.shift()!;
+  }
+  return normal.shift() ?? low.shift();
+}
+
 export class SpotifyClient {
   private tokens: TokenData | null = null;
   private loadPromise: Promise<TokenData> | null = null;
@@ -290,10 +315,17 @@ export class SpotifyClient {
    * waits apply to every task regardless of lane.
    */
   private _lanes: {
-    normal: Array<{ run: () => Promise<unknown>; resolve: (v: unknown) => void; reject: (e: unknown) => void }>;
-    low: Array<{ run: () => Promise<unknown>; resolve: (v: unknown) => void; reject: (e: unknown) => void }>;
+    normal: Array<LaneTask>;
+    low: Array<LaneTask>;
   } = { normal: [], low: [] };
   private _draining = false;
+
+  /**
+   * Waiter aging (#133): a low-priority task waiting longer than
+   * LOW_AGING_MS is promoted ahead of queued normal tasks, so a busy
+   * interactive session cannot starve background walks indefinitely.
+   */
+  private static readonly LOW_AGING_MS = 15_000;
 
   private enqueue<T>(fn: () => Promise<T>, priority: 'normal' | 'low' = 'normal'): Promise<T> {
     return new Promise<T>((resolve, reject) => {
@@ -301,6 +333,7 @@ export class SpotifyClient {
         run: fn as () => Promise<unknown>,
         resolve: resolve as (v: unknown) => void,
         reject,
+        enqueuedAt: Date.now(),
       });
       this._drain();
     });
@@ -312,8 +345,12 @@ export class SpotifyClient {
     void (async () => {
       try {
         for (;;) {
-          // Normal lane always wins; fall back to one low task at a time.
-          const next = this._lanes.normal.shift() ?? this._lanes.low.shift();
+          const next = selectNextLaneTask(
+            this._lanes.normal,
+            this._lanes.low,
+            Date.now(),
+            SpotifyClient.LOW_AGING_MS,
+          );
           if (!next) break;
           const now = Date.now();
           const rateLimitWait = Math.max(0, this._rateLimitUntil - now);
