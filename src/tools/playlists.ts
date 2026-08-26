@@ -1080,8 +1080,205 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
         groupNum++;
       }
       if (view.footer) lines.push(`(${view.footer})`);
-      lines.push('Remove specific occurrences with remove_from_playlist using { uri, positions }.');
+      lines.push('Remove specific occurrences with remove_from_playlist using { uri, positions },');
+      lines.push('or use remove_duplicate_playlist_items to clean them up in one safe call.');
       return textResult(lines.join('\n'), listStructuredContent(view.items, pag, extra));
+    },
+  );
+
+  // remove_duplicate_playlist_items (#168)
+  // One-shot cleanup companion to find_duplicates_in_playlist: pages the
+  // playlist, keeps the FIRST occurrence of every duplicate group (exact URI
+  // repeats always; relinked same-song copies on opt-in) and removes the
+  // rest. Deletions run highest-position-first so indices never shift under
+  // us; bulk removals are elicitation-gated like other destructive ops; a
+  // post-mutation re-scan verifies the playlist is actually clean.
+  server.tool(
+    'remove_duplicate_playlist_items',
+    'Remove duplicate items from a playlist: keeps the first occurrence of each track and removes '
+      + 'later repeats. Exact URI repeats are always cleaned; pass include_relinked=true to also '
+      + 'collapse same-song entries that appear under different URIs (remasters/relinks). '
+      + 'Supports dry_run; removals of 10+ items ask for confirmation via elicitation.',
+    {
+      playlist_id: z.string().describe('Playlist ID'),
+      include_relinked: z
+        .boolean()
+        .optional()
+        .default(false)
+        .describe(
+          'Also collapse same-song duplicates under different URIs (relinks/remasters). '
+            + 'Default false — only exact URI repeats are removed.',
+        ),
+      dry_run: DryRun,
+    },
+    async (args) => {
+      const id = encodeURIComponent(args.playlist_id);
+      const meta = await client.get<{ id?: string; name?: string }>(`/playlists/${id}`);
+      if (!meta) throw new Error(`Playlist "${args.playlist_id}" not found`);
+
+      const items = await client.getAllPages<PlaylistItemObject>(`/playlists/${id}/items`, {
+        limit: '100',
+      });
+
+      interface Occurrence {
+        uri: string;
+        position: number;
+        label: string;
+      }
+      const byUri = new Map<string, Occurrence[]>();
+      const byIdentity = new Map<string, Map<string, Occurrence[]>>();
+
+      let position = 0;
+      for (const item of items) {
+        const track = item.item;
+        if (track?.uri) {
+          const artists =
+            'artists' in track && Array.isArray(track.artists)
+              ? track.artists.map((a) => a.name).join(', ')
+              : ('show' in track && track.show ? track.show.name : '');
+          const occ: Occurrence = {
+            uri: track.uri,
+            position,
+            label: `"${track.name}"${artists ? ` by ${artists}` : ''}`,
+          };
+          const uriOccs = byUri.get(track.uri);
+          if (uriOccs) uriOccs.push(occ);
+          else byUri.set(track.uri, [occ]);
+
+          if (args.include_relinked) {
+            const key = trackIdentityKey(track);
+            const uriMap = byIdentity.get(key);
+            if (uriMap) {
+              const occs = uriMap.get(track.uri);
+              if (occs) occs.push(occ);
+              else uriMap.set(track.uri, [occ]);
+            } else {
+              byIdentity.set(key, new Map([[track.uri, [occ]]]));
+            }
+          }
+        }
+        // Unavailable items still occupy a playlist position.
+        position++;
+      }
+
+      // Keep-first/remove-rest over positions; a Set keyed by position makes
+      // the exact-uri and relinked passes compose without double-removals.
+      const removals = new Map<number, Occurrence>();
+      let groups = 0;
+      for (const occs of byUri.values()) {
+        if (occs.length > 1) {
+          groups++;
+          for (const occ of occs.slice(1)) removals.set(occ.position, occ);
+        }
+      }
+      if (args.include_relinked) {
+        for (const uriMap of byIdentity.values()) {
+          if (uriMap.size < 2) continue;
+          groups++;
+          const all = [...uriMap.values()].flat().sort((a, b) => a.position - b.position);
+          for (const occ of all.slice(1)) removals.set(occ.position, occ);
+        }
+      }
+
+      const ordered = [...removals.values()].sort((a, b) => b.position - a.position);
+      const preview = ordered
+        .slice(0, 20)
+        .map((o) => `${o.label} @ position ${o.position} (${o.uri})`);
+      const extra = {
+        playlist_id: args.playlist_id,
+        scanned: items.length,
+        duplicate_groups: groups,
+        removable_items: ordered.length,
+      };
+
+      if (ordered.length === 0) {
+        return textResult(
+          `No duplicate item(s) found across ${items.length} scanned item(s) — nothing to remove.`,
+          { ...extra, ok: true, removed: 0 },
+        );
+      }
+
+      if (args.dry_run) {
+        return textResult(
+          describeDryRun(
+            'remove duplicates from playlist',
+            args.playlist_id,
+            [
+              `Would keep ${items.length - ordered.length} of ${items.length} item(s) and remove ${ordered.length}:`,
+              ...preview,
+              ...(ordered.length > preview.length ? [`(…and ${ordered.length - preview.length} more)`] : []),
+            ],
+          ),
+          { ...extra, ok: true, dry_run: true },
+        );
+      }
+
+      if (ordered.length >= REMOVE_ELICIT_THRESHOLD) {
+        const verdict = await confirmViaElicitation(server, {
+          message: describeConfirmation('remove duplicates from playlist', meta.name ?? args.playlist_id, [
+            `Remove ${ordered.length} duplicate item(s), keeping the first occurrence of each:`,
+            ...preview,
+            ...(ordered.length > preview.length ? [`(…and ${ordered.length - preview.length} more)`] : []),
+          ]),
+        });
+        if (verdict === 'declined') {
+          return textResult('Cancelled — nothing was changed.', { ok: false, cancelled: true });
+        }
+      }
+
+      // One DELETE per occurrence, highest position first: each request sees
+      // a playlist where lower indices are untouched, so original positions
+      // stay valid without snapshot juggling.
+      const itemsPath = `/playlists/${id}/items`;
+      let lastSnapshotId: string | undefined;
+      for (const occ of ordered) {
+        const res = await client.delete<{ snapshot_id?: string }>(itemsPath, {
+          tracks: [{ uri: occ.uri, positions: [occ.position] }],
+        });
+        if (res?.snapshot_id) lastSnapshotId = res.snapshot_id;
+      }
+
+      // Post-mutation re-scan proves the cleanup actually landed.
+      const after = await client.getAllPages<PlaylistItemObject>(`/playlists/${id}/items`, {
+        limit: '100',
+      });
+      const seenUris = new Set<string>();
+      let remainingExact = 0;
+      const afterIdentity = new Map<string, Set<string>>();
+      let remainingRelinkedGroups = 0;
+      for (const item of after) {
+        const track = item.item;
+        if (!track?.uri) continue;
+        if (seenUris.has(track.uri)) remainingExact++;
+        seenUris.add(track.uri);
+        const key = trackIdentityKey(track);
+        const uris = afterIdentity.get(key);
+        if (uris) {
+          if (!uris.has(track.uri)) remainingRelinkedGroups++;
+          uris.add(track.uri);
+        } else {
+          afterIdentity.set(key, new Set([track.uri]));
+        }
+      }
+      const remainingDuplicates = args.include_relinked
+        ? remainingExact + remainingRelinkedGroups
+        : remainingExact;
+
+      const text = withSnapshot(
+        `Removed ${ordered.length} duplicate item(s) from "${meta.name ?? args.playlist_id}" `
+          + `(kept ${after.length} item(s)).`
+          + `\n${batchSummary(ordered.length, ordered.map((o) => o.uri))}`
+          + `\nRe-scan: ${remainingDuplicates === 0 ? 'no duplicates remain.' : `${remainingDuplicates} duplicate(s) REMAIN — investigate.`}`,
+        lastSnapshotId,
+      );
+      return textResult(text, {
+        ...extra,
+        ok: remainingDuplicates === 0,
+        removed: ordered.length,
+        kept: after.length,
+        remaining_duplicates: remainingDuplicates,
+        snapshot_id: lastSnapshotId,
+      });
     },
   );
 }
