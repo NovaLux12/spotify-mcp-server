@@ -29,6 +29,17 @@ import { registerSavedDedupeTools } from './tools/saveddedupe.js';
 import { registerBackupTools } from './tools/backup.js';
 import { registerRestoreTools } from './tools/restore.js';
 import { registerLibraryHygieneTools } from './tools/libraryhygiene.js';
+import { registerBrowseTools } from './tools/browse.js';
+import { registerArtistWatchTools } from './tools/artistwatch.js';
+import { registerLibraryAnalyticsTools } from './tools/libraryanalytics.js';
+import { registerPlaylistHealthTools } from './tools/playlisthealth.js';
+import { registerPlaylistBatchTools } from './tools/playlistbatch.js';
+import { registerPlaylistMiscTools } from './tools/playlistmisc.js';
+import { registerPortabilityTools } from './tools/portability.js';
+import { registerQueueOpsTools } from './tools/queueops.js';
+import { registerPlaybackExtTools } from './tools/playbackext.js';
+import { registerSearchHistoryTools } from './tools/searchhistory.js';
+import { registerEpisodeMgmtTools } from './tools/episodemgmt.js';
 import { registerDoctorTool } from './tools/doctortool.js';
 import { verifyReceipt, formatReceipt } from './receipts.js';
 import { registerTemplateResources } from './resources/templates.js';
@@ -126,6 +137,22 @@ async function startMcpServer(): Promise<void> {
     if (!readOnly) registerRestoreTools(server, client)
     registerBackupTools(server, client)
   }
+  // Big-release streams (wired centrally to avoid per-stream index conflicts):
+  // catalog/browse
+  if (isModuleActive('browse', activeSets, overrides) && !moduleBlockedByScopes('catalog', grantedScopes)) registerBrowseTools(server, client)
+  if (isModuleActive('artistwatch', activeSets, overrides) && !moduleBlockedByScopes('catalog', grantedScopes)) registerArtistWatchTools(server, client)
+  if (isModuleActive('searchhistory', activeSets, overrides) && !moduleBlockedByScopes('search', grantedScopes)) registerSearchHistoryTools(server, client)
+  // library analytics + portability + episode management
+  if (isModuleActive('libraryanalytics', activeSets, overrides) && !moduleBlockedByScopes('library', grantedScopes)) registerLibraryAnalyticsTools(server, client)
+  if (!readOnly && isModuleActive('portability', activeSets, overrides) && !moduleBlockedByScopes('library', grantedScopes)) registerPortabilityTools(server, client)
+  if (!readOnly && isModuleActive('episodemgmt', activeSets, overrides) && !moduleBlockedByScopes('library', grantedScopes)) registerEpisodeMgmtTools(server, client)
+  // playlist health + batch + misc
+  if (isModuleActive('playlisthealth', activeSets, overrides) && !moduleBlockedByScopes('playlists', grantedScopes)) registerPlaylistHealthTools(server, client)
+  if (!readOnly && isModuleActive('playlistbatch', activeSets, overrides) && !moduleBlockedByScopes('playlists', grantedScopes)) registerPlaylistBatchTools(server, client)
+  if (!readOnly && isModuleActive('playlistmisc', activeSets, overrides) && !moduleBlockedByScopes('playlists', grantedScopes)) registerPlaylistMiscTools(server, client)
+  // playback/queue extensions
+  if (!readOnly && isModuleActive('queueops', activeSets, overrides) && !moduleBlockedByScopes('playback', grantedScopes)) registerQueueOpsTools(server, client)
+  if (!readOnly && isModuleActive('playbackext', activeSets, overrides) && !moduleBlockedByScopes('playback', grantedScopes)) registerPlaybackExtTools(server, client)
   // spotify_doctor diagnostic (#111): unconditional — must survive toolset trimming.
   registerDoctorTool(server, client);
   if (!readOnly && isModuleActive('following', activeSets, overrides) && !moduleBlockedByScopes('following', grantedScopes)) registerFollowingTools(server, client)

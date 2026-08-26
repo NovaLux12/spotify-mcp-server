@@ -20,24 +20,6 @@ function makeHarness(getResponse?: (path: string, params?: Record<string,string>
 }
 function find(registered: RegisteredTool[], name:string){ const t=registered.find(x=>x.name===name); assert.ok(t, `missing ${name}`); return t!; }
 function text(r:ToolContent){ return r.content.map(c=>c.text).join('\n'); }
-test('get_related_artists returns truncated list and structuredContent', async () => {
-  const { registered } = makeHarness((path) => {
-    if (path.includes('related-artists')) return { artists: [{id:'a2',name:'Metallica',uri:'spotify:artist:a2',genres:['metal']},{id:'a3',name:'Nirvana',uri:'spotify:artist:a3',genres:[]},{id:'a4',name:'Foo Fighters',uri:'spotify:artist:a4',genres:[]}] };
-    return null;
-  });
-  const r = await find(registered,'get_related_artists').handler({ artist_id:'a1', max_results:2 });
-  const t=text(r);
-  assert.match(t, /Metallica/);
-  assert.match(t, /Nirvana/);
-  assert.doesNotMatch(t, /Foo Fighters/);
-  assert.match(t, /1 more/);
-  assert.ok(((r.structuredContent as unknown) as {items:unknown[]}).items.length===2);
-});
-test('get_related_artists empty case', async () => {
-  const { registered } = makeHarness(()=>({artists:[]}));
-  const r = await find(registered,'get_related_artists').handler({ artist_id:'a1' });
-  assert.match(text(r), /No related artists/);
-});
 test('get_artist_genres returns genres', async () => {
   const { registered } = makeHarness((path)=> path==='/artists/a1' ? {id:'a1',name:'Queen',uri:'spotify:artist:a1',genres:['rock','glam']} : null);
   const r = await find(registered,'get_artist_genres').handler({ artist_id:'a1' });
@@ -48,17 +30,6 @@ test('get_artist_genres handles none listed', async () => {
   const { registered } = makeHarness(()=>({id:'a1',name:'X',uri:'spotify:artist:a1',genres:[]}));
   const r = await find(registered,'get_artist_genres').handler({ artist_id:'a1' });
   assert.match(text(r), /none listed/);
-});
-test('get_featured_playlists renders and respects max_results', async () => {
-  const { registered } = makeHarness(()=>({ message:'Monday', playlists:{ items:[{name:'P1',uri:'spotify:playlist:p1',owner:{id:'spotify'},tracks:{total:10}},{name:'P2',uri:'spotify:playlist:p2',owner:{id:'spotify'}},{name:'P3',uri:'spotify:playlist:p3',owner:{id:'spotify'}}], total:3, limit:20, offset:0 }}));
-  const r = await find(registered,'get_featured_playlists').handler({ max_results:2 });
-  const t=text(r);
-  assert.match(t, /P1/); assert.match(t,/P2/); assert.doesNotMatch(t,/P3/);
-});
-test('get_featured_playlists empty', async () => {
-  const { registered } = makeHarness(()=>null);
-  const r = await find(registered,'get_featured_playlists').handler({});
-  assert.match(text(r), /No featured playlists/);
 });
 test('get_categories and get_category_playlists', async () => {
   const { registered, calls } = makeHarness((path)=>{

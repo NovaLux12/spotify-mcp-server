@@ -20,22 +20,33 @@
  *
  * Sets and what they enable:
  *   playback        → tools/playback.ts        (15 tools)
+ *                     tools/queueops.ts        (queue_playlist + reorder stubs)
+ *                     tools/playbackext.ts     (save/restore playback, device presets, sessions)
  *   catalog         → tools/search.ts          (1 tool)
  *                     tools/catalog.ts         (18 tools)
- *                     tools/audiobooks.ts      (4 tools)  = 23 tools
+ *                     tools/audiobooks.ts      (4 tools)
+ *                     tools/browse.ts          (featured/categories/related/genres)
+ *                     tools/artistwatch.ts     (discography/watchlist)
+ *                     tools/searchhistory.ts   (search history)
  *   playlists       → tools/playlists.ts       (10 tools)
- *                     tools/users.ts           (2 tools)  = 12 tools
+ *                     tools/users.ts           (2 tools)
+ *                     tools/playlisthealth.ts  (health/followers/collab/snapshots)
+ *                     tools/playlistbatch.ts   (batch add/copy/move)
+ *                     tools/playlistmisc.ts    (pin/unpin/templates)
  *   library         → tools/library.ts         (10 tools)
- *                     tools/following.ts       (4 tools)  = 14 tools
+ *                     tools/following.ts       (4 tools)
+ *                     tools/libraryanalytics.ts (coverage/heatmap/growth/genre trends)
+ *                     tools/portability.ts     (weekly/radar save + full export)
+ *                     tools/episodemgmt.ts     (archive/mark episodes)
  *   personalization → tools/personalization.ts (3 tools)
  *   resources       → resources/index.ts       (24 resources)
  *   prompts         → prompts/index.ts         (9 prompts)
  */
 export const TOOLSETS: Record<string, readonly string[]> = {
-  playback: ['playback'],
-  catalog: ['search', 'catalog', 'audiobooks'],
-  playlists: ['playlists', 'users'],
-  library: ['library', 'following'],
+  playback: ['playback', 'queueops', 'playbackext'],
+  catalog: ['search', 'catalog', 'audiobooks', 'browse', 'artistwatch', 'searchhistory'],
+  playlists: ['playlists', 'users', 'playlisthealth', 'playlistbatch', 'playlistmisc'],
+  library: ['library', 'following', 'libraryanalytics', 'portability', 'episodemgmt'],
   personalization: ['personalization'],
   resources: ['resources'],
   prompts: ['prompts'],
