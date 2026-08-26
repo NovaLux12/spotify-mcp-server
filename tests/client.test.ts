@@ -39,7 +39,7 @@ const tokenDir = await mkdtemp(path.join(tmpdir(), 'spotify-mcp-client-test-'));
 process.env.SPOTIFY_MCP_TOKEN_FILE = path.join(tokenDir, 'tokens.json');
 process.env.SPOTIFY_CLIENT_ID = 'test-client-id';
 
-const { SpotifyClient, SpotifyApiError } = await import('../src/client.ts');
+const { SpotifyClient, SpotifyApiError, selectNextLaneTask } = await import('../src/client.ts');
 const { TOKEN_FILE } = await import('../src/auth.ts');
 const { initConfig } = await import('../src/config.ts');
 
@@ -805,5 +805,49 @@ describe('SpotifyClient', () => {
       const all = await client.getAllPages('/me/tracks');
       assert.deepEqual(all, [{ id: 0 }]);
     });
+  });
+});
+
+describe('lane aging selection (#133)', () => {
+  it('promotes an aged LOW task ahead of queued NORMAL tasks', () => {
+    const mk = (name: string, enqueuedAt: number) => ({
+      run: async () => name,
+      resolve: () => {},
+      reject: () => {},
+      enqueuedAt,
+    });
+    const now = 1_000_000;
+    const n1 = mk('n1', now), n2 = mk('n2', now);
+    const oldTask = mk('old', now - 16_000), newTask = mk('new', now - 100);
+    const normal = [n1, n2];
+    const low = [oldTask, newTask];
+
+    // Aged LOW is promoted ahead of queued NORMAL tasks.
+    const agedPick = selectNextLaneTask(normal, low, now, 15_000);
+    assert.equal(agedPick, oldTask);
+    assert.deepEqual(normal, [n1, n2]);
+    assert.deepEqual(low, [newTask]);
+
+    // Without aging, NORMAL wins and the fresh LOW task stays queued.
+    const freshPick = selectNextLaneTask([n1], [newTask], now, 15_000);
+    assert.equal(freshPick, n1);
+  });
+
+  it('keeps NORMAL priority while no LOW task has aged past the threshold', () => {
+    const mk = (name: string, enqueuedAt: number) => ({
+      run: async () => name,
+      resolve: () => {},
+      reject: () => {},
+      enqueuedAt,
+    });
+    const now = 1_000_000;
+    const n1 = mk('n1', now);
+    const fresh = mk('fresh', now - 1_000);
+    const normal = [n1];
+    const low = [fresh];
+
+    const picked = selectNextLaneTask(normal, low, now, 15_000);
+    assert.equal(picked, n1);
+    assert.equal(low.length, 1);
   });
 });
