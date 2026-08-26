@@ -1,4 +1,5 @@
-import { loadTokens, saveTokens } from './auth.js';
+import { readFile } from 'node:fs/promises';
+import { loadTokens, saveTokens, TOKEN_FILE } from './auth.js';
 import { LruTtlCache, shouldBypassCache, cacheKey } from './cache.js';
 import { getConfig } from './config.js';
 import { appendHistory } from './history.js';
@@ -6,24 +7,16 @@ import { appendHistory } from './history.js';
 const BASE_URL = 'https://api.spotify.com/v1';
 import type { TokenData, SpotifyPaged } from './types/spotify.js';
 
-// Per-request timeout in milliseconds. Every outbound HTTP call (API requests,
-// token refresh) carries an AbortSignal.timeout so a hung connection (network
-// change, VPN drop) cannot stall the serialized request queue forever.
-// Override with SPOTIFY_REQUEST_TIMEOUT_MS.
-const REQUEST_TIMEOUT_MS = (() => {
-  const parsed = Number.parseInt(process.env.SPOTIFY_REQUEST_TIMEOUT_MS ?? '', 10);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : 30_000;
-})();
-
 async function fetchWithTimeout(url: string, init: RequestInit): Promise<Response> {
+  const requestTimeoutMs = getConfig().spotifyRequestTimeoutMs;
   try {
-    return await fetch(url, { ...init, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
+    return await fetch(url, { ...init, signal: AbortSignal.timeout(requestTimeoutMs) });
   } catch (err) {
     // We own the signal, so an abort here can only be our own timeout.
     if (err instanceof Error && (err.name === 'TimeoutError' || err.name === 'AbortError')) {
       throw new SpotifyApiError(
         408,
-        `${init.method ?? 'GET'} ${url} timed out after ${Math.round(REQUEST_TIMEOUT_MS / 1000)}s`,
+        `${init.method ?? 'GET'} ${url} timed out after ${Math.round(requestTimeoutMs / 1000)}s`,
       );
     }
     throw err;
@@ -214,20 +207,61 @@ export class SpotifyClient {
     if (!clientId) throw new Error('SPOTIFY_CLIENT_ID environment variable is not set');
 
     const tokens = this.tokens!;
+
+    // Cross-process race guard (#109): another spotify-mcp process may have
+    // refreshed since we loaded our copy. If the on-disk token is fresher
+    // than ours, adopt it and skip the network round-trip entirely.
+    try {
+      const stored = JSON.parse(await readFile(TOKEN_FILE, 'utf8')) as TokenData;
+      if (Number.isFinite(stored.expires_at) && stored.expires_at > tokens.expires_at) {
+        this.loadPromise = Promise.resolve(stored);
+        this.tokens = stored;
+        return;
+      }
+    } catch {
+      // Missing/unreadable/corrupt file — fall through to a normal refresh.
+    }
+
     const body = new URLSearchParams({
       grant_type: 'refresh_token',
       refresh_token: tokens.refresh_token,
       client_id: clientId,
     });
 
-    const res = await fetchWithTimeout('https://accounts.spotify.com/api/token', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: body.toString(),
-    });
+    let res: Response;
+    try {
+      res = await fetchWithTimeout('https://accounts.spotify.com/api/token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: body.toString(),
+      });
+    } catch {
+      // Network failure or our own timeout. If the old access token is still
+      // usable, keep it and let the current request proceed (#109); otherwise
+      // there is nothing left to authenticate with.
+      if (Date.now() < tokens.expires_at) return;
+      throw new SpotifyApiError(503, 'Spotify token service temporarily unavailable');
+    }
 
     if (!res.ok) {
-      throw new SpotifyApiError(res.status, 'Token refresh failed — re-run "spotify-mcp auth"');
+      // Classify the failure before deciding what to surface (#109).
+      let grantError: string | undefined;
+      try {
+        const errBody = (await res.json()) as { error?: unknown };
+        if (typeof errBody?.error === 'string') grantError = errBody.error;
+      } catch {
+        // Non-JSON error body — treated as an unclassified failure below.
+      }
+
+      if (grantError === 'invalid_grant') {
+        // Refresh token revoked/expired — only re-auth fixes this.
+        throw new SpotifyApiError(res.status, 'Token refresh failed — re-run "spotify-mcp auth"');
+      }
+
+      // Transient outage (5xx) with a still-valid access token: ride it out.
+      if (res.status >= 500 && Date.now() < tokens.expires_at) return;
+
+      throw new SpotifyApiError(res.status, 'Spotify token service temporarily unavailable');
     }
 
     const data = await res.json() as {
@@ -236,10 +270,15 @@ export class SpotifyClient {
       refresh_token?: string;
     };
 
+    // Guard against a malformed expires_in (#109): NaN/undefined would poison
+    // expires_at forever, so treat it as already expired — the next request
+    // will attempt another refresh instead of sending a dead token.
+    const expiresIn = Number.isFinite(data.expires_in) ? data.expires_in : 0;
+
     this.tokens = {
       access_token: data.access_token,
       refresh_token: data.refresh_token ?? tokens.refresh_token,
-      expires_at: Date.now() + data.expires_in * 1000,
+      expires_at: Date.now() + expiresIn * 1000,
     };
 
     await saveTokens(this.tokens);
