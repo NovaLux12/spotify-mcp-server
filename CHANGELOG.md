@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > from [Conventional Commits](https://www.conventionalcommits.org/). Entries below v1.0.4 were
 > backfilled by hand from git history.
 
+## [1.10.0](https://github.com/NovaLux12/spotify-mcp-server/compare/v1.9.0...v1.10.0) (2026-08-26)
+
+
+### Features
+
+* **#133:** two-lane request scheduler — interactive reads drain before bulk walks ([301517e](https://github.com/NovaLux12/spotify-mcp-server/commit/301517eeea752876b5402af5b6ce1f0ecd05005a))
+
 ## [1.9.0](https://github.com/NovaLux12/spotify-mcp-server/compare/v1.8.0...v1.9.0) (2026-08-26)
 
 
