@@ -234,46 +234,64 @@ async function runDoctor(): Promise<void> {
   console.log('');
   console.log('Configuration:');
   console.log(`  token file        ${cfg.tokenFile}`);
+  if (cfg.profile) console.log(`  profile           ${cfg.profile}`);
   console.log(`  redirect URI      ${cfg.redirectUri}`);
   console.log(`  headless          ${cfg.headless ? 'yes' : 'no'}`);
   console.log(`  max items         ${cfg.maxItems}`);
   console.log(`  fetch-all cap     ${cfg.fetchAllCap}`);
   console.log(`  mutation history  ${cfg.historyEnabled ? 'enabled' : 'disabled'}`);
+  if (cfg.market) console.log(`  market            ${cfg.market}`);
+  if (cfg.scopes) console.log(`  scopes            ${cfg.scopes.join(', ')}`);
 
   console.log('');
   try {
     const tokens = await loadTokens();
     const msLeft = tokens.expires_at - Date.now();
+    const hasRefresh = typeof tokens.refresh_token === 'string' && !!tokens.refresh_token;
+    const refreshNote = hasRefresh ? 'refresh_token present' : 'refresh_token MISSING — re-run auth';
     if (msLeft <= 0) {
-      console.log('Token state: EXPIRED — the next API call will attempt an automatic refresh.');
+      const secAgo = Math.round(-msLeft / 1000);
+      console.log(`Token state: EXPIRED (${secAgo}s ago, ${new Date(tokens.expires_at).toISOString()}) — next API call will auto-refresh; if refresh fails, re-run "spotify-mcp auth".`);
+      console.log(`             ${refreshNote} | file: ${cfg.tokenFile}`);
     } else if (msLeft < 60_000) {
       console.log(
         `Token state: expiring in ${Math.round(msLeft / 1000)}s — will auto-refresh on next use.`,
       );
+      console.log(`             ${refreshNote} | file: ${cfg.tokenFile}`);
     } else {
       const mins = Math.floor(msLeft / 60_000);
       const hours = Math.floor(mins / 60);
       console.log(
         `Token state: valid, expires at ${new Date(tokens.expires_at).toISOString()} ` +
-          `(in ${hours > 0 ? `${hours}h ` : ''}${mins % 60}m).`,
+          `(in ${hours > 0 ? `${hours}h ` : ''}${mins % 60}m) — ${refreshNote}`,
       );
+      console.log(`             file: ${cfg.tokenFile}`);
     }
+    if (tokens.scope) console.log(`  granted scopes: ${tokens.scope}`);
   } catch (err) {
     failed = true;
     console.error(`Token state: MISSING or unreadable — ${err instanceof Error ? err.message : err}`);
     console.error('             Run "spotify-mcp auth" first.');
+    console.error(`             file: ${cfg.tokenFile}`);
   }
 
   console.log('');
   console.log('Live probe: GET /me ...');
   const client = new SpotifyClient({ disableCache: true });
   try {
-    const me = await client.get<{ id?: string; display_name?: string }>('/me');
+    const me = await client.get<{ id?: string; display_name?: string; product?: string; country?: string }>('/me');
     if (!me || !me.id) {
       failed = true;
       console.error('  FAIL — endpoint returned an empty profile.');
     } else {
-      console.log(`  PASS — authenticated as ${me.display_name ?? me.id} (${me.id})`);
+      const extra = [
+        me.product ? `product=${me.product}` : null,
+        me.country ? `country=${me.country}` : null,
+      ].filter(Boolean).join(' ');
+      console.log(`  PASS — authenticated as ${me.display_name ?? me.id} (${me.id})${extra ? ' ' + extra : ''}`);
+      if (me.product   === 'free' || me.product === 'open') {
+        console.log('  NOTE — account is Free — playback control (play/pause/skip/seek/volume/queue) will 403; Premium required.');
+      }
     }
   } catch (err) {
     failed = true;

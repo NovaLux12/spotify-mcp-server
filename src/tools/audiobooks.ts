@@ -19,6 +19,7 @@ import {
   listStructuredContent,
   type ResponseFormatValue,
 } from '../shaping.js';
+import { getConfig, resolveMarket } from '../config.js';
 
 const MARKET_NOTE =
   ' Audiobooks are only available in the US, UK, Canada, Ireland, New Zealand and Australia markets.';
@@ -59,7 +60,10 @@ async function getWithMarketFallback<T>(
   marketArg: string | undefined,
   extraParams: Record<string, string> = {},
 ): Promise<T | null> {
-  const market = marketArg ?? (await resolveProfileCountry(client));
+  let market: string | undefined;
+  if (marketArg) market = marketArg.toUpperCase();
+  else if (getConfig().market) market = getConfig().market!;
+  else market = await resolveProfileCountry(client);
   const params: Record<string, string> = { ...extraParams };
   if (market) params.market = market;
   try {
