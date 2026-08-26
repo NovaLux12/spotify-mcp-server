@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > from [Conventional Commits](https://www.conventionalcommits.org/). Entries below v1.0.4 were
 > backfilled by hand from git history.
 
+## [1.18.0](https://github.com/NovaLux12/spotify-mcp-server/compare/v1.17.0...v1.18.0) (2026-08-26)
+
+
+### Features
+
+* **backup:** backup_library + list_backups local library snapshots ([#159](https://github.com/NovaLux12/spotify-mcp-server/issues/159)) ([d69932d](https://github.com/NovaLux12/spotify-mcp-server/commit/d69932dcf918515686525c64e4d464b92ffcb0f6))
+* **restore:** restore_library_snapshot — strictly additive snapshot restore ([#160](https://github.com/NovaLux12/spotify-mcp-server/issues/160)) ([9efadff](https://github.com/NovaLux12/spotify-mcp-server/commit/9efadff9f4f0ee4acd9dce40d30c3990451ab244))
+* wire backup_library/list_backups + restore_library_snapshot into the server ([6c473c1](https://github.com/NovaLux12/spotify-mcp-server/commit/6c473c11910abb205727ba873657a3f0636689c4))
+
 ## [1.17.0](https://github.com/NovaLux12/spotify-mcp-server/compare/v1.16.1...v1.17.0) (2026-08-26)
 
 
