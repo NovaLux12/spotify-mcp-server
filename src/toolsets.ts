@@ -7,6 +7,10 @@
  *
  * A set maps to REGISTRATION KEYS (the registerXxx call sites in index.ts),
  * not individual tool names: gating happens at registration time.
+ *
+ * Fine-grained opt-in/opt-out (#111 item 7): SPOTIFY_MCP_ENABLE_TOOLS /
+ * SPOTIFY_MCP_DISABLE_TOOLS force individual registration keys on/off on top
+ * of the set trim (disable wins over enable wins over set membership).
  */
 
 /**
@@ -83,11 +87,70 @@ export function resolveToolsets(spec: string | undefined): { sets: Set<string>; 
 }
 
 /**
- * Whether registration key `key` is enabled under the active set names from
- * {@link resolveToolsets}. Keys not covered by any set are always active
- * (defensive default: never silently drop an unclassified entry point).
+ * Set-membership-only variant of {@link isModuleActive} (no overrides).
+ * Kept as the exported name used by existing call sites in index.ts.
  */
 export function isActive(key: string, sets: Set<string>): boolean {
+  return isModuleActive(key, sets);
+}
+
+/**
+ * Per-tool opt-in/opt-out (#111 item 7), layered on top of the toolset trim.
+ * Parses two comma-separated lists of REGISTRATION KEYS from env-driven specs:
+ *
+ *   SPOTIFY_MCP_ENABLE_TOOLS  → force a module active even if its set was trimmed
+ *   SPOTIFY_MCP_DISABLE_TOOLS → force a module hidden even if its set is active
+ *
+ * Precedence (see {@link isModuleActive}): disable beats enable beats set
+ * membership. Unknown keys are collected so the caller can warn, mirroring
+ * {@link resolveToolsets}; they never activate or deactivate anything.
+ */
+export function resolveToolOverrides(
+  enableSpec: string | undefined,
+  disableSpec: string | undefined,
+): {
+  enable: Set<string>;
+  disable: Set<string>;
+  unknown: { enable: string[]; disable: string[] };
+} {
+  const known: Record<string, true> = {};
+  for (const k of ALL_KEYS) known[k.toLowerCase()] = true;
+
+  const parse = (
+    spec: string | undefined,
+    bucket: Set<string>,
+    misses: string[],
+  ): void => {
+    for (const token of (spec ?? '').split(',')) {
+      const t = token.trim().toLowerCase();
+      if (t.length === 0) continue;
+      if (Object.hasOwn(known, t)) bucket.add(t);
+      else misses.push(t);
+    }
+  };
+
+  const enable = new Set<string>();
+  const disable = new Set<string>();
+  const unknown = { enable: [] as string[], disable: [] as string[] };
+  parse(enableSpec, enable, unknown.enable);
+  parse(disableSpec, disable, unknown.disable);
+  return { enable, disable, unknown };
+}
+
+/**
+ * Whether registration key `key` is active under the resolved toolsets plus
+ * per-key overrides: `overrides.disable` wins over `overrides.enable`, which
+ * wins over set membership. Keys not covered by any set stay active unless
+ * explicitly disabled (same defensive default as {@link isActive}).
+ */
+export function isModuleActive(
+  key: string,
+  sets: Set<string>,
+  overrides?: { enable: Set<string>; disable: Set<string> },
+): boolean {
+  const lk = key.toLowerCase();
+  if (overrides?.disable.has(lk)) return false;
+  if (overrides?.enable.has(lk)) return true;
   const owners = KEY_TO_SETS[key];
   if (!owners) return true;
   return owners.some((set) => sets.has(set));
