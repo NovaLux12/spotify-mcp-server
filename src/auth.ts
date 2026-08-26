@@ -147,11 +147,16 @@ async function exchangeCodeForTokens(
     access_token: string;
     refresh_token: string;
     expires_in: number;
+    // Space-separated scopes actually granted. Spotify echoes this back on
+    // success; fall back to what we requested (#111 item 6) so downstream
+    // scope-aware gating always has something to compare against.
+    scope?: string;
   };
   return {
     access_token: data.access_token,
     refresh_token: data.refresh_token,
     expires_at: Date.now() + data.expires_in * 1000,
+    scope: data.scope ?? SCOPES,
   };
 }
 
