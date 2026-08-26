@@ -20,6 +20,7 @@ import {
   DryRun,
 } from '../shaping.js';
 import type { ResponseFormatValue, PaginationInfo } from '../shaping.js';
+import { issueReceipt, formatReceipt } from '../receipts.js';
 import { getConfig } from '../config.js';
 
 // ---------------------------------------------------------------------------
@@ -62,6 +63,32 @@ function mutationOut(
 ): ToolOut {
   const payload = { ok: true, affected: n, uris: [...uris] };
   return shapeResult(rf, `${prose}\n${batchSummary(n, uris)}`, payload);
+}
+
+/**
+ * Mutation confirmation + post-mutation verification receipt (#112 idea 11):
+ * refetches minimal state so the agent sees explicit confirmation of what
+ * landed in the same turn as the write.
+ */
+async function mutationOutVerified(
+  rf: ResponseFormatValue,
+  client: { get<T>(path: string, params?: Record<string, string>): Promise<T | null> },
+  kind: 'library',
+  prose: string,
+  n: number,
+  uris: readonly string[],
+  receiptOpts: { expectPresent?: boolean } = {},
+): Promise<ToolOut> {
+  const base = mutationOut(rf, prose, n, uris);
+  const receipt = await issueReceipt(client, { kind, uris: [...uris], ...receiptOpts });
+  const text = `${base.content[0].text}\n${formatReceipt(receipt)}`;
+  return {
+    content: [{ type: 'text', text: `${base.content[0].text}\n${formatReceipt(receipt)}` }],
+    structuredContent: {
+      ...(base.structuredContent ?? {}),
+      receipt: receipt as unknown as Record<string, unknown>,
+    },
+  };
 }
 
 /** dry_run preview (#57): deterministic diff text, zero mutating calls made. */
@@ -550,8 +577,10 @@ export function registerLibraryTools(server: McpServer, client: SpotifyClient): 
         return dryRunOut(args.response_format, 'save_to_library', 'user library', args.uris);
       }
       await client.put(`/me/library?${new URLSearchParams(libraryUrisParam(args.uris)).toString()}`);
-      return mutationOut(
+      return mutationOutVerified(
         args.response_format,
+        client,
+        'library',
         `Saved ${args.uris.length} item(s) to library.`,
         args.uris.length,
         args.uris,
@@ -583,11 +612,14 @@ export function registerLibraryTools(server: McpServer, client: SpotifyClient): 
       await client.delete(
         `/me/library?${new URLSearchParams(libraryUrisParam(args.uris)).toString()}`,
       );
-      return mutationOut(
+      return mutationOutVerified(
         args.response_format,
+        client,
+        'library',
         `Removed ${args.uris.length} item(s) from library.`,
         args.uris.length,
         args.uris,
+        { expectPresent: false },
       );
     },
   );

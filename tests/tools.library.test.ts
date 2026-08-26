@@ -452,8 +452,7 @@ describe('zod schema bounds (50/50/50)', () => {
 // ---------------------------------------------------------------------------
 
 describe('unified library tools (save_to_library / remove_from_library / check_in_library)', () => {
-  it('save_to_library sends full URIs comma-separated as ?uris= on PUT /me/library', async () => {
-    const h = harness();
+  it('save_to_library sends full URIs comma-separated as ?uris= on PUT /me/library and verifies via a receipt', async () => {
     const uris = [
       'spotify:track:abc',
       'spotify:album:xyz',
@@ -461,33 +460,52 @@ describe('unified library tools (save_to_library / remove_from_library / check_i
       'spotify:user:wanda',
       'spotify:playlist:p1',
     ];
+    const h = harness((path) =>
+      path === '/me/library/contains' ? uris.map(() => true) : undefined,
+    );
 
     const out = await h.invoke('save_to_library', { uris });
 
-    assert.deepEqual(wireCalls(h.client.calls), [
+    const wires = wireCalls(h.client.calls);
+    assert.deepEqual(wires.filter((c) => c.method === 'PUT'), [
       {
         method: 'PUT',
         path: `/me/library?uris=${encodeURIComponent(uris.join(','))}`,
         arg: undefined,
       },
     ]);
+    // Receipt verification refetches /me/library/contains (one chunk, ≤50).
+    const contains = wires.filter((c) => c.method === 'GET' && c.path === '/me/library/contains');
+    assert.equal(contains.length, 1);
     assert.match(out.content[0].text, /Saved 5 item\(s\) to library\./);
+    assert.match(out.content[0].text, /verified/i);
+    const sc = out.structuredContent as { receipt?: { verified: boolean } };
+    assert.equal(sc.receipt?.verified, true);
   });
 
-  it('remove_from_library sends full URIs comma-separated as ?uris= on DELETE /me/library', async () => {
-    const h = harness();
+  it('remove_from_library sends full URIs comma-separated as ?uris= on DELETE /me/library and verifies via a receipt', async () => {
     const uris = ['spotify:show:s1', 'spotify:episode:e1', 'spotify:user:wanda'];
+    const h = harness((path) =>
+      path === '/me/library/contains' ? uris.map(() => false) : undefined,
+    );
 
     const out = await h.invoke('remove_from_library', { uris });
 
-    assert.deepEqual(wireCalls(h.client.calls), [
-      {
-        method: 'DELETE',
-        path: `/me/library?uris=${encodeURIComponent(uris.join(','))}`,
-        arg: undefined,
-      },
-    ]);
+    assert.deepEqual(
+      wireCalls(h.client.calls).filter((c) => c.method === 'DELETE'),
+      [
+        {
+          method: 'DELETE',
+          path: `/me/library?uris=${encodeURIComponent(uris.join(','))}`,
+          arg: undefined,
+        },
+      ],
+    );
     assert.match(out.content[0].text, /Removed 3 item\(s\) from library\./);
+    // Post-removal contains returns false for everything → verified.
+    const sc = out.structuredContent as { receipt?: { verified: boolean; missing: string[] } };
+    assert.equal(sc.receipt?.verified, true);
+    assert.deepEqual(sc.receipt?.missing, []);
   });
 
   it('check_in_library queries /me/library/contains once, accepting artist/user/playlist URIs in order', async () => {
@@ -714,11 +732,16 @@ describe('dry_run previews destructive operations without any mutating call (#57
     for (const uri of uris) assert.ok(text.includes(uri));
   });
 
-  it('remove_from_library without dry_run still performs the DELETE', async () => {
-    const h = harness();
+  it('remove_from_library without dry_run still performs the DELETE (plus the receipt contains-check)', async () => {
+    const h = harness((path) =>
+      path === '/me/library/contains' ? [false] : undefined,
+    );
     await h.invoke('remove_from_library', { uris: ['spotify:playlist:p1'] });
-    assert.equal(h.client.calls.length, 1);
-    assert.equal(h.client.calls[0].method, 'DELETE');
+    assert.equal(
+      h.client.calls.filter((c) => c.method === 'DELETE').length,
+      1,
+      'exactly one DELETE',
+    );
   });
 });
 

@@ -62,6 +62,11 @@ export interface IssueReceiptOpts {
   id?: string;
   uris: string[];
   before?: number;
+  /**
+   * Library kind only: whether the mutation was expected to make the uris
+   * PRESENT (save) or ABSENT (remove). Defaults to present.
+   */
+  expectPresent?: boolean;
 }
 
 // In-module receipt store, capped at 100 with FIFO eviction.
@@ -122,8 +127,16 @@ export async function issueReceipt(
         if (flags?.[j]) present.add(uri);
       });
     }
-    missing = opts.uris.filter((u) => !present.has(u));
-    after = present.size;
+    // Save expects everything present; removal expects everything absent —
+    // a leftover uri after removal is exactly what the agent needs to know.
+    const expectPresent = opts.expectPresent ?? true;
+    if (expectPresent) {
+      missing = opts.uris.filter((u) => !present.has(u));
+      after = present.size;
+    } else {
+      missing = opts.uris.filter((u) => present.has(u));
+      after = opts.uris.length - missing.length;
+    }
     verified = missing.length === 0;
   } else {
     // playlist_meta: the mutation succeeded if the playlist itself resolves.
