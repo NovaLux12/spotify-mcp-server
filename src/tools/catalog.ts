@@ -24,6 +24,7 @@ import {
   truncateItems,
   paginationInfo,
   listStructuredContent,
+  parseSpotifyUri,
   type ResponseFormatValue,
 } from '../shaping.js';
 import { getConfig, resolveMarket } from '../config.js';
@@ -845,6 +846,397 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
         continuable: false,
         maxResults: args.max_results,
       });
+    },
+  );
+
+  // ----- gap-fill: get_category (#256) -----
+  server.tool(
+    'get_category',
+    'Get a single Spotify browse category by ID (GET /browse/categories/{id}). Quota: 🟢 single.',
+    {
+      category_id: z.string().min(1).describe('Category ID from get_categories'),
+      country: z.string().optional().describe('ISO 3166-1 alpha-2 country code'),
+      locale: z.string().optional().describe('Locale, e.g. en_US'),
+      response_format: ResponseFormat,
+    },
+    async (args) => {
+      const params: Record<string, string> = {};
+      if (args.country) params.country = args.country;
+      if (args.locale) params.locale = args.locale;
+      const data = await client.get<Record<string, unknown>>(
+        `/browse/categories/${encodeURIComponent(args.category_id)}`,
+        params,
+      );
+      if (!data) throw new Error(`Category "${args.category_id}" not found`);
+      if (args.response_format === 'json') return jsonResult(data as Record<string, unknown>);
+      const icons = (data.icons as Array<{ url: string }> | undefined) ?? [];
+      const lines = [
+        `Category: ${data.name as string} (id: ${data.id as string})`,
+        `Href: ${data.href as string}`,
+        ...(icons.length ? [`Icons: ${icons.map((i) => i.url).join(', ')}`] : []),
+      ];
+      return renderSingle(args.response_format, data as Record<string, unknown>, lines);
+    },
+  );
+
+  // ----- typed search family (#257-263) via factory -----
+  type TypedSearchKind = 'track' | 'artist' | 'album' | 'playlist' | 'show' | 'episode' | 'audiobook';
+  const typedSearchMeta: Record<TypedSearchKind, { tool: string; description: string; key: string }> = {
+    track: { tool: 'search_tracks', description: 'Search tracks only (GET /search?type=track). Quota: 🟢 single.', key: 'tracks' },
+    artist: { tool: 'search_artists', description: 'Search artists only (GET /search?type=artist). Quota: 🟢 single.', key: 'artists' },
+    album: { tool: 'search_albums', description: 'Search albums only (GET /search?type=album). Quota: 🟢 single.', key: 'albums' },
+    playlist: { tool: 'search_playlists', description: 'Search playlists only (GET /search?type=playlist). Quota: 🟢 single.', key: 'playlists' },
+    show: { tool: 'search_shows', description: 'Search podcast shows only (GET /search?type=show). Quota: 🟢 single.', key: 'shows' },
+    episode: { tool: 'search_episodes', description: 'Search podcast episodes only (GET /search?type=episode). Quota: 🟢 single.', key: 'episodes' },
+    audiobook: { tool: 'search_audiobooks', description: 'Search audiobooks only (GET /search?type=audiobook). Audiobooks are only available in the US, UK, CA, IE, NZ and AU markets. Quota: 🟢 single.', key: 'audiobooks' },
+  };
+  function makeTypedSearchTool(kind: TypedSearchKind): void {
+    const meta = typedSearchMeta[kind];
+    server.tool(
+      meta.tool,
+      meta.description,
+      {
+        query: z.string().min(1).describe('Search query'),
+        limit: z.number().int().min(1).max(10).optional().describe('Results per type, 1–10. Default: 5'),
+        offset: z.number().int().min(0).max(1000).optional().describe('Index of the first result to return, 0–1000'),
+        market: z.string().optional().describe('ISO 3166-1 alpha-2 country code'),
+        include_external: z.enum(['audio']).optional().describe('Pass "audio" to include externally-hosted audio items'),
+        response_format: ResponseFormat,
+        max_results: z.number().int().positive().max(2000).optional().describe('Max items to return'),
+      },
+      async (args) => {
+        const limit = args.limit ?? 5;
+        const offset = args.offset ?? 0;
+        const params: Record<string, string> = { q: args.query as string, type: kind, limit: String(limit) };
+        if (args.offset !== undefined) params.offset = String(args.offset);
+        if (args.market) params.market = args.market as string;
+        if (args.include_external) params.include_external = args.include_external as string;
+        const raw = await client.get<Record<string, unknown>>('/search', params);
+        if (!raw) return { content: [{ type: 'text', text: 'No results found.' }] };
+        if (args.response_format === 'json') {
+          const r = raw as Record<string, unknown>;
+          return { content: [{ type: 'text', text: JSON.stringify(r) }], structuredContent: r };
+        }
+        const section = (raw as Record<string, unknown>)[meta.key] as { items?: unknown[]; total?: number } | undefined;
+        const items = (section?.items ?? []).filter(Boolean) as unknown[];
+        const total = typeof section?.total === 'number' ? section!.total as number : items.length;
+        if (items.length === 0) return { content: [{ type: 'text', text: 'No results found.' }] };
+        const cap = resolveMaxResults(args.max_results as number | undefined);
+        const trunc = truncateItems(items, cap);
+        const lines: string[] = [`Search ${kind}s for "${args.query}" (${total} total):`];
+        trunc.items.forEach((it) => {
+          const o = it as Record<string, unknown>;
+          const name = (o.name as string) ?? (o.id as string) ?? 'unknown';
+          const uri = (o.uri as string) ?? '';
+          let extra = '';
+          if (kind === 'track') {
+            const artists = ((o.artists as Array<{ name: string }> | undefined) ?? []).map((a) => a.name).join(', ');
+            const album = (o.album as { name?: string } | undefined)?.name ?? '';
+            extra = artists ? ` by ${artists}` : '';
+            if (album) extra += ` — ${album}`;
+            if (typeof o.duration_ms === 'number') extra += ` (${formatDuration(o.duration_ms as number)})`;
+          } else if (kind === 'artist') {
+            const genres = ((o.genres as string[] | undefined) ?? []).slice(0, 3).join(', ');
+            if (genres) extra = ` — ${genres}`;
+          } else if (kind === 'album') {
+            const artists = ((o.artists as Array<{ name: string }> | undefined) ?? []).map((a) => a.name).join(', ');
+            if (artists) extra = ` by ${artists}`;
+            if (o.release_date) extra += ` (${o.release_date as string})`;
+          } else if (kind === 'playlist') {
+            const owner = (o.owner as { display_name?: string; id?: string } | undefined);
+            const ownerName = owner?.display_name ?? owner?.id ?? 'unknown';
+            extra = ` by ${ownerName}`;
+          } else if (kind === 'show') {
+            const pub = (o.publisher as string | undefined) ?? 'unknown publisher';
+            extra = ` by ${pub}`;
+          } else if (kind === 'episode') {
+            const show = (o.show as { name?: string } | undefined)?.name ?? '';
+            if (show) extra = ` — ${show}`;
+            if (typeof o.duration_ms === 'number') extra += ` (${formatDuration(o.duration_ms as number)})`;
+          } else if (kind === 'audiobook') {
+            const authors = ((o.authors as Array<{ name: string }> | undefined) ?? []).map((a) => a.name).join(', ');
+            if (authors) extra = ` by ${authors}`;
+          }
+          lines.push(`  \u2022 "${name}"${extra} | URI: ${uri}`);
+        });
+        if (trunc.footer) lines.push('', `(${trunc.footer})`);
+        const pagination = paginationInfo({ total, offset, limit, returned: trunc.items.length });
+        return { content: [{ type: 'text', text: lines.join('\n') }], structuredContent: { query: args.query, type: kind, items: trunc.items, total, pagination } };
+      },
+    );
+  }
+  (['track', 'artist', 'album', 'playlist', 'show', 'episode', 'audiobook'] as TypedSearchKind[]).forEach(makeTypedSearchTool);
+
+  // ----- catalog_batch_lookup (#268) -----
+  server.tool(
+    'catalog_batch_lookup',
+    'Resolve a mixed list of Spotify URIs (tracks/albums/artists/shows/episodes/audiobooks/chapters) in partitioned batch calls. Quota: 🟡 1 per distinct type + chunking.',
+    {
+      uris: z.array(z.string().min(1)).min(1).max(50).describe('Spotify URIs (spotify:track:..., spotify:album:..., etc.) 1–50 mixed'),
+      ...sharedListFields,
+    },
+    async (args) => {
+      const uris = args.uris as string[];
+      const groups = new Map<string, string[]>();
+      const invalid: string[] = [];
+      for (const uri of uris) {
+        const parsed = parseSpotifyUri(uri);
+        if (!parsed) { invalid.push(uri); continue; }
+        const type = parsed.type;
+        // normalize plural key for fetchSeveral
+        const kindMap: Record<string, string> = { track: 'tracks', album: 'albums', artist: 'artists', playlist: 'playlists', show: 'shows', episode: 'episodes', audiobook: 'audiobooks', chapter: 'chapters' };
+        const kind = kindMap[type];
+        if (!kind) { invalid.push(uri); continue; }
+        // playlists use different endpoint not in fetchSeveral; skip with note
+        if (kind === 'playlists') { invalid.push(uri); continue; }
+        const arr = groups.get(kind) ?? [];
+        arr.push(parsed.id);
+        groups.set(kind, arr);
+      }
+      if (groups.size === 0) throw new Error(`No resolvable URIs. Invalid: ${invalid.join(', ')}`);
+      const responseKeyMap: Record<string, string> = { tracks: 'tracks', albums: 'albums', artists: 'artists', shows: 'shows', episodes: 'episodes', audiobooks: 'audiobooks', chapters: 'chapters' };
+      const allItems: Array<{ type: string; item: unknown }> = [];
+      for (const [kind, ids] of groups) {
+        const key = responseKeyMap[kind] ?? kind;
+        const items = await fetchSeveral<Record<string, unknown>>(client, kind as SeveralKind, key, ids);
+        for (const it of items) allItems.push({ type: kind, item: it });
+      }
+      if (args.response_format === 'json') {
+        const raw: Record<string, unknown> = { items: allItems, invalid };
+        return { content: [{ type: 'text', text: JSON.stringify(raw) }], structuredContent: raw };
+      }
+      const cap = resolveMaxResults(args.max_results);
+      const trunc = truncateItems(allItems, cap);
+      const lines = [`Batch lookup (${allItems.length} resolved${invalid.length ? `, ${invalid.length} invalid skipped` : ''}):`];
+      trunc.items.forEach(({ type, item }) => {
+        const o = item as Record<string, unknown>;
+        lines.push(`  \u2022 [${type}] "${(o.name as string) ?? (o.id as string)}" | URI: ${(o.uri as string) ?? ''}`);
+      });
+      if (trunc.footer) lines.push('', `(${trunc.footer})`);
+      if (invalid.length) lines.push('', `Invalid URIs skipped: ${invalid.join(', ')}`);
+      return { content: [{ type: 'text', text: lines.join('\n') }], structuredContent: { items: trunc.items, total: allItems.length, invalid } };
+    },
+  );
+
+  // ----- get_artist_singles / get_artist_appearances (#269, #270) -----
+  server.tool(
+    'get_artist_singles',
+    "List an artist's singles only (GET /artists/{id}/albums?include_groups=single). Quota: 🟢 single.",
+    {
+      artist_id: z.string().describe('Spotify artist ID'),
+      limit: z.number().int().min(1).max(10).optional().describe('Results per page, 1–10. Default: 10'),
+      offset: z.number().int().min(0).optional().describe('Offset. Default: 0'),
+      market: MARKET_CODE.optional().describe('ISO 3166-1 alpha-2 country code'),
+      ...sharedListFields,
+    },
+    async (args) => {
+      const result = await getWithMarketFallback<SpotifyArtistAlbumsResponse>(client, `/artists/${encodeURIComponent(args.artist_id as string)}/albums`, args.market as string | undefined, { include_groups: 'single', limit: String((args.limit as number) ?? 10), offset: String((args.offset as number) ?? 0) });
+      if (!result) throw new Error(`Artist "${args.artist_id}" not found`);
+      if (args.response_format === 'json') return jsonResult(result as unknown as Record<string, unknown>);
+      return renderList(args.response_format as ResponseFormatValue, result.items, { header: `Singles for artist (${result.total} total):`, line: (album: SpotifyAlbumItem) => `  \u2022 "${album.name}" (${album.release_date}, ${album.total_tracks} tracks) | URI: ${album.uri}`, total: result.total, offset: args.offset as number | undefined, limit: (args.limit as number) ?? 10, maxResults: args.max_results as number | undefined });
+    },
+  );
+  server.tool(
+    'get_artist_appearances',
+    "List albums an artist appears on (GET /artists/{id}/albums?include_groups=appears_on). Quota: 🟢 single.",
+    {
+      artist_id: z.string().describe('Spotify artist ID'),
+      limit: z.number().int().min(1).max(10).optional().describe('Results per page, 1–10. Default: 10'),
+      offset: z.number().int().min(0).optional().describe('Offset. Default: 0'),
+      market: MARKET_CODE.optional().describe('ISO 3166-1 alpha-2 country code'),
+      include_groups: z.array(z.enum(['appears_on', 'compilation'])).optional().describe('Default: ["appears_on"]'),
+      ...sharedListFields,
+    },
+    async (args) => {
+      const groups = ((args.include_groups as string[] | undefined) ?? ['appears_on']).join(',');
+      const result = await getWithMarketFallback<SpotifyArtistAlbumsResponse>(client, `/artists/${encodeURIComponent(args.artist_id as string)}/albums`, args.market as string | undefined, { include_groups: groups, limit: String((args.limit as number) ?? 10), offset: String((args.offset as number) ?? 0) });
+      if (!result) throw new Error(`Artist "${args.artist_id}" not found`);
+      if (args.response_format === 'json') return jsonResult(result as unknown as Record<string, unknown>);
+      return renderList(args.response_format as ResponseFormatValue, result.items, { header: `Appearances for artist (${result.total} total):`, line: (album: SpotifyAlbumItem) => `  \u2022 "${album.name}" (${album.album_type}, ${album.release_date}) | URI: ${album.uri}`, total: result.total, offset: args.offset as number | undefined, limit: (args.limit as number) ?? 10, maxResults: args.max_results as number | undefined });
+    },
+  );
+
+  // ----- market_validate (#271) -----
+  server.tool(
+    'market_validate',
+    'Validate ISO 3166-1 market codes against GET /markets (cached) and optionally return the account market from /me. Quota: 🟢 1–2 calls.',
+    {
+      markets: z.array(z.string().min(2).max(2)).optional().describe('Market codes to validate (2-letter). If omitted, just lists valid markets / account market.'),
+      include_account_market: z.boolean().optional().describe('Include account country from /me'),
+      response_format: ResponseFormat,
+    },
+    async (args) => {
+      let validSet: Set<string> | null = null;
+      let marketsRaw: unknown = null;
+      try {
+        const data = await client.get<{ markets?: Array<string | { codes?: string[] }> }>('/markets');
+        const list = data?.markets ?? [];
+        const codes: string[] = [];
+        for (const m of list) {
+          if (typeof m === 'string') codes.push(m.toUpperCase());
+          else if (m && typeof m === 'object' && Array.isArray((m as { codes?: string[] }).codes)) codes.push(...(m as { codes: string[] }).codes.map((c) => c.toUpperCase()));
+          else if (m && typeof m === 'object' && typeof (m as { name?: string }).name === 'string') { /* ignore name-only */ }
+        }
+        validSet = new Set(codes);
+        marketsRaw = data;
+      } catch (err) {
+        if (err instanceof SpotifyApiError && err.status === 403) {
+          const note = `GET /markets returned 403 (removed for newer app registrations Feb 2026). Falling back to account market only.`;
+          let accountMarket: string | undefined;
+          if (args.include_account_market) {
+            try { const me = await client.get<UserProfile>('/me'); accountMarket = me?.country; } catch { /* ignore */ }
+          }
+          const result: Record<string, unknown> = { note, account_market: accountMarket ?? null };
+          if (args.markets?.length) {
+            result.requested = args.markets;
+            result.verdict = 'unknown — /markets unavailable (403)';
+          }
+          if (args.response_format === 'json') return { content: [{ type: 'text', text: JSON.stringify(result) }], structuredContent: result };
+          const lines = [note];
+          if (accountMarket) lines.push(`Account market: ${accountMarket}`);
+          if (args.markets?.length) lines.push(`Requested: ${args.markets.join(', ')} (cannot validate without /markets)`);
+          return { content: [{ type: 'text', text: lines.join('\n') }], structuredContent: result };
+        }
+        throw err;
+      }
+      let accountMarket: string | undefined;
+      if (args.include_account_market) {
+        try { const me = await client.get<UserProfile>('/me'); accountMarket = me?.country; } catch { /* ignore */ }
+      }
+      if (!args.markets?.length) {
+        const result: Record<string, unknown> = { valid_markets: validSet ? [...validSet].sort() : [], account_market: accountMarket ?? null, markets_raw: marketsRaw };
+        if (args.response_format === 'json') return { content: [{ type: 'text', text: JSON.stringify(result) }], structuredContent: result };
+        const lines = [`Valid markets (${validSet!.size}): ${[...validSet!].sort().join(', ')}`];
+        if (accountMarket) lines.push(`Account market: ${accountMarket}`);
+        return { content: [{ type: 'text', text: lines.join('\n') }], structuredContent: result };
+      }
+      const requested = (args.markets as string[]).map((c) => c.toUpperCase());
+      const valid: string[] = [];
+      const invalid: string[] = [];
+      for (const c of requested) (validSet!.has(c) ? valid : invalid).push(c);
+      const result: Record<string, unknown> = { requested, valid, invalid, account_market: accountMarket ?? null };
+      if (args.response_format === 'json') return { content: [{ type: 'text', text: JSON.stringify(result) }], structuredContent: result };
+      const lines = [`Requested: ${requested.join(', ')}`, `Valid: ${valid.length ? valid.join(', ') : 'none'}`, `Invalid: ${invalid.length ? invalid.join(', ') : 'none'}`];
+      if (accountMarket) lines.push(`Account market: ${accountMarket}`);
+      return { content: [{ type: 'text', text: lines.join('\n') }], structuredContent: result };
+    },
+  );
+
+  // ----- browse_category_deepdive (rank 59 / #317) -----
+  server.tool(
+    'browse_category_deepdive',
+    'Category → playlists → optional items peek in one call (GET /browse/categories/{id} + /playlists (+ /playlists/{id}/tracks peek)). Quota: 🟡 2–3 calls.',
+    {
+      category_id: z.string().min(1).describe('Category ID from get_categories'),
+      country: z.string().optional().describe('ISO 3166-1 alpha-2 country code'),
+      locale: z.string().optional().describe('Locale, e.g. en_US'),
+      limit: z.number().int().min(1).max(50).optional().describe('Playlists per page, 1–50. Default: 10'),
+      peek_items: z.boolean().optional().describe('When true, fetch top 2 tracks of the first playlist'),
+      ...sharedListFields,
+    },
+    async (args) => {
+      const catParams: Record<string, string> = {};
+      if (args.country) catParams.country = args.country as string;
+      if (args.locale) catParams.locale = args.locale as string;
+      const category = await client.get<Record<string, unknown>>(`/browse/categories/${encodeURIComponent(args.category_id as string)}`, catParams);
+      if (!category) throw new Error(`Category "${args.category_id}" not found`);
+      const plParams: Record<string, string> = {};
+      if (args.country) plParams.country = args.country as string;
+      if (args.limit !== undefined) plParams.limit = String(args.limit);
+      const plData = await client.get<{ playlists: SpotifyPaged<SpotifyAlbumItem & { owner?: { display_name?: string; id?: string } }> }>(`/browse/categories/${encodeURIComponent(args.category_id as string)}/playlists`, plParams);
+      const playlists = plData?.playlists;
+      let peek: unknown[] | null = null;
+      if (args.peek_items && playlists?.items?.length) {
+        const first = playlists.items[0] as { id?: string };
+        if (first?.id) {
+          try {
+            const itemsData = await client.get<{ items: unknown[] }>(`/playlists/${encodeURIComponent(first.id)}/tracks`, { limit: '2' });
+            peek = itemsData?.items ?? null;
+          } catch { peek = null; }
+        }
+      }
+      if (args.response_format === 'json') {
+        const raw: Record<string, unknown> = { category, playlists, peek };
+        return { content: [{ type: 'text', text: JSON.stringify(raw) }], structuredContent: raw };
+      }
+      const cap = resolveMaxResults(args.max_results as number | undefined);
+      const lines = [`Category: ${category.name as string} (id: ${category.id as string})`];
+      if (playlists) {
+        lines.push(`Playlists (${playlists.total} total):`);
+        const trunc = truncateItems(playlists.items as unknown[], cap);
+        trunc.items.forEach((p) => {
+          const o = p as Record<string, unknown>;
+          lines.push(`  \u2022 "${o.name as string}" | URI: ${o.uri as string}`);
+        });
+        if (trunc.footer) lines.push(`  (${trunc.footer})`);
+        if (peek?.length) {
+          lines.push('', 'Peek (first playlist, 2 tracks):');
+          (peek as Array<Record<string, unknown>>).slice(0, 2).forEach((it) => {
+            const track = (it.track ?? it) as Record<string, unknown>;
+            lines.push(`  - "${(track.name as string) ?? 'unknown'}" | URI: ${(track.uri as string) ?? ''}`);
+          });
+        }
+      }
+      return { content: [{ type: 'text', text: lines.join('\n') }], structuredContent: { category, playlists, peek } };
+    },
+  );
+
+  // ----- show_episode_search (rank 60 / #318) -----
+  server.tool(
+    'show_episode_search',
+    'Full-text search within one show\'s episodes (GET /shows/{id}/episodes paged + client-side q). Quota: 🟡 1–N pages (fetch_all walks).',
+    {
+      show_id: z.string().min(1).describe('Spotify show ID'),
+      query: z.string().min(1).describe('Case-insensitive substring over name/description'),
+      limit: z.number().int().min(1).max(50).optional().describe('Results per page for the underlying paging, 1–50. Default: 20'),
+      offset: z.number().int().min(0).optional().describe('Offset for underlying paging. Default: 0'),
+      market: z.string().optional().describe('ISO 3166-1 alpha-2 country code'),
+      fetch_all: z.boolean().optional().describe('When true, walk all pages (up to cap) to find matches'),
+      ...sharedListFields,
+    },
+    async (args) => {
+      const q = (args.query as string).toLowerCase();
+      const fetchAll = Boolean(args.fetch_all);
+      const limit = (args.limit as number) ?? 20;
+      const offset = (args.offset as number) ?? 0;
+      const market = args.market as string | undefined;
+      const matches: SpotifyEpisodeSimple[] = [];
+      let total = 0;
+      const walk = async (off: number, lim: number) => {
+        const params: Record<string, string> = { limit: String(lim), offset: String(off) };
+        if (market) params.market = market;
+        const page = await client.get<SpotifyPaged<SpotifyEpisodeSimple>>(`/shows/${encodeURIComponent(args.show_id as string)}/episodes`, params);
+        if (!page) return null;
+        total = page.total;
+        for (const ep of page.items) {
+          const hay = `${ep.name} ${ep.description ?? ''}`.toLowerCase();
+          if (hay.includes(q)) matches.push(ep);
+        }
+        return page;
+      };
+      if (fetchAll) {
+        let off = 0;
+        const pageSize = 50;
+        while (true) {
+          const page = await walk(off, pageSize);
+          if (!page || page.items.length < pageSize || off + pageSize >= (page.total ?? 0)) break;
+          off += pageSize;
+          if (off > 500) break; // safety cap
+        }
+      } else {
+        await walk(offset, limit);
+      }
+      if (args.response_format === 'json') {
+        const raw: Record<string, unknown> = { show_id: args.show_id, query: args.query, total_episodes: total, matches };
+        return { content: [{ type: 'text', text: JSON.stringify(raw) }], structuredContent: raw };
+      }
+      if (matches.length === 0) return { content: [{ type: 'text', text: `No episodes matching "${args.query}" in show ${args.show_id}.` }] };
+      const cap = resolveMaxResults(args.max_results as number | undefined);
+      const trunc = truncateItems(matches, cap);
+      const lines = [`Episodes matching "${args.query}" in show ${args.show_id} (${matches.length} of ${total} total):`];
+      trunc.items.forEach((ep) => lines.push(`  \u2022 "${ep.name}" (${formatDuration(ep.duration_ms)}, ${ep.release_date}) | URI: ${ep.uri}`));
+      if (trunc.footer) lines.push('', `(${trunc.footer})`);
+      return { content: [{ type: 'text', text: lines.join('\n') }], structuredContent: { show_id: args.show_id, query: args.query, total_episodes: total, matches: trunc.items, pagination: paginationInfo({ total: matches.length, offset: 0, limit: null, returned: trunc.items.length }) } };
     },
   );
 }
