@@ -95,15 +95,14 @@ test('registers all #59 resource URIs plus format/json twins and templates', asy
 
   assert.deepEqual(uris, [
     'spotify://me',
-    'spotify://me/followed/artists',
+    'spotify://me/genre-heatmap',
+    'spotify://me/listening-history',
     'spotify://me/playlists',
     'spotify://me/rate-limit',
     'spotify://me/recently-played',
     'spotify://me/saved/albums',
-    'spotify://me/saved/audiobooks',
     'spotify://me/saved/episodes',
     'spotify://me/saved/shows',
-    'spotify://me/saved/tracks',
     'spotify://me/top/artists',
     'spotify://me/top/tracks',
     'spotify://player/queue',
@@ -246,23 +245,25 @@ test('rate-limit resource reports never throttled by default (#56/#59)', async (
 
 // ---------------------------------------------------------------- prompts
 
-test('all eleven prompts are registered (#60, #112, #227)', async () => {
+test('all ten prompts are registered (#60, #112)', async () => {
   const client = await connect(makeClientStub());
   const prompts = await client.listPrompts();
   assert.deepEqual(
     prompts.prompts.map((p) => p.name).sort(),
     [
       'artist_deep_dive',
+      'crate_digging',
       'discover_weekly_alternative',
       'dj',
       'listening_recap',
       'migrate_library',
-      'music_briefing',
+      'morning_briefing',
       'music_taste_summary',
       'playlist_audit',
       'playlist_from_mood',
       'podcast_catchup',
       'triage_liked_songs',
+      'weekly_digest',
     ],
   );
 });
@@ -334,9 +335,12 @@ const realToolNames: Record<string, true> = Object.fromEntries([
   'get_user_profile', 'get_user_playlists_by_id',
   // audiobooks
   'get_audiobook', 'get_audiobook_chapters', 'get_chapter', 'get_saved_audiobooks',
-  // radar / freshness / artist-watch (#113-era additions, needed for music_briefing)
-  'show_new_episodes', 'whats_new', 'artist_release_digest', 'check_artist_releases', 'get_artist_discography',
-  'get_recently_played', 'get_followed_artists', 'get_artist_albums', 'get_saved_shows', 'get_show_episodes',
+  // analytics/portability (exhaust-portability)
+  'listening_report', 'listening_streaks', 'top_artists_by_range', 'taste_shift_report',
+  'export_all_playlists', 'export_library_json', 'export_followed_artists', 'library_snapshot_diff', 'history_search', 'import_from_sidecar',
+  'save_discover_weekly', 'save_release_radar',
+  // search/catalog helpers referenced by prompts
+  'search', 'search_deep', 'get_artist_albums', 'get_album_tracks',
 ].map((name) => [name, true as const]));
 
 test('every prompt only references tool names that are actually registered', async () => {
@@ -359,7 +363,7 @@ test('every prompt only references tool names that are actually registered', asy
     // Non-tool snake_case tokens that legitimately appear in prompt bodies:
     // Spotify API field names, prompt argument names, and time ranges.
     const NOT_TOOLS = [
-      'fetch_all', 'max_per_show', 'max_shows', 'max_artists', 'time_range',
+      'fetch_all', 'max_per_show', 'time_range',
       'short_term', 'medium_term', 'long_term',
       'album_type', 'release_date', 'playlist_name', 'include_singles',
       'max_results', 'dry_run',
