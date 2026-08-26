@@ -22,6 +22,7 @@
  *   playback        → tools/playback.ts        (15 tools)
  *                     tools/queueops.ts        (queue_playlist + reorder stubs)
  *                     tools/playbackext.ts     (save/restore playback, device presets, sessions)
+ *                     tools/playbackintel.ts   (queue/context/volume/market intel)
  *   catalog         → tools/search.ts          (1 tool)
  *                     tools/catalog.ts         (18 tools)
  *                     tools/audiobooks.ts      (4 tools)
@@ -43,7 +44,7 @@
  *   prompts         → prompts/index.ts         (9 prompts)
  */
 export const TOOLSETS: Record<string, readonly string[]> = {
-  playback: ['playback', 'queueops', 'playbackext'],
+  playback: ['playback', 'queueops', 'playbackext', 'playbackintel'],
   catalog: ['search', 'catalog', 'audiobooks', 'browse', 'artistwatch', 'searchhistory'],
   playlists: ['playlists', 'users', 'playlisthealth', 'playlistbatch', 'playlistmisc'],
   library: ['library', 'following', 'libraryanalytics', 'portability', 'episodemgmt'],
