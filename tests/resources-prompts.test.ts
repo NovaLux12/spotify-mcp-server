@@ -308,6 +308,7 @@ test('triage_liked_songs is registered and its schema rejects a bogus bucket_by 
 const realToolNames: Record<string, true> = Object.fromEntries([
   // playback
   'get_now_playing', 'get_currently_playing', 'play_from_search', 'play', 'pause',
+  'find_duplicates_in_playlist',
   'skip_next', 'skip_previous', 'seek', 'set_volume', 'set_shuffle', 'set_repeat',
   'get_queue', 'add_to_queue', 'get_devices', 'transfer_playback',
   'get_track', 'get_artist', 'get_artist_albums', 'get_album', 'get_album_tracks',
