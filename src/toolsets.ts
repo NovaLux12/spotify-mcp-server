@@ -25,7 +25,7 @@
  *   catalog         → tools/search.ts          (1 tool)
  *                     tools/catalog.ts         (18 tools)
  *                     tools/audiobooks.ts      (4 tools)
- *                     tools/browse.ts          (featured/categories/related/genres)
+ *                     tools/browse.ts          (artist genres + browse categories)
  *                     tools/artistwatch.ts     (discography/watchlist)
  *                     tools/searchhistory.ts   (search history)
  *   playlists       → tools/playlists.ts       (10 tools)

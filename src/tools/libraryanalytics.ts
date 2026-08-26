@@ -88,14 +88,16 @@ export function registerLibraryAnalyticsTools(server: McpServer, client: Spotify
       max_results: MaxResults,
       max_playlists: z.number().int().min(1).max(100).optional().describe('How many playlists to scan (default 50, max 100)'),
       include_not_saved: z.boolean().optional().describe('Include unsaved playlist items (default true)'),
+      scan_cap: z.number().int().min(1).max(10000).optional().describe('Max items to walk per paginated source; default SPOTIFY_MCP_FETCH_ALL_CAP'),
     },
-    async ({ response_format, max_results, max_playlists, include_not_saved }) => {
+    async ({ response_format, max_results, max_playlists, include_not_saved, scan_cap }) => {
       const rf = response_format;
       const maxResults = cap({ max_results });
       const includeNotSaved = include_not_saved !== false;
 
-      const savedTracks = await client.getAllPages<SavedTrackItem>('/me/tracks', { limit: '50' });
-      const allPlaylists = await client.getAllPages<SpotifyPlaylistSimple>('/me/playlists', { limit: '50' });
+      const scanCap = (scan_cap as number | undefined) ?? getConfig().fetchAllCap;
+      const savedTracks = await client.getAllPages<SavedTrackItem>('/me/tracks', { limit: '50' }, { maxItems: scanCap });
+      const allPlaylists = await client.getAllPages<SpotifyPlaylistSimple>('/me/playlists', { limit: '50' }, { maxItems: scanCap });
       const playlists = allPlaylists.slice(0, max_playlists ?? 50);
 
       // Collect every playlist item id
@@ -108,14 +110,14 @@ export function registerLibraryAnalyticsTools(server: McpServer, client: Spotify
         // Spotify uses /playlists/{id}/tracks for items; also handle /items alias
         let items: PlaylistItemObject[] = [];
         try {
-          items = await client.getAllPages<PlaylistItemObject>(`/playlists/${encodeURIComponent(pl.id)}/tracks`, { limit: '100' });
+          items = await client.getAllPages<PlaylistItemObject>(`/playlists/${encodeURIComponent(pl.id)}/tracks`, { limit: '100' }, { maxItems: scanCap });
           // fallback: if empty and we suspect /items path, try it
           if (items.length === 0) {
-            const alt = await client.getAllPages<PlaylistItemObject>(`/playlists/${encodeURIComponent(pl.id)}/items`, { limit: '100' });
+            const alt = await client.getAllPages<PlaylistItemObject>(`/playlists/${encodeURIComponent(pl.id)}/items`, { limit: '100' }, { maxItems: scanCap });
             if (alt.length > 0) items = alt;
           }
         } catch {
-          items = await client.getAllPages<PlaylistItemObject>(`/playlists/${encodeURIComponent(pl.id)}/items`, { limit: '100' }).catch(() => []);
+          items = await client.getAllPages<PlaylistItemObject>(`/playlists/${encodeURIComponent(pl.id)}/items`, { limit: '100' }, { maxItems: scanCap }).catch(() => []);
         }
         const ids: string[] = [];
         for (const it of items) {
@@ -179,6 +181,8 @@ export function registerLibraryAnalyticsTools(server: McpServer, client: Spotify
         }
       }
 
+      const truncated = savedTracks.length >= scanCap || allPlaylists.length >= scanCap;
+      if (truncated) lines.push(`(scan truncated at scan_cap=${scanCap} — coverage verdict may be incomplete)`);
       const payload = {
         ...listStructuredContent(t.items, pagination),
         coverage_ratio: coverageRatio,
@@ -187,6 +191,9 @@ export function registerLibraryAnalyticsTools(server: McpServer, client: Spotify
         playlists_scanned: playlists.length,
         unsaved_playlist_items: unsavedByPlaylist,
         total_unsaved: unsavedByPlaylist.reduce((a, b) => a + b.unsaved_count, 0),
+        scanned: savedTracks.length,
+        scan_cap: scanCap,
+        truncated,
       };
       return shapeResult(rf, lines.join('\n'), payload);
     },
@@ -291,14 +298,14 @@ export function registerLibraryAnalyticsTools(server: McpServer, client: Spotify
       const lb = lookback ?? 12;
 
       const [tracks, albums] = await Promise.all([
-        client.getAllPages<SavedTrackItem>('/me/tracks', { limit: '50' }),
-        client.getAllPages<SavedAlbumItem>('/me/albums', { limit: '50' }),
+        client.getAllPages<SavedTrackItem>('/me/tracks', { limit: '50' }, { maxItems: getConfig().fetchAllCap }),
+        client.getAllPages<SavedAlbumItem>('/me/albums', { limit: '50' }, { maxItems: getConfig().fetchAllCap }),
       ]);
       // optional shows/episodes — tolerate missing scope
       let shows: Array<{ added_at: string }> = [];
       let episodes: Array<{ added_at: string }> = [];
-      try { shows = await client.getAllPages<{ added_at: string }>('/me/shows', { limit: '50' }); } catch { /* no scope */ }
-      try { episodes = await client.getAllPages<{ added_at: string }>('/me/episodes', { limit: '50' }); } catch { /* no scope */ }
+      try { shows = await client.getAllPages<{ added_at: string }>('/me/shows', { limit: '50' }, { maxItems: getConfig().fetchAllCap }); } catch { /* no scope */ }
+      try { episodes = await client.getAllPages<{ added_at: string }>('/me/episodes', { limit: '50' }, { maxItems: getConfig().fetchAllCap }); } catch { /* no scope */ }
 
       const keys = enumeratePeriods(p, lb);
       const keySet = new Set(keys);
@@ -373,7 +380,7 @@ export function registerLibraryAnalyticsTools(server: McpServer, client: Spotify
       const lb = lookback ?? 6;
       const maxResults = cap({ max_results });
 
-      const tracks = await client.getAllPages<SavedTrackItem>('/me/tracks', { limit: '50' });
+      const tracks = await client.getAllPages<SavedTrackItem>('/me/tracks', { limit: '50' }, { maxItems: getConfig().fetchAllCap });
       const keys = enumeratePeriods(p, lb);
       const keySet = new Set(keys);
 

@@ -661,6 +661,61 @@ export function registerLibraryTools(server: McpServer, client: SpotifyClient): 
       return shapeResult(args.response_format, lines.join('\n'), listStructuredContent(t.items, pagination));
     },
   );
+
+  // search_saved_tracks (#229)
+  server.tool(
+    'search_saved_tracks',
+    'Search your Liked Songs (saved tracks) by text query and optional facets — client-side filter over a bounded walk of /me/tracks. For catalog-wide search use search. Reports walk truncation.',
+    {
+      query: z.string().optional().describe('Substring to match against track name, artist name, or album name (case-insensitive). Omit to list by facets/sort only.'),
+      artist: z.string().optional().describe('Filter to tracks where any artist name contains this substring'),
+      album: z.string().optional().describe('Filter to tracks where album name contains this substring'),
+      added_after: z.string().optional().describe('ISO date — only tracks added after this date'),
+      added_before: z.string().optional().describe('ISO date — only tracks added before this date'),
+      sort_by: z.enum(['added_desc','added_asc','name_asc','artist_asc']).optional().default('added_desc').describe('Sort order'),
+      limit: z.number().int().min(1).max(100).optional().default(20).describe('Max results to return'),
+      max_items: z.number().int().min(1).max(10000).optional().describe('How many saved tracks to walk (default SPOTIFY_MCP_FETCH_ALL_CAP)'),
+      response_format: ResponseFormat,
+      max_results: MaxResults,
+    },
+    async (args) => {
+      const rf = args.response_format;
+      const walkCap = args.max_items ?? getConfig().fetchAllCap;
+      const all = await client.getAllPages<SavedTrackItem>('/me/tracks', { limit: '50' }, { maxItems: walkCap });
+      const truncated = all.length >= walkCap;
+      let filtered = all;
+      const q = args.query?.toLowerCase();
+      if (q) filtered = filtered.filter(s => {
+        const tr = s.track; if (!tr) return false;
+        const hay = [tr.name ?? '', ...(tr.artists ?? []).map(a=>a.name), (tr as any).album?.name ?? ''].join(' ').toLowerCase();
+        return hay.includes(q);
+      });
+      if (args.artist) { const a = args.artist.toLowerCase(); filtered = filtered.filter(s => (s.track.artists ?? []).some(ar => ar.name.toLowerCase().includes(a))); }
+      if (args.album) { const a = args.album.toLowerCase(); filtered = filtered.filter(s => ((s.track as any).album?.name ?? '').toLowerCase().includes(a)); }
+      if (args.added_after) { const d = Date.parse(args.added_after); if(Number.isFinite(d)) filtered = filtered.filter(s => Date.parse(s.added_at) > d); }
+      if (args.added_before) { const d = Date.parse(args.added_before); if(Number.isFinite(d)) filtered = filtered.filter(s => Date.parse(s.added_at) < d); }
+      const sort = args.sort_by ?? 'added_desc';
+      filtered = [...filtered].sort((a,b)=>{
+        if(sort==='added_asc') return Date.parse(a.added_at)-Date.parse(b.added_at);
+        if(sort==='added_desc') return Date.parse(b.added_at)-Date.parse(a.added_at);
+        if(sort==='name_asc') return (a.track.name??'').localeCompare(b.track.name??'');
+        if(sort==='artist_asc') return ((a.track.artists?.[0]?.name??'').localeCompare(b.track.artists?.[0]?.name??''));
+        return 0;
+      });
+      const totalMatches = filtered.length;
+      const limit = args.limit ?? 20;
+      const sliced = filtered.slice(0, Math.min(limit, cap(args)));
+      const lines = [`Saved tracks search: ${totalMatches} match(es) across ${all.length} walked${truncated ? ` (walk truncated at ${walkCap})` : ''}, showing ${sliced.length}:`];
+      for (const s of sliced) {
+        const tr = s.track; const artists = (tr.artists??[]).map(a=>a.name).join(', '); const album = (tr as any).album?.name ?? '';
+        lines.push(`  • "${tr.name}" by ${artists} — ${album} (added ${s.added_at}) | URI: ${tr.uri}`);
+      }
+      if (truncated) lines.push(`(walk hit cap ${walkCap} — pass max_items to scan more)`);
+      const payload = { total_matches: totalMatches, walked: all.length, scan_cap: walkCap, truncated, items: sliced.map(s=>({ track: s.track, added_at: s.added_at })), returned: sliced.length };
+      return shapeResult(rf, lines.join('\n'), payload as unknown as Record<string, unknown>);
+    },
+  );
+
 }
 
 // ---------------------------------------------------------------------------

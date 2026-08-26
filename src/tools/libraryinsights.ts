@@ -140,8 +140,8 @@ interface ScanResult {
  */
 async function scanLibraryGenres(client: SpotifyClient): Promise<ScanResult> {
   const [savedTracks, savedAlbums] = await Promise.all([
-    client.getAllPages<SavedTrackItem>('/me/tracks', { limit: '50' }),
-    client.getAllPages<SavedAlbumItem>('/me/albums', { limit: '50' }),
+    client.getAllPages<SavedTrackItem>('/me/tracks', { limit: '50' }, { maxItems: getConfig().fetchAllCap }),
+    client.getAllPages<SavedAlbumItem>('/me/albums', { limit: '50' }, { maxItems: getConfig().fetchAllCap }),
   ]);
 
   const store = loadGenreTags();
@@ -289,7 +289,7 @@ export function registerLibraryInsightsTools(server: McpServer, client: SpotifyC
 
       const matches: string[] = [];
       if (kind === 'tracks') {
-        const saved = await client.getAllPages<SavedTrackItem>('/me/tracks', { limit: '50' });
+        const saved = await client.getAllPages<SavedTrackItem>('/me/tracks', { limit: '50' }, { maxItems: getConfig().fetchAllCap });
         for (const item of saved) {
           const artists = item?.track?.artists;
           if (!Array.isArray(artists)) continue;
@@ -298,7 +298,7 @@ export function registerLibraryInsightsTools(server: McpServer, client: SpotifyC
           }
         }
       } else {
-        const saved = await client.getAllPages<SavedAlbumItem>('/me/albums', { limit: '50' });
+        const saved = await client.getAllPages<SavedAlbumItem>('/me/albums', { limit: '50' }, { maxItems: getConfig().fetchAllCap });
         for (const item of saved) {
           const artists = item?.album?.artists;
           if (!Array.isArray(artists)) continue;

@@ -564,15 +564,21 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
       if (args.dry_run) {
         let wouldAdd = args.uris;
         if (args.check_duplicates) {
+          const fetchCap = getConfig().fetchAllCap;
           const existing = await client.getAllPages<PlaylistItemObject>(
             `/playlists/${id}/items`,
             { limit: '100' },
+            { maxItems: fetchCap },
           );
           const present = new Set<string>();
           for (const item of existing) {
             if (item.item?.uri) present.add(item.item.uri);
           }
           wouldAdd = args.uris.filter((u) => !present.has(u));
+          const truncated = existing.length >= fetchCap;
+          if (truncated) {
+            // disclosure handled in structuredContent below
+          }
         }
         return {
           content: [{
@@ -588,9 +594,11 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
       let toAdd = args.uris;
       let skipped = 0;
       if (args.check_duplicates) {
+        const fetchCap2 = getConfig().fetchAllCap;
         const existing = await client.getAllPages<PlaylistItemObject>(
           `/playlists/${id}/items`,
           { limit: '100' },
+          { maxItems: fetchCap2 },
         );
         const present = new Set<string>();
         for (const item of existing) {
