@@ -8,6 +8,13 @@
 // Usage:
 //   node scripts/live-gauntlet.mjs [report.json]
 //   node scripts/live-gauntlet.mjs --include-mutating=create_playlist,save_items [report.json]
+//   node scripts/live-gauntlet.mjs --batch=40 --resume=memory/live-sweep-report.json --report=memory/live-sweep-report.json
+//
+// Batch/resume mode (quota-paced sweeps of the full surface):
+//   --batch=N      stop after N tool calls this run (seeds excluded)
+//   --resume=FILE  skip tools already recorded in FILE (FAILs are retried)
+//   --report=FILE  cumulative report location (used by --resume)
+// A run with nothing left to do prints SWEEP_COMPLETE and exits 0.
 //
 // Safety model:
 //   - Tools are classified SAFE (reads) vs MUTATING via the table below;
@@ -17,6 +24,7 @@
 //     dry_run:true and PASSES only when the response confirms the dry-run
 //     preview — so even the opt-in path cannot mutate.
 import { spawn } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 
@@ -42,6 +50,18 @@ const MUTATING = new Set([
 // expected to fail on newer app registrations. A failure here is reported as
 // SKIP, not FAIL.
 const REMOVED = new Set(['get_artist_top_tracks', 'get_available_markets', 'get_user_profile', 'get_user_playlists_by_id']);
+
+// Endpoints that 403 Forbidden on current app registrations (2026-08-27 edge
+// probe): documented /me/*/contains family, browse categories, and friends.
+// Legacy registrations may still serve them; failure here is SKIP, not FAIL.
+const GATED = new Set([
+  'get_categories', 'get_category_playlists', 'get_new_releases',
+  'check_in_library', 'check_saved_items', 'check_following_artists',
+  'check_following_playlist', 'check_following_artists_and_users',
+]);
+
+// Snippets meaning "tool answered but the underlying endpoint is gated".
+const GATE_SNIFF = /forbidden|\b403\b|removed by spotify|not available for this app|app registration/i;
 
 // --------------------------------------------------------------- JSONL RPC layer
 
@@ -91,7 +111,28 @@ const includeMutating = new Set(
   process.argv.slice(2).filter((a) => a.startsWith('--include-mutating='))
     .flatMap((a) => a.split('=')[1].split(',').map((s) => s.trim()).filter(Boolean)),
 );
-const reportPath = process.argv.slice(2).find((a) => !a.startsWith('--'));
+const reportFlag = process.argv.slice(2).find((a) => a.startsWith('--report='));
+const reportPath = reportFlag ? reportFlag.split('=')[1] : process.argv.slice(2).find((a) => !a.startsWith('--'));
+
+// Batch/resume support (issue #330). --batch caps API calls per run; --resume
+// skips tools already recorded (FAILs retried so quota stalls are not cached).
+const batchArg = process.argv.slice(2).find((a) => a.startsWith('--batch='));
+const batchLimit = batchArg ? Math.max(1, parseInt(batchArg.split("=")[1], 10)) : Infinity;
+const resumeArg = process.argv.slice(2).find((a) => a.startsWith('--resume='));
+const resumePath = resumeArg ? resumeArg.split("=")[1] : undefined;
+const done = new Map();
+if (resumePath) {
+  try {
+    const prev = JSON.parse(readFileSync(resumePath, 'utf8'));
+    for (const r of prev.results ?? []) done.set(r.tool, r);
+    console.log(`resume: ${done.size} already-recorded tool entries loaded from ${resumePath}`);
+  } catch (e) {
+    console.error(`resume: cannot read ${resumePath} (${e.message}) — starting fresh`);
+  }
+}
+let calls = 0;   // API calls performed this run (seeds excluded)
+let resumed = 0; // tools skipped due to prior records
+let consecutiveFails = 0; // quota-wall abort counter
 
 // ------------------------------------------------------------------ discovery
 
@@ -283,10 +324,24 @@ const MUTATING_ARGS = {
 
 // ------------------------------------------------------------------- gauntlet
 
+// SWEEP_COMPLETE fast path: everything recorded (or only FAILs remain) — nothing to do.
+const remaining = tools.filter((t) => t.name !== 'get_me' && t.name !== 'get_user_playlists'
+  && (!done.has(t.name) || done.get(t.name).status === 'FAIL'));
+if (remaining.length === 0) {
+  console.log('SWEEP_COMPLETE: every registered tool is recorded in the report (no FAILs to retry)');
+  child.kill();
+  process.exit(0);
+}
+if (batchLimit < Infinity) console.log(`batch mode: up to ${batchLimit} calls this run; ${remaining.length} tools pending (${done.size} recorded)`);
+
 for (const tool of tools.map((t) => t.name)) {
   if (tool === 'get_me' || tool === 'get_user_playlists') continue; // already run as seeds
   const cls = MUTATING.has(tool) ? 'MUTATING' : 'SAFE'; // unclassified ⇒ treated as MUTATING
 
+  if (done.has(tool) && done.get(tool).status !== 'FAIL') {
+    resumed++;
+    continue;
+  }
   if (cls === 'MUTATING') {
     if (!includeMutating.has(tool)) {
       record(tool, cls, 'SKIP', 0, { reason: 'mutating; not in --include-mutating allowlist' });
@@ -302,6 +357,8 @@ for (const tool of tools.map((t) => t.name)) {
       record(tool, cls, 'SKIP', 0, { reason: built ?? 'no arg recipe' });
       continue;
     }
+    calls++;
+    if (calls > batchLimit) break;
     const r = await callTool(tool, { ...built, dry_run: true });
     // Verify no mutation occurred: the tool must confirm the dry-run preview.
     const confirmed = r.ok && (r.structured?.dry_run === true || /\[dry run\]/.test(r.text));
@@ -316,19 +373,38 @@ for (const tool of tools.map((t) => t.name)) {
     record(tool, cls, 'SKIP', 0, { reason: built ?? 'missing prereq from seed reads' });
     continue;
   }
+  calls++;
+  if (calls > batchLimit) break;
   const r = await callTool(tool, typeof built === 'object' ? built : {});
   if (r.ok) {
+    consecutiveFails = 0;
     // Chain: first chapter of the seed audiobook feeds chapter tools.
     if (tool === 'get_audiobook_chapters') {
       seed.chapterId = r.structured?.items?.[0]?.id;
     }
-    record(tool, cls, 'PASS', r.ms);
+    if (GATE_SNIFF.test(r.text)) {
+      record(tool, cls, 'PASS', r.ms, { gated: true, reason: 'tool answered but snippet suggests app-registration gating (403/Forbidden/removed)' });
+    } else {
+      record(tool, cls, 'PASS', r.ms);
+    }
   } else if (REMOVED.has(tool)) {
+    consecutiveFails = 0;
     record(tool, cls, 'SKIP', r.ms, { reason: 'endpoint removed by Spotify Feb 2026 Web API changes' });
+  } else if (GATED.has(tool)) {
+    consecutiveFails = 0;
+    record(tool, cls, 'SKIP', r.ms, { reason: 'app-registration-gated (403 on current registrations); legacy registrations may differ' });
   } else {
+    consecutiveFails++;
+    if (consecutiveFails >= 3) {
+      record(tool, cls, 'FAIL', r.ms, { reason: r.error });
+      console.log('QUOTA_WALL: 3 consecutive failures — aborting this batch; sweep-loop will back off');
+      break;
+    }
     record(tool, cls, 'FAIL', r.ms, { reason: r.error });
   }
 }
+
+if (batchLimit < Infinity) console.log(`batch run finished after ${calls} calls (${resumed} resumed, ${results.length} recorded this run)`);
 
 // -------------------------------------------------------------------- report
 
@@ -349,7 +425,12 @@ if (dryRunVerified.length) console.log(`dry-run verified (no mutation): ${dryRun
 const report = {
   generated_at: new Date().toISOString(),
   tools_discovered: tools.length,
-  summary: { pass: counts.PASS, fail: counts.FAIL, skip: counts.SKIP, total_calls: results.length + 3 },
+  mode: { batch_limit: batchLimit === Infinity ? null : batchLimit, resumed_from: resumePath ?? null },
+  summary: { pass: counts.PASS, fail: counts.FAIL, skip: counts.SKIP,
+    gated: results.filter((r) => r.gated).length,
+    total_calls: results.length + 3 + resumed,
+    pending: remaining.filter((t) => !results.some((r) => r.tool === t.name)).length,
+  },
   mutation_proof: {
     mutations_performed: [],
     mutating_tools_skipped_by_default: mutatingSkipped,

@@ -1,0 +1,167 @@
+{
+  "generated_at": "2026-08-26T23:17:20.101Z",
+  "tools_discovered": 224,
+  "mode": {
+    "batch_limit": 5,
+    "resumed_from": "memory/live-sweep-report.json"
+  },
+  "summary": {
+    "pass": 8,
+    "fail": 0,
+    "skip": 12,
+    "gated": 0,
+    "total_calls": 23,
+    "pending": 205
+  },
+  "mutation_proof": {
+    "mutations_performed": [],
+    "mutating_tools_skipped_by_default": [
+      "play_from_search",
+      "play",
+      "pause",
+      "skip_next",
+      "skip_previous",
+      "seek",
+      "set_volume",
+      "set_shuffle",
+      "set_repeat",
+      "add_to_queue",
+      "transfer_playback"
+    ],
+    "mutating_tools_dry_run_verified": []
+  },
+  "results": [
+    {
+      "tool": "get_me",
+      "class": "SAFE",
+      "status": "PASS",
+      "latency_ms": 76
+    },
+    {
+      "tool": "search",
+      "class": "SAFE",
+      "status": "PASS",
+      "latency_ms": 342
+    },
+    {
+      "tool": "get_user_playlists",
+      "class": "SAFE",
+      "status": "PASS",
+      "latency_ms": 240
+    },
+    {
+      "tool": "get_now_playing",
+      "class": "SAFE",
+      "status": "PASS",
+      "latency_ms": 103
+    },
+    {
+      "tool": "get_currently_playing",
+      "class": "SAFE",
+      "status": "PASS",
+      "latency_ms": 73
+    },
+    {
+      "tool": "play_from_search",
+      "class": "MUTATING",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "mutating; not in --include-mutating allowlist"
+    },
+    {
+      "tool": "play",
+      "class": "MUTATING",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "mutating; not in --include-mutating allowlist"
+    },
+    {
+      "tool": "pause",
+      "class": "MUTATING",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "mutating; not in --include-mutating allowlist"
+    },
+    {
+      "tool": "skip_next",
+      "class": "MUTATING",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "mutating; not in --include-mutating allowlist"
+    },
+    {
+      "tool": "skip_previous",
+      "class": "MUTATING",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "mutating; not in --include-mutating allowlist"
+    },
+    {
+      "tool": "seek",
+      "class": "MUTATING",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "mutating; not in --include-mutating allowlist"
+    },
+    {
+      "tool": "set_volume",
+      "class": "MUTATING",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "mutating; not in --include-mutating allowlist"
+    },
+    {
+      "tool": "set_shuffle",
+      "class": "MUTATING",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "mutating; not in --include-mutating allowlist"
+    },
+    {
+      "tool": "set_repeat",
+      "class": "MUTATING",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "mutating; not in --include-mutating allowlist"
+    },
+    {
+      "tool": "get_queue",
+      "class": "SAFE",
+      "status": "PASS",
+      "latency_ms": 115
+    },
+    {
+      "tool": "add_to_queue",
+      "class": "MUTATING",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "mutating; not in --include-mutating allowlist"
+    },
+    {
+      "tool": "get_devices",
+      "class": "SAFE",
+      "status": "PASS",
+      "latency_ms": 41
+    },
+    {
+      "tool": "transfer_playback",
+      "class": "MUTATING",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "mutating; not in --include-mutating allowlist"
+    },
+    {
+      "tool": "handoff",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "search",
+      "class": "SAFE",
+      "status": "PASS",
+      "latency_ms": 384
+    }
+  ]
+}

@@ -50,6 +50,8 @@
     "dev": "node --env-file-if-exists=.env --import tsx/esm src/index.ts",
     "auth": "node --env-file-if-exists=.env --import tsx/esm src/index.ts auth",
     "start": "node --env-file-if-exists=.env dist/index.js",
-    "test": "node --import tsx --test 'tests/*.test.ts'"
+    "test": "node --import tsx --test 'tests/*.test.ts'",
+    "sweep": "node scripts/live-gauntlet.mjs --batch=40 --resume=memory/live-sweep-report.json --report=memory/live-sweep-report.json",
+    "sweep:loop": "bash scripts/sweep-loop.sh"
   }
 }
