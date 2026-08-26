@@ -39,6 +39,7 @@ import { registerPortabilityTools } from './tools/portability.js';
 import { registerQueueOpsTools } from './tools/queueops.js';
 import { registerPlaybackExtTools } from './tools/playbackext.js';
 import { registerSearchHistoryTools } from './tools/searchhistory.js';
+import { registerExhaustMiscTools } from './tools/exhaustmisc.js';
 import { registerEpisodeMgmtTools } from './tools/episodemgmt.js';
 import { registerDoctorTool } from './tools/doctortool.js';
 import { verifyReceipt, formatReceipt } from './receipts.js';
@@ -142,6 +143,8 @@ async function startMcpServer(): Promise<void> {
   if (isModuleActive('browse', activeSets, overrides) && !moduleBlockedByScopes('catalog', grantedScopes)) registerBrowseTools(server, client)
   if (isModuleActive('artistwatch', activeSets, overrides) && !moduleBlockedByScopes('catalog', grantedScopes)) registerArtistWatchTools(server, client)
   if (isModuleActive('searchhistory', activeSets, overrides) && !moduleBlockedByScopes('search', grantedScopes)) registerSearchHistoryTools(server, client)
+  // Exhaust misc mop-up (search_within_playlist, search_history_stats, audiobook_progress + 7 deferred) — playlists+library set
+  if (isModuleActive('playlists', activeSets, overrides)) registerExhaustMiscTools(server, client)
   // library analytics + portability + episode management
   if (isModuleActive('libraryanalytics', activeSets, overrides) && !moduleBlockedByScopes('library', grantedScopes)) registerLibraryAnalyticsTools(server, client)
   if (!readOnly && isModuleActive('portability', activeSets, overrides) && !moduleBlockedByScopes('library', grantedScopes)) registerPortabilityTools(server, client)
