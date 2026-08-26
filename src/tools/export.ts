@@ -132,9 +132,11 @@ export function registerExportTools(server: McpServer, client: SpotifyClient): v
       const meta = await client.get<{ id?: string; name?: string }>(`/playlists/${id}`);
       if (!meta) throw new Error(`Playlist "${args.playlist_id}" not found`);
 
+      const fetchCap = getConfig().fetchAllCap;
       const items = await client.getAllPages<PlaylistItemObject>(`/playlists/${id}/items`, {
         limit: '100',
-      });
+      }, { maxItems: fetchCap });
+      const fetchTruncated = items.length >= fetchCap;
 
       let unavailable = 0;
       const rows: ExportRow[] = [];
@@ -170,6 +172,8 @@ export function registerExportTools(server: McpServer, client: SpotifyClient): v
         tracks: trackRows.length,
         episodes: episodeRows.length,
         unavailable_skipped: unavailable,
+        fetch_truncated: fetchTruncated,
+        fetch_cap: fetchCap,
         items: rows.map((r, i) => ({
           track_no: i + 1,
           title: r.title,
@@ -190,7 +194,7 @@ export function registerExportTools(server: McpServer, client: SpotifyClient): v
           ...basePayload,
           output_path: args.output_path,
           bytes,
-          truncated: false,
+          truncated: fetchTruncated,
         };
         if (args.response_format === 'json') return textResult(jsonText(payload), payload);
 
@@ -199,6 +203,7 @@ export function registerExportTools(server: McpServer, client: SpotifyClient): v
             (episodeRows.length > 0 ? `, ${episodeRows.length} episode(s)` : '') +
             `) as ${args.format.toUpperCase()} to ${args.output_path} (${bytes} bytes).`,
         ];
+        if (fetchTruncated) parts.push(`(first ${fetchCap} of ${rows.length}+ — truncated at FETCH_ALL_CAP=${fetchCap}, raise SPOTIFY_MCP_FETCH_ALL_CAP for full export)`);
         if (omitsEpisodes) {
           parts.push(
             `${episodeRows.length} episode(s) were skipped in the M3U output (M3U does not carry talk content).`,
@@ -211,11 +216,14 @@ export function registerExportTools(server: McpServer, client: SpotifyClient): v
       // ---- Inline mode: truncate at max_results ROWS with a footer -------
       const cap = resolveMaxResults(args.max_results, getConfig().maxItems);
       const view = exportable.slice(0, cap);
-      const truncated = exportable.length > cap;
+      const truncated = exportable.length > cap || fetchTruncated;
       const document = renderDoc(view);
       const inlineText =
         document +
-        (truncated
+        (fetchTruncated
+          ? `\n[first ${fetchCap} of ${rows.length}+ — raise SPOTIFY_MCP_FETCH_ALL_CAP (currently ${fetchCap}) for full export]\n`
+          : '') +
+        (exportable.length > cap
           ? `\n[truncated: showing first ${cap} of ${exportable.length} items — ` +
             `full export is ${renderDoc(exportable).split('\n').length - 1} lines; ` +
             `pass output_path or raise max_results for everything]\n`
@@ -235,6 +243,8 @@ export function registerExportTools(server: McpServer, client: SpotifyClient): v
         items: basePayload.items,
         returned: view.length,
         truncated,
+        fetch_truncated: fetchTruncated,
+        fetch_cap: fetchCap,
         bytes: Buffer.byteLength(inlineText, 'utf8'),
       };
       if (args.response_format === 'json') return textResult(jsonText(payload), payload);

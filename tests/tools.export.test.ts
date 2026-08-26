@@ -479,3 +479,29 @@ describe('export_playlist json mode', () => {
     assert.deepEqual(out.structuredContent, parsed);
   });
 });
+
+describe('export_playlist fetch truncation (FETCH_ALL_CAP)', () => {
+  it('reports fetch_truncated and footer when playlist exceeds FETCH_ALL_CAP', async () => {
+    const { initConfig, getConfig } = await import('../src/config.js');
+    initConfig({ SPOTIFY_MCP_FETCH_ALL_CAP: '2' });
+    assert.equal(getConfig().fetchAllCap, 2);
+    // Need 3 items but cap 2
+    const manyResponder: typeof mixedResponder = (_path, arg) => {
+      const params = (arg ?? {}) as Record<string, string>;
+      const all = [
+        trackItem('t1', 'A', 1000, ['X']),
+        trackItem('t2', 'B', 1000, ['Y']),
+        trackItem('t3', 'C', 1000, ['Z']),
+      ];
+      const offset = Number(params.offset ?? 0);
+      const items = all.slice(offset, offset + 2);
+      return { items, total: all.length, limit: 2, offset };
+    };
+    const h = harness((path, arg) => path === `/playlists/${PLAYLIST_ID}` ? { id: PLAYLIST_ID } : manyResponder(path, arg));
+    const out = await h.invoke('export_playlist', { playlist_id: PLAYLIST_ID });
+    assert.equal(out.structuredContent?.fetch_truncated, true);
+    assert.equal(out.structuredContent?.fetch_cap, 2);
+    assert.match(textOf(out), /raise SPOTIFY_MCP_FETCH_ALL_CAP/);
+    initConfig(); // restore
+  });
+});

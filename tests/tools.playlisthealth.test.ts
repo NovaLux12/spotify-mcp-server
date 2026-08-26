@@ -36,6 +36,47 @@ describe('get_playlist_followers', () => {
 describe('playlist_collaboration_report', () => {
   it('rolls up contributors with counts and timestamps', async () => { const items: PlaylistItemObject[] = [ { added_at: '2026-01-01T00:00:00Z', added_by: { id: 'alice' } as unknown as PlaylistItemObject['added_by'], item: { type: 'track', id: 't1', name: 'T1', uri: 'spotify:track:t1', duration_ms: 1000, artists: [] } as unknown as PlaylistItemObject extends { item?: infer I } ? I : never } as unknown as PlaylistItemObject, { added_at: '2026-01-02T00:00:00Z', added_by: { id: 'bob' } as unknown as PlaylistItemObject['added_by'], item: { type: 'track', id: 't2', name: 'T2', uri: 'spotify:track:t2', duration_ms: 1000, artists: [] } as unknown as PlaylistItemObject extends { item?: infer I } ? I : never } as unknown as PlaylistItemObject, { added_at: '2026-01-03T00:00:00Z', added_by: { id: 'alice' } as unknown as PlaylistItemObject['added_by'], item: { type: 'track', id: 't3', name: 'T3', uri: 'spotify:track:t3', duration_ms: 1000, artists: [] } as unknown as PlaylistItemObject extends { item?: infer I } ? I : never } as unknown as PlaylistItemObject, ]; const h = makeHarness(() => items); registerPlaylistHealthTools(h.server as unknown as McpServer, h.client); const out = await h.invoke('playlist_collaboration_report', { playlist_id: 'pl1' }); const sc = out.structuredContent as { contributors: Array<{ user_id: string; count: number }>; most_active: string }; assert.equal(sc.contributors.length, 2); assert.equal(sc.contributors[0].user_id, 'alice'); assert.equal(sc.contributors[0].count, 2); assert.equal(sc.most_active, 'alice'); });
 });
+describe('find_duplicate_playlists dry_run + quota', () => {
+  it('dry_run returns cost estimate without calls', async () => {
+    let calls = 0;
+    const h = makeHarness(() => { calls++; return []; });
+    registerPlaylistHealthTools(h.server as unknown as McpServer, h.client);
+    const out = await h.invoke('find_duplicate_playlists', { dry_run: true, max_playlists: 10, scan_cap: 100 });
+    assert.equal(calls, 0);
+    assert.equal((out.structuredContent as Record<string, unknown>).dry_run, true);
+    assert.equal((out.structuredContent as Record<string, unknown>).estimated_requests, 11);
+    assert.match(out.content[0].text, /dry run/);
+  });
+  it('quota partial recovery returns groups so far', async () => {
+    const { SpotifyApiError } = await import('../src/client.js');
+    const h2 = makeHarness(() => []);
+    let calls2 = 0;
+    (h2.client as unknown as Record<string, unknown>).getAllPages = async (path: string) => {
+      if (path === '/me/playlists') return [{ id: 'pl1', name: 'P1' }, { id: 'pl2', name: 'P2' }] as unknown[];
+      if (path.startsWith('/playlists/')) {
+        calls2++;
+        if (calls2 === 2) throw new SpotifyApiError(429, 'quota', 30);
+        return [{ item: { uri: 'spotify:track:t1' } }] as unknown[];
+      }
+      return [];
+    };
+    h2.registered.length = 0;
+    const { registerPlaylistHealthTools: reg2 } = await import('../src/tools/playlisthealth.js');
+    // need fresh server to avoid duplicate registration from before
+    const h3 = makeHarness(() => []);
+    let c3 = 0;
+    (h3.client as unknown as Record<string, unknown>).getAllPages = async (path: string) => {
+      if (path === '/me/playlists') return [{ id: 'pl1', name: 'P1' }, { id: 'pl2', name: 'P2' }] as unknown[];
+      if (path.startsWith('/playlists/')) { c3++; if (c3 === 2) throw new SpotifyApiError(429, 'quota', 30); return [{ item: { uri: 'spotify:track:t1' } }] as unknown[]; }
+      return [];
+    };
+    reg2(h3.server as unknown as McpServer, h3.client);
+    const out = await h3.invoke('find_duplicate_playlists', { max_playlists: 2 });
+    assert.equal((out.structuredContent as Record<string, unknown>).quota_hit, true);
+    assert.match(out.content[0].text, /quota hit/i);
+  });
+});
+
 describe('snapshot + diff + list', () => {
   it('snapshot round-trip creates file and list finds it', async () => { const items = [mkTrack('a'), mkTrack('b')]; const h = makeHarness(() => items); registerPlaylistHealthTools(h.server as unknown as McpServer, h.client); const snap = await h.invoke('snapshot_playlist', { playlist_id: 'pl1', snapshot_id: 'snap1' }); const sc = snap.structuredContent as { snapshot_id: string }; assert.equal(sc.snapshot_id, 'snap1'); const list = await h.invoke('list_playlist_snapshots', { playlist_id: 'pl1' }); const lsc = list.structuredContent as { count: number }; assert.equal(lsc.count, 1); });
   it('diff detects added, removed, and reordered', async () => { const initialItems = [mkTrack('a'), mkTrack('b'), mkTrack('c')]; let currentItems: PlaylistItemObject[] = initialItems; const h = makeHarness(() => currentItems); registerPlaylistHealthTools(h.server as unknown as McpServer, h.client); await h.invoke('snapshot_playlist', { playlist_id: 'pl1', snapshot_id: 'snap1' }); currentItems = [mkTrack('c'), mkTrack('a'), mkTrack('d')]; const diff = await h.invoke('diff_since_snapshot', { playlist_id: 'pl1', snapshot_id: 'snap1' }); const sc = diff.structuredContent as { added: unknown[]; removed: unknown[]; reordered: unknown[] }; assert.equal(sc.added.length, 1); assert.equal(sc.removed.length, 1); assert.ok(sc.reordered.length > 0); });
