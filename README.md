@@ -209,6 +209,7 @@ All settings come from environment variables — no config file required:
 | `SPOTIFY_MCP_FRESHNESS_STATE` | `~/.spotify-mcp/freshness.json` | Watermark file powering `whats_new`'s `since: 'last-check'` |
 | `SPOTIFY_MCP_SCENES_FILE` | `~/.spotify-mcp/scenes.json` | Location of the playback-scene sidecar written by the scene tools |
 | `SPOTIFY_MCP_GENRE_TAGS_FILE` | `~/.spotify-mcp/genre-tags.json` | Artist→genre-tags sidecar consumed by the library genre tools |
+| `SPOTIFY_MCP_READONLY` | unset | Set to `1` to hide every write-capable module (playback, playlists, library, following) — reads and diagnostics stay available |
 
 ### Trim the surface with toolsets
 
