@@ -21,6 +21,8 @@ import { registerAudiobookCopilotTools } from './tools/audiobookcopilot.js';
 import { registerScenesTools } from './tools/scenes.js';
 import { registerPlaylistDnaTools } from './tools/playlistdna.js';
 import { registerAnalyticsTools } from './tools/analytics.js';
+import { registerLibraryHygieneTools } from './tools/libraryhygiene.js';
+import { registerDoctorTool } from './tools/doctortool.js';
 import { verifyReceipt, formatReceipt } from './receipts.js';
 import { registerTemplateResources } from './resources/templates.js';
 import { z } from 'zod';
@@ -79,6 +81,10 @@ async function startMcpServer(): Promise<void> {
   if (isActive('personalization', activeSets)) registerPersonalizationTools(server, client);
   // Listening analytics (#97): derived taste-profile reporting.
   if (isActive('personalization', activeSets)) registerAnalyticsTools(server, client);
+  // Library hygiene (#112 idea 5): album completion + consolidation findings.
+  if (isActive('library', activeSets)) registerLibraryHygieneTools(server, client);
+  // spotify_doctor diagnostic (#111): unconditional — must survive toolset trimming.
+  registerDoctorTool(server, client);
   if (isActive('following', activeSets)) registerFollowingTools(server, client);
   if (isActive('audiobooks', activeSets)) registerAudiobookTools(server, client);
   if (isActive('playlists', activeSets)) registerPlaylistTools(server, client);

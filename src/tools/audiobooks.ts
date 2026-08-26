@@ -25,6 +25,8 @@ const MARKET_NOTE =
 
 const MARKET_PARAM = z
   .string()
+  .regex(/^[A-Za-z]{2}$/, 'market must be a 2-letter ISO 3166-1 alpha-2 country code, e.g. "US"')
+  .transform((code) => code.toUpperCase())
   .optional()
   .describe(
     `ISO 3166-1 alpha-2 country code. If given, only content available in that market is returned.${MARKET_NOTE}`,

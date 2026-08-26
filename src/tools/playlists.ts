@@ -298,6 +298,8 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
       offset: z.number().int().min(0).optional().describe('Pagination offset. Default: 0'),
       market: z
         .string()
+        .regex(/^[A-Za-z]{2}$/, 'market must be a 2-letter ISO 3166-1 alpha-2 country code, e.g. "US"')
+        .transform((code) => code.toUpperCase())
         .optional()
         .describe("ISO 3166-1 alpha-2 country code, e.g. 'GB'; relinks tracks to that market and flags unavailable ones"),
       fields: z
@@ -305,9 +307,9 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
         .optional()
         .describe("Comma-separated list of response fields to keep, e.g. 'total,items(track(name,uri))'"),
       additional_types: z
-        .string()
+        .array(z.enum(['track', 'episode']))
         .optional()
-        .describe("Comma-separated item types beyond the default 'track', e.g. 'track,episode'"),
+        .describe("Item types to include beyond the default 'track', e.g. ['track', 'episode']"),
     },
     async (args) => {
       const id = encodeURIComponent(
@@ -318,7 +320,7 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
       if (args.market !== undefined) params.market = args.market;
       if (args.fields !== undefined) params.fields = args.fields;
       if (args.additional_types !== undefined) {
-        params.additional_types = args.additional_types;
+        params.additional_types = args.additional_types.join(',');
       }
 
       const page = await client.get<PlaylistItemsResponse>(`/playlists/${id}/items`, params);

@@ -245,6 +245,10 @@ export function registerPersonalizationTools(server: McpServer, client: SpotifyC
         }
       }
       if (shaped.footer) lines.push(`(${shaped.footer})`);
+      const nextCursor = result.cursors?.after ?? null;
+      if (nextCursor !== null) {
+        lines.push(`Pass after=${nextCursor} to continue.`);
+      }
 
       // Recently-played pages by after/before cursors rather than numeric
       // offsets — expose the cursor alongside the shared pagination shape.
@@ -257,7 +261,7 @@ export function registerPersonalizationTools(server: McpServer, client: SpotifyC
       return {
         content: [{ type: 'text', text: lines.join('\n') }],
         structuredContent: listStructuredContent(shaped.items, pagination, {
-          next_cursor: result.cursors?.after ?? null,
+          next_cursor: nextCursor,
           truncated: shaped.truncated,
           remaining: shaped.remaining,
         }),
