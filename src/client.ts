@@ -95,7 +95,6 @@ export class SpotifyClient {
   private loadPromise: Promise<TokenData> | null = null;
 
   // Rate limiting
-  private _queue: Promise<unknown> = Promise.resolve();
   private _lastRequestTime = 0;
   private _rateLimitUntil = 0;
   // Last throttling event this client observed (#56).
@@ -284,19 +283,52 @@ export class SpotifyClient {
     await saveTokens(this.tokens);
   }
 
-  private enqueue<T>(fn: () => Promise<T>): Promise<T> {
-    const promise = this._queue.then(async () => {
-      const now = Date.now();
-      const rateLimitWait = Math.max(0, this._rateLimitUntil - now);
-      const gapWait = Math.max(0, this._lastRequestTime + 100 - now);
-      const waitMs = Math.max(rateLimitWait, gapWait);
-      if (waitMs > 0) await sleep(waitMs);
-      this._lastRequestTime = Date.now();
-      return fn();
+  /**
+   * Two-lane request scheduler (#133): interactive requests ('normal') drain
+   * before bulk-walk pages ('low'), so multi-minute library walks can no
+   * longer starve quick reads. FIFO within a lane; pacing and rate-limit
+   * waits apply to every task regardless of lane.
+   */
+  private _lanes: {
+    normal: Array<{ run: () => Promise<unknown>; resolve: (v: unknown) => void; reject: (e: unknown) => void }>;
+    low: Array<{ run: () => Promise<unknown>; resolve: (v: unknown) => void; reject: (e: unknown) => void }>;
+  } = { normal: [], low: [] };
+  private _draining = false;
+
+  private enqueue<T>(fn: () => Promise<T>, priority: 'normal' | 'low' = 'normal'): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      this._lanes[priority].push({
+        run: fn as () => Promise<unknown>,
+        resolve: resolve as (v: unknown) => void,
+        reject,
+      });
+      this._drain();
     });
-    // Prevent a rejected promise from poisoning the queue chain
-    this._queue = promise.catch(() => undefined);
-    return promise;
+  }
+
+  private _drain(): void {
+    if (this._draining) return;
+    this._draining = true;
+    void (async () => {
+      try {
+        for (;;) {
+          // Normal lane always wins; fall back to one low task at a time.
+          const next = this._lanes.normal.shift() ?? this._lanes.low.shift();
+          if (!next) break;
+          const now = Date.now();
+          const rateLimitWait = Math.max(0, this._rateLimitUntil - now);
+          const gapWait = Math.max(0, this._lastRequestTime + 100 - now);
+          const waitMs = Math.max(rateLimitWait, gapWait);
+          if (waitMs > 0) await sleep(waitMs);
+          this._lastRequestTime = Date.now();
+          await next.run().then(next.resolve, next.reject);
+        }
+      } finally {
+        this._draining = false;
+        // Tasks enqueued during the final awaits restart the drain.
+        if (this._lanes.normal.length > 0 || this._lanes.low.length > 0) this._drain();
+      }
+    })();
   }
 
   private buildUrl(path: string, params?: Record<string, string>): string {
@@ -423,7 +455,7 @@ export class SpotifyClient {
     return res;
   }
 
-  async get<T>(path: string, params?: Record<string, string>): Promise<T | null> {
+  async get<T>(path: string, params?: Record<string, string>, opts?: { priority?: 'normal' | 'low' }): Promise<T | null> {
     const url = this.buildUrl(path, params);
     // TTL cache for immutable catalog reads (#54): keyed on the API-relative
     // URL; volatile paths (/me/player*, /me/top*, recently-played) bypass.
@@ -434,21 +466,24 @@ export class SpotifyClient {
       const hit = this.cache!.get(key);
       if (hit !== undefined) return hit as T;
     }
-    const result = await this.enqueue(async () => {
-      const res = await this.rawRequest('GET', url);
-      if (res.status === 204) return null;
-      try {
-        return (await res.json()) as T;
-      } catch (err) {
-        if (err instanceof SyntaxError) {
-          // Body was not valid JSON. Best-effort drain so the connection can
-          // be reused, then fail with an actionable error.
-          await res.text().catch(() => undefined);
-          throw new SpotifyApiError(res.status, `GET ${path} returned a non-JSON body`);
+    const result = await this.enqueue(
+      async () => {
+        const res = await this.rawRequest('GET', url);
+        if (res.status === 204) return null;
+        try {
+          return (await res.json()) as T;
+        } catch (err) {
+          if (err instanceof SyntaxError) {
+            // Body was not valid JSON. Best-effort drain so the connection
+            // can be reused, then fail with an actionable error.
+            await res.text().catch(() => undefined);
+            throw new SpotifyApiError(res.status, `GET ${path} returned a non-JSON body`);
+          }
+          throw err;
         }
-        throw err;
-      }
-    });
+      },
+      opts?.priority,
+    );
     if (cacheable && result !== null) this.cache!.set(key, result);
     return result;
   }
@@ -482,7 +517,9 @@ export class SpotifyClient {
     // until a short page signals the end. maxItems caps iterations too.
     for (;;) {
       const pageParams = { ...params, offset: String(offset) };
-      const page = await this.get<SpotifyPaged<T>>(path, pageParams);
+      // #133: walk pages enqueue at LOW priority so interactive reads
+      // always drain first.
+      const page = await this.get<SpotifyPaged<T>>(path, pageParams, { priority: 'low' });
       if (!page || !Array.isArray(page.items)) break;
       all.push(...page.items);
       const reporter = this.progressReporter;
