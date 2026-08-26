@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > from [Conventional Commits](https://www.conventionalcommits.org/). Entries below v1.0.4 were
 > backfilled by hand from git history.
 
+## [1.17.0](https://github.com/NovaLux12/spotify-mcp-server/compare/v1.16.1...v1.17.0) (2026-08-26)
+
+
+### Features
+
+* **#155:** export_playlist — M3U/CSV export of full playlist item lists ([bfb9bff](https://github.com/NovaLux12/spotify-mcp-server/commit/bfb9bff6b537ceccbc1dfb4fc623cd7195d38ea2))
+* **playlists:** elicit-confirm visibility flips toward public in update_playlist ([#157](https://github.com/NovaLux12/spotify-mcp-server/issues/157)) ([fdc2815](https://github.com/NovaLux12/spotify-mcp-server/commit/fdc2815f4054748be0ba9f1291e3cd1beeb314d9))
+* **tools:** add find_duplicate_saved_tracks read-only dedupe tool ([#156](https://github.com/NovaLux12/spotify-mcp-server/issues/156)) ([1c63b82](https://github.com/NovaLux12/spotify-mcp-server/commit/1c63b822c74e452bfce978c28daf8948bda1ee97))
+* wire export_playlist + find_duplicate_saved_tracks into the server ([8096c79](https://github.com/NovaLux12/spotify-mcp-server/commit/8096c798e37a01925b8413303812b90a64459354))
+
+
+### Bug Fixes
+
+* actually register export_playlist + find_duplicate_saved_tracks ([bcae236](https://github.com/NovaLux12/spotify-mcp-server/commit/bcae236d73a8646665175d04954f7d732ee52d8d))
+* scope gates on export/dedupe registrations (parity with all other modules) ([3acd24d](https://github.com/NovaLux12/spotify-mcp-server/commit/3acd24d3e5410b4c6c639641eccec0db99b6861a))
+
 ## [1.16.1](https://github.com/NovaLux12/spotify-mcp-server/compare/v1.16.0...v1.16.1) (2026-08-26)
 
 
