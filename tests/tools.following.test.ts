@@ -315,8 +315,8 @@ describe('check_following_artists shaping (#51/#52/#53)', () => {
 
     const sc = out.structuredContent as { items: Array<{ id: string; follows: boolean }> };
     assert.deepEqual(sc.items, [
-      { id: 'a', uri: 'spotify:artist:a', follows: true, saved: true },
-      { id: 'b', uri: 'spotify:artist:b', follows: false, saved: false },
+      { id: 'a', uri: 'spotify:artist:a', follows: true },
+      { id: 'b', uri: 'spotify:artist:b', follows: false },
     ]);
   });
 
@@ -327,7 +327,7 @@ describe('check_following_artists shaping (#51/#52/#53)', () => {
       response_format: 'json',
     });
     const payload = JSON.parse(out.content[0].text);
-    assert.deepEqual(payload.items, [{ id: 'x', uri: 'spotify:artist:x', follows: false, saved: false }]);
+    assert.deepEqual(payload.items, [{ id: 'x', uri: 'spotify:artist:x', follows: false }]);
     assert.deepEqual(out.structuredContent, payload);
   });
 });
