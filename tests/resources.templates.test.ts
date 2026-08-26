@@ -133,8 +133,12 @@ test('registers 5 catalog templates plus their {+qs} query twins', async () => {
     'spotify://artist/{id}{+qs}',
     'spotify://episode/{id}',
     'spotify://episode/{id}{+qs}',
+    'spotify://playlist/{id}',
+    'spotify://playlist/{id}{+qs}',
     'spotify://show/{id}',
     'spotify://show/{id}{+qs}',
+    'spotify://track/{id}',
+    'spotify://track/{id}{+qs}',
   ]);
 });
 

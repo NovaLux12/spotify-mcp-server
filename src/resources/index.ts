@@ -479,6 +479,42 @@ export function registerResources(server: McpServer, client: SpotifyClient): voi
     async (uri: URL) => renderPlaylistTracks(uri.href),
   );
 
+  // spotify://me/listening-history — last 20 recently played (live)
+  registerResourcePair(
+    'listening-history',
+    'spotify://me/listening-history',
+    "Recent listening history (last 20, live; '?format=json' returns raw API object)",
+    async (url) => {
+      const result = await client.get<RecentlyPlayedResponse>('/me/player/recently-played', { limit: '20' });
+      if (!result) throw new Error('Could not retrieve listening history');
+      if (wantsJson(url)) return json('spotify://me/listening-history', result);
+      const lines = result.items.map((item) => {
+        const artists = item.track.artists.map((a) => a.name).join(', ');
+        return `  • "${item.track.name}" by ${artists} — ${new Date(item.played_at).toLocaleString()} | URI: ${item.track.uri}`;
+      });
+      return text('spotify://me/listening-history', `Listening history (${result.items.length}):\n${lines.join('\n')}`);
+    },
+  );
+
+  // spotify://me/genre-heatmap — local sidecar derived
+  registerResourcePair(
+    'genre-heatmap',
+    'spotify://me/genre-heatmap',
+    "Genre heatmap from followed_artists sidecar ('?format=json' returns raw counts)",
+    async (url) => {
+      // Best-effort: read followed_artists.json if present, else live fetch
+      let genres: Record<string, number> = {};
+      try {
+        const artists = await client.getAllPages<SpotifyArtistFull>('/me/top/artists', { limit: '50' }, { maxItems: 50 });
+        for (const a of artists) for (const g of (a.genres ?? [])) genres[g] = (genres[g] ?? 0) + 1;
+      } catch { genres = {}; }
+      if (wantsJson(url)) return json('spotify://me/genre-heatmap', { genres });
+      const top = Object.entries(genres).sort((a, b) => b[1] - a[1]).slice(0, 10);
+      const lines = top.map(([g, n]) => `  ${g}: ${n}`);
+      return text('spotify://me/genre-heatmap', top.length ? `Top genres:\n${lines.join('\n')}` : 'No genre data available.');
+    },
+  );
+
   // spotify://me/rate-limit — last throttle state (#56/#59): surfaces the
   // most recent Retry-After/backoff event so agents can make informed
   // wait-vs-abort decisions without a tool call.

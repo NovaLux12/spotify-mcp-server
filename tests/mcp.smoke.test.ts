@@ -50,14 +50,14 @@ const FORBIDDEN_TOOLS = [
   'get_recommendations',
   'get_related_artists',
   'get_available_genres',
-  'get_featured_playlists', // deprecated Nov 2024 — never register (browse/categories ARE registered and verified live)
+  'get_featured_playlists',
   'get_audio_features',
   'get_audio_analysis',
   'follow_artist',
   'unfollow_artist',
 ];
 
-const EXPECTED_PROMPTS = ['dj', 'playlist_from_mood', 'music_taste_summary', 'discover_weekly_alternative', 'playlist_audit', 'listening_recap', 'migrate_library', 'podcast_catchup', 'artist_deep_dive', 'triage_liked_songs', 'music_briefing'];
+const EXPECTED_PROMPTS = ['artist_deep_dive', 'crate_digging', 'discover_weekly_alternative', 'dj', 'listening_recap', 'migrate_library', 'morning_briefing', 'music_taste_summary', 'playlist_audit', 'playlist_from_mood', 'podcast_catchup', 'triage_liked_songs', 'weekly_digest'];
 
 interface JsonRpcResponse {
   id?: number | string | null;
