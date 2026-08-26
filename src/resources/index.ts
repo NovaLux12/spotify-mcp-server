@@ -15,6 +15,8 @@ import type {
   SavedAlbumItem,
   SavedShowItem,
   SavedEpisodeItem,
+  SavedTrackItem,
+  FollowedArtistsResponse,
 } from '../types/spotify.js';
 import { getConfig } from '../config.js';
 
@@ -313,6 +315,96 @@ export function registerResources(server: McpServer, client: SpotifyClient): voi
       return `Saved episodes (${items.length}):\n${lines.join('\n')}`;
     },
   );
+
+  // --- #218: additional saved-library resources --------------------------------
+
+  // spotify://me/saved/tracks — paginated with ?offset&limit, prose "name by artist | URI"
+  (() => {
+    const uri = 'spotify://me/saved/tracks';
+    const parseWithPagination = (url: URL) => {
+      const intParam = (key: string, fallback: number): number => {
+        const v = Number.parseInt(url.searchParams.get(key) ?? '', 10);
+        return Number.isFinite(v) ? v : fallback;
+      };
+      return {
+        offset: Math.max(0, intParam('offset', 0)),
+        limit: Math.min(50, Math.max(1, intParam('limit', 20))),
+        jsonFormat: wantsJson(url),
+      };
+    };
+    const render = async (url: URL): Promise<ResourceContents> => {
+      const { offset, limit, jsonFormat } = parseWithPagination(url);
+      const result = await client.get<SpotifyPaged<SavedTrackItem>>('/me/tracks', {
+        limit: String(limit),
+        offset: String(offset),
+      });
+      if (!result) throw new Error('Could not retrieve saved tracks');
+      if (jsonFormat) return json(uri, result);
+      const entries = result.items ?? [];
+      if (entries.length === 0) return text(uri, offset === 0 ? 'No saved tracks.' : `No saved tracks at offset ${offset}.`);
+      const header = `Saved tracks (${result.total ?? entries.length} total, showing ${entries.length} at offset ${offset}):`;
+      const lines = entries.map(({ added_at, track }, i) => {
+        const artists = track.artists.map((a) => a.name).join(', ');
+        return `  ${offset + i + 1}. "${track.name}" by ${artists} | URI: ${track.uri} (added ${added_at.slice(0, 10)})`;
+      });
+      const hasMore = typeof result.total === 'number' ? offset + entries.length < result.total : entries.length === limit;
+      const footer = hasMore ? `\n... more available — re-read with ?offset=${offset + entries.length}` : '';
+      return text(uri, `${header}\n${lines.join('\n')}${footer}`);
+    };
+    server.resource('saved-tracks', uri, { description: "Tracks saved in your library, paginated via ?offset&limit ('?format=json' returns raw paged object)" }, async (u: URL) => render(u));
+    server.resource('saved-tracks-query', new ResourceTemplate(`${uri}{?format,offset,limit}`, { list: undefined }), { description: "Query-string variant of 'spotify://me/saved/tracks' (?format=json, ?offset, ?limit)" }, async (u: URL) => render(u));
+    server.resource('saved-tracks-qs', new ResourceTemplate(`${uri}{+qs}`, { list: undefined }), { description: "Catch-all query variant of 'spotify://me/saved/tracks'" }, async (u: URL) => render(u));
+  })();
+
+  // spotify://me/followed/artists — cursor walk via /me/following
+  (() => {
+    const uri = 'spotify://me/followed/artists';
+    const render = async (url: URL): Promise<ResourceContents> => {
+      const cap = getConfig().fetchAllCap;
+      const artists: SpotifyArtistFull[] = [];
+      let after: string | undefined;
+      while (artists.length < cap) {
+        const params: Record<string, string> = { type: 'artist', limit: '50' };
+        if (after) params.after = after;
+        const page = await client.get<FollowedArtistsResponse>('/me/following', params);
+        const items = page?.artists?.items ?? [];
+        if (items.length === 0) break;
+        artists.push(...(items as unknown as SpotifyArtistFull[]));
+        after = page?.artists?.cursors?.after ?? undefined;
+        if (!page?.artists?.next || !after) break;
+      }
+      if (artists.length > cap) artists.length = cap;
+      if (wantsJson(url)) return json(uri, { total: artists.length, items: artists });
+      if (artists.length === 0) return text(uri, 'No followed artists.');
+      const lines = artists.map((a, i) => {
+        const genres = Array.isArray(a.genres) && a.genres.length > 0 ? a.genres.join(', ') : 'no genres';
+        return `  ${i + 1}. ${a.name} — ${genres} | URI: ${a.uri}`;
+      });
+      return text(uri, `Followed artists (${artists.length}):\n${lines.join('\n')}`);
+    };
+    registerResourcePair('followed-artists', uri, "Artists you follow ('?format=json' returns the raw items)", render);
+  })();
+
+  // spotify://me/saved/audiobooks — /me/audiobooks
+  (() => {
+    const uri = 'spotify://me/saved/audiobooks';
+    const render = async (url: URL): Promise<ResourceContents> => {
+      let items: Array<{ added_at: string; audiobook: { id: string; name: string; uri: string; authors?: Array<{ name: string }> } }> = [];
+      try {
+        items = await client.getAllPages<{ added_at: string; audiobook: { id: string; name: string; uri: string; authors?: Array<{ name: string }> } }>('/me/audiobooks', { limit: '50' }, { maxItems: getConfig().fetchAllCap });
+      } catch {
+        items = [];
+      }
+      if (wantsJson(url)) return json(uri, { total: items.length, items });
+      if (items.length === 0) return text(uri, 'No saved audiobooks.');
+      const lines = items.map(({ added_at, audiobook }) => {
+        const authors = (audiobook.authors ?? []).map((a) => a.name).join(', ') || 'unknown author';
+        return `  • "${audiobook.name}" — ${authors} (added ${added_at.slice(0, 10)}) | ID: ${audiobook.id}`;
+      });
+      return text(uri, `Saved audiobooks (${items.length}):\n${lines.join('\n')}`);
+    };
+    registerResourcePair('saved-audiobooks', uri, "Audiobooks saved in your library ('?format=json' returns the raw items)", render);
+  })();
 
   // spotify://playlist/{id}/tracks — templated resource (#59): hosts that
   // poll resources can follow playlist contents without tool calls.
