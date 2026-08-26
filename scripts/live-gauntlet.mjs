@@ -61,7 +61,7 @@ child.stdout.on('data', (d) => {
   }
 });
 let nextId = 1;
-function rpc(method, params, timeoutMs = 45000) {
+function rpc(method, params, timeoutMs = 120000) {
   const id = nextId++;
   return new Promise((res, rej) => {
     pending.set(id, (m) => (m.error ? rej(new Error(JSON.stringify(m.error))) : res(m.result)));
@@ -193,6 +193,42 @@ const SAFE_ARGS = {
   get_user_playlists_by_id: () => seed.userId ? { user_id: seed.userId, max_results: 5 } : 'no user id in seeds',
   get_artist_top_tracks: () => seed.artistId ? { id: seed.artistId } : 'no artist in seeds',
   get_available_markets: () => ({}),
+  // searchdive.ts
+  search_deep: () => ({ query: 'radiohead', types: ['track'], pages: 1 }),
+  // analytics.ts (#97)
+  listening_report: () => ({ time_range: 'short_term', max_results: 3 }),
+  // libraryinsights.ts (#112 idea 1)
+  library_genre_report: () => ({ max_results: 5 }),
+  filter_by_genre: () => ({ genre: 'rock', kind: 'tracks', max_results: 5 }),
+  tag_management: () => ({ action: 'list' }),
+  // freshness.ts (#112 idea 2)
+  whats_new: () => ({ days_back: 365, kinds: ['albums', 'podcasts'], max_results: 3 }),
+  // libraryhygiene.ts (#112 idea 5)
+  library_hygiene: () => ({ max_results: 3 }),
+  // playlistdna.ts (#112 idea 6)
+  grow_playlist: () => seed.playlistId ? { playlist_id: seed.playlistId, size: 5, exclude_saved: false } : 'no playlist in seeds',
+  // playlistops.ts (#96)
+  merge_playlists: () => seed.playlistId ? { sources: [seed.playlistId], new_name: 'gauntlet-merge-DELETE-ME', dry_run: true } : 'no playlist in seeds',
+  diff_playlists: () => seed.playlistId ? { a: seed.playlistId, b: seed.playlistId } : 'no playlist in seeds',
+  overlap_playlists: () => seed.playlistId ? { playlists: [seed.playlistId] } : 'no playlist in seeds',
+  // podcastsession.ts (#112 idea 3)
+  plan_podcast_session: () => ({ minutes: 30, max_results: 3 }),
+  start_podcast_session: () => ({ minutes: 30, dry_run: true }),
+  // audiobookcopilot.ts (#112 idea 4)
+  list_all_chapters: () => seed.audiobookId ? { audiobook_id: seed.audiobookId } : 'no audiobook in seeds (market-gated)',
+  where_was_i: () => seed.audiobookId ? { audiobook_id: seed.audiobookId } : 'no audiobook in seeds (market-gated)',
+  jump_to_chapter: () => 'mutating adjacent — requires device; covered by list_all_chapters instead',
+  // scenes.ts (#112 ideas 7+12)
+  list_scenes: () => ({}),
+  apply_scene: () => 'needs a saved scene; covered by list_scenes/save_scene instead',
+  save_scene: () => 'MUTATING-ADJACENT (writes sidecar); not exercised by the safe sweep',
+  delete_scene: () => 'MUTATING-ADJACENT (writes sidecar); not exercised by the safe sweep',
+  schedule_wind_down: () => 'MUTATING-ADJACENT (arms timers + volume changes)',
+  cancel_wind_down: () => 'no active wind-down during gauntlet',
+  // doctortool.ts (#111)
+  spotify_doctor: () => ({}),
+  // receipts (#112 idea 11)
+  verify_receipt: () => 'needs a receipt id from a prior mutation; skip in safe sweep',
 };
 
 // Chained after get_audiobook: chapters feed get_chapter / get_several_chapters.
