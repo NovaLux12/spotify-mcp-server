@@ -110,8 +110,8 @@ test('volume_step nudge', async()=>{
 });
 test('market_availability', async()=>{
   const { registered } = makeHarness({ getResponse:(p)=> p.startsWith('/tracks/')?{ name:'Hit', available_markets:['US','GB','DE']}:null });
-  const r = await invoke(find(registered,'market_availability'), { uri:'spotify:track:trk1' });
-  assert.match(text(r), /available in 3/);
+  const r = await invoke(find(registered,'market_availability'), { uri:'spotify:track:trk1', markets:['US','GB','DE'] });
+  assert.match(text(r), /3\/3 markets available/);
 });
 test('playback_compare_states diff (sidecar)', async()=>{
   const dir = join(tmpdir(), `pb-intel-test-${Date.now()}`);

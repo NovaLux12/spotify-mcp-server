@@ -95,14 +95,17 @@ test('registers all #59 resource URIs plus format/json twins and templates', asy
 
   assert.deepEqual(uris, [
     'spotify://me',
+    'spotify://me/followed/artists',
     'spotify://me/genre-heatmap',
     'spotify://me/listening-history',
     'spotify://me/playlists',
     'spotify://me/rate-limit',
     'spotify://me/recently-played',
     'spotify://me/saved/albums',
+    'spotify://me/saved/audiobooks',
     'spotify://me/saved/episodes',
     'spotify://me/saved/shows',
+    'spotify://me/saved/tracks',
     'spotify://me/top/artists',
     'spotify://me/top/tracks',
     'spotify://player/queue',
@@ -245,7 +248,7 @@ test('rate-limit resource reports never throttled by default (#56/#59)', async (
 
 // ---------------------------------------------------------------- prompts
 
-test('all ten prompts are registered (#60, #112)', async () => {
+test('all fourteen prompts are registered (#60, #112)', async () => {
   const client = await connect(makeClientStub());
   const prompts = await client.listPrompts();
   assert.deepEqual(
@@ -258,6 +261,7 @@ test('all ten prompts are registered (#60, #112)', async () => {
       'listening_recap',
       'migrate_library',
       'morning_briefing',
+      'music_briefing',
       'music_taste_summary',
       'playlist_audit',
       'playlist_from_mood',
@@ -341,6 +345,15 @@ const realToolNames: Record<string, true> = Object.fromEntries([
   'save_discover_weekly', 'save_release_radar',
   // search/catalog helpers referenced by prompts
   'search', 'search_deep', 'get_artist_albums', 'get_album_tracks',
+  // radar/briefing tools referenced by music_briefing + others
+  'show_new_episodes', 'artist_release_digest', 'whats_new', 'check_artist_releases',
+  'library_genre_report', 'filter_by_genre',
+  // catalog helpers for crate_digging etc
+  'get_top_tracks', 'get_top_artists', 'get_recently_played', 'get_saved_albums', 'get_saved_tracks',
+  'get_saved_shows', 'get_show_episodes', 'get_followed_artists',
+  // suite helpers
+  'create_playlist', 'add_to_playlist', 'add_to_queue', 'get_user_playlists', 'get_playlist_items',
+  'find_duplicates_in_playlist', 'remove_from_playlist',
 ].map((name) => [name, true as const]));
 
 test('every prompt only references tool names that are actually registered', async () => {
