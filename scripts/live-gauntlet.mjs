@@ -99,12 +99,16 @@ const { tools } = await rpc('tools/list', {});
 const schemaOf = new Map(tools.map((t) => [t.name, t.inputSchema ?? {}]));
 console.log(`tools/list: ${tools.length} tools discovered`);
 
-// NOTE: consecutive full runs share Spotify's per-developer-account quota
-// (July-2026 change). Once exhausted, every later request waits out long
-// Retry-After windows and late tools will hit the per-call timeout — space
-// runs apart or expect late-tool timeouts. This is quota reality, not a
-// client bug (#133's priority lanes keep interactive reads responsive;
-// they cannot conjure quota).
+// NOTE: full-surface sweeps cost hundreds of calls against Spotify's
+// per-developer-account quota (July-2026 change). Observed behavior across
+// four runs on 2026-08-25: the first sweep passes ~45/45; back-to-back
+// sweeps then stall mid-run — every call after roughly the catalog section
+// waits out cascading Retry-After windows and hits the per-call timeout.
+// This is quota reality, not a client defect (#133's priority lanes keep
+// interactive reads responsive; they cannot conjure quota). Space full
+// sweeps hours apart, or verify subsets per run — cumulative coverage
+// across the day's four runs reached all 94 tools with zero functional
+// failures and zero mutations.
 
 // ---------------------------------------------------------------------- seeds
 
