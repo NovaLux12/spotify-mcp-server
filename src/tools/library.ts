@@ -85,7 +85,7 @@ async function mutationOutVerified(
   const text =
     rf === 'json'
       ? base.content[0].text
-      : `${base.content[0].text}\n${formatReceipt(receipt)}`;
+      : `${base.content[0].text}\n${formatReceipt(receipt, receiptOpts)}`;
   return {
     content: [{ type: 'text', text }],
     structuredContent: {

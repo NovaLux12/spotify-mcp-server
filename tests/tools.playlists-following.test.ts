@@ -469,8 +469,10 @@ describe('create_playlist', () => {
       collaborative: false,
     });
 
-    assert.equal(h.client.calls.length, 1, 'must be exactly one POST');
-    const call = h.client.calls[0];
+    // The mutation receipt adds a trailing verification GET — count writes only.
+    const posts = h.client.calls.filter((c) => c.method === 'POST');
+    assert.equal(posts.length, 1, 'must be exactly one POST');
+    const call = posts[0];
     assert.equal(call.method, 'POST');
     assert.equal(call.path, '/me/playlists');
     assert.deepEqual(call.arg, {
@@ -536,10 +538,11 @@ describe('add_to_playlist / remove_from_playlist / update_playlist / reorder_pla
     const uris = ['spotify:track:a', 'spotify:episode:b'];
 
     await h.invoke('add_to_playlist', { playlist_id: 'pl', uris, position: 7 });
-    assert.deepEqual(wireCalls(h.client.calls).slice(0, 1), [
+    // Each mutation is followed by a verification GET — compare writes only.
+    const posts = h.client.calls.filter((c) => c.method === 'POST');
+    assert.deepEqual(wireCalls(posts).slice(0, 1), [
       { method: 'POST', path: '/playlists/pl/items', arg: { uris, position: 7 } },
     ]);
-
     await h.invoke('add_to_playlist', { playlist_id: 'pl', uris });
     assert.deepEqual(h.client.calls[1].arg, { uris }, 'position omitted when not provided');
   });
@@ -550,13 +553,16 @@ describe('add_to_playlist / remove_from_playlist / update_playlist / reorder_pla
     const out = await h.invoke('remove_from_playlist', {
       playlist_id: 'pl',
       uris: ['spotify:track:x', 'spotify:track:y'],
-    });
-
-    assert.deepEqual(wireCalls(h.client.calls), [
-      {
-        method: 'DELETE',
-        path: '/playlists/pl/items',
-        arg: { tracks: [{ uri: 'spotify:track:x' }, { uri: 'spotify:track:y' }] },
+    assert.deepEqual(
+      wireCalls(h.client.calls.filter((c) => c.method === 'DELETE')),
+      [
+        {
+          method: 'DELETE',
+          path: '/playlists/pl/items',
+          arg: { tracks: [{ uri: 'spotify:track:x' }, { uri: 'spotify:track:y' }] },
+        },
+      ],
+    );
       },
     ]);
     assert.match(textOf(out), /Removed 2 item\(s\) from playlist\./);
@@ -566,12 +572,18 @@ describe('add_to_playlist / remove_from_playlist / update_playlist / reorder_pla
     const h = harness();
 
     await h.invoke('update_playlist', { playlist_id: 'pl', name: 'New Name', public: false });
-    assert.deepEqual(wireCalls(h.client.calls).slice(0, 1), [
-      { method: 'PUT', path: '/playlists/pl', arg: { name: 'New Name', public: false } },
-    ]);
+    // The mutation receipt adds a trailing verification GET — compare writes only.
+    assert.deepEqual(
+      wireCalls(h.client.calls.filter((c) => c.method === 'PUT')),
+      [{ method: 'PUT', path: '/playlists/pl', arg: { name: 'New Name', public: false } }],
+    );
 
     await h.invoke('update_playlist', {
       id: 'pl',
+      description: 'd',
+      collaborative: true,
+    });
+    assert.deepEqual(h.client.calls.filter((c) => c.method === 'PUT')[1].arg, {
       description: 'd',
       collaborative: true,
     });

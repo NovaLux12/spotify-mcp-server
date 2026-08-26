@@ -63,8 +63,9 @@ export interface IssueReceiptOpts {
   uris: string[];
   before?: number;
   /**
-   * Library kind only: whether the mutation was expected to make the uris
-   * PRESENT (save) or ABSENT (remove). Defaults to present.
+   * Whether the mutation was expected to make the uris PRESENT
+   * (add/save — default) or ABSENT (remove). Applies to the
+   * 'playlist_items' and 'library' kinds.
    */
   expectPresent?: boolean;
 }
@@ -112,9 +113,21 @@ export async function issueReceipt(
       }
       if (!res.next || res.items.length < PLAYLIST_ITEMS_PAGE_SIZE) break;
     }
-    missing = [...counts.entries()].filter(([, n]) => n === 0).map(([uri]) => uri);
-    after = [...counts.values()].reduce((a, b) => a + b, 0);
-    verified = missing.length === 0;
+    // Add expects every uri present after the write; removal expects every
+    // uri gone — a leftover uri after removal is exactly what the agent
+    // needs to know about (#133-era receipts follow the same convention as
+    // the library kind).
+    const expectPresent = opts.expectPresent ?? true;
+    if (expectPresent) {
+      missing = [...counts.entries()].filter(([, n]) => n === 0).map(([uri]) => uri);
+      after = [...counts.values()].reduce((a, b) => a + b, 0);
+      verified = missing.length === 0;
+    } else {
+      const leftovers = [...counts.entries()].filter(([, n]) => n > 0).map(([uri]) => uri);
+      missing = leftovers;
+      after = counts.size - leftovers.length;
+      verified = leftovers.length === 0;
+    }
   } else if (opts.kind === 'library') {
     // /me/library/contains takes ≤50 uris per call; chunk and OR the results.
     const present = new Set<string>();
@@ -170,14 +183,26 @@ export async function issueReceipt(
  * Deterministic prose lines for appending to a tool result. Same receipt →
  * byte-identical output, every time.
  */
-export function formatReceipt(r: Receipt): string {
+export function formatReceipt(
+  r: Receipt,
+  opts?: { expectPresent?: boolean },
+): string {
   const target = r.id ? `${r.kind} ${r.id}` : r.kind;
   const lines = [`Receipt ${r.receipt_id}: ${r.verified ? 'VERIFIED' : 'UNVERIFIED'} (${target})`];
   if (r.before !== undefined || r.after !== undefined) {
     lines.push(`  occurrences before/after: ${r.before ?? '?'}/${r.after ?? '?'}`);
   }
-  lines.push(
-    r.missing.length > 0 ? `  missing uris: ${r.missing.join(', ')}` : '  all uris confirmed',
-  );
+  if (opts?.expectPresent === false) {
+    // Removal direction: "missing" lists uris STILL PRESENT after the write.
+    lines.push(
+      r.missing.length > 0
+        ? `  still-present uris: ${r.missing.join(', ')}`
+        : '  all uris confirmed absent',
+    );
+  } else {
+    lines.push(
+      r.missing.length > 0 ? `  missing uris: ${r.missing.join(', ')}` : '  all uris confirmed',
+    );
+  }
   return lines.join('\n');
 }

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { issueReceipt, formatReceipt } from '../receipts.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
 import { getConfig } from '../config.js';
@@ -497,10 +498,16 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
       }>('/me/playlists', body);
       if (!result) throw new Error('Could not create playlist');
 
+      // Receipt (#112 idea 11): confirm the created playlist actually resolves.
+      const meta = await issueReceipt(client, {
+        kind: 'playlist_meta',
+        id: result.id,
+        uris: [],
+      });
       return {
         content: [{
           type: 'text',
-          text: `Created playlist "${args.name}"\nID: ${result.id}\nURI: ${result.uri}\nURL: ${result.external_urls.spotify}`,
+          text: `Created playlist "${args.name}"\nID: ${result.id}\nURI: ${result.uri}\nURL: ${result.external_urls.spotify}\n${formatReceipt(meta)}`,
         }],
         structuredContent: {
           ok: true,
@@ -508,6 +515,7 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
           uri: result.uri,
           url: result.external_urls.spotify,
           name: args.name,
+          receipt: meta as unknown as Record<string, unknown>,
         },
       };
     },
@@ -587,11 +595,25 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
       if (args.position !== undefined) body.position = args.position;
 
       const res = await client.post<{ snapshot_id?: string }>(`/playlists/${id}/items`, body);
+      // Receipt (#112 idea 11): verify the added URIs actually landed.
+      const receipt = await issueReceipt(client, {
+        kind: 'playlist_items',
+        id: args.playlist_id,
+        uris: toAdd,
+      });
       // #58: confirmation-friendly batch echo alongside the snapshot anchor.
       const lines = [`Added ${toAdd.length} item(s) to playlist.`];
       if (skipped > 0) lines.push(`Skipped ${skipped} duplicate(s) already in the playlist.`);
       lines.push(batchSummary(toAdd.length, toAdd));
-      return textResult(withSnapshot(lines.join('\n'), res?.snapshot_id));
+      return textResult(
+        withSnapshot(`${lines.join('\n')}\n${formatReceipt(receipt)}`, res?.snapshot_id),
+        listStructuredContent(toAdd, paginationInfo({
+          total: toAdd.length,
+          offset: 0,
+          limit: toAdd.length,
+          returned: toAdd.length,
+        }), { receipt: receipt as unknown as Record<string, unknown> }),
+      );
     },
   );
 
@@ -661,15 +683,24 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
         `/playlists/${encodeURIComponent(args.playlist_id)}/items`,
         body,
       );
+      // Receipt (#112 idea 11): removal verifies ABSENCE of the touched uris.
+      const receipt = await issueReceipt(client, {
+        kind: 'playlist_items',
+        id: args.playlist_id,
+        uris: tracks.map((t) => t.uri),
+        expectPresent: false,
+      });
       // #58: echo exactly which URIs were touched for the audit trail.
+      const text = withSnapshot(
+        `Removed ${tracks.length} item(s) from playlist.\n${batchSummary(
+          tracks.length,
+          tracks.map((t) => t.uri),
+        )}`,
+        res?.snapshot_id,
+      );
       return textResult(
-        withSnapshot(
-          `Removed ${tracks.length} item(s) from playlist.\n${batchSummary(
-            tracks.length,
-            tracks.map((t) => t.uri),
-          )}`,
-          res?.snapshot_id,
-        ),
+        `${text}\n${formatReceipt(receipt, { expectPresent: false })}`,
+        { ok: true, removed: tracks.length, snapshot_id: res?.snapshot_id, receipt: receipt as unknown as Record<string, unknown> },
       );
     },
   );
@@ -729,20 +760,28 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
       }
 
       await client.put(`/playlists/${encodeURIComponent(playlistId)}`, body);
+      const changed = {
+        ...(args.name !== undefined ? { name: args.name } : {}),
+        ...(args.description !== undefined ? { description: args.description } : {}),
+        ...(args.public !== undefined ? { public: args.public } : {}),
+        ...(args.collaborative !== undefined ? { collaborative: args.collaborative } : {}),
+      };
+      // Receipt (#112 idea 11): confirm the mutated playlist still resolves.
+      const metaReceipt = await issueReceipt(client, {
+        kind: 'playlist_meta',
+        id: playlistId,
+        uris: [],
+      });
       return {
         content: [{
           type: 'text',
-          text: `Playlist updated.${args.name !== undefined ? ` Name: "${args.name}".` : ''}`,
+          text: `Playlist updated.${args.name !== undefined ? ` Name: "${args.name}".` : ''}\n${formatReceipt(metaReceipt)}`,
         }],
         structuredContent: {
           ok: true,
-          playlist_id: args.id,
-          changed: {
-            ...(args.name !== undefined ? { name: args.name } : {}),
-            ...(args.description !== undefined ? { description: args.description } : {}),
-            ...(args.public !== undefined ? { public: args.public } : {}),
-            ...(args.collaborative !== undefined ? { collaborative: args.collaborative } : {}),
-          },
+          playlist_id: playlistId,
+          changed,
+          receipt: metaReceipt as unknown as Record<string, unknown>,
         },
       };
     },
@@ -849,12 +888,25 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
         if (res?.snapshot_id) snapshotId = res.snapshot_id;
       }
 
+      // Receipt (#112 idea 11): replace is present-semantics — verify the
+      // new contents actually landed.
+      const receipt = await issueReceipt(client, {
+        kind: 'playlist_items',
+        id: args.playlist_id,
+        uris: args.uris,
+      });
       // #58: confirmation-friendly batch echo alongside the snapshot anchor.
       return textResult(
         withSnapshot(
-          `Replaced playlist contents with ${args.uris.length} item(s) across ${requestCount} request(s).\n${batchSummary(args.uris.length, args.uris)}`,
+          `Replaced playlist contents with ${args.uris.length} item(s) across ${requestCount} request(s).\n${batchSummary(args.uris.length, args.uris)}\n${formatReceipt(receipt)}`,
           snapshotId,
         ),
+        listStructuredContent(args.uris, paginationInfo({
+          total: args.uris.length,
+          offset: 0,
+          limit: args.uris.length,
+          returned: args.uris.length,
+        }), { receipt: receipt as unknown as Record<string, unknown> }),
       );
     },
   );
