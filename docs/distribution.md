@@ -3,7 +3,7 @@
 One-stop copy for claiming/listing the server in directories. Keep in sync
 with README + server.json when the tool surface changes.
 
-## Canonical facts (2026-08-26, v1.16.1)
+## Canonical facts (2026-08-26, v1.22.0)
 
 - npm: `@novalux12/spotify-mcp` — https://www.npmjs.com/package/@novalux12/spotify-mcp
 - Repo: https://github.com/NovaLux12/spotify-mcp-server
@@ -11,7 +11,7 @@ with README + server.json when the tool surface changes.
 - Transport: stdio (`npx @novalux12/spotify-mcp` after `npm i -g`, or via client config)
 - Auth: OAuth PKCE (S256) browser flow or headless mode; tokens at `~/.spotify-mcp/tokens.json` (0600)
 - Surface: 154 tools across 38 tool modules plus the top-level `verify_receipt` diagnostic + 11 fixed resource URIs + RFC-6570 templates + 10 prompts (toolsets can trim); aligned with Spotify's post-Feb-2026 API
-- Tests: 638-case node:test suite, CI on Node 22
+- Tests: 837-case node:test suite, CI on Node 22
 - Safety: `dry_run` previews on every mutating tool; elicitation-gated human confirmation on bulk playlist removals (10+ URIs) and replacements (50+); mutation receipts verifiable via `verify_receipt`; opt-in JSONL audit trail; hard read-only mode (`SPOTIFY_MCP_READONLY=1`)
 - Provenance: npm publishes carry SLSA provenance; listed in the official MCP Registry as `io.github.NovaLux12/spotify-mcp-server`
 
@@ -40,7 +40,7 @@ library migration; live resources expose now-playing and library state for
 polling clients. Built for the post-deprecation API: honest about what Spotify
 removed, graceful where endpoints are restricted, dry-run previews everywhere
 state changes, human-in-the-loop confirmation on bulk deletions, post-write
-receipts you can verify in a later turn, and a hard read-only mode. 630+ tests,
+receipts you can verify in a later turn, and a hard read-only mode. 830+ tests,
 TypeScript strict, published to npm (with SLSA provenance) and the official MCP
 Registry.
 

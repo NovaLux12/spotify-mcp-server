@@ -1228,14 +1228,43 @@ spotify-mcp/
 │   ├── history.ts            # Opt-in mutation history JSONL writer
 │   ├── shaping.ts            # Shared response shaping (response_format, max_results, pagination)
 │   ├── tools/
+│   │   ├── analytics.ts      # listening_report
+│   │   ├── artistwatch.ts    # get_artist_discography, resolve_artist, save_artist_new_releases, watch_artists, check_artist_releases, artist_release_digest
 │   │   ├── audiobooks.ts     # get_audiobook, get_audiobook_chapters, get_chapter, get_saved_audiobooks
+│   │   ├── audiobookcopilot.ts # list_all_chapters, jump_to_chapter, where_was_i
+│   │   ├── backup.ts         # backup_library, list_backups
+│   │   ├── browse.ts         # get_artist_genres, get_categories, get_category_playlists
 │   │   ├── catalog.ts        # get_me, get_track, get_several_tracks, get_artist, get_artist_top_tracks, get_artist_albums, get_several_artists, get_album, get_album_tracks, get_several_albums, get_show, get_show_episodes, get_several_shows, get_episode, get_several_episodes, get_available_markets, get_several_audiobooks, get_several_chapters
+│   │   ├── doctortool.ts     # spotify_doctor
+│   │   ├── episodemgmt.ts    # archive_played_episodes, mark_episode_played
+│   │   ├── export.ts         # export_playlist (M3U/CSV)
 │   │   ├── following.ts      # get_followed_artists, follow_artists, unfollow_artists, check_following_artists
+│   │   ├── freshness.ts      # whats_new (new-release radar)
+│   │   ├── import.ts         # import_playlist (M3U/CSV)
+│   │   ├── libraryanalytics.ts # library_coverage_report, listening_heatmap, library_growth_report, genre_trends_over_time
+│   │   ├── libraryhygiene.ts # library_hygiene
+│   │   ├── libraryinsights.ts # library_genre_report, filter_by_genre, tag_management
 │   │   ├── library.ts        # get_saved_tracks, get_saved_albums, get_saved_shows, get_saved_episodes, save_items, remove_saved_items, check_saved_items, save_to_library, remove_from_library, check_in_library
 │   │   ├── personalization.ts # get_top_tracks, get_top_artists, get_recently_played
 │   │   ├── playback.ts       # get_now_playing, get_currently_playing, play, pause, skip_next, skip_previous, seek, set_volume, set_shuffle, set_repeat, get_queue, add_to_queue, get_devices, transfer_playback, play_from_search
+│   │   ├── playbackext.ts    # save_playback_state, restore_playback_state, list_playback_states, rename_device, set_device_volume_preset, apply_device_presets, list_device_presets, tag_listening_session, replay_session, list_sessions, save_smart_playlist_rule, refresh_smart_playlist, save_show_digest
+│   │   ├── playlistbatch.ts  # batch_add_to_playlist, copy_playlist, move_items_between_playlists
+│   │   ├── playlistdna.ts    # grow_playlist (co-occurrence)
+│   │   ├── playlisthealth.ts # playlist_health_check, get_playlist_followers, playlist_collaboration_report, snapshot_playlist, diff_since_snapshot, list_playlist_snapshots
+│   │   ├── playlistmisc.ts   # pin_playlist, unpin_playlist, playlist_template_apply
+│   │   ├── playlistops.ts    # merge_playlists, diff_playlists, overlap_playlists
 │   │   ├── playlists.ts      # get_user_playlists, get_playlist, get_playlist_items, create_playlist, add_to_playlist, remove_from_playlist, update_playlist, reorder_playlist_items, replace_playlist_items, find_duplicates_in_playlist, get_playlist_cover, upload_playlist_cover
+│   │   ├── podcastsession.ts # plan_podcast_session, start_podcast_session
+│   │   ├── portability.ts    # save_discover_weekly, save_release_radar, export_library_json, export_followed_artists
+│   │   ├── queueops.ts       # queue_playlist, queue_reorder, queue_remove, queue_clear
+│   │   ├── restore.ts        # restore_library_snapshot
+│   │   ├── saveddedupe.ts    # find_duplicate_saved_tracks
+│   │   ├── scenes.ts         # save_scene, list_scenes, delete_scene, apply_scene, schedule_wind_down, cancel_wind_down
+│   │   ├── searchdive.ts     # search_deep
+│   │   ├── searchhistory.ts  # search_history, search_rerun
 │   │   ├── search.ts         # search
+│   │   ├── showradar.ts      # show_new_episodes
+│   │   ├── smart.ts          # create_smart_playlist, clean_all_playlists, remove_duplicate_playlist_items
 │   │   └── users.ts          # get_user_profile, get_user_playlists_by_id
 │   ├── resources/
 │   │   └── index.ts          # MCP resource handlers
@@ -1318,3 +1347,5 @@ npm run auth   # or: SPOTIFY_CLIENT_ID=xxx npm run auth
 | **Phase 8** | Package for npm (`spotify-mcp`) + README polish |
 | **Phase 9** | Deprecation cleanup + coverage completion (2026-08): removed deprecated endpoints (audio features/analysis, recommendations, related artists, genres, featured playlists, follow/unfollow artist); create_playlist moved to `POST /me/playlists`; added album tracks, show episodes, get_me, audiobook family, get_currently_playing, play_from_search, playlist cover get/upload; fetch_all pagination via client.getAllPages; SPOTIFY_MCP_TOKEN_FILE override |
 | **Phase 10** | v1.1.0 coverage expansion (2026-08): users module (`get_user_profile`, `get_user_playlists_by_id`); `follow_artists`/`unfollow_artists`; unified-library trio (`save_to_library`, `remove_from_library`, `check_in_library`); `get_playlist_items`, `replace_playlist_items`, `find_duplicates_in_playlist`; `get_artist_top_tracks`, `get_available_markets`, and the seven `get_several_*` batch lookups; shared response shaping (`response_format`/`max_results`/`structuredContent`); fetch timeouts, TTL read cache, rate-limit visibility resource, opt-in mutation history, and the `spotify-mcp doctor` CLI |
+| **Phase 11** | v1.19–1.21 wave: `import_playlist` (M3U/CSV), `remove_duplicate_playlist_items` + `clean_all_playlists`, `create_smart_playlist`, `show_new_episodes`, backup/restore, bug trio (#195/#196/#210), 104 tools |
+| **Phase 12** | **v1.22.0 big-release (2026-08-26): 50 new tools across 11 modules — 6 parallel streams: catalog/browse+artistwatch (8), library analytics (4), playlist health (6), playlist batch (3), playlist misc+portability (7), playback/queue/search/episodes (22) — wired centrally, 154 tools across 38 modules, 837 tests, smoke FORBIDDEN_TOOLS guard** |
