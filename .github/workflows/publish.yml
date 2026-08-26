@@ -47,7 +47,12 @@ jobs:
           if npm view "@novalux12/spotify-mcp@$VERSION" version >/dev/null 2>&1; then
             echo "@novalux12/spotify-mcp@$VERSION already on npm — skipping"
           else
-            npm publish --access public
+            # --provenance generates SLSA provenance via the OIDC identity.
+            # Requires id-token: write (set on this job) and works alongside
+            # NPM_TOKEN auth. To move fully to trusted publishing instead,
+            # remove NODE_AUTH_TOKEN and configure the package on npmjs.com
+            # (Settings → Publishing access → GitHub Actions).
+            npm publish --access public --provenance
           fi
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
