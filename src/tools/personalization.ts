@@ -29,7 +29,7 @@ type TopArtist = SpotifyArtistFull & {
   followers?: { total: number };
   popularity?: number;
 };
-const timeRangeSchema = z
+export const timeRangeSchema = z
   .enum(['short_term', 'medium_term', 'long_term'])
   .optional()
   .describe('~4 weeks / ~6 months / all time. Default: medium_term');
