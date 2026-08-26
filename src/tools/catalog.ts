@@ -27,6 +27,14 @@ import {
   type ResponseFormatValue,
 } from '../shaping.js';
 
+
+// Issue #110: market codes are exactly two letters; lowercase input is
+// normalised to uppercase before it reaches the wire.
+const MARKET_CODE = z
+  .string()
+  .regex(/^[A-Za-z]{2}$/, 'market must be a 2-letter ISO 3166-1 alpha-2 country code, e.g. "US"')
+  .transform((code) => code.toUpperCase());
+
 let profileCountry: Promise<string | undefined> | null = null;
 
 // Show/episode lookups are market-gated (#29): when the caller supplies no
@@ -329,7 +337,7 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
         .optional()
         .describe('Results per page, 1–10. Default: 10'),
       offset: z.number().int().min(0).optional().describe('Index of the first album to return. Default: 0'),
-      market: z.string().optional().describe(
+      market: MARKET_CODE.optional().describe(
         'ISO 3166-1 alpha-2 country code. Defaults to the account country; affects album availability.',
       ),
       ...sharedListFields,
@@ -370,7 +378,7 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
     'Get album details and track list by ID',
     {
       id: z.string().describe('Spotify album ID'),
-      market: z.string().optional().describe(
+      market: MARKET_CODE.optional().describe(
         'ISO 3166-1 alpha-2 country code. Defaults to the account country; affects track playability.',
       ),
       ...sharedListFields,
@@ -424,7 +432,7 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
         .optional()
         .describe('Results per page, 1–50. Default: 20'),
       offset: z.number().int().min(0).optional().describe('Index of the first track to return. Default: 0'),
-      market: z.string().optional().describe(
+      market: MARKET_CODE.optional().describe(
         'ISO 3166-1 alpha-2 country code. Defaults to the account country; affects track availability.',
       ),
       ...sharedListFields,
@@ -464,7 +472,7 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
     'Get full details for a podcast show',
     {
       id: z.string().describe('Spotify show ID'),
-      market: z.string().optional().describe('ISO 3166-1 alpha-2 country code'),
+      market: MARKET_CODE.optional().describe('ISO 3166-1 alpha-2 country code'),
       response_format: ResponseFormat,
     },
     async (args) => {
@@ -511,7 +519,7 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
         .optional()
         .describe('Results per page, 1–50. Default: 20'),
       offset: z.number().int().min(0).optional().describe('Index of the first episode to return. Default: 0'),
-      market: z.string().optional().describe(
+      market: MARKET_CODE.optional().describe(
         'ISO 3166-1 alpha-2 country code. If given, only shows and episodes available in that market are returned.',
       ),
       ...sharedListFields,

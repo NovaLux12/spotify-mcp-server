@@ -213,6 +213,7 @@ test('get_recently_played truncates with footer and exposes the next cursor (#52
     max_results: 2,
   });
   assert.match(text(result), /\(3 more — pass offset or fetch_all\)/);
+  assert.match(text(result), /Pass after=a9 to continue\./);
   const sc = result.structuredContent as { next_cursor: string | null; truncated: boolean };
   assert.equal(sc.next_cursor, 'a9');
   assert.equal(sc.truncated, true);

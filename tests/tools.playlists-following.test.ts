@@ -642,11 +642,14 @@ describe('get_playlist_items', () => {
       return { items: [], total: 0, limit: 100, offset: 0 };
     });
 
+    // #110: lowercase market is normalised to uppercase on the wire, and
+    // additional_types arrives as an enum array but serialises to a
+    // comma-separated string.
     await h.invoke('get_playlist_items', {
       playlist_id: 'pl1',
-      market: 'GB',
+      market: 'gb',
       fields: 'total,items(track(name,uri))',
-      additional_types: 'track,episode',
+      additional_types: ['track', 'episode'],
     });
     assert.deepEqual(h.client.calls[0].arg, {
       limit: '100',
@@ -654,6 +657,20 @@ describe('get_playlist_items', () => {
       fields: 'total,items(track(name,uri))',
       additional_types: 'track,episode',
     });
+  });
+
+  it('rejects a malformed market code before any client call (#110)', async () => {
+    const h = harness();
+
+    await assert.rejects(
+      () => h.invoke('get_playlist_items', { playlist_id: 'pl1', market: 'USA' }),
+      (err: unknown) => err instanceof z.ZodError,
+    );
+    await assert.rejects(
+      () => h.invoke('get_playlist_items', { playlist_id: 'pl1', market: 'g' }),
+      (err: unknown) => err instanceof z.ZodError,
+    );
+    assert.equal(h.client.calls.length, 0);
   });
 
   it('forwards explicit limit and offset and numbers rows from the absolute offset', async () => {
