@@ -169,3 +169,75 @@ describe('show_new_episodes', () => {
     assert.equal(parsed.new_episodes, 1);
   });
 });
+
+describe('show_new_episodes budget/dry_run/quota', () => {
+  it('dry_run returns cost estimate without API calls', async () => {
+    let getCalled = false;
+    const registered: any[] = [];
+    const fakeServer = {
+      tool(n: string, _d: string, schema: z.ZodRawShape, h: any) {
+        registered.push({ name: n, validate: (a: any) => z.object(schema).parse(a), handler: h });
+      },
+    } as unknown as McpServer;
+    // client that would fail if called
+    const client = {
+      async getAllPages() { getCalled = true; return []; },
+      async get() { getCalled = true; return null; },
+    };
+    const { registerShowRadarTools: reg } = await import('../src/tools/showradar.js');
+    reg(fakeServer, client as unknown as SpotifyClient);
+    const tool = registered.find((t: any) => t.name === 'show_new_episodes');
+    const out = await tool.handler(tool.validate({ dry_run: true, max_shows: 10 }));
+    assert.equal(getCalled, false);
+    assert.match(textOf(out), /dry run/i);
+    assert.match(textOf(out), /Cost estimate/i);
+    const p = out.structuredContent as any;
+    assert.equal(p.dry_run, true);
+    assert.equal(p.max_shows, 10);
+    assert.ok(p.cost_estimate);
+  });
+
+  it('caps scan at max_shows and reports truncated_by_budget', async () => {
+    const shows = [show('s1'), show('s2'), show('s3'), show('s4'), show('s5')];
+    const h = harness({
+      shows,
+      episodesByShow: { s1: [ep('e1', today)], s2: [ep('e2', today)], s3: [ep('e3', today)], s4: [ep('e4', today)], s5: [ep('e5', today)] },
+    });
+    const out = await h.invoke({ days: 7, per_show_limit: 5, max_shows: 2 });
+    const p = out.structuredContent as any;
+    assert.equal(p.truncated_by_budget, true);
+    assert.equal(p.shows_scanned, 2);
+    assert.equal(p.saved_shows_total, 5);
+  });
+
+  it('recovers partial on 429 quota mid-loop', async () => {
+    const registered: any[] = [];
+    const fakeServer = {
+      tool(n: string, _d: string, schema: z.ZodRawShape, h: any) {
+        registered.push({ name: n, validate: (a: any) => z.object(schema).parse(a), handler: h });
+      },
+    } as unknown as McpServer;
+    const shows = [show('s1'), show('s2'), show('s3')];
+    const client = {
+      async getAllPages<T>(path: string): Promise<T[]> {
+        if (path === '/me/shows') return shows.map((s) => ({ added_at: '2026-01-01T00:00:00Z', show: s }) as unknown as T);
+        if (path === '/me/episodes') return [] as unknown as T[];
+        return [];
+      },
+      async get<T>(path: string): Promise<T | null> {
+        if (path === '/shows/s1/episodes') return { items: [ep('e1', today)], total: 1 } as T;
+        // quota on second show
+        if (path === '/shows/s2/episodes') throw Object.assign(new Error('quota'), { status: 429, reason: 'QUOTA_EXCEEDED', retryAfterSec: 5 });
+        return { items: [], total: 0 } as T;
+      },
+    };
+    const { registerShowRadarTools: reg2 } = await import('../src/tools/showradar.js');
+    reg2(fakeServer, client as unknown as SpotifyClient);
+    const tool = registered.find((t: any) => t.name === 'show_new_episodes');
+    const out = await tool.handler(tool.validate({ days: 7 }));
+    const p = out.structuredContent as any;
+    assert.equal(p.quota_hit, true);
+    assert.equal(p.retry_after, 5);
+    assert.equal(p.new_episodes, 1);
+  });
+});

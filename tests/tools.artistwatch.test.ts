@@ -106,3 +106,83 @@ test('artist_release_digest shows unseen', async () => {
     assert.match(text(r),/Digest One/);
   });
 });
+
+test('check_artist_releases budget caps and reports truncated', async () => {
+  await withTmpDir(async ()=>{
+    const { registered } = makeHarness((path)=>{
+      if (path.includes('/artists/')) return { items:[album('a1','Fresh','album','2026-08-20')] };
+      return null;
+    });
+    await find(registered,'watch_artists').handler({ artist_ids:['art1','art2','art3','art4','art5'] });
+    const r = await find(registered,'check_artist_releases').handler({ max_artists: 2, lookback_days: 1000 });
+    const sc = r.structuredContent as unknown as Record<string,unknown>;
+    assert.equal(sc.truncated, true);
+    assert.equal(sc.watchlist_size, 5);
+    assert.equal(sc.artists_scanned, 2);
+  });
+});
+
+test('check_artist_releases dry_run returns cost estimate without calls', async () => {
+  await withTmpDir(async ()=>{
+    let getCalled = false;
+    const { registered } = makeHarness((path)=>{
+      getCalled = true;
+      if (path.includes('/artists/')) return { items:[] };
+      return null;
+    });
+    await find(registered,'watch_artists').handler({ artist_ids:['art1','art2'] });
+    getCalled = false;
+    const r = await find(registered,'check_artist_releases').handler({ max_artists: 1, dry_run: true });
+    assert.equal(getCalled, false);
+    const sc = r.structuredContent as unknown as Record<string,unknown>;
+    assert.equal(sc.dry_run, true);
+    assert.equal(sc.would_check, 1);
+    assert.match(text(r), /dry run/i);
+    assert.match(text(r), /Cost estimate/i);
+  });
+});
+
+test('check_artist_releases quota recovery returns partial', async () => {
+  await withTmpDir(async ()=>{
+    let callN = 0;
+    const { registered } = makeHarness((path)=>{
+      if (path.includes('/artists/')) {
+        callN++;
+        if (callN === 2) throw Object.assign(new Error('quota'), { status: 429, reason: 'QUOTA_EXCEEDED', retryAfterSec: 7 });
+        return { items:[album('a1','Fresh','album','2026-08-20')] };
+      }
+      return null;
+    });
+    await find(registered,'watch_artists').handler({ artist_ids:['art1','art2','art3'] });
+    const r = await find(registered,'check_artist_releases').handler({ lookback_days: 1000 });
+    const sc = r.structuredContent as unknown as Record<string,unknown>;
+    assert.equal(sc.quota_hit, true);
+    assert.equal(sc.retry_after, 7);
+  });
+});
+
+test('artist_release_digest dry_run and budget cap', async () => {
+  await withTmpDir(async ()=>{
+    const { registered } = makeHarness((path)=>{
+      if (path.includes('/artists/')) return { items:[album('d1','Digest One')] };
+      return null;
+    });
+    await find(registered,'watch_artists').handler({ artist_ids:['art1','art2','art3'] });
+    const r = await find(registered,'artist_release_digest').handler({ dry_run: true, max_artists: 1 });
+    const sc = r.structuredContent as unknown as Record<string,unknown>;
+    assert.equal(sc.dry_run, true);
+    assert.equal(sc.would_check, 1);
+    assert.equal(sc.watchlist_size, 3);
+  });
+});
+
+test('watch_artists warns when >50 artists', async () => {
+  await withTmpDir(async ()=>{
+    const { registered } = makeHarness(()=>null);
+    const many = Array.from({length: 51}, (_,i)=>`art${i}`);
+    const r = await find(registered,'watch_artists').handler({ artist_ids: many });
+    assert.match(text(r), /Warning/i);
+    const sc = r.structuredContent as unknown as Record<string,unknown>;
+    assert.ok(sc.warning);
+  });
+});

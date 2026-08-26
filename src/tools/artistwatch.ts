@@ -1,8 +1,10 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
+import { SpotifyApiError } from '../client.js';
 import { getConfig } from '../config.js';
 import {
+  DryRun,
   ResponseFormat,
   sharedListFields,
   resolveMaxResults,
@@ -78,6 +80,21 @@ function isNewRelease(album: AlbumItem, lookbackDays?: number): boolean {
   return diff >= 0 && diff <= lookbackDays * 24 * 60 * 60 * 1000;
 }
 
+function isQuotaError(err: unknown): { quota: boolean; retryAfter: number | undefined } {
+  if (err instanceof SpotifyApiError && err.status === 429 && err.reason === 'QUOTA_EXCEEDED') {
+    return { quota: true, retryAfter: err.retryAfterSec };
+  }
+  if (
+    err !== null && typeof err === 'object' &&
+    (err as { status?: unknown; reason?: unknown }).status === 429 &&
+    (err as { reason?: unknown }).reason === 'QUOTA_EXCEEDED'
+  ) {
+    const ra = (err as { retryAfterSec?: unknown }).retryAfterSec;
+    return { quota: true, retryAfter: typeof ra === 'number' ? ra : undefined };
+  }
+  return { quota: false, retryAfter: undefined };
+}
+
 export function registerArtistWatchTools(server: McpServer, client: SpotifyClient): void {
   server.tool(
     'get_artist_discography',
@@ -86,7 +103,7 @@ export function registerArtistWatchTools(server: McpServer, client: SpotifyClien
       artist_id: z.string().describe('Spotify artist ID'),
       album_types: z.array(z.enum(['album', 'single', 'appears_on', 'compilation'])).optional().describe('Filter to these album types. Default: all'),
       include_groups: z.array(z.enum(['album', 'single', 'appears_on', 'compilation'])).optional().describe('Alias for album_types (Spotify include_groups)'),
-      limit: z.number().int().min(1).max(50).optional().describe('Results per page, 1\u201350. Default: 20'),
+      limit: z.number().int().min(1).max(50).optional().describe('Results per page, 1–50. Default: 20'),
       offset: z.number().int().min(0).optional().describe('Offset'),
       market: z.string().optional().describe('ISO 3166-1 alpha-2 country code'),
       ...sharedListFields,
@@ -134,7 +151,7 @@ export function registerArtistWatchTools(server: McpServer, client: SpotifyClien
     'Resolve an artist name or URI to a Spotify artist ID via search',
     {
       query: z.string().describe('Artist name, spotify:artist: URI, or search query'),
-      limit: z.number().int().min(1).max(10).optional().describe('Search results to consider, 1\u201310. Default: 5'),
+      limit: z.number().int().min(1).max(10).optional().describe('Search results to consider, 1–10. Default: 5'),
       ...sharedListFields,
     },
     async (args) => {
@@ -182,7 +199,7 @@ export function registerArtistWatchTools(server: McpServer, client: SpotifyClien
     'Find new releases for an artist and save unsaved albums to Your Library (diffs against /me/albums/contains)',
     {
       artist_id: z.string().describe('Spotify artist ID'),
-      limit: z.number().int().min(1).max(50).optional().describe('Albums to fetch, 1\u201350. Default: 20'),
+      limit: z.number().int().min(1).max(50).optional().describe('Albums to fetch, 1–50. Default: 20'),
       market: z.string().optional().describe('ISO 3166-1 alpha-2 country code'),
       response_format: ResponseFormat,
     },
@@ -242,22 +259,32 @@ export function registerArtistWatchTools(server: McpServer, client: SpotifyClien
       }
       await saveStore(store);
       const added = entry.artists.length - before;
-      const msg = `Watchlist "${listName}": ${added} added, ${entry.artists.length} total.`;
+      let msg = `Watchlist "${listName}": ${added} added, ${entry.artists.length} total.`;
+      if (entry.artists.length > 50) {
+        msg += ` Warning: watchlist has ${entry.artists.length} artists — check_artist_releases will cap at max_artists (default 25) and each check costs 1 request per artist. Consider using a smaller watchlist or raising max_artists explicitly.`;
+      }
       if (args.response_format === 'json') {
         const raw: Record<string, unknown> = { name: listName, added, total: entry.artists.length, artists: [...entry.artists] };
+        if (entry.artists.length > 50) (raw as Record<string, unknown>).warning = `watchlist exceeds 50 artists (${entry.artists.length}); polling will be capped`;
         return { content: [{ type: 'text', text: JSON.stringify(raw, null, 2) }], structuredContent: raw };
       }
-      return { content: [{ type: 'text', text: msg }], structuredContent: { name: listName, added, total: entry.artists.length, artists: [...entry.artists] } };
+      return { content: [{ type: 'text', text: msg }], structuredContent: { name: listName, added, total: entry.artists.length, artists: [...entry.artists], ...(entry.artists.length > 50 ? { warning: `watchlist exceeds 50 artists (${entry.artists.length})` } : {}) } };
     },
   );
 
   server.tool(
     'check_artist_releases',
-    'Check watched artists for new releases since last check (or within lookback_days)',
+    'Check watched artists for new releases since last check (or within lookback_days). '
+      + 'WARNING: N artists in watchlist = N API requests. Use max_artists to budget and dry_run to preview cost.',
     {
       watchlist_name: z.string().optional().describe('Watchlist name. Default: "default"'),
       lookback_days: z.number().int().min(1).max(365).optional().describe('Only consider releases from the last N days'),
-      limit: z.number().int().min(1).max(50).optional().describe('Albums per artist to fetch, 1\u201350. Default: 10'),
+      limit: z.number().int().min(1).max(50).optional().describe('Albums per artist to fetch, 1–50. Default: 10'),
+      max_artists: z.number().int().min(1).max(200).optional().describe(
+        'Per-call budget for artist lookups. Default: 25 (or SPOTIFY_MCP_FRESHNESS_BUDGET). '
+          + 'Truncates to max_artists and reports watchlist_size / artists_scanned / truncated.',
+      ),
+      dry_run: DryRun,
       ...sharedListFields,
     },
     async (args) => {
@@ -267,49 +294,119 @@ export function registerArtistWatchTools(server: McpServer, client: SpotifyClien
       if (!entry || entry.artists.length === 0) {
         return { content: [{ type: 'text', text: `Watchlist "${listName}" is empty \u2014 add artists with watch_artists first.` }] };
       }
-      const perArtist: Array<{ artist_id: string; newReleases: AlbumItem[] }> = [];
-      for (const artistId of entry.artists) {
-        const data = await client.get<{ items: AlbumItem[] }>(`/artists/${encodeURIComponent(artistId)}/albums`, {
-          include_groups: 'album,single',
-          limit: String(args.limit ?? 10),
-          offset: '0',
-        });
-        const items = data?.items ?? [];
-        const seen = new Set(entry.seen[artistId] ?? []);
-        const filtered = items.filter((al) => !seen.has(al.id) && isNewRelease(al, args.lookback_days));
-        perArtist.push({ artist_id: artistId, newReleases: filtered });
+      const watchlistSize = entry.artists.length;
+      const budget = args.max_artists ?? getConfig().freshnessBudget;
+      const effectiveCap = Math.min(budget, getConfig().fetchAllCap);
+      const truncated = watchlistSize > effectiveCap;
+      const artistsToCheck = entry.artists.slice(0, effectiveCap);
+
+      if (args.dry_run) {
+        const costEstimate = `${watchlistSize} artists in watchlist "${listName}" \u2192 ${artistsToCheck.length} album lookups (capped at max_artists=${budget}, effective ${effectiveCap} with fetchAllCap=${getConfig().fetchAllCap}) → ${artistsToCheck.length} requests`;
+        const prose =
+          `[dry run] check_artist_releases preview — no API calls were made and nothing was changed.\n`
+          + `Watchlist "${listName}": ${watchlistSize} artists total, would check ${artistsToCheck.length} (cap ${effectiveCap}).\n`
+          + `Cost estimate: ${costEstimate}${truncated ? ` (${watchlistSize - effectiveCap} artists would be skipped — raise max_artists to check all)` : ''}.`;
+        return {
+          content: [{ type: 'text', text: prose }],
+          structuredContent: {
+            ok: true,
+            dry_run: true,
+            watchlist: listName,
+            watchlist_size: watchlistSize,
+            would_check: artistsToCheck.length,
+            capped_at: effectiveCap,
+            max_artists: budget,
+            truncated,
+            cost_estimate: costEstimate,
+            artists: artistsToCheck,
+          },
+        };
       }
+
+      let quotaHit = false;
+      let quotaRetryAfter: number | undefined;
+      let quotaScanned = 0;
+      const perArtist: Array<{ artist_id: string; newReleases: AlbumItem[] }> = [];
+      for (const artistId of artistsToCheck) {
+        try {
+          const data = await client.get<{ items: AlbumItem[] }>(`/artists/${encodeURIComponent(artistId)}/albums`, {
+            include_groups: 'album,single',
+            limit: String(args.limit ?? 10),
+            offset: '0',
+          });
+          const items = data?.items ?? [];
+          const seen = new Set(entry.seen[artistId] ?? []);
+          const filtered = items.filter((al) => !seen.has(al.id) && isNewRelease(al, args.lookback_days));
+          perArtist.push({ artist_id: artistId, newReleases: filtered });
+        } catch (err) {
+          const q = isQuotaError(err);
+          if (q.quota) {
+            quotaHit = true;
+            quotaRetryAfter = q.retryAfter;
+            quotaScanned = perArtist.length;
+            break;
+          }
+          throw err;
+        }
+      }
+      const successfulScanned = perArtist.length;
+      const artistsScanned = quotaHit ? quotaScanned : successfulScanned;
+      // Only mark seen for successful lookups
       for (const { artist_id, newReleases } of perArtist) {
         if (!entry.seen[artist_id]) entry.seen[artist_id] = [];
         for (const al of newReleases) if (!entry.seen[artist_id].includes(al.id)) entry.seen[artist_id].push(al.id);
       }
-      entry.lastChecked = new Date().toISOString();
-      await saveStore(store);
+      if (perArtist.length > 0) {
+        entry.lastChecked = new Date().toISOString();
+        await saveStore(store);
+      }
       const allNew = perArtist.flatMap((p) => p.newReleases.map((al) => ({ artist_id: p.artist_id, album: al })));
+      const baseExtra = {
+        watchlist: listName,
+        watchlist_size: watchlistSize,
+        artists_scanned: artistsScanned,
+        truncated,
+        truncated_by_budget: truncated,
+        max_artists: budget,
+        effective_cap: effectiveCap,
+        ...(quotaHit ? { quota_hit: true, retry_after: quotaRetryAfter ?? null, quota_scanned: quotaScanned } : {}),
+      };
       if (args.response_format === 'json') {
-        const raw: Record<string, unknown> = { watchlist: listName, new_releases: allNew, total: allNew.length };
+        const raw: Record<string, unknown> = { ...baseExtra, new_releases: allNew, total: allNew.length };
         return { content: [{ type: 'text', text: JSON.stringify(raw, null, 2) }], structuredContent: raw };
       }
       if (allNew.length === 0) {
-        return { content: [{ type: 'text', text: `No new releases for watchlist "${listName}"${args.lookback_days ? ` (last ${args.lookback_days} days)` : ''}.` }], structuredContent: { watchlist: listName, total: 0, items: [] } };
+        let msg = `No new releases for watchlist "${listName}"${args.lookback_days ? ` (last ${args.lookback_days} days)` : ''}. Scanned ${artistsScanned}/${watchlistSize} artists${truncated ? ` (capped at ${effectiveCap})` : ''}.`;
+        if (quotaHit) msg += ` Quota exceeded mid-scan (QUOTA_EXCEEDED) after ${quotaScanned} artists.${quotaRetryAfter != null ? ` Retry-After: ${quotaRetryAfter}s.` : ''} Partial results.`;
+        return { content: [{ type: 'text', text: msg }], structuredContent: { ...baseExtra, total: 0, items: [] } };
       }
       const cap = resolveMaxResults(args.max_results);
       const trunc = truncateItems(allNew, cap);
       const lines = [`New releases for watchlist "${listName}" (${allNew.length}):`];
       trunc.items.forEach(({ artist_id, album }) => lines.push(`  \u2022 "${album.name}" by ${artist_id} (${album.album_type}, ${album.release_date}) | URI: ${album.uri}`));
       if (trunc.footer) lines.push('', `(${trunc.footer})`);
+      if (truncated) lines.push(`Truncated by budget: scanned ${effectiveCap} of ${watchlistSize} artists (max_artists=${budget}). Raise max_artists to check all.`);
+      if (quotaHit) {
+        const retryMsg = quotaRetryAfter != null ? ` Retry-After: ${quotaRetryAfter}s.` : '';
+        lines.push(`Quota exceeded mid-scan (QUOTA_EXCEEDED) after ${quotaScanned} artists — partial results.${retryMsg}`);
+      }
       return {
         content: [{ type: 'text', text: lines.join('\n') }],
-        structuredContent: { watchlist: listName, total: allNew.length, items: trunc.items, pagination: paginationInfo({ total: allNew.length, returned: trunc.items.length }) },
+        structuredContent: { ...baseExtra, total: allNew.length, items: trunc.items, pagination: paginationInfo({ total: allNew.length, returned: trunc.items.length }) },
       };
     },
   );
 
   server.tool(
     'artist_release_digest',
-    'Show a digest of new releases since the last check for a watchlist',
+    'Show a digest of new releases since the last check for a watchlist. '
+      + 'WARNING: N artists = N requests. Use max_artists to budget and dry_run to preview.',
     {
       watchlist_name: z.string().optional().describe('Watchlist name. Default: "default"'),
+      max_artists: z.number().int().min(1).max(200).optional().describe(
+        'Per-call budget for artist lookups. Default: 25 (or SPOTIFY_MCP_FRESHNESS_BUDGET).',
+      ),
+      dry_run: DryRun,
       ...sharedListFields,
     },
     async (args) => {
@@ -319,35 +416,93 @@ export function registerArtistWatchTools(server: McpServer, client: SpotifyClien
       if (!entry || entry.artists.length === 0) {
         return { content: [{ type: 'text', text: `Watchlist "${listName}" is empty.` }] };
       }
+      const watchlistSize = entry.artists.length;
+      const budget = args.max_artists ?? getConfig().freshnessBudget;
+      const effectiveCap = Math.min(budget, getConfig().fetchAllCap);
+      const truncated = watchlistSize > effectiveCap;
+      const artistsToCheck = entry.artists.slice(0, effectiveCap);
+
+      if (args.dry_run) {
+        const costEstimate = `${watchlistSize} artists in watchlist "${listName}" \u2192 ${artistsToCheck.length} album lookups (capped at max_artists=${budget}, effective ${effectiveCap} with fetchAllCap=${getConfig().fetchAllCap}) → ${artistsToCheck.length} requests`;
+        const prose =
+          `[dry run] artist_release_digest preview — no API calls were made.\n`
+          + `Watchlist "${listName}": ${watchlistSize} artists total, would check ${artistsToCheck.length} (cap ${effectiveCap}).\n`
+          + `Cost estimate: ${costEstimate}${truncated ? ` (${watchlistSize - effectiveCap} artists would be skipped)` : ''}.`;
+        return {
+          content: [{ type: 'text', text: prose }],
+          structuredContent: {
+            ok: true,
+            dry_run: true,
+            watchlist: listName,
+            watchlist_size: watchlistSize,
+            would_check: artistsToCheck.length,
+            capped_at: effectiveCap,
+            max_artists: budget,
+            truncated,
+            cost_estimate: costEstimate,
+            artists: artistsToCheck,
+          },
+        };
+      }
+
+      let quotaHit = false;
+      let quotaRetryAfter: number | undefined;
+      let quotaScanned = 0;
       const perArtist: Array<{ artist_id: string; releases: AlbumItem[] }> = [];
-      for (const artistId of entry.artists) {
-        const data = await client.get<{ items: AlbumItem[] }>(`/artists/${encodeURIComponent(artistId)}/albums`, {
-          include_groups: 'album,single',
-          limit: '10',
-          offset: '0',
-        });
-        const items = data?.items ?? [];
-        const seen = new Set(entry.seen[artistId] ?? []);
-        const unseen = items.filter((al) => !seen.has(al.id));
-        if (unseen.length) perArtist.push({ artist_id: artistId, releases: unseen });
+      for (const artistId of artistsToCheck) {
+        try {
+          const data = await client.get<{ items: AlbumItem[] }>(`/artists/${encodeURIComponent(artistId)}/albums`, {
+            include_groups: 'album,single',
+            limit: '10',
+            offset: '0',
+          });
+          const items = data?.items ?? [];
+          const seen = new Set(entry.seen[artistId] ?? []);
+          const unseen = items.filter((al) => !seen.has(al.id));
+          if (unseen.length) perArtist.push({ artist_id: artistId, releases: unseen });
+        } catch (err) {
+          const q = isQuotaError(err);
+          if (q.quota) {
+            quotaHit = true;
+            quotaRetryAfter = q.retryAfter;
+            quotaScanned = perArtist.length;
+            break;
+          }
+          throw err;
+        }
       }
       const allUnseen = perArtist.flatMap((p) => p.releases.map((al) => ({ artist_id: p.artist_id, album: al })));
+      const baseExtra = {
+        watchlist: listName,
+        watchlist_size: watchlistSize,
+        artists_scanned: quotaHit ? quotaScanned : artistsToCheck.length,
+        truncated,
+        truncated_by_budget: truncated,
+        max_artists: budget,
+        effective_cap: effectiveCap,
+        lastChecked: entry.lastChecked,
+        ...(quotaHit ? { quota_hit: true, retry_after: quotaRetryAfter ?? null } : {}),
+      };
       if (args.response_format === 'json') {
-        const raw: Record<string, unknown> = { watchlist: listName, lastChecked: entry.lastChecked, digest: allUnseen };
+        const raw: Record<string, unknown> = { ...baseExtra, lastChecked: entry.lastChecked, digest: allUnseen };
         return { content: [{ type: 'text', text: JSON.stringify(raw, null, 2) }], structuredContent: raw };
       }
       if (allUnseen.length === 0) {
         const when = entry.lastChecked ? ` (last checked ${entry.lastChecked})` : '';
-        return { content: [{ type: 'text', text: `No unseen releases for watchlist "${listName}"${when}.` }], structuredContent: { watchlist: listName, lastChecked: entry.lastChecked, total: 0 } };
+        let msg = `No unseen releases for watchlist "${listName}"${when}. Scanned ${quotaHit ? quotaScanned : artistsToCheck.length}/${watchlistSize} artists${truncated ? ` (capped at ${effectiveCap})` : ''}.`;
+        if (quotaHit) msg += ` Quota exceeded after ${quotaScanned} artists.${quotaRetryAfter != null ? ` Retry-After: ${quotaRetryAfter}s.` : ''}`;
+        return { content: [{ type: 'text', text: msg }], structuredContent: { ...baseExtra, total: 0 } };
       }
       const cap = resolveMaxResults(args.max_results);
       const trunc = truncateItems(allUnseen, cap);
       const lines = [`Release digest for "${listName}" \u2014 ${allUnseen.length} unseen${entry.lastChecked ? ` since ${entry.lastChecked}` : ''}:`];
       trunc.items.forEach(({ artist_id, album }) => lines.push(`  \u2022 "${album.name}" by ${artist_id} (${album.release_date}) | URI: ${album.uri}`));
       if (trunc.footer) lines.push('', `(${trunc.footer})`);
+      if (truncated) lines.push(`Truncated by budget: scanned ${effectiveCap} of ${watchlistSize} artists (max_artists=${budget}).`);
+      if (quotaHit) lines.push(`Quota exceeded mid-scan after ${quotaScanned} artists — partial results.${quotaRetryAfter != null ? ` Retry-After: ${quotaRetryAfter}s.` : ''}`);
       return {
         content: [{ type: 'text', text: lines.join('\n') }],
-        structuredContent: { watchlist: listName, lastChecked: entry.lastChecked, total: allUnseen.length, items: trunc.items },
+        structuredContent: { ...baseExtra, total: allUnseen.length, items: trunc.items },
       };
     },
   );
