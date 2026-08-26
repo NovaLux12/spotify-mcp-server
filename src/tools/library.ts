@@ -628,6 +628,151 @@ export function registerLibraryTools(server: McpServer, client: SpotifyClient): 
     },
   );
 
+  // get_saved_counts (#296)
+  server.tool(
+    'get_saved_counts',
+    "Library size snapshot: total counts for tracks/albums/shows/episodes/audiobooks/playlists via limit=1 reads — no item paging. Quota: 🟢 6 GETs.",
+    {
+      response_format: ResponseFormat,
+    },
+    async (args) => {
+      const rf = args.response_format;
+      const endpoints: Array<[string, string]> = [
+        ['tracks', '/me/tracks'],
+        ['albums', '/me/albums'],
+        ['shows', '/me/shows'],
+        ['episodes', '/me/episodes'],
+        ['audiobooks', '/me/audiobooks'],
+        ['playlists', '/me/playlists'],
+      ];
+      const counts: Record<string, number> = {};
+      for (const [key, path] of endpoints) {
+        try {
+          const res = await client.get<{ total: number }>(path, { limit: '1' });
+          counts[key] = res?.total ?? 0;
+        } catch { counts[key] = 0; }
+      }
+      const total = Object.values(counts).reduce((a, b) => a + b, 0);
+      const lines = ['Library counts:'];
+      for (const [k, v] of Object.entries(counts)) lines.push(`  ${k}: ${v}`);
+      lines.push(`Total: ${total}`);
+      const payload = { counts, total };
+      if (rf === 'json') return { content: [{ type: 'text', text: JSON.stringify(payload, null, 2) }], structuredContent: payload };
+      return shapeResult(rf as ResponseFormatValue, lines.join('\n'), payload as unknown as Record<string, unknown>);
+    },
+  );
+
+  // search_saved_albums (#264)
+  server.tool(
+    'search_saved_albums',
+    'Search saved albums (client-side filter over bounded walk). Quota: 🟢 GET /me/albums paged.',
+    {
+      query: z.string().optional().describe('Substring match against album name/artist'),
+      artist: z.string().optional().describe('Substring match against album artist'),
+      added_after: z.string().optional().describe('ISO date — only albums added after this'),
+      max_results: MaxResults,
+      scan_cap: z.number().int().min(1).max(2000).optional().describe('Max albums to scan (default fetchAllCap)'),
+      response_format: ResponseFormat,
+    },
+    async (args) => {
+      const rf = args.response_format;
+      const capN = args.scan_cap ?? getConfig().fetchAllCap;
+      const all = await client.getAllPages<SavedAlbumItem>('/me/albums', { limit: '50' }, { maxItems: capN });
+      let filtered = all;
+      if (args.query) { const q = args.query.toLowerCase(); filtered = filtered.filter(i => i.album.name.toLowerCase().includes(q) || i.album.artists.some(a => a.name.toLowerCase().includes(q))); }
+      if (args.artist) { const q = args.artist.toLowerCase(); filtered = filtered.filter(i => i.album.artists.some(a => a.name.toLowerCase().includes(q))); }
+      if (args.added_after) { const after = new Date(args.added_after).getTime(); filtered = filtered.filter(i => new Date(i.added_at).getTime() > after); }
+      const t = truncateItems(filtered, cap(args));
+      const pagination = paginationInfo({ total: filtered.length, returned: t.items.length });
+      const lines = [`Saved albums search: ${filtered.length} match(es), showing ${t.items.length} (scanned ${all.length}):`];
+      for (const it of t.items) renderAlbumLine(lines, it, rf === 'detailed');
+      if (t.footer) lines.push(`(${t.footer})`);
+      if (all.length >= capN) lines.push('(truncated at fetch_all_cap)');
+      return shapeResult(rf as ResponseFormatValue, lines.join('\n'), listStructuredContent(t.items, pagination, { scanned: all.length, matched: filtered.length }));
+    },
+  );
+
+  // search_saved_shows (#265)
+  server.tool(
+    'search_saved_shows',
+    'Search saved podcast shows (bounded walk + client-side filter). Quota: 🟢 GET /me/shows paged.',
+    {
+      query: z.string().optional().describe('Substring match against show name/publisher'),
+      max_results: MaxResults,
+      scan_cap: z.number().int().min(1).max(2000).optional(),
+      response_format: ResponseFormat,
+    },
+    async (args) => {
+      const rf = args.response_format;
+      const capN = args.scan_cap ?? getConfig().fetchAllCap;
+      const all = await client.getAllPages<SavedShowItem>('/me/shows', { limit: '50' }, { maxItems: capN });
+      let filtered = all;
+      if (args.query) { const q = args.query.toLowerCase(); filtered = filtered.filter(i => i.show.name.toLowerCase().includes(q) || (i.show.publisher ?? '').toLowerCase().includes(q)); }
+      const t = truncateItems(filtered, cap(args));
+      const pagination = paginationInfo({ total: filtered.length, returned: t.items.length });
+      const lines = [`Saved shows search: ${filtered.length} match(es), showing ${t.items.length} (scanned ${all.length}):`];
+      for (const it of t.items) renderShowLine(lines, it, rf === 'detailed');
+      if (t.footer) lines.push(`(${t.footer})`);
+      if (all.length >= capN) lines.push('(truncated at fetch_all_cap)');
+      return shapeResult(rf as ResponseFormatValue, lines.join('\n'), listStructuredContent(t.items, pagination, { scanned: all.length, matched: filtered.length }));
+    },
+  );
+
+  // search_saved_episodes (#266)
+  server.tool(
+    'search_saved_episodes',
+    'Search saved episodes (bounded walk + client-side filter). Quota: 🟢 GET /me/episodes paged.',
+    {
+      query: z.string().optional().describe('Substring against episode/show name'),
+      show: z.string().optional().describe('Substring against show name'),
+      max_results: MaxResults,
+      scan_cap: z.number().int().min(1).max(2000).optional(),
+      response_format: ResponseFormat,
+    },
+    async (args) => {
+      const rf = args.response_format;
+      const capN = args.scan_cap ?? getConfig().fetchAllCap;
+      const all = await client.getAllPages<SavedEpisodeItem>('/me/episodes', { limit: '50' }, { maxItems: capN });
+      let filtered = all;
+      if (args.query) { const q = args.query.toLowerCase(); filtered = filtered.filter(i => i.episode.name.toLowerCase().includes(q)); }
+      if (args.show) { const q = args.show.toLowerCase(); filtered = filtered.filter(i => i.episode.show.name.toLowerCase().includes(q)); }
+      const t = truncateItems(filtered, cap(args));
+      const pagination = paginationInfo({ total: filtered.length, returned: t.items.length });
+      const lines = [`Saved episodes search: ${filtered.length} match(es), showing ${t.items.length} (scanned ${all.length}):`];
+      for (const it of t.items) renderEpisodeLine(lines, it, rf === 'detailed');
+      if (t.footer) lines.push(`(${t.footer})`);
+      if (all.length >= capN) lines.push('(truncated at fetch_all_cap)');
+      return shapeResult(rf as ResponseFormatValue, lines.join('\n'), listStructuredContent(t.items, pagination, { scanned: all.length, matched: filtered.length }));
+    },
+  );
+
+  // search_saved_audiobooks (#267)
+  server.tool(
+    'search_saved_audiobooks',
+    'Search saved audiobooks (bounded walk + client-side filter). Quota: 🟢 GET /me/audiobooks paged.',
+    {
+      query: z.string().optional().describe('Substring against audiobook name/author'),
+      max_results: MaxResults,
+      scan_cap: z.number().int().min(1).max(2000).optional(),
+      response_format: ResponseFormat,
+    },
+    async (args) => {
+      const rf = args.response_format;
+      const capN = args.scan_cap ?? getConfig().fetchAllCap;
+      type SavedAudiobookItem = { added_at: string; audiobook: { name: string; authors: Array<{ name: string }>; uri: string } };
+      const all = await client.getAllPages<SavedAudiobookItem>('/me/audiobooks', { limit: '50' }, { maxItems: capN });
+      let filtered = all;
+      if (args.query) { const q = args.query.toLowerCase(); filtered = filtered.filter(i => i.audiobook.name.toLowerCase().includes(q) || i.audiobook.authors.some(a => a.name.toLowerCase().includes(q))); }
+      const t = truncateItems(filtered, cap(args));
+      const pagination = paginationInfo({ total: filtered.length, returned: t.items.length });
+      const lines = [`Saved audiobooks search: ${filtered.length} match(es), showing ${t.items.length} (scanned ${all.length}):`];
+      for (const it of t.items) lines.push(`  • "${it.audiobook.name}" by ${it.audiobook.authors.map(a=>a.name).join(', ')} | URI: ${it.audiobook.uri} | Added: ${it.added_at}`);
+      if (t.footer) lines.push(`(${t.footer})`);
+      if (all.length >= capN) lines.push('(truncated at fetch_all_cap)');
+      return shapeResult(rf as ResponseFormatValue, lines.join('\n'), listStructuredContent(t.items, pagination, { scanned: all.length, matched: filtered.length }));
+    },
+  );
+
   // check_in_library (#37)
   server.tool(
     'check_in_library',
