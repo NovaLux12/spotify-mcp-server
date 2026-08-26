@@ -944,9 +944,9 @@ describe('check_following_artists', () => {
 
     const text = textOf(out);
     assert.match(text, /Following check:/);
-    assert.match(text, /✓ aa/);
-    assert.match(text, /✗ bb/);
-    assert.match(text, /✓ cc/);
+    assert.match(text, /✓ spotify:artist:aa \(id: aa\)/);
+    assert.match(text, /✗ spotify:artist:bb \(id: bb\)/);
+    assert.match(text, /✓ spotify:artist:cc \(id: cc\)/);
     // Booleans map back in INPUT order, not result-sorted order.
     const idxAa = text.indexOf('aa');
     const idxBb = text.indexOf('bb');
@@ -957,7 +957,7 @@ describe('check_following_artists', () => {
   it('renders ✗ for every-false results', async () => {
     const h = harness(() => [false], registerFollowingTools);
     const out = await h.invoke('check_following_artists', { ids: ['zzz'] });
-    assert.match(textOf(out), /✗ zzz/);
+    assert.match(textOf(out), /✗ spotify:artist:zzz \(id: zzz\)/);
   });
 });
 
