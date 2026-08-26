@@ -9,6 +9,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > from [Conventional Commits](https://www.conventionalcommits.org/). Entries below v1.0.4 were
 > backfilled by hand from git history.
 
+## [1.23.0](https://github.com/NovaLux12/spotify-mcp-server/compare/v1.22.0...v1.23.0) (2026-08-26)
+
+
+### Features
+
+* **auth,config,doctor:** auth hardening + scopes/profiles/market/doctor TTL ([#246](https://github.com/NovaLux12/spotify-mcp-server/issues/246)) ([9a8b90e](https://github.com/NovaLux12/spotify-mcp-server/commit/9a8b90e19a7de7a0ba6b5f73dcbc18c0b41b716d))
+* **auth:** configurable OAuth scopes via SPOTIFY_SCOPES and auth ([9a8b90e](https://github.com/NovaLux12/spotify-mcp-server/commit/9a8b90e19a7de7a0ba6b5f73dcbc18c0b41b716d))
+* **auth:** multi-profile token management via SPOTIFY_MCP_PROFILE and ([9a8b90e](https://github.com/NovaLux12/spotify-mcp-server/commit/9a8b90e19a7de7a0ba6b5f73dcbc18c0b41b716d))
+* **catalog:** typed search family + category gaps ([#322](https://github.com/NovaLux12/spotify-mcp-server/issues/322)) ([4c0aa1b](https://github.com/NovaLux12/spotify-mcp-server/commit/4c0aa1bf7aa24d66aec2a1b0b5d8f523b63cdf02))
+* **config:** SPOTIFY_MCP_MARKET default-market with arg&gt;env>account> ([9a8b90e](https://github.com/NovaLux12/spotify-mcp-server/commit/9a8b90e19a7de7a0ba6b5f73dcbc18c0b41b716d))
+* **doctor:** report token TTL/expiry ETA, refresh_token presence, token ([9a8b90e](https://github.com/NovaLux12/spotify-mcp-server/commit/9a8b90e19a7de7a0ba6b5f73dcbc18c0b41b716d))
+* **exhaust-misc:** mop-up 10 tools to close 60/60 sweep (search_within_playlist, history stats, audiobook progress + 7 deferred) ([#323](https://github.com/NovaLux12/spotify-mcp-server/issues/323)) ([636e247](https://github.com/NovaLux12/spotify-mcp-server/commit/636e2478c7ebe83a14b2fa3f7246b4d1a8497658))
+* **exhaust-remnants:** close final 14 gaps to 95/95 (265-267,301-307,311-314) ([#324](https://github.com/NovaLux12/spotify-mcp-server/issues/324)) ([f2eee0f](https://github.com/NovaLux12/spotify-mcp-server/commit/f2eee0f0fc08eb6f16b7d553de7e1cef48724438))
+* **library,playlists,smart:** library/smart/discovery cluster ([#236](https://github.com/NovaLux12/spotify-mcp-server/issues/236) [#234](https://github.com/NovaLux12/spotify-mcp-server/issues/234) [#229](https://github.com/NovaLux12/spotify-mcp-server/issues/229) [#225](https://github.com/NovaLux12/spotify-mcp-server/issues/225) [#219](https://github.com/NovaLux12/spotify-mcp-server/issues/219) [#237](https://github.com/NovaLux12/spotify-mcp-server/issues/237)) ([#244](https://github.com/NovaLux12/spotify-mcp-server/issues/244)) ([e81d6f3](https://github.com/NovaLux12/spotify-mcp-server/commit/e81d6f38b0496032d6487c71a6b1cc449fd042ab))
+* **playback:** exhaustive playback/queue/player intel — 15 tools ([#320](https://github.com/NovaLux12/spotify-mcp-server/issues/320)) ([a579b64](https://github.com/NovaLux12/spotify-mcp-server/commit/a579b6407aafa349a70d3dc81f5a2ca78ed12e5b))
+* **playlists/library/following:** exhaustive sweep — 18 tools ([#284](https://github.com/NovaLux12/spotify-mcp-server/issues/284)-[#297](https://github.com/NovaLux12/spotify-mcp-server/issues/297) + saved-search trio) ([#319](https://github.com/NovaLux12/spotify-mcp-server/issues/319)) ([f25eb90](https://github.com/NovaLux12/spotify-mcp-server/commit/f25eb9031fab1367479dab8ebfba6f1690fa8a38)), closes [#285](https://github.com/NovaLux12/spotify-mcp-server/issues/285) [#286](https://github.com/NovaLux12/spotify-mcp-server/issues/286) [#287](https://github.com/NovaLux12/spotify-mcp-server/issues/287) [#288](https://github.com/NovaLux12/spotify-mcp-server/issues/288) [#289](https://github.com/NovaLux12/spotify-mcp-server/issues/289) [#290](https://github.com/NovaLux12/spotify-mcp-server/issues/290) [#291](https://github.com/NovaLux12/spotify-mcp-server/issues/291) [#292](https://github.com/NovaLux12/spotify-mcp-server/issues/292) [#293](https://github.com/NovaLux12/spotify-mcp-server/issues/293) [#294](https://github.com/NovaLux12/spotify-mcp-server/issues/294) [#295](https://github.com/NovaLux12/spotify-mcp-server/issues/295) [#296](https://github.com/NovaLux12/spotify-mcp-server/issues/296)
+* **portability:** profile portability cluster — fixes + exports + resources ([#240](https://github.com/NovaLux12/spotify-mcp-server/issues/240) [#238](https://github.com/NovaLux12/spotify-mcp-server/issues/238) [#223](https://github.com/NovaLux12/spotify-mcp-server/issues/223) [#220](https://github.com/NovaLux12/spotify-mcp-server/issues/220) [#218](https://github.com/NovaLux12/spotify-mcp-server/issues/218)) ([#245](https://github.com/NovaLux12/spotify-mcp-server/issues/245)) ([33d05e2](https://github.com/NovaLux12/spotify-mcp-server/commit/33d05e29c8c6267cbbd3d0c3126e5f643a4cf4d6))
+* **quota:** dry_run + quota disclosure for coverage, duplicates, backup, export ([#255](https://github.com/NovaLux12/spotify-mcp-server/issues/255)) ([628ff9f](https://github.com/NovaLux12/spotify-mcp-server/commit/628ff9f13a6b1b46de21050defd4201d9a9715d8))
+
+
+### Bug Fixes
+
+* **auth:** callback server binds dual-stack for localhost redirects; ([9a8b90e](https://github.com/NovaLux12/spotify-mcp-server/commit/9a8b90e19a7de7a0ba6b5f73dcbc18c0b41b716d))
+* exhaustive portability/analytics/resources/prompts (sweep P0-P2) ([#321](https://github.com/NovaLux12/spotify-mcp-server/issues/321)) ([391754a](https://github.com/NovaLux12/spotify-mcp-server/commit/391754aa59c7c6e31fe7a8b395036246ce498ea7))
+* **freshness:** budget, quota recovery and watermark hold ([#243](https://github.com/NovaLux12/spotify-mcp-server/issues/243)) ([2b04285](https://github.com/NovaLux12/spotify-mcp-server/commit/2b042853a4b361ff765c6d7a99697c2e17f94b43))
+* **queue,episodes:** remove 4 phantom tools, add save_queue_as_playlist, shared ID resolver, music_briefing prompt ([#248](https://github.com/NovaLux12/spotify-mcp-server/issues/248)) ([a4bdf73](https://github.com/NovaLux12/spotify-mcp-server/commit/a4bdf73d46c22023ec028662e298f1e1f2cc4854))
+* **quota:** budget, dry_run and quota recovery for showradar + artistwatch ([#249](https://github.com/NovaLux12/spotify-mcp-server/issues/249) [#250](https://github.com/NovaLux12/spotify-mcp-server/issues/250)) ([#254](https://github.com/NovaLux12/spotify-mcp-server/issues/254)) ([34f3665](https://github.com/NovaLux12/spotify-mcp-server/commit/34f3665bfe682fd3bf41877297c2c69373a97bea))
+* **safety:** safety/receipts/readonly/undo/backup cluster ([#241](https://github.com/NovaLux12/spotify-mcp-server/issues/241) [#233](https://github.com/NovaLux12/spotify-mcp-server/issues/233) [#235](https://github.com/NovaLux12/spotify-mcp-server/issues/235) [#217](https://github.com/NovaLux12/spotify-mcp-server/issues/217) [#216](https://github.com/NovaLux12/spotify-mcp-server/issues/216)) ([#247](https://github.com/NovaLux12/spotify-mcp-server/issues/247)) ([0f41271](https://github.com/NovaLux12/spotify-mcp-server/commit/0f4127107e905dbce2e1b84d2425339053e67eb0))
+
 ## [1.22.0](https://github.com/NovaLux12/spotify-mcp-server/compare/v1.21.0...v1.22.0) (2026-08-26)
 
 
