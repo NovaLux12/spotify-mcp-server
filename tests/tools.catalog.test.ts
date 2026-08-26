@@ -1219,3 +1219,132 @@ test('get_several_tracks explains the Feb 2026 removal on 403 instead of a raw e
     },
   );
 });
+
+// ---------------------------- exhaust catalog gap-fill: 15 new tools
+
+test('get_category fetches /browse/categories/{id} and renders', async () => {
+  const cat = { id: 'mood', name: 'Mood', href: 'https://api.spotify.com/v1/browse/categories/mood', icons: [{ url: 'https://example.com/icon.png', height: null, width: null }] };
+  const { registered, calls } = makeHarness(registerCatalogTools, { getResponse: (p) => (p === '/browse/categories/mood' ? cat : undefined) });
+  const out = text(await invoke(findTool(registered, 'get_category'), { category_id: 'mood' }));
+  assert.equal(calls[0].path, '/browse/categories/mood');
+  assert.match(out, /Category: Mood/);
+  assert.match(out, /mood/);
+});
+
+test('get_category forwards country and locale', async () => {
+  const cat = { id: 'mood', name: 'Mood', href: 'h', icons: [] };
+  const { registered, calls } = makeHarness(registerCatalogTools, { getResponse: (p) => (p === '/browse/categories/mood' ? cat : undefined) });
+  await invoke(findTool(registered, 'get_category'), { category_id: 'mood', country: 'US', locale: 'en_US' });
+  assert.deepEqual(calls[0].params, { country: 'US', locale: 'en_US' });
+});
+
+test('search_tracks locks type=track and renders', async () => {
+  const { registered, calls } = makeHarness(registerCatalogTools, { getResponse: (p, params) => { if (p === '/search') { assert.equal(params.type, 'track'); return { tracks: { items: [{ id: 't1', name: 'Song', uri: 'spotify:track:t1', artists: [{ name: 'A' }], album: { name: 'Alb' }, duration_ms: 200000 }], total: 1 } }; } return undefined; } });
+  const out = text(await invoke(findTool(registered, 'search_tracks'), { query: 'hello' }));
+  assert.match(out, /Search tracks for "hello"/);
+  assert.match(out, /Song/);
+  assert.equal(calls[0].params.q, 'hello');
+});
+
+test('search_artists / search_albums / search_playlists / search_shows / search_episodes / search_audiobooks registered and type-locked', async () => {
+  const kinds: Array<{ tool: string; type: string; key: string }> = [
+    { tool: 'search_artists', type: 'artist', key: 'artists' },
+    { tool: 'search_albums', type: 'album', key: 'albums' },
+    { tool: 'search_playlists', type: 'playlist', key: 'playlists' },
+    { tool: 'search_shows', type: 'show', key: 'shows' },
+    { tool: 'search_episodes', type: 'episode', key: 'episodes' },
+    { tool: 'search_audiobooks', type: 'audiobook', key: 'audiobooks' },
+  ];
+  for (const k of kinds) {
+    const { registered, calls } = makeHarness(registerCatalogTools, { getResponse: (p, params) => { if (p === '/search') { assert.equal(params.type, k.type); return { [k.key]: { items: [{ id: 'x1', name: 'Found', uri: `spotify:${k.type}:x1`, artists: [{ name: 'A' }], owner: { display_name: 'Owner', id: 'o1' }, publisher: 'Pub', show: { name: 'Show' }, authors: [{ name: 'Author' }], duration_ms: 1000 }], total: 1 } }; } return undefined; } });
+    const out = text(await invoke(findTool(registered, k.tool), { query: 'q' }));
+    assert.match(out, /Found/);
+    assert.equal(calls[0].params.type, k.type);
+  }
+});
+
+test('search_tracks json mode returns raw', async () => {
+  const raw = { tracks: { items: [{ id: 't1', name: 'Song', uri: 'spotify:track:t1' }], total: 1 } };
+  const { registered } = makeHarness(registerCatalogTools, { getResponse: (p) => (p === '/search' ? raw : undefined) });
+  const res = await invoke(findTool(registered, 'search_tracks'), { query: 'hi', response_format: 'json' });
+  const parsed = JSON.parse(res.content[0].text);
+  assert.equal(parsed.tracks.total, 1);
+});
+
+test('search_tracks handles no results', async () => {
+  const { registered } = makeHarness(registerCatalogTools, { getResponse: (p) => (p === '/search' ? { tracks: { items: [], total: 0 } } : undefined) });
+  const out = text(await invoke(findTool(registered, 'search_tracks'), { query: 'zzz' }));
+  assert.match(out, /No results/);
+});
+
+test('catalog_batch_lookup partitions mixed URIs', async () => {
+  const { registered, calls } = makeHarness(registerCatalogTools, { getResponse: (p, params) => { if (p === '/tracks') return { tracks: params.ids.split(',').map((id) => ({ id, name: `Track ${id}`, uri: `spotify:track:${id}` })) }; if (p === '/artists') return { artists: params.ids.split(',').map((id) => ({ id, name: `Artist ${id}`, uri: `spotify:artist:${id}` })) }; return undefined; } });
+  const out = text(await invoke(findTool(registered, 'catalog_batch_lookup'), { uris: ['spotify:track:t1', 'spotify:artist:a1'] }));
+  assert.match(out, /Batch lookup/);
+  assert.match(out, /Track t1/);
+  assert.match(out, /Artist a1/);
+  assert.equal(calls.length, 2);
+});
+
+test('catalog_batch_lookup reports invalid URIs', async () => {
+  const { registered } = makeHarness(registerCatalogTools, { getResponse: (p) => (p === '/tracks' ? { tracks: [{ id: 't1', name: 'Track t1', uri: 'spotify:track:t1' }] } : undefined) });
+  const out = text(await invoke(findTool(registered, 'catalog_batch_lookup'), { uris: ['spotify:track:t1', 'not-a-uri'] }));
+  assert.match(out, /invalid/i);
+});
+
+test('get_artist_singles calls include_groups=single', async () => {
+  const { registered, calls } = makeHarness(registerCatalogTools, { getResponse: (p) => (p === '/artists/art1/albums' ? { items: [{ id: 's1', name: 'Single 1', uri: 'spotify:album:s1', album_type: 'single', release_date: '2026-01-01', total_tracks: 1 }], total: 1 } : undefined) });
+  const out = text(await invoke(findTool(registered, 'get_artist_singles'), { artist_id: 'art1' }));
+  assert.match(out, /Singles for artist/);
+  assert.match(out, /Single 1/);
+  assert.equal(calls.find((c) => c.path === '/artists/art1/albums').params.include_groups, 'single');
+});
+
+test('get_artist_appearances calls include_groups=appears_on', async () => {
+  const { registered, calls } = makeHarness(registerCatalogTools, { getResponse: (p) => (p === '/artists/art1/albums' ? { items: [{ id: 'ap1', name: 'Feat 1', uri: 'spotify:album:ap1', album_type: 'appears_on', release_date: '2026-01-01' }], total: 1 } : undefined) });
+  const out = text(await invoke(findTool(registered, 'get_artist_appearances'), { artist_id: 'art1' }));
+  assert.match(out, /Appearances/);
+  assert.equal(calls.find((c) => c.path === '/artists/art1/albums').params.include_groups, 'appears_on');
+});
+
+test('market_validate validates codes', async () => {
+  const { registered } = makeHarness(registerCatalogTools, { getResponse: (p) => { if (p === '/markets') return { markets: ['US', 'GB', 'DE'] }; return undefined; } });
+  const out = text(await invoke(findTool(registered, 'market_validate'), { markets: ['US', 'XX'] }));
+  assert.match(out, /Valid: US/);
+  assert.match(out, /Invalid: XX/);
+});
+
+test('market_validate with no markets lists valid', async () => {
+  const { registered } = makeHarness(registerCatalogTools, { getResponse: (p) => (p === '/markets' ? { markets: ['US', 'GB'] } : undefined) });
+  const out = text(await invoke(findTool(registered, 'market_validate'), {}));
+  assert.match(out, /Valid markets/);
+  assert.match(out, /US/);
+});
+
+test('market_validate handles 403 gracefully', async () => {
+  const { registered } = makeHarness(registerCatalogTools, { getError: (p) => (p === '/markets' ? new SpotifyApiError(403, 'Forbidden') : undefined) });
+  const out = text(await invoke(findTool(registered, 'market_validate'), { markets: ['US'] }));
+  assert.match(out, /403|removed|unavailable/i);
+});
+
+test('browse_category_deepdive fetches category + playlists', async () => {
+  const { registered, calls } = makeHarness(registerCatalogTools, { getResponse: (p) => { if (p === '/browse/categories/mood') return { id: 'mood', name: 'Mood', href: 'h', icons: [] }; if (p === '/browse/categories/mood/playlists') return { playlists: { items: [{ id: 'pl1', name: 'Chill Hits', uri: 'spotify:playlist:pl1' }], total: 1 } }; return undefined; } });
+  const out = text(await invoke(findTool(registered, 'browse_category_deepdive'), { category_id: 'mood' }));
+  assert.match(out, /Category: Mood/);
+  assert.match(out, /Chill Hits/);
+  assert.equal(calls.length, 2);
+});
+
+test('show_episode_search filters by query', async () => {
+  const { registered } = makeHarness(registerCatalogTools, { getResponse: (p) => (p === '/shows/shw1/episodes' ? { items: [episodeSimpleFixture({ id: 'ep1', name: 'AMA with Jack', description: 'ask me anything' }), episodeSimpleFixture({ id: 'ep2', name: 'Other', description: 'nothing' })], total: 2 } : undefined) });
+  const out = text(await invoke(findTool(registered, 'show_episode_search'), { show_id: 'shw1', query: 'AMA' }));
+  assert.match(out, /AMA with Jack/);
+  assert.ok(!out.includes('"Other"'));
+});
+
+test('show_episode_search reports no matches', async () => {
+  const { registered } = makeHarness(registerCatalogTools, { getResponse: (p) => (p === '/shows/shw1/episodes' ? { items: [episodeSimpleFixture({ name: 'Other' })], total: 1 } : undefined) });
+  const out = text(await invoke(findTool(registered, 'show_episode_search'), { show_id: 'shw1', query: 'zzz' }));
+  assert.match(out, /No episodes matching/);
+});
+
