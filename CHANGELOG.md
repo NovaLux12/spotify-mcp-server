@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > from [Conventional Commits](https://www.conventionalcommits.org/). Entries below v1.0.4 were
 > backfilled by hand from git history.
 
+## [1.9.0](https://github.com/NovaLux12/spotify-mcp-server/compare/v1.8.0...v1.9.0) (2026-08-26)
+
+
+### Features
+
+* **auth:** persist auth-time scopes; add scopefilter for scope-aware module hiding ([#111](https://github.com/NovaLux12/spotify-mcp-server/issues/111) item 6) ([9da8bfa](https://github.com/NovaLux12/spotify-mcp-server/commit/9da8bfa74ea5602065b996eb8156fa5aa13463b5))
+* **toolsets:** per-tool opt-in/opt-out layered on toolsets ([#111](https://github.com/NovaLux12/spotify-mcp-server/issues/111) item 7) ([42d97b6](https://github.com/NovaLux12/spotify-mcp-server/commit/42d97b6ae488a0fa2c1f457ce73e7525c205b30b))
+* wire wave-9 — scope-aware hiding + per-tool opt-in/opt-out ([9de646f](https://github.com/NovaLux12/spotify-mcp-server/commit/9de646f2f77d82a96ae9043b0b22ee33d177a479))
+
+
+### Bug Fixes
+
+* **#110:** final polish — audit prompt uses find_duplicates; honest queue pagination ([0a931f1](https://github.com/NovaLux12/spotify-mcp-server/commit/0a931f1751dc2664f302cb5467e9b48e3b520dca))
+
 ## [1.8.0](https://github.com/NovaLux12/spotify-mcp-server/compare/v1.7.0...v1.8.0) (2026-08-26)
 
 
