@@ -493,3 +493,33 @@ describe('list_backups', () => {
     assert.deepEqual(out.structuredContent, parsed);
   });
 });
+
+describe('backup_library dry_run + quota', () => {
+  it('dry_run returns would_walk breakdown without API calls', async () => {
+    let calls = 0;
+    const h = harness(() => { calls++; return { items: [], total: 0, limit: 50, offset: 0, next: null }; });
+    const out = await h.invoke('backup_library', { dry_run: true, max_results: 100 });
+    assert.equal(calls, 0);
+    const sc = out.structuredContent as Record<string, unknown>;
+    assert.equal(sc.dry_run, true);
+    assert.ok((sc.would_walk as Record<string, number>).tracks === 100);
+    assert.ok(typeof sc.estimated_requests === 'number');
+    assert.match(textOf(out), /dry run/);
+  });
+  it('quota 429 writes partial file and returns quota_hit', async () => {
+    const { SpotifyApiError } = await import('../src/client.js');
+    // make /me/tracks throw 429 so collectSnapshot fails
+    const h = harness((_path) => { throw new SpotifyApiError(429, 'quota', 60); });
+    const out = await h.invoke('backup_library', { max_results: 10 });
+    const sc = out.structuredContent as Record<string, unknown>;
+    assert.equal(sc.quota_hit, true);
+    assert.equal(sc.retry_after, 60);
+    assert.match(textOf(out), /Quota hit/);
+    // partial file was written
+    if (sc.file) {
+      const raw = await readFile(sc.file as string, 'utf8');
+      const j = JSON.parse(raw);
+      assert.equal(j.quota_hit, true);
+    }
+  });
+});

@@ -5,6 +5,7 @@ import type { SavedTrackItem, SavedAlbumItem, SpotifyPaged, RecentlyPlayedRespon
 import {
   ResponseFormat,
   MaxResults,
+  DryRun,
   resolveMaxResults,
   truncateItems,
   paginationInfo,
@@ -12,6 +13,7 @@ import {
 } from '../shaping.js';
 import type { ResponseFormatValue } from '../shaping.js';
 import { getConfig } from '../config.js';
+import { SpotifyApiError } from '../client.js';
 
 type ToolOut = {
   content: Array<{ type: 'text'; text: string }>;
@@ -89,35 +91,84 @@ export function registerLibraryAnalyticsTools(server: McpServer, client: Spotify
       max_playlists: z.number().int().min(1).max(100).optional().describe('How many playlists to scan (default 50, max 100)'),
       include_not_saved: z.boolean().optional().describe('Include unsaved playlist items (default true)'),
       scan_cap: z.number().int().min(1).max(10000).optional().describe('Max items to walk per paginated source; default SPOTIFY_MCP_FETCH_ALL_CAP'),
+      dry_run: DryRun,
     },
-    async ({ response_format, max_results, max_playlists, include_not_saved, scan_cap }) => {
+    async ({ response_format, max_results, max_playlists, include_not_saved, scan_cap, dry_run }) => {
       const rf = response_format;
       const maxResults = cap({ max_results });
       const includeNotSaved = include_not_saved !== false;
 
       const scanCap = (scan_cap as number | undefined) ?? getConfig().fetchAllCap;
-      const savedTracks = await client.getAllPages<SavedTrackItem>('/me/tracks', { limit: '50' }, { maxItems: scanCap });
-      const allPlaylists = await client.getAllPages<SpotifyPlaylistSimple>('/me/playlists', { limit: '50' }, { maxItems: scanCap });
-      const playlists = allPlaylists.slice(0, max_playlists ?? 50);
+      // dry_run: cost estimate without any API calls
+      if (dry_run) {
+        const n = max_playlists ?? 50;
+        const perPlaylistPages = Math.max(1, Math.ceil(scanCap / 100));
+        const estimatedRequests = 2 + n * perPlaylistPages;
+        const lines = [
+          `[dry run] library_coverage_report would scan ${n} playlist(s) (scan_cap=${scanCap}).`,
+          `Cost: ~${estimatedRequests} requests (2 listing walks for /me/tracks + /me/playlists + ${n} × ~${perPlaylistPages} page(s) per playlist at scan_cap=${scanCap}, limit 100 per page).`,
+          n > 25 ? `Warning: scanning ${n} playlists (>25) may approach rate limits — consider max_playlists ≤25 or a lower scan_cap.` : '',
+        ].filter(Boolean);
+        const payload = {
+          dry_run: true,
+          would_scan_playlists: n,
+          scan_cap: scanCap,
+          per_playlist_pages: perPlaylistPages,
+          estimated_requests: estimatedRequests,
+          capped_at_scan_cap: true,
+        };
+        return shapeResult(rf, (lines as string[]).join('\n'), payload);
+      }
+      // Wrap initial walks + per-playlist walks so a 429 mid-scan can return partial coverage.
+      let savedTracks: SavedTrackItem[] = [];
+      let allPlaylists: SpotifyPlaylistSimple[] = [];
+      let playlists: SpotifyPlaylistSimple[] = [];
+      let quotaHit: { retry_after?: number; at_playlist?: string } | null = null;
+      try {
+        savedTracks = await client.getAllPages<SavedTrackItem>('/me/tracks', { limit: '50' }, { maxItems: scanCap });
+        allPlaylists = await client.getAllPages<SpotifyPlaylistSimple>('/me/playlists', { limit: '50' }, { maxItems: scanCap });
+        playlists = allPlaylists.slice(0, max_playlists ?? 50);
+      } catch (e) {
+        if (e instanceof SpotifyApiError && e.status === 429) {
+          const retryAfter = e.retryAfterSec;
+          const lines = [`Quota hit before playlist scan (Retry-After: ${retryAfter ?? 'unknown'}s) — partial coverage unavailable.`];
+          const payload = { quota_hit: true, retry_after: retryAfter ?? null, scanned: 0, total_saved: savedTracks.length, playlists_scanned: 0 };
+          return shapeResult(rf, lines.join('\n'), payload as unknown as Record<string, unknown>);
+        }
+        throw e;
+      }
 
       // Collect every playlist item id
       const playlistTrackIds = new Set<string>();
       const unsavedByPlaylist: Array<{ playlist_id: string; playlist_name: string; unsaved_count: number; unsaved_sample: string[] }> = [];
       const playlistItemsById = new Map<string, string[]>(); // playlist id -> track ids
 
+      // per-playlist quota guard: break on 429 and keep partial ids
+      let quotaAtPlaylist: string | null = null;
+      let quotaRetryAfter: number | null = null;
       for (const pl of playlists) {
         if (!pl?.id) continue;
-        // Spotify uses /playlists/{id}/tracks for items; also handle /items alias
+        if (quotaHit) break;
         let items: PlaylistItemObject[] = [];
         try {
-          items = await client.getAllPages<PlaylistItemObject>(`/playlists/${encodeURIComponent(pl.id)}/tracks`, { limit: '100' }, { maxItems: scanCap });
-          // fallback: if empty and we suspect /items path, try it
-          if (items.length === 0) {
-            const alt = await client.getAllPages<PlaylistItemObject>(`/playlists/${encodeURIComponent(pl.id)}/items`, { limit: '100' }, { maxItems: scanCap });
-            if (alt.length > 0) items = alt;
+          try {
+            items = await client.getAllPages<PlaylistItemObject>(`/playlists/${encodeURIComponent(pl.id)}/tracks`, { limit: '100' }, { maxItems: scanCap });
+            if (items.length === 0) {
+              const alt = await client.getAllPages<PlaylistItemObject>(`/playlists/${encodeURIComponent(pl.id)}/items`, { limit: '100' }, { maxItems: scanCap });
+              if (alt.length > 0) items = alt;
+            }
+          } catch (inner) {
+            if (inner instanceof SpotifyApiError && inner.status === 429) throw inner;
+            items = await client.getAllPages<PlaylistItemObject>(`/playlists/${encodeURIComponent(pl.id)}/items`, { limit: '100' }, { maxItems: scanCap }).catch(() => []);
           }
-        } catch {
-          items = await client.getAllPages<PlaylistItemObject>(`/playlists/${encodeURIComponent(pl.id)}/items`, { limit: '100' }, { maxItems: scanCap }).catch(() => []);
+        } catch (e) {
+          if (e instanceof SpotifyApiError && e.status === 429) {
+            quotaAtPlaylist = pl.id;
+            quotaRetryAfter = e.retryAfterSec ?? null;
+            quotaHit = { retry_after: quotaRetryAfter ?? undefined, at_playlist: quotaAtPlaylist };
+            break;
+          }
+          items = [];
         }
         const ids: string[] = [];
         for (const it of items) {
@@ -183,7 +234,11 @@ export function registerLibraryAnalyticsTools(server: McpServer, client: Spotify
 
       const truncated = savedTracks.length >= scanCap || allPlaylists.length >= scanCap;
       if (truncated) lines.push(`(scan truncated at scan_cap=${scanCap} — coverage verdict may be incomplete)`);
-      const payload = {
+      if ((max_playlists ?? 50) > 25) lines.push(`(quota note: scanning ${max_playlists ?? 50} playlists — consider dry_run first or lowering max_playlists to ≤25)`);
+      if (quotaHit) {
+        lines.push(`Quota hit at playlist ${quotaAtPlaylist} (Retry-After: ${quotaRetryAfter ?? 'unknown'}s) — partial coverage returned.`);
+      }
+      const payload: Record<string, unknown> = {
         ...listStructuredContent(t.items, pagination),
         coverage_ratio: coverageRatio,
         total_saved: totalSaved,
@@ -194,6 +249,7 @@ export function registerLibraryAnalyticsTools(server: McpServer, client: Spotify
         scanned: savedTracks.length,
         scan_cap: scanCap,
         truncated,
+        ...(quotaHit ? { quota_hit: true, quota_at_playlist: quotaAtPlaylist, retry_after: quotaRetryAfter } : {}),
       };
       return shapeResult(rf, lines.join('\n'), payload);
     },

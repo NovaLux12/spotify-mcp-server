@@ -244,3 +244,39 @@ describe('genre_trends_over_time', () => {
     assert.match(textOf(out), /No saved tracks/);
   });
 });
+
+describe('library_coverage_report dry_run + quota', () => {
+  it('dry_run returns cost estimate without API calls', async () => {
+    let calls = 0;
+    const h = harness(() => { calls++; return { items: [], total: 0, limit: 50, offset: 0, next: null }; });
+    const out = await h.invoke('library_coverage_report', { dry_run: true, max_playlists: 10, scan_cap: 100 });
+    assert.equal(calls, 0, 'dry_run must make zero API calls');
+    assert.equal(out.structuredContent?.dry_run, true);
+    assert.equal(out.structuredContent?.would_scan_playlists, 10);
+    assert.equal(out.structuredContent?.estimated_requests, 2 + 10 * 1);
+    assert.match(textOf(out), /dry run/);
+  });
+  it('dry_run warns when >25 playlists', async () => {
+    const h = harness(() => ({ items: [], total: 0, limit: 50, offset: 0, next: null }));
+    const out = await h.invoke('library_coverage_report', { dry_run: true, max_playlists: 50 });
+    assert.match(textOf(out), /Warning/);
+  });
+  it('quota partial recovery on per-playlist 429', async () => {
+    const { SpotifyApiError } = await import('../src/client.js');
+    let playlistCall = 0;
+    const h = harness((path) => {
+      if (path === '/me/tracks') return { items: [{ track: { id: 't1', name: 'T1', uri: 'spotify:track:t1' } }], total: 1, limit: 50, offset: 0, next: null };
+      if (path === '/me/playlists') return { items: [{ id: 'pl1', name: 'P1' }, { id: 'pl2', name: 'P2' }], total: 2, limit: 50, offset: 0, next: null };
+      if (path.startsWith('/playlists/')) {
+        playlistCall++;
+        if (playlistCall === 2) throw new SpotifyApiError(429, 'quota', 60, 'QUOTA_EXCEEDED');
+        return { items: [{ track: { id: 't1', uri: 'spotify:track:t1' } }], total: 1, limit: 100, offset: 0, next: null };
+      }
+      return { items: [], total: 0, limit: 50, offset: 0, next: null };
+    });
+    const out = await h.invoke('library_coverage_report', { max_playlists: 2 });
+    assert.equal(out.structuredContent?.quota_hit, true);
+    assert.equal(out.structuredContent?.retry_after, 60);
+    assert.match(textOf(out), /Quota hit/);
+  });
+});

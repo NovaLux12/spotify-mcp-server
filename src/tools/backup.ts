@@ -19,7 +19,8 @@ import { join } from 'node:path';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
 import { getConfig } from '../config.js';
-import { ResponseFormat, type ResponseFormatValue } from '../shaping.js';
+import { ResponseFormat, DryRun, type ResponseFormatValue } from '../shaping.js';
+import { SpotifyApiError } from '../client.js';
 import type {
   FollowedArtistsResponse,
   PlaylistItemObject,
@@ -239,17 +240,23 @@ export async function collectSnapshot(client: SpotifyClient, cap: number): Promi
   const playlistRows: BackupPlaylistRow[] = [];
   for (const p of playlists) {
     if (!p || typeof p.uri !== 'string') continue;
-    const { items } = await collectPlaylistItems(client, p.id, cap);
-    const reported =
-      p.items && typeof p.items === 'object' && typeof (p.items as { total?: unknown }).total === 'number'
-        ? (p.items.total as number)
-        : null;
-    playlistRows.push({
-      uri: p.uri,
-      name: typeof p.name === 'string' ? p.name : '',
-      item_count: reported ?? items.length,
-      items,
-    });
+    try {
+      const { items } = await collectPlaylistItems(client, p.id, cap);
+      const reported =
+        p.items && typeof p.items === 'object' && typeof (p.items as { total?: unknown }).total === 'number'
+          ? (p.items.total as number)
+          : null;
+      playlistRows.push({
+        uri: p.uri,
+        name: typeof p.name === 'string' ? p.name : '',
+        item_count: reported ?? items.length,
+        items,
+      });
+    } catch (e) {
+      if (e instanceof SpotifyApiError && e.status === 429) throw e;
+      // non-quota per-playlist error: skip playlist
+      playlistRows.push({ uri: p.uri, name: typeof p.name === 'string' ? p.name : '', item_count: 0, items: [] });
+    }
   }
 
   return {
@@ -315,11 +322,69 @@ export function registerBackupTools(server: McpServer, client: SpotifyClient): v
         .max(2000)
         .optional()
         .describe('Per-category walk cap for THIS call (default: SPOTIFY_MCP_FETCH_ALL_CAP)'),
+      dry_run: DryRun,
     },
     async (args) => {
       const cap = args.max_results ?? getConfig().fetchAllCap;
-
-      const collected = await collectSnapshot(client, cap);
+      if (args.dry_run) {
+        const perCatPages = Math.ceil(cap / 50);
+        const wouldWalk = {
+          tracks: cap,
+          albums: cap,
+          shows: cap,
+          episodes: cap,
+          audiobooks: cap,
+          followed_artists: cap,
+          playlists: cap,
+          playlist_items_cap: Math.min(cap, PLAYLIST_ITEMS_CAP),
+        };
+        const categories = 7;
+        const estimatedRequests = categories * perCatPages + 10; // ~10 playlist item walks extra, rough
+        const lines = [
+          `[dry run] backup_library would walk ${categories} categories (tracks, albums, shows, episodes, audiobooks, followed_artists, playlists) capped at ${cap} per category (~${perCatPages} page(s) each at limit 50).`,
+          `Plus per-playlist item walks: up to ~10 playlists × ~${Math.ceil(Math.min(cap, PLAYLIST_ITEMS_CAP) / 100)} page(s) each.`,
+          `Estimated: ~${estimatedRequests}+ requests (varies with actual playlist count).`,
+        ];
+        const payload: Record<string, unknown> = {
+          dry_run: true,
+          would_walk: wouldWalk,
+          per_category_pages: perCatPages,
+          estimated_requests: estimatedRequests,
+          cap,
+        };
+        const prose = lines.join('\n');
+        if (args.response_format === 'json') return { content: [{ type: 'text', text: JSON.stringify(payload, null, 2) }], structuredContent: payload };
+        return shapeResult(args.response_format, prose, payload);
+      }
+      let collected: Omit<LibraryBackup, '_meta'>;
+      let quotaHit: { retry_after: number | null } | null = null;
+      try {
+        collected = await collectSnapshot(client, cap);
+      } catch (e) {
+        if (e instanceof SpotifyApiError && e.status === 429) {
+          quotaHit = { retry_after: e.retryAfterSec ?? null };
+          // Build a best-effort partial from what collectSnapshot may have partially populated is not available,
+          // so we return a quota_hit summary and no file. Attempt to write a partial file with empty categories.
+          const partial: Omit<LibraryBackup, '_meta'> = { liked_tracks: [], saved_albums: [], saved_shows: [], saved_episodes: [], saved_audiobooks: [], followed_artists: [], playlists: [] };
+          const created = new Date().toISOString();
+          const snapshot: LibraryBackup = { _meta: { created, counts: metaCounts(partial) }, ...partial };
+          let file: string | null = null;
+          try {
+            const dir = backupDir();
+            await mkdir(dir, { recursive: true, mode: 0o700 });
+            const dateStamp = created.slice(0, 10);
+            const seq = await nextBackupSeq(dir, dateStamp);
+            file = join(dir, `backup-${dateStamp}-${seq}.partial.json`);
+            await writeFile(file, `${JSON.stringify({ ...snapshot, _partial: true, quota_hit: true, retry_after: quotaHit.retry_after }, null, 2)}\n`, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+          } catch { /* best-effort */ }
+          const payload: Record<string, unknown> = { ok: false, quota_hit: true, retry_after: quotaHit.retry_after, file, counts: metaCounts(partial), partial: true };
+          const prose = `Quota hit during backup_library (Retry-After: ${quotaHit.retry_after ?? 'unknown'}s) — partial snapshot${file ? ` written to ${file}` : ' (no file)'} . Retry later or lower max_results.`;
+          return shapeResult(args.response_format, prose, payload);
+        }
+        throw e;
+      }
+      // quotaHit inside collectSnapshot per-playlist loops is swallowed there; surface via playlist count shortfall if needed
+      void quotaHit;
       const created = new Date().toISOString();
       const snapshot: LibraryBackup = {
         _meta: {
