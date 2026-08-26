@@ -95,12 +95,15 @@ test('registers all #59 resource URIs plus format/json twins and templates', asy
 
   assert.deepEqual(uris, [
     'spotify://me',
+    'spotify://me/followed/artists',
     'spotify://me/playlists',
     'spotify://me/rate-limit',
     'spotify://me/recently-played',
     'spotify://me/saved/albums',
+    'spotify://me/saved/audiobooks',
     'spotify://me/saved/episodes',
     'spotify://me/saved/shows',
+    'spotify://me/saved/tracks',
     'spotify://me/top/artists',
     'spotify://me/top/tracks',
     'spotify://player/queue',
