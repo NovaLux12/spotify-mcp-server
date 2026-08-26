@@ -99,6 +99,13 @@ const { tools } = await rpc('tools/list', {});
 const schemaOf = new Map(tools.map((t) => [t.name, t.inputSchema ?? {}]));
 console.log(`tools/list: ${tools.length} tools discovered`);
 
+// NOTE: consecutive full runs share Spotify's per-developer-account quota
+// (July-2026 change). Once exhausted, every later request waits out long
+// Retry-After windows and late tools will hit the per-call timeout — space
+// runs apart or expect late-tool timeouts. This is quota reality, not a
+// client bug (#133's priority lanes keep interactive reads responsive;
+// they cannot conjure quota).
+
 // ---------------------------------------------------------------------- seeds
 
 // Minimal reads whose results feed every other SAFE call's arguments.
