@@ -61,7 +61,8 @@ These fail at runtime on app registrations created after November 2024. Never wr
 | `GET /recommendations`, `GET /recommendations/available-genre-seeds` | Blocked for post-Nov-2024 apps |
 | `GET /artists/{id}/related-artists` | Blocked for post-Nov-2024 apps |
 | `GET /audio-features/{id}`, `GET /audio-analysis/{id}` | Blocked for post-Nov-2024 apps |
-| `GET /browse/categories`, `GET /browse/new-releases`, featured playlists | Blocked/removed — do not use |
+| `GET /browse/categories` | Live — wrapped by get_categories / get_category_playlists |
+| `GET /browse/new-releases`, `GET /browse/featured-playlists` | Blocked/removed — do not use |
 | Lyrics endpoints | Not available via the Web API — do not use |
 
 ### Schema-flagged deprecated but verified operational — wrapped with graceful 403 handling

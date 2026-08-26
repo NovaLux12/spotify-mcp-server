@@ -16,6 +16,7 @@ import {
   batchSummary,
   truncateItems,
 } from '../shaping.js';
+import { getConfig } from '../config.js';
 import { issueReceipt, formatReceipt } from '../receipts.js';
 import { timeRangeSchema } from './personalization.js';
 import type {
@@ -73,7 +74,7 @@ function dedupeUris(tracks: readonly SpotifyTrack[]): SpotifyTrack[] {
   });
 }
 
-async function loadCandidates(client: SpotifyClient, source: string): Promise<SpotifyTrack[]> {
+async function loadCandidates(client: SpotifyClient, source: string, scanCap?: number): Promise<SpotifyTrack[]> {
   switch (source) {
     case 'top_tracks': {
       // Two pages of 50 is plenty: filters only shrink the candidate pool.
@@ -98,7 +99,8 @@ async function loadCandidates(client: SpotifyClient, source: string): Promise<Sp
         .map((item) => item.track as SpotifyTrack);
     }
     default: {
-      const saved = await client.getAllPages<SavedTrackItem>('/me/tracks', { limit: '50' });
+      const cap = scanCap ?? getConfig().fetchAllCap;
+      const saved = await client.getAllPages<SavedTrackItem>('/me/tracks', { limit: '50' }, { maxItems: cap });
       return saved.map((entry) => entry?.track).filter((t): t is SpotifyTrack => Boolean(t?.uri));
     }
   }
@@ -109,7 +111,8 @@ export function registerSmartTools(server: McpServer, client: SpotifyClient): vo
     'create_smart_playlist',
     'Create a playlist from rules over your own listening data: top tracks (by time range), '
       + 'recently played, or saved tracks — with optional artist-name filtering and a '
-      + 'one-track-per-artist toggle. No deprecated recommendations endpoints involved. '
+      + 'one-track-per-artist toggle. When source=saved_tracks the pool is the newest N saved tracks '
+      + '(N=scan_cap, default fetchAllCap=500) and truncation is reported. No deprecated recommendations endpoints involved. '
       + 'dry_run previews the exact track list without creating anything.',
     {
       name: z.string().min(1).describe('Playlist name'),
@@ -137,10 +140,15 @@ export function registerSmartTools(server: McpServer, client: SpotifyClient): vo
         .describe('Keep at most one track per primary artist. Default false.'),
       description: z.string().optional().describe('Playlist description'),
       public: z.boolean().optional().default(false).describe('Whether the playlist is public'),
+      scan_cap: z.number().int().min(1).max(10000).optional().describe('How many saved tracks to scan when source=saved_tracks; default SPOTIFY_MCP_FETCH_ALL_CAP (500). Reports truncation when hit.'),
       dry_run: DryRun,
     },
     async (args) => {
-      let candidates = dedupeUris(await loadCandidates(client, args.source));
+      const scanCap = args.scan_cap ?? getConfig().fetchAllCap;
+      let rawCandidates = await loadCandidates(client, args.source, scanCap);
+      const candidatesScanned = rawCandidates.length;
+      const truncatedAtCap = args.source === 'saved_tracks' && candidatesScanned >= scanCap;
+      let candidates = dedupeUris(rawCandidates);
 
       if (args.artist_filter && args.artist_filter.length > 0) {
         candidates = candidates.filter((t) => matchesArtistFilter(t, args.artist_filter!));
@@ -161,11 +169,16 @@ export function registerSmartTools(server: McpServer, client: SpotifyClient): vo
           ...view.items.map((t) => `• ${t.artists.map((a) => a.name).join(', ')} — ${t.name}`),
           ...(view.footer ? [view.footer] : []),
         ];
+        if (truncatedAtCap) lines.push(`(saved_tracks pool truncated at scan_cap=${scanCap} — newest ${scanCap} only)`);
         return textResult(lines.join('\n'), {
           ok: true,
           dry_run: true,
           source: args.source,
           selected: picked.length,
+          candidates_scanned: candidatesScanned,
+          truncated_at_fetch_all_cap: truncatedAtCap,
+          newest_first: args.source === 'saved_tracks',
+          scan_cap: scanCap,
           uris: picked.map((t) => t.uri),
         });
       }
@@ -212,6 +225,10 @@ export function registerSmartTools(server: McpServer, client: SpotifyClient): vo
           playlist_uri: created.uri,
           source: args.source,
           added: picked.length,
+          candidates_scanned: candidatesScanned,
+          truncated_at_fetch_all_cap: truncatedAtCap,
+          newest_first: args.source === 'saved_tracks',
+          scan_cap: scanCap,
           batches_sent: batches,
           uris: picked.map((t) => t.uri),
           receipt: receipt as unknown as Record<string, unknown>,

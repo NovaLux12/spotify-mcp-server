@@ -50,7 +50,7 @@ const FORBIDDEN_TOOLS = [
   'get_recommendations',
   'get_related_artists',
   'get_available_genres',
-  'get_featured_playlists',
+  'get_featured_playlists', // deprecated Nov 2024 — never register (browse/categories ARE registered and verified live)
   'get_audio_features',
   'get_audio_analysis',
   'follow_artist',

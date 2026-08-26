@@ -59,7 +59,7 @@ export function registerPlaylistHealthTools(server: McpServer, client: SpotifyCl
     async (args) => {
       const playlistId = args.playlist_id;
       const encId = encodeURIComponent(playlistId);
-      const items = await client.getAllPages<PlaylistItemObject>(`/playlists/${encId}/items`);
+      const items = await client.getAllPages<PlaylistItemObject>(`/playlists/${encId}/items`, { limit: '100' }, { maxItems: getConfig().fetchAllCap });
       const issues: Array<{ type: string; count: number; positions: number[]; description: string }> = [];
       if (items.length === 0) {
         issues.push({ type: 'empty', count: 1, positions: [], description: 'Playlist is empty' });
@@ -146,7 +146,7 @@ export function registerPlaylistHealthTools(server: McpServer, client: SpotifyCl
     },
     async (args) => {
       const encId = encodeURIComponent(args.playlist_id);
-      const items = await client.getAllPages<PlaylistItemObject & { added_by?: { id: string } }>(`/playlists/${encId}/items`);
+      const items = await client.getAllPages<PlaylistItemObject & { added_by?: { id: string } }>(`/playlists/${encId}/items`, { limit: '100' }, { maxItems: getConfig().fetchAllCap });
       const byUser = new Map<string, { count: number; first: string | null; last: string | null }>();
       for (const row of items) {
         const addedBy = (row as unknown as Record<string, unknown>).added_by as { id?: string } | undefined;
@@ -182,7 +182,7 @@ export function registerPlaylistHealthTools(server: McpServer, client: SpotifyCl
     },
     async (args) => {
       const encId = encodeURIComponent(args.playlist_id);
-      const items = await client.getAllPages<PlaylistItemObject>(`/playlists/${encId}/items`);
+      const items = await client.getAllPages<PlaylistItemObject>(`/playlists/${encId}/items`, { limit: '100' }, { maxItems: getConfig().fetchAllCap });
       const snapId = args.snapshot_id ?? new Date().toISOString().replace(/[:.]/g, '-');
       const data: SnapshotData = {
         playlist_id: args.playlist_id, snapshot_id: snapId, created_at: new Date().toISOString(), total: items.length,
@@ -213,7 +213,7 @@ export function registerPlaylistHealthTools(server: McpServer, client: SpotifyCl
       let snapshot: SnapshotData;
       try { snapshot = JSON.parse(await readFile(filePath, 'utf8')) as SnapshotData; } catch { throw new Error(`Snapshot "${args.snapshot_id}" not found for playlist "${args.playlist_id}"`); }
       const encId = encodeURIComponent(args.playlist_id);
-      const current = await client.getAllPages<PlaylistItemObject>(`/playlists/${encId}/items`);
+      const current = await client.getAllPages<PlaylistItemObject>(`/playlists/${encId}/items`, { limit: '100' }, { maxItems: getConfig().fetchAllCap });
       const currentUris = current.map((row) => { const t = row.item as unknown as Record<string, unknown> | null | undefined; return t && typeof t.uri === 'string' ? (t.uri as string) : null; });
       const snapUris = snapshot.items.map((it) => it.uri);
       const snapSet = new Set(snapUris.filter((u): u is string => u !== null));
@@ -233,6 +233,97 @@ export function registerPlaylistHealthTools(server: McpServer, client: SpotifyCl
       if (!structured.has_changes) text = `No changes since snapshot ${args.snapshot_id} (playlist ${args.playlist_id}, ${current.length} items).`;
       else { const parts: string[] = []; if (added.length) parts.push(`added: ${added.map((a) => a.uri).join(', ')}`); if (removed.length) parts.push(`removed: ${removed.map((r) => r.uri).join(', ')}`); if (reordered.length) parts.push(`reordered: ${reordered.map((r) => `${r.uri} ${r.from}→${r.to}`).join(', ')}`); text = `Diff for playlist ${args.playlist_id} vs snapshot ${args.snapshot_id}: ${current.length} now vs ${snapshot.total} then.\n${parts.join('\n')}`; }
       return textResult(text, structured);
+    },
+  );
+
+
+  server.tool(
+    'remove_unavailable_playlist_items',
+    'Remove unavailable (null track) items from a playlist — actionable companion to playlist_health_check. Targets only unavailable occurrences by position so healthy copies are preserved. Read-only dry_run preview available.',
+    {
+      playlist_id: z.string().min(1).describe('Playlist ID or Spotify URL/URI'),
+      dry_run: z.boolean().optional().describe('Preview only — no writes'),
+      max_results: z.number().int().min(1).max(100).optional().describe('Max unavailable items to remove (default 100)'),
+    },
+    async (args) => {
+      const raw = args.playlist_id;
+      let playlistId = raw;
+      try { const m = raw.match(/playlist\/([a-zA-Z0-9]+)/); if(m) playlistId = m[1]; const m2 = raw.match(/spotify:playlist:([a-zA-Z0-9]+)/); if(m2) playlistId = m2[1]; } catch {}
+      const encId = encodeURIComponent(playlistId);
+      const items = await client.getAllPages<PlaylistItemObject>(`/playlists/${encId}/items`, { limit: '100' }, { maxItems: getConfig().fetchAllCap });
+      const unavailable: Array<{ position: number; uri: string }> = [];
+      const orphanedPositions: number[] = [];
+      for (let i=0;i<items.length;i++) {
+        const row = (items[i] as any);
+        const isUnavailable = !row.item && !row.track;
+        if (!isUnavailable) continue;
+        // Unavailable rows have null track/item; Spotify sometimes retains track.uri before nulling
+        const recovered: string | undefined =
+          (typeof row?.track?.uri === 'string' ? row.track.uri : undefined)
+          ?? (typeof row?.item?.uri === 'string' ? row.item.uri : undefined)
+          ?? (typeof row?.uri === 'string' ? row.uri : undefined);
+        if (!recovered) { orphanedPositions.push(i); continue; }
+        unavailable.push({ position: i, uri: recovered });
+      }
+      const totalUnavailable = unavailable.length + orphanedPositions.length;
+      if (totalUnavailable===0) return textResult(`No unavailable items in playlist ${playlistId} (${items.length} tracks).`, { playlist_id: playlistId, total: items.length, unavailable_count: 0, removed: 0 });
+      if (unavailable.length===0 && orphanedPositions.length>0) {
+        return textResult(`Found ${orphanedPositions.length} unavailable item(s) at positions ${orphanedPositions.join(', ')} but no URI is recoverable — Spotify nulled the track object entirely. Remove them manually via the Spotify app or use snapshot-based replacement.`, { ok: false, playlist_id: playlistId, unavailable_count: orphanedPositions.length, orphaned_positions: orphanedPositions, removed: 0, hint: 'No URI recoverable for position-targeted removal; Spotify nulled these track objects' });
+      }
+      const toRemove = unavailable.slice(0, args.max_results ?? 100);
+      const dryRunExtra = orphanedPositions.length>0 ? ` (${orphanedPositions.length} additional unavailable item(s) at positions ${orphanedPositions.join(', ')} have no recoverable URI and will be skipped)` : '';
+      if (args.dry_run) return textResult(`[dry run] Would remove ${toRemove.length} unavailable item(s) from playlist ${playlistId} at positions ${toRemove.map(r=>r.position).join(', ')}.${dryRunExtra}`, { ok: true, dry_run: true, playlist_id: playlistId, would_remove: toRemove.length, positions: toRemove.map(r=>r.position), ...(orphanedPositions.length>0 ? { orphaned_positions: orphanedPositions, orphaned_count: orphanedPositions.length } : {}) });
+      // Use positions targeting: Spotify expects { tracks: [{ uri, positions }] } for precise removal
+      const snapshotRes = await client.delete<{ snapshot_id?: string }>(`/playlists/${encId}/items`, { tracks: toRemove.map(r=>({ uri: r.uri, positions: [r.position] })) } as any);
+      // Re-scan
+      const after = await client.getAllPages<PlaylistItemObject>(`/playlists/${encId}/items`, { limit: '100' }, { maxItems: getConfig().fetchAllCap }).catch(()=>[] as any);
+      const remaining = (after as any[]).filter((r:any)=>!r.item).length;
+      const orphanNote = orphanedPositions.length>0 ? ` (${orphanedPositions.length} unavailable item(s) at positions ${orphanedPositions.join(', ')} had no recoverable URI and were skipped)` : '';
+      return textResult(`Removed ${toRemove.length} unavailable item(s) from playlist ${playlistId}. Remaining unavailable: ${remaining}.${orphanNote} Snapshot: ${snapshotRes?.snapshot_id ?? 'n/a'}`, { ok: true, playlist_id: playlistId, removed: toRemove.length, remaining_unavailable: remaining, snapshot_id: snapshotRes?.snapshot_id ?? null, positions_removed: toRemove.map(r=>r.position), ...(orphanedPositions.length>0 ? { orphaned_positions: orphanedPositions, orphaned_count: orphanedPositions.length } : {}) });
+    },
+  );
+
+  server.tool(
+    'find_duplicate_playlists',
+    'Scan your playlists for exact and near-duplicate track sets. Exact = identical URI sets (order-insensitive); near = Jaccard overlap >= threshold. Read-only.',
+    {
+      threshold: z.number().min(0).max(1).optional().default(0.85).describe('Jaccard threshold for near-duplicates (default 0.85)'),
+      max_playlists: z.number().int().min(1).max(200).optional().describe('How many playlists to scan (default 100)'),
+      scan_cap: z.number().int().min(1).max(10000).optional().describe('Max items walked per playlist (default fetchAllCap)'),
+    },
+    async (args) => {
+      const cap2 = args.scan_cap ?? getConfig().fetchAllCap;
+      const threshold = args.threshold ?? 0.85;
+      const all = await client.getAllPages<import('../types/spotify.js').SpotifyPlaylistSimple>('/me/playlists', { limit: '50' }, { maxItems: cap2 });
+      const playlists = all.slice(0, args.max_playlists ?? 100);
+      const truncated = all.length >= cap2;
+      // Fetch track sets
+      const sets: Array<{ id:string; name:string; uris:Set<string> }> = [];
+      for (const pl of playlists) {
+        if(!pl.id) continue;
+        try {
+          const items = await client.getAllPages<PlaylistItemObject>(`/playlists/${encodeURIComponent(pl.id)}/items`, { limit: '100' }, { maxItems: cap2 });
+          const uris = new Set<string>(); for(const it of items){ const u=(it as any).item?.uri; if(u) uris.add(u); }
+          sets.push({ id: pl.id, name: pl.name, uris });
+        } catch { sets.push({ id: pl.id, name: pl.name, uris: new Set() }); }
+      }
+      const groups: Array<{ type:string; playlists:Array<{id:string;name:string}>; overlap:number; shared:number; union:number }> = [];
+      const exactGroups = new Map<string, typeof sets>();
+      for(const s of sets){ const key=[...s.uris].sort().join('|'); const arr=exactGroups.get(key)??[]; arr.push(s); exactGroups.set(key, arr); }
+      for(const [, arr] of exactGroups){ if(arr.length>1) groups.push({ type:'exact', playlists: arr.map(a=>({id:a.id,name:a.name})), overlap:1, shared: arr[0].uris.size, union: arr[0].uris.size }); }
+      // near duplicates pairwise
+      for(let i=0;i<sets.length;i++) for(let j=i+1;j<sets.length;j++){
+        const a=sets[i], b=sets[j];
+        if(a.uris.size===0||b.uris.size===0) continue;
+        // skip if already exact group
+        const keyA=[...a.uris].sort().join('|'), keyB=[...b.uris].sort().join('|'); if(keyA===keyB) continue;
+        let inter=0; for(const u of a.uris) if(b.uris.has(u)) inter++;
+        const union=a.uris.size+b.uris.size-inter; const jacc=union===0?0:inter/union;
+        if(jacc>=threshold) groups.push({ type:'near', playlists: [{id:a.id,name:a.name},{id:b.id,name:b.name}], overlap: Number(jacc.toFixed(3)), shared: inter, union });
+      }
+      const lines=[`Scanned ${playlists.length} playlist(s)${truncated?` (truncated at ${cap2})`:''}: ${groups.length} duplicate group(s) (threshold ${threshold})`];
+      for(const g of groups) lines.push(`  ${g.type} overlap=${g.overlap} shared=${g.shared}/${g.union}: ${g.playlists.map(p=>'"'+p.name+'" ('+p.id+')').join(' ↔ ')}`);
+      return textResult(lines.join('\n'), { ok:true, scanned: playlists.length, total_playlists: all.length, truncated, threshold, groups });
     },
   );
 
