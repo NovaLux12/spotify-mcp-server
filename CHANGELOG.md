@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > from [Conventional Commits](https://www.conventionalcommits.org/). Entries below v1.0.4 were
 > backfilled by hand from git history.
 
+## [1.12.0](https://github.com/NovaLux12/spotify-mcp-server/compare/v1.11.0...v1.12.0) (2026-08-26)
+
+
+### Features
+
+* **#111:** SPOTIFY_MCP_READONLY mode — write-capable modules hidden on demand ([0a73e15](https://github.com/NovaLux12/spotify-mcp-server/commit/0a73e15f94cc63ab015869cc90a4631167987975))
+
 ## [1.11.0](https://github.com/NovaLux12/spotify-mcp-server/compare/v1.10.0...v1.11.0) (2026-08-26)
 
 
