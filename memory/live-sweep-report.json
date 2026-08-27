@@ -1,17 +1,17 @@
 {
-  "generated_at": "2026-08-26T23:17:20.101Z",
+  "generated_at": "2026-08-27T11:51:52.563Z",
   "tools_discovered": 224,
   "mode": {
-    "batch_limit": 5,
+    "batch_limit": 40,
     "resumed_from": "memory/live-sweep-report.json"
   },
   "summary": {
-    "pass": 8,
+    "pass": 61,
     "fail": 0,
-    "skip": 12,
-    "gated": 0,
-    "total_calls": 23,
-    "pending": 205
+    "skip": 163,
+    "gated": 13,
+    "total_calls": 433,
+    "pending": 0
   },
   "mutation_proof": {
     "mutations_performed": [],
@@ -26,7 +26,20 @@
       "set_shuffle",
       "set_repeat",
       "add_to_queue",
-      "transfer_playback"
+      "transfer_playback",
+      "follow_artists",
+      "unfollow_artists",
+      "upload_playlist_cover",
+      "create_playlist",
+      "add_to_playlist",
+      "remove_from_playlist",
+      "update_playlist",
+      "reorder_playlist_items",
+      "replace_playlist_items",
+      "save_items",
+      "remove_saved_items",
+      "save_to_library",
+      "remove_from_library"
     ],
     "mutating_tools_dry_run_verified": []
   },
@@ -35,31 +48,31 @@
       "tool": "get_me",
       "class": "SAFE",
       "status": "PASS",
-      "latency_ms": 76
+      "latency_ms": 157
     },
     {
       "tool": "search",
       "class": "SAFE",
       "status": "PASS",
-      "latency_ms": 342
+      "latency_ms": 498
     },
     {
       "tool": "get_user_playlists",
       "class": "SAFE",
       "status": "PASS",
-      "latency_ms": 240
+      "latency_ms": 191
     },
     {
       "tool": "get_now_playing",
       "class": "SAFE",
       "status": "PASS",
-      "latency_ms": 103
+      "latency_ms": 69
     },
     {
       "tool": "get_currently_playing",
       "class": "SAFE",
       "status": "PASS",
-      "latency_ms": 73
+      "latency_ms": 95
     },
     {
       "tool": "play_from_search",
@@ -128,7 +141,7 @@
       "tool": "get_queue",
       "class": "SAFE",
       "status": "PASS",
-      "latency_ms": 115
+      "latency_ms": 94
     },
     {
       "tool": "add_to_queue",
@@ -141,7 +154,7 @@
       "tool": "get_devices",
       "class": "SAFE",
       "status": "PASS",
-      "latency_ms": 41
+      "latency_ms": 34
     },
     {
       "tool": "transfer_playback",
@@ -158,10 +171,1411 @@
       "reason": "missing prereq from seed reads"
     },
     {
-      "tool": "search",
+      "tool": "get_track",
       "class": "SAFE",
       "status": "PASS",
-      "latency_ms": 384
+      "latency_ms": 112
+    },
+    {
+      "tool": "get_artist",
+      "class": "SAFE",
+      "status": "PASS",
+      "latency_ms": 115
+    },
+    {
+      "tool": "get_artist_albums",
+      "class": "SAFE",
+      "status": "PASS",
+      "latency_ms": 59
+    },
+    {
+      "tool": "get_album",
+      "class": "SAFE",
+      "status": "PASS",
+      "latency_ms": 132
+    },
+    {
+      "tool": "get_album_tracks",
+      "class": "SAFE",
+      "status": "PASS",
+      "latency_ms": 100
+    },
+    {
+      "tool": "get_show",
+      "class": "SAFE",
+      "status": "PASS",
+      "latency_ms": 328
+    },
+    {
+      "tool": "get_show_episodes",
+      "class": "SAFE",
+      "status": "PASS",
+      "latency_ms": 195
+    },
+    {
+      "tool": "get_episode",
+      "class": "SAFE",
+      "status": "PASS",
+      "latency_ms": 364
+    },
+    {
+      "tool": "get_artist_top_tracks",
+      "class": "SAFE",
+      "status": "PASS",
+      "latency_ms": 58,
+      "gated": true,
+      "reason": "tool answered but snippet suggests app-registration gating (403/Forbidden/removed)"
+    },
+    {
+      "tool": "get_available_markets",
+      "class": "SAFE",
+      "status": "PASS",
+      "latency_ms": 118,
+      "gated": true,
+      "reason": "tool answered but snippet suggests app-registration gating (403/Forbidden/removed)"
+    },
+    {
+      "tool": "get_several_tracks",
+      "class": "SAFE",
+      "status": "PASS",
+      "latency_ms": 81,
+      "gated": true,
+      "reason": "tool answered but snippet suggests app-registration gating (403/Forbidden/removed)"
+    },
+    {
+      "tool": "get_several_albums",
+      "class": "SAFE",
+      "status": "PASS",
+      "latency_ms": 116,
+      "gated": true,
+      "reason": "tool answered but snippet suggests app-registration gating (403/Forbidden/removed)"
+    },
+    {
+      "tool": "get_several_artists",
+      "class": "SAFE",
+      "status": "PASS",
+      "latency_ms": 88,
+      "gated": true,
+      "reason": "tool answered but snippet suggests app-registration gating (403/Forbidden/removed)"
+    },
+    {
+      "tool": "get_several_episodes",
+      "class": "SAFE",
+      "status": "PASS",
+      "latency_ms": 104,
+      "gated": true,
+      "reason": "tool answered but snippet suggests app-registration gating (403/Forbidden/removed)"
+    },
+    {
+      "tool": "get_several_shows",
+      "class": "SAFE",
+      "status": "PASS",
+      "latency_ms": 99,
+      "gated": true,
+      "reason": "tool answered but snippet suggests app-registration gating (403/Forbidden/removed)"
+    },
+    {
+      "tool": "get_several_audiobooks",
+      "class": "SAFE",
+      "status": "PASS",
+      "latency_ms": 103,
+      "gated": true,
+      "reason": "tool answered but snippet suggests app-registration gating (403/Forbidden/removed)"
+    },
+    {
+      "tool": "get_several_chapters",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "no chapter in seeds"
+    },
+    {
+      "tool": "get_category",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "search_tracks",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "search_artists",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "search_albums",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "search_playlists",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "search_shows",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "search_episodes",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "search_audiobooks",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "catalog_batch_lookup",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "get_artist_singles",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "get_artist_appearances",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "market_validate",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "browse_category_deepdive",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "show_episode_search",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "get_top_tracks",
+      "class": "SAFE",
+      "status": "PASS",
+      "latency_ms": 246
+    },
+    {
+      "tool": "get_top_artists",
+      "class": "SAFE",
+      "status": "PASS",
+      "latency_ms": 172
+    },
+    {
+      "tool": "get_recently_played",
+      "class": "SAFE",
+      "status": "PASS",
+      "latency_ms": 144
+    },
+    {
+      "tool": "listening_streaks",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "top_artists_by_range",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "taste_shift_report",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "listening_report",
+      "class": "SAFE",
+      "status": "PASS",
+      "latency_ms": 1132
+    },
+    {
+      "tool": "library_hygiene",
+      "class": "SAFE",
+      "status": "PASS",
+      "latency_ms": 9952
+    },
+    {
+      "tool": "restore_library_snapshot",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "backup_library",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "list_backups",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "get_artist_genres",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "get_categories",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "get_category_playlists",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "get_artist_discography",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "resolve_artist",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "save_artist_new_releases",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "watch_artists",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "check_artist_releases",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "artist_release_digest",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "search_history",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "search_rerun",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "search_within_playlist",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "search_history_stats",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "audiobook_progress",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "unsave_orphan_tracks",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "playlist_to_library",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "followed_playlists_audit",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "get_playlist_added_dates",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "split_playlist",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "find_duplicate_tracks_across_playlists",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "remove_from_library_by_playlist",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "library_coverage_report",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "listening_heatmap",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "library_growth_report",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "genre_trends_over_time",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "save_discover_weekly",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "save_release_radar",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "export_library_json",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "export_followed_artists",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "export_profile_state",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "import_profile_state",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "export_listening_history",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "export_all_playlists",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "library_snapshot_diff",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "history_search",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "import_from_sidecar",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "archive_played_episodes",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "playlist_health_check",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "get_playlist_followers",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "playlist_collaboration_report",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "snapshot_playlist",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "diff_since_snapshot",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "remove_unavailable_playlist_items",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "find_duplicate_playlists",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "list_playlist_snapshots",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "batch_add_to_playlist",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "copy_playlist",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "move_items_between_playlists",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "pin_playlist",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "unpin_playlist",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "playlist_template_apply",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "queue_playlist",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "save_queue_as_playlist",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "save_playback_state",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "restore_playback_state",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "list_playback_states",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "rename_device",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "set_device_volume_preset",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "apply_device_presets",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "list_device_presets",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "tag_listening_session",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "replay_session",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "list_sessions",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "save_smart_playlist_rule",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "refresh_smart_playlist",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "save_show_digest",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "play_on",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "queue_next",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "describe_queue",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "describe_listening_session",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "play_at",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "device_health",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "seek_relative",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "playback_timeline",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "repeat_queue_toggle",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "now_playing_history",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "playback_compare_states",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "peek_next",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "get_playback_context",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "volume_step",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "market_availability",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "spotify_doctor",
+      "class": "SAFE",
+      "status": "PASS",
+      "latency_ms": 2
+    },
+    {
+      "tool": "get_followed_artists",
+      "class": "SAFE",
+      "status": "PASS",
+      "latency_ms": 199
+    },
+    {
+      "tool": "check_following_artists",
+      "class": "SAFE",
+      "status": "PASS",
+      "latency_ms": 57,
+      "gated": true,
+      "reason": "tool answered but snippet suggests app-registration gating (403/Forbidden/removed)"
+    },
+    {
+      "tool": "follow_artists",
+      "class": "MUTATING",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "mutating; not in --include-mutating allowlist"
+    },
+    {
+      "tool": "unfollow_artists",
+      "class": "MUTATING",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "mutating; not in --include-mutating allowlist"
+    },
+    {
+      "tool": "following_analytics",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "get_audiobook",
+      "class": "SAFE",
+      "status": "PASS",
+      "latency_ms": 311
+    },
+    {
+      "tool": "get_audiobook_chapters",
+      "class": "SAFE",
+      "status": "PASS",
+      "latency_ms": 146
+    },
+    {
+      "tool": "get_chapter",
+      "class": "SAFE",
+      "status": "PASS",
+      "latency_ms": 173
+    },
+    {
+      "tool": "get_saved_audiobooks",
+      "class": "SAFE",
+      "status": "PASS",
+      "latency_ms": 106
+    },
+    {
+      "tool": "get_playlist",
+      "class": "SAFE",
+      "status": "PASS",
+      "latency_ms": 305
+    },
+    {
+      "tool": "get_playlist_items",
+      "class": "SAFE",
+      "status": "PASS",
+      "latency_ms": 191
+    },
+    {
+      "tool": "get_playlist_cover",
+      "class": "SAFE",
+      "status": "PASS",
+      "latency_ms": 185
+    },
+    {
+      "tool": "upload_playlist_cover",
+      "class": "MUTATING",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "mutating; not in --include-mutating allowlist"
+    },
+    {
+      "tool": "create_playlist",
+      "class": "MUTATING",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "mutating; not in --include-mutating allowlist"
+    },
+    {
+      "tool": "add_to_playlist",
+      "class": "MUTATING",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "mutating; not in --include-mutating allowlist"
+    },
+    {
+      "tool": "remove_from_playlist",
+      "class": "MUTATING",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "mutating; not in --include-mutating allowlist"
+    },
+    {
+      "tool": "update_playlist",
+      "class": "MUTATING",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "mutating; not in --include-mutating allowlist"
+    },
+    {
+      "tool": "reorder_playlist_items",
+      "class": "MUTATING",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "mutating; not in --include-mutating allowlist"
+    },
+    {
+      "tool": "replace_playlist_items",
+      "class": "MUTATING",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "mutating; not in --include-mutating allowlist"
+    },
+    {
+      "tool": "find_duplicates_in_playlist",
+      "class": "SAFE",
+      "status": "PASS",
+      "latency_ms": 296
+    },
+    {
+      "tool": "remove_duplicate_playlist_items",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "clean_all_playlists",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "check_playlist_following",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "clone_playlist_cover",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "compare_playlist_covers",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "get_playlist_snapshot",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "playlist_collab_toggle",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "playlist_sort",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "playlist_shuffle",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "playlist_reverse",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "playlist_union",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "playlist_subtract",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "playlist_symmetric_difference",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "playlist_trim",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "get_user_profile",
+      "class": "SAFE",
+      "status": "PASS",
+      "latency_ms": 61,
+      "gated": true,
+      "reason": "tool answered but snippet suggests app-registration gating (403/Forbidden/removed)"
+    },
+    {
+      "tool": "get_user_playlists_by_id",
+      "class": "SAFE",
+      "status": "PASS",
+      "latency_ms": 95,
+      "gated": true,
+      "reason": "tool answered but snippet suggests app-registration gating (403/Forbidden/removed)"
+    },
+    {
+      "tool": "get_saved_tracks",
+      "class": "SAFE",
+      "status": "PASS",
+      "latency_ms": 163
+    },
+    {
+      "tool": "get_saved_albums",
+      "class": "SAFE",
+      "status": "PASS",
+      "latency_ms": 119
+    },
+    {
+      "tool": "get_saved_shows",
+      "class": "SAFE",
+      "status": "PASS",
+      "latency_ms": 215
+    },
+    {
+      "tool": "get_saved_episodes",
+      "class": "SAFE",
+      "status": "PASS",
+      "latency_ms": 326
+    },
+    {
+      "tool": "save_items",
+      "class": "MUTATING",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "mutating; not in --include-mutating allowlist"
+    },
+    {
+      "tool": "remove_saved_items",
+      "class": "MUTATING",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "mutating; not in --include-mutating allowlist"
+    },
+    {
+      "tool": "check_saved_items",
+      "class": "SAFE",
+      "status": "PASS",
+      "latency_ms": 55,
+      "gated": true,
+      "reason": "tool answered but snippet suggests app-registration gating (403/Forbidden/removed)"
+    },
+    {
+      "tool": "save_to_library",
+      "class": "MUTATING",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "mutating; not in --include-mutating allowlist"
+    },
+    {
+      "tool": "remove_from_library",
+      "class": "MUTATING",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "mutating; not in --include-mutating allowlist"
+    },
+    {
+      "tool": "get_saved_counts",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "search_saved_albums",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "search_saved_shows",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "search_saved_episodes",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "search_saved_audiobooks",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "check_in_library",
+      "class": "SAFE",
+      "status": "PASS",
+      "latency_ms": 132
+    },
+    {
+      "tool": "search_saved_tracks",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "merge_playlists",
+      "class": "SAFE",
+      "status": "PASS",
+      "latency_ms": 1
+    },
+    {
+      "tool": "diff_playlists",
+      "class": "SAFE",
+      "status": "PASS",
+      "latency_ms": 0
+    },
+    {
+      "tool": "overlap_playlists",
+      "class": "SAFE",
+      "status": "PASS",
+      "latency_ms": 1
+    },
+    {
+      "tool": "grow_playlist",
+      "class": "SAFE",
+      "status": "PASS",
+      "latency_ms": 1475,
+      "gated": true,
+      "reason": "tool answered but snippet suggests app-registration gating (403/Forbidden/removed)"
+    },
+    {
+      "tool": "export_playlist",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "import_playlist",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "create_smart_playlist",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "show_new_episodes",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "find_duplicate_saved_tracks",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "library_genre_report",
+      "class": "SAFE",
+      "status": "PASS",
+      "latency_ms": 518
+    },
+    {
+      "tool": "filter_by_genre",
+      "class": "SAFE",
+      "status": "PASS",
+      "latency_ms": 1
+    },
+    {
+      "tool": "tag_management",
+      "class": "SAFE",
+      "status": "PASS",
+      "latency_ms": 0
+    },
+    {
+      "tool": "whats_new",
+      "class": "SAFE",
+      "status": "PASS",
+      "latency_ms": 256
+    },
+    {
+      "tool": "search_deep",
+      "class": "SAFE",
+      "status": "PASS",
+      "latency_ms": 478
+    },
+    {
+      "tool": "plan_podcast_session",
+      "class": "SAFE",
+      "status": "PASS",
+      "latency_ms": 362
+    },
+    {
+      "tool": "start_podcast_session",
+      "class": "SAFE",
+      "status": "PASS",
+      "latency_ms": 1
+    },
+    {
+      "tool": "list_all_chapters",
+      "class": "SAFE",
+      "status": "PASS",
+      "latency_ms": 147
+    },
+    {
+      "tool": "jump_to_chapter",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "mutating adjacent — requires device; covered by list_all_chapters instead"
+    },
+    {
+      "tool": "where_was_i",
+      "class": "SAFE",
+      "status": "PASS",
+      "latency_ms": 69
+    },
+    {
+      "tool": "save_scene",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "MUTATING-ADJACENT (writes sidecar); not exercised by the safe sweep"
+    },
+    {
+      "tool": "list_scenes",
+      "class": "SAFE",
+      "status": "PASS",
+      "latency_ms": 1
+    },
+    {
+      "tool": "delete_scene",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "MUTATING-ADJACENT (writes sidecar); not exercised by the safe sweep"
+    },
+    {
+      "tool": "apply_scene",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "needs a saved scene; covered by list_scenes/save_scene instead"
+    },
+    {
+      "tool": "schedule_wind_down",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "MUTATING-ADJACENT (arms timers + volume changes)"
+    },
+    {
+      "tool": "cancel_wind_down",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "no active wind-down during gauntlet"
+    },
+    {
+      "tool": "backup_first",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "undo_mutation",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "undo_last_mutation",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "missing prereq from seed reads"
+    },
+    {
+      "tool": "verify_receipt",
+      "class": "SAFE",
+      "status": "SKIP",
+      "latency_ms": 0,
+      "reason": "needs a receipt id from a prior mutation; skip in safe sweep"
     }
   ]
 }
