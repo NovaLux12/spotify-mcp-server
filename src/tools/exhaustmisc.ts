@@ -271,13 +271,16 @@ export function registerExhaustMiscTools(server: McpServer, client: SpotifyClien
       const ids = trackUris.map((u) => u.split(':').pop()!);
       let toSave = ids;
       let skipped = 0;
-      if (dedupe && ids.length > 0) {
-        // Check which are already saved (batch 50)
+      if (dedupe && trackUris.length > 0) {
+        // Check which are already saved (batch 50). /me/library/contains is
+        // the ungated unified drop-in for the documented /me/tracks/contains,
+        // which 403s on current app registrations (#329 probe, #330) — same
+        // saved-state semantics: URIs in, order-preserving booleans out.
         const already = new Set<string>();
-        for (let i = 0; i < ids.length; i += 50) {
-          const chunk = ids.slice(i, i + 50);
-          const res = await client.get<boolean[]>(`/me/tracks/contains`, { ids: chunk.join(',') });
-          if (Array.isArray(res)) chunk.forEach((id, idx) => { if (res[idx]) already.add(id); });
+        for (let i = 0; i < trackUris.length; i += 50) {
+          const chunk = trackUris.slice(i, i + 50);
+          const res = await client.get<boolean[]>('/me/library/contains', { uris: chunk.join(',') });
+          if (Array.isArray(res)) chunk.forEach((uri, idx) => { if (res[idx]) already.add(uri.split(':').pop()!); });
         }
         toSave = ids.filter((id) => !already.has(id));
         skipped = ids.length - toSave.length;
@@ -506,16 +509,20 @@ export function registerExhaustMiscTools(server: McpServer, client: SpotifyClien
       const rf = args.response_format as ResponseFormatValue | undefined;
       const dryRun = args.dry_run ?? true;
       const items = await client.getAllPages<PlaylistItemObject>(`/playlists/${encodeURIComponent(args.playlist_id)}/items`, { limit: '50' });
-      const ids = items
+      const trackUris = items
         .map((row) => (row.item as unknown as Record<string, unknown> | null))
         .filter((t): t is Record<string, unknown> => t !== null && typeof t.uri === 'string' && (t.uri as string).startsWith('spotify:track:'))
-        .map((t) => (t.uri as string).split(':').pop()!);
-      // Check which are actually saved
+        .map((t) => t.uri as string);
+      const ids = trackUris.map((u) => u.split(':').pop()!);
+      // Check which are actually saved — via /me/library/contains, the ungated
+      // unified drop-in for the documented /me/tracks/contains, which 403s on
+      // current app registrations (#329 probe, #330): same saved-state
+      // semantics, URIs in, order-preserving booleans out.
       const savedSet = new Set<string>();
-      for (let i = 0; i < ids.length; i += 50) {
-        const chunk = ids.slice(i, i + 50);
-        const res = await client.get<boolean[]>(`/me/tracks/contains`, { ids: chunk.join(',') });
-        if (Array.isArray(res)) chunk.forEach((id, idx) => { if (res[idx]) savedSet.add(id); });
+      for (let i = 0; i < trackUris.length; i += 50) {
+        const chunk = trackUris.slice(i, i + 50);
+        const res = await client.get<boolean[]>('/me/library/contains', { uris: chunk.join(',') });
+        if (Array.isArray(res)) chunk.forEach((uri, idx) => { if (res[idx]) savedSet.add(uri.split(':').pop()!); });
       }
       const toRemove = [...savedSet];
       const structured: Record<string, unknown> = {

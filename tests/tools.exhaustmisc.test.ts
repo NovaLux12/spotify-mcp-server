@@ -92,4 +92,60 @@ describe('exhaustmisc — mop-up 10 tools', () => {
     const res = await handler({ audiobook_id: 'ab1', response_format: 'concise' });
     assert.ok(res.content[0].text.includes('Dune'));
   });
+
+  // #330: the documented /me/tracks/contains is on the #329 registration-gated
+  // surface — contains-checks must go through the ungated unified endpoint.
+  it('playlist_to_library dedupes via /me/library/contains (ungated drop-in)', async () => {
+    let captured: unknown = null;
+    const server = {
+      tool(_name: string, _desc: string, _shape: unknown, handler: (args: unknown) => Promise<unknown>) {
+        if (_name === 'playlist_to_library') captured = handler;
+      },
+    } as unknown as McpServer;
+    const calls: Array<{ path: string; params?: Record<string, string> }> = [];
+    const client = makeClient({
+      getAllPages: mock.fn(async () => [{ item: { uri: 'spotify:track:t1', name: 'One' } }, { item: { uri: 'spotify:track:t2', name: 'Two' } }]),
+      get: mock.fn(async (path: string, params?: Record<string, string>) => {
+        calls.push({ path, params });
+        if (path === '/me/library/contains') return [true, false];
+        return null;
+      }),
+      put: mock.fn(async () => null),
+    });
+    registerExhaustMiscTools(server, client);
+    const handler = captured as (args: unknown) => Promise<unknown>;
+    await handler({ playlist_id: 'pl1', dry_run: true, response_format: 'concise' });
+    const contains = calls.filter((c) => c.path.includes('/contains'));
+    assert.equal(contains.length, 1);
+    assert.equal(contains[0].path, '/me/library/contains');
+    assert.equal(contains[0].params?.uris, 'spotify:track:t1,spotify:track:t2');
+    assert.ok(!calls.some((c) => c.path.includes('/me/tracks/contains')));
+  });
+
+  it('remove_from_library_by_playlist checks saved state via /me/library/contains', async () => {
+    let captured: unknown = null;
+    const server = {
+      tool(_name: string, _desc: string, _shape: unknown, handler: (args: unknown) => Promise<unknown>) {
+        if (_name === 'remove_from_library_by_playlist') captured = handler;
+      },
+    } as unknown as McpServer;
+    const calls: Array<{ path: string; params?: Record<string, string> }> = [];
+    const client = makeClient({
+      getAllPages: mock.fn(async () => [{ item: { uri: 'spotify:track:t1', name: 'One' } }]),
+      get: mock.fn(async (path: string, params?: Record<string, string>) => {
+        calls.push({ path, params });
+        if (path === '/me/library/contains') return [true];
+        return null;
+      }),
+      delete: mock.fn(async () => null),
+    });
+    registerExhaustMiscTools(server, client);
+    const handler = captured as (args: unknown) => Promise<unknown>;
+    await handler({ playlist_id: 'pl1', dry_run: true, response_format: 'concise' });
+    const contains = calls.filter((c) => c.path.includes('/contains'));
+    assert.equal(contains.length, 1);
+    assert.equal(contains[0].path, '/me/library/contains');
+    assert.equal(contains[0].params?.uris, 'spotify:track:t1');
+    assert.ok(!calls.some((c) => c.path.includes('/me/tracks/contains')));
+  });
 });
