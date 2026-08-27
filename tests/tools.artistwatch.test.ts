@@ -61,7 +61,7 @@ test('save_artist_new_releases saves only unsaved', async () => {
   const puts: unknown[] = [];
   const { registered } = makeHarness((path)=>{
     if (path.includes('/artists/art1/albums')) return { items:[album('alb1','New Album'),album('alb2','Old Album')] };
-    if (path==='/me/albums/contains') return [false,true];
+    if (path==='/me/library/contains') return [false,true];
     return null;
   }, async (path, body)=>{ puts.push({path,body}); });
   const r = await find(registered,'save_artist_new_releases').handler({ artist_id:'art1' });
@@ -72,7 +72,7 @@ test('save_artist_new_releases saves only unsaved', async () => {
 test('save_artist_new_releases all already saved', async () => {
   const { registered } = makeHarness((path)=>{
     if (path.includes('/artists/art1/albums')) return { items:[album('alb1','A')] };
-    if (path==='/me/albums/contains') return [true];
+    if (path==='/me/library/contains') return [true];
     return null;
   });
   const r = await find(registered,'save_artist_new_releases').handler({ artist_id:'art1' });

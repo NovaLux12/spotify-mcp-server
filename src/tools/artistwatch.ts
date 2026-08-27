@@ -196,7 +196,7 @@ export function registerArtistWatchTools(server: McpServer, client: SpotifyClien
 
   server.tool(
     'save_artist_new_releases',
-    'Find new releases for an artist and save unsaved albums to Your Library (diffs against /me/albums/contains)',
+    'Find new releases for an artist and save unsaved albums to Your Library (diffs against /me/library/contains)',
     {
       artist_id: z.string().describe('Spotify artist ID'),
       limit: z.number().int().min(1).max(50).optional().describe('Albums to fetch, 1–50. Default: 20'),
@@ -215,7 +215,13 @@ export function registerArtistWatchTools(server: McpServer, client: SpotifyClien
       const ids = albums.map((a) => a.id);
       let contains: boolean[] = [];
       try {
-        const res = await client.get<boolean[]>('/me/albums/contains', { ids: ids.join(',') });
+        // /me/library/contains is the ungated unified drop-in for the
+        // documented /me/albums/contains, which 403s on current app
+        // registrations (#329 probe, #330) — same saved-state semantics:
+        // URIs in, order-preserving booleans out.
+        const res = await client.get<boolean[]>('/me/library/contains', {
+          uris: ids.map((id) => `spotify:album:${id}`).join(','),
+        });
         contains = Array.isArray(res) ? res : [];
       } catch {
         contains = ids.map(() => false);
