@@ -343,6 +343,7 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
       const shows = await client.getAllPages<{ show?: { name?: string; total_episodes?: number }; total?: number }>('/me/shows', { limit: '50' }, { maxItems: args.max_shows });
       const newEpisodes: Array<{ show: string; episode: string; released: string }> = [];
       const backlog: Array<{ show: string; total_episodes: number | null }> = [];
+      let skippedShows = 0;
       for (const row of shows.slice(0, args.max_shows)) {
         const show = row.show;
         if (!show) continue;
@@ -355,10 +356,9 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
           );
         } catch (e) {
           // A throttled/gated show must not kill the whole briefing — skip it.
-          if (e instanceof SpotifyApiError && (e.status === 429 || e.status === 403)) continue;
+          if (e instanceof SpotifyApiError && (e.status === 429 || e.status === 403)) { skippedShows++; continue; }
           throw e;
-        }
-        for (const e of ep?.items ?? []) {
+        }        for (const e of ep?.items ?? []) {
           const rd = e.release_date ?? '';
           if (rd && Date.parse(rd) >= since && !e.resume_point?.fully_played) {
             newEpisodes.push({ show: show.name ?? 'unknown', episode: e.name ?? 'unknown', released: rd });
@@ -982,6 +982,7 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
       const lists = await client.getAllPages<{ id: string; name: string }>('/me/playlists', { limit: '50' }, { maxItems: args.limit });
       const rows: Array<{ name: string; items: number; newest: string | null; oldest: string | null; median_age_days: number | null; added_last_90d: number }> = [];
       let skipped = 0;
+      let skippedShows = 0;
       for (const pl of lists) {
         let items: PlaylistRow[];
         try {
@@ -1043,12 +1044,20 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
       const rf = args.response_format as ResponseFormatValue;
       const shows = await client.getAllPages<{ show?: { id?: string; name?: string; total_episodes?: number } }>('/me/shows', { limit: '50' }, { maxItems: args.max_shows });
       const rows: Array<{ name: string; unplayed: number; backlog_hours: number; newest_episode: string | null; total_episodes: number | null }> = [];
+      let skippedShows = 0;
       for (const row of shows) {
         const show = row.show;
         if (!show?.id) continue;
-        const eps = await client.getAllPages<{ name?: string; duration_ms?: number; release_date?: string; resume_point?: { fully_played?: boolean } }>(
-          `/shows/${encodeURIComponent(show.id)}/episodes`, { limit: '50' }, { maxItems: 500 },
-        );
+        let eps: Array<{ name?: string; duration_ms?: number; release_date?: string; resume_point?: { fully_played?: boolean } }>;
+        try {
+          eps = await client.getAllPages<{ name?: string; duration_ms?: number; release_date?: string; resume_point?: { fully_played?: boolean } }>(
+            `/shows/${encodeURIComponent(show.id)}/episodes`, { limit: '50' }, { maxItems: 500 },
+          );
+        } catch (e) {
+          // Throttled/gated shows are skipped, not fatal — the report names them.
+          if (e instanceof SpotifyApiError && (e.status === 429 || e.status === 403)) { skippedShows++; continue; }
+          throw e;
+        }
         let unplayed = 0; let ms = 0; let newest: string | null = null;
         for (const e of eps) {
           if (newest === null || (e.release_date ?? '') > newest) newest = e.release_date ?? null;
@@ -1059,6 +1068,7 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
         }
         rows.push({ name: show.name ?? 'unknown', unplayed, backlog_hours: Math.round((ms / HOUR_MS) * 10) / 10, newest_episode: newest, total_episodes: row.show?.total_episodes ?? eps.length });
       }
+      if (skippedShows > 0) rows.push({ name: `(${skippedShows} show(s) skipped — throttled or gated)`, unplayed: 0, backlog_hours: 0, newest_episode: null, total_episodes: null });
       if (args.min_hours > 0) {
         const filtered = rows.filter((r) => r.backlog_hours >= args.min_hours);
         rows.length = 0;
