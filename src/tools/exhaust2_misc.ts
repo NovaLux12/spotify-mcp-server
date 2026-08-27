@@ -329,9 +329,11 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
       const artists = await loadFollowedArtists(client, args.max_artists);
       const freshAlbums: Array<{ artist: string; album: string; release_date: string }> = [];
       for (const a of artists.slice(0, args.max_artists)) {
+        // NOTE: /artists/{id}/albums currently rejects limit > 10 with 400
+        // (live-observed 2026-08-27) — page at 10 instead of 20.
         const page = await client.get<{ items?: Array<{ name?: string; release_date?: string; artists?: Array<{ name: string }> }> }>(
           `/artists/${encodeURIComponent(a.id)}/albums`,
-          { include_groups: 'album,single', limit: '20' },
+          { include_groups: 'album,single', limit: '10' },
         );
         for (const alb of page?.items ?? []) {
           const rd = alb.release_date ?? '';
@@ -345,10 +347,17 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
         const show = row.show;
         if (!show) continue;
         backlog.push({ show: show.name ?? 'unknown', total_episodes: row.total ?? null });
-        const ep = await client.get<{ items?: Array<{ name?: string; release_date?: string; resume_point?: { fully_played?: boolean } }> }>(
-          `/shows/${encodeURIComponent(String((show as unknown as { id?: string }).id ?? ''))}/episodes`,
-          { limit: '10' },
-        );
+        let ep: { items?: Array<{ name?: string; release_date?: string; resume_point?: { fully_played?: boolean } }> } | null;
+        try {
+          ep = await client.get<{ items?: Array<{ name?: string; release_date?: string; resume_point?: { fully_played?: boolean } }> }>(
+            `/shows/${encodeURIComponent(String((show as unknown as { id?: string }).id ?? ''))}/episodes`,
+            { limit: '10' },
+          );
+        } catch (e) {
+          // A throttled/gated show must not kill the whole briefing — skip it.
+          if (e instanceof SpotifyApiError && (e.status === 429 || e.status === 403)) continue;
+          throw e;
+        }
         for (const e of ep?.items ?? []) {
           const rd = e.release_date ?? '';
           if (rd && Date.parse(rd) >= since && !e.resume_point?.fully_played) {
@@ -972,8 +981,17 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
       const rf = args.response_format as ResponseFormatValue;
       const lists = await client.getAllPages<{ id: string; name: string }>('/me/playlists', { limit: '50' }, { maxItems: args.limit });
       const rows: Array<{ name: string; items: number; newest: string | null; oldest: string | null; median_age_days: number | null; added_last_90d: number }> = [];
+      let skipped = 0;
       for (const pl of lists) {
-        const items = await client.getAllPages<PlaylistRow>(`/playlists/${encodeURIComponent(pl.id)}/items`, { limit: '100', fields: 'items(added_at),total' }, { maxItems: args.per_playlist_cap });
+        let items: PlaylistRow[];
+        try {
+          items = await client.getAllPages<PlaylistRow>(`/playlists/${encodeURIComponent(pl.id)}/items`, { limit: '100', fields: 'items(added_at),total' }, { maxItems: args.per_playlist_cap });
+        } catch (e) {
+          // 403 = collaborative/unfollowed playlists whose items this token cannot
+          // read (playlist-read-private/collaborative gaps) — skip, never crash.
+          if (e instanceof SpotifyApiError && e.status === 403) { skipped++; continue; }
+          throw e;
+        }
         const ages = items.map((r) => (r?.added_at ? Math.floor((Date.now() - Date.parse(r.added_at)) / DAY_MS) : NaN)).filter((n) => Number.isFinite(n));
         ages.sort((a, b) => a - b);
         const median = ages.length ? ages[Math.floor(ages.length / 2)]! : null;
@@ -995,8 +1013,8 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
       rows.sort(cmp[args.sort] ?? cmp.median_age!);
       const maxResults = resolveMaxResults(args.max_results, getConfig().maxItems);
       const t = truncateItems(rows, maxResults);
-      const payload = { ok: true, scanned: rows.length, playlists: t.items, truncated: t.truncated };
-      const lines = [`Playlist staleness report (${rows.length} playlists, sorted by ${args.sort}):`, ''];
+      const payload = { ok: true, scanned: rows.length, skipped_unreadable: skipped, playlists: t.items, truncated: t.truncated };
+      const lines = [`Playlist staleness report (${rows.length} playlists${skipped ? `, ${skipped} unreadable skipped` : ''}, sorted by ${args.sort}):`, ''];
       for (const r of t.items) {
         lines.push(`• ${r.name} — ${r.items} items, median age ${r.median_age_days ?? '?'}d, ${r.added_last_90d} added last 90d (oldest ${r.oldest ?? '?'})`);
       }
