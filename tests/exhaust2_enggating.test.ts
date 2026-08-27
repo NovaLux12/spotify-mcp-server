@@ -73,6 +73,7 @@ test('isGatedPath classifies the #329 gated families', () => {
     '/me/episodes/contains',
     '/me/shows/contains',
     '/me/audiobooks/contains',
+    '/me/following/contains',
     '/playlists/pl1/followers/contains',
   ];
   for (const p of gated) assert.ok(isGatedPath(p), `expected gated: ${p}`);

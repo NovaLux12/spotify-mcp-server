@@ -47,7 +47,7 @@ import type { SpotifyClient } from '../client.js';
  *   /markets                      -- app-gated
  *   /artists/{id}/top-tracks      -- app-gated
  *   /users/{id}*                  -- profile + playlists (Feb 2026 removal)
- *   documented /me/<type>/contains -- albums/tracks/episodes/shows/audiobooks
+ *   documented /me/<type>/contains -- albums/tracks/episodes/shows/audiobooks/following
  *   /playlists/{id}/followers/contains
  *
  * Exported so the #330 gauntlet SKIP set and future callers classify against
@@ -59,7 +59,7 @@ export const GATED_PATH_PATTERNS: readonly RegExp[] = [
   /^\/markets$/,
   /^\/artists\/[^/]+\/top-tracks$/,
   /^\/users\/[^/]+(?:\/.+)?$/,
-  /^\/me\/(?:albums|tracks|episodes|shows|audiobooks)\/contains$/,
+  /^\/me\/(?:albums|tracks|episodes|shows|audiobooks|following)\/contains$/,
   /^\/playlists\/[^/]+\/followers\/contains$/,
 ];
 
