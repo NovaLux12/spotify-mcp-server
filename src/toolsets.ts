@@ -46,7 +46,7 @@
 export const TOOLSETS: Record<string, readonly string[]> = {
   playback: ['playback', 'queueops', 'playbackext', 'playbackintel', 'exhaust2playback'],
   catalog: ['search', 'catalog', 'audiobooks', 'browse', 'artistwatch', 'searchhistory', 'exhaust2catalog', 'exhaust2enggating'],
-  playlists: ['playlists', 'users', 'playlisthealth', 'playlistbatch', 'playlistmisc', 'exhaust2playlists'],
+  playlists: ['playlists', 'users', 'playlisthealth', 'playlistbatch', 'playlistmisc', 'exhaust2playlists', 'exhaust2extra'],
   library: ['library', 'following', 'libraryanalytics', 'portability', 'episodemgmt', 'exhaust2misc'],
   personalization: ['personalization'],
   resources: ['resources'],

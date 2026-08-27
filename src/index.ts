@@ -48,6 +48,7 @@ import { registerExhaust2PlaybackTools } from './tools/exhaust2_playback.js';
 import { registerExhaust2PlaylistsTools } from './tools/exhaust2_playlists.js';
 import { registerExhaust2MiscTools } from './tools/exhaust2_misc.js';
 import { registerExhaust2EnggatingTools } from './tools/exhaust2_enggating.js';
+import { registerExhaust2ExtraTools } from './tools/exhaust2_extra.js';
 import { registerEpisodeMgmtTools } from './tools/episodemgmt.js';
 import { registerDoctorTool } from './tools/doctortool.js';
 import { verifyReceipt, formatReceipt } from './receipts.js';
@@ -158,6 +159,7 @@ async function startMcpServer(): Promise<void> {
   if (!readOnly && isModuleActive('exhaust2playlists', activeSets, overrides) && !moduleBlockedByScopes('playlists', grantedScopes)) registerExhaust2PlaylistsTools(server, client)
   if (isModuleActive('exhaust2misc', activeSets, overrides) && !moduleBlockedByScopes('library', grantedScopes)) registerExhaust2MiscTools(server, client)
   if (isModuleActive('exhaust2enggating', activeSets, overrides) && !moduleBlockedByScopes('catalog', grantedScopes)) registerExhaust2EnggatingTools(server, client)
+  if (!readOnly && isModuleActive('exhaust2extra', activeSets, overrides) && !moduleBlockedByScopes('playlists', grantedScopes)) registerExhaust2ExtraTools(server, client)
   // library analytics + portability + episode management
   if (isModuleActive('libraryanalytics', activeSets, overrides) && !moduleBlockedByScopes('library', grantedScopes)) registerLibraryAnalyticsTools(server, client)
   if (!readOnly && isModuleActive('portability', activeSets, overrides) && !moduleBlockedByScopes('library', grantedScopes)) registerPortabilityTools(server, client)
