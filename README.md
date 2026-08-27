@@ -7,7 +7,7 @@
 
 An MCP server that wraps the Spotify Web API — lets Claude and other AI assistants control playback, search the catalog (tracks, podcasts, audiobooks), and manage your library and playlists.
 
-212 tools. Every non-deprecated endpoint, plus extras most servers skip. [Full list →](SPEC.md)
+313 tools. Every non-deprecated endpoint, plus extras most servers skip. [Full list →](SPEC.md)
 
 ---
 
@@ -35,7 +35,7 @@ An MCP server that wraps the Spotify Web API — lets Claude and other AI assist
 
 | | |
 |---|---|
-| **Complete** | 212 tools — playback, search, catalog, library, playlists, following + extras like duplicate cleanup, M3U/CSV import-export, podcast sessions and market checks. |
+| **Complete** | 313 tools — playback, search, catalog, library, playlists, following + extras like duplicate cleanup, M3U/CSV import-export, podcast sessions and market checks. |
 | **Safe** | `dry_run` previews on every write, receipts that prove what landed, human confirmation for bulk deletes, and `READONLY` to hide all writes. |
 | **Honest** | No zombie tools for endpoints Spotify removed. Legacy lookups explain the 403 instead of crashing. |
 | **Polished** | Paginated (up to 500), podcasts first-class, device-aware playback, `spotify_doctor` self-diagnosis, real test suite. |

@@ -407,7 +407,7 @@ Quick reference for all endpoints used. All paths are relative to `https://api.s
 
 ## 5. Tools
 
-212 registered tools across forty-three tool modules riding nine registration keys (playback, search, catalog, personalization, library, following, audiobooks, playlists, and users), plus the unconditional `spotify_doctor` diagnostic and top-level `verify_receipt`. All tools return a structured result object; errors surface as MCP tool errors with a human-readable message.
+313 registered tools across forty-eight tool modules riding twelve registration keys (playback, search, catalog, personalization, library, following, audiobooks, playlists, users, exhaust2catalog/playback/playlists/misc/enggating/extra, plus the unconditional `spotify_doctor` diagnostic and top-level `verify_receipt`). All tools return a structured result object; errors surface as MCP tool errors with a human-readable message.
 
 ### Shared tool contract
 
@@ -1350,3 +1350,4 @@ npm run auth   # or: SPOTIFY_CLIENT_ID=xxx npm run auth
 | **Phase 11** | v1.19–1.21 wave: `import_playlist` (M3U/CSV), `remove_duplicate_playlist_items` + `clean_all_playlists`, `create_smart_playlist`, `show_new_episodes`, backup/restore, bug trio (#195/#196/#210), 104 tools |
 | **Phase 12** | **v1.22.0 big-release (2026-08-26): 50 new tools across 11 modules — 6 parallel streams: catalog/browse+artistwatch (8), library analytics (4), playlist health (6), playlist batch (3), playlist misc+portability (7), playback/queue/search/episodes (22) — wired centrally, 169 tools across 38 modules, 837 tests, smoke FORBIDDEN_TOOLS guard** |
 | **Phase 13** | **v1.23.0 exhaust-remnants (2026-08-26): 14 PR gaps to 95/95 — typed search family (7), category helpers (4), catalog batch/validate (4), library insights, playlist ops, freshness/scene/market tools, 16 resources + 14 prompts, 212 tools across 43 modules, 916 tests** |
+| **Phase 14** | **v1.24.0 exhaust2 swarm (2026-08-27): 89 new tools across 5 modules — graceful-403 gating contract (closes #328/#429), playback/device/session tools (22), portability/analytics/workflow (27), playlist set-algebra/curation (21), catalog typed-search depth (19) — 313 tools across 48 modules, 1040 tests, live gauntlet + tools/list ground-truth verified** |
