@@ -133,6 +133,7 @@ if (resumePath) {
 let calls = 0;   // API calls performed this run (seeds excluded)
 let resumed = 0; // tools skipped due to prior records
 let consecutiveFails = 0; // quota-wall abort counter
+const RETRY_MAX = parseInt(process.env.SWEEP_RETRY_MAX ?? '2', 10); // FAIL attempts before giving up
 
 // ------------------------------------------------------------------ discovery
 
@@ -338,7 +339,8 @@ for (const tool of tools.map((t) => t.name)) {
   if (tool === 'get_me' || tool === 'get_user_playlists') continue; // already run as seeds
   const cls = MUTATING.has(tool) ? 'MUTATING' : 'SAFE'; // unclassified ⇒ treated as MUTATING
 
-  if (done.has(tool) && done.get(tool).status !== 'FAIL') {
+  const prevRec = done.get(tool);
+  if (prevRec && (prevRec.status !== 'FAIL' || (prevRec.attempts ?? 0) >= RETRY_MAX)) {
     resumed++;
     continue;
   }
@@ -395,12 +397,13 @@ for (const tool of tools.map((t) => t.name)) {
     record(tool, cls, 'SKIP', r.ms, { reason: 'app-registration-gated (403 on current registrations); legacy registrations may differ' });
   } else {
     consecutiveFails++;
+    const attempts = (prevRec?.attempts ?? 0) + 1;
     if (consecutiveFails >= 3) {
-      record(tool, cls, 'FAIL', r.ms, { reason: r.error });
+      record(tool, cls, 'FAIL', r.ms, { reason: r.error, attempts });
       console.log('QUOTA_WALL: 3 consecutive failures — aborting this batch; sweep-loop will back off');
       break;
     }
-    record(tool, cls, 'FAIL', r.ms, { reason: r.error });
+    record(tool, cls, 'FAIL', r.ms, { reason: r.error, attempts });
   }
 }
 
@@ -410,10 +413,15 @@ if (batchLimit < Infinity) console.log(`batch run finished after ${calls} calls 
 
 child.kill();
 
+// Cumulative merge: previous runs (done) + this run — the report is the
+// union, so --resume actually accumulates across spaced batches.
+const merged = new Map(done);
+for (const r of results) merged.set(r.tool, r);
+const allResults = [...merged.values()];
 const counts = { PASS: 0, FAIL: 0, SKIP: 0 };
-for (const r of results) counts[r.status]++;
-const mutatingSkipped = results.filter((r) => r.class === 'MUTATING' && r.status === 'SKIP').map((r) => r.tool);
-const dryRunVerified = results.filter((r) => r.verified_no_mutation).map((r) => r.tool);
+for (const r of allResults) counts[r.status]++;
+const mutatingSkipped = allResults.filter((r) => r.class === 'MUTATING' && r.status === 'SKIP').map((r) => r.tool);
+const dryRunVerified = allResults.filter((r) => r.verified_no_mutation).map((r) => r.tool);
 
 console.log('\n=== LIVE GAUNTLET SUMMARY ===');
 console.log(`${'STATUS'.padEnd(6)} ${'CLASS'.padEnd(9)} TOOL`);
@@ -427,16 +435,16 @@ const report = {
   tools_discovered: tools.length,
   mode: { batch_limit: batchLimit === Infinity ? null : batchLimit, resumed_from: resumePath ?? null },
   summary: { pass: counts.PASS, fail: counts.FAIL, skip: counts.SKIP,
-    gated: results.filter((r) => r.gated).length,
-    total_calls: results.length + 3 + resumed,
-    pending: remaining.filter((t) => !results.some((r) => r.tool === t.name)).length,
+    gated: allResults.filter((r) => r.gated).length,
+    total_calls: allResults.length + 3 + resumed,
+    pending: remaining.filter((t) => !allResults.some((r) => r.tool === t.name)).length,
   },
   mutation_proof: {
     mutations_performed: [],
     mutating_tools_skipped_by_default: mutatingSkipped,
     mutating_tools_dry_run_verified: dryRunVerified,
   },
-  results,
+  results: allResults,
 };
 if (reportPath) {
   writeFileSync(reportPath, JSON.stringify(report, null, 2) + '\n');
