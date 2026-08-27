@@ -43,6 +43,11 @@ import { registerPlaybackExtTools } from './tools/playbackext.js';
 import { registerPlaybackIntelTools } from './tools/playbackintel.js';
 import { registerSearchHistoryTools } from './tools/searchhistory.js';
 import { registerExhaustMiscTools } from './tools/exhaustmisc.js';
+import { registerExhaust2CatalogTools } from './tools/exhaust2_catalog.js';
+import { registerExhaust2PlaybackTools } from './tools/exhaust2_playback.js';
+import { registerExhaust2PlaylistsTools } from './tools/exhaust2_playlists.js';
+import { registerExhaust2MiscTools } from './tools/exhaust2_misc.js';
+import { registerExhaust2EnggatingTools } from './tools/exhaust2_enggating.js';
 import { registerEpisodeMgmtTools } from './tools/episodemgmt.js';
 import { registerDoctorTool } from './tools/doctortool.js';
 import { verifyReceipt, formatReceipt } from './receipts.js';
@@ -148,6 +153,11 @@ async function startMcpServer(): Promise<void> {
   if (isModuleActive('searchhistory', activeSets, overrides) && !moduleBlockedByScopes('search', grantedScopes)) registerSearchHistoryTools(server, client)
   // Exhaust misc mop-up (search_within_playlist, search_history_stats, audiobook_progress + 7 deferred) — playlists+library set
   if (isModuleActive('playlists', activeSets, overrides)) registerExhaustMiscTools(server, client)
+  if (isModuleActive('exhaust2catalog', activeSets, overrides) && !moduleBlockedByScopes('catalog', grantedScopes)) registerExhaust2CatalogTools(server, client)
+  if (!readOnly && isModuleActive('exhaust2playback', activeSets, overrides) && !moduleBlockedByScopes('playback', grantedScopes)) registerExhaust2PlaybackTools(server, client)
+  if (!readOnly && isModuleActive('exhaust2playlists', activeSets, overrides) && !moduleBlockedByScopes('playlists', grantedScopes)) registerExhaust2PlaylistsTools(server, client)
+  if (isModuleActive('exhaust2misc', activeSets, overrides) && !moduleBlockedByScopes('library', grantedScopes)) registerExhaust2MiscTools(server, client)
+  if (isModuleActive('exhaust2enggating', activeSets, overrides) && !moduleBlockedByScopes('catalog', grantedScopes)) registerExhaust2EnggatingTools(server, client)
   // library analytics + portability + episode management
   if (isModuleActive('libraryanalytics', activeSets, overrides) && !moduleBlockedByScopes('library', grantedScopes)) registerLibraryAnalyticsTools(server, client)
   if (!readOnly && isModuleActive('portability', activeSets, overrides) && !moduleBlockedByScopes('library', grantedScopes)) registerPortabilityTools(server, client)

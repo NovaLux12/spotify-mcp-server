@@ -44,10 +44,10 @@
  *   prompts         → prompts/index.ts         (9 prompts)
  */
 export const TOOLSETS: Record<string, readonly string[]> = {
-  playback: ['playback', 'queueops', 'playbackext', 'playbackintel'],
-  catalog: ['search', 'catalog', 'audiobooks', 'browse', 'artistwatch', 'searchhistory'],
-  playlists: ['playlists', 'users', 'playlisthealth', 'playlistbatch', 'playlistmisc'],
-  library: ['library', 'following', 'libraryanalytics', 'portability', 'episodemgmt'],
+  playback: ['playback', 'queueops', 'playbackext', 'playbackintel', 'exhaust2playback'],
+  catalog: ['search', 'catalog', 'audiobooks', 'browse', 'artistwatch', 'searchhistory', 'exhaust2catalog', 'exhaust2enggating'],
+  playlists: ['playlists', 'users', 'playlisthealth', 'playlistbatch', 'playlistmisc', 'exhaust2playlists'],
+  library: ['library', 'following', 'libraryanalytics', 'portability', 'episodemgmt', 'exhaust2misc'],
   personalization: ['personalization'],
   resources: ['resources'],
   prompts: ['prompts'],
