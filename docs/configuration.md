@@ -227,6 +227,25 @@ to skip prompting entirely so automation and readonly contexts are never blocked
 SPOTIFY_MCP_CONFIRM=never npx -y @novalux12/spotify-mcp@latest
 ```
 
+## Registration-gated endpoints
+
+Some Spotify Web API endpoints are denied **at the app-registration level**:
+on current app registrations they return `403 Forbidden` regardless of the
+OAuth scopes granted or the account's subscription tier. Verified by live
+probe on 2026-08-27 ([#329](https://github.com/NovaLux12/spotify-mcp-server/issues/329)):
+
+| Response | Endpoints |
+|---|---|
+| `403 Forbidden` | `/browse/new-releases`, `/browse/categories` (and `/browse/categories/{id}/playlists`), `/markets`, `/artists/{id}/top-tracks`, `/users/{id}` (and `/users/{id}/playlists`), every documented `/me/{type}/contains` check (tracks, albums, shows, episodes, audiobooks, following), `/playlists/{id}/followers/contains` |
+| `404 Not Found` | `/recommendations`, `/recommendations/available-genre-seeds` |
+| `410 Gone` | `/me/apps`, `/me/chapters` |
+
+This is Spotify-side gating, not a server or configuration problem. Tools
+wrapping these endpoints are still exposed because legacy app registrations
+may retain access; on newer registrations the server returns its plain-English
+403 explanation. The undocumented `/me/library/contains` check is not gated
+and powers the duplicate-cleanup tooling.
+
 ## Not used
 
 `SPOTIFY_CLIENT_SECRET` is deliberately not supported: the PKCE flow proves

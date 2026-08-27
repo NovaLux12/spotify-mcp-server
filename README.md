@@ -155,6 +155,23 @@ Full reference: [docs/configuration.md](docs/configuration.md)
 - **Premium** for playback control (play/pause/skip/seek/volume/queue). Free accounts can still use search, library & playlists.
 - Node 22.9+, Spotify app in dev mode (5 users until extended quota).
 - Audiobooks gated by Spotify to US/UK/CA/IE/NZ/AU.
+- A subset of endpoints is **registration-gated** — 403 on current app registrations regardless of scopes or Premium. See [Registration-gated endpoints](#registration-gated-endpoints).
+
+### Registration-gated endpoints
+
+Some Web API endpoints are denied **at the app-registration level**: on current Spotify app registrations they return `403 Forbidden` no matter which OAuth scopes you grant or whether the account is Premium. This is Spotify-side gating, not a misconfiguration on your end. Verified by live probe on 2026-08-27 ([#329](https://github.com/NovaLux12/spotify-mcp-server/issues/329)):
+
+| Response | Endpoints |
+|---|---|
+| `403 Forbidden` | `/browse/new-releases`, `/browse/categories` (and `/browse/categories/{id}/playlists`), `/markets`, `/artists/{id}/top-tracks`, `/users/{id}` (and `/users/{id}/playlists`), every documented `/me/{type}/contains` check (tracks, albums, shows, episodes, audiobooks, following), `/playlists/{id}/followers/contains` |
+| `404 Not Found` | `/recommendations`, `/recommendations/available-genre-seeds` |
+| `410 Gone` | `/me/apps`, `/me/chapters` |
+
+Notes:
+
+- Tools wrapping a gated endpoint are **not hidden** — they still work on legacy app registrations where Spotify granted the endpoint. On a newer registration you'll get the server's plain-English 403 explanation instead of a crash.
+- The undocumented `/me/library/contains` check is *not* gated (it returned 200 on the same probe) and powers the duplicate-cleanup tooling.
+- Legacy lookups the server already explains gracefully (audio-features, audio-analysis, related-artists, featured-playlists) also probe as 403; their tools say so in the error message.
 
 <details><summary>Troubleshooting</summary>
 
@@ -162,6 +179,7 @@ Full reference: [docs/configuration.md](docs/configuration.md)
 - **Auth loop / S256 error** → open a private window, log into spotify.com first, then retry the auth URL there.
 - **Port in use (8888)** → free the port, set `SPOTIFY_REDIRECT_URI` to another port, or use `SPOTIFY_HEADLESS=1`.
 - **"Premium required"** on playback → expected on Free accounts; no workaround.
+- **`Forbidden` on lookup tools** (categories, markets, top-tracks, user profiles, library `contains` checks) → these endpoints are registration-gated by Spotify; see [Registration-gated endpoints](#registration-gated-endpoints).
 - **Still stuck?** `npx -y @novalux12/spotify-mcp@latest doctor` or ask your agent to run the [spotify-mcp-doctor skill](skills/spotify-mcp-doctor/SKILL.md).
 
 </details>
