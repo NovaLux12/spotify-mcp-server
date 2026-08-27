@@ -407,7 +407,7 @@ Quick reference for all endpoints used. All paths are relative to `https://api.s
 
 ## 5. Tools
 
-313 registered tools across forty-eight tool modules riding twelve registration keys (playback, search, catalog, personalization, library, following, audiobooks, playlists, users, exhaust2catalog/playback/playlists/misc/enggating/extra, plus the unconditional `spotify_doctor` diagnostic and top-level `verify_receipt`). All tools return a structured result object; errors surface as MCP tool errors with a human-readable message.
+313 registered tools across 49 tool modules riding 29 registration keys (artistwatch, audiobooks, browse, catalog, episodemgmt, exhaust2catalog, exhaust2enggating, exhaust2extra, exhaust2misc, exhaust2playback, exhaust2playlists, following, library, libraryanalytics, personalization, playback, playbackext, playlistbatch, playlisthealth, playlistmisc, playlists, portability, prompts, queueops, resources, search, searchhistory, users, verify_receipt). All tools return a structured result object; errors surface as MCP tool errors with a human-readable message.
 
 ### Shared tool contract
 
