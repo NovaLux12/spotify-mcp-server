@@ -51,6 +51,17 @@ import { registerExhaust2EnggatingTools } from './tools/exhaust2_enggating.js';
 import { registerExhaust2ExtraTools } from './tools/exhaust2_extra.js';
 import { registerEpisodeMgmtTools } from './tools/episodemgmt.js';
 import { registerDoctorTool } from './tools/doctortool.js';
+import { registerSwarm3PlaybackTools } from './tools/swarm3_playback.js';
+import { registerSwarm3PlaylistopsTools } from './tools/swarm3_playlistops.js';
+import { registerSwarm3DiscoveryTools } from './tools/swarm3_discovery.js';
+import { registerSwarm3bDiscoveryTools } from './tools/swarm3b_discovery.js';
+import { registerSwarm4PlaylistsTools } from './tools/swarm4_playlists.js';
+import { registerSwarm3LibraryTools } from './tools/swarm3_library.js';
+import { registerSwarm3ShowsTools } from './tools/swarm3_shows.js';
+import { registerSwarm3AnalyticsTools } from './tools/swarm3_analytics.js';
+import { registerSwarm3RefsTools } from './tools/swarm3_refs.js';
+import { registerSwarm3SnapshotsTools } from './tools/swarm3_snapshots.js';
+import { registerSwarm3MetaTools } from './tools/swarm3_meta.js';
 import { verifyReceipt, formatReceipt } from './receipts.js';
 import { registerTemplateResources } from './resources/templates.js';
 import { z } from 'zod';
@@ -174,6 +185,19 @@ async function startMcpServer(): Promise<void> {
   if (isModuleActive('playback', activeSets, overrides) && !moduleBlockedByScopes('playback', grantedScopes)) registerPlaybackIntelTools(server, client)
   // spotify_doctor diagnostic (#111): unconditional — must survive toolset trimming.
   registerDoctorTool(server, client);
+
+  // swarm3 500-tool push (issue #442): one registration key per slice file.
+  if (!readOnly && isModuleActive('swarm3playback', activeSets, overrides) && !moduleBlockedByScopes('playback', grantedScopes)) registerSwarm3PlaybackTools(server, client)
+  if (!readOnly && isModuleActive('swarm3playlistops', activeSets, overrides) && !moduleBlockedByScopes('playlists', grantedScopes)) registerSwarm3PlaylistopsTools(server, client)
+  if (isModuleActive('swarm3discovery', activeSets, overrides) && !moduleBlockedByScopes('catalog', grantedScopes)) registerSwarm3DiscoveryTools(server, client)
+  if (isModuleActive('swarm3bdiscovery', activeSets, overrides) && !moduleBlockedByScopes('catalog', grantedScopes)) registerSwarm3bDiscoveryTools(server, client)
+  if (isModuleActive('swarm3library', activeSets, overrides) && !moduleBlockedByScopes('library', grantedScopes)) registerSwarm3LibraryTools(server, client)
+  if (isModuleActive('swarm3shows', activeSets, overrides) && !moduleBlockedByScopes('catalog', grantedScopes)) registerSwarm3ShowsTools(server, client)
+  if (isModuleActive('swarm3analytics', activeSets, overrides) && !moduleBlockedByScopes('personalization', grantedScopes)) registerSwarm3AnalyticsTools(server, client)
+  if (isModuleActive('swarm3refs', activeSets, overrides) && !moduleBlockedByScopes('catalog', grantedScopes)) registerSwarm3RefsTools(server, client)
+  if (!readOnly && isModuleActive('swarm3snapshots', activeSets, overrides) && !moduleBlockedByScopes('playlists', grantedScopes)) registerSwarm3SnapshotsTools(server, client)
+  if (isModuleActive('swarm3meta', activeSets, overrides) && !moduleBlockedByScopes('catalog', grantedScopes)) registerSwarm3MetaTools(server, client)
+  if (!readOnly && isModuleActive('swarm4playlists', activeSets, overrides) && !moduleBlockedByScopes('playlists', grantedScopes)) registerSwarm4PlaylistsTools(server, client)
   if (!readOnly && isModuleActive('following', activeSets, overrides) && !moduleBlockedByScopes('following', grantedScopes)) registerFollowingTools(server, client)
   if (!readOnly && isModuleActive('audiobooks', activeSets, overrides) && !moduleBlockedByScopes('audiobooks', grantedScopes)) registerAudiobookTools(server, client)
   if (!readOnly && isModuleActive('playlists', activeSets, overrides) && !moduleBlockedByScopes('playlists', grantedScopes)) registerPlaylistTools(server, client)
