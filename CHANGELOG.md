@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > from [Conventional Commits](https://www.conventionalcommits.org/). Entries below v1.0.4 were
 > backfilled by hand from git history.
 
+## [1.26.0](https://github.com/NovaLux12/spotify-mcp-server/compare/v1.25.0...v1.26.0) (2026-08-28)
+
+
+### Features
+
+* **tools:** swarm3 push — 550 registered tools across 60 modules ([#442](https://github.com/NovaLux12/spotify-mcp-server/issues/442)) ([#442](https://github.com/NovaLux12/spotify-mcp-server/issues/442)) ([ee814a2](https://github.com/NovaLux12/spotify-mcp-server/commit/ee814a2e36cd36b76ec55bbfe66a6b0ee57c3e2b))
+
 ## [1.25.0](https://github.com/NovaLux12/spotify-mcp-server/compare/v1.24.0...v1.25.0) (2026-08-27)
 
 
