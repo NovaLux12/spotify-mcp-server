@@ -1,0 +1,90 @@
+name: Publish
+
+# On a version tag: test, build, publish the npm package, then publish the
+# server metadata to the official MCP Registry via GitHub OIDC (no secrets).
+#
+# NOTE: release-please creates tags with GITHUB_TOKEN, and GitHub suppresses
+# workflow triggers from GITHUB_TOKEN events — so the tag push alone will NOT
+# start this workflow. After release-please tags a release, run:
+#   gh workflow run publish.yml --ref v<version>
+#
+# Trusted publishing (#113): this workflow is cut over to npm trusted
+# publishing (OIDC). The id-token: *** permission mints a short-lived OIDC
+# token; --provenance attests the build. Once the trusted publisher is
+# configured on npmjs.com (package Settings → Trusted Publishers → GitHub
+# Actions, repo NovaLux12/spotify-mcp-server, workflow publish.yml), the
+# NPM_TOKEN fallback can be removed — npm will accept the OIDC identity alone.
+# Until then both paths are supported: OIDC when the publisher is configured,
+# NPM_TOKEN otherwise (the --provenance flag is harmless with token auth).
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  publish-npm:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: *** # npm provenance + trusted publishing (OIDC)
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: "22.x"
+          cache: npm
+          registry-url: "https://registry.npmjs.org"
+
+      - run: npm ci
+
+      - run: npx tsc --noEmit
+
+      - run: npm test
+
+      - run: npm run build
+
+      # Idempotency: skip when this version is already on npm (re-runs after
+      # a partial failure converge green instead of failing on "cannot
+      # publish over the previously published version").
+      - name: Publish to npm (trusted publishing / NPM_TOKEN fallback)
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          if npm view "@novalux12/spotify-mcp@$VERSION" version >/dev/null 2>&1; then
+            echo "@novalux12/spotify-mcp@$VERSION already on npm — skipping"
+          else
+            npm publish --access public --provenance
+          fi
+        env:
+          NODE_AUTH_TOKEN: *** secrets.NPM_TOKEN }}
+
+  publish-mcp-registry:
+    runs-on: ubuntu-latest
+    needs: publish-npm
+    permissions:
+      contents: read
+      id-token: *** # GitHub OIDC auth for the MCP Registry
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Sync server.json version from tag
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          jq --arg v "$VERSION" '.version = $v | .packages[0].version = $v' \
+            server.json > server.tmp && mv server.tmp server.json
+
+      - name: Install mcp-publisher (version-pinned, checksum-verified)
+        run: |
+          MCP_PUBLISHER_VERSION=v1.8.1
+          curl -sSL -o mcp-publisher.tar.gz "https://github.com/modelcontextprotocol/registry/releases/download/${MCP_PUBLISHER_VERSION}/mcp-publisher_linux_amd64.tar.gz"
+          echo "a06c9096dcb9727c13555b6be26c7effa707b01f06a4c561ba7a3635443cf2cc  mcp-publisher.tar.gz" | sha256sum -c -
+          tar xz mcp-publisher -f mcp-publisher.tar.gz
+
+      - name: Authenticate to MCP Registry
+        run: ./mcp-publisher login github-oidc
+
+      - name: Publish server to MCP Registry
+        run: ./mcp-publisher publish
