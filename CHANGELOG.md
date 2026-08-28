@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > from [Conventional Commits](https://www.conventionalcommits.org/). Entries below v1.0.4 were
 > backfilled by hand from git history.
 
+## [1.26.1](https://github.com/NovaLux12/spotify-mcp-server/compare/v1.26.0...v1.26.1) (2026-08-28)
+
+
+### Bug Fixes
+
+* **ci:** repair publish.yml — id-token write permission and NODE_AUTH_TOKEN expr were redaction-corrupted to YAML-invalid *** ([#441](https://github.com/NovaLux12/spotify-mcp-server/issues/441)) ([4a4945f](https://github.com/NovaLux12/spotify-mcp-server/commit/4a4945fbc9dd31fb606adba2e6506285077b94fe))
+
 ## [1.26.0](https://github.com/NovaLux12/spotify-mcp-server/compare/v1.25.0...v1.26.0) (2026-08-28)
 
 
