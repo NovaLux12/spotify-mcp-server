@@ -9,7 +9,7 @@ name: Publish
 #   gh workflow run publish.yml --ref v<version>
 #
 # Trusted publishing (#113): this workflow is cut over to npm trusted
-# publishing (OIDC). The id-token: *** permission mints a short-lived OIDC
+# publishing (OIDC). The id-token: write permission mints a short-lived OIDC
 # token; --provenance attests the build. Once the trusted publisher is
 # configured on npmjs.com (package Settings → Trusted Publishers → GitHub
 # Actions, repo NovaLux12/spotify-mcp-server, workflow publish.yml), the
@@ -29,7 +29,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      id-token: *** # npm provenance + trusted publishing (OIDC)
+      id-token: write # npm provenance + trusted publishing (OIDC)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
@@ -59,14 +59,14 @@ jobs:
             npm publish --access public --provenance
           fi
         env:
-          NODE_AUTH_TOKEN: *** secrets.NPM_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
   publish-mcp-registry:
     runs-on: ubuntu-latest
     needs: publish-npm
     permissions:
       contents: read
-      id-token: *** # GitHub OIDC auth for the MCP Registry
+      id-token: write # GitHub OIDC auth for the MCP Registry
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
