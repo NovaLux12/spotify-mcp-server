@@ -125,11 +125,7 @@ function harness(
       registered.push({
         name,
         description,
-        validate: (args) => {
-          const parsed = z.object(schema).parse(args);
-          if (name === 'get_playlist_items') console.log('DEBUG VALIDATE', name, JSON.stringify(parsed));
-          return parsed;
-        },
+        validate: (args) => z.object(schema).parse(args),
         handler,
       });
     },
@@ -783,7 +779,6 @@ describe('get_playlist_items', () => {
     };
     const itemsResp = () => {
       const idx = itemCallIndex++;
-      console.log('DEBUG itemsResp idx:', idx);
       if (idx === 0) return {
         items: Array.from({ length: 50 }, (_, i) => ({ item: playableTrack(`t${i}`, `T${i}`), added_at: undefined })),
         total: 80, limit: 50, offset: 0,
@@ -792,23 +787,17 @@ describe('get_playlist_items', () => {
         items: Array.from({ length: 30 }, (_, i) => ({ item: playableTrack(`t${50 + i}`, `T${50 + i}`), added_at: undefined })),
         total: 80, limit: 50, offset: 50,
       };
-      console.log('DEBUG itemsResp returning empty');
       return { items: [], total: 80, limit: 50, offset: idx * 50 };
     };
 
     const h = harness((path: string) => {
-      console.log('DEBUG harness path:', path);
       if (path === '/playlists/pl1') return metadataResp;
       if (path.startsWith('/playlists/pl1/items')) return itemsResp();
       return undefined;
     });
 
-    console.log('DEBUG args.fetch_all: true');
     const out = await h.invoke('get_playlist_items', { playlist_id: 'pl1', fetch_all: true });
-    console.log('DEBUG calls:', h.client.calls.map((c: any) => `${c.method} ${c.path} ${JSON.stringify(c.arg)}`).join(' | '));
-    console.log('DEBUG call count:', h.client.calls.length);
     const text = textOf(out);
-    console.log('DEBUG output:', text);
     // get_playlist_items renders all collected items (no truncation post-fetch_all).
     assert.match(text, /Playlist items \(80 total, showing 80\)/);
     assert.ok(!text.includes('more —'), 'no continuation footer when all items are shown');
