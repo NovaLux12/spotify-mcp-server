@@ -166,7 +166,7 @@ export function registerFreshnessTools(server: McpServer, client: SpotifyClient)
       + 'and saved shows (new podcast episodes), replacing the removed browse/new-releases surface. '
       + 'WARNING: N followed artists = N+1 API requests (1 follow page + N album lookups); '
       + 'a large library can exhaust small dev-account quotas in one call. Use max_artists to budget '
-      + 'and dry_run to preview the cost before running.',
+      + 'and dry_run to preview the cost before running. Decision guide: whats_new for personal follows radar; search_fresh for query-scoped tag:new, search/search_deep for general catalog, search_by_isrc for ISRC-exact.',
     {
       since: z
         .union([z.string().regex(ISO_DATE_RE, 'Use YYYY-MM-DD or "last-check"'), z.literal('last-check')])

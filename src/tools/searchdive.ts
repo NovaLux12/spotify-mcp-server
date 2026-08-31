@@ -137,7 +137,7 @@ async function collectType(
 export function registerSearchDeepTool(server: McpServer, client: SpotifyClient): void {
   server.tool(
     'search_deep',
-    'Paged catalog search that walks past the API limit of 10 results per type. Fetches up to 5 pages of 10 results per requested type server-side, dedupes by id, and returns compact rows (name | artists | album | URI).',
+    'Paged catalog search that walks past the API limit of 10 results per type. Fetches up to 5 pages of 10 results per requested type server-side, dedupes by id, and returns compact rows. Decision guide: use search_deep when you need >10 results/type (paginated fetch_all); otherwise use search (single page), search_fresh (new releases), search_by_isrc (ISRC-exact), whats_new (personal follows).',
     {
       query: z.string().describe('Search query'),
       types: z

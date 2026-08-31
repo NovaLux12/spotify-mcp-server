@@ -38,7 +38,7 @@ function activeModules(server: McpServer): string[] {
 export function registerSwarm3MetaTools(server: McpServer, client: SpotifyClient): void {
   server.tool(
     'find_tool',
-    'Search the live tool registry by name or description substring — the fastest way to discover which of the 500+ tools handles a job',
+    'Search the live tool registry by name or description substring — the fastest way to discover which of the 500+ tools handles a job. Discovery set: find_tool/inspect_tool/toolset_report are always available (also via catalog). Use this first when unsure which verb to use (e.g., playlist vs snapshot vs search).',
     {
       query: z.string().min(2).describe('Case-insensitive substring to match against tool names and descriptions'),
       response_format: ResponseFormat,
@@ -90,7 +90,7 @@ export function registerSwarm3MetaTools(server: McpServer, client: SpotifyClient
 
   server.tool(
     'toolset_report',
-    'Report the active toolsets and registration modules, plus the live registered tool count — answers "how much surface is exposed right now"',
+    'Report the active toolsets and registration modules, plus the live registered tool count — answers "how much surface is exposed right now". Discovery set; always available. Also see find_tool / inspect_tool.',
     {},
     async () => {
       const all = toolRegistry(server);
