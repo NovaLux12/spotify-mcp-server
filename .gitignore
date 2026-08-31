@@ -11,3 +11,9 @@ memory/*
 !memory/live-sweep-report.json
 !memory/live-sweep-report.md
 !memory/live-sweep-plan.md
+
+# ephemeral / local audit artifacts
+.tmp/
+AGENTS.md
+USABILITY_AUDIT_*.md
+audit-quota-lurkers.md
