@@ -1,18 +1,30 @@
 import { z } from 'zod';
 import type { SpotifyHandlerExtra, tool } from './types.js';
-import { handleSpotifyRequest, spotifyFetch } from './utils.js';
+import {
+  CHUNK_CAPS,
+  chunkArray,
+  extractSpotifyId,
+  handleSpotifyRequest,
+  spotifyFetch,
+} from './utils.js';
 
 const getPlaylist: tool<{
   playlistId: z.ZodString;
+  id: z.ZodOptional<z.ZodString>;
 }> = {
   name: 'getPlaylist',
   description:
-    'Get details of a specific Spotify playlist including tracks count, description and owner',
+    'Get details of a specific Spotify playlist including tracks count, description and owner. ' +
+    'Accepts bare playlist ID, spotify:playlist: URI, or https://open.spotify.com/playlist/ URL (spotifyId). ' +
+    'Idempotency: read-only, safe to retry.',
   schema: {
-    playlistId: z.string().describe('The Spotify ID of the playlist'),
+    playlistId: z.string().describe('The Spotify ID of the playlist (also accepts spotify:playlist: URI or https://open.spotify.com/playlist/ URL)'),
+    id: z.string().optional().describe('Alias for playlistId — also accepts URI/URL (bare id for compat)'),
   },
   handler: async (args, _extra: SpotifyHandlerExtra) => {
-    const { playlistId } = args;
+    const raw = (args as any).playlistId ?? (args as any).id;
+    const playlistId = raw ? extractSpotifyId(raw) : undefined;
+    if (!playlistId) return { content: [{ type: 'text', text: 'Error: playlistId is required (also accepts id, URI or URL)' }] };
 
     try {
       const playlist = await handleSpotifyRequest(async (spotifyApi) => {
@@ -61,6 +73,7 @@ const getPlaylist: tool<{
 
 const updatePlaylist: tool<{
   playlistId: z.ZodString;
+  id: z.ZodOptional<z.ZodString>;
   name: z.ZodOptional<z.ZodString>;
   description: z.ZodOptional<z.ZodString>;
   public: z.ZodOptional<z.ZodBoolean>;
@@ -70,7 +83,8 @@ const updatePlaylist: tool<{
   description:
     'Update the details of a Spotify playlist (name, description, public/private, collaborative)',
   schema: {
-    playlistId: z.string().describe('The Spotify ID of the playlist'),
+    playlistId: z.string().describe('The Spotify ID of the playlist (also accepts URI/URL)'),
+    id: z.string().optional().describe('Alias for playlistId — also accepts URI/URL'),
     name: z.string().optional().describe('New name for the playlist'),
     description: z
       .string()
@@ -88,13 +102,10 @@ const updatePlaylist: tool<{
       ),
   },
   handler: async (args, _extra: SpotifyHandlerExtra) => {
-    const {
-      playlistId,
-      name,
-      description,
-      public: isPublic,
-      collaborative,
-    } = args;
+    const rawId = (args as any).playlistId ?? (args as any).id;
+    const playlistId = rawId ? extractSpotifyId(rawId) : undefined;
+    const { name, description, public: isPublic, collaborative } = args as any;
+    if (!playlistId) return { content: [{ type: 'text', text: 'Error: playlistId is required' }] };
 
     if (
       !name &&
@@ -149,19 +160,22 @@ const updatePlaylist: tool<{
 
 const removeTracksFromPlaylist: tool<{
   playlistId: z.ZodString;
+  id: z.ZodOptional<z.ZodString>;
   trackIds: z.ZodArray<z.ZodString>;
   snapshotId: z.ZodOptional<z.ZodString>;
 }> = {
   name: 'removeTracksFromPlaylist',
   description:
-    'Remove one or more tracks from a Spotify playlist (max 100 tracks per request)',
+    'Remove one or more tracks from a Spotify playlist (max 100 tracks per request). ' +
+    'Idempotency: with deduped input, re-running after partial failure is safe; snapshot_id guards version. Quota: ceil(N/100) writes, sequential.',
   schema: {
-    playlistId: z.string().describe('The Spotify ID of the playlist'),
+    playlistId: z.string().describe('The Spotify ID of the playlist (also accepts URI/URL)'),
+    id: z.string().optional().describe('Alias for playlistId — also accepts URI/URL'),
     trackIds: z
       .array(z.string())
       .min(1)
       .max(100)
-      .describe('Array of Spotify track IDs to remove (max 100)'),
+      .describe('Array of Spotify track IDs to remove (max 100). Accepts bare ID, URI, or URL — deduped.'),
     snapshotId: z
       .string()
       .optional()
@@ -170,7 +184,13 @@ const removeTracksFromPlaylist: tool<{
       ),
   },
   handler: async (args, _extra: SpotifyHandlerExtra) => {
-    const { playlistId, trackIds, snapshotId } = args;
+    const rawId = (args as any).playlistId ?? (args as any).id;
+    const playlistId = rawId ? extractSpotifyId(rawId) : undefined;
+    if (!playlistId) return { content: [{ type: 'text', text: 'Error: playlistId is required' }] };
+    const snapshotId = (args as any).snapshotId as string | undefined;
+    const rawTracks: string[] = (args as any).trackIds ?? [];
+    const deduped = [...new Set(rawTracks.map(extractSpotifyId))];
+    const trackIds = deduped;
 
     try {
       const items = trackIds.map((id) => ({
@@ -214,6 +234,7 @@ const removeTracksFromPlaylist: tool<{
 
 const reorderPlaylistItems: tool<{
   playlistId: z.ZodString;
+  id: z.ZodOptional<z.ZodString>;
   rangeStart: z.ZodNumber;
   insertBefore: z.ZodNumber;
   rangeLength: z.ZodOptional<z.ZodNumber>;
@@ -223,7 +244,8 @@ const reorderPlaylistItems: tool<{
   description:
     'Reorder a range of tracks within a Spotify playlist by moving them to a new position',
   schema: {
-    playlistId: z.string().describe('The Spotify ID of the playlist'),
+    playlistId: z.string().describe('The Spotify ID of the playlist (also accepts URI/URL)'),
+    id: z.string().optional().describe('Alias for playlistId — also accepts URI/URL'),
     rangeStart: z
       .number()
       .nonnegative()
@@ -247,8 +269,10 @@ const reorderPlaylistItems: tool<{
       ),
   },
   handler: async (args, _extra: SpotifyHandlerExtra) => {
-    const { playlistId, rangeStart, insertBefore, rangeLength, snapshotId } =
-      args;
+    const rawId = (args as any).playlistId ?? (args as any).id;
+    const playlistId = rawId ? extractSpotifyId(rawId) : undefined;
+    if (!playlistId) return { content: [{ type: 'text', text: 'Error: playlistId is required' }] };
+    const { rangeStart, insertBefore, rangeLength, snapshotId } = args as any;
 
     try {
       // Hit /items directly: see spotifyFetch JSDoc for context.
@@ -290,18 +314,20 @@ const reorderPlaylistItems: tool<{
 
 const unfollowPlaylist: tool<{
   playlistId: z.ZodString;
+  id: z.ZodOptional<z.ZodString>;
 }> = {
   name: 'unfollowPlaylist',
   description:
     "Remove a playlist from the current user's library (unfollow). " +
     'Note: Spotify does not allow permanent deletion of playlists via the API.',
   schema: {
-    playlistId: z
-      .string()
-      .describe('The Spotify ID of the playlist to unfollow'),
+    playlistId: z.string().describe('The Spotify ID of the playlist to unfollow (also accepts URI/URL)'),
+    id: z.string().optional().describe('Alias for playlistId — also accepts URI/URL'),
   },
   handler: async (args, _extra: SpotifyHandlerExtra) => {
-    const { playlistId } = args;
+    const raw = (args as any).playlistId ?? (args as any).id;
+    const playlistId = raw ? extractSpotifyId(raw) : undefined;
+    if (!playlistId) return { content: [{ type: 'text', text: 'Error: playlistId is required' }] };
 
     try {
       await spotifyFetch(`playlists/${playlistId}/followers`, {
@@ -331,8 +357,49 @@ const unfollowPlaylist: tool<{
   },
 };
 
+// Batch twin for EPIC 523 #478 — parallel fetch of multiple playlists (up to 20)
+const getSeveralPlaylists: tool<{
+  playlistIds: z.ZodArray<z.ZodString>;
+  ids: z.ZodOptional<z.ZodArray<z.ZodString>>;
+}> = {
+  name: 'getSeveralPlaylists',
+  description:
+    'Get details for several playlists in parallel (batch twin for getPlaylist). ' +
+    'Accepts bare IDs, spotify:playlist: URIs, or open.spotify.com URLs — deduped. ' +
+    'Uses Promise.all for reads (order preserved). Playlist writes remain sequential (snapshot chain). ' +
+    `Quota: 1 per ${CHUNK_CAPS.playlistWrite} items but reads are parallel; no chunk cap — each playlist is one GET.`,
+  schema: {
+    playlistIds: z.array(z.string()).min(1).max(50).describe('Array of playlist IDs/URIs/URLs (max 50, deduped)'),
+    ids: z.array(z.string()).min(1).max(50).optional().describe('Alias for playlistIds'),
+  },
+  handler: async (args, _extra: SpotifyHandlerExtra) => {
+    const raw: string[] = (args as any).playlistIds ?? (args as any).ids ?? [];
+    const deduped = [...new Set(raw.map(extractSpotifyId))];
+    if (deduped.length === 0) return { content: [{ type: 'text', text: 'Error: playlistIds is required' }] };
+    try {
+      const results = await Promise.all(
+        deduped.map((pid) =>
+          handleSpotifyRequest(async (spotifyApi) => spotifyApi.playlists.getPlaylist(pid))
+            .then((pl) => ({ ok: true as const, pl }))
+            .catch((e: unknown) => ({ ok: false as const, id: pid, error: e instanceof Error ? e.message : String(e) })),
+        ),
+      );
+      const lines = results.map((r, i) => {
+        if (!r.ok) return `${i + 1}. [Failed ${r.id}: ${r.error}]`;
+        const pl: any = r.pl;
+        const owner = pl.owner?.display_name ?? pl.owner?.id ?? 'Unknown';
+        return `${i + 1}. "${pl.name}" by ${owner} (${pl.tracks?.total ?? 0} tracks) — ID: ${pl.id}`;
+      });
+      return { content: [{ type: 'text', text: `# Playlists (${results.length})\n\n${lines.join('\n')}` }] };
+    } catch (error) {
+      return { content: [{ type: 'text', text: `Error getting playlists: ${error instanceof Error ? error.message : String(error)}` }] };
+    }
+  },
+};
+
 export const playlistTools = [
   getPlaylist,
+  getSeveralPlaylists,
   updatePlaylist,
   removeTracksFromPlaylist,
   reorderPlaylistItems,

@@ -502,6 +502,166 @@ export function formatDuration(ms: number): string {
   return `${minutes}:${seconds.padStart(2, '0')}`;
 }
 
+// ---------------------------------------------------------------------------
+// EPIC 523 — Pagination, Batch & ID Contract helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Batch / chunk caps — single source of truth.
+ * Spotify API limits differ per endpoint; this table is the canonical reference.
+ * Keep in sync with schema max() values in tools.
+ *
+ * | Entity            | Cap | Endpoint / note                              |
+ * |-------------------|-----|----------------------------------------------|
+ * | tracks/artists/episodes/shows/audiobooks/chapters (get_several_*) | 50  | GET /{type}s?ids=  |
+ * | albums (get_several) | 20 | GET /albums?ids= (album cap is lower)      |
+ * | playlist writes (add/remove) | 100 | POST /playlists/{id}/items       |
+ * | library saves (tracks/albums) | 40 | PUT /me/library, /me/albums      |
+ * | queue POSTs       | 1 (no batch endpoint) | POST /me/player/queue?uri= |
+ * | get_followed_artists | 50 | cursor pagination                        |
+ */
+export const CHUNK_CAPS = {
+  tracks: 50,
+  albums: 20,
+  artists: 50,
+  episodes: 50,
+  shows: 50,
+  audiobooks: 50,
+  chapters: 50,
+  playlistWrite: 100,
+  library: 40,
+} as const;
+
+/** Split array into chunks of size n (preserves order). */
+export function chunkArray<T>(arr: T[], size: number): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+  return out;
+}
+
+/**
+ * Extract a bare Spotify ID from an ID, URI (spotify:type:id), or open URL
+ * (https://open.spotify.com/type/id). Returns the bare ID if extraction
+ * succeeds, otherwise returns the trimmed input (so callers can still try).
+ * Also handles already-bare IDs gracefully.
+ */
+export function extractSpotifyId(input: string): string {
+  const s = input.trim();
+  // URI: spotify:track:xxx or spotify:playlist:xxx etc.
+  const uriMatch = s.match(/^spotify:[a-z_]+:([a-zA-Z0-9]+)$/);
+  if (uriMatch) return uriMatch[1];
+  // URL: https://open.spotify.com/track/xxx  or /playlist/ etc. with optional query
+  try {
+    const url = new URL(s);
+    if (url.hostname === 'open.spotify.com') {
+      const parts = url.pathname.split('/').filter(Boolean);
+      // parts[0]=type, parts[1]=id
+      if (parts.length >= 2 && /^[a-zA-Z0-9]+$/.test(parts[1])) return parts[1];
+    }
+  } catch {
+    // not a URL — fall through
+  }
+  // Bare ID (22-char base62) or any string — return as-is trimmed
+  // Strip query/hash if present after ID
+  const bare = s.split('?')[0].split('#')[0].split('/').pop() ?? s;
+  return bare || s;
+}
+
+/**
+ * Hint when a string looks like a URI/URL but caller passed it as bare ID.
+ * Used to surface actionable error messages.
+ */
+export function idEncodingHint(input: string): string | null {
+  if (input.includes('spotify:')) return 'Looks like a Spotify URI — the tool accepts URI/URL; extraction was applied.';
+  if (input.includes('open.spotify.com')) return 'Looks like an open.spotify.com URL — the tool accepts URL; extraction was applied.';
+  return null;
+}
+
+/** Fetch-all cap (max items to walk with fetch_all=true). Env-overrideable. */
+export function getFetchAllCap(): number {
+  const env = process.env.SPOTIFY_MCP_MAX_ITEMS ?? process.env.SPOTIFY_MCP_FETCH_ALL_CAP;
+  const n = env ? Number(env) : NaN;
+  if (Number.isFinite(n) && n > 0) return Math.min(Math.floor(n), 2000);
+  return 500;
+}
+
+/**
+ * Generic offset-pagination walker. Walks `fetchFn(offset, limit)` until
+ * total is reached or cap is hit. Pages are fetched sequentially because
+ * Spotify offset pagination requires ordered offsets, but callers that batch
+ * independent fetches should use Promise.all outside.
+ */
+export async function getAllPages<T>(
+  fetchFn: (offset: number, limit: number) => Promise<{ items: T[]; total: number }>,
+  opts: { startOffset?: number; pageLimit?: number; cap?: number } = {},
+): Promise<{ items: T[]; total: number; truncatedByCap: boolean }> {
+  const cap = opts.cap ?? getFetchAllCap();
+  const pageLimit = opts.pageLimit ?? 50;
+  let offset = opts.startOffset ?? 0;
+  const all: T[] = [];
+  let total = 0;
+  let truncatedByCap = false;
+  while (all.length < cap) {
+    const page = await fetchFn(offset, Math.min(pageLimit, cap - all.length));
+    total = page.total;
+    all.push(...page.items);
+    if (page.items.length === 0 || all.length >= total) break;
+    if (all.length >= cap) { truncatedByCap = true; break; }
+    offset += page.items.length;
+    // safety: if API returns same page repeatedly, break
+    if (page.items.length < pageLimit && all.length < total) break;
+    // Also break if we've fetched total
+    if (all.length >= total) break;
+  }
+  if (all.length > cap) {
+    truncatedByCap = true;
+    all.length = cap;
+  }
+  return { items: all, total, truncatedByCap };
+}
+
+/**
+ * Cursor-pagination walker for endpoints like /me/following?type=artist.
+ * Walks via `after` cursor (last item ID) until next is null or cap hit.
+ * This extends the getAllPages concept to cursor pagination (previously
+ * documented as NOT supported).
+ */
+export async function getAllPagesCursor<T extends { id: string }>(
+  fetchFn: (after: string | undefined, limit: number) => Promise<{ items: T[]; nextAfter: string | null }>,
+  opts: { pageLimit?: number; cap?: number } = {},
+): Promise<{ items: T[]; truncatedByCap: boolean }> {
+  const cap = opts.cap ?? getFetchAllCap();
+  const pageLimit = opts.pageLimit ?? 50;
+  const all: T[] = [];
+  let after: string | undefined = undefined;
+  let truncatedByCap = false;
+  while (all.length < cap) {
+    const page = await fetchFn(after, Math.min(pageLimit, cap - all.length));
+    all.push(...page.items);
+    if (!page.nextAfter || page.items.length === 0) break;
+    if (all.length >= cap) { truncatedByCap = true; break; }
+    after = page.nextAfter;
+    // safety: if API echoes same cursor, break to avoid loop
+    if (page.items.length === 0) break;
+  }
+  if (all.length > cap) {
+    truncatedByCap = true;
+    all.length = cap;
+  }
+  return { items: all, truncatedByCap };
+}
+
+/** Build a standard pagination footer for list outputs. */
+export function paginationFooter(opts: { count: number; total: number; offset: number; limit: number; truncatedByCap?: boolean }): string {
+  const { count, total, offset, limit, truncatedByCap } = opts;
+  if (truncatedByCap) return ` (truncated at fetch_all cap ${getFetchAllCap()})`;
+  if (total > count) {
+    const nextOffset = offset + count;
+    return `\n\nMore pages available — pass offset=${nextOffset} or fetch_all=true (of total ${total}).`;
+  }
+  return '';
+}
+
 export async function handleSpotifyRequest<T>(
   action: (spotifyApi: SpotifyApi) => Promise<T>,
 ): Promise<T> {

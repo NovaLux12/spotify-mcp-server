@@ -14,8 +14,12 @@ import type {
 import {
   createSpotifyApi,
   formatDuration,
+  extractSpotifyId,
+  getAllPages,
+  getFetchAllCap,
   handleSpotifyRequest,
   loadSpotifyConfig,
+  paginationFooter,
   spotifyFetch,
 } from './utils.js';
 
@@ -60,7 +64,8 @@ const searchSpotify: tool<{
     'Search for tracks, albums, artists, playlists, podcast episodes, or shows on Spotify. ' +
     'For episodes and shows, the query matches against title, description, and publisher. ' +
     'Use type "episode" to find individual podcast episodes by topic or guest name, ' +
-    'and type "show" to find podcast series.',
+    'and type "show" to find podcast series. ' +
+    'Idempotency: search is read-only and safe to retry.',
   schema: {
     query: z
       .string()
@@ -77,7 +82,7 @@ const searchSpotify: tool<{
       .min(1)
       .max(50)
       .optional()
-      .describe('Maximum number of results to return (default: 10, max: 50)'),
+      .describe('Maximum number of results to return (canonical: limit, 1-50, default: 10, max: 50)'),
   },
   handler: async (args, _extra: SpotifyHandlerExtra) => {
     const { query, type, limit } = args;
@@ -275,27 +280,56 @@ const getNowPlaying: tool<Record<string, never>> = {
 
 const getMyPlaylists: tool<{
   limit: z.ZodOptional<z.ZodNumber>;
+  offset: z.ZodOptional<z.ZodNumber>;
+  fetch_all: z.ZodOptional<z.ZodBoolean>;
+  max_results: z.ZodOptional<z.ZodNumber>;
 }> = {
   name: 'getMyPlaylists',
-  description: "Get a list of the current user's playlists on Spotify",
+  description:
+    "Get a list of the current user's playlists on Spotify. " +
+    'Supports pagination via limit/offset or fetch_all=true to walk all pages (up to cap). ' +
+    `Default limit 20 is a single page — more pages available signal included. Cap: ${getFetchAllCap()}.`,
   schema: {
     limit: z
       .number()
       .min(1)
       .max(50)
       .optional()
-      .describe('Maximum number of playlists to return (1-50)'),
+      .describe('Page size (1-50). Canonical limit. Also accepts max_results as alias via max_results param. Default: 20.'),
+    offset: z.number().min(0).optional().describe('Offset for pagination (0-based). Ignored when fetch_all=true — walk starts from offset.'),
+    fetch_all: z.boolean().optional().describe('Fetch all pages (up to cap) instead of a single page'),
+    max_results: z.number().int().min(1).max(2000).optional().describe('Client-side truncation cap (up to 2000). Applied after fetching. Alias for max_items.'),
   },
   handler: async (args, _extra: SpotifyHandlerExtra) => {
-    const { limit = 50 } = args;
+    const { limit = 20, offset = 0, fetch_all = false, max_results } = args as any;
 
-    const playlists = await handleSpotifyRequest(async (spotifyApi) => {
-      return await spotifyApi.currentUser.playlists.playlists(
-        limit as MaxInt<50>,
+    let allItems: any[] = [];
+    let total = 0;
+    let truncatedByCap = false;
+    if (fetch_all) {
+      const res = await getAllPages(
+        async (off, lim) => {
+          const page = await handleSpotifyRequest(async (spotifyApi) => {
+            return await spotifyApi.currentUser.playlists.playlists(lim as MaxInt<50>, off);
+          });
+          return { items: page.items, total: page.total };
+        },
+        { startOffset: offset, pageLimit: limit, cap: getFetchAllCap() },
       );
-    });
+      allItems = res.items;
+      total = res.total;
+      truncatedByCap = res.truncatedByCap;
+      if (max_results && allItems.length > max_results) { allItems = allItems.slice(0, max_results); truncatedByCap = true; }
+    } else {
+      const page = await handleSpotifyRequest(async (spotifyApi) => {
+        return await spotifyApi.currentUser.playlists.playlists(limit as MaxInt<50>, offset);
+      });
+      allItems = page.items;
+      total = page.total;
+      if (max_results && allItems.length > max_results) { allItems = allItems.slice(0, max_results); truncatedByCap = true; }
+    }
 
-    if (playlists.items.length === 0) {
+    if (allItems.length === 0) {
       return {
         content: [
           {
@@ -306,20 +340,27 @@ const getMyPlaylists: tool<{
       };
     }
 
-    const formattedPlaylists = playlists.items
+    const formattedPlaylists = allItems
       .map((playlist, i) => {
         const tracksTotal = playlist.tracks?.total ? playlist.tracks.total : 0;
-        return `${i + 1}. "${playlist.name}" (${tracksTotal} tracks) - ID: ${
+        return `${offset + i + 1}. "${playlist.name}" (${tracksTotal} tracks) - ID: ${
           playlist.id
         }`;
       })
       .join('\n');
 
+    const footer = truncatedByCap
+      ? ` (truncated at ${max_results ?? getFetchAllCap()})`
+      : total > allItems.length
+        ? paginationFooter({ count: allItems.length, total, offset, limit })
+        : offset + allItems.length < total
+          ? `\n\nMore pages available — pass offset=${offset + allItems.length} or fetch_all=true (of total ${total}).`
+          : '';
     return {
       content: [
         {
           type: 'text',
-          text: `# Your Spotify Playlists\n\n${formattedPlaylists}`,
+          text: `# Your Spotify Playlists (${offset + 1}-${offset + allItems.length} of ${total})\n\n${formattedPlaylists}${footer}`,
         },
       ],
     };
@@ -328,27 +369,41 @@ const getMyPlaylists: tool<{
 
 const getPlaylistTracks: tool<{
   playlistId: z.ZodString;
+  id: z.ZodOptional<z.ZodString>;
   limit: z.ZodOptional<z.ZodNumber>;
   offset: z.ZodOptional<z.ZodNumber>;
+  fetch_all: z.ZodOptional<z.ZodBoolean>;
+  max_results: z.ZodOptional<z.ZodNumber>;
 }> = {
   name: 'getPlaylistTracks',
-  description: 'Get a list of tracks in a Spotify playlist',
+  description:
+    'Get a list of tracks in a Spotify playlist. ' +
+    'Accepts bare playlist ID, spotify:playlist: URI, or https://open.spotify.com/playlist/ URL (spotifyId). ' +
+    'Supports limit/offset pagination or fetch_all=true to walk all pages (up to cap). Default limit 20 is a single page.',
   schema: {
-    playlistId: z.string().describe('The Spotify ID of the playlist'),
+    playlistId: z.string().describe('The Spotify ID of the playlist (also accepts spotify:playlist: URI or https://open.spotify.com/playlist/ URL)'),
+    id: z.string().optional().describe('Alias for playlistId — also accepts URI/URL (bare id for compat)'),
     limit: z
       .number()
       .min(1)
       .max(50)
       .optional()
-      .describe('Maximum number of tracks to return (1-50)'),
+      .describe('Page size (1-50). Canonical limit. Default: 20.'),
     offset: z
       .number()
       .min(0)
       .optional()
-      .describe('Offset for pagination (0-based index)'),
+      .describe('Offset for pagination (0-based index). When fetch_all=true, walk starts from offset.'),
+    fetch_all: z.boolean().optional().describe('Fetch all pages (up to cap) instead of a single page'),
+    max_results: z.number().int().min(1).max(2000).optional().describe('Client-side truncation cap (up to 2000). Applied after fetching.'),
   },
   handler: async (args, _extra: SpotifyHandlerExtra) => {
-    const { playlistId, limit = 50, offset = 0 } = args;
+    const rawId = (args as any).playlistId ?? (args as any).id;
+    const playlistId = rawId ? extractSpotifyId(rawId) : undefined;
+    const { limit = 20, offset = 0, fetch_all = false, max_results } = args as any;
+    if (!playlistId) {
+      return { content: [{ type: 'text', text: 'Error: playlistId is required (also accepts id alias, URI or URL)' }] };
+    }
 
     // Hit /items directly: see spotifyFetch JSDoc for context.
     // Response wraps each entry's track under `item` (new) or `track` (legacy).
@@ -357,14 +412,34 @@ const getPlaylistTracks: tool<{
       item?: SpotifyTrack | SpotifyEpisode | null;
       track?: SpotifyTrack | SpotifyEpisode | null;
     };
-    const playlistTracks = await spotifyFetch<{
-      items: PlaylistItemEntry[];
-      total: number;
-    }>(`playlists/${playlistId}/items`, {
-      query: { limit, offset, additional_types: 'track,episode' },
-    });
 
-    if ((playlistTracks.items?.length ?? 0) === 0) {
+    let allItems: PlaylistItemEntry[] = [];
+    let total = 0;
+    let truncatedByCap = false;
+    if (fetch_all) {
+      const res = await getAllPages(
+        async (off, lim) => {
+          const page = await spotifyFetch<{ items: PlaylistItemEntry[]; total: number }>(`playlists/${playlistId}/items`, {
+            query: { limit: lim, offset: off, additional_types: 'track,episode' },
+          });
+          return { items: page.items, total: page.total };
+        },
+        { startOffset: offset, pageLimit: limit, cap: getFetchAllCap() },
+      );
+      allItems = res.items;
+      total = res.total;
+      truncatedByCap = res.truncatedByCap;
+      if (max_results && allItems.length > max_results) { allItems = allItems.slice(0, max_results); truncatedByCap = true; }
+    } else {
+      const page = await spotifyFetch<{ items: PlaylistItemEntry[]; total: number }>(`playlists/${playlistId}/items`, {
+        query: { limit, offset, additional_types: 'track,episode' },
+      });
+      allItems = page.items;
+      total = page.total;
+      if (max_results && allItems.length > max_results) { allItems = allItems.slice(0, max_results); truncatedByCap = true; }
+    }
+
+    if ((allItems.length ?? 0) === 0) {
       return {
         content: [
           {
@@ -375,7 +450,7 @@ const getPlaylistTracks: tool<{
       };
     }
 
-    const formattedTracks = playlistTracks.items
+    const formattedTracks = allItems
       .map((entry, i) => {
         const track = entry.item ?? entry.track;
         if (!track) return `${offset + i + 1}. [Removed track]`;
@@ -394,11 +469,18 @@ const getPlaylistTracks: tool<{
       })
       .join('\n');
 
+    const footer = truncatedByCap
+      ? ` (truncated at ${max_results ?? getFetchAllCap()})`
+      : total > allItems.length
+        ? paginationFooter({ count: allItems.length, total, offset, limit })
+        : offset + allItems.length < total
+          ? `\n\nMore pages available — pass offset=${offset + allItems.length} or fetch_all=true (of total ${total}).`
+          : '';
     return {
       content: [
         {
           type: 'text',
-          text: `# Tracks in Playlist (${offset + 1}-${offset + playlistTracks.items.length} of ${playlistTracks.total})\n\n${formattedTracks}`,
+          text: `# Tracks in Playlist (${offset + 1}-${offset + allItems.length} of ${total})\n\n${formattedTracks}${footer}`,
         },
       ],
     };
@@ -409,14 +491,15 @@ const getRecentlyPlayed: tool<{
   limit: z.ZodOptional<z.ZodNumber>;
 }> = {
   name: 'getRecentlyPlayed',
-  description: 'Get a list of recently played tracks on Spotify',
+  description:
+    'Get a list of recently played tracks on Spotify. This endpoint uses cursor pagination (before/after) internally — pass limit as page size. For full history use fetch_all semantics via repeated calls.',
   schema: {
     limit: z
       .number()
       .min(1)
       .max(50)
       .optional()
-      .describe('Maximum number of tracks to return (1-50)'),
+      .describe('Maximum number of tracks to return (1-50). Canonical limit.'),
   },
   handler: async (args, _extra: SpotifyHandlerExtra) => {
     const { limit = 50 } = args;
@@ -470,34 +553,57 @@ const getRecentlyPlayed: tool<{
 const getUsersSavedTracks: tool<{
   limit: z.ZodOptional<z.ZodNumber>;
   offset: z.ZodOptional<z.ZodNumber>;
+  fetch_all: z.ZodOptional<z.ZodBoolean>;
+  max_results: z.ZodOptional<z.ZodNumber>;
 }> = {
   name: 'getUsersSavedTracks',
   description:
-    'Get a list of tracks saved in the user\'s "Liked Songs" library',
+    'Get a list of tracks saved in the user\'s "Liked Songs" library. Supports limit/offset pagination or fetch_all=true to walk all pages (up to cap). Default limit 20 is a single page.',
   schema: {
     limit: z
       .number()
       .min(1)
       .max(50)
       .optional()
-      .describe('Maximum number of tracks to return (1-50)'),
+      .describe('Page size (1-50). Canonical limit. Default: 20.'),
     offset: z
       .number()
       .min(0)
       .optional()
-      .describe('Offset for pagination (0-based index)'),
+      .describe('Offset for pagination (0-based index). When fetch_all=true, walk starts from offset.'),
+    fetch_all: z.boolean().optional().describe('Fetch all pages (up to cap) instead of a single page'),
+    max_results: z.number().int().min(1).max(2000).optional().describe('Client-side truncation cap (up to 2000)'),
   },
   handler: async (args, _extra: SpotifyHandlerExtra) => {
-    const { limit = 50, offset = 0 } = args;
+    const { limit = 20, offset = 0, fetch_all = false, max_results } = args as any;
 
-    const savedTracks = await handleSpotifyRequest(async (spotifyApi) => {
-      return await spotifyApi.currentUser.tracks.savedTracks(
-        limit as MaxInt<50>,
-        offset,
+    let allItems: any[] = [];
+    let total = 0;
+    let truncatedByCap = false;
+    if (fetch_all) {
+      const res = await getAllPages(
+        async (off, lim) => {
+          const page = await handleSpotifyRequest(async (spotifyApi) => {
+            return await spotifyApi.currentUser.tracks.savedTracks(lim as MaxInt<50>, off);
+          });
+          return { items: page.items, total: page.total };
+        },
+        { startOffset: offset, pageLimit: limit, cap: getFetchAllCap() },
       );
-    });
+      allItems = res.items;
+      total = res.total;
+      truncatedByCap = res.truncatedByCap;
+      if (max_results && allItems.length > max_results) { allItems = allItems.slice(0, max_results); truncatedByCap = true; }
+    } else {
+      const page = await handleSpotifyRequest(async (spotifyApi) => {
+        return await spotifyApi.currentUser.tracks.savedTracks(limit as MaxInt<50>, offset);
+      });
+      allItems = page.items;
+      total = page.total;
+      if (max_results && allItems.length > max_results) { allItems = allItems.slice(0, max_results); truncatedByCap = true; }
+    }
 
-    if (savedTracks.items.length === 0) {
+    if (allItems.length === 0) {
       return {
         content: [
           {
@@ -508,7 +614,7 @@ const getUsersSavedTracks: tool<{
       };
     }
 
-    const formattedTracks = savedTracks.items
+    const formattedTracks = allItems
       .map((item, i) => {
         const track = item.track;
         if (!track) return `${i + 1}. [Removed track]`;
@@ -524,11 +630,18 @@ const getUsersSavedTracks: tool<{
       })
       .join('\n');
 
+    const footer = truncatedByCap
+      ? ` (truncated at ${max_results ?? getFetchAllCap()})`
+      : total > allItems.length
+        ? paginationFooter({ count: allItems.length, total, offset, limit })
+        : offset + allItems.length < total
+          ? `\n\nMore pages available — pass offset=${offset + allItems.length} or fetch_all=true (of total ${total}).`
+          : '';
     return {
       content: [
         {
           type: 'text',
-          text: `# Your Liked Songs (${offset + 1}-${offset + savedTracks.items.length} of ${savedTracks.total})\n\n${formattedTracks}`,
+          text: `# Your Liked Songs (${offset + 1}-${offset + allItems.length} of ${total})\n\n${formattedTracks}${footer}`,
         },
       ],
     };
@@ -547,7 +660,7 @@ const getQueue: tool<{
       .min(1)
       .max(50)
       .optional()
-      .describe('Maximum number of upcoming items to show (1-50)'),
+      .describe('Maximum number of upcoming items to show (1-50). Canonical limit.'),
   },
   handler: async (args, _extra: SpotifyHandlerExtra) => {
     const { limit = 10 } = args;
@@ -691,15 +804,18 @@ const removeUsersSavedTracks: tool<{
 }> = {
   name: 'removeUsersSavedTracks',
   description:
-    'Remove one or more tracks from the user\'s "Liked Songs" library (max 40 per request)',
+    'Remove one or more tracks from the user\'s "Liked Songs" library (max 40 per request). ' +
+    'Idempotency: removing a non-saved track is a no-op. Deduped input URIs. Quota: 40 per call — split larger sets.',
   schema: {
     trackIds: z
       .array(z.string())
       .max(40)
-      .describe('Array of Spotify track IDs to remove (max 40)'),
+      .describe('Array of Spotify track IDs to remove (max 40). Accepts bare ID, spotify:track: URI, or URL — deduped.'),
   },
   handler: async (args, _extra: SpotifyHandlerExtra) => {
-    const { trackIds } = args;
+    const raw = (args as any).trackIds as string[];
+    const deduped = [...new Set(raw.map(extractSpotifyId))];
+    const trackIds = deduped;
 
     if (trackIds.length === 0) {
       return {
@@ -780,7 +896,7 @@ const getTopTracks: tool<{
       .min(1)
       .max(50)
       .optional()
-      .describe('Maximum number of tracks to return (1-50)'),
+      .describe('Maximum number of tracks to return (1-50). Canonical limit.'),
   },
   handler: async (args, _extra: SpotifyHandlerExtra) => {
     const { timeRange = 'medium_term', limit = 20 } = args;
@@ -840,7 +956,7 @@ const getTopArtists: tool<{
       .min(1)
       .max(50)
       .optional()
-      .describe('Maximum number of artists to return (1-50)'),
+      .describe('Maximum number of artists to return (1-50). Canonical limit.'),
   },
   handler: async (args, _extra: SpotifyHandlerExtra) => {
     const { timeRange = 'medium_term', limit = 20 } = args;
@@ -882,6 +998,70 @@ const getTopArtists: tool<{
   },
 };
 
+// Cursor pagination — get_followed_artists (Spotify follows are cursor-paginated)
+const getFollowedArtists: tool<{
+  limit: z.ZodOptional<z.ZodNumber>;
+  after: z.ZodOptional<z.ZodString>;
+  fetch_all: z.ZodOptional<z.ZodBoolean>;
+  max_results: z.ZodOptional<z.ZodNumber>;
+}> = {
+  name: 'getFollowedArtists',
+  description:
+    'Get artists the current user follows. Uses cursor pagination (after = last artist ID), not offset. ' +
+    'Default 20 is a single page; pass fetch_all=true to walk all cursors (up to cap) or re-call with after from previous page. ' +
+    'Previously truncated at 20 — bulk 150 follows now walks via fetch_all.',
+  schema: {
+    limit: z.number().min(1).max(50).optional().describe('Page size (1-50). Canonical limit. Default: 20.'),
+    after: z.string().optional().describe('Cursor from previous page\'s last artist ID — not an offset number. Null/omit on first call.'),
+    fetch_all: z.boolean().optional().describe('Walk all pages via cursor up to fetch_all cap (default 500).'),
+    max_results: z.number().int().min(1).max(2000).optional().describe('Client-side cap (up to 2000).'),
+  },
+  handler: async (args, _extra: SpotifyHandlerExtra) => {
+    const { limit = 20, after, fetch_all = false, max_results } = args as any;
+    try {
+      if (fetch_all) {
+        const cap = max_results ?? getFetchAllCap();
+        const all: any[] = [];
+        let cursor: string | undefined = after;
+        let truncatedByCap = false;
+        while (all.length < cap) {
+          const page = await spotifyFetch<any>('me/following', {
+            query: { type: 'artist', limit: Math.min(limit, cap - all.length), ...(cursor ? { after: cursor } : {}) },
+          });
+          const artists = page?.artists;
+          const items = artists?.items ?? [];
+          const nextAfter = artists?.cursors?.after ?? null;
+          all.push(...items);
+          if (!nextAfter || items.length === 0) break;
+          if (all.length >= cap) { truncatedByCap = true; break; }
+          cursor = nextAfter;
+        }
+        const sliced = max_results ? all.slice(0, max_results) : all;
+        if (sliced.length === 0) return { content: [{ type: 'text', text: 'You don\'t follow any artists.' }] };
+        const formatted = sliced.map((a: any, i: number) => `${i + 1}. ${a.name} — ID: ${a.id}`).join('\n');
+        const footer = truncatedByCap ? ` (truncated at ${cap})` : '';
+        return { content: [{ type: 'text', text: `# Followed Artists (${sliced.length})\n\n${formatted}${footer}` }] };
+      } else {
+        const page = await spotifyFetch<any>('me/following', {
+          query: { type: 'artist', limit, ...(after ? { after } : {}) },
+        });
+        const artists = page?.artists;
+        const items = artists?.items ?? [];
+        const total = artists?.total ?? items.length;
+        const nextAfter = artists?.cursors?.after ?? null;
+        if (items.length === 0) return { content: [{ type: 'text', text: 'You don\'t follow any artists.' }] };
+        const formatted = items.map((a: any, i: number) => `${i + 1}. ${a.name} — ID: ${a.id}`).join('\n');
+        const footer = nextAfter
+          ? `\n\nMore pages available — pass after="${nextAfter}" or fetch_all=true (total ~${total}).`
+          : '';
+        return { content: [{ type: 'text', text: `# Followed Artists (${items.length}${total ? ` of ${total}` : ''})\n\n${formatted}${footer}` }] };
+      }
+    } catch (error) {
+      return { content: [{ type: 'text', text: `Error getting followed artists: ${error instanceof Error ? error.message : String(error)}` }] };
+    }
+  },
+};
+
 export const readTools = [
   searchSpotify,
   getNowPlaying,
@@ -894,4 +1074,5 @@ export const readTools = [
   getAvailableDevices,
   getTopTracks,
   getTopArtists,
+  getFollowedArtists,
 ];

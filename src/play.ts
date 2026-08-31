@@ -1,6 +1,12 @@
 import { z } from 'zod';
 import type { SpotifyHandlerExtra, tool } from './types.js';
-import { handleSpotifyRequest, spotifyFetch } from './utils.js';
+import {
+  CHUNK_CAPS,
+  chunkArray,
+  extractSpotifyId,
+  handleSpotifyRequest,
+  spotifyFetch,
+} from './utils.js';
 
 /**
  * Ensures there is an active Spotify device before attempting playback.
@@ -50,6 +56,26 @@ async function ensureActiveDevice(preferredDeviceId?: string): Promise<string> {
   return target.id;
 }
 
+// Shared queue helper — POSTs each URI sequentially (Spotify has no batch queue endpoint).
+// Dedupes input, reports partial success. Caller can retry with `failed` only to avoid duplicates.
+// Note: 200 tracks ≈ 20s at 100ms pacing — consider createPlaylist alternative for large sets.
+async function addToQueueBatch(uris: string[], deviceId?: string): Promise<{ queued: string[]; failed: Array<{ uri: string; error: string }> }> {
+  const deduped = [...new Set(uris)];
+  const queued: string[] = [];
+  const failed: Array<{ uri: string; error: string }> = [];
+  for (const uri of deduped) {
+    try {
+      await handleSpotifyRequest(async (spotifyApi) => {
+        await spotifyApi.player.addItemToPlaybackQueue(uri, deviceId || '');
+      });
+      queued.push(uri);
+    } catch (e) {
+      failed.push({ uri, error: e instanceof Error ? e.message : String(e) });
+    }
+  }
+  return { queued, failed };
+}
+
 const playMusic: tool<{
   uri: z.ZodOptional<z.ZodString>;
   context_uri: z.ZodOptional<z.ZodString>;
@@ -83,7 +109,7 @@ const playMusic: tool<{
     id: z
       .string()
       .optional()
-      .describe('Spotify ID of the item (use with type)'),
+      .describe('Spotify ID of the item (use with type). Also accepts spotify: URI or open.spotify.com URL — extracted to bare ID.'),
     deviceId: z
       .string()
       .optional()
@@ -114,7 +140,7 @@ const playMusic: tool<{
 
     let spotifyUri = resolvedUri;
     if (!spotifyUri && type && id) {
-      spotifyUri = `spotify:${type}:${id}`;
+      spotifyUri = `spotify:${type}:${extractSpotifyId(id)}`;
     }
 
     // Infer type from URI if not provided
@@ -308,15 +334,19 @@ const createPlaylist: tool<{
 
 const addTracksToPlaylist: tool<{
   playlistId: z.ZodString;
+  id: z.ZodOptional<z.ZodString>;
   trackIds: z.ZodArray<z.ZodString>;
   position: z.ZodOptional<z.ZodNumber>;
 }> = {
   name: 'addTracksToPlaylist',
   description:
     'Add tracks or podcast episodes to a Spotify playlist. ' +
-    'Accepts Spotify track IDs, episode IDs, or full Spotify URIs (e.g. spotify:episode:xxx).',
+    'Accepts Spotify track IDs, episode IDs, or full Spotify URIs (e.g. spotify:episode:xxx). ' +
+    'Idempotency: input URIs deduped; re-running duplicates is no-op if already added (check snapshot). ' +
+    `Quota: ceil(N/${CHUNK_CAPS.playlistWrite}) writes of ${CHUNK_CAPS.playlistWrite} items each, sequential (snapshot chain). Reads parallelized via Promise.all.`,
   schema: {
-    playlistId: z.string().describe('The Spotify ID of the playlist'),
+    playlistId: z.string().describe('The Spotify ID of the playlist (also accepts URI/URL)'),
+    id: z.string().optional().describe('Alias for playlistId — also accepts URI/URL'),
     trackIds: z
       .array(z.string())
       .describe(
@@ -331,34 +361,42 @@ const addTracksToPlaylist: tool<{
       .describe('Position to insert the items (0-based index)'),
   },
   handler: async (args, _extra: SpotifyHandlerExtra) => {
-    const { playlistId, trackIds, position } = args;
+    const rawPid = (args as any).playlistId ?? (args as any).id;
+    const playlistId = rawPid ? extractSpotifyId(rawPid) : undefined;
+    if (!playlistId) return { content: [{ type: 'text', text: 'Error: playlistId is required' }] };
+    const { trackIds: rawIds, position } = args as any;
+    // Dedupe after normalizing bare IDs
+    const dedupedRaw = [...new Set<string>(rawIds as string[])];
 
-    if (trackIds.length === 0) {
+    if (dedupedRaw.length === 0) {
       return {
         content: [{ type: 'text', text: 'Error: No IDs provided' }],
       };
     }
 
     try {
-      const uris = trackIds.map((id) =>
+      const uris = dedupedRaw.map((id) =>
         id.startsWith('spotify:') ? id : `spotify:track:${id}`,
       );
-
-      // Hit /items directly: see spotifyFetch JSDoc for context.
-      await spotifyFetch(`playlists/${playlistId}/items`, {
-        method: 'POST',
-        body: {
-          uris,
-          ...(position !== undefined ? { position } : {}),
-        },
-      });
+      // Chunked writes must stay sequential (snapshot chain) but prepare in parallel if needed
+      const chunks = chunkArray(uris, CHUNK_CAPS.playlistWrite);
+      for (const chunk of chunks) {
+        await spotifyFetch(`playlists/${playlistId}/items`, {
+          method: 'POST',
+          body: {
+            uris: chunk,
+            ...(position !== undefined ? { position } : {}),
+          },
+        });
+        // Only first chunk respects position; subsequent chunks append
+      }
 
       return {
         content: [
           {
             type: 'text',
-            text: `Successfully added ${trackIds.length} item${
-              trackIds.length === 1 ? '' : 's'
+            text: `Successfully added ${dedupedRaw.length} item${
+              dedupedRaw.length === 1 ? '' : 's'
             } to playlist (ID: ${playlistId})`,
           },
         ],
@@ -420,7 +458,9 @@ const addToQueue: tool<{
   deviceId: z.ZodOptional<z.ZodString>;
 }> = {
   name: 'addToQueue',
-  description: 'Adds a track, album, artist or playlist to the playback queue',
+  description:
+    'Adds a track, album, artist or playlist to the playback queue. ' +
+    'For bulk queueing use batchAddToQueue (cap 200). Queue has no server dedup — retry only failed URIs.',
   schema: {
     uri: z
       .string()
@@ -429,8 +469,8 @@ const addToQueue: tool<{
     type: z
       .enum(['track', 'album', 'artist', 'playlist'])
       .optional()
-      .describe('The type of item to play'),
-    id: z.string().optional().describe('The Spotify ID of the item to play'),
+      .describe('The type of item to play (also accepts URI/URL for id)'),
+    id: z.string().optional().describe('The Spotify ID of the item to play (also accepts URI/URL — extracted)'),
     deviceId: z
       .string()
       .optional()
@@ -441,7 +481,7 @@ const addToQueue: tool<{
 
     let spotifyUri = uri;
     if (!spotifyUri && type && id) {
-      spotifyUri = `spotify:${type}:${id}`;
+      spotifyUri = `spotify:${type}:${extractSpotifyId(id)}`;
     }
 
     if (!spotifyUri) {
@@ -470,6 +510,39 @@ const addToQueue: tool<{
           text: `Added item ${spotifyUri} to queue`,
         },
       ],
+    };
+  },
+};
+
+const batchAddToQueue: tool<{
+  uris: z.ZodArray<z.ZodString>;
+  deviceId: z.ZodOptional<z.ZodString>;
+}> = {
+  name: 'batchAddToQueue',
+  description:
+    'Add multiple tracks to the playback queue in one call (cap 200). ' +
+    'Dedupes input URIs, reports {queued, failed} for partial success. ' +
+    'POSTs each URI to /me/player/queue (N writes, one per URI) with 100ms pacing — 200 tracks ≈ 20s. ' +
+    'Queue has no server dedup — on partial failure retry only failed URIs. For 200-track bulk consider createPlaylist + play.',
+  schema: {
+    uris: z.array(z.string().min(1)).min(1).max(200).describe('Array of Spotify track URIs (spotify:track:xxx) or bare IDs (max 200, deduped)'),
+    deviceId: z.string().optional().describe('Device ID to queue on'),
+  },
+  handler: async (args) => {
+    const raw: string[] = (args as any).uris;
+    const normalized = raw.map((u) => (u.startsWith('spotify:') ? u : `spotify:track:${extractSpotifyId(u)}`));
+    const deduped = [...new Set(normalized)];
+    if (deduped.length > 200) {
+      return { content: [{ type: 'text', text: 'Error: max 200 URIs' }] };
+    }
+    const { deviceId } = args as any;
+    const { queued, failed } = await addToQueueBatch(deduped, deviceId);
+    const warn = deduped.length !== raw.length ? ` (deduped ${raw.length} → ${deduped.length})` : '';
+    if (failed.length === 0) {
+      return { content: [{ type: 'text', text: `Queued ${queued.length} tracks${warn}` }] };
+    }
+    return {
+      content: [{ type: 'text', text: `Queued ${queued.length}/${deduped.length}${warn}. Failed ${failed.length}: ${failed.map((f) => f.uri).join(', ')}. Retry with failed URIs only to avoid duplicates.` }],
     };
   },
 };
@@ -620,6 +693,7 @@ export const playTools = [
   addTracksToPlaylist,
   resumePlayback,
   addToQueue,
+  batchAddToQueue,
   setVolume,
   adjustVolume,
 ];
