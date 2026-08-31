@@ -371,7 +371,7 @@ test('every prompt only references tool names that are actually registered', asy
     const promptArgs = Object.fromEntries(
       ((p.arguments ?? []) as Array<{ name: string; required?: boolean }>)
         .filter((a) => a.required)
-        .map((a) => [a.name, 'test-input']),
+        .map((a) => [a.name, a.name === 'since' ? '2026-01-01' : 'test-input']),
     );
     const result = await client.getPrompt({ name: p.name, arguments: promptArgs });
     const body = result.messages.map((m) => textOf(m)).join('\n');
@@ -381,7 +381,7 @@ test('every prompt only references tool names that are actually registered', asy
       'fetch_all', 'max_per_show', 'time_range',
       'short_term', 'medium_term', 'long_term',
       'album_type', 'release_date', 'playlist_name', 'include_singles',
-      'max_results', 'dry_run',
+      'max_results', 'dry_run', 'total_tracks',
     ];
     const referenced = [...body.matchAll(/\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b/g)]
       .map((m) => m[0])
