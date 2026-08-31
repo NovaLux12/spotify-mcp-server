@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { MARKET_CODE } from './catalog.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
 import type {
@@ -83,7 +84,7 @@ export function registerSearchTools(server: McpServer, client: SpotifyClient): v
         .enum(['audio'])
         .optional()
         .describe('Pass "audio" to include externally-hosted audio items marked as playable'),
-      market: z.string().optional().describe('ISO 3166-1 alpha-2 country code'),
+      market: MARKET_CODE.optional().describe('ISO 3166-1 alpha-2 country code, e.g. \'US\' — uppercased automatically'),
       response_format: ResponseFormat,
       max_results: MaxResults,
     },

@@ -32,7 +32,7 @@ import { getConfig, resolveMarket } from '../config.js';
 
 // Issue #110: market codes are exactly two letters; lowercase input is
 // normalised to uppercase before it reaches the wire.
-const MARKET_CODE = z
+export const MARKET_CODE = z
   .string()
   .regex(/^[A-Za-z]{2}$/, 'market must be a 2-letter ISO 3166-1 alpha-2 country code, e.g. "US"')
   .transform((code) => code.toUpperCase());
