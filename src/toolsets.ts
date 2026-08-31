@@ -22,7 +22,8 @@
  *   playback        → tools/playback.ts        (15 tools)
  *                     tools/queueops.ts        (queue_playlist + reorder stubs)
  *                     tools/playbackext.ts     (save/restore playback, device presets, sessions)
- *                     tools/playbackintel.ts   (queue/context/volume/market intel)
+ *                     tools/playbackintel.ts   (queue/context/volume/market intel) — also in playbackintel set
+ *   playbackintel   → tools/playbackintel.ts   (queue/context/volume/market intel) — standalone, also enabled via playback
  *   catalog         → tools/search.ts          (1 tool)
  *                     tools/catalog.ts         (18 tools)
  *                     tools/audiobooks.ts      (4 tools)
@@ -40,15 +41,18 @@
  *                     tools/portability.ts     (weekly/radar save + full export)
  *                     tools/episodemgmt.ts     (archive/mark episodes)
  *   personalization → tools/personalization.ts (3 tools)
+ *   discovery       → tools/swarm3_meta.ts     (find_tool, inspect_tool, toolset_report) — also in catalog for compat
  *   resources       → resources/index.ts       (24 resources)
  *   prompts         → prompts/index.ts         (9 prompts)
  */
 export const TOOLSETS: Record<string, readonly string[]> = {
   playback: ['playback', 'queueops', 'playbackext', 'playbackintel', 'exhaust2playback', 'swarm3playback'],
+  playbackintel: ['playbackintel'],
   catalog: ['search', 'catalog', 'audiobooks', 'browse', 'artistwatch', 'searchhistory', 'exhaust2catalog', 'exhaust2enggating', 'swarm3discovery', 'swarm3bdiscovery', 'swarm3shows', 'swarm3refs', 'swarm3meta'],
   playlists: ['playlists', 'users', 'playlisthealth', 'playlistbatch', 'playlistmisc', 'exhaust2playlists', 'exhaust2extra', 'swarm3playlistops', 'swarm3snapshots', 'swarm4playlists'],
   library: ['library', 'following', 'libraryanalytics', 'portability', 'episodemgmt', 'exhaust2misc', 'swarm3library'],
   personalization: ['personalization', 'swarm3analytics'],
+  discovery: ['swarm3meta'],
   resources: ['resources'],
   prompts: ['prompts'],
 } as const;

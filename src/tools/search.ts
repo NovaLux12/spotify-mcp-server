@@ -52,7 +52,7 @@ function sectionItems<K extends keyof SearchResults>(
 export function registerSearchTools(server: McpServer, client: SpotifyClient): void {
   server.tool(
     'search',
-    "Search Spotify's catalog for tracks, artists, albums, playlists, shows, episodes, or audiobooks. Pass `types` as an array (e.g. `[\"artist\"]`) to search a single kind — no track/album fallback noise.",
+    "Search Spotify's catalog for tracks, artists, albums, playlists, shows, episodes, or audiobooks. Pass `types` as an array (e.g. `[\"artist\"]`) to search a single kind — no track/album fallback noise. Decision guide: search (general, ≤10/type), search_deep (paginated fetch_all up to 50/type), search_fresh (tag:new last 2 weeks), search_by_isrc (exact ISRC), whats_new (personal radar from follows).", 
     {
       query: z.string().describe('Search query'),
       types: z

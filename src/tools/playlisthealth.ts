@@ -177,7 +177,7 @@ export function registerPlaylistHealthTools(server: McpServer, client: SpotifyCl
 
   server.tool(
     'snapshot_playlist',
-    'Snapshot a playlist\'s current URIs+positions+timestamp to a sidecar JSON file',
+    'Snapshot a playlist\'s current URIs+positions+timestamp to a sidecar JSON file (legacy, simple path playlistId→file). For transactional local snapshots with plsnapi naming, diff, and bundle tooling, use take_playlist_snapshot instead. Also covers: playlist snapshot (legacy).',
     {
       playlist_id: z.string().min(1).describe('Playlist ID'),
       snapshot_id: z.string().optional().describe('Custom snapshot ID (default: timestamp)'),
