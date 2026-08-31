@@ -122,29 +122,41 @@ test('registers the exhaust2 playlists slice (18 tools)', () => {
 });
 
 test('playlist_staleness_score grades a stale playlist and suggests refreshes', async () => {
-  const registered: RegisteredTool[] = [];
-  registerExhaust2PlaylistsTools(makeServer(registered), makeFakeClient(PLAYLIST_ROUTE));
-  const t = find(registered, 'playlist_staleness_score');
-  const r = await t.handler({ playlist_id: 'mix1', dry_run: true, response_format: 'json' });
-  const p = r.structuredContent as Record<string, unknown>;
-  assert.equal(p.ok, true);
-  assert.equal(p.playlist, 'mix1');
-  assert.equal(p.items, 5);
-  // Latest save is 5 days ago -> fresh grade, no refresh push.
-  assert.equal(p.days_since_latest, 5);
-  assert.equal(p.grade, 'fresh');
-  assert.deepEqual(p.suggestions, ['no action needed — ride the momentum']);
+  const originalDateNow = Date.now;
+  Date.now = () => NOW;
+  try {
+    const registered: RegisteredTool[] = [];
+    registerExhaust2PlaylistsTools(makeServer(registered), makeFakeClient(PLAYLIST_ROUTE));
+    const t = find(registered, 'playlist_staleness_score');
+    const r = await t.handler({ playlist_id: 'mix1', dry_run: true, response_format: 'json' });
+    const p = r.structuredContent as Record<string, unknown>;
+    assert.equal(p.ok, true);
+    assert.equal(p.playlist, 'mix1');
+    assert.equal(p.items, 5);
+    // Latest save is 5 days ago -> fresh grade, no refresh push.
+    assert.equal(p.days_since_latest, 5);
+    assert.equal(p.grade, 'fresh');
+    assert.deepEqual(p.suggestions, ['no action needed — ride the momentum']);
+  } finally {
+    Date.now = originalDateNow;
+  }
 });
 
 test('playlist_staleness_score text mode renders grade + suggestions prose', async () => {
-  const registered: RegisteredTool[] = [];
-  registerExhaust2PlaylistsTools(makeServer(registered), makeFakeClient(PLAYLIST_ROUTE));
-  const t = find(registered, 'playlist_staleness_score');
-  const r = await t.handler({ playlist_id: 'spotify:playlist:mix1', dry_run: true });
-  const prose = text(r);
-  assert.match(prose, /FRIDAY MIX/i);
-  assert.match(prose, /FRESH/);
-  assert.match(prose, /latest save 5 day\(s\) ago/);
+  const originalDateNow = Date.now;
+  Date.now = () => NOW;
+  try {
+    const registered: RegisteredTool[] = [];
+    registerExhaust2PlaylistsTools(makeServer(registered), makeFakeClient(PLAYLIST_ROUTE));
+    const t = find(registered, 'playlist_staleness_score');
+    const r = await t.handler({ playlist_id: 'spotify:playlist:mix1', dry_run: true });
+    const prose = text(r);
+    assert.match(prose, /FRIDAY MIX/i);
+    assert.match(prose, /FRESH/);
+    assert.match(prose, /latest save 5 day\(s\) ago/);
+  } finally {
+    Date.now = originalDateNow;
+  }
 });
 
 test('playlist_artist_heat computes share, HHI, and repeat offenders', async () => {
