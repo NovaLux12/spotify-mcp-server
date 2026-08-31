@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > from [Conventional Commits](https://www.conventionalcommits.org/). Entries below v1.0.4 were
 > backfilled by hand from git history.
 
+## [1.27.0](https://github.com/NovaLux12/spotify-mcp-server/compare/v1.26.1...v1.27.0) (2026-08-31)
+
+
+### Features
+
+* accuracy and coverage from fix-skills-tests swarm ([fbe81c1](https://github.com/NovaLux12/spotify-mcp-server/commit/fbe81c1c4018564da03b03aaa6aaade24eb4ec50))
+* agent usability fixes for release ([beee490](https://github.com/NovaLux12/spotify-mcp-server/commit/beee4908931e472ab8a19b93a14a3cdd92a7926d))
+
+
+### Bug Fixes
+
+* mock Date.now in playlist_staleness_score tests\n\nThese tests relied on a fixed NOW anchor for test data but did not\nmock Date.now() inside the handler, causing time-dependent assertions\nto drift as real time passes. ([921cffd](https://github.com/NovaLux12/spotify-mcp-server/commit/921cffd0d32dedc676f4d3c04c5295ea2cbf9dbf))
+
 ## [1.26.1](https://github.com/NovaLux12/spotify-mcp-server/compare/v1.26.0...v1.26.1) (2026-08-28)
 
 
