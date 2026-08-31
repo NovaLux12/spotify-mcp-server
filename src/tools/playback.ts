@@ -367,8 +367,14 @@ export function registerPlaybackTools(server: McpServer, client: SpotifyClient):
     {
       device_id: z.string().optional().describe('Target device ID'),
       response_format: ResponseFormat,
+      dry_run: DryRun,
     },
     async (args) => {
+      if (args.dry_run) {
+        return {
+          content: [{ type: 'text', text: describeDryRun('pause', args.device_id ?? 'the active device', []) }],
+        };
+      }
       const path = args.device_id
         ? `/me/player/pause?device_id=${encodeURIComponent(args.device_id)}`
         : '/me/player/pause';
@@ -451,8 +457,14 @@ export function registerPlaybackTools(server: McpServer, client: SpotifyClient):
       position_ms: z.number().int().min(0).describe('Position in milliseconds'),
       device_id: z.string().optional().describe('Target device ID'),
       response_format: ResponseFormat,
+      dry_run: DryRun,
     },
     async (args) => {
+      if (args.dry_run) {
+        return {
+          content: [{ type: 'text', text: describeDryRun('seek', `position ${formatDuration(args.position_ms)} on ${args.device_id ?? 'the active device'}`, [`PUT /me/player/seek?position_ms=${args.position_ms}${args.device_id ? `&device_id=${args.device_id}` : ''}`]) }],
+        };
+      }
       const params = new URLSearchParams({ position_ms: String(args.position_ms) });
       if (args.device_id) params.set('device_id', args.device_id);
       await client.put(`/me/player/seek?${params}`);
@@ -472,8 +484,14 @@ export function registerPlaybackTools(server: McpServer, client: SpotifyClient):
       volume_percent: z.number().int().min(0).max(100).describe('Volume level 0–100'),
       device_id: z.string().optional().describe('Target device ID'),
       response_format: ResponseFormat,
+      dry_run: DryRun,
     },
     async (args) => {
+      if (args.dry_run) {
+        return {
+          content: [{ type: 'text', text: describeDryRun('set volume', `${args.volume_percent}% on ${args.device_id ?? 'the active device'}`, [`PUT /me/player/volume?volume_percent=${args.volume_percent}${args.device_id ? `&device_id=${args.device_id}` : ''}`]) }],
+        };
+      }
       const params = new URLSearchParams({ volume_percent: String(args.volume_percent) });
       if (args.device_id) params.set('device_id', args.device_id);
       await client.put(`/me/player/volume?${params}`);
@@ -493,8 +511,14 @@ export function registerPlaybackTools(server: McpServer, client: SpotifyClient):
       state: z.boolean().describe('true = shuffle on, false = shuffle off'),
       device_id: z.string().optional().describe('Target device ID'),
       response_format: ResponseFormat,
+      dry_run: DryRun,
     },
     async (args) => {
+      if (args.dry_run) {
+        return {
+          content: [{ type: 'text', text: describeDryRun('set shuffle', `${args.state ? 'on' : 'off'} on ${args.device_id ?? 'the active device'}`, [`PUT /me/player/shuffle?state=${args.state}${args.device_id ? `&device_id=${args.device_id}` : ''}`]) }],
+        };
+      }
       const params = new URLSearchParams({ state: String(args.state) });
       if (args.device_id) params.set('device_id', args.device_id);
       await client.put(`/me/player/shuffle?${params}`);
@@ -514,8 +538,14 @@ export function registerPlaybackTools(server: McpServer, client: SpotifyClient):
       state: z.enum(['off', 'context', 'track']).describe('Repeat mode'),
       device_id: z.string().optional().describe('Target device ID'),
       response_format: ResponseFormat,
+      dry_run: DryRun,
     },
     async (args) => {
+      if (args.dry_run) {
+        return {
+          content: [{ type: 'text', text: describeDryRun('set repeat', `${args.state} on ${args.device_id ?? 'the active device'}`, [`PUT /me/player/repeat?state=${args.state}${args.device_id ? `&device_id=${args.device_id}` : ''}`]) }],
+        };
+      }
       const params = new URLSearchParams({ state: args.state });
       if (args.device_id) params.set('device_id', args.device_id);
       await client.put(`/me/player/repeat?${params}`);

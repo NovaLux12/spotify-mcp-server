@@ -351,6 +351,8 @@ const realToolNames: Record<string, true> = Object.fromEntries([
   // catalog helpers for crate_digging etc
   'get_top_tracks', 'get_top_artists', 'get_recently_played', 'get_saved_albums', 'get_saved_tracks',
   'get_saved_shows', 'get_show_episodes', 'get_followed_artists',
+  // queueops
+  'queue_playlist', 'save_queue_as_playlist', 'batch_add_to_queue',
   // suite helpers
   'create_playlist', 'add_to_playlist', 'add_to_queue', 'get_user_playlists', 'get_playlist_items',
   'find_duplicates_in_playlist', 'remove_from_playlist',

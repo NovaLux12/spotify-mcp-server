@@ -125,7 +125,11 @@ function harness(
       registered.push({
         name,
         description,
-        validate: (args) => z.object(schema).parse(args),
+        validate: (args) => {
+          const parsed = z.object(schema).parse(args);
+          if (name === 'get_playlist_items') console.log('DEBUG VALIDATE', name, JSON.stringify(parsed));
+          return parsed;
+        },
         handler,
       });
     },
@@ -752,6 +756,99 @@ describe('get_playlist_items', () => {
       (err: unknown) => err instanceof z.ZodError,
     );
     assert.equal(h.client.calls.length, 0);
+  });
+
+  // ---- #67-style fetch_all tests mirroring get_user_playlists ----
+
+  it('#67 fetch_all starts from offset 0 and shows every collected item', async () => {
+    const h = harness(() => ({
+      id: 'pl1', name: 'Small', owner: { display_name: 'Owner', id: 'o1' }, images: [],
+      items: [
+        { item: playableTrack('t0', 'A'), added_at: undefined },
+        { item: playableTrack('t1', 'B'), added_at: undefined },
+      ],
+      total: 2, limit: 50, offset: 0,
+    }));
+    const out = await h.invoke('get_playlist_items', { playlist_id: 'pl1', fetch_all: true });
+    const text = textOf(out);
+    assert.match(text, /Playlist items \(2 total, showing 2\)/);
+    assert.ok(!text.includes('more —'), 'no footer when everything fits under fetch_all cap');
+  });
+
+  it('#67 fetch_all walks pages and collects every item up to FETCH_ALL_CAP', async () => {
+    // 80 items across two pages of 50 and 30.
+    let itemCallIndex = 0;
+    const metadataResp = {
+      id: 'pl1', name: 'Big PL', owner: { display_name: 'O', id: 'o1' }, images: [], uri: 'spotify:playlist:pl1',
+    };
+    const itemsResp = () => {
+      const idx = itemCallIndex++;
+      console.log('DEBUG itemsResp idx:', idx);
+      if (idx === 0) return {
+        items: Array.from({ length: 50 }, (_, i) => ({ item: playableTrack(`t${i}`, `T${i}`), added_at: undefined })),
+        total: 80, limit: 50, offset: 0,
+      };
+      if (idx === 1) return {
+        items: Array.from({ length: 30 }, (_, i) => ({ item: playableTrack(`t${50 + i}`, `T${50 + i}`), added_at: undefined })),
+        total: 80, limit: 50, offset: 50,
+      };
+      console.log('DEBUG itemsResp returning empty');
+      return { items: [], total: 80, limit: 50, offset: idx * 50 };
+    };
+
+    const h = harness((path: string) => {
+      console.log('DEBUG harness path:', path);
+      if (path === '/playlists/pl1') return metadataResp;
+      if (path.startsWith('/playlists/pl1/items')) return itemsResp();
+      return undefined;
+    });
+
+    console.log('DEBUG args.fetch_all: true');
+    const out = await h.invoke('get_playlist_items', { playlist_id: 'pl1', fetch_all: true });
+    console.log('DEBUG calls:', h.client.calls.map((c: any) => `${c.method} ${c.path} ${JSON.stringify(c.arg)}`).join(' | '));
+    console.log('DEBUG call count:', h.client.calls.length);
+    const text = textOf(out);
+    console.log('DEBUG output:', text);
+    // get_playlist_items renders all collected items (no truncation post-fetch_all).
+    assert.match(text, /Playlist items \(80 total, showing 80\)/);
+    assert.ok(!text.includes('more —'), 'no continuation footer when all items are shown');
+    assert.match(text, /T0/);
+    assert.match(text, /T79/);
+  });
+
+  it('#67 fetch_all resumes pagination from a non-zero offset', async () => {
+    let itemCallIndex = 0;
+    const metadataResp = {
+      id: 'pl2', name: 'Offset PL', owner: { display_name: 'O', id: 'o1' }, images: [],
+    };
+    const itemsResp = () => {
+      const idx = itemCallIndex++;
+      // Call 0: first page at the requested offset
+      if (idx === 0) return {
+        items: [{ item: playableTrack('t40', 'P40'), added_at: undefined }], total: 60, limit: 50, offset: 40,
+      };
+      // Calls 1+: continue from where we left off
+      const pageOffset = 41 + (idx - 1) * 50;
+      const remaining = Math.max(0, 60 - pageOffset);
+      if (remaining <= 0) return { items: [], total: 60, limit: 50, offset: pageOffset };
+      const count = Math.min(50, remaining);
+      return {
+        items: Array.from({ length: count }, (_, i) => ({ item: playableTrack(`t${pageOffset + i}`, `P${pageOffset + i}`), added_at: undefined })),
+        total: 60, limit: 50, offset: pageOffset,
+      };
+    };
+
+    const h = harness((path: string) => {
+      if (path === '/playlists/pl2') return metadataResp;
+      if (path.startsWith('/playlists/pl2/items')) return itemsResp();
+      return undefined;
+    });
+
+    const out = await h.invoke('get_playlist_items', { playlist_id: 'pl2', fetch_all: true, offset: 40 });
+    const text = textOf(out);
+    // 60 total, offset 40, so 20 items from positions 41–60
+    assert.match(text, /Playlist items \(60 total, showing 20\)/);
+    assert.match(text, /41\. "P40"/);
   });
 });
 

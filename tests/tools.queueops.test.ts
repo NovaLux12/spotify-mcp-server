@@ -47,11 +47,12 @@ function harness(overrides: Partial<{
 }
 
 describe('queueops', () => {
-  it('registers exactly 2 tools (queue_playlist + save_queue_as_playlist)', () => {
+  it('registers exactly 3 tools (queue_playlist + save_queue_as_playlist + batch_add_to_queue)', () => {
     const h = harness();
-    assert.equal(h.registered.length, 2);
+    assert.equal(h.registered.length, 3);
     assert.ok(h.registered.some((r: any) => r.name === 'queue_playlist'));
     assert.ok(h.registered.some((r: any) => r.name === 'save_queue_as_playlist'));
+    assert.ok(h.registered.some((r: any) => r.name === 'batch_add_to_queue'));
   });
   it('does not register phantom queue_reorder/remove/clear tools', () => {
     const h = harness();
@@ -110,6 +111,23 @@ describe('queueops', () => {
     const out = await h.invoke('save_queue_as_playlist', { target_playlist_id: 'existingPl' });
     assert.ok(h.posts.some((p) => p.includes('existingPl/tracks')));
     assert.match(out.content[0].text, /Appended 2 items/i);
+  });
+  it('batch_add_to_queue POSTs each URI and returns a summary', async () => {
+    const h = harness();
+    const out = await h.invoke('batch_add_to_queue', { uris: ['spotify:track:a1', 'spotify:track:a2', 'spotify:episode:e1'] });
+    assert.equal(h.posts.length, 3);
+    assert.match(out.content[0].text, /Queued 3/);
+    assert.equal((out.structuredContent as any)?.ok, true);
+  });
+  it('batch_add_to_queue dry_run does not POST', async () => {
+    const h = harness();
+    const out = await h.invoke('batch_add_to_queue', { uris: ['spotify:track:a1'], dry_run: true });
+    assert.match(out.content[0].text, /dry run/i);
+    assert.equal(h.posts.length, 0);
+  });
+  it('batch_add_to_queue rejects invalid URIs', async () => {
+    const h = harness();
+    await assert.rejects(() => h.invoke('batch_add_to_queue', { uris: ['not-a-uri'] }), /Invalid Spotify track\/episode URI/);
   });
   it('save_queue_as_playlist include_episodes=false skips episodes', async () => {
     const h = harness({ queueData: { currently_playing: episode('ep1'), queue: [track('t1'), episode('ep2')] } });

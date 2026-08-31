@@ -541,10 +541,7 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
     },
     async (args) => {
       const rf = args.response_format;
-      const loaded: LoadedPlaylist[] = [];
-      for (const ref of args.source_playlist_ids) {
-        loaded.push(await loadPlaylistFull(client, ref));
-      }
+      const loaded = await Promise.all(args.source_playlist_ids.map((ref) => loadPlaylistFull(client, ref)));
       const uriLists = loaded.map((p) => trackRows(p.items).map((r) => r.uri));
       const counts = intersectionOf(uriLists).length;
       const intersected = dedupeSequence(intersectionOf(uriLists), args.dedupe);
@@ -1342,8 +1339,7 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
     },
     async (args) => {
       const rf = args.response_format;
-      const loaded: LoadedPlaylist[] = [];
-      for (const ref of args.playlist_ids) loaded.push(await loadPlaylistFull(client, ref));
+      const loaded = await Promise.all(args.playlist_ids.map((ref) => loadPlaylistFull(client, ref)));
       const sets = loaded.map((p) => new Set(trackRows(p.items).map((r) => r.uri)));
       const threshold = args.min_overlap ?? 0.5;
       const pairs: Array<{ a: string; b: string; intersection: number; union: number; jaccard: number }> = [];

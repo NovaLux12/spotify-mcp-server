@@ -335,6 +335,12 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
         .array(z.enum(['track', 'episode']))
         .optional()
         .describe("Item types to include beyond the default 'track', e.g. ['track', 'episode']"),
+      fetch_all: z
+        .boolean()
+        .optional()
+        .describe(
+          `Fetch every item across pages (up to ${getConfig().fetchAllCap}), continuing FROM offset rather than restarting at 0. limit is the page size. Note: library tools' fetch_all instead ignores offset — contracts differ between modules (#110).`,
+        ),
     },
     async (args) => {
       const id = encodeURIComponent(
@@ -351,22 +357,43 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
       const page = await client.get<PlaylistItemsResponse>(`/playlists/${id}/items`, params);
       if (!page) throw new Error(`Could not retrieve items for playlist ${args.playlist_id}`);
 
+      let items = page.items;
+      let total = page.total;
+      if (args.fetch_all && page) {
+        const collected = [...page.items];
+        while (collected.length < Math.min(page.total, FETCH_ALL_CAP())) {
+          const nextPage = await client.get<PlaylistItemsResponse>(`/playlists/${id}/items`, {
+            limit: String(args.limit ?? 100),
+            offset: String(collected.length),
+          });
+          if (!nextPage || nextPage.items.length === 0) break;
+          collected.push(...nextPage.items);
+        }
+        if (collected.length > FETCH_ALL_CAP()) collected.length = FETCH_ALL_CAP();
+        items = collected;
+      }
+
       // #51/#52/#53: truncate to max_results, expose pagination, and offer a
       // raw-JSON view of the page for programmatic consumers.
       const fmt: ResponseFormatValue = args.response_format;
-      const view = truncateItems(page.items, resolveMaxResults(args.max_results));
+      const view = args.fetch_all
+        ? { items, footer: undefined }
+        : truncateItems(items, resolveMaxResults(args.max_results));
       const pag = paginationInfo({
-        total: page.total,
+        total,
         offset: args.offset ?? 0,
         limit: args.limit ?? 100,
         returned: view.items.length,
       });
 
       if (fmt === 'json') {
-        return textResult(jsonText(page), listStructuredContent(view.items, pag));
+        const payload = args.fetch_all
+          ? { total, items: view.items, offset: args.offset ?? 0, limit: args.limit ?? 100 }
+          : page;
+        return textResult(jsonText(payload), listStructuredContent(view.items, pag));
       }
 
-      const lines = [`Playlist items (${page.total} total, showing ${view.items.length}):`];
+      const lines = [`Playlist items (${total} total, showing ${view.items.length}):`];
       let position = (args.offset ?? 0) + 1;
       for (const item of view.items) {
         const description = formatPlaylistItem(item);

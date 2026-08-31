@@ -616,8 +616,7 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
     },
     async (args) => {
       const rf = args.response_format;
-      const loaded: LoadedPlaylist[] = [];
-      for (const ref of args.playlist_ids) loaded.push(await loadPlaylistFull(client, ref));
+      const loaded = await Promise.all(args.playlist_ids.map((ref) => loadPlaylistFull(client, ref)));
       const seqs = loaded.map((p) => trackRows(p.items).map((r) => r.uri));
       const per = args.strategy === 'chunk' ? (args.chunk_size ?? 3) : 1;
       const out: string[] = [];
@@ -688,8 +687,7 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
     },
     async (args) => {
       const rf = args.response_format;
-      const loaded: LoadedPlaylist[] = [];
-      for (const ref of args.playlist_ids) loaded.push(await loadPlaylistFull(client, ref));
+      const loaded = await Promise.all(args.playlist_ids.map((ref) => loadPlaylistFull(client, ref)));
       const seqs = loaded.map((p) => trackRows(p.items).map((r) => r.uri));
       const raw = seqs.flat();
       const merged = dedupeSequence(raw, args.dedupe ?? 'first');
@@ -738,8 +736,7 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
     async (args) => {
       const rf = args.response_format;
       const base = await loadPlaylistFull(client, args.base_playlist_id);
-      const subs: LoadedPlaylist[] = [];
-      for (const ref of args.subtract_playlist_ids) subs.push(await loadPlaylistFull(client, ref));
+      const subs = await Promise.all(args.subtract_playlist_ids.map((ref) => loadPlaylistFull(client, ref)));
       const baseSeq = trackRows(base.items).map((r) => r.uri);
       const cut = unionOf(subs.map((s) => trackRows(s.items).map((r) => r.uri)));
       const diff = differenceOf(baseSeq, cut);
@@ -791,8 +788,7 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
     },
     async (args) => {
       const rf = args.response_format;
-      const loaded: LoadedPlaylist[] = [];
-      for (const ref of args.playlist_ids) loaded.push(await loadPlaylistFull(client, ref));
+      const loaded = await Promise.all(args.playlist_ids.map((ref) => loadPlaylistFull(client, ref)));
       const nameOf = loaded.map((p) => p.name ?? p.id);
       const rowsPer = loaded.map((p) => trackRows(p.items));
       const membership = new Map<string, OpRow[]>();
@@ -838,8 +834,7 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
     },
     async (args) => {
       const rf = args.response_format;
-      const loaded: LoadedPlaylist[] = [];
-      for (const ref of args.playlist_ids) loaded.push(await loadPlaylistFull(client, ref));
+      const loaded = await Promise.all(args.playlist_ids.map((ref) => loadPlaylistFull(client, ref)));
       const nameOf = loaded.map((p) => p.name ?? p.id);
       const seqs = loaded.map((p) => trackRows(p.items).map((r) => r.uri));
       const union = unionOf(seqs);
@@ -1607,8 +1602,7 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
     async (args) => {
       const rf = args.response_format;
       const metric = args.balance_by ?? 'count';
-      const loaded: LoadedPlaylist[] = [];
-      for (const ref of args.playlist_ids) loaded.push(await loadPlaylistFull(client, ref));
+      const loaded = await Promise.all(args.playlist_ids.map((ref) => loadPlaylistFull(client, ref)));
       const loadedById = new Map(loaded.map((p) => [p.id, p.items]));
       const buckets = loaded.map((p) => {
         const rows = trackRows(p.items).filter((r) => r.uri && (metric === 'count' || r.durationMs != null));

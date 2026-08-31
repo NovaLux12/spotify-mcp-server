@@ -1348,3 +1348,66 @@ test('show_episode_search reports no matches', async () => {
   assert.match(out, /No episodes matching/);
 });
 
+// --------------------------------------------------- catalog_batch_lookup
+
+test('catalog_batch_lookup rejects >50 URIs via schema before any client call', async () => {
+  const { registered } = makeHarness(registerCatalogTools);
+  const tooMany = Array.from({ length: 51 }, (_, i) => `spotify:track:${String(i).padStart(22, '0')}`);
+  const schema = findTool(registered, 'catalog_batch_lookup').schema.uris;
+  assert.equal(schema.safeParse(tooMany).success, false, 'schema max(50) must reject 51 URIs');
+});
+
+test('catalog_batch_lookup accepts exactly 50 URIs and fans out per type', async () => {
+  // Use 22-char IDs so parseSpotifyUri resolves them correctly
+  const trackCount = 25;
+  const albumCount = 20; // albums chunk at 20, so 20 = exactly 1 chunk → 1 call
+  const tracks = Array.from({ length: trackCount }, (_, i) => ({
+    id: String(i).padStart(22, '0'),
+    name: `Track ${i}`,
+    uri: `spotify:track:${String(i).padStart(22, '0')}`,
+  }));
+  const albums = Array.from({ length: albumCount }, (_, i) => ({
+    id: String(100 + i).padStart(22, '0'),
+    name: `Album ${i}`,
+    uri: `spotify:album:${String(100 + i).padStart(22, '0')}`,
+  }));
+  const trackIds = tracks.map((t) => t.id);
+  const albumIds = albums.map((a) => a.id);
+  const { registered, calls } = makeHarness(registerCatalogTools, {
+    getResponse: (p, params) => {
+      if (p === '/tracks') {
+        const ids = params!.ids.split(',');
+        return { tracks: ids.map((id) => tracks.find((t) => t.id === id) ?? { id, name: `Track ${id}`, uri: `spotify:track:${id}` }) };
+      }
+      if (p === '/albums') {
+        const ids = params!.ids.split(',');
+        return { albums: ids.map((id) => albums.find((a) => a.id === id) ?? { id, name: `Album ${id}`, uri: `spotify:album:${id}` }) };
+      }
+      return undefined;
+    },
+  });
+  const uris = [...tracks.map((t) => t.uri), ...albums.map((a) => a.uri)];
+  const out = text(await invoke(findTool(registered, 'catalog_batch_lookup'), { uris }));
+  // One chunk per type group: 1 tracks call + 1 albums call
+  assert.equal(calls.filter((c) => c.path === '/tracks').length, 1);
+  assert.equal(calls.filter((c) => c.path === '/albums').length, 1);
+  assert.match(out, /Batch lookup/);
+  assert.match(out, /Track 0/);
+  assert.match(out, /Album 0/);
+});
+
+test('catalog_batch_lookup skips unsupported types (playlists) and reports them as invalid', async () => {
+  const { registered } = makeHarness(registerCatalogTools, {
+    getResponse: (p) => {
+      if (p === '/tracks') return { tracks: [{ id: 't1', name: 'Track 1', uri: 'spotify:track:t1' }] };
+      return undefined;
+    },
+  });
+  const out = text(await invoke(findTool(registered, 'catalog_batch_lookup'), {
+    uris: ['spotify:track:t1', 'spotify:playlist:pl1'],
+  }));
+  assert.match(out, /Invalid URIs skipped/i);
+  assert.match(out, /spotify:playlist:pl1/);
+  assert.match(out, /Track 1/);
+});
+

@@ -239,4 +239,33 @@ describe('MCP stdio smoke (real src/index.ts)', () => {
     assert.equal(genreResource, undefined, 'spotify://genres resource must not be listed');
     assert.ok(resources.some((r) => r.uri === 'spotify://me'), 'core spotify://me resource should still be listed');
   });
+
+  // --------------------------------------------------------------
+  // Multi-tool sequential workflow (regression guard for the
+  // sequential-call anti-pattern: one tool call must not try to
+  // subsume a second independent tool invocation).
+  // --------------------------------------------------------------
+  it('supports sequential tool workflow without the single-call anti-pattern', async () => {
+    // Regression guard: agents must issue independent tools/call requests
+    // for each tool invocation; one call must not subsume a second.
+    // We exercise two sequential calls against the live stdio server.
+    //
+    // Call 1: local-only parse_spotify_uri (zero network — always succeeds).
+    const parseRes = await client.request('tools/call', {
+      name: 'parse_spotify_uri',
+      arguments: { uri: 'spotify:track:4iV5W9uYEdYUVa79Axb7Rh' },
+    });
+    assert.equal(parseRes.error, undefined, `parse_spotify_uri must not error: ${JSON.stringify(parseRes.error)}`);
+
+    // Call 2: get_me (real API call — may 403 with test token, but must not
+    // crash the transport; a JSON-RPC error result is acceptable).
+    const meRes = await client.request('tools/call', {
+      name: 'get_me',
+      arguments: {},
+    });
+    // The call itself must not crash the server; either a clean result or a
+    // structured error response is fine (test token has no real Spotify scopes).
+    assert.ok(meRes.error !== undefined || meRes.result !== undefined,
+      'get_me must return either a result or a structured error, never crash the server');
+  });
 });

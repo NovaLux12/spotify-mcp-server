@@ -11,6 +11,7 @@ import type { SpotifyClient } from '../client.js';
 import type { PlaybackState } from '../types/spotify.js';
 import { DryRun, ResponseFormat } from '../shaping.js';
 import { getConfig } from '../config.js';
+import { addToQueueBatch } from './queueops.js';
 
 type ToolResult = { content: Array<{ type: 'text'; text: string }>; structuredContent?: Record<string, unknown> };
 function textResult(text: string, structured?: Record<string, unknown>): ToolResult {
@@ -243,9 +244,8 @@ export function registerPlaybackExtTools(server: McpServer, client: SpotifyClien
       if (sess.tracks.length === 0) return textResult(`Session "${args.session_id}" has no tracks to replay.`, { ok: false });
       if (args.dry_run) return { content: [{ type: 'text', text: `[dry run] Would replay "${args.session_id}" via ${args.mode}: ${sess.tracks.length} tracks` }] };
       if (args.mode === 'queue') {
-        let queued = 0;
-        for (const uri of sess.tracks) { try { await client.post(`/me/player/queue?${new URLSearchParams({ uri })}`); queued++; } catch { } }
-        return emit(args.response_format as string, { ok: true, session_id: args.session_id, mode: 'queue', queued, total: sess.tracks.length }, `Replayed session "${args.session_id}" → queued ${queued}/${sess.tracks.length} tracks.`);
+        const { queued, failed } = await addToQueueBatch(client, sess.tracks);
+        return emit(args.response_format as string, { ok: true, session_id: args.session_id, mode: 'queue', queued, failed, total: sess.tracks.length }, `Replayed session "${args.session_id}" → queued ${queued}/${sess.tracks.length} tracks${failed.length ? ` (${failed.length} failed)` : ''}.`);
       } else {
         const pl = await client.post<{ id: string; uri: string }>('/me/playlists', { name: `Replay: ${sess.id}`, description: `Replay of session ${sess.id} — ${sess.tags.join(', ')}` });
         const id = (pl as any)?.id;
