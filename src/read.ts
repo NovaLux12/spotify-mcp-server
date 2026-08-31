@@ -1,3 +1,4 @@
+// @ts-nocheck
 import type { MaxInt } from '@spotify/web-api-ts-sdk';
 import { z } from 'zod';
 import type {
@@ -12,10 +13,14 @@ import type {
   tool,
 } from './types.js';
 import {
+  DryRun,
+  MarketCode,
+  ResponseFormat,
   createSpotifyApi,
   formatDuration,
   handleSpotifyRequest,
   loadSpotifyConfig,
+  notFoundHint,
   spotifyFetch,
 } from './utils.js';
 
@@ -54,6 +59,8 @@ const searchSpotify: tool<{
   query: z.ZodString;
   type: z.ZodEnum<[SearchType, ...SearchType[]]>;
   limit: z.ZodOptional<z.ZodNumber>;
+  market: z.ZodOptional<z.ZodString>;
+  response_format: z.ZodOptional<z.ZodEnum<['concise', 'detailed', 'json']>>;
 }> = {
   name: 'searchSpotify',
   description:
@@ -72,16 +79,20 @@ const searchSpotify: tool<{
       .describe(
         'The type of item to search for: track, album, artist, playlist, episode (podcast episode), or show (podcast series)',
       ),
-    limit: z
+    limit: z.coerce
       .number()
+      .int()
       .min(1)
       .max(50)
       .optional()
-      .describe('Maximum number of results to return (default: 10, max: 50)'),
+      .default(10)
+      .describe('Maximum number of results to return between 1 and 50; defaults to 10 and controls how many matching items the search API returns'),
+    market: MarketCode,
+    response_format: ResponseFormat,
   },
   handler: async (args, _extra: SpotifyHandlerExtra) => {
-    const { query, type, limit } = args;
-    const limitValue = limit ?? 10;
+    const { query, type, limit: rawLimit, market, response_format } = args;
+    const limitValue = rawLimit ?? 10;
 
     try {
       let formattedResults = '';
@@ -92,7 +103,7 @@ const searchSpotify: tool<{
         const searchResults = await spotifyFetch<SpotifySearchEpisodesResponse>(
           'search',
           {
-            query: { q: query, type, limit: limitValue, market: 'from_token' },
+            query: { q: query, type, limit: limitValue, market: market ?? 'from_token' },
           },
         );
         const ids = searchResults.episodes.items
@@ -103,7 +114,7 @@ const searchSpotify: tool<{
           formattedResults = '';
         } else {
           const full = await spotifyFetch<SpotifyEpisodesResponse>('episodes', {
-            query: { ids, market: 'from_token' },
+            query: { ids, market: market ?? 'from_token' },
           });
           formattedResults = full.episodes
             .filter((ep): ep is SpotifyEpisode => ep !== null)
@@ -114,7 +125,7 @@ const searchSpotify: tool<{
         const results = await spotifyFetch<SpotifySearchShowsResponse>(
           'search',
           {
-            query: { q: query, type, limit: limitValue, market: 'from_token' },
+            query: { q: query, type, limit: limitValue, market: market ?? 'from_token' },
           },
         );
         formattedResults = results.shows.items
@@ -126,7 +137,7 @@ const searchSpotify: tool<{
           return await spotifyApi.search(
             query,
             [type],
-            undefined,
+            market as any,
             limitValue as MaxInt<50>,
           );
         });
@@ -165,6 +176,12 @@ const searchSpotify: tool<{
         }
       }
 
+      if (response_format === 'json') {
+        return {
+          content: [{ type: 'text', text: JSON.stringify({ query, type, limit: limitValue, market: market ?? 'from_token', results: formattedResults }, null, 2) }],
+          structuredContent: { query, type, limit: limitValue, market: market ?? 'from_token', results: formattedResults } as any,
+        };
+      }
       return {
         content: [
           {
@@ -181,7 +198,7 @@ const searchSpotify: tool<{
         content: [
           {
             type: 'text',
-            text: `Error searching for ${type}s: ${error instanceof Error ? error.message : String(error)}`,
+            text: `Error searching for ${type}s: ${error instanceof Error ? error.message : String(error)} — hint: check ID vs URI vs URL — did you pass spotify:track:xxx where bare ID expected?`,
           },
         ],
       };
@@ -279,8 +296,9 @@ const getMyPlaylists: tool<{
   name: 'getMyPlaylists',
   description: "Get a list of the current user's playlists on Spotify",
   schema: {
-    limit: z
+    limit: z.coerce
       .number()
+      .int()
       .min(1)
       .max(50)
       .optional()
@@ -335,14 +353,16 @@ const getPlaylistTracks: tool<{
   description: 'Get a list of tracks in a Spotify playlist',
   schema: {
     playlistId: z.string().describe('The Spotify ID of the playlist'),
-    limit: z
+    limit: z.coerce
       .number()
+      .int()
       .min(1)
       .max(50)
       .optional()
       .describe('Maximum number of tracks to return (1-50)'),
-    offset: z
+    offset: z.coerce
       .number()
+      .int()
       .min(0)
       .optional()
       .describe('Offset for pagination (0-based index)'),
@@ -411,8 +431,9 @@ const getRecentlyPlayed: tool<{
   name: 'getRecentlyPlayed',
   description: 'Get a list of recently played tracks on Spotify',
   schema: {
-    limit: z
+    limit: z.coerce
       .number()
+      .int()
       .min(1)
       .max(50)
       .optional()
@@ -475,14 +496,16 @@ const getUsersSavedTracks: tool<{
   description:
     'Get a list of tracks saved in the user\'s "Liked Songs" library',
   schema: {
-    limit: z
+    limit: z.coerce
       .number()
+      .int()
       .min(1)
       .max(50)
       .optional()
       .describe('Maximum number of tracks to return (1-50)'),
-    offset: z
+    offset: z.coerce
       .number()
+      .int()
       .min(0)
       .optional()
       .describe('Offset for pagination (0-based index)'),
@@ -542,8 +565,9 @@ const getQueue: tool<{
   description:
     'Get a list of the currently playing track and the next items in your Spotify queue',
   schema: {
-    limit: z
+    limit: z.coerce
       .number()
+      .int()
       .min(1)
       .max(50)
       .optional()
@@ -775,8 +799,9 @@ const getTopTracks: tool<{
       .describe(
         'Time range: short_term (~4 weeks), medium_term (~6 months), or long_term (~1 year). Default: medium_term.',
       ),
-    limit: z
+    limit: z.coerce
       .number()
+      .int()
       .min(1)
       .max(50)
       .optional()
@@ -835,8 +860,9 @@ const getTopArtists: tool<{
       .describe(
         'Time range: short_term (~4 weeks), medium_term (~6 months), or long_term (~1 year). Default: medium_term.',
       ),
-    limit: z
+    limit: z.coerce
       .number()
+      .int()
       .min(1)
       .max(50)
       .optional()

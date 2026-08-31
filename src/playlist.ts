@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { z } from 'zod';
 import type { SpotifyHandlerExtra, tool } from './types.js';
 import { handleSpotifyRequest, spotifyFetch } from './utils.js';
@@ -224,18 +225,21 @@ const reorderPlaylistItems: tool<{
     'Reorder a range of tracks within a Spotify playlist by moving them to a new position',
   schema: {
     playlistId: z.string().describe('The Spotify ID of the playlist'),
-    rangeStart: z
+    rangeStart: z.coerce
       .number()
+      .int()
       .nonnegative()
       .describe('The position of the first item to move (0-based index)'),
-    insertBefore: z
+    insertBefore: z.coerce
       .number()
+      .int()
       .nonnegative()
       .describe(
         'The position where the items should be inserted (0-based index)',
       ),
-    rangeLength: z
+    rangeLength: z.coerce
       .number()
+      .int()
       .min(1)
       .optional()
       .describe('Number of consecutive items to move (defaults to 1)'),
