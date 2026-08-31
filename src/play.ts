@@ -58,7 +58,7 @@ async function ensureActiveDevice(preferredDeviceId?: string): Promise<string> {
 
 // Shared queue helper — POSTs each URI sequentially (Spotify has no batch queue endpoint).
 // Dedupes input, reports partial success. Caller can retry with `failed` only to avoid duplicates.
-// Note: 200 tracks ≈ 20s at 100ms pacing — consider createPlaylist alternative for large sets.
+// Note: sequential POSTs, coalesced via batch helper — consider createPlaylist alternative for large sets.
 async function addToQueueBatch(uris: string[], deviceId?: string): Promise<{ queued: string[]; failed: Array<{ uri: string; error: string }> }> {
   const deduped = [...new Set(uris)];
   const queued: string[] = [];
@@ -522,7 +522,7 @@ const batchAddToQueue: tool<{
   description:
     'Add multiple tracks to the playback queue in one call (cap 200). ' +
     'Dedupes input URIs, reports {queued, failed} for partial success. ' +
-    'POSTs each URI to /me/player/queue (N writes, one per URI) with 100ms pacing — 200 tracks ≈ 20s. ' +
+    'POSTs each URI to /me/player/queue (N writes, one per URI) sequential via batch helper — ' +
     'Queue has no server dedup — on partial failure retry only failed URIs. For 200-track bulk consider createPlaylist + play.',
   schema: {
     uris: z.array(z.string().min(1)).min(1).max(200).describe('Array of Spotify track URIs (spotify:track:xxx) or bare IDs (max 200, deduped)'),
