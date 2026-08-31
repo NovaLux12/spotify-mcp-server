@@ -582,7 +582,7 @@ export function registerSwarm3ShowsTools(server: McpServer, client: SpotifyClien
   // 9. unsubscribe_from_show --------------------------------------------------
   server.tool(
     'unsubscribe_from_show',
-    'Remove ONE saved show from your library (DELETE /me/shows) — removal verb: also see remove_saved_shows (bulk), delete_playlist_snapshot (local snapshots).  after confirming what it is — '
+    'Remove ONE saved show from your library (DELETE /me/shows) — removal verb: also see remove_saved_shows (bulk), delete_playlist_snapshot (local snapshots). After confirming what it is — '
       + 'previews a PLAN naming the show by default; pass dry_run=false to commit.',
     {
       show_id: spotifyId('show').describe('Show ID, spotify:show: URI, or open.spotify.com/show URL'),
@@ -618,7 +618,7 @@ export function registerSwarm3ShowsTools(server: McpServer, client: SpotifyClien
   // 10. remove_saved_shows ----------------------------------------------------
   server.tool(
     'remove_saved_shows',
-    'Bulk-remove shows from your library (DELETE /me/shows) — removal verb family: also see unsubscribe_from_show (single), remove_saved_episode (episodes).  after cross-checking which of the '
+    'Bulk-remove shows from your library (DELETE /me/shows) — removal verb family: also see unsubscribe_from_show (single), remove_saved_episode (episodes). After cross-checking which of the '
       + 'given IDs are actually saved — previews a PLAN by default; pass dry_run=false to commit.',
     {
       show_ids: spotifyIdArray('show').min(1).max(50).describe('Show IDs/URIs to remove (1–50)'),
@@ -764,7 +764,7 @@ export function registerSwarm3ShowsTools(server: McpServer, client: SpotifyClien
   // 14. remove_saved_episode ---------------------------------------------------
   server.tool(
     'remove_saved_episode',
-    'Remove episodes from your library (DELETE /me/episodes) — removal verb: also see remove_saved_shows (shows), delete_playlist_snapshot (local).  after cross-checking which are '
+    'Remove episodes from your library (DELETE /me/episodes) — removal verb: also see remove_saved_shows (shows), delete_playlist_snapshot (local). After cross-checking which are '
       + 'actually saved — previews a PLAN by default; pass dry_run=false to commit.',
     {
       episode_ids: spotifyIdArray('episode').min(1).max(50).describe('Episode IDs/URIs to remove (1–50)'),

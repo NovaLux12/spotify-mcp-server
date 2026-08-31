@@ -455,7 +455,7 @@ export function registerExhaustMiscTools(server: McpServer, client: SpotifyClien
   // 9. find_duplicate_tracks_across_playlists
   server.tool(
     'find_duplicate_tracks_across_playlists',
-    'Find tracks that appear in more than one of the given playlists (cross-playlist dupes). Quota: 🟡 N GETs (one per playlist).',
+    'Find tracks that appear in more than one of the given playlists (cross-playlist dupes). Quota: 🟡 N GETs (one per playlist). Also covers: find_duplicates_in_playlist (single-playlist), find_duplicate_playlists — See also: find_duplicates_in_playlist, find_duplicate_playlists.',
     {
       playlist_ids: z.array(z.string().min(1)).min(2).max(20).describe('Playlist IDs to compare (2–20)'),
       response_format: ResponseFormat,

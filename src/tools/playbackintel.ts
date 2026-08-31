@@ -124,7 +124,7 @@ export function registerPlaybackIntelTools(server: McpServer, client: SpotifyCli
 
   // 274 describe_queue — enriched queue + context
   server.tool('describe_queue',
-    'Enriched queue view: currently playing + up-next with durations, total remaining, and source context label. 🟢 (1 read) or 🟡 (2 if include_context resolves playlist/album name).',
+    'Enriched queue view: currently playing + up-next with durations, total remaining, and source context label. 🟢 (1 read) or 🟡 (2 if include_context resolves playlist/album name). Also covers: raw queue via get_queue, snapshot via get_queue_snapshot — See also: get_queue, get_queue_snapshot.',
     { max_results: MaxResults, include_context: z.boolean().default(true).describe('Resolve context URI to playlist/album name (extra GET)'), response_format: ResponseFormat },
     async (args) => {
       const cap = resolveMaxResults(args.max_results as number | undefined);

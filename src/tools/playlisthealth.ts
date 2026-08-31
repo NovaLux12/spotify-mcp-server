@@ -275,7 +275,7 @@ export function registerPlaylistHealthTools(server: McpServer, client: SpotifyCl
 
   server.tool(
     'find_duplicate_playlists',
-    'Scan your playlists for exact and near-duplicate track sets. Exact = identical URI sets (order-insensitive); near = Jaccard overlap >= threshold. Read-only.',
+    'Scan your playlists for exact and near-duplicate track sets. Exact = identical URI sets (order-insensitive); near = Jaccard overlap >= threshold. Read-only. Also covers: find_duplicates_in_playlist, find_duplicate_tracks_across_playlists — See also: find_duplicates_in_playlist, find_duplicate_tracks_across_playlists.',
     {
       threshold: z.number().min(0).max(1).optional().default(0.85).describe('Jaccard threshold for near-duplicates (default 0.85)'),
       max_playlists: z.number().int().min(1).max(100).optional().describe('How many playlists to scan (default 50, max 100)'),

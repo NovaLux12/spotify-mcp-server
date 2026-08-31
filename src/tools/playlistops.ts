@@ -230,7 +230,7 @@ export function registerPlaylistOpsTools(server: McpServer, client: SpotifyClien
   // diff_playlists
   server.tool(
     'diff_playlists',
-    'Compare two playlists fully paged: tracks only in A, only in B (by track ID), and tracks present in both but at different positions. Rendered rows are capped by max_results; totals are always accurate.',
+    'Compare two playlists fully paged: tracks only in A, only in B (by track ID), and tracks present in both but at different positions. Rendered rows are capped by max_results; totals are always accurate. Also covers: playlist_diff (snapshot diff), playlist_difference_plan (A minus B plan) — See also: playlist_diff, playlist_difference_plan.',
     {
       ...sharedListFields,
       a: z.string().describe('First playlist, as ID or spotify:playlist: URI'),

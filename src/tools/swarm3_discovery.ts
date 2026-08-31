@@ -1344,7 +1344,7 @@ export function registerSwarm3DiscoveryTools(server: McpServer, client: SpotifyC
     'b_sides_finder',
     'Surfaces an artist\'s b-sides: tracks on singles/compilation releases whose normalized titles never appear on '
       + 'the artist\'s core album-group releases, found via discography walks + chunked full-album fan-in. '
-      + 'Quota: 2 walks + 1 /albums?ids= call per 20 releases per group.',
+      + 'Quota: 2 walks + 1 /albums?ids= call per 20 releases per group. Also covers: b_sides_detector — See also: b_sides_detector.',
     {
       artist_id: spotifyId('artist'),
       max_per_group: z.number().int().min(1).max(60).optional()
