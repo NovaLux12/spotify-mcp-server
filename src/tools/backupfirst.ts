@@ -9,6 +9,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
 import { getConfig } from '../config.js';
 import { backupDir, nextBackupSeq, collectSnapshot } from './backup.js';
+import { ResponseFormat } from '../shaping.js';
 
 type ToolResult = { content: Array<{ type: 'text'; text: string }>; structuredContent?: Record<string, unknown> };
 function textResult(text: string, s?: Record<string, unknown>): ToolResult {
@@ -62,6 +63,7 @@ export function registerBackupFirstTools(server: McpServer, client: SpotifyClien
     'Create a pre-flight library snapshot before a destructive operation. Returns snapshot file path and counts for later restore. Read-only against Spotify.',
     {
       notes: z.string().optional().describe('Free-text note for the snapshot'),
+      response_format: ResponseFormat,
     },
     async (args) => {
       try {

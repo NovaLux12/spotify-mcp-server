@@ -6,7 +6,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
 import { getConfig } from '../config.js';
 import { SpotifyApiError } from '../client.js';
-import { DryRun } from '../shaping.js';
+import { DryRun, ResponseFormat } from '../shaping.js';
 import type { PlaylistItemObject } from '../types/spotify.js';
 
 type TextContent = { type: 'text'; text: string };
@@ -57,6 +57,7 @@ export function registerPlaylistHealthTools(server: McpServer, client: SpotifyCl
     'Audit a playlist for unavailable, local, duplicate, and empty issues (read-only)',
     {
       playlist_id: z.string().min(1).describe('Playlist ID'),
+      response_format: ResponseFormat,
     },
     async (args) => {
       const playlistId = args.playlist_id;
@@ -123,6 +124,7 @@ export function registerPlaylistHealthTools(server: McpServer, client: SpotifyCl
     {
       playlist_id: z.string().min(1).describe('Playlist ID'),
       include_profiles: z.boolean().optional().describe('If true, fetch the owner public profile'),
+      response_format: ResponseFormat,
     },
     async (args) => {
       const encId = encodeURIComponent(args.playlist_id);
@@ -145,6 +147,7 @@ export function registerPlaylistHealthTools(server: McpServer, client: SpotifyCl
     'Report who added what to a playlist (counts + first/last timestamps, most-active)',
     {
       playlist_id: z.string().min(1).describe('Playlist ID'),
+      response_format: ResponseFormat,
     },
     async (args) => {
       const encId = encodeURIComponent(args.playlist_id);
@@ -181,6 +184,7 @@ export function registerPlaylistHealthTools(server: McpServer, client: SpotifyCl
     {
       playlist_id: z.string().min(1).describe('Playlist ID'),
       snapshot_id: z.string().optional().describe('Custom snapshot ID (default: timestamp)'),
+      response_format: ResponseFormat,
     },
     async (args) => {
       const encId = encodeURIComponent(args.playlist_id);
@@ -209,6 +213,7 @@ export function registerPlaylistHealthTools(server: McpServer, client: SpotifyCl
     {
       playlist_id: z.string().min(1).describe('Playlist ID'),
       snapshot_id: z.string().min(1).describe('Snapshot ID to compare against'),
+      response_format: ResponseFormat,
     },
     async (args) => {
       const filePath = snapshotPath(args.playlist_id, args.snapshot_id);
@@ -246,6 +251,7 @@ export function registerPlaylistHealthTools(server: McpServer, client: SpotifyCl
       playlist_id: z.string().min(1).describe('Playlist ID or Spotify URL/URI'),
       dry_run: z.boolean().optional().describe('Preview only — no writes'),
       max_results: z.number().int().min(1).max(100).optional().describe('Max unavailable items to remove (default 100)'),
+      response_format: ResponseFormat,
     },
     async (args) => {
       const raw = args.playlist_id;
@@ -275,6 +281,7 @@ export function registerPlaylistHealthTools(server: McpServer, client: SpotifyCl
       max_playlists: z.number().int().min(1).max(100).optional().describe('How many playlists to scan (default 50, max 100)'),
       scan_cap: z.number().int().min(1).max(10000).optional().describe('Max items walked per playlist (default fetchAllCap)'),
       dry_run: DryRun,
+      response_format: ResponseFormat,
     },
     async (args) => {
       const cap2 = args.scan_cap ?? getConfig().fetchAllCap;
@@ -336,6 +343,7 @@ export function registerPlaylistHealthTools(server: McpServer, client: SpotifyCl
     'List stored snapshots (optionally filtered by playlist_id)',
     {
       playlist_id: z.string().optional().describe('If provided, only snapshots for this playlist'),
+      response_format: ResponseFormat,
     },
     async (args) => {
       const dir = snapshotDir();

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { MARKET_CODE } from './catalog.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
 import { ResponseFormat, MaxResults, resolveMaxResults, truncateItems } from '../shaping.js';
@@ -150,7 +151,7 @@ export function registerSearchDeepTool(server: McpServer, client: SpotifyClient)
         .max(5)
         .optional()
         .describe('Pages of 10 results to walk per type, 1–5. Default: 1'),
-      market: z.string().optional().describe('ISO 3166-1 alpha-2 country code'),
+      market: MARKET_CODE.optional().describe('ISO 3166-1 alpha-2 country code, e.g. \'US\''),
       response_format: ResponseFormat,
       max_results: MaxResults,
     },

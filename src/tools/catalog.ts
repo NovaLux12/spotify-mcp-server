@@ -564,7 +564,7 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
     'Get full details for a podcast episode',
     {
       id: z.string().describe('Spotify episode ID'),
-      market: z.string().optional().describe('ISO 3166-1 alpha-2 country code'),
+      market: MARKET_CODE.optional().describe('ISO 3166-1 alpha-2 country code, e.g. \'US\''),
       response_format: ResponseFormat,
     },
     async (args) => {
@@ -623,9 +623,7 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
     "Get an artist's ten most-played tracks for a market. Removed by Spotify's February 2026 Web API changes — unavailable for newer app registrations",
     {
       id: z.string().describe('Spotify artist ID'),
-      market: z.string().optional().describe(
-        'ISO 3166-1 alpha-2 country code. Defaults to the account country.',
-      ),
+      market: MARKET_CODE.optional().describe('ISO 3166-1 alpha-2 country code, e.g. \'US\' — defaults to the account country'),
       ...sharedListFields,
     },
     async (args) => {
@@ -855,7 +853,7 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
     'Get a single Spotify browse category by ID (GET /browse/categories/{id}). Quota: 🟢 single.',
     {
       category_id: z.string().min(1).describe('Category ID from get_categories'),
-      country: z.string().optional().describe('ISO 3166-1 alpha-2 country code'),
+      country: MARKET_CODE.optional().describe('ISO 3166-1 alpha-2 country code, e.g. \'US\''),
       locale: z.string().optional().describe('Locale, e.g. en_US'),
       response_format: ResponseFormat,
     },
@@ -899,7 +897,7 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
         query: z.string().min(1).describe('Search query'),
         limit: z.number().int().min(1).max(10).optional().describe('Results per type, 1–10. Default: 5'),
         offset: z.number().int().min(0).max(1000).optional().describe('Index of the first result to return, 0–1000'),
-        market: z.string().optional().describe('ISO 3166-1 alpha-2 country code'),
+        market: MARKET_CODE.optional().describe('ISO 3166-1 alpha-2 country code, e.g. \'US\''),
         include_external: z.enum(['audio']).optional().describe('Pass "audio" to include externally-hosted audio items'),
         response_format: ResponseFormat,
         max_results: z.number().int().positive().max(2000).optional().describe('Max items to return'),
@@ -1061,7 +1059,7 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
     'market_validate',
     'Validate ISO 3166-1 market codes against GET /markets (cached) and optionally return the account market from /me. Quota: 🟢 1–2 calls.',
     {
-      markets: z.array(z.string().min(2).max(2)).optional().describe('Market codes to validate (2-letter). If omitted, just lists valid markets / account market.'),
+      markets: z.array(MARKET_CODE).optional().describe('Market codes to validate (2-letter). If omitted, just lists valid markets / account market.'),
       include_account_market: z.boolean().optional().describe('Include account country from /me'),
       response_format: ResponseFormat,
     },
@@ -1128,7 +1126,7 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
     'Category → playlists → optional items peek in one call (GET /browse/categories/{id} + /playlists (+ /playlists/{id}/tracks peek)). Quota: 🟡 2–3 calls.',
     {
       category_id: z.string().min(1).describe('Category ID from get_categories'),
-      country: z.string().optional().describe('ISO 3166-1 alpha-2 country code'),
+      country: MARKET_CODE.optional().describe('ISO 3166-1 alpha-2 country code, e.g. \'US\''),
       locale: z.string().optional().describe('Locale, e.g. en_US'),
       limit: z.number().int().min(1).max(50).optional().describe('Playlists per page, 1–50. Default: 10'),
       peek_items: z.boolean().optional().describe('When true, fetch top 2 tracks of the first playlist'),
@@ -1190,7 +1188,7 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
       query: z.string().min(1).describe('Case-insensitive substring over name/description'),
       limit: z.number().int().min(1).max(50).optional().describe('Results per page for the underlying paging, 1–50. Default: 20'),
       offset: z.number().int().min(0).optional().describe('Offset for underlying paging. Default: 0'),
-      market: z.string().optional().describe('ISO 3166-1 alpha-2 country code'),
+      market: MARKET_CODE.optional().describe('ISO 3166-1 alpha-2 country code, e.g. \'US\''),
       fetch_all: z.boolean().optional().describe('When true, walk all pages (up to cap) to find matches'),
       ...sharedListFields,
     },

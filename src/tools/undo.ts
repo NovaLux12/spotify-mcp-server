@@ -7,7 +7,7 @@ import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
 import { verifyReceipt, issueReceipt, formatReceipt, getAllReceipts } from '../receipts.js';
-import { DryRun } from '../shaping.js';
+import { DryRun, ResponseFormat } from '../shaping.js';
 
 type ToolResult = { content: Array<{ type: 'text'; text: string }>; structuredContent?: Record<string, unknown> };
 function textResult(text: string, s?: Record<string, unknown>): ToolResult {
@@ -67,6 +67,7 @@ export function registerUndoTools(server: McpServer, client: SpotifyClient): voi
     'Undo a specific mutation by receipt ID. Inverts: playlist_items add→remove, library save→remove. Non-reversible kinds return not reversible. Supports dry_run.',
     {
       receipt_id: z.string().min(1).describe('Receipt ID to undo'),
+      response_format: ResponseFormat,
       dry_run: DryRun,
     },
     async (args) => {
@@ -80,7 +81,8 @@ export function registerUndoTools(server: McpServer, client: SpotifyClient): voi
   server.tool(
     'undo_last_mutation',
     'Undo the most recent reversible mutation (receipt FIFO). Same inversion semantics as undo_mutation. Supports dry_run.',
-    { dry_run: DryRun },
+    { dry_run: DryRun,
+      response_format: ResponseFormat, },
     async (args) => {
       const all = getAllReceipts();
       let target: ReturnType<typeof verifyReceipt> | undefined;

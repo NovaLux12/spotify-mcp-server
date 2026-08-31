@@ -59,7 +59,8 @@ export function registerBrowseTools(server: McpServer, client: SpotifyClient): v
       const params: Record<string, string> = {};
       if (args.limit !== undefined) params.limit = String(args.limit);
       if (args.offset !== undefined) params.offset = String(args.offset);
-      if (args.country) params.country = args.country;
+      const countryVal = (args as any).country ?? (args as any).market;
+      if (countryVal) params.country = countryVal;
       if (args.locale) params.locale = args.locale;
       const data = await client.get<{ categories: SpotifyPaged<CategoryItem> }>('/browse/categories', params);
       if (!data?.categories) {
@@ -96,7 +97,8 @@ export function registerBrowseTools(server: McpServer, client: SpotifyClient): v
       const params: Record<string, string> = {};
       if (args.limit !== undefined) params.limit = String(args.limit);
       if (args.offset !== undefined) params.offset = String(args.offset);
-      if (args.country) params.country = args.country;
+      const countryVal2 = (args as any).country ?? (args as any).market;
+      if (countryVal2) params.country = countryVal2;
       const data = await client.get<{ playlists: PlaylistPage }>(
         `/browse/categories/${encodeURIComponent(args.category_id)}/playlists`,
         params,

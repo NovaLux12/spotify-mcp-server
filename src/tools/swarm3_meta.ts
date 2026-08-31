@@ -9,6 +9,7 @@ import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
 import { TOOLSETS, isModuleActive, allRegistrationKeys } from '../toolsets.js';
+import { ResponseFormat } from '../shaping.js';
 
 interface RegisteredToolInfo {
   name: string;
@@ -40,6 +41,7 @@ export function registerSwarm3MetaTools(server: McpServer, client: SpotifyClient
     'Search the live tool registry by name or description substring — the fastest way to discover which of the 500+ tools handles a job',
     {
       query: z.string().min(2).describe('Case-insensitive substring to match against tool names and descriptions'),
+      response_format: ResponseFormat,
       limit: z.number().int().min(1).max(100).optional().describe('Max matches to return (default 25)'),
     },
     async (args) => {
@@ -65,6 +67,7 @@ export function registerSwarm3MetaTools(server: McpServer, client: SpotifyClient
     'Show one tool\'s full description and input schema before calling it',
     {
       tool_name: z.string().min(1).describe('Exact registered tool name'),
+      response_format: ResponseFormat,
     },
     async (args) => {
       const all = toolRegistry(server);

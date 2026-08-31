@@ -17,6 +17,7 @@
  * bookmarks, listening journal, archived monthly reports. Owner-only modes.
  */
 import { z } from 'zod';
+import { MARKET_CODE } from './catalog.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
@@ -267,7 +268,7 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
     {
       recent: z.number().int().min(1).max(40).optional().default(1)
         .describe('Save the N most recent plays (only used as fallback when nothing is currently playing). Default 1.'),
-      market: z.string().optional().describe('ISO-3166 market code passed on the player read'),
+      market: MARKET_CODE.optional().describe('ISO-3166 market code passed on the player read, e.g. \'US\''),
       dry_run: z.boolean().optional().default(true)
         .describe('Preview the save plan without writing (default true)'),
       response_format: ResponseFormat,

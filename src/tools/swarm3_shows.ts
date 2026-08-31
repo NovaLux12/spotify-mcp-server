@@ -18,6 +18,7 @@
  *     consumer tolerates its absence ("(unknown publisher)").
  */
 import { z } from 'zod';
+import { MARKET_CODE } from './catalog.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
 import { getConfig } from '../config.js';
@@ -297,7 +298,7 @@ export function registerSwarm3ShowsTools(server: McpServer, client: SpotifyClien
       + "Defaults to 'concise' prose.",
     {
       show_id: spotifyId('show').describe('Show ID, spotify:show: URI, or open.spotify.com/show URL'),
-      market: z.string().optional().describe('ISO 3166-1 alpha-2 market for availability'),
+      market: MARKET_CODE.optional().describe('ISO 3166-1 alpha-2 market for availability, e.g. \'US\''),
       response_format: ResponseFormat,
     },
     async (args) => {
@@ -336,7 +337,7 @@ export function registerSwarm3ShowsTools(server: McpServer, client: SpotifyClien
     {
       show_id: spotifyId('show').describe('Show ID, spotify:show: URI, or open.spotify.com/show URL'),
       offset: z.number().int().min(0).optional().describe('Offset into the episode list. Default 0'),
-      market: z.string().optional().describe('ISO 3166-1 alpha-2 market for availability'),
+      market: MARKET_CODE.optional().describe('ISO 3166-1 alpha-2 market for availability, e.g. \'US\''),
       ...sharedListFieldsShow(),
     },
     async (args) => {
@@ -376,7 +377,7 @@ export function registerSwarm3ShowsTools(server: McpServer, client: SpotifyClien
       + "'what dropped last?' in one GET. Defaults to 'concise' prose.",
     {
       show_id: spotifyId('show').describe('Show ID, spotify:show: URI, or open.spotify.com/show URL'),
-      market: z.string().optional().describe('ISO 3166-1 alpha-2 market for availability'),
+      market: MARKET_CODE.optional().describe('ISO 3166-1 alpha-2 market for availability, e.g. \'US\''),
       response_format: ResponseFormat,
     },
     async (args) => {
@@ -668,7 +669,7 @@ export function registerSwarm3ShowsTools(server: McpServer, client: SpotifyClien
       + "Defaults to 'concise' prose.",
     {
       episode_id: spotifyId('episode').describe('Episode ID, spotify:episode: URI, or open.spotify.com/episode URL'),
-      market: z.string().optional().describe('ISO 3166-1 alpha-2 market for availability'),
+      market: MARKET_CODE.optional().describe('ISO 3166-1 alpha-2 market for availability, e.g. \'US\''),
       response_format: ResponseFormat,
     },
     async (args) => {
@@ -1142,7 +1143,7 @@ export function registerSwarm3ShowsTools(server: McpServer, client: SpotifyClien
       + 'missing publisher facet on show search. Defaults to 10 search results.',
     {
       query: z.string().describe('Publisher or network name, e.g. "Wondery"'),
-      market: z.string().optional().describe('ISO 3166-1 alpha-2 market for the search'),
+      market: MARKET_CODE.optional().describe('ISO 3166-1 alpha-2 market for the search, e.g. \'US\''),
       ...sharedListFieldsShow(),
     },
     async (args) => {

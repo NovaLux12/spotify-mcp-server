@@ -192,7 +192,8 @@ export async function loadTokens(): Promise<TokenData> {
     return JSON.parse(data) as TokenData;
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
-      throw new Error('Not authenticated. Run "spotify-mcp auth" (or "npm run auth") first.');
+      const profileHint = parseAuthArgs().profile ? ` (profile: ${parseAuthArgs().profile})` : (process.env.SPOTIFY_MCP_PROFILE ? ` (profile: ${process.env.SPOTIFY_MCP_PROFILE})` : '');
+      throw new Error(`Not authenticated — no token file at ${tokenFile}${profileHint}. Run "spotify-mcp auth" (or "npm run auth") first.`);
     }
     if (err instanceof SyntaxError) {
       throw new Error('Saved Spotify tokens are corrupted — run `npm run auth` again.');

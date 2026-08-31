@@ -14,6 +14,7 @@ import type { SpotifyClient } from '../client.js';
 import { SpotifyApiError } from '../client.js';
 import { getConfig } from '../config.js';
 import { readFile } from 'node:fs/promises';
+import { ResponseFormat } from '../shaping.js';
 
 type TextContent = { type: 'text'; text: string };
 type ToolResult = { content: TextContent[]; structuredContent?: Record<string, unknown> };
@@ -147,6 +148,7 @@ export function registerImportTools(server: McpServer, client: SpotifyClient): v
         .optional()
         .default(false)
         .describe('Parse and report what would be added without touching the playlist'),
+      response_format: ResponseFormat,
     },
     async (args) => {
       // Exactly one document source — ambiguity would silently pick one.
