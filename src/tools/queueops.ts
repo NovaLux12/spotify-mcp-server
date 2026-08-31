@@ -21,6 +21,22 @@ function mutationResult(format: string | undefined, echo: Record<string, unknown
   return { content: [{ type: 'text', text }], structuredContent: echo };
 }
 
+export async function addToQueueBatch(client: SpotifyClient, uris: string[], deviceId?: string): Promise<{ queued: number; failed: string[] }> {
+  let queued = 0;
+  const failed: string[] = [];
+  for (const uri of uris) {
+    try {
+      const params = new URLSearchParams({ uri });
+      if (deviceId) params.set('device_id', deviceId);
+      await client.post(`/me/player/queue?${params}`);
+      queued++;
+    } catch {
+      failed.push(uri);
+    }
+  }
+  return { queued, failed };
+}
+
 async function resolveUris(client: SpotifyClient, sourceUri: string, limit: number): Promise<{ uris: string[]; sourceType: string; total: number }> {
   const parsed = parseSpotifyUri(sourceUri);
   if (!parsed) throw new Error(`Invalid Spotify URI: ${sourceUri}`);
@@ -214,6 +230,32 @@ export function registerQueueOpsTools(server: McpServer, client: SpotifyClient):
         uris: collected,
         is_new: isNew,
       }, text);
+    },
+  );
+
+  server.tool(
+    'batch_add_to_queue',
+    'Add multiple URIs to the playback queue in one shot. POSTs each URI to /me/player/queue and returns a summary of queued/failed counts. Quota: 🟡 N writes (one POST per URI).',
+    {
+      uris: z.array(z.string()).min(1).max(200).describe('Spotify track/episode URIs to queue (1–200)'),
+      device_id: z.string().optional().describe('Target device id'),
+      dry_run: DryRun,
+      response_format: ResponseFormat,
+    },
+    async (args) => {
+      const uriList = args.uris as string[];
+      for (const uri of uriList) {
+        const parsed = parseSpotifyUri(uri);
+        if (!parsed || (parsed.type !== 'track' && parsed.type !== 'episode')) {
+          throw new Error(`Invalid Spotify track/episode URI: ${uri}`);
+        }
+      }
+      if (args.dry_run) {
+        return { content: [{ type: 'text', text: describeDryRun('batch_add_to_queue', `${uriList.length} URIs to queue`, [`Would queue ${uriList.length} URI(s)`]) }] };
+      }
+      const { queued, failed } = await addToQueueBatch(client, uriList, args.device_id as string | undefined);
+      const text = `Queued ${queued}/${uriList.length} tracks${failed.length ? ` — ${failed.length} failed` : ''}`;
+      return mutationResult(args.response_format as string | undefined, { ok: true, queued, failed, total: uriList.length }, text);
     },
   );
 }

@@ -39,7 +39,7 @@ export function registerPrompts(server: McpServer): void {
         role: 'user',
         content: {
           type: 'text',
-          text: `Create a playlist for this mood: "${args.mood}". Use search to find 15–20 tracks that fit the vibe (search several related keywords, artists, and genres to get good variety). Then use create_playlist to make a new playlist with a fitting name and description, and add_to_playlist to fill it with the tracks you found.`,
+          text: `Create a playlist for this mood: "${args.mood}". Use up to 6 search calls with combined keywords, artists, and genres to find 15–20 tracks that fit the vibe. Then use create_playlist to make a new playlist with a fitting name and description, and add_to_playlist to fill it with the tracks you found. IMPORTANT: preview the plan with create_playlist(dry_run=true) and add_to_playlist(dry_run=true) before committing.`,
         },
       }],
     }),
@@ -91,7 +91,7 @@ export function registerPrompts(server: McpServer): void {
         role: 'user',
         content: {
           type: 'text',
-          text: `Generate a personalised discovery list of ${args.size} songs for me. Use get_top_tracks (short_term) and get_recently_played to learn my recent favourites, then use search to find ${args.size} lesser-known tracks in the same artistic space — dig beyond each favourite artist's biggest hits (deep cuts, B-sides, similar smaller artists). IMPORTANT: explicitly exclude every track that appears in my top tracks or recently played, and skip each artist's most-streamed signature songs so the picks feel fresh. Focus on variety — mix up energy levels and moods while staying within my taste. Present the list with track names, artists, and URIs so I can play them.`,
+          text: `Generate a personalised discovery list of ${args.size} songs for me. Use get_top_tracks (short_term) and get_recently_played to learn my recent favourites, then use search with combined genre/mood/artist queries to find ${args.size} lesser-known tracks in the same artistic space — dig beyond each favourite artist's biggest hits (deep cuts, B-sides, similar smaller artists). Use broad queries rather than one search per target track. IMPORTANT: explicitly exclude every track that appears in my top tracks or recently played, and skip each artist's most-streamed signature songs so the picks feel fresh. Focus on variety — mix up energy levels and moods while staying within my taste. Present the list with track names, artists, and URIs so I can play them.`,
         },
       }],
     });
@@ -153,7 +153,7 @@ export function registerPrompts(server: McpServer): void {
         role: 'user',
         content: {
           type: 'text',
-          text: `Migrate my saved albums into one playlist. Use get_saved_albums with fetch_all=true to list everything saved. For each album${args.include_singles === 'true' ? '' : ' whose album_type is "album" (skip "single")'}, fetch its tracks with get_album_tracks. Collect ALL track URIs into one deduplicated ordered list (album by album, preserving track order). Check whether a playlist named "${args.playlist_name}" already exists via get_user_playlists — if it does, reuse its ID, otherwise create it with create_playlist (description "Tracks migrated from my saved albums"). Add the URIs to it with add_to_playlist in batches of at most 100. Finish with counts: albums walked, unique tracks added, duplicates skipped.`,
+          text: `Migrate my saved albums into one playlist. Use get_saved_albums with fetch_all=true to list everything saved. Collect every album ID, then fetch album metadata in chunks of 20 using get_several_albums. From those results, pick albums matching the type filter${args.include_singles === 'true' ? '' : ' (keep only album_type=="album", skip "single" and "compilation")'}, then fetch their tracks. Collect ALL track URIs into one deduplicated ordered list preserving album order. Check whether a playlist named "${args.playlist_name}" already exists via get_user_playlists — if it does, reuse its ID, otherwise create it with create_playlist (description "Tracks migrated from my saved albums"). Use add_to_playlist in batches of at most 100. IMPORTANT: preview the full plan with create_playlist(dry_run=true) and add_to_playlist(dry_run=true) before committing. Finish with counts: albums walked, unique tracks added, duplicates skipped.`,
         },
       }],
     });
@@ -175,7 +175,7 @@ export function registerPrompts(server: McpServer): void {
         role: 'user',
         content: {
           type: 'text',
-          text: `Catch me up on podcasts since ${args.since}. Call get_saved_shows (fetch_all=true), then for each show call get_show_episodes (limit=${Math.max(args.max_per_show * 3, 10)}). Keep only episodes whose release_date is >= ${args.since}, newest first, capped at ${args.max_per_show} per show. Present grouped by show: episode title, release date, duration, description snippet, and episode URI/ID. Flag anything longer than 90 minutes as a "long listen". At the end ask whether I want any of them queued now via add_to_queue or played directly — do not start playback unprompted.`,
+          text: `Catch me up on podcasts since ${args.since}. Call get_saved_shows (fetch_all=true), then for each show call get_show_episodes (limit=${Math.max(args.max_per_show * 3, 10)}). Keep only episodes whose release_date is >= ${args.since}, newest first, capped at ${args.max_per_show} per show. For efficiency, keep max_per_show small (default 3) unless I explicitly ask for more. Present grouped by show: episode title, release date, duration, description snippet, and episode URI/ID. Flag anything longer than 90 minutes as a "long listen". At the end ask whether I want any of them queued now via batch_add_to_queue or played directly — do not start playback unprompted.`,
         },
       }],
     });
@@ -245,7 +245,7 @@ export function registerPrompts(server: McpServer): void {
     messages: [{ role: 'user', content: { type: 'text', text: 'Weekly digest: call taste_shift_report, listening_streaks, and listening_report (medium_term). Write a 7-day roll-up: rising artist, streak summary, library vibe, and one crate-digging pick with URIs.' } }],
   }));
   server.prompt('crate_digging', 'Crate dig deep cuts for your top artists.', { depth: z.coerce.number().int().positive().max(5).optional().describe('Deep cuts per artist (default 3)') }, async (rawArgs) => ({
-    messages: [{ role: 'user', content: { type: 'text', text: `Crate digging: for each of your top 5 artists (get_top_artists short_term), find ${(rawArgs as { depth?: number }).depth ?? 3} non-hit deep cuts via search + get_artist_albums + get_album_tracks, skipping each artist's top tracks. Propose a playlist with URIs.` } }],
+    messages: [{ role: 'user', content: { type: 'text', text: `Crate digging: for each of your top 5 artists (get_top_artists short_term), find ${(rawArgs as { depth?: number }).depth ?? 3} non-hit deep cuts via search + get_artist_albums + get_album_tracks, skipping each artist's top tracks. Propose a playlist with URIs. If I want to keep it, create it with create_playlist and add_to_playlist — preview with dry_run=true before committing.` } }],
   }));
 
   // triage_liked_songs — walk the saved-tracks backlog into bucket
@@ -272,7 +272,7 @@ export function registerPrompts(server: McpServer): void {
         : 'AUTO MODE: proceed without waiting for approval, but still run each planned write once with dry_run=true before doing it for real.';
       const bucketing =
         args.bucket_by === 'decade'
-          ? 'Call get_album once per distinct album ID from step 1 (cache lookups; do not re-fetch), read each release_date, and assign the track to a decade bucket such as "Liked · 2010s".'
+          ? 'Collect distinct album IDs from step 1, then fetch album metadata in chunks of 20 using get_several_albums (cache lookups; do not re-fetch). Read each release_date and assign the track to a decade bucket such as "Liked · 2010s".'
           : args.bucket_by === 'genre'
             ? 'Call library_genre_report to see which of my artists carry sidecar genre tags, then filter_by_genre once per tag to collect matching saved-track URIs into genre buckets such as "Liked · Jazz". If the report comes back empty, ask ME for an artist-to-genre mapping on this first pass instead of guessing.'
             : 'Group tracks by their primary artist name straight from the saved-track data (no extra lookups), one bucket per major artist such as "Liked · Queen".';
