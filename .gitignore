@@ -17,3 +17,9 @@ memory/*
 AGENTS.md
 USABILITY_AUDIT_*.md
 audit-quota-lurkers.md
+
+# pending skill proposals (explicit apply/reject required)
+skills/github-actions-ci-triage/
+skills/github-post-merge-tidy/
+skills/readme-optimization/
+skills/release-workflow-retrigger/
