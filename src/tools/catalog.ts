@@ -120,30 +120,27 @@ async function fetchSeveral<T>(
     chunks.push(ids.slice(i, i + limit));
   }
 
-  const merged: T[] = [];
-  for (const chunk of chunks) {
-    // Feb 2026: all "Get Several" batch endpoints were removed for app
-    // registrations created after Nov 2024 (403). Fail with an explanation
-    // rather than a raw API error.
-    let res: Partial<Record<string, Array<T | null>>> | null;
-    try {
-      res = await client.get<Partial<Record<string, Array<T | null>>>>(`/${kind}`, {
-        ids: chunk.map((id) => encodeURIComponent(id)).join(','),
-      });
-    } catch (err) {
-      if (err instanceof SpotifyApiError && err.status === 403) {
-        throw new Error(
-          `Spotify returned 403 for the /${kind} batch lookup: ${err.message}. The "Get Several" batch endpoints were removed by Spotify's February 2026 Web API changes and are unavailable for newer app registrations; use the single-item get tools instead, or run with credentials from a grandfathered (pre-Nov-2024) app.`,
-          { cause: err },
-        );
+  // 523: parallelize chunk fetches (was sequential for-loop) — order preserved via Promise.all index
+  const __chunkResults = await Promise.all(
+    chunks.map(async (chunk) => {
+      let res: Partial<Record<string, Array<T | null>>> | null;
+      try {
+        res = await client.get<Partial<Record<string, Array<T | null>>>>(`/${kind}`, {
+          ids: chunk.map((id) => encodeURIComponent(id)).join(','),
+        });
+      } catch (err) {
+        if (err instanceof SpotifyApiError && err.status === 403) {
+          throw new Error(
+            `Spotify returned 403 for the /${kind} batch lookup: ${err.message}. The "Get Several" batch endpoints were removed by Spotify's February 2026 Web API changes and are unavailable for newer app registrations; use the single-item get tools instead, or run with credentials from a grandfathered (pre-Nov-2024) app.`,
+            { cause: err },
+          );
+        }
+        throw err;
       }
-      throw err;
-    }
-    for (const item of res?.[responseKey] ?? []) {
-      if (item != null) merged.push(item);
-    }
-  }
-  return merged;
+      return (res?.[responseKey] ?? []).filter((item): item is T => item != null);
+    })
+  );
+  return __chunkResults.flat();
 }
 
 function severalIdsSchema(kind: SeveralKind) {
@@ -345,19 +342,31 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
       market: MARKET_CODE.optional().describe(
         'ISO 3166-1 alpha-2 country code. Defaults to the account country; affects album availability.',
       ),
+      fetch_all: z.boolean().optional().describe('When true, walk all pages via getAllPages up to cap (fetch_all_cap) — use for "all" queries. Default: false'),
       ...sharedListFields,
     },
     async (args) => {
-      const result = await getWithMarketFallback<SpotifyArtistAlbumsResponse>(
-        client,
-        `/artists/${encodeURIComponent(args.id)}/albums`,
-        args.market,
-        {
-          include_groups: (args.include_groups ?? ['album', 'single']).join(','),
-          limit: String(args.limit ?? 10),
-          offset: String(args.offset ?? 0),
-        },
-      );
+      // 523: fetch_all walks all pages via getAllPages
+      let result: SpotifyArtistAlbumsResponse | null;
+      if ((args as unknown as { fetch_all?: boolean }).fetch_all) {
+        const items = await client.getAllPages<SpotifyArtistAlbumsResponse['items'][number]>(
+          `/artists/${encodeURIComponent(args.id)}/albums`,
+          { include_groups: (args.include_groups ?? ['album', 'single']).join(','), market: args.market ?? '' },
+          { maxItems: args.max_results }
+        );
+        result = { items, total: items.length, limit: items.length, offset: 0, href: '', previous: null, next: null } as unknown as SpotifyArtistAlbumsResponse;
+      } else {
+        result = await getWithMarketFallback<SpotifyArtistAlbumsResponse>(
+          client,
+          `/artists/${encodeURIComponent(args.id)}/albums`,
+          args.market,
+          {
+            include_groups: (args.include_groups ?? ['album', 'single']).join(','),
+            limit: String(args.limit ?? 10),
+            offset: String(args.offset ?? 0),
+          },
+        );
+      }
       if (!result) throw new Error(`Artist "${args.id}" not found`);
 
       if (args.response_format === 'json') {
@@ -440,18 +449,29 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
       market: MARKET_CODE.optional().describe(
         'ISO 3166-1 alpha-2 country code. Defaults to the account country; affects track availability.',
       ),
+      fetch_all: z.boolean().optional().describe('When true, walk all pages via getAllPages up to cap (fetch_all_cap) — use for "all" queries. Default: false'),
       ...sharedListFields,
     },
     async (args) => {
-      const result = await getWithMarketFallback<SpotifyPaged<SpotifyTrackSimple>>(
-        client,
-        `/albums/${encodeURIComponent(args.id)}/tracks`,
-        args.market,
-        {
-          limit: String(args.limit ?? 20),
-          offset: String(args.offset ?? 0),
-        },
-      );
+      let result: SpotifyPaged<SpotifyTrackSimple> | null;
+      if ((args as unknown as { fetch_all?: boolean }).fetch_all) {
+        const items = await client.getAllPages<SpotifyTrackSimple>(
+          `/albums/${encodeURIComponent(args.id)}/tracks`,
+          args.market ? { market: args.market } : undefined,
+          { maxItems: args.max_results }
+        );
+        result = { items, total: items.length, limit: items.length, offset: 0, next: null } as SpotifyPaged<SpotifyTrackSimple>;
+      } else {
+        result = await getWithMarketFallback<SpotifyPaged<SpotifyTrackSimple>>(
+          client,
+          `/albums/${encodeURIComponent(args.id)}/tracks`,
+          args.market,
+          {
+            limit: String(args.limit ?? 20),
+            offset: String(args.offset ?? 0),
+          },
+        );
+      }
       if (!result) throw new Error(`Album "${args.id}" not found`);
 
       if (args.response_format === 'json') {
@@ -527,18 +547,29 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
       market: MARKET_CODE.optional().describe(
         'ISO 3166-1 alpha-2 country code. If given, only shows and episodes available in that market are returned.',
       ),
+      fetch_all: z.boolean().optional().describe('When true, walk all pages via getAllPages up to cap (fetch_all_cap) — use for "all" queries. Default: false'),
       ...sharedListFields,
     },
     async (args) => {
-      const result = await getWithMarketFallback<SpotifyPaged<SpotifyEpisodeSimple>>(
-        client,
-        `/shows/${encodeURIComponent(args.id)}/episodes`,
-        args.market,
-        {
-          limit: String(args.limit ?? 20),
-          offset: String(args.offset ?? 0),
-        },
-      );
+      let result: SpotifyPaged<SpotifyEpisodeSimple> | null;
+      if ((args as unknown as { fetch_all?: boolean }).fetch_all) {
+        const items = await client.getAllPages<SpotifyEpisodeSimple>(
+          `/shows/${encodeURIComponent(args.id)}/episodes`,
+          args.market ? { market: args.market } : undefined,
+          { maxItems: args.max_results }
+        );
+        result = { items, total: items.length, limit: items.length, offset: 0, next: null } as SpotifyPaged<SpotifyEpisodeSimple>;
+      } else {
+        result = await getWithMarketFallback<SpotifyPaged<SpotifyEpisodeSimple>>(
+          client,
+          `/shows/${encodeURIComponent(args.id)}/episodes`,
+          args.market,
+          {
+            limit: String(args.limit ?? 20),
+            offset: String(args.offset ?? 0),
+          },
+        );
+      }
       if (!result) throw new Error(`Show "${args.id}" not found`);
 
       if (args.response_format === 'json') {

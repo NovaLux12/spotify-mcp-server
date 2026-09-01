@@ -41,6 +41,11 @@ export const DryRun = z
  * their own fields alongside; wave B composes:
  *   z.object({ ...sharedListFields, id: z.string() })
  */
+export const CHUNK_CAPS = {
+  tracks: 50, albums: 20, artists: 50, episodes: 50, shows: 50, audiobooks: 50, chapters: 50,
+  playlist_writes: 100, library_writes: 40, followed: 50,
+} as const;
+
 export const sharedListFields = {
   response_format: ResponseFormat,
   max_results: MaxResults,

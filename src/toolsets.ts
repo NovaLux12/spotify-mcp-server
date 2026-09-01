@@ -52,7 +52,6 @@
 export const TOOLSETS: Record<string, readonly string[]> = {
   playback: ['playback', 'queueops', 'playbackext', 'playbackintel', 'exhaust2playback', 'swarm3playback'],
   playbackintel: ['playbackintel'],
-  playbackintel: ['playbackintel'],
   catalog: ['search', 'catalog', 'audiobooks', 'browse', 'artistwatch', 'searchhistory', 'exhaust2catalog', 'exhaust2enggating', 'swarm3discovery', 'swarm3bdiscovery', 'swarm3shows', 'swarm3refs', 'swarm3meta'],
   playlists: ['playlists', 'users', 'playlisthealth', 'playlistbatch', 'playlistmisc', 'exhaust2playlists', 'exhaust2extra', 'swarm3playlistops', 'swarm3snapshots', 'swarm4playlists'],
   library: ['library', 'following', 'libraryanalytics', 'portability', 'episodemgmt', 'exhaust2misc', 'swarm3library'],
