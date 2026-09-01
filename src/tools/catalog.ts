@@ -120,30 +120,27 @@ async function fetchSeveral<T>(
     chunks.push(ids.slice(i, i + limit));
   }
 
-  const merged: T[] = [];
-  for (const chunk of chunks) {
-    // Feb 2026: all "Get Several" batch endpoints were removed for app
-    // registrations created after Nov 2024 (403). Fail with an explanation
-    // rather than a raw API error.
-    let res: Partial<Record<string, Array<T | null>>> | null;
-    try {
-      res = await client.get<Partial<Record<string, Array<T | null>>>>(`/${kind}`, {
-        ids: chunk.map((id) => encodeURIComponent(id)).join(','),
-      });
-    } catch (err) {
-      if (err instanceof SpotifyApiError && err.status === 403) {
-        throw new Error(
-          `Spotify returned 403 for the /${kind} batch lookup: ${err.message}. The "Get Several" batch endpoints were removed by Spotify's February 2026 Web API changes and are unavailable for newer app registrations; use the single-item get tools instead, or run with credentials from a grandfathered (pre-Nov-2024) app.`,
-          { cause: err },
-        );
+  // 523: parallelize chunk fetches (was sequential for-loop) — order preserved via Promise.all index
+  const __chunkResults = await Promise.all(
+    chunks.map(async (chunk) => {
+      let res: Partial<Record<string, Array<T | null>>> | null;
+      try {
+        res = await client.get<Partial<Record<string, Array<T | null>>>>(`/${kind}`, {
+          ids: chunk.map((id) => encodeURIComponent(id)).join(','),
+        });
+      } catch (err) {
+        if (err instanceof SpotifyApiError && err.status === 403) {
+          throw new Error(
+            `Spotify returned 403 for the /${kind} batch lookup: ${err.message}. The "Get Several" batch endpoints were removed by Spotify's February 2026 Web API changes and are unavailable for newer app registrations; use the single-item get tools instead, or run with credentials from a grandfathered (pre-Nov-2024) app.`,
+            { cause: err },
+          );
+        }
+        throw err;
       }
-      throw err;
-    }
-    for (const item of res?.[responseKey] ?? []) {
-      if (item != null) merged.push(item);
-    }
-  }
-  return merged;
+      return (res?.[responseKey] ?? []).filter((item): item is T => item != null);
+    })
+  );
+  return __chunkResults.flat();
 }
 
 function severalIdsSchema(kind: SeveralKind) {
