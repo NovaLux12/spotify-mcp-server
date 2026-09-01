@@ -13,6 +13,7 @@
  * Forbidden errors.
  */
 import { z } from 'zod';
+import { MARKET_CODE } from './catalog.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
 import { SpotifyApiError } from '../client.js';
@@ -857,7 +858,7 @@ max_results: z.number().int().positive().max(2000).optional(),
       + '(paged category walk).',
     {
       text: z.string().min(1).describe('Free-text genre/vibe, e.g. "chill electronic"'),
-      country: z.string().optional().describe('ISO 3166-1 alpha-2 country code'),
+      country: MARKET_CODE.optional().describe('ISO 3166-1 alpha-2 country code, e.g. \'US\''),
       locale: z.string().optional().describe('Locale, e.g. en_US'),
       response_format: ResponseFormat,
     },
@@ -1179,8 +1180,8 @@ max_results: z.number().int().positive().max(2000).optional(),
         .max(2)
         .optional()
         .describe("Types to search (up to 2). Default: ['track']"),
-      market_a: z.string().min(2).max(2).describe("First market code, e.g. 'US'"),
-      market_b: z.string().min(2).max(2).describe("Second market code, e.g. 'GB'"),
+      market_a: MARKET_CODE.describe("First market code, e.g. 'US'"),
+      market_b: MARKET_CODE.describe("Second market code, e.g. 'GB'"),
       limit: SearchLimit,
       response_format: ResponseFormat,
     },

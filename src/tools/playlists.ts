@@ -1369,17 +1369,25 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
         .describe(
           'Also count/collapse same-song entries under different URIs (relinks/remasters).',
         ),
+      dry_run: DryRun.describe(
+        'Preview only — when true, nothing is changed; when false via dry_run=false or apply=true, executes the cleanup',
+      ),
       apply: z
         .boolean()
         .optional()
         .default(false)
         .describe(
-          'false (default): report only — nothing is changed. true: execute the cleanup '
-            + 'across all playlists with duplicates.',
+          'Deprecated alias for dry_run — prefer dry_run. false (default): report only. true: execute the cleanup '
+            + 'across all playlists with duplicates. If both are given, dry_run wins.',
         ),
       ...sharedListFields,
     },
     async (args) => {
+      // dry_run is the canonical flag; apply is a deprecated alias for backwards compat
+      const rawDryRun = (args as any).dry_run;
+      const rawApply = (args as any).apply;
+      const effectiveApply = rawDryRun !== undefined ? !rawDryRun : !!rawApply;
+      const effectiveDryRun = !effectiveApply;
       const playlists = await client.getAllPages<SpotifyPlaylistSimple>('/me/playlists', {
         limit: '50',
       });
@@ -1413,7 +1421,7 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
           scanned: items.length,
           duplicate_groups: groups,
           removable_items: ordered.length,
-          ...(args.apply && ordered.length > 0 ? { removals: ordered.map((o) => ({ uri: o.uri, position: o.position })) } : {}),
+          ...(effectiveApply && ordered.length > 0 ? { removals: ordered.map((o) => ({ uri: o.uri, position: o.position })) } : {}),
         });
       }
 
@@ -1424,13 +1432,13 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
         playlists_scanned: playlistsScanned,
         playlists_with_duplicates: dirty.length,
         total_removable_items: totalRemovable,
-        applied: args.apply,
+        applied: effectiveApply,
       };
 
       const renderRow = (f: PlaylistFinding): string =>
         `• "${f.name}" (${f.owner}) — ${f.duplicate_groups} group(s), ${f.removable_items} removable of ${f.scanned}`;
 
-      if (!args.apply) {
+      if (!effectiveApply) {
         if (dirty.length === 0) {
           return textResult(
             `Scanned ${playlistsScanned} playlist(s) — no duplicates found. Nothing to clean.`,
@@ -1444,8 +1452,8 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
           ...(view.footer ? [view.footer] : []),
           '',
           args.include_relinked
-            ? 'Report only — re-run with apply=true to remove these items.'
-            : 'Report only — re-run with include_relinked=true to widen matching, or apply=true to remove.',
+            ? 'Report only — re-run with apply=true to remove these items (or dry_run=false).'
+            : 'Report only — re-run with include_relinked=true to widen matching, or apply=true to remove (or dry_run=false).',
         ];
         return textResult(lines.join('\n'), listStructuredContent(view.items, pag, extra));
       }

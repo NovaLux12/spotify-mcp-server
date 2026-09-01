@@ -13,6 +13,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
 import {
   DryRun,
+  ResponseFormat,
   batchSummary,
   truncateItems,
 } from '../shaping.js';
@@ -141,6 +142,7 @@ export function registerSmartTools(server: McpServer, client: SpotifyClient): vo
       description: z.string().optional().describe('Playlist description'),
       public: z.boolean().optional().default(false).describe('Whether the playlist is public'),
       scan_cap: z.number().int().min(1).max(10000).optional().describe('How many saved tracks to scan when source=saved_tracks; default SPOTIFY_MCP_FETCH_ALL_CAP (500). Reports truncation when hit.'),
+      response_format: ResponseFormat,
       dry_run: DryRun,
     },
     async (args) => {

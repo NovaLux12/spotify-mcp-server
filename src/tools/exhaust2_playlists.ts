@@ -15,6 +15,7 @@
  *   • No deprecated endpoints (SPEC §9).
  */
 import { z } from 'zod';
+import { MARKET_CODE } from './catalog.js';
 import { readFile, readdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -1133,7 +1134,7 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
     {
       playlist_id: z.string().describe('Playlist to score (ID or spotify:playlist: URI)'),
       threshold_days: z.number().int().min(1).optional().describe('Days over which a playlist counts as stale. Default 90'),
-      market: z.string().optional().describe('ISO 3166-1 alpha-2 market for availability'),
+      market: MARKET_CODE.optional().describe('ISO 3166-1 alpha-2 market for availability, e.g. \'US\''),
       response_format: ResponseFormat,
       max_results: MaxResults,
       dry_run: DryRun,
@@ -1258,9 +1259,7 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
       + 'Pairs with playlist_era slices. Quota: 🟢 1 GET (market refetch disclosed).',
     {
       playlist_id: z.string().describe('Playlist to profile (ID or spotify:playlist: URI)'),
-      market: z.string().optional().describe(
-        'ISO 3166-1 alpha-2 market. When given, items are REFETCHED with this market so album release dates resolve (disclosed second GET).',
-      ),
+      market: MARKET_CODE.optional().describe('ISO 3166-1 alpha-2 market, e.g. \'US\' — when given, items are REFETCHED with this market so album release dates resolve (disclosed second GET)'),
       response_format: ResponseFormat,
       max_results: MaxResults,
       dry_run: DryRun,
@@ -1385,7 +1384,7 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
       + 'ID when given a name, then filters the liked shelf. Quota: 🟡 getAllPages + 1 search (name input).',
     {
       artist: z.string().describe('Artist ID/URI, or a name (1 search to resolve)'),
-      market: z.string().optional().describe('ISO 3166-1 alpha-2 market for the artist search'),
+      market: MARKET_CODE.optional().describe('ISO 3166-1 alpha-2 market for the artist search, e.g. \'US\''),
       response_format: ResponseFormat,
       max_results: MaxResults,
       dry_run: DryRun,

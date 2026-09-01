@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { MARKET_CODE } from './catalog.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
 import type {
@@ -209,9 +210,9 @@ export function registerLibraryTools(server: McpServer, client: SpotifyClient): 
     'get_saved_tracks',
     "Get tracks saved in the user's Liked Songs. Set fetch_all=true to retrieve the entire collection. Output is capped by max_results (default: SPOTIFY_MCP_MAX_ITEMS).",
     {
-      limit: z.number().int().min(1).max(50).optional().describe('1–50. Default: 20'),
+      limit: z.coerce.number().int().min(1).max(50).optional().describe('1–50. Default: 20'),
       offset: z.number().int().min(0).optional().describe('Pagination offset. Default: 0'),
-      market: z.string().optional().describe('ISO 3166-1 alpha-2 country code'),
+      market: MARKET_CODE.optional().describe('ISO 3166-1 alpha-2 country code, e.g. \'US\''),
       fetch_all: z
         .boolean()
         .optional()
@@ -272,9 +273,9 @@ export function registerLibraryTools(server: McpServer, client: SpotifyClient): 
     'get_saved_albums',
     "Get albums saved in the user's library. Set fetch_all=true to retrieve the entire collection. Output is capped by max_results (default: SPOTIFY_MCP_MAX_ITEMS).",
     {
-      limit: z.number().int().min(1).max(50).optional().describe('1–50. Default: 20'),
+      limit: z.coerce.number().int().min(1).max(50).optional().describe('1–50. Default: 20'),
       offset: z.number().int().min(0).optional().describe('Pagination offset. Default: 0'),
-      market: z.string().optional().describe('ISO 3166-1 alpha-2 country code'),
+      market: MARKET_CODE.optional().describe('ISO 3166-1 alpha-2 country code, e.g. \'US\''),
       fetch_all: z
         .boolean()
         .optional()
@@ -335,7 +336,7 @@ export function registerLibraryTools(server: McpServer, client: SpotifyClient): 
     'get_saved_shows',
     "Get podcast shows saved in the user's library. Set fetch_all=true to retrieve the entire collection. Output is capped by max_results (default: SPOTIFY_MCP_MAX_ITEMS).",
     {
-      limit: z.number().int().min(1).max(50).optional().describe('1–50. Default: 20'),
+      limit: z.coerce.number().int().min(1).max(50).optional().describe('1–50. Default: 20'),
       offset: z.number().int().min(0).optional().describe('Pagination offset. Default: 0'),
       fetch_all: z
         .boolean()
@@ -396,9 +397,9 @@ export function registerLibraryTools(server: McpServer, client: SpotifyClient): 
     'get_saved_episodes',
     "Get podcast episodes saved in the user's library. Set fetch_all=true to retrieve the entire collection. Output is capped by max_results (default: SPOTIFY_MCP_MAX_ITEMS).",
     {
-      limit: z.number().int().min(1).max(50).optional().describe('1–50. Default: 20'),
+      limit: z.coerce.number().int().min(1).max(50).optional().describe('1–50. Default: 20'),
       offset: z.number().int().min(0).optional().describe('Pagination offset. Default: 0'),
-      market: z.string().optional().describe('ISO 3166-1 alpha-2 country code'),
+      market: MARKET_CODE.optional().describe('ISO 3166-1 alpha-2 country code, e.g. \'US\''),
       fetch_all: z
         .boolean()
         .optional()
@@ -818,7 +819,7 @@ export function registerLibraryTools(server: McpServer, client: SpotifyClient): 
       added_after: z.string().optional().describe('ISO date — only tracks added after this date'),
       added_before: z.string().optional().describe('ISO date — only tracks added before this date'),
       sort_by: z.enum(['added_desc','added_asc','name_asc','artist_asc']).optional().default('added_desc').describe('Sort order'),
-      limit: z.number().int().min(1).max(100).optional().default(20).describe('Max results to return'),
+      limit: z.coerce.number().int().min(1).max(100).optional().default(20).describe('Max results to return'),
       max_items: z.number().int().min(1).max(10000).optional().describe('How many saved tracks to walk (default SPOTIFY_MCP_FETCH_ALL_CAP)'),
       response_format: ResponseFormat,
       max_results: MaxResults,

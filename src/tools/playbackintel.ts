@@ -7,6 +7,7 @@
  * Each tool notes quota in description (🟢/🟡).
  */
 import { z } from 'zod';
+import { MARKET_CODE } from './catalog.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
 import type { PlaybackState, SpotifyQueue, GetDevicesResponse, SpotifyDevice, SpotifyTrack, SpotifyEpisode } from '../types/spotify.js';
@@ -421,7 +422,7 @@ export function registerPlaybackIntelTools(server: McpServer, client: SpotifyCli
   // market_availability — per-entity multi-market check
   server.tool('market_availability',
     'Per-entity multi-market preview — checks if a track/episode/album is playable in each of 1-10 given markets (N× GET /{type}/{id}?market=X). Reports per-market available/404 plus full available_markets. 🟡 (N reads, 1-10). Read-only.',
-    { uri: z.string().min(1).describe('Spotify URI (track/episode/album)'), markets: z.array(z.string().min(2).max(5)).min(1).max(10).describe('Market codes to test (1-10, e.g. ["US","JP","DE"])'), response_format: ResponseFormat },
+    { uri: z.string().min(1).describe('Spotify URI (track/episode/album)'), markets: z.array(MARKET_CODE).min(1).max(10).describe('Market codes to test (1-10, e.g. ["US","JP","DE"])'), response_format: ResponseFormat },
     async (args) => {
       const parsed = parseSpotifyUri(args.uri as string);
       if (!parsed) return textResult(`Invalid URI: ${args.uri}`, { ok:false });

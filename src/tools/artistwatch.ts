@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { MARKET_CODE } from './catalog.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
 import { SpotifyApiError } from '../client.js';
@@ -105,7 +106,7 @@ export function registerArtistWatchTools(server: McpServer, client: SpotifyClien
       include_groups: z.array(z.enum(['album', 'single', 'appears_on', 'compilation'])).optional().describe('Alias for album_types (Spotify include_groups)'),
       limit: z.number().int().min(1).max(50).optional().describe('Results per page, 1–50. Default: 20'),
       offset: z.number().int().min(0).optional().describe('Offset'),
-      market: z.string().optional().describe('ISO 3166-1 alpha-2 country code'),
+      market: MARKET_CODE.optional().describe('ISO 3166-1 alpha-2 country code, e.g. \'US\''),
       ...sharedListFields,
     },
     async (args) => {
@@ -200,7 +201,7 @@ export function registerArtistWatchTools(server: McpServer, client: SpotifyClien
     {
       artist_id: z.string().describe('Spotify artist ID'),
       limit: z.number().int().min(1).max(50).optional().describe('Albums to fetch, 1–50. Default: 20'),
-      market: z.string().optional().describe('ISO 3166-1 alpha-2 country code'),
+      market: MARKET_CODE.optional().describe('ISO 3166-1 alpha-2 country code, e.g. \'US\''),
       response_format: ResponseFormat,
     },
     async (args) => {

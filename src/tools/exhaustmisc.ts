@@ -8,6 +8,7 @@
  * remove_from_library_by_playlist).
  */
 import { z } from 'zod';
+import { MARKET_CODE } from './catalog.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
 import { getConfig } from '../config.js';
@@ -55,7 +56,7 @@ export function registerExhaustMiscTools(server: McpServer, client: SpotifyClien
     {
       playlist_id: z.string().min(1).describe('Playlist ID'),
       query: z.string().min(1).describe('Substring to match against track/episode name, artist, album'),
-      market: z.string().optional().describe('Market for track relinking'),
+      market: MARKET_CODE.optional().describe('Market for track relinking, e.g. \'US\''),
       ...sharedListFields,
     },
     async (args) => {
@@ -155,7 +156,7 @@ export function registerExhaustMiscTools(server: McpServer, client: SpotifyClien
     'Audiobook progress rollup: chapters total, played count, current chapter, percent complete. Quota: 🟡 2 GETs (audiobook + chapters).',
     {
       audiobook_id: z.string().min(1).describe('Audiobook ID'),
-      market: z.string().optional().describe('Market'),
+      market: MARKET_CODE.optional().describe('Market, e.g. \'US\''),
       response_format: ResponseFormat,
     },
     async (args) => {

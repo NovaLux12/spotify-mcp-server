@@ -14,6 +14,7 @@
  * (repo convention: previews are the default); quota lines in descriptions.
  */
 import { z } from 'zod';
+import { MARKET_CODE } from './catalog.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
 import { DryRun, ResponseFormat, describeDryRun, parseSpotifyUri } from '../shaping.js';
@@ -280,7 +281,7 @@ export function registerExhaust2ExtraTools(server: McpServer, client: SpotifyCli
       queries: z.array(z.string().min(1)).min(1).max(25).describe('Search queries, cycled round-robin (1–25)'),
       target_count: z.number().int().min(1).max(500).optional()
         .describe('Grow the playlist until it reaches this many NEW items. Default 20'),
-      market: z.string().length(2).optional().describe('ISO 3166-1 alpha-2 market for search'),
+      market: MARKET_CODE.optional().describe('ISO 3166-1 alpha-2 market for search, e.g. \'US\''),
       response_format: ResponseFormat,
       dry_run: DryRun,
     },

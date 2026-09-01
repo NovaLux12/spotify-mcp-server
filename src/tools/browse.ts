@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { MARKET_CODE } from './catalog.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
 import type { SpotifyArtistFull, SpotifyPlaylistSimple, SpotifyPaged } from '../types/spotify.js';
@@ -50,7 +51,7 @@ export function registerBrowseTools(server: McpServer, client: SpotifyClient): v
     {
       limit: z.number().int().min(1).max(50).optional().describe('Results per page, 1\u201350. Default: 20'),
       offset: z.number().int().min(0).optional().describe('Offset. Default: 0'),
-      country: z.string().optional().describe('ISO 3166-1 alpha-2 country code'),
+      country: z.string().regex(/^[A-Za-z]{2}$/, "market must be 2 letters e.g. 'US'").transform(s=>s.toUpperCase()).optional().describe('ISO 3166-1 alpha-2 country code, e.g. \'US\' (alias: market)'),
       locale: z.string().optional().describe('Locale, e.g. en_US'),
       ...sharedListFields,
     },
@@ -58,7 +59,8 @@ export function registerBrowseTools(server: McpServer, client: SpotifyClient): v
       const params: Record<string, string> = {};
       if (args.limit !== undefined) params.limit = String(args.limit);
       if (args.offset !== undefined) params.offset = String(args.offset);
-      if (args.country) params.country = args.country;
+      const countryVal = (args as any).country ?? (args as any).market;
+      if (countryVal) params.country = countryVal;
       if (args.locale) params.locale = args.locale;
       const data = await client.get<{ categories: SpotifyPaged<CategoryItem> }>('/browse/categories', params);
       if (!data?.categories) {
@@ -88,14 +90,15 @@ export function registerBrowseTools(server: McpServer, client: SpotifyClient): v
       category_id: z.string().describe('Category ID (from get_categories)'),
       limit: z.number().int().min(1).max(50).optional().describe('Results per page, 1\u201350. Default: 20'),
       offset: z.number().int().min(0).optional().describe('Offset. Default: 0'),
-      country: z.string().optional().describe('ISO 3166-1 alpha-2 country code'),
+      country: z.string().regex(/^[A-Za-z]{2}$/, "market must be 2 letters e.g. 'US'").transform(s=>s.toUpperCase()).optional().describe('ISO 3166-1 alpha-2 country code, e.g. \'US\' (alias: market)'),
       ...sharedListFields,
     },
     async (args) => {
       const params: Record<string, string> = {};
       if (args.limit !== undefined) params.limit = String(args.limit);
       if (args.offset !== undefined) params.offset = String(args.offset);
-      if (args.country) params.country = args.country;
+      const countryVal2 = (args as any).country ?? (args as any).market;
+      if (countryVal2) params.country = countryVal2;
       const data = await client.get<{ playlists: PlaylistPage }>(
         `/browse/categories/${encodeURIComponent(args.category_id)}/playlists`,
         params,

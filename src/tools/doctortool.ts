@@ -15,6 +15,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
 import { getConfig } from '../config.js';
 import { resolveToolsets, isActive } from '../toolsets.js';
+import { ResponseFormat } from '../shaping.js';
 
 // ---------------------------------------------------------------------------
 // Row model
@@ -371,6 +372,7 @@ export function registerDoctorTool(server: McpServer, client: SpotifyClient): vo
         .boolean()
         .optional()
         .describe('Include per-check technical detail lines in the prose output'),
+      response_format: z.enum(['concise','detailed','json']).optional().describe('Response format: concise (default) returns human-readable text, detailed adds metadata, json returns structured data'),
     },
     async (args) => {
       const report = await collectDoctorReport(client);
