@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > from [Conventional Commits](https://www.conventionalcommits.org/). Entries below v1.0.4 were
 > backfilled by hand from git history.
 
+## [1.27.0](https://github.com/NovaLux12/spotify-mcp-server/compare/v1.26.1...v1.27.0) (2026-09-01)
+
+
+### Features
+
+* accuracy and coverage from fix-skills-tests swarm ([fbe81c1](https://github.com/NovaLux12/spotify-mcp-server/commit/fbe81c1c4018564da03b03aaa6aaade24eb4ec50))
+* agent usability fixes for release ([beee490](https://github.com/NovaLux12/spotify-mcp-server/commit/beee4908931e472ab8a19b93a14a3cdd92a7926d))
+
+
+### Bug Fixes
+
+* docs & skills sync — tool counts, versions, skill routing (EPIC 526) ([#539](https://github.com/NovaLux12/spotify-mcp-server/issues/539)) ([9253f2c](https://github.com/NovaLux12/spotify-mcp-server/commit/9253f2c7647a16a49ece4e6a3797af6179817651)), closes [#526](https://github.com/NovaLux12/spotify-mcp-server/issues/526)
+* mock Date.now in playlist_staleness_score tests\n\nThese tests relied on a fixed NOW anchor for test data but did not\nmock Date.now() inside the handler, causing time-dependent assertions\nto drift as real time passes. ([921cffd](https://github.com/NovaLux12/spotify-mcp-server/commit/921cffd0d32dedc676f4d3c04c5295ea2cbf9dbf))
+* pagination, batch & ID contract — CHUNK_CAPS, parallel chunks (EPIC 523 minimal) ([#542](https://github.com/NovaLux12/spotify-mcp-server/issues/542)) ([6adec1f](https://github.com/NovaLux12/spotify-mcp-server/commit/6adec1faab031c9b0a8d789c36e889840e217056))
+* prompts — no N+1, no silent failures (EPIC 525) ([#540](https://github.com/NovaLux12/spotify-mcp-server/issues/540)) ([e69b9c3](https://github.com/NovaLux12/spotify-mcp-server/commit/e69b9c3c8f7428e34200ec6b0299d2e9bb201e13)), closes [#452](https://github.com/NovaLux12/spotify-mcp-server/issues/452) [#455](https://github.com/NovaLux12/spotify-mcp-server/issues/455) [#456](https://github.com/NovaLux12/spotify-mcp-server/issues/456) [#457](https://github.com/NovaLux12/spotify-mcp-server/issues/457) [#460](https://github.com/NovaLux12/spotify-mcp-server/issues/460) [#462](https://github.com/NovaLux12/spotify-mcp-server/issues/462) [#506](https://github.com/NovaLux12/spotify-mcp-server/issues/506) [#509](https://github.com/NovaLux12/spotify-mcp-server/issues/509) [#511](https://github.com/NovaLux12/spotify-mcp-server/issues/511) [#514](https://github.com/NovaLux12/spotify-mcp-server/issues/514) [#516](https://github.com/NovaLux12/spotify-mcp-server/issues/516) [#525](https://github.com/NovaLux12/spotify-mcp-server/issues/525)
+* tool discovery & naming — collisions, toolsets, dedupe alias (EPIC 522) ([#541](https://github.com/NovaLux12/spotify-mcp-server/issues/541)) ([efe2920](https://github.com/NovaLux12/spotify-mcp-server/commit/efe29201e6337011256caf7f4a27edfc996f5439))
+* tool params & errors — validate market, response_format, hints (EPIC 524) ([#536](https://github.com/NovaLux12/spotify-mcp-server/issues/536)) ([241005a](https://github.com/NovaLux12/spotify-mcp-server/commit/241005a8e69452950149028db5b8cc2ffb99867f))
+
 ## [1.26.1](https://github.com/NovaLux12/spotify-mcp-server/compare/v1.26.0...v1.26.1) (2026-08-28)
 
 
