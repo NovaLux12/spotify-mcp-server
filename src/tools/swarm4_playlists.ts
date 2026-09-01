@@ -386,7 +386,7 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
     'playlist_resequence',
     'Sort a playlist in place — by track name, artist, album, duration, or date added — written '
       + 'back as one atomic replace. Episodes sort last (no artist/album key). '
-      + 'Quota: 🟢 2 GETs + 1 PUT.',
+      + 'Quota: 🟢 2 GETs + 1 PUT. Also covers: reorder_playlist_items (range-based), playlist_move_block — See also: reorder_playlist_items, playlist_move_block.',
     {
       playlist_id: z.string().describe('Playlist to sort, as ID or spotify:playlist: URI'),
       sort_by: z
@@ -622,7 +622,7 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
     'playlist_move_block',
     'Move a contiguous block of items (1-based start + count) so its first item lands at a target '
       + 'position expressed in the ORIGINAL numbering. The rest of the playlist closes up around '
-      + 'it. Written as one atomic replace. Quota: 🟢 2 GETs + 1 PUT.',
+      + 'it. Written as one atomic replace. Quota: 🟢 2 GETs + 1 PUT. Also covers: reorder_playlist_items, playlist_resequence — See also: reorder_playlist_items, playlist_resequence.',
     {
       playlist_id: z.string().describe('Playlist to edit, as ID or spotify:playlist: URI'),
       start: z.number().int().min(1).describe('1-based position of the first item to move'),
@@ -1114,7 +1114,7 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
   server.tool(
     'playlist_diff',
     'Compare two playlists: what is only in A, only in B, and in both — plus whether the shared '
-      + 'tracks appear in the same relative order. Read-only. Quota: 🟢 4 GETs.',
+      + 'tracks appear in the same relative order. Read-only. Quota: 🟢 4 GETs. Also covers: diff_playlists (live playlist diff), playlist_difference_plan (subtract plan) — See also: diff_playlists, playlist_difference_plan.',
     {
       playlist_a_id: z.string().describe('First playlist, as ID or spotify:playlist: URI'),
       playlist_b_id: z.string().describe('Second playlist, as ID or spotify:playlist: URI'),

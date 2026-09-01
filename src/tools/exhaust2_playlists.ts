@@ -530,7 +530,7 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
     'playlist_intersect',
     'Keep only the tracks present in ALL of 2–10 playlists, written as one atomic replace — '
       + 'the missing set op (union/subtract/XOR exist). Without a target it reports the '
-      + 'intersection read-only. Quota: 🟢 N GETs + 1 PUT when committing.',
+      + 'intersection read-only. Quota: 🟢 N GETs + 1 PUT when committing. Also covers: playlist_intersection (same op, unified) — See also: playlist_intersection.',
     {
       source_playlist_ids: z
         .array(z.string())

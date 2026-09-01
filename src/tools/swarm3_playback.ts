@@ -619,7 +619,7 @@ export function registerSwarm3PlaybackTools(server: McpServer, client: SpotifyCl
   // -------------------------------------------------------------------------
   server.tool(
     'get_queue_snapshot',
-    'Return the full upcoming queue with per-track runtime and the total queue runtime. Read-only.',
+    'Return the full upcoming queue with per-track runtime and the total queue runtime. Read-only. Also covers: raw queue via get_queue, enriched view via describe_queue — See also: get_queue, describe_queue.',
     {
       max_results: MaxResults,
       response_format: ResponseFormat,

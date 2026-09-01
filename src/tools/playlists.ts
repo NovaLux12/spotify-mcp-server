@@ -896,7 +896,7 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
   // reorder_playlist_items
   server.tool(
     'reorder_playlist_items',
-    'Move a range of items within a playlist. Spotify semantics: when insert_before > range_start, the effective destination shifts down by range_length because the moved range is lifted out first (e.g. moving [2] to insert_before=4 lands it AT index 3).',
+    'Move a range of items within a playlist. Spotify semantics: when insert_before > range_start, the effective destination shifts down by range_length because the moved range is lifted out first (e.g. moving [2] to insert_before=4 lands it AT index 3). Also covers: playlist_resequence (full resequence), playlist_move_block — See also: playlist_resequence, playlist_move_block.',
     {
       playlist_id: z.string().describe('Playlist ID'),
       range_start: z.number().int().min(0).describe('Index of the first item to move'),
@@ -1025,7 +1025,7 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
   // remove_from_playlist's { uri, positions } entries.
   server.tool(
     'find_duplicates_in_playlist',
-    'Find duplicate tracks in a playlist: repeated URIs plus relinked copies of the same song appearing under different URIs.',
+    'Find duplicate tracks in a playlist: repeated URIs plus relinked copies of the same song appearing under different URIs. Also covers: find_duplicate_tracks_across_playlists (cross-playlist), find_duplicate_playlists (playlist-level), remove_duplicate_playlist_items — See also: find_duplicate_tracks_across_playlists, find_duplicate_playlists, remove_duplicate_playlist_items.',
     {
       ...sharedListFields,
       playlist_id: z.string().describe('Playlist ID'),
@@ -1226,7 +1226,7 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
     'Remove duplicate items from a playlist: keeps the first occurrence of each track and removes '
       + 'later repeats. Exact URI repeats are always cleaned; pass include_relinked=true to also '
       + 'collapse same-song entries that appear under different URIs (remasters/relinks). '
-      + 'Supports dry_run; removals of 10+ items ask for confirmation via elicitation.',
+      + 'Supports dry_run; removals of 10+ items ask for confirmation via elicitation. Also covers: playlist_dedupe_advanced, dedupe_playlist_plan — See also: playlist_dedupe_advanced, dedupe_playlist_plan.',
     {
       playlist_id: z.string().describe('Playlist ID'),
       include_relinked: z
@@ -1601,7 +1601,7 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
   });
 
   // playlist_sort (#287)
-  server.tool('playlist_sort', 'Sort a playlist in place by added_at/name/artist/duration/popularity. Quota: 🟢 GET all + PUT/POST.', { playlist_id: z.string(), sort_by: z.enum(['added_asc','added_desc','name_asc','name_desc','artist_asc','duration_asc','duration_desc','popularity_desc']).default('name_asc'), dry_run: DryRun, ...sharedListFields }, async (args) => {
+  server.tool('playlist_sort', 'Sort a playlist in place by added_at/name/artist/duration/popularity. Quota: 🟢 GET all + PUT/POST. Also covers: sort_playlist_plan / sort_playlist_apply (safe plan/apply) — See also: sort_playlist_plan, sort_playlist_apply.', { playlist_id: z.string(), sort_by: z.enum(['added_asc','added_desc','name_asc','name_desc','artist_asc','duration_asc','duration_desc','popularity_desc']).default('name_asc'), dry_run: DryRun, ...sharedListFields }, async (args) => {
     const items = await client.getAllPages<PlaylistItemObject>(`/playlists/${encodeURIComponent(args.playlist_id)}/items`, { limit: '100' }, { maxItems: getConfig().fetchAllCap });
     const entries = items.map((row, idx) => ({ uri: row.item?.uri ?? '', name: (row.item as SpotifyTrack | undefined)?.name ?? '', artist: ((row.item as SpotifyTrack | undefined)?.artists?.[0]?.name ?? ''), duration: (row.item as SpotifyTrack | undefined)?.duration_ms ?? 0, added: row.added_at, popularity: (row.item as unknown as { popularity?: number })?.popularity ?? 0, idx })).filter(e => !!e.uri);
     const sorted = [...entries].sort((a,b) => {
@@ -1636,7 +1636,7 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
   });
 
   // playlist_reverse (#289)
-  server.tool('playlist_reverse', 'Reverse a playlist in one atomic replace. Quota: 🟢 GET all + PUT/POST.', { playlist_id: z.string(), dry_run: DryRun }, async (args) => {
+  server.tool('playlist_reverse', 'Reverse a playlist in one atomic replace. Quota: 🟢 GET all + PUT/POST. Also covers: reverse_playlist_plan — See also: reverse_playlist_plan.', { playlist_id: z.string(), dry_run: DryRun }, async (args) => {
     const uris = await getAllUris(args.playlist_id);
     const rev = [...uris].reverse();
     if (args.dry_run) return textResult(describeDryRun('reverse playlist', args.playlist_id, [`Would reverse ${uris.length} items`]));

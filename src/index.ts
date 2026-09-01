@@ -182,7 +182,7 @@ async function startMcpServer(): Promise<void> {
   // playback/queue extensions
   if (!readOnly && isModuleActive('queueops', activeSets, overrides) && !moduleBlockedByScopes('playback', grantedScopes)) registerQueueOpsTools(server, client)
   if (!readOnly && isModuleActive('playbackext', activeSets, overrides) && !moduleBlockedByScopes('playback', grantedScopes)) registerPlaybackExtTools(server, client)
-  if (isModuleActive('playback', activeSets, overrides) && !moduleBlockedByScopes('playback', grantedScopes)) registerPlaybackIntelTools(server, client)
+  if (isModuleActive('playbackintel', activeSets, overrides) && !moduleBlockedByScopes('playback', grantedScopes)) registerPlaybackIntelTools(server, client)
   // spotify_doctor diagnostic (#111): unconditional — must survive toolset trimming.
   registerDoctorTool(server, client);
 
@@ -196,7 +196,9 @@ async function startMcpServer(): Promise<void> {
   if (isModuleActive('swarm3analytics', activeSets, overrides) && !moduleBlockedByScopes('personalization', grantedScopes)) registerSwarm3AnalyticsTools(server, client)
   if (isModuleActive('swarm3refs', activeSets, overrides) && !moduleBlockedByScopes('catalog', grantedScopes)) registerSwarm3RefsTools(server, client)
   if (!readOnly && isModuleActive('swarm3snapshots', activeSets, overrides) && !moduleBlockedByScopes('playlists', grantedScopes)) registerSwarm3SnapshotsTools(server, client)
-  if (isModuleActive('swarm3meta', activeSets, overrides) && !moduleBlockedByScopes('catalog', grantedScopes)) registerSwarm3MetaTools(server, client)
+  // Discovery tools (find_tool/inspect_tool/toolset_report) — always registered (like doctor) so minimal toolsets
+  // (playback+playlists) can still discover the surface; discovery/catalog sets also gate via ENABLE_TOOLS for compat.
+  if (!moduleBlockedByScopes('catalog', grantedScopes)) registerSwarm3MetaTools(server, client)
   if (!readOnly && isModuleActive('swarm4playlists', activeSets, overrides) && !moduleBlockedByScopes('playlists', grantedScopes)) registerSwarm4PlaylistsTools(server, client)
   if (!readOnly && isModuleActive('following', activeSets, overrides) && !moduleBlockedByScopes('following', grantedScopes)) registerFollowingTools(server, client)
   if (!readOnly && isModuleActive('audiobooks', activeSets, overrides) && !moduleBlockedByScopes('audiobooks', grantedScopes)) registerAudiobookTools(server, client)

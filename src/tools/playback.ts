@@ -83,7 +83,7 @@ export function registerPlaybackTools(server: McpServer, client: SpotifyClient):
   // get_now_playing
   server.tool(
     'get_now_playing',
-    'Full device/session state for what is playing right now — item, progress, plus shuffle/repeat mode, active device, and volume. For a lightweight item+progress poll use get_currently_playing instead.',
+    'Full device/session state for what is playing right now — item, progress, plus shuffle/repeat mode, active device, and volume. For a lightweight item+progress poll use get_currently_playing instead. Also covers: get_currently_playing lightweight poll — See also: get_currently_playing.',
     {
       market: marketSchema,
       additional_types: additionalTypesSchema,
@@ -150,7 +150,7 @@ export function registerPlaybackTools(server: McpServer, client: SpotifyClient):
   // get_currently_playing
   server.tool(
     'get_currently_playing',
-    'Lightweight poll of what is playing right now: the item and progress only. For full session state (shuffle/repeat mode, active device, volume) use get_now_playing instead.',
+    'Lightweight poll of what is playing right now: the item and progress only. For full session state (shuffle/repeat mode, active device, volume) use get_now_playing instead. Also covers: get_now_playing full-state poll — See also: get_now_playing.',
     {
       market: marketSchema,
       additional_types: additionalTypesSchema,
@@ -390,7 +390,7 @@ export function registerPlaybackTools(server: McpServer, client: SpotifyClient):
   // skip_next
   server.tool(
     'skip_next',
-    'Skip to the next track in the queue or context',
+    'Skip to the next track in the queue or context Also covers: batch skip via skip_n — See also: skip_n, skip_previous.',
     {
       device_id: z.string().optional().describe('Target device ID'),
       response_format: ResponseFormat,
@@ -422,7 +422,7 @@ export function registerPlaybackTools(server: McpServer, client: SpotifyClient):
   // skip_previous
   server.tool(
     'skip_previous',
-    'Skip to the previous track. If more than 3 seconds in, restarts the current track first.',
+    'Skip to the previous track. If more than 3 seconds in, restarts the current track first. Also covers: batch skip via skip_n — See also: skip_n, skip_next.',
     {
       device_id: z.string().optional().describe('Target device ID'),
       response_format: ResponseFormat,
@@ -560,7 +560,7 @@ export function registerPlaybackTools(server: McpServer, client: SpotifyClient):
   // get_queue
   server.tool(
     'get_queue',
-    'Get the current playback queue',
+    'Get the current playback queue Also covers: enriched queue via describe_queue, snapshot via get_queue_snapshot — See also: describe_queue, get_queue_snapshot.',
     {
       response_format: ResponseFormat,
       max_results: MaxResults,
@@ -627,7 +627,7 @@ export function registerPlaybackTools(server: McpServer, client: SpotifyClient):
   // add_to_queue
   server.tool(
     'add_to_queue',
-    'Add a track or episode to the end of the playback queue',
+    'Add a track or episode to the end of the playback queue Also covers: bulk via batch_add_to_queue, playlist queue via queue_playlist — See also: batch_add_to_queue, queue_playlist.',
     {
       uri: z.string().describe('Spotify track or episode URI (e.g. spotify:track:...)'),
       device_id: z.string().optional().describe('Target device ID'),

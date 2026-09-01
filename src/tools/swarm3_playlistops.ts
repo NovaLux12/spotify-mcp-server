@@ -510,7 +510,7 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
     'reverse_playlist_plan',
     'Plan (and optionally commit) reversing a playlist\'s entire order via one atomic replace — ' +
       'dry_run defaults to TRUE so it returns the reversed PLAN read-only. '
-      + 'Quota: 🟢 GET + 1 PUT when committing.',
+      + 'Quota: 🟢 GET + 1 PUT when committing. Also covers: playlist_reverse variant — See also: playlist_reverse.',
     {
       playlist_id: z.string().describe('Playlist to reverse (ID or spotify:playlist: URI)'),
       dry_run: DryRunDefault,

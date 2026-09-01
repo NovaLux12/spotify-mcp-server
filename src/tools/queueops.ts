@@ -83,7 +83,7 @@ async function resolveUris(client: SpotifyClient, sourceUri: string, limit: numb
 export function registerQueueOpsTools(server: McpServer, client: SpotifyClient): void {
   server.tool(
     'queue_playlist',
-    'Queue all tracks from a playlist/album/artist URI in order (cap 200). mode=append adds to end; mode=replace is not supported — Spotify has no queue-clear endpoint.',
+    'Queue all tracks from a playlist/album/artist URI in order (cap 200). mode=append adds to end; mode=replace is not supported — Spotify has no queue-clear endpoint. Also covers: single add via add_to_queue, bulk via batch_add_to_queue — See also: add_to_queue, batch_add_to_queue.',
     {
       source_uri: z.string().describe('Source Spotify URI (playlist/album/artist/track/episode)'),
       mode: z.enum(['append', 'replace']).default('append').describe('append: add to end; replace: not supported — returns ok:false with guidance'),
@@ -235,7 +235,7 @@ export function registerQueueOpsTools(server: McpServer, client: SpotifyClient):
 
   server.tool(
     'batch_add_to_queue',
-    'Add multiple URIs to the playback queue in one shot. POSTs each URI to /me/player/queue and returns a summary of queued/failed counts. Quota: 🟡 N writes (one POST per URI).',
+    'Add multiple URIs to the playback queue in one shot. POSTs each URI to /me/player/queue and returns a summary of queued/failed counts. Quota: 🟡 N writes (one POST per URI). Also covers: single add via add_to_queue, playlist queue via queue_playlist — See also: add_to_queue, queue_playlist.',
     {
       uris: z.array(z.string()).min(1).max(200).describe('Spotify track/episode URIs to queue (1–200)'),
       device_id: z.string().optional().describe('Target device id'),

@@ -425,7 +425,7 @@ export function registerSwarm3SnapshotsTools(server: McpServer, client: SpotifyC
   // -- 1. take_playlist_snapshot -------------------------------------------
   server.tool(
     'take_playlist_snapshot',
-    'Capture a live playlist’s items (uri, name, added_at) into a timestamped local JSON snapshot file; dry_run=true previews the walk and target filename without writing.',
+    'Capture a live playlist’s items (uri, name, added_at) into a timestamped local JSON snapshot file; dry_run=true previews the walk and target filename without writing. Newest, transactional snapshot (swarm) — preferred over legacy snapshot_playlist. See also list_saved_snapshots, read_playlist_snapshot, diff_playlist_snapshots. Also covers: playlist snapshot (swarm). Snapshot guide: take_playlist_snapshot (create), list_saved_snapshots (list), read_playlist_snapshot (read), diff_playlist_snapshots / snapshot_new_tracks / snapshot_removed_tracks (diff), restore_playlist_from_snapshot / restore_playlist_plan (restore).',
     {
       playlist: spotifyId('playlist').describe('Playlist ID or spotify:playlist: URI to snapshot'),
       notes: z.string().optional().describe('Free-text note stored in the snapshot _meta block'),
@@ -499,7 +499,7 @@ export function registerSwarm3SnapshotsTools(server: McpServer, client: SpotifyC
   // -- 2. list_saved_snapshots ------------------------------------------
   server.tool(
     'list_saved_snapshots',
-    'List local playlist snapshots (newest first) with path, creation time, size, and the _meta summary; optionally filtered to one playlist',
+    'List local playlist snapshots (newest first) with path, creation time, size, and the _meta summary; optionally filtered to one playlist Snapshot guide: take_playlist_snapshot (create), list_saved_snapshots (list), read_playlist_snapshot (read), diff_playlist_snapshots / snapshot_new_tracks / snapshot_removed_tracks (diff), restore_playlist_from_snapshot / restore_playlist_plan (restore).',
     {
       playlist: spotifyId('playlist').optional().describe('Only snapshots of this playlist (ID or URI)'),
       max_results: MaxResults,
@@ -547,7 +547,7 @@ export function registerSwarm3SnapshotsTools(server: McpServer, client: SpotifyC
   // -- 3. read_playlist_snapshot -------------------------------------------
   server.tool(
     'read_playlist_snapshot',
-    'Read one local playlist snapshot and return its meta plus the captured track rows (truncated by max_results)',
+    'Read one local playlist snapshot and return its meta plus the captured track rows (truncated by max_results) Snapshot guide: take_playlist_snapshot (create), list_saved_snapshots (list), read_playlist_snapshot (read), diff_playlist_snapshots / snapshot_new_tracks / snapshot_removed_tracks (diff), restore_playlist_from_snapshot / restore_playlist_plan (restore).',
     {
       snapshot: z.string().min(1).describe('Snapshot id (filename stem), filename, or path'),
       max_results: MaxResults,
@@ -583,7 +583,7 @@ export function registerSwarm3SnapshotsTools(server: McpServer, client: SpotifyC
   // -- 4. delete_playlist_snapshot -----------------------------------------
   server.tool(
     'delete_playlist_snapshot',
-    'Delete one local playlist snapshot file; dry_run=true (default) only reports what would be removed',
+    'Delete one local playlist snapshot file; dry_run=true (default) only reports what would be removed Snapshot guide: take_playlist_snapshot (create), list_saved_snapshots (list), read_playlist_snapshot (read), diff_playlist_snapshots / snapshot_new_tracks / snapshot_removed_tracks (diff), restore_playlist_from_snapshot / restore_playlist_plan (restore).',
     {
       snapshot: z.string().min(1).describe('Snapshot id (filename stem), filename, or path'),
       response_format: ResponseFormat,
@@ -609,7 +609,7 @@ export function registerSwarm3SnapshotsTools(server: McpServer, client: SpotifyC
   // -- 5. diff_playlist_snapshots ------------------------------------------
   server.tool(
     'diff_playlist_snapshots',
-    'Diff two local snapshots of a playlist and report every added and removed track between them',
+    'Diff two local snapshots of a playlist and report every added and removed track between them Snapshot guide: take_playlist_snapshot (create), list_saved_snapshots (list), read_playlist_snapshot (read), diff_playlist_snapshots / snapshot_new_tracks / snapshot_removed_tracks (diff), restore_playlist_from_snapshot / restore_playlist_plan (restore).',
     {
       from_snapshot: z.string().min(1).describe('Older snapshot (id, filename, or path) — the baseline'),
       to_snapshot: z.string().min(1).describe('Newer snapshot (id, filename, or path) — the comparison'),
@@ -647,7 +647,7 @@ export function registerSwarm3SnapshotsTools(server: McpServer, client: SpotifyC
   // -- 6. snapshot_new_tracks ----------------------------------------------
   server.tool(
     'snapshot_new_tracks',
-    'List only the tracks added between an older and a newer snapshot of a playlist',
+    'List only the tracks added between an older and a newer snapshot of a playlist Snapshot guide: take_playlist_snapshot (create), list_saved_snapshots (list), read_playlist_snapshot (read), diff_playlist_snapshots / snapshot_new_tracks / snapshot_removed_tracks (diff), restore_playlist_from_snapshot / restore_playlist_plan (restore).',
     {
       from_snapshot: z.string().min(1).describe('Older snapshot (id, filename, or path)'),
       to_snapshot: z.string().min(1).describe('Newer snapshot (id, filename, or path)'),
@@ -683,7 +683,7 @@ export function registerSwarm3SnapshotsTools(server: McpServer, client: SpotifyC
   // -- 7. snapshot_removed_tracks ------------------------------------------
   server.tool(
     'snapshot_removed_tracks',
-    'List only the tracks removed between an older and a newer snapshot of a playlist',
+    'List only the tracks removed between an older and a newer snapshot of a playlist Snapshot guide: take_playlist_snapshot (create), list_saved_snapshots (list), read_playlist_snapshot (read), diff_playlist_snapshots / snapshot_new_tracks / snapshot_removed_tracks (diff), restore_playlist_from_snapshot / restore_playlist_plan (restore).',
     {
       from_snapshot: z.string().min(1).describe('Older snapshot (id, filename, or path)'),
       to_snapshot: z.string().min(1).describe('Newer snapshot (id, filename, or path)'),
@@ -719,7 +719,7 @@ export function registerSwarm3SnapshotsTools(server: McpServer, client: SpotifyC
   // -- 8. snapshot_added_at_report -----------------------------------------
   server.tool(
     'snapshot_added_at_report',
-    'Report when the tracks in a snapshot were added to the playlist, bucketed by month (YYYY-MM)',
+    'Report when the tracks in a snapshot were added to the playlist, bucketed by month (YYYY-MM) Snapshot guide: take_playlist_snapshot (create), list_saved_snapshots (list), read_playlist_snapshot (read), diff_playlist_snapshots / snapshot_new_tracks / snapshot_removed_tracks (diff), restore_playlist_from_snapshot / restore_playlist_plan (restore).',
     {
       snapshot: z.string().min(1).describe('Snapshot id, filename, or path'),
       response_format: ResponseFormat,
@@ -758,7 +758,7 @@ export function registerSwarm3SnapshotsTools(server: McpServer, client: SpotifyC
   // -- 9. snapshot_changelog -----------------------------------------------
   server.tool(
     'snapshot_changelog',
-    'Build a chronological changelog of a playlist from every local snapshot, describing the changes between consecutive snapshots',
+    'Build a chronological changelog of a playlist from every local snapshot, describing the changes between consecutive snapshots Snapshot guide: take_playlist_snapshot (create), list_saved_snapshots (list), read_playlist_snapshot (read), diff_playlist_snapshots / snapshot_new_tracks / snapshot_removed_tracks (diff), restore_playlist_from_snapshot / restore_playlist_plan (restore).',
     {
       playlist: spotifyId('playlist').describe('Playlist ID or spotify:playlist: URI'),
       max_results: MaxResults,
@@ -834,7 +834,7 @@ export function registerSwarm3SnapshotsTools(server: McpServer, client: SpotifyC
   // -- 10. snapshot_stats_report -------------------------------------------
   server.tool(
     'snapshot_stats_report',
-    'Compute stats for one snapshot: track count, unique URIs, duplicates, and the oldest/newest added_at dates',
+    'Compute stats for one snapshot: track count, unique URIs, duplicates, and the oldest/newest added_at dates Snapshot guide: take_playlist_snapshot (create), list_saved_snapshots (list), read_playlist_snapshot (read), diff_playlist_snapshots / snapshot_new_tracks / snapshot_removed_tracks (diff), restore_playlist_from_snapshot / restore_playlist_plan (restore).',
     {
       snapshot: z.string().min(1).describe('Snapshot id, filename, or path'),
       response_format: ResponseFormat,
@@ -883,7 +883,7 @@ export function registerSwarm3SnapshotsTools(server: McpServer, client: SpotifyC
   // -- 11. snapshot_integrity_check ----------------------------------------
   server.tool(
     'snapshot_integrity_check',
-    'Validate one snapshot (or all of them): JSON parses, required _meta keys exist, and the declared track_count matches the tracks array',
+    'Validate one snapshot (or all of them): JSON parses, required _meta keys exist, and the declared track_count matches the tracks array Snapshot guide: take_playlist_snapshot (create), list_saved_snapshots (list), read_playlist_snapshot (read), diff_playlist_snapshots / snapshot_new_tracks / snapshot_removed_tracks (diff), restore_playlist_from_snapshot / restore_playlist_plan (restore).',
     {
       snapshot: z.string().min(1).optional().describe('One snapshot (id/filename/path); omit to check ALL snapshots'),
       response_format: ResponseFormat,
@@ -946,7 +946,7 @@ export function registerSwarm3SnapshotsTools(server: McpServer, client: SpotifyC
   // -- 12. prune_old_snapshots ---------------------------------------------
   server.tool(
     'prune_old_snapshots',
-    'Delete old local snapshots, keeping the newest N per playlist and optionally dropping those older than a cutoff; dry_run=true (default) only reports what would go',
+    'Delete old local snapshots, keeping the newest N per playlist and optionally dropping those older than a cutoff; dry_run=true (default) only reports what would go Snapshot guide: take_playlist_snapshot (create), list_saved_snapshots (list), read_playlist_snapshot (read), diff_playlist_snapshots / snapshot_new_tracks / snapshot_removed_tracks (diff), restore_playlist_from_snapshot / restore_playlist_plan (restore).',
     {
       playlist: spotifyId('playlist').optional().describe('Restrict pruning to this playlist (ID or URI)'),
       keep_last: z.number().int().positive().max(100).optional().describe('Snapshots to KEEP per playlist (default 5)'),
@@ -1012,7 +1012,7 @@ export function registerSwarm3SnapshotsTools(server: McpServer, client: SpotifyC
   // -- 13. restore_playlist_from_snapshot ----------------------------------
   server.tool(
     'restore_playlist_from_snapshot',
-    'Make a live playlist match a snapshot (add missing, remove extra tracks); dry_run=true (default) returns the deterministic PLAN without touching Spotify',
+    'Make a live playlist match a snapshot (add missing, remove extra tracks); dry_run=true (default) returns the deterministic PLAN without touching Spotify Snapshot guide: take_playlist_snapshot (create), list_saved_snapshots (list), read_playlist_snapshot (read), diff_playlist_snapshots / snapshot_new_tracks / snapshot_removed_tracks (diff), restore_playlist_from_snapshot / restore_playlist_plan (restore).',
     {
       snapshot: z.string().min(1).describe('Snapshot to restore from (id, filename, or path)'),
       playlist: spotifyId('playlist').optional().describe('Target playlist (default: the snapshot’s own playlist_id)'),
@@ -1066,7 +1066,7 @@ export function registerSwarm3SnapshotsTools(server: McpServer, client: SpotifyC
   // -- 14. restore_playlist_plan -------------------------------------------
   server.tool(
     'restore_playlist_plan',
-    'Read-only plan of exactly which tracks would be added/removed to make a live playlist match a snapshot — never mutates',
+    'Read-only plan of exactly which tracks would be added/removed to make a live playlist match a snapshot — never mutates Snapshot guide: take_playlist_snapshot (create), list_saved_snapshots (list), read_playlist_snapshot (read), diff_playlist_snapshots / snapshot_new_tracks / snapshot_removed_tracks (diff), restore_playlist_from_snapshot / restore_playlist_plan (restore).',
     {
       snapshot: z.string().min(1).describe('Snapshot to plan from (id, filename, or path)'),
       playlist: spotifyId('playlist').optional().describe('Target playlist (default: the snapshot’s own playlist_id)'),
@@ -1104,7 +1104,7 @@ export function registerSwarm3SnapshotsTools(server: McpServer, client: SpotifyC
   // -- 15. snapshot_diff_summary -------------------------------------------
   server.tool(
     'snapshot_diff_summary',
-    'One-paragraph summary of the differences between two snapshots: counts plus the first few changed tracks',
+    'One-paragraph summary of the differences between two snapshots: counts plus the first few changed tracks Snapshot guide: take_playlist_snapshot (create), list_saved_snapshots (list), read_playlist_snapshot (read), diff_playlist_snapshots / snapshot_new_tracks / snapshot_removed_tracks (diff), restore_playlist_from_snapshot / restore_playlist_plan (restore).',
     {
       from_snapshot: z.string().min(1).describe('Older snapshot (id, filename, or path)'),
       to_snapshot: z.string().min(1).describe('Newer snapshot (id, filename, or path)'),
@@ -1134,7 +1134,7 @@ export function registerSwarm3SnapshotsTools(server: McpServer, client: SpotifyC
   // -- 16. find_new_since_snapshot -----------------------------------------
   server.tool(
     'find_new_since_snapshot',
-    'Compare a live playlist against a snapshot and list tracks added to the playlist since it was taken',
+    'Compare a live playlist against a snapshot and list tracks added to the playlist since it was taken Snapshot guide: take_playlist_snapshot (create), list_saved_snapshots (list), read_playlist_snapshot (read), diff_playlist_snapshots / snapshot_new_tracks / snapshot_removed_tracks (diff), restore_playlist_from_snapshot / restore_playlist_plan (restore).',
     {
       snapshot: z.string().min(1).describe('Baseline snapshot (id, filename, or path)'),
       playlist: spotifyId('playlist').optional().describe('Live playlist to compare (default: the snapshot’s playlist_id)'),
@@ -1171,7 +1171,7 @@ export function registerSwarm3SnapshotsTools(server: McpServer, client: SpotifyC
   // -- 17. find_lost_since_snapshot ----------------------------------------
   server.tool(
     'find_lost_since_snapshot',
-    'Compare a live playlist against a snapshot and list snapshot tracks that have since disappeared from the playlist',
+    'Compare a live playlist against a snapshot and list snapshot tracks that have since disappeared from the playlist Snapshot guide: take_playlist_snapshot (create), list_saved_snapshots (list), read_playlist_snapshot (read), diff_playlist_snapshots / snapshot_new_tracks / snapshot_removed_tracks (diff), restore_playlist_from_snapshot / restore_playlist_plan (restore).',
     {
       snapshot: z.string().min(1).describe('Baseline snapshot (id, filename, or path)'),
       playlist: spotifyId('playlist').optional().describe('Live playlist to compare (default: the snapshot’s playlist_id)'),
@@ -1208,7 +1208,7 @@ export function registerSwarm3SnapshotsTools(server: McpServer, client: SpotifyC
   // -- 18. merge_snapshot_changes_plan -------------------------------------
   server.tool(
     'merge_snapshot_changes_plan',
-    'Read-only plan to replay the changes between two snapshots onto the live playlist (add new and/or remove lost tracks)',
+    'Read-only plan to replay the changes between two snapshots onto the live playlist (add new and/or remove lost tracks) Snapshot guide: take_playlist_snapshot (create), list_saved_snapshots (list), read_playlist_snapshot (read), diff_playlist_snapshots / snapshot_new_tracks / snapshot_removed_tracks (diff), restore_playlist_from_snapshot / restore_playlist_plan (restore).',
     {
       from_snapshot: z.string().min(1).describe('Older snapshot — the baseline the playlist is assumed to match'),
       to_snapshot: z.string().min(1).describe('Newer snapshot — the target state'),
@@ -1263,7 +1263,7 @@ export function registerSwarm3SnapshotsTools(server: McpServer, client: SpotifyC
   // -- 19. apply_snapshot_changes ------------------------------------------
   server.tool(
     'apply_snapshot_changes',
-    'Execute a merge plan on the live playlist (replay the changes between two snapshots); dry_run=true (default) only returns the plan',
+    'Execute a merge plan on the live playlist (replay the changes between two snapshots); dry_run=true (default) only returns the plan Snapshot guide: take_playlist_snapshot (create), list_saved_snapshots (list), read_playlist_snapshot (read), diff_playlist_snapshots / snapshot_new_tracks / snapshot_removed_tracks (diff), restore_playlist_from_snapshot / restore_playlist_plan (restore).',
     {
       from_snapshot: z.string().min(1).describe('Older snapshot — the baseline'),
       to_snapshot: z.string().min(1).describe('Newer snapshot — the target state'),
@@ -1334,7 +1334,7 @@ export function registerSwarm3SnapshotsTools(server: McpServer, client: SpotifyC
   // -- 20. snapshot_retention_plan -----------------------------------------
   server.tool(
     'snapshot_retention_plan',
-    'Report which snapshots a keep-last-N (+ optional age cutoff) retention policy would keep or delete — never deletes anything',
+    'Report which snapshots a keep-last-N (+ optional age cutoff) retention policy would keep or delete — never deletes anything Snapshot guide: take_playlist_snapshot (create), list_saved_snapshots (list), read_playlist_snapshot (read), diff_playlist_snapshots / snapshot_new_tracks / snapshot_removed_tracks (diff), restore_playlist_from_snapshot / restore_playlist_plan (restore).',
     {
       playlist: spotifyId('playlist').optional().describe('Restrict the plan to this playlist (ID or URI)'),
       keep_last: z.number().int().positive().max(100).optional().describe('Snapshots to KEEP per playlist (default 5)'),
@@ -1384,7 +1384,7 @@ export function registerSwarm3SnapshotsTools(server: McpServer, client: SpotifyC
   // -- 21. snapshot_disk_usage ---------------------------------------------
   server.tool(
     'snapshot_disk_usage',
-    'Report disk usage of the snapshot directory: total size, file count, per-playlist breakdown, and the largest files',
+    'Report disk usage of the snapshot directory: total size, file count, per-playlist breakdown, and the largest files Snapshot guide: take_playlist_snapshot (create), list_saved_snapshots (list), read_playlist_snapshot (read), diff_playlist_snapshots / snapshot_new_tracks / snapshot_removed_tracks (diff), restore_playlist_from_snapshot / restore_playlist_plan (restore).',
     {
       response_format: ResponseFormat,
     },
@@ -1429,7 +1429,7 @@ export function registerSwarm3SnapshotsTools(server: McpServer, client: SpotifyC
   // -- 22. snapshot_integrity_report ---------------------------------------
   server.tool(
     'snapshot_integrity_report',
-    'Aggregate health report over all local snapshots: valid vs corrupt files, per-playlist coverage, and the age of each playlist’s newest snapshot',
+    'Aggregate health report over all local snapshots: valid vs corrupt files, per-playlist coverage, and the age of each playlist’s newest snapshot Snapshot guide: take_playlist_snapshot (create), list_saved_snapshots (list), read_playlist_snapshot (read), diff_playlist_snapshots / snapshot_new_tracks / snapshot_removed_tracks (diff), restore_playlist_from_snapshot / restore_playlist_plan (restore).',
     {
       response_format: ResponseFormat,
     },
@@ -1482,7 +1482,7 @@ export function registerSwarm3SnapshotsTools(server: McpServer, client: SpotifyC
   // -- 23. export_snapshot_bundle ------------------------------------------
   server.tool(
     'export_snapshot_bundle',
-    'Bundle selected snapshots (all of one playlist, or explicit ids) into a single portable JSON export file locally; dry_run=true (default) previews the bundle',
+    'Bundle selected snapshots (all of one playlist, or explicit ids) into a single portable JSON export file locally; dry_run=true (default) previews the bundle Snapshot guide: take_playlist_snapshot (create), list_saved_snapshots (list), read_playlist_snapshot (read), diff_playlist_snapshots / snapshot_new_tracks / snapshot_removed_tracks (diff), restore_playlist_from_snapshot / restore_playlist_plan (restore).',
     {
       playlist: spotifyId('playlist').optional().describe('Bundle every snapshot of this playlist (ID or URI)'),
       snapshots: z.array(z.string().min(1)).optional().describe('Explicit snapshot ids/filenames to bundle (overrides playlist filter)'),
@@ -1564,7 +1564,7 @@ export function registerSwarm3SnapshotsTools(server: McpServer, client: SpotifyC
   // -- 24. snapshot_registry_report ----------------------------------------
   server.tool(
     'snapshot_registry_report',
-    'Registry view of every local snapshot: per playlist, all snapshot ids with taken_at and track counts, plus naming anomalies in the snapshot directory',
+    'Registry view of every local snapshot: per playlist, all snapshot ids with taken_at and track counts, plus naming anomalies in the snapshot directory Snapshot guide: take_playlist_snapshot (create), list_saved_snapshots (list), read_playlist_snapshot (read), diff_playlist_snapshots / snapshot_new_tracks / snapshot_removed_tracks (diff), restore_playlist_from_snapshot / restore_playlist_plan (restore).',
     {
       response_format: ResponseFormat,
     },

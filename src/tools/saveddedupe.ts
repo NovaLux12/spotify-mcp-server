@@ -385,7 +385,7 @@ export function registerSavedDedupeTools(server: McpServer, client: SpotifyClien
       + 'opt-in, remasters/re-recordings of the same song (near duplicates). Lists each group '
       + 'oldest save first with a keep-one-remove-the-rest suggestion. Optionally pass a '
       + 'playlist_id to cross-reference which duplicates also appear in that playlist. '
-      + 'Never mutates your library.',
+      + 'Never mutates your library. Also covers: find_duplicates_in_playlist — See also: find_duplicates_in_playlist, find_duplicate_tracks_across_playlists.',
     {
       response_format: ResponseFormat,
       max_results: MaxResults,

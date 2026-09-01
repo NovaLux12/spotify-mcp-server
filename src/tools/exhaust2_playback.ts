@@ -453,7 +453,7 @@ export function registerExhaust2PlaybackTools(server: McpServer, client: Spotify
   // 6. skip_n (#363) — looped next with honest N-call disclosure
   server.tool(
     'skip_n',
-    'Advance N tracks at once via N sequential POST /me/player/next calls. Quota: 🔴 N writes (1-20, one call per skip — Spotify has no batch-skip endpoint).',
+    'Advance N tracks at once via N sequential POST /me/player/next calls. Quota: 🔴 N writes (1-20, one call per skip — Spotify has no batch-skip endpoint). Also covers: single skip via skip_next / skip_previous — See also: skip_next, skip_previous.',
     {
       n: z.number().int().min(1).max(20).optional().default(1).describe('How many tracks to skip (1-20)'),
       device_id: z.string().optional().describe('Device to skip on'),

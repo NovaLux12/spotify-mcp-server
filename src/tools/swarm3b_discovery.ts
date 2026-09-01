@@ -759,7 +759,7 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
   // ------------------------------------------------------------------ 14
   server.tool(
     'b_sides_detector',
-    'Detect B-sides: tracks that appear on an artist\'s singles but never on any album — the non-LP catalogue. Quota: 🔴 paginated walks + batched /albums lookups.',
+    'Detect B-sides: tracks that appear on an artist\'s singles but never on any album — the non-LP catalogue. Also covers: b_sides_finder (same discography scan) — See also: b_sides_finder. Quota: 🔴 paginated walks + batched /albums lookups.',
     {
       artist_id: spotifyId('artist').describe('Spotify artist ID, URI, or URL'),
       max_singles: z.number().int().positive().max(200).optional().describe('Singles to scan. Default: 50'),

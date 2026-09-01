@@ -442,7 +442,7 @@ export function registerExhaust2CatalogTools(server: McpServer, client: SpotifyC
     'search_fresh',
     'Query-scoped newness: runs your query with Spotify\'s `tag:new` filter (last ~2 weeks of releases) — '
       + 'per-artist/genre "what just dropped" without the dead browse/new-releases endpoint. '
-      + 'Quota: 🟢 one GET /search call.',
+      + 'Quota: 🟢 one GET /search call. Decision guide: search_fresh for newness-filtered hits; search (general), search_deep (paginated), search_by_isrc (ISRC-exact), whats_new (personal follows).',
     {
       query: z.string().min(1).describe("Base query, e.g. an artist name ('Noise Pop 2026') or genre"),
       types: z
@@ -922,7 +922,7 @@ max_results: z.number().int().positive().max(2000).optional(),
   server.tool(
     'search_by_isrc',
     'Exact track resolution from an ISRC via the `isrc:` search filter — the dedupe/relink anchor for catalog '
-      + 'work. Quota: 🟢 one GET /search call.',
+      + 'work. Quota: 🟢 one GET /search call. Decision guide: search_by_isrc for ISRC-only exact match; search/search_deep for general text, search_fresh for tag:new newness.',
     {
       isrc: z.string().min(12).max(15).describe('ISRC code, e.g. USUM71703861 (spaces/dashes tolerated)'),
       market: Market,

@@ -510,10 +510,10 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
     },
   );
 
-  // get_show_episodes
+  // get_show_episodes — deprecated alias of list_show_episodes (swarm3_shows). Both hit GET /shows/{id}/episodes.
   server.tool(
     'get_show_episodes',
-    "List a podcast show's episodes with pagination. Resume positions require the user-read-playback-position scope.",
+    '[Deprecated] use list_show_episodes — List a podcast show\'s episodes with pagination. Alias kept for backward compat; forwards to same GET /shows/{id}/episodes as list_show_episodes. Resume positions require the user-read-playback-position scope. Also covers: show episode listing, paged podcast episodes.',
     {
       id: z.string().describe('Spotify show ID'),
       limit: z
