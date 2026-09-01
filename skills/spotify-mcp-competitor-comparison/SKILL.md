@@ -13,7 +13,7 @@ Answer "is our MCP really standard / do others offer more" or "are we better tha
    - Read SPEC.md §2 (Transport, Stack) and §4.0.2 (MCP server wiring) for SDK version, transport, and primitive registration.
    - Grep src/ for the primitive surface: `server.tool(` / `server.prompt(` / `server.resource(` counts, and `structuredContent`, progress-notification usage. `structuredContent` emission lives in src/shaping.ts plus tools like playlistmisc.ts, searchhistory.ts, queueops.ts.
    - Cite tests/mcp.smoke.test.ts: it spawns the real entry over stdio and speaks raw newline-delimited JSON-RPC (initialize / tools/list / prompts/list / resources/list), so protocol conformance is tested, not assumed.
-   - Read current tool/prompt/resource counts from CHANGELOG or `grep -r "server\.tool" src/tools/*.ts | wc -l` / `tools/list` — they drift between releases (e.g., 538 tools as of v1.27.1 vs 550 in CHANGELOG at ee814a2); never hardcode counts from an older answer.
+   - Read current tool/prompt/resource counts from CHANGELOG or `grep -rn "server\.tool\|registerTool" src --include="*.ts" | wc -l` with typed-search factory correction (545 - 1 + 7 = 551) / live `tools/list` — they drift between releases (e.g., 551 tools as of v1.27.1 vs 550 in CHANGELOG at ee814a2); never hardcode counts from an older answer.
    - Criterion: every protocol claim (SDK, transport, primitive counts, spec features) is backed by a file/line you inspected this turn.
 
 2. State optional spec features the server lacks as optional, not gaps.

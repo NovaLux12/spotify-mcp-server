@@ -11,14 +11,14 @@ description: "Exhaustive feature sweep across Spotify domains — enumerate all 
 ## Procedure
 
 1. Inventory current coverage per domain.
-   - Count `grep -r "server\.tool" src/tools/*.ts | wc -l` (e.g., 538 server-wide as of v1.27.1) and per-domain files (playback.ts 16 + playbackext.ts 13 + queueops.ts 3 + scenes.ts 6 =38); read `SPEC.md §9` removed list and `src/tools/*.ts` for existing endpoint coverage.
+   - Count `grep -rn "server\.tool\|registerTool" src --include="*.ts" | wc -l` with typed-search factory correction (545 raw including the 1 placeholder in catalog.ts → 545 - 1 + 7 = 551 server-wide as of v1.27.1; verify via live `tools/list`); per-domain files (playback.ts 16 + playbackext.ts 13 + queueops.ts 3 + scenes.ts 6 =38); read `SPEC.md §9` removed list and `src/tools/*.ts` for existing endpoint coverage.
    - Completion: baseline tool count and removed-endpoint list recorded; endpoint→tool map drafted showing wrapped vs gap.
 
 2. Inventory open work to avoid duplicates.
    - List `git branch -a` and diff each open `swarm/*` and `fix/quota-*` branch vs main; note PRs #243-255 tools (e.g., search_saved_tracks, export_listening_history, save_queue_as_playlist already open).
    - Completion: table of open branches → new tools noted; duplicates excluded from candidates.
 
-3. Enumerate every non-deprecated endpoint in each domainquantity-first.
+3. Enumerate every non-deprecated endpoint in each domain quantity-first.
    - For assigned domain, list all live reads/writes (Search GET /search, Browse /browse/categories*, Catalog /tracks|albums|artists|shows|episodes|audiobooks|chapters, Player /me/player*, Playlists /playlists/{id}*, Follow /me/following, User /me, etc.); mark SPEC §9 deprecated as excluded (recommendations, audio-features, audio-analysis, related-artists, featured/new-releases).
    - Completion: checklist with ≥1 candidate per live endpoint; deprecated explicitly marked excluded.
 
@@ -31,11 +31,11 @@ description: "Exhaustive feature sweep across Spotify domains — enumerate all 
    - Completion: ranked table includes Quota column and factory reuse note (makeTypedSearchTool in src/tools/catalog.ts, fetchSeveral chunking at 20-50, getAllPages in src/client.ts).
 
 6. Write per-domain deliverable and highlight top 5.
-   - Write `/tmp/exhaust-<domain>.md` with ranked table, detailed cards, endpoint quick-reference, ship buckets, and top-5 ordered by ergonomics × selling power × quota efficiency; include tool-count impact (e.g., 538→~598 as of v1.27.1).
+   - Write `/tmp/exhaust-<domain>.md` with ranked table, detailed cards, endpoint quick-reference, ship buckets, and top-5 ordered by ergonomics × selling power × quota efficiency; include tool-count impact (e.g., 551→~611 as of v1.27.1).
    - Completion: markdown ≥15k with ranked table, 5 highlighted with rationale, count summary.
 
 7. Audit and dedupe across domains before logging.
-   - Merge all scout outputs: intra-dedupe, skip already-open issues (e.g., #229, #220, #224), drop deprecated, produce 73 unique → cap ship to 60 P0/P1 to avoid flooding, defer P2/🔴 to backlog; verify monotonic tool count beyond baseline floor (154, current 538 as of v1.27.1).
+   - Merge all scout outputs: intra-dedupe, skip already-open issues (e.g., #229, #220, #224), drop deprecated, produce 73 unique → cap ship to 60 P0/P1 to avoid flooding, defer P2/🔴 to backlog; verify monotonic tool count beyond baseline floor (154, current 551 as of v1.27.1).
    - Completion: audit file `/tmp/exhaust-audit.md` ≥10k with raw→unique→ship counts, priority table, and ship list.
 
 8. Log GitHub issues in rate-limited batch.
@@ -72,7 +72,8 @@ description: "Exhaustive feature sweep across Spotify domains — enumerate all 
 
 ## Guardrails
 - Never propose SPEC §9 removed endpoints; respect batch limits (chunk at 20-50) and SPOTIFY_MCP_FETCH_ALL_CAP; keep response_format/max_results/truncateItems shaping consistent.
-- Keep monotonic tool count: never propose restorations that drop below published floor (154 at v1.22.0, current 538 at v1.27.1); net adds only.
+- Keep monotonic tool count: never propose restorations that drop below published floor (154 at v1.22.0, current 551 at v1.27.1); net adds only.
+- Guard non-existent workflow risk: verify every `gh workflow run` / `POST /actions/workflows/.../dispatches` target exists on the target ref before invoking; a 422 means the workflow file is absent on that ref, not a transient error.
 
 ## References
 - Sources: SPEC.md §9, src/tools/*.ts, src/client.ts getAllPages, src/config.ts caps (DEFAULT_FETCH_ALL_CAP), src/shaping.ts helpers, audit-quota-lurkers.md.

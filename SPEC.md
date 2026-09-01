@@ -407,7 +407,7 @@ Quick reference for all endpoints used. All paths are relative to `https://api.s
 
 ## 5. Tools
 
-550 registered tools across 60 tool modules riding 40 registration keys (artistwatch, audiobooks, browse, catalog, episodemgmt, exhaust2catalog, exhaust2enggating, exhaust2extra, exhaust2misc, exhaust2playback, exhaust2playlists, following, library, libraryanalytics, personalization, playback, playbackext, playlistbatch, playlisthealth, playlistmisc, playlists, portability, prompts, queueops, resources, search, searchhistory, users, verify_receipt, swarm3playback, swarm3playlistops, swarm3discovery, swarm3bdiscovery, swarm3library, swarm3shows, swarm3analytics, swarm3refs, swarm3snapshots, swarm3meta, swarm4playlists). All tools return a structured result object; errors surface as MCP tool errors with a human-readable message.
+551 registered tools across 60 tool modules riding 40 registration keys (artistwatch, audiobooks, browse, catalog, episodemgmt, exhaust2catalog, exhaust2enggating, exhaust2extra, exhaust2misc, exhaust2playback, exhaust2playlists, following, library, libraryanalytics, personalization, playback, playbackext, playlistbatch, playlisthealth, playlistmisc, playlists, portability, prompts, queueops, resources, search, searchhistory, users, verify_receipt, swarm3playback, swarm3playlistops, swarm3discovery, swarm3bdiscovery, swarm3library, swarm3shows, swarm3analytics, swarm3refs, swarm3snapshots, swarm3meta, swarm4playlists). All tools return a structured result object; errors surface as MCP tool errors with a human-readable message.
 
 ### Shared tool contract
 

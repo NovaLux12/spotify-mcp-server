@@ -3,15 +3,15 @@
 One-stop copy for claiming/listing the server in directories. Keep in sync
 with README + server.json when the tool surface changes.
 
-## Canonical facts (2026-08-26, v1.22.0)
+## Canonical facts (2026-08-31, v1.27.1)
 
 - npm: `@novalux12/spotify-mcp` — https://www.npmjs.com/package/@novalux12/spotify-mcp
 - Repo: https://github.com/NovaLux12/spotify-mcp-server
 - MCP Registry name: `io.github.NovaLux12/spotify-mcp-server`
 - Transport: stdio (`npx @novalux12/spotify-mcp` after `npm i -g`, or via client config)
 - Auth: OAuth PKCE (S256) browser flow or headless mode; tokens at `~/.spotify-mcp/tokens.json` (0600)
-- Surface: 157 tools across 38 tool modules plus the top-level `verify_receipt` diagnostic + 14 fixed resource URIs + RFC-6570 templates + 10 prompts (toolsets can trim); aligned with Spotify's post-Feb-2026 API
-- Tests: 837-case node:test suite, CI on Node 22
+- Surface: 551 tools across 60 tool modules plus the top-level `verify_receipt` diagnostic + 16 resources + 14 prompts (toolsets can trim); aligned with Spotify's post-Feb-2026 API
+- Tests: 1066-case node:test suite, CI on Node 22
 - Safety: `dry_run` previews on every mutating tool; elicitation-gated human confirmation on bulk playlist removals (10+ URIs) and replacements (50+); mutation receipts verifiable via `verify_receipt`; opt-in JSONL audit trail; hard read-only mode (`SPOTIFY_MCP_READONLY=1`)
 - Provenance: npm publishes carry SLSA provenance; listed in the official MCP Registry as `io.github.NovaLux12/spotify-mcp-server`
 
