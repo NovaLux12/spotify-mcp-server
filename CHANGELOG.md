@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > from [Conventional Commits](https://www.conventionalcommits.org/). Entries below v1.0.4 were
 > backfilled by hand from git history.
 
+## [1.28.2](https://github.com/NovaLux12/spotify-mcp-server/compare/v1.28.1...v1.28.2) (2026-09-04)
+
+
+### Bug Fixes
+
+* sync release-please manifest with package.json (1.28.1) ([#547](https://github.com/NovaLux12/spotify-mcp-server/issues/547)) ([c380028](https://github.com/NovaLux12/spotify-mcp-server/commit/c3800281373babbc9d8bcefd66bb06bb302598fa))
+
 ## [1.26.1](https://github.com/NovaLux12/spotify-mcp-server/compare/v1.26.0...v1.26.1) (2026-08-28)
 
 
