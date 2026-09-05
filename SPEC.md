@@ -407,7 +407,7 @@ Quick reference for all endpoints used. All paths are relative to `https://api.s
 
 ## 5. Tools
 
-551 registered tools across 60 tool modules riding 40 registration keys (artistwatch, audiobooks, browse, catalog, episodemgmt, exhaust2catalog, exhaust2enggating, exhaust2extra, exhaust2misc, exhaust2playback, exhaust2playlists, following, library, libraryanalytics, personalization, playback, playbackext, playlistbatch, playlisthealth, playlistmisc, playlists, portability, prompts, queueops, resources, search, searchhistory, users, verify_receipt, swarm3playback, swarm3playlistops, swarm3discovery, swarm3bdiscovery, swarm3library, swarm3shows, swarm3analytics, swarm3refs, swarm3snapshots, swarm3meta, swarm4playlists). All tools return a structured result object; errors surface as MCP tool errors with a human-readable message.
+589 registered tools across 62 tool modules riding 42 registration keys (artistwatch, audiobooks, browse, catalog, episodemgmt, exhaust2catalog, exhaust2enggating, exhaust2extra, exhaust2misc, exhaust2playback, exhaust2playlists, following, library, libraryanalytics, personalization, playback, playbackext, playlistbatch, playlisthealth, playlistmisc, playlists, portability, prompts, queueops, resources, search, searchhistory, users, verify_receipt, swarm3playback, swarm3playlistops, swarm3discovery, swarm3bdiscovery, swarm3library, swarm3shows, swarm3analytics, swarm3refs, swarm3snapshots, swarm3meta, swarm4playlists, statsfm, taste). All tools return a structured result object; errors surface as MCP tool errors with a human-readable message.
 
 ### Shared tool contract
 
@@ -1117,44 +1117,19 @@ List another Spotify user's public playlists.
 
 **Returns:** playlist name, owner, track count, ID, URI; plus total count and pagination info in structuredContent. Output is capped by `max_results`. Uses `GET /users/{user_id}/playlists`.
 
-### 5.10 stats.fm (v2 — planned)
+### 5.10 stats.fm (v2 — implemented)
 
-Second upstream: long-range listening history, cross-range top lists, and taste aggregates from the stats.fm API. All stats.fm tools are read-only; they pair with the Spotify write tools above (see `docs/cookbook.md` recipe 1 and `docs/taste.md`). Setup, ranges, limits, and privacy: `docs/statsfm.md`.
+Second upstream: long-range listening history, cross-range top lists, and taste aggregates from the stats.fm public API (`https://api.stats.fm/api/v1`, no auth). All stats.fm tools are read-only; they pair with the Spotify write tools above (see `docs/cookbook.md` recipe 1 and `docs/taste.md`). Setup, ranges, limits, and privacy: `docs/statsfm.md`.
 
-> Placeholder — the implementation branches own the final schemas. Names below are the planned contract.
+Two registration keys, both default ON: `statsfm` (30 endpoint tools, `src/tools/statsfm.ts` over `src/lib/statsfm-client.ts`) and `taste` (8 taste-intelligence tools, `src/tools/statsfm_taste.ts`). Error envelope everywhere: `{code, message, retryable}`; private sections surface HTTP 404 as `PRIVATE_PROFILE`.
 
-#### `statsfm_get_profile`
-Public profile: display name, follower counts, total streams and minutes, account age.
+#### Endpoint tools (`statsfm_*`)
 
-#### `statsfm_top_tracks`
-Top tracks for a `range` window, paged with `limit` / `offset`.
+`statsfm_resolve_user` — customId/display name → canonical userId (always call first). `statsfm_top_tracks` / `statsfm_top_artists` / `statsfm_top_albums` / `statsfm_top_genres` — ranked lists for `range` = lifetime|weeks|months (lowercase only), paged `limit` ≤ 100 + `offset`. `statsfm_top_tracks_from_artist` / `statsfm_top_albums_from_artist` / `statsfm_top_tracks_from_album` — scoped tops. `statsfm_recent_streams` — newest-first (API returns a fixed 50, `limit` ignored upstream). `statsfm_now_playing` — live track + device, null when idle. `statsfm_track_stats` / `statsfm_artist_stats` / `statsfm_album_stats` (+ `*_date_stats` per-day variants) — lifetime obsession scores for one entity, Spotify-ID ↔ stats.fm-ID mapped via `externalIds.spotify[]`. `statsfm_streams_stats` — totals + percentiles + cardinality (singular object, not an array). `statsfm_search` — users/tracks/artists/albums. `statsfm_recaps` — weekly/monthly/seasonal/yearly/artist/time-capsule digests. `statsfm_catalog_track` / `statsfm_catalog_artist` / `statsfm_catalog_album` — catalog lookup. `statsfm_genre_artists` — genre drill-down (`genre.tag`, not `.name`). `statsfm_charts_tracks` / `statsfm_charts_artists` / `statsfm_charts_albums` / `statsfm_charts_users` — honest compositions over verified user endpoints (the public API exposes no global charts endpoint). `statsfm_friends` / `statsfm_friend_count` / `statsfm_records_artists` — social + records.
 
-#### `statsfm_top_artists`
-Top artists for a `range` window, with stream counts.
+#### Taste-intelligence tools (unprefixed, `taste` key)
 
-#### `statsfm_top_albums`
-Top albums for a `range` window.
-
-#### `statsfm_top_genres`
-Genre ranking for a `range` window — the input to taste work. Labels use stats.fm's own taxonomy.
-
-#### `statsfm_recent_streams`
-Most recent individual streams (track + timestamp). Full detail for the linked account; aggregates for others.
-
-#### `statsfm_stream_stats`
-Totals for a `range` window: streams, minutes, distinct tracks/artists, daily average.
-
-#### `statsfm_listening_clock`
-Hourly / weekday heatmap of when listening happens.
-
-#### `statsfm_taste_profile`
-Aggregate digest: top genres, anchor artists, clock summary, diversity notes — built to feed playlist creation.
-
-#### `statsfm_compare_taste`
-Overlap between two stats.fm users: shared artists/tracks, compatibility note. Only sees what both profiles expose.
-
-#### `statsfm_history_status`
-Import coverage: how much history stats.fm holds, newest/oldest stream, gaps. Call first on a new setup — lifetime ranges undercount before the import completes.
+`taste_profile` — core artists, top genres, loyalty (top-5 share) vs novelty (recent-outside-core share), day-parting + peak. `artist_affinity` — intensity + recency half-life, exposure tier. `exposure_check` — unheard / sampled / explored / established / favorite with lifetime + recent evidence. `listening_eras` — change points on top-artist turnover or >60% volume shifts. `listening_sessions` — gap-grouped sessions (configurable 5–240 min). `forgotten_favorites` — lifetime tops absent from recent + revival pick. `taste_recommendations` — bridge-mode picks (adjacent genres, dormant artists) each with evidence + risk. `record_feedback` — local-only in-memory verdicts (love/like/mixed/boring/dislike); never touches the network.
 
 
 ## 5. Resources
