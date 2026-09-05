@@ -59,6 +59,7 @@ import { registerSwarm4PlaylistsTools } from './tools/swarm4_playlists.js';
 import { registerSwarm3LibraryTools } from './tools/swarm3_library.js';
 import { registerSwarm3ShowsTools } from './tools/swarm3_shows.js';
 import { registerSwarm3AnalyticsTools } from './tools/swarm3_analytics.js';
+import { registerStatsfmTasteTools } from './tools/statsfm_taste.js';
 import { registerSwarm3RefsTools } from './tools/swarm3_refs.js';
 import { registerSwarm3SnapshotsTools } from './tools/swarm3_snapshots.js';
 import { registerSwarm3MetaTools } from './tools/swarm3_meta.js';
@@ -150,6 +151,10 @@ async function startMcpServer(): Promise<void> {
   if (isModuleActive('personalization', activeSets, overrides) && !moduleBlockedByScopes('personalization', grantedScopes)) registerPersonalizationTools(server, client)
   // Listening analytics (#97): derived taste-profile reporting.
   if (isModuleActive('personalization', activeSets, overrides) && !moduleBlockedByScopes('personalization', grantedScopes)) registerAnalyticsTools(server, client)
+  // stats.fm taste intelligence (v2 taste track): read-only public API, no
+  // auth, no Spotify scopes — record_feedback is local-only memory. No
+  // readOnly gate: nothing here mutates Spotify state.
+  if (isModuleActive('taste', activeSets, overrides)) registerStatsfmTasteTools(server, client)
   // Library hygiene (#112 idea 5): album completion + consolidation findings.
   if (!readOnly && isModuleActive('library', activeSets, overrides) && !moduleBlockedByScopes('library', grantedScopes)) registerLibraryHygieneTools(server, client)
   // Library backup (#159) + strictly-additive restore (#160). Backup is
