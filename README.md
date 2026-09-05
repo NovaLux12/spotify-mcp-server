@@ -7,7 +7,7 @@
 
 An MCP server that wraps the Spotify Web API — lets Claude and other AI assistants control playback, search the catalog (tracks, podcasts, audiobooks), and manage your library and playlists.
 
-551 tools. Every non-deprecated endpoint, plus extras most servers skip. [Full list →](SPEC.md)
+589 tools. Every non-deprecated endpoint, plus extras most servers skip. [Full list →](SPEC.md)
 
 ---
 
@@ -35,7 +35,7 @@ An MCP server that wraps the Spotify Web API — lets Claude and other AI assist
 
 | | |
 |---|---|
-| **Complete** | 551 tools — playback, search, catalog, library, playlists, following + extras like duplicate cleanup, M3U/CSV import-export, podcast sessions, snapshot diffing, listening analytics and market checks. |
+| **Complete** | 589 tools — playback, search, catalog, library, playlists, following + extras like duplicate cleanup, M3U/CSV import-export, podcast sessions, snapshot diffing, listening analytics, market checks, and stats.fm taste imports. |
 | **Safe** | `dry_run` previews on every write, receipts that prove what landed, human confirmation for bulk deletes, and `READONLY` to hide all writes. |
 | **Honest** | No zombie tools for endpoints Spotify removed. Legacy lookups explain the 403 instead of crashing. |
 | **Polished** | Paginated (up to 500), podcasts first-class, device-aware playback, `spotify_doctor` self-diagnosis, real test suite. |
@@ -127,6 +127,8 @@ Any spec-compliant host works — same `command`/`args`/`env` shape under `mcpSe
 - "Add Blinding Lights to my workout playlist"
 - "What podcasts have new episodes?"
 - "Clean duplicates across all my playlists"
+- "What does my taste look like? Build a playlist from it"
+- "Do my stats.fm lifetime genres match what I've played this month?"
 
 ## Configuration
 
@@ -147,6 +149,10 @@ Full reference: [docs/configuration.md](docs/configuration.md)
 - [SPEC.md](SPEC.md) — every tool, resource & prompt
 - [ARCHITECTURE.md](ARCHITECTURE.md) — how it's built
 - [docs/configuration.md](docs/configuration.md) — all env vars
+- [docs/statsfm.md](docs/statsfm.md) — stats.fm second source: setup, tool cheat sheet, gotchas
+- [docs/cookbook.md](docs/cookbook.md) — ten copy-paste agent recipes
+- [docs/taste.md](docs/taste.md) — anonymized taste showcase driving a playlist
+- [docs/faq.md](docs/faq.md) — auth, Premium, 403s, headless, tokens
 - [CONTRIBUTING.md](CONTRIBUTING.md) — dev setup & conventions
 - [CHANGELOG.md](CHANGELOG.md) — release history
 

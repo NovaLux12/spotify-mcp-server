@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0] - Unreleased
+
+### Added
+
+- stats.fm second upstream (planned): read-only taste and history surface — profile, top tracks/artists/albums/genres, recent streams, stream stats, listening clock, taste profile, taste compare, history status. See SPEC §5.10 and `docs/statsfm.md`.
+- Docs: `docs/statsfm.md` (setup, tool cheat sheet, range/limit/privacy gotchas), `docs/cookbook.md` (ten copy-paste agent recipes including the flagship taste-profile flow), `docs/faq.md` (auth loop, port 8888, Premium gating, registration-gated 403s, headless, token paths), `docs/taste.md` (anonymized taste showcase driving a playlist).
+- Brand: `assets/logo.svg` (original dual-note mark) and `assets/attribution-strip.svg` (Spotify plus stats.fm plus Last.fm prior-art attribution).
+
 > **Note:** Going forward, releases are cut via [release-please](https://github.com/googleapis/release-please)
 > from [Conventional Commits](https://www.conventionalcommits.org/). Entries below v1.0.4 were
 > backfilled by hand from git history.

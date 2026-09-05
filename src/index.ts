@@ -59,9 +59,11 @@ import { registerSwarm4PlaylistsTools } from './tools/swarm4_playlists.js';
 import { registerSwarm3LibraryTools } from './tools/swarm3_library.js';
 import { registerSwarm3ShowsTools } from './tools/swarm3_shows.js';
 import { registerSwarm3AnalyticsTools } from './tools/swarm3_analytics.js';
+import { registerStatsfmTasteTools } from './tools/statsfm_taste.js';
 import { registerSwarm3RefsTools } from './tools/swarm3_refs.js';
 import { registerSwarm3SnapshotsTools } from './tools/swarm3_snapshots.js';
 import { registerSwarm3MetaTools } from './tools/swarm3_meta.js';
+import { registerStatsfmTools } from './tools/statsfm.js';
 import { verifyReceipt, formatReceipt } from './receipts.js';
 import { registerTemplateResources } from './resources/templates.js';
 import { z } from 'zod';
@@ -149,6 +151,10 @@ async function startMcpServer(): Promise<void> {
   if (isModuleActive('personalization', activeSets, overrides) && !moduleBlockedByScopes('personalization', grantedScopes)) registerPersonalizationTools(server, client)
   // Listening analytics (#97): derived taste-profile reporting.
   if (isModuleActive('personalization', activeSets, overrides) && !moduleBlockedByScopes('personalization', grantedScopes)) registerAnalyticsTools(server, client)
+  // stats.fm taste intelligence (v2 taste track): read-only public API, no
+  // auth, no Spotify scopes — record_feedback is local-only memory. No
+  // readOnly gate: nothing here mutates Spotify state.
+  if (isModuleActive('taste', activeSets, overrides)) registerStatsfmTasteTools(server, client)
   // Library hygiene (#112 idea 5): album completion + consolidation findings.
   if (!readOnly && isModuleActive('library', activeSets, overrides) && !moduleBlockedByScopes('library', grantedScopes)) registerLibraryHygieneTools(server, client)
   // Library backup (#159) + strictly-additive restore (#160). Backup is
@@ -200,6 +206,9 @@ async function startMcpServer(): Promise<void> {
   // (playback+playlists) can still discover the surface; discovery/catalog sets also gate via ENABLE_TOOLS for compat.
   if (!moduleBlockedByScopes('catalog', grantedScopes)) registerSwarm3MetaTools(server, client)
   if (!readOnly && isModuleActive('swarm4playlists', activeSets, overrides) && !moduleBlockedByScopes('playlists', grantedScopes)) registerSwarm4PlaylistsTools(server, client)
+  // stats.fm (third-party public API, no Spotify auth/scopes): read-only,
+  // so it stays registered under READONLY like backup_library.
+  if (isModuleActive('statsfm', activeSets, overrides)) registerStatsfmTools(server)
   if (!readOnly && isModuleActive('following', activeSets, overrides) && !moduleBlockedByScopes('following', grantedScopes)) registerFollowingTools(server, client)
   if (!readOnly && isModuleActive('audiobooks', activeSets, overrides) && !moduleBlockedByScopes('audiobooks', grantedScopes)) registerAudiobookTools(server, client)
   if (!readOnly && isModuleActive('playlists', activeSets, overrides) && !moduleBlockedByScopes('playlists', grantedScopes)) registerPlaylistTools(server, client)

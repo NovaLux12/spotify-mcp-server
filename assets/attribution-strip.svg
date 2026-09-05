@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 96" role="img" aria-label="Attribution: Spotify, stats.fm, Last.fm prior art">
+  <title>Attribution strip — Spotify, stats.fm, Last.fm prior art</title>
+  <rect width="640" height="96" rx="16" fill="#121212"/>
+  <!-- Spotify: three arcs (original nod, not the logo) -->
+  <g stroke="#1DB954" stroke-width="5" fill="none" stroke-linecap="round">
+    <path d="M28 62 Q60 50 92 62"/>
+    <path d="M30 50 Q60 39 90 50"/>
+    <path d="M32 38 Q60 28 88 38"/>
+  </g>
+  <text x="108" y="60" font-family="sans-serif" font-size="22" fill="#FFFFFF">Spotify</text>
+  <!-- stats.fm: bar-chart glyph -->
+  <g fill="#FFB454">
+    <rect x="248" y="56" width="10" height="18" rx="2"/>
+    <rect x="262" y="46" width="10" height="28" rx="2"/>
+    <rect x="276" y="36" width="10" height="38" rx="2"/>
+  </g>
+  <text x="298" y="60" font-family="sans-serif" font-size="22" fill="#FFFFFF">stats.fm</text>
+  <!-- Last.fm: scrobble-dot chain (prior art nod) -->
+  <g fill="#D51007">
+    <circle cx="448" cy="52" r="8"/>
+    <circle cx="470" cy="52" r="8"/>
+    <circle cx="492" cy="52" r="8" opacity="0.45"/>
+  </g>
+  <text x="508" y="60" font-family="sans-serif" font-size="22" fill="#FFFFFF">Last.fm</text>
+  <text x="28" y="86" font-family="sans-serif" font-size="12" fill="#9E9E9E">Data &amp; artwork belong to their services. Taste graphs pioneered by Last.fm.</text>
+</svg>
