@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.29.0](https://github.com/NovaLux12/spotify-mcp-server/compare/v1.28.2...v1.29.0) (2026-09-05)
+
+
+### Features
+
+* **statsfm:** 30 read-only stats.fm endpoint tools ([deed7ab](https://github.com/NovaLux12/spotify-mcp-server/commit/deed7ab4e65b06c4db270a7964d01464584cced0))
+* **taste:** stats.fm taste-intelligence tools (v2) ([97e6ff4](https://github.com/NovaLux12/spotify-mcp-server/commit/97e6ff47c5a145695ecd3a12633817236ca4e9b2))
+
 ## [2.0.0] - Unreleased
 
 ### Added
