@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="SpotifyMCP dual-note mark">
+  <title>SpotifyMCP — dual-note mark</title>
+  <!-- Original mark: two overlapping eighth notes. Green nods to Spotify,
+       amber to stats.fm. Drawn from circles, rounded stems and a shared beam. -->
+  <rect width="128" height="128" rx="28" fill="#121212"/>
+  <!-- Back note (amber) -->
+  <g fill="#FFB454">
+    <ellipse cx="72" cy="92" rx="16" ry="12"/>
+    <rect x="83" y="34" width="7" height="58" rx="3.5"/>
+  </g>
+  <!-- Shared beam -->
+  <rect x="45" y="30" width="46" height="9" rx="4.5" fill="#FFB454" transform="rotate(-8 68 34)"/>
+  <!-- Front note (green) -->
+  <g fill="#1DB954">
+    <ellipse cx="46" cy="96" rx="16" ry="12"/>
+    <rect x="57" y="36" width="7" height="60" rx="3.5"/>
+  </g>
+</svg>

@@ -127,6 +127,8 @@ Any spec-compliant host works — same `command`/`args`/`env` shape under `mcpSe
 - "Add Blinding Lights to my workout playlist"
 - "What podcasts have new episodes?"
 - "Clean duplicates across all my playlists"
+- "What does my taste look like? Build a playlist from it"
+- "Do my stats.fm lifetime genres match what I've played this month?"
 
 ## Configuration
 
@@ -147,6 +149,10 @@ Full reference: [docs/configuration.md](docs/configuration.md)
 - [SPEC.md](SPEC.md) — every tool, resource & prompt
 - [ARCHITECTURE.md](ARCHITECTURE.md) — how it's built
 - [docs/configuration.md](docs/configuration.md) — all env vars
+- [docs/statsfm.md](docs/statsfm.md) — stats.fm second source: setup, tool cheat sheet, gotchas
+- [docs/cookbook.md](docs/cookbook.md) — ten copy-paste agent recipes
+- [docs/taste.md](docs/taste.md) — anonymized taste showcase driving a playlist
+- [docs/faq.md](docs/faq.md) — auth, Premium, 403s, headless, tokens
 - [CONTRIBUTING.md](CONTRIBUTING.md) — dev setup & conventions
 - [CHANGELOG.md](CHANGELOG.md) — release history
 

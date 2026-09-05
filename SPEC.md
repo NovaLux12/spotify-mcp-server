@@ -1117,6 +1117,45 @@ List another Spotify user's public playlists.
 
 **Returns:** playlist name, owner, track count, ID, URI; plus total count and pagination info in structuredContent. Output is capped by `max_results`. Uses `GET /users/{user_id}/playlists`.
 
+### 5.10 stats.fm (v2 — planned)
+
+Second upstream: long-range listening history, cross-range top lists, and taste aggregates from the stats.fm API. All stats.fm tools are read-only; they pair with the Spotify write tools above (see `docs/cookbook.md` recipe 1 and `docs/taste.md`). Setup, ranges, limits, and privacy: `docs/statsfm.md`.
+
+> Placeholder — the implementation branches own the final schemas. Names below are the planned contract.
+
+#### `statsfm_get_profile`
+Public profile: display name, follower counts, total streams and minutes, account age.
+
+#### `statsfm_top_tracks`
+Top tracks for a `range` window, paged with `limit` / `offset`.
+
+#### `statsfm_top_artists`
+Top artists for a `range` window, with stream counts.
+
+#### `statsfm_top_albums`
+Top albums for a `range` window.
+
+#### `statsfm_top_genres`
+Genre ranking for a `range` window — the input to taste work. Labels use stats.fm's own taxonomy.
+
+#### `statsfm_recent_streams`
+Most recent individual streams (track + timestamp). Full detail for the linked account; aggregates for others.
+
+#### `statsfm_stream_stats`
+Totals for a `range` window: streams, minutes, distinct tracks/artists, daily average.
+
+#### `statsfm_listening_clock`
+Hourly / weekday heatmap of when listening happens.
+
+#### `statsfm_taste_profile`
+Aggregate digest: top genres, anchor artists, clock summary, diversity notes — built to feed playlist creation.
+
+#### `statsfm_compare_taste`
+Overlap between two stats.fm users: shared artists/tracks, compatibility note. Only sees what both profiles expose.
+
+#### `statsfm_history_status`
+Import coverage: how much history stats.fm holds, newest/oldest stream, gaps. Call first on a new setup — lifetime ranges undercount before the import completes.
+
 
 ## 5. Resources
 
