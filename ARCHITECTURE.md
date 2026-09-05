@@ -96,6 +96,16 @@ Every HTTP call funnels through one private path inside `SpotifyClient`:
 7. **Pagination** — `getAllPages<T>()` walks offset-paginated endpoints through the *same* two-lane scheduler as a `low`-priority task (each page is a normal queued `get`). It accumulates items until offset passes the server-reported `total`, the page returns zero items, or the cap is hit — the configured fetch-all cap by default (**500**, via `SPOTIFY_MCP_FETCH_ALL_CAP`), overridable per call via `{ maxItems }` (result sliced to the cap). `opts.initialOffset` seeds the cursor so callers resuming mid-list continue where they left off. Each walk carries a monotonic id which `index.ts` forwards as the `progressToken` of MCP `notifications/progress` events (best-effort; a throwing reporter never breaks a walk). Cursor-paginated endpoints (e.g. followed artists, which use an `after` cursor) remain explicit per-call loops.
 8. **Read cache (#54)** — `src/cache.ts` provides an `LruTtlCache` (5-minute TTL, LRU eviction by default) plus a bypass policy (`shouldBypassCache`: never cache non-GET requests or volatile `/me/player*` and `/me/top*` paths, which covers recently-played). `get()` consults the cache before enqueueing and stores successful JSON responses after fetch; every successful mutation calls `afterMutation()`, which drops the whole cache (a mutation may invalidate any cached object) and records the mutation in the opt-in history JSONL.
 
+## Second upstream: stats.fm (v2 — planned)
+
+Spotify is the system of record for playback, library, and catalog. stats.fm rides alongside as a **second upstream** for what Spotify's API cannot give: lifetime listening history, cross-range top lists, and taste aggregates. The stats.fm tools (planned `src/tools/statsfm.ts`, SPEC §5.10) are read-only and share the response-shaping contract (`response_format`, `max_results`, `structuredContent`) but not the write path — no `dry_run`, no receipts, no history JSONL. Identity is a stats.fm user ID (`STATSFM_USER_ID`), not OAuth: public profiles need no token, private profiles stay hidden by design. Lifetime ranges depend on a completed history import (`statsfm_history_status` first). Full guide: `docs/statsfm.md`.
+
+```mermaid
+flowchart LR
+    T["statsfm.ts tools (read-only)"] --> SC["StatsfmClient<br/>paced queue + range/limit shaping"] --> SF["stats.fm API"]
+    T --> ACT["Spotify write tools<br/>(search / create / add)"]
+```
+
 ## Tool and response layer
 
 Each `register*Tools(server, client)` function calls `server.tool(...)` or, for tools needing richer metadata, `server.registerTool(...)`:
