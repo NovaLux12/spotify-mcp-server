@@ -45,6 +45,7 @@
  *                     tools/episodemgmt.ts     (archive/mark episodes)
  *                     tools/exhaust2misc.ts, swarm3library (library hygiene)
  *   personalization → tools/personalization.ts (3 tools) + swarm3analytics (listening analytics)
+ *   taste             → tools/statsfm_taste.ts     (8 tools: stats.fm taste intelligence, read-only, no auth)
  *   discovery       → tools/swarm3_meta.ts     (find_tool, inspect_tool, toolset_report) — also in catalog for compat
  *   resources       → resources/index.ts       (16 resources)
  *   prompts         → prompts/index.ts         (14 prompts)
@@ -56,6 +57,7 @@ export const TOOLSETS: Record<string, readonly string[]> = {
   playlists: ['playlists', 'users', 'playlisthealth', 'playlistbatch', 'playlistmisc', 'exhaust2playlists', 'exhaust2extra', 'swarm3playlistops', 'swarm3snapshots', 'swarm4playlists'],
   library: ['library', 'following', 'libraryanalytics', 'portability', 'episodemgmt', 'exhaust2misc', 'swarm3library'],
   personalization: ['personalization', 'swarm3analytics'],
+  taste: ['taste'],
   discovery: ['swarm3meta'],
   resources: ['resources'],
   prompts: ['prompts'],
