@@ -1,4 +1,4 @@
-# Wave 2 composites — 11 read-only taste composites toward 600 tools
+# Wave 2 composites — 11 read-only taste composites (shipped in v1.30.0, surface now 600 tools)
 
 Baseline: v1.29.0 ships 38 stats.fm + taste tools (30 `statsfm_*` live names
 via loop registration + 8 `taste_*` in `statsfm_taste.ts`). Total live surface

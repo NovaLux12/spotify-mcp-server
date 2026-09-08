@@ -17,6 +17,8 @@ The taste tools live under the `taste` toolset with canonical **`statsfm_taste_*
 | `statsfm_taste_recommendations` | `taste_recommendations` |
 | `statsfm_record_feedback` | `record_feedback` |
 
+> **Live-shape hardening (v1.30.0):** `statsfm_taste_profile` now resolves nested stats.fm entity names — live top payloads wrap entities (`entry.artist` / `entry.track` / `entry.album`, genre as a bare string) while older shapes were flat. Counts always worked; names could come back blank on live data. Fixed with flat backwards-compat plus live-shaped regression tests.
+
 ## The starting point
 
 Listener A has streamed for about three years, imported fully into stats.fm (`statsfm_history_status` reports continuous coverage, oldest stream 2023). The question: *what does A actually sound like, and can that become a playlist worth keeping?*
