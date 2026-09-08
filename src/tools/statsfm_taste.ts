@@ -101,12 +101,51 @@ function countOf(it: RawItem): number {
   return num(it.streams, 0);
 }
 
+function genreNameOf(v: unknown): string {
+  if (typeof v === 'string') return v;
+  if (v && typeof v === 'object') {
+    const o = v as RawItem;
+    return str(o.tag) || str(o.name) || str(o.genre);
+  }
+  return '';
+}
+
+function nestedObj(it: RawItem, key: string): RawItem | undefined {
+  const v = it[key];
+  return v && typeof v === 'object' ? (v as RawItem) : undefined;
+}
+
 function nameOf(it: RawItem): string {
+  // Flat shapes (existing fixtures): { name }, { genre }, { item: { name } }.
+  // Live stats.fm top payloads are wrapped:
+  //   artists: { position, streams, playedMs, artist: { id, name } }
+  //   tracks:  { ..., track: { id, name } }
+  //   albums:  { ..., album: { id, name } }
+  //   genres:  { ..., genre: string | { tag/name } }
   return (
     str(it.name) ||
-    str(it.genre) ||
+    genreNameOf(it.genre) ||
+    str(nestedObj(it, 'artist')?.name) ||
+    str(nestedObj(it, 'track')?.name) ||
+    str(nestedObj(it, 'album')?.name) ||
     str((it.item as RawItem | undefined)?.name) ||
+    genreNameOf((it.item as RawItem | undefined)?.genre) ||
+    str(nestedObj((it.item as RawItem | undefined) ?? {}, 'artist')?.name) ||
+    str(nestedObj((it.item as RawItem | undefined) ?? {}, 'track')?.name) ||
+    str(nestedObj((it.item as RawItem | undefined) ?? {}, 'album')?.name) ||
     'unknown'
+  );
+}
+
+/** Prefer the nested entity id (artist/track/album) over the wrapper id. */
+export function idOf(it: RawItem): string {
+  return (
+    str(nestedObj(it, 'artist')?.id) ||
+    str(nestedObj(it, 'track')?.id) ||
+    str(nestedObj(it, 'album')?.id) ||
+    str((it.item as RawItem | undefined)?.id) ||
+    str(it.id) ||
+    nameOf(it)
   );
 }
 
@@ -194,7 +233,7 @@ export interface TopRow {
 
 export function normalizeTopList(payload: unknown): TopRow[] {
   return asItems(payload).map((it) => ({
-    id: str(it.id) || nameOf(it),
+    id: idOf(it),
     name: nameOf(it),
     count: countOf(it),
   }));
