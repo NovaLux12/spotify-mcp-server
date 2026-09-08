@@ -12,6 +12,8 @@ import {
   detectEras,
   summarizeDayParting,
   normalizeStreams,
+  normalizeTopList,
+  idOf,
   type TasteStream,
 } from '../src/tools/statsfm_taste.js';
 
@@ -393,4 +395,106 @@ test('normalizeStreams drops undated rows and sorts ascending', () => {
     rows.map((r) => r.trackName),
     ['A', 'B'],
   );
+});
+
+// --------------------------------- regression: live-shaped wrapped payloads
+
+test('normalizeTopList resolves nested live-shaped entity names (no unknown)', () => {
+  const artists = normalizeTopList({
+    items: [
+      { position: 1, streams: 120, playedMs: 1_000, artist: { id: 'a1', name: 'Core Band' } },
+      { position: 2, streams: 60, playedMs: 500, artist: { id: 'a2', name: 'Second Act' } },
+    ],
+  });
+  assert.deepEqual(
+    artists.map((r) => r.name),
+    ['Core Band', 'Second Act'],
+  );
+  assert.deepEqual(
+    artists.map((r) => r.id),
+    ['a1', 'a2'],
+  );
+  assert.ok(artists.every((r) => r.name !== 'unknown'));
+
+  const tracks = normalizeTopList({
+    items: [{ position: 1, streams: 90, track: { id: 't1', name: 'Hit Single' } }],
+  });
+  assert.equal(tracks[0].name, 'Hit Single');
+  assert.equal(tracks[0].id, 't1');
+
+  const albums = normalizeTopList({
+    items: [{ position: 1, streams: 40, album: { id: 'al1', name: 'Big Record' } }],
+  });
+  assert.equal(albums[0].name, 'Big Record');
+  assert.equal(albums[0].id, 'al1');
+
+  // Genre as bare string on the wrapper entry.
+  const genresStr = normalizeTopList({
+    items: [
+      { position: 1, streams: 200, genre: 'indie rock' },
+      { position: 2, streams: 120, genre: 'shoegaze' },
+    ],
+  });
+  assert.deepEqual(
+    genresStr.map((r) => r.name),
+    ['indie rock', 'shoegaze'],
+  );
+
+  // Genre as object { tag }.
+  const genresObj = normalizeTopList({
+    items: [{ position: 1, streams: 50, genre: { tag: 'krautrock' } }],
+  });
+  assert.equal(genresObj[0].name, 'krautrock');
+
+  // Backwards compat: flat fixtures still resolve.
+  const flat = normalizeTopList({
+    items: [{ id: 'a9', name: 'Flat Band', streams: 7 }],
+  });
+  assert.equal(flat[0].name, 'Flat Band');
+  assert.equal(flat[0].id, 'a9');
+  assert.equal(idOf({ id: 'x', name: 'Flat' }), 'x');
+});
+
+test('taste_profile end-to-end with live-shaped wrapped fixtures shows real names', async () => {
+  __setStatsfmFetchImpl(async (url: string) => {
+    if (url.includes('/top/artists')) {
+      return {
+        items: [
+          { position: 1, streams: 120, playedMs: 1_000, artist: { id: 'a1', name: 'Core Band' } },
+          { position: 2, streams: 60, playedMs: 500, artist: { id: 'a2', name: 'Second Act' } },
+        ],
+      };
+    }
+    if (url.includes('/top/genres')) {
+      return {
+        items: [
+          { position: 1, streams: 200, genre: 'indie rock' },
+          { position: 2, streams: 120, genre: { tag: 'shoegaze' } },
+        ],
+      };
+    }
+    if (url.includes('/top/tracks')) {
+      return {
+        items: [{ position: 1, streams: 90, track: { id: 't1', name: 'Hit Single' } }],
+      };
+    }
+    if (url.includes('/streams')) return recentStreams();
+    throw new Error(`unexpected stats.fm path: ${url}`);
+  });
+  const { registered } = makeHarness();
+  const result = await invoke(findTool(registered, 'taste_profile'), {
+    statsfm_user: 'demo',
+  });
+  const out = text(result);
+  assert.match(out, /Core Band \(120\)/);
+  assert.match(out, /Second Act \(60\)/);
+  assert.match(out, /indie rock \(200\)/);
+  assert.match(out, /shoegaze \(120\)/);
+  assert.doesNotMatch(out, /unknown/);
+  const sc = result.structuredContent as {
+    coreArtists: Array<{ name: string }>;
+    topGenres: Array<{ name: string }>;
+  };
+  assert.ok(sc.coreArtists.every((a) => a.name !== 'unknown'));
+  assert.ok(sc.topGenres.every((g) => g.name !== 'unknown'));
 });
