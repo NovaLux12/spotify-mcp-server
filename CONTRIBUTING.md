@@ -5,6 +5,7 @@ Thanks for your interest in improving SpotifyMCP! This document covers everythin
 ## Development setup
 
 Requirements: **Node.js >= 22.9** (the dev scripts rely on `--env-file-if-exists`, added in Node 22.9).
+Toolchain: **TypeScript 7** / `@types/node` 26 (via `npm ci`; `tsc` must pass — see CI).
 
 ```bash
 git clone https://github.com/NovaLux12/spotify-mcp-server.git
