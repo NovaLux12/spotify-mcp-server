@@ -135,21 +135,33 @@ test.afterEach(() => {
 
 // ------------------------------------------------------------------ registry
 
-test('registers all 8 taste tools', () => {
+test('registers 8 canonical statsfm_taste_* tools + 8 taste_* aliases', () => {
   const { registered } = makeHarness();
-  for (const name of [
-    'taste_profile',
-    'artist_affinity',
-    'exposure_check',
-    'listening_eras',
-    'listening_sessions',
-    'forgotten_favorites',
-    'taste_recommendations',
-    'record_feedback',
-  ]) {
-    assert.ok(registered.some((t) => t.name === name), `missing ${name}`);
+  const pairs: Array<[string, string]> = [
+    ['statsfm_taste_profile', 'taste_profile'],
+    ['statsfm_artist_affinity', 'artist_affinity'],
+    ['statsfm_exposure_check', 'exposure_check'],
+    ['statsfm_listening_eras', 'listening_eras'],
+    ['statsfm_listening_sessions', 'listening_sessions'],
+    ['statsfm_forgotten_favorites', 'forgotten_favorites'],
+    ['statsfm_taste_recommendations', 'taste_recommendations'],
+    ['statsfm_record_feedback', 'record_feedback'],
+  ];
+  for (const [canonical, alias] of pairs) {
+    assert.ok(registered.some((t) => t.name === canonical), `missing ${canonical}`);
+    assert.ok(registered.some((t) => t.name === alias), `missing alias ${alias}`);
   }
-  assert.equal(registered.length, 8);
+  assert.equal(registered.length, 16);
+});
+
+test('aliases share the canonical handler', async () => {
+  const { registered } = makeHarness();
+  const canonical = findTool(registered, 'statsfm_taste_profile');
+  const alias = findTool(registered, 'taste_profile');
+  const c = await invoke(canonical, { statsfm_user: 'demo' });
+  const a = await invoke(alias, { statsfm_user: 'demo' });
+  assert.equal(text(a), text(c));
+  assert.match(alias.description, /Legacy alias of statsfm_taste_profile/);
 });
 
 // ------------------------------------------------------------- taste_profile

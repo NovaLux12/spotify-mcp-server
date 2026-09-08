@@ -26,6 +26,10 @@ export STATSFM_USER_ID=your_statsfm_user_id_here
 
 No OAuth dance: stats.fm public profile data needs no token. Private profiles need the profile owner's cooperation (see [Privacy](#privacy)).
 
+## Taste-tool naming
+
+The eight taste-intelligence tools (the `taste` toolset, `src/tools/statsfm_taste.ts`) use canonical **`statsfm_taste_*`** names so every stats.fm-backed tool shares the `statsfm_` prefix. The original **`taste_*`** names stay registered as backwards-compatible aliases — either name invokes the same handler. Full matrix: [taste showcase naming](taste.md#tool-naming).
+
 ## Tool cheat sheet
 
 The planned stats.fm surface. Every tool accepts `response_format` (`concise` / `detailed` / `json`) like the rest of the server.

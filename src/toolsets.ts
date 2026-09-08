@@ -46,7 +46,7 @@
  *                     tools/exhaust2misc.ts, swarm3library (library hygiene)
  *   personalization → tools/personalization.ts (3 tools) + swarm3analytics (listening analytics)
  *   statsfm         → tools/statsfm.ts         (30 tools, third-party stats.fm API, read-only)
- *   taste           → tools/statsfm_taste.ts   (8 tools: stats.fm taste intelligence, read-only, no auth)
+ *   taste           → tools/statsfm_taste.ts   (8 canonical statsfm_taste_* tools + 8 taste_* legacy aliases: stats.fm taste intelligence, read-only, no auth)
  *   discovery       → tools/swarm3_meta.ts     (find_tool, inspect_tool, toolset_report) — also in catalog for compat
  *   resources       → resources/index.ts       (16 resources)
  *   prompts         → prompts/index.ts         (14 prompts)
