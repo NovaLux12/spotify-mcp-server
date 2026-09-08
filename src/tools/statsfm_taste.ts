@@ -466,14 +466,49 @@ function textOut(lines: string[], structured?: Record<string, unknown>): ToolOut
 }
 
 // ---------------------------------------------------------------------------
+// Dual registration: canonical statsfm_* names + backwards-compat taste_* aliases
+// ---------------------------------------------------------------------------
+
+/** Canonical name → legacy alias pairs. Aliases keep existing clients working. */
+export const TASTE_TOOL_ALIASES: Readonly<Record<string, string>> = {
+  statsfm_taste_profile: 'taste_profile',
+  statsfm_artist_affinity: 'artist_affinity',
+  statsfm_exposure_check: 'exposure_check',
+  statsfm_listening_eras: 'listening_eras',
+  statsfm_listening_sessions: 'listening_sessions',
+  statsfm_forgotten_favorites: 'forgotten_favorites',
+  statsfm_taste_recommendations: 'taste_recommendations',
+  statsfm_record_feedback: 'record_feedback',
+};
+
+// ---------------------------------------------------------------------------
 // Registration
 // ---------------------------------------------------------------------------
 
 export function registerStatsfmTasteTools(server: McpServer, _client: SpotifyClient): void {
   void _client; // stats.fm public API needs no Spotify client; kept for index.ts uniformity
 
+  // Register the canonical statsfm_* name plus the legacy taste_* alias.
+  // Both point at the same handler; gating stays at the 'taste' module key.
+  const dualRegister = (
+    canonical: string,
+    alias: string,
+    desc: string,
+    params: Record<string, z.ZodTypeAny>,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    handler: (args: any) => Promise<any>,
+  ): void => {
+    const s = server as unknown as {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      tool(name: string, desc: string, params: any, handler: any): void;
+    };
+    s.tool(canonical, desc, params, handler);
+    s.tool(alias, `${desc} (Legacy alias of ${canonical} — prefer the canonical name.)`, params, handler);
+  };
+
   // ---- taste_profile ----
-  server.tool(
+  dualRegister(
+    'statsfm_taste_profile',
     'taste_profile',
     'Taste snapshot from stats.fm: core artists, top genres, loyalty-vs-novelty balance, and day-parting (when you listen). Read-only, no auth.',
     {
@@ -576,7 +611,8 @@ export function registerStatsfmTasteTools(server: McpServer, _client: SpotifyCli
   );
 
   // ---- artist_affinity ----
-  server.tool(
+  dualRegister(
+    'statsfm_artist_affinity',
     'artist_affinity',
     'How deep does an artist run? Lifetime intensity (share of top-artist streams) plus a recency half-life fitted to recent stream ages. Read-only, no auth.',
     {
@@ -639,7 +675,8 @@ export function registerStatsfmTasteTools(server: McpServer, _client: SpotifyCli
   );
 
   // ---- exposure_check ----
-  server.tool(
+  dualRegister(
+    'statsfm_exposure_check',
     'exposure_check',
     'Where does a subject sit on the exposure ladder — unheard / sampled / explored / established / favorite? Evidence cites lifetime + recent counts. Read-only, no auth.',
     {
@@ -703,7 +740,8 @@ export function registerStatsfmTasteTools(server: McpServer, _client: SpotifyCli
   );
 
   // ---- listening_eras ----
-  server.tool(
+  dualRegister(
+    'statsfm_listening_eras',
     'listening_eras',
     'Change points in monthly listening: groups months into eras split on top-artist turnover or >60% volume shifts. Read-only, no auth.',
     {
@@ -756,7 +794,8 @@ export function registerStatsfmTasteTools(server: McpServer, _client: SpotifyCli
   );
 
   // ---- listening_sessions ----
-  server.tool(
+  dualRegister(
+    'statsfm_listening_sessions',
     'listening_sessions',
     'Group recent streams into sessions: a gap longer than gap_minutes starts a new session (default 30). Read-only, no auth.',
     {
@@ -824,7 +863,8 @@ export function registerStatsfmTasteTools(server: McpServer, _client: SpotifyCli
   );
 
   // ---- forgotten_favorites ----
-  server.tool(
+  dualRegister(
+    'statsfm_forgotten_favorites',
     'forgotten_favorites',
     'High-lifetime tracks with zero recent plays — favorites that fell off. Ranked by lifetime streams. Read-only, no auth.',
     {
@@ -895,7 +935,8 @@ export function registerStatsfmTasteTools(server: McpServer, _client: SpotifyCli
   );
 
   // ---- taste_recommendations ----
-  server.tool(
+  dualRegister(
+    'statsfm_taste_recommendations',
     'taste_recommendations',
     'Bridge-mode recommendations: adjacent genres/artists between the listener\u2019s core and the unexplored, each with evidence and a risk note. Heuristic over stats.fm tops — read-only, no auth.',
     {
@@ -983,7 +1024,8 @@ export function registerStatsfmTasteTools(server: McpServer, _client: SpotifyCli
   );
 
   // ---- record_feedback ----
-  server.tool(
+  dualRegister(
+    'statsfm_record_feedback',
     'record_feedback',
     'Record a local-only taste verdict (love/like/mixed/boring/dislike) or list stored verdicts. Never touches the network — memory for future recommendations.',
     {

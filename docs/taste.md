@@ -2,6 +2,21 @@
 
 An anonymized end-to-end run of the [flagship recipe](cookbook.md#1-taste-profile--playlist-flagship): stats.fm evidence in, Spotify playlist out. Every name below is fictional — "Listener A" stands in for any account with a completed history import.
 
+## Tool naming
+
+The taste tools live under the `taste` toolset with canonical **`statsfm_taste_*`** names. The original **`taste_*`** names remain registered as backwards-compatible aliases pointing at the same handlers — either name works.
+
+| Canonical (preferred) | Legacy alias |
+|---|---|
+| `statsfm_taste_profile` | `taste_profile` |
+| `statsfm_artist_affinity` | `artist_affinity` |
+| `statsfm_exposure_check` | `exposure_check` |
+| `statsfm_listening_eras` | `listening_eras` |
+| `statsfm_listening_sessions` | `listening_sessions` |
+| `statsfm_forgotten_favorites` | `forgotten_favorites` |
+| `statsfm_taste_recommendations` | `taste_recommendations` |
+| `statsfm_record_feedback` | `record_feedback` |
+
 ## The starting point
 
 Listener A has streamed for about three years, imported fully into stats.fm (`statsfm_history_status` reports continuous coverage, oldest stream 2023). The question: *what does A actually sound like, and can that become a playlist worth keeping?*
