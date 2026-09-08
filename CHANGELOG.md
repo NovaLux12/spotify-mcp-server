@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.30.0](https://github.com/NovaLux12/spotify-mcp-server/compare/v1.29.0...v1.30.0) (2026-09-08)
+
+
+### Features
+
+* **taste:** 11 composite tools toward 600 ([#555](https://github.com/NovaLux12/spotify-mcp-server/issues/555)) ([a3af7f9](https://github.com/NovaLux12/spotify-mcp-server/commit/a3af7f9d687af181b294a6dfa7c600cf90850aae))
+
+
+### Bug Fixes
+
+* **taste:** resolve nested stats.fm entity names in taste_profile ([#552](https://github.com/NovaLux12/spotify-mcp-server/issues/552)) ([afc9e46](https://github.com/NovaLux12/spotify-mcp-server/commit/afc9e46196202c4e90258ca3a4db95d9d5ad6024))
+
 ## [1.29.0](https://github.com/NovaLux12/spotify-mcp-server/compare/v1.28.2...v1.29.0) (2026-09-05)
 
 
