@@ -60,6 +60,7 @@ import { registerSwarm3LibraryTools } from './tools/swarm3_library.js';
 import { registerSwarm3ShowsTools } from './tools/swarm3_shows.js';
 import { registerSwarm3AnalyticsTools } from './tools/swarm3_analytics.js';
 import { registerStatsfmTasteTools } from './tools/statsfm_taste.js';
+import { registerTasteCompositeTools } from './tools/taste_composites.js';
 import { registerSwarm3RefsTools } from './tools/swarm3_refs.js';
 import { registerSwarm3SnapshotsTools } from './tools/swarm3_snapshots.js';
 import { registerSwarm3MetaTools } from './tools/swarm3_meta.js';
@@ -155,6 +156,9 @@ async function startMcpServer(): Promise<void> {
   // auth, no Spotify scopes — record_feedback is local-only memory. No
   // readOnly gate: nothing here mutates Spotify state.
   if (isModuleActive('taste', activeSets, overrides)) registerStatsfmTasteTools(server, client)
+  // Wave-2 taste composites (registration key `tastecomposites`, taste set):
+  // read-only stats.fm composites, no Spotify scopes — same treatment as taste.
+  if (isModuleActive('tastecomposites', activeSets, overrides)) registerTasteCompositeTools(server, client)
   // Library hygiene (#112 idea 5): album completion + consolidation findings.
   if (!readOnly && isModuleActive('library', activeSets, overrides) && !moduleBlockedByScopes('library', grantedScopes)) registerLibraryHygieneTools(server, client)
   // Library backup (#159) + strictly-additive restore (#160). Backup is
