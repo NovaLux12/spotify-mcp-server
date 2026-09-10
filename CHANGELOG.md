@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.30.1](https://github.com/NovaLux12/spotify-mcp-server/compare/v1.30.0...v1.30.1) (2026-09-10)
+
+
+### Bug Fixes
+
+* bump server.json via release-please extra-files ([#561](https://github.com/NovaLux12/spotify-mcp-server/issues/561)) ([5d4f344](https://github.com/NovaLux12/spotify-mcp-server/commit/5d4f344cf0face22c44ff0fc1cd850413535263e))
+* sync server.json to 1.30.0 + pin registry metadata in tests ([#559](https://github.com/NovaLux12/spotify-mcp-server/issues/559)) ([1272079](https://github.com/NovaLux12/spotify-mcp-server/commit/1272079eb8b75ec074bafdf2fb4f62674b174346))
+
 ## [1.30.0](https://github.com/NovaLux12/spotify-mcp-server/compare/v1.29.0...v1.30.0) (2026-09-08)
 
 
