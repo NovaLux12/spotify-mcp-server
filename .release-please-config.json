@@ -4,7 +4,19 @@
   "packages": {
     ".": {
       "package-name": "@novalux12/spotify-mcp",
-      "include-component-in-tag": false
+      "include-component-in-tag": false,
+      "extra-files": [
+        {
+          "type": "json",
+          "path": "server.json",
+          "jsonpath": "$.version"
+        },
+        {
+          "type": "json",
+          "path": "server.json",
+          "jsonpath": "$.packages[0].version"
+        }
+      ]
     }
   }
 }
