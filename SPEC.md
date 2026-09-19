@@ -62,21 +62,23 @@ A Model Context Protocol (MCP) server that gives Claude full control over Spotif
 ```json
 {
   "type": "module",
+  "engines": { "node": ">=22.9" },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "latest",
-    "open": "^10.0.0",
-    "zod": "^3.0.0"
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "open": "^11.0.1",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
-    "@types/node": "^22.0.0",
+    "@types/node": "^26.4.1",
     "tsx": "^4.0.0",
-    "typescript": "^5.0.0"
+    "typescript": "^7.0.2"
   },
   "scripts": {
     "build": "tsc && node scripts/add-shebang.js",
-    "dev": "node --import tsx/esm src/index.ts",
-    "auth": "node --import tsx/esm src/index.ts auth",
-    "start": "node dist/index.js"
+    "dev": "node --env-file-if-exists=.env --import tsx/esm src/index.ts",
+    "auth": "node --env-file-if-exists=.env --import tsx/esm src/index.ts auth",
+    "start": "node --env-file-if-exists=.env dist/index.js",
+    "test": "node --import tsx --test 'tests/*.test.ts'"
   }
 }
 ```
@@ -407,7 +409,7 @@ Quick reference for all endpoints used. All paths are relative to `https://api.s
 
 ## 5. Tools
 
-589 registered tools across 62 tool modules riding 42 registration keys (artistwatch, audiobooks, browse, catalog, episodemgmt, exhaust2catalog, exhaust2enggating, exhaust2extra, exhaust2misc, exhaust2playback, exhaust2playlists, following, library, libraryanalytics, personalization, playback, playbackext, playlistbatch, playlisthealth, playlistmisc, playlists, portability, prompts, queueops, resources, search, searchhistory, users, verify_receipt, swarm3playback, swarm3playlistops, swarm3discovery, swarm3bdiscovery, swarm3library, swarm3shows, swarm3analytics, swarm3refs, swarm3snapshots, swarm3meta, swarm4playlists, statsfm, taste). All tools return a structured result object; errors surface as MCP tool errors with a human-readable message.
+608 registered tools — 607 from the modules under `src/tools/` plus the inline `verify_receipt` in `src/index.ts` — registered by 43 toolset keys (`src/toolsets.ts`: artistwatch, audiobooks, browse, catalog, episodemgmt, exhaust2catalog, exhaust2enggating, exhaust2extra, exhaust2misc, exhaust2playback, exhaust2playlists, following, library, libraryanalytics, personalization, playback, playbackext, playbackintel, playlistbatch, playlisthealth, playlistmisc, playlists, portability, prompts, queueops, resources, search, searchhistory, statsfm, swarm3analytics, swarm3bdiscovery, swarm3discovery, swarm3library, swarm3meta, swarm3playback, swarm3playlistops, swarm3refs, swarm3shows, swarm3snapshots, swarm4playlists, taste, tastecomposites, users), spread over 63 files in `src/tools/` (61 of them register tools; `confirm.ts` is the elicitation helper, `exhaust2_enggating.ts` installs the graceful-403 client contract). `spotify_doctor`, `find_tool`, `inspect_tool` and `toolset_report` register unconditionally so diagnostics and discovery survive toolset trimming. All tools return a structured result object; errors surface as MCP tool errors with a human-readable message.
 
 ### Shared tool contract
 
