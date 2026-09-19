@@ -123,17 +123,23 @@ describe('exhaust2_misc — 27-tool misc slice', () => {
     const res = await h({ include_listening: true, max_artists: 5, max_shows: 5, response_format: 'concise' });
     assert.ok(res.content[0].text.includes('Morning briefing'));
     assert.ok(res.content[0].text.includes('Today so far'));
-    console.error('DBG', JSON.stringify(res.structuredContent && (res.structuredContent as any).listening), res.content[0].text.split('\n').slice(0,12).join(' | '));assert.equal((res.structuredContent as { listening: { plays: number } }).listening.plays, 1);
+    assert.equal((res.structuredContent as { listening: { plays: number } }).listening.plays, 1);
   });
 
   // #403
-  it('monthly_listening_report computes minutes, days and sessions for a month', async () => {
-    const month = new Date().toISOString().slice(0, 7);
+  it('monthly_listening_report computes minutes, days and sessions for a month', async (t) => {
+    // Pin the clock: with the real clock the two plays below could straddle UTC
+    // midnight (suite started within a minute of it) and "Active days" became 2.
+    t.mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-06-15T12:00:00.000Z') });
+    const month = '2026-06';
     const h = getHandler('monthly_listening_report', makeClient({
       get: mock.fn(async (path: string) => {
         if (path.includes('recently-played')) {
           return {
-            items: [PLAYED_NOW('spotify:track:a'), { ...PLAYED_NOW('spotify:track:a'), played_at: new Date(Date.now() - 60_000).toISOString() }],
+            items: [
+              PLAYED_NOW('spotify:track:a'),
+              { ...PLAYED_NOW('spotify:track:a'), played_at: new Date(Date.parse('2026-06-15T11:59:00.000Z')).toISOString() },
+            ],
             next: null,
           };
         }
@@ -141,6 +147,7 @@ describe('exhaust2_misc — 27-tool misc slice', () => {
       }),
     }));
     const res = await h({ month, response_format: 'concise' });
+    t.mock.timers.reset();
     assert.ok(res.content[0].text.includes('Active days: 1'));
     assert.equal((res.structuredContent as { plays: number }).plays, 2);
   });
