@@ -57,6 +57,12 @@ export interface Receipt {
   missing: string[];
   /** URIs that were part of the original mutation (for undo). */
   uris: string[];
+  /**
+   * Which way the mutation went (#625): `added` for save/add receipts, `removed`
+   * for removal receipts. Derived from `expectPresent` so `undo` can invert the
+   * original operation instead of always deleting.
+   */
+  direction?: 'added' | 'removed';
   /** When true, playlist exceeds verifiable window — verified is false due to cap, not missing data. */
   windowExceeded?: boolean;
   /** Human reason when not verified or window exceeded. */
@@ -277,6 +283,7 @@ export async function issueReceipt(
     ...(after !== undefined ? { after } : {}),
     missing,
     uris: [...opts.uris],
+    direction: (opts.expectPresent ?? true) ? 'added' : 'removed',
     ...(_windowExceeded ? { windowExceeded: true as const, reason: _reason } : {}),
   };
   store.set(receipt.receipt_id, receipt);

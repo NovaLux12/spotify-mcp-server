@@ -1,70 +1,131 @@
 /**
- * Undo for receipt-driven mutations (#217).
- * Inverts the most recent (or a targeted) receipt's mutation.
- * Undo itself issues a new receipt so the agent gets proof of the rollback.
+ * Undo for receipt-driven mutations (#217, #625).
+ * Inverts the most recent (or a targeted) receipt's mutation, using the direction
+ * the receipt recorded: an `added` receipt is undone by removing, a `removed`
+ * receipt by re-adding. Undo itself issues a new receipt so the agent gets proof
+ * of the rollback, and it previews by default (`dry_run: false` executes).
  */
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
-import { verifyReceipt, issueReceipt, formatReceipt, getAllReceipts } from '../receipts.js';
+import {
+  verifyReceipt,
+  issueReceipt,
+  formatReceipt,
+  getAllReceipts,
+  type Receipt,
+} from '../receipts.js';
 import { DryRun, ResponseFormat } from '../shaping.js';
 
 type ToolResult = { content: Array<{ type: 'text'; text: string }>; structuredContent?: Record<string, unknown> };
+
 function textResult(text: string, s?: Record<string, unknown>): ToolResult {
   return { content: [{ type: 'text', text }], ...(s ? { structuredContent: s } : {}) };
 }
+
+/** Spotify write caps: 100 items per playlist request, 40 per unified-library request. */
+const PLAYLIST_ITEMS_CHUNK = 100;
+const LIBRARY_CHUNK = 40;
 
 function reversibleKind(kind: string): boolean {
   return kind === 'playlist_items' || kind === 'library';
 }
 
+/** Split into fixed-size chunks for the API's per-request caps. */
+function chunk<T>(items: readonly T[], size: number): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
+  return out;
+}
+
+/**
+ * Undo a receipt by performing the opposite of its recorded direction.
+ * `receipt.direction` is absent only on receipts issued before #625; those were
+ * overwhelmingly add/save receipts, so `added` is the conservative default
+ * (undoing an add by removing is recoverable; re-adding duplicates is not).
+ */
 async function invertReceipt(
   client: SpotifyClient,
-  receipt: NonNullable<ReturnType<typeof verifyReceipt>>,
+  receipt: Receipt,
   dryRun: boolean | undefined,
 ): Promise<ToolResult> {
   const uris = receipt.uris;
   if (!uris || uris.length === 0) {
     return textResult(`Receipt ${receipt.receipt_id} has no stored URIs — cannot undo.`, { ok: false, reason: 'no_uris' });
   }
-  if (dryRun) {
-    const lines = [`[dry run] undo ${receipt.receipt_id} (${receipt.kind}${receipt.id ? ` ${receipt.id}` : ''}) — nothing was changed.`, `Would invert ${uris.length} URI(s):`];
+  const direction = receipt.direction ?? 'added';
+  const inverse = direction === 'added' ? 'remove' : 'add';
+
+  // Preview unless the caller explicitly asked to execute (#625: undo defaults to dry-run,
+  // matching restore_library_snapshot).
+  if (dryRun !== false) {
+    const lines = [
+      `[dry run] undo ${receipt.receipt_id} (${receipt.kind}${receipt.id ? ` ${receipt.id}` : ''}) — nothing was changed.`,
+      `Original mutation: ${direction}. Would ${inverse} ${uris.length} URI(s):`,
+    ];
     for (const u of uris.slice(0, 10)) lines.push(`  - ${u}`);
     if (uris.length > 10) lines.push(`  (…and ${uris.length - 10} more)`);
-    return textResult(lines.join('\n'), { ok: true, dry_run: true, receipt_id: receipt.receipt_id, kind: receipt.kind, uris });
+    lines.push('Re-run with dry_run: false to execute.');
+    return textResult(lines.join('\n'), {
+      ok: true, dry_run: true, receipt_id: receipt.receipt_id, kind: receipt.kind,
+      direction, would: inverse, uris,
+    });
   }
+
   let snapshotId: string | undefined;
-  if (receipt.kind === 'playlist_items' && receipt.id) {
-    try {
-      const res = await client.delete<{ snapshot_id?: string }>(`/playlists/${encodeURIComponent(receipt.id)}/items`, { tracks: uris.map((uri) => ({ uri })) });
-      snapshotId = res?.snapshot_id;
-    } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e);
-      return textResult(`Undo failed: ${msg}`, { ok: false, error: msg });
-    }
-  } else if (receipt.kind === 'library') {
-    try {
-      // Library undo: try remove then save fallback — default to remove (undo a save)
-      await client.delete(`/me/library?uris=${uris.join(',')}`);
-    } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e);
-      return textResult(`Undo failed: ${msg}`, { ok: false, error: msg });
-    }
-  }
-  let newReceipt;
+  let requests = 0;
   try {
-    newReceipt = await issueReceipt(client, { kind: receipt.kind, id: receipt.id, uris, expectPresent: false });
+    if (receipt.kind === 'playlist_items' && receipt.id) {
+      const encId = encodeURIComponent(receipt.id);
+      for (const part of chunk(uris, PLAYLIST_ITEMS_CHUNK)) {
+        if (direction === 'added') {
+          const res = await client.delete<{ snapshot_id?: string }>(`/playlists/${encId}/items`, {
+            tracks: part.map((uri) => ({ uri })),
+          });
+          snapshotId = res?.snapshot_id ?? snapshotId;
+        } else {
+          const res = await client.post<{ snapshot_id?: string }>(`/playlists/${encId}/items`, { uris: part });
+          snapshotId = res?.snapshot_id ?? snapshotId;
+        }
+        requests++;
+      }
+    } else if (receipt.kind === 'library') {
+      for (const part of chunk(uris, LIBRARY_CHUNK)) {
+        const qs = `uris=${part.join(',')}`;
+        if (direction === 'added') await client.delete(`/me/library?${qs}`);
+        else await client.put(`/me/library?${qs}`);
+        requests++;
+      }
+    }
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return textResult(`Undo failed: ${msg}`, { ok: false, error: msg, direction, requests });
+  }
+
+  let newReceipt: Receipt | undefined;
+  try {
+    // After undoing an add the URIs are absent; after undoing a removal they are present.
+    newReceipt = await issueReceipt(client, {
+      kind: receipt.kind, id: receipt.id, uris,
+      expectPresent: direction === 'removed',
+    });
   } catch { /* best-effort */ }
-  const lines = [`Undid ${receipt.receipt_id} (${receipt.kind}${receipt.id ? ` ${receipt.id}` : ''}) — inverted ${uris.length} URI(s).`];
+
+  const lines = [
+    `Undid ${receipt.receipt_id} (${receipt.kind}${receipt.id ? ` ${receipt.id}` : ''}) — ${direction} → ${inverse}, ${uris.length} URI(s) across ${requests} request(s).`,
+  ];
   if (snapshotId) lines.push(`Snapshot ID: ${snapshotId}`);
-  if (newReceipt) lines.push(formatReceipt(newReceipt, { expectPresent: false }));
-  return textResult(lines.join('\n'), { ok: true, undone_receipt: receipt.receipt_id, snapshot_id: snapshotId, receipt: newReceipt as unknown as Record<string, unknown> });
+  if (newReceipt) lines.push(formatReceipt(newReceipt, { expectPresent: direction === 'removed' }));
+  return textResult(lines.join('\n'), {
+    ok: true, undone_receipt: receipt.receipt_id, direction, inverted_to: inverse,
+    requests, snapshot_id: snapshotId, receipt: newReceipt as unknown as Record<string, unknown>,
+  });
 }
 
 export function registerUndoTools(server: McpServer, client: SpotifyClient): void {
   server.tool(
     'undo_mutation',
-    'Undo a specific mutation by receipt ID. Inverts: playlist_items add→remove, library save→remove. Non-reversible kinds return not reversible. Supports dry_run.',
+    'Undo a specific mutation by receipt ID. Inverts the recorded direction: an add/save is undone by removing, a removal by re-adding (playlist items or library). Non-reversible kinds return not reversible. dry_run defaults to TRUE (preview); pass dry_run: false to execute.',
     {
       receipt_id: z.string().min(1).describe('Receipt ID to undo'),
       response_format: ResponseFormat,
@@ -80,12 +141,12 @@ export function registerUndoTools(server: McpServer, client: SpotifyClient): voi
 
   server.tool(
     'undo_last_mutation',
-    'Undo the most recent reversible mutation (receipt FIFO). Same inversion semantics as undo_mutation. Supports dry_run.',
+    'Undo the most recent reversible mutation (receipt FIFO). Same inversion semantics as undo_mutation: add/save → remove, removal → re-add. dry_run defaults to TRUE (preview); pass dry_run: false to execute.',
     { dry_run: DryRun,
       response_format: ResponseFormat, },
     async (args) => {
       const all = getAllReceipts();
-      let target: ReturnType<typeof verifyReceipt> | undefined;
+      let target: Receipt | undefined;
       for (let i = all.length - 1; i >= 0; i--) {
         const r = all[i]!;
         if (reversibleKind(r.kind) && r.uris.length > 0) { target = r; break; }
