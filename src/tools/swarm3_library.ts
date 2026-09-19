@@ -831,7 +831,13 @@ export function registerSwarm3LibraryTools(server: McpServer, client: SpotifyCli
             { maxItems: cap },
           );
           for (const it of items) {
-            const tr = (it as unknown as { track?: { id?: string } | null }).track;
+            // Rows carry `item` since the Feb-2026 rename (#A7-001); keep the legacy `track`
+            // shape working for older fixtures/snapshots.
+            const row = it as unknown as {
+              item?: { id?: string } | null;
+              track?: { id?: string } | null;
+            };
+            const tr = row.item ?? row.track;
             if (tr?.id) playlistTrackIds.add(tr.id);
           }
         } catch (e) {
