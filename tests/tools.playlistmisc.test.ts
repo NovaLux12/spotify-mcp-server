@@ -32,7 +32,7 @@ function harness(responder: Responder=()=>null, elicitResult?: unknown) {
   const fakeServer = {
     tool(name:string,_d:string,schema:z.ZodRawShape,handler:RegisteredTool['handler']){ registered.push({name,validate:(a)=>z.object(schema).parse(a),handler}); },
     registerTool(name:string,cfg:{description?:string;inputSchema?:z.ZodType},handler:RegisteredTool['handler']){ registered.push({name,validate:(a)=>(cfg.inputSchema as z.ZodType).parse(a),handler}); },
-    ...(elicitResult!==undefined?{server:{getClientCapabilities:()=>({elicitation:{form:{}}})},async elicitInput(){ if(elicitResult instanceof Error) throw elicitResult; return elicitResult; }}:{}),
+    ...(elicitResult!==undefined?{server:{getClientCapabilities:()=>({elicitation:{form:{}}}),async elicitInput(){ if(elicitResult instanceof Error) throw elicitResult; return elicitResult; }}}:{}),
   } as unknown as McpServer;
   const client = makeStubClient(responder);
   registerPlaylistMiscTools(fakeServer, client as unknown as SpotifyClient);

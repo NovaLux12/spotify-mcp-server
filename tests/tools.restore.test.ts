@@ -115,11 +115,13 @@ function harness(state: LiveState, elicit: ElicitVerdict = 'unsupported') {
       ? base
       : {
           ...base,
-          server: { getClientCapabilities: () => ({ elicitation: {} }) },
-          elicitInput: async () =>
-            elicit === 'accept'
-              ? { action: 'accept', content: { confirm: true } }
-              : { action: 'decline' },
+          server: {
+            getClientCapabilities: () => ({ elicitation: {} }),
+            elicitInput: async () =>
+              elicit === 'accept'
+                ? { action: 'accept', content: { confirm: true } }
+                : { action: 'decline' },
+          },
         };
   const client = makeClient(state);
   registerRestoreTools(fakeServer as unknown as McpServer, client as unknown as SpotifyClient);

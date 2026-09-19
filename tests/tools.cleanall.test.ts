@@ -45,10 +45,10 @@ function harness(
   const fakeServer = {
     server: {
       getClientCapabilities: () => ({ elicitation: { form: {} } }),
-    },
-    async elicitInput(request: { message: string }) {
-      elicitRequests.push(request);
-      return opts.result ?? { action: 'accept', content: { confirm: true } };
+      async elicitInput(request: { message: string }) {
+        elicitRequests.push(request);
+        return opts.result ?? { action: 'accept', content: { confirm: true } };
+      },
     },
     tool(
       name: string,

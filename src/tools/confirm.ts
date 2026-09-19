@@ -2,47 +2,61 @@
  * Elicitation-gated confirmation for destructive playlist operations (#111 item 5).
  *
  * Destructive bulk mutations ask the human operator to confirm via MCP
- * elicitation before touching Spotify. Environments without elicitation
- * support (or with SPOTIFY_MCP_CONFIRM=never) skip prompting entirely so
- * automation/readonly contexts are never blocked.
+ * elicitation before touching Spotify. Environments that never advertised the
+ * capability (or set SPOTIFY_MCP_CONFIRM=never) skip prompting entirely so
+ * automation/readonly contexts are never blocked — but a prompt that FAILS
+ * mid-flight is a refusal, never a silent proceed (#684).
  */
-import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 
 // Gates used by callers: removals at this scale can silently gut a playlist;
 // full replacements rewrite every item.
 export const REMOVE_ELICIT_THRESHOLD = 10;
 export const REPLACE_ELICIT_THRESHOLD = 50;
 
-interface ElicitCapableServer {
-  server: {
-    getClientCapabilities?: () => { elicitation?: unknown } | undefined;
-  };
-  elicitInput: (request: {
+/** The object that actually owns elicitation — see elicitHost(). */
+interface ElicitHost {
+  elicitInput(request: {
     message: string;
     requestedSchema: Record<string, unknown>;
-  }) => Promise<unknown>;
+  }): Promise<unknown>;
+  getClientCapabilities?(): { elicitation?: unknown } | undefined;
 }
 
 /**
- * True when the connected client advertised the elicitation capability.
+ * Resolve the elicitation-capable object: MCP keeps both `elicitInput` and
+ * `getClientCapabilities` on the inner `Server` that `McpServer` exposes as
+ * `.server`. Probing the wrapper for them always missed, silently disabling
+ * every gate (#684).
+ *
+ * Duck-typed on purpose: the SDK class and test doubles differ nominally, so
+ * the members we call are validated at runtime. Returns null when the host
+ * cannot prompt, so callers never re-check.
+ */
+function elicitHost(server: unknown): ElicitHost | null {
+  if (typeof server !== 'object' || server === null) return null;
+  const inner: unknown = 'server' in server ? server.server : server;
+  if (typeof inner !== 'object' || inner === null) return null;
+  const host = inner as ElicitHost;
+  return typeof host.elicitInput === 'function' ? host : null;
+}
+
+/**
+ * True when the connected client advertised the elicitation capability AND the
+ * resolved host can prompt.
  *
  * Elicitation is advertised BY THE CLIENT during initialization — the
- * accessor is `server.server.getClientCapabilities()` on the inner Server.
- * An earlier revision read the server's own declared capabilities here,
- * which are never set, silently disabling prompting in production; the
- * InMemoryTransport integration test catches that failure mode.
+ * accessor is `server.server.getClientCapabilities()`. An earlier revision
+ * read the server's own declared capabilities here, which are never set,
+ * silently disabling prompting in production; the InMemoryTransport
+ * integration test catches that failure mode.
  */
 export function supportsElicitation(server: unknown): boolean {
-  if (typeof server !== 'object' || server === null) return false;
+  const host = elicitHost(server);
+  if (!host) return false;
   try {
-    const inner = (server as ElicitCapableServer).server;
-    const caps =
-      typeof inner?.getClientCapabilities === 'function'
-        ? inner.getClientCapabilities()
-        : undefined;
-    return Boolean(caps?.elicitation);
+    return Boolean(host.getClientCapabilities?.()?.elicitation);
   } catch {
-    return false;
+    return false; // A throwing accessor is not a capability claim.
   }
 }
 
@@ -52,7 +66,15 @@ export function describeConfirmation(kind: string, target: string, changes: stri
   return [`About to ${kind} "${target}":`, ...lines, '', 'Proceed?'].join('\n');
 }
 
-type ElicitVerdict = 'confirmed' | 'declined' | 'unsupported';
+export type ElicitVerdict =
+  /** Human explicitly accepted. */
+  | 'confirmed'
+  /** Human declined or cancelled the prompt. */
+  | 'declined'
+  /** No client capability (or SPOTIFY_MCP_CONFIRM=never) — proceed unprompted. */
+  | 'unsupported'
+  /** The prompt itself failed on the wire — callers MUST refuse (#684). */
+  | 'error';
 
 interface ElicitResultShape {
   action?: string;
@@ -63,11 +85,45 @@ function isElicitResult(value: unknown): value is ElicitResultShape {
   return typeof value === 'object' && value !== null && 'action' in value;
 }
 
+/** Caller-facing refusal for a gate verdict that must block the write. */
+export interface ElicitRefusal {
+  /** Why the operation stopped, for structured results. */
+  reason: 'declined' | 'elicitation_failed';
+  /** Human text to return as the tool result. */
+  message: string;
+  /** Structured content to return as the tool result. */
+  payload: { ok: false; cancelled: true; reason?: 'elicitation_failed' };
+}
+
+/**
+ * Guard for a gate verdict: the refusal a caller must return, or null when the
+ * operation may proceed.
+ *
+ * 'declined' and 'error' both stop the write; only 'unsupported' (the client
+ * never advertised elicitation, or SPOTIFY_MCP_CONFIRM=never) proceeds
+ * unprompted, since there was never a human to ask.
+ */
+export function refusalFor(verdict: ElicitVerdict): ElicitRefusal | null {
+  if (verdict === 'declined') {
+    return {
+      reason: 'declined',
+      message: 'Cancelled — nothing was changed.',
+      payload: { ok: false, cancelled: true },
+    };
+  }
+  if (verdict === 'error') {
+    return {
+      reason: 'elicitation_failed',
+      message: 'Elicitation failed on the wire — refusing to proceed; nothing was changed.',
+      payload: { ok: false, cancelled: true, reason: 'elicitation_failed' },
+    };
+  }
+  return null;
+}
+
 /**
  * Ask the user to confirm a destructive operation.
- * Returns 'confirmed' only on explicit accept + confirm=true; anything else
- * (decline, cancel, missing capability, transport error) is treated as not
- * confirmed. 'unsupported' means the caller should proceed without prompting.
+ * Returns 'confirmed' only on explicit accept + confirm=true.
  */
 export async function confirmViaElicitation(
   server: unknown,
@@ -75,17 +131,12 @@ export async function confirmViaElicitation(
 ): Promise<ElicitVerdict> {
   // Escape hatch: automation/readonly contexts never prompt.
   if (process.env.SPOTIFY_MCP_CONFIRM === 'never') return 'unsupported';
-  if (
-    !supportsElicitation(server) ||
-    typeof server !== 'object' ||
-    server === null ||
-    !('elicitInput' in server)
-  ) {
-    return 'unsupported';
-  }
+  const host = elicitHost(server);
+  // Already resolved: the capability probe reads the same object we'll call.
+  if (!host || !supportsElicitation(host)) return 'unsupported';
 
   try {
-    const result = await (server as ElicitCapableServer).elicitInput({
+    const result = await host.elicitInput({
       message: opts.message,
       requestedSchema: {
         type: 'object',
@@ -101,8 +152,8 @@ export async function confirmViaElicitation(
       ? 'confirmed'
       : 'declined';
   } catch {
-    // Client without elicitation support errors on elicitInput — degrade to
-    // unprompted operation rather than failing the tool call.
-    return 'unsupported';
+    // The prompt was attempted and failed — a dead gate must not become an
+    // ungated write (#684). Callers refuse on 'error'.
+    return 'error';
   }
 }

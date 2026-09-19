@@ -28,7 +28,7 @@ function harness(responder: Responder = () => null, elicitResult?: unknown) {
     tool(name: string, desc: string, schema: z.ZodRawShape, handler: RegisteredTool['handler']) { registered.push({ name, description: desc, validate: (a) => z.object(schema).parse(a), handler }); },
     registerTool(name: string, config: { description?: string; inputSchema?: z.ZodType }, handler: RegisteredTool['handler']) { registered.push({ name, description: config.description ?? '', validate: (a) => (config.inputSchema as z.ZodType).parse(a), handler }); },
   };
-  if (elicitResult !== undefined) { fakeServer.server = { getClientCapabilities: () => ({ elicitation: { form: {} } }) }; (fakeServer as Record<string, unknown>).elicitInput = async () => { if (elicitResult instanceof Error) throw elicitResult; return elicitResult; }; }
+  if (elicitResult !== undefined) { fakeServer.server = { getClientCapabilities: () => ({ elicitation: { form: {} } }), elicitInput: async () => { if (elicitResult instanceof Error) throw elicitResult; return elicitResult; } } as unknown as typeof fakeServer.server; }
   const client = makeStubClient(responder);
   registerPlaylistBatchTools(fakeServer as unknown as McpServer, client as unknown as SpotifyClient);
   return { registered, client, invoke: async (name: string, args: Record<string, unknown>) => { const tool = registered.find((t) => t.name === name); assert.ok(tool, `tool "${name}" should be registered`); return tool.handler(tool.validate(args)); } };

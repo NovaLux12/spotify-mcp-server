@@ -51,10 +51,10 @@ function harness(
     // Elicitation-capable client shape (mirrors tools.confirm.test.ts).
     server: {
       getClientCapabilities: () => ({ elicitation: { form: {} } }),
-    },
-    async elicitInput(request: { message: string }) {
-      elicitRequests.push(request);
-      return opts.result ?? { action: 'accept', content: { confirm: true } };
+      async elicitInput(request: { message: string }) {
+        elicitRequests.push(request);
+        return opts.result ?? { action: 'accept', content: { confirm: true } };
+      },
     },
     tool(
       name: string,
