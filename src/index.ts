@@ -63,6 +63,7 @@ import { registerStatsfmTasteTools } from './tools/statsfm_taste.js';
 import { registerTasteCompositeTools } from './tools/taste_composites.js';
 import { registerSwarm3RefsTools } from './tools/swarm3_refs.js';
 import { registerSwarm3SnapshotsTools } from './tools/swarm3_snapshots.js';
+import { applyToolAnnotations } from './tools/annotations.js';
 import { registerSwarm3MetaTools } from './tools/swarm3_meta.js';
 import { registerStatsfmTools } from './tools/statsfm.js';
 import { verifyReceipt, formatReceipt } from './receipts.js';
@@ -268,6 +269,16 @@ async function startMcpServer(): Promise<void> {
     );
   }
 
+  // Annotations + titles for every registered tool (#565/A0-002): hosts need to
+  // tell reads from destructive writes to auto-approve safely. Applied once here
+  // rather than at 500+ call sites; assert coverage below so a silent no-op (SDK
+  // registry shape change) is visible in the startup log instead of a host.
+  const annotations = applyToolAnnotations(server);
+  if (annotations.total === 0 || annotations.annotated < annotations.total) {
+    console.error(
+      `[spotify-mcp] warning: tool annotations applied to ${annotations.annotated}/${annotations.total} registered tools`,
+    );
+  }
   const transport = new StdioServerTransport();
   await server.connect(transport);
 }
