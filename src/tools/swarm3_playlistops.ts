@@ -942,9 +942,13 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
         ]), { ok: true, dry_run: true, playlist: p.id, range: [from, to], removals: doomed.length, remaining: keptCount });
       }
       const backupFile = await backupItemsBeforeWrite(p.id, p.name, p.items);
+      // Positions are indices into the CURRENT playlist, so removals must run from the tail
+      // backwards: chunking ascending positions deletes the wrong rows once a chunk lands
+      // (#A6-003). Sorting descending keeps every later request's indices valid.
+      const doomedDesc = [...doomed].sort((a, b) => b.position - a.position);
       let requests = 0;
-      for (let start = 0; start < doomed.length; start += 100) {
-        const chunk = doomed.slice(start, start + 100);
+      for (let start = 0; start < doomedDesc.length; start += 100) {
+        const chunk = doomedDesc.slice(start, start + 100);
         await client.delete(`/playlists/${encodeURIComponent(p.id)}/items`, {
           tracks: chunk.map((r) => ({ uri: r.uri, positions: [r.position] })),
         });
@@ -1562,9 +1566,12 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
         ]), { ok: true, dry_run: true, source: src.id, destination: dst.id, moved: moving.length, plan: uris });
       }
       const backupFile = await backupItemsBeforeWrite(src.id, src.name, src.items);
+      // Same tail-first rule as remove_playlist_range (#A6-003): the destination add is
+      // independent, but the source delete must not shift rows still queued for deletion.
+      const movingDesc = [...moving].sort((a, b) => b.position - a.position);
       let requests = 0;
-      for (let start = 0; start < moving.length; start += 100) {
-        const chunk = moving.slice(start, start + 100);
+      for (let start = 0; start < movingDesc.length; start += 100) {
+        const chunk = movingDesc.slice(start, start + 100);
         await client.delete(`/playlists/${encodeURIComponent(src.id)}/items`, {
           tracks: chunk.map((r) => ({ uri: r.uri, positions: [r.position] })),
         });
