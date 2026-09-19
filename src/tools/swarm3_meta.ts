@@ -4,11 +4,22 @@
  * Discoverability tools for a 500+ tool surface: search the live tool
  * registry, inspect a single tool's schema, and report toolset/module
  * structure. Pure introspection — no Spotify API calls.
+ *
+ * Registry notes (#A0-004): the SDK keeps its tools in `McpServer`'s private
+ * `_registeredTools` record, keyed by tool name; the VALUE has no `name` field.
+ * Reading `tool.name` therefore produced an empty registry and all three tools
+ * reported "0 tools" no matter how many were registered. The key is the name.
  */
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
-import { TOOLSETS, isModuleActive, allRegistrationKeys } from '../toolsets.js';
+import {
+  TOOLSETS,
+  isModuleActive,
+  allRegistrationKeys,
+  resolveToolsets,
+  resolveToolOverrides,
+} from '../toolsets.js';
 import { ResponseFormat } from '../shaping.js';
 
 interface RegisteredToolInfo {
@@ -17,22 +28,45 @@ interface RegisteredToolInfo {
   inputSchema?: unknown;
 }
 
-/** Read the SDK's private-but-stable tool registry, tolerating SDK changes. */
-function toolRegistry(server: McpServer): RegisteredToolInfo[] {
-  const raw = (server as unknown as { _registeredTools?: Record<string, { name?: string; description?: string; inputSchema?: unknown }> })._registeredTools;
-  if (!raw || typeof raw !== 'object') return [];
-  return Object.values(raw).map((t) => ({
-    name: String(t?.name ?? ''),
-    description: String(t?.description ?? ''),
-    inputSchema: t?.inputSchema,
-  })).filter((t) => t.name !== '');
+interface SdkRegisteredTool {
+  title?: string;
+  description?: string;
+  inputSchema?: unknown;
+  enabled?: boolean;
 }
 
-/** Which toolset registration keys does a tool belong to? Not knowable at
- * runtime per-name (gating is per-module), so report module activity instead. */
-function activeModules(server: McpServer): string[] {
-  const sets = new Set(Object.keys(TOOLSETS));
-  return allRegistrationKeys.filter((key) => isModuleActive(key, sets));
+/** Read the SDK's private-but-stable tool registry, tolerating SDK changes. */
+function toolRegistry(server: McpServer): RegisteredToolInfo[] {
+  const raw = (server as unknown as { _registeredTools?: Record<string, SdkRegisteredTool> })
+    ._registeredTools;
+  if (!raw || typeof raw !== 'object') return [];
+  return Object.entries(raw)
+    .filter(([, tool]) => tool?.enabled !== false)
+    .map(([name, tool]) => ({
+      name,
+      description: String(tool?.description ?? ''),
+      inputSchema: tool?.inputSchema,
+    }))
+    .filter((tool) => tool.name !== '');
+}
+
+/** Message used when the registry cannot be read at all (SDK shape change). */
+const REGISTRY_UNAVAILABLE =
+  'Tool registry unavailable: the MCP SDK exposed no tool registry to read. ' +
+  'This is a server bug, not an empty surface — report it rather than retrying.';
+
+/**
+ * Registration keys currently active, derived from the same env specs the
+ * server registers with (`SPOTIFY_MCP_TOOLSETS` plus the per-key overrides).
+ * Scope-driven hiding is not reflected here (it depends on the token).
+ */
+function activeModules(): string[] {
+  const sets = resolveToolsets(process.env.SPOTIFY_MCP_TOOLSETS).sets;
+  const overrides = resolveToolOverrides(
+    process.env.SPOTIFY_MCP_ENABLE_TOOLS,
+    process.env.SPOTIFY_MCP_DISABLE_TOOLS,
+  );
+  return allRegistrationKeys.filter((key) => isModuleActive(key, sets, overrides));
 }
 
 export function registerSwarm3MetaTools(server: McpServer, client: SpotifyClient): void {
@@ -48,6 +82,12 @@ export function registerSwarm3MetaTools(server: McpServer, client: SpotifyClient
       const q = args.query.toLowerCase();
       const limit = args.limit ?? 25;
       const all = toolRegistry(server);
+      if (all.length === 0) {
+        return {
+          content: [{ type: 'text', text: REGISTRY_UNAVAILABLE }],
+          structuredContent: { query: args.query, total_registered: 0, matched: 0, tools: [], error: 'registry_unavailable' },
+        };
+      }
       const matches = all
         .filter((t) => t.name.toLowerCase().includes(q) || t.description.toLowerCase().includes(q))
         .slice(0, limit);
@@ -71,6 +111,12 @@ export function registerSwarm3MetaTools(server: McpServer, client: SpotifyClient
     },
     async (args) => {
       const all = toolRegistry(server);
+      if (all.length === 0) {
+        return {
+          content: [{ type: 'text', text: REGISTRY_UNAVAILABLE }],
+          structuredContent: { found: false, tool_name: args.tool_name, error: 'registry_unavailable' },
+        };
+      }
       const hit = all.find((t) => t.name === args.tool_name);
       if (!hit) {
         const near = all.filter((t) => t.name.toLowerCase().includes(args.tool_name.toLowerCase().slice(0, 6))).slice(0, 5).map((t) => t.name);
@@ -94,17 +140,31 @@ export function registerSwarm3MetaTools(server: McpServer, client: SpotifyClient
     {},
     async () => {
       const all = toolRegistry(server);
-      const modules = activeModules(server);
+      const modules = activeModules();
+      const activeKeys = new Set(modules);
+      const activeSets = Object.entries(TOOLSETS)
+        .filter(([, keys]) => keys.some((k) => activeKeys.has(k)))
+        .map(([set]) => set);
       const setLines = Object.entries(TOOLSETS)
         .map(([set, keys]) => {
-          const active = keys.filter((k) => modules.includes(k)).length;
+          const active = keys.filter((k) => activeKeys.has(k)).length;
           return `• ${set}: ${active}/${keys.length} modules active (${keys.join(', ')})`;
         })
         .join('\n');
-      const text = `Registered tools (live): ${all.length}\n\nToolsets (SPOTIFY_MCP_TOOLSETS):\n${setLines}`;
+      const readOnly = ['1', 'true', 'yes'].includes((process.env.SPOTIFY_MCP_READONLY ?? '').toLowerCase());
+      const head = all.length === 0
+        ? REGISTRY_UNAVAILABLE
+        : `Registered tools (live): ${all.length}`;
+      const text = `${head}\nActive toolsets: ${activeSets.join(', ') || '(none)'}\nread-only: ${readOnly ? 'yes' : 'no'}\n\nToolsets (SPOTIFY_MCP_TOOLSETS):\n${setLines}`;
       return {
         content: [{ type: 'text', text }],
-        structuredContent: { registered_tools: all.length, active_modules: modules, toolsets: TOOLSETS },
+        structuredContent: {
+          registered_tools: all.length,
+          active_toolsets: activeSets,
+          active_modules: modules,
+          read_only: readOnly,
+          toolsets: TOOLSETS,
+        },
       };
     },
   );
