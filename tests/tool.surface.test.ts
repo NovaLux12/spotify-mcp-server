@@ -26,14 +26,13 @@ const REPO_ROOT = join(import.meta.dirname, '..');
 
 /** Ceilings. Raising one is a deliberate act with a measured reason. */
 const DEFAULT_MAX_TOOLS = 620;          // today 608
-const DEFAULT_MAX_BYTES = 700_000;      // today 632,970 (annotations included)
+const DEFAULT_MAX_BYTES = 600_000;      // baseline 567,183 + annotations (measured +27,830 B); the delta must stay < ~33 KB
 const PER_TOOL_MAX_BYTES = 6_000;       // worst single schema+description today
 const CORE_MAX_TOOLS = 200;             // today 157
 const CORE_MAX_BYTES = 220_000;         // today 162,592
 
 interface Tool {
   name: string;
-  title?: string;
   description?: string;
   inputSchema?: unknown;
   annotations?: { readOnlyHint?: boolean; destructiveHint?: boolean; idempotentHint?: boolean; openWorldHint?: boolean };
@@ -102,29 +101,56 @@ async function listTools(env: Record<string, string>): Promise<Tool[]> {
 
 const bytesOf = (t: Tool): number => JSON.stringify(t).length;
 
+/**
+ * Every verb that changes state. A host auto-approving one of these as a "read"
+ * is the failure mode this gate exists for: a name-suffix rule (`*_plan`,
+ * `*_preview`) shipped 11 of them as read-only before this list was pinned.
+ */
+const MUTATING_PREFIXES =
+  /^(apply|start|save|add|create|update|set|replace|import|move|copy|remove|delete|unfollow|unsave|follow|pin|fill|merge|split|sort|shuffle|reorder|transfer|restore|cancel|clean|clear|trim|cull|archive|mark|queue|play|pause|skip|seek|generate|grow|balance|reschedule|migrate|handoff|dj|undo|export|backup|write|upload|rename|retag|sync|dedupe|take|snapshot|plan)/;
+
+const READ_ONLY_PREFIXES =
+  /^(get|list|search|check|inspect|find|show|describe|report|count|is|has|read|lookup|compare|diff|history|stats|statsfm|summary|summarize|summarise|analyze|analyse|validate|estimate|diagnose|resolve|quiz|census|audit|review|coverage|timeline|heatmap|trends?|insights?|distribution|breakdown|matrix|explorer|probe|digest|briefing|radar|where)/;
+
 describe('tool surface: annotations', () => {
-  it('every tool carries a title and an explicit readOnlyHint', async () => {
+  it('every tool carries an explicit classification', async () => {
     const tools = await listTools({});
-    const missingTitle = tools.filter((t) => !t.title).map((t) => t.name);
-    const missingHint = tools.filter((t) => typeof t.annotations?.readOnlyHint !== 'boolean').map((t) => t.name);
-    assert.deepEqual(missingTitle.slice(0, 10), [], `${missingTitle.length} tools without a title`);
-    assert.deepEqual(missingHint.slice(0, 10), [], `${missingHint.length} tools without readOnlyHint`);
+    const unclassified = tools
+      .filter((t) => typeof t.annotations?.readOnlyHint !== 'boolean' && typeof t.annotations?.destructiveHint !== 'boolean')
+      .map((t) => t.name);
+    assert.deepEqual(unclassified.slice(0, 10), [], `${unclassified.length} tools with no classification`);
   });
 
-  it('never advertises a destructive verb as read-only, nor a read verb as destructive', async () => {
+  it('nothing that can mutate is advertised as read-only', async () => {
     const tools = await listTools({});
-    const DESTRUCTIVE = /^(remove|delete|unfollow|unsave|clear|clean|purge|drop|trash|replace|reset|cull|prune|wipe|empty|revoke|erase)/;
-    const READ = /^(get|list|search|check|inspect|find|show|describe|report|count|analyze|analyse|validate|compare|diff)/;
+    const leaks = tools.filter((t) => MUTATING_PREFIXES.test(t.name) && t.annotations?.readOnlyHint === true).map((t) => t.name);
+    assert.deepEqual(leaks, [], `mutating tools advertised read-only: [${leaks.join(', ')}]`);
 
-    const badReadOnly = tools.filter((t) => DESTRUCTIVE.test(t.name) && t.annotations?.readOnlyHint === true).map((t) => t.name);
-    const badDestructive = tools.filter((t) => READ.test(t.name) && t.annotations?.destructiveHint === true).map((t) => t.name);
-    assert.deepEqual(badReadOnly, [], `destructive tools marked read-only: [${badReadOnly.join(', ')}]`);
-    assert.deepEqual(badDestructive, [], `read tools marked destructive: [${badDestructive.join(', ')}]`);
+    // Presence floor: the assertion above cannot pass on an empty/degenerate surface.
+    const readOnly = tools.filter((t) => t.annotations?.readOnlyHint === true);
+    assert.ok(readOnly.length > 100, `expected >100 read-only tools, got ${readOnly.length}`);
+    assert.ok(tools.length > 500, `expected the full surface, got ${tools.length} tools`);
+  });
 
-    // Both classes must actually exist, so the assertions above cannot pass on an empty surface.
-    assert.ok(tools.some((t) => t.annotations?.readOnlyHint === true), 'expected read-only tools');
-    assert.ok(tools.some((t) => t.annotations?.destructiveHint === true), 'expected destructive tools');
-    assert.ok(tools.filter((t) => t.annotations?.readOnlyHint === true).length > 100, 'expected >100 read-only tools');
+  it('every write states destructiveHint explicitly (MCP defaults it to true)', async () => {
+    const tools = await listTools({});
+    const silentWrites = tools
+      .filter((t) => t.annotations?.readOnlyHint !== true && typeof t.annotations?.destructiveHint !== 'boolean')
+      .map((t) => t.name);
+    assert.deepEqual(silentWrites.slice(0, 10), [], `${silentWrites.length} writes leave destructiveHint to the true default`);
+
+    const destructive = tools.filter((t) => t.annotations?.destructiveHint === true).map((t) => t.name);
+    assert.ok(destructive.length > 0, 'expected at least one destructive tool');
+    const wrong = destructive.filter((t) => !MUTATING_PREFIXES.test(t) && !/snapshot_changes/.test(t));
+    assert.deepEqual(wrong, [], `destructive tools outside the mutating verb set: [${wrong.join(', ')}]`);
+  });
+
+  it('read verbs are not advertised as destructive', async () => {
+    const tools = await listTools({});
+    const bad = tools
+      .filter((t) => READ_ONLY_PREFIXES.test(t.name) && !MUTATING_PREFIXES.test(t.name) && t.annotations?.destructiveHint === true)
+      .map((t) => t.name);
+    assert.deepEqual(bad, [], `read tools marked destructive: [${bad.join(', ')}]`);
   });
 });
 
