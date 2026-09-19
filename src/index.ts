@@ -171,14 +171,14 @@ async function startMcpServer(): Promise<void> {
   // Big-release streams (wired centrally to avoid per-stream index conflicts):
   // catalog/browse
   if (isModuleActive('browse', activeSets, overrides) && !moduleBlockedByScopes('catalog', grantedScopes)) registerBrowseTools(server, client)
-  if (isModuleActive('artistwatch', activeSets, overrides) && !moduleBlockedByScopes('catalog', grantedScopes)) registerArtistWatchTools(server, client)
+  if (!readOnly && isModuleActive('artistwatch', activeSets, overrides) && !moduleBlockedByScopes('catalog', grantedScopes)) registerArtistWatchTools(server, client)
   if (isModuleActive('searchhistory', activeSets, overrides) && !moduleBlockedByScopes('search', grantedScopes)) registerSearchHistoryTools(server, client)
   // Exhaust misc mop-up (search_within_playlist, search_history_stats, audiobook_progress + 7 deferred) — playlists+library set
-  if (isModuleActive('playlists', activeSets, overrides)) registerExhaustMiscTools(server, client)
+  if (!readOnly && isModuleActive('playlists', activeSets, overrides)) registerExhaustMiscTools(server, client)
   if (isModuleActive('exhaust2catalog', activeSets, overrides) && !moduleBlockedByScopes('catalog', grantedScopes)) registerExhaust2CatalogTools(server, client)
   if (!readOnly && isModuleActive('exhaust2playback', activeSets, overrides) && !moduleBlockedByScopes('playback', grantedScopes)) registerExhaust2PlaybackTools(server, client)
   if (!readOnly && isModuleActive('exhaust2playlists', activeSets, overrides) && !moduleBlockedByScopes('playlists', grantedScopes)) registerExhaust2PlaylistsTools(server, client)
-  if (isModuleActive('exhaust2misc', activeSets, overrides) && !moduleBlockedByScopes('library', grantedScopes)) registerExhaust2MiscTools(server, client)
+  if (!readOnly && isModuleActive('exhaust2misc', activeSets, overrides) && !moduleBlockedByScopes('library', grantedScopes)) registerExhaust2MiscTools(server, client)
   if (isModuleActive('exhaust2enggating', activeSets, overrides) && !moduleBlockedByScopes('catalog', grantedScopes)) registerExhaust2EnggatingTools(server, client)
   if (!readOnly && isModuleActive('exhaust2extra', activeSets, overrides) && !moduleBlockedByScopes('playlists', grantedScopes)) registerExhaust2ExtraTools(server, client)
   // library analytics + portability + episode management
@@ -186,13 +186,13 @@ async function startMcpServer(): Promise<void> {
   if (!readOnly && isModuleActive('portability', activeSets, overrides) && !moduleBlockedByScopes('library', grantedScopes)) registerPortabilityTools(server, client)
   if (!readOnly && isModuleActive('episodemgmt', activeSets, overrides) && !moduleBlockedByScopes('library', grantedScopes)) registerEpisodeMgmtTools(server, client)
   // playlist health + batch + misc
-  if (isModuleActive('playlisthealth', activeSets, overrides) && !moduleBlockedByScopes('playlists', grantedScopes)) registerPlaylistHealthTools(server, client)
+  if (!readOnly && isModuleActive('playlisthealth', activeSets, overrides) && !moduleBlockedByScopes('playlists', grantedScopes)) registerPlaylistHealthTools(server, client)
   if (!readOnly && isModuleActive('playlistbatch', activeSets, overrides) && !moduleBlockedByScopes('playlists', grantedScopes)) registerPlaylistBatchTools(server, client)
   if (!readOnly && isModuleActive('playlistmisc', activeSets, overrides) && !moduleBlockedByScopes('playlists', grantedScopes)) registerPlaylistMiscTools(server, client)
   // playback/queue extensions
   if (!readOnly && isModuleActive('queueops', activeSets, overrides) && !moduleBlockedByScopes('playback', grantedScopes)) registerQueueOpsTools(server, client)
   if (!readOnly && isModuleActive('playbackext', activeSets, overrides) && !moduleBlockedByScopes('playback', grantedScopes)) registerPlaybackExtTools(server, client)
-  if (isModuleActive('playbackintel', activeSets, overrides) && !moduleBlockedByScopes('playback', grantedScopes)) registerPlaybackIntelTools(server, client)
+  if (!readOnly && isModuleActive('playbackintel', activeSets, overrides) && !moduleBlockedByScopes('playback', grantedScopes)) registerPlaybackIntelTools(server, client)
   // spotify_doctor diagnostic (#111): unconditional — must survive toolset trimming.
   registerDoctorTool(server, client);
 
@@ -202,7 +202,7 @@ async function startMcpServer(): Promise<void> {
   if (isModuleActive('swarm3discovery', activeSets, overrides) && !moduleBlockedByScopes('catalog', grantedScopes)) registerSwarm3DiscoveryTools(server, client)
   if (isModuleActive('swarm3bdiscovery', activeSets, overrides) && !moduleBlockedByScopes('catalog', grantedScopes)) registerSwarm3bDiscoveryTools(server, client)
   if (isModuleActive('swarm3library', activeSets, overrides) && !moduleBlockedByScopes('library', grantedScopes)) registerSwarm3LibraryTools(server, client)
-  if (isModuleActive('swarm3shows', activeSets, overrides) && !moduleBlockedByScopes('catalog', grantedScopes)) registerSwarm3ShowsTools(server, client)
+  if (!readOnly && isModuleActive('swarm3shows', activeSets, overrides) && !moduleBlockedByScopes('catalog', grantedScopes)) registerSwarm3ShowsTools(server, client)
   if (isModuleActive('swarm3analytics', activeSets, overrides) && !moduleBlockedByScopes('personalization', grantedScopes)) registerSwarm3AnalyticsTools(server, client)
   if (isModuleActive('swarm3refs', activeSets, overrides) && !moduleBlockedByScopes('catalog', grantedScopes)) registerSwarm3RefsTools(server, client)
   if (!readOnly && isModuleActive('swarm3snapshots', activeSets, overrides) && !moduleBlockedByScopes('playlists', grantedScopes)) registerSwarm3SnapshotsTools(server, client)

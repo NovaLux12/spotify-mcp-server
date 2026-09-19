@@ -57,6 +57,14 @@ const FORBIDDEN_TOOLS = [
   'unfollow_artist',
 ];
 
+const READONLY_WRITE_TOOLS = [
+  // Verified leaking before the #579 fix (live probe, 2026-09-19): the READONLY
+  // surface contained writer tools from six modules registered without the gate.
+  'play_on', 'queue_next', 'seek_relative', 'remove_saved_shows', 'save_episode',
+  'remove_saved_episode', 'unsave_orphan_tracks', 'remove_from_library_by_playlist',
+  'playlist_to_library', 'save_artist_new_releases', 'pin_playlist',
+];
+
 const EXPECTED_PROMPTS = ['artist_deep_dive', 'crate_digging', 'discover_weekly_alternative', 'dj', 'listening_recap', 'migrate_library', 'morning_briefing', 'music_briefing', 'music_taste_summary', 'playlist_audit', 'playlist_from_mood', 'podcast_catchup', 'triage_liked_songs', 'weekly_digest'];
 
 interface JsonRpcResponse {
@@ -267,5 +275,45 @@ describe('MCP stdio smoke (real src/index.ts)', () => {
     // structured error response is fine (test token has no real Spotify scopes).
     assert.ok(meRes.error !== undefined || meRes.result !== undefined,
       'get_me must return either a result or a structured error, never crash the server');
+  });
+});
+
+describe('SPOTIFY_MCP_READONLY hides write-capable modules (#579)', () => {
+  it('exposes no writer tools and a strictly smaller surface', async () => {
+    const child = spawn('node', ['--import', 'tsx', 'src/index.ts'], {
+      cwd: REPO_ROOT,
+      env: {
+        ...process.env,
+        SPOTIFY_CLIENT_ID: 'test-client-id',
+        SPOTIFY_MCP_TOKEN_FILE: join(tempDir, 'tokens.json'),
+        SPOTIFY_MCP_READONLY: '1',
+      },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    const readOnlyClient = new StdioClient(child);
+    try {
+      const init = await readOnlyClient.request('initialize', {
+        protocolVersion: '2024-11-05',
+        capabilities: {},
+        clientInfo: { name: 'mcp-readonly-smoke', version: '1.0.0' },
+      });
+      assert.equal(init.error, undefined, `initialize failed: ${JSON.stringify(init.error)}`);
+      readOnlyClient.notify('notifications/initialized');
+
+      const roRes = await readOnlyClient.request('tools/list');
+      const roNames = new Set(((roRes.result?.tools ?? []) as Array<{ name: string }>).map((t) => t.name));
+      const leaked = READONLY_WRITE_TOOLS.filter((n) => roNames.has(n));
+      assert.deepEqual(leaked, [], `write tools visible under SPOTIFY_MCP_READONLY=1: [${leaked.join(', ')}]`);
+
+      const fullRes = await client.request('tools/list');
+      const fullNames = ((fullRes.result?.tools ?? []) as unknown[]).length;
+      assert.ok(
+        roNames.size < fullNames,
+        `read-only surface (${roNames.size}) must be smaller than the full surface (${fullNames})`,
+      );
+    } finally {
+      readOnlyClient.child.stdin.end();
+      setTimeout(() => readOnlyClient.child.kill('SIGKILL'), 2000).unref();
+    }
   });
 });
