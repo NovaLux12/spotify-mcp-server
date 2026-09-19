@@ -131,13 +131,14 @@ function harness(
     },
     ...(elicitResult !== undefined
       ? {
-          // Real McpServer shape: elicitation is advertised BY THE CLIENT
-          // via server.server.getClientCapabilities(); elicitInput lives on
-          // the wrapper (matches src/tools/confirm.ts's accessor).
-          server: { getClientCapabilities: () => ({ elicitation: { form: {} } }) },
-          async elicitInput() {
-            if (elicitResult instanceof Error) throw elicitResult;
-            return elicitResult;
+          // Real McpServer shape: both the capability accessor and elicitation
+          // live on the inner Server that McpServer exposes as .server.
+          server: {
+            getClientCapabilities: () => ({ elicitation: { form: {} } }),
+            async elicitInput() {
+              if (elicitResult instanceof Error) throw elicitResult;
+              return elicitResult;
+            },
           },
         }
       : {}),
