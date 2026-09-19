@@ -19,6 +19,8 @@
  * ungated server.
  *
  * Sets and what they enable:
+ *   core            → search + playback + playlists (+batch/misc) + library + following + users
+ *                     (~75 tools: the smallest set that still covers the daily loop)
  *   playback        → tools/playback.ts        (16 tools)
  *                     tools/queueops.ts        (queue_playlist + reorder stubs)
  *                     tools/playbackext.ts     (save/restore playback, device presets, sessions)
@@ -53,6 +55,11 @@
  *   prompts         → prompts/index.ts         (14 prompts)
  */
 export const TOOLSETS: Record<string, readonly string[]> = {
+  // The day-to-day surface: search, playback controls, playlist read/write,
+  // library read/write, following. ~75 tools / ~30k tokens instead of 608 / ~170k
+  // — the practical answer to the 153 KB payload (#565) until the default flips in
+  // v2. Discovery tools and spotify_doctor register unconditionally.
+  core: ['search', 'playback', 'playlists', 'playlistbatch', 'playlistmisc', 'library', 'following', 'users', 'portability', 'statsfm', 'swarm3meta'],
   playback: ['playback', 'queueops', 'playbackext', 'playbackintel', 'exhaust2playback', 'swarm3playback'],
   playbackintel: ['playbackintel'],
   catalog: ['search', 'catalog', 'audiobooks', 'browse', 'artistwatch', 'searchhistory', 'exhaust2catalog', 'exhaust2enggating', 'swarm3discovery', 'swarm3bdiscovery', 'swarm3shows', 'swarm3refs', 'swarm3meta'],
@@ -60,6 +67,7 @@ export const TOOLSETS: Record<string, readonly string[]> = {
   library: ['library', 'following', 'libraryanalytics', 'portability', 'episodemgmt', 'exhaust2misc', 'swarm3library'],
   personalization: ['personalization', 'swarm3analytics'],
   statsfm: ['statsfm'],
+  portability: ['portability'],
   taste: ['taste', 'tastecomposites'],
   discovery: ['swarm3meta'],
   resources: ['resources'],
