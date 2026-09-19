@@ -80,7 +80,10 @@ test('save_artist_new_releases all already saved', async () => {
 });
 test('watch_artists and check_artist_releases sidecar', async () => {
   await withTmpDir(async ()=>{
-    const dataAlbums = [album('new1','Fresh','album','2026-08-20'), album('old1','Old','album','2020-01-01')];
+    // Relative date: a hard-coded one eventually falls outside the lookback window
+    // and this test becomes a time bomb (it broke main the day it turned 30 days old).
+    const freshDate = new Date(Date.now() - 5 * 86_400_000).toISOString().slice(0, 10);
+    const dataAlbums = [album('new1','Fresh','album',freshDate), album('old1','Old','album','2020-01-01')];
     const { registered } = makeHarness((path)=>{
       if (path.includes('/artists/art1/albums')) return { items:dataAlbums };
       return null;
