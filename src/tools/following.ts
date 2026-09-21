@@ -207,16 +207,23 @@ export function registerFollowingTools(server: McpServer, client: SpotifyClient)
   // follow_artists
   server.tool(
     'follow_artists',
-    'Follow one or more artists (1–50 IDs). Requires user-follow-modify.',
+    'Follow one or more artists (1–50 IDs). Requires user-follow-modify. Set dry_run=true to preview.',
     {
       ids: z.array(z.string()).min(1).max(50).describe('Spotify artist IDs to follow'),
+      dry_run: z
+        .boolean()
+        .optional()
+        .describe('Preview only: show exactly which artists would be followed without calling the API'),
       response_format: ResponseFormat,
     },
     async (args) => {
+      const artistUris = args.ids.map((id) => `spotify:artist:${id}`);
+      if (args.dry_run) {
+        return dryRunOut(args.response_format, 'follow_artists', 'followed artists', artistUris);
+      }
       // Spotify takes ids/type as query parameters on PUT /me/following,
       // not a request body.
       await client.put(`/me/following?type=artist&ids=${args.ids.join(',')}`);
-      const artistUris = args.ids.map((id) => `spotify:artist:${id}`);
       return mutationOut(
         args.response_format,
         `Followed ${args.ids.length} artist(s).`,
