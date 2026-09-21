@@ -96,12 +96,19 @@ test('market wins over country; explicit locale wins over both', async () => {
   await find(registered,'get_categories').handler({ market:'GB', country:'DE', locale:'sv_SE' });
   assert.deepEqual(calls[1].params, { locale:'sv_SE' });
 });
-test('browse tools declare market canonical plus deprecated country alias', () => {
-  const { registered } = makeHarness();
+test('browse tools declare market canonical plus deprecated country alias, send no country wire key', async () => {
+  const { registered, calls } = makeHarness((path)=>{
+    if (path==='/browse/categories') return { categories:{ items:[], total:0, limit:20, offset:0 }};
+    if (path==='/browse/categories/mood/playlists') return { playlists:{ items:[], total:0, limit:20, offset:0 }};
+    return null;
+  });
   for (const name of ['get_categories','get_category_playlists']) {
     const t = find(registered,name);
     assert.ok('market' in t.schema, `${name} missing market`);
     assert.ok('country' in t.schema, `${name} missing deprecated country alias`);
   }
-  assert.ok(!('country' in find(registered,'get_artist_genres').schema));
+  await find(registered,'get_categories').handler({ market:'GB', country:'DE' });
+  assert.deepEqual(calls[0].params, { locale:'en_GB' });
+  await find(registered,'get_category_playlists').handler({ category_id:'mood', market:'GB', country:'DE' });
+  assert.deepEqual(calls[1].params, { locale:'en_GB' });
 });
