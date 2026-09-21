@@ -21,6 +21,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { join } from 'node:path';
+import { NEVER_MUTATING_PLANS } from '../src/tools/annotations.js';
 
 const REPO_ROOT = join(import.meta.dirname, '..');
 
@@ -102,12 +103,13 @@ async function listTools(env: Record<string, string>): Promise<Tool[]> {
 const bytesOf = (t: Tool): number => JSON.stringify(t).length;
 
 /**
- * Every verb that changes state. A host auto-approving one of these as a "read"
- * is the failure mode this gate exists for: a name-suffix rule (`*_plan`,
- * `*_preview`) shipped 11 of them as read-only before this list was pinned.
+ * Verbs that change state. Bare `plan` is deliberately NOT here: a `_plan`
+ * suffix alone is not evidence of mutation, so `*_plan` tools are classified by
+ * capability in NEVER_MUTATING_PLANS (imported live so this gate cannot drift
+ * from the classifier).
  */
 const MUTATING_PREFIXES =
-  /^(apply|start|save|add|create|update|set|replace|import|move|copy|remove|delete|unfollow|unsave|follow|pin|fill|merge|split|sort|shuffle|reorder|transfer|restore|cancel|clean|clear|trim|cull|archive|mark|queue|play|pause|skip|seek|generate|grow|balance|reschedule|migrate|handoff|dj|undo|export|backup|write|upload|rename|retag|sync|dedupe|take|snapshot|plan)/;
+  /^(apply|start|save|add|create|update|set|replace|import|move|copy|remove|delete|unfollow|unsave|follow|pin|fill|merge|split|sort|shuffle|reorder|transfer|restore|cancel|clean|clear|trim|cull|archive|mark|queue|play|pause|skip|seek|generate|grow|balance|reschedule|migrate|handoff|dj|undo|export|backup|write|upload|rename|retag|sync|dedupe|take|snapshot|volume|sleep|transfer_playback|recently|retry|revert|reset|purge|wipe|drop|erase|revoke|disconnect|logout)/;
 
 const READ_ONLY_PREFIXES =
   /^(get|list|search|check|inspect|find|show|describe|report|count|is|has|read|lookup|compare|diff|history|stats|statsfm|summary|summarize|summarise|analyze|analyse|validate|estimate|diagnose|resolve|quiz|census|audit|review|coverage|timeline|heatmap|trends?|insights?|distribution|breakdown|matrix|explorer|probe|digest|briefing|radar|where)/;
@@ -123,13 +125,35 @@ describe('tool surface: annotations', () => {
 
   it('nothing that can mutate is advertised as read-only', async () => {
     const tools = await listTools({});
-    const leaks = tools.filter((t) => MUTATING_PREFIXES.test(t.name) && t.annotations?.readOnlyHint === true).map((t) => t.name);
+    // Any _plan/_preview name outside the audited never-mutating set must be a
+    // write: preview-by-default tools that accept dry_run=false execute.
+    const unlistedPlans = tools
+      .filter((t) => /_(plan|preview)$/.test(t.name) && !NEVER_MUTATING_PLANS.has(t.name) && t.annotations?.readOnlyHint === true)
+      .map((t) => t.name);
+    assert.deepEqual(unlistedPlans, [], `unaudited plan/preview tools advertised read-only: [${unlistedPlans.join(', ')}]`);
+    const leaks = tools.filter((t) => MUTATING_PREFIXES.test(t.name) && !NEVER_MUTATING_PLANS.has(t.name) && t.annotations?.readOnlyHint === true).map((t) => t.name);
     assert.deepEqual(leaks, [], `mutating tools advertised read-only: [${leaks.join(', ')}]`);
 
     // Presence floor: the assertion above cannot pass on an empty/degenerate surface.
     const readOnly = tools.filter((t) => t.annotations?.readOnlyHint === true);
     assert.ok(readOnly.length > 100, `expected >100 read-only tools, got ${readOnly.length}`);
     assert.ok(tools.length > 500, `expected the full surface, got ${tools.length} tools`);
+  });
+
+  it('audited never-mutating plans stay read-only, and coverage cannot silently drop', async () => {
+    const tools = await listTools({});
+    const byName = new Map(tools.map((t) => [t.name, t]));
+
+    // Every audited name must still exist and still be a read.
+    for (const name of NEVER_MUTATING_PLANS) {
+      const tool = byName.get(name);
+      assert.ok(tool, `audited plan ${name} is no longer registered`);
+      assert.equal(tool.annotations?.readOnlyHint, true, `${name} lost its read-only classification`);
+    }
+
+    // Honest previews keep helping the host auto-approve: the set must not
+    // quietly shrink until only executes remain.
+    assert.ok(NEVER_MUTATING_PLANS.size >= 18, `audited never-mutating set unexpectedly shrank to ${NEVER_MUTATING_PLANS.size}`);
   });
 
   it('every write states destructiveHint explicitly (MCP defaults it to true)', async () => {
@@ -144,7 +168,6 @@ describe('tool surface: annotations', () => {
     const wrong = destructive.filter((t) => !MUTATING_PREFIXES.test(t) && !/snapshot_changes/.test(t));
     assert.deepEqual(wrong, [], `destructive tools outside the mutating verb set: [${wrong.join(', ')}]`);
   });
-
   it('read verbs are not advertised as destructive', async () => {
     const tools = await listTools({});
     const bad = tools
