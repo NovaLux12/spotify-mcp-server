@@ -12,9 +12,24 @@ import {
   listStructuredContent,
 } from '../shaping.js';
 
-/** Derive the `locale` wire param from a market code (e.g. US -> en_US). */
+/** Map a market code to the `locale` wire param (e.g. US -> en_US). */
+const MARKET_LOCALES: Record<string, string> = {
+  US: 'en_US',
+  GB: 'en_GB',
+  DE: 'de_DE',
+  FR: 'fr_FR',
+  ES: 'es_ES',
+  IT: 'it_IT',
+  BR: 'pt_BR',
+  NL: 'nl_NL',
+  SE: 'sv_SE',
+  JP: 'ja_JP',
+  KR: 'ko_KR',
+};
+
 function marketToLocale(market: string): string {
-  return `en_${market.toUpperCase()}`;
+  const code = market.toUpperCase();
+  return MARKET_LOCALES[code] ?? `en_${code}`;
 }
 
 type PlaylistPage = SpotifyPaged<SpotifyPlaylistSimple> & { message?: string | null };
@@ -56,8 +71,9 @@ export function registerBrowseTools(server: McpServer, client: SpotifyClient): v
     {
       limit: z.number().int().min(1).max(50).optional().describe('Results per page, 1\u201350. Default: 20'),
       offset: z.number().int().min(0).optional().describe('Offset. Default: 0'),
-      market: MARKET_CODE.optional().describe('ISO 3166-1 alpha-2 country code, e.g. \'US\'. Localises category names via the locale wire param (market US -> locale en_US); the endpoint filters by locale, not market.'),
-      locale: z.string().optional().describe('Locale, e.g. en_US'),
+      market: MARKET_CODE.optional().describe('ISO 3166-1 alpha-2 country code, e.g. \'US\'. Canonical; wins over deprecated country. Sent as the locale wire param (market US -> locale en_US); explicit locale wins over both.'),
+      country: z.string().regex(/^[A-Za-z]{2}$/, 'country must be a 2-letter ISO 3166-1 alpha-2 code, e.g. "US"').optional().describe('DEPRECATED alias of market — prefer market. Resolves only when market is omitted; same locale mapping applies.'),
+      locale: z.string().optional().describe('Locale, e.g. en_US. Explicit locale wins over market/country.'),
       ...sharedListFields,
     },
     async (args) => {
@@ -65,7 +81,7 @@ export function registerBrowseTools(server: McpServer, client: SpotifyClient): v
       if (args.limit !== undefined) params.limit = String(args.limit);
       if (args.offset !== undefined) params.offset = String(args.offset);
       if (args.locale) params.locale = args.locale;
-      else if (args.market) params.locale = marketToLocale(args.market);
+      else if (args.market ?? args.country) params.locale = marketToLocale((args.market ?? args.country) as string);
       const data = await client.get<{ categories: SpotifyPaged<CategoryItem> }>('/browse/categories', params);
       if (!data?.categories) {
         return { content: [{ type: 'text', text: 'No categories found.' }] };
@@ -94,14 +110,15 @@ export function registerBrowseTools(server: McpServer, client: SpotifyClient): v
       category_id: z.string().describe('Category ID (from get_categories)'),
       limit: z.number().int().min(1).max(50).optional().describe('Results per page, 1\u201350. Default: 20'),
       offset: z.number().int().min(0).optional().describe('Offset. Default: 0'),
-      market: MARKET_CODE.optional().describe('ISO 3166-1 alpha-2 country code, e.g. \'US\'. Sent as the locale wire param (market US -> locale en_US); the endpoint accepts locale/limit/offset only.'),
+      market: MARKET_CODE.optional().describe('ISO 3166-1 alpha-2 country code, e.g. \'US\'. Canonical; wins over deprecated country. Sent as the locale wire param (market US -> locale en_US); the endpoint accepts locale/limit/offset only.'),
+      country: z.string().regex(/^[A-Za-z]{2}$/, 'country must be a 2-letter ISO 3166-1 alpha-2 code, e.g. "US"').optional().describe('DEPRECATED alias of market — prefer market. Resolves only when market is omitted; same locale mapping applies.'),
       ...sharedListFields,
     },
     async (args) => {
       const params: Record<string, string> = {};
       if (args.limit !== undefined) params.limit = String(args.limit);
       if (args.offset !== undefined) params.offset = String(args.offset);
-      if (args.market) params.locale = marketToLocale(args.market);
+      if (args.market ?? args.country) params.locale = marketToLocale((args.market ?? args.country) as string);
       const data = await client.get<{ playlists: PlaylistPage }>(
         `/browse/categories/${encodeURIComponent(args.category_id)}/playlists`,
         params,
