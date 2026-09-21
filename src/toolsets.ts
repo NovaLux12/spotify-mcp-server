@@ -120,6 +120,29 @@ export function resolveToolsets(spec: string | undefined): { sets: Set<string>; 
 }
 
 /**
+ * Fail-loud guard for SPOTIFY_MCP_TOOLSETS (#910): an unknown-only spec
+ * (non-empty, no 'all', zero known sets) throws naming the valid sets via
+ * {@link toolsetEnvHelp}; everything else (unset/empty/whitespace/'all'/
+ * mixed known+unknown) stays non-fatal so callers keep today's behaviour.
+ * Does not change {@link resolveToolsets}' return shape.
+ */
+export function assertToolsetsUsable(
+  envValue: string | undefined,
+  resolved: { sets: Set<string>; unknown: string[] },
+): void {
+  const tokens = (envValue ?? '')
+    .split(',')
+    .map((t) => t.trim().toLowerCase())
+    .filter((t) => t.length > 0);
+  if (tokens.length === 0 || tokens.includes('all')) return;
+  if (resolved.sets.size === 0) {
+    throw new Error(
+      `[spotify-mcp] SPOTIFY_MCP_TOOLSETS=${JSON.stringify(envValue)} matches no known toolset (unknown: ${resolved.unknown.join(', ')}) — ${toolsetEnvHelp()}`,
+    );
+  }
+}
+
+/**
  * Set-membership-only variant of {@link isModuleActive} (no overrides).
  * Kept as the exported name used by existing call sites in index.ts.
  */
@@ -194,7 +217,8 @@ export function toolsetEnvHelp(): string {
   const names = Object.keys(TOOLSETS).join(',');
   return (
     `SPOTIFY_MCP_TOOLSETS=<sets> — comma-separated subsets of ${names}; ` +
-    `'all' or unset registers everything`
+    `'all' or unset registers everything. ` +
+    `Unknown-only specs fail startup; mixed specs ignore unknown names.`
   );
 }
 

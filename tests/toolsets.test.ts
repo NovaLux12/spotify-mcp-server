@@ -3,6 +3,7 @@ import { describe, it } from 'node:test';
 
 import {
   TOOLSETS,
+  assertToolsetsUsable,
   resolveToolsets,
   resolveToolOverrides,
   isActive,
@@ -81,6 +82,12 @@ describe('resolveToolsets', () => {
     const { sets, unknown } = resolveToolsets('catalog,bogus,nonsense');
     assert.deepEqual([...sets], ['catalog']);
     assert.deepEqual(unknown.sort(), ['bogus', 'nonsense']);
+  });
+
+  it('yields empty sets for an unknown-only spec', () => {
+    const { sets, unknown } = resolveToolsets('bogus_set');
+    assert.equal(sets.size, 0);
+    assert.deepEqual(unknown, ['bogus_set']);
   });
 
   it('does not treat Object.prototype names as known sets', () => {
@@ -235,5 +242,41 @@ describe('overrides combined with resolveToolsets output', () => {
     for (const key of Object.values(TOOLSETS).flat()) {
       assert.equal(isActive(key, sets), isModuleActive(key, sets), key);
     }
+  });
+});
+
+describe('assertToolsetsUsable', () => {
+  it('throws naming valid sets for an unknown-only spec', () => {
+    const resolved = resolveToolsets('bogus_set');
+    assert.throws(
+      () => assertToolsetsUsable('bogus_set', resolved),
+      (err: unknown) => {
+        assert.ok(err instanceof Error);
+        for (const name of Object.keys(TOOLSETS)) {
+          assert.ok(err.message.includes(name), `missing set '${name}'`);
+        }
+        assert.ok(err.message.includes('bogus_set'));
+        return true;
+      },
+    );
+  });
+
+  it('stays non-fatal for empty/unset/whitespace/all specs', () => {
+    for (const spec of [undefined, '', '   ', ',,,', 'all', 'catalog,all']) {
+      assert.doesNotThrow(() => assertToolsetsUsable(spec, resolveToolsets(spec)), `spec: ${JSON.stringify(spec)}`);
+    }
+  });
+
+  it('resolves fine for mixed known+unknown specs', () => {
+    const resolved = resolveToolsets('playback,bogus_set');
+    assert.doesNotThrow(() => assertToolsetsUsable('playback,bogus_set', resolved));
+    assert.deepEqual([...resolved.sets], ['playback']);
+    assert.deepEqual(resolved.unknown, ['bogus_set']);
+  });
+
+  it('states the unknown-only/mixed rule in toolsetEnvHelp', () => {
+    const line = toolsetEnvHelp();
+    assert.ok(line.includes('Unknown-only'), 'missing unknown-only rule');
+    assert.ok(line.toLowerCase().includes('mixed'), 'missing mixed rule');
   });
 });
