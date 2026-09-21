@@ -71,7 +71,7 @@ import { registerTemplateResources } from './resources/templates.js';
 import { z } from 'zod';
 import { registerResources } from './resources/index.js';
 import { registerPrompts } from './prompts/index.js';
-import { TOOLSETS, resolveToolsets, isModuleActive, resolveToolOverrides, toolsetEnvHelp } from './toolsets.js';
+import { TOOLSETS, resolveToolsets, assertToolsetsUsable, isModuleActive, resolveToolOverrides, toolsetEnvHelp } from './toolsets.js';
 import { moduleBlockedByScopes, scopesFor } from './scopefilter.js';
 import { createRequire } from 'node:module';
 
@@ -89,7 +89,10 @@ async function startMcpServer(): Promise<void> {
 
   // Toolset segmentation (#95): SPOTIFY_MCP_TOOLSETS=playlists,player,... trims
   // the registered surface for clients that cap tool counts. Default: all.
-  const { sets: activeSets, unknown } = resolveToolsets(process.env.SPOTIFY_MCP_TOOLSETS);
+  const toolsetsSpec = process.env.SPOTIFY_MCP_TOOLSETS;
+  const { sets: activeSets, unknown } = resolveToolsets(toolsetsSpec);
+  // Unknown-only specs fail loud (#910); mixed specs keep starting.
+  assertToolsetsUsable(toolsetsSpec, { sets: activeSets, unknown });
   // Per-tool opt-in/opt-out (#111 item 7): SPOTIFY_MCP_ENABLE_TOOLS /
   // SPOTIFY_MCP_DISABLE_TOOLS take registration keys; disable > enable > set.
   const { enable, disable, unknown: unknownOverrides } = resolveToolOverrides(
@@ -104,7 +107,7 @@ async function startMcpServer(): Promise<void> {
   }
   const overrides = { enable, disable };
   if (unknown.length > 0) {
-    console.error(`[spotify-mcp] unknown toolset(s) ignored: ${unknown.join(', ')} — ${toolsetEnvHelp()}`);
+    console.error(`[spotify-mcp] unknown toolset(s) ignored: ${unknown.join(', ')} — registered ${activeSets.size} toolset(s): ${[...activeSets].sort().join(', ')} — ${toolsetEnvHelp()}`);
   }
   if (activeSets.size < Object.keys(TOOLSETS).length) {
     console.error(`[spotify-mcp] active toolsets: ${[...activeSets].sort().join(', ')}`);

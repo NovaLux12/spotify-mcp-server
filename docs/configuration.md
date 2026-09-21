@@ -18,7 +18,7 @@ Every environment variable read by `@novalux12/spotify-mcp` — set in your MCP 
 | `SPOTIFY_MCP_FETCH_ALL_CAP` | `500` | Hard cap on `fetch_all=true` pagination walks. |
 | `SPOTIFY_MCP_HISTORY` | unset | Set to `1` to log one JSONL line per agent-driven mutation. |
 | `SPOTIFY_MCP_HISTORY_DIR` | `~/.spotify-mcp/history` | Directory holding the mutation JSONL log (`mutations.jsonl`). |
-| `SPOTIFY_MCP_TOOLSETS` | unset (all) | Comma-separated toolsets to register: `playback`, `catalog`, `library`, `personalization`, `playlists`, `prompts`, `resources`; `all` or unset registers everything. |
+| `SPOTIFY_MCP_TOOLSETS` | unset (all) | Comma-separated toolsets to register: `playback`, `catalog`, `library`, `personalization`, `playlists`, `prompts`, `resources`; `all` or unset registers everything. Unknown-only spec fails startup naming valid sets; mixed known+unknown spec starts and ignores unknown names. |
 | `SPOTIFY_MCP_ENABLE_TOOLS` | unset | Comma-separated module keys forced on top of the toolset trim (`disable` wins over `enable` wins over set membership). |
 | `SPOTIFY_MCP_DISABLE_TOOLS` | unset | Comma-separated module keys forced off. |
 | `SPOTIFY_MCP_FRESHNESS_STATE` | `~/.spotify-mcp/freshness.json` | Watermark file powering `whats_new`'s `since: 'last-check'`. |
@@ -134,7 +134,7 @@ audiobooks), `library` (saved items + following), `personalization`,
 SPOTIFY_MCP_TOOLSETS=playback,catalog npx -y @novalux12/spotify-mcp@latest
 ```
 
-Unknown set names are reported on stderr and ignored.
+A spec naming only unknown sets fails startup (non-zero exit) naming the valid sets; a mixed spec with at least one known set starts normally, reporting the ignored names and the registered toolset count on stderr.
 
 ### `SPOTIFY_MCP_ENABLE_TOOLS` / `SPOTIFY_MCP_DISABLE_TOOLS`
 
