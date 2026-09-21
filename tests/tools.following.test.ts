@@ -153,6 +153,21 @@ describe('follow_artists', () => {
 
     assert.match(textOf(out), /Followed 2 artist/);
   });
+
+  it('dry_run makes zero client calls and previews artist URIs (#57)', async () => {
+    const h = makeHarness();
+    const out = await h.invoke('follow_artists', { ids: ['a'], dry_run: true });
+
+    assert.equal(h.calls.length, 0, 'dry_run must not touch the API');
+    const text = textOf(out);
+    assert.match(text, /^\[dry run\] follow_artists on followed artists — nothing was changed\./);
+    assert.match(text, /Would affect 1 item:/);
+    assert.ok(text.includes('spotify:artist:a'));
+
+    const sc = out.structuredContent as Record<string, unknown>;
+    assert.equal(sc.dry_run, true);
+    assert.deepEqual(sc.would_affect, ['spotify:artist:a']);
+  });
 });
 
 // ---------------------------------------------------------------------------
