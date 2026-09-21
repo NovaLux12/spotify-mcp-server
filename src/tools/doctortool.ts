@@ -264,15 +264,22 @@ function staticRows(client: SpotifyClient): DoctorRow[] {
   });
   try {
     const rl = client.getRateLimitStatus();
+    const usage = 'requestsTotal' in rl && typeof rl.requestsTotal === 'number'
+      ? `requests_total=${rl.requestsTotal} requests_last_min=${rl.requestsLastMinute ?? 'n/a'} requests_last_hour=${rl.requestsLastHour ?? 'n/a'}`
+      : null;
     if (rl.cooldownRemainingMs > 0) {
       rows.push({
         id: 'rate_limit',
         status: 'warn',
-        summary: `rate-limit cooldown active — requests wait ${Math.ceil(rl.cooldownRemainingMs / 1000)}s more`,
-        detail: `lastThrottleAt=${rl.lastThrottleAt ? new Date(rl.lastThrottleAt).toISOString() : 'n/a'} retryAfterSec=${rl.retryAfterSec ?? 'n/a'}`,
+        summary: `rate-limit cooldown active — requests wait ${Math.ceil(rl.cooldownRemainingMs / 1000)}s more${usage ? ` (${usage})` : ''}`,
+        detail: `lastThrottleAt=${rl.lastThrottleAt ? new Date(rl.lastThrottleAt).toISOString() : 'n/a'} retryAfterSec=${rl.retryAfterSec ?? 'n/a'}${usage ? ` ${usage}` : ''}`,
       });
     } else {
-      rows.push({ id: 'rate_limit', status: 'pass', summary: 'no active rate-limit cooldown' });
+      rows.push({
+        id: 'rate_limit',
+        status: 'pass',
+        summary: usage ? `no active rate-limit cooldown (${usage})` : 'no active rate-limit cooldown',
+      });
     }
   } catch {
     // Stub/test clients without the accessor: skip the row entirely.

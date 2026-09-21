@@ -14,7 +14,7 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
-import { SpotifyApiError } from '../client.js';
+import { SpotifyApiError, quotaPreflight, quotaSnapshot, quotaWindowRemaining, quotaDelta } from '../client.js';
 import type {
   FollowedArtistsResponse,
   SavedShowItem,
@@ -204,6 +204,18 @@ export function registerFreshnessTools(server: McpServer, client: SpotifyClient)
     },
     async (args) => {
       const rf = args.response_format;
+      const gate = quotaPreflight(client);
+      if (gate.blocked) {
+        return shapeResult(rf, gate.message, {
+          ok: false,
+          cooldown: true,
+          wait_sec: gate.waitSec,
+          requests_made: 0,
+          requests_planned: (args.max_artists ?? getConfig().freshnessBudget) + 1,
+          kinds: args.kinds ?? ['albums', 'podcasts'],
+        });
+      }
+      const snapshot = quotaSnapshot(client);
       const kinds = args.kinds ?? ['albums', 'podcasts'];
       const wantAlbums = kinds.includes('albums');
       const wantPodcasts = kinds.includes('podcasts');
@@ -273,9 +285,15 @@ export function registerFreshnessTools(server: McpServer, client: SpotifyClient)
       const lookupCap = getConfig().fetchAllCap;
       // Effective per-source caps — budget is independent of fetchAllCap but
       // both apply (the smaller wins). Keeps existing FETCH_ALL_CAP semantics
-      // while adding the quota budget.
-      const artistCap = Math.min(lookupCap, freshnessBudget);
-      const showCap = Math.min(lookupCap, freshnessBudget);
+      // while adding the quota budget. (#904) when the client reports recent
+      // spend inside the trailing window, shrink the call's scan budget to the
+      // remaining window instead of the module-local constant; with no spend
+      // the caps resolve exactly as before.
+      const windowRemaining = quotaWindowRemaining(client);
+      const freshnessBudgetEff = Math.min(freshnessBudget, windowRemaining);
+      const shrinkNote = freshnessBudgetEff < freshnessBudget;
+      const artistCap = Math.min(lookupCap, freshnessBudgetEff);
+      const showCap = Math.min(lookupCap, freshnessBudgetEff);
 
       // ---- Albums path: followed artists → newest album page per artist -----
       const albums: NewReleaseHit[] = [];
@@ -491,6 +509,9 @@ export function registerFreshnessTools(server: McpServer, client: SpotifyClient)
         );
       }
       lines.push(`Scanned: ${scanSummary.join('; ')}.`);
+      if (shrinkNote) {
+        lines.push(`Scan budget shrunk to the remaining quota window (max_artists=${freshnessBudgetEff} of requested ${freshnessBudget}).`);
+      }
       if (watermarkAdvanced) {
         lines.push(
           previousWatermark
@@ -515,6 +536,8 @@ export function registerFreshnessTools(server: McpServer, client: SpotifyClient)
         watermark_held: !watermarkAdvanced,
         ...(watermarkReason ? { watermark_reason: watermarkReason } : {}),
         counts: { albums: albums.length, episodes: episodes.length },
+        ...quotaDelta(client, snapshot),
+        ...(shrinkNote ? { requests_planned: freshnessBudgetEff + 1, budget_shrunk: true } : {}),
         lookups: {
           artists_seen: artistsSeen,
           artist_album_calls: artistLookups,

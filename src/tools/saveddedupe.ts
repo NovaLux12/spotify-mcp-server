@@ -17,6 +17,7 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
+import { quotaPreflight, quotaSnapshot, quotaWindowRemaining, quotaDelta } from '../client.js';
 import type { SavedTrackItem, PlaylistItemObject } from '../types/spotify.js';
 import {
   ResponseFormat,
@@ -254,8 +255,13 @@ async function analyze(
   client: SpotifyClient,
   includeNearDuplicates: boolean,
   playlistId?: string,
-): Promise<AnalysisResult> {
-  const fetchAllCap = getConfig().fetchAllCap;
+): Promise<AnalysisResult & { requests_made?: number }> {
+  const snapshot = quotaSnapshot(client);
+  const requestedCap = getConfig().fetchAllCap;
+  // (#904) shrink the walk to the remaining quota window when recent
+  // throttle pressure exists; idle clients keep today's budget exactly.
+  const fetchAllCap = Math.min(requestedCap, quotaWindowRemaining(client));
+  const walkShrunk = fetchAllCap < requestedCap;
   const saved = await client.getAllPages<SavedTrackItem>(
     '/me/tracks',
     { limit: '50' },
@@ -301,6 +307,8 @@ async function analyze(
       ...(playlist ? { playlist_id: playlistId, playlist_name: playlist.name } : {}),
       ...(playlist ? { playlist_tracks: playlist.trackCount } : {}),
     },
+    ...quotaDelta(client, snapshot),
+    ...(walkShrunk ? { requests_planned: requestedCap, budget_shrunk: true } : {}),
     counts: {
       exact_groups: groups.filter((g) => g.kind === 'exact').length,
       near_duplicate_groups: groups.filter((g) => g.kind === 'near_duplicate').length,
@@ -408,6 +416,16 @@ export function registerSavedDedupeTools(server: McpServer, client: SpotifyClien
     },
     async (args) => {
       const rf = args.response_format;
+      const gate = quotaPreflight(client);
+      if (gate.blocked) {
+        return shapeResult(rf, gate.message, {
+          ok: false,
+          cooldown: true,
+          wait_sec: gate.waitSec,
+          requests_made: 0,
+          requests_planned: getConfig().fetchAllCap,
+        } as unknown as AnalysisResult);
+      }
       const result = await analyze(client, args.include_near_duplicates, args.playlist_id);
       const maxResults = resolveMaxResults(args.max_results, getConfig().maxItems);
       return shapeResult(rf, renderProse(result, maxResults), result);

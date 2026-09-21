@@ -21,7 +21,7 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
-import { SpotifyApiError } from '../client.js';
+import { SpotifyApiError, quotaPreflight, quotaSnapshot, quotaWindowRemaining, quotaDelta } from '../client.js';
 import {
   ResponseFormat,
   MaxResults,
@@ -312,6 +312,34 @@ function walkCap(scan_cap?: number): number {
   return scan_cap ?? getConfig().fetchAllCap;
 }
 
+/**
+ * Scan pre-flight + budget resolution shared by the heavy saved-library
+ * scans (#904). Returns either a blocked cooldown payload or the effective
+ * cap: the requested cap shrunk to the remaining quota window. With no
+ * recent throttle pressure the window is unbounded, so behaviour matches
+ * today's budgets exactly.
+ */
+function scanGate(
+  client: SpotifyClient,
+  requestedCap: number,
+): { gate: { blocked: boolean; waitSec: number; message: string }; cap: number; shrunk: boolean; snapshot: number | null } {
+  const gate = quotaPreflight(client);
+  const snapshot = quotaSnapshot(client);
+  if (gate.blocked) return { gate, cap: requestedCap, shrunk: false, snapshot };
+  const eff = Math.min(requestedCap, quotaWindowRemaining(client));
+  return { gate, cap: eff, shrunk: eff < requestedCap, snapshot };
+}
+
+function blockedScan(rf: ResponseFormatValue, gate: { waitSec: number; message: string }, planned: number): ToolOut {
+  return shapeResult(rf, gate.message, {
+    ok: false,
+    cooldown: true,
+    wait_sec: gate.waitSec,
+    requests_made: 0,
+    requests_planned: planned,
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Registration — 24 tools
 // ---------------------------------------------------------------------------
@@ -461,7 +489,10 @@ export function registerSwarm3LibraryTools(server: McpServer, client: SpotifyCli
     async ({ response_format, max_results, scan_cap, dry_run }) => {
       const rf = response_format;
       const maxResults = resolveMaxResults(max_results, getConfig().maxItems);
-      const cap = walkCap(scan_cap);
+      const pre = scanGate(client, walkCap(scan_cap));
+      if (pre.gate.blocked) return blockedScan(rf, pre.gate, pre.cap);
+      const cap = pre.cap;
+      const shrink = pre.shrunk ? { requests_planned: walkCap(scan_cap), budget_shrunk: true } : {};
       if (dry_run) {
         const pages = Math.max(1, Math.ceil(cap / 50));
         return shapeResult(rf, `[dry run] orphaned_artist_check would walk /me/tracks + /me/albums (scan_cap=${cap}). Cost: ~${pages * 2} requests.`, {
@@ -500,6 +531,8 @@ export function registerSwarm3LibraryTools(server: McpServer, client: SpotifyCli
         ...(tA.footer ? [`  (${tA.footer})`] : []),
       ];
       const payload: Record<string, unknown> = {
+        ...quotaDelta(client, pre.snapshot),
+        ...shrink,
         total_saved_tracks: tracks.length,
         total_saved_albums: albums.length,
         track_only_artists: tracksOnly,
@@ -760,7 +793,10 @@ export function registerSwarm3LibraryTools(server: McpServer, client: SpotifyCli
     async ({ response_format, max_results, scan_cap, dry_run }) => {
       const rf = response_format;
       const maxResults = resolveMaxResults(max_results, getConfig().maxItems);
-      const cap = walkCap(scan_cap);
+      const pre = scanGate(client, walkCap(scan_cap));
+      if (pre.gate.blocked) return blockedScan(rf, pre.gate, pre.cap);
+      const cap = pre.cap;
+      const shrink = pre.shrunk ? { requests_planned: walkCap(scan_cap), budget_shrunk: true } : {};
       if (dry_run) {
         const pages = Math.max(1, Math.ceil(cap / 50));
         return shapeResult(rf, `[dry run] never_played_saved would walk /me/tracks (scan_cap=${cap}) + one /me/player/recently-played call. Cost: ~${pages + 1} requests.`, {
@@ -783,6 +819,8 @@ export function registerSwarm3LibraryTools(server: McpServer, client: SpotifyCli
         ...(t.footer ? [`(${t.footer})`] : []),
       ];
       const payload: Record<string, unknown> = {
+        ...quotaDelta(client, pre.snapshot),
+        ...shrink,
         ...listStructuredContent(
           t.items.map((tr) => ({ name: tr.name, artists: artistNames(tr), added_at: tr.added_at, uri: tr.uri })),
           paginationInfo({ total: t.total, returned: t.returned }),
@@ -809,7 +847,10 @@ export function registerSwarm3LibraryTools(server: McpServer, client: SpotifyCli
     async ({ response_format, max_results, scan_cap, dry_run }) => {
       const rf = response_format;
       const maxResults = resolveMaxResults(max_results, getConfig().maxItems);
-      const cap = walkCap(scan_cap);
+      const pre = scanGate(client, walkCap(scan_cap));
+      if (pre.gate.blocked) return blockedScan(rf, pre.gate, pre.cap);
+      const cap = pre.cap;
+      const shrink = pre.shrunk ? { requests_planned: walkCap(scan_cap), budget_shrunk: true } : {};
       if (dry_run) {
         // Cost preview without any calls: playlist count unknown until walk, so estimate at scan_cap pages.
         const trackPages = Math.max(1, Math.ceil(cap / 50));
@@ -859,6 +900,8 @@ export function registerSwarm3LibraryTools(server: McpServer, client: SpotifyCli
         ...(quotaAt ? [`Quota hit at playlist ${quotaAt} — partial coverage returned.`] : []),
       ];
       const payload: Record<string, unknown> = {
+        ...quotaDelta(client, pre.snapshot),
+        ...shrink,
         ...listStructuredContent(
           t.items.map((tr) => ({ name: tr.name, artists: artistNames(tr), uri: tr.uri })),
           paginationInfo({ total: t.total, returned: t.returned }),
@@ -888,7 +931,10 @@ export function registerSwarm3LibraryTools(server: McpServer, client: SpotifyCli
       const rf = response_format;
       const maxResults = resolveMaxResults(max_results, getConfig().maxItems);
       const n = top_n ?? 10;
-      const cap = walkCap(scan_cap);
+      const pre = scanGate(client, walkCap(scan_cap));
+      if (pre.gate.blocked) return blockedScan(rf, pre.gate, pre.cap);
+      const cap = pre.cap;
+      const shrink = pre.shrunk ? { requests_planned: walkCap(scan_cap), budget_shrunk: true } : {};
       if (dry_run) {
         return shapeResult(rf, `[dry run] artist_completeness_score would walk /me/tracks (scan_cap=${cap}) then call /artists/{id}/top-tracks × ${n}. Cost: ~${Math.max(1, Math.ceil(cap / 50)) + n} requests.`, {
           dry_run: true, scan_cap: cap, artists_to_score: n, estimated_requests: Math.max(1, Math.ceil(cap / 50)) + n,
@@ -937,6 +983,8 @@ export function registerSwarm3LibraryTools(server: McpServer, client: SpotifyCli
         ...(quotaHit ? [`Quota hit after ${scores.length}/${top.length} artist(s) — partial results.`] : []),
       ];
       const payload: Record<string, unknown> = {
+        ...quotaDelta(client, pre.snapshot),
+        ...shrink,
         ...listStructuredContent(t.items, paginationInfo({ total: t.total, returned: t.returned })),
         average_completeness: avg,
         artists_scored: scores.length,
@@ -1315,7 +1363,10 @@ export function registerSwarm3LibraryTools(server: McpServer, client: SpotifyCli
     async ({ response_format, max_results, scan_cap, dry_run }) => {
       const rf = response_format;
       const maxResults = resolveMaxResults(max_results, getConfig().maxItems);
-      const cap = walkCap(scan_cap);
+      const pre = scanGate(client, walkCap(scan_cap));
+      if (pre.gate.blocked) return blockedScan(rf, pre.gate, pre.cap);
+      const cap = pre.cap;
+      const shrink = pre.shrunk ? { requests_planned: walkCap(scan_cap), budget_shrunk: true } : {};
       if (dry_run) {
         const pages = Math.max(1, Math.ceil(cap / 50));
         return shapeResult(rf, `[dry run] library_value_summary would walk /me/tracks + /me/albums (scan_cap=${cap}). Cost: ~${pages * 2} requests.`, {
@@ -1387,6 +1438,8 @@ export function registerSwarm3LibraryTools(server: McpServer, client: SpotifyCli
       ].filter(Boolean);
 
       const payload: Record<string, unknown> = {
+        ...quotaDelta(client, pre.snapshot),
+        ...shrink,
         total_saved_tracks: tracks.length,
         total_saved_albums: albums.length,
         total_runtime_ms: totalMs,

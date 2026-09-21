@@ -23,7 +23,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import type { SpotifyClient } from '../client.js';
-import { SpotifyApiError } from '../client.js';
+import { SpotifyApiError, quotaPreflight, quotaSnapshot, quotaWindowRemaining, quotaDelta } from '../client.js';
 import {
   ResponseFormat,
   MaxResults,
@@ -745,11 +745,22 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
     },
     async (args) => {
       const rf = args.response_format as ResponseFormatValue;
+      const gate = quotaPreflight(client);
+      if (gate.blocked) {
+        return emit(rf, gate.message, {
+          ok: false, cooldown: true, wait_sec: gate.waitSec, requests_made: 0,
+          requests_planned: args.max_playlists + 2,
+        });
+      }
+      const snapshot = quotaSnapshot(client);
+      const windowRemaining = quotaWindowRemaining(client);
+      const maxPlaylists = Math.min(args.max_playlists, windowRemaining);
+      const shrink = maxPlaylists < args.max_playlists;
       const saved = await client.getAllPages<{ added_at?: string; track?: { uri?: string; name?: string; artists?: Array<{ name: string }> } }>('/me/tracks', { limit: '50' });
       const recent = await loadPlaysBetween(client, Date.now() - 90 * DAY_MS, Date.now(), 1000);
       const playedRecently = new Set(recent.map((p) => p.track.uri));
       const inPlaylist = new Set<string>();
-      const lists = await client.getAllPages<{ id: string; name: string }>('/me/playlists', { limit: '50' }, { maxItems: args.max_playlists });
+      const lists = await client.getAllPages<{ id: string; name: string }>('/me/playlists', { limit: '50' }, { maxItems: maxPlaylists });
       let playlistsScanned = 0;
       for (const pl of lists) {
         playlistsScanned++;
@@ -773,6 +784,8 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
         candidates: candidates.map((c) => c.uri),
         details: candidates,
         count: candidates.length,
+        ...quotaDelta(client, snapshot),
+        ...(shrink ? { requests_planned: args.max_playlists + 2, budget_shrunk: true } : {}),
       };
       if (args.dry_run) {
         return emit(rf, describeDryRun('dead-library cleanup', 'your library', [
@@ -980,7 +993,18 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
     },
     async (args) => {
       const rf = args.response_format as ResponseFormatValue;
-      const lists = await client.getAllPages<{ id: string; name: string }>('/me/playlists', { limit: '50' }, { maxItems: args.limit });
+      const gate = quotaPreflight(client);
+      if (gate.blocked) {
+        return emit(rf, gate.message, {
+          ok: false, cooldown: true, wait_sec: gate.waitSec, requests_made: 0,
+          requests_planned: args.limit + 1,
+        });
+      }
+      const snapshot = quotaSnapshot(client);
+      const windowRemaining = quotaWindowRemaining(client);
+      const limit = Math.min(args.limit, windowRemaining);
+      const shrink = limit < args.limit;
+      const lists = await client.getAllPages<{ id: string; name: string }>('/me/playlists', { limit: '50' }, { maxItems: limit });
       const rows: Array<{ name: string; items: number; newest: string | null; oldest: string | null; median_age_days: number | null; added_last_90d: number }> = [];
       let skipped = 0;
       let skippedShows = 0;
@@ -1015,7 +1039,11 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
       rows.sort(cmp[args.sort] ?? cmp.median_age!);
       const maxResults = resolveMaxResults(args.max_results, getConfig().maxItems);
       const t = truncateItems(rows, maxResults);
-      const payload = { ok: true, scanned: rows.length, skipped_unreadable: skipped, playlists: t.items, truncated: t.truncated };
+      const payload = {
+        ok: true, scanned: rows.length, skipped_unreadable: skipped, playlists: t.items, truncated: t.truncated,
+        ...quotaDelta(client, snapshot),
+        ...(shrink ? { requests_planned: args.limit + 1, budget_shrunk: true } : {}),
+      };
       const lines = [`Playlist staleness report (${rows.length} playlists${skipped ? `, ${skipped} unreadable skipped` : ''}, sorted by ${args.sort}):`, ''];
       for (const r of t.items) {
         lines.push(`• ${r.name} — ${r.items} items, median age ${r.median_age_days ?? '?'}d, ${r.added_last_90d} added last 90d (oldest ${r.oldest ?? '?'})`);

@@ -14,6 +14,7 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
+import { quotaPreflight, quotaSnapshot, quotaWindowRemaining, quotaDelta } from '../client.js';
 import type { SavedTrackItem, SpotifyAlbumFull } from '../types/spotify.js';
 import {
   ResponseFormat,
@@ -133,8 +134,15 @@ export function buildSuggestion(likedCount: number): string {
  * Walk the liked-tracks library, group by album, look up album totals
  * (cached per album id, capped), and derive hygiene findings.
  */
-async function analyze(client: SpotifyClient): Promise<AnalysisResult> {
+async function analyze(
+  client: SpotifyClient,
+): Promise<AnalysisResult & { requests_made?: number }> {
+  const snapshot = quotaSnapshot(client);
   const fetchAllCap = getConfig().fetchAllCap;
+  // (#904) shrink the module-local lookup cap to the remaining quota window
+  // when recent throttle pressure exists; idle clients keep the full cap.
+  const lookupCap = Math.min(ALBUM_LOOKUP_CAP, quotaWindowRemaining(client));
+  const lookupShrunk = lookupCap < ALBUM_LOOKUP_CAP;
   const saved = await client.getAllPages<SavedTrackItem>(
     '/me/tracks',
     { limit: '50' },
@@ -190,7 +198,7 @@ async function analyze(client: SpotifyClient): Promise<AnalysisResult> {
   let lookups = 0;
   let lookupTruncated = false;
   for (const group of groups) {
-    if (lookups >= ALBUM_LOOKUP_CAP) {
+    if (lookups >= lookupCap) {
       lookupTruncated = true;
       break;
     }
@@ -284,13 +292,15 @@ async function analyze(client: SpotifyClient): Promise<AnalysisResult> {
     },
     album_lookups: {
       made: lookups,
-      cap: ALBUM_LOOKUP_CAP,
+      cap: lookupCap,
       truncated_by_cap: lookupTruncated,
     },
+    ...(lookupShrunk ? { requests_planned: ALBUM_LOOKUP_CAP, budget_shrunk: true } : {}),
     counts: {
       near_complete: nearComplete.length,
       orphaned_singles: orphanedSingles.length,
     },
+    ...quotaDelta(client, snapshot),
     groups,
     near_complete: nearComplete,
     orphaned_singles: orphanedSingles,
@@ -380,6 +390,16 @@ export function registerLibraryHygieneTools(server: McpServer, client: SpotifyCl
     },
     async (args) => {
       const rf = args.response_format;
+      const gate = quotaPreflight(client);
+      if (gate.blocked) {
+        return shapeResult(rf, gate.message, {
+          ok: false,
+          cooldown: true,
+          wait_sec: gate.waitSec,
+          requests_made: 0,
+          requests_planned: ALBUM_LOOKUP_CAP,
+        } as unknown as AnalysisResult);
+      }
       const result = await analyze(client);
       const maxResults = resolveMaxResults(args.max_results, getConfig().maxItems);
       return shapeResult(rf, renderProse(result, maxResults), result);
