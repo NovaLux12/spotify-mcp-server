@@ -115,6 +115,22 @@ export function selectNextLaneTask(
   return normal.shift() ?? low.shift();
 }
 
+/**
+ * Structured rate-limit + quota-usage state (#56/#59/#904). The first three
+ * fields predate #904 and are unchanged; the request counters are additive.
+ */
+export interface RateLimitStatus {
+  lastThrottleAt: number | null;
+  retryAfterSec: number | null;
+  cooldownRemainingMs: number;
+  /** Cumulative API requests issued through the drain queue this process. */
+  requestsTotal: number;
+  /** Requests issued in the trailing 60s (rolling window). */
+  requestsLastMinute: number;
+  /** Requests issued in the trailing 60min (rolling window). */
+  requestsLastHour: number;
+}
+
 export class SpotifyClient {
   private tokens: TokenData | null = null;
   private loadPromise: Promise<TokenData> | null = null;
@@ -124,6 +140,12 @@ export class SpotifyClient {
   private _rateLimitUntil = 0;
   // Last throttling event this client observed (#56).
   private _lastThrottle: { retryAfterSec: number; waitedMs: number; at: number } | null = null;
+  // Request/quota usage tracking (#904): cumulative count plus per-request
+  // timestamps (pruned to the longest exposed window). Maintained in _drain,
+  // the single funnel every queued API call passes through. Cache hits bypass
+  // the queue and cost no quota, so they are not counted.
+  private _requestsTotal = 0;
+  private _requestTimes: number[] = [];
 
   // Immutable-read TTL cache (#54) — null when disabled.
   readonly cache: LruTtlCache<unknown> | null;
@@ -161,17 +183,46 @@ export class SpotifyClient {
     return `rate-limited by Spotify, waited ${Math.round(ev.waitedMs / 1000)}s before retrying`;
   }
 
-  /** Structured rate-limit state for the spotify://me/rate-limit resource. */
-  getRateLimitStatus(): {
-    lastThrottleAt: number | null;
-    retryAfterSec: number | null;
-    cooldownRemainingMs: number;
-  } {
+  /** Structured rate-limit + quota-usage state for the spotify://me/rate-limit resource. */
+  getRateLimitStatus(): RateLimitStatus {
     return {
       lastThrottleAt: this._lastThrottle?.at ?? null,
       retryAfterSec: this._lastThrottle?.retryAfterSec ?? null,
       cooldownRemainingMs: Math.max(0, this._rateLimitUntil - Date.now()),
+      requestsTotal: this._requestsTotal,
+      requestsLastMinute: this.requestsSince(60_000),
+      requestsLastHour: this.requestsSince(3_600_000),
     };
+  }
+
+  /** Cumulative API requests issued through the drain queue (#904). */
+  get requestsTotal(): number {
+    return this._requestsTotal;
+  }
+
+  /**
+   * Rolling-window request count: queued API calls issued in the trailing
+   * `windowMs` (#904). Powers the windowed quota readouts.
+   */
+  requestsSince(windowMs: number): number {
+    const cutoff = Date.now() - Math.max(0, windowMs);
+    let n = 0;
+    for (let i = this._requestTimes.length - 1; i >= 0; i--) {
+      if (this._requestTimes[i]! >= cutoff) n++;
+      else break;
+    }
+    return n;
+  }
+
+  /** Record one issued request; called once per drained queue task (#904). */
+  private recordRequest(): void {
+    const now = Date.now();
+    this._requestsTotal++;
+    this._requestTimes.push(now);
+    const cutoff = now - SpotifyClient.REQUEST_WINDOW_RETAIN_MS;
+    let drop = 0;
+    while (drop < this._requestTimes.length && this._requestTimes[drop]! < cutoff) drop++;
+    if (drop > 0) this._requestTimes.splice(0, drop);
   }
 
   /**
@@ -327,6 +378,12 @@ export class SpotifyClient {
    */
   private static readonly LOW_AGING_MS = 15_000;
 
+  /**
+   * Longest rolling window retained for requestsSince() (#904): one hour
+   * covers the widest count exposed via getRateLimitStatus().
+   */
+  private static readonly REQUEST_WINDOW_RETAIN_MS = 3_600_000;
+
   private enqueue<T>(fn: () => Promise<T>, priority: 'normal' | 'low' = 'normal'): Promise<T> {
     return new Promise<T>((resolve, reject) => {
       this._lanes[priority].push({
@@ -358,6 +415,7 @@ export class SpotifyClient {
           const waitMs = Math.max(rateLimitWait, gapWait);
           if (waitMs > 0) await sleep(waitMs);
           this._lastRequestTime = Date.now();
+          this.recordRequest();
           await next.run().then(next.resolve, next.reject);
         }
       } finally {
@@ -633,4 +691,80 @@ export class SpotifyClient {
     this.afterMutation('DELETE', path, result);
     return result;
   }
+}
+
+/**
+ * Pre-flight gate for heavy composite scans (#904). Reads the shared
+ * cooldown through the existing getRateLimitStatus() accessor: when a
+ * cooldown is active the caller returns `message` verbatim and issues zero
+ * requests instead of fanning out. Clients without the accessor (older
+ * stubs) report no cooldown, so their budgets apply unchanged.
+ */
+export function quotaPreflight(client: SpotifyClient): { blocked: boolean; waitSec: number; message: string } {
+  let waitMs = 0;
+  try {
+    waitMs = client.getRateLimitStatus?.()?.cooldownRemainingMs ?? 0;
+  } catch {
+    waitMs = 0;
+  }
+  if (!(waitMs > 0)) return { blocked: false, waitSec: 0, message: '' };
+  const waitSec = Math.ceil(waitMs / 1000);
+  return {
+    blocked: true,
+    waitSec,
+    message:
+      `Rate-limit cooldown active — wait ~${waitSec}s before heavy scans (cooldownRemainingMs=${Math.round(waitMs)}ms). `
+      + 'Issued 0 requests; scan budget held. Retry after the quota window resets.',
+  };
+}
+
+/** Request-count snapshot before a scan (#904): null when the client does not expose counters. */
+export function quotaSnapshot(client: SpotifyClient): number | null {
+  let total: unknown;
+  try {
+    total = client.getRateLimitStatus?.()?.requestsTotal;
+  } catch {
+    return null;
+  }
+  return typeof total === 'number' ? total : null;
+}
+
+/**
+ * Recency horizon for quota pressure (#904): a throttle older than this no
+ * longer shrinks scan budgets — the window has recovered.
+ */
+const QUOTA_PRESSURE_MS = 5 * 60_000;
+
+/**
+ * Remaining scan budget inside the trailing quota window (#904). When the
+ * client throttled recently (but the cooldown has since expired) heavy scans
+ * shrink to what's left of the window instead of their module-local
+ * constant. With no recent throttle pressure the window is unbounded, so
+ * today's budgets apply exactly as before.
+ */
+export function quotaWindowRemaining(client: SpotifyClient): number {
+  let status: RateLimitStatus | undefined;
+  try {
+    status = client.getRateLimitStatus?.();
+  } catch {
+    return Number.MAX_SAFE_INTEGER;
+  }
+  if (!status || status.lastThrottleAt == null) return Number.MAX_SAFE_INTEGER;
+  if (Date.now() - status.lastThrottleAt > QUOTA_PRESSURE_MS) return Number.MAX_SAFE_INTEGER;
+  const spent = status.requestsLastMinute ?? 0;
+  return Math.max(1, getConfig().fetchAllCap - spent);
+}
+
+/**
+ * `requests_made` fragment for scan payloads (#904): the delta since
+ * `before`, or an empty object when counters are unavailable so stub-backed
+ * payload shapes stay byte-identical.
+ */
+export function quotaDelta(
+  client: SpotifyClient,
+  before: number | null,
+): { requests_made: number } | Record<string, never> {
+  if (before === null) return {};
+  const after = quotaSnapshot(client);
+  return after === null ? {} : { requests_made: after - before };
 }

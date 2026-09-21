@@ -524,7 +524,14 @@ export function registerResources(server: McpServer, client: SpotifyClient): voi
     "Last rate-limit event: Retry-After/wait or 'never throttled'",
     async (url) => {
       const status = client.getRateLimitStatus();
-      if (wantsJson(url)) return json('spotify://me/rate-limit', status);
+      if (wantsJson(url)) {
+        return json('spotify://me/rate-limit', {
+          ...status,
+          ...(typeof status.requestsTotal === 'number'
+            ? { requests_total: status.requestsTotal, requests_last_min: status.requestsLastMinute, requests_last_hour: status.requestsLastHour }
+            : {}),
+        });
+      }
       const lines: string[] = [];
       if (status.lastThrottleAt == null) {
         lines.push('never throttled');
@@ -538,6 +545,11 @@ export function registerResources(server: McpServer, client: SpotifyClient): voi
           ? `Active cooldown: ~${Math.round(status.cooldownRemainingMs / 1000)}s remaining`
           : 'No active cooldown',
       );
+      if (typeof status.requestsTotal === 'number') {
+        lines.push(
+          `Requests: ${status.requestsTotal} total, ${status.requestsLastMinute ?? '?'} last min, ${status.requestsLastHour ?? '?'} last hour`,
+        );
+      }
       return text('spotify://me/rate-limit', lines.join('\n'));
     },
   );
