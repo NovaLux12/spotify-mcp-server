@@ -12,6 +12,11 @@ import {
   listStructuredContent,
 } from '../shaping.js';
 
+/** Derive the `locale` wire param from a market code (e.g. US -> en_US). */
+function marketToLocale(market: string): string {
+  return `en_${market.toUpperCase()}`;
+}
+
 type PlaylistPage = SpotifyPaged<SpotifyPlaylistSimple> & { message?: string | null };
 
 interface CategoryItem {
@@ -51,7 +56,7 @@ export function registerBrowseTools(server: McpServer, client: SpotifyClient): v
     {
       limit: z.number().int().min(1).max(50).optional().describe('Results per page, 1\u201350. Default: 20'),
       offset: z.number().int().min(0).optional().describe('Offset. Default: 0'),
-      country: z.string().regex(/^[A-Za-z]{2}$/, "market must be 2 letters e.g. 'US'").transform(s=>s.toUpperCase()).optional().describe('ISO 3166-1 alpha-2 country code, e.g. \'US\' (alias: market)'),
+      market: MARKET_CODE.optional().describe('ISO 3166-1 alpha-2 country code, e.g. \'US\'. Localises category names via the locale wire param (market US -> locale en_US); the endpoint filters by locale, not market.'),
       locale: z.string().optional().describe('Locale, e.g. en_US'),
       ...sharedListFields,
     },
@@ -59,9 +64,8 @@ export function registerBrowseTools(server: McpServer, client: SpotifyClient): v
       const params: Record<string, string> = {};
       if (args.limit !== undefined) params.limit = String(args.limit);
       if (args.offset !== undefined) params.offset = String(args.offset);
-      const countryVal = (args as any).country ?? (args as any).market;
-      if (countryVal) params.country = countryVal;
       if (args.locale) params.locale = args.locale;
+      else if (args.market) params.locale = marketToLocale(args.market);
       const data = await client.get<{ categories: SpotifyPaged<CategoryItem> }>('/browse/categories', params);
       if (!data?.categories) {
         return { content: [{ type: 'text', text: 'No categories found.' }] };
@@ -90,15 +94,14 @@ export function registerBrowseTools(server: McpServer, client: SpotifyClient): v
       category_id: z.string().describe('Category ID (from get_categories)'),
       limit: z.number().int().min(1).max(50).optional().describe('Results per page, 1\u201350. Default: 20'),
       offset: z.number().int().min(0).optional().describe('Offset. Default: 0'),
-      country: z.string().regex(/^[A-Za-z]{2}$/, "market must be 2 letters e.g. 'US'").transform(s=>s.toUpperCase()).optional().describe('ISO 3166-1 alpha-2 country code, e.g. \'US\' (alias: market)'),
+      market: MARKET_CODE.optional().describe('ISO 3166-1 alpha-2 country code, e.g. \'US\'. Sent as the locale wire param (market US -> locale en_US); the endpoint accepts locale/limit/offset only.'),
       ...sharedListFields,
     },
     async (args) => {
       const params: Record<string, string> = {};
       if (args.limit !== undefined) params.limit = String(args.limit);
       if (args.offset !== undefined) params.offset = String(args.offset);
-      const countryVal2 = (args as any).country ?? (args as any).market;
-      if (countryVal2) params.country = countryVal2;
+      if (args.market) params.locale = marketToLocale(args.market);
       const data = await client.get<{ playlists: PlaylistPage }>(
         `/browse/categories/${encodeURIComponent(args.category_id)}/playlists`,
         params,

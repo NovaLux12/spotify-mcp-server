@@ -48,3 +48,39 @@ test('get_category_playlists empty', async () => {
   const r = await find(registered,'get_category_playlists').handler({ category_id:'mood' });
   assert.match(text(r), /No playlists/);
 });
+test('get_categories maps market to the locale wire param', async () => {
+  const { registered, calls } = makeHarness(()=>({ categories:{ items:[], total:0, limit:20, offset:0 }}));
+  await find(registered,'get_categories').handler({ market:'GB' });
+  assert.deepEqual(calls[0].params, { locale:'en_GB' });
+  assert.equal(new URLSearchParams(calls[0].params).toString(), 'locale=en_GB');
+});
+test('get_category_playlists maps market to the locale wire param', async () => {
+  const { registered, calls } = makeHarness(()=>({ playlists:{ items:[], total:0, limit:20, offset:0 }}));
+  await find(registered,'get_category_playlists').handler({ category_id:'mood', market:'gb' });
+  assert.deepEqual(calls[0].params, { locale:'en_GB' });
+  assert.equal(new URLSearchParams(calls[0].params).toString(), 'locale=en_GB');
+});
+test('browse tools send no locale key when market omitted', async () => {
+  const { registered, calls } = makeHarness((path)=>{
+    if (path==='/browse/categories') return { categories:{ items:[], total:0, limit:20, offset:0 }};
+    if (path==='/browse/categories/mood/playlists') return { playlists:{ items:[], total:0, limit:20, offset:0 }};
+    return null;
+  });
+  await find(registered,'get_categories').handler({});
+  assert.ok(!('locale' in (calls[0].params ?? {})));
+  assert.ok(!('country' in (calls[0].params ?? {})));
+  await find(registered,'get_category_playlists').handler({ category_id:'mood' });
+  assert.ok(!('locale' in (calls[1].params ?? {})));
+  assert.ok(!('country' in (calls[1].params ?? {})));
+});
+test('get_categories explicit locale wins over market', async () => {
+  const { registered, calls } = makeHarness(()=>({ categories:{ items:[], total:0, limit:20, offset:0 }}));
+  await find(registered,'get_categories').handler({ market:'GB', locale:'sv_SE' });
+  assert.deepEqual(calls[0].params, { locale:'sv_SE' });
+});
+test('no browse tool declares country', () => {
+  const { registered } = makeHarness();
+  for (const t of registered) assert.ok(!('country' in t.schema), `${t.name} declares country`);
+  assert.ok('market' in find(registered,'get_categories').schema);
+  assert.ok('market' in find(registered,'get_category_playlists').schema);
+});
