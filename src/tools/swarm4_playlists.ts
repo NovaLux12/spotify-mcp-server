@@ -77,7 +77,7 @@ const PublicFlag = z
 const IncludeFullOrder = z
   .boolean()
   .optional()
-  .describe('Return the complete planned URI order in structuredContent, bypassing max_results');
+  .describe('Opt in to the full planned order; otherwise structuredContent is capped');
 
 // ---------------------------------------------------------------------------
 // Shared plumbing
