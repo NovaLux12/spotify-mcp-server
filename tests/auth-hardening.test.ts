@@ -9,7 +9,7 @@
 
 import { describe, it, after, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, writeFile, readFile, rm, stat } from 'node:fs/promises';
+import { chmod, lstat, mkdtemp, writeFile, readFile, rm, stat, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -21,7 +21,7 @@ const tokenDir = await mkdtemp(path.join(tmpdir(), 'spotify-mcp-auth-hardening-'
 process.env.SPOTIFY_MCP_TOKEN_FILE = path.join(tokenDir, 'tokens.json');
 process.env.SPOTIFY_CLIENT_ID = 'test-client-id';
 
-const { loadTokens, saveTokens, TOKEN_FILE } = await import('../src/auth.ts');
+const { isTokenData, loadTokens, saveTokens, TOKEN_FILE } = await import('../src/auth.ts');
 const { SpotifyClient, SpotifyApiError } = await import('../src/client.ts');
 const { initConfig, getConfig } = await import('../src/config.ts');
 
@@ -128,12 +128,61 @@ describe('atomic token persistence (#109)', () => {
     await assert.rejects(stat(`${TOKEN_FILE}.tmp`), { code: 'ENOENT' });
   });
 
+  it('normalizes a pre-existing loose directory and legacy sidecar', async () => {
+    await chmod(tokenDir, 0o755);
+    await writeFile(`${TOKEN_FILE}.tmp`, 'attacker-controlled', { mode: 0o644 });
+    await saveTokens({
+      access_token: 'tok-permissions',
+      refresh_token: 'ref-permissions',
+      expires_at: Date.now() + 1000,
+    });
+    assert.equal((await stat(tokenDir)).mode & 0o777, 0o700);
+    assert.equal((await stat(TOKEN_FILE)).mode & 0o777, 0o600);
+    await assert.rejects(stat(`${TOKEN_FILE}.tmp`), { code: 'ENOENT' });
+  });
+
+  it('does not follow a pre-existing legacy sidecar symlink', async () => {
+    const target = path.join(tokenDir, 'symlink-target');
+    await writeFile(target, 'unchanged', 'utf8');
+    await symlink(target, `${TOKEN_FILE}.tmp`);
+    await saveTokens({
+      access_token: 'tok-symlink-safe',
+      refresh_token: 'ref-symlink-safe',
+      expires_at: Date.now() + 1000,
+    });
+    assert.equal(await readFile(target, 'utf8'), 'unchanged');
+    await assert.rejects(lstat(`${TOKEN_FILE}.tmp`), { code: 'ENOENT' });
+  });
+
   it('loadTokens turns a corrupted tokens.json into an actionable error', async () => {
     await writeFile(TOKEN_FILE, '{not json at all', 'utf8');
     await assert.rejects(
       loadTokens(),
-      { message: 'Saved Spotify tokens are corrupted — run `npm run auth` again.' },
+      { message: `Saved Spotify tokens are corrupted at ${TOKEN_FILE} — run \`npm run auth\` again.` },
     );
+  });
+
+  it('rejects token objects with missing fields or non-finite expiry', async () => {
+    for (const malformed of [
+      { access_token: 'x' },
+      { access_token: 'a', refresh_token: 'r', expires_at: 'soon' },
+      { access_token: 'a', refresh_token: 'r', expires_at: Number.POSITIVE_INFINITY },
+    ]) {
+      await writeFile(TOKEN_FILE, JSON.stringify(malformed), 'utf8');
+      assert.equal(isTokenData(malformed), false);
+      await assert.rejects(loadTokens(), /Saved Spotify tokens are corrupted/);
+    }
+  });
+
+  it('loads a complete token object', async () => {
+    const valid = {
+      access_token: 'a',
+      refresh_token: 'r',
+      expires_at: Date.now() + 60_000,
+      scope: 'user-read-email',
+    };
+    await writeFile(TOKEN_FILE, JSON.stringify(valid), 'utf8');
+    assert.deepEqual(await loadTokens(), valid);
   });
 });
 

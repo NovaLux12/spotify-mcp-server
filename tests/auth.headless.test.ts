@@ -14,7 +14,7 @@
 
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { isHeadlessMode, parseCallbackUrl } from '../src/auth.ts';
+import { getCallbackPort, isHeadlessMode, parseCallbackUrl, validateRedirectUri } from '../src/auth.ts';
 
 describe('isHeadlessMode (SPOTIFY_HEADLESS env var gate)', () => {
   const ORIGINAL = process.env.SPOTIFY_HEADLESS;
@@ -111,6 +111,38 @@ describe('parseCallbackUrl (pasted-URL extraction & validation)', () => {
     assert.throws(
       () => parseCallbackUrl(pasted, STATE),
       /No authorization code/,
+    );
+  });
+});
+
+describe('OAuth callback security regressions', () => {
+  const STATE = 'expected-state-token-abc123';
+
+  it('checks state before processing a provider error', () => {
+    const pasted = 'http://127.0.0.1:8888/callback?error=access_denied&state=wrong-state';
+    assert.throws(() => parseCallbackUrl(pasted, STATE), /State mismatch/);
+  });
+
+  it('redacts pasted authorization codes from URL parse errors', () => {
+    const secret = 'super-secret-authorization-code';
+    assert.throws(
+      () => parseCallbackUrl(`http://127.0.0.1:8888/callback?code=${secret}&stat`, STATE),
+      (error: unknown) => {
+        assert.ok(error instanceof Error);
+        assert.doesNotMatch(error.message, new RegExp(secret));
+        assert.doesNotMatch(error.message, /code=[^< ]+/);
+        return true;
+      },
+    );
+  });
+
+  it('validates redirect schemes and derives the effective port', () => {
+    assert.equal(getCallbackPort('http://127.0.0.1/callback'), 80);
+    assert.equal(getCallbackPort('http://127.0.0.1:8888/callback'), 8888);
+    assert.equal(getCallbackPort('http://127.0.0.1:8123/callback'), 8123);
+    assert.throws(
+      () => validateRedirectUri('https://127.0.0.1:8888/callback'),
+      /plain HTTP/,
     );
   });
 });
