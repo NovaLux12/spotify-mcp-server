@@ -6,75 +6,202 @@ description: "Exhaustive feature sweep across Spotify domains — enumerate all 
 # Spotify Exhaustive Feature Sweep
 
 ## When to Use
-- Asked to do exhaustive/quantity-first sweep, beat N tools, find maximum candidates, or scout new features across Spotify domains (Catalog/Search/Browse, Playback/Queue/Devices, Playlists/Library/Social, Portability/Analytics/Resources/Prompts).
+
+Use this workflow for an exhaustive or quantity-first feature sweep: finding
+maximum viable candidates across Catalog/Search/Browse,
+Playback/Queue/Devices, Playlists/Library/Social, and
+Portability/Analytics/Resources/Prompts.
+
+Ground every inventory and candidate in the current checkout, live MCP
+registry, official Spotify OpenAPI schema, and (when credentials are available)
+a real API response. Historical issue numbers, branch names, and prose counts
+are leads at most, never current truth.
 
 ## Procedure
 
 1. Inventory current coverage per domain.
-   - Count `grep -rn "server\.tool\|registerTool" src --include="*.ts" | wc -l` with typed-search factory correction (545 raw including the 1 placeholder in catalog.ts → 545 - 1 + 7 = 551 server-wide as of v1.27.1; verify via live `tools/list`); per-domain files (playback.ts 16 + playbackext.ts 13 + queueops.ts 3 + scenes.ts 6 =38); read `SPEC.md §9` removed list and `src/tools/*.ts` for existing endpoint coverage.
-   - Completion: baseline tool count and removed-endpoint list recorded; endpoint→tool map drafted showing wrapped vs gap.
+   - Connect to the current server and call `toolset_report`; record
+     `registered_tools`, `active_toolsets`, and `active_modules` as the live
+     tool baseline. `tools/list` is the equivalent protocol evidence.
+   - Call `resources/list`, `resources/templates/list`, and `prompts/list` and
+     record their live sizes separately.
+   - Map endpoints to registrations by reading `src/index.ts`, `src/toolsets.ts`,
+     `src/resources/index.ts`, `src/resources/templates.ts`, `src/prompts/index.ts`,
+     and the relevant `src/tools/*.ts` modules. A grep count of
+     `server.tool` / `registerTool` is not a registry count because it misses
+     factories and includes gated or unused modules.
+   - Read `SPEC.md` section 9 as project history, then verify removals and
+     registration gates against the official schema and live responses. Do not
+     assume an endpoint is current merely because prose names it.
+   - Completion: live primitive counts, active modules, and an endpoint-to-tool
+     map distinguish wrapped, gated, removed, and genuine gaps.
 
 2. Inventory open work to avoid duplicates.
-   - List `git branch -a` and diff each open `swarm/*` and `fix/quota-*` branch vs main; note PRs #243-255 tools (e.g., search_saved_tracks, export_listening_history, save_queue_as_playlist already open).
-   - Completion: table of open branches → new tools noted; duplicates excluded from candidates.
+   - Use `gh pr list --state all` and `gh issue list --state all` to inspect
+     current and recently closed work. Filter by endpoint/tool names from the
+     inventory, not by old issue-number ranges.
+   - Inspect candidate branches/worktrees only when they still exist; record the
+     exact branch and compare it with the current base before treating a tool
+     as unshipped.
+   - Completion: an endpoint/name-based duplicate table records shipped, active,
+     closed-unmerged, and genuinely open work.
 
-3. Enumerate every non-deprecated endpoint in each domain quantity-first.
-   - For assigned domain, list all live reads/writes (Search GET /search, Browse /browse/categories*, Catalog /tracks|albums|artists|shows|episodes|audiobooks|chapters, Player /me/player*, Playlists /playlists/{id}*, Follow /me/following, User /me, etc.); mark SPEC §9 deprecated as excluded (recommendations, audio-features, audio-analysis, related-artists, featured/new-releases).
-   - Completion: checklist with ≥1 candidate per live endpoint; deprecated explicitly marked excluded.
+3. Enumerate Spotify endpoints by domain, quantity-first.
+   - Start from the current official Spotify OpenAPI schema. Cover Search,
+     Browse, Catalog, Player, Playlists, Library, Follow, User, Show/Episode,
+     Audiobook/Chapter, and current stats.fm surfaces where relevant.
+   - Verify every query parameter, body field, and response key in the schema.
+     Mark `SPEC.md` section 9 entries as historical leads; classify live
+     removal (`404`/`410`), app-registration gating (`403` with a generic
+     reason), and operational status separately.
+   - Completion: every current endpoint is mapped to a tool/resource/prompt,
+     a verified gap, or a documented reason it is out of scope.
 
-4. Expand each endpoint into 1-3 ergonomic wrappers.
-   - Apply expansion patterns: typed-search split (one endpoint ×7 type wrappers), saved-library filter family (/me/{type} + client filter), batch fan-out (catalog_batch_lookup mixed URIs, playlist set-algebra union/subtract/symmetric-difference), deep-dive bundles (category→playlists→peek, listening_session snapshot), market previews, include_groups shortcuts, portability sidecars (export/delta/snapshot-diff), analytics and resources/prompts.
-   - Completion: 20±2 ranked proposals per domain; each card has name, pitch, endpoint(s), params, use case, quota flag, ship bucket (P0/P1/P2/P3).
+4. Expand each real gap into ergonomic wrappers.
+   - Consider typed-search splits, filtered saved-library families, batch
+     lookups, deep-dive bundles, market previews, `include_groups` shortcuts,
+     portability sidecars, analytics, resources, and prompts only when they
+     serve a concrete consumer job.
+   - Preserve the existing shaping contract: `response_format`,
+     `max_results`, truncation disclosure, and `getAllPages` caps. Reuse
+     `makeTypedSearchTool` in `src/tools/catalog.ts` and the shared helpers in
+     `src/client.ts` and `src/shaping.ts`; do not create a parallel convention.
+   - Completion: each card has a unique name, pitch, verified endpoint(s),
+     parameters, use case, quota cost, implementation reuse, and ship bucket.
 
-5. Flag quota cost and phantom-endpoint policy for every candidate.
-   - Tag 🟢 single call, 🟡 moderate (2-3 calls or optional getAllPages), 🔴 N+1/fan-out with disclosure line; enforce phantom-endpoint policy: if endpoint does not exist (e.g., only GET+POST /me/player/queue are real, no reorder/remove/clear), propose honest-workaround with disclosure contract rather than claiming phantom.
-   - Completion: ranked table includes Quota column and factory reuse note (makeTypedSearchTool in src/tools/catalog.ts, fetchSeveral chunking at 20-50, getAllPages in src/client.ts).
+5. Flag quota cost and phantom-endpoint risk.
+   - Tag single-call work as low cost, bounded multi-call work as moderate, and
+     N+1/fan-out work as high with an explicit request-budget disclosure.
+   - If Spotify has no endpoint for a desired verb, propose an honest local or
+     multi-call workaround and label it as such. Never invent reorder, remove,
+     clear, recommendation, audio-feature, or related-artist endpoints.
+   - Completion: every ranked card includes quota behavior, pagination/caps,
+     partial-failure behavior, and whether it is read-only or mutating.
 
-6. Write per-domain deliverable and highlight top 5.
-   - Write `/tmp/exhaust-<domain>.md` with ranked table, detailed cards, endpoint quick-reference, ship buckets, and top-5 ordered by ergonomics × selling power × quota efficiency; include tool-count impact (e.g., 551→~611 as of v1.27.1).
-   - Completion: markdown ≥15k with ranked table, 5 highlighted with rationale, count summary.
+6. Write the per-domain deliverable.
+   - Write `/tmp/exhaust-<domain>.md` with the live baseline, endpoint map,
+     ranked table, proposal cards, quick reference, ship buckets, and the top
+     five ordered by value, ergonomics, and quota efficiency.
+   - Express count impact as `live registered_tools + accepted net additions`;
+     do not hardcode a historical total or predict the final total before
+     dedupe and review.
+   - Completion: another agent can implement each P0/P1 card from the card and
+     endpoint evidence without rediscovering the baseline.
 
 7. Audit and dedupe across domains before logging.
-   - Merge all scout outputs: intra-dedupe, skip already-open issues (e.g., #229, #220, #224), drop deprecated, produce 73 unique → cap ship to 60 P0/P1 to avoid flooding, defer P2/🔴 to backlog; verify monotonic tool count beyond baseline floor (154, current 551 as of v1.27.1).
-   - Completion: audit file `/tmp/exhaust-audit.md` ≥10k with raw→unique→ship counts, priority table, and ship list.
+   - Merge by normalized endpoint, user job, and proposed tool name. Drop
+     duplicates, already-shipped work, removed endpoints, and unsupported
+     assumptions. Keep P2/high-cost ideas in the backlog rather than forcing
+     them into the ship set.
+   - Re-run the registry comparison after the ship set is chosen; accepted
+     proposals must not reduce the current live registered-tool surface.
+   - Completion: `/tmp/exhaust-audit.md` records raw → unique → accepted counts,
+     duplicate decisions, priority table, and final ship list.
 
-8. Log GitHub issues in rate-limited batch.
-   - Create issues with `gh issue create` in loop with 1s sleep to respect rate limit; monitor with `gh issue list --state open --json number --jq 'length'`; forward full stdout on success; handle long-pole (60 creates ~60s) without re-triggering scouts.
-   - Completion: up to 60 issues created; final open count and URLs reported.
+8. Log agreed issues in rate-limited batches.
+   - Create one issue per accepted proposal with `gh issue create`, including
+     verified endpoint evidence, acceptance criteria, quota behavior, and
+     duplicate-search results.
+   - Follow the repository's current GitHub issue-filing procedure and rate
+     limits. Record every returned issue URL; do not infer success from a loop
+     exit code alone.
+   - Completion: the accepted ship list and created issue URLs reconcile
+     one-to-one, with skipped items explained.
 
-9. Dispatch partitioned swarm and hold merges for review.
-   - Partition ship list into non-overlapping slices (e.g., catalog 15, playback 12, playlists 15, portability 12, misc 10) and open one isolated worktree per slice via `git worktree add /tmp/fix-exhaust-<slice> -b fix/exhaust-<slice> origin/main`; assign each slice its explicit `closes #N` set and an explicit DO NOT MERGE instruction.
-   - Require each worker subagent to reuse shaping helpers (`resolveMaxResults`/`truncateItems`/`getAllPages`/`resolveDeviceHint`), add 1-2 tests per tool, pass `npm test` and `npm run build`, commit conventionally (`feat(<domain>): ...`), push branch, and open PR via `gh pr create` listing its closes; report PR URL without merging.
-   - Completion: one PR per slice opened against `origin/main` with no merges; closed-issue sets are disjoint and sum to ship list.
+9. Dispatch partitioned implementation slices in isolated worktrees.
+   - Partition the ship list into non-overlapping endpoint/tool slices and
+     create each worktree from the agreed base, for example with
+     `git worktree add /tmp/fix-exhaust-<slice> -b fix/exhaust-<slice> <base>`.
+   - Give every worker its explicit issue set, owned files, shared interfaces,
+     and a no-merge instruction. Require behavioral regression tests for
+     consumer-visible behavior, then run the repository's own `npm test` and
+     `npm run build` gates once per integrated change.
+   - Completion: slices are disjoint, their base is recorded, and no worker
+     merges another slice.
 
-10. Run independent adversarial review-and-fix swarm before any merge (hold merges).
-    - Partition PRs into groups (e.g., 3 PRs/group, 5 groups for 14 PRs) and delegate one reviewer per group, using the project's preferred task-delegation mechanism; give each group explicit DO NOT MERGE, fix-by-pushing-to-PR-branch instructions and per-PR checklists (watermark hold, budget cap, dry_run cost disclosure, 429 partial recovery, phantom-queue disclosure, tool-count monotonic 154→, duplicate tool names, deprecated endpoints, quota flags).
-    - Require per PR: `gh pr view` + `gh issue view` for expected behavior, `git worktree` isolation, source review vs issue, `npm test` + `npm run build` with fixes in place, doc counts verification, `fix(review): <detail>` commit and `git push origin HEAD:<branch>`, 100/100 score and `/tmp/review-<group>-report.md` with scores, fixes, risks, PR URLs.
-    - Completion: all PRs scored 100/100, failing checks fixed and pushed, reports present, no merges performed.
+10. Run independent review and fix findings without merging.
+    - Partition implementation branches into review groups and assign one
+      reviewer per group. Each review checks issue behavior, current API/schema
+      evidence, duplicate names, mutation safety, quota disclosure, response
+      shaping, and whether the live registry surface increased as expected.
+    - Require `gh pr view` and `gh issue view` for expected behavior, source
+      review, the project test/build gates, and fixes pushed to the owning PR
+      branch. Reports must name risks and unresolved findings; a numeric score
+      is optional and never replaces evidence.
+    - Completion: every finding is fixed or explicitly accepted by the
+      integrator, CI is green, and no review worker merges.
 
-11. Ground-truth live accessibility against a real key before trusting SPEC §9 alone.
-   - Probe the undocumented/removed/dubious surface with a real token. Write probes as files under scripts/ (e.g., edge-probe.mjs); never inline `node -e` with an Authorization header — the redaction layer mangles `Bearer` expressions to `***` and breaks syntax, while file-based scripts run clean. The redactor also masks identifier-shaped text in edit/write/exec args and file-write content: property names that read as secrets (a counter's PASS member, pass-prefixed keys, token-property dot-access) get elided to `***`/ellipsis forms, silently corrupting programmatic patches (observed 2026-08-27: an invalid object key written to disk; a mangled edit needle that applied as a no-op). Build such strings via string concatenation inside file-based patcher scripts, and verify every programmatic patch — `node --check` for JS targets, a read-back diff otherwise.
-   - Classify every response: 200 ALIVE; 404 removed-dead; 410 gone; blanket `403 {"error":{"status":403,"message":"Forbidden"}}` with no reason field = app-registration gating, NOT a scope problem (scope errors carry distinct messages; if scope-requiring reads such as saved-tracks/top-artists return 200 while many documented endpoints 403 identically, the 403 family is app-gated, not a token defect).
-   - Verify tool-level behaviour by spawning the built server (`node --env-file=.env dist/index.js`) and driving JSON-RPC over stdio. Use the live `tools/list` count as ground truth (docs drift observed 2026-08-27: 224 registered vs 212 documented) and call candidate tools with minimal read-only args to expose raw vs graceful 403 handling.
-   - Record gated endpoints in the gauntlet REMOVED set as SKIP, never FAIL; prefer live fallbacks when verified (undocumented `/me/library/contains` returned 200 while every documented `/me/*/contains` variant 403'd, verified 2026-08-27).
-   - Completion: endpoint map (alive/dead/gone/gated) recorded in memory/ with probe scripts kept in scripts/, REMOVED set covers the gated class, drift counts filed as issues.
+11. Ground-truth uncertain endpoints with real credentials.
+    - Write auditable probe files under `scripts/` rather than embedding an
+      authorization header in a shell command. Keep credentials in the token
+      file or environment and redact outputs before saving evidence.
+    - Classify responses carefully: `200` alive; `404` removed/not found;
+      `410` gone; a generic `403 Forbidden` may be app-registration gating,
+      while a scope error has a distinct message. Confirm scope-related reads
+      before blaming the token.
+    - Verify tool behavior through the built stdio server. After
+      `npm run build`, start it with
+      `node --env-file-if-exists=.env dist/index.js` (or `npm start`) and drive
+      JSON-RPC over stdin/stdout. Use `tools/list` or `toolset_report` for the
+      live count, and call candidate tools with minimal read-only arguments.
+    - Record gated/dead endpoints in the live sweep report and gauntlet skip
+      sets. Do not turn a prior app-registration observation into a permanent
+      universal claim.
+    - Completion: an evidence record maps each uncertain endpoint to status,
+      response, timestamp, and the tool/resource behavior observed.
 
-12. Run the live sweep loop staggered and adaptive, never as one burst.
-   - Size each batch under the observed quota ceiling (e.g., BATCH=40 vs a ~45-call wall), sleep a fixed INTERVAL (default 1800s) between batches, and let FAILs retry on later batches so a mid-sweep wall never poisons results.
-   - Guard against wasted batches: after 3 consecutive failures, abort the batch with a `QUOTA_WALL` marker and have the loop double its sleep; the client fails fast on `QUOTA_EXCEEDED` (throws with `retryAfterSec`), so a wall costs seconds of timeouts, not minutes.
-   - Verify persistence separately from the run's summary line: after any smoke run that claims to write its report, `ls` the artifact — a clean "8 passed" summary can still mean the report silently never saved; confirm every new CLI flag (`--report=`) is actually parsed by the target script (a flag the script still only reads positionally drops the output), and rerun smoke until artifact + resume file exist.
-   - Make the batch report cumulative or the loop never finishes: each run must merge prior records with its own before writing (`new Map(done)` seeded from the resume load, then `merged.set(r.tool, r)` for this run, write the union, count the summary over the union). If a run overwrites the report with only its own records, `--resume` skips just the previous batch's records and later batches re-run the same early tools instead of progressing (observed 2026-08-27: batch 3 re-ran batch 1's tool list; loop would have cycled to MAX_BATCHES without completing).
-   - Cap FAIL retries (e.g., 2 attempts via `SWEEP_RETRY_MAX`): record `attempts` on each FAIL and skip resuming tools at the cap, or 120s quota timeouts get retried every batch and starve the batch budget forever.
-   - Launch the loop detached so host restarts cannot reap it: `setsid nohup bash scripts/sweep-loop.sh ... &`, never a plain background exec session — a gateway/exec restart kills session-anchored children silently and leaves only the latest batch header in the log. After launching, confirm a live `sweep-loop`/`live-gauntlet` pid (`ps -eo pid,etime,cmd | grep -E 'sweep-loop|live-gauntlet'`) and a fresh log mtime before walking away.
-   - Distinguish running from dead before diagnosing a silent loop: the loop echoes a batch's output only after the batch completes, so mid-batch silence is normal — check ps plus log mtime first; "LOOP NOT RUNNING" plus a stale mtime means the loop died and must be relaunched with the detached command above.
-   - Verify progression between batches before leaving a loop unattended: diff consecutive batch tool lists in the loop log — each batch must record new tool names or cleanly resumed skips. A batch repeating an earlier batch's list means resume state is lost: stop the loop, fix the merge, archive the stale report (rename, never delete), restart.
-   - Completion: sweep runs in staggered batches to a complete report with zero FAILs; report and resume files exist after every batch; consecutive batches show new tool names.
+12. Run the live sweep with the current package scripts.
+    - Use `npm run sweep` for one batch and `npm run sweep:loop` for the
+      quota-paced loop. The package scripts pass the current
+      `--batch`, `--resume`, and `--report` flags to
+      `scripts/live-gauntlet.mjs`; `scripts/sweep-loop.sh` controls `BATCH`,
+      `INTERVAL`, `REPORT`, and `MAX_BATCHES`.
+    - Keep batches below the observed quota wall, space them with `INTERVAL`,
+      and allow `SWEEP_RETRY_MAX` to cap retries. Inspect the report and resume
+      file after each run; the script merges prior records with current results.
+    - For an unattended loop, launch the package script detached, for example
+      `setsid nohup npm run sweep:loop > memory/sweep-loop.log 2>&1 &`.
+      Confirm a live process with
+      `ps -eo pid,etime,cmd | grep -E 'sweep-loop|live-gauntlet'` and check the
+      log mtime before leaving it unattended.
+    - Treat mid-batch silence as normal until process state and log mtime are
+      checked. Stop the loop if a resumed batch repeats the same tool set
+      without recording new entries or clean skips.
+    - Completion: the report accounts for every discovered tool as PASS,
+      SKIP/gated, or an explained FAIL; report and resume artifacts exist; no
+      unexplained failures remain.
 
 ## Guardrails
-- Never propose SPEC §9 removed endpoints; respect batch limits (chunk at 20-50) and SPOTIFY_MCP_FETCH_ALL_CAP; keep response_format/max_results/truncateItems shaping consistent.
-- Keep monotonic tool count: never propose restorations that drop below published floor (154 at v1.22.0, current 551 at v1.27.1); net adds only.
-- Guard non-existent workflow risk: verify every `gh workflow run` / `POST /actions/workflows/.../dispatches` target exists on the target ref before invoking; a 422 means the workflow file is absent on that ref, not a transient error.
+
+- Never propose a phantom endpoint or a removed API as if it were live. Verify
+  paths, parameters, and schemas against the current official OpenAPI document.
+- Respect Spotify batch limits, `SPOTIFY_MCP_FETCH_ALL_CAP`, request budgets,
+  `Retry-After`, and the shared response-shaping helpers.
+- Preserve the live registered-tool baseline unless the user explicitly asks
+  for a breaking cutover; accepted net additions must not reduce that surface.
+- Keep mutation tools read-only/dry-run safe where required, disclose fan-out
+  cost, and never bypass elicitation or scope gates.
+- Verify a workflow or script path exists on the target ref before invoking it;
+  a missing file is not a transient GitHub Actions failure.
+- Do not present a proposal, historical issue, or documented endpoint as
+  shipped. Re-check `tools/list`, the issue tracker, and the current source.
 
 ## References
-- Sources: SPEC.md §9, src/tools/*.ts, src/client.ts getAllPages, src/config.ts caps (DEFAULT_FETCH_ALL_CAP), src/shaping.ts helpers, audit-quota-lurkers.md.
-- Prior patterns: spotify-exhaustive-catalog-sweep (domain-specific), swarm PRs #243-248, fix/quota PRs #254-255.
+
+- `package.json` — package scripts and MCP SDK dependency.
+- `src/index.ts` — live registration gates and stdio entry.
+- `src/toolsets.ts` — active-set and per-module override semantics.
+- `src/tools/*.ts` — tool implementations and graceful endpoint handling.
+- `src/resources/index.ts` and `src/resources/templates.ts` — live resource
+  and template registrations, including show/episode ID completions.
+- `src/prompts/index.ts` — prompt registrations.
+- `src/client.ts`, `src/config.ts`, and `src/shaping.ts` — pagination, caps,
+  and response shaping.
+- `scripts/live-gauntlet.mjs` and `scripts/sweep-loop.sh` — live sweep flags,
+  safety classifications, retry, and report behavior.
+- `docs/configuration.md`, `docs/faq.md`, `docs/cookbook.md`, and
+  `docs/distribution.md` — current operator and packaging context.
+- `memory/live-sweep-report.json` — latest persisted sweep evidence; refresh it
+  rather than treating an old run as current truth.
+- Official Spotify OpenAPI schema:
+  `https://developer.spotify.com/reference/web-api/open-api-schema.yaml`.

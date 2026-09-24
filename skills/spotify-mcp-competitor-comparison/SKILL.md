@@ -5,29 +5,69 @@ description: "Answer \"is our MCP standard/conformant\" or \"do others offer mor
 
 # Spotify MCP Competitor Comparison
 
-Answer "is our MCP really standard / do others offer more" or "are we better than X" questions with in-repo evidence first, then web research. Never assert conformance from memory — the repo holds the proof.
+Answer "is our MCP really standard / do others offer more" or "are we better
+than X" questions with current in-repo and live-protocol evidence first, then
+web research. Never assert conformance or inventory from memory.
 
 ## Steps
 
-1. Verify protocol conformance in-repo before any web search.
-   - Read SPEC.md §2 (Transport, Stack) and §4.0.2 (MCP server wiring) for SDK version, transport, and primitive registration.
-   - Grep src/ for the primitive surface: `server.tool(` / `server.prompt(` / `server.resource(` counts, and `structuredContent`, progress-notification usage. `structuredContent` emission lives in src/shaping.ts plus tools like playlistmisc.ts, searchhistory.ts, queueops.ts.
-   - Cite tests/mcp.smoke.test.ts: it spawns the real entry over stdio and speaks raw newline-delimited JSON-RPC (initialize / tools/list / prompts/list / resources/list), so protocol conformance is tested, not assumed.
-   - Read current tool/prompt/resource counts from CHANGELOG or `grep -rn "server\.tool\|registerTool" src --include="*.ts" | wc -l` with typed-search factory correction (545 - 1 + 7 = 551) / live `tools/list` — they drift between releases (e.g., 551 tools as of v1.27.1 vs 550 in CHANGELOG at ee814a2); never hardcode counts from an older answer.
-   - Criterion: every protocol claim (SDK, transport, primitive counts, spec features) is backed by a file/line you inspected this turn.
+1. Establish the current protocol surface.
+   - Read `package.json` for the MCP SDK dependency and the scripts/entry
+     surface; read `src/index.ts` for the actual transport and tool/resource/
+     prompt registration gates.
+   - Treat `SPEC.md` as design/history, not a count source. Static registration
+     searches miss factories, inline registrations, scope gates, and toolset
+     trimming.
+   - Connect to the current server and record the live results of
+     `tools/list`, `resources/list`, `resources/templates/list`, and
+     `prompts/list`. For tools, `toolset_report.structuredContent`
+     exposes `registered_tools`, `active_toolsets`, and `active_modules`.
+   - Cite `tests/mcp.smoke.test.ts`: it starts the real stdio entry and
+     exchanges newline-delimited JSON-RPC for initialize and primitive lists.
+   - Criterion: every count and primitive claim names the live request or
+     source file inspected for this comparison. Never copy a count from
+     `CHANGELOG.md`, `SPEC.md`, or an earlier answer.
 
-2. State optional spec features the server lacks as optional, not gaps.
-   - Fixed checklist: stdio-only transport (no HTTP/SSE/Streamable), no server-side OAuth 2.0 dynamic client registration (PKCE CLI flow instead), no `completions/complete`, no roots/sampling.
-   - Criterion: the answer lists gaps only from this checklist and marks each as an optional spec feature, not a conformance failure.
+2. Re-audit optional or unsupported protocol features from current source.
+   Put the proof beside every claim:
 
-3. Survey the landscape with web_search.
-   - Query patterns: "<author> spotify-mcp npm tools", "most popular spotify mcp server stars", "<repo> spotify mcp".
-   - Tabulate each competitor's tool count or documented scope from search snippets/docs (e.g., SpotifyMCP2 docs state "eight tools").
-   - Check whether an official Spotify-published MCP server exists before claiming absence; if you find only community servers, say so explicitly.
-   - Criterion: every competitor row cites a source from search results plus a tool count or documented scope; the "official server exists?" claim is verified, not assumed.
+   | Claim | Current proof to inspect |
+   |---|---|
+   | stdio transport | `src/index.ts` imports and connects `StdioServerTransport`; no HTTP/SSE server entry is wired there |
+   | OAuth is Authorization Code + PKCE, not server-side dynamic client registration | `src/auth.ts` builds an authorization request with `code_challenge_method=S256` and exchanges `authorization_code` plus `code_verifier` |
+   | resource argument completion is present | `src/resources/templates.ts` attaches `complete.id` to the bare `spotify://show/{id}` and `spotify://episode/{id}` templates; `tests/resources.templates.test.ts` exercises their suggesters |
+   | no roots/sampling feature is exposed | Search `src/` for roots and sampling handlers and confirm no implementation; describe these as client capabilities that this server does not consume, not as a conformance failure |
 
-4. Answer with an evidence table, capability separate from delivery mode.
-   - Table: competitor scale vs ours, each row sourced.
-   - Delivery-mode differences (hosted remotes like Zapier/Composio/@open-mcp proxies: no local install but fewer tools and third-party token custody) go in their own section, never conflated with capability.
-   - Include the honest caveat: "standard in the wild" usually means small community servers; ours is conformant but atypical in scale.
-   - Criterion: capability claims and delivery-mode claims appear in separate sections, both backed by steps 1-3.
+   For completion, verify the protocol path rather than inferring it from
+   template registration. With a connected MCP client, call `client.complete`
+   using a `ref/resource` URI of `spotify://show/{id}` or
+   `spotify://episode/{id}`, argument name `id`, and an empty value. The
+   suggesters read the first saved-library IDs from `/me/shows` or
+   `/me/episodes` (up to ten); an unavailable library or failed request returns
+   an empty list. The query-string twins do not carry completion callbacks.
+   Do not claim completion for the artist, album, track, or playlist templates.
+
+   Criterion: absent optional features are labeled optional differences, and
+   every remaining claim has a named file, live request, or source search. A
+   missing optional feature is not a protocol-conformance failure.
+
+3. Survey the landscape with `web_search`.
+   - Query patterns: "<author> spotify-mcp npm tools", "most popular spotify
+     mcp server stars", and "<repo> spotify mcp".
+   - Tabulate each competitor's documented tool count or scope from current
+     search results, primary docs, or its repository. Do not turn a historical
+     snippet into a current count.
+   - Check whether Spotify publishes an official MCP server before claiming
+     absence; if the evidence shows only community servers, say exactly that.
+   - Criterion: every competitor row cites a current source plus a tool count
+     or documented scope, and the official-server claim is verified.
+
+4. Answer with evidence separated by capability and delivery mode.
+   - Show live scale versus competitors in one table, with each row sourced.
+   - Put hosted remotes and proxies (for example, the services verified in
+     Step 3) in a delivery-mode section: no local install, but third-party
+     token custody and a different tool surface.
+   - State the useful caveat without overclaiming: community MCP servers vary
+     widely, so protocol conformance and feature scale are separate questions.
+   - Criterion: capability and delivery claims are in separate sections and
+     both trace to Steps 1-3.
