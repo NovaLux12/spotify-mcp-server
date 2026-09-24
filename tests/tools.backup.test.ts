@@ -214,7 +214,7 @@ describe('backup_library', () => {
     const h = harness(baseResponder);
     const out = await h.invoke('backup_library', { response_format: 'concise' });
 
-    const files = (await readdir(tmp)).filter((f) => f.startsWith('backup-'));
+    const files = (await readdir(tmp)).filter((f) => /^backup-\d{4}-\d{2}-\d{2}-\d+\.json$/.test(f));
     assert.equal(files.length, 1);
     const file = join(tmp, files[0]!);
 
@@ -222,6 +222,14 @@ describe('backup_library', () => {
     const snap = JSON.parse(raw) as LibraryBackup; // round-trip validation
 
     assert.equal(snap._meta.created, new Date(snap._meta.created).toISOString());
+    assert.equal(snap._meta.snapshot_state, 'complete');
+    assert.equal(snap._meta.complete, true);
+    assert.equal(snap._meta.cap, 500);
+    assert.equal(snap._meta.caps.playlist_items_per_playlist, 500);
+    assert.equal(snap._meta.collections.liked_tracks.fetched, 5);
+    assert.equal(snap._meta.collections.liked_tracks.cap, 500);
+    assert.equal(snap._meta.collections.liked_tracks.truncated, false);
+    assert.equal(snap._meta.playlist_items.truncated, false);
     assert.deepEqual(snap._meta.counts, {
       liked_tracks: 5,
       saved_albums: 5,
@@ -231,6 +239,7 @@ describe('backup_library', () => {
       followed_artists: 3,
       playlists: 2,
       playlist_items: 5,
+      playlists_truncated: 0,
     });
 
     // Row shapes
@@ -264,7 +273,7 @@ describe('backup_library', () => {
     assert.match(textOf(out), /Library backup written/);
     assert.match(textOf(out), new RegExp(files[0]!));
     assert.match(textOf(out), /Liked tracks: 5/);
-    assert.match(textOf(out), /Playlists: 2 \(5 items\)/);
+    assert.match(textOf(out), /Playlists: 2 \(5 items; 0 truncated\)/);
     const sc = out.structuredContent as Record<string, unknown>;
     assert.equal(sc.ok, true);
     assert.equal(sc.file, file);
@@ -273,8 +282,8 @@ describe('backup_library', () => {
 
   it('stores optional notes in _meta', async () => {
     const h = harness(baseResponder);
-    await h.invoke('backup_library', { response_format: 'concise', notes: 'before spring clean' });
-    const raw = await readFile(join(tmp, (await readdir(tmp))[0]!), 'utf8');
+    const first = await h.invoke('backup_library', { response_format: 'concise', notes: 'before spring clean' });
+    const raw = await readFile((first.structuredContent as { file: string }).file, 'utf8');
     const snap = JSON.parse(raw) as LibraryBackup;
     assert.equal(snap._meta.notes, 'before spring clean');
 
@@ -295,8 +304,10 @@ describe('backup_library', () => {
       const stDir = await stat(nested);
       assert.equal(stDir.mode & 0o777, 0o700);
       const files = await readdir(nested);
-      const stFile = await stat(join(nested, files[0]!));
-      assert.equal(stFile.mode & 0o777, 0o600);
+      const snapshotName = files.find((name) => /^backup-.*\.json$/.test(name) && !name.endsWith('.meta.json'))!;
+      const sidecarName = files.find((name) => name.endsWith('.meta.json'))!;
+      assert.equal((await stat(join(nested, snapshotName))).mode & 0o777, 0o600);
+      assert.equal((await stat(join(nested, sidecarName))).mode & 0o777, 0o600);
     } finally {
       if (prev === undefined) delete process.env.SPOTIFY_MCP_BACKUP_DIR;
       else process.env.SPOTIFY_MCP_BACKUP_DIR = prev;
@@ -307,7 +318,7 @@ describe('backup_library', () => {
     const h = harness(baseResponder);
     await h.invoke('backup_library', { response_format: 'concise' });
     await h.invoke('backup_library', { response_format: 'concise' });
-    const files = (await readdir(tmp)).filter((f) => f.startsWith('backup-')).sort();
+    const files = (await readdir(tmp)).filter((f) => /^backup-\d{4}-\d{2}-\d{2}-\d+\.json$/.test(f)).sort();
     assert.equal(files.length, 2);
     assert.notEqual(files[0], files[1]);
     const [, seqA] = /-(\d+)\.json$/.exec(files[0]!)!;
@@ -340,6 +351,69 @@ describe('backup_library', () => {
       await h.invoke('backup_library', { response_format: 'concise', max_results: 2 })
     ).structuredContent as Record<string, unknown>;
     assert.equal((sc2.counts as Record<string, number>).liked_tracks, 2);
+  });
+
+  it('distinguishes exactly-at-cap from cap-plus-one collection walks', async () => {
+    const exact = harness((path, params) =>
+      path === '/me/tracks'
+        ? offsetPages('/me/tracks', [0, 1, 2].map((i) => savedRow('track', i)))(params)
+        : baseResponder(path, params),
+    );
+    const exactOut = await exact.invoke('backup_library', { response_format: 'json', max_results: 3 });
+    const exactSnap = JSON.parse(textOf(exactOut)) as LibraryBackup;
+    assert.equal(exactSnap._meta.collections.liked_tracks.fetched, 3);
+    assert.equal(exactSnap._meta.collections.liked_tracks.cap, 3);
+    assert.equal(exactSnap._meta.collections.liked_tracks.truncated, false);
+    assert.equal(exactSnap._meta.collections.liked_tracks.complete, true);
+
+    const over = harness((path, params) =>
+      path === '/me/tracks'
+        ? offsetPages('/me/tracks', [0, 1, 2, 3].map((i) => savedRow('track', i)))(params)
+        : baseResponder(path, params),
+    );
+    const overOut = await over.invoke('backup_library', { response_format: 'json', max_results: 3 });
+    const overSnap = JSON.parse(textOf(overOut)) as LibraryBackup;
+    assert.equal(overSnap._meta.collections.liked_tracks.fetched, 3);
+    assert.equal(overSnap._meta.collections.liked_tracks.truncated, true);
+    assert.equal(overSnap._meta.collections.liked_tracks.complete, false);
+    assert.equal(overSnap._meta.snapshot_state, 'partial');
+  });
+
+  it('records playlist item truncation and names the affected playlist in prose', async () => {
+    const h = harness((path, params) => {
+      if (path === '/me/playlists') {
+        return {
+          items: [{ id: 'large', name: 'Large Playlist', uri: 'spotify:playlist:large', items: { total: 600 } }],
+          total: 1,
+          limit: 50,
+          offset: 0,
+          next: null,
+        };
+      }
+      if (path === '/playlists/large/items') {
+        const offset = Number(params?.offset ?? 0);
+        const size = Math.min(100, 600 - offset);
+        return {
+          items: Array.from({ length: size }, (_, index) => ({
+            item: { uri: `spotify:track:${offset + index}`, name: `Track ${offset + index}` },
+          })),
+          total: 600,
+          limit: 100,
+          offset,
+          next: offset + size < 600 ? 'next' : null,
+        };
+      }
+      return baseResponder(path, params);
+    });
+    const out = await h.invoke('backup_library', { response_format: 'concise' });
+    const snap = JSON.parse(await readFile((out.structuredContent as { file: string }).file, 'utf8')) as LibraryBackup;
+    assert.equal(snap.playlists[0]!.items.length, 500);
+    assert.equal(snap.playlists[0]!.item_count, 600);
+    assert.equal(snap.playlists[0]!.items_truncated, true);
+    assert.equal(snap._meta.counts.playlists_truncated, 1);
+    assert.equal(snap._meta.playlist_items.truncated_playlists, 1);
+    assert.equal(snap._meta.snapshot_state, 'partial');
+    assert.match(textOf(out), /Large Playlist.*fetched 500 of 600 items, cap 500 — TRUNCATED/);
   });
 
   it('walks multi-page offset endpoints until next is null', async () => {
@@ -424,6 +498,21 @@ describe('list_backups', () => {
     const older: LibraryBackup = {
       _meta: {
         created: '2025-12-01T10:00:00.000Z',
+        snapshot_state: 'complete',
+        complete: true,
+        partial_reasons: [],
+        cap: 500,
+        caps: { per_category: 500, playlist_items_per_playlist: 500 },
+        collections: {
+          liked_tracks: { fetched: 9, cap: 500, complete: true, truncated: false },
+          saved_albums: { fetched: 0, cap: 500, complete: true, truncated: false },
+          saved_shows: { fetched: 0, cap: 500, complete: true, truncated: false },
+          saved_episodes: { fetched: 0, cap: 500, complete: true, truncated: false },
+          saved_audiobooks: { fetched: 0, cap: 500, complete: true, truncated: false },
+          followed_artists: { fetched: 1, cap: 500, complete: true, truncated: false },
+          playlists: { fetched: 0, cap: 500, complete: true, truncated: false },
+        },
+        playlist_items: { fetched: 0, cap_per_playlist: 500, truncated: false, truncated_playlists: 0 },
         counts: {
           liked_tracks: 9,
           saved_albums: 0,
@@ -433,6 +522,7 @@ describe('list_backups', () => {
           followed_artists: 1,
           playlists: 0,
           playlist_items: 0,
+          playlists_truncated: 0,
         },
       },
       liked_tracks: [],
@@ -461,6 +551,7 @@ describe('list_backups', () => {
       bytes: number | null;
       counts: Record<string, number> | null;
       notes?: string;
+      metadata_source: string;
     }>;
     assert.equal(backups.length, 3);
     // Newest-first: both of today's snapshots precede the seeded 2025 one...
@@ -474,12 +565,57 @@ describe('list_backups', () => {
     assert.equal(backups[2]!.counts!.liked_tracks, 9);
     assert.equal(backups[2]!.counts!.followed_artists, 1);
     assert.equal(backups[0]!.notes, 'latest');
+    assert.equal(backups[0]!.metadata_source, 'sidecar');
+    assert.equal(backups[2]!.metadata_source, 'legacy_prefix');
     assert.ok(backups.every((b) => b.bytes !== null && b.bytes > 0));
 
     assert.match(textOf(out), /newest first/);
     const firstIdx = textOf(out).indexOf(backups[0]!.path.split('/').pop()!);
     const lastIdx = textOf(out).indexOf(backups[2]!.path.split('/').pop()!);
     assert.ok(firstIdx !== -1 && lastIdx !== -1 && firstIdx < lastIdx);
+  });
+
+
+  it('lists quota partial snapshots visibly with their recorded reason', async () => {
+    const partialPath = join(tmp, 'backup-2026-01-02-7.partial.json');
+    const meta = {
+      created: '2026-01-02T03:04:05.000Z',
+      snapshot_state: 'partial',
+      complete: false,
+      partial_reason: 'quota_exceeded',
+      partial_reasons: ['quota_exceeded'],
+      counts: { liked_tracks: 0, playlists: 0, playlist_items: 0, followed_artists: 0 },
+    };
+    await writeFile(partialPath, `${JSON.stringify({ _meta: meta, _partial: true }, null, 2)}\n`);
+    await writeFile(
+      join(tmp, 'backup-2026-01-02-7.partial.meta.json'),
+      `${JSON.stringify({ schema_version: 1, snapshot: partialPath, bytes: 123, meta }, null, 2)}\n`,
+    );
+
+    const out = await harness(baseResponder).invoke('list_backups', { response_format: 'concise' });
+    const backups = (out.structuredContent as { backups: Array<Record<string, unknown>> }).backups;
+    assert.equal(backups.length, 1);
+    assert.equal(backups[0]!.partial, true);
+    assert.equal(backups[0]!.complete, false);
+    assert.equal(backups[0]!.snapshot_state, 'partial');
+    assert.equal(backups[0]!.partial_reason, 'quota_exceeded');
+    assert.match(textOf(out), /PARTIAL: quota_exceeded/);
+  });
+
+  it('uses a bounded legacy metadata prefix without parsing a multi-megabyte body', async () => {
+    const legacyPath = join(tmp, 'backup-2026-01-03-1.json');
+    const legacyPrefix = `${JSON.stringify({
+      _meta: {
+        created: '2026-01-03T00:00:00.000Z',
+        counts: { liked_tracks: 7, playlists: 2, playlist_items: 9, followed_artists: 3 },
+      },
+    }).slice(0, -1)},\n${'"liked_tracks":[' + '0,'.repeat(5_000_000)}\n`;
+    await writeFile(legacyPath, legacyPrefix);
+    const out = await harness(baseResponder).invoke('list_backups', { response_format: 'json' });
+    const backups = (JSON.parse(textOf(out)) as { backups: Array<Record<string, unknown>> }).backups;
+    assert.equal(backups.length, 1);
+    assert.equal((backups[0]!.counts as Record<string, number>).liked_tracks, 7);
+    assert.equal(backups[0]!.snapshot_state, 'unknown');
   });
 
   it('json mode exposes the raw backups payload', async () => {
@@ -516,10 +652,18 @@ describe('backup_library dry_run + quota', () => {
     assert.equal(sc.retry_after, 60);
     assert.match(textOf(out), /Quota hit/);
     // partial file was written
-    if (sc.file) {
-      const raw = await readFile(sc.file as string, 'utf8');
-      const j = JSON.parse(raw);
-      assert.equal(j.quota_hit, true);
-    }
+    assert.ok(sc.file);
+    const raw = await readFile(sc.file as string, 'utf8');
+    const j = JSON.parse(raw);
+    assert.equal(j.quota_hit, true);
+    assert.equal(j._meta.snapshot_state, 'partial');
+    assert.equal(j._meta.complete, false);
+    assert.equal(j._meta.partial_reason, 'quota_exceeded');
+
+    const list = await h.invoke('list_backups', { response_format: 'json' });
+    const listed = (JSON.parse(textOf(list)) as { backups: Array<Record<string, unknown>> }).backups;
+    assert.equal(listed.length, 1);
+    assert.equal(listed[0]!.partial, true);
+    assert.equal(listed[0]!.partial_reason, 'quota_exceeded');
   });
 });

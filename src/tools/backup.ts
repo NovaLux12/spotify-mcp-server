@@ -1,25 +1,24 @@
 /**
  * Library backup (#159): snapshot the entire reachable library — liked
  * tracks, saved albums/shows/episodes/audiobooks, followed artists and every
- * playlist (with items) — into a timestamped local JSON file, plus a cheap
- * inventory of past snapshots.
+ * playlist (with items) — into a timestamped local JSON file plus a bounded
+ * metadata sidecar used by list_backups.
  *
- * Backups are READ-ONLY against Spotify: every endpoint hit is a GET. The
- * only write is the local sidecar file (owner-only dir 0700 / file 0600,
- * same hygiene as scenes.json). Restore stays a separate, additive-only
- * concern (#160).
+ * Backups are READ-ONLY against Spotify: every endpoint hit is a GET. Local
+ * snapshots and sidecars use owner-only dir 0700 / file 0600 permissions.
+ * Restore stays a separate, additive-only concern (#160).
  *
  * Every walk is capped at getConfig().fetchAllCap (SPOTIFY_MCP_FETCH_ALL_CAP,
  * default 500); an explicit max_results argument overrides it for this call.
  */
 import { z } from 'zod';
-import { mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises';
+import { mkdir, open, readdir, stat, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
 import { getConfig } from '../config.js';
-import { ResponseFormat, DryRun, type ResponseFormatValue } from '../shaping.js';
+import { ResponseFormat, DryRun, completenessFooter, type ResponseFormatValue } from '../shaping.js';
 import { SpotifyApiError } from '../client.js';
 import type {
   FollowedArtistsResponse,
@@ -57,12 +56,48 @@ export interface BackupPlaylistRow {
   /** Spotify's own item total when reported (`items.total`), else items.length. */
   item_count: number | null;
   items: Array<{ uri: string; name: string }>;
+  /** True when stored playlist items are incomplete because the item cap was reached. */
+  items_truncated: boolean;
+  /** Present when Spotify could not be read for this playlist. */
+  items_error?: string;
 }
 
-/** Cheap top-level block so list_backups never parses full snapshots. */
+export type BackupCollectionName =
+  | 'liked_tracks'
+  | 'saved_albums'
+  | 'saved_shows'
+  | 'saved_episodes'
+  | 'saved_audiobooks'
+  | 'followed_artists'
+  | 'playlists';
+
+export interface BackupCollectionStatus {
+  fetched: number;
+  cap: number;
+  complete: boolean;
+  truncated: boolean;
+}
+
+/** Cheap top-level block mirrored to an owner-only sidecar for list_backups. */
 export interface BackupMeta {
   created: string;
   notes?: string;
+  snapshot_state: 'complete' | 'partial';
+  complete: boolean;
+  partial_reason?: string;
+  partial_reasons: string[];
+  cap: number;
+  caps: {
+    per_category: number;
+    playlist_items_per_playlist: number;
+  };
+  collections: Record<BackupCollectionName, BackupCollectionStatus>;
+  playlist_items: {
+    fetched: number;
+    cap_per_playlist: number;
+    truncated: boolean;
+    truncated_playlists: number;
+  };
   counts: {
     liked_tracks: number;
     saved_albums: number;
@@ -72,6 +107,7 @@ export interface BackupMeta {
     followed_artists: number;
     playlists: number;
     playlist_items: number;
+    playlists_truncated: number;
   };
 }
 
@@ -99,7 +135,7 @@ export function backupDir(env: NodeJS.ProcessEnv = process.env): string {
   return env.SPOTIFY_MCP_BACKUP_DIR ?? join(homedir(), '.spotify-mcp', 'backups');
 }
 
-const BACKUP_FILE_RE = /^backup-(\d{4}-\d{2}-\d{2})-(\d+)\.json$/;
+const BACKUP_FILE_RE = /^backup-(\d{4}-\d{2}-\d{2})-(\d+)(\.partial)?\.json$/;
 
 /**
  * Next free sequence for today's date inside dir. Scans existing names so
@@ -125,32 +161,49 @@ export async function nextBackupSeq(dir: string, dateStamp: string): Promise<num
 // ---------------------------------------------------------------------------
 
 
+interface WalkResult<T> {
+  rows: T[];
+  complete: boolean;
+  truncated: boolean;
+}
 
 /**
- * Offset-walk a standard Spotify paged endpoint up to `cap` items using the
- * raw client get (not getAllPages) so every page stays observable in tests
- * and the cap applies uniformly across heterogeneous endpoints.
+ * Offset-walk a standard Spotify paged endpoint up to `cap` items. The
+ * endpoint's own `next` signal distinguishes an exact-cap ending from a walk
+ * that was cut short, without fetching cap + 1 full rows.
  */
-async function walkOffset<T>(
-  client: SpotifyClient,
-  path: string,
-  cap: number,
-): Promise<T[]> {
+async function walkOffset<T>(client: SpotifyClient, path: string, cap: number): Promise<WalkResult<T>> {
   const out: T[] = [];
   let offset = 0;
-  // Hard iteration bound so a misbehaving server can never loop forever.
-  while (out.length < cap && offset < cap * 2) {
+  let truncated = false;
+  let complete = false;
+  const maxRequests = Math.ceil((cap + 1) / 50) + 1;
+  for (let request = 0; request < maxRequests && offset <= cap; request += 1) {
     const page = await client.get<SpotifyPaged<T>>(path, {
-      limit: '50',
+      limit: String(Math.min(50, cap + 1 - out.length)),
       offset: String(offset),
     });
-    if (!page || !Array.isArray(page.items)) break;
+    if (!page || !Array.isArray(page.items)) {
+      complete = true;
+      break;
+    }
     out.push(...page.items);
-    if (!page.next || page.items.length === 0) break;
+    if (out.length > cap) {
+      out.length = cap;
+      truncated = true;
+      break;
+    }
+    if (!page.next || page.items.length === 0) {
+      complete = true;
+      break;
+    }
+    if (out.length >= cap) {
+      truncated = true;
+      break;
+    }
     offset += page.items.length;
   }
-  if (out.length > cap) out.length = cap;
-  return out;
+  return { rows: out, complete, truncated };
 }
 
 async function walkSaved(
@@ -158,76 +211,118 @@ async function walkSaved(
   path: string,
   key: 'track' | 'album' | 'show' | 'episode' | 'audiobook',
   cap: number,
-): Promise<BackupSavedRow[]> {
+): Promise<WalkResult<BackupSavedRow>> {
   type Row = { added_at: string } & Record<string, { uri: string; name: string }>;
-  const rows = await walkOffset<Row>(client, path, cap);
-  return rows
+  const walked = await walkOffset<Row>(client, path, cap);
+  const rows = walked.rows
     .filter((r) => r[key] !== undefined && r[key] !== null)
     .map((r) => ({ uri: r[key].uri, name: r[key].name, added_at: r.added_at }));
+  return { rows, complete: walked.complete, truncated: walked.truncated };
 }
 
-/** Cursor-walk followed artists (after-cursor pagination, not offsets). */
-async function walkFollowedArtists(
-  client: SpotifyClient,
-  cap: number,
-): Promise<BackupArtistRow[]> {
+/** Cursor-walk followed artists, retaining the API's end-of-data signal. */
+async function walkFollowedArtists(client: SpotifyClient, cap: number): Promise<WalkResult<BackupArtistRow>> {
   const out: BackupArtistRow[] = [];
   let after: string | undefined;
-  while (out.length < cap) {
-    const params: Record<string, string> = { type: 'artist', limit: '50' };
+  let complete = false;
+  let truncated = false;
+  const maxRequests = Math.ceil((cap + 1) / 50) + 1;
+  for (let request = 0; request < maxRequests; request += 1) {
+    const params: Record<string, string> = { type: 'artist', limit: String(Math.min(50, cap + 1 - out.length)) };
     if (after) params.after = after;
     const page = await client.get<FollowedArtistsResponse>('/me/following', params);
-    const items = page?.artists?.items ?? [];
-    if (items.length === 0) break;
+    if (!page) {
+      complete = true;
+      break;
+    }
+    const items = page.artists?.items ?? [];
+    if (items.length === 0) {
+      complete = true;
+      break;
+    }
     out.push(...items.map((a) => ({ uri: a.uri, name: a.name })));
+    if (out.length > cap) {
+      out.length = cap;
+      truncated = true;
+      break;
+    }
     after = page?.artists?.cursors?.after ?? undefined;
-    if (!page?.artists?.next || !after) break;
+    if (!page?.artists?.next || !after) {
+      complete = true;
+      break;
+    }
+    if (out.length >= cap) {
+      truncated = true;
+      break;
+    }
   }
-  if (out.length > cap) out.length = cap;
-  return out;
+  return { rows: out, complete, truncated };
 }
 
-/** Per-playlist item cap (#159): at most 500 items snapshotted per playlist. */
+/** Per-playlist item cap (#159): at most 500 valid items are stored. */
 const PLAYLIST_ITEMS_CAP = 500;
 
-function playlistItemRows(rows: PlaylistItemObject[], cap: number): BackupPlaylistRow['items'] {
-  const out: Array<{ uri: string; name: string }> = [];
-  for (const r of rows) {
-    if (out.length >= cap) break;
-    // Local tracks removed by Spotify surface as null items — skip them.
-    const item = r.item;
-    if (!item || typeof item !== 'object') continue;
-    if (typeof item.uri !== 'string' || typeof item.name !== 'string') continue;
-    out.push({ uri: item.uri, name: item.name });
-  }
-  return out;
-}
 
-/** Page one playlist's items up to min(cap, PLAYLIST_ITEMS_CAP). */
+/** Page valid playlist items and report a true next-page cap crossing. */
 async function collectPlaylistItems(
   client: SpotifyClient,
   playlistId: string,
   cap: number,
-): Promise<{ items: BackupPlaylistRow['items']; truncated: boolean }> {
+): Promise<WalkResult<BackupPlaylistRow['items'][number]>> {
   const limit = Math.min(cap, PLAYLIST_ITEMS_CAP);
-  const out: Array<{ uri: string; name: string }> = [];
+  const out: BackupPlaylistRow['items'] = [];
   let offset = 0;
-  while (out.length < limit && offset < limit * 2) {
+  let complete = false;
+  let truncated = false;
+  const maxRequests = Math.ceil((limit + 1) / 100) + 1;
+  for (let request = 0; request < maxRequests; request += 1) {
     const page = await client.get<SpotifyPaged<PlaylistItemObject>>(
       `/playlists/${playlistId}/items`,
-      { limit: '100', offset: String(offset) },
+      { limit: String(Math.min(100, limit + 1 - out.length)), offset: String(offset) },
     );
-    if (!page || !Array.isArray(page.items)) break;
-    out.push(...playlistItemRows(page.items, limit));
-    if (!page.next || page.items.length === 0) break;
+    if (!page || !Array.isArray(page.items)) {
+      complete = true;
+      break;
+    }
+    let validBeyondRemaining = false;
+    for (const row of page.items) {
+      const item = row.item;
+      if (!item || typeof item !== 'object') continue;
+      if (typeof item.uri !== 'string' || typeof item.name !== 'string') continue;
+      if (out.length >= limit) {
+        validBeyondRemaining = true;
+        break;
+      }
+      out.push({ uri: item.uri, name: item.name });
+    }
+    if (validBeyondRemaining) {
+      truncated = true;
+      break;
+    }
+    if (!page.next || page.items.length === 0) {
+      complete = true;
+      break;
+    }
+    if (out.length >= limit) {
+      truncated = true;
+      break;
+    }
     offset += page.items.length;
   }
-  return { items: out.slice(0, limit), truncated: out.length >= limit };
+  return { rows: out, complete, truncated };
 }
 
-/** Gather the full library snapshot via read-only GETs. */
-export async function collectSnapshot(client: SpotifyClient, cap: number): Promise<Omit<LibraryBackup, '_meta'>> {
-  const [liked, albums, shows, episodes, audiobooks, artists, playlists] = await Promise.all([
+type SnapshotBody = Omit<LibraryBackup, '_meta'>;
+interface DetailedSnapshot {
+  body: SnapshotBody;
+  collections: BackupMeta['collections'];
+  playlistItems: BackupMeta['playlist_items'];
+  partialReasons: string[];
+}
+
+/** Gather a snapshot plus truthful end-of-data/truncation metadata. */
+async function collectSnapshotDetailed(client: SpotifyClient, cap: number): Promise<DetailedSnapshot> {
+  const [liked, albums, shows, episodes, audiobooks, artists, playlistWalk] = await Promise.all([
     walkSaved(client, '/me/tracks', 'track', cap),
     walkSaved(client, '/me/albums', 'album', cap),
     walkSaved(client, '/me/shows', 'show', cap),
@@ -238,39 +333,80 @@ export async function collectSnapshot(client: SpotifyClient, cap: number): Promi
   ]);
 
   const playlistRows: BackupPlaylistRow[] = [];
-  for (const p of playlists) {
+  const partialReasons: string[] = [];
+  for (const p of playlistWalk.rows) {
     if (!p || typeof p.uri !== 'string') continue;
+    const reported =
+      p.items && typeof p.items === 'object' && typeof (p.items as { total?: unknown }).total === 'number'
+        ? (p.items.total as number)
+        : null;
     try {
-      const { items } = await collectPlaylistItems(client, p.id, cap);
-      const reported =
-        p.items && typeof p.items === 'object' && typeof (p.items as { total?: unknown }).total === 'number'
-          ? (p.items.total as number)
-          : null;
+      const walked = await collectPlaylistItems(client, p.id, cap);
+      if (walked.truncated) partialReasons.push(`playlist_truncated:${p.uri}`);
+      if (!walked.complete) partialReasons.push(`playlist_incomplete:${p.uri}`);
       playlistRows.push({
         uri: p.uri,
         name: typeof p.name === 'string' ? p.name : '',
-        item_count: reported ?? items.length,
-        items,
+        item_count: reported ?? walked.rows.length,
+        items: walked.rows,
+        items_truncated: walked.truncated,
       });
     } catch (e) {
       if (e instanceof SpotifyApiError && e.status === 429) throw e;
-      // non-quota per-playlist error: skip playlist
-      playlistRows.push({ uri: p.uri, name: typeof p.name === 'string' ? p.name : '', item_count: 0, items: [] });
+      const message = e instanceof Error ? e.message : String(e);
+      partialReasons.push(`playlist_read_failed:${p.uri}:${message}`);
+      playlistRows.push({
+        uri: p.uri,
+        name: typeof p.name === 'string' ? p.name : '',
+        item_count: reported ?? 0,
+        items: [],
+        items_truncated: false,
+        items_error: message,
+      });
     }
   }
 
-  return {
-    liked_tracks: liked,
-    saved_albums: albums,
-    saved_shows: shows,
-    saved_episodes: episodes,
-    saved_audiobooks: audiobooks,
-    followed_artists: artists,
+  const body: SnapshotBody = {
+    liked_tracks: liked.rows,
+    saved_albums: albums.rows,
+    saved_shows: shows.rows,
+    saved_episodes: episodes.rows,
+    saved_audiobooks: audiobooks.rows,
+    followed_artists: artists.rows,
     playlists: playlistRows,
+  };
+  const statuses: BackupMeta['collections'] = {
+    liked_tracks: { fetched: liked.rows.length, cap, complete: liked.complete, truncated: liked.truncated },
+    saved_albums: { fetched: albums.rows.length, cap, complete: albums.complete, truncated: albums.truncated },
+    saved_shows: { fetched: shows.rows.length, cap, complete: shows.complete, truncated: shows.truncated },
+    saved_episodes: { fetched: episodes.rows.length, cap, complete: episodes.complete, truncated: episodes.truncated },
+    saved_audiobooks: { fetched: audiobooks.rows.length, cap, complete: audiobooks.complete, truncated: audiobooks.truncated },
+    followed_artists: { fetched: artists.rows.length, cap, complete: artists.complete, truncated: artists.truncated },
+    playlists: { fetched: playlistRows.length, cap, complete: playlistWalk.complete, truncated: playlistWalk.truncated },
+  };
+  const cappedCollections = Object.entries(statuses)
+    .filter(([, status]) => !status.complete || status.truncated)
+    .map(([name]) => name);
+  if (cappedCollections.length > 0) partialReasons.unshift(`collection_cap_reached:${cappedCollections.join(',')}`);
+  return {
+    body,
+    collections: statuses,
+    playlistItems: {
+      fetched: playlistRows.reduce((n, p) => n + p.items.length, 0),
+      cap_per_playlist: Math.min(cap, PLAYLIST_ITEMS_CAP),
+      truncated: playlistRows.some((p) => p.items_truncated),
+      truncated_playlists: playlistRows.filter((p) => p.items_truncated).length,
+    },
+    partialReasons,
   };
 }
 
-function metaCounts(snap: Omit<LibraryBackup, '_meta'>): BackupMeta['counts'] {
+/** Gather the full library snapshot via read-only GETs. */
+export async function collectSnapshot(client: SpotifyClient, cap: number): Promise<SnapshotBody> {
+  return (await collectSnapshotDetailed(client, cap)).body;
+}
+
+function metaCounts(snap: SnapshotBody): BackupMeta['counts'] {
   return {
     liked_tracks: snap.liked_tracks.length,
     saved_albums: snap.saved_albums.length,
@@ -280,6 +416,35 @@ function metaCounts(snap: Omit<LibraryBackup, '_meta'>): BackupMeta['counts'] {
     followed_artists: snap.followed_artists.length,
     playlists: snap.playlists.length,
     playlist_items: snap.playlists.reduce((n, p) => n + p.items.length, 0),
+    playlists_truncated: snap.playlists.filter((p) => p.items_truncated).length,
+  };
+}
+
+function buildMeta(
+  created: string,
+  detailed: DetailedSnapshot,
+  notes?: string,
+  forcedPartialReason?: string,
+): BackupMeta {
+  const partialReasons = forcedPartialReason
+    ? [forcedPartialReason, ...detailed.partialReasons]
+    : detailed.partialReasons;
+  const complete = partialReasons.length === 0;
+  return {
+    created,
+    ...(notes !== undefined ? { notes } : {}),
+    snapshot_state: complete ? 'complete' : 'partial',
+    complete,
+    ...(partialReasons[0] !== undefined ? { partial_reason: partialReasons[0] } : {}),
+    partial_reasons: partialReasons,
+    cap: detailed.collections.liked_tracks.cap,
+    caps: {
+      per_category: detailed.collections.liked_tracks.cap,
+      playlist_items_per_playlist: detailed.playlistItems.cap_per_playlist,
+    },
+    collections: detailed.collections,
+    playlist_items: detailed.playlistItems,
+    counts: metaCounts(detailed.body),
   };
 }
 
@@ -303,6 +468,109 @@ function shapeResult(rf: ResponseFormatValue, prose: string, payload: Record<str
 function formatBytes(n: number): string {
   return n < 1024 ? `${n} B` : `${(n / 1024).toFixed(1)} KiB`;
 }
+
+const MAX_SIDECAR_BYTES = 1024 * 1024;
+const MAX_LEGACY_META_PREFIX_BYTES = 64 * 1024;
+
+const MetadataRecordSchema = z.record(z.string(), z.unknown());
+const MetadataCountsSchema = z.record(z.string(), z.number());
+const MetadataSidecarSchema = z.object({ meta: MetadataRecordSchema });
+
+function metadataSidecarPath(snapshotPath: string): string {
+  return `${snapshotPath.slice(0, -'.json'.length)}.meta.json`;
+}
+
+async function readBoundedJson(path: string, maxBytes: number): Promise<unknown | null> {
+  const handle = await open(path, 'r');
+  try {
+    const file = await handle.stat();
+    if (file.size > maxBytes) return null;
+    const buffer = Buffer.allocUnsafe(file.size);
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+    const raw = buffer.subarray(0, bytesRead).toString('utf8');
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      return MetadataRecordSchema.safeParse(parsed).success ? parsed : null;
+    } catch {
+      return null;
+    }
+  } finally {
+    await handle.close();
+  }
+}
+
+/** Read only the leading _meta object from a pre-sidecar snapshot. */
+async function readLegacySnapshotMeta(path: string): Promise<Record<string, unknown> | null> {
+  const handle = await open(path, 'r');
+  let prefix: string;
+  try {
+    const buffer = Buffer.allocUnsafe(MAX_LEGACY_META_PREFIX_BYTES);
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+    prefix = buffer.subarray(0, bytesRead).toString('utf8');
+  } finally {
+    await handle.close();
+  }
+
+  const key = prefix.indexOf('"_meta"');
+  if (key < 0) return null;
+  const objectStart = prefix.indexOf('{', key);
+  if (objectStart < 0) return null;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let i = objectStart; i < prefix.length; i += 1) {
+    const char = prefix[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (char === '\\') escaped = true;
+      else if (char === '"') inString = false;
+      continue;
+    }
+    if (char === '"') inString = true;
+    else if (char === '{') depth += 1;
+    else if (char === '}') {
+      depth -= 1;
+      if (depth === 0) {
+        try {
+          const parsed: unknown = JSON.parse(prefix.slice(objectStart, i + 1));
+          const validated = MetadataRecordSchema.safeParse(parsed);
+          return validated.success ? validated.data : null;
+        } catch {
+          return null;
+        }
+      }
+    }
+  }
+  return null;
+}
+
+async function writeMetadataSidecar(snapshotPath: string, meta: BackupMeta, bytes: number): Promise<void> {
+  const body = `${JSON.stringify({ schema_version: 1, snapshot: snapshotPath, bytes, meta }, null, 2)}\n`;
+  await writeFile(metadataSidecarPath(snapshotPath), body, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+}
+
+function stringField(record: Record<string, unknown>, key: string): string | undefined {
+  const value = record[key];
+  return typeof value === 'string' ? value : undefined;
+}
+
+function countsField(record: Record<string, unknown>): Record<string, number> | null {
+  const value = record.counts;
+  const validated = MetadataCountsSchema.safeParse(value);
+  return validated.success ? validated.data : null;
+}
+
+function booleanField(record: Record<string, unknown>, key: string): boolean | undefined {
+  const value = record[key];
+  return typeof value === 'boolean' ? value : undefined;
+}
+
+function stringArrayField(record: Record<string, unknown>, key: string): string[] {
+  const value = record[key];
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is string => typeof item === 'string');
+}
+
 
 // ---------------------------------------------------------------------------
 // Registration
@@ -356,18 +624,46 @@ export function registerBackupTools(server: McpServer, client: SpotifyClient): v
         if (args.response_format === 'json') return { content: [{ type: 'text', text: JSON.stringify(payload, null, 2) }], structuredContent: payload };
         return shapeResult(args.response_format, prose, payload);
       }
-      let collected: Omit<LibraryBackup, '_meta'>;
-      let quotaHit: { retry_after: number | null } | null = null;
+      let detailed: DetailedSnapshot;
       try {
-        collected = await collectSnapshot(client, cap);
+        detailed = await collectSnapshotDetailed(client, cap);
       } catch (e) {
         if (e instanceof SpotifyApiError && e.status === 429) {
-          quotaHit = { retry_after: e.retryAfterSec ?? null };
-          // Build a best-effort partial from what collectSnapshot may have partially populated is not available,
-          // so we return a quota_hit summary and no file. Attempt to write a partial file with empty categories.
-          const partial: Omit<LibraryBackup, '_meta'> = { liked_tracks: [], saved_albums: [], saved_shows: [], saved_episodes: [], saved_audiobooks: [], followed_artists: [], playlists: [] };
+          const quotaHit = { retry_after: e.retryAfterSec ?? null };
+          const partialBody: SnapshotBody = {
+            liked_tracks: [],
+            saved_albums: [],
+            saved_shows: [],
+            saved_episodes: [],
+            saved_audiobooks: [],
+            followed_artists: [],
+            playlists: [],
+          };
+          const emptyStatus = (): BackupCollectionStatus => ({ fetched: 0, cap, complete: false, truncated: false });
+          const partialDetailed: DetailedSnapshot = {
+            body: partialBody,
+            collections: {
+              liked_tracks: emptyStatus(),
+              saved_albums: emptyStatus(),
+              saved_shows: emptyStatus(),
+              saved_episodes: emptyStatus(),
+              saved_audiobooks: emptyStatus(),
+              followed_artists: emptyStatus(),
+              playlists: emptyStatus(),
+            },
+            playlistItems: {
+              fetched: 0,
+              cap_per_playlist: Math.min(cap, PLAYLIST_ITEMS_CAP),
+              truncated: false,
+              truncated_playlists: 0,
+            },
+            partialReasons: [],
+          };
           const created = new Date().toISOString();
-          const snapshot: LibraryBackup = { _meta: { created, counts: metaCounts(partial) }, ...partial };
+          const snapshot: LibraryBackup = {
+            _meta: buildMeta(created, partialDetailed, args.notes, 'quota_exceeded'),
+            ...partialBody,
+          };
           let file: string | null = null;
           try {
             const dir = backupDir();
@@ -375,24 +671,33 @@ export function registerBackupTools(server: McpServer, client: SpotifyClient): v
             const dateStamp = created.slice(0, 10);
             const seq = await nextBackupSeq(dir, dateStamp);
             file = join(dir, `backup-${dateStamp}-${seq}.partial.json`);
-            await writeFile(file, `${JSON.stringify({ ...snapshot, _partial: true, quota_hit: true, retry_after: quotaHit.retry_after }, null, 2)}\n`, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
-          } catch { /* best-effort */ }
-          const payload: Record<string, unknown> = { ok: false, quota_hit: true, retry_after: quotaHit.retry_after, file, counts: metaCounts(partial), partial: true };
+            const body = `${JSON.stringify({ ...snapshot, _partial: true, quota_hit: true, retry_after: quotaHit.retry_after }, null, 2)}\n`;
+            await writeFile(file, body, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+            await writeMetadataSidecar(file, snapshot._meta, Buffer.byteLength(body));
+          } catch { /* best-effort local failure */ }
+          const payload: Record<string, unknown> = {
+            ok: false,
+            quota_hit: true,
+            retry_after: quotaHit.retry_after,
+            file,
+            counts: snapshot._meta.counts,
+            cap,
+            collections: snapshot._meta.collections,
+            snapshot_state: 'partial',
+            complete: false,
+            partial: true,
+            partial_reason: 'quota_exceeded',
+          };
           const prose = `Quota hit during backup_library (Retry-After: ${quotaHit.retry_after ?? 'unknown'}s) — partial snapshot${file ? ` written to ${file}` : ' (no file)'} . Retry later or lower max_results.`;
           return shapeResult(args.response_format, prose, payload);
         }
         throw e;
       }
-      // quotaHit inside collectSnapshot per-playlist loops is swallowed there; surface via playlist count shortfall if needed
-      void quotaHit;
+
       const created = new Date().toISOString();
       const snapshot: LibraryBackup = {
-        _meta: {
-          created,
-          ...(args.notes !== undefined ? { notes: args.notes } : {}),
-          counts: metaCounts(collected),
-        },
-        ...collected,
+        _meta: buildMeta(created, detailed, args.notes),
+        ...detailed.body,
       };
 
       const dir = backupDir();
@@ -401,47 +706,68 @@ export function registerBackupTools(server: McpServer, client: SpotifyClient): v
       const seq = await nextBackupSeq(dir, dateStamp);
       const file = join(dir, `backup-${dateStamp}-${seq}.json`);
       const body = `${JSON.stringify(snapshot, null, 2)}\n`;
+      const bytes = Buffer.byteLength(body);
       // 'wx' refuses to clobber even if sequencing raced another writer.
       await writeFile(file, body, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+      await writeMetadataSidecar(file, snapshot._meta, bytes);
 
       const c = snapshot._meta.counts;
       const payload: Record<string, unknown> = {
         ok: true,
         file,
-        bytes: Buffer.byteLength(body),
+        bytes,
         counts: c,
+        cap,
+        caps: snapshot._meta.caps,
+        collections: snapshot._meta.collections,
+        playlist_items: snapshot._meta.playlist_items,
+        snapshot_state: snapshot._meta.snapshot_state,
+        complete: snapshot._meta.complete,
+        partial: !snapshot._meta.complete,
+        ...(snapshot._meta.partial_reason !== undefined ? { partial_reason: snapshot._meta.partial_reason } : {}),
         ...(args.notes !== undefined ? { notes: args.notes } : {}),
       };
       if (args.response_format === 'json') {
-        // Full snapshot as the text body; the summary twin stays on
-        // structuredContent so cheap consumers never re-parse the blob.
         return {
           content: [{ type: 'text', text: JSON.stringify(snapshot, null, 2) }],
           structuredContent: payload,
         };
       }
+      const truncatedPlaylists = detailed.body.playlists.filter((playlist) => playlist.items_truncated);
+      const truncationLines = truncatedPlaylists.map(
+        (playlist) =>
+          `\n- Truncated playlist "${playlist.name}" (${playlist.uri}): ${completenessFooter({
+            fetched: playlist.items.length,
+            cap: detailed.playlistItems.cap_per_playlist,
+            truncated: true,
+            subject: 'items',
+            total: playlist.item_count,
+          })}`,
+      );
       const prose =
-        `Library backup written → ${file} (${formatBytes(payload.bytes as number)})\n` +
+        `Library ${snapshot._meta.complete ? 'backup' : 'partial backup'} written → ${file} (${formatBytes(bytes)})\n` +
         `- Liked tracks: ${c.liked_tracks}\n` +
         `- Saved albums: ${c.saved_albums}\n` +
         `- Saved shows: ${c.saved_shows}\n` +
         `- Saved episodes: ${c.saved_episodes}\n` +
         `- Saved audiobooks: ${c.saved_audiobooks}\n` +
         `- Followed artists: ${c.followed_artists}\n` +
-        `- Playlists: ${c.playlists} (${c.playlist_items} items)`;
+        `- Playlists: ${c.playlists} (${c.playlist_items} items; ${c.playlists_truncated} truncated)\n` +
+        truncationLines.join('') +
+        (snapshot._meta.partial_reason ? `\n- Incomplete: ${snapshot._meta.partial_reason}` : '');
       return shapeResult(args.response_format, prose, payload);
     },
   );
 
   server.tool(
     'list_backups',
-    'List previous library backups (newest first) with path, creation date, size, and the _meta.counts summary from each snapshot',
+    'List complete and partial library backups (newest first) using bounded metadata sidecar reads, with a bounded prefix fallback for legacy snapshots',
     { response_format: ResponseFormat },
     async (args) => {
       const dir = backupDir();
       let names: string[] = [];
       try {
-        names = (await readdir(dir)).filter((n) => BACKUP_FILE_RE.test(n));
+        names = (await readdir(dir)).filter((name) => BACKUP_FILE_RE.test(name));
       } catch {
         names = [];
       }
@@ -458,23 +784,66 @@ export function registerBackupTools(server: McpServer, client: SpotifyClient): v
         await Promise.all(
           names.map(async (name) => {
             const path = join(dir, name);
+            const partialByName = name.endsWith('.partial.json');
             try {
-              const [st, parsed] = await Promise.all([
-                stat(path),
-                readFile(path, 'utf8').then(
-                  (raw) => JSON.parse(raw) as Partial<LibraryBackup>,
-                ),
-              ]);
+              const st = await stat(path);
+              let meta: Record<string, unknown> | null = null;
+              let metadataSource = 'unavailable';
+              try {
+                const sidecar = await readBoundedJson(metadataSidecarPath(path), MAX_SIDECAR_BYTES);
+                const validated = MetadataSidecarSchema.safeParse(sidecar);
+                if (validated.success) {
+                  meta = validated.data.meta;
+                  metadataSource = 'sidecar';
+                }
+              } catch { /* no usable sidecar */ }
+              if (meta === null) {
+                meta = await readLegacySnapshotMeta(path);
+                if (meta !== null) metadataSource = 'legacy_prefix';
+              }
+
+              const created = stringField(meta ?? {}, 'created') ?? st.mtime.toISOString();
+              const notes = stringField(meta ?? {}, 'notes');
+              const recordedState = stringField(meta ?? {}, 'snapshot_state');
+              const snapshotState = partialByName ? 'partial' : recordedState ?? 'unknown';
+              const complete = partialByName ? false : booleanField(meta ?? {}, 'complete') ?? null;
+              const reasons = stringArrayField(meta ?? {}, 'partial_reasons');
+              const recordedReason = stringField(meta ?? {}, 'partial_reason');
               return {
                 path,
-                created: parsed._meta?.created ?? st.mtime.toISOString(),
-                ...(parsed._meta?.notes !== undefined ? { notes: parsed._meta.notes } : {}),
+                created,
+                notes: notes ?? null,
                 bytes: st.size,
-                counts: parsed._meta?.counts ?? null,
+                counts: meta === null ? null : countsField(meta),
+                cap: meta === null ? null : (typeof meta.cap === 'number' ? meta.cap : null),
+                collections: meta !== null && typeof meta.collections === 'object' && meta.collections !== null
+                  ? meta.collections
+                  : null,
+                snapshot_state: snapshotState,
+                complete,
+                partial: partialByName || snapshotState === 'partial',
+                partial_reason: partialByName
+                  ? recordedReason ?? 'unknown'
+                  : recordedReason ?? (reasons[0] ?? null),
+                partial_reasons: partialByName && reasons.length === 0 ? ['unknown'] : reasons,
+                metadata_source: metadataSource,
               };
             } catch {
-              // Unreadable/corrupt entry: still listed, but unsummarized.
-              return { path, created: null, bytes: null, counts: null, notes: undefined };
+              return {
+                path,
+                created: null,
+                bytes: null,
+                counts: null,
+                cap: null,
+                collections: null,
+                notes: null,
+                snapshot_state: partialByName ? 'partial' : 'unknown',
+                complete: false,
+                partial: partialByName,
+                partial_reason: partialByName ? 'unknown' : null,
+                partial_reasons: partialByName ? ['unknown'] : [],
+                metadata_source: 'unavailable',
+              };
             }
           }),
         )
@@ -489,6 +858,7 @@ export function registerBackupTools(server: McpServer, client: SpotifyClient): v
         const bits = [
           b.created ?? 'unknown date',
           b.bytes !== null ? formatBytes(b.bytes) : 'unreadable',
+          b.partial ? `PARTIAL: ${b.partial_reason ?? 'unknown reason'}` : b.snapshot_state,
         ];
         if (b.notes) bits.push(`notes: "${b.notes}"`);
         if (b.counts) {

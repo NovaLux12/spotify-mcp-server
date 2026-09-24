@@ -295,6 +295,65 @@ describe('restore_library_snapshot strictly additive', () => {
     }
   });
 
+  it('reports a capped playlist shortfall in dry run and never plans its creation', async () => {
+    const snap = baseSnapshot();
+    snap._meta = {
+      ...snap._meta,
+      snapshot_state: 'partial',
+      complete: false,
+      partial_reason: 'collection_cap_reached:playlists',
+      partial_reasons: ['collection_cap_reached:playlists'],
+    };
+    snap.playlists = [{
+      name: 'Capped Playlist',
+      item_count: 600,
+      items: Array.from({ length: 500 }, (_, i) => ({
+        uri: `spotify:track:capped${i}`,
+        name: `Capped ${i}`,
+      })),
+      items_truncated: true,
+    }];
+    const path = await snapshotFile(snap);
+    try {
+      const h = harness(emptyState());
+      const out = await h.invoke('restore_library_snapshot', {
+        backup_path: path,
+        categories: ['playlists'],
+      });
+      const payload = out.structuredContent as Record<string, any>;
+      assert.equal(payload.snapshot_state, 'partial');
+      assert.equal(payload.restorable_complete, false);
+      assert.equal(payload.playlists.created.length, 0);
+      assert.match(payload.shortfalls.join(' '), /Capped Playlist: stored 500 of 600 items/);
+      assert.match(textOf(out), /Snapshot completeness: partial/);
+      assert.equal(writesOf(h.client).length, 0);
+    } finally {
+      await rm(join(path, '..'), { recursive: true, force: true });
+    }
+  });
+
+  it('refuses a partial snapshot before confirmation or any write', async () => {
+    const snap = baseSnapshot();
+    snap._meta = {
+      ...snap._meta,
+      snapshot_state: 'partial',
+      complete: false,
+      partial_reason: 'quota_exceeded',
+      partial_reasons: ['quota_exceeded'],
+    };
+    const path = await snapshotFile(snap);
+    try {
+      const h = harness(emptyState(), 'accept');
+      await assert.rejects(
+        h.invoke('restore_library_snapshot', { backup_path: path, dry_run: false }),
+        /Refusing to restore incomplete snapshot.*quota_exceeded/,
+      );
+      assert.equal(writesOf(h.client).length, 0);
+    } finally {
+      await rm(join(path, '..'), { recursive: true, force: true });
+    }
+  });
+
   it('contains-checks are chunked ≤50 and saves only absent URIs', async () => {
     const state = emptyState();
     const present = new Set(['spotify:track:present0', 'spotify:track:present75']);

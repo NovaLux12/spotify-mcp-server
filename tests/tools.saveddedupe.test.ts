@@ -162,7 +162,11 @@ interface Payload {
   scanned: {
     saved_tracks: number;
     skipped_unplayable: number;
+    fetched: number;
+    cap: number;
     fetch_all_cap: number;
+    snapshot_state: 'complete' | 'partial';
+    complete: boolean;
     truncated_by_cap: boolean;
     playlist_id?: string;
     playlist_name?: string | null;
@@ -671,13 +675,38 @@ describe('find_duplicate_saved_tracks cap enforcement', () => {
     const walked = h.client.calls.filter((c) => c.path === '/me/tracks').length;
     assert.ok(walked >= 1, 'at least one page fetched');
     // Whatever the cap is, the tool reports it and never walks past it.
-    assert.equal(p.scanned.fetch_all_cap >= p.scanned.saved_tracks, true);
-    if (p.scanned.truncated_by_cap) {
-      assert.ok(p.scanned.saved_tracks < bigLibrary.length, 'cap truncated the walk');
-      assert.match(textOf(out), /REACHED/);
-    } else {
-      assert.equal(p.scanned.saved_tracks, bigLibrary.length);
-    }
+    assert.equal(p.scanned.cap, p.scanned.fetch_all_cap);
+    assert.equal(p.scanned.fetched, p.scanned.cap);
+    assert.equal(p.scanned.snapshot_state, 'partial');
+    assert.equal(p.scanned.complete, false);
+    assert.equal(p.scanned.truncated_by_cap, true);
+    assert.ok(p.scanned.saved_tracks < bigLibrary.length, 'cap truncated the walk');
+    assert.match(textOf(out), /fetched 500 saved tracks, cap 500 — TRUNCATED/);
     void out;
+  });
+
+  it('distinguishes exactly-at-cap from cap-plus-one', async () => {
+    const exact = Array.from({ length: 500 }, (_, i) =>
+      savedTrack({ id: `exact${i}`, name: `Exact ${i}`, durationMs: 200_000, addedAt: '2026-01-01' }),
+    );
+    const exactOut = await harness(libraryResponder(exact)).invoke('find_duplicate_saved_tracks');
+    const exactPayload = payloadOf(exactOut);
+    assert.equal(exactPayload.scanned.fetched, 500);
+    assert.equal(exactPayload.scanned.cap, 500);
+    assert.equal(exactPayload.scanned.snapshot_state, 'complete');
+    assert.equal(exactPayload.scanned.complete, true);
+    assert.equal(exactPayload.scanned.truncated_by_cap, false);
+    assert.match(textOf(exactOut), /fetched 500 saved tracks, cap 500 — complete; cap not reached/);
+
+    const over = [...exact, savedTrack({
+      id: 'over', name: 'Over', durationMs: 200_000, addedAt: '2026-01-02',
+    })];
+    const overOut = await harness(libraryResponder(over)).invoke('find_duplicate_saved_tracks');
+    const overPayload = payloadOf(overOut);
+    assert.equal(overPayload.scanned.fetched, 500);
+    assert.equal(overPayload.scanned.snapshot_state, 'partial');
+    assert.equal(overPayload.scanned.complete, false);
+    assert.equal(overPayload.scanned.truncated_by_cap, true);
+    assert.match(textOf(overOut), /fetched 500 saved tracks, cap 500 — TRUNCATED/);
   });
 });

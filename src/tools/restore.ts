@@ -24,6 +24,7 @@ import {
   MaxResults,
   resolveMaxResults,
   parseSpotifyUri,
+  completenessFooter,
   truncateItems,
 } from '../shaping.js';
 import type { ResponseFormatValue } from '../shaping.js';
@@ -51,10 +52,28 @@ export interface SnapshotPlaylist {
   uri?: string | null;
   item_count?: number | null;
   items?: SnapshotPlaylistItem[];
+  items_truncated?: boolean;
+  items_error?: string;
+}
+
+interface SnapshotCollectionStatus {
+  complete?: boolean;
+  truncated?: boolean;
+  fetched?: number;
+  cap?: number;
 }
 
 export interface LibrarySnapshot {
-  _meta?: { created?: string; notes?: string; counts?: Record<string, unknown> };
+  _meta?: {
+    created?: string;
+    notes?: string;
+    counts?: Record<string, unknown>;
+    snapshot_state?: 'complete' | 'partial';
+    complete?: boolean;
+    partial_reason?: string;
+    partial_reasons?: string[];
+    collections?: Record<string, SnapshotCollectionStatus>;
+  };
   liked_tracks?: SnapshotRow[];
   saved_albums?: SnapshotRow[];
   saved_shows?: SnapshotRow[];
@@ -209,6 +228,11 @@ export interface PlaylistCreation {
 
 export interface RestorePlan {
   snapshotCreated: string | null;
+  snapshotState: 'complete' | 'partial' | 'unknown';
+  restorableComplete: boolean | null;
+  selectedFetched: number | null;
+  selectedCap: number | null;
+  shortfalls: string[];
   perCategory: CategoryPlan[];
   playlistCreations: PlaylistCreation[];
   skippedPlaylists: string[];
@@ -280,7 +304,29 @@ export async function computeRestorePlan(
   const perCategory: CategoryPlan[] = [];
   const playlistCreations: PlaylistCreation[] = [];
   const skippedPlaylists: string[] = [];
+  const shortfalls: string[] = [];
+  const selected: readonly string[] = categories;
+  const collectionMetadata = snapshot._meta?.collections;
+  const recordedReasons = [
+    ...(snapshot._meta?.partial_reasons ?? []),
+    ...(snapshot._meta?.partial_reason ? [snapshot._meta.partial_reason] : []),
+  ];
+  if (collectionMetadata === undefined) {
+    for (const reason of recordedReasons) shortfalls.push(`snapshot: ${reason}`);
+  }
 
+  for (const [name, status] of Object.entries(snapshot._meta?.collections ?? {})) {
+    if (selected.includes(name) && (status.truncated === true || status.complete === false)) {
+      shortfalls.push(`${name}: fetched ${status.fetched ?? 'unknown'} of cap ${status.cap ?? 'unknown'}`);
+    }
+  }
+  const selectedStatuses = categories.map((category) => snapshot._meta?.collections?.[category]);
+  const selectedFetched = selectedStatuses.every((status) => typeof status?.fetched === 'number')
+    ? selectedStatuses.reduce((total, status) => total + (status?.fetched ?? 0), 0)
+    : null;
+  const selectedCap = selectedStatuses.every((status) => typeof status?.cap === 'number')
+    ? selectedStatuses.reduce((total, status) => total + (status?.cap ?? 0), 0)
+    : null;
   for (const category of categories) {
     const plan = freshCategoryPlan(category);
 
@@ -329,6 +375,16 @@ export async function computeRestorePlan(
         const currentNames = new Set(current.map((p) => p.name));
         const dateSuffix = snapshotDate(snapshot);
         for (const pl of snapshotPlaylists) {
+          const expected = typeof pl.item_count === 'number' ? pl.item_count : null;
+          const stored = (pl.items ?? []).filter((it) => typeof it?.uri === 'string').length;
+          if (pl.items_truncated === true || pl.items_error !== undefined || (expected !== null && expected > stored)) {
+            shortfalls.push(
+              `${pl.name}: stored ${stored} of ${expected ?? 'unknown'} items${pl.items_error ? ` (${pl.items_error})` : ''}`,
+            );
+            plan.skipped += 1;
+            plan.notes.push(`refused incomplete playlist "${pl.name}" — ${stored} of ${expected ?? 'unknown'} items stored`);
+            continue;
+          }
           if (currentNames.has(pl.name)) {
             // STRICTLY ADDITIVE: an existing playlist of the same name is
             // never written into — the restore skips it untouched.
@@ -356,8 +412,18 @@ export async function computeRestorePlan(
     perCategory.push(plan);
   }
 
+  const uniqueShortfalls = shortfalls.filter((reason, index) => shortfalls.indexOf(reason) === index);
+  const snapshotState: RestorePlan['snapshotState'] =
+    uniqueShortfalls.length > 0 || snapshot._meta?.complete === false
+      ? 'partial'
+      : snapshot._meta?.snapshot_state ?? 'unknown';
   return {
     snapshotCreated: snapshot._meta?.created ?? null,
+    snapshotState,
+    restorableComplete: uniqueShortfalls.length > 0 ? false : snapshotState === 'unknown' ? null : true,
+    selectedFetched,
+    selectedCap,
+    shortfalls: uniqueShortfalls,
     perCategory,
     playlistCreations,
     skippedPlaylists,
@@ -470,6 +536,11 @@ function buildPayload(
     backup_path: backupPath,
     snapshot_created: plan.snapshotCreated,
     status,
+    snapshot_state: plan.snapshotState,
+    restorable_complete: plan.restorableComplete,
+    selected_fetched: plan.selectedFetched,
+    selected_cap: plan.selectedCap,
+    shortfalls: plan.shortfalls,
     categories,
     playlists: {
       created: (outcome?.createdPlaylists ?? plan.playlistCreations.map((c) => ({
@@ -500,8 +571,19 @@ function buildProse(
       : status === 'cancelled'
         ? `Restore cancelled for ${backupPath} — zero writes performed. Would-have-done summary:`
         : `Restore complete for ${backupPath} (strictly additive; nothing existing was modified):`;
-  const lines: string[] = [header];
-
+  const lines: string[] = [
+    header,
+    `Snapshot completeness: ${plan.snapshotState}${plan.restorableComplete === false ? ' — incomplete collections/playlists will not be restored' : ''}`,
+  ];
+  if (plan.selectedFetched !== null && plan.selectedCap !== null) {
+    lines.push(completenessFooter({
+      fetched: plan.selectedFetched,
+      cap: plan.selectedCap,
+      truncated: plan.restorableComplete === false,
+      subject: 'selected collection rows',
+    }));
+  }
+  for (const shortfall of plan.shortfalls) lines.push(`  · shortfall: ${shortfall}`);
   for (const c of plan.perCategory) {
     const bits = [`${c.total} in snapshot`, `${c.alreadyPresent} already present`];
     bits.push(done ? `${outcome?.executed[c.category] ?? 0} written` : `${c.planned} would be written`);
@@ -531,7 +613,7 @@ function buildProse(
 export function registerRestoreTools(server: McpServer, client: SpotifyClient): void {
   server.tool(
     'restore_library_snapshot',
-    "STRICTLY ADDITIVE restore of a library snapshot written by backup_library_snapshot. Adds only what is missing: saves absent tracks/albums/shows/episodes/audiobooks, follows unfollowed artists, and creates NEW playlists named 'Restored · <name> (<snapshot date>)' — existing playlists are never touched and nothing is ever deleted, renamed, or overwritten. dry_run defaults to TRUE (read-only preview); setting dry_run=false requires explicit confirmation before any write, fails closed when elicitation is unavailable or errors, and allows writes when SPOTIFY_MCP_CONFIRM=never.",
+    "STRICTLY ADDITIVE restore of a library snapshot written by backup_library_snapshot. Adds only what is missing: saves absent tracks/albums/shows/episodes/audiobooks, follows unfollowed artists, and creates NEW playlists named 'Restored · <name> (<snapshot date>)' — existing playlists are never touched and nothing is ever deleted, renamed, or overwritten. Partial/truncated snapshots are previewable but refused before confirmation or writes unless all selected data is complete. dry_run defaults to TRUE (read-only preview); setting dry_run=false requires explicit confirmation before any write, fails closed when elicitation is unavailable or errors, and allows writes when SPOTIFY_MCP_CONFIRM=never.",
     {
       backup_path: z
         .string()
@@ -557,6 +639,11 @@ export function registerRestoreTools(server: McpServer, client: SpotifyClient): 
       const plan = await computeRestorePlan(client, snapshot, categories);
       const maxItems = resolveMaxResults(args.max_results, getConfig().maxItems);
       const plannedTotal = plan.perCategory.reduce((n, c) => n + c.planned, 0);
+      if (!args.dry_run && plan.restorableComplete === false) {
+        throw new Error(
+          `Refusing to restore incomplete snapshot at ${args.backup_path}: ${plan.shortfalls.join('; ')}`,
+        );
+      }
 
       if (args.dry_run || plannedTotal === 0) {
         return shapeResult(

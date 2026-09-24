@@ -103,6 +103,23 @@ export function resolveMaxResults(explicit: number | undefined, fallback = DEFAU
   return Math.max(1, Math.floor(fallback));
 }
 
+export interface CompletenessFooterOptions {
+  fetched: number;
+  cap: number;
+  truncated: boolean;
+  subject?: string;
+  total?: number | null;
+}
+
+/** Canonical wording for complete versus cap-truncated collection walks. */
+export function completenessFooter(options: CompletenessFooterOptions): string {
+  const subject = options.subject ?? 'items';
+  const total = typeof options.total === 'number' ? ` of ${options.total}` : '';
+  return options.truncated
+    ? `fetched ${options.fetched}${total} ${subject}, cap ${options.cap} — TRUNCATED; older ${subject} were not analyzed`
+    : `fetched ${options.fetched}${total} ${subject}, cap ${options.cap} — complete; cap not reached`;
+}
+
 // ---------------------------------------------------------------------------
 // Pagination info + structuredContent emission (#52)
 // ---------------------------------------------------------------------------

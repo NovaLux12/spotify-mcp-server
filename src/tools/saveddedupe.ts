@@ -19,11 +19,12 @@ import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
 import { quotaPreflight, quotaSnapshot, quotaWindowRemaining, quotaDelta } from '../client.js';
-import type { SavedTrackItem, PlaylistItemObject, SpotifyTrack } from '../types/spotify.js';
+import type { SavedTrackItem, PlaylistItemObject, SpotifyArtistSimple, SpotifyTrack } from '../types/spotify.js';
 import {
   ResponseFormat,
   MaxResults,
   resolveMaxResults,
+  completenessFooter,
   truncateItems,
 } from '../shaping.js';
 import type { ResponseFormatValue } from '../shaping.js';
@@ -74,7 +75,11 @@ interface AnalysisResult {
   scanned: {
     saved_tracks: number;
     skipped_unplayable: number;
+    fetched: number;
+    cap: number;
     fetch_all_cap: number;
+    snapshot_state: 'complete' | 'partial';
+    complete: boolean;
     truncated_by_cap: boolean;
     /** Present only when a playlist_id cross-reference was requested. */
     playlist_id?: string;
@@ -322,11 +327,13 @@ async function analyze(
   // throttle pressure exists; idle clients keep today's budget exactly.
   const fetchAllCap = Math.min(requestedCap, quotaWindowRemaining(client));
   const walkShrunk = fetchAllCap < requestedCap;
-  const saved = await client.getAllPages<SavedTrackItem>(
+  const walked = await client.getAllPages<SavedTrackItem>(
     '/me/tracks',
     { limit: '50' },
-    { maxItems: fetchAllCap },
+    { maxItems: fetchAllCap + 1 },
   );
+  const truncatedByCap = walked.length > fetchAllCap;
+  const saved = walked.slice(0, fetchAllCap);
 
   const members: SavedTrackMember[] = [];
   let skippedUnplayable = 0;
@@ -343,7 +350,7 @@ async function analyze(
       id: track.id,
       uri: track.uri,
       name: track.name ?? '',
-      artist_names: (track.artists ?? []).map((a) => a.name),
+      artist_names: (track.artists ?? []).map((artist: SpotifyArtistSimple) => artist.name),
       album_name: track.album?.name ?? null,
       album_id: track.album?.id ?? null,
       duration_ms: track.duration_ms,
@@ -367,8 +374,12 @@ async function analyze(
     scanned: {
       saved_tracks: members.length,
       skipped_unplayable: skippedUnplayable,
+      fetched: saved.length,
+      cap: fetchAllCap,
       fetch_all_cap: fetchAllCap,
-      truncated_by_cap: saved.length >= fetchAllCap,
+      snapshot_state: truncatedByCap ? 'partial' : 'complete',
+      complete: !truncatedByCap,
+      truncated_by_cap: truncatedByCap,
       ...(playlist ? { playlist_id: playlistId, playlist_name: playlist.name } : {}),
       ...(playlist ? { playlist_tracks: playlist.trackCount } : {}),
     },
@@ -397,8 +408,12 @@ function renderProse(result: AnalysisResult, maxResults: number): string {
   lines.push(
     `Scanned ${scanned.saved_tracks} saved track${scanned.saved_tracks === 1 ? '' : 's'} `
       + `${scanned.skipped_unplayable ? `(${scanned.skipped_unplayable} unplayable/local entries skipped) ` : ''}`
-      + `— fetch-all cap ${scanned.fetch_all_cap} `
-      + `${scanned.truncated_by_cap ? 'REACHED — older saved tracks were NOT analyzed' : 'not reached'}.`,
+      + `— ${completenessFooter({
+        fetched: scanned.fetched,
+        cap: scanned.cap,
+        truncated: scanned.truncated_by_cap,
+        subject: 'saved tracks',
+      })}.`,
   );
 
   if (scanned.saved_tracks === 0) {
