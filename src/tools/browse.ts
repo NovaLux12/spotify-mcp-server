@@ -21,6 +21,18 @@ interface CategoryItem {
   icons: Array<{ url: string; height: number | null; width: number | null }>;
 }
 
+function resolveBrowseMarket(
+  market: string | undefined,
+  country: string | undefined,
+): string | undefined {
+  if (market !== undefined && country !== undefined && market !== country) {
+    throw new Error(
+      `Conflicting values: market ("${market}") and deprecated country ("${country}") differ — pass only one.`,
+    );
+  }
+  return market ?? country;
+}
+
 export function registerBrowseTools(server: McpServer, client: SpotifyClient): void {
   server.tool(
     'get_artist_genres',
@@ -51,7 +63,12 @@ export function registerBrowseTools(server: McpServer, client: SpotifyClient): v
     {
       limit: z.number().int().min(1).max(50).optional().describe('Results per page, 1\u201350. Default: 20'),
       offset: z.number().int().min(0).optional().describe('Offset. Default: 0'),
-      country: z.string().regex(/^[A-Za-z]{2}$/, "market must be 2 letters e.g. 'US'").transform(s=>s.toUpperCase()).optional().describe('ISO 3166-1 alpha-2 country code, e.g. \'US\' (alias: market)'),
+      market: MARKET_CODE.optional().describe(
+        'Canonical ISO 3166-1 alpha-2 market code, e.g. \'US\'; forwarded to Spotify as market.',
+      ),
+      country: MARKET_CODE.optional().describe(
+        'Deprecated compatibility spelling for market. Prefer market; conflicting spellings are rejected.',
+      ),
       locale: z.string().optional().describe('Locale, e.g. en_US'),
       ...sharedListFields,
     },
@@ -59,8 +76,8 @@ export function registerBrowseTools(server: McpServer, client: SpotifyClient): v
       const params: Record<string, string> = {};
       if (args.limit !== undefined) params.limit = String(args.limit);
       if (args.offset !== undefined) params.offset = String(args.offset);
-      const countryVal = (args as any).country ?? (args as any).market;
-      if (countryVal) params.country = countryVal;
+      const market = resolveBrowseMarket(args.market, args.country);
+      if (market) params.market = market;
       if (args.locale) params.locale = args.locale;
       const data = await client.get<{ categories: SpotifyPaged<CategoryItem> }>('/browse/categories', params);
       if (!data?.categories) {
@@ -90,15 +107,20 @@ export function registerBrowseTools(server: McpServer, client: SpotifyClient): v
       category_id: z.string().describe('Category ID (from get_categories)'),
       limit: z.number().int().min(1).max(50).optional().describe('Results per page, 1\u201350. Default: 20'),
       offset: z.number().int().min(0).optional().describe('Offset. Default: 0'),
-      country: z.string().regex(/^[A-Za-z]{2}$/, "market must be 2 letters e.g. 'US'").transform(s=>s.toUpperCase()).optional().describe('ISO 3166-1 alpha-2 country code, e.g. \'US\' (alias: market)'),
+      market: MARKET_CODE.optional().describe(
+        'Canonical ISO 3166-1 alpha-2 market code, e.g. \'US\'; forwarded to Spotify as market.',
+      ),
+      country: MARKET_CODE.optional().describe(
+        'Deprecated compatibility spelling for market. Prefer market; conflicting spellings are rejected.',
+      ),
       ...sharedListFields,
     },
     async (args) => {
       const params: Record<string, string> = {};
       if (args.limit !== undefined) params.limit = String(args.limit);
       if (args.offset !== undefined) params.offset = String(args.offset);
-      const countryVal2 = (args as any).country ?? (args as any).market;
-      if (countryVal2) params.country = countryVal2;
+      const market = resolveBrowseMarket(args.market, args.country);
+      if (market) params.market = market;
       const data = await client.get<{ playlists: PlaylistPage }>(
         `/browse/categories/${encodeURIComponent(args.category_id)}/playlists`,
         params,

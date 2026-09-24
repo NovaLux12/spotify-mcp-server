@@ -2,7 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { registerBrowseTools } from '../src/tools/browse.js';
 type ToolContent = { content: Array<{ type: string; text: string }>; structuredContent?: Record<string, unknown> };
-type RegisteredTool = { name: string; description: string; schema: Record<string, { safeParse(a: unknown): { success: boolean } }>; handler: (a: Record<string, unknown>) => Promise<ToolContent> };
+type SchemaField = { safeParse(a: unknown): { success: boolean; data?: unknown }; description?: string };
+type RegisteredTool = { name: string; description: string; schema: Record<string, SchemaField>; handler: (a: Record<string, unknown>) => Promise<ToolContent> };
 type Call = { method: string; path: string; params?: Record<string,string> };
 function makeHarness(getResponse?: (path: string, params?: Record<string,string>) => unknown) {
   const calls: Call[] = [];
@@ -17,6 +18,18 @@ function makeHarness(getResponse?: (path: string, params?: Record<string,string>
   const server = { tool: (name:string,desc:string,schema:RegisteredTool['schema'],handler:RegisteredTool['handler'])=> registered.push({name,description:desc,schema,handler}) };
   registerBrowseTools(server as never, client as never);
   return { registered, calls };
+}
+
+function parseArgs(tool: RegisteredTool, args: Record<string, unknown>): Record<string, unknown> {
+  const parsed: Record<string, unknown> = {};
+  for (const [name, value] of Object.entries(args)) {
+    const field = tool.schema[name];
+    assert.ok(field, `missing schema field ${name}`);
+    const result = field.safeParse(value);
+    assert.equal(result.success, true, `invalid ${name}`);
+    parsed[name] = result.data;
+  }
+  return parsed;
 }
 function find(registered: RegisteredTool[], name:string){ const t=registered.find(x=>x.name===name); assert.ok(t, `missing ${name}`); return t!; }
 function text(r:ToolContent){ return r.content.map(c=>c.text).join('\n'); }
@@ -47,4 +60,70 @@ test('get_category_playlists empty', async () => {
   const { registered } = makeHarness(()=>({ playlists:{ items:[], total:0, limit:20, offset:0 }}));
   const r = await find(registered,'get_category_playlists').handler({ category_id:'mood' });
   assert.match(text(r), /No playlists/);
+});
+
+test('browse tools validate canonical market and deprecated country aliases', () => {
+  const { registered } = makeHarness();
+  for (const name of ['get_categories', 'get_category_playlists']) {
+    const tool = find(registered, name);
+    assert.ok(tool.schema.market);
+    assert.ok(tool.schema.country);
+    assert.equal(tool.schema.market.safeParse('gb').data, 'GB');
+    assert.equal(tool.schema.country.safeParse('us').data, 'US');
+    assert.equal(tool.schema.market.safeParse('USA').success, false);
+    assert.equal(tool.schema.market.safeParse('G').success, false);
+    assert.equal(tool.schema.country.safeParse('1A').success, false);
+    assert.match(tool.schema.country.description ?? '', /Deprecated compatibility spelling/);
+  }
+});
+
+test('browse tools forward canonical and deprecated market spellings as market', async () => {
+  const { registered, calls } = makeHarness((path) => {
+    if (path === '/browse/categories') return { categories: { items: [], total: 0, limit: 20, offset: 0 } };
+    return { playlists: { items: [], total: 0, limit: 20, offset: 0 } };
+  });
+  const categories = find(registered, 'get_categories');
+  const playlists = find(registered, 'get_category_playlists');
+
+  await categories.handler(parseArgs(categories, { market: 'gb' }));
+  await categories.handler(parseArgs(categories, { country: 'ca' }));
+  await playlists.handler(parseArgs(playlists, { category_id: 'mood', market: 'de' }));
+  await playlists.handler(parseArgs(playlists, { category_id: 'mood', country: 'fr' }));
+
+  assert.deepEqual(calls.map((call) => call.params), [
+    { market: 'GB' },
+    { market: 'CA' },
+    { market: 'DE' },
+    { market: 'FR' },
+  ]);
+});
+
+test('browse tools reject conflicting market spellings before calling Spotify', async () => {
+  const { registered, calls } = makeHarness(() => null);
+  const categories = find(registered, 'get_categories');
+  const playlists = find(registered, 'get_category_playlists');
+
+  await assert.rejects(
+    categories.handler(parseArgs(categories, { market: 'GB', country: 'US' })),
+    /Conflicting values: market \("GB"\) and deprecated country \("US"\) differ/,
+  );
+  await assert.rejects(
+    playlists.handler(parseArgs(playlists, { category_id: 'mood', market: 'GB', country: 'US' })),
+    /Conflicting values: market \("GB"\) and deprecated country \("US"\) differ/,
+  );
+  assert.equal(calls.length, 0);
+});
+
+test('browse tools accept matching canonical and deprecated market spellings', async () => {
+  const { registered, calls } = makeHarness((path) => {
+    if (path === '/browse/categories') return { categories: { items: [], total: 0, limit: 20, offset: 0 } };
+    return { playlists: { items: [], total: 0, limit: 20, offset: 0 } };
+  });
+  const categories = find(registered, 'get_categories');
+  const playlists = find(registered, 'get_category_playlists');
+
+  await categories.handler(parseArgs(categories, { market: 'gb', country: 'GB' }));
+  await playlists.handler(parseArgs(playlists, { category_id: 'mood', market: 'GB', country: 'gb' }));
+
+  assert.deepEqual(calls.map((call) => call.params), [{ market: 'GB' }, { market: 'GB' }]);
 });
