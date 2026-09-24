@@ -13,7 +13,7 @@ type Responder = (path: string, arg: unknown) => unknown;
 function makeHarness(responder: Responder) {
   const registered: RegisteredTool[] = [];
   const fakeServer = { tool(name: string, _desc: string, schema: z.ZodRawShape, handler: RegisteredTool['handler']) { registered.push({ name, validate: (args) => z.object(schema).parse(args), handler }); }, registerTool(name: string, config: { description?: string; inputSchema?: z.ZodType }, handler: RegisteredTool['handler']) { registered.push({ name, validate: (args) => (config.inputSchema as z.ZodType).parse(args), handler }); }, } as unknown as McpServer;
-  const client = { async get<T>(path: string, params?: Record<string, string>): Promise<T | null> { return responder(path, params) as T | null; }, async getAllPages<T>(path: string, _params?: Record<string, string>): Promise<T[]> { const result = responder(path, _params); if (Array.isArray(result)) return result as T[]; return []; }, } as unknown as SpotifyClient;
+  const client = { async get<T>(path: string, params?: Record<string, string>): Promise<T | null> { return responder(path, params) as T | null; }, async getAllPages<T>(path: string, _params?: Record<string, string>): Promise<T[]> { const result = responder(path, _params); if (Array.isArray(result)) return result as T[]; return []; }, async delete<T>(path: string, body?: unknown): Promise<T | null> { return responder(path, { body }) as T | null; }, } as unknown as SpotifyClient;
   return { registered, client, server: fakeServer, invoke: async (name: string, args: Record<string, unknown>) => { const tool = registered.find((t) => t.name === name)!; assert.ok(tool, `tool ${name} registered`); return tool.handler(tool.validate(args)); }, };
 }
 const mkTrack = (id: string, overrides: Record<string, unknown> = {}) => ({ added_at: '2026-01-15T10:00:00Z', added_by: { id: 'user1' }, item: { type: 'track' as const, id, name: `Track ${id}`, uri: `spotify:track:${id}`, duration_ms: 200000, artists: [{ name: `Artist ${id}` }], ...overrides }, }) as unknown as PlaylistItemObject;
@@ -80,4 +80,88 @@ describe('find_duplicate_playlists dry_run + quota', () => {
 describe('snapshot + diff + list', () => {
   it('snapshot round-trip creates file and list finds it', async () => { const items = [mkTrack('a'), mkTrack('b')]; const h = makeHarness(() => items); registerPlaylistHealthTools(h.server as unknown as McpServer, h.client); const snap = await h.invoke('snapshot_playlist', { playlist_id: 'pl1', snapshot_id: 'snap1' }); const sc = snap.structuredContent as { snapshot_id: string }; assert.equal(sc.snapshot_id, 'snap1'); const list = await h.invoke('list_playlist_snapshots', { playlist_id: 'pl1' }); const lsc = list.structuredContent as { count: number }; assert.equal(lsc.count, 1); });
   it('diff detects added, removed, and reordered', async () => { const initialItems = [mkTrack('a'), mkTrack('b'), mkTrack('c')]; let currentItems: PlaylistItemObject[] = initialItems; const h = makeHarness(() => currentItems); registerPlaylistHealthTools(h.server as unknown as McpServer, h.client); await h.invoke('snapshot_playlist', { playlist_id: 'pl1', snapshot_id: 'snap1' }); currentItems = [mkTrack('c'), mkTrack('a'), mkTrack('d')]; const diff = await h.invoke('diff_since_snapshot', { playlist_id: 'pl1', snapshot_id: 'snap1' }); const sc = diff.structuredContent as { added: unknown[]; removed: unknown[]; reordered: unknown[] }; assert.equal(sc.added.length, 1); assert.equal(sc.removed.length, 1); assert.ok(sc.reordered.length > 0); });
+});
+
+describe('remove_unavailable_playlist_items', () => {
+  it('deletes only validated unavailable positions highest first and verifies the rescan', async () => {
+    let items: PlaylistItemObject[] = [mkTrack('a'), mkUnavailable(), mkTrack('b'), mkUnavailable(), mkTrack('c')];
+    const writes: Array<Record<string, unknown>> = [];
+    const h = makeHarness((path, arg) => {
+      if (arg && typeof arg === 'object' && 'body' in arg) {
+        const body = arg.body as { tracks: Array<{ positions: number[] }> };
+        const position = body.tracks[0].positions[0];
+        writes.push(body);
+        items.splice(position, 1);
+        return { snapshot_id: 'snap1' };
+      }
+      assert.equal(path, '/playlists/pl1/items');
+      return items;
+    });
+    registerPlaylistHealthTools(h.server as unknown as McpServer, h.client);
+    const out = await h.invoke('remove_unavailable_playlist_items', { playlist_id: 'pl1', max_removals: 2 });
+    const sc = out.structuredContent as { ok: boolean; removed: number; removed_positions: number[] };
+    assert.equal(sc.ok, true);
+    assert.equal(sc.removed, 2);
+    assert.deepEqual(writes.map((body) => (body.tracks as Array<{ positions: number[] }>)[0].positions[0]), [3, 1]);
+    assert.ok(writes.every((body) => !('uri' in (body.tracks as Array<Record<string, unknown>>)[0])));
+    assert.deepEqual(sc.removed_positions, [1, 3]);
+  });
+
+  it('returns failure when DELETE does not change the unavailable rows', async () => {
+    const h = makeHarness((_path, arg) => arg && typeof arg === 'object' && 'body' in arg
+      ? { snapshot_id: 'snap1' }
+      : [mkUnavailable(), mkTrack('a')]);
+    registerPlaylistHealthTools(h.server as unknown as McpServer, h.client);
+    const out = await h.invoke('remove_unavailable_playlist_items', { playlist_id: 'pl1' });
+    const sc = out.structuredContent as { ok: boolean; removed: number; remaining_unavailable: number; remaining_positions: number[] };
+    assert.equal(sc.ok, false);
+    assert.equal(sc.removed, 0);
+    assert.equal(sc.remaining_unavailable, 1);
+    assert.deepEqual(sc.remaining_positions, [0]);
+  });
+
+  it('defaults the destructive cap to all detected unavailable rows', async () => {
+    let items: PlaylistItemObject[] = Array.from({ length: 101 }, mkUnavailable);
+    let writes = 0;
+    const h = makeHarness((_path, arg) => {
+      if (arg && typeof arg === 'object' && 'body' in arg) {
+        writes++;
+        items = [];
+        return { snapshot_id: 'snap1' };
+      }
+      return items;
+    });
+    registerPlaylistHealthTools(h.server as unknown as McpServer, h.client);
+    const out = await h.invoke('remove_unavailable_playlist_items', { playlist_id: 'pl1' });
+    assert.equal(writes, 101);
+    assert.equal((out.structuredContent as { ok: boolean }).ok, true);
+  });
+
+  it('does not write during dry run', async () => {
+    let writes = 0;
+    const h = makeHarness((_path, arg) => {
+      if (arg && typeof arg === 'object' && 'body' in arg) { writes++; return {}; }
+      return [mkUnavailable(), mkTrack('a')];
+    });
+    registerPlaylistHealthTools(h.server as unknown as McpServer, h.client);
+    const out = await h.invoke('remove_unavailable_playlist_items', { playlist_id: 'pl1', dry_run: true });
+    assert.equal(writes, 0);
+    assert.equal((out.structuredContent as { dry_run: boolean }).dry_run, true);
+  });
+
+  it('reports verification unavailable when the post-write rescan fails', async () => {
+    let gets = 0;
+    const h = makeHarness((_path, arg) => {
+      if (arg && typeof arg === 'object' && 'body' in arg) return { snapshot_id: 'snap1' };
+      gets++;
+      if (gets === 1) return [mkUnavailable(), mkTrack('a')];
+      throw new Error('rescan failed');
+    });
+    registerPlaylistHealthTools(h.server as unknown as McpServer, h.client);
+    const out = await h.invoke('remove_unavailable_playlist_items', { playlist_id: 'pl1' });
+    const sc = out.structuredContent as { ok: boolean; verification: string; removed: null };
+    assert.equal(sc.ok, false);
+    assert.equal(sc.verification, 'unavailable');
+    assert.equal(sc.removed, null);
+  });
 });
