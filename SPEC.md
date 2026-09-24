@@ -578,12 +578,14 @@ Search Spotify's catalog.
 |---|---|---|---|
 | `query` | string | yes | Search query |
 | `types` | string[] | no | Any of `track`, `artist`, `album`, `playlist`, `show`, `episode`, `audiobook`. Default: `["track","artist","album"]`. (`audiobook` only in US/UK/CA/IE/NZ/AU markets) |
-| `limit` | number | no | Results per type, 1–50. Default: 5 |
+| `limit` | number | no | Results per type, 1–10. Default: 5. Use `offset` with repeated 10-result requests to page deeper |
 | `market` | string | no | ISO 3166-1 alpha-2 country code |
 | `offset` | number | no | Index of the first result to return, 0–1000 — use with `limit` to page through results |
 | `include_external` | string | no | Pass `"audio"` to include externally-hosted audio items marked as playable |
 
 **Returns:** grouped results by type. Each item includes URI, name, and type-specific fields (artist names, album name, release date, duration, etc.).
+
+`playlist_fill_from_search` also sends at most 10 track results per `/search` request. It requests later offsets only when the requested number of new playlist items has not yet been found, and its plan discloses the candidate count and pages searched for every query.
 
 ---
 
@@ -1217,7 +1219,7 @@ Known limitations to document and handle:
 |---|---|
 | **Premium required** | All playback control: play, pause, skip, seek, volume, shuffle, repeat, queue |
 | **No audio** | API provides metadata and control only — no audio streams |
-| **Search limit** | Max 50 results per type per call (schema cap; default 5) |
+| **Search limit** | Max 10 results per type per `/search` request (schema and runtime cap; default 5). Tools needing deeper results must page with successive offsets. |
 | **Queue opacity** | `GET /me/player/queue` returns items but positions are not editable |
 | **Removed endpoints** | Audio features/analysis, recommendations, related artists, genres, featured playlists, new releases — gone since Feb 2026. The batch lookups (`GET /tracks?ids=` family) and `GET /artists/{id}/top-tracks` returned in v1.1.0. |
 | **Removed fields** | `popularity`, `followers`, `available_markets` no longer returned on tracks, artists, albums |
