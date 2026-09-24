@@ -5,6 +5,7 @@
  */
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { SpotifyApiError } from '../client.js';
 import type { SpotifyClient } from '../client.js';
 import { DryRun, describeDryRun, parseSpotifyUri, ResponseFormat } from '../shaping.js';
 import type { SpotifyPaged, SpotifyTrack } from '../types/spotify.js';
@@ -21,20 +22,83 @@ function mutationResult(format: string | undefined, echo: Record<string, unknown
   return { content: [{ type: 'text', text }], structuredContent: echo };
 }
 
-export async function addToQueueBatch(client: SpotifyClient, uris: string[], deviceId?: string): Promise<{ queued: number; failed: string[] }> {
+export interface QueueFailure {
+  uri: string;
+  reason: string;
+}
+
+export interface QueueBatchResult {
+  queued: number;
+  failed: QueueFailure[];
+}
+
+function queueFailureReason(error: unknown): string {
+  const record = error !== null && typeof error === 'object'
+    ? error as { status?: unknown; message?: unknown }
+    : undefined;
+  const status = error instanceof SpotifyApiError
+    ? error.status
+    : typeof record?.status === 'number'
+      ? record.status
+      : undefined;
+  const rawMessage = error instanceof Error
+    ? error.message
+    : typeof record?.message === 'string'
+      ? record.message
+      : error === undefined || error === null
+        ? 'unknown error'
+        : String(error);
+  const label = status === 429
+    ? 'rate limited'
+    : status === 404
+      ? 'not found'
+      : status === 403
+        ? 'forbidden'
+        : status === 401
+          ? 'unauthorized'
+          : undefined;
+  if (status !== undefined) {
+    const suffix = rawMessage && !rawMessage.toLowerCase().includes(label ?? '')
+      ? `: ${rawMessage}`
+      : '';
+    return `${status} ${label ?? 'request failed'}${suffix}`;
+  }
+  return rawMessage || 'unknown error';
+}
+
+export async function addToQueueBatch(client: SpotifyClient, uris: string[], deviceId?: string): Promise<QueueBatchResult> {
   let queued = 0;
-  const failed: string[] = [];
+  const failed: QueueFailure[] = [];
   for (const uri of uris) {
     try {
       const params = new URLSearchParams({ uri });
       if (deviceId) params.set('device_id', deviceId);
       await client.post(`/me/player/queue?${params}`);
       queued++;
-    } catch {
-      failed.push(uri);
+    } catch (error) {
+      failed.push({ uri, reason: queueFailureReason(error) });
     }
   }
   return { queued, failed };
+}
+
+export function dominantQueueFailureReason(failed: QueueFailure[]): string | undefined {
+  if (failed.length === 0) return undefined;
+  const causeCounts = new Map<string, number>();
+  for (const failure of failed) {
+    const cause = failure.reason.match(/^\d{3} (?:rate limited|not found|forbidden|unauthorized|request failed)/)?.[0]
+      ?? failure.reason.split(':', 1)[0];
+    causeCounts.set(cause, (causeCounts.get(cause) ?? 0) + 1);
+  }
+  return [...causeCounts.entries()].sort((a, b) => b[1] - a[1])[0][0];
+}
+
+export function formatQueueFailures(failed: QueueFailure[]): string {
+  if (failed.length === 0) return '';
+  const dominant = dominantQueueFailureReason(failed);
+  const shown = failed.slice(0, 3).map((failure) => `${failure.uri} — ${failure.reason}`).join('; ');
+  const remainder = failed.length > 3 ? `; +${failed.length - 3} more` : '';
+  return `${failed.length} failed (dominant: ${dominant}; ${shown}${remainder})`;
 }
 
 async function resolveUris(client: SpotifyClient, sourceUri: string, limit: number): Promise<{ uris: string[]; sourceType: string; total: number }> {
@@ -110,20 +174,10 @@ export function registerQueueOpsTools(server: McpServer, client: SpotifyClient):
         const preview = uris.slice(0, 5);
         return { content: [{ type: 'text', text: describeDryRun('queue_playlist', args.source_uri as string, [`${args.mode} ${uris.length} tracks (source: ${sourceType}, total ${total})`, ...preview]) }] };
       }
-      let queued = 0;
-      const failed: string[] = [];
-      for (const uri of uris) {
-        try {
-          const params = new URLSearchParams({ uri });
-          if (args.device_id) params.set('device_id', args.device_id as string);
-          await client.post(`/me/player/queue?${params}`);
-          queued++;
-        } catch {
-          failed.push(uri);
-        }
-      }
-      const text = `Queued ${queued}/${uris.length} tracks from ${sourceType} ${args.source_uri} (mode=${args.mode})${failed.length ? ` — ${failed.length} failed` : ''}`;
-      return mutationResult(args.response_format as string | undefined, { ok: true, source_uri: args.source_uri, source_type: sourceType, mode: args.mode, total, queued, failed }, text);
+      const { queued, failed } = await addToQueueBatch(client, uris, args.device_id as string | undefined);
+      const failureSummary = formatQueueFailures(failed);
+      const text = `Queued ${queued}/${uris.length} tracks from ${sourceType} ${args.source_uri} (mode=${args.mode})${failureSummary ? ` — ${failureSummary}` : ''}`;
+      return mutationResult(args.response_format as string | undefined, { ok: true, source_uri: args.source_uri, source_type: sourceType, mode: args.mode, total, queued, failed, dominant_cause: dominantQueueFailureReason(failed) ?? null }, text);
     },
   );
 
@@ -254,8 +308,9 @@ export function registerQueueOpsTools(server: McpServer, client: SpotifyClient):
         return { content: [{ type: 'text', text: describeDryRun('batch_add_to_queue', `${uriList.length} URIs to queue`, [`Would queue ${uriList.length} URI(s)`]) }] };
       }
       const { queued, failed } = await addToQueueBatch(client, uriList, args.device_id as string | undefined);
-      const text = `Queued ${queued}/${uriList.length} tracks${failed.length ? ` — ${failed.length} failed` : ''}`;
-      return mutationResult(args.response_format as string | undefined, { ok: true, queued, failed, total: uriList.length }, text);
+      const failureSummary = formatQueueFailures(failed);
+      const text = `Queued ${queued}/${uriList.length} tracks${failureSummary ? ` — ${failureSummary}` : ''}`;
+      return mutationResult(args.response_format as string | undefined, { ok: true, queued, failed, total: uriList.length, dominant_cause: dominantQueueFailureReason(failed) ?? null }, text);
     },
   );
 }

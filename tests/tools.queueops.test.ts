@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { registerQueueOpsTools } from '../src/tools/queueops.js';
+import { SpotifyApiError } from '../src/client.js';
 import type { SpotifyClient } from '../src/client.js';
 
 function track(id: string) { return { id, uri: `spotify:track:${id}`, name: `T ${id}`, type: 'track', duration_ms: 200000, artists: [{ id: 'a', name: 'A' }], album: { id: 'al', name: 'Al', uri: 'spotify:album:al' } } as any; }
@@ -11,6 +12,7 @@ function episode(id: string) { return { uri: `spotify:episode:${id}`, type: 'epi
 function harness(overrides: Partial<{
   playlistItems: any[]; albumTracks: any[]; topTracks: any[];
   queueData: any; meResponse: any; createPlaylistResponse: any;
+  postErrorFor?: (path: string, index: number) => Error | undefined;
 }> = {}) {
   const registered: any[] = []; const posts: string[] = []; const postBodies: any[] = [];
   const fakeServer = { tool(name: string, _d: string, schema: any, handler: any) { registered.push({ name, schema, handler }); } } as unknown as McpServer;
@@ -27,8 +29,12 @@ function harness(overrides: Partial<{
       if (path.includes('/playlists/')) return overrides.playlistItems ?? [{ item: track('p1') }, { item: track('p2') }];
       return [];
     },
-    async post(path: string, body?: any) {
+    async post(path: string, body?: unknown) {
       posts.push(path); postBodies.push(body);
+      const queueError = path.startsWith('/me/player/queue?')
+        ? overrides.postErrorFor?.(path, posts.length - 1)
+        : undefined;
+      if (queueError) throw queueError;
       if (path.includes('/users/') && path.includes('/playlists')) {
         return (overrides.createPlaylistResponse ?? { id: 'newPlId', external_urls: { spotify: 'https://open.spotify.com/playlist/newPlId' }, snapshot_id: 'snap1' }) as any;
       }
@@ -72,6 +78,34 @@ describe('queueops', () => {
     const out = await h.invoke('queue_playlist', { source_uri: 'spotify:playlist:pl1', mode: 'append' });
     assert.equal(h.posts.length, 2);
     assert.match(out.content[0].text, /Queued 2/);
+  });
+  it('queue_playlist reports each failed URI with an actionable reason', async () => {
+    const h = harness({
+      playlistItems: [
+        { item: track('a1') },
+        { item: track('a2') },
+        { item: track('a3') },
+        { item: track('a4') },
+        { item: track('a5') },
+      ],
+      postErrorFor: (_path, index) => index === 1
+        ? new SpotifyApiError(429, 'slow down')
+        : index === 3
+          ? Object.assign(new Error('track unavailable'), { status: 404 })
+          : undefined,
+    });
+    const out = await h.invoke('queue_playlist', { source_uri: 'spotify:playlist:pl1', mode: 'append' });
+    const structured = out.structuredContent as { queued: number; failed: Array<{ uri: string; reason: string }>; dominant_cause: string | null } | undefined;
+    assert.ok(structured);
+    assert.equal(structured.queued, 3);
+    assert.equal(structured.dominant_cause, '429 rate limited');
+    assert.deepEqual(structured.failed, [
+      { uri: 'spotify:track:a2', reason: '429 rate limited: slow down' },
+      { uri: 'spotify:track:a4', reason: '404 not found: track unavailable' },
+    ]);
+    assert.match(out.content[0].text, /dominant: 429 rate limited/);
+    assert.match(out.content[0].text, /spotify:track:a2/);
+    assert.match(out.content[0].text, /spotify:track:a4/);
   });
   it('queue_playlist handles album source', async () => {
     const h = harness({ albumTracks: [track('al1'), track('al2')] });
