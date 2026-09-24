@@ -7,16 +7,37 @@ on:
 permissions:
   contents: write
   pull-requests: write
+  actions: write
+
+concurrency:
+  group: release-please-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   release-please:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: google-github-actions/release-please-action@e4dc86ba9405554aeba3c6bb2d169500e7d3b4ee # v4
+        id: release
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           config-file: .release-please-config.json
           manifest-file: .github/release-please-manifest.json
 
-      # npm + MCP Registry publishing happens in publish.yml, triggered by
-      # the v* tag that release-please creates.
+      # release-please's GITHUB_TOKEN tag push cannot start push-triggered
+      # workflows. Dispatch the guarded publish workflow explicitly; the same
+      # workflow remains available for manual recovery with a matching tag.
+      - name: Dispatch npm and registry publish
+        if: steps.release.outputs.tag_name != ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag_name }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "release-please returned an invalid tag: $RELEASE_TAG" >&2
+            exit 1
+          fi
+          gh workflow run publish.yml --ref "$RELEASE_TAG" -f tag="$RELEASE_TAG"

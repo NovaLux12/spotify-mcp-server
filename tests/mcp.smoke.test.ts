@@ -9,8 +9,8 @@
  */
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
-import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { spawn, execFileSync, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { mkdtemp, writeFile, readFile, rm, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { once } from 'node:events';
@@ -275,6 +275,55 @@ describe('MCP stdio smoke (real src/index.ts)', () => {
     // structured error response is fine (test token has no real Spotify scopes).
     assert.ok(meRes.error !== undefined || meRes.result !== undefined,
       'get_me must return either a result or a structured error, never crash the server');
+  });
+});
+
+describe('npm package artifact', () => {
+  it('packs a shebanged dist entry that starts and initializes', async () => {
+    const packOutput = execFileSync('npm', ['pack', '--json', '--pack-destination', tempDir], {
+      cwd: REPO_ROOT,
+      encoding: 'utf8',
+    });
+    const [{ filename }] = JSON.parse(packOutput) as Array<{ filename: string }>;
+    const packageDir = join(tempDir, 'package');
+    execFileSync('tar', ['-xzf', join(tempDir, filename), '-C', tempDir]);
+
+    const packedEntry = join(packageDir, 'dist', 'index.js');
+    const firstLine = (await readFile(packedEntry, 'utf8')).split('\n', 1)[0];
+    assert.equal(firstLine, '#!/usr/bin/env node', 'npm tarball must contain the executable shebang');
+
+    // Dependencies are supplied by the consumer's install; link the checkout's
+    // installed dependencies so this test remains offline while exercising the
+    // actual packed entry point.
+    await symlink(join(REPO_ROOT, 'node_modules'), join(packageDir, 'node_modules'), 'dir');
+    const child = spawn(process.execPath, [packedEntry], {
+      cwd: packageDir,
+      env: {
+        ...process.env,
+        SPOTIFY_CLIENT_ID: 'test-client-id',
+        SPOTIFY_MCP_TOKEN_FILE: join(tempDir, 'tokens.json'),
+      },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    const packagedClient = new StdioClient(child);
+    try {
+      const init = await packagedClient.request('initialize', {
+        protocolVersion: '2024-11-05',
+        capabilities: {},
+        clientInfo: { name: 'mcp-package-smoke', version: '1.0.0' },
+      });
+      assert.equal(init.error, undefined, `packed initialize failed: ${JSON.stringify(init.error)}`);
+      assert.equal(
+        (init.result?.serverInfo as { name?: string } | undefined)?.name,
+        'spotify-mcp',
+      );
+      packagedClient.notify('notifications/initialized');
+    } finally {
+      packagedClient.child.stdin.end();
+      if (packagedClient.child.exitCode === null && packagedClient.child.signalCode === null) {
+        await once(packagedClient.child, 'exit');
+      }
+    }
   });
 });
 

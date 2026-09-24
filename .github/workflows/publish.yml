@@ -1,42 +1,67 @@
 name: Publish
 
-# On a version tag: test, build, publish the npm package, then publish the
-# server metadata to the official MCP Registry via GitHub OIDC (no secrets).
-#
-# NOTE: release-please creates tags with GITHUB_TOKEN, and GitHub suppresses
-# workflow triggers from GITHUB_TOKEN events — so the tag push alone will NOT
-# start this workflow. After release-please tags a release, run:
-#   gh workflow run publish.yml --ref v<version>
-#
-# Trusted publishing (#113): this workflow is cut over to npm trusted
-# publishing (OIDC). The id-token: write permission mints a short-lived OIDC
-# token; --provenance attests the build. Once the trusted publisher is
-# configured on npmjs.com (package Settings → Trusted Publishers → GitHub
-# Actions, repo NovaLux12/spotify-mcp-server, workflow publish.yml), the
-# NPM_TOKEN fallback can be removed — npm will accept the OIDC identity alone.
-# Until then both paths are supported: OIDC when the publisher is configured,
-# NPM_TOKEN otherwise (the --provenance flag is harmless with token auth).
+# Release-please tags do not trigger workflows when created with GITHUB_TOKEN.
+# release.yml explicitly dispatches this workflow for a newly-created tag;
+# a maintainer can also recover with:
+#   gh workflow run publish.yml --ref v<version> -f tag=v<version>
 on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Exact v-prefixed release tag to publish (must equal the selected ref)'
+        required: true
+        type: string
 
 permissions:
   contents: read
 
+concurrency:
+  group: publish-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
 jobs:
   publish-npm:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     permissions:
       contents: read
       id-token: write # npm provenance + trusted publishing (OIDC)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
+      - name: Verify tag and package versions
+        shell: bash
+        env:
+          REQUESTED_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF_TYPE:-}" != "tag" || "${GITHUB_REF:-}" != refs/tags/v* ]]; then
+            echo "publish requires a v* tag; refusing ref ${GITHUB_REF:-<unset>}" >&2
+            exit 1
+          fi
+          tag="${GITHUB_REF#refs/tags/}"
+          if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "invalid release tag: $tag" >&2
+            exit 1
+          fi
+          if [[ "${GITHUB_EVENT_NAME}" == workflow_dispatch && "${REQUESTED_TAG:-}" != "$tag" ]]; then
+            echo "manual dispatch tag must exactly match the selected ref: ${REQUESTED_TAG:-<missing>} != $tag" >&2
+            exit 1
+          fi
+          version="${tag#v}"
+          package_version="$(node -p "require('./package.json').version")"
+          server_version="$(node -p "require('./server.json').version")"
+          server_package_version="$(node -p "require('./server.json').packages[0].version")"
+          if [[ "$package_version" != "$version" || "$server_version" != "$version" || "$server_package_version" != "$version" ]]; then
+            echo "version drift: tag=$version package=$package_version server=$server_version server_package=$server_package_version" >&2
+            exit 1
+          fi
+
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: "22.x"
-          cache: npm
+          node-version: "24.x"
           registry-url: "https://registry.npmjs.org"
 
       - run: npm ci
@@ -45,11 +70,15 @@ jobs:
 
       - run: npm test
 
-      - run: npm run build
+      - name: Verify packed artifact has a shebang
+        shell: bash
+        run: |
+          set -euo pipefail
+          pack_json="$(npm pack --json --pack-destination "$RUNNER_TEMP")"
+          tarball="$(node -e 'const fs=require("fs"); const rows=JSON.parse(fs.readFileSync(0,"utf8")); process.stdout.write(rows[0].filename)' <<< "$pack_json")"
+          first_line="$(tar -xOf "$RUNNER_TEMP/$tarball" package/dist/index.js | sed -n '1p')"
+          test "$first_line" = '#!/usr/bin/env node'
 
-      # Idempotency: skip when this version is already on npm (re-runs after
-      # a partial failure converge green instead of failing on "cannot
-      # publish over the previously published version").
       - name: Publish to npm (trusted publishing / NPM_TOKEN fallback)
         run: |
           VERSION="${GITHUB_REF#refs/tags/v}"
@@ -63,6 +92,7 @@ jobs:
 
   publish-mcp-registry:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     needs: publish-npm
     permissions:
       contents: read
