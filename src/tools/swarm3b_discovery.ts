@@ -35,6 +35,7 @@ import type {
 } from '../types/spotify.js';
 import {
   ResponseFormat,
+  MaxResults,
   resolveMaxResults,
   truncateItems,
   paginationInfo,
@@ -116,6 +117,33 @@ function tsOf(date: string | null | undefined): number | null {
 /** Whole days between two timestamps. */
 function daysBetween(a: number, b: number): number {
   return Math.round(Math.abs(b - a) / 86_400_000);
+}
+
+function isLeapYear(year: number): boolean {
+  return year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+}
+
+function resolveAnniversary(releaseDate: string, nowMs: number): { year: number; date: string; timestamp: number; adjusted: boolean } | null {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(releaseDate);
+  if (!match) return null;
+  const [, , month, day] = match;
+  const now = new Date(nowMs);
+  let year = now.getUTCFullYear();
+  const dateFor = (candidateYear: number): { date: string; timestamp: number; adjusted: boolean } => {
+    const isAdjusted = month === '02' && day === '29' && !isLeapYear(candidateYear);
+    const date = isAdjusted
+      ? `${candidateYear}-02-28`
+      : `${candidateYear}-${month}-${day}`;
+    return { date, timestamp: Date.parse(date), adjusted: isAdjusted };
+  };
+  let candidate = dateFor(year);
+  if (!Number.isFinite(candidate.timestamp)) return null;
+  if (candidate.timestamp < nowMs) {
+    year += 1;
+    candidate = dateFor(year);
+    if (!Number.isFinite(candidate.timestamp)) return null;
+  }
+  return { year, date: candidate.date, timestamp: candidate.timestamp, adjusted: candidate.adjusted };
 }
 
 /** Lowercase, strip punctuation/symbols, collapse whitespace. */
@@ -218,7 +246,7 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
       artist: z.string().min(1).describe('Artist ID, URI, URL, or name to resolve via search'),
       include_groups: IncludeGroups,
       response_format: ResponseFormat,
-      max_results: z.number().int().positive().max(2000).optional(),
+      max_results: MaxResults.describe('Max releases to return (default 40).'),
     },
     async (args) => {
       const rf = args.response_format;
@@ -238,7 +266,8 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
       const years = new Set(albums.map((a) => yearOf(a.release_date)).filter((y): y is number => y !== null));
       const spanYears = first && latest ? (yearOf(latest.release_date) ?? 0) - (yearOf(first.release_date) ?? 0) + 1 : 0;
       const perYear = years.size > 0 ? Math.round((albums.length / years.size) * 10) / 10 : 0;
-      const rows = sorted.map((a) => `${yearOf(a.release_date) ?? '????'} · ${a.album_type} · ${a.name} (${a.total_tracks} tracks)`);
+      const cap = resolveMaxResults(args.max_results, 40);
+      const trunc = truncateItems(sorted, cap);
       const prose = [
         `Discography overview — ${profile.name}${profile.genres?.length ? ` (${profile.genres.slice(0, 4).join(', ')})` : ''}:`,
         `Releases: ${albums.length} across ${years.size} active year(s) (~${perYear}/active year, span ${spanYears}y)`,
@@ -246,7 +275,8 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
         first ? `First: ${first.name} (${first.release_date})` : null,
         latest ? `Latest: ${latest.name} (${latest.release_date})` : null,
         '',
-        ...rows.slice(0, 40),
+        ...trunc.items.map((a) => `${yearOf(a.release_date) ?? '????'} · ${a.album_type} · ${a.name} (${a.total_tracks} tracks)`),
+        trunc.footer ? `(${trunc.footer})` : null,
       ].filter((l): l is string => l !== null).join('\n');
       const payload = {
         artist: { id: ref.id, name: profile.name, genres: profile.genres ?? [] },
@@ -254,7 +284,8 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
         counts_by_type: Object.fromEntries([...byType.entries()].sort()),
         first_release: first ? { id: first.id, name: first.name, release_date: first.release_date, album_type: first.album_type } : null,
         latest_release: latest ? { id: latest.id, name: latest.name, release_date: latest.release_date, album_type: latest.album_type } : null,
-        releases: albums.map((a) => ({ id: a.id, name: a.name, release_date: a.release_date, album_type: a.album_type, total_tracks: a.total_tracks })),
+        releases: trunc.items.map((a) => ({ id: a.id, name: a.name, release_date: a.release_date, album_type: a.album_type, total_tracks: a.total_tracks })),
+        pagination: paginationInfo({ total: trunc.total, returned: trunc.returned }),
       };
       return emit(rf, prose, payload);
     },
@@ -439,7 +470,7 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
       artist_id: spotifyId('artist').describe('Spotify artist ID, URI, or URL'),
       max_releases: z.number().int().positive().max(1000).optional().describe('Releases to scan. Default: SPOTIFY_MCP_FETCH_ALL_CAP'),
       response_format: ResponseFormat,
-      max_results: z.number().int().positive().max(2000).optional(),
+      max_results: MaxResults.describe('Max reissue groups to return (default 100).'),
     },
     async (args) => {
       const rf = args.response_format;
@@ -454,16 +485,17 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
         .filter(([, rows]) => rows.length > 1)
         .map(([base, rows]) => ({ base_title: rows[0].name, variant_count: rows.length, variants: [...rows].sort((x, y) => (x.year ?? 0) - (y.year ?? 0)) }))
         .sort((a, b) => b.variant_count - a.variant_count);
+      const cap = resolveMaxResults(args.max_results, 100);
+      const trunc = truncateItems(variantGroups, cap);
       const prose = [
         `Reissue scan — ${variantGroups.length} base title(s) with multiple variants (scanned ${albums.length} releases):`,
         '',
-        ...(variantGroups.length
-          ? variantGroups.map((g) =>
+        ...(trunc.items.length
+          ? trunc.items.map((g) =>
               `${g.variant_count}× "${g.base_title}":\n${g.variants.map((v) => `    ${v.year ?? '????'} · ${v.album_type} · ${v.name}`).join('\n')}`)
           : ['No multi-variant titles found.']),
+        trunc.footer ? `(${trunc.footer})` : '',
       ].join('\n');
-      const cap = resolveMaxResults((args as { max_results?: number }).max_results, 100);
-      const trunc = truncateItems(variantGroups, cap);
       const payload = listStructuredContent(trunc.items, paginationInfo({
         total: trunc.total, returned: trunc.returned,
       }), { artist_id: args.artist_id, releases_scanned: albums.length });
@@ -563,7 +595,7 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
       const albums = await artistAlbums(client, args.artist_id, args.include_groups ?? 'album,single,compilation,appears_on', fetchAllCap());
       const needle = normalizeName(args.query);
       const hits = albums.filter((a) => normalizeName(a.name).includes(needle));
-      const cap = resolveMaxResults((args as { max_results?: number }).max_results, 100);
+      const cap = resolveMaxResults(args.max_results, 100);
       const trunc = truncateItems(hits, cap);
       const prose = [
         `Releases matching "${args.query}": ${hits.length} of ${albums.length} scanned.`,
@@ -681,6 +713,7 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
       artist_id: spotifyId('artist').describe('Spotify artist ID, URI, or URL'),
       max_albums: z.number().int().positive().max(100).optional().describe('Albums to scan (album group only). Default: 30'),
       response_format: ResponseFormat,
+      max_results: MaxResults.describe('Max album openers to return (default 100).'),
     },
     async (args) => {
       const rf = args.response_format;
@@ -696,10 +729,11 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
           track_list_truncated: (m.tracks?.items?.length ?? 0) < m.total_tracks,
         };
       });
-      const cap = resolveMaxResults((args as { max_results?: number }).max_results, 100);
+      const cap = resolveMaxResults(args.max_results, 100);
       const trunc = truncateItems(rows, cap);
+      const budget = `showing ${trunc.returned} of ${trunc.total}${trunc.remaining ? ` (${trunc.remaining} withheld)` : ''}`;
       const prose = [
-        `Album openers (${rows.length} albums):`,
+        `Album openers (${budget}):`,
         '',
         ...trunc.items.map((r) =>
           `${r.year ?? '????'} · ${r.album} — opens with "${r.opener?.name ?? '???'}" (${r.opener?.duration ?? '?:??'})${r.track_list_truncated ? ' · track list partial' : ''}`),
@@ -707,7 +741,12 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
       ].join('\n');
       const payload = listStructuredContent(trunc.items, paginationInfo({
         total: trunc.total, returned: trunc.returned,
-      }), { artist_id: args.artist_id });
+      }), {
+        artist_id: args.artist_id,
+        total: trunc.total,
+        returned: trunc.returned,
+        withheld: trunc.remaining,
+      });
       return emit(rf, prose, payload);
     },
   );
@@ -850,27 +889,21 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
     async (args) => {
       const rf = args.response_format;
       const albums = await artistAlbums(client, args.artist_id, 'album', fetchAllCap());
-      const now = new Date();
+      const nowMs = Date.now();
       const window = Math.min(365, Math.max(1, args.window_days ?? 30));
       const step = Math.max(1, args.milestone_step ?? 5);
       const rows = albums
         .map((a) => {
           const d = a.release_date ?? '';
-          if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return null;
-          const [, mm, dd] = d.split('-');
-          let annivYear = now.getUTCFullYear();
-          let anniv = Date.parse(`${annivYear}-${mm}-${dd}`);
-          if (!Number.isFinite(anniv)) return null;
-          if (anniv < now.getTime()) {
-            annivYear += 1;
-            anniv = Date.parse(`${annivYear}-${mm}-${dd}`);
-          }
-          const daysUntil = Math.round((anniv - now.getTime()) / 86_400_000);
-          if (daysUntil > window) return null;
-          const turning = annivYear - Number(d.slice(0, 4));
+          const anniversary = resolveAnniversary(d, nowMs);
+          if (!anniversary) return null;
+          const daysUntil = Math.round((anniversary.timestamp - nowMs) / 86_400_000);
+          if (!Number.isFinite(daysUntil) || daysUntil > window) return null;
+          const turning = anniversary.year - Number(d.slice(0, 4));
           return {
             album: a.name, album_id: a.id, original_release_date: d,
-            anniversary_date: `${annivYear}-${mm}-${dd}`, turning, days_until: daysUntil,
+            anniversary_date: anniversary.date, date_adjusted: anniversary.adjusted,
+            turning, days_until: daysUntil,
             milestone: turning % step === 0 && turning > 0,
           };
         })
@@ -880,7 +913,7 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
         `Album anniversaries in the next ${window} day(s):`,
         '',
         ...(rows.length
-          ? rows.map((r) => `${r.anniversary_date} · ${r.album} turns ${r.turning}${r.milestone ? ' · MILESTONE' : ''}`)
+          ? rows.map((r) => `${r.anniversary_date} · ${r.album} turns ${r.turning}${r.milestone ? ' · MILESTONE' : ''}${r.date_adjusted ? ' · adjusted from Feb 29' : ''}`)
           : ['No anniversaries in the window.']),
       ].join('\n');
       const payload = listStructuredContent(rows, paginationInfo({
@@ -916,7 +949,7 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
           longest_track: longest ? { name: longest.name, duration_ms: longest.duration_ms, duration: fmtDur(longest.duration_ms) } : null,
         };
       }).sort((a, b) => b.runtime_ms - a.runtime_ms);
-      const cap = resolveMaxResults((args as { max_results?: number }).max_results, 100);
+      const cap = resolveMaxResults(args.max_results, 100);
       const trunc = truncateItems(rows, cap);
       const prose = [
         `Album runtimes (${rows.length} albums, longest first):`,
@@ -973,19 +1006,26 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
       }
 
       const rows: Array<{ artist: string; artist_id: string; release: string; release_date: string; album_type: string; age_days: number | null }> = [];
+      const probeFailures: Array<{ id: string; name: string; error: string }> = [];
+      let artistsProbed = 0;
       for (const [id, name] of artistMap) {
-        const peek = await client.get<{ items?: SpotifyAlbumItem[] }>(`/artists/${encodeURIComponent(id)}/albums`, {
-          include_groups: 'album,single', limit: '3',
-        });
-        const newest = (peek?.items ?? [])
-          .filter((r) => tsOf(r.release_date) !== null)
-          .sort((a, b) => (b.release_date ?? '').localeCompare(a.release_date ?? ''))[0];
-        if (!newest) continue;
-        const ts = tsOf(newest.release_date)!;
-        rows.push({
-          artist: name, artist_id: id, release: newest.name, release_date: newest.release_date,
-          album_type: newest.album_type, age_days: daysBetween(ts, Date.now()),
-        });
+        try {
+          const peek = await client.get<{ items?: SpotifyAlbumItem[] }>(`/artists/${encodeURIComponent(id)}/albums`, {
+            include_groups: 'album,single', limit: '3',
+          });
+          artistsProbed += 1;
+          const newest = (peek?.items ?? [])
+            .filter((r) => tsOf(r.release_date) !== null)
+            .sort((a, b) => (b.release_date ?? '').localeCompare(a.release_date ?? ''))[0];
+          if (!newest) continue;
+          const ts = tsOf(newest.release_date)!;
+          rows.push({
+            artist: name, artist_id: id, release: newest.name, release_date: newest.release_date,
+            album_type: newest.album_type, age_days: daysBetween(ts, Date.now()),
+          });
+        } catch (error) {
+          probeFailures.push({ id, name, error: error instanceof Error ? error.message : String(error) });
+        }
       }
       rows.sort((a, b) => (b.release_date ?? '').localeCompare(a.release_date ?? ''));
       const capOut = resolveMaxResults(args.max_results, 100);
@@ -995,10 +1035,18 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
         '',
         ...trunc.items.map((r) => `${r.release_date} · ${r.album_type} · ${r.release} — ${r.artist} (${r.age_days ?? '?'}d old)`),
         trunc.footer ? `\n(${trunc.footer})` : '',
+        ...(probeFailures.length
+          ? [`these artists could not be checked: ${probeFailures.map((f) => `${f.name} (${f.id}) — ${f.error}`).join('; ')}.`]
+          : []),
       ].join('\n');
       const payload = listStructuredContent(trunc.items, paginationInfo({
         total: trunc.total, returned: trunc.returned,
-      }), { artists_checked: artistMap.size });
+      }), {
+        artists_checked: artistMap.size,
+        artists_probed: artistsProbed,
+        artists_failed: probeFailures.length,
+        probe_failures: probeFailures,
+      });
       return emit(rf, prose, payload);
     },
   );
@@ -1071,7 +1119,7 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
         .filter((a) => liveRe.test(a.name))
         .sort((a, b) => (a.release_date ?? '').localeCompare(b.release_date ?? ''))
         .map((a) => ({ id: a.id, name: a.name, release_date: a.release_date, year: yearOf(a.release_date), album_type: a.album_type, total_tracks: a.total_tracks }));
-      const cap = resolveMaxResults((args as { max_results?: number }).max_results, 100);
+      const cap = resolveMaxResults(args.max_results, 100);
       const trunc = truncateItems(rows, cap);
       const prose = [
         `Live releases (${rows.length} of ${albums.length} scanned):`,
@@ -1104,7 +1152,7 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
         .filter((a) => !savedIds.has(a.id))
         .sort((a, b) => (a.release_date ?? '').localeCompare(b.release_date ?? ''))
         .map((a) => ({ id: a.id, name: a.name, release_date: a.release_date, year: yearOf(a.release_date), total_tracks: a.total_tracks }));
-      const cap = resolveMaxResults((args as { max_results?: number }).max_results, 100);
+      const cap = resolveMaxResults(args.max_results, 100);
       const trunc = truncateItems(rows, cap);
       const prose = [
         `Collection gaps (${rows.length} of ${albums.length} studio albums not saved):`,
@@ -1136,12 +1184,6 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
         .map((s) => ({ id: s.id, name: s.name, release_date: s.release_date, year: yearOf(s.release_date), total_tracks: s.total_tracks }));
       const cap = resolveMaxResults(args.max_results, 300);
       const trunc = truncateItems(rows, cap);
-      let prev = '';
-      const withGaps = trunc.items.map((r) => {
-        const gap = prev && r.release_date ? `${daysBetween(tsOf(prev) ?? 0, tsOf(r.release_date) ?? 0)}d` : '—';
-        prev = r.release_date ?? prev;
-        return { ...r, gap_days_since_previous: prev && r.release_date ? daysBetween(tsOf(rows.find((x) => x.release_date === prev && false)?.release_date ?? '') ?? 0, 0) || undefined : undefined, gap_display: gap };
-      });
       const prose = [
         `Singles timeline (${singles.length}):`,
         '',
