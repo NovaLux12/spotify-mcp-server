@@ -3,19 +3,44 @@ version: 2
 updates:
   - package-ecosystem: npm
     directory: /
+    versioning-strategy: increase-if-necessary
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 7
     groups:
-      dependencies:
+      production-minor-patch:
         dependency-type: production
-      dev-dependencies:
+        update-types:
+          - minor
+          - patch
+      production-major:
+        dependency-type: production
+        update-types:
+          - major
+        open-pull-requests-limit: 1
+        labels:
+          - area:ci
+      development-minor-patch:
         dependency-type: development
+        update-types:
+          - minor
+          - patch
+      development-major:
+        dependency-type: development
+        update-types:
+          - major
+        open-pull-requests-limit: 1
+        labels:
+          - area:ci
     open-pull-requests-limit: 10
 
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 7
     groups:
       actions:
         patterns:
