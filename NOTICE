@@ -1,0 +1,82 @@
+SpotifyMCP / @novalux12/spotify-mcp
+Copyright (c) 2026 Carme99 and NovaLux12 contributors
+
+Provenance and acknowledgements
+--------------------------------
+
+This project is an independent implementation. The repository was reviewed
+against the public acknowledgements in README.md. No source file, test, script,
+schema, or other substantial portion of the distributed Server was intentionally
+copied or derived from calebWei/SpotifyMCP or varunneal/spotify-mcp. The
+similar project names and MCP/Spotify integration pattern are acknowledged as
+prior art; this statement is a provenance record, not a legal determination
+about every historical revision.
+
+Acknowledged projects:
+
+* calebWei/SpotifyMCP — https://github.com/calebWei/SpotifyMCP
+  No licence file was found in the public project listing. No permission to
+  reuse its code is granted by this notice, and no code from that project is
+  included here. The attribution records the project as an inspiration/source
+  of the shared SpotifyMCP concept only.
+
+* varunneal/spotify-mcp — https://github.com/varunneal/spotify-mcp
+  The public project identifies the following MIT copyright notice:
+  Copyright (c) 2025 Varun Neal Srivastava
+  No code or schema from that project is intentionally included in this
+  distribution. Its MIT notice is reproduced below as an acknowledgement of the
+  prior project; it does not imply that the independent Server is a derivative.
+
+This project is licensed under the MIT License. The MIT text below covers the
+project's own code, documentation, and other project-authored material. Spotify
+Content, the Spotify Platform, Spotify client libraries, and Spotify marks are
+not licensed by this project and remain subject to Spotify's own terms,
+including https://developer.spotify.com/terms and the third-party notices at
+https://developer.spotify.com/third-party-licenses. The Server is not affiliated
+with or endorsed by Spotify AB.
+
+MIT License
+
+Copyright (c) 2026 Carme99 and NovaLux12 contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+Upstream varunneal/spotify-mcp MIT notice (acknowledgement)
+
+MIT License
+
+Copyright (c) 2025 Varun Neal Srivastava
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
