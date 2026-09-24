@@ -15,7 +15,7 @@ import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import type { SpotifyClient } from '../src/client.js';
+import { SpotifyApiError, type SpotifyClient } from '../src/client.js';
 import { initConfig } from '../src/config.js';
 import { registerDoctorTool } from '../src/tools/doctortool.js';
 
@@ -28,6 +28,27 @@ interface DoctorRow {
   status: string;
   summary: string;
   detail?: string;
+  phase?: string;
+  message?: string;
+}
+
+interface DoctorSurface {
+  registry_available: boolean;
+  registered_tools: number;
+  total_modules: number;
+  active_modules: string[];
+  exposed_modules: string[];
+  hidden_by_trim: string[];
+  hidden_by_scopes: string[];
+  hidden_by_readonly: string[];
+  active_sets: string[];
+  inactive_sets: string[];
+  unknown_toolsets: string[];
+  enable_overrides: string[];
+  disable_overrides: string[];
+  unknown_enable_overrides: string[];
+  unknown_disable_overrides: string[];
+  read_only: boolean;
 }
 
 interface RegisteredTool {
@@ -36,7 +57,7 @@ interface RegisteredTool {
   validate: (args: Record<string, unknown>) => Record<string, unknown>;
   handler: (args: Record<string, unknown>) => Promise<{
     content: Array<{ type: string; text: string }>;
-    structuredContent?: { ok?: boolean; rows?: DoctorRow[] };
+    structuredContent?: { ok?: boolean; rows?: DoctorRow[]; surface?: DoctorSurface };
   }>;
 }
 
@@ -46,15 +67,30 @@ interface StubRateLimit {
   cooldownRemainingMs: number;
 }
 
-function harness(opts: { rateLimit?: StubRateLimit; omitRateLimit?: boolean } = {}) {
+function harness(opts: {
+  rateLimit?: StubRateLimit;
+  omitRateLimit?: boolean;
+  seededTools?: number;
+  accountError?: Error;
+  account?: { id: string; display_name?: string; product?: string; country?: string };
+} = {}) {
+  const requestedPaths: string[] = [];
   const registered: RegisteredTool[] = [];
+  const registry: Record<string, { enabled?: boolean }> = {};
+  if (opts.seededTools) {
+    for (let index = 0; index < opts.seededTools; index += 1) {
+      registry[`seed_tool_${index}`] = { enabled: true };
+    }
+  }
   const fakeServer = {
+    _registeredTools: registry,
     tool(
       name: string,
       description: string,
       schema: z.ZodRawShape,
       handler: RegisteredTool['handler'],
     ) {
+      registry[name] = { enabled: true };
       registered.push({
         name,
         description,
@@ -64,13 +100,25 @@ function harness(opts: { rateLimit?: StubRateLimit; omitRateLimit?: boolean } = 
     },
   } as unknown as McpServer;
 
-  const client = (
-    opts.omitRateLimit ? {} : { getRateLimitStatus: () => opts.rateLimit ?? { lastThrottleAt: null, retryAfterSec: null, cooldownRemainingMs: 0 } }
-  ) as unknown as SpotifyClient;
+  const client = ({
+    ...(opts.omitRateLimit ? {} : {
+      getRateLimitStatus: () => opts.rateLimit ?? {
+        lastThrottleAt: null,
+        retryAfterSec: null,
+        cooldownRemainingMs: 0,
+      },
+    }),
+    get: async (path: string) => {
+      requestedPaths.push(path);
+      if (opts.accountError) throw opts.accountError;
+      return opts.account ?? { id: 'user-1', display_name: 'Test User', product: 'premium', country: 'US' };
+    },
+  }) as unknown as SpotifyClient;
 
   registerDoctorTool(fakeServer, client);
 
   return {
+    requestedPaths,
     registered,
     invoke: async (args: Record<string, unknown> = {}) => {
       const tool = registered.find((t) => t.name === 'spotify_doctor');
@@ -97,6 +145,9 @@ async function writeTokenFile(content: object): Promise<string> {
 
 beforeEach(() => {
   delete process.env.SPOTIFY_MCP_TOOLSETS;
+  delete process.env.SPOTIFY_MCP_ENABLE_TOOLS;
+  delete process.env.SPOTIFY_MCP_DISABLE_TOOLS;
+  delete process.env.SPOTIFY_MCP_READONLY;
 });
 
 afterEach(async () => {
@@ -131,7 +182,7 @@ describe('spotify_doctor', () => {
     await assert.doesNotReject(() => invoke({ verbose: true }));
     // Unknown keys are stripped by zod (same as SDK-side parsing), not fatal.
     const tool = harness().registered[0];
-    assert.deepEqual(tool.validate({ bogus: 1 }), {});
+    assert.deepEqual(tool.validate({ bogus: 1 }), { response_format: 'concise' });
     assert.equal(tool.validate({ verbose: true }).verbose, true);
   });
 
@@ -169,17 +220,15 @@ describe('spotify_doctor', () => {
     assert.match(row!.summary, /EXPIRED/);
   });
 
-  it('scope mismatch → warn row listing missing write scopes', async () => {
+  it('missing write scopes removes affected modules from the exposed surface', async () => {
     await writeTokenFile({ ...VALID_TOKENS(), scope: 'user-read-private user-library-read' });
     const { invoke } = harness();
-    const res = await invoke();
-    const row = res.structuredContent?.rows?.find((r) => r.id === 'scopes');
-    assert.equal(row?.status, 'warn');
-    assert.match(row!.summary, /lack required scopes/);
-    assert.match(row!.detail!, /playlist-modify-public/);
-    assert.match(row!.detail!, /user-modify-playback-state/);
-    assert.match(row!.detail!, /user-library-modify/);
-    assert.match(row!.detail!, /user-follow-modify/);
+    const report = (await invoke({ response_format: 'json' })).structuredContent;
+    assert.ok(report?.surface?.hidden_by_scopes.includes('playback'));
+    assert.ok(report?.surface?.hidden_by_scopes.includes('playlists'));
+    assert.ok(report?.surface?.hidden_by_scopes.includes('library'));
+    assert.ok(report?.surface?.hidden_by_scopes.includes('following'));
+    assert.ok(!report?.surface?.exposed_modules.includes('playback'));
   });
 
   it('full grant scope → scopes pass row', async () => {
@@ -248,7 +297,7 @@ describe('spotify_doctor', () => {
     assert.match(row!.summary, /get_me/);
   });
 
-  it('json mode: structuredContent carries raw rows; prose renders status glyphs', async () => {
+  it('structured content carries diagnostic rows while prose renders status glyphs', async () => {
     await writeTokenFile(VALID_TOKENS());
     const { invoke } = harness();
     const res = await invoke({ verbose: true });
@@ -271,5 +320,109 @@ describe('spotify_doctor', () => {
     assert.match(verbose.content[0].text, /seconds_remaining=/);
     const concise = await invoke({});
     assert.doesNotMatch(concise.content[0].text, /seconds_remaining=/);
+  });
+
+  it('json text parses to the same report object exposed as structuredContent', async () => {
+    await writeTokenFile(VALID_TOKENS());
+    const { invoke } = harness({ seededTools: 3 });
+    const res = await invoke({ response_format: 'json' });
+    assert.deepEqual(JSON.parse(res.content[0].text), res.structuredContent);
+  });
+
+  it('concise and detailed render the same report with distinct detail visibility', async () => {
+    await writeTokenFile(VALID_TOKENS());
+    const { invoke } = harness();
+    const concise = await invoke({ response_format: 'concise' });
+    const detailed = await invoke({ response_format: 'detailed' });
+    assert.equal(concise.structuredContent?.surface?.registered_tools, 1);
+    assert.match(concise.content[0].text, /Spotify doctor/);
+    assert.doesNotMatch(concise.content[0].text, /seconds_remaining=/);
+    assert.match(detailed.content[0].text, /seconds_remaining=/);
+    assert.deepEqual(
+      concise.structuredContent?.surface?.registered_tools,
+      detailed.structuredContent?.surface?.registered_tools,
+    );
+  });
+
+  it('surfaces 401 probe failures and makes the report unhealthy', async () => {
+    await writeTokenFile(VALID_TOKENS());
+    const { invoke } = harness({ accountError: new SpotifyApiError(401, 'token expired') });
+    const res = await invoke({ response_format: 'json' });
+    const row = res.structuredContent?.rows?.find((candidate) => candidate.id === 'account_probe');
+    assert.equal(res.structuredContent?.ok, false);
+    assert.equal(row?.status, 'fail');
+    assert.equal(row?.phase, 'account_probe');
+    assert.match(row?.message ?? '', /401 token expired/);
+    assert.doesNotMatch(res.content[0].text, /no failures/);
+  });
+
+  it('surfaces 429 and network probe outcomes without hiding their phases', async () => {
+    await writeTokenFile(VALID_TOKENS());
+    const throttled = harness({ accountError: new SpotifyApiError(429, 'rate limited', 7) });
+    let res = await throttled.invoke({ response_format: 'json' });
+    let row = res.structuredContent?.rows?.find((candidate) => candidate.id === 'account_probe');
+    assert.equal(res.structuredContent?.ok, true);
+    assert.equal(row?.status, 'warn');
+    assert.match(row?.summary ?? '', /429.*retry after 7s/);
+
+    const offline = harness({ accountError: new TypeError('fetch failed') });
+    res = await offline.invoke({ response_format: 'json' });
+    row = res.structuredContent?.rows?.find((candidate) => candidate.id === 'account_probe');
+    assert.equal(res.structuredContent?.ok, true);
+    assert.equal(row?.status, 'info');
+    assert.match(row?.summary ?? '', /live probe skipped \(network\)/);
+  });
+
+  it('reports live tool count plus internally consistent trim and scope state', async () => {
+    await writeTokenFile({ ...VALID_TOKENS(), scope: 'user-read-private' });
+    process.env.SPOTIFY_MCP_TOOLSETS = 'playback';
+    const { invoke } = harness({ seededTools: 2 });
+    const surface = (await invoke({ response_format: 'json' })).structuredContent?.surface;
+    assert.ok(surface);
+    assert.equal(surface.registry_available, true);
+    assert.equal(surface.registered_tools, 3);
+    assert.deepEqual(surface.active_sets, ['playback']);
+    assert.ok(surface.hidden_by_trim.includes('library'));
+    assert.ok(surface.hidden_by_scopes.includes('playback'));
+    assert.equal(surface.active_modules.length + surface.hidden_by_trim.length, surface.total_modules);
+    assert.equal(
+      surface.exposed_modules.length,
+      surface.active_modules.length - surface.hidden_by_scopes.length - surface.hidden_by_readonly.length,
+    );
+  });
+
+  it('names unknown-only trimming instead of implying a healthy full surface', async () => {
+    await writeTokenFile(VALID_TOKENS());
+    process.env.SPOTIFY_MCP_TOOLSETS = 'bogus_set';
+    const { invoke } = harness({ seededTools: 3 });
+    const res = await invoke({ response_format: 'detailed' });
+    assert.equal(res.structuredContent?.surface?.registered_tools, 4);
+    assert.deepEqual(res.structuredContent?.surface?.active_sets, []);
+    assert.deepEqual(res.structuredContent?.surface?.unknown_toolsets, ['bogus_set']);
+    assert.match(res.content[0].text, /unknown_toolsets=bogus_set/);
+  });
+
+  it('reports enable and disable override state and honors READONLY trimming', async () => {
+    await writeTokenFile(VALID_TOKENS());
+    process.env.SPOTIFY_MCP_TOOLSETS = 'playback';
+    process.env.SPOTIFY_MCP_ENABLE_TOOLS = 'library';
+    process.env.SPOTIFY_MCP_DISABLE_TOOLS = 'playback';
+    process.env.SPOTIFY_MCP_READONLY = 'true';
+    const { invoke } = harness();
+    const surface = (await invoke({ response_format: 'json' })).structuredContent?.surface;
+    assert.deepEqual(surface?.active_sets, ['playback']);
+    assert.deepEqual(surface?.enable_overrides, ['library']);
+    assert.deepEqual(surface?.disable_overrides, ['playback']);
+    assert.equal(surface?.read_only, true);
+    assert.ok(surface?.active_modules.includes('library'));
+    assert.ok(!surface?.active_modules.includes('playback'));
+    assert.ok(!surface?.exposed_modules.includes('library'));
+  });
+
+  it('issues only the account read probe and no mutation request', async () => {
+    await writeTokenFile(VALID_TOKENS());
+    const { invoke, requestedPaths } = harness();
+    await invoke();
+    assert.deepEqual(requestedPaths, ['/me']);
   });
 });
