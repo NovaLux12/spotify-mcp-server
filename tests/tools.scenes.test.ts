@@ -20,6 +20,7 @@ import {
   type WindDownTimers,
   type WindDownHandle,
   activeWindDown,
+  windDownStatus,
 } from '../src/tools/scenes.js';
 
 // ---------------------------------------------------------------------------
@@ -133,6 +134,8 @@ interface StubSpotifyClient {
 function makeFakeTimers() {
   const scheduled: Array<{ fn: () => void; ms: number } & WindDownHandle> = [];
   const cleared: WindDownHandle[] = [];
+  const delays: number[] = [];
+  let now = 0;
   const timers: WindDownTimers = {
     setTimeout(fn: () => void, ms: number) {
       const handle = { fn, ms };
@@ -142,18 +145,21 @@ function makeFakeTimers() {
     clearTimeout(handle) {
       cleared.push(handle);
     },
+    now: () => now,
   };
   /** Fire due callbacks one at a time, letting async continuations settle. */
   const drain = async (): Promise<void> => {
     for (let guard = 0; guard < 100 && scheduled.length > 0; guard++) {
-      const { fn } = scheduled.shift()!;
-      fn();
+      const timer = scheduled.shift()!;
+      delays.push(timer.ms);
+      now += timer.ms;
+      timer.fn();
       const { promise, resolve } = Promise.withResolvers<void>();
       setImmediate(resolve);
       await promise;
     }
   };
-  return { timers, scheduled, cleared, drain };
+  return { timers, scheduled, cleared, delays, drain };
 }
 
 // ---------------------------------------------------------------------------
@@ -187,7 +193,7 @@ const deviceList = () => ({
 // ---------------------------------------------------------------------------
 
 describe('scenes module registrations', () => {
-  it('registers all six scene tools exactly once', () => {
+  it('registers all seven scene tools exactly once', () => {
     const { registered } = harness();
     assert.deepEqual(registered.map((t) => t.name).sort(), [
       'apply_scene',
@@ -196,6 +202,7 @@ describe('scenes module registrations', () => {
       'list_scenes',
       'save_scene',
       'schedule_wind_down',
+      'wind_down_status',
     ]);
   });
 });
@@ -286,7 +293,7 @@ describe('apply_scene device-hint resolution', () => {
     await h.invoke('apply_scene', { name: 'cook' });
     const muts = wireCalls(h.client.calls).filter((c) => c.method === 'PUT');
     assert.ok(muts.some((c) => c.path === '/me/player' && JSON.stringify(c.arg ?? {}).includes('dev-kitchen')), 'transfer targets kitchen id');
-    assert.ok(muts.some((c) => c.path.includes('volume=40') && c.path.includes('device_id=dev-kitchen')));
+    assert.ok(muts.some((c) => c.path.includes('volume_percent=40') && c.path.includes('device_id=dev-kitchen')));
   });
 
   it('exact device id wins over name matching', async () => {
@@ -330,7 +337,7 @@ describe('apply_scene ordering', () => {
 
     const [transfer, vol, shuf, rep, play] = muts;
     assert.deepEqual(transfer!.arg, { device_ids: ['dev-living'] });
-    assert.match(vol!.path, /volume=25/);
+    assert.match(vol!.path, /volume_percent=25/);
     assert.match(vol!.path, /device_id=dev-living/);
     assert.match(shuf!.path, /state=false/);
     assert.match(rep!.path, /state=context/);
@@ -449,12 +456,12 @@ describe('schedule_wind_down', () => {
     try {
       const out = await h.invoke('schedule_wind_down', { minutes: 10, step_minutes: 5, floor_volume: 10, device_id: 'dev-living' });
       const echo = out.structuredContent!;
-      // 80 → 10 over 2 steps: decrement ceil(70/2)=35 → [45, 10], pause after.
+      // 80 → 10 over 2 steps: decrement ceil(70/2)=35 → [45, 10], pause one step later.
       assert.deepEqual(echo.schedule, [
         { at_minute: 5, volume: 45 },
         { at_minute: 10, volume: 10 },
       ]);
-      assert.equal(echo.pause_at_minute, 10);
+      assert.equal(echo.pause_at_minute, 15);
       assert.equal(fake.scheduled.length, 1, 'only the first tick armed eagerly');
       assert.equal(realArmed, false, 'real setTimeout never used');
       assert.match(textOf(out), /Wind-down started from volume 80/);
@@ -471,8 +478,8 @@ describe('schedule_wind_down', () => {
       assert.deepEqual(
         puts.map((c) => c.path),
         [
-          '/me/player/volume?volume=45&device_id=dev-living',
-          '/me/player/volume?volume=10&device_id=dev-living',
+          '/me/player/volume?volume_percent=45&device_id=dev-living',
+          '/me/player/volume?volume_percent=10&device_id=dev-living',
           '/me/player/pause?device_id=dev-living',
         ],
       );
@@ -481,16 +488,89 @@ describe('schedule_wind_down', () => {
     }
   });
 
-  it('timer delays are step_minutes in ms and pause comes after the last step', async () => {
+  it('anchors 30-minute fade steps to one wall-clock start without cumulative drift', async () => {
     const h = harness(() => ({ device: { volume_percent: 50 } }));
     const fake = makeFakeTimers();
-    await h.invoke('cancel_wind_down', {}); // drop any ramp left by a prior test
+    await h.invoke('cancel_wind_down', {});
 
     __setWindDownScheduler(fake.timers);
-    await h.invoke('schedule_wind_down', { minutes: 30, step_minutes: 5 });
-    // First armed tick is 5 minutes out.
-    assert.equal(fake.scheduled[0]!.ms, 5 * 60_000);
+    const out = await h.invoke('schedule_wind_down', { minutes: 30, step_minutes: 5 });
+    await fake.drain();
+
+    assert.deepEqual(fake.delays, Array(7).fill(5 * 60_000));
+    assert.equal(out.structuredContent!.pause_at_minute, 35);
   });
+  it('previews the exact schedule without arming or replacing the active fade', async () => {
+    const h = harness(() => ({ device: { id: 'dev-live', volume_percent: 80 } }));
+    const fake = makeFakeTimers();
+    await h.invoke('cancel_wind_down', {});
+    __setWindDownScheduler(fake.timers);
+    const args = { minutes: 15, step_minutes: 5, device_id: 'dev-live' };
+    const preview = await h.invoke('schedule_wind_down', { ...args, dry_run: true });
+
+    assert.equal(activeWindDown(), null, 'preview does not create active state');
+    assert.equal(fake.scheduled.length, 0, 'preview arms no timer');
+    assert.equal(h.client.calls.filter((call) => call.method === 'PUT').length, 0);
+
+    const live = await h.invoke('schedule_wind_down', args);
+    const active = activeWindDown()!;
+    const armed = fake.scheduled[0];
+    const activePreview = await h.invoke('schedule_wind_down', { ...args, dry_run: true });
+
+    assert.equal(activeWindDown(), active, 'preview leaves the live state object untouched');
+    assert.equal(active.steps_applied, 0);
+    assert.equal(fake.scheduled.length, 1);
+    assert.equal(fake.scheduled[0], armed, 'preview arms no replacement timer');
+    assert.deepEqual(activePreview.structuredContent!.schedule, live.structuredContent!.schedule);
+    assert.equal(activePreview.structuredContent!.pause_at_minute, live.structuredContent!.pause_at_minute);
+    assert.deepEqual(preview.structuredContent!.schedule, live.structuredContent!.schedule);
+    assert.equal(preview.structuredContent!.pause_at_minute, live.structuredContent!.pause_at_minute);
+    assert.match(textOf(preview), /dry run/i);
+    await h.invoke('cancel_wind_down', {});
+  });
+
+  it('records the rejected volume step and preserves earlier progress', async () => {
+    let volumeWrites = 0;
+    const h = harness((path) => {
+      if (path === '/me/player') return { device: { volume_percent: 80 } };
+      if (path.startsWith('/me/player/volume') && ++volumeWrites === 2) {
+        throw new Error('403 Premium required');
+      }
+      return null;
+    });
+    const fake = makeFakeTimers();
+    __setWindDownScheduler(fake.timers);
+    await h.invoke('schedule_wind_down', { minutes: 15, step_minutes: 5 });
+    await fake.drain();
+
+    assert.equal(activeWindDown(), null, 'failed chain leaves no pending timer');
+    assert.deepEqual(
+      { state: windDownStatus()!.state, applied: windDownStatus()!.steps_applied, failed: windDownStatus()!.steps_failed, last: windDownStatus()!.last_error },
+      { state: 'failed', applied: 1, failed: 1, last: '403 Premium required' },
+    );
+    assert.deepEqual(windDownStatus()!.failures[0], { step: 2, at_minute: 10, action: 'volume', error: '403 Premium required' });
+    const status = await h.invoke('wind_down_status', {});
+    assert.match(textOf(status), /2 \(volume, \+10m\): 403 Premium required/);
+    assert.equal(volumeWrites, 2, 'remaining steps are not attempted after a hard failure');
+  });
+
+  it('records a rejected terminal pause after applying the volume', async () => {
+    const h = harness((path) => {
+      if (path === '/me/player') return { device: { volume_percent: 50 } };
+      if (path === '/me/player/pause') throw new Error('404 device unavailable');
+      return null;
+    });
+    const fake = makeFakeTimers();
+    __setWindDownScheduler(fake.timers);
+    await h.invoke('schedule_wind_down', { minutes: 5, step_minutes: 5 });
+    await fake.drain();
+
+    assert.equal(windDownStatus()!.steps_applied, 1);
+    assert.equal(windDownStatus()!.steps_failed, 1);
+    assert.equal(windDownStatus()!.failures[0]!.action, 'pause');
+    assert.equal(windDownStatus()!.last_error, '404 device unavailable');
+  });
+
 });
 
 describe('cancel_wind_down', () => {

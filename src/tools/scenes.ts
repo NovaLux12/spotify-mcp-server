@@ -6,11 +6,11 @@
  * playback preferences — but like history/tokens it is kept owner-only
  * (0600 file, 0700 dir).
  *
- * Also ships schedule_wind_down / cancel_wind_down (#112 idea 12): an
- * IN-PROCESS volume ramp that steps playback down every N minutes until a
- * floor volume, then pauses. Timers run through an injectable scheduler
- * seam (__setWindDownScheduler) so tests drive ticks deterministically
- * without real time passing.
+ * Also ships schedule_wind_down / wind_down_status / cancel_wind_down
+ * (#112 idea 12): an IN-PROCESS volume ramp that steps playback down every
+ * N minutes until a floor volume, then pauses. Timers run through an
+ * injectable scheduler seam (__setWindDownScheduler) so tests drive ticks
+ * deterministically without real time passing.
  */
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -19,7 +19,7 @@ import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import type { SpotifyClient } from '../client.js';
 import type { PlaybackState, SpotifyDevice, GetDevicesResponse } from '../types/spotify.js';
-import { ResponseFormat, DryRun } from '../shaping.js';
+import { ResponseFormat, DryRun, describeDryRun } from '../shaping.js';
 
 // ---------------------------------------------------------------------------
 // Sidecar store
@@ -145,7 +145,7 @@ function planSteps(scene: Scene, deviceId: string | null): PlannedStep[] {
   }
   if (scene.volume !== undefined) {
     steps.push(
-      skipAll ? skipStep('volume', '') : { action: 'volume', detail: `set volume to ${scene.volume}`, call: `PUT /me/player/volume?volume=${scene.volume}${devSuffix(deviceId)}` },
+      skipAll ? skipStep('volume', '') : { action: 'volume', detail: `set volume to ${scene.volume}`, call: `PUT ${volumeQuery(scene.volume, deviceId ?? undefined)}` },
     );
   }
   if (scene.shuffle !== undefined) {
@@ -213,6 +213,7 @@ export interface WindDownHandle {
 export interface WindDownTimers {
   setTimeout(fn: () => void, ms: number): WindDownHandle;
   clearTimeout(handle: WindDownHandle): void;
+  now?(): number;
 }
 
 const realTimers: WindDownTimers = {
@@ -224,6 +225,7 @@ const realTimers: WindDownTimers = {
     return timer;
   },
   clearTimeout: (handle) => clearTimeout(handle as NodeJS.Timeout),
+  now: Date.now,
 };
 
 let windDownTimers: WindDownTimers = realTimers;
@@ -237,20 +239,58 @@ export function __setWindDownScheduler(timers?: WindDownTimers | null): void {
   windDownTimers = timers ?? realTimers;
 }
 
-interface ActiveWindDown {
+export interface WindDownStepFailure {
+  step: number;
+  at_minute: number;
+  action: 'volume' | 'pause';
+  error: string;
+}
+
+export interface WindDownStatus {
   key: string;
+  state: 'scheduled' | 'running' | 'completed' | 'failed' | 'cancelled';
+  started_at: string;
+  steps_planned: number;
+  steps_applied: number;
+  steps_failed: number;
+  last_error: string | null;
+  failures: WindDownStepFailure[];
+}
+
+export type ActiveWindDownStep =
+  | { action: 'volume'; volume: number; at_minute: number }
+  | { action: 'pause'; volume: null; at_minute: number };
+
+export interface ActiveWindDown extends WindDownStatus {
   cancelled: boolean;
   pending: WindDownHandle[];
-  /** Volume steps still to run (earliest first); last entry pauses. */
-  remaining: Array<{ volume?: number; delayMs: number }>;
+  /** Remaining steps (earliest first), keyed by their absolute minute mark. */
+  remaining: ActiveWindDownStep[];
 }
 
 /** Only ONE fade at a time: scheduling a new one cancels the previous. */
 let current: ActiveWindDown | null = null;
+let lastWindDownStatus: WindDownStatus | null = null;
 
 /** Internal state exposure for tests: the live wind-down, if any. */
 export function activeWindDown(): Readonly<ActiveWindDown> | null {
   return current;
+}
+
+/** Most recent live or terminal wind-down status. */
+export function windDownStatus(): Readonly<WindDownStatus> | null {
+  const status = current ?? lastWindDownStatus;
+  if (!status) return null;
+  return {
+    key: status.key,
+    state: status.state,
+    started_at: status.started_at,
+    steps_planned: status.steps_planned,
+    steps_applied: status.steps_applied,
+    steps_failed: status.steps_failed,
+    last_error: status.last_error,
+    failures: status.failures.map((failure) => ({ ...failure })),
+  };
 }
 
 const windDownKey = (deviceId?: string): string => deviceId ?? 'default';
@@ -261,6 +301,8 @@ function cancelActive(): boolean {
   for (const handle of current.pending) windDownTimers.clearTimeout(handle);
   current.pending = [];
   current.remaining = [];
+  current.state = 'cancelled';
+  lastWindDownStatus = windDownStatus() ?? null;
   current = null;
   return true;
 }
@@ -284,8 +326,8 @@ function ensureExitCleanup(): void {
 /**
  * Deterministic ramp math: split [current → floor] into
  * totalSteps = floor(minutes / step_minutes) (≥1) equal integer decrements,
- * clamped so volume never drops below floor. Pause lands after the final
- * step (at totalSteps × step_minutes).
+ * clamped so volume never drops below floor. The pause lands one step after
+ * the final volume mark.
  */
 export function computeWindDownSchedule(
   startVolume: number,
@@ -303,13 +345,16 @@ export function computeWindDownSchedule(
   return out;
 }
 
+function volumeQuery(percent: number, deviceId?: string): string {
+  const params = new URLSearchParams({ volume_percent: String(percent) });
+  if (deviceId) params.set('device_id', deviceId);
+  return `/me/player/volume?${params}`;
+}
+
 /** Execute one ramp tick: PUT volume (or pause when volume is absent). */
-async function execTick(client: SpotifyClient, step: { volume?: number }, deviceId?: string): Promise<void> {
-  if (step.volume !== undefined) {
-    const qs = deviceId
-      ? `?${new URLSearchParams({ volume: String(step.volume), device_id: deviceId })}`
-      : `?${new URLSearchParams({ volume: String(step.volume) })}`;
-    await client.put(`/me/player/volume${qs}`);
+async function execTick(client: SpotifyClient, step: ActiveWindDownStep, deviceId?: string): Promise<void> {
+  if (step.action === 'volume') {
+    await client.put(volumeQuery(step.volume, deviceId));
   } else {
     await client.put(deviceId ? `/me/player/pause?device_id=${encodeURIComponent(deviceId)}` : '/me/player/pause');
   }
@@ -319,39 +364,73 @@ async function execTick(client: SpotifyClient, step: { volume?: number }, device
 function startWindDown(
   key: string,
   schedule: Array<{ at_minute: number; volume: number }>,
+  stepMinutes: number,
   deviceId: string | undefined,
   client: SpotifyClient,
 ): void {
   ensureExitCleanup();
   cancelActive(); // single-slot: arming a new fade replaces any previous one
+  lastWindDownStatus = null;
 
-  // at_minute already counts in step_minutes multiples; the pause sentinel
-  // lands one step after the final volume step.
-  const pauseAtMinute = schedule.at(-1)?.at_minute ?? 1;
-  const remaining: Array<{ volume?: number; delayMs: number }> = schedule.map((s) => ({
-    volume: s.volume,
-    delayMs: s.at_minute * 60_000,
+  const startedAtMs = windDownTimers.now?.() ?? Date.now();
+  const pauseAtMinute = (schedule.at(-1)?.at_minute ?? 0) + stepMinutes;
+  const remaining: ActiveWindDownStep[] = schedule.map((step) => ({
+    action: 'volume',
+    volume: step.volume,
+    at_minute: step.at_minute,
   }));
-  remaining.push({ volume: undefined, delayMs: Math.max(1, pauseAtMinute * 60_000) });
-  const active: ActiveWindDown = { key, cancelled: false, pending: [], remaining };
+  remaining.push({ action: 'pause', volume: null, at_minute: pauseAtMinute });
+
+  const active: ActiveWindDown = {
+    key,
+    cancelled: false,
+    pending: [],
+    remaining,
+    state: 'scheduled',
+    started_at: new Date(startedAtMs).toISOString(),
+    steps_planned: remaining.length,
+    steps_applied: 0,
+    steps_failed: 0,
+    last_error: null,
+    failures: [],
+  };
   current = active;
+
+  const finish = (state: 'completed' | 'failed'): void => {
+    active.pending = [];
+    active.remaining = [];
+    active.state = state;
+    lastWindDownStatus = windDownStatus() ?? null;
+    if (current === active) current = null;
+  };
 
   const armNext = (): void => {
     const next = active.remaining[0];
     if (!next || active.cancelled) return;
+    const delayMs = Math.max(1, startedAtMs + next.at_minute * 60_000 - (windDownTimers.now?.() ?? Date.now()));
     const handle = windDownTimers.setTimeout(() => {
-      if (active.cancelled) return;
+      active.pending = [];
+      if (active.cancelled || current !== active) return;
       active.remaining.shift();
-      const isFinalPause = next.volume === undefined;
+      active.state = 'running';
+      const stepNumber = active.steps_applied + active.steps_failed + 1;
+      const action = next.action;
       void execTick(client, next, deviceId)
-        .catch(() => {
-          /* best-effort: a dropped step must not kill the ramp */
+        .then(() => {
+          if (active.cancelled) return;
+          active.steps_applied++;
+          if (action === 'pause') finish('completed');
+          else armNext();
         })
-        .finally(() => {
-          if (isFinalPause && !active.cancelled && current === active) current = null;
-          armNext();
+        .catch((error: unknown) => {
+          if (active.cancelled) return;
+          const message = error instanceof Error ? error.message : String(error);
+          active.steps_failed++;
+          active.last_error = message;
+          active.failures.push({ step: stepNumber, at_minute: next.at_minute, action, error: message });
+          finish('failed');
         });
-    }, next.delayMs);
+    }, delayMs);
     active.pending.push(handle);
   };
   armNext();
@@ -496,9 +575,7 @@ export function registerScenesTools(server: McpServer, client: SpotifyClient): v
               await client.put('/me/player', { device_ids: [deviceId!] });
               break;
             case 'volume':
-              await client.put(
-                `/me/player/volume?${new URLSearchParams({ volume: String(scene.volume!), ...(deviceId ? { device_id: deviceId } : {}) })}`,
-              );
+              await client.put(volumeQuery(scene.volume!, deviceId ?? undefined));
               break;
             case 'shuffle':
               await client.put(
@@ -547,7 +624,7 @@ export function registerScenesTools(server: McpServer, client: SpotifyClient): v
 
   server.tool(
     'schedule_wind_down',
-    'Ramp playback volume down to a floor over N minutes (stepping every step_minutes), then pause. Runs in-process until done or cancelled via cancel_wind_down.',
+    'Preview or start a volume wind-down: absolute-minute volume steps, then pause. Set dry_run to preview without replacing or cancelling an active timer.',
     {
       minutes: z.number().int().min(1).max(180).describe('Total ramp duration in minutes (1–180)'),
       step_minutes: z
@@ -565,6 +642,7 @@ export function registerScenesTools(server: McpServer, client: SpotifyClient): v
         .describe('Volume floor the ramp never goes below (default 10)'),
       device_id: z.string().optional().describe('Target device id; defaults to the active device'),
       response_format: ResponseFormat,
+      dry_run: DryRun,
     },
     async (args) => {
       const state = await client.get<PlaybackState>('/me/player');
@@ -578,26 +656,56 @@ export function registerScenesTools(server: McpServer, client: SpotifyClient): v
       }
       const startVol = Math.min(100, Math.max(0, Math.round(capturedVol)));
       const schedule = computeWindDownSchedule(startVol, args.minutes, args.step_minutes, args.floor_volume);
-      const key = windDownKey(args.device_id);
-      startWindDown(key, schedule, args.device_id, client);
-
+      const pauseAtMinute = (schedule.at(-1)?.at_minute ?? 0) + args.step_minutes;
       const lines = [
-        ...schedule.map((s) => `  +${s.at_minute}m → volume ${s.volume}`),
-        `  +${schedule.length * args.step_minutes}m → pause`,
+        ...schedule.map((step) => `  +${step.at_minute}m → volume ${step.volume}`),
+        `  +${pauseAtMinute}m → pause`,
       ];
       const echo = {
         ok: true,
+        dry_run: args.dry_run === true,
         started_from: startVol,
         floor: args.floor_volume,
         step_minutes: args.step_minutes,
         device_id: args.device_id ?? null,
         schedule,
-        pause_at_minute: schedule.length * args.step_minutes,
+        pause_at_minute: pauseAtMinute,
       };
+      if (args.dry_run) {
+        return {
+          content: [{ type: 'text', text: describeDryRun('schedule_wind_down', `volume ${startVol}% → ${args.floor_volume}% then pause`, lines) }],
+          structuredContent: echo,
+        };
+      }
+
+      startWindDown(windDownKey(args.device_id), schedule, args.step_minutes, args.device_id, client);
       return emit(
         args.response_format,
         echo,
-        `Wind-down started from volume ${startVol} → floor ${args.floor_volume} over ${args.minutes}m:\n${lines.join('\n')}\nCancel with cancel_wind_down. The fade runs only while this MCP server process is running — closing the client cancels it.`,
+        `Wind-down started from volume ${startVol} → floor ${args.floor_volume} over ${args.minutes}m:\n${lines.join('\n')}\nCancel with cancel_wind_down. Read wind_down_status for per-step progress and failures. The fade runs only while this MCP server process is running — closing the client cancels it.`,
+      );
+    },
+  );
+
+  server.tool(
+    'wind_down_status',
+    'Read the current or most recent wind-down progress, including per-step failures',
+    {
+      device_id: z.string().optional().describe('Only return status for this device id'),
+      response_format: ResponseFormat,
+    },
+    async (args) => {
+      const status = windDownStatus();
+      if (!status || (args.device_id && status.key !== windDownKey(args.device_id))) {
+        return emit(args.response_format, { ok: false, error: 'not_found' }, 'No wind-down status is available.');
+      }
+      const failures = status.failures.map((failure) =>
+        `  ✗ step ${failure.step} (${failure.action}, +${failure.at_minute}m): ${failure.error}`,
+      );
+      return emit(
+        args.response_format,
+        { ...status, failures: status.failures.map((failure) => ({ ...failure })) },
+        `Wind-down ${status.state}: ${status.steps_applied} applied, ${status.steps_failed} failed, ${status.steps_planned} planned.${status.last_error ? `\nLast error: ${status.last_error}` : ''}${failures.length ? `\n${failures.join('\n')}` : ''}`,
       );
     },
   );

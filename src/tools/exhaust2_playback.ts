@@ -1,9 +1,9 @@
 /**
  * exhaust2 playback slice — feature swarm v1.24.0 (issues #358-#379).
  *
- * 22 playback tools owned by the fix/exhaust2-playback builder. All in this
+ * 23 playback tools owned by the fix/exhaust2-playback builder. All in this
  * slice register here and nowhere else. Buckets: timers/volume/sleep
- * (sleep_timer, mute, unmute, volume_ramp, room_level, volume_report),
+ * (sleep_timer, playback_timer_status, mute, unmute, volume_ramp, room_level, volume_report),
  * devices (switch_device, pause_everywhere), shuffle-play (surprise_me,
  * skip_n, daily_pick), podcasts (episode_bookmark, episode_resume,
  * queue_next_episode), queue honesty (queue_replace_via_playlist,
@@ -202,36 +202,178 @@ export async function saveExhaust2Store(store: Exhaust2Store, env: NodeJS.Proces
 // ---------------------------------------------------------------------------
 
 export type Exhaust2TimerKind = 'sleep_timer' | 'volume_ramp';
-interface ActiveTimer {
+export type Exhaust2TimerState = 'scheduled' | 'running' | 'completed' | 'failed' | 'cancelled';
+
+export interface Exhaust2TimerHandle {
+  unref?(): unknown;
+}
+
+export interface Exhaust2TimerScheduler {
+  setTimeout(fn: () => void | Promise<void>, ms: number): Exhaust2TimerHandle;
+  clearTimeout(handle: Exhaust2TimerHandle): void;
+}
+
+const realExhaust2Timers: Exhaust2TimerScheduler = {
+  setTimeout(fn, ms) {
+    const timer = setTimeout(fn, ms);
+    timer.unref();
+    return timer;
+  },
+  clearTimeout: (handle) => clearTimeout(handle as NodeJS.Timeout),
+};
+
+let exhaust2Timers: Exhaust2TimerScheduler = realExhaust2Timers;
+
+/** Test seam for driving playback timer callbacks without wall-clock waits. */
+export function __setExhaust2Scheduler(timers?: Exhaust2TimerScheduler | null): void {
+  exhaust2Timers = timers ?? realExhaust2Timers;
+}
+
+export interface Exhaust2TimerFailure {
+  step: number;
+  at_minute: number;
+  action: 'pause' | 'play' | 'volume';
+  error: string;
+}
+
+export interface Exhaust2TimerStatus {
   kind: Exhaust2TimerKind;
   description: string;
   started_at: string;
+  state: Exhaust2TimerState;
+  steps_planned: number;
+  steps_applied: number;
+  steps_failed: number;
+  last_error: string | null;
+  failures: Exhaust2TimerFailure[];
+}
+
+interface ActiveTimer extends Exhaust2TimerStatus {
+  handle: Exhaust2TimerHandle | null;
+  cancelled: boolean;
+  terminalized: boolean;
   cancel: () => void;
 }
-const activeTimers = new Map<Exhaust2TimerKind, ActiveTimer>();
 
-export function listExhaust2Timers(): Array<{ kind: Exhaust2TimerKind; description: string; started_at: string }> {
-  return [...activeTimers.values()].map((t) => ({ kind: t.kind, description: t.description, started_at: t.started_at }));
+const activeTimers = new Map<Exhaust2TimerKind, ActiveTimer>();
+const terminalTimers = new Map<Exhaust2TimerKind, Exhaust2TimerStatus>();
+
+function timerStatus(timer: Exhaust2TimerStatus): Exhaust2TimerStatus {
+  return {
+    kind: timer.kind,
+    description: timer.description,
+    started_at: timer.started_at,
+    state: timer.state,
+    steps_planned: timer.steps_planned,
+    steps_applied: timer.steps_applied,
+    steps_failed: timer.steps_failed,
+    last_error: timer.last_error,
+    failures: timer.failures.map((failure) => ({ ...failure })),
+  };
 }
+
+export function listExhaust2Timers(): Exhaust2TimerStatus[] {
+  return [...activeTimers.values()].map(timerStatus);
+}
+
+function listPlaybackTimerStatuses(): Exhaust2TimerStatus[] {
+  return [
+    ...[...activeTimers.values()].map(timerStatus),
+    ...[...terminalTimers.values()]
+      .filter((terminal) => !activeTimers.has(terminal.kind))
+      .map(timerStatus),
+  ];
+}
+
+export function exhaust2TimerStatus(kind: Exhaust2TimerKind): Exhaust2TimerStatus | null {
+  const timer = terminalTimers.get(kind) ?? activeTimers.get(kind);
+  return timer ? timerStatus(timer) : null;
+}
+
 /** Cancel the in-process timer of a kind (sleep_timer / volume_ramp). */
 export function cancelExhaust2Timer(kind: Exhaust2TimerKind): boolean {
-  const t = activeTimers.get(kind);
-  if (!t) return false;
-  t.cancel();
+  const timer = activeTimers.get(kind);
+  if (!timer) return false;
+  timer.cancel();
   return true;
 }
-function registerTimer(kind: Exhaust2TimerKind, description: string, timeout: NodeJS.Timeout): void {
-  const t: ActiveTimer = {
+
+function registerTimer(
+  kind: Exhaust2TimerKind,
+  description: string,
+  stepsPlanned: number,
+  handle: Exhaust2TimerHandle | null,
+): ActiveTimer {
+  const timer: ActiveTimer = {
     kind,
     description,
     started_at: new Date().toISOString(),
+    state: 'scheduled',
+    steps_planned: stepsPlanned,
+    steps_applied: 0,
+    steps_failed: 0,
+    last_error: null,
+    failures: [],
+    handle,
+    cancelled: false,
+    terminalized: false,
     cancel: () => {
-      clearTimeout(timeout);
-      activeTimers.delete(kind);
+      if (timer.handle) exhaust2Timers.clearTimeout(timer.handle);
+      timer.handle = null;
+      timer.cancelled = true;
+      timer.terminalized = true;
+      timer.state = 'cancelled';
+      if (activeTimers.get(kind) === timer) activeTimers.delete(kind);
+      terminalTimers.delete(kind);
     },
   };
-  timeout.unref?.();
-  activeTimers.set(kind, t);
+  if (handle) handle.unref?.();
+  terminalTimers.delete(kind);
+  activeTimers.set(kind, timer);
+  return timer;
+}
+
+function replaceTimer(timer: ActiveTimer, handle: Exhaust2TimerHandle): void {
+  timer.handle = handle;
+  handle.unref?.();
+}
+
+function timerIsTerminal(timer: ActiveTimer): boolean {
+  return timer.terminalized || timer.state === 'completed' || timer.state === 'failed';
+}
+
+function timerIsActive(timer: ActiveTimer): boolean {
+  return activeTimers.get(timer.kind) === timer;
+}
+
+function finishTimer(timer: ActiveTimer, state: 'completed' | 'failed'): void {
+  if (!timerIsActive(timer) || timer.cancelled || timerIsTerminal(timer)) return;
+  timer.terminalized = true;
+  timer.handle = null;
+  timer.state = timer.steps_failed > 0 || timer.last_error !== null ? 'failed' : state;
+  terminalTimers.set(timer.kind, timerStatus(timer));
+  if (activeTimers.get(timer.kind) === timer) activeTimers.delete(timer.kind);
+}
+
+function recordTimerFailure(
+  timer: ActiveTimer,
+  failure: Exhaust2TimerFailure,
+): void {
+  if (!timerIsActive(timer) || timer.cancelled || timerIsTerminal(timer)) return;
+  timer.state = 'failed';
+  timer.terminalized = true;
+  timer.steps_failed++;
+  timer.last_error = failure.error;
+  timer.failures.push(failure);
+  timer.handle = null;
+  terminalTimers.set(timer.kind, timerStatus(timer));
+  if (activeTimers.get(timer.kind) === timer) activeTimers.delete(timer.kind);
+
+}
+function volumeQuery(percent: number, deviceId?: string | null): string {
+  const params = new URLSearchParams({ volume_percent: String(percent) });
+  if (deviceId) params.set('device_id', deviceId);
+  return `/me/player/volume?${params}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -283,11 +425,27 @@ export function registerExhaust2PlaybackTools(server: McpServer, client: Spotify
       }
       cancelExhaust2Timer('sleep_timer');
       const ms = args.duration_min * 60_000;
-      const timeout = setTimeout(() => {
-        activeTimers.delete('sleep_timer');
-        void client.put(target ? `/me/player/pause?device_id=${encodeURIComponent(target)}` : '/me/player/pause').catch(() => {});
-      }, ms);
-      registerTimer('sleep_timer', desc, timeout);
+      const timer = registerTimer('sleep_timer', desc, 1, null);
+      replaceTimer(timer, exhaust2Timers.setTimeout(() => {
+        if (timer.cancelled) return;
+        timer.handle = null;
+        timer.state = 'running';
+        void client
+          .put(target ? `/me/player/pause?device_id=${encodeURIComponent(target)}` : '/me/player/pause')
+          .then(() => {
+            if (timer.cancelled) return;
+            timer.steps_applied++;
+            finishTimer(timer, 'completed');
+          })
+          .catch((error: unknown) => {
+            recordTimerFailure(timer, {
+              step: 1,
+              at_minute: args.duration_min,
+              action: 'pause',
+              error: error instanceof Error ? error.message : String(error),
+            });
+          });
+      }, ms));
       return emit(fmt, { ok: true, dry_run: false, duration_min: args.duration_min, device_id: target, now_playing: state?.item?.name ?? null, expires_at: new Date(Date.now() + ms).toISOString() }, `Sleep timer set: pausing ${device} in ${args.duration_min} min. Music keeps playing until then. Call sleep_timer again to replace the timer.`);
     },
   );
@@ -313,13 +471,13 @@ export function registerExhaust2PlaybackTools(server: McpServer, client: Spotify
       const previous = typeof state?.device?.volume_percent === 'number' ? state.device.volume_percent : 50;
       const memoryKey = deviceId ?? 'active';
       if (dryRun) {
-        const steps = [`Remember current volume ${previous}% for ${deviceName ?? deviceId ?? 'active device'}`, `PUT /me/player/volume?volume=0${deviceId ? `&device_id=${deviceId}` : ''}`];
+        const steps = [`Remember current volume ${previous}% for ${deviceName ?? deviceId ?? 'active device'}`, `PUT ${volumeQuery(0, deviceId)}`];
         return { content: [{ type: 'text', text: describeDryRun('mute', deviceName ?? deviceId ?? 'active device', steps) }], structuredContent: { ok: true, dry_run: true, plan: steps, previous_volume: previous } };
       }
       const store = await loadExhaust2Store();
       store.muteMemory[memoryKey] = { volume: previous, muted_at: new Date().toISOString(), device_id: deviceId, device_name: deviceName };
       await saveExhaust2Store(store);
-      await client.put(`/me/player/volume?${new URLSearchParams({ volume: '0', ...(deviceId ? { device_id: deviceId } : {}) })}`);
+      await client.put(volumeQuery(0, deviceId));
       return emit(fmt, { ok: true, dry_run: false, previous_volume: previous, device_id: deviceId, remembered_for: memoryKey }, `Muted ${deviceName ?? deviceId ?? 'active device'} (was ${previous}% — remembered for unmute).`);
     },
   );
@@ -348,10 +506,10 @@ export function registerExhaust2PlaybackTools(server: McpServer, client: Spotify
       const volume = memory?.volume ?? 50;
       const source = memory ? 'remembered by mute' : 'no memory — default 50%';
       if (dryRun) {
-        const steps = [`PUT /me/player/volume?volume=${volume}${deviceId ? `&device_id=${deviceId}` : ''} (${source})`];
+        const steps = [`PUT ${volumeQuery(volume, deviceId)} (${source})`];
         return { content: [{ type: 'text', text: describeDryRun('unmute', deviceId ?? 'active device', steps) }], structuredContent: { ok: true, dry_run: true, plan: steps, volume, source } };
       }
-      await client.put(`/me/player/volume?${new URLSearchParams({ volume: String(volume), ...(deviceId ? { device_id: deviceId } : {}) })}`);
+      await client.put(volumeQuery(volume, deviceId));
       return emit(fmt, { ok: true, dry_run: false, volume, source, device_id: deviceId }, `Unmuted → volume ${volume}% (${source}).`);
     },
   );
@@ -532,23 +690,83 @@ export function registerExhaust2PlaybackTools(server: McpServer, client: Spotify
       }
       cancelExhaust2Timer('volume_ramp');
       const spacing = (args.minutes * 60_000) / steps.length;
-      let i = 0;
-      const runStep = (): void => {
-        i++;
-        const step = steps[i - 1]!;
-        void client.put(`/me/player/volume?${new URLSearchParams({ volume: String(step.percent), ...(deviceId ? { device_id: deviceId } : {}) })}`).catch(() => {});
-        if (i >= steps.length) {
-          activeTimers.delete('volume_ramp');
-          if (args.end_state === 'pause') void client.put(deviceId ? `/me/player/pause?device_id=${encodeURIComponent(deviceId)}` : '/me/player/pause').catch(() => {});
-          if (args.end_state === 'play') void client.put(deviceId ? `/me/player/play?device_id=${encodeURIComponent(deviceId)}` : '/me/player/play').catch(() => {});
-        } else {
-          const t = setTimeout(runStep, spacing);
-          registerTimer('volume_ramp', desc, t);
+      const endSteps = args.end_state === 'none' ? 0 : 1;
+      const timer = registerTimer('volume_ramp', desc, steps.length + endSteps, null);
+      let stepIndex = 0;
+      const runStep = async (): Promise<void> => {
+        if (!timerIsActive(timer) || timer.cancelled || timerIsTerminal(timer)) return;
+        timer.handle = null;
+        timer.state = 'running';
+        const step = steps[stepIndex++]!;
+        try {
+          await client.put(volumeQuery(step.percent, deviceId));
+        } catch (error: unknown) {
+          if (!timerIsActive(timer) || timer.cancelled || timerIsTerminal(timer)) return;
+          recordTimerFailure(timer, {
+            step: step.index,
+            at_minute: step.after_minutes,
+            action: 'volume',
+            error: error instanceof Error ? error.message : String(error),
+          });
+          return;
         }
+        if (!timerIsActive(timer) || timer.cancelled || timerIsTerminal(timer)) return;
+        timer.steps_applied++;
+
+        if (stepIndex < steps.length) {
+          replaceTimer(timer, exhaust2Timers.setTimeout(() => runStep(), spacing));
+          return;
+        }
+
+        if (args.end_state !== 'none') {
+          const action = args.end_state;
+          const path = deviceId
+            ? `/me/player/${action}?device_id=${encodeURIComponent(deviceId)}`
+            : `/me/player/${action}`;
+          try {
+            await client.put(path);
+          } catch (error: unknown) {
+            if (!timerIsActive(timer) || timer.cancelled || timerIsTerminal(timer)) return;
+            recordTimerFailure(timer, {
+              step: steps.length + 1,
+              at_minute: args.minutes,
+              action,
+              error: error instanceof Error ? error.message : String(error),
+            });
+            return;
+          }
+          if (!timerIsActive(timer) || timer.cancelled || timerIsTerminal(timer)) return;
+          timer.steps_applied++;
+        }
+        finishTimer(timer, 'completed');
       };
-      const first = setTimeout(runStep, spacing);
-      registerTimer('volume_ramp', desc, first);
-      return emit(fmt, { ok: true, dry_run: false, from, to: args.target_percent, steps: steps.length, spacing_minutes: Math.round((spacing / 60_000) * 100) / 100, end_state: args.end_state, device_id: deviceId }, `Volume ramp started: ${from}% → ${args.target_percent}% over ${args.minutes} min (${steps.length} steps, end_state=${args.end_state}). Starting a new ramp replaces this one.`);
+      replaceTimer(timer, exhaust2Timers.setTimeout(() => runStep(), spacing));
+      return emit(fmt, { ok: true, dry_run: false, from, to: args.target_percent, steps: steps.length, spacing_minutes: Math.round((spacing / 60_000) * 100) / 100, end_state: args.end_state, device_id: deviceId, status: timerStatus(timer) }, `Volume ramp started: ${from}% → ${args.target_percent}% over ${args.minutes} min (${steps.length} steps, end_state=${args.end_state}). Starting a new ramp replaces this one; read playback_timer_status for later progress and per-step failures.`);
+    },
+  );
+
+  server.tool(
+    'playback_timer_status',
+    'Read sleep_timer and volume_ramp progress, including every applied, failed, or pending step. Quota: 🟢 local in-process state only.',
+    {
+      kind: z.enum(['sleep_timer', 'volume_ramp']).optional().describe('Only return this timer kind'),
+      response_format: ResponseFormat,
+    },
+    async (args) => {
+      const fmt = args.response_format as ResponseFormatValue | undefined;
+      const timers: Exhaust2TimerStatus[] = args.kind
+        ? [exhaust2TimerStatus(args.kind)].filter((timer): timer is Exhaust2TimerStatus => timer !== null)
+        : listPlaybackTimerStatuses();
+      if (timers.length === 0) {
+        return emit(fmt, { ok: true, count: 0, timers: [] }, 'No playback timer status is available.');
+      }
+      const lines = timers.flatMap((timer) => [
+        `${timer.kind} ${timer.state}: ${timer.steps_applied} applied, ${timer.steps_failed} failed, ${timer.steps_planned} planned`,
+        ...timer.failures.map((failure) =>
+          `  ✗ step ${failure.step} (${failure.action}, +${failure.at_minute}m): ${failure.error}`,
+        ),
+      ]);
+      return emit(fmt, { ok: true, count: timers.length, timers }, lines.join('\n'));
     },
   );
 
@@ -997,13 +1215,13 @@ export function registerExhaust2PlaybackTools(server: McpServer, client: Spotify
       const targets = devices.filter((d) => d.id !== active.id && d.id !== args.exclude_device_id && !d.is_restricted);
       if (targets.length === 0) return textResult('No other live devices to level.', { ok: true, applied: 0 });
       if (dryRun) {
-        const steps = targets.map((d) => `PUT /me/player/volume?volume=${active.volume_percent}&device_id=${d.id} ("${d.name}")`);
+        const steps = targets.map((d) => `PUT ${volumeQuery(active.volume_percent!, d.id)} ("${d.name}")`);
         return { content: [{ type: 'text', text: describeDryRun('room_level', `${targets.length} device(s) @ ${active.volume_percent}%`, steps) }], structuredContent: { ok: true, dry_run: true, source: { id: active.id, name: active.name, volume: active.volume_percent }, targets: targets.map((d) => ({ id: d.id, name: d.name })) } };
       }
       let applied = 0;
       const failed: string[] = [];
       for (const d of targets) {
-        try { await client.put(`/me/player/volume?${new URLSearchParams({ volume: String(active.volume_percent!), device_id: d.id! })}`); applied++; } catch { failed.push(d.name); }
+        try { await client.put(volumeQuery(active.volume_percent!, d.id!)); applied++; } catch { failed.push(d.name); }
       }
       return emit(fmt, { ok: failed.length === 0, source: { id: active.id, name: active.name, volume: active.volume_percent }, applied, total: targets.length, failed }, `Room levelled: ${applied}/${targets.length} device(s) → ${active.volume_percent}%${failed.length ? ` — failed: ${failed.join(', ')}` : ''}.`);
     },

@@ -1,4 +1,4 @@
-import test from 'node:test';
+import test, { afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   registerExhaust2PlaybackTools,
@@ -11,6 +11,10 @@ import {
   computeRampPlan,
   listExhaust2Timers,
   cancelExhaust2Timer,
+  exhaust2TimerStatus,
+  __setExhaust2Scheduler,
+  type Exhaust2TimerHandle,
+  type Exhaust2TimerScheduler,
 } from '../src/tools/exhaust2_playback.js';
 
 // ---------------------------------------------------------------- fixtures
@@ -32,6 +36,7 @@ type Call = { method: string; path: string; params?: Record<string, string>; bod
 interface ClientOptions {
   getResponse?: (path: string, params?: Record<string, string>) => unknown;
   getError?: (path: string, params?: Record<string, string>) => unknown;
+  putError?: (path: string, body?: unknown) => unknown;
 }
 
 function makeHarness(
@@ -51,7 +56,8 @@ function makeHarness(
     },
     put: async (path: string, body?: unknown) => {
       calls.push({ method: 'PUT', path, body });
-      return null;
+      const error = opts.putError?.(path, body);
+      if (error !== undefined) throw error;
     },
     post: async (path: string, body?: unknown) => {
       calls.push({ method: 'POST', path, body });
@@ -83,6 +89,33 @@ function makeHarness(
 }
 
 const text = (out: ToolContent): string => out.content.map((c) => c.text).join('\n');
+
+function makeFakePlaybackTimers() {
+  const scheduled: Array<{ fn: () => void | Promise<void>; ms: number } & Exhaust2TimerHandle> = [];
+  const cleared: Exhaust2TimerHandle[] = [];
+  const scheduler: Exhaust2TimerScheduler = {
+    setTimeout(fn, ms) {
+      const handle = { fn, ms };
+      scheduled.push(handle);
+      return handle;
+    },
+    clearTimeout(handle) {
+      cleared.push(handle);
+    },
+  };
+  const drain = async (): Promise<void> => {
+    for (let guard = 0; guard < 100 && scheduled.length > 0; guard++) {
+      await scheduled.shift()!.fn();
+    }
+  };
+  return { scheduler, scheduled, cleared, drain };
+}
+
+afterEach(() => {
+  cancelExhaust2Timer('sleep_timer');
+  cancelExhaust2Timer('volume_ramp');
+  __setExhaust2Scheduler(null);
+});
 
 const device = (over: Partial<Record<string, unknown>> = {}) => ({
   id: 'dev1',
@@ -156,11 +189,11 @@ test('computeRampPlan: even steps, last step lands on target', () => {
 
 // ---------------------------------------------------------------- registration
 
-test('all 22 exhaust2 playback tools are registered with quota notes', () => {
+test('all 23 exhaust2 playback tools are registered with quota notes', () => {
   const { tools } = makeHarness(registerExhaust2PlaybackTools);
   const expected = [
     'sleep_timer', 'mute', 'unmute', 'switch_device', 'surprise_me',
-    'skip_n', 'pause_everywhere', 'volume_ramp',
+    'skip_n', 'pause_everywhere', 'volume_ramp', 'playback_timer_status',
     'episode_bookmark', 'episode_resume', 'queue_next_episode', 'queue_replace_via_playlist',
     'session_stats', 'most_replayed', 'last_heard',
     'weekday_heatmap', 'queue_profile',
@@ -221,6 +254,25 @@ test('sleep_timer live run replaces an active timer and discloses process scope'
   assert.equal(listExhaust2Timers().length, 0);
 });
 
+test('sleep_timer exposes a rejected pause instead of swallowing it', async () => {
+  const fake = makeFakePlaybackTimers();
+  __setExhaust2Scheduler(fake.scheduler);
+  const h = makeHarness(registerExhaust2PlaybackTools, {
+    getResponse: (p) => (p === '/me/player' ? playbackState() : undefined),
+    putError: (path) => path === '/me/player/pause?device_id=dev1' ? new Error('403 Premium required') : undefined,
+  });
+  await h.invoke('sleep_timer', { duration_min: 5, dry_run: false });
+  await fake.drain();
+
+  const status = exhaust2TimerStatus('sleep_timer')!;
+  assert.equal(status.state, 'failed');
+  assert.equal(status.steps_applied, 0);
+  assert.equal(status.steps_failed, 1);
+  assert.deepEqual(status.failures[0], { step: 1, at_minute: 5, action: 'pause', error: '403 Premium required' });
+  const readable = await h.invoke('playback_timer_status', { kind: 'sleep_timer' });
+  assert.match(text(readable), /step 1 \(pause, \+5m\): 403 Premium required/);
+});
+
 // ---------------------------------------------------------------- mute / unmute
 
 test('mute remembers the previous volume and zeroes it', async () => {
@@ -229,7 +281,7 @@ test('mute remembers the previous volume and zeroes it', async () => {
   assert.match(text(out), /Muted Kitchen \(was 55% — remembered for unmute\)/);
   const put = calls.find((c) => c.method === 'PUT' && c.path.includes('/me/player/volume'));
   assert.ok(put);
-  assert.match(put!.path, /volume=0/);
+  assert.match(put!.path, /volume_percent=0/);
   const store = await loadExhaust2Store();
   assert.equal(store.muteMemory.dev1?.volume, 55);
 });
@@ -243,7 +295,7 @@ test('unmute restores the remembered level; default is 50% without memory', asyn
   const out = await invoke('unmute', { device_id: 'dev1', dry_run: false });
   assert.match(text(out), /volume 33% \(remembered by mute\)/);
   const put = calls.find((c) => c.method === 'PUT' && c.path.includes('/me/player/volume'));
-  assert.match(put!.path, /volume=33/);
+  assert.match(put!.path, /volume_percent=33/);
 
   const { invoke: invoke2 } = makeHarness(registerExhaust2PlaybackTools);
   await clearSidecar();
@@ -374,14 +426,80 @@ test('volume_ramp dry run discloses step plan without writes', async () => {
   assert.equal((out.structuredContent as { steps: number }).steps, 4);
 });
 
-test('volume_ramp live run registers a cancel-safe in-process ramp', async () => {
+test('volume_ramp records every successful volume and end-state write', async () => {
+  const fake = makeFakePlaybackTimers();
+  __setExhaust2Scheduler(fake.scheduler);
   const h = makeHarness(registerExhaust2PlaybackTools, { getResponse: (p) => (p === '/me/player' ? playbackState() : undefined) });
   const out = await h.invoke('volume_ramp', { target_percent: 30, minutes: 2, step_minutes: 1, end_state: 'pause', dry_run: false });
   assert.match(text(out), /Volume ramp started/);
-  assert.equal((out.structuredContent as { steps: number }).steps, 2);
-  assert.ok(listExhaust2Timers().some((t) => t.kind === 'volume_ramp'));
+  assert.equal(out.structuredContent?.steps, 2);
+  await fake.drain();
+
+  const puts = h.calls.filter((call) => call.method === 'PUT');
+  assert.deepEqual(puts.map((call) => call.path), [
+    '/me/player/volume?volume_percent=43&device_id=dev1',
+    '/me/player/volume?volume_percent=30&device_id=dev1',
+    '/me/player/pause?device_id=dev1',
+  ]);
+  assert.equal(exhaust2TimerStatus('volume_ramp')!.steps_applied, puts.length);
+  assert.equal(exhaust2TimerStatus('volume_ramp')!.steps_failed, 0);
+  assert.equal(exhaust2TimerStatus('volume_ramp')!.state, 'completed');
+});
+
+test('volume_ramp terminally records a rejected first volume step', async () => {
+  const fake = makeFakePlaybackTimers();
+  __setExhaust2Scheduler(fake.scheduler);
+  const h = makeHarness(registerExhaust2PlaybackTools, {
+    getResponse: (p) => (p === '/me/player' ? playbackState() : undefined),
+    putError: (path) => path.startsWith('/me/player/volume?') && path.includes('device_id=dev1') ? new Error('429 rate limited') : undefined,
+  });
+  await h.invoke('volume_ramp', { target_percent: 20, minutes: 4, step_minutes: 1, dry_run: false });
+  await fake.drain();
+
+  const status = exhaust2TimerStatus('volume_ramp')!;
+  assert.equal(status.state, 'failed');
+  assert.equal(status.steps_applied, 0);
+  assert.equal(status.steps_failed, 1);
+  assert.equal(status.last_error, '429 rate limited');
+  assert.deepEqual(status.failures[0], { step: 1, at_minute: 1, action: 'volume', error: '429 rate limited' });
+  const readable = await h.invoke('playback_timer_status', { kind: 'volume_ramp' });
+  assert.match(text(readable), /step 1 \(volume, \+1m\): 429 rate limited/);
+  assert.equal(readable.structuredContent?.count, 1);
+  assert.equal(h.calls.filter((call) => call.method === 'PUT').length, 1, 'later ramp steps are not attempted');
+});
+
+for (const endState of ['pause', 'play'] as const) {
+  test(`volume_ramp exposes a rejected ${endState} end-state write`, async () => {
+    const fake = makeFakePlaybackTimers();
+    __setExhaust2Scheduler(fake.scheduler);
+    const h = makeHarness(registerExhaust2PlaybackTools, {
+      getResponse: (p) => (p === '/me/player' ? playbackState() : undefined),
+      putError: (path) => path === `/me/player/${endState}?device_id=dev1` ? new Error(`404 ${endState} unavailable`) : undefined,
+    });
+    await h.invoke('volume_ramp', { target_percent: 20, minutes: 1, step_minutes: 1, end_state: endState, dry_run: false });
+    await fake.drain();
+
+    const status = exhaust2TimerStatus('volume_ramp')!;
+    assert.equal(status.steps_applied, 1);
+    assert.equal(status.steps_failed, 1);
+    assert.equal(status.failures[0]!.action, endState);
+    assert.equal(status.last_error, `404 ${endState} unavailable`);
+    const readable = await h.invoke('playback_timer_status', { kind: 'volume_ramp' });
+    assert.match(text(readable), new RegExp(`step 2 \\(${endState}, \\+1m\\): 404 ${endState} unavailable`));
+  });
+}
+
+test('cancelling volume_ramp prevents every pending volume and end-state write', async () => {
+  const fake = makeFakePlaybackTimers();
+  __setExhaust2Scheduler(fake.scheduler);
+  const h = makeHarness(registerExhaust2PlaybackTools, { getResponse: (p) => (p === '/me/player' ? playbackState() : undefined) });
+  await h.invoke('volume_ramp', { target_percent: 20, minutes: 4, step_minutes: 1, end_state: 'pause', dry_run: false });
+
   assert.ok(cancelExhaust2Timer('volume_ramp'));
-  assert.equal(listExhaust2Timers().filter((t) => t.kind === 'volume_ramp').length, 0);
+  assert.equal(fake.cleared.length, 1);
+  await fake.drain();
+  assert.equal(h.calls.filter((call) => call.method === 'PUT').length, 0);
+  assert.equal(exhaust2TimerStatus('volume_ramp'), null);
 });
 
 // ---------------------------------------------------------------- episode bookmarks
@@ -609,7 +727,7 @@ test('room_level applies the active volume to every other live device', async ()
   const out = await h.invoke('room_level', { dry_run: false });
   assert.match(text(out), /Room levelled: 1\/1 device\(s\) → 50%/);
   const vol = h.calls.find((c) => c.method === 'PUT' && c.path.includes('/me/player/volume'));
-  assert.match(vol!.path, /volume=50/);
+  assert.match(vol!.path, /volume_percent=50/);
   assert.match(vol!.path, /device_id=dev2/);
 });
 
