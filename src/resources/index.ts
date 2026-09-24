@@ -1,7 +1,7 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { ResourceTemplate } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { ReadResourceResult } from '@modelcontextprotocol/sdk/types.js';
-import type { SpotifyClient } from '../client.js';
+import { SpotifyApiError, type SpotifyClient } from '../client.js';
 import type {
   PlaybackState,
   SpotifyQueue,
@@ -26,15 +26,82 @@ function formatDuration(ms: number): string {
   return `${minutes}:${seconds.toString().padStart(2, '0')}`;
 }
 
-function formatItem(item: SpotifyTrack | SpotifyEpisode): string {
+type RenderableItem = {
+  type?: string;
+  name?: string;
+  uri?: string;
+  duration_ms?: number;
+  artists?: Array<{ name?: string }>;
+  album?: { name?: string };
+  show?: { name?: string };
+  audiobook?: { name?: string; authors?: Array<{ name?: string }> };
+  authors?: Array<{ name?: string }>;
+};
+
+function itemDetail(item: RenderableItem): string {
   if (item.type === 'track') {
-    const artists = item.artists.map((a) => a.name).join(', ');
-    return `"${item.name}" by ${artists} (${formatDuration(item.duration_ms)}) | URI: ${item.uri}`;
+    const artists = (item.artists ?? []).map((a) => a.name ?? 'unknown artist').join(', ') || 'unknown artist';
+    return `by ${artists}${item.album?.name ? ` — ${item.album.name}` : ''}`;
   }
-  if (item.type === 'episode') {
-    return `"${item.name}" — ${item.show.name} (${formatDuration(item.duration_ms)}) | URI: ${item.uri}`;
+  if (item.type === 'episode' && item.show?.name) return `from ${item.show.name}`;
+  if (item.type === 'chapter') {
+    const book = item.audiobook;
+    const authors = (book?.authors ?? []).map((a) => a.name ?? 'unknown author').join(', ');
+    return `from ${book?.name ?? 'unknown audiobook'}${authors ? ` by ${authors}` : ''}`;
   }
-  return `"${(item as { type?: string }).type ?? 'unknown'}" (unsupported item)`;
+  if (item.type === 'audiobook') {
+    const authors = (item.authors ?? []).map((a) => a.name ?? 'unknown author').join(', ') || 'unknown author';
+    return `by ${authors}`;
+  }
+  return item.type ?? 'item';
+}
+
+function formatItem(item: RenderableItem): string {
+  const name = item.name ?? 'Untitled';
+  const type = item.type ?? 'item';
+  const duration = typeof item.duration_ms === 'number' ? ` (${formatDuration(item.duration_ms)})` : '';
+  return `"${name}" (${type}) — ${itemDetail(item)}${duration} | URI: ${item.uri ?? 'unknown'}`;
+}
+
+function playlistTotal(playlist: SpotifyPlaylistSimple): number | 'unknown' {
+  const legacyPlaylist = playlist as unknown as { tracks?: { total?: number } };
+  const paging = playlist.items ?? legacyPlaylist.tracks;
+  return typeof paging?.total === 'number' ? paging.total : 'unknown';
+}
+
+type ResourceError = SpotifyApiError | { status: number; retryAfterSec?: number };
+
+function resourceError(error: unknown): ResourceError | null {
+  if (error instanceof SpotifyApiError) return error;
+  if (error === null || typeof error !== 'object' || !('status' in error)) return null;
+  const status = error.status;
+  if (typeof status !== 'number') return null;
+  const retryAfterSec = 'retryAfterSec' in error && typeof error.retryAfterSec === 'number'
+    ? error.retryAfterSec
+    : undefined;
+  return { status, retryAfterSec };
+}
+
+function gatedResourceResult(
+  url: URL,
+  uri: string,
+  error: ResourceError,
+  subject: string,
+  rateLimitRetryAfterSec?: number | null,
+): ResourceContents | null {
+  if (![403, 404, 429].includes(error.status)) return null;
+  const waitSeconds = error.retryAfterSec ?? rateLimitRetryAfterSec ?? undefined;
+  const detail = error.status === 429
+    ? `Spotify rate limited this resource (429). Retry after ${waitSeconds ?? 'an unspecified number of'} seconds.`
+    : `${subject} is unavailable in this market or OAuth scope (${error.status}).`;
+  if (wantsJson(url)) {
+    return json(uri, {
+      error: String(error.status),
+      partial: false,
+      ...(error.status === 429 && waitSeconds !== undefined ? { retry_after: waitSeconds } : {}),
+    });
+  }
+  return text(uri, detail);
 }
 
 /**
@@ -81,12 +148,27 @@ export function registerResources(server: McpServer, client: SpotifyClient): voi
     description: string,
     render: (url: URL) => Promise<ResourceContents>,
   ): void => {
-    server.resource(name, uri, { description }, async (u: URL) => render(u));
+    const renderWithApiErrors = async (url: URL): Promise<ResourceContents> => {
+      try {
+        return await render(url);
+      } catch (error) {
+        const expected = resourceError(error);
+        if (!expected) throw error;
+        const rateLimit = client.getRateLimitStatus();
+        const result = gatedResourceResult(url, uri, expected, name, rateLimit.retryAfterSec);
+        if (result) return result;
+        throw error;
+      }
+    };
+    server.resource(name, uri, { description, mimeType: 'text/plain' }, renderWithApiErrors);
     server.resource(
       `${name}-query`,
       new ResourceTemplate(`${uri}{?format}`, { list: undefined }),
-      { description: `Query-string variant of '${uri}' (?format=json returns raw JSON)` },
-      async (u: URL) => render(u),
+      {
+        description: `Query-string variant of '${uri}' (?format=json returns raw JSON)`,
+        mimeType: 'text/plain',
+      },
+      renderWithApiErrors,
     );
   };
 
@@ -112,29 +194,26 @@ export function registerResources(server: McpServer, client: SpotifyClient): voi
     'spotify://player/state',
     "Current Spotify playback state (live; '?format=json' returns the raw API object)",
     async (url) => {
-      const state = await client.get<PlaybackState>('/me/player');
+      const state = await client.get<Omit<PlaybackState, 'item'> & { item: RenderableItem | null }>('/me/player', {
+        additional_types: 'track,episode,audiobook',
+      });
       if (!state || !state.item) {
         return text('spotify://player/state', 'Nothing is currently playing.');
       }
       if (wantsJson(url)) return json('spotify://player/state', state);
-      const { item, is_playing, shuffle_state, repeat_state, device } = state;
-      const lines: string[] = [];
-      if (item.type === 'track') {
-        const artists = item.artists.map((a) => a.name).join(', ');
-        lines.push(`${is_playing ? 'Playing' : 'Paused'}: "${item.name}" by ${artists}`);
-        lines.push(`Album: ${item.album.name}`);
-      } else if (item.type === 'episode') {
-        lines.push(`${is_playing ? 'Playing' : 'Paused'}: "${item.name}" (${item.show.name})`);
-      } else {
-        lines.push(`${is_playing ? 'Playing' : 'Paused'}: "${(item as { type?: string }).type ?? 'unknown'}" (unsupported item)`);
-      }
+      const { item, is_playing, shuffle_state, repeat_state, device, progress_ms } = state;
+      const lines: string[] = [
+        `${is_playing ? 'Playing' : 'Paused'}: ${formatItem(item)}`,
+        `Progress: ${formatDuration(progress_ms ?? 0)}${typeof item.duration_ms === 'number' ? ` / ${formatDuration(item.duration_ms)}` : ''}`,
+      ];
+      if (item.album?.name) lines.push(`Album: ${item.album.name}`);
+      if (item.show?.name) lines.push(`Show: ${item.show.name}`);
       if (device) {
         lines.push(`Device: ${device.name} (${device.type})`);
       } else {
         lines.push('Device: none active');
       }
       lines.push(`Shuffle: ${shuffle_state ? 'on' : 'off'} | Repeat: ${repeat_state}`);
-      lines.push(`URI: ${item.uri}`);
       return text('spotify://player/state', lines.join('\n'));
     },
   );
@@ -242,8 +321,8 @@ export function registerResources(server: McpServer, client: SpotifyClient): voi
         return text('spotify://me/playlists', 'No playlists found.');
       }
       const lines = playlists.map((pl) => {
-        const trackCount = pl.items?.total ?? 0;
-        return `  • "${pl.name}" (${trackCount} tracks) | ID: ${pl.id} | URI: ${pl.uri}`;
+        const count = playlistTotal(pl);
+        return `  • "${pl.name}" (${count === 'unknown' ? 'unknown item count' : `${count} items`}) | ID: ${pl.id} | URI: ${pl.uri}`;
       });
       return text('spotify://me/playlists', `Playlists (${playlists.length} total):\n${lines.join('\n')}`);
     },
@@ -351,9 +430,9 @@ export function registerResources(server: McpServer, client: SpotifyClient): voi
       const footer = hasMore ? `\n... more available — re-read with ?offset=${offset + entries.length}` : '';
       return text(uri, `${header}\n${lines.join('\n')}${footer}`);
     };
-    server.resource('saved-tracks', uri, { description: "Tracks saved in your library, paginated via ?offset&limit ('?format=json' returns raw paged object)" }, async (u: URL) => render(u));
-    server.resource('saved-tracks-query', new ResourceTemplate(`${uri}{?format,offset,limit}`, { list: undefined }), { description: "Query-string variant of 'spotify://me/saved/tracks' (?format=json, ?offset, ?limit)" }, async (u: URL) => render(u));
-    server.resource('saved-tracks-qs', new ResourceTemplate(`${uri}{+qs}`, { list: undefined }), { description: "Catch-all query variant of 'spotify://me/saved/tracks'" }, async (u: URL) => render(u));
+    server.resource('saved-tracks', uri, { description: "Tracks saved in your library, paginated via ?offset&limit ('?format=json' returns raw paged object)", mimeType: 'text/plain' }, async (u: URL) => render(u));
+    server.resource('saved-tracks-query', new ResourceTemplate(`${uri}{?format,offset,limit}`, { list: undefined }), { description: "Query-string variant of 'spotify://me/saved/tracks' (?format=json, ?offset, ?limit)", mimeType: 'text/plain' }, async (u: URL) => render(u));
+    server.resource('saved-tracks-qs', new ResourceTemplate(`${uri}{+qs}`, { list: undefined }), { description: "Catch-all query variant of 'spotify://me/saved/tracks'", mimeType: 'text/plain' }, async (u: URL) => render(u));
   })();
 
   // spotify://me/followed/artists — cursor walk via /me/following
@@ -389,11 +468,16 @@ export function registerResources(server: McpServer, client: SpotifyClient): voi
   (() => {
     const uri = 'spotify://me/saved/audiobooks';
     const render = async (url: URL): Promise<ResourceContents> => {
-      let items: Array<{ added_at: string; audiobook: { id: string; name: string; uri: string; authors?: Array<{ name: string }> } }> = [];
+      let items: Array<{ added_at: string; audiobook: { id: string; name: string; uri: string; authors?: Array<{ name: string }> } }>;
       try {
         items = await client.getAllPages<{ added_at: string; audiobook: { id: string; name: string; uri: string; authors?: Array<{ name: string }> } }>('/me/audiobooks', { limit: '50' }, { maxItems: getConfig().fetchAllCap });
-      } catch {
-        items = [];
+      } catch (error) {
+        const expected = resourceError(error);
+        if (expected) {
+          const rateLimit = client.getRateLimitStatus();
+          const result = gatedResourceResult(url, uri, expected, 'Audiobooks', rateLimit.retryAfterSec);
+        }
+        throw error;
       }
       if (wantsJson(url)) return json(uri, { total: items.length, items });
       if (items.length === 0) return text(uri, 'No saved audiobooks.');
@@ -439,24 +523,23 @@ export function registerResources(server: McpServer, client: SpotifyClient): voi
   const renderPlaylistTracks = async (rawUrl: string): Promise<ResourceContents> => {
     const req = parsePlaylistTracksUri(new URL(rawUrl));
     if (!req) throw new Error(`Malformed playlist tracks URI: ${rawUrl}`);
-    const result = await client.get<SpotifyPaged<{ item: SpotifyTrack | null }>>(
+    const result = await client.get<Omit<SpotifyPaged<{ item: RenderableItem | null }>, 'total'> & { total?: number }>(
       `/playlists/${req.id}/items`,
-      { offset: String(req.offset), limit: String(req.limit) },
+      { offset: String(req.offset), limit: String(req.limit), additional_types: 'track,episode,audiobook' },
     );
     if (!result) throw new Error(`Could not retrieve playlist ${req.id}`);
     const uri = `spotify://playlist/${req.id}/tracks`;
     if (req.jsonFormat) return json(uri, result);
-    const entries = result.items.filter((it): it is { item: SpotifyTrack } => it.item != null);
-    const header = `Playlist ${req.id} — ${result.total ?? entries.length} tracks (showing ${entries.length} at offset ${req.offset}):`;
-    const lines = entries.map(({ item: track }, i) => {
-      const artists = track.artists.map((a) => a.name).join(', ');
-      return `  ${req.offset + i + 1}. "${track.name}" by ${artists} | URI: ${track.uri}`;
-    });
-    const hasMore =
-      typeof result.total === 'number'
-        ? req.offset + entries.length < result.total
-        : entries.length === req.limit;
-    const footer = hasMore ? `\n... more available — re-read with ?offset=${req.offset + entries.length}` : '';
+    const entries = result.items.filter((entry): entry is { item: RenderableItem } => entry.item != null);
+    const total = typeof result.total === 'number' ? String(result.total) : 'unknown';
+    const header = `Playlist ${req.id} — ${total} items (showing ${entries.length} at offset ${req.offset}):`;
+    const lines = entries.map(({ item: playlistItem }, i) =>
+      `  ${req.offset + i + 1}. ${formatItem(playlistItem)}`,
+    );
+    const hasMore = typeof result.total === 'number'
+      ? req.offset + result.items.length < result.total
+      : result.items.length === req.limit;
+    const footer = hasMore ? `\n... more available — re-read with ?offset=${req.offset + result.items.length}` : '';
     return text(uri, `${header}\n${lines.join('\n')}${footer}`);
   };
 
@@ -466,6 +549,7 @@ export function registerResources(server: McpServer, client: SpotifyClient): voi
     {
       description:
         "A playlist's tracks, paginated via ?offset/&limit ('?format=json' returns the raw API object)",
+        mimeType: 'text/plain',
     },
     async (uri: URL) => renderPlaylistTracks(uri.href),
   );
@@ -475,7 +559,7 @@ export function registerResources(server: McpServer, client: SpotifyClient): voi
   server.resource(
     'playlist-tracks-query',
     new ResourceTemplate('spotify://playlist/{id}/tracks{+qs}', { list: undefined }),
-    { description: 'Query-string variant of playlist-tracks (?format=json, ?offset, ?limit)' },
+    { description: 'Query-string variant of playlist-tracks (?format=json, ?offset, ?limit)', mimeType: 'text/plain' },
     async (uri: URL) => renderPlaylistTracks(uri.href),
   );
 
@@ -503,11 +587,25 @@ export function registerResources(server: McpServer, client: SpotifyClient): voi
     "Genre heatmap from followed_artists sidecar ('?format=json' returns raw counts)",
     async (url) => {
       // Best-effort: read followed_artists.json if present, else live fetch
-      let genres: Record<string, number> = {};
+      const genres: Record<string, number> = {};
+      let artists: SpotifyArtistFull[];
       try {
-        const artists = await client.getAllPages<SpotifyArtistFull>('/me/top/artists', { limit: '50' }, { maxItems: 50 });
-        for (const a of artists) for (const g of (a.genres ?? [])) genres[g] = (genres[g] ?? 0) + 1;
-      } catch { genres = {}; }
+        artists = await client.getAllPages<SpotifyArtistFull>('/me/top/artists', { limit: '50' }, { maxItems: 50 });
+      } catch (error) {
+        const expected = resourceError(error);
+        if (expected) {
+          const rateLimit = client.getRateLimitStatus();
+          const result = gatedResourceResult(
+            url,
+            'spotify://me/genre-heatmap',
+            expected,
+            'Genre data',
+            rateLimit.retryAfterSec,
+          );
+        }
+        throw error;
+      }
+      for (const a of artists) for (const g of (a.genres ?? [])) genres[g] = (genres[g] ?? 0) + 1;
       if (wantsJson(url)) return json('spotify://me/genre-heatmap', { genres });
       const top = Object.entries(genres).sort((a, b) => b[1] - a[1]).slice(0, 10);
       const lines = top.map(([g, n]) => `  ${g}: ${n}`);

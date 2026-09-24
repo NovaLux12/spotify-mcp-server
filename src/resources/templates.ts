@@ -92,13 +92,16 @@ export function registerTemplateResources(server: McpServer, client: SpotifyClie
           },
         }
       : ({ list: undefined } as const);
-    server.resource(name, new ResourceTemplate(pattern, templateOpts), { description }, async (uri: URL) =>
+    server.resource(name, new ResourceTemplate(pattern, templateOpts), { description, mimeType: 'text/plain' }, async (uri: URL) =>
       render(uri.href),
     );
     server.resource(
       `${name}-query`,
       new ResourceTemplate(`${pattern}{+qs}`, { list: undefined }),
-      { description: `Query-string variant of ${pattern} (?format=json returns raw JSON)` },
+      {
+        description: `Query-string variant of ${pattern} (?format=json returns raw JSON)`,
+        mimeType: 'text/plain',
+      },
       async (uri: URL) => render(uri.href),
     );
   };
@@ -274,7 +277,11 @@ export function registerTemplateResources(server: McpServer, client: SpotifyClie
       if (wantsJson(url)) return json(uri, pl);
       const name = (pl.name as string) ?? id;
       const owner = ((pl.owner as { display_name?: string; id?: string })?.display_name ?? (pl.owner as { id?: string })?.id ?? 'unknown');
-      return text(uri, `Playlist: "${name}" by ${owner}\nID: ${id}\nURI: ${(pl.uri as string) ?? `spotify:playlist:${id}`}\nTracks: ${(pl.tracks as { total?: number })?.total ?? 'unknown'}`);
+      const paging = pl.items ?? pl.tracks;
+      const total = paging !== null && typeof paging === 'object' && 'total' in paging && typeof paging.total === 'number'
+        ? paging.total
+        : 'unknown';
+      return text(uri, `Playlist: "${name}" by ${owner}\nID: ${id}\nURI: ${(pl.uri as string) ?? `spotify:playlist:${id}`}\nTracks: ${total}`);
     },
   );
 

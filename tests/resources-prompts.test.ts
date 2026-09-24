@@ -19,7 +19,7 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 
 import { registerResources } from '../src/resources/index.js';
 import { registerPrompts } from '../src/prompts/index.js';
-import type { SpotifyClient } from '../src/client.js';
+import { SpotifyApiError, type SpotifyClient } from '../src/client.js';
 
 // ---------------------------------------------------------------- fixtures
 
@@ -112,6 +112,8 @@ test('registers all #59 resource URIs plus format/json twins and templates', asy
     'spotify://player/state',
   ]);
 
+  assert.ok(resources.resources.every((resource) => resource.mimeType === 'text/plain'));
+
   const templates = await client.listResourceTemplates();
   const templateUris = templates.resourceTemplates.map((t) => t.uriTemplate).sort();
   // Every fixed URI has a {?format} twin…
@@ -120,6 +122,7 @@ test('registers all #59 resource URIs plus format/json twins and templates', asy
   // …and playlist tracks exists bare + query-absorbing.
   assert.ok(templateUris.includes('spotify://playlist/{id}/tracks'));
   assert.ok(templateUris.includes('spotify://playlist/{id}/tracks{+qs}'));
+  assert.ok(templates.resourceTemplates.every((template) => template.mimeType === 'text/plain'));
 });
 
 // ------------------------------------------------------ json variant routing
@@ -156,7 +159,36 @@ test('player state json variant returns the raw API object', async () => {
   assert.deepEqual(JSON.parse(raw.text), playbackState);
 
   const prose = firstContent(await client.readResource({ uri: 'spotify://player/state' }));
-  assert.match(prose.text, /Playing: "Bohemian Rhapsody" by Queen/);
+  assert.match(prose.text, /Playing: "Bohemian Rhapsody" \(track\) — by Queen/);
+});
+
+test('player state safely renders chapter items and requests non-track types', async () => {
+  const chapter = {
+    id: 'ch1',
+    name: 'Chapter One',
+    uri: 'spotify:chapter:ch1',
+    type: 'chapter',
+    duration_ms: 60000,
+    audiobook: { name: 'A Long Book', authors: [{ name: 'An Author' }] },
+  };
+  const state = {
+    is_playing: true,
+    progress_ms: 15000,
+    shuffle_state: false,
+    repeat_state: 'off',
+    timestamp: 1,
+    device: null,
+    item: chapter,
+    currently_playing_type: 'unknown',
+    context: null,
+  };
+  const stub = makeClientStub({ getResponse: (path) => (path === '/me/player' ? state : undefined) });
+  const client = await connect(stub);
+
+  const prose = firstContent(await client.readResource({ uri: 'spotify://player/state' }));
+  assert.match(prose.text, /Chapter One/);
+  assert.match(prose.text, /A Long Book/);
+  assert.doesNotMatch(prose.text, /unsupported item/);
 });
 
 // ------------------------------------------------------------ saved library
@@ -200,6 +232,19 @@ test('saved albums/shows/episodes walk pages and support ?format=json (#59)', as
   assert.match(episodes.text, /"Episode One" — Great Podcast \(30:00/);
 });
 
+test('playlist summary distinguishes a zero count from a missing count', async () => {
+  const client = await connect(makeClientStub({
+    getAllPagesResponse: () => [
+      { id: 'zero', name: 'Empty', uri: 'spotify:playlist:zero', description: null, owner: { id: 'u', display_name: null }, items: { total: 0 } },
+      { id: 'unknown', name: 'Uncounted', uri: 'spotify:playlist:unknown', description: null, owner: { id: 'u', display_name: null } },
+    ],
+  }));
+
+  const out = firstContent(await client.readResource({ uri: 'spotify://me/playlists' }));
+  assert.match(out.text, /"Empty" \(0 items\)/);
+  assert.match(out.text, /"Uncounted" \(unknown item count\)/);
+});
+
 // -------------------------------------------------------- playlist tracks
 
 test('playlist/{id}/tracks template serves prose pagination and raw json (#59)', async () => {
@@ -221,10 +266,10 @@ test('playlist/{id}/tracks template serves prose pagination and raw json (#59)',
   }));
 
   const bare = firstContent(await client.readResource({ uri: 'spotify://playlist/pl1/tracks' }));
-  assert.match(bare.text, /^Playlist pl1 — 3 tracks/);
-  assert.match(bare.text, /1\. "Bohemian Rhapsody" by Queen \| URI: spotify:track:trk1/);
-  // the { track: null } entry is filtered out, so the next offset is 1
-  assert.match(bare.text, /more available — re-read with \?offset=1/);
+  assert.match(bare.text, /^Playlist pl1 — 3 items/);
+  assert.match(bare.text, /1\. "Bohemian Rhapsody" \(track\) — by Queen/);
+  // the { item: null } entry is filtered out, so the next offset advances by the page size
+  assert.match(bare.text, /more available — re-read with \?offset=2/);
 
   const paged = firstContent(
     await client.readResource({ uri: 'spotify://playlist/pl1/tracks?offset=100&limit=2' }),
@@ -233,6 +278,55 @@ test('playlist/{id}/tracks template serves prose pagination and raw json (#59)',
 
   const raw = firstContent(await client.readResource({ uri: 'spotify://playlist/pl1/tracks?format=json' }));
   assert.deepEqual(JSON.parse(raw.text), page);
+
+});
+
+test('playlist tracks keeps missing totals distinct from zero and renders non-track entries', async () => {
+  const episode = {
+    item: {
+      id: 'ep1', name: 'Episode One', uri: 'spotify:episode:ep1', type: 'episode', duration_ms: 120000,
+      show: { name: 'The Show' },
+    },
+  };
+  const client = await connect(makeClientStub({
+    getResponse: (path) => path === '/playlists/pl2/items'
+      ? { items: [episode], limit: 100, offset: 0, next: null }
+      : undefined,
+  }));
+
+  const out = firstContent(await client.readResource({ uri: 'spotify://playlist/pl2/tracks' }));
+  assert.match(out.text, /Playlist pl2 — unknown items/);
+  assert.match(out.text, /Episode One.*episode.*The Show/);
+});
+
+test('gated resource errors are named instead of rendered as empty', async () => {
+  for (const uri of ['spotify://me/saved/audiobooks', 'spotify://me/genre-heatmap']) {
+    const forbidden = await connect(makeClientStub({
+      getAllPagesResponse: () => { throw new SpotifyApiError(403, 'Forbidden'); },
+    }));
+    const prose = firstContent(await forbidden.readResource({ uri }));
+    assert.match(prose.text, /market or OAuth scope \(403\)/);
+
+    const payload = firstContent(await forbidden.readResource({ uri: `${uri}?format=json` }));
+    assert.deepEqual(JSON.parse(payload.text), { error: '403', partial: false });
+  }
+
+  const rateLimited = await connect(makeClientStub({
+    getAllPagesResponse: () => {
+      throw new SpotifyApiError(429, 'Rate limited', 17);
+    },
+  }));
+  const wait = firstContent(await rateLimited.readResource({ uri: 'spotify://me/genre-heatmap' }));
+  assert.match(wait.text, /Retry after 17 seconds/);
+});
+
+test('unexpected resource errors propagate instead of claiming empty data', async () => {
+  for (const uri of ['spotify://me/saved/audiobooks', 'spotify://me/genre-heatmap']) {
+    const client = await connect(makeClientStub({
+      getAllPagesResponse: () => { throw new TypeError('payload parser failed'); },
+    }));
+    await assert.rejects(client.readResource({ uri }), /payload parser failed/);
+  }
 });
 
 // ------------------------------------------------------------- rate-limit
