@@ -1,20 +1,42 @@
-# PR labeler rules — used by .github/workflows/labeler.yml (actions/labeler@v5)
+# PR labeler rules — used by .github/workflows/labeler.yml (actions/labeler@v7)
+# Keep these paths aligned with the current src, docs, tests, and release layout.
 area:docs:
   - changed-files:
       - any-glob-to-any-file: docs/**
+      - any-glob-to-any-file: README.md
+      - any-glob-to-any-file: SPEC.md
+      - any-glob-to-any-file: ARCHITECTURE.md
 
 area:tools:
   - changed-files:
       - any-glob-to-any-file: src/tools/**
+      - any-glob-to-any-file: src/toolsets.ts
 
 area:auth:
   - changed-files:
       - any-glob-to-any-file: src/auth.ts
+      - any-glob-to-any-file: src/config.ts
 
 area:client:
   - changed-files:
       - any-glob-to-any-file: src/client.ts
 
+area:resources:
+  - changed-files:
+      - any-glob-to-any-file: src/resources/**
+      - any-glob-to-any-file: src/prompts/**
+
 area:ci:
   - changed-files:
       - any-glob-to-any-file: .github/**
+      - any-glob-to-any-file: tests/**
+      - any-glob-to-any-file: scripts/**
+
+area:distribution:
+  - changed-files:
+      - any-glob-to-any-file: package.json
+      - any-glob-to-any-file: package-lock.json
+      - any-glob-to-any-file: server.json
+      - any-glob-to-any-file: smithery.yaml
+      - any-glob-to-any-file: .release-please-config.json
+      - any-glob-to-any-file: .github/workflows/publish.yml

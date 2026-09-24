@@ -54,6 +54,38 @@ body:
       description: e.g. Claude Desktop, Claude Code, OpenClaw, Cursor (with version)
     validations:
       required: true
+  - type: input
+    id: server-version
+    attributes:
+      label: Server version
+      description: Run `npx @novalux12/spotify-mcp --version` or provide the package.json version.
+    validations:
+      required: true
+  - type: input
+    id: node-version
+    attributes:
+      label: Node version
+      description: Include the Node.js version, for example v22.9.0.
+    validations:
+      required: true
+  - type: dropdown
+    id: install-method
+    attributes:
+      label: Installation method
+      options:
+        - npx
+        - Global npm install
+        - From source
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: artifact
+    attributes:
+      label: Package or build artifact
+      description: Provide the package name/version or source commit/build identifier when applicable.
+    validations:
+      required: true
   - type: textarea
     id: logs
     attributes:

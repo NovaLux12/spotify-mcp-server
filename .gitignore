@@ -1,25 +1,37 @@
+# Dependencies and generated build output
 node_modules/
 dist/
+coverage/
+*.js.map
+*.tgz
+
+# Local configuration and credentials
 .env
 .env.local
-*.js.map
+.npmrc
+
+# Logs and test/tool caches
+*.log
+npm-debug.log*
 .pytest_cache/
 tests/__pycache__/
 
-# local sweep memory - keep only final reports
+# Operating system and editor artifacts
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*~
+
+# Local sweep memory - keep only final reports
 memory/*
 !memory/live-sweep-report.json
 !memory/live-sweep-report.md
 !memory/live-sweep-plan.md
 
-# ephemeral / local audit artifacts
+# Ephemeral / local audit artifacts
 .tmp/
 AGENTS.md
 USABILITY_AUDIT_*.md
 audit-quota-lurkers.md
-
-# pending skill proposals (explicit apply/reject required)
-skills/github-actions-ci-triage/
-skills/github-post-merge-tidy/
-skills/readme-optimization/
-skills/release-workflow-retrigger/

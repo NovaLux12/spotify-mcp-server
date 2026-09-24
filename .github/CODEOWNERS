@@ -1,1 +1,10 @@
+# Default ownership for all repository files.
 * @NovaLux12
+
+# Release and distribution surface requires explicit maintainer review.
+/package.json @NovaLux12
+/package-lock.json @NovaLux12
+/server.json @NovaLux12
+/.release-please-config.json @NovaLux12
+/.github/workflows/ @NovaLux12
+/scripts/ @NovaLux12
