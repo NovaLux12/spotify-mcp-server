@@ -94,29 +94,35 @@ function trackRow(t: AnalyticsTrack): { id: string; name: string; artists: strin
 }
 
 /**
- * Walk /me/player/recently-played by its `after` cursor (offset pagination is
- * NOT supported there). At most RECENT_MAX_PAGES calls of RECENT_PAGE_SIZE
- * items each.
+ * Walk /me/player/recently-played toward older history. Spotify returns a
+ * freshest-first page whose `cursors.after` must be supplied as `before` on
+ * the next request. At most RECENT_MAX_PAGES calls of RECENT_PAGE_SIZE items
+ * each.
  */
 async function walkRecentlyPlayed(
   client: SpotifyClient,
 ): Promise<{ items: RecentlyPlayedItem[]; pages: number }> {
   const items: RecentlyPlayedItem[] = [];
-  let afterCursor: string | undefined;
+  const seen = new Set<string>();
+  let beforeCursor: string | undefined;
   let pages = 0;
   while (pages < RECENT_MAX_PAGES) {
     const params: Record<string, string> = { limit: String(RECENT_PAGE_SIZE) };
-    if (afterCursor !== undefined) params.after = afterCursor;
+    if (beforeCursor !== undefined) params.before = beforeCursor;
     const page: RecentlyPlayedResponse | null = await client.get<RecentlyPlayedResponse>(
       '/me/player/recently-played',
       params,
     );
     pages += 1;
-    const rows = page?.items ?? [];
-    items.push(...rows.filter((r) => r?.track));
-    // Stop on missing cursor or a short/empty page.
-    if (!page?.cursors?.after || rows.length < RECENT_PAGE_SIZE) break;
-    afterCursor = page.cursors.after;
+    for (const row of page?.items ?? []) {
+      if (!row?.track) continue;
+      const key = JSON.stringify([row.played_at, row.track.id]);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      items.push(row);
+    }
+    if (!page?.next || !page.cursors?.after) break;
+    beforeCursor = page.cursors.after;
   }
   return { items, pages };
 }

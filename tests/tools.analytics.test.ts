@@ -16,6 +16,7 @@ import {
   decadeOf,
   hourBucketOf,
 } from '../src/tools/analytics.js';
+import { registerSwarm3AnalyticsTools } from '../src/tools/swarm3_analytics.js';
 
 // ---------------------------------------------------------------------------
 // Stub plumbing
@@ -90,6 +91,50 @@ function harness(responder: Responder = () => null) {
     return tool.handler(tool.validate(args));
   };
 
+  return { registered, calls, invoke };
+}
+
+function swarmHarness(responder: Responder = () => null) {
+  const registered: Array<{
+    name: string;
+    validate: (args: Record<string, unknown>) => Record<string, unknown>;
+    handler: (
+      args: Record<string, unknown>,
+    ) => Promise<{
+      content: Array<{ type: string; text: string }>;
+      structuredContent?: Record<string, unknown>;
+    }>;
+  }> = [];
+  const fakeServer = {
+    tool(
+      name: string,
+      _description: string,
+      schema: z.ZodRawShape,
+      handler: (args: Record<string, unknown>) => Promise<{
+        content: Array<{ type: string; text: string }>;
+        structuredContent?: Record<string, unknown>;
+      }>,
+    ) {
+      registered.push({
+        name,
+        validate: (args) => z.object(schema).parse(args),
+        handler,
+      });
+    },
+  } as unknown as McpServer;
+  const calls: RecordedCall[] = [];
+  const client = {
+    async get<T>(path: string, params?: Record<string, string>): Promise<T | null> {
+      calls.push({ path, params });
+      return responder(path, params) as T | null;
+    },
+  };
+  registerSwarm3AnalyticsTools(fakeServer, client as unknown as SpotifyClient);
+  const invoke = async (toolName: string, args: Record<string, unknown> = {}) => {
+    const tool = registered.find((t) => t.name === toolName);
+    assert.ok(tool, `${toolName} should be registered`);
+    return tool.handler(tool.validate(args));
+  };
   return { registered, calls, invoke };
 }
 
@@ -285,43 +330,41 @@ describe('listening_report fetch caps', () => {
     assert.equal(recent?.params?.before, undefined);
   });
 
-  it('walks recently-played via after cursors, at most 3 pages / ≤150 items', async () => {
-    // Two full pages then a short page → 3 walks total; the page-3 cursor is
-    // present but never followed.
-    const fullPage = Array.from({ length: 50 }, (_, i) => ({
-      trackId: `r${i}`,
-      playedAt: new Date(2026, 7, 26, 10, 0).toISOString(),
-    }));
+  it('walks with after-as-before cursors, dedupes boundary rows, and stops on the final page', async () => {
+    const playedAt = new Date(2026, 7, 26, 10, 0).toISOString();
+    const firstPage = Array.from({ length: 50 }, (_, i) => recentItem(`r${i}`, playedAt));
+    const secondPage = [
+      firstPage[49],
+      ...Array.from({ length: 49 }, (_, i) => recentItem(`r${i + 50}`, playedAt)),
+      recentItem('r0', new Date(2026, 7, 26, 10, 1).toISOString()),
+    ];
+    const pages = [firstPage, secondPage, [recentItem('tail', playedAt)]];
     let page = 0;
-    let recentCalls = 0;
     const base = standardResponder();
     const { calls, invoke } = harness((path, params) => {
       if (path !== '/me/player/recently-played') return base(path, params);
-      recentCalls += 1;
+      const items = pages[page];
       page += 1;
-      if (page <= 2) {
-        return {
-          items: fullPage.map((r) => recentItem(r.trackId, r.playedAt)),
-          cursors: { before: 'b', after: `cursor-${page}` },
-          next: 'next-url',
-        };
-      }
       return {
-        items: [recentItem('tail', new Date(2026, 7, 26, 10, 0).toISOString())],
-        cursors: { before: 'b', after: 'cursor-3' }, // present but never followed
-        next: 'next-url',
+        items,
+        cursors: page < pages.length ? { before: 'unused', after: `cursor-${page}` } : null,
+        next: page < pages.length ? 'next-url' : null,
       };
     });
-    void recentCalls;
     const out = await invoke({});
     const payload = payloadOf(out);
-    assert.equal(page, 3); // ≤3 cursor walks
-    assert.equal(payload.fetched.recently_played, 101); // 50+50+1 ≤ 150
+    assert.equal(page, 3);
+    assert.equal(payload.fetched.recently_played, 101);
     assert.equal(payload.fetched.recent_pages_walked, 3);
     const walkCalls = calls.filter((c) => c.path === '/me/player/recently-played');
-    assert.equal(walkCalls[0].params?.after, undefined);
-    assert.equal(walkCalls[1].params?.after, 'cursor-1');
-    assert.equal(walkCalls[2].params?.after, 'cursor-2');
+    assert.deepEqual(
+      walkCalls.map((c) => ({ before: c.params?.before, after: c.params?.after })),
+      [
+        { before: undefined, after: undefined },
+        { before: 'cursor-1', after: undefined },
+        { before: 'cursor-2', after: undefined },
+      ],
+    );
     for (const c of walkCalls) assert.equal(c.params?.limit, '50');
   });
 
@@ -339,6 +382,51 @@ describe('listening_report fetch caps', () => {
       (c) => c.path === '/me/top/tracks' && c.params?.time_range !== 'short_term',
     );
     assert.equal(primary?.params?.time_range, 'long_term');
+  });
+});
+
+describe('swarm3 recently-played cursor walk', () => {
+  it('uses after-as-before, dedupes boundary rows, and stops on the final page', async () => {
+    const playedAt = new Date(2026, 7, 26, 10, 0).toISOString();
+    const firstPage = [
+      recentItem('swarm-0', playedAt),
+      recentItem('swarm-1', playedAt),
+    ];
+    const pages = [
+      firstPage,
+      [
+        firstPage[1],
+        recentItem('swarm-0', new Date(2026, 7, 26, 10, 1).toISOString()),
+        recentItem('swarm-2', playedAt),
+      ],
+      [recentItem('swarm-tail', playedAt)],
+    ];
+    let page = 0;
+    const { calls, invoke } = swarmHarness((path) => {
+      if (path !== '/me/player/recently-played') return null;
+      const items = pages[page];
+      page += 1;
+      return {
+        items,
+        cursors: page < pages.length ? { before: 'unused', after: `swarm-cursor-${page}` } : null,
+        next: page < pages.length ? 'next-url' : null,
+      };
+    });
+
+    const out = await invoke('track_rotation_report', { response_format: 'json' });
+    const payload = out.structuredContent as Record<string, unknown>;
+    assert.equal(page, 3);
+    assert.equal(payload.history_items, 5);
+    assert.equal(payload.recent_pages_walked, 3);
+    const walkCalls = calls.filter((c) => c.path === '/me/player/recently-played');
+    assert.deepEqual(
+      walkCalls.map((c) => ({ before: c.params?.before, after: c.params?.after })),
+      [
+        { before: undefined, after: undefined },
+        { before: 'swarm-cursor-1', after: undefined },
+        { before: 'swarm-cursor-2', after: undefined },
+      ],
+    );
   });
 });
 
