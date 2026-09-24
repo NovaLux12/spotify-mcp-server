@@ -2,6 +2,7 @@ import { describe, it, mock } from 'node:test';
 import assert from 'node:assert/strict';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { registerExhaust2CatalogTools } from '../src/tools/exhaust2_catalog.js';
+import { registerArtistWatchTools } from '../src/tools/artistwatch.js';
 import { SpotifyApiError } from '../src/client.js';
 
 type Handler = (args: Record<string, unknown>) => Promise<{
@@ -362,4 +363,74 @@ assert.equal((res.structuredContent as { gaps_flagged: unknown[] }).gaps_flagged
     assert.ok(res.content[0].text.includes('no genres'));
     assert.equal((res.structuredContent as { counts: { without_genres: number } }).counts.without_genres, 1);
   });
+
+  it('track_enrichment_batch fetches album and artist chunks concurrently but preserves order', async () => {
+    let albumCalls = 0;
+    let artistCalls = 0;
+    let releaseFirstAlbum!: () => void;
+    const firstAlbum = new Promise<void>((resolve) => { releaseFirstAlbum = resolve; });
+    const client = makeClient({
+      get: mock.fn(async (path: string, params?: Record<string, string>) => {
+        if (path === '/tracks') {
+          const ids = params!.ids.split(',');
+          return { tracks: ids.map((id, i) => trackPayload({ id, uri: `spotify:track:${id}`, name: `Track ${id}`, album: { id: `album${i}`, name: `Album ${i}`, uri: `spotify:album:album${i}`, images: [], release_date: '2021-01-01', album_type: 'album', total_tracks: 1 }, artists: [{ id: `artist${i}`, name: `Artist ${i}`, uri: `spotify:artist:artist${i}` }] })) };
+        }
+        if (path === '/albums') {
+          albumCalls++;
+          if (albumCalls === 1) await firstAlbum;
+          if (albumCalls === 2) releaseFirstAlbum();
+          return { albums: params!.ids.split(',').map((id) => ({ id, name: `Album ${id}`, uri: `spotify:album:${id}`, release_date: '2021-01-01', label: `Label ${id}`, artists: [], tracks: { items: [], total: 0 } })) };
+        }
+        if (path === '/artists') {
+          artistCalls++;
+          return { artists: params!.ids.split(',').map((id) => ({ id, name: `Artist ${id}`, uri: `spotify:artist:${id}`, genres: [id] })) };
+        }
+        return null;
+      }),
+    });
+    const trackIds = Array.from({ length: 21 }, (_, i) => `t${i}`);
+    const res = await handlerFor('track_enrichment_batch', client)({ track_ids: trackIds, response_format: 'json' });
+    const rows = (res.structuredContent as { tracks: Array<{ id: string; label: string | null }> }).tracks;
+    assert.deepEqual(rows.map((row) => row.id), trackIds);
+    assert.equal(albumCalls, 2);
+    assert.equal(artistCalls, 1);
+  });
 });
+
+describe('save_artist_new_releases saved-state safety', () => {
+  function saveHandler(get: (path: string, params?: Record<string, string>) => unknown, calls: Array<{ method: string; path: string }>) {
+    let handler!: Handler;
+    const client = makeClient({
+      get: mock.fn(async (path: string, params?: Record<string, string>) => { calls.push({ method: 'GET', path }); return get(path, params); }),
+      put: mock.fn(async (path: string) => { calls.push({ method: 'PUT', path }); }),
+    });
+    const server = { tool: (name: string, _d: string, _s: unknown, h: Handler) => { if (name === 'save_artist_new_releases') handler = h; } } as unknown as McpServer;
+    registerArtistWatchTools(server, client);
+    return handler;
+  }
+
+  it('does not PUT when contains cardinality is wrong', async () => {
+    const calls: Array<{ method: string; path: string }> = [];
+    const handler = saveHandler((path) => path.includes('/albums') ? { items: [{ id: 'a1' }, { id: 'a2' }] } : [false], calls);
+    await assert.rejects(handler({ artist_id: 'art1' }), /Unable to verify Your Library saved state/);
+    assert.equal(calls.filter((c) => c.method === 'PUT').length, 0);
+  });
+
+  it('does not PUT when contains contains a non-boolean value', async () => {
+    const calls: Array<{ method: string; path: string }> = [];
+    const handler = saveHandler((path) => path.includes('/albums') ? { items: [{ id: 'a1' }] } : [null], calls);
+    await assert.rejects(handler({ artist_id: 'art1' }), /Unable to verify Your Library saved state/);
+    assert.equal(calls.filter((c) => c.method === 'PUT').length, 0);
+  });
+
+  it('does not PUT when contains lookup errors', async () => {
+    const calls: Array<{ method: string; path: string }> = [];
+    const handler = saveHandler((path) => {
+      if (path.includes('/albums')) return { items: [{ id: 'a1' }] };
+      throw new Error('contains unavailable');
+    }, calls);
+    await assert.rejects(handler({ artist_id: 'art1' }), /contains unavailable/);
+    assert.equal(calls.filter((c) => c.method === 'PUT').length, 0);
+  });
+});
+

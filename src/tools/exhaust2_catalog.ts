@@ -13,7 +13,7 @@
  * Forbidden errors.
  */
 import { z } from 'zod';
-import { MARKET_CODE } from './catalog.js';
+import { ARTIST_ALBUM_PAGE_LIMIT, MARKET_CODE } from './catalog.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
 import { SpotifyApiError } from '../client.js';
@@ -405,7 +405,7 @@ export function registerExhaust2CatalogTools(server: McpServer, client: SpotifyC
       const fetchAllCap = getConfig().fetchAllCap;
       const params: Record<string, string> = {
         include_groups: args.include_groups ?? 'album,single',
-        limit: '50',
+        limit: String(ARTIST_ALBUM_PAGE_LIMIT),
       };
       const albums = await client.getAllPages<SpotifyAlbumItem>(
         `/artists/${encodeURIComponent(args.artist_id)}/albums`,
@@ -518,15 +518,21 @@ max_results: z.number().int().positive().max(2000).optional(),
       if (tracks.length === 0) throw new Error('No playable tracks found for the given IDs');
 
       const albumIds = [...new Set(tracks.map((t) => t.album?.id).filter((x): x is string => !!x))];
+      const albumGroups = chunk(albumIds, 20);
+      const albumResponses = await Promise.all(
+        albumGroups.map((group) => client.get<{ albums: (AlbumPayload | null)[] }>('/albums', { ids: group.join(',') })),
+      );
       const albums = new Map<string, AlbumPayload>();
-      for (const group of chunk(albumIds, 20)) {
-        const res = await client.get<{ albums: (AlbumPayload | null)[] }>('/albums', { ids: group.join(',') });
+      for (const res of albumResponses) {
         for (const al of res?.albums ?? []) if (al?.id) albums.set(al.id, al);
       }
       const artistIds = [...new Set(tracks.flatMap((t) => (t.artists ?? []).map((a) => a.id)).filter((x): x is string => !!x))];
       const genresByArtist = new Map<string, string[]>();
-      for (const group of chunk(artistIds, 50)) {
-        const res = await client.get<{ artists: (SpotifyArtistFull | null)[] }>('/artists', { ids: group.join(',') });
+      const artistGroups = chunk(artistIds, 50);
+      const artistResponses = await Promise.all(
+        artistGroups.map((group) => client.get<{ artists: (SpotifyArtistFull | null)[] }>('/artists', { ids: group.join(',') })),
+      );
+      for (const res of artistResponses) {
         for (const ar of res?.artists ?? []) if (ar?.id) genresByArtist.set(ar.id, ar.genres ?? []);
       }
 
@@ -683,7 +689,7 @@ max_results: z.number().int().positive().max(2000).optional(),
       const artist = await client.get<SpotifyArtistFull>(`/artists/${encodeURIComponent(args.artist_id)}`);
       const albums = await client.getAllPages<SpotifyAlbumItem>(
         `/artists/${encodeURIComponent(args.artist_id)}/albums`,
-        { include_groups: args.include_groups ?? 'album,single', limit: '50' },
+        { include_groups: args.include_groups ?? 'album,single', limit: String(ARTIST_ALBUM_PAGE_LIMIT) },
         { maxItems: fetchAllCap },
       );
       if (albums.length === 0) throw new Error(`No releases found for artist "${args.artist_id}"`);
@@ -1137,7 +1143,7 @@ max_results: z.number().int().positive().max(2000).optional(),
       const maxAlbums = args.max_albums ?? 10;
       const albums = await client.getAllPages<AlbumPayload>(
         `/artists/${encodeURIComponent(args.artist_id)}/albums`,
-        { include_groups: 'album,single', limit: '50' },
+        { include_groups: 'album,single', limit: String(ARTIST_ALBUM_PAGE_LIMIT) },
         { maxItems: maxAlbums },
       );
       for (const al of albums) {

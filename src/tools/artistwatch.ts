@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { MARKET_CODE } from './catalog.js';
+import { ARTIST_ALBUM_PAGE_LIMIT, MARKET_CODE } from './catalog.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
 import { SpotifyApiError } from '../client.js';
@@ -104,7 +104,7 @@ export function registerArtistWatchTools(server: McpServer, client: SpotifyClien
       artist_id: z.string().describe('Spotify artist ID'),
       album_types: z.array(z.enum(['album', 'single', 'appears_on', 'compilation'])).optional().describe('Filter to these album types. Default: all'),
       include_groups: z.array(z.enum(['album', 'single', 'appears_on', 'compilation'])).optional().describe('Alias for album_types (Spotify include_groups)'),
-      limit: z.number().int().min(1).max(50).optional().describe('Results per page, 1–50. Default: 20'),
+      limit: z.number().int().min(1).max(ARTIST_ALBUM_PAGE_LIMIT).optional().describe(`Results per page, 1–${ARTIST_ALBUM_PAGE_LIMIT}. Default: ${ARTIST_ALBUM_PAGE_LIMIT}`),
       offset: z.number().int().min(0).optional().describe('Offset'),
       market: MARKET_CODE.optional().describe('ISO 3166-1 alpha-2 country code, e.g. \'US\''),
       ...sharedListFields,
@@ -113,7 +113,7 @@ export function registerArtistWatchTools(server: McpServer, client: SpotifyClien
       const types = (args.album_types ?? args.include_groups ?? undefined) as string[] | undefined;
       const includeGroups = types ? types.join(',') : undefined;
       const params: Record<string, string> = {
-        limit: String(args.limit ?? 20),
+        limit: String(Math.min(args.limit ?? ARTIST_ALBUM_PAGE_LIMIT, ARTIST_ALBUM_PAGE_LIMIT)),
         offset: String(args.offset ?? 0),
       };
       if (includeGroups) params.include_groups = includeGroups;
@@ -200,33 +200,34 @@ export function registerArtistWatchTools(server: McpServer, client: SpotifyClien
     'Find new releases for an artist and save unsaved albums to Your Library (diffs against /me/library/contains)',
     {
       artist_id: z.string().describe('Spotify artist ID'),
-      limit: z.number().int().min(1).max(50).optional().describe('Albums to fetch, 1–50. Default: 20'),
+      limit: z.number().int().min(1).max(ARTIST_ALBUM_PAGE_LIMIT).optional().describe(`Albums to fetch, 1–${ARTIST_ALBUM_PAGE_LIMIT}. Default: ${ARTIST_ALBUM_PAGE_LIMIT}`),
       market: MARKET_CODE.optional().describe('ISO 3166-1 alpha-2 country code, e.g. \'US\''),
       response_format: ResponseFormat,
     },
     async (args) => {
       const data = await client.get<{ items: AlbumItem[] }>(
         `/artists/${encodeURIComponent(args.artist_id)}/albums`,
-        { include_groups: 'album,single', limit: String(args.limit ?? 20), offset: '0', ...(args.market ? { market: args.market } : {}) },
+        { include_groups: 'album,single', limit: String(Math.min(args.limit ?? ARTIST_ALBUM_PAGE_LIMIT, ARTIST_ALBUM_PAGE_LIMIT)), offset: '0', ...(args.market ? { market: args.market } : {}) },
       );
       const albums = data?.items ?? [];
       if (albums.length === 0) {
         return { content: [{ type: 'text', text: `No releases found for artist "${args.artist_id}".` }] };
       }
       const ids = albums.map((a) => a.id);
-      let contains: boolean[] = [];
-      try {
-        // /me/library/contains is the ungated unified drop-in for the
-        // documented /me/albums/contains, which 403s on current app
-        // registrations (#329 probe, #330) — same saved-state semantics:
-        // URIs in, order-preserving booleans out.
-        const res = await client.get<boolean[]>('/me/library/contains', {
-          uris: ids.map((id) => `spotify:album:${id}`).join(','),
-        });
-        contains = Array.isArray(res) ? res : [];
-      } catch {
-        contains = ids.map(() => false);
+      // Saving is a mutation: an unavailable or ambiguous contains response
+      // must never be interpreted as "unsaved".  Require one strict boolean
+      // per requested URI before issuing any PUT.
+      const res = await client.get<unknown>('/me/library/contains', {
+        uris: ids.map((id) => `spotify:album:${id}`).join(','),
+      });
+      if (
+        !Array.isArray(res)
+        || res.length !== ids.length
+        || res.some((value) => typeof value !== 'boolean')
+      ) {
+        throw new Error('Unable to verify Your Library saved state; no albums were saved.');
       }
+      const contains = res;
       const toSave = albums.filter((_, i) => !contains[i]);
       if (toSave.length === 0) {
         const msg = `All ${albums.length} releases for "${args.artist_id}" are already in Your Library.`;
@@ -286,7 +287,7 @@ export function registerArtistWatchTools(server: McpServer, client: SpotifyClien
     {
       watchlist_name: z.string().optional().describe('Watchlist name. Default: "default"'),
       lookback_days: z.number().int().min(1).max(365).optional().describe('Only consider releases from the last N days'),
-      limit: z.number().int().min(1).max(50).optional().describe('Albums per artist to fetch, 1–50. Default: 10'),
+      limit: z.number().int().min(1).max(ARTIST_ALBUM_PAGE_LIMIT).optional().describe(`Albums per artist to fetch, 1–${ARTIST_ALBUM_PAGE_LIMIT}. Default: ${ARTIST_ALBUM_PAGE_LIMIT}`),
       max_artists: z.number().int().min(1).max(200).optional().describe(
         'Per-call budget for artist lookups. Default: 25 (or SPOTIFY_MCP_FRESHNESS_BUDGET). '
           + 'Truncates to max_artists and reports watchlist_size / artists_scanned / truncated.',
@@ -338,7 +339,7 @@ export function registerArtistWatchTools(server: McpServer, client: SpotifyClien
         try {
           const data = await client.get<{ items: AlbumItem[] }>(`/artists/${encodeURIComponent(artistId)}/albums`, {
             include_groups: 'album,single',
-            limit: String(args.limit ?? 10),
+            limit: String(Math.min(args.limit ?? ARTIST_ALBUM_PAGE_LIMIT, ARTIST_ALBUM_PAGE_LIMIT)),
             offset: '0',
           });
           const items = data?.items ?? [];
@@ -460,7 +461,7 @@ export function registerArtistWatchTools(server: McpServer, client: SpotifyClien
         try {
           const data = await client.get<{ items: AlbumItem[] }>(`/artists/${encodeURIComponent(artistId)}/albums`, {
             include_groups: 'album,single',
-            limit: '10',
+            limit: String(ARTIST_ALBUM_PAGE_LIMIT),
             offset: '0',
           });
           const items = data?.items ?? [];

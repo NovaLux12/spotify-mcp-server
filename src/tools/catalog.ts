@@ -106,6 +106,8 @@ const SEVERAL_LIMITS = {
   chapters: 50,
 } as const;
 
+export const ARTIST_ALBUM_PAGE_LIMIT = 10;
+
 type SeveralKind = keyof typeof SEVERAL_LIMITS;
 
 async function fetchSeveral<T>(
@@ -335,7 +337,7 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
         .number()
         .int()
         .min(1)
-        .max(10)
+        .max(ARTIST_ALBUM_PAGE_LIMIT)
         .optional()
         .describe('Results per page, 1–10. Default: 10'),
       offset: z.number().int().min(0).optional().describe('Index of the first album to return. Default: 0'),
@@ -351,8 +353,12 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
       if ((args as unknown as { fetch_all?: boolean }).fetch_all) {
         const items = await client.getAllPages<SpotifyArtistAlbumsResponse['items'][number]>(
           `/artists/${encodeURIComponent(args.id)}/albums`,
-          { include_groups: (args.include_groups ?? ['album', 'single']).join(','), market: args.market ?? '' },
-          { maxItems: args.max_results }
+          {
+            include_groups: (args.include_groups ?? ['album', 'single']).join(','),
+            limit: String(ARTIST_ALBUM_PAGE_LIMIT),
+            ...(args.market ? { market: args.market } : {}),
+          },
+          { maxItems: args.max_results },
         );
         result = { items, total: items.length, limit: items.length, offset: 0, href: '', previous: null, next: null } as unknown as SpotifyArtistAlbumsResponse;
       } else {
@@ -362,7 +368,7 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
           args.market,
           {
             include_groups: (args.include_groups ?? ['album', 'single']).join(','),
-            limit: String(args.limit ?? 10),
+            limit: String(Math.min(args.limit ?? ARTIST_ALBUM_PAGE_LIMIT, ARTIST_ALBUM_PAGE_LIMIT)),
             offset: String(args.offset ?? 0),
           },
         );
@@ -380,7 +386,7 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
         },
         total: result.total,
         offset: args.offset,
-        limit: args.limit ?? 10,
+        limit: Math.min(args.limit ?? ARTIST_ALBUM_PAGE_LIMIT, ARTIST_ALBUM_PAGE_LIMIT),
         maxResults: args.max_results,
       });
     },
@@ -1053,16 +1059,16 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
     "List an artist's singles only (GET /artists/{id}/albums?include_groups=single). Quota: 🟢 single.",
     {
       artist_id: z.string().describe('Spotify artist ID'),
-      limit: z.number().int().min(1).max(10).optional().describe('Results per page, 1–10. Default: 10'),
+      limit: z.number().int().min(1).max(ARTIST_ALBUM_PAGE_LIMIT).optional().describe(`Results per page, 1–${ARTIST_ALBUM_PAGE_LIMIT}. Default: ${ARTIST_ALBUM_PAGE_LIMIT}`),
       offset: z.number().int().min(0).optional().describe('Offset. Default: 0'),
       market: MARKET_CODE.optional().describe('ISO 3166-1 alpha-2 country code'),
       ...sharedListFields,
     },
     async (args) => {
-      const result = await getWithMarketFallback<SpotifyArtistAlbumsResponse>(client, `/artists/${encodeURIComponent(args.artist_id as string)}/albums`, args.market as string | undefined, { include_groups: 'single', limit: String((args.limit as number) ?? 10), offset: String((args.offset as number) ?? 0) });
+      const result = await getWithMarketFallback<SpotifyArtistAlbumsResponse>(client, `/artists/${encodeURIComponent(args.artist_id as string)}/albums`, args.market as string | undefined, { include_groups: 'single', limit: String(Math.min((args.limit as number) ?? ARTIST_ALBUM_PAGE_LIMIT, ARTIST_ALBUM_PAGE_LIMIT)), offset: String((args.offset as number) ?? 0) });
       if (!result) throw new Error(`Artist "${args.artist_id}" not found`);
       if (args.response_format === 'json') return jsonResult(result as unknown as Record<string, unknown>);
-      return renderList(args.response_format as ResponseFormatValue, result.items, { header: `Singles for artist (${result.total} total):`, line: (album: SpotifyAlbumItem) => `  \u2022 "${album.name}" (${album.release_date}, ${album.total_tracks} tracks) | URI: ${album.uri}`, total: result.total, offset: args.offset as number | undefined, limit: (args.limit as number) ?? 10, maxResults: args.max_results as number | undefined });
+      return renderList(args.response_format as ResponseFormatValue, result.items, { header: `Singles for artist (${result.total} total):`, line: (album: SpotifyAlbumItem) => `  • "${album.name}" (${album.release_date}, ${album.total_tracks} tracks) | URI: ${album.uri}`, total: result.total, offset: args.offset as number | undefined, limit: Math.min((args.limit as number) ?? ARTIST_ALBUM_PAGE_LIMIT, ARTIST_ALBUM_PAGE_LIMIT), maxResults: args.max_results as number | undefined });
     },
   );
   server.tool(
@@ -1070,7 +1076,7 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
     "List albums an artist appears on (GET /artists/{id}/albums?include_groups=appears_on). Quota: 🟢 single.",
     {
       artist_id: z.string().describe('Spotify artist ID'),
-      limit: z.number().int().min(1).max(10).optional().describe('Results per page, 1–10. Default: 10'),
+      limit: z.number().int().min(1).max(ARTIST_ALBUM_PAGE_LIMIT).optional().describe(`Results per page, 1–${ARTIST_ALBUM_PAGE_LIMIT}. Default: ${ARTIST_ALBUM_PAGE_LIMIT}`),
       offset: z.number().int().min(0).optional().describe('Offset. Default: 0'),
       market: MARKET_CODE.optional().describe('ISO 3166-1 alpha-2 country code'),
       include_groups: z.array(z.enum(['appears_on', 'compilation'])).optional().describe('Default: ["appears_on"]'),
@@ -1078,10 +1084,10 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
     },
     async (args) => {
       const groups = ((args.include_groups as string[] | undefined) ?? ['appears_on']).join(',');
-      const result = await getWithMarketFallback<SpotifyArtistAlbumsResponse>(client, `/artists/${encodeURIComponent(args.artist_id as string)}/albums`, args.market as string | undefined, { include_groups: groups, limit: String((args.limit as number) ?? 10), offset: String((args.offset as number) ?? 0) });
+      const result = await getWithMarketFallback<SpotifyArtistAlbumsResponse>(client, `/artists/${encodeURIComponent(args.artist_id as string)}/albums`, args.market as string | undefined, { include_groups: groups, limit: String(Math.min((args.limit as number) ?? ARTIST_ALBUM_PAGE_LIMIT, ARTIST_ALBUM_PAGE_LIMIT)), offset: String((args.offset as number) ?? 0) });
       if (!result) throw new Error(`Artist "${args.artist_id}" not found`);
       if (args.response_format === 'json') return jsonResult(result as unknown as Record<string, unknown>);
-      return renderList(args.response_format as ResponseFormatValue, result.items, { header: `Appearances for artist (${result.total} total):`, line: (album: SpotifyAlbumItem) => `  \u2022 "${album.name}" (${album.album_type}, ${album.release_date}) | URI: ${album.uri}`, total: result.total, offset: args.offset as number | undefined, limit: (args.limit as number) ?? 10, maxResults: args.max_results as number | undefined });
+      return renderList(args.response_format as ResponseFormatValue, result.items, { header: `Appearances for artist (${result.total} total):`, line: (album: SpotifyAlbumItem) => `  • "${album.name}" (${album.album_type}, ${album.release_date}) | URI: ${album.uri}`, total: result.total, offset: args.offset as number | undefined, limit: Math.min((args.limit as number) ?? ARTIST_ALBUM_PAGE_LIMIT, ARTIST_ALBUM_PAGE_LIMIT), maxResults: args.max_results as number | undefined });
     },
   );
 
