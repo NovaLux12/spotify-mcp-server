@@ -427,3 +427,35 @@ test('statsfm tools honor response_format=json', async () => {
   const parsed = JSON.parse(out.content[0].text) as { items: unknown[] };
   assert.equal(parsed.items.length, 2);
 });
+
+test('statsfm rejects malformed and structurally invalid collection responses', async () => {
+  for (const body of [null, [], { items: null }, { items: {} }]) {
+    const h = makeHarness(() => body);
+    await assert.rejects(
+      () => h.find('statsfm_top_tracks').handler({ user_id: 'u' }),
+      (error: unknown) => error instanceof StatsfmApiError && /invalid response/.test(error.message),
+    );
+  }
+});
+
+test('statsfm rejects wrong JSON types for single, search, and stats responses', async () => {
+  const cases = [
+    ['statsfm_resolve_user', { user_id: 'u' }, null],
+    ['statsfm_search', { query: 'x' }, []],
+    ['statsfm_streams_stats', { user_id: 'u' }, { items: [] }],
+  ] as const;
+  for (const [name, args, body] of cases) {
+    const h = makeHarness(() => body);
+    await assert.rejects(
+      () => h.find(name).handler(args),
+      (error: unknown) => error instanceof StatsfmApiError && /invalid response/.test(error.message),
+    );
+  }
+});
+
+test('statsfm preserves a legitimate null now-playing item', async () => {
+  const h = makeHarness(() => ({ item: null }));
+  const out = await h.find('statsfm_now_playing').handler({ user_id: 'u', response_format: 'json' });
+  assert.deepEqual(JSON.parse(out.content[0].text), null);
+  assert.deepEqual(out.structuredContent, { item: null });
+});
