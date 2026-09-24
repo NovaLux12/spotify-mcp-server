@@ -108,6 +108,14 @@ describe('isActive', () => {
     }
   });
 
+  it('keeps scenes active through the playback key for default and trimmed specs', () => {
+    for (const spec of [undefined, '  Playback  ']) {
+      const { sets, unknown } = resolveToolsets(spec);
+      assert.equal(isActive('playback', sets), true, `spec: ${JSON.stringify(spec)}`);
+      assert.deepEqual(unknown, []);
+    }
+  });
+
   it('deactivates keys owned only by inactive sets', () => {
     const allInactive = [
       'library',
