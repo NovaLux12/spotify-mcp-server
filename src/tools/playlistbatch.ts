@@ -8,7 +8,7 @@ import { getConfig } from '../config.js';
 import { issueReceipt, formatReceipt } from '../receipts.js';
 import { confirmViaElicitation, describeConfirmation, refusalFor } from './confirm.js';
 import { DryRun, batchSummary, parseSpotifyUri, resolveMaxResults, sharedListFields, truncateItems } from '../shaping.js';
-import type { SpotifyTrack, SpotifyEpisode } from '../types/spotify.js';
+import type { PlaylistItemObject, SpotifyTrack, SpotifyEpisode } from '../types/spotify.js';
 type TextContent = { type: 'text'; text: string };
 type ToolResult = { content: TextContent[]; structuredContent?: Record<string, unknown> };
 function textResult(text: string, structured?: Record<string, unknown>): ToolResult { const content: TextContent[] = [{ type: 'text', text }]; return structured ? { content, structuredContent: structured } : { content }; }
@@ -17,7 +17,42 @@ export const BATCH_ADD_ELICIT_THRESHOLD = 100;
 export const MOVE_ELICIT_THRESHOLD = 50;
 const FETCH_ALL_CAP = () => getConfig().fetchAllCap;
 function normalizePlaylistId(ref: string): string { const parsed = parseSpotifyUri(ref); if (parsed && parsed.type === 'playlist') return parsed.id; return ref.trim(); }
-async function fetchPlaylistItems(client: SpotifyClient, playlistId: string): Promise<import('../types/spotify.js').PlaylistItemObject[]> { const id = encodeURIComponent(normalizePlaylistId(playlistId)); return client.getAllPages<import('../types/spotify.js').PlaylistItemObject>(`/playlists/${id}/items`, { limit: '100' }, { maxItems: FETCH_ALL_CAP() }); }
+async function fetchPlaylistItems(client: SpotifyClient, playlistId: string): Promise<PlaylistItemObject[]> { const id = encodeURIComponent(normalizePlaylistId(playlistId)); return client.getAllPages<PlaylistItemObject>(`/playlists/${id}/items`, { limit: '100' }, { maxItems: FETCH_ALL_CAP() }); }
+
+interface SavedAlbumRef { id?: string; name?: string; uri?: string; }
+interface AlbumTrackRef { uri?: string | null; is_playable?: boolean; }
+
+/**
+ * Expand one album into a bounded, fail-closed list of playable track URIs.
+ * Album-track objects can contain null URIs when a market blocks a track, so
+ * URI shape is validated rather than trusting the collection's declared type.
+ */
+export async function expandAlbumToTracks(
+  client: SpotifyClient,
+  album: SavedAlbumRef,
+  maxItems = FETCH_ALL_CAP(),
+): Promise<string[]> {
+  const parsedAlbum = album.uri ? parseSpotifyUri(album.uri) : null;
+  const albumId = album.id ?? parsedAlbum?.id;
+  if (!albumId) throw new Error('Saved album is missing a valid Spotify album ID or URI');
+  const cap = Math.min(FETCH_ALL_CAP(), Math.max(0, Math.floor(maxItems)));
+  if (cap === 0) return [];
+
+  const items = await client.getAllPages<AlbumTrackRef>(
+    `/albums/${encodeURIComponent(albumId)}/tracks`,
+    { limit: '50' },
+    { maxItems: cap },
+  );
+  const tracks: string[] = [];
+  for (const item of items) {
+    const uri = item?.uri?.trim();
+    const parsed = uri ? parseSpotifyUri(uri) : null;
+    if (item?.is_playable !== false && parsed?.type === 'track' && parsed.id && uri?.startsWith('spotify:track:')) tracks.push(uri);
+    if (tracks.length >= cap) break;
+  }
+  return tracks;
+}
+
 async function resolveSourceUris(client: SpotifyClient, uris: string[]): Promise<{ resolved: string[]; skipped: number; invalid: string[] }> {
   const resolved: string[] = []; let skipped = 0; const invalid: string[] = [];
   for (const raw of uris) {
@@ -25,7 +60,7 @@ async function resolveSourceUris(client: SpotifyClient, uris: string[]): Promise
     if (!parsed) { invalid.push(raw); skipped++; continue; }
     if (parsed.type === 'track' || parsed.type === 'episode') { resolved.push(raw); }
     else if (parsed.type === 'album') {
-      try { const items = await client.getAllPages<{ uri: string }>(`/albums/${encodeURIComponent(parsed.id)}/tracks`, { limit: '50' }, { maxItems: FETCH_ALL_CAP() }); if (items.length > 0) { for (const t of items) if (t?.uri) resolved.push(t.uri); } else { const album = await client.get<{ tracks?: { items?: Array<{ uri: string }> } }>(`/albums/${encodeURIComponent(parsed.id)}`); const ts = album?.tracks?.items ?? []; for (const t of ts) if (t?.uri) resolved.push(t.uri); if (ts.length === 0) skipped++; } } catch { skipped++; }
+      try { const tracks = await expandAlbumToTracks(client, { id: parsed.id }, FETCH_ALL_CAP()); if (tracks.length > 0) resolved.push(...tracks); else skipped++; } catch { skipped++; }
     } else if (parsed.type === 'artist') {
       try { const top = await client.get<{ tracks?: Array<{ uri: string }> }>(`/artists/${encodeURIComponent(parsed.id)}/top-tracks`, { market: 'US' }); const ts = top?.tracks ?? []; if (ts.length > 0) { for (const t of ts) if (t?.uri) resolved.push(t.uri); } else skipped++; } catch { skipped++; }
     } else if (parsed.type === 'playlist') {

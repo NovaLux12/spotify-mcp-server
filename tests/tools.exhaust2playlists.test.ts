@@ -40,6 +40,14 @@ function item(payload: Record<string, unknown>, addedAt = daysAgo(30)): Record<s
   return { added_at: addedAt, item: payload };
 }
 
+function album(id: string, name: string): Record<string, unknown> {
+  return { id, name, uri: `spotify:album:${id}`, images: [] };
+}
+
+function savedTrack(payload: Record<string, unknown>, addedAt = daysAgo(30)): Record<string, unknown> {
+  return { added_at: addedAt, track: payload };
+}
+
 /**
  * Fake client mirroring the surface exhaust2_playlists touches:
  * get (metadata), getAllPages (playlist items), post/put (mutations, logged).
@@ -245,16 +253,16 @@ test('playlist_strip_episodes strip=tracks keeps episodes and removes tracks', a
 test('saved_tracks_roulette dry run deals a plan without creating anything', async () => {
   const client = makeFakeClient({
     '/me/tracks': [
-      item(track('t1', 'One'), daysAgo(1)),
-      item(track('t2', 'Two'), daysAgo(2)),
-      item(track('t3', 'Three'), daysAgo(3)),
-      item(track('t4', 'Four'), daysAgo(4)),
-      item(track('t5', 'Five'), daysAgo(5)),
-      item(track('t6', 'Six'), daysAgo(6)),
-      item(track('t7', 'Seven'), daysAgo(7)),
-      item(track('t8', 'Eight'), daysAgo(8)),
-      item(track('t9', 'Nine'), daysAgo(9)),
-      item(track('t10', 'Ten'), daysAgo(10)),
+      savedTrack(track('t1', 'One'), daysAgo(1)),
+      savedTrack(track('t2', 'Two'), daysAgo(2)),
+      savedTrack(track('t3', 'Three'), daysAgo(3)),
+      savedTrack(track('t4', 'Four'), daysAgo(4)),
+      savedTrack(track('t5', 'Five'), daysAgo(5)),
+      savedTrack(track('t6', 'Six'), daysAgo(6)),
+      savedTrack(track('t7', 'Seven'), daysAgo(7)),
+      savedTrack(track('t8', 'Eight'), daysAgo(8)),
+      savedTrack(track('t9', 'Nine'), daysAgo(9)),
+      savedTrack(track('t10', 'Ten'), daysAgo(10)),
     ],
   });
   const registered: RegisteredTool[] = [];
@@ -265,14 +273,15 @@ test('saved_tracks_roulette dry run deals a plan without creating anything', asy
   assert.equal(p.dry_run, true);
   assert.match(text(r), /\[dry run\]/);
   assert.equal(client.calls.filter((c) => c.method === 'POST' || c.method === 'PUT').length, 0);
+  assert.equal(client.calls.some((call) => call.method === 'POST' && call.path === '/me/playlists'), false);
 });
 
 test('library_to_playlist dry run plans the export without POSTing', async () => {
   const client = makeFakeClient({
     '/me/tracks': [
-      item(track('t1', 'One'), daysAgo(1)),
-      item(track('t2', 'Two'), daysAgo(2)),
-      item(track('t3', 'Three'), daysAgo(3)),
+      savedTrack(track('t1', 'One'), daysAgo(1)),
+      savedTrack(track('t2', 'Two'), daysAgo(2)),
+      savedTrack(track('t3', 'Three'), daysAgo(3)),
     ],
   });
   const registered: RegisteredTool[] = [];
@@ -283,7 +292,123 @@ test('library_to_playlist dry run plans the export without POSTing', async () =>
   assert.equal(p.dry_run, true);
   assert.match(text(r), /Liked Export/);
   assert.equal(client.calls.filter((c) => c.method === 'POST').length, 0);
+  assert.equal(client.calls.some((call) => call.method === 'POST' && call.path === '/me/playlists'), false);
 });
+
+test('library_to_playlist expands saved albums to playable track URIs before adding', async () => {
+  const client = makeFakeClient({
+    '/me/albums': [{ added_at: daysAgo(1), album: album('a1', 'Shelf Album') }],
+    '/albums/a1/tracks': [
+      { uri: 'spotify:track:t1' },
+      { uri: null, is_playable: false, restrictions: { reason: 'market' } },
+      { uri: 'spotify:track:market-blocked', is_playable: false, restrictions: { reason: 'market' } },
+      { uri: 'spotify:episode:e1' },
+      { uri: 'spotify:track:t2' },
+    ],
+  });
+  const registered: RegisteredTool[] = [];
+  registerExhaust2PlaylistsTools(makeServer(registered), client);
+  const result = await find(registered, 'library_to_playlist').handler({
+    from: 'albums',
+    name: 'Album Export',
+    limit: 2,
+    dry_run: false,
+    response_format: 'json',
+  });
+  const payload = result.structuredContent as Record<string, unknown>;
+  assert.deepEqual(payload.resulting_uris, ['spotify:track:t1', 'spotify:track:t2']);
+  assert.equal(payload.albums_expanded, 1);
+  const add = client.calls.find((call) => call.method === 'POST' && call.path === '/playlists/new-pl-1/items');
+  assert.deepEqual((add?.body as { uris: string[] }).uris, ['spotify:track:t1', 'spotify:track:t2']);
+  assert.ok(!(add?.body as { uris: string[] }).uris.some((uri) => uri.startsWith('spotify:album:')));
+});
+
+test('saved_tracks_roulette reads the albums shelf and writes only expanded tracks', async () => {
+  const client = makeFakeClient({
+    '/me/albums': [{ added_at: daysAgo(1), album: album('a1', 'Shelf Album') }],
+    '/albums/a1/tracks': [
+      { uri: 'spotify:track:t1' },
+      { uri: null, is_playable: false },
+      { uri: 'spotify:track:t2' },
+    ],
+  });
+  const registered: RegisteredTool[] = [];
+  registerExhaust2PlaylistsTools(makeServer(registered), client);
+  const result = await find(registered, 'saved_tracks_roulette').handler({
+    from: 'albums',
+    count: 10,
+    dry_run: false,
+    response_format: 'json',
+  });
+  const payload = result.structuredContent as Record<string, unknown>;
+  assert.equal(payload.albums_expanded, 1);
+  assert.equal(client.calls.some((call) => call.path === '/me/episodes'), false);
+  const add = client.calls.find((call) => call.method === 'POST' && call.path === '/playlists/new-pl-1/items');
+  assert.deepEqual((add?.body as { uris: string[] }).uris.slice().sort(), ['spotify:track:t1', 'spotify:track:t2']);
+});
+
+for (const toolName of ['library_to_playlist', 'saved_tracks_roulette']) {
+  test(`${toolName} rejects an empty saved album before playlist creation`, async () => {
+    const client = makeFakeClient({
+      '/me/albums': [{ added_at: daysAgo(1), album: album('empty', 'Empty Album') }],
+      '/albums/empty/tracks': [],
+    });
+    const registered: RegisteredTool[] = [];
+    registerExhaust2PlaylistsTools(makeServer(registered), client);
+    await assert.rejects(
+      () => find(registered, toolName).handler({
+        from: 'albums',
+        count: 10,
+        dry_run: false,
+        response_format: 'json',
+      }),
+      /empty or fully region-blocked.*no playlist was created/i,
+    );
+    assert.equal(client.calls.some((call) => call.method === 'POST' && call.path === '/me/playlists'), false);
+  });
+
+  test(`${toolName} rejects a fully region-blocked album before playlist creation`, async () => {
+    const client = makeFakeClient({
+      '/me/albums': [{ added_at: daysAgo(1), album: album('blocked', 'Blocked Album') }],
+      '/albums/blocked/tracks': [
+        { uri: null, is_playable: false, restrictions: { reason: 'market' } },
+        { uri: null, is_playable: false, restrictions: { reason: 'product' } },
+      ],
+    });
+    const registered: RegisteredTool[] = [];
+    registerExhaust2PlaylistsTools(makeServer(registered), client);
+    await assert.rejects(
+      () => find(registered, toolName).handler({
+        from: 'albums',
+        count: 10,
+        dry_run: false,
+        response_format: 'json',
+      }),
+      /empty or fully region-blocked.*no playlist was created/i,
+    );
+    assert.equal(client.calls.some((call) => call.method === 'POST' && call.path === '/me/playlists'), false);
+  });
+
+  test(`${toolName} aborts without creating when album expansion fails`, async () => {
+    const failure = Object.assign(new Error('album unavailable'), { status: 403 });
+    const client = makeFakeClient({
+      '/me/albums': [{ added_at: daysAgo(1), album: album('blocked', 'Blocked Album') }],
+      '/albums/blocked/tracks': failure,
+    });
+    const registered: RegisteredTool[] = [];
+    registerExhaust2PlaylistsTools(makeServer(registered), client);
+    await assert.rejects(
+      () => find(registered, toolName).handler({
+        from: 'albums',
+        count: 10,
+        dry_run: false,
+        response_format: 'json',
+      }),
+      /could not expand saved album.*no playlist was created/i,
+    );
+    assert.equal(client.calls.some((call) => call.method === 'POST' && call.path === '/me/playlists'), false);
+  });
+}
 
 test('missing playlist fails fast with a clear error', async () => {
   const registered: RegisteredTool[] = [];

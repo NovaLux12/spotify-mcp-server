@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../src/client.js';
-import { registerPlaylistBatchTools } from '../src/tools/playlistbatch.js';
+import { expandAlbumToTracks, registerPlaylistBatchTools } from '../src/tools/playlistbatch.js';
 import type { SpotifyPaged } from '../src/types/spotify.js';
 interface RecordedCall { method: string; path: string; arg?: unknown; }
 type Responder = (path: string, arg: unknown, method?: string) => unknown;
@@ -35,6 +35,53 @@ function harness(responder: Responder = () => null, elicitResult?: unknown) {
 }
 const textOf = (out: { content: Array<{ text: string }> }) => out.content[0].text;
 const track = (id: string) => `spotify:track:${id}`;
+
+describe('album source expansion', () => {
+  it('returns only validated track URIs and respects the requested bound', async () => {
+    const firstTrackId = '1'.repeat(22);
+    const secondTrackId = '2'.repeat(22);
+    const h = harness((path) => path === '/albums/a1/tracks' ? {
+      items: [
+        { uri: track(firstTrackId) },
+        { uri: track(secondTrackId) },
+        { uri: null, is_playable: false },
+        { uri: 'spotify:track:blocked', is_playable: false },
+        { uri: 'spotify:episode:e1' },
+        { uri: 'spotify:album:a1' },
+      ],
+      total: 6,
+      limit: 50,
+      offset: 0,
+      next: null,
+    } : { items: [], total: 0, limit: 50, offset: 0, next: null });
+    const uris = await expandAlbumToTracks(h.client as unknown as SpotifyClient, { id: 'a1', name: 'Album' }, 2);
+    assert.deepEqual(uris, [track(firstTrackId), track(secondTrackId)]);
+    const read = h.client.calls.find((call) => call.method === 'GET' && call.path === '/albums/a1/tracks');
+    assert.deepEqual(read?.arg, { limit: '50', offset: '0' });
+  });
+
+  it('resolves an album source to track URIs before batch_add_to_playlist posts', async () => {
+    const h = harness((path, _arg, method) => {
+      if (method === 'POST') return { snapshot_id: 'snap' };
+      if (path === '/albums/a1/tracks') {
+        return { items: [{ uri: track('t1') }, { uri: null, is_playable: false }, { uri: track('t2') }], total: 3, limit: 50, offset: 0, next: null };
+      }
+      return { items: [], total: 0, limit: 100, offset: 0, next: null };
+    });
+    await h.invoke('batch_add_to_playlist', { target_playlist_id: 'target', source_uris: ['spotify:album:a1'] });
+    const add = h.client.calls.find((call) => call.method === 'POST' && call.path === '/playlists/target/items');
+    assert.deepEqual((add?.arg as { uris: string[] }).uris, [track('t1'), track('t2')]);
+  });
+
+  it('does not post when an album source has no playable tracks', async () => {
+    const h = harness((path) => path === '/albums/a1/tracks'
+      ? { items: [{ uri: null, is_playable: false, restrictions: { reason: 'market' } }], total: 1, limit: 50, offset: 0, next: null }
+      : { items: [], total: 0, limit: 100, offset: 0, next: null });
+    const result = await h.invoke('batch_add_to_playlist', { target_playlist_id: 'target', source_uris: ['spotify:album:a1'] });
+    assert.match(textOf(result), /No tracks resolved/);
+    assert.equal(h.client.calls.some((call) => call.method === 'POST'), false);
+  });
+});
 describe('batch_add_to_playlist', () => {
   it('dedupes within batch', async () => {
     const h = harness((_, _a, method) => { if (method === 'POST') return { snapshot_id: 'snap1' } as unknown; return { items: [], total: 0, limit: 100, offset: 0, next: null } as unknown; });
