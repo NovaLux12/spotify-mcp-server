@@ -732,6 +732,12 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
         if (verdict === 'declined') {
           return textResult('Cancelled — nothing was changed.', { ok: false, cancelled: true });
         }
+        if (verdict === 'error') {
+          throw new Error('Elicitation failed — refusing to remove playlist items without confirmation');
+        }
+        if (verdict === 'unsupported' && process.env.SPOTIFY_MCP_CONFIRM !== 'never') {
+          throw new Error('Elicitation unavailable — refusing to remove playlist items without confirmation');
+        }
       }
       const tracks = args.uris.map((entry) =>
         typeof entry === 'string'
@@ -831,8 +837,9 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
       // #157: flipping a playlist toward MORE visible (private→public, or
       // enabling collaboration) is elicitation-gated. Renames/description
       // edits and toward-private flips never prompt, and the current-state
-      // GET happens only when a toward-visible flip is possible. Declined or
-      // cancelled → nothing is written; unsupported capability proceeds.
+      // GET happens only when a toward-visible flip is possible. Every verdict
+      // except explicit acceptance (or the documented automation bypass) stops
+      // the write.
       const towardPublic = args.public === true;
       const towardCollaborative = args.collaborative === true;
       let currentPublic: boolean | null | undefined;
@@ -862,6 +869,12 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
         });
         if (verdict === 'declined') {
           return textResult('Cancelled — nothing was changed.', { ok: false, cancelled: true });
+        }
+        if (verdict === 'error') {
+          throw new Error('Elicitation failed — refusing to make playlist public without confirmation');
+        }
+        if (verdict === 'unsupported' && process.env.SPOTIFY_MCP_CONFIRM !== 'never') {
+          throw new Error('Elicitation unavailable — refusing to make playlist public without confirmation');
         }
       }
 
@@ -979,6 +992,12 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
         });
         if (verdict === 'declined') {
           return textResult('Cancelled — nothing was changed.', { ok: false, cancelled: true });
+        }
+        if (verdict === 'error') {
+          throw new Error('Elicitation failed — refusing to replace playlist items without confirmation');
+        }
+        if (verdict === 'unsupported' && process.env.SPOTIFY_MCP_CONFIRM !== 'never') {
+          throw new Error('Elicitation unavailable — refusing to replace playlist items without confirmation');
         }
       }
       const id = encodeURIComponent(args.playlist_id);
@@ -1293,6 +1312,12 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
         if (verdict === 'declined') {
           return textResult('Cancelled — nothing was changed.', { ok: false, cancelled: true });
         }
+        if (verdict === 'error') {
+          throw new Error('Elicitation failed — refusing to remove duplicate playlist items without confirmation');
+        }
+        if (verdict === 'unsupported' && process.env.SPOTIFY_MCP_CONFIRM !== 'never') {
+          throw new Error('Elicitation unavailable — refusing to remove duplicate playlist items without confirmation');
+        }
       }
 
       // One DELETE per occurrence, highest position first: each request sees
@@ -1476,6 +1501,12 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
         });
         if (verdict === 'declined') {
           return textResult('Cancelled — nothing was changed.', { ok: false, cancelled: true });
+        }
+        if (verdict === 'error') {
+          throw new Error('Elicitation failed — refusing to remove duplicate playlist items without confirmation');
+        }
+        if (verdict === 'unsupported' && process.env.SPOTIFY_MCP_CONFIRM !== 'never') {
+          throw new Error('Elicitation unavailable — refusing to remove duplicate playlist items without confirmation');
         }
       }
 

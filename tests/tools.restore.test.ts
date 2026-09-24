@@ -402,16 +402,13 @@ describe('restore_library_snapshot confirmation gate', () => {
     }
   });
 
-  it('SPOTIFY_MCP_CONFIRM=never refuses restores entirely', async () => {
+  it('SPOTIFY_MCP_CONFIRM=never explicitly bypasses confirmation and permits restores', async () => {
     process.env[CONFIRM_ENV] = 'never';
     const path = await snapshotFile(baseSnapshot());
     try {
       const h = harness(emptyState(), 'unsupported');
-      await assert.rejects(
-        h.invoke('restore_library_snapshot', { backup_path: path, dry_run: false }),
-        /refusing to restore without confirmation/,
-      );
-      assert.equal(writesOf(h.client).length, 0, 'refused before any write');
+      await h.invoke('restore_library_snapshot', { backup_path: path, dry_run: false });
+      assert.ok(writesOf(h.client).length > 0, 'automation bypass should permit additive writes');
     } finally {
       delete process.env[CONFIRM_ENV];
       await rm(join(path, '..'), { recursive: true, force: true });

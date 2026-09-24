@@ -26,7 +26,7 @@ Every environment variable read by `@novalux12/spotify-mcp` — set in your MCP 
 | `SPOTIFY_MCP_SCENES_FILE` | `~/.spotify-mcp/scenes.json` | Location of the playback-scene sidecar written by the scene tools. |
 | `SPOTIFY_MCP_GENRE_TAGS_FILE` | `~/.spotify-mcp/genre-tags.json` | Artist→genre-tags sidecar consumed by the library genre tools. |
 | `SPOTIFY_MCP_READONLY` | unset | Set to `1`/`true`/`yes` to hide every write-capable module (plus resources and prompts) — reads and diagnostics stay available. |
-| `SPOTIFY_MCP_CONFIRM` | unset | Set to `never` to skip the elicitation-gated confirmation on bulk destructive playlist operations. |
+| `SPOTIFY_MCP_CONFIRM` | unset | Explicit automation bypass for confirmation-gated destructive operations. Unset fails closed when elicitation is unavailable or errors. |
 
 ## Details
 
@@ -217,11 +217,16 @@ SPOTIFY_MCP_READONLY=1 npx -y @novalux12/spotify-mcp@latest
 
 ### `SPOTIFY_MCP_CONFIRM`
 
-Bulk-destructive playlist operations ask the human operator to confirm via MCP
-elicitation before executing: `remove_from_playlist` at 10 or more URIs and
-`replace_playlist_items` at 50 or more. The prompt only fires when the
-connected client advertised elicitation support; set `SPOTIFY_MCP_CONFIRM=never`
-to skip prompting entirely so automation and readonly contexts are never blocked.
+Confirmation-gated destructive operations require an explicit accepted MCP
+elicitation response. This includes bulk playlist removal and replacement,
+playlist visibility increases, duplicate cleanup, unpinning, and snapshot
+restore. The gate fails closed: a declined response cancels the operation, and
+an unsupported client or elicitation transport error refuses the write.
+
+Set `SPOTIFY_MCP_CONFIRM=never` only as an explicit automation bypass. It skips
+the prompt and permits these operations without confirmation; it is not needed
+for ordinary automation to remain safe. Read-only previews still run before any
+confirmation gate.
 
 ```bash
 SPOTIFY_MCP_CONFIRM=never npx -y @novalux12/spotify-mcp@latest

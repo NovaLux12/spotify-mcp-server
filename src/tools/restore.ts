@@ -12,9 +12,8 @@
  *    and reports what it WOULD do, calling no mutating endpoint.
  *  - Any actual write requires explicit elicitation confirmation summarizing
  *    the planned writes per category. A declined prompt cancels with zero
- *    writes; an environment without elicitation support (or with
- *    SPOTIFY_MCP_CONFIRM=never) refuses restores entirely rather than
- *    proceeding silently.
+ *    writes; elicitation errors and clients without support refuse restores
+ *    entirely. SPOTIFY_MCP_CONFIRM=never is the explicit automation bypass.
  */
 import { z } from 'zod';
 import { readFile } from 'node:fs/promises';
@@ -532,7 +531,7 @@ function buildProse(
 export function registerRestoreTools(server: McpServer, client: SpotifyClient): void {
   server.tool(
     'restore_library_snapshot',
-    "STRICTLY ADDITIVE restore of a library snapshot written by backup_library_snapshot. Adds only what is missing: saves absent tracks/albums/shows/episodes/audiobooks, follows unfollowed artists, and creates NEW playlists named 'Restored · <name> (<snapshot date>)' — existing playlists are never touched and nothing is ever deleted, renamed, or overwritten. dry_run defaults to TRUE (read-only preview); setting dry_run=false requires explicit interactive confirmation before any write, and restores are refused entirely in environments without confirmation support.",
+    "STRICTLY ADDITIVE restore of a library snapshot written by backup_library_snapshot. Adds only what is missing: saves absent tracks/albums/shows/episodes/audiobooks, follows unfollowed artists, and creates NEW playlists named 'Restored · <name> (<snapshot date>)' — existing playlists are never touched and nothing is ever deleted, renamed, or overwritten. dry_run defaults to TRUE (read-only preview); setting dry_run=false requires explicit confirmation before any write, fails closed when elicitation is unavailable or errors, and allows writes when SPOTIFY_MCP_CONFIRM=never.",
     {
       backup_path: z
         .string()
@@ -568,8 +567,8 @@ export function registerRestoreTools(server: McpServer, client: SpotifyClient): 
       }
 
       // Real writes: explicit confirmation first. Anything short of an
-      // explicit accept cancels; no elicitation support refuses outright —
-      // restores must never proceed silently.
+      // explicit accept cancels; elicitation errors and unavailable clients
+      // refuse outright. SPOTIFY_MCP_CONFIRM=never is the only bypass.
       const changeLines = plan.perCategory
         .filter((c) => c.planned > 0)
         .map((c) => {
@@ -595,7 +594,10 @@ export function registerRestoreTools(server: McpServer, client: SpotifyClient): 
         confirmLabel: 'Restore snapshot',
       });
 
-      if (verdict === 'unsupported') {
+      if (verdict === 'error') {
+        throw new Error('Elicitation failed — refusing to restore without confirmation');
+      }
+      if (verdict === 'unsupported' && process.env.SPOTIFY_MCP_CONFIRM !== 'never') {
         throw new Error('Elicitation unavailable — refusing to restore without confirmation');
       }
       if (verdict === 'declined') {
