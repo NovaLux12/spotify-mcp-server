@@ -25,7 +25,7 @@ import {
   batchSummary,
   type ResponseFormatValue,
 } from '../shaping.js';
-import type { PlaylistItemObject, SpotifyPaged } from '../types/spotify.js';
+import type { PlaylistItemObject } from '../types/spotify.js';
 
 // ---------------------------------------------------------------------------
 // helpers
@@ -153,7 +153,7 @@ export function registerExhaustMiscTools(server: McpServer, client: SpotifyClien
   // 3. audiobook_progress (#316) — book-level progress rollup (scout-c C7)
   server.tool(
     'audiobook_progress',
-    'Audiobook progress rollup: chapters total, played count, current chapter, percent complete. Quota: 🟡 2 GETs (audiobook + chapters).',
+    'Audiobook progress rollup: chapters total, played count, current chapter, percent complete. Walks every chapter page up to the shared fetch-all cap and reports scan coverage. Quota: 🟡 1 audiobook GET + chapter page GETs.',
     {
       audiobook_id: z.string().min(1).describe('Audiobook ID'),
       market: MARKET_CODE.optional().describe('Market, e.g. \'US\''),
@@ -169,24 +169,34 @@ export function registerExhaustMiscTools(server: McpServer, client: SpotifyClien
         total_chapters: number;
       }>(`/audiobooks/${encId}`, params);
       if (!audiobook) throw new Error('Audiobook not found');
-      const chaptersRes = await client.get<SpotifyPaged<{ id: string; chapter_number: number; name: string; resume_point?: { fully_played: boolean } }>>(
+      const chapterCap = getConfig().fetchAllCap;
+      const chapters = await client.getAllPages<{ id: string; chapter_number: number; name: string; resume_point?: { fully_played: boolean } }>(
         `/audiobooks/${encId}/chapters`,
         { limit: '50', ...(args.market ? { market: args.market } : {}) },
+        { maxItems: chapterCap },
       );
-      const chapters = chaptersRes?.items ?? [];
+      const chaptersScanned = chapters.length;
+      // A walk that reaches the shared cap is conservatively marked truncated:
+      // an exact-cap walk cannot prove that the endpoint had no next page.
+      const truncated = chaptersScanned >= chapterCap;
       const played = chapters.filter((c) => c.resume_point?.fully_played).length;
-      const total = audiobook.total_chapters ?? chapters.length;
+      const total = audiobook.total_chapters ?? chaptersScanned;
       const pct = total > 0 ? Math.round((played / total) * 100) : 0;
       const nextUnplayed = chapters.find((c) => !c.resume_point?.fully_played) ?? null;
       const structured: Record<string, unknown> = {
         audiobook_id: audiobook.id,
-        name: audiobook.name,
         total_chapters: total,
+        total,
+        chapters_scanned: chaptersScanned,
         played_chapters: played,
-        percent_complete: pct,
+        percent_complete: truncated ? null : pct,
+        truncated,
         next_unplayed: nextUnplayed ? { id: nextUnplayed.id, chapter_number: nextUnplayed.chapter_number, name: nextUnplayed.name } : null,
       };
-      const text = `Audiobook "${audiobook.name}": ${played}/${total} chapters played (${pct}%).${nextUnplayed ? ` Next: Ch. ${nextUnplayed.chapter_number} "${nextUnplayed.name}"` : ' All played.'}`;
+      const progress = truncated
+        ? `Scanned ${chaptersScanned}/${total} chapters; ${played} played among scanned chapters. Progress is incomplete because the chapter walk hit the cap.`
+        : `${played}/${total} chapters played (${pct}%).${nextUnplayed ? ` Next: Ch. ${nextUnplayed.chapter_number} "${nextUnplayed.name}"` : ' All played.'}`;
+      const text = `Audiobook "${audiobook.name}": ${progress}`;
       if (rf === 'json') return { content: [{ type: 'text', text: JSON.stringify(structured, null, 2) }], structuredContent: structured };
       return textResult(text, structured);
     },
@@ -212,6 +222,7 @@ export function registerExhaustMiscTools(server: McpServer, client: SpotifyClien
       // Collect all playlist URIs
       const playlists = await client.getAllPages<{ id: string }>('/me/playlists', { limit: '50' });
       const playlistUris = new Set<string>();
+      const failedPlaylistWalks: string[] = [];
       for (const pl of playlists) {
         try {
           const items = await client.getAllPages<PlaylistItemObject>(`/playlists/${encodeURIComponent(pl.id)}/items`, { limit: '50' });
@@ -220,13 +231,16 @@ export function registerExhaustMiscTools(server: McpServer, client: SpotifyClien
             const uri = track && typeof track.uri === 'string' ? (track.uri as string) : null;
             if (uri) playlistUris.add(uri);
           }
-        } catch { /* skip inaccessible playlists */ }
+        } catch {
+          failedPlaylistWalks.push(pl.id);
+        }
       }
       const orphans = saved.filter((s) => !playlistUris.has(s.track.uri)).slice(0, maxRemove);
       const orphanUris = orphans.map((o) => o.track.uri);
       const structured: Record<string, unknown> = {
         scanned: saved.length,
         playlists_scanned: playlists.length,
+        playlist_walk_failures: failedPlaylistWalks,
         orphan_count: orphans.length,
         orphans: orphans.map((o) => ({ uri: o.track.uri, name: o.track.name })),
         dry_run: dryRun,
@@ -237,13 +251,18 @@ export function registerExhaustMiscTools(server: McpServer, client: SpotifyClien
         if (rf === 'json') return { content: [{ type: 'text', text: JSON.stringify(structured, null, 2) }], structuredContent: structured };
         return textResult(lines.join('\n'), structured);
       }
+      if (failedPlaylistWalks.length > 0) {
+        throw new Error(`Refusing to remove orphan tracks: failed to walk ${failedPlaylistWalks.length} playlist(s): ${failedPlaylistWalks.join(', ')}`);
+      }
       if (orphanUris.length === 0) {
         if (rf === 'json') return { content: [{ type: 'text', text: JSON.stringify(structured, null, 2) }], structuredContent: structured };
         return textResult('No orphan tracks to remove.', structured);
       }
-      // Spotify DELETE /me/tracks?ids= takes comma-separated ids
-      const ids = orphans.map((o) => o.track.id).join(',');
-      await client.delete(`/me/tracks?ids=${ids}`);
+      // Spotify DELETE /me/tracks?ids= accepts at most 50 IDs per request.
+      const ids = orphans.map((o) => o.track.id);
+      for (let i = 0; i < ids.length; i += 50) {
+        await client.delete(`/me/tracks?ids=${ids.slice(i, i + 50).join(',')}`);
+      }
       const text = `Removed ${orphans.length} orphan track(s): ${batchSummary(orphans.length, orphanUris)}`;
       if (rf === 'json') return { content: [{ type: 'text', text: JSON.stringify(structured, null, 2) }], structuredContent: structured };
       return textResult(text, structured);
