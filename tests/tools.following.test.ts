@@ -387,3 +387,117 @@ describe('mutation summaries + dry_run on follow tools (#57/#58)', () => {
     assert.deepEqual(payload.uris, ['spotify:artist:a']);
   });
 });
+
+// ---------------------------------------------------------------------------
+// get_followed_artists fetch_all (#744)
+// ---------------------------------------------------------------------------
+
+describe('get_followed_artists fetch_all (#744)', () => {
+  /** One `/me/following` page: `n` artists, an `after` cursor, a reported total. */
+  const followedPage = (from: number, n: number, total: number, after: string | null) => ({
+    artists: {
+      items: Array.from({ length: n }, (_, i) => followedArtist(`a${from + i}`, `Artist ${from + i}`)),
+      total,
+      cursors: after === null ? null : { after },
+      next: null,
+    },
+  });
+
+  it('walks every `after` page and returns all three pages in one result', async () => {
+    // 120 follows over 50 + 50 + 20: the third page is short, which is the
+    // only signal that the cursor is exhausted.
+    const pages = [
+      followedPage(0, 50, 120, 'cur-1'),
+      followedPage(50, 50, 120, 'cur-2'),
+      followedPage(100, 20, 120, null),
+    ];
+    let call = 0;
+    const h = makeHarness(() => {
+      const page = pages[call++];
+      assert.ok(page, 'the walk must not ask for a fourth page');
+      return page;
+    });
+
+    const out = await h.invoke('get_followed_artists', { fetch_all: true });
+
+    // The exact wire calls: one full page per request, each carrying the
+    // previous response's cursor, and no manual limit/after of the caller's.
+    assert.equal(h.calls.length, 3);
+    assert.ok(h.calls.every((c) => c.method === 'GET' && c.path === '/me/following'));
+    assert.deepEqual(h.calls.map((c) => c.arg), [
+      { type: 'artist', limit: '50' },
+      { type: 'artist', limit: '50', after: 'cur-1' },
+      { type: 'artist', limit: '50', after: 'cur-2' },
+    ]);
+
+    const sc = out.structuredContent as { items: unknown[]; truncated_by_cap: boolean; next_cursor: string | null };
+    assert.equal(sc.items.length, 120, 'every followed artist is returned in the one call');
+    assert.equal(sc.truncated_by_cap, false);
+    assert.equal(sc.next_cursor, null);
+    assert.match(textOf(out), /^Followed artists \(120 fetched, showing 120\):/);
+  });
+
+  it('reports truncated_by_cap instead of stopping silently at the fetch-all cap', async () => {
+    // More follows than SPOTIFY_MCP_FETCH_ALL_CAP (500) and an endless cursor.
+    let call = 0;
+    const h = makeHarness(() => followedPage(call++ * 50, 50, 900, `cur-${call}`));
+
+    const out = await h.invoke('get_followed_artists', { fetch_all: true });
+
+    // The walk stops at the cap rather than paging forever.
+    assert.equal(h.calls.length, 10, '500 rows at 50 per page is 10 requests, never an 11th');
+    const sc = out.structuredContent as { items: unknown[]; truncated_by_cap: boolean; next_cursor: string | null };
+    assert.equal(sc.items.length, 500);
+    assert.equal(sc.truncated_by_cap, true);
+    assert.equal(sc.next_cursor, 'cur-10', 'the caller can resume from the cursor the walk stopped on');
+    assert.match(textOf(out), /500 fetched of 900, showing 500/);
+    assert.match(textOf(out), /\(400 more — fetch-all cap REACHED; pass after=cur-10 to continue\)/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Artist reference normalisation in the follow family (#745)
+// ---------------------------------------------------------------------------
+
+describe('follow family normalises artist references (#745)', () => {
+  it('sends bare ids on the wire when the caller passes spotify:artist: URIs', async () => {
+    const h = makeHarness();
+    const out = await h.invoke('follow_artists', { ids: ['spotify:artist:a', 'b'] });
+
+    // The URI and the bare id reach the same wire call.
+    assert.equal(h.calls.length, 1);
+    assert.equal(h.calls[0].method, 'PUT');
+    assert.equal(h.calls[0].path, '/me/following?type=artist&ids=a,b');
+    // …and the normalised ids are echoed so the caller can see what was sent.
+    const sc = out.structuredContent as { affected: number; uris: string[] };
+    assert.equal(sc.affected, 2);
+    assert.deepEqual(sc.uris, ['spotify:artist:a', 'spotify:artist:b']);
+  });
+
+  it('normalises unfollow_artists and check_following_artists the same way', async () => {
+    const h = makeHarness(() => [true]);
+
+    await h.invoke('unfollow_artists', { ids: ['spotify:artist:xyz789'] });
+    assert.equal(h.calls[0].method, 'DELETE');
+    assert.equal(h.calls[0].path, '/me/following?type=artist&ids=xyz789');
+
+    const out = await h.invoke('check_following_artists', { ids: ['spotify:artist:xyz789'] });
+    assert.deepEqual(h.calls[1].arg, { type: 'artist', ids: 'xyz789' });
+    const sc = out.structuredContent as { items: Array<{ id: string; uri: string }> };
+    assert.deepEqual(sc.items, [{ id: 'xyz789', uri: 'spotify:artist:xyz789', follows: true }]);
+  });
+
+  it('accepts a CSV string and rejects a wrong-kind reference by name', async () => {
+    const h = makeHarness(() => [true, false]);
+
+    // Hosts that serialise array params as CSV hand us one string.
+    await h.invoke('follow_artists', { ids: 'a,spotify:artist:b' });
+    assert.equal(h.calls[0].path, '/me/following?type=artist&ids=a,b');
+
+    await assert.rejects(
+      () => h.invoke('follow_artists', { ids: ['spotify:track:x'] }),
+      /Invalid artist reference "spotify:track:x".*expected artist/,
+    );
+    assert.equal(h.calls.length, 1, 'the rejected reference never reached Spotify');
+  });
+});
