@@ -55,11 +55,15 @@ function makeClient(state: LiveState) {
       calls.push({ method: 'GET', path: _path, params });
       if (_path === '/me/library/contains') {
         const uris = (params?.uris ?? '').split(',').filter(Boolean);
-        return uris.map((u) => state.savedUris.includes(u));
-      }
-      if (_path === '/me/following/contains') {
-        const ids = (params?.ids ?? '').split(',').filter(Boolean);
-        return ids.map((id) => state.followedArtistIds.includes(id));
+        // #594: artist URIs now arrive on the library endpoint as well, since
+        // follow state is checked there. Answering them keeps the stub honest:
+        // a regression back to /me/following/contains would fall through to
+        // null and fail, rather than being quietly accommodated here.
+        return uris.map((u) =>
+          u.startsWith('spotify:artist:')
+            ? state.followedArtistIds.includes(u.slice('spotify:artist:'.length))
+            : state.savedUris.includes(u),
+        );
       }
       return null;
     },
@@ -354,7 +358,7 @@ describe('restore_library_snapshot strictly additive', () => {
     }
   });
 
-  it('contains-checks are chunked ≤50 and saves only absent URIs', async () => {
+  it('contains-checks and saves are chunked ≤40 — the documented /me/library cap (#594)', async () => {
     const state = emptyState();
     const present = new Set(['spotify:track:present0', 'spotify:track:present75']);
     state.savedUris = [...present];
@@ -380,17 +384,17 @@ describe('restore_library_snapshot strictly additive', () => {
       const checks = h.client.calls.filter(
         (c) => c.method === 'GET' && c.path === '/me/library/contains',
       );
-      assert.equal(checks.length, 3, '120 uris checked in 3 ≤50 chunks');
+      assert.equal(checks.length, 3, '120 uris checked in 3 chunks of ≤40');
       for (const c of checks) {
         assert.ok(
-          ((c.params?.uris ?? '').split(',').filter(Boolean)).length <= 50,
-          'contains chunk ≤50',
+          ((c.params?.uris ?? '').split(',').filter(Boolean)).length <= 40,
+          'contains chunk ≤40 — /me/library takes at most 40 URIs per request',
         );
       }
       const puts = h.client.calls.filter(
         (c) => c.method === 'PUT' && c.path.startsWith('/me/library?'),
       );
-      assert.equal(puts.length, 3, '118 absent uris saved in ≤50 chunks (50/50/18)');
+      assert.equal(puts.length, 3, '118 absent uris saved in ≤40 chunks (40/40/38)');
       const savedUris = puts.flatMap((p) =>
         (p.path.split('uris=')[1] ?? '').split(',').filter(Boolean),
       );
@@ -404,7 +408,11 @@ describe('restore_library_snapshot strictly additive', () => {
     }
   });
 
-  it('follows only unfollowed artists', async () => {
+  // #594: the follow WRITE cannot be migrated — PUT /me/following is removed
+  // and PUT /me/library does not accept spotify:artist: URIs. The category
+  // therefore reports as blocked: the read side still detects what is already
+  // followed, but nothing is planned and nothing is written.
+  it('reports followed_artists as blocked and writes nothing (#594)', async () => {
     const state = emptyState();
     state.followedArtistIds = ['have1'];
     const path = await snapshotFile({
@@ -422,13 +430,67 @@ describe('restore_library_snapshot strictly additive', () => {
         dry_run: false,
         categories: ['followed_artists'],
       });
-      const puts = h.client.calls.filter(
-        (c) => c.method === 'PUT' && c.path.startsWith('/me/following?'),
+
+      // The removed write endpoints must never be issued, in any form.
+      const followWrites = h.client.calls.filter(
+        (c) =>
+          (c.method === 'PUT' || c.method === 'DELETE') &&
+          c.path.startsWith('/me/following'),
       );
-      assert.deepEqual(puts.map((p) => p.path), ['/me/following?type=artist&ids=new1']);
+      assert.deepEqual(followWrites, [], 'no follow write may be attempted');
+      // Nor may it be laundered through /me/library with artist URIs.
+      assert.deepEqual(writesOf(h.client), [], 'a blocked category performs zero writes');
+      assert.ok(
+        !h.client.calls.some((c) => c.path === '/me/following/contains'),
+        'the removed /me/following/contains must not be called',
+      );
+
+      // The read side still works, on the migrated endpoint.
+      const checks = h.client.calls.filter((c) => c.path === '/me/library/contains');
+      assert.ok(checks.length > 0, 'already-followed detection still runs');
+      const uris = checks.flatMap((c) => (c.params?.uris ?? '').split(',').filter(Boolean));
+      assert.deepEqual(
+        uris.sort(),
+        ['spotify:artist:have1', 'spotify:artist:new1'],
+        'follow state is checked with spotify:artist: URIs on /me/library/contains',
+      );
+
       const payload = out.structuredContent as Record<string, any>;
-      assert.equal(payload.categories.followed_artists.executed, 1);
-      assert.equal(payload.categories.followed_artists.skipped, 1, 'non-artist URI skipped');
+      const cat = payload.categories.followed_artists;
+      assert.equal(cat.already_present, 1, 'the already-followed artist is still detected');
+      assert.equal(cat.planned, 0, 'nothing may be planned — the write is impossible');
+      assert.equal(cat.executed, 0);
+      assert.equal(cat.skipped, 1, 'non-artist URI skipped');
+      assert.match(cat.blocked, /does not accept spotify:artist: URIs/);
+      assert.match(textOf(out), /BLOCKED \(#594\)/);
+    } finally {
+      await rm(join(path, '..'), { recursive: true, force: true });
+    }
+  });
+
+  it('a blocked followed_artists does not block the rest of a default restore (#594)', async () => {
+    // followed_artists is in the default category set, so it must degrade
+    // rather than abort: the library categories still restore normally.
+    const state = emptyState();
+    const path = await snapshotFile(baseSnapshot());
+    try {
+      const h = harness(state, 'accept');
+      const out = await h.invoke('restore_library_snapshot', {
+        backup_path: path,
+        dry_run: false,
+      });
+      const payload = out.structuredContent as Record<string, any>;
+      assert.equal(payload.status, 'executed');
+      assert.ok(payload.categories.liked_tracks.planned > 0, 'library categories still planned');
+      assert.equal(payload.categories.followed_artists.planned, 0);
+      assert.match(payload.categories.followed_artists.blocked, /spotify:artist:/);
+      // The only writes are the library ones.
+      for (const w of writesOf(h.client)) {
+        assert.ok(
+          w.path.startsWith('/me/library') || w.path.startsWith('/me/playlists') || w.path.startsWith('/playlists/'),
+          `unexpected write to ${w.path}`,
+        );
+      }
     } finally {
       await rm(join(path, '..'), { recursive: true, force: true });
     }

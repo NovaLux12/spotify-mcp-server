@@ -12,6 +12,7 @@ import { describe, it } from 'node:test';
 import { z } from 'zod';
 import assert from 'node:assert/strict';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { readFile } from 'node:fs/promises';
 import type { SpotifyClient } from '../src/client.js';
 import { registerFollowingTools } from '../src/tools/following.js';
 
@@ -106,6 +107,19 @@ function makeHarness(responder: Responder = () => null) {
 
 const textOf = (out: { content: Array<{ text: string }> }) => out.content[0].text;
 
+/**
+ * The `uris` query/body of a recorded call, split into individual URIs.
+ * Narrowed at runtime rather than cast, so a call that sent some other shape
+ * fails the assertion instead of reading `undefined` and passing quietly.
+ */
+function urisOf(call: RecordedCall): string[] {
+  const arg: unknown = call.arg;
+  assert.ok(arg !== null && typeof arg === 'object' && 'uris' in arg, 'call must carry a `uris` param');
+  const uris: unknown = arg.uris;
+  assert.ok(typeof uris === 'string', '`uris` must be a string');
+  return uris.split(',');
+}
+
 const followedArtist = (id: string, name: string, genres: string[] = []) => ({
   id,
   name,
@@ -118,20 +132,48 @@ const followedArtist = (id: string, name: string, genres: string[] = []) => ({
 // ---------------------------------------------------------------------------
 
 describe('follow_artists', () => {
-  it('sends PUT /me/following with type=artist and comma-joined ids in the query string', async () => {
+  // #594: PUT /me/following was removed in February 2026, and the documented
+  // replacement — PUT /me/library — does NOT accept spotify:artist: URIs
+  // (supported: track, album, episode, show, audiobook, user, playlist).
+  // No call can follow an artist, so the tool refuses instead of issuing a
+  // request that looks migrated while following nothing.
+  it('refuses without issuing any request', async () => {
     const h = makeHarness();
-    await h.invoke('follow_artists', { ids: ['artist1', 'artist2', 'artist3'] });
-
-    assert.equal(h.calls.length, 1);
-    assert.equal(h.calls[0].method, 'PUT');
-    assert.equal(h.calls[0].path, '/me/following?type=artist&ids=artist1,artist2,artist3');
+    await assert.rejects(
+      () => h.invoke('follow_artists', { ids: ['artist1', 'artist2', 'artist3'] }),
+      /follow_artists cannot run/,
+    );
+    assert.equal(h.calls.length, 0, 'no request may be issued — there is no endpoint to call');
   });
 
-  it('sends no request body', async () => {
+  it('names the real blocker rather than blaming a scope', async () => {
     const h = makeHarness();
-    await h.invoke('follow_artists', { ids: ['solo'] });
+    await assert.rejects(
+      () => h.invoke('follow_artists', { ids: ['a'] }),
+      (err: Error) => {
+        assert.match(err.message, /PUT\/DELETE \/me\/library/);
+        assert.match(err.message, /does not accept spotify:artist: URIs/);
+        return true;
+      },
+    );
+  });
 
-    assert.equal(h.calls[0].arg, undefined);
+  it('refuses dry_run too — a preview of an impossible write would mislead', async () => {
+    const h = makeHarness();
+    await assert.rejects(
+      () => h.invoke('follow_artists', { ids: ['a'], dry_run: true }),
+      /follow_artists cannot run/,
+    );
+    assert.equal(h.calls.length, 0);
+  });
+
+  it('still rejects a wrong-kind reference by name before refusing', async () => {
+    const h = makeHarness();
+    await assert.rejects(
+      () => h.invoke('follow_artists', { ids: ['spotify:track:x'] }),
+      /Invalid artist reference "spotify:track:x".*expected artist/,
+    );
+    assert.equal(h.calls.length, 0, 'the rejected reference never reached Spotify');
   });
 
   it('rejects an empty ids array and more than 50 ids via schema bounds', () => {
@@ -146,28 +188,6 @@ describe('follow_artists', () => {
       tool.validate({ ids: Array.from({ length: 50 }, (_, i) => `a${i}`) }),
     );
   });
-
-  it('confirms the number of artists followed', async () => {
-    const h = makeHarness();
-    const out = await h.invoke('follow_artists', { ids: ['a', 'b'] });
-
-    assert.match(textOf(out), /Followed 2 artist/);
-  });
-
-  it('dry_run makes zero client calls and previews artist URIs (#57)', async () => {
-    const h = makeHarness();
-    const out = await h.invoke('follow_artists', { ids: ['a'], dry_run: true });
-
-    assert.equal(h.calls.length, 0, 'dry_run must not touch the API');
-    const text = textOf(out);
-    assert.match(text, /^\[dry run\] follow_artists on followed artists — nothing was changed\./);
-    assert.match(text, /Would affect 1 item:/);
-    assert.ok(text.includes('spotify:artist:a'));
-
-    const sc = out.structuredContent as Record<string, unknown>;
-    assert.equal(sc.dry_run, true);
-    assert.deepEqual(sc.would_affect, ['spotify:artist:a']);
-  });
 });
 
 // ---------------------------------------------------------------------------
@@ -175,20 +195,33 @@ describe('follow_artists', () => {
 // ---------------------------------------------------------------------------
 
 describe('unfollow_artists', () => {
-  it('sends DELETE /me/following with type=artist and comma-joined ids in the query string', async () => {
+  // #594: DELETE /me/following is gone and DELETE /me/library does not accept
+  // spotify:artist: URIs either, so there is no call that can unfollow one.
+  it('refuses without issuing any request', async () => {
     const h = makeHarness();
-    await h.invoke('unfollow_artists', { ids: ['artist1', 'artist2'] });
-
-    assert.equal(h.calls.length, 1);
-    assert.equal(h.calls[0].method, 'DELETE');
-    assert.equal(h.calls[0].path, '/me/following?type=artist&ids=artist1,artist2');
+    await assert.rejects(
+      () => h.invoke('unfollow_artists', { ids: ['artist1', 'artist2'] }),
+      /unfollow_artists cannot run/,
+    );
+    assert.equal(h.calls.length, 0, 'no request may be issued — there is no endpoint to call');
   });
 
-  it('sends no request body', async () => {
+  it('refuses dry_run rather than previewing an impossible write', async () => {
     const h = makeHarness();
-    await h.invoke('unfollow_artists', { ids: ['solo'] });
+    await assert.rejects(
+      () => h.invoke('unfollow_artists', { ids: ['a'], dry_run: true }),
+      /unfollow_artists cannot run/,
+    );
+    assert.equal(h.calls.length, 0);
+  });
 
-    assert.equal(h.calls[0].arg, undefined);
+  it('still rejects a wrong-kind reference by name before refusing', async () => {
+    const h = makeHarness();
+    await assert.rejects(
+      () => h.invoke('unfollow_artists', { ids: ['spotify:album:x'] }),
+      /Invalid artist reference "spotify:album:x".*expected artist/,
+    );
+    assert.equal(h.calls.length, 0);
   });
 
   it('rejects an empty ids array and more than 50 ids via schema bounds', () => {
@@ -204,12 +237,6 @@ describe('unfollow_artists', () => {
     );
   });
 
-  it('confirms the number of artists unfollowed', async () => {
-    const h = makeHarness();
-    const out = await h.invoke('unfollow_artists', { ids: ['a', 'b', 'c'] });
-
-    assert.match(textOf(out), /Unfollowed 3 artist/);
-  });
 });
 
 // ---------------------------------------------------------------------------
@@ -347,44 +374,81 @@ describe('check_following_artists shaping (#51/#52/#53)', () => {
   });
 });
 
-describe('mutation summaries + dry_run on follow tools (#57/#58)', () => {
-  it('follow_artists echoes "{n} items affected" with artist URIs (#58)', async () => {
-    const h = makeHarness();
-    const out = await h.invoke('follow_artists', { ids: ['a', 'b'] });
-    assert.match(
-      textOf(out),
-      /2 items affected: spotify:artist:a, spotify:artist:b/,
-    );
+// ---------------------------------------------------------------------------
+// #594 — the follow-state check migrated to GET /me/library/contains.
+// These assert the ACTUAL request path and URI form on the wire. A stubbed
+// client answers whatever path it is handed, so a test that only asserted the
+// returned booleans would have passed happily against the removed
+// GET /me/following/contains — the path and the `uris` form are the contract.
+// ---------------------------------------------------------------------------
+
+describe('check_following_artists wire migration (#594)', () => {
+  it('requests /me/library/contains with spotify:artist: URIs, never /me/following/contains', async () => {
+    const h = makeHarness(() => [true, false, true]);
+    await h.invoke('check_following_artists', { ids: ['a', 'b', 'c'] });
+
+    assert.equal(h.calls.length, 1);
+    assert.equal(h.calls[0].method, 'GET');
+    // The exact migrated path — this is what the test exists to pin.
+    assert.equal(h.calls[0].path, '/me/library/contains');
+    // The exact URI form: /me/library/contains takes `uris`, not `ids`+`type`.
+    assert.deepEqual(h.calls[0].arg, {
+      uris: 'spotify:artist:a,spotify:artist:b,spotify:artist:c',
+    });
+    // The removed endpoint and the old query shape must both be gone.
+    assert.ok(!JSON.stringify(h.calls).includes('/me/following/contains'));
+    assert.ok(!JSON.stringify(h.calls).includes('"type":"artist"'));
   });
 
-  it('unfollow_artists echoes the removed URIs (#58)', async () => {
-    const h = makeHarness();
-    const out = await h.invoke('unfollow_artists', { ids: ['only1'] });
-    assert.match(textOf(out), /1 item affected: spotify:artist:only1/);
+  it('sends the boolean flags through in order, one per requested URI', async () => {
+    const h = makeHarness(() => [false, true]);
+    const out = await h.invoke('check_following_artists', { ids: ['x', 'y'] });
+
+    // Position matters: the response array is positional against `uris`.
+ assert.equal(h.calls[0].path, '/me/library/contains');
+    assert.deepEqual(h.calls[0].arg, { uris: 'spotify:artist:x,spotify:artist:y' });
+    const sc = out.structuredContent as { items: Array<{ id: string; follows: boolean }> };
+    assert.deepEqual(sc.items, [
+      { id: 'x', uri: 'spotify:artist:x', follows: false },
+      { id: 'y', uri: 'spotify:artist:y', follows: true },
+    ]);
   });
 
-  it('unfollow_artists dry_run makes zero client calls and previews artist URIs (#57)', async () => {
-    const h = makeHarness();
-    const out = await h.invoke('unfollow_artists', { ids: ['a', 'b'], dry_run: true });
+  it('chunks at the documented 40-URI cap of /me/library/contains', async () => {
+    // 50 ids are accepted by the schema; the endpoint takes at most 40 URIs
+    // per request, so a single 50-URI request would be rejected by Spotify.
+    const ids = Array.from({ length: 50 }, (_, i) => `a${i}`);
+    const h = makeHarness((_path, arg) => {
+      assert.ok(arg !== null && typeof arg === 'object' && 'uris' in arg);
+      return String(arg.uris).split(',').map(() => true);
+    });
+    await h.invoke('check_following_artists', { ids });
 
-    assert.equal(h.calls.length, 0, 'dry_run must not touch the API');
-    const text = textOf(out);
-    assert.match(text, /^\[dry run\] unfollow_artists on followed artists — nothing was changed\./);
-    assert.match(text, /Would affect 2 items:/);
-    assert.ok(text.includes('spotify:artist:a') && text.includes('spotify:artist:b'));
-
-    const sc = out.structuredContent as Record<string, unknown>;
-    assert.equal(sc.dry_run, true);
-    assert.deepEqual(sc.would_affect, ['spotify:artist:a', 'spotify:artist:b']);
+    assert.equal(h.calls.length, 2, '50 URIs must split into 40 + 10, not one 50-URI call');
+    for (const call of h.calls) {
+      assert.equal(call.path, '/me/library/contains');
+      const uris = urisOf(call);
+      assert.ok(uris.length <= 40, `chunk of ${uris.length} exceeds the documented 40 cap`);
+      for (const uri of uris) assert.match(uri, /^spotify:artist:a\d+$/);
+    }
+    assert.equal(urisOf(h.calls[0]).length, 40);
+    assert.equal(urisOf(h.calls[1]).length, 10);
   });
 
-  it('follow_artists json output reports ok/affected (#51)', async () => {
-    const h = makeHarness();
-    const out = await h.invoke('follow_artists', { ids: ['a'], response_format: 'json' });
-    const payload = JSON.parse(out.content[0].text);
-    assert.equal(payload.ok, true);
-    assert.equal(payload.affected, 1);
-    assert.deepEqual(payload.uris, ['spotify:artist:a']);
+  it('reassembles chunked flags back onto the right artists', async () => {
+    const ids = Array.from({ length: 45 }, (_, i) => `a${i}`);
+    const h = makeHarness((_path, arg) => {
+      assert.ok(arg !== null && typeof arg === 'object' && 'uris' in arg);
+      return String(arg.uris)
+        .split(',')
+        // Only the 41st artist (index 40, first of chunk two) is followed.
+        .map((uri) => uri === 'spotify:artist:a40');
+    });
+    const out = await h.invoke('check_following_artists', { ids });
+
+    const sc = out.structuredContent as { items: Array<{ id: string; follows: boolean }> };
+    const followed = sc.items.filter((i) => i.follows);
+    assert.deepEqual(followed.map((i) => i.id), ['a40'], 'flags must not shift across the chunk boundary');
   });
 });
 
@@ -460,44 +524,228 @@ describe('get_followed_artists fetch_all (#744)', () => {
 // ---------------------------------------------------------------------------
 
 describe('follow family normalises artist references (#745)', () => {
-  it('sends bare ids on the wire when the caller passes spotify:artist: URIs', async () => {
-    const h = makeHarness();
-    const out = await h.invoke('follow_artists', { ids: ['spotify:artist:a', 'b'] });
+  // Spotify artist ids are 22 characters, so the fixtures below pad to that.
+  const idA = 'a'.repeat(22);
+  const idB = 'b'.repeat(22);
+  const idC = 'c'.repeat(22);
+  // #594: the write tools no longer reach the wire, so normalisation is
+  // asserted through check_following_artists — the remaining tool in this
+  // family that actually issues a request. The point is unchanged: a URI, a
+  // bare id and a URL are one id on the wire.
+  it('sends canonical spotify:artist: URIs when the caller passes mixed forms', async () => {
+    const h = makeHarness(() => [true, true]);
+    const out = await h.invoke('check_following_artists', {
+      ids: [
+        `spotify:artist:${idA}`,
+        idB,
+        `https://open.spotify.com/artist/${idC}`,
+      ],
+    });
 
-    // The URI and the bare id reach the same wire call.
     assert.equal(h.calls.length, 1);
-    assert.equal(h.calls[0].method, 'PUT');
-    assert.equal(h.calls[0].path, '/me/following?type=artist&ids=a,b');
+    assert.equal(h.calls[0].path, '/me/library/contains');
+    assert.deepEqual(urisOf(h.calls[0]), [
+      `spotify:artist:${idA}`,
+      `spotify:artist:${idB}`,
+      `spotify:artist:${idC}`,
+    ]);
     // …and the normalised ids are echoed so the caller can see what was sent.
-    const sc = out.structuredContent as { affected: number; uris: string[] };
-    assert.equal(sc.affected, 2);
-    assert.deepEqual(sc.uris, ['spotify:artist:a', 'spotify:artist:b']);
-  });
-
-  it('normalises unfollow_artists and check_following_artists the same way', async () => {
-    const h = makeHarness(() => [true]);
-
-    await h.invoke('unfollow_artists', { ids: ['spotify:artist:xyz789'] });
-    assert.equal(h.calls[0].method, 'DELETE');
-    assert.equal(h.calls[0].path, '/me/following?type=artist&ids=xyz789');
-
-    const out = await h.invoke('check_following_artists', { ids: ['spotify:artist:xyz789'] });
-    assert.deepEqual(h.calls[1].arg, { type: 'artist', ids: 'xyz789' });
     const sc = out.structuredContent as { items: Array<{ id: string; uri: string }> };
-    assert.deepEqual(sc.items, [{ id: 'xyz789', uri: 'spotify:artist:xyz789', follows: true }]);
+    assert.deepEqual(
+      sc.items.map((i) => i.id),
+      [idA, idB, idC],
+    );
   });
 
   it('accepts a CSV string and rejects a wrong-kind reference by name', async () => {
     const h = makeHarness(() => [true, false]);
 
     // Hosts that serialise array params as CSV hand us one string.
-    await h.invoke('follow_artists', { ids: 'a,spotify:artist:b' });
-    assert.equal(h.calls[0].path, '/me/following?type=artist&ids=a,b');
+    const out = await h.invoke('check_following_artists', { ids: `${idA},spotify:artist:${idB}` });
+    assert.deepEqual(urisOf(h.calls[0]), [`spotify:artist:${idA}`, `spotify:artist:${idB}`]);
+    const sc = out.structuredContent as { items: Array<{ id: string; follows: boolean }> };
+    assert.deepEqual(sc.items.map((i) => i.id), [idA, idB]);
 
     await assert.rejects(
-      () => h.invoke('follow_artists', { ids: ['spotify:track:x'] }),
+      () => h.invoke('check_following_artists', { ids: ['spotify:track:x'] }),
       /Invalid artist reference "spotify:track:x".*expected artist/,
     );
     assert.equal(h.calls.length, 1, 'the rejected reference never reached Spotify');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// following_analytics — batch /artists?ids= removed in Feb 2026 (#594)
+// ---------------------------------------------------------------------------
+
+describe('following_analytics batch-endpoint removal (#594)', () => {
+  /** One short `/me/following` page so the cursor walk ends after a single call. */
+  const onePage = (artists: Array<{ id: string; name: string; genres: string[] }>) => ({
+    artists: {
+      items: artists,
+      total: artists.length,
+      cursors: null,
+      next: null,
+    },
+  });
+
+  it('enriches with per-id GET /artists/{id}, never the removed batch endpoint', async () => {
+    const h = makeHarness((path) => {
+      if (path === '/me/following') {
+        return onePage([
+          { id: 'a1', name: 'A1', genres: ['rock'] },
+          { id: 'b2', name: 'B2', genres: ['rock', 'jazz'] },
+        ]);
+      }
+      return null;
+    });
+
+    const out = await h.invoke('following_analytics', { group_by: 'genre' });
+
+    const artistCalls = h.calls.filter((c) => c.path.startsWith('/artists/'));
+    // The exact replacement shape: one request per artist, id in the path.
+    assert.deepEqual(
+      artistCalls.map((c) => c.path),
+      ['/artists/a1', '/artists/b2'],
+    );
+    assert.ok(artistCalls.every((c) => c.method === 'GET'));
+    // The removed batch endpoint must appear nowhere, in any form.
+    assert.ok(
+      !h.calls.some((c) => c.path === '/artists' || String(c.path).includes('ids=')),
+      'no call may target the removed batch /artists?ids= endpoint',
+    );
+    assert.match(textOf(out), /rock: 2/);
+  });
+
+  it('refuses popularity and followers rollups — those Artist fields no longer exist', async () => {
+    // Spotify removed `popularity` and `followers` from Artist objects in the
+    // same February 2026 release. The old code defaulted both to 0, which
+    // reported every artist as "0-24"/"<10K" — a named rollup full of lies.
+    for (const group_by of ['popularity', 'followers']) {
+      const h = makeHarness(() => onePage([]));
+      await assert.rejects(
+        () => h.invoke('following_analytics', { group_by }),
+        (err: Error) => {
+          assert.match(err.message, /removed the popularity|followers field/);
+          assert.match(err.message, /group_by="genre"/);
+          return true;
+        },
+      );
+      assert.equal(h.calls.length, 0, `${group_by} must be refused before any request`);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #594 — module-wide guard: no code path may reach a removed endpoint.
+// A stub client answers whatever path it is handed, so the only way to prove
+// a removed endpoint is unreachable is to drive every tool and inspect what
+// actually went out on the wire.
+// ---------------------------------------------------------------------------
+
+const REMOVED_ENDPOINTS: Array<{ label: string; match: (c: RecordedCall) => boolean }> = [
+  { label: 'PUT /me/following', match: (c) => c.method === 'PUT' && c.path.startsWith('/me/following') },
+  {
+    label: 'DELETE /me/following',
+    match: (c) => c.method === 'DELETE' && c.path.startsWith('/me/following'),
+  },
+  {
+    label: 'GET /me/following/contains',
+    match: (c) => c.method === 'GET' && c.path === '/me/following/contains',
+  },
+  {
+    // The per-id replacement is `/artists/{id}`; only the batch collection
+    // request was removed — whether the ids rode in the query string or in
+    // the params object. `/artists/{id}` is a surviving, supported call.
+    label: 'GET /artists?ids=',
+    match: (c) => c.path === '/artists' || c.path.startsWith('/artists?'),
+  },
+];
+
+describe('no removed follow/artist-batch endpoint is reachable (#594)', () => {
+  it('drives every registered tool and records zero removed-endpoint calls', async () => {
+    const h = makeHarness((path) => {
+      if (path === '/me/following') {
+        return {
+          artists: { items: [{ id: 'a1', name: 'A1', uri: 'spotify:artist:a1', genres: ['rock'] }], total: 1, cursors: null },
+        };
+      }
+      if (path.startsWith('/artists/')) return { id: 'a1', name: 'A1', uri: 'spotify:artist:a1', genres: ['rock'] };
+      return [];
+    });
+
+    const id = 'a'.repeat(22);
+    // Every tool in the module, with arguments valid for its schema.
+    const invocations: Array<[string, Record<string, unknown>]> = [
+      ['get_followed_artists', {}],
+      ['get_followed_artists', { fetch_all: true }],
+      ['check_following_artists', { ids: [id] }],
+      ['follow_artists', { ids: [id] }],
+      ['follow_artists', { ids: [id], dry_run: true }],
+      ['unfollow_artists', { ids: [id] }],
+      ['unfollow_artists', { ids: [id], dry_run: true }],
+      ['following_analytics', { group_by: 'genre' }],
+    ];
+
+    for (const [name, args] of invocations) {
+      // The two write tools now refuse by design; every other call must succeed.
+      const refuses = name === 'follow_artists' || name === 'unfollow_artists';
+      if (refuses) {
+        await assert.rejects(() => h.invoke(name, args), /cannot run/);
+      } else {
+        await h.invoke(name, args);
+      }
+    }
+
+    // The read path still works, so this is not vacuously empty.
+    assert.ok(h.calls.length > 0, 'the guard must actually exercise the tools');
+    for (const call of h.calls) {
+      for (const removed of REMOVED_ENDPOINTS) {
+        assert.ok(
+          !removed.match(call),
+          `${removed.label} was called (${call.method} ${call.path}) — it was removed in Feb 2026`,
+        );
+      }
+    }
+  });
+
+  it('issues no removed endpoint from any client call site in its own source', async () => {
+    // Structural invariant, in the repo's established grep-guard style
+    // (see tests/mutations.conformance.test.ts:112-116), but extracting the
+    // actual call sites rather than scanning for bare substrings. Scanning for
+    // substrings cannot work here: this module deliberately NAMES the removed
+    // endpoints in its tool descriptions and error messages, and a pattern
+    // that also has to see past `client.get<T>(...)` generic arguments would
+    // either match that prose or silently never match anything.
+    const source = await readFile(new URL('../src/tools/following.ts', import.meta.url), 'utf8');
+    // The path literal is the first argument of a real client call. Optional
+    // `<...>` covers the explicit type arguments these calls pass.
+    const callSite = /client\.(get|put|post|delete|putRaw)(?:<[^>]*>)?\(\s*(['"`])((?:[^\\]|\\.)*?)\2/g;
+    const paths = [...source.matchAll(callSite)].map((m) => m[3] as string);
+
+    // Sanity: the extraction must find the calls, or this guard is vacuous.
+    assert.ok(paths.length >= 4, `expected to extract the module's client calls, found ${paths.length}`);
+
+    for (const path of paths) {
+      assert.ok(
+        !/^\/me\/following(\?|\/contains)/.test(path),
+        `removed follow endpoint issued: ${path}`,
+      );
+      assert.ok(
+        path !== '/artists' && !path.startsWith('/artists?'),
+        `removed batch /artists endpoint issued: ${path}`,
+      );
+    }
+
+    // The still-supported list endpoint must remain reachable.
+    assert.ok(
+      paths.includes('/me/following'),
+      'GET /me/following is still available and must stay',
+    );
+    // …and so must the migrated per-id replacement for the removed batch call.
+    assert.ok(
+      paths.some((p) => p.startsWith('/artists/')),
+      'following_analytics must enrich via per-id GET /artists/{id}',
+    );
   });
 });

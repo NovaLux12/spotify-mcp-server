@@ -5,9 +5,14 @@
  * Safety rules baked in:
  *  - Nothing existing is ever overwritten, renamed, deleted, or unfollowed.
  *    Liked tracks / saved items are only ADDED when absent (contains-check
- *    first); artists are only followed when not yet followed; playlists are
- *    only ever CREATED — a snapshot playlist whose exact name already exists
- *    in the live account is skipped untouched.
+ *    first); playlists are only ever CREATED — a snapshot playlist whose
+ *    exact name already exists in the live account is skipped untouched.
+ *  - The `followed_artists` category is BLOCKED (#594): Spotify removed
+ *    PUT /me/following and no replacement accepts a spotify:artist: write, so
+ *    no artist is ever followed. The category still reports which snapshot
+ *    artists are already followed (via GET /me/library/contains) and says
+ *    plainly that the rest cannot be restored, rather than reporting a
+ *    "planned" follow that will never happen.
  *  - dry_run defaults to TRUE: by default the tool performs read-only checks
  *    and reports what it WOULD do, calling no mutating endpoint.
  *  - Any actual write requires explicit elicitation confirmation summarizing
@@ -20,6 +25,7 @@ import { readFile } from 'node:fs/promises';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
 import {
+  CHUNK_CAPS,
   ResponseFormat,
   MaxResults,
   resolveMaxResults,
@@ -111,8 +117,9 @@ const LIBRARY_CATEGORIES = [
   'saved_audiobooks',
 ] as const satisfies readonly RestoreCategory[];
 
-const LIBRARY_CONTAINS_CHUNK = 50;
-const FOLLOW_CHUNK = 50;
+// #594: GET /me/library/contains accepts at most 40 URIs per request. The
+// previous value of 50 exceeded that documented cap.
+const LIBRARY_CONTAINS_CHUNK = CHUNK_CAPS.library_writes;
 const ADD_ITEMS_CHUNK = 100;
 
 function chunk<T>(items: readonly T[], size: number): T[][] {
@@ -213,12 +220,46 @@ interface CategoryPlan {
   planned: number;
   /** Absent URIs to save (library categories only). */
   plannedUris: string[];
-  /** Unfollowed artist IDs to follow (followed_artists only). */
-  plannedArtistIds: string[];
   /** Rows dropped (malformed URI/name, duplicates, name collisions). */
   skipped: number;
   notes: string[];
+  /**
+   * Set when the category cannot be written at all (#594).
+   *
+   * DO NOT fold this into `shortfalls`, and do not report it as one. The two
+   * answer different questions and drive opposite control flow:
+   *
+   *   - `shortfalls` means the SNAPSHOT is incomplete (a truncated collection,
+   *     a partly-stored playlist). It is a property of the input, and it
+   *     refuses the entire restore before any write, because restoring a
+   *     partial snapshot risks a half-restored library.
+   *   - `blocked` means the CAPABILITY is gone (Spotify removed the endpoint
+   *     and no replacement exists). It is a property of the platform, and it
+   *     is per-category: the rest of the restore still runs.
+   *
+   * Folding them together would mean one unfollowable category refused every
+   * restore — including the library categories that work perfectly well.
+   * `followed_artists` is in the DEFAULT category set, so that failure would
+   * reach every caller who never asked for it.
+   */
+  blocked: string | null;
 }
+
+/**
+ * Why `followed_artists` can no longer be restored (#594).
+ *
+ * Spotify removed `PUT /me/following` in February 2026 and named
+ * `PUT /me/library` as the replacement, but that endpoint does not accept
+ * `spotify:artist:` URIs (supported types: track, album, episode, show,
+ * audiobook, user, playlist). Writing artists through it would look migrated
+ * while following nothing, so the category is reported as blocked instead.
+ * The read side still works and is still used: `GET /me/library/contains`
+ * accepts artist URIs, so "already followed" is still detected accurately.
+ */
+const FOLLOWED_ARTISTS_BLOCKED =
+  'cannot restore followed artists: Spotify removed PUT /me/following in February 2026 and the ' +
+  'replacement PUT /me/library does not accept spotify:artist: URIs. Already-followed artists are ' +
+  'still detected, but missing ones cannot be re-followed.';
 
 export interface PlaylistCreation {
   snapshotName: string;
@@ -266,20 +307,21 @@ async function containsLibraryUris(
   return flags;
 }
 
+/**
+ * Whether each artist id is currently followed (#594).
+ *
+ * `GET /me/following/contains` was removed in February 2026;
+ * `GET /me/library/contains` is the documented replacement and it DOES accept
+ * `spotify:artist:` URIs, so this is a true migration rather than a change of
+ * question — it still answers "is this artist followed", not "is this track
+ * saved". It reuses `containsLibraryUris` so both checks share one chunking
+ * rule and one error message instead of drifting apart.
+ */
 async function followsArtistIds(
   client: SpotifyClient,
   ids: readonly string[],
 ): Promise<boolean[]> {
-  const flags: boolean[] = [];
-  for (const part of chunk(ids, FOLLOW_CHUNK)) {
-    const res = await client.get<boolean[]>('/me/following/contains', {
-      type: 'artist',
-      ids: part.join(','),
-    });
-    if (!res) throw new Error('Could not check current follows (/me/following/contains)');
-    flags.push(...res);
-  }
-  return flags;
+  return containsLibraryUris(client, ids.map((id) => `spotify:artist:${id}`));
 }
 
 function freshCategoryPlan(category: RestoreCategory): CategoryPlan {
@@ -289,9 +331,9 @@ function freshCategoryPlan(category: RestoreCategory): CategoryPlan {
     alreadyPresent: 0,
     planned: 0,
     plannedUris: [],
-    plannedArtistIds: [],
     skipped: 0,
     notes: [],
+    blocked: null,
   };
 }
 
@@ -355,14 +397,15 @@ export async function computeRestorePlan(
         }
       }
       if (ids.length > 0) {
+        // Read side still works: GET /me/library/contains accepts artist URIs,
+        // so "already followed" stays accurate. The write side does not, so
+        // nothing is planned — the category reports as blocked instead of
+        // promising `would follow …` notes for an impossible write.
         const follows = await followsArtistIds(client, ids);
-        ids.forEach((id, i) => {
-          if (follows[i]) plan.alreadyPresent += 1;
-          else plan.plannedArtistIds.push(id);
-        });
-        plan.planned = plan.plannedArtistIds.length;
+        plan.alreadyPresent = follows.filter(Boolean).length;
+        plan.blocked = FOLLOWED_ARTISTS_BLOCKED;
         plan.notes.push(
-          ...plan.plannedArtistIds.map((id) => `would follow spotify:artist:${id}`),
+          `${ids.length - plan.alreadyPresent} artist(s) in the snapshot are not followed, and cannot be re-followed`,
         );
       }
     } else if (category === 'playlists') {
@@ -464,11 +507,6 @@ async function executeRestore(
         await client.put(`/me/library?uris=${part.join(',')}`);
       }
       executed[category] = catPlan.plannedUris.length;
-    } else if (category === 'followed_artists') {
-      for (const part of chunk(catPlan.plannedArtistIds, FOLLOW_CHUNK)) {
-        await client.put(`/me/following?type=artist&ids=${part.join(',')}`);
-      }
-      executed[category] = catPlan.plannedArtistIds.length;
     } else if (category === 'playlists') {
       let addedTotal = 0;
       for (const creation of plan.playlistCreations) {
@@ -520,6 +558,7 @@ function categoryPayload(plan: CategoryPlan, outcome: RestoreOutcome | null) {
     executed: outcome?.executed[plan.category] ?? 0,
     skipped: plan.skipped,
     notes: plan.notes,
+    blocked: plan.blocked,
   };
 }
 
@@ -589,6 +628,7 @@ function buildProse(
     bits.push(done ? `${outcome?.executed[c.category] ?? 0} written` : `${c.planned} would be written`);
     if (c.skipped > 0) bits.push(`${c.skipped} skipped`);
     lines.push(`- ${c.category}: ${bits.join(' · ')}`);
+    if (c.blocked) lines.push(`  · BLOCKED (#594): ${c.blocked}`);
   }
 
   const detailLines: string[] = plan.playlistCreations.map((c) =>
@@ -613,7 +653,7 @@ function buildProse(
 export function registerRestoreTools(server: McpServer, client: SpotifyClient): void {
   server.tool(
     'restore_library_snapshot',
-    "STRICTLY ADDITIVE restore of a library snapshot written by backup_library_snapshot. Adds only what is missing: saves absent tracks/albums/shows/episodes/audiobooks, follows unfollowed artists, and creates NEW playlists named 'Restored · <name> (<snapshot date>)' — existing playlists are never touched and nothing is ever deleted, renamed, or overwritten. Partial/truncated snapshots are previewable but refused before confirmation or writes unless all selected data is complete. dry_run defaults to TRUE (read-only preview); setting dry_run=false requires explicit confirmation before any write, fails closed when elicitation is unavailable or errors, and allows writes when SPOTIFY_MCP_CONFIRM=never.",
+    "STRICTLY ADDITIVE restore of a library snapshot written by backup_library_snapshot. Adds only what is missing: saves absent tracks/albums/shows/episodes/audiobooks and creates NEW playlists named 'Restored · <name> (<snapshot date>)' — existing playlists are never touched and nothing is ever deleted, renamed, or overwritten. Partial/truncated snapshots are previewable but refused before confirmation or writes unless all selected data is complete. dry_run defaults to TRUE (read-only preview); setting dry_run=false requires explicit confirmation before any write, fails closed when elicitation is unavailable or errors, and allows writes when SPOTIFY_MCP_CONFIRM=never. BLOCKED (#594): followed_artists cannot be restored — no endpoint accepts spotify:artist: writes — and reports blocked rather than silently doing nothing.",
     {
       backup_path: z
         .string()
@@ -660,9 +700,6 @@ export function registerRestoreTools(server: McpServer, client: SpotifyClient): 
         .filter((c) => c.planned > 0)
         .map((c) => {
           if (c.category === 'playlists') return `- playlists: create ${c.planned} playlist(s)`;
-          if (c.category === 'followed_artists') {
-            return `- followed_artists: follow ${c.planned} artist(s)`;
-          }
           return `- ${c.category}: save ${c.planned} item(s)`;
         });
       changeLines.push(

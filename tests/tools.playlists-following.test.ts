@@ -1049,7 +1049,9 @@ describe('get_followed_artists', () => {
 });
 
 describe('check_following_artists', () => {
-  it('sends bare IDs to /me/following/contains with type=artist', async () => {
+  // #594: GET /me/following/contains was removed in Feb 2026; the migrated
+  // call is GET /me/library/contains with spotify:artist: URIs.
+  it('sends spotify:artist: URIs to /me/library/contains', async () => {
     const h = harness(() => [true, false, true], registerFollowingTools);
 
     const out = await h.invoke('check_following_artists', { ids: ['aa', 'bb', 'cc'] });
@@ -1057,8 +1059,8 @@ describe('check_following_artists', () => {
     assert.deepEqual(wireCalls(h.client.calls), [
       {
         method: 'GET',
-        path: '/me/following/contains',
-        arg: { type: 'artist', ids: 'aa,bb,cc' },
+        path: '/me/library/contains',
+        arg: { uris: 'spotify:artist:aa,spotify:artist:bb,spotify:artist:cc' },
       },
     ]);
 
@@ -1566,9 +1568,12 @@ describe('elicitation-gated destructive mutations (#111 item 5)', () => {
 
 // Unpin and restore share the same fail-closed verdict contract as removal.
 describe('destructive confirmation parity across remove/unpin/restore', () => {
+  // #594: followed_artists can no longer be written (its endpoint is
+  // unexpressible), so this fixture restores a library category instead —
+  // what this suite actually exercises is the confirmation gate.
   const snapshot = {
     _meta: { created: '2026-09-25T00:00:00.000Z' },
-    followed_artists: [{ uri: 'spotify:artist:a1', name: 'Artist' }],
+    liked_tracks: [{ uri: 'spotify:track:t1', name: 'Track' }],
   };
 
   async function withSnapshotFile(run: (path: string) => Promise<void>): Promise<void> {
@@ -1582,11 +1587,15 @@ describe('destructive confirmation parity across remove/unpin/restore', () => {
     }
   }
 
+  // #594: the follow check moved to /me/library/contains, which takes
+  // spotify:artist: URIs. The followed_artists category itself is now
+  // blocked (its write endpoint is unexpressible), so this fixture only
+  // exercises the confirmation gate, not any artist write.
   const restoreResponder: Responder = (path) =>
-    path === '/me/following/contains' ? [false] : null;
+    path === '/me/library/contains' ? [false] : null;
   const restoreArgs = (backup_path: string) => ({
     backup_path,
-    categories: ['followed_artists'],
+    categories: ['liked_tracks'],
     dry_run: false,
   });
 
