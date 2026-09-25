@@ -42,6 +42,45 @@ import { dirname, join } from 'node:path';
 // ---------------------------------------------------------------------------
 
 const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+/**
+ * True only for a syntactically well-formed YYYY-MM-DD string that is an
+ * actually existing calendar day.
+ *
+ * `new Date('2026-02-30')` does NOT fail — it silently rolls over to
+ * 2026-03-02, and `2026-02-29` in a non-leap year rolls to 2026-03-01. Anything
+ * that round-trips a date through `Date` therefore normalises impossible input
+ * instead of rejecting it, which is how a caller ends up scanning a window they
+ * never asked for. We validate by comparing UTC calendar parts, so no rollover
+ * is possible.
+ */
+export function isRealCalendarDate(value: string): boolean {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (!m) return false;
+  const year = Number(m[1]);
+  const month = Number(m[2]);
+  const day = Number(m[3]);
+  if (month < 1 || month > 12 || day < 1 || day > 31) return false;
+  // Day 0 of month+1 is the last day of `month` in UTC. This never parses the
+  // input itself, so an impossible day cannot normalise here.
+  const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  return day <= daysInMonth;
+}
+
+/** Explain why a YYYY-MM-DD string is not an existing calendar day. */
+export function describeImpossibleDate(value: string): string | null {
+  if (isRealCalendarDate(value)) return null;
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (!m) return 'expected the YYYY-MM-DD form';
+  const year = Number(m[1]);
+  const month = Number(m[2]);
+  const day = Number(m[3]);
+  if (month < 1 || month > 12) return `month ${m[2]} does not exist (expected 01-12)`;
+  if (day < 1 || day > 31) return `day ${m[3]} does not exist (expected 01-31)`;
+  const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  const leap = (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
+  return `${year}-${m[2]} has ${daysInMonth} days`
+    + `${leap ? ' (leap year)' : ' (not a leap year)'}, so day ${m[3]} does not exist`;
+}
 
 /** Today's date as YYYY-MM-DD in UTC. */
 function todayUtc(): string {
@@ -60,6 +99,10 @@ function daysBack(n: number): string {
  * "2026-05-17") to a comparable YYYY-MM-DD lower bound. Year/month-only
  * dates pad with 01 so they are treated as their earliest possible day —
  * inclusive when filtering against a cutoff.
+ *
+ * The result is shape-normalised but NOT calendar-validated: it can still be an
+ * impossible day (e.g. a bogus upstream "2026-02-30"). Callers must gate on
+ * `isRealCalendarDate` before trusting it as a real day.
  */
 export function normalizeReleaseDate(raw: string): string {
   if (/^\d{4}$/.test(raw)) return `${raw}-01-01`;
@@ -67,15 +110,46 @@ export function normalizeReleaseDate(raw: string): string {
   return raw.slice(0, 10);
 }
 
+/**
+ * Zod schema for the `since` argument: YYYY-MM-DD or the "last-check"
+ * sentinel. Beyond shape, the day must actually exist on the calendar so
+ * `since=2026-02-30` / `2026-13-01` / `2026-02-29` are rejected by name
+ * rather than silently rolling forward into a different window.
+ */
+const SinceArg = z.union([z.literal('last-check'), z.string()]).superRefine((value, ctx) => {
+  if (value === 'last-check') return;
+  if (!ISO_DATE_RE.test(value)) {
+    ctx.addIssue({
+      code: 'custom',
+      message: 'since: expected YYYY-MM-DD or "last-check"',
+    });
+    return;
+  }
+  const why = describeImpossibleDate(value);
+  if (why) {
+    ctx.addIssue({
+      code: 'custom',
+      message: `since: "${value}" is not a real calendar date — ${why}. Pick an existing day, or use "last-check".`,
+    });
+  }
+});
+
 function watermarkFilePath(): string {
   return (
     process.env.SPOTIFY_MCP_FRESHNESS_STATE ??
     join(homedir(), '.spotify-mcp', 'freshness.json')
   );
 }
-
-/** Read the stored watermark ({ last_check: "YYYY-MM-DD" }), or null. */
+/**
+ * Read the stored watermark ({ last_check: "YYYY-MM-DD" }), or null.
+ *
+ * A hand-edited or corrupted state file can hold a day that does not exist
+ * ("2026-02-30"). Using it as the cutoff would scan a window the caller never
+ * asked for, so such a value is rejected by name rather than coerced; only a
+ * genuinely absent/unreadable file falls back to `days_back`.
+ */
 async function readWatermark(): Promise<string | null> {
+  let raw: string;
   try {
     const parsed: unknown = JSON.parse(await readFile(watermarkFilePath(), 'utf8'));
     if (
@@ -83,12 +157,21 @@ async function readWatermark(): Promise<string | null> {
       typeof parsed === 'object' &&
       typeof (parsed as { last_check?: unknown }).last_check === 'string'
     ) {
-      return (parsed as { last_check: string }).last_check;
+      raw = (parsed as { last_check: string }).last_check;
+    } else {
+      return null;
     }
-    return null;
   } catch {
     return null;
   }
+  const why = describeImpossibleDate(raw);
+  if (why) {
+    throw new Error(
+      `Stored watermark in ${watermarkFilePath()} is not a real calendar date: `
+      + `"${raw}" — ${why}. Fix or delete that file, or pass an explicit since=YYYY-MM-DD.`,
+    );
+  }
+  return raw;
 }
 
 /**
@@ -169,8 +252,7 @@ export function registerFreshnessTools(server: McpServer, client: SpotifyClient)
       + 'a large library can exhaust small dev-account quotas in one call. Use max_artists to budget '
       + 'and dry_run to preview the cost before running. Decision guide: whats_new for personal follows radar; search_fresh for query-scoped tag:new, search/search_deep for general catalog, search_by_isrc for ISRC-exact.',
     {
-      since: z
-        .union([z.string().regex(ISO_DATE_RE, 'Use YYYY-MM-DD or "last-check"'), z.literal('last-check')])
+      since: SinceArg
         .optional()
         .describe(
           "Only include releases on/after this date (YYYY-MM-DD), or 'last-check' to resume from "
@@ -342,7 +424,9 @@ export function registerFreshnessTools(server: McpServer, client: SpotifyClient)
               artistsSeen++;
               for (const album of res?.items ?? []) {
                 const dateKey = normalizeReleaseDate(album.release_date ?? '');
-                if (!ISO_DATE_RE.test(dateKey) || dateKey < cutoff) continue;
+                // Shape AND calendar: an impossible upstream day ("2026-02-30")
+                // is dropped, never rolled into a neighbouring month.
+                if (!isRealCalendarDate(dateKey) || dateKey < cutoff) continue;
                 albums.push({
                   kind: 'album',
                   id: album.id,
@@ -407,7 +491,9 @@ export function registerFreshnessTools(server: McpServer, client: SpotifyClient)
               showsSeen++;
               for (const ep of res?.items ?? []) {
                 const dateKey = normalizeReleaseDate(ep.release_date ?? '');
-                if (!ISO_DATE_RE.test(dateKey) || dateKey < cutoff) continue;
+                // Shape AND calendar: an impossible upstream day ("2026-02-30")
+                // is dropped, never rolled into a neighbouring month.
+                if (!isRealCalendarDate(dateKey) || dateKey < cutoff) continue;
                 episodes.push({
                   kind: 'episode',
                   id: ep.id,
