@@ -282,12 +282,14 @@ describe('MCP stdio smoke (real src/index.ts)', () => {
     // vocabulary and a numeric status. It does NOT pin WHICH class is correct
     // — the runtime gets that wrong today; see the known-defect note below.
     //
-    // Two neighbouring guarantees are deliberately NOT re-asserted here
-    // because the harness above already fails the run before any assertion
-    // could: a dead process is caught by StdioClient's exit handler (verified
-    // — a `process.exit` inside the tool fails this test with "server exited
-    // early"), and a malformed CallToolResult is rejected by the MCP SDK's own
-    // result validation with JSON-RPC -32602.
+    // One neighbouring guarantee is deliberately NOT re-asserted here because
+    // the harness already fails the run before any assertion could: a dead
+    // process. StdioClient's `exit` handler calls failAll, which rejects every
+    // in-flight request, so a `process.exit` inside the tool rejects this call
+    // with "server exited early" rather than returning a payload to assert on.
+    // A malformed CallToolResult is NOT in that category: StdioClient does no
+    // result validation of its own, so such a payload would resolve and be
+    // caught by the `assert.ok(failure, …)` guard below instead.
     const meRes = await client.request('tools/call', {
       name: 'get_me',
       arguments: {},
@@ -298,6 +300,12 @@ describe('MCP stdio smoke (real src/index.ts)', () => {
     assert.equal(me.isError, true, 'get_me must not report success against a stub token');
     const failure = (me.structuredContent as { error?: { tool?: unknown; kind?: unknown; status?: unknown } } | undefined)?.error;
     assert.ok(failure, 'a failing tool must map its error into structuredContent.error');
+    // The error is attributed to the tool that produced it, not to the session
+    // or the argument batch: `errorResult` stamps the requested name. A payload
+    // that dropped or mis-stamped it would leave an operator unable to tell
+    // which call failed, and a "some tool failed" message here would sail
+    // through the kind/status guards below.
+    assert.equal(failure.tool, 'get_me', 'the mapped error must name the failing tool');
     // Constrained to the server's own classification vocabulary, not merely to
     // "a non-empty string": a typo'd or unmapped class would otherwise sail
     // straight through. Deliberately NOT pinned to the *correct* class — see
