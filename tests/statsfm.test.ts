@@ -7,6 +7,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { StatsfmApiError, StatsfmClient } from '../src/lib/statsfm-client.js';
 import { registerStatsfmTools } from '../src/tools/statsfm.js';
+import {
+  __resetStatsfmFetchImpl,
+  __setStatsfmFetchImpl,
+  registerStatsfmTasteTools,
+} from '../src/tools/statsfm_taste.js';
 
 // ---------------------------------------------------------------- fixtures
 
@@ -171,6 +176,172 @@ test('StatsfmClient preserves typed 404 and 429 metadata', async () => {
     () => limited.get('/users/busy'),
     (error: unknown) => error instanceof StatsfmApiError && error.status === 429 && error.retryAfterSec === 23 && error.reason === 'QUOTA_EXCEEDED',
   );
+});
+
+test('StatsfmClient redacts response messages and preserves classified failure metadata', async () => {
+  const cases = [
+    { status: 401, reason: 'AUTHENTICATION_REQUIRED' },
+    { status: 403, reason: 'ACCESS_FORBIDDEN' },
+    { status: 404, reason: 'RESOURCE_NOT_FOUND' },
+    { status: 429, reason: 'QUOTA_EXCEEDED', retryAfter: 29 },
+    { status: 503, reason: 'SERVICE_UNAVAILABLE' },
+  ] as const;
+
+  for (const expected of cases) {
+    const client = new StatsfmClient(async () => new Response(
+      JSON.stringify({
+        message: 'private https://example.test/users/alice?token=secret',
+        reason: expected.reason,
+      }),
+      {
+        status: expected.status,
+        headers: {
+          'content-type': 'application/json',
+          ...(expected.retryAfter === undefined ? {} : { 'retry-after': String(expected.retryAfter) }),
+        },
+      },
+    ));
+    await assert.rejects(
+      () => client.get('/users/alice'),
+      (error: unknown) => {
+        assert.ok(error instanceof StatsfmApiError);
+        assert.equal(error.status, expected.status);
+        assert.equal(error.reason, expected.reason);
+        assert.equal(error.retryAfterSec, expected.retryAfter);
+        assert.doesNotMatch(error.message, /example\.test|alice|token|secret/);
+        return true;
+      },
+    );
+  }
+});
+
+test('StatsfmClient converts rejected fetches to redacted transport errors', async () => {
+  const client = new StatsfmClient(async () => {
+    throw new TypeError('fetch failed for https://example.test/private?token=secret');
+  });
+  await assert.rejects(
+    () => client.get('/private'),
+    (error: unknown) => {
+      assert.ok(error instanceof StatsfmApiError);
+      assert.equal(error.status, 0);
+      assert.equal(error.reason, 'transport_error');
+      assert.equal(error.retryAfterSec, undefined);
+      assert.doesNotMatch(error.message, /example\.test|private|token|secret/);
+      return true;
+    },
+  );
+});
+
+
+test('taste tools normalize injected transport failures to shared errors', async () => {
+  __setStatsfmFetchImpl(async () => {
+    throw new TypeError('private https://example.test/users/alice?token=secret');
+  });
+  try {
+    const handlers = new Map<string, (args: Record<string, unknown>) => Promise<ToolContent>>();
+    const server = {
+      tool: (name: string, _description: string, _schema: RegisteredTool['schema'], handler: RegisteredTool['handler']) => {
+        handlers.set(name, handler);
+      },
+    };
+    registerStatsfmTasteTools(
+      server as unknown as Parameters<typeof registerStatsfmTasteTools>[0],
+      {} as unknown as Parameters<typeof registerStatsfmTasteTools>[1],
+    );
+    const handler = handlers.get('statsfm_taste_profile');
+    assert.ok(handler);
+    await assert.rejects(
+      () => handler({ statsfm_user: 'alice' }),
+      (error: unknown) => {
+        assert.ok(error instanceof StatsfmApiError);
+        assert.equal(error.status, 0);
+        assert.equal(error.reason, 'transport_error');
+        assert.doesNotMatch(error.message, /example\.test|alice|token|secret/);
+        return true;
+      },
+    );
+  } finally {
+    __resetStatsfmFetchImpl();
+  }
+});
+
+test('taste tools normalize non-2xx responses and preserve typed metadata', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(
+    JSON.stringify({
+      message: 'private https://example.test/users/alice?token=secret',
+      reason: 'QUOTA_EXCEEDED',
+    }),
+    { status: 429, headers: { 'content-type': 'application/json', 'retry-after': '31' } },
+  );
+  try {
+    const handlers = new Map<string, (args: Record<string, unknown>) => Promise<ToolContent>>();
+    const server = {
+      tool: (name: string, _description: string, _schema: RegisteredTool['schema'], handler: RegisteredTool['handler']) => {
+        handlers.set(name, handler);
+      },
+    };
+    registerStatsfmTasteTools(
+      server as unknown as Parameters<typeof registerStatsfmTasteTools>[0],
+      {} as unknown as Parameters<typeof registerStatsfmTasteTools>[1],
+    );
+    const handler = handlers.get('statsfm_taste_profile');
+    assert.ok(handler);
+    await assert.rejects(
+      () => handler({ statsfm_user: 'alice' }),
+      (error: unknown) => {
+        assert.ok(error instanceof StatsfmApiError);
+        assert.equal(error.status, 429);
+        assert.equal(error.reason, 'QUOTA_EXCEEDED');
+        assert.equal(error.retryAfterSec, 31);
+        assert.doesNotMatch(error.message, /example\.test|alice|token|secret/);
+        return true;
+      },
+    );
+  } finally {
+    __resetStatsfmFetchImpl();
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('taste tools normalize HTTP 200 error envelopes through the shared client', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(
+    JSON.stringify({
+      status: 503,
+      message: 'private https://example.test/users/alice?token=secret',
+      reason: 'SERVICE_UNAVAILABLE',
+    }),
+    { status: 200, headers: { 'content-type': 'application/json' } },
+  );
+  try {
+    const handlers = new Map<string, (args: Record<string, unknown>) => Promise<ToolContent>>();
+    const server = {
+      tool: (name: string, _description: string, _schema: RegisteredTool['schema'], handler: RegisteredTool['handler']) => {
+        handlers.set(name, handler);
+      },
+    };
+    registerStatsfmTasteTools(
+      server as unknown as Parameters<typeof registerStatsfmTasteTools>[0],
+      {} as unknown as Parameters<typeof registerStatsfmTasteTools>[1],
+    );
+    const handler = handlers.get('statsfm_taste_profile');
+    assert.ok(handler);
+    await assert.rejects(
+      () => handler({ statsfm_user: 'alice' }),
+      (error: unknown) => {
+        assert.ok(error instanceof StatsfmApiError);
+        assert.equal(error.status, 503);
+        assert.equal(error.reason, 'SERVICE_UNAVAILABLE');
+        assert.equal(error.retryAfterSec, undefined);
+        assert.doesNotMatch(error.message, /example\.test|alice|token|secret/);
+        return true;
+      },
+    );
+  } finally {
+    __resetStatsfmFetchImpl();
+    globalThis.fetch = originalFetch;
+  }
 });
 
 // ---------------------------------------------------------------- tops
