@@ -558,6 +558,41 @@ describe('add_to_playlist / remove_from_playlist / update_playlist / reorder_pla
       { uris },
       'position omitted when not provided',
     );
+
+    // #625: the receipt must name the row this call INSERTED. The playlist
+    // already held a copy of `dup` at index 2; adding `dup` at position 0
+    // lands a new row ABOVE it. Deriving the touched row as "the uri's last
+    // occurrence" (the append rule) would record index 2 — a row that predates
+    // this add — and `undo` would then delete the pre-existing copy instead of
+    // the one just created. This is the caller-side half of that contract: the
+    // position has to reach issueReceipt for the derivation to be possible.
+    const rows = ['spotify:track:dup', 'spotify:track:a', 'spotify:track:dup'];
+    const withRows = harness((path) =>
+      path === '/playlists/pl/items'
+        ? { items: rows.map((uri) => ({ item: { uri } })), total: rows.length }
+        : undefined,
+    );
+
+    const out = await withRows.invoke('add_to_playlist', {
+      playlist_id: 'pl',
+      uris: ['spotify:track:dup'],
+      position: 0,
+    });
+
+    assert.deepEqual(
+      wireCalls(withRows.client.calls.filter((c) => c.method === 'POST'))[0].arg,
+      { uris: ['spotify:track:dup'], position: 0 },
+      'the positional add must reach the API with its index',
+    );
+    const structured = out.structuredContent;
+    assert.ok(structured && 'receipt' in structured, 'add_to_playlist returns its receipt');
+    const receipt = structured.receipt;
+    assert.ok(receipt && typeof receipt === 'object' && 'affected' in receipt);
+    assert.deepEqual(
+      receipt.affected,
+      [{ uri: 'spotify:track:dup', positions: [0] }],
+      'receipt must record the inserted row, not the copy that predated it',
+    );
   });
 
   it('remove_from_playlist DELETEs wrapped track objects to /playlists/{id}/items', async () => {
