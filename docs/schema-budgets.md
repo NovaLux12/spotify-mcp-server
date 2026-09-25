@@ -79,7 +79,7 @@ above either ceiling fails CI and server startup.
 | doctor | 1 | 750 | 1 | 750 | 2 | 826 |
 | swarm3meta | 3 | 1,624 | 3 | 1,624 | 4 | 1,787 |
 | libraryanalytics | 4 | 3,350 | 4 | 3,350 | 5 | 3,686 |
-| portability | 11 | 9,514 | 11 | 9,514 | 12 | 10,466 |
+| portability | 11 | 9,762 | 11 | 9,762 | 12 | 10,739 |
 | libraryinsights | 3 | 2,751 | 3 | 2,751 | 4 | 3,027 |
 | libraryhygiene | 1 | 734 | 1 | 734 | 2 | 808 |
 | showradar | 1 | 1,675 | 1 | 1,675 | 2 | 1,843 |

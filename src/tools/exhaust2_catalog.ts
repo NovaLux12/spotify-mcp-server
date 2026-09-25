@@ -661,14 +661,24 @@ max_results: z.number().int().positive().max(2000).optional().describe('Max item
       const rf = args.response_format;
       const fetchAllCap = getConfig().fetchAllCap;
       const albumMeta = await client.get<AlbumPayload>(`/albums/${encodeURIComponent(args.album_id)}`);
-      const page = await client.get<{ items: SpotifyTrackSimple[]; total: number }>(
+      // #774: one 50-track page is not the album. Walk every page (bounded by
+      // the fetch-all cap) and CARRY the truncation verdict — a capped walk
+      // must never be presented as the album's statistics.
+      const walk = await client.getAllPagesWithTruncation<SpotifyTrackSimple>(
         `/albums/${encodeURIComponent(args.album_id)}/tracks`,
         { limit: '50', ...(args.market ? { market: args.market } : {}) },
+        { maxItems: fetchAllCap },
       );
-      if (!page || !Array.isArray(page.items) || page.items.length === 0) {
+      const tracks = walk.items;
+      if (tracks.length === 0) {
         throw new Error(`Album "${args.album_id}" not found or has no listed tracks`);
       }
-      const tracks = page.items;
+      // The album's own track count, when the album read carried one. A field
+      // that was not read is UNKNOWN (null), never coerced to the walked length.
+      const tracksListed = typeof albumMeta?.tracks?.total === 'number'
+        ? albumMeta.tracks.total
+        : typeof albumMeta?.total_tracks === 'number' ? albumMeta.total_tracks : null;
+      const partialEstimate = walk.truncated;
       const durations = tracks.map((s) => s.duration_ms ?? 0).sort((a, b) => a - b);
       const total = durations.reduce((n, d) => n + d, 0);
       const mean = Math.round(total / durations.length);
@@ -682,19 +692,27 @@ max_results: z.number().int().positive().max(2000).optional().describe('Max item
           : { id: args.album_id },
         stats: {
           track_count: tracks.length,
+          tracks_listed: tracksListed,
+          partial_estimate: partialEstimate,
           min_ms: durations[0],
           max_ms: durations[durations.length - 1],
           mean_ms: mean,
           median_ms: median,
           total_runtime_ms: total,
         },
+        fetch_all_cap: fetchAllCap,
         longest_track: { id: longest.id, name: longest.name, duration_ms: longest.duration_ms },
       };
       const name = albumMeta?.name ? `"${albumMeta.name}"` : args.album_id;
+      // A capped walk is stated in the prose, never left to be inferred from
+      // a number that reads like an album total.
+      const countLine = partialEstimate
+        ? `Track stats for ${name} (PARTIAL — first ${tracks.length} of ${tracksListed ?? 'an unknown number of'} listed tracks, scan capped at ${fetchAllCap}):`
+        : `Track stats for ${name} (${tracks.length} listed tracks):`;
       const prose = [
-        `Track stats for ${name} (${tracks.length} listed tracks):`,
+        countLine,
         `  shortest: ${fmtDur(durations[0])} · median: ${fmtDur(median)} · mean: ${fmtDur(mean)} · longest: ${fmtDur(durations[durations.length - 1])}`,
-        `  total runtime: ${fmtDur(total)}`,
+        `  total runtime: ${fmtDur(total)}${partialEstimate ? ' (partial — excludes the tracks the cap cut off)' : ''}`,
         `  longest track: "${longest.name}" (${fmtDur(longest.duration_ms)})`,
       ].join('\n');
       return emit(rf, prose, payload);

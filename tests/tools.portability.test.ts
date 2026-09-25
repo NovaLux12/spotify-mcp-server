@@ -487,3 +487,129 @@ describe('import_from_sidecar (#736 restores every collection)',()=>{
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// #1008: the importer reads the exporter's own truncated / cap_reached flags
+// ---------------------------------------------------------------------------
+
+describe('import_from_sidecar (#1008 surfaces the exporter truncation flags)',()=>{
+  const cappedDoc={
+    exported_at:'2026-01-01T00:00:00.000Z',
+    counts:{ tracks:500, albums:500, shows:3, episodes:0, audiobooks:0 },
+    cap_reached:{ tracks:true, albums:true, shows:false, episodes:false, audiobooks:false },
+    truncated:true,
+    cap:500,
+    tracks: rows('track',500,1),
+    albums: rows('album',500,1001),
+    shows: rows('show',3,2001),
+    episodes: [],
+    audiobooks: [],
+  };
+
+  it('never reports a capped sidecar as a complete restore in the executed payload',async()=>{
+    // 1003 rows crosses the 100-item elicitation gate; disable it so this
+    // test exercises the reporting, not the confirmation.
+    const prevConfirm=process.env.SPOTIFY_MCP_CONFIRM;
+    process.env.SPOTIFY_MCP_CONFIRM='never';
+    try{
+      await withSidecar(cappedDoc, async (p)=>{
+        const {responder}=libraryStub();
+        const h=harness(responder);
+        const out=await h.invoke('import_from_sidecar',{ input_path:p, dry_run:false });
+        const payload=out.structuredContent!;
+        assert.equal(payload.added,1003);
+        // The defect in #1008: the payload said nothing about the 400+ tracks
+        // and 400+ albums the exporter never wrote.
+        assert.equal(payload.sidecar_truncated,true);
+        assert.deepEqual(payload.truncated_collections,['tracks','albums']);
+        assert.equal(payload.cap,500);
+        assert.deepEqual(payload.cap_reached,{ tracks:true, albums:true, shows:false, episodes:false, audiobooks:false });
+        assert.match(textOf(out),/TRUNCATED/);
+        assert.match(textOf(out),/tracks, albums/);
+        // The honest count still has to be there alongside the disclosure.
+        assert.match(textOf(out),/added 1003 item/);
+      });
+    } finally { if(prevConfirm===undefined) delete process.env.SPOTIFY_MCP_CONFIRM; else process.env.SPOTIFY_MCP_CONFIRM=prevConfirm; }
+  });
+
+  it('discloses truncation in the dry run too, not only after writes',async()=>{
+    await withSidecar(cappedDoc, async (p)=>{
+      const {responder}=libraryStub();
+      const h=harness(responder);
+      const out=await h.invoke('import_from_sidecar',{ input_path:p });
+      assert.equal(h.client.calls.length,0);
+      assert.equal(out.structuredContent!.executed,false);
+      assert.equal(out.structuredContent!.sidecar_truncated,true);
+      assert.deepEqual(out.structuredContent!.truncated_collections,['tracks','albums']);
+      assert.match(textOf(out),/TRUNCATED/);
+    });
+  });
+
+  it('surfaces the truncation in the confirmation prompt, before the write',async()=>{
+    const prompts:string[]=[];
+    const elicitHost={
+      getClientCapabilities:()=>({elicitation:{}}),
+      elicitInput:async(req:{message:string})=>{ prompts.push(req.message); return {action:'accept',content:{confirm:true}}; },
+    };
+    const prevConfirm=process.env.SPOTIFY_MCP_CONFIRM;
+    delete process.env.SPOTIFY_MCP_CONFIRM;
+    try{
+      await withSidecar(cappedDoc, async (p)=>{
+        const {responder}=libraryStub();
+        const h=harness(responder,{ server: elicitHost });
+        await h.invoke('import_from_sidecar',{ input_path:p, dry_run:false });
+        assert.equal(prompts.length,1);
+        assert.match(prompts[0],/TRUNCATED/);
+        assert.match(prompts[0],/tracks, albums/);
+      });
+    } finally { if(prevConfirm===undefined) delete process.env.SPOTIFY_MCP_CONFIRM; else process.env.SPOTIFY_MCP_CONFIRM=prevConfirm; }
+  });
+
+  it('reports a file with no truncation flag as UNKNOWN, never as complete',async()=>{
+    // Same rows, flag removed: nothing in the file can prove the export
+    // finished, so the importer must not claim it did.
+    await withSidecar({ tracks: rows('track',3), albums: rows('album',2) }, async (p)=>{
+      const {responder}=libraryStub();
+      const h=harness(responder);
+      const out=await h.invoke('import_from_sidecar',{ input_path:p, dry_run:false });
+      const payload=out.structuredContent!;
+      assert.equal(payload.sidecar_truncated,null);
+      assert.deepEqual(payload.truncated_collections,[]);
+      assert.equal(payload.cap,null);
+      assert.match(textOf(out),/UNKNOWN/);
+      assert.doesNotMatch(textOf(out),/complete export/);
+    });
+  });
+
+  it('honours an explicit truncated:false as a complete export',async()=>{
+    await withSidecar({ truncated:false, cap:500, cap_reached:{tracks:false}, tracks: rows('track',3) }, async (p)=>{
+      const {responder}=libraryStub();
+      const h=harness(responder);
+      const out=await h.invoke('import_from_sidecar',{ input_path:p, dry_run:false });
+      assert.equal(out.structuredContent!.sidecar_truncated,false);
+      assert.match(textOf(out),/complete export/);
+    });
+  });
+
+  it('names every present collection when the file flags truncation without naming which',async()=>{
+    await withSidecar({ truncated:true, tracks: rows('track',2), shows: rows('show',1) }, async (p)=>{
+      const {responder}=libraryStub();
+      const h=harness(responder);
+      const out=await h.invoke('import_from_sidecar',{ input_path:p, dry_run:false });
+      // A flag with no per-collection detail cannot single out a key, so it
+      // must not silently narrow the disclosure to a plausible guess.
+      assert.deepEqual(out.structuredContent!.truncated_collections,['tracks','albums','shows','episodes','audiobooks']);
+    });
+  });
+
+  it('discloses a truncated sidecar even when it restores nothing',async()=>{
+    await withSidecar({ truncated:true, cap_reached:{tracks:true}, cap:500, tracks:[{uri:'junk'},{uri:''}] }, async (p)=>{
+      const {responder}=libraryStub();
+      const h=harness(responder);
+      const out=await h.invoke('import_from_sidecar',{ input_path:p, dry_run:false });
+      assert.equal(out.structuredContent!.added,0);
+      assert.equal(out.structuredContent!.sidecar_truncated,true);
+      assert.match(textOf(out),/TRUNCATED/);
+    });
+  });
+});

@@ -56,6 +56,34 @@ const NO_ACTIVE_DEVICE_MESSAGE =
   'pass its device_id to target it directly.';
 
 /**
+ * The no-active-device message, naming the device_id the call actually asked
+ * for when one was supplied (#849).
+ *
+ * A stale `device_id` is the other way to land here, and it is invisible to
+ * the agent if the message does not say which id was rejected: it reads
+ * "start playback in the app" and re-sends the same dead id. The id is read
+ * from the request URL, so it is the value Spotify rejected — not a guess.
+ * Absent or unparseable ⇒ no id clause; unknown stays unknown.
+ */
+function noActiveDeviceMessage(url: string): string {
+  let deviceId: string | null = null;
+  try {
+    const raw = new URL(url).searchParams.get('device_id');
+    if (raw && raw.trim().length > 0) deviceId = raw;
+  } catch {
+    deviceId = null;
+  }
+  if (deviceId === null) return NO_ACTIVE_DEVICE_MESSAGE;
+  return (
+    `${NO_ACTIVE_DEVICE_MESSAGE} Spotify rejected device_id "${deviceId}": ` +
+    'that id is not an available device for this account (it may be stale, ' +
+    'from another account, or no longer reachable). Run device_health to list ' +
+    `the current device ids, then re-run with one of those (or omit device_id ` +
+    'to target the active device).'
+  );
+}
+
+/**
  * True when Spotify's own 404 body describes a player/device problem rather
  * than a missing resource. Deliberately narrow: a plain 404 ("Not found." for
  * a playlist) must keep the generic not-found mapping.
@@ -564,7 +592,7 @@ export class SpotifyClient {
         if (spotifyMsg && spotifyMsg.trim().length > 0) {
           message =
             res.status === 404 && isNoActiveDevice404(spotifyMsg)
-              ? NO_ACTIVE_DEVICE_MESSAGE
+              ? noActiveDeviceMessage(url)
               : reason
                 ? `${spotifyMsg} (reason: ${reason})`
                 : spotifyMsg;

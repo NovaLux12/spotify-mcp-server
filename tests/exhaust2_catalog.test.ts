@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { registerExhaust2CatalogTools } from '../src/tools/exhaust2_catalog.js';
 import { registerArtistWatchTools } from '../src/tools/artistwatch.js';
-import { SpotifyApiError } from '../src/client.js';
+import { SpotifyApiError, SpotifyClient } from '../src/client.js';
+import { initConfig } from '../src/config.js';
 
 type Handler = (args: Record<string, unknown>) => Promise<{
   content: Array<{ type: string; text: string }>;
@@ -50,6 +51,53 @@ function trackPayload(overrides: Record<string, unknown> = {}) {
     external_ids: { isrc: 'USXXX0000001' },
     ...overrides,
   };
+}
+
+/**
+ * A real-walk client for #774: `get` serves genuinely paginated album-track
+ * responses and the PROTOTYPE `getAllPagesWithTruncation` does the walking, so
+ * these tests exercise the production paging loop and its truncation verdict
+ * rather than a re-implementation of it. Track i+1 has duration (i+1)ms, so
+ * the expected statistics are computable by hand.
+ */
+function pagedAlbumClient(rowCount: number, albumTotalTracks: number) {
+  const rows = Array.from({ length: rowCount }, (_, i) => ({
+    id: `t${i + 1}`, name: `Track ${i + 1}`, uri: `spotify:track:t${i + 1}`,
+    duration_ms: (i + 1) * 1000, explicit: false, track_number: i + 1, artists: [artist],
+  }));
+  const offsets: string[] = [];
+  const client = Object.create(SpotifyClient.prototype) as unknown as {
+    get: (path: string, params?: Record<string, string>) => Promise<unknown>;
+    fetchAllCap?: number;
+    walkCounter: number;
+    progressReporter: null;
+  };
+  client.get = async (path: string, params?: Record<string, string>) => {
+    if (!path.endsWith('/tracks')) {
+      return {
+        id: 'alb1', name: 'Album', uri: 'spotify:album:alb1', album_type: 'album',
+        release_date: '2021', artists: [artist], images: [],
+        total_tracks: albumTotalTracks, tracks: { items: [], total: albumTotalTracks },
+      };
+    }
+    const offset = Number(params?.offset ?? 0);
+    const limit = Number(params?.limit ?? 50);
+    offsets.push(String(offset));
+    return { items: rows.slice(offset, offset + limit), total: rows.length, limit, offset };
+  };
+  client.walkCounter = 0;
+  client.progressReporter = null;
+  return { client, rows, offsets };
+}
+
+/** Install a fetch-all cap for the duration of `fn`, then restore the env snapshot. */
+async function withFetchAllCap<T>(cap: number, fn: () => Promise<T>): Promise<T> {
+  initConfig({ ...process.env, SPOTIFY_MCP_FETCH_ALL_CAP: String(cap) });
+  try {
+    return await fn();
+  } finally {
+    initConfig(process.env);
+  }
 }
 
 const EXPECTED_TOOLS = 19;
@@ -155,24 +203,84 @@ describe('statistics + local-compute tools', () => {
   });
 
   it('album_track_stats returns min/max/mean/median + longest', async () => {
-    const client = makeClient({
-      get: mock.fn(async (path: string) => {
-        if (path.includes('/tracks')) {
-          return { items: [
-            { id: 't1', name: 'Short', uri: 'u', duration_ms: 60_000, explicit: false, track_number: 1, artists: [artist] },
-            { id: 't2', name: 'Long', uri: 'u', duration_ms: 300_000, explicit: false, track_number: 2, artists: [artist] },
-            { id: 't3', name: 'Mid', uri: 'u', duration_ms: 180_000, explicit: false, track_number: 3, artists: [artist] },
-          ], total: 3 };
-        }
-        return { id: 'alb1', name: 'Album', uri: 'u', album_type: 'album', release_date: '2021', total_tracks: 3, artists: [artist], images: [] };
-      }),
-    });
-    const res = await handlerFor('album_track_stats', client)({ album_id: 'alb1', response_format: 'concise' });
+    const { client } = pagedAlbumClient(3, 3);
+    const res = await handlerFor('album_track_stats', client as never)({ album_id: 'alb1', response_format: 'concise' });
     const stats = (res.structuredContent as { stats: { min_ms: number; max_ms: number; mean_ms: number; median_ms: number } }).stats;
-    assert.equal(stats.min_ms, 60_000);
-    assert.equal(stats.max_ms, 300_000);
-    assert.equal(stats.median_ms, 180_000);
-    assert.ok(res.content[0].text.includes('"Long" (5:00)'));
+    assert.equal(stats.min_ms, 1_000);
+    assert.equal(stats.max_ms, 3_000);
+    assert.equal(stats.median_ms, 2_000);
+    assert.ok(res.content[0].text.includes('"Track 3"'));
+  });
+
+  // #774: a short album is complete and says so — no partial flag. Cannot pass
+  // vacuously: the fixture reports tracks.total = 3 and the walk returns 3.
+  it('album_track_stats reports no partial flag for a fully-walked short album', async () => {
+    const { client, offsets } = pagedAlbumClient(3, 3);
+    const res = await handlerFor('album_track_stats', client as never)({ album_id: 'alb1', response_format: 'concise' });
+    const stats = (res.structuredContent as { stats: { track_count: number; tracks_listed: number; partial_estimate: boolean } }).stats;
+    assert.equal(stats.track_count, 3);
+    assert.equal(stats.tracks_listed, 3);
+    assert.equal(stats.partial_estimate, false);
+    assert.deepEqual(offsets, ['0']);
+    assert.ok(!res.content[0].text.includes('PARTIAL'));
+  });
+
+  // #774: 120 tracks over 3 pages. Pre-fix this read ONE page of 50 and
+  // reported track_count 50 with no completeness signal.
+  it('album_track_stats walks every page: 120 tracks over 3 pages', async () => {
+    const { client, offsets } = pagedAlbumClient(120, 120);
+    const res = await handlerFor('album_track_stats', client as never)({ album_id: 'alb1', response_format: 'concise' });
+    const stats = (res.structuredContent as {
+      stats: { track_count: number; tracks_listed: number; partial_estimate: boolean; min_ms: number; max_ms: number; mean_ms: number; median_ms: number; total_runtime_ms: number };
+    }).stats;
+    assert.deepEqual(offsets, ['0', '50', '100']);
+    assert.equal(stats.track_count, 120);
+    assert.equal(stats.tracks_listed, 120);
+    assert.equal(stats.partial_estimate, false);
+    // Hand-computed over all 120 durations (1000..120000 ms).
+    assert.equal(stats.min_ms, 1_000);
+    assert.equal(stats.max_ms, 120_000);
+    assert.equal(stats.mean_ms, 60_500);
+    assert.equal(stats.median_ms, 60_500);
+    assert.equal(stats.total_runtime_ms, 7_260_000);
+    assert.ok(res.content[0].text.includes('(120 listed tracks)'));
+    assert.ok(!res.content[0].text.includes('PARTIAL'));
+  });
+
+  // #774: when the walk IS cut off by the cap, the numbers cover only the
+  // walked window and the payload plus the prose must say so.
+  it('album_track_stats flags a cap-truncated walk instead of reporting it as the album', async () => {
+    const { client, offsets } = pagedAlbumClient(200, 200);
+    const res = await withFetchAllCap(60, () =>
+      handlerFor('album_track_stats', client as never)({ album_id: 'alb1', response_format: 'concise' }));
+    const stats = (res.structuredContent as {
+      stats: { track_count: number; tracks_listed: number; partial_estimate: boolean; total_runtime_ms: number };
+    }).stats;
+    assert.equal(stats.track_count, 60);
+    assert.equal(stats.tracks_listed, 200);
+    assert.equal(stats.partial_estimate, true);
+    assert.equal((res.structuredContent as { fetch_all_cap: number }).fetch_all_cap, 60);
+    // Only the first 60 durations (1000..60000 ms) are in these numbers.
+    assert.equal(stats.total_runtime_ms, 1_830_000);
+    assert.ok(res.content[0].text.includes('PARTIAL'));
+    assert.ok(res.content[0].text.includes('60'));
+    assert.ok(res.content[0].text.includes('200'));
+    assert.deepEqual(offsets, ['0', '50']);
+  });
+
+  // #774: an album read that carried no track count is UNKNOWN, not silently
+  // filled in with the walked length.
+  it('album_track_stats reports tracks_listed as null when the album read carried no count', async () => {
+    const { client } = pagedAlbumClient(3, 3);
+    const bare = client as { get: (path: string, params?: Record<string, string>) => Promise<unknown> };
+    const realGet = bare.get;
+    bare.get = async (path: string, params?: Record<string, string>) =>
+      (path.endsWith('/tracks') ? realGet(path, params) : null);
+    const res = await handlerFor('album_track_stats', bare as never)({ album_id: 'alb1', response_format: 'concise' });
+    const stats = (res.structuredContent as { stats: { track_count: number; tracks_listed: number | null; partial_estimate: boolean } }).stats;
+    assert.equal(stats.track_count, 3);
+    assert.equal(stats.tracks_listed, null);
+    assert.equal(stats.partial_estimate, false);
   });
 
   it('artist_discography_stats reports counts, rate, longest gap', async () => {
