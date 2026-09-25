@@ -232,10 +232,10 @@ function metadataFromPayload(
   payload: JsonObject,
   args: JsonObject,
   capabilities: Required<TruncationCapabilities>,
-  inferredRemaining: number,
+  inferredRemaining: number | undefined,
   itemsWereSliced: boolean,
   cap: number | undefined,
-): TruncationMetadata {
+): TruncationMetadata | undefined {
   const pagination = payload.pagination != null && typeof payload.pagination === 'object'
     ? payload.pagination as JsonObject
     : undefined;
@@ -243,10 +243,14 @@ function metadataFromPayload(
   const explicitReturned = numberField(payload.returned);
   const returned = itemsWereSliced
     ? cap!
-    : explicitReturned ?? items?.length ?? cap ?? 0;
-  const explicitTotal = numberField(payload.total) ?? numberField(pagination?.total);
-  const total = explicitTotal ?? returned + inferredRemaining;
-  const remaining = Math.max(0, total - returned);
+    : explicitReturned ?? items?.length ?? cap;
+  const explicitTotal = numberField(payload.total)
+    ?? numberField(pagination?.total)
+    ?? numberField(payload.unique_tracks);
+  const remaining = inferredRemaining
+    ?? (explicitTotal !== undefined && returned !== undefined ? Math.max(0, explicitTotal - returned) : undefined);
+  if (returned === undefined || remaining === undefined) return undefined;
+  const total = explicitTotal ?? returned + remaining;
   const existingNextOffset = numberField(payload.next_offset) ?? numberField(pagination?.next_offset);
   const nextOffset = capabilities.offset
     ? existingNextOffset ?? (
@@ -314,8 +318,8 @@ export function installTruncationBoundary(server: object): TruncationBoundary {
       && typeof (block as JsonObject).text === 'string'
     ) as { type: 'text'; text: string } | undefined;
     const text = textBlock?.text;
-    const legacy = typeof text === 'string'
-      ? /\b(\d+)\s+more\s+[—-]\s+pass offset or fetch_all\b/i.exec(text)
+    const footerMatch = typeof text === 'string'
+      ? /\b(\d+)\s+more\s+[—-]\s+[^)\n]+\)?/i.exec(text)
       : undefined;
     const markedTruncated = result.structuredContent != null
       && typeof result.structuredContent === 'object'
@@ -344,21 +348,29 @@ export function installTruncationBoundary(server: object): TruncationBoundary {
       const total = Number(completeness[2] ?? completeness[1]);
       payload = { returned: fetched, total, remaining: Math.max(0, total - fetched) };
     }
-    if (!payload && legacy != null) payload = {};
+    if (!payload && footerMatch != null) payload = {};
     const items = payload ? findReturnedItems(payload) : undefined;
     const cap = truncationCap(args, capabilities);
     const itemsWereSliced = items !== undefined && cap !== undefined && items.length > cap;
-    const declaredTotal = payload ? numberField(payload.total) : undefined;
-    const shortPage = items !== undefined && declaredTotal !== undefined && items.length < declaredTotal;
-    const hasTruncationSignal = markedTruncated || legacy != null || completeness != null || shortPage;
+    const declaredTotal = payload
+      ? numberField(payload.total)
+        ?? numberField((payload.pagination as JsonObject | undefined)?.total)
+        ?? numberField(payload.unique_tracks)
+      : undefined;
+    const returned = numberField(payload?.returned) ?? items?.length ?? (itemsWereSliced ? cap : undefined);
+    const inferredRemaining = footerMatch != null
+      ? Number(footerMatch[1])
+      : completeness != null
+        ? Math.max(0, Number(completeness[2] ?? completeness[1]) - Number(completeness[1]))
+        : itemsWereSliced
+          ? items!.length - cap!
+          : numberField(payload?.remaining)
+            ?? (declaredTotal !== undefined && returned !== undefined ? Math.max(0, declaredTotal - returned) : undefined);
+    const shortPage = returned !== undefined && declaredTotal !== undefined && returned < declaredTotal;
+    const hasTruncationSignal = markedTruncated || footerMatch != null || completeness != null || shortPage;
     if (!payload || (!hasTruncationSignal && !itemsWereSliced)) return resultValue;
-
-    const originalLength = items?.length;
-    let remaining = legacy ? Number(legacy[1])
-      : completeness ? Math.max(0, Number(completeness[2] ?? completeness[1]) - Number(completeness[1]))
-      : numberField(payload.remaining) ?? 0;
-    if (itemsWereSliced) remaining = Math.max(remaining, originalLength! - cap!);
-    const metadata = metadataFromPayload(payload, args, capabilities, remaining, itemsWereSliced, cap);
+    const metadata = metadataFromPayload(payload, args, capabilities, inferredRemaining, itemsWereSliced, cap);
+    if (!metadata) return resultValue;
     const nextPayload: JsonObject = { ...payload, ...metadata };
     if (itemsWereSliced && items) {
       const sliced = items.slice(0, cap!);
@@ -367,8 +379,8 @@ export function installTruncationBoundary(server: object): TruncationBoundary {
       }
     }
     let nextText = text;
-    if (legacy && typeof text === 'string') {
-      nextText = text.replace(legacy[0], `${metadata.remaining} more — ${advice.get(toolName)}`);
+    if (footerMatch && typeof text === 'string') {
+      nextText = text.replace(footerMatch[0], `${metadata.remaining} more — ${advice.get(toolName)}`);
     } else if (typeof text === 'string' && !parsedJson && !mentionsAcceptedControl(text, capabilities)) {
       nextText = `${text}\n(${metadata.remaining} more — ${advice.get(toolName)})`;
     }

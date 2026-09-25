@@ -7,7 +7,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { z } from 'zod';
 import type { SpotifyClient } from '../src/client.js';
-import { installTruncationBoundary, type TruncationBoundary } from '../src/shaping.js';
+import { installTruncationBoundary, truncateItems, type TruncationBoundary } from '../src/shaping.js';
 
 const REPO_ROOT = join(import.meta.dirname, '..');
 const TOOL_MODULE_DIR = join(REPO_ROOT, 'src/tools');
@@ -153,6 +153,25 @@ describe('production truncation boundary', () => {
       remaining: 1,
     });
     assert.deepEqual(JSON.parse(shaped.content[0]!.text), shaped.structuredContent);
+  });
+
+  it('handles the current limit-only footer with entries but no total metadata', async () => {
+    const server = new McpServer({ name: 'truncation-limit-test', version: '0.0.0' });
+    const boundary = installTruncationBoundary(server);
+    server.tool('most_replayed', 'Limit-only ranked list', { limit: z.number().optional() }, async () => ({ content: [] }));
+    const shapedResult = truncateItems(['a', 'b', 'c', 'd'], 2, { limit: true });
+    const shaped = boundary.shape('most_replayed', { limit: 2 }, {
+      content: [{ type: 'text', text: `ranked\n(${shapedResult.footer})` }],
+      structuredContent: { unique_tracks: 4, entries: shapedResult.items, truncated: true },
+    }) as {
+      content: Array<{ type: string; text: string }>;
+      structuredContent: Record<string, unknown>;
+    };
+    assert.match(shaped.content[0]!.text, /2 more — raise limit/);
+    assert.doesNotMatch(shaped.content[0]!.text, /0 more|max_results|offset|fetch_all|scan_cap/);
+    assert.equal(shaped.structuredContent.returned, 2);
+    assert.equal(shaped.structuredContent.total, 4);
+    assert.equal(shaped.structuredContent.remaining, 2);
   });
 
   it('preserves successful untouched results by identity', async () => {
