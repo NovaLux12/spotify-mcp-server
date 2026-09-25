@@ -291,6 +291,7 @@ export function withPlaylistInputNote(text: string, resolved: PlaylistInputResol
 
 export interface TruncationCapabilities {
   maxResults?: boolean;
+  maxItems?: boolean;
   offset?: boolean;
   fetchAll?: boolean;
   scanCap?: boolean;
@@ -326,6 +327,7 @@ function directFooterAdvice(capabilities: TruncationCapabilities | undefined): s
 export function truncationAdvice(capabilities: TruncationCapabilities): string {
   const advice: string[] = [];
   if (capabilities.maxResults) advice.push('raise max_results');
+  if (capabilities.maxItems) advice.push('raise max_items');
   if (capabilities.offset) advice.push('continue with offset');
   if (capabilities.fetchAll) advice.push('set fetch_all');
   if (capabilities.scanCap) advice.push('raise scan_cap');
@@ -404,6 +406,7 @@ type JsonObject = Record<string, unknown>;
 
 const CONTINUATION_KEYS: Record<keyof TruncationCapabilities, string> = {
   maxResults: 'max_results',
+  maxItems: 'max_items',
   offset: 'offset',
   fetchAll: 'fetch_all',
   scanCap: 'scan_cap',
@@ -423,6 +426,7 @@ function capabilitiesForSchema(inputSchema: unknown): Required<TruncationCapabil
   const keys = schemaKeys(inputSchema);
   return {
     maxResults: keys.has('max_results'),
+    maxItems: keys.has('max_items'),
     offset: keys.has('offset'),
     fetchAll: keys.has('fetch_all'),
     scanCap: keys.has('scan_cap'),
@@ -442,6 +446,7 @@ function truncationCap(
   capabilities: Required<TruncationCapabilities>,
 ): number | undefined {
   if (capabilities.maxResults) return resolveMaxResults(positiveArgument(args, 'max_results'), getConfig().maxItems);
+  if (capabilities.maxItems) return resolveMaxResults(positiveArgument(args, 'max_items'), getConfig().maxItems);
   if (capabilities.limit) return positiveArgument(args, 'limit');
   return undefined;
 }
@@ -511,8 +516,9 @@ interface CanonicalFooterMatch {
 
 function canonicalFooterMatch(text: string, expectedAdvice: string): CanonicalFooterMatch | null {
   for (const candidate of [expectedAdvice, 'pass offset or fetch_all']) {
-    const body = `\\d+ more — ${escapeRegExp(candidate)}`;
-    const match = new RegExp(`\\((?<parenthesized>${body})\\)|(?<bare>${body})`).exec(text);
+    const match = new RegExp(
+      `\\(\\s*(?<parenthesized>\\d+) more — ${escapeRegExp(candidate)}\\s*\\)|(?<bare>\\d+) more — ${escapeRegExp(candidate)}`,
+    ).exec(text);
     if (match) {
       const count = Number(match.groups?.parenthesized ?? match.groups?.bare);
       return Number.isFinite(count) ? { match, count } : null;

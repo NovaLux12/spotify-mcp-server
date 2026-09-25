@@ -12,7 +12,7 @@ import { installTruncationBoundary, truncateItems, type TruncationBoundary } fro
 
 const REPO_ROOT = join(import.meta.dirname, '..');
 const TOOL_MODULE_DIR = join(REPO_ROOT, 'src/tools');
-const CONTROL_NAMES = ['max_results', 'offset', 'fetch_all', 'scan_cap', 'limit'] as const;
+const CONTROL_NAMES = ['max_results', 'max_items', 'offset', 'fetch_all', 'scan_cap', 'limit'] as const;
 
 interface ListedTool {
   name: string;
@@ -23,6 +23,7 @@ function representativeArgs(properties: Set<string>): Record<string, unknown> {
   const args: Record<string, unknown> = {};
   if (properties.has('max_results')) args.max_results = 1;
   if (properties.has('offset')) args.offset = 0;
+  if (properties.has('max_items')) args.max_items = 1;
   if (properties.has('fetch_all')) args.fetch_all = true;
   if (properties.has('scan_cap')) args.scan_cap = 1;
   if (properties.has('limit')) args.limit = 1;
@@ -124,6 +125,7 @@ describe('production truncation boundary', () => {
         assert.ok(properties.has(control), `${tool.name} footer names unavailable ${control}`);
       }
       if (signature === 'max_results') assert.match(text, /raise max_results/);
+      if (signature === 'max_items') assert.match(text, /raise max_items/);
       if (signature === 'offset,fetch_all') assert.match(text, /continue with offset.*set fetch_all/);
       if (signature === 'scan_cap') assert.match(text, /raise scan_cap/);
       if (signature === 'none') assert.match(text, /narrow the query/);
@@ -142,6 +144,7 @@ describe('production truncation boundary', () => {
     assert.ok(signatures.some((signature) => signature.includes('offset') && signature.includes('fetch_all')), 'fixture must include offset + fetch_all tools');
     assert.ok(signatures.some((signature) => signature.split(',').includes('scan_cap')), 'fixture must include scan_cap tools');
     assert.ok(signatures.includes('none'), 'fixture must include no-continuation tools');
+    assert.ok(signatures.includes('max_items'), 'fixture must include max_items-only tools');
     const clientText = topTracksResult.content.map((block) => 'text' in block ? block.text : '').join('\n');
     assert.match(clientText, /2 more — raise max_results, continue with offset, raise limit/);
     const clientMetadata = topTracksResult.structuredContent as Record<string, unknown>;
@@ -149,6 +152,27 @@ describe('production truncation boundary', () => {
     assert.equal(clientMetadata.total, 4);
     assert.equal(clientMetadata.remaining, 2);
     assert.equal(clientMetadata.next_offset, 2);
+
+    const listeningStreaks = tools.find((tool) => tool.name === 'listening_streaks');
+    assert.ok(listeningStreaks, 'fixture must include listening_streaks');
+    const listeningProperties = new Set(Object.keys(listeningStreaks.inputSchema?.properties ?? {}));
+    assert.ok(listeningProperties.has('max_items'));
+    assert.equal(listeningProperties.has('offset'), false);
+    const listeningResult = shape('listening_streaks', { max_items: 2 }, {
+      content: [{
+        type: 'text',
+        text: 'Listening streaks\n(3 more — pass offset or fetch_all)',
+      }],
+      structuredContent: { items: ['a', 'b', 'c'], total: 5 },
+    }) as {
+      content: Array<{ type: string; text: string }>;
+      structuredContent: Record<string, unknown>;
+    };
+    assert.match(listeningResult.content[0]!.text, /3 more — raise max_items/);
+    assert.doesNotMatch(listeningResult.content[0]!.text, /pass offset or fetch_all/);
+    assert.deepEqual(mentionedControls(listeningResult.content[0]!.text), ['max_items']);
+    assert.equal(listeningResult.structuredContent.returned, 2);
+    assert.equal(listeningResult.structuredContent.remaining, 3);
   });
 
   it('preserves the legacy direct truncateItems footer contract', () => {
