@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { z } from 'zod';
-import { mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -213,5 +213,33 @@ describe('export_all_playlists CSV formula neutralisation (#630)',()=>{
       for(const row of rows) for(const cell of row) assert.doesNotMatch(cell,FORMULA_LEAD,`cell would execute when opened: ${JSON.stringify(cell)}`);
       for(const [index,payload] of payloads.entries()) assert.equal(rows[index+1][1],`'${payload}`);
     } finally { await rm(dir,{recursive:true,force:true}); }
+  });
+
+  it('tightens a pre-existing world-readable ledger to 0600 and 0700 on the directory',async()=>{
+    const dir=await mkdtemp(join(tmpdir(),'portability-hist-'));
+    const histDir=join(dir,'history');
+    await mkdir(histDir,{recursive:true,mode:0o755});
+    const histPath=join(histDir,'mutations.jsonl');
+    await writeFile(histPath,'{"method":"PUT","path":"/me/library"}\n');
+    await chmod(histPath,0o644);
+    await chmod(histDir,0o755);
+    const prev=process.env.SPOTIFY_MCP_HISTORY_DIR;
+    process.env.SPOTIFY_MCP_HISTORY_DIR=histDir;
+    try{
+      const archive=join(dir,'state.json');
+      await writeFile(archive,JSON.stringify({
+        schema_version:1,
+        stores:{ mutations_history:[{ method:'DELETE', path:'/me/library', target:'abc' }] },
+      }));
+      const { invoke }=harness();
+      await invoke('import_profile_state',{ input_path:archive, mode:'overwrite', response_format:'concise' });
+
+      assert.equal((await stat(histPath)).mode & 0o777,0o600);
+      assert.equal((await stat(histDir)).mode & 0o777,0o700);
+    } finally {
+      if (prev === undefined) delete process.env.SPOTIFY_MCP_HISTORY_DIR;
+      else process.env.SPOTIFY_MCP_HISTORY_DIR = prev;
+      await rm(dir,{recursive:true,force:true});
+    }
   });
 });

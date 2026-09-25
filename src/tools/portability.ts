@@ -17,8 +17,9 @@ import { issueReceipt, formatReceipt } from '../receipts.js';
 import { getConfig } from '../config.js';
 // mkdir/writeFile stay for import_profile_state, which writes to the server's
 // own store paths (scenesFilePath(), historyFilePath()) rather than to a
-// caller-supplied destination.
-import { mkdir, writeFile, readFile, readdir } from 'node:fs/promises';
+// caller-supplied destination. chmod is here for the history-file mode
+// enforcement in export_profile_state.
+import { chmod, mkdir, writeFile, readFile, readdir } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import { exportRootDir, resolveOutputPath, writeOutputFile } from '../paths.js';
@@ -39,7 +40,7 @@ import { scenesFilePath, loadScenes } from './scenes.js';
 import { genreTagsPath } from './libraryinsights.js';
 import { playbackExtFile } from './playbackext.js';
 import { searchHistoryFile } from './searchhistory.js';
-import { historyFilePath } from '../history.js';
+import { HISTORY_DIR_MODE, HISTORY_FILE_MODE, historyFilePath, readHistory } from '../history.js';
 
 type ToolOut = {
   content: Array<{ type: 'text'; text: string }>;
@@ -206,14 +207,6 @@ async function tryReadJson(path: string): Promise<unknown | null> {
   try {
     const raw = await readFile(path, 'utf8');
     return JSON.parse(raw);
-  } catch {
-    return null;
-  }
-}
-
-async function tryReadText(path: string): Promise<string | null> {
-  try {
-    return await readFile(path, 'utf8');
   } catch {
     return null;
   }
@@ -480,17 +473,11 @@ export function registerPortabilityTools(server: McpServer, client: SpotifyClien
         counts.artist_watchlist = 0;
       }
 
-      // mutations history (optional)
+      // mutations history (optional) — bounded tail read (#628)
       if (args.include_history) {
-        const histRaw = await tryReadText(historyFilePath());
-        if (histRaw) {
-          const lines = histRaw.split('\n').filter(Boolean);
-          stores.mutations_history = lines.map((l) => { try { return JSON.parse(l); } catch { return { raw: l }; } });
-          counts.mutations_history = lines.length;
-        } else {
-          stores.mutations_history = null;
-          counts.mutations_history = 0;
-        }
+        const records = await readHistory();
+        stores.mutations_history = records.length > 0 ? records : null;
+        counts.mutations_history = records.length;
       }
 
       const doc = {
@@ -623,21 +610,26 @@ export function registerPortabilityTools(server: McpServer, client: SpotifyClien
           case 'mutations_history': {
             if (Array.isArray(value)) {
               const histPath = historyFilePath();
-              await mkdir(dirname(histPath), { recursive: true, mode: 0o700 });
+              await mkdir(dirname(histPath), { recursive: true, mode: HISTORY_DIR_MODE });
+              // Mode arguments only apply at creation, so re-assert after the
+              // write: a pre-existing or copied-in ledger must not stay
+              // group/world-readable (#628).
+              await chmod(dirname(histPath), HISTORY_DIR_MODE);
               if (args.mode === 'overwrite') {
                 const lines = (value as unknown[]).map((r) => JSON.stringify(r)).join('\n') + '\n';
-                await writeFile(histPath, lines, { encoding: 'utf8', mode: 0o600 });
+                await writeFile(histPath, lines, { encoding: 'utf8', mode: HISTORY_FILE_MODE });
                 results.mutations_history = 'overwritten';
               } else {
                 const lines = (value as unknown[]).map((r) => JSON.stringify(r)).join('\n') + '\n';
                 const { appendFile } = await import('node:fs/promises');
                 try {
-                  await appendFile(histPath, lines, { encoding: 'utf8', mode: 0o600 } as unknown as Record<string, unknown>);
+                  await appendFile(histPath, lines, { encoding: 'utf8', mode: HISTORY_FILE_MODE } as unknown as Record<string, unknown>);
                 } catch {
-                  await writeFile(histPath, lines, { encoding: 'utf8', mode: 0o600 });
+                  await writeFile(histPath, lines, { encoding: 'utf8', mode: HISTORY_FILE_MODE });
                 }
                 results.mutations_history = 'merged';
               }
+              await chmod(histPath, HISTORY_FILE_MODE);
             }
             break;
           }

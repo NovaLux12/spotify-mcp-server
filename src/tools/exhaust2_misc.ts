@@ -40,7 +40,8 @@ import { WRITE_SCOPE_REQUIREMENTS, moduleBlockedByScopes, scopesFor } from '../s
 import { loadScenes, scenesFilePath } from './scenes.js';
 import { loadPlaybackExt, playbackExtFile } from './playbackext.js';
 import { genreTagsPath, loadGenreTags } from './libraryinsights.js';
-import { historyFilePath, isHistoryEnabled } from '../history.js';
+import { historyFilePath, isHistoryEnabled, readHistory } from '../history.js';
+import type { HistoryRecord } from '../history.js';
 import { verifyReceipt, getAllReceipts } from '../receipts.js';
 
 // ---------------------------------------------------------------------------
@@ -1465,11 +1466,8 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
         tryRead(playbackExtFile()),
         tryRead(miscFilePath()),
       ]);
-      let history: unknown[] = [];
-      try {
-        const raw = await readFile(historyFilePath(), 'utf8');
-        history = raw.trim().split('\n').filter(Boolean).map((l) => { try { return JSON.parse(l); } catch { return { unparseable: l }; } });
-      } catch { history = []; }
+      // Bounded tail read (#628): a large ledger must not be slurped whole.
+      const history: unknown[] = await readHistory();
       const bundle = {
         exported_at: new Date().toISOString(),
         bundle_version: 1,
@@ -1553,12 +1551,10 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
     },
     async (args) => {
       const rf = args.response_format as ResponseFormatValue;
-      type LogRow = { ts?: string; who?: string; method?: string; path?: string; snapshot_id?: string };
-      let rows: LogRow[] = [];
-      try {
-        const raw = await readFile(historyFilePath(), 'utf8');
-        rows = raw.trim().split('\n').filter(Boolean).map((l) => { try { return JSON.parse(l) as LogRow; } catch { return {}; } });
-      } catch {
+      type LogRow = HistoryRecord;
+      // Bounded tail read (#628): never load an unbounded ledger into memory.
+      let rows: LogRow[] = await readHistory();
+      if (rows.length === 0) {
         return emit(rf, 'No mutation history found (history is opt-in: set SPOTIFY_MCP_HISTORY=1).', { ok: false, error: 'no_history' });
       }
       if (args.from) rows = rows.filter((r) => (r.ts ?? '') >= args.from!);

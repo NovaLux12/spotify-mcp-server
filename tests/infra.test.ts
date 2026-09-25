@@ -5,15 +5,15 @@
  *     cacheKey param-order insensitivity.
  *   - src/shaping.ts: truncateItems truncation math + footer, resolveMaxResults
  *     clamping, describeDryRun output shape.
- *   - src/history.ts: JSONL record whitelist (only whitelisted fields ever hit
- *     disk), enabled/disabled gating, env-dir override — all under os.tmpdir().
+ *   - src/history.ts: JSONL record whitelist, URI redaction, owner-only mode
+ *     re-assertion, size-bounded rotation, bounded tail reads — all under os.tmpdir().
  *
  * Run with: node --import tsx --test tests/infra.test.ts
  */
 
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -26,7 +26,15 @@ const { loadConfig, truthyEnv, initConfig, getConfig, DEFAULT_MAX_ITEMS, DEFAULT
   await import('../src/config.ts');
 const { LruTtlCache, shouldBypassCache, cacheKey } = await import('../src/cache.ts');
 const { truncateItems, resolveMaxResults, describeDryRun } = await import('../src/shaping.ts');
-const { appendHistory, isHistoryEnabled, historyFilePath } = await import('../src/history.ts');
+const {
+  appendHistory,
+  isHistoryEnabled,
+  historyFilePath,
+  historyMaxBytes,
+  redactPath,
+  readHistory,
+  DEFAULT_HISTORY_MAX_BYTES,
+} = await import('../src/history.ts');
 
 // ---------------------------------------------------------------------------
 // Config parsing (#53/#55/#61)
@@ -311,13 +319,17 @@ describe('history: JSONL mutation records', () => {
     histDir = await mkdtemp(path.join(tmpdir(), 'spotify-mcp-history-test-'));
     savedEnv['SPOTIFY_MCP_HISTORY'] = process.env.SPOTIFY_MCP_HISTORY;
     savedEnv['SPOTIFY_MCP_HISTORY_DIR'] = process.env.SPOTIFY_MCP_HISTORY_DIR;
+    savedEnv['SPOTIFY_MCP_HISTORY_MAX_BYTES'] = process.env.SPOTIFY_MCP_HISTORY_MAX_BYTES;
     process.env.SPOTIFY_MCP_HISTORY = '1';
     process.env.SPOTIFY_MCP_HISTORY_DIR = histDir;
+    delete process.env.SPOTIFY_MCP_HISTORY_MAX_BYTES;
   });
 
   afterEach(async () => {
     process.env.SPOTIFY_MCP_HISTORY = savedEnv['SPOTIFY_MCP_HISTORY'];
     process.env.SPOTIFY_MCP_HISTORY_DIR = savedEnv['SPOTIFY_MCP_HISTORY_DIR'];
+    if (savedEnv['SPOTIFY_MCP_HISTORY_MAX_BYTES'] === undefined) delete process.env.SPOTIFY_MCP_HISTORY_MAX_BYTES;
+    else process.env.SPOTIFY_MCP_HISTORY_MAX_BYTES = savedEnv['SPOTIFY_MCP_HISTORY_MAX_BYTES'];
     await rm(histDir, { recursive: true, force: true });
   });
 
@@ -342,9 +354,9 @@ describe('history: JSONL mutation records', () => {
     assert.equal(lines.length, 1);
 
     const rec = JSON.parse(lines[0]) as Record<string, unknown>;
-    assert.deepEqual(Object.keys(rec).sort(), ['method', 'path', 'ts', 'who']);
+    assert.deepEqual(Object.keys(rec).sort(), ['method', 'path', 'target', 'ts', 'who']);
     assert.equal(rec.method, 'PUT', 'method uppercased');
-    assert.equal(rec.path, '/playlists/p1/items');
+    assert.equal(rec.path, '/playlists/p1/items', 'route vocabulary survives redaction');
     assert.equal(rec.who, 'agent');
     assert.ok(typeof rec.ts === 'string' && !Number.isNaN(Date.parse(String(rec.ts))));
     assert.ok(!raw.includes('SECRET'), 'token-like payload never persisted');
@@ -402,5 +414,150 @@ describe('history: JSONL mutation records', () => {
       'utf8',
     );
     assert.match(raw, /"path":"\/deep"/);
+  });
+
+  // --- #628 property 1: no raw URI payload is persisted ---------------------
+
+  it('persists no raw playlist/track URI — only a route template and a fingerprint', async () => {
+    const playlistId = '37i9dQZF1DXcBWIGoYBM5M';
+    const trackUri = 'spotify:track:4uLU6hMCjMI75M1A2tKUQC';
+    await appendHistory({
+      method: 'put',
+      path: `/me/library?uris=${encodeURIComponent(trackUri)}`,
+    });
+    await appendHistory({
+      method: 'post',
+      path: `/playlists/${playlistId}/items`,
+      snapshot_id: 'snap-9',
+    });
+
+    const raw = await readFile(path.join(histDir, 'mutations.jsonl'), 'utf8');
+    assert.ok(!raw.includes(trackUri), 'item URI from the query string never persisted');
+    assert.ok(!raw.includes('spotify:track'), 'no spotify: URI scheme fragment persisted');
+    assert.ok(!raw.includes(playlistId), 'playlist id never persisted');
+    assert.ok(!raw.includes('uris='), 'raw query string never persisted');
+
+    const rows = raw.trim().split('\n').map((l) => JSON.parse(l) as { path: string; target: string });
+    assert.deepEqual(rows.map((r) => r.path), ['/me/library', '/playlists/{id}/items']);
+    // "What changed" is still answerable: which route, which method, and a
+    // stable per-target fingerprint that repeats for the same target.
+    assert.equal(rows[0].target.length, 16);
+    await appendHistory({ method: 'put', path: `/me/library?uris=${encodeURIComponent(trackUri)}` });
+    const after = (await readHistory()).filter((r) => r.path === '/me/library');
+    assert.equal(after.length, 2);
+    assert.equal(after[0].target, after[1].target, 'same target hashes to the same fingerprint');
+  });
+
+  it('redactPath collapses ids, URI fragments and query strings but keeps route vocabulary', () => {
+    assert.equal(redactPath('/me/player/pause'), '/me/player/pause');
+    assert.equal(redactPath('/playlists/37i9dQZF1DXcBWIGoYBM5M/items'), '/playlists/{id}/items');
+    assert.equal(redactPath('/me/library?uris=spotify%3Atrack%3Aabc'), '/me/library');
+    assert.equal(redactPath('/me/tracks/spotify:track:abc'), '/me/tracks/{id}');
+    assert.equal(redactPath('/users/someuser_1234567890abcd/playlists'), '/users/{id}/playlists');
+    assert.equal(redactPath('/playlists/{id}/items'), '/playlists/{id}/items', 'idempotent');
+  });
+
+  // --- #628 property 2: owner-only mode, not just at creation ---------------
+
+  it('tightens a pre-existing world-readable ledger to 0600 on the next write', async () => {
+    const file = path.join(histDir, 'mutations.jsonl');
+    await writeFile(file, '{"ts":"2020-01-01T00:00:00.000Z","who":"agent","method":"PUT","path":"/me/library"}\n');
+    await chmod(file, 0o644);
+    assert.equal((await stat(file)).mode & 0o777, 0o644, 'precondition: copied-in loose mode');
+
+    await appendHistory({ method: 'put', path: '/me/library' });
+
+    assert.equal((await stat(file)).mode & 0o777, 0o600);
+  });
+
+  it('tightens a pre-existing world-readable history directory to 0700', async () => {
+    const dir = path.join(histDir, 'loose');
+    await mkdir(dir, { recursive: true, mode: 0o755 });
+    await chmod(dir, 0o755);
+    process.env.SPOTIFY_MCP_HISTORY_DIR = dir;
+
+    await appendHistory({ method: 'put', path: '/me/library' });
+
+    assert.equal((await stat(dir)).mode & 0o777, 0o700);
+    assert.equal((await stat(path.join(dir, 'mutations.jsonl'))).mode & 0o777, 0o600);
+  });
+
+  // --- #628 property 3: bounded growth and bounded reads -------------------
+
+  it('rotates the ledger so total on-disk history stays within 2x the cap', async () => {
+    process.env.SPOTIFY_MCP_HISTORY_MAX_BYTES = '2048';
+    assert.equal(historyMaxBytes(), 2048);
+    for (let i = 0; i < 200; i++) {
+      await appendHistory({ method: 'put', path: `/me/library?uris=spotify%3Atrack%3A${i}` });
+    }
+
+    const live = await stat(path.join(histDir, 'mutations.jsonl'));
+    const archive = await stat(path.join(histDir, 'mutations.jsonl.1'));
+    assert.ok(live.size <= 2048 + 512, `live ledger grew past the cap: ${live.size}`);
+    assert.ok(live.size + archive.size <= 2 * 2048 + 512, `ledger unbounded: ${live.size}+${archive.size}`);
+    assert.ok(archive.size > 0, 'rotation actually happened');
+    assert.equal(archive.mode & 0o777, 0o600, 'rotated archive is owner-only too');
+    // Rotation is lossy by design — but the newest records must survive.
+    const rows = await readHistory({ limit: 1 });
+    assert.equal(rows.length, 1);
+    assert.match(String(rows[0].target), /^[0-9a-f]{16}$/);
+  });
+
+  it('defaults the rotation cap and ignores a nonsense override', () => {
+    assert.equal(historyMaxBytes({}), DEFAULT_HISTORY_MAX_BYTES);
+    assert.equal(historyMaxBytes({ SPOTIFY_MCP_HISTORY_MAX_BYTES: '0' }), DEFAULT_HISTORY_MAX_BYTES);
+    assert.equal(historyMaxBytes({ SPOTIFY_MCP_HISTORY_MAX_BYTES: 'abc' }), DEFAULT_HISTORY_MAX_BYTES);
+    assert.equal(historyMaxBytes({ SPOTIFY_MCP_HISTORY_MAX_BYTES: '4096' }), 4096);
+  });
+
+  it('readHistory returns at most limit records for an arbitrarily large ledger', async () => {
+    // 5,000 records ≈ 700 KB. Pre-fix, readers did
+    // `readFile(...).split('\n')` and materialized every line; the bounded
+    // reader must return 25 newest and nothing more.
+    const records = Array.from({ length: 5000 }, (_, i) =>
+      JSON.stringify({ ts: new Date(Date.UTC(2026, 0, 1, 0, 0, i)).toISOString(), who: 'agent', method: 'PUT', path: '/me/library', target: `t${i}` }),
+    ).join('\n');
+    const file = path.join(histDir, 'mutations.jsonl');
+    await writeFile(file, records + '\n');
+    assert.equal((await readFile(file, 'utf8')).trim().split('\n').length, 5000, 'precondition: the ledger is genuinely large');
+
+    const rows = await readHistory({ limit: 25 });
+    assert.equal(rows.length, 25);
+    assert.equal(rows[24].target, 't4999', 'newest record retained');
+    assert.equal(rows[0].target, 't4975', 'oldest of the retained window');
+  });
+
+  it('readHistory spans the rotation boundary in chronological order', async () => {
+    process.env.SPOTIFY_MCP_HISTORY_MAX_BYTES = '2048';
+    for (let i = 0; i < 200; i++) {
+      await appendHistory({ method: 'put', path: `/me/library?uris=spotify%3Atrack%3A${i}` });
+    }
+    await appendHistory({ method: 'delete', path: '/me/tracks/37i9dQZF1DXcBWIGoYBM5M' });
+
+    const rows = await readHistory({ limit: 500 });
+    const methods = rows.map((r) => r.method);
+    assert.ok(methods.length > 1, 'records came from both generations');
+    assert.equal(methods.filter((m) => m === 'DELETE').length, 1, 'live generation read last');
+    const times = rows.map((r) => String(r.ts));
+    assert.deepEqual(times, [...times].sort(), 'records returned oldest-first');
+    // Nothing is lost at the seam: every line in both generations is returned.
+    const count = async (p: string) => (await readFile(p, 'utf8')).trim().split('\n').filter(Boolean).length;
+    const onDisk = (await count(path.join(histDir, 'mutations.jsonl.1'))) + (await count(path.join(histDir, 'mutations.jsonl')));
+    assert.equal(rows.length, Math.min(onDisk, 500));
+    assert.ok(onDisk > 1, 'precondition: both generations hold records');
+  });
+
+  it('readHistory skips torn/unparseable lines instead of failing the read', async () => {
+    await writeFile(
+      path.join(histDir, 'mutations.jsonl'),
+      '{"method":"PUT","path":"/me/library","target":"a"}\n{"method":"PUT","path":"/me/lib\n',
+    );
+    const rows = await readHistory();
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].target, 'a');
+  });
+
+  it('readHistory returns an empty list when no ledger exists', async () => {
+    assert.deepEqual(await readHistory(), []);
   });
 });
