@@ -46,7 +46,16 @@ function item(index: number) {
   };
 }
 
-function harness(options: { totalItems: number; reportedTotal?: number | null } = { totalItems: 300 }) {
+/** A row itemToTrackRow rejects (no uri) — it is walked but dropped from `tracks`. */
+function malformedItem(index: number) {
+  return {
+    added_at: '2026-01-01T00:00:00Z',
+    item: { name: `Broken ${index}`, type: 'track' },
+  };
+}
+
+/** `dropEvery` makes every Nth walked row malformed (no uri → itemToTrackRow null). */
+function harness(options: { totalItems: number; reportedTotal?: number | null; dropEvery?: number } = { totalItems: 300 }) {
   const registered: RegisteredTool[] = [];
   const fakeServer = {
     tool(name: string, _description: string, schema: z.ZodRawShape, handler: RegisteredTool['handler']) {
@@ -56,6 +65,7 @@ function harness(options: { totalItems: number; reportedTotal?: number | null } 
 
   const totalItems = options.totalItems;
   const reportedTotal = options.reportedTotal === undefined ? totalItems : options.reportedTotal;
+  const dropEvery = options.dropEvery ?? 0;
   const walkCalls: WalkCall[] = [];
   const itemPageRequests: number[] = [];
 
@@ -84,7 +94,7 @@ function harness(options: { totalItems: number; reportedTotal?: number | null } 
       for (;;) {
         const page = Array.from(
           { length: Math.max(0, Math.min(pageSize, totalItems - offset)) },
-          (_, i) => item(offset + i),
+          (_, i) => (dropEvery > 0 && (offset + i) % dropEvery === 0 ? malformedItem(offset + i) : item(offset + i)),
         );
         itemPageRequests.push(offset);
         all.push(...page);
@@ -214,5 +224,25 @@ describe('take_playlist_snapshot walk cap (#878)', () => {
     assert.equal(commit.walkCalls[0].maxItems, planned.item_walk_cap, 'default cap is the same number');
     assert.equal(done.item_walk_cap, planned.item_walk_cap);
     assert.equal(done.cap_reached, true, '5,000 items under a 500 cap is disclosed');
+  });
+
+  it('detects the cap from the raw walk even when dropped rows hide it', async () => {
+    // Every 2nd walked row is malformed, so the walk collects 100 rows but
+    // `tracks` holds only 50. Keying the disclosure off tracks.length would
+    // wrongly report "not truncated" for a playlist that really was cut off.
+    const commit = harness({ totalItems: 300, dropEvery: 2 });
+    const out = await commit.invoke('take_playlist_snapshot', {
+      playlist: '4uLU6hMCjMI75M1A2tKUQC',
+      max_results: 100,
+      dry_run: false,
+    });
+    const done = out.structuredContent as { track_count: number; cap_reached: boolean };
+    const prose = out.content.map((c) => c.text).join('\n');
+
+    assert.equal(commit.walkCalls[0].maxItems, 100);
+    assert.equal(done.track_count, 50, 'only well-formed rows are stored');
+    assert.ok(done.track_count < 100, 'stored rows sit below the ceiling');
+    assert.equal(done.cap_reached, true, 'truncation is still disclosed');
+    assert.match(prose, /TRUNCATED/);
   });
 });
