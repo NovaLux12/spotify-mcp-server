@@ -116,7 +116,7 @@ above either ceiling fails CI and server startup.
 | swarm3bdiscovery | 24 | 20,048 | 24 | 20,048 | 25 | 22,053 |
 | swarm3shows | 24 | 20,161 | 24 | 20,161 | 25 | 22,178 |
 | swarm3refs | 6 | 4,331 | 6 | 4,331 | 7 | 4,765 |
-| swarm3analytics | 24 | 18,448 | 24 | 18,448 | 25 | 20,293 |
+| swarm3analytics | 24 | 18,880 | 24 | 18,880 | 25 | 20,768 |
 | swarm3library | 24 | 17,987 | 24 | 17,987 | 25 | 19,786 |
 | swarm3playback | 24 | 14,247 | 24 | 14,247 | 25 | 15,672 |
 | swarm3playlistops | 24 | 31,777 | 24 | 31,777 | 25 | 34,955 |
