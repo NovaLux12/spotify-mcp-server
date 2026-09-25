@@ -4,6 +4,33 @@ import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../src/client.js';
 import { registerSwarm3AnalyticsTools } from '../src/tools/swarm3_analytics.js';
+/**
+ * Spelled out rather than imported: the opt-in's env-var name IS the public
+ * contract of #695, and importing it from the registrar would let a rename
+ * silently keep both the implementation and its tests agreeing.
+ */
+const ANALYTICS_OPT_IN_ENV = 'SPOTIFY_MCP_EXPERIMENTAL_ANALYTICS';
+
+/**
+ * The derived listening metrics #695 gates. Hard-coded here on purpose: a
+ * constant imported from the registrar would only restate the implementation.
+ */
+const DERIVED_ANALYTICS_TOOLS = [
+  'binge_detector_report',
+  'discovery_ratio',
+  'listening_clock',
+  'listening_clock_heatmap',
+  'mood_bucket_report',
+  'artist_listening_clock',
+  'weekday_listening_report',
+] as const;
+
+/** Ungated members of the same module — the gate must not take these. */
+const UNGATED_ANALYTICS_TOOLS = [
+  'listening_history_export',
+  'weekly_rotation_report',
+] as const;
+
 
 type ToolResult = {
   content: Array<{ type: string; text: string }>;
@@ -21,19 +48,26 @@ interface RecentItem {
   track: { id: string; name: string; uri: string; artists: Array<{ id: string; name: string }> };
 }
 
-function playedAt(id: string, played_at: string): RecentItem {
+/** `artistId` is separate from the track id so several tracks can belong to
+ * one artist — the binge detector counts plays per artist, not per track. */
+function playedAt(id: string, played_at: string, artistId = `artist-${id}`): RecentItem {
   return {
     played_at,
     track: {
       id,
       name: `Track ${id}`,
       uri: `spotify:track:${id}`,
-      artists: [{ id: `artist-${id}`, name: `Artist ${id}` }],
+      artists: [{ id: artistId, name: `Artist ${artistId}` }],
     },
   };
 }
 
-function harness(recent: RecentItem[]) {
+/**
+ * Register the module with the derived-analytics opt-in in a known state.
+ * Registration reads the env once, so it is set only around the call and the
+ * process env is restored before any handler runs.
+ */
+function harness(recent: RecentItem[], options: { analyticsOptIn?: boolean } = {}) {
   const registered: RegisteredTool[] = [];
   const fakeServer = {
     tool(name: string, _description: string, schema: z.ZodRawShape, handler: RegisteredTool['handler']) {
@@ -56,9 +90,20 @@ function harness(recent: RecentItem[]) {
     },
   };
 
-  registerSwarm3AnalyticsTools(fakeServer, client as unknown as SpotifyClient);
+  const optIn = options.analyticsOptIn ?? true;
+  const previous = process.env[ANALYTICS_OPT_IN_ENV];
+  if (optIn) process.env[ANALYTICS_OPT_IN_ENV] = '1';
+  else delete process.env[ANALYTICS_OPT_IN_ENV];
+  try {
+    registerSwarm3AnalyticsTools(fakeServer, client as unknown as SpotifyClient);
+  } finally {
+    if (previous === undefined) delete process.env[ANALYTICS_OPT_IN_ENV];
+    else process.env[ANALYTICS_OPT_IN_ENV] = previous;
+  }
+
   const byName = new Map(registered.map((tool) => [tool.name, tool]));
   return {
+    names: registered.map((tool) => tool.name),
     async invoke(name: string, args: Record<string, unknown> = {}): Promise<ToolResult> {
       const tool = byName.get(name);
       assert.ok(tool, `${name} is registered`);
@@ -223,4 +268,61 @@ describe('swarm3 analytics time frame (#824)', () => {
       });
     });
   }
+});
+
+// ---------------------------------------------------------------------------
+// Derived-analytics opt-in (#695)
+// ---------------------------------------------------------------------------
+
+describe('derived listening analytics opt-in', () => {
+  const recent = [
+    playedAt('a', '2026-09-20T10:00:00Z'),
+    playedAt('a', '2026-09-20T11:00:00Z'),
+    playedAt('b', '2026-09-20T12:00:00Z'),
+    ...Array.from({ length: 3 }, (_, i) => playedAt(`c${i}`, '2026-09-20T13:00:00Z', 'artist-loop')),
+    ...Array.from({ length: 3 }, (_, i) => playedAt(`c${i}`, '2026-09-21T14:00:00Z', 'artist-loop')),
+  ];
+
+  it('registers none of the derived metrics when the opt-in is unset', () => {
+    const { names } = harness(recent, { analyticsOptIn: false });
+    for (const name of DERIVED_ANALYTICS_TOOLS) {
+      assert.ok(!names.includes(name), `${name} must not be registered without ${ANALYTICS_OPT_IN_ENV}`);
+    }
+  });
+
+  it('keeps the ungated members of the same module registered without the opt-in', () => {
+    const { names } = harness(recent, { analyticsOptIn: false });
+    for (const name of UNGATED_ANALYTICS_TOOLS) {
+      assert.ok(names.includes(name), `${name} must stay available without ${ANALYTICS_OPT_IN_ENV}`);
+    }
+  });
+
+  it('registers every derived metric when the opt-in is set', () => {
+    const { names } = harness(recent, { analyticsOptIn: true });
+    for (const name of DERIVED_ANALYTICS_TOOLS) {
+      assert.ok(names.includes(name), `${name} must be registered with ${ANALYTICS_OPT_IN_ENV}=1`);
+    }
+  });
+
+  it('returns the same payload as before once opted in (binge detector)', async () => {
+    const out = await harness(recent, { analyticsOptIn: true }).invoke('binge_detector_report');
+    const payload = out.structuredContent as { threshold: number; binges: Array<{ id: string; plays: number }> };
+    assert.equal(payload.threshold, 5);
+    // Only the looped artist clears the default threshold of 5 plays.
+    assert.deepEqual(payload.binges.map((b) => [b.id, b.plays]), [['artist-loop', 6]]);
+  });
+
+  it('returns the same payload as before once opted in (weekday report)', async () => {
+    const out = await harness(recent, { analyticsOptIn: true }).invoke('weekday_listening_report');
+    const payload = out.structuredContent as {
+      weekdays: Array<{ weekday: string; plays: number }>;
+      busiest_weekday: string;
+    };
+    // 2026-09-20 is a Sunday, 2026-09-21 a Monday.
+    assert.deepEqual(
+      payload.weekdays.filter((d) => d.plays > 0).map((d) => [d.weekday, d.plays]),
+      [['Mon', 3], ['Sun', 6]],
+    );
+    assert.equal(payload.busiest_weekday, 'Sun');
+  });
 });
