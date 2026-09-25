@@ -473,12 +473,21 @@ export function registerExhaust2ExtraTools(server: McpServer, client: SpotifyCli
       const rf = args.response_format as ResponseFormatValue;
       const dry = args.dry_run ?? true;
       const id = normalizeRef(args.playlist_id);
-      const meta = await client.get<{ id?: string; name?: string }>(`/playlists/${encodeURIComponent(id)}`);
+      const meta = await client.get<{ id?: string; name?: string; tracks?: { total?: number } | null }>(`/playlists/${encodeURIComponent(id)}`);
       if (!meta) throw new Error(`Playlist "${args.playlist_id}" not found`);
+      // The playlist's real length, as reported by the playlist object. The
+      // item walk below is bounded, so its row count can never stand in here.
+      const rawTotal = meta.tracks?.total;
+      const playlistTotal = typeof rawTotal === 'number' && Number.isFinite(rawTotal) ? rawTotal : null;
+      const totalPhrase = playlistTotal === null
+        ? 'playlist length unknown'
+        : `playlist has ${playlistTotal} item(s)`;
 
       let trackUri = args.track_uri ?? null;
       let images: CoverImage[] = [];
       let source = '';
+      // Items actually fetched below; 0 when the walk never runs (track_uri path).
+      let itemsScanned = 0;
       if (trackUri) {
         const tid = normalizeRef(trackUri);
         const t = await client.get<{ uri?: string; name?: string; album?: { images?: CoverImage[] } }>(`/tracks/${encodeURIComponent(tid)}`);
@@ -493,10 +502,13 @@ export function registerExhaust2ExtraTools(server: McpServer, client: SpotifyCli
           { maxItems: 500 },
         );
         const idx = args.position ?? -1;
+        itemsScanned = rows.length;
         const candidates = args.position != null
           ? [rows[idx]].filter(Boolean)
           : rows;
-        if (args.position != null && !candidates[0]) throw new Error(`Position ${args.position} out of range (${rows.length} item(s))`);
+        if (args.position != null && !candidates[0]) {
+          throw new Error(`Position ${args.position} is beyond the ${itemsScanned} item(s) scanned (${totalPhrase})`);
+        }
         for (const row of candidates) {
           const item = row?.item;
           if (item?.type !== 'track' || !item.uri) continue;
@@ -509,7 +521,7 @@ export function registerExhaust2ExtraTools(server: McpServer, client: SpotifyCli
         }
       }
       if (!trackUri || images.length === 0) {
-        throw new Error('No track with album art found (pass track_uri or position, or add a track with art first)');
+        throw new Error(`No track with album art found in the ${itemsScanned} item(s) scanned (${totalPhrase}). Pass track_uri or position, or add a track with art first.`);
       }
       const ranked = rankCoverCandidates(images);
       if (dry) {
@@ -521,7 +533,7 @@ export function registerExhaust2ExtraTools(server: McpServer, client: SpotifyCli
             `Cover candidates (largest first): ${ranked.map((i) => `${i.url} (${i.width ?? '?'}px)`).join(', ')}`,
             'Next commit: fetch the largest JPEG ≤ 256 KB and PUT /playlists/{id}/images.',
           ]),
-          { ok: true, dry_run: true, playlist: id, track: trackUri, source, candidates: ranked },
+          { ok: true, dry_run: true, playlist: id, track: trackUri, source, candidates: ranked, items_scanned: itemsScanned, playlist_total: playlistTotal },
         );
       }
       let lastError: unknown = null;
@@ -532,7 +544,7 @@ export function registerExhaust2ExtraTools(server: McpServer, client: SpotifyCli
           return shape(
             rf,
             `Cover of "${meta.name ?? id}" set from ${trackUri} via ${source} (${candidate.width ?? '?'}px, ${bytes} B).`,
-            { ok: true, dry_run: false, playlist: id, track: trackUri, source, image_url: candidate.url, bytes },
+            { ok: true, dry_run: false, playlist: id, track: trackUri, source, image_url: candidate.url, bytes, items_scanned: itemsScanned, playlist_total: playlistTotal },
           );
         } catch (err) {
           lastError = err;

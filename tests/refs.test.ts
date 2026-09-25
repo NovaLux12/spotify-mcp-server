@@ -287,4 +287,47 @@ describe('curated reference tool surface', () => {
     assert.equal(result.structuredContent?.valid, 0);
     assert.equal((result.structuredContent?.results as unknown[]).length, 2);
   });
+
+  // #825: the share-URL host must match exactly. These are the near misses a
+  // suffix/substring/case-insensitive-but-loose check would let through.
+  const HOST_TABLE: Array<{ url: string; accepted: boolean }> = [
+    { url: `https://open.spotify.com/track/${ID}`, accepted: true },
+    { url: `https://OPEN.SPOTIFY.COM/track/${ID}`, accepted: true },
+    { url: `https://open.spotify.com:443/track/${ID}`, accepted: true },
+    { url: `https://open.spotify.com.evil.test/track/${ID}`, accepted: false },
+    { url: `https://open.spotify.com.example.com/track/${ID}`, accepted: false },
+    { url: `https://OPEN.SPOTIFY.COM.EVIL.TEST/track/${ID}`, accepted: false },
+    { url: `https://open.spotify.com.co/track/${ID}`, accepted: false },
+    { url: `https://open.spotify.co/track/${ID}`, accepted: false },
+    { url: `https://notopen.spotify.com/track/${ID}`, accepted: false },
+    { url: `https://sub.open.spotify.com/track/${ID}`, accepted: false },
+    { url: `https://open.spotify.com./track/${ID}`, accepted: false },
+    { url: `https://open.spotify.com@evil.test/track/${ID}`, accepted: false },
+    { url: `https://evil.test/open.spotify.com/track/${ID}`, accepted: false },
+  ];
+
+  it('accepts only the exact open.spotify.com host and refuses lookalikes', async () => {
+    const harness = makeRefsHarness();
+    for (const { url, accepted } of HOST_TABLE) {
+      const parsed = (await harness.invoke('parse_spotify_uri', { uri: url, expected_kind: 'track' }))
+        .structuredContent!;
+      assert.equal(parsed.valid, accepted, url);
+      if (accepted) {
+        assert.equal(parsed.id, ID, url);
+        assert.equal(parsed.canonical_uri, `spotify:track:${ID}`, url);
+        continue;
+      }
+      // The lookalike must be refused outright, not resolved to an entity:
+      // no id, no kind, no canonical URI leaks through any surface.
+      assert.equal(parsed.id, null, url);
+      assert.equal(parsed.kind, null, url);
+      assert.equal(parsed.canonical_uri, null, url);
+
+      const canonicalised = (await harness.invoke('canonicalize_spotify_uri', {
+        uris: [url],
+        expected_kind: 'track',
+      })).structuredContent as { rows: Array<{ valid: boolean; canonical_uri: string | null }> };
+      assert.deepEqual(canonicalised.rows, [{ input: url, canonical_uri: null, valid: false }], url);
+    }
+  });
 });
