@@ -61,10 +61,10 @@ export const CHUNK_CAPS = {
 } as const;
 
 /**
- * Canonical per-request cap for a `/me/library` write (#624). Spotify rejects
- * a PUT/DELETE carrying more than 40 uris. `restore.ts` and `undo.ts` import
- * this rather than re-hardcoding the number; `library.ts` has its own single-
- * request save/remove tools, which the 40-uri input schema already bounds.
+ * Per-request cap for a `/me/library` write (#624). Spotify rejects a PUT or
+ * DELETE carrying more than 40 uris. `restore.ts` and `undo.ts` import this
+ * rather than each hardcoding the number, which is how the two drifted apart.
+ * The read endpoint `/me/library/contains` takes 50 and is capped separately.
  */
 export const LIBRARY_WRITE_CHUNK = CHUNK_CAPS.library_writes;
 

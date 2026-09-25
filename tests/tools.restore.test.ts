@@ -735,4 +735,48 @@ describe('restore_library_snapshot write safety (#624)', () => {
       await rm(join(path, '..'), { recursive: true, force: true });
     }
   });
+
+  it('does not claim a playlist was created when its create failed', async () => {
+    const path = await snapshotFile({
+      _meta: { created: CREATED },
+      playlists: [
+        { name: 'One', item_count: 1, items: [{ uri: 'spotify:track:o1', name: 'O1' }] },
+        { name: 'Two', item_count: 1, items: [{ uri: 'spotify:track:t1', name: 'T1' }] },
+        { name: 'Three', item_count: 1, items: [{ uri: 'spotify:track:th1', name: 'TH1' }] },
+      ],
+    });
+    try {
+      const h = harness(emptyState(), 'accept');
+      // The FIRST create fails; the loop still attempts the other two, so the
+      // report must credit those two and blame only the one that failed.
+      const realPost = h.client.post.bind(h.client);
+      let creates = 0;
+      h.client.post = async (p: string, body?: unknown) => {
+        if (p === '/me/playlists' && ++creates === 1) throw new Error('Spotify rejected the create');
+        return realPost(p, body);
+      };
+
+      const out = await h.invoke('restore_library_snapshot', {
+        backup_path: path,
+        dry_run: false,
+        categories: ['playlists'],
+      });
+      const payload = out.structuredContent as Record<string, any>;
+      const text = textOf(out);
+
+      assert.equal(payload.status, 'partial_restore');
+      assert.equal(payload.playlists.created.length, 2, 'the two that succeeded are credited');
+      assert.equal(payload.playlists.not_created, 1, 'only the failed create is reported lost');
+      assert.equal(payload.failures.length, 1);
+      assert.equal(payload.failures[0].stage, 'playlist_create');
+      const restored = (name: string) => `Restored · ${name} \\(${CREATED.slice(0, 10)}\\)`;
+      assert.match(text, new RegExp(`NOT created — "${restored('One')}"`));
+      assert.doesNotMatch(text, new RegExp(`· created "${restored('One')}"`));
+      assert.match(text, new RegExp(`created "${restored('Two')}" \\(1 item\\(s\\)\\)`));
+      assert.match(text, new RegExp(`created "${restored('Three')}" \\(1 item\\(s\\)\\)`));
+      assert.match(text, /1 planned playlist\(s\) were never created/);
+    } finally {
+      await rm(join(path, '..'), { recursive: true, force: true });
+    }
+  });
 });

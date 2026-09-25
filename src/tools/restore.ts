@@ -500,14 +500,19 @@ export interface RestoreFailure {
   items_written: number;
   items_planned: number;
   items_pending: number;
-  /** Planned playlists that were never created (playlists category only). */
-  playlists_not_created?: number;
+  /**
+   * Every field is a count of what was ACTUALLY attempted. A count that folded
+   * in work still queued would be a guess, and a guess about what landed is
+   * worse than no number at all.
+   */
 }
 
 export interface RestoreOutcome {
   executed: ExecutedByCategory;
   createdPlaylists: CreatedPlaylist[];
   failures: RestoreFailure[];
+  /** Planned playlist creations absent from `createdPlaylists`. */
+  playlistsNotCreated: number;
 }
 
 /** One chunked list write, accounted so a mid-run failure is reportable. */
@@ -589,15 +594,14 @@ async function executeRestore(
       }
     } else if (category === 'playlists') {
       let addedTotal = 0;
-      // Each creation is attempted independently so one failure is attributed
-      // to its own playlist; `plannedPlaylists` tracks how many creations the
-      // plan still owes, so a failure reports every playlist that did NOT
-      // land — not just the one that threw.
+      // Each creation is attempted independently, so one failure is attributed
+      // to its own playlist rather than abandoning the rest. A failure record
+      // covers only what was actually attempted: counting the creations still
+      // queued would report playlists as lost that may be created moments
+      // later. The truthful "not created" total is computed once, after the
+      // loop, from what the outcome really contains.
       const plannedPlaylists = plan.playlistCreations;
-      for (let index = 0; index < plannedPlaylists.length; index++) {
-        const creation = plannedPlaylists[index]!;
-        const stillOwed = plannedPlaylists.slice(index);
-        const owedItems = stillOwed.reduce((total, c) => total + c.itemUris.length, 0);
+      for (const creation of plannedPlaylists) {
         let created: { id?: string } | null;
         try {
           created = await client.post<{ id?: string }>('/me/playlists', {
@@ -615,9 +619,8 @@ async function executeRestore(
             requests_completed: createdPlaylists.length,
             requests_attempted: createdPlaylists.length + 1,
             items_written: addedTotal,
-            items_planned: addedTotal + owedItems,
-            items_pending: owedItems,
-            playlists_not_created: stillOwed.length,
+            items_planned: addedTotal + creation.itemUris.length,
+            items_pending: creation.itemUris.length,
           });
           continue;
         }
@@ -631,17 +634,14 @@ async function executeRestore(
           itemsAdded: r.itemsWritten,
         });
         if (r.failed) {
-          const after = plannedPlaylists.slice(index + 1);
-          const pendingItems = after.reduce((total, c) => total + c.itemUris.length, 0);
           failures.push({
             category,
             stage: 'playlist_items',
             requests_completed: r.completed,
             requests_attempted: r.attempted,
             items_written: r.itemsWritten,
-            items_planned: creation.itemUris.length + pendingItems,
-            items_pending: creation.itemUris.length - r.itemsWritten + pendingItems,
-            playlists_not_created: after.length,
+            items_planned: creation.itemUris.length,
+            items_pending: creation.itemUris.length - r.itemsWritten,
           });
         }
       }
@@ -649,7 +649,13 @@ async function executeRestore(
     }
   }
 
-  return { executed, createdPlaylists, failures };
+  return {
+    executed,
+    createdPlaylists,
+    failures,
+    // Truthful by construction: planned creations that are not in the outcome.
+    playlistsNotCreated: plan.playlistCreations.length - createdPlaylists.length,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -711,6 +717,7 @@ function buildPayload(
         items_added: c.itemsAdded,
       })),
       skipped_existing: plan.skippedPlaylists,
+      ...(outcome ? { not_created: outcome.playlistsNotCreated } : {}),
     },
   };
 }
@@ -760,18 +767,35 @@ function buildProse(
       `  · NOT WRITTEN — ${failure.category} (${failure.stage}): ` +
         `${failure.requests_completed}/${failure.requests_attempted} request(s) succeeded, ` +
         `${failure.items_written}/${failure.items_planned} item(s) landed, ` +
-        `${failure.items_pending} still pending. Re-run the restore to finish them.` +
-        (failure.playlists_not_created
-          ? ` ${failure.playlists_not_created} planned playlist(s) were never created.`
-          : ''),
+        `${failure.items_pending} still pending. Re-run the restore to finish them.`,
+    );
+  }
+  if (outcome && outcome.playlistsNotCreated > 0) {
+    lines.push(
+      `  · ${outcome.playlistsNotCreated} planned playlist(s) were never created. Re-run the restore to create them.`,
     );
   }
 
-  const detailLines: string[] = plan.playlistCreations.map((c) =>
-    done
-      ? `created "${c.restoredName}" (${c.itemUris.length} item(s))`
-      : `would create "${c.restoredName}" (${c.itemUris.length} item(s))`,
-  );
+  // Once writes have run, the per-playlist lines come from the OUTCOME: a
+  // playlist whose create failed must not be listed as created, and one that
+  // took only some items must not claim them all.
+  let detailLines: string[];
+  if (done && outcome) {
+    const plannedSize = new Map(plan.playlistCreations.map((c) => [c.restoredName, c.itemUris.length]));
+    detailLines = outcome.createdPlaylists.map((c) => {
+      const expected = plannedSize.get(c.restoredAs);
+      return c.itemsAdded === expected
+        ? `created "${c.restoredAs}" (${c.itemsAdded} item(s))`
+        : `created "${c.restoredAs}" (${c.itemsAdded} of ${expected ?? '?'} item(s) added)`;
+    });
+    for (const c of plan.playlistCreations) {
+      if (!outcome.createdPlaylists.some((made) => made.restoredAs === c.restoredName)) {
+        detailLines.push(`NOT created — "${c.restoredName}" (${c.itemUris.length} item(s))`);
+      }
+    }
+  } else {
+    detailLines = plan.playlistCreations.map((c) => `would create "${c.restoredName}" (${c.itemUris.length} item(s))`);
+  }
   for (const name of plan.skippedPlaylists) {
     detailLines.push(`skipped existing playlist "${name}" — left untouched`);
   }
