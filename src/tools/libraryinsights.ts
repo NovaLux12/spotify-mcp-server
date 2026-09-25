@@ -4,6 +4,7 @@ import { dirname, join } from 'node:path';
 import {
   chmodSync,
   closeSync,
+  existsSync,
   fsyncSync,
   mkdirSync,
   openSync,
@@ -87,12 +88,20 @@ export function genreTagsPath(env: NodeJS.ProcessEnv = process.env): string {
  * copy. Rather than letting the write proceed and reset the store, the corrupt
  * bytes are copied aside at DETECTION time and the read still throws: the
  * payload is preserved twice (original + backup) and no write is ever
- * authorised to destroy it. Best-effort — a read-only or full directory must
- * not mask the corruption report itself.
+ * authorised to destroy it.
+ *
+ * The copy never overwrites an existing one. This is exactly the workflow the
+ * error message prescribes — the user is pointed at the copy to repair from —
+ * so a second, different corrupt state must not clobber the first one's
+ * evidence. Later copies get a unique `.corrupt.N` suffix.
+ *
+ * Best-effort: a read-only or full directory must not mask the corruption
+ * report itself, and the original still names the file to repair either way.
  */
 function quarantineCorruptSidecar(path: string): string | undefined {
-  const backup = `${path}.corrupt`;
+  let backup = `${path}.corrupt`;
   try {
+    for (let n = 2; existsSync(backup); n += 1) backup = `${path}.corrupt.${n}`;
     writeFileSync(backup, readFileSync(path), { mode: 0o600 });
     chmodSync(backup, 0o600);
     return backup;
@@ -161,9 +170,19 @@ export function loadGenreTags(path: string = genreTagsPath()): GenreTagStore {
 
   const tags: Record<string, string[]> = {};
   for (const [artist, genres] of Object.entries(tagsRaw as Record<string, unknown>)) {
-    if (typeof artist !== 'string' || !Array.isArray(genres)) continue;
-    const clean = [...new Set(genres.filter((g): g is string => typeof g === 'string'))];
-    if (clean.length > 0) tags[artist] = clean;
+    // A malformed entry is corruption, not noise. Dropping it would resolve to a
+    // smaller plausible set and the next write would persist that loss away and
+    // report success — the same class of coercion this whole path exists to end.
+    if (!Array.isArray(genres) || genres.some((g) => typeof g !== 'string')) {
+      throw new Error(
+        `Genre tag sidecar ${path} has a malformed entry for "${artist}": expected an array of `
+        + `genre strings, got ${JSON.stringify(genres) ?? String(genres)}. `
+        + quarantineNote(quarantineCorruptSidecar(path)),
+      );
+    }
+    // An empty list is a legitimately empty tag set (every tag was retracted),
+    // not corruption, so it is dropped rather than persisted as an empty entry.
+    if (genres.length > 0) tags[artist] = [...new Set(genres as string[])];
   }
   return { version: 1, tags };
 }

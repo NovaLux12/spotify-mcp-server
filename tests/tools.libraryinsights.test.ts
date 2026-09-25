@@ -12,8 +12,20 @@
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import { z } from 'zod';
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { spawn } from 'node:child_process';
+import {
+  chmodSync,
+  createReadStream,
+  closeSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  openSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
+import { spawn, spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -647,10 +659,47 @@ describe('sidecar robustness', () => {
     assert.equal(readFileSync(sidecarPath, 'utf8'), corrupt);
   });
 
-  it('the sidecar is written owner-only (0600)', async () => {
+  // Umask-proof: a fresh create could pass 0600 by luck if CI runs umask 077.
+  // Pre-seeding a world-readable store proves the writer re-asserts owner-only
+  // rather than relying on the creation-time mode, and fails on the old code.
+  it('a pre-existing world-readable store is tightened to 0600 on write', async () => {
+    writeFileSync(sidecarPath, JSON.stringify({ version: 1, tags: { X: ['pop'] } }), 'utf8');
+    chmodSync(sidecarPath, 0o644);
     const h = harness();
     await h.invoke('tag_management', { action: 'add', artist: 'Aurora', tags: ['pop'] });
     assert.equal(statSync(sidecarPath).mode & 0o777, 0o600);
+  });
+
+  it('a malformed tag entry is corruption, not a silently dropped artist', () => {
+    // Dropping this would resolve to a smaller plausible set, and the next
+    // write would persist that loss away and report success.
+    writeFileSync(sidecarPath, JSON.stringify({ version: 1, tags: { Sigur: 'ambient' } }), 'utf8');
+    assert.throws(() => loadGenreTags(sidecarPath), /malformed entry for "Sigur"/);
+  });
+
+  it('a non-string tag value is corruption, not filtered out', () => {
+    writeFileSync(sidecarPath, JSON.stringify({ version: 1, tags: { Sigur: ['ambient', 7] } }), 'utf8');
+    assert.throws(() => loadGenreTags(sidecarPath), /malformed entry for "Sigur"/);
+  });
+
+  it('an emptied tag list is a legitimate empty set, not corruption', () => {
+    // Retracting every tag is normal and leaves an entry with nothing in it.
+    writeFileSync(sidecarPath, JSON.stringify({ version: 1, tags: { Sigur: [] } }), 'utf8');
+    assert.deepEqual(loadGenreTags(sidecarPath).tags, {});
+  });
+
+  it('a second corrupt state does not destroy the first preserved copy', () => {
+    const first = '{"version":1,"tags":{"A":["x"]},,';
+    const second = '{"version":1,"tags":{"B":["y"]';
+    writeFileSync(sidecarPath, first, 'utf8');
+    assert.throws(() => loadGenreTags(sidecarPath), /is not valid JSON/);
+    // The user is told to repair from the copy, so that copy must survive the
+    // next distinct corruption rather than being clobbered last-write-wins.
+    writeFileSync(sidecarPath, second, 'utf8');
+    assert.throws(() => loadGenreTags(sidecarPath), /is not valid JSON/);
+
+    assert.equal(readFileSync(`${sidecarPath}.corrupt`, 'utf8'), first);
+    assert.equal(readFileSync(`${sidecarPath}.corrupt.2`, 'utf8'), second);
   });
 
   it('a write interrupted before the rename leaves the previous store intact', async () => {
@@ -707,55 +756,106 @@ describe('sidecar robustness', () => {
     assert.equal(existsSync(`${sidecarPath}.corrupt`), false);
   });
 
-  it('killing the writer process mid-write leaves the previous sidecar intact', async () => {
+  // A write is a REPLACEMENT, never an in-place truncate: the rename publishes a
+  // new inode. Same inode across a write is the old truncate-in-place bug.
+  it('each write replaces the store by rename, not by truncating it in place', async () => {
     const h = harness();
     await h.invoke('tag_management', { action: 'add', artist: 'Aurora', tags: ['pop'] });
-    const before = readFileSync(sidecarPath, 'utf8');
+    const ino = statSync(sidecarPath).ino;
+    await h.invoke('tag_management', { action: 'add', artist: 'Aurora', tags: ['indie'] });
+    assert.notEqual(statSync(sidecarPath).ino, ino);
+  });
 
-    // A child that truncates the TEMP file, writes a partial payload, then hangs
-    // forever — the exact state a crash between the write and the rename leaves.
-    // SIGKILL gives it no chance to clean up, so whatever survives is what a real
-    // crash would leave on disk.
+  // The window the atomic write exists to protect: write started, process dies
+  // before the rename. This drives the REAL production writer (the registered
+  // tag_management tool, not a hand-rolled imitation) in a child process and
+  // SIGKILLs it while it is blocked mid-write.
+  //
+  // The block is real, not a sleep: the temp path is a FIFO, so the writer's
+  // open blocks until this process opens the read end, and its write then
+  // blocks again once the 64 KiB pipe buffer fills. Reading a byte proves the
+  // write is genuinely in flight; only then do we kill.
+  it('killing the real writer mid-write leaves the published sidecar intact', { timeout: 60_000 }, async () => {
+    // A store far larger than the pipe buffer, so the writer cannot finish its
+    // write without a reader draining it.
+    const seeded = { version: 1, tags: {} as Record<string, string[]> };
+    for (let i = 0; i < 4000; i += 1) seeded.tags[`Artist ${i}`] = ['genre-number-' + i];
+    const before = `${JSON.stringify(seeded, null, 2)}\n`;
+    writeFileSync(sidecarPath, before, 'utf8');
+    assert.ok(before.length > 128 * 1024, 'seed must exceed the pipe buffer');
+
+    // A FIFO at the temp path: the writer can only proceed via the temp file.
+    const fifo = `${sidecarPath}.tmp`;
+    spawnSync("mkfifo", ["-m", "600", fifo]);
+
     const child = spawn(
       process.execPath,
       [
-        '-e',
+        '--import', 'tsx', '--input-type=module', '-e',
+        // Real production path: register the tools and dispatch tag_management.
+        // Dynamic import is required, not stylistic: this string is the SOURCE of
+        // a separate OS process that must load the production module at runtime,
+        // so no static import can reach it. This is a module-loading boundary.
         [
-          'const { openSync, writeSync } = require("node:fs");',
-          'const fd = openSync(process.argv[1] + ".tmp", "w", 0o600);',
-          // A deliberately truncated JSON payload — the crash signature.
-          'writeSync(fd, \'{"version":1,"tags":{"HALF-WRI\');',
-          'process.stdout.write("written\\n");',
-          'setInterval(() => {}, 1000);',
-        ].join(''),
-        sidecarPath,
+          // Configured by ENV, not argv: under `-e` the script is not an argv
+          // entry, so argv indices are mode-dependent and easy to get wrong.
+          'const base = "file://" + process.env.CHILD_ROOT + "/";',
+          'const { registerLibraryInsightsTools } = await import(base + "src/tools/libraryinsights.ts");',
+          'const { initConfig } = await import(base + "src/config.ts");',
+          'initConfig(process.env);',
+          'let handler;',
+          'const server = { tool: (n, d, s, h) => { if (n === "tag_management") handler = h; } };',
+          'registerLibraryInsightsTools(server, {});',
+          'await handler({ action: "add", artist: "Killer", tags: ["x"], response_format: "json" });',
+          'process.stdout.write("committed\\n");',
+        ].join('\n'),
       ],
-      { stdio: ['ignore', 'pipe', 'ignore'] },
+      {
+        stdio: ['pipe', 'pipe', 'pipe'],
+        cwd: process.cwd(),
+        env: {
+          ...process.env,
+          CHILD_ROOT: process.cwd(),
+          SPOTIFY_MCP_GENRE_TAGS_FILE: sidecarPath,
+        },
+      },
     );
-    // Await the real signal the child emits, not a guessed delay. The guard timer
-    // is a hang-breaker only: this drives a separate OS process, so no fake-timer
-    // control can stand in for its lifecycle.
-    const wrote = Promise.withResolvers<void>();
-    const guard = setTimeout(
-      () => wrote.reject(new Error('child never reported its partial write')),
-      10_000,
-    );
-    child.stdout.on('data', (d: Buffer) => { if (String(d).includes('written')) wrote.resolve(); });
-    child.on('error', wrote.reject);
-    try {
-      await wrote.promise;
-    } finally {
-      clearTimeout(guard);
-    }
-    child.kill('SIGKILL');
-    const exited = Promise.withResolvers<unknown>();
-    child.on('exit', exited.resolve);
-    await exited.promise;
 
-    // The partial payload went to the temp path; the published store is intact,
-    // still valid JSON, and still holds the old tags.
-    assert.equal(readFileSync(sidecarPath, 'utf8'), before);
-    const surviving = JSON.parse(readFileSync(sidecarPath, 'utf8')) as GenreTagStore;
-    assert.deepEqual(surviving.tags, { Aurora: ['pop'] });
+    // 'r+' (O_RDWR) so this open NEVER blocks waiting for a writer — 'r' would
+    // hang the suite if the child died before reaching its open(). Holding the
+    // write end ourselves also releases the child's open immediately.
+    const fd = openSync(fifo, 'r+');
+    const reader = createReadStream(fifo, { fd });
+    let killed = false;
+    try {
+      const flow = Promise.withResolvers<{ kind: 'bytes' | 'exited' }>();
+      reader.on('readable', () => {
+        if (reader.read(1) !== null) flow.resolve({ kind: 'bytes' });
+      });
+      child.on('exit', () => flow.resolve({ kind: 'exited' }));
+      child.stdout.on('data', () => { /* drain so the child never blocks on us */ });
+
+      // "exited" means the writer never went through the temp path at all — it
+      // wrote the live sidecar directly. That is precisely the old bug, and it
+      // is what makes this test fail on origin/main.
+      assert.equal((await flow.promise).kind, 'bytes');
+
+      child.kill('SIGKILL');
+      killed = true;
+      await new Promise((resolve) => child.on('exit', resolve));
+
+      // The store is byte-for-byte the pre-kill version and still valid: the
+      // half-written payload never reached it because the rename never ran.
+      assert.equal(readFileSync(sidecarPath, 'utf8'), before);
+      const surviving = JSON.parse(readFileSync(sidecarPath, 'utf8')) as GenreTagStore;
+      assert.equal(Object.keys(surviving.tags).length, 4000);
+      assert.equal(surviving.tags['Killer'], undefined); // the killed add never landed
+    } finally {
+      // Unconditional: a failed assertion must still release the child and the
+      // FIFO handle, or the open pipe keeps the event loop alive and the whole
+      // run hangs long after this test has reported.
+      if (!killed && child.exitCode === null) child.kill('SIGKILL');
+      reader.destroy();
+    }
   });
 });
