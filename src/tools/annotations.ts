@@ -251,8 +251,9 @@ const OVERRIDES: Record<string, ToolAnnotations> = {
   pause: { destructiveHint: false },
   next_track: { destructiveHint: false },
   previous_track: { destructiveHint: false },
-  undo_mutation: { destructiveHint: false },
-  undo_last_mutation: { destructiveHint: false },
+  // undo_mutation / undo_last_mutation are deliberately NOT listed here: they
+  // delete real library rows, and a client that trusts destructiveHint to decide
+  // what it may auto-approve must not be told a rollback is safe (#627).
   // (No read-only overrides for undo_preview / restore_playlist_plan here — they
   // live in NEVER_MUTATING_PLANS below with the per-handler audit notes.)
   restore_playback: { destructiveHint: false },
@@ -505,10 +506,10 @@ const manifestEntry = (
 export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   manifestEntry('search', 'search', 'src/tools/search.ts', registerSearchTools, [1, 1821], { readOnlySafe: true }),
   manifestEntry('catalog', 'catalog', 'src/tools/catalog.ts', registerCatalogTools, [31, 25456], { readOnlySafe: true }),
-  manifestEntry('library', 'library', 'src/tools/library.ts', registerLibraryTools, [16, 14560]),
+  manifestEntry('library', 'library', 'src/tools/library.ts', registerLibraryTools, [16, 14797]),
   manifestEntry('playback', 'playback', 'src/tools/playback.ts', registerPlaybackTools, [16, 12023]),
   manifestEntry('following', 'following', 'src/tools/following.ts', registerFollowingTools, [5, 3567]),
-  manifestEntry('users', 'users', 'src/tools/users.ts', registerUsersTools, [2, 1515]),
+  manifestEntry('users', 'users', 'src/tools/users.ts', registerUsersTools, [2, 1613]),
   manifestEntry('audiobooks', 'audiobooks', 'src/tools/audiobooks.ts', registerAudiobookTools, [4, 3535]),
   manifestEntry('audiobookcopilot', 'audiobooks', 'src/tools/audiobookcopilot.ts', registerAudiobookCopilotTools, [3, 1870]),
   manifestEntry('playlists', 'playlists', 'src/tools/playlists.ts', registerPlaylistTools, [26, 25949]),
@@ -526,13 +527,13 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   manifestEntry('portability', 'portability', 'src/tools/portability.ts', registerPortabilityTools, [11, 8808], { scopeKey: 'library' }),
   manifestEntry('libraryinsights', 'library', 'src/tools/libraryinsights.ts', registerLibraryInsightsTools, [3, 2751], { scopeKey: 'library' }),
   manifestEntry('libraryhygiene', 'library', 'src/tools/libraryhygiene.ts', registerLibraryHygieneTools, [1, 681], { scopeKey: 'library' }),
-  manifestEntry('showradar', 'library', 'src/tools/showradar.ts', registerShowRadarTools, [1, 1529], { readOnlySafe: true, scopeKey: 'library' }),
+  manifestEntry('showradar', 'library', 'src/tools/showradar.ts', registerShowRadarTools, [1, 1675], { readOnlySafe: true, scopeKey: 'library' }),
   manifestEntry('saveddedupe', 'library', 'src/tools/saveddedupe.ts', registerSavedDedupeTools, [1, 1562], { scopeKey: 'library' }),
   manifestEntry('podcastsession', 'library', 'src/tools/podcastsession.ts', registerPodcastSessionTools, [2, 2759], { scopeKey: 'library' }),
   manifestEntry('backupfirst', 'library', 'src/tools/backupfirst.ts', registerBackupFirstTools, [1, 513], { readOnlySafe: true, scopeKey: 'library' }),
   manifestEntry('backup', 'library', 'src/tools/backup.ts', registerBackupTools, [2, 1443], { readOnlySafe: true, scopeKey: 'library' }),
   manifestEntry('restore', 'library', 'src/tools/restore.ts', registerRestoreTools, [1, 1851], { scopeKey: 'library' }),
-  manifestEntry('undo', 'library', 'src/tools/undo.ts', registerUndoTools, [2, 1430], { scopeKey: 'library' }),
+  manifestEntry('undo', 'library', 'src/tools/undo.ts', registerUndoTools, [2, 1518], { scopeKey: 'library' }),
   manifestEntry('receipts', 'library', 'src/tools/annotations.ts', (server) => {
     server.tool(
       'verify_receipt',
@@ -567,7 +568,7 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   manifestEntry('exhaust2enggating', 'exhaust2enggating', 'src/tools/exhaust2_enggating.ts', registerExhaust2EnggatingTools, [0, 0], { readOnlySafe: true, scopeKey: 'catalog' }),
   manifestEntry('exhaust2playback', 'exhaust2playback', 'src/tools/exhaust2_playback.ts', registerExhaust2PlaybackTools, [23, 17306], { scopeKey: 'playback' }),
   manifestEntry('exhaust2playlists', 'exhaust2playlists', 'src/tools/exhaust2_playlists.ts', registerExhaust2PlaylistsTools, [18, 23466], { scopeKey: 'playlists' }),
-  manifestEntry('exhaust2misc', 'exhaust2misc', 'src/tools/exhaust2_misc.ts', registerExhaust2MiscTools, [27, 23174], { scopeKey: 'library' }),
+  manifestEntry('exhaust2misc', 'exhaust2misc', 'src/tools/exhaust2_misc.ts', registerExhaust2MiscTools, [27, 23234], { scopeKey: 'library' }),
   manifestEntry('exhaust2extra', 'exhaust2extra', 'src/tools/exhaust2_extra.ts', registerExhaust2ExtraTools, [3, 3695], { scopeKey: 'playlists' }),
   manifestEntry('swarm3discovery', 'swarm3discovery', 'src/tools/swarm3_discovery.ts', registerSwarm3DiscoveryTools, [24, 21951], { readOnlySafe: true, scopeKey: 'catalog' }),
   manifestEntry('swarm3bdiscovery', 'swarm3bdiscovery', 'src/tools/swarm3b_discovery.ts', registerSwarm3bDiscoveryTools, [24, 20048], { readOnlySafe: true, scopeKey: 'catalog' }),

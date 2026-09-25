@@ -61,10 +61,10 @@ above either ceiling fails CI and server startup.
 |---|---:|---:|---:|---:|---:|---:|
 | search | 1 | 1,821 | 1 | 1,821 | 2 | 2,004 |
 | catalog | 31 | 25,456 | 31 | 25,456 | 32 | 28,002 |
-| library | 16 | 14,560 | 16 | 14,560 | 17 | 16,017 |
+| library | 16 | 14,797 | 16 | 14,797 | 17 | 16,277 |
 | playback | 16 | 12,023 | 16 | 12,023 | 17 | 13,226 |
 | following | 5 | 3,567 | 5 | 3,567 | 6 | 3,924 |
-| users | 2 | 1,515 | 2 | 1,515 | 3 | 1,667 |
+| users | 2 | 1,613 | 2 | 1,613 | 3 | 1,775 |
 | audiobooks | 4 | 3,535 | 4 | 3,535 | 5 | 3,889 |
 | audiobookcopilot | 3 | 1,870 | 3 | 1,870 | 4 | 2,057 |
 | playlists | 26 | 25,949 | 26 | 25,949 | 27 | 28,544 |
@@ -82,13 +82,13 @@ above either ceiling fails CI and server startup.
 | portability | 11 | 8,808 | 11 | 8,808 | 12 | 9,689 |
 | libraryinsights | 3 | 2,751 | 3 | 2,751 | 4 | 3,027 |
 | libraryhygiene | 1 | 681 | 1 | 681 | 2 | 750 |
-| showradar | 1 | 1,529 | 1 | 1,529 | 2 | 1,682 |
+| showradar | 1 | 1,675 | 1 | 1,675 | 2 | 1,843 |
 | saveddedupe | 1 | 1,562 | 1 | 1,562 | 2 | 1,719 |
 | podcastsession | 2 | 2,759 | 2 | 2,759 | 3 | 3,035 |
 | backupfirst | 1 | 513 | 1 | 513 | 2 | 565 |
 | backup | 2 | 1,443 | 2 | 1,443 | 3 | 1,588 |
 | restore | 1 | 1,851 | 1 | 1,851 | 2 | 2,037 |
-| undo | 2 | 1,430 | 2 | 1,430 | 3 | 1,574 |
+| undo | 2 | 1,518 | 2 | 1,518 | 3 | 1,670 |
 | receipts | 1 | 315 | 1 | 315 | 2 | 347 |
 | episodemgmt | 1 | 964 | 1 | 964 | 2 | 1,061 |
 | freshness | 1 | 2,043 | 1 | 2,043 | 2 | 2,248 |
@@ -110,7 +110,7 @@ above either ceiling fails CI and server startup.
 | exhaust2enggating | 0 | 0 | 0 | 0 | 1 | 0 |
 | exhaust2playback | 23 | 17,306 | 23 | 17,306 | 24 | 19,037 |
 | exhaust2playlists | 18 | 23,466 | 18 | 23,466 | 19 | 25,813 |
-| exhaust2misc | 27 | 23,174 | 27 | 23,174 | 28 | 25,492 |
+| exhaust2misc | 27 | 23,234 | 27 | 23,234 | 28 | 25,558 |
 | exhaust2extra | 3 | 3,695 | 3 | 3,695 | 4 | 4,065 |
 | swarm3discovery | 24 | 21,951 | 24 | 21,951 | 25 | 24,147 |
 | swarm3bdiscovery | 24 | 20,048 | 24 | 20,048 | 25 | 22,053 |
