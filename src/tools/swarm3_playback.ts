@@ -907,31 +907,51 @@ export function registerSwarm3PlaybackTools(server: McpServer, client: SpotifyCl
       }
       let positionInContext: number | null = null;
       let contextTotal: number | null = null;
+      // Raw playlist rows the walk has read, and whether it stopped at the cap
+      // without finding the track (#845). Disclosed in structuredContent so a
+      // "could not be determined" answer is not mistaken for a complete walk.
+      let walked = 0;
+      let walkTruncated = false;
       const cap = getConfig().fetchAllCap;
       try {
         if (ctx.type === 'playlist' && ctx.uri) {
           const pid = ctx.uri.split(':').pop() ?? '';
+          // Never ask for (or read) more rows than the cap still allows, so
+          // `walked` can never exceed `cap`.
+          const limitFor = (at: number): string => String(Math.max(1, Math.min(100, cap - at)));
+          // One slot per row, kept 1:1 with the page: an unavailable / local
+          // row has no playable uri but still occupies a playlist position.
+          // Dropping those slots here would make the walk advance by fewer
+          // rows than the API returned, so it re-reads rows it already saw
+          // (#845) and reports a shifted position.
+          const toUris = (rows: PlaylistItemRow[] | undefined): string[] =>
+            (rows ?? []).map((r) => r?.item?.uri ?? r?.track?.uri ?? '');
           const page = await client.get<{ items?: PlaylistItemRow[] }>(
             `/playlists/${encodeURIComponent(pid)}/items`,
-            { limit: String(Math.min(100, cap)) },
+            { limit: limitFor(0) },
           );
-          let items = (page?.items ?? []).map((r) => r?.item?.uri ?? r?.track?.uri ?? '').filter(Boolean);
+          let uris = toUris(page?.items);
           let offset = 0;
-          // Walk pages (offset-based) until the track is found or the cap is hit.
-          while (positionInContext === null && items.length > 0 && offset < cap) {
-            const idx = items.indexOf(state.item.uri);
+          // Walk pages (offset-based) until the track is found or the cap is
+          // hit. `offset` counts raw rows, so it is the API's own row cursor.
+          while (positionInContext === null && uris.length > 0 && offset < cap) {
+            walked = offset + uris.length;
+            const idx = uris.indexOf(state.item.uri);
             if (idx >= 0) {
               positionInContext = offset + idx + 1;
               break;
             }
-            offset += items.length;
+            offset += uris.length;
+            if (offset >= cap) break;
             const next = await client.get<{ items?: PlaylistItemRow[] }>(
               `/playlists/${encodeURIComponent(pid)}/items`,
-              { limit: String(Math.min(100, cap)), offset: String(offset) },
+              { limit: limitFor(offset), offset: String(offset) },
             );
-            items = (next?.items ?? []).map((r) => r?.item?.uri ?? r?.track?.uri ?? '').filter(Boolean);
-            if (items.length === 0) break;
+            uris = toUris(next?.items);
           }
+          // The walk ran out of rows (a complete enumeration, just no match)
+          // or hit the cap; only the second one is truncation.
+          walkTruncated = positionInContext === null && walked >= cap;
         } else if (ctx.type === 'album' && ctx.uri) {
           const aid = ctx.uri.split(':').pop() ?? '';
           const album = await client.get<{ total_tracks?: number; tracks?: { items?: Array<{ uri?: string }> } }>(
@@ -948,7 +968,9 @@ export function registerSwarm3PlaybackTools(server: McpServer, client: SpotifyCl
       }
       const positionText = positionInContext !== null
         ? `Track ${positionInContext}${contextTotal ? ` of ${contextTotal}` : ''} in the context`
-        : 'Position within the context could not be determined (non-enumerable or capped walk).';
+        : walkTruncated
+          ? `Position within the context could not be determined (walked ${walked} of ${cap} playlist rows, then hit the fetch-all cap).`
+          : 'Position within the context could not be determined (track not found in the enumerated context).';
       const prose = [
         `Context inspect:`,
         `  Type: ${ctx.type} · URI: ${ctx.uri}`,
@@ -960,6 +982,9 @@ export function registerSwarm3PlaybackTools(server: McpServer, client: SpotifyCl
         context_enumerated: positionInContext !== null,
         position_in_context: positionInContext,
         context_total: contextTotal,
+        walked,
+        cap,
+        truncated: walkTruncated,
       });
     },
   );
