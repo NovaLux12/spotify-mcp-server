@@ -161,10 +161,19 @@ and one guarantee tightened:
 2. **Playlist set-operation inputs are canonical.** A/B pairs are
    `playlist_a`/`playlist_b`; ordered lists are `playlists`;
    `playlist_subtract` takes the base as `base_playlist_id`. The old spellings
-   (`a`/`b`, `playlist_ids`, `source_playlist_ids`, `sources`,
-   `playlist_a_id`/`playlist_b_id`, and the positional subtract form) are still
-   accepted through **2.0** and removed in **2.1**; a result that used one
-   carries `deprecated_inputs` and a `deprecation_note`.
+   are still accepted through **2.0** and removed in **2.1**; a result that used
+   one carries `deprecated_inputs` and a `deprecation_note`. Each tool accepts
+   only its own aliases, so send the one its schema declares rather than the
+   whole list below — SPEC.md's table maps every tool to its exact aliases:
+
+> | family | canonical | accepted aliases (per tool, one pair or one list) |
+> |---|---|---|
+> | A/B pair | `playlist_a`, `playlist_b` | `a`/`b` *or* `playlist_id_a`/`playlist_id_b` *or* `playlist_a_id`/`playlist_b_id` — pick the one the tool declares |
+> | ordered list | `playlists` | `playlist_ids` *or* `source_playlist_ids` *or* `sources` |
+> | subtraction | `base_playlist_id` + `playlists` | the positional form `playlists: [base, ...sources]` |
+>
+> Sending more than one of these is a `validation` error naming the conflict,
+> and a name the tool does not declare is an `unknown_param` error.
 3. **Numeric caps have canonical names.** `max_results` caps what is returned;
    `limit` and `scan_cap` cap how much of each source is read.
 4. **Unknown arguments are rejected** with a typed `unknown_param` error rather

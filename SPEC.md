@@ -896,9 +896,11 @@ All playlist set-operation, diff, overlap, intersection, union, subtraction, mer
 |---|---|---|---|
 | Ordered multi-playlist operation | `playlist_intersection`, `playlist_overlap_matrix`, `playlist_intersect`, `playlist_union`, `merge_playlists`, `merge_playlists_plan`, `interleave_playlists_plan`, `playlist_union_preview`, `find_duplicate_tracks_across_playlists`, `balance_playlist_pairs` | `playlists` | The tool's prior plural name: `playlist_ids`, `source_playlist_ids`, or `sources` |
 | Ordered overlap analysis | `overlap_playlists` | `playlists` | None; canonical-only input |
-| Base-minus-set operation | `playlist_subtract`, `playlist_difference_plan` | `base_playlist_id` plus `playlists` for the sources to subtract | `subtract_playlist_ids` |
+| Base-minus-set operation | `playlist_subtract`, `playlist_difference_plan` | `base_playlist_id` plus `playlists` for the sources to subtract | `subtract_playlist_ids`, and the positional form `playlists: [base, ...sources]` |
 | A/B comparison | `diff_playlists`, `playlist_diff`, `playlist_pair_check`, `compare_playlist_covers`, `playlist_symmetric_difference` | `playlist_a`, then `playlist_b` | `a`/`b`, `playlist_a_id`/`playlist_b_id`, or `playlist_id_a`/`playlist_id_b` |
 | Following fan-out | `check_playlist_following` | `playlists` | `playlist_ids` (retains its historical 1–50 bound) |
+
+**Returned versus total counts.** Where a set operation returns arrays, `removed`/`kept` (and `uris`/`removed_uris` beside them) count only the rows actually returned, bounded by `max_results`; `removed_total`/`kept_total` carry the true impact the confirmation prompt quoted. A capped response therefore never reports a count its own arrays contradict.
 
 **Migration note (v2.0 → v2.1):** legacy names remain callable through v2.0 and are removed in v2.1. Supplying both canonical and legacy values is accepted only when they normalize to the same values in the same order; missing, incomplete, differently ordered, or conflicting inputs fail before any Spotify request and name both conflicting fields. Legacy results include `deprecated_inputs` plus `deprecation_note` in structuredContent and the same one-line note in prose/JSON text. Canonical-only calls omit both fields.
 

@@ -36,6 +36,10 @@ const parameterAllowlist = new Set([
   'requests_planned', 'token_refresh', 'web_search',
   // Enum values and explicitly-removed field names, not parameters.
   'appears_on', 'available_markets',
+  // StructuredContent field names, not parameters: the documented count split.
+  'removed_total', 'kept_total', 'source_truncated', 'target_truncated',
+  'would_confirm', 'base_read_whole', 'base_unrepresentable',
+  'removed_uris', 'scan_cap', 'base_playlist', 'target_playlist',
 ]);
 /** Registration keys are module names, not tools; docs legitimately name them. */
 const registrationKeyNames = new Set(census.registrationKeyNames ?? []);
