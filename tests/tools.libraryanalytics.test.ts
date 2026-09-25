@@ -359,6 +359,44 @@ describe('genre_trends_over_time', () => {
     const out = await h.invoke('genre_trends_over_time', {});
     assert.match(textOf(out), /No saved tracks/);
   });
+  // Every genre count here is derived from one capped walk of /me/tracks, so
+  // a walk stopped at fetchAllCap makes `total_saved_tracks` and each bucket
+  // count a floor rather than a library size (#741).
+  it('discloses a capped tracks walk instead of reporting the floor as the library size', async () => {
+    initConfig({ ...process.env, SPOTIFY_MCP_FETCH_ALL_CAP: '3' });
+    const iso = new Date().toISOString();
+    const build = (count: number) => harness((path, params) => {
+      if (path === '/me/tracks') {
+        return pagedResponder({
+          '/me/tracks': Array.from({ length: count }, (_, i) => trackItem(`t${i}`, iso, ['rock'])),
+        })(path, params);
+      }
+      return { items: [], total: 0, limit: 50, offset: 0, next: null };
+    });
+    try {
+      assert.equal(getConfig().fetchAllCap, 3);
+
+      // 5 saved tracks, so the walk really does stop at 3.
+      const capped = await build(5).invoke('genre_trends_over_time', { period: 'monthly', lookback: 2 });
+      const c = capped.structuredContent as { truncated: boolean; scan_cap: number; total_saved_tracks: number };
+      assert.equal(c.total_saved_tracks, 3, 'the tracks walk really did stop at the cap');
+      assert.equal(c.truncated, true, 'a capped tracks walk must not be reported as a complete scan');
+      assert.equal(c.scan_cap, 3);
+      assert.match(textOf(capped), /walk capped at 3/);
+      assert.match(textOf(capped), /lower bound/);
+
+      // Under the cap: no false truncation and no cap note.
+      const whole = await build(2).invoke('genre_trends_over_time', { period: 'monthly', lookback: 2 });
+      const w = whole.structuredContent as { truncated: boolean; scan_cap: number; total_saved_tracks: number };
+      assert.equal(w.total_saved_tracks, 2);
+      assert.equal(w.truncated, false, 'a walk under the cap is not truncated');
+      assert.equal(w.scan_cap, 3, 'the cap is reported even when it did not bind');
+      assert.doesNotMatch(textOf(whole), /walk capped/);
+    } finally {
+      initConfig();
+    }
+  });
+
 });
 
 describe('library_coverage_report dry_run + quota', () => {
@@ -559,5 +597,59 @@ describe('library_growth_report scanned vs in-window (#741)', () => {
     } finally {
       initConfig();
     }
+  });
+});
+
+// Each per-playlist item walk is capped at scan_cap just as the /me/tracks and
+// /me/playlists walks are. A playlist that reaches the cap was only read to its
+// head, so the ids past it are invisible: a saved track past the cap is listed
+// as an orphan that does not exist, and unsaved items past it go uncounted.
+// That is a partial read, and it must not be reported as a complete one (#741).
+describe('library_coverage_report per-playlist walk cap (#741)', () => {
+  const playlistItem = (id: string) => ({ track: { id } });
+  const build = (playlistItems: Array<{ track: { id: string } }>, savedIds: string[], scanCap: number) =>
+    harness((path, params) => {
+      if (path === '/me/tracks') return pagedResponder({ '/me/tracks': savedIds.map((id) => trackItem(id)) })(path, params);
+      if (path === '/me/playlists') return pagedResponder({ '/me/playlists': [{ id: 'p1', name: 'Big' }] })(path, params);
+      if (path === '/playlists/p1/items') return pagedResponder({ '/playlists/p1/items': playlistItems })(path, params);
+      return { items: [], total: 0, limit: 50, offset: 0, next: null };
+    });
+
+  it('names a playlist whose items hit the cap and downgrades the coverage verdict', async () => {
+    // 10-item playlist read at scan_cap=3: the walk sees u0..u2 only.
+    const h = build(Array.from({ length: 10 }, (_, i) => playlistItem(`u${i}`)), ['u7'], 3);
+    const out = await h.invoke('library_coverage_report', { scan_cap: 3, include_not_saved: true });
+    const sc = out.structuredContent as {
+      truncated: boolean; scan_cap: number; coverage_complete: boolean;
+      coverage_ratio_is_lower_bound: boolean; capped_playlists: Array<{ playlist_id: string; name: string | null }>;
+      unsaved_playlist_items: Array<{ unsaved_count: number }>;
+    };
+    assert.equal(sc.scan_cap, 3);
+    assert.equal(sc.unsaved_playlist_items[0].unsaved_count, 3, 'the item walk really did stop at the cap');
+    assert.deepEqual(sc.capped_playlists, [{ playlist_id: 'p1', name: 'Big' }]);
+    assert.equal(sc.truncated, true, 'a capped playlist walk must not be reported as a complete scan');
+    assert.equal(sc.coverage_complete, false, 'a partially read playlist is not a complete coverage scan');
+    assert.equal(sc.coverage_ratio_is_lower_bound, true);
+    const prose = textOf(out);
+    assert.match(prose, /1 playlist\(s\) hit scan_cap=3/);
+    assert.match(prose, /Big/);
+    // u7 really is saved and really is in the playlist — the cap is the only
+    // reason it is listed as an orphan, which is why the verdict must say so.
+    assert.match(prose, /NOT a full orphan list/);
+  });
+
+  it('reports a playlist read entirely under the cap as complete, with no cap note', async () => {
+    const h = build([playlistItem('u0'), playlistItem('u1')], ['u0'], 3);
+    const out = await h.invoke('library_coverage_report', { scan_cap: 3, include_not_saved: true });
+    const sc = out.structuredContent as {
+      truncated: boolean; coverage_complete: boolean; coverage_ratio_is_lower_bound: boolean;
+      capped_playlists: unknown[]; unsaved_playlist_items: Array<{ unsaved_count: number }>;
+    };
+    assert.equal(sc.unsaved_playlist_items[0].unsaved_count, 1);
+    assert.deepEqual(sc.capped_playlists, []);
+    assert.equal(sc.truncated, false, 'a walk under the cap is not truncated');
+    assert.equal(sc.coverage_complete, true, 'every playlist was read in full, so coverage is exact');
+    assert.equal(sc.coverage_ratio_is_lower_bound, false);
+    assert.doesNotMatch(textOf(out), /hit scan_cap/);
   });
 });
