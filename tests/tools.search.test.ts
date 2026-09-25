@@ -1,6 +1,39 @@
-import test from 'node:test';
+import test, { afterEach, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { registerSearchTools } from '../src/tools/search.js';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { z } from 'zod';
+
+// search records every executed query to the local sidecar (#766); keep that
+// sidecar in a temp dir so the suite never writes to the real home store.
+let historyDir: string;
+let historyFile: string;
+beforeEach(async () => {
+  historyDir = await mkdtemp(join(tmpdir(), 'search-sh-'));
+  historyFile = join(historyDir, 'search-history.json');
+  process.env.SPOTIFY_MCP_SEARCH_HISTORY_FILE = historyFile;
+  delete process.env.SPOTIFY_MCP_SEARCH_HISTORY;
+});
+afterEach(async () => {
+  delete process.env.SPOTIFY_MCP_SEARCH_HISTORY_FILE;
+  delete process.env.SPOTIFY_MCP_SEARCH_HISTORY;
+  await rm(historyDir, { recursive: true, force: true });
+});
+
+const HISTORY_ENTRY = z.object({
+  query: z.string(),
+  types: z.array(z.string()).optional(),
+  top_result_ids: z.array(z.string()),
+  limit: z.number().optional(),
+  market: z.string().optional(),
+  offset: z.number().optional(),
+});
+
+async function readHistory() {
+  return z.array(HISTORY_ENTRY).parse(JSON.parse(await readFile(historyFile, 'utf8')));
+}
 
 // ---------------------------------------------------------------- fixtures
 
@@ -368,4 +401,61 @@ test('search drops null playlist rows and reads items.total for track counts (is
   assert.match(out, /"Focus Hits" by Owner One \(42 tracks\)/);
   // The filtered null slot must not render or crash.
   assert.doesNotMatch(out, /undefined|by u1 \(0 tracks\)/);
+});
+
+// ------------------------------------------------- search history recording
+
+test('search records the executed query with its top result uris (#766)', async () => {
+  const { registered } = makeHarness({
+    getResponse: () => ({ tracks: { items: [trackFixture(), trackFixture({ id: 'trk2', uri: 'spotify:track:trk2', name: 'Another One' })], total: 2 } }),
+  });
+  await invoke(findTool(registered, 'search'), { query: 'queen', types: ['track'], limit: 3 });
+  const entries = await readHistory();
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0]!.query, 'queen');
+  assert.deepEqual(entries[0]!.types, ['track']);
+  assert.equal(entries[0]!.limit, 3);
+  assert.deepEqual(entries[0]!.top_result_ids, ['spotify:track:trk1', 'spotify:track:trk2']);
+});
+
+test('search records only the requested types, in request order (#766)', async () => {
+  const { registered } = makeHarness({
+    getResponse: () => ({
+      artists: { items: [artistFixture()], total: 1 },
+      tracks: { items: [trackFixture()], total: 1 },
+    }),
+  });
+  await invoke(findTool(registered, 'search'), { query: 'queen', types: ['artist', 'track'] });
+  const [entry] = await readHistory();
+  assert.deepEqual(entry!.types, ['artist', 'track']);
+  // Tracks rank first because they were asked for first, not because the
+  // response happened to list them first.
+  assert.deepEqual(entry!.top_result_ids, ['spotify:artist:art1', 'spotify:track:trk1']);
+});
+
+test('search skips null market-filtered slots when recording top results (#766)', async () => {
+  const { registered } = makeHarness({
+    getResponse: () => ({ tracks: { items: [null, trackFixture()], total: 2 } }),
+  });
+  await invoke(findTool(registered, 'search'), { query: 'queen', types: ['track'] });
+  const [entry] = await readHistory();
+  assert.deepEqual(entry!.top_result_ids, ['spotify:track:trk1']);
+});
+
+test('search records nothing when the query returns no sections (#766)', async () => {
+  const { registered } = makeHarness({ getResponse: () => ({ tracks: { items: [], total: 0 } }) });
+  const out = text(await invoke(findTool(registered, 'search'), { query: 'zzz', types: ['track'] }));
+  assert.match(out, /No results/i);
+  await assert.rejects(readFile(historyFile, 'utf8'), { code: 'ENOENT' });
+});
+
+test('an unwritable search-history sidecar does not fail search (#766)', async () => {
+  const blocker = join(historyDir, 'blocker');
+  await writeFile(blocker, 'not a directory');
+  process.env.SPOTIFY_MCP_SEARCH_HISTORY_FILE = join(blocker, 'search-history.json');
+  const { registered } = makeHarness({
+    getResponse: () => ({ tracks: { items: [trackFixture()], total: 1 } }),
+  });
+  const out = text(await invoke(findTool(registered, 'search'), { query: 'queen', types: ['track'] }));
+  assert.match(out, /Bohemian Rhapsody/);
 });
