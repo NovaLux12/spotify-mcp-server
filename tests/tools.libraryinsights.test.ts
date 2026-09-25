@@ -14,7 +14,7 @@ import { z } from 'zod';
 import assert from 'node:assert/strict';
 import {
   chmodSync,
-  createReadStream,
+  unlinkSync,
   closeSync,
   existsSync,
   mkdirSync,
@@ -844,6 +844,10 @@ describe('sidecar robustness', () => {
           'let handler;',
           'const server = { tool: (n, d, s, h) => { if (n === "tag_management") handler = h; } };',
           'registerLibraryInsightsTools(server, {});',
+          // Announce that we are about to dispatch the real writer. The parent
+          // reads this marker together with "the child is still alive" as proof
+          // that the write is blocked in flight, so it must precede the call.
+          'process.stdout.write("TAG_READY\\n");',
           'await handler({ action: "add", artist: "Killer", tags: ["x"], response_format: "json" });',
           'process.stdout.write("committed\\n");',
         ].join('\n'),
@@ -859,28 +863,33 @@ describe('sidecar robustness', () => {
       },
     );
 
-    // 'r+' (O_RDWR) so this open NEVER blocks waiting for a writer — 'r' would
-    // hang the suite if the child died before reaching its open(). Holding the
-    // write end ourselves also releases the child's open immediately.
+    // Hold the write end so the child's open of the temp path succeeds and its
+    // write blocks partway (nobody drains the pipe, and the body is far larger
+    // than the 64 KiB buffer). Deliberately a BARE descriptor: a ReadStream on a
+    // FIFO we hold r+ can never reach EOF, stays referenced, and hangs the
+    // runner on the failing path.
     const fd = openSync(fifo, 'r+');
-    const reader = createReadStream(fifo, { fd });
+    // `head -c1` is the byte signal: it exits only once a real byte has been
+    // written to the temp path, so its exit proves the writer went through the
+    // temp file. A ReadStream cannot give us that without the never-EOF hang,
+    // and a stdout marker cannot either: the old writer prints its marker and
+    // then writes the LIVE sidecar, so "marker seen" also matches broken code.
+    const probe = spawn('head', ['-c1', fifo], { stdio: 'ignore' });
     let killed = false;
     try {
-      const flow = Promise.withResolvers<{ kind: 'bytes' | 'exited' }>();
-      reader.on('readable', () => {
-        if (reader.read(1) !== null) flow.resolve({ kind: 'bytes' });
-      });
-      child.on('exit', () => flow.resolve({ kind: 'exited' }));
-      child.stdout.on('data', () => { /* drain so the child never blocks on us */ });
+      const raced = Promise.withResolvers<{ byte: boolean }>();
+      probe.once('exit', () => raced.resolve({ byte: true }));
+      // If the WRITER exits first it finished without ever touching the temp
+      // path — it truncated the live sidecar in place. That is the old bug.
+      child.once('exit', () => raced.resolve({ byte: false }));
+      const { byte } = await raced.promise;
 
-      // "exited" means the writer never went through the temp path at all — it
-      // wrote the live sidecar directly. That is precisely the old bug, and it
-      // is what makes this test fail on origin/main.
-      assert.equal((await flow.promise).kind, 'bytes');
+      assert.equal(byte, true, 'a byte must reach the temp path before the rename');
+      assert.equal(child.exitCode, null, 'a writer blocked mid-write must not have exited');
 
       child.kill('SIGKILL');
       killed = true;
-      await new Promise((resolve) => child.on('exit', resolve));
+      await new Promise((resolve) => child.once('exit', resolve));
 
       // The store is byte-for-byte the pre-kill version and still valid: the
       // half-written payload never reached it because the rename never ran.
@@ -889,11 +898,51 @@ describe('sidecar robustness', () => {
       assert.equal(Object.keys(surviving.tags).length, 4000);
       assert.equal(surviving.tags['Killer'], undefined); // the killed add never landed
     } finally {
-      // Unconditional: a failed assertion must still release the child and the
-      // FIFO handle, or the open pipe keeps the event loop alive and the whole
-      // run hangs long after this test has reported.
+      // Unconditional: a failed assertion must still release both children and
+      // the descriptor, or the open pipe keeps the event loop alive and the run
+      // HANGS instead of reporting a failure.
       if (!killed && child.exitCode === null) child.kill('SIGKILL');
-      reader.destroy();
+      if (probe.exitCode === null) probe.kill('SIGKILL');
+      try { closeSync(fd); } catch { /* already gone */ }
+      try { unlinkSync(fifo); } catch { /* afterEach removes the dir anyway */ }
     }
+  });
+
+  // The writer and the reader must agree on what a tag list is. `z.string()
+  // .min(1)` admits a whitespace-only tag, which normalises away to nothing; if
+  // the writer then persisted that empty list, the store on disk would say
+  // something the reader has to second-guess. Driven end to end because the
+  // split only shows up across the write/read boundary.
+  it('a whitespace-only tag is rejected and never lands in the store', async () => {
+    const h = harness();
+    await assert.rejects(
+      h.invoke('tag_management', { action: 'add', artist: 'Bonobo', tags: ['   '] }),
+      /non-blank tag/,
+    );
+    // Nothing was written, and what is there is still readable.
+    assert.deepEqual(loadGenreTags(sidecarPath).tags, {});
+    assert.equal(existsSync(sidecarPath), false);
+  });
+
+  it('a mixed list keeps its real tags and rejects nothing', async () => {
+    const h = harness();
+    await h.invoke('tag_management', { action: 'add', artist: 'Bonobo', tags: ['  ', 'house'] });
+    assert.deepEqual(loadGenreTags(sidecarPath).tags, { Bonobo: ['house'] });
+    // And the persisted store never contains an empty list.
+    const onDisk = JSON.parse(readFileSync(sidecarPath, 'utf8')) as GenreTagStore;
+    for (const genres of Object.values(onDisk.tags)) assert.ok(genres.length > 0);
+  });
+
+  it('an existing artist is not clobbered by an all-blank add', async () => {
+    const h = harness();
+    await h.invoke('tag_management', { action: 'add', artist: 'Bonobo', tags: ['house'] });
+    const before = readFileSync(sidecarPath, 'utf8');
+    await assert.rejects(
+      h.invoke('tag_management', { action: 'add', artist: 'Bonobo', tags: ['  ', '\t'] }),
+      /non-blank tag/,
+    );
+    // The rejected write left the existing tags exactly as they were.
+    assert.equal(readFileSync(sidecarPath, 'utf8'), before);
+    assert.deepEqual(loadGenreTags(sidecarPath).tags, { Bonobo: ['house'] });
   });
 });

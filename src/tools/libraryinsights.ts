@@ -558,6 +558,15 @@ export function registerLibraryInsightsTools(server: McpServer, client: SpotifyC
       if (action === 'add' && (!tags || tags.length === 0)) {
         throw new Error("add requires at least one tag — e.g. tags: ['pop']");
       }
+      // `z.string().min(1)` admits a whitespace-only tag, which then normalises
+      // away to nothing. Writing that would persist an empty tag list and
+      // report `Tagged "X" with []` — a success that stored nothing, and a store
+      // the reader then has to second-guess. Reject it where the bad value is
+      // created, exactly as a missing tag list is rejected just above, so the
+      // caller gets a real error instead of a silent no-op write.
+      if (action === 'add' && !tags?.some((t) => t.trim().length > 0)) {
+        throw new Error("add requires at least one non-blank tag — e.g. tags: ['pop']");
+      }
 
       const store = loadGenreTags();
       const existingKey = findArtistKey(store.tags, name);
