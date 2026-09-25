@@ -1,10 +1,13 @@
-import { describe, it } from 'node:test';
+import { after, before, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../src/client.js';
 import type { PlaylistItemObject } from '../src/types/spotify.js';
 import { registerSwarm4PlaylistsTools } from '../src/tools/swarm4_playlists.js';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 type ToolResult = {
   content: Array<{ type: 'text'; text: string }>;
@@ -205,5 +208,70 @@ describe('playlist plan structuredContent budgeting', () => {
     assert.equal(payload.items_returned, 3);
     assert.equal(payload.items_withheld, 0);
     assert.equal(payload.items_truncated, false);
+  });
+});
+
+describe('playlist_changelog multiset diff', () => {
+  const backupRoot = mkdtempSync(join(tmpdir(), 'swarm4-backup-'));
+  const origBackupDir = process.env.SPOTIFY_MCP_BACKUP_DIR;
+  before(() => { process.env.SPOTIFY_MCP_BACKUP_DIR = backupRoot; });
+  after(() => {
+    if (origBackupDir === undefined) delete process.env.SPOTIFY_MCP_BACKUP_DIR;
+    else process.env.SPOTIFY_MCP_BACKUP_DIR = origBackupDir;
+    rmSync(backupRoot, { recursive: true, force: true });
+  });
+
+  function writeBackup(file: string, uris: string[]): void {
+    const payload = {
+      _meta: {},
+      liked_tracks: [], saved_albums: [], saved_shows: [], saved_episodes: [],
+      saved_audiobooks: [], followed_artists: [],
+      playlists: [{
+        uri: 'spotify:playlist:PL',
+        name: 'Mix',
+        item_count: uris.length,
+        items: uris.map((u) => ({ uri: u, name: `Track ${u.slice(-1)}` })),
+        items_truncated: false,
+      }],
+    };
+    writeFileSync(join(backupRoot, file), JSON.stringify(payload), 'utf8');
+  }
+
+  it('reports a swapped duplicate occurrence as added/removed (#876)', async () => {
+    // Both snapshots hold the URI set {a, b}; only per-URI counts differ.
+    writeBackup('backup-2026-01-01-1.json', ['spotify:track:a', 'spotify:track:a', 'spotify:track:b']);
+    writeBackup('backup-2026-01-02-1.json', ['spotify:track:a', 'spotify:track:b', 'spotify:track:b']);
+    const h = harness({});
+    const out = await h.invoke('playlist_changelog', {
+      backup_file_a: 'backup-2026-01-01-1.json',
+      backup_file_b: 'backup-2026-01-02-1.json',
+      playlist_name: 'Mix',
+      response_format: 'concise',
+    });
+    const sc = out.structuredContent as {
+      added: Array<{ uri: string }>;
+      removed: Array<{ uri: string }>;
+      kept_count: number;
+    };
+    assert.deepEqual(sc.added.map((a) => a.uri), ['spotify:track:b']);
+    assert.deepEqual(sc.removed.map((r) => r.uri), ['spotify:track:a']);
+    assert.equal(sc.kept_count, 2);
+    assert.match(out.content[0].text, /\+1 added \/ -1 removed \/ 2 kept/);
+  });
+
+  it('reports an extra copy of an already-present track (#876)', async () => {
+    writeBackup('backup-2026-01-03-1.json', ['spotify:track:a', 'spotify:track:b']);
+    writeBackup('backup-2026-01-04-1.json', ['spotify:track:a', 'spotify:track:b', 'spotify:track:b']);
+    const h = harness({});
+    const out = await h.invoke('playlist_changelog', {
+      backup_file_a: 'backup-2026-01-03-1.json',
+      backup_file_b: 'backup-2026-01-04-1.json',
+      playlist_name: 'Mix',
+      response_format: 'concise',
+    });
+    const sc = out.structuredContent as { added: Array<{ uri: string }>; removed: unknown[] };
+    assert.deepEqual(sc.added.map((a) => a.uri), ['spotify:track:b']);
+    assert.equal(sc.removed.length, 0);
+    assert.match(out.content[0].text, /Added:/);
   });
 });
