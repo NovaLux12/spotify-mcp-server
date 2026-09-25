@@ -560,6 +560,73 @@ test('statsfm_charts_users ranks friends by stream count', async () => {
   assert.ok(txt.indexOf('Fast') < txt.indexOf('Slow'), `expected Fast ranked first:\n${txt}`);
 });
 
+test('statsfm_charts_users reports an unreadable friend instead of ranking it as 0 (#803)', async () => {
+  const h = makeHarness((path) => {
+    if (path === '/users/u/friends') {
+      return {
+        items: [
+          { id: 'f1', displayName: 'Readable', customId: 'readable' },
+          { id: 'f2', displayName: 'Secretive', customId: 'secretive' },
+          { id: 'f3', displayName: 'Idle', customId: 'idle' },
+        ],
+      };
+    }
+    if (path === '/users/f1/streams/stats') return { items: { count: 42 } };
+    if (path === '/users/f2/streams/stats') throw new StatsfmApiError(403, 'stats.fm HTTP 403');
+    if (path === '/users/f3/streams/stats') return { items: { count: 0 } };
+    throw new Error(`unexpected ${path}`);
+  });
+  const out = await h.find('statsfm_charts_users').handler({ user_id: 'u' });
+  const txt = h.text(out);
+
+  // A friend that looked and found nothing is still a real, ranked 0.
+  assert.match(txt, /Idle — 0 streams/);
+  // A friend we could not read is named with a reason, never with a count.
+  assert.doesNotMatch(txt, /Secretive — 0 streams/);
+  assert.match(txt, /Secretive — unreadable \(private or gated profile \(403\)\)/);
+  // The summary says the chart is partial and how many friends are missing.
+  assert.match(txt, /1 of 3 unreadable — partial result/);
+  assert.match(txt, /Unreadable — stream count unknown, not zero \(1, excluded from the ranking\)/);
+
+  const sc = out.structuredContent as Record<string, unknown>;
+  assert.equal(sc.unreadable_count, 1);
+  assert.deepEqual((sc.unreadable as Array<Record<string, unknown>>).map((u) => u.customId), ['secretive']);
+  const items = sc.items as Array<Record<string, unknown>>;
+  assert.deepEqual(items.map((i) => i.customId), ['readable', 'idle']);
+
+  // No retry: a failed lookup is reported, not hammered again.
+  assert.equal(h.calls.filter((c) => c.path === '/users/f2/streams/stats').length, 1);
+});
+
+test('statsfm_charts_users marks a throttled friend unreadable without a stream count (#803)', async () => {
+  const h = makeHarness((path) => {
+    if (path === '/users/u/friends') return { items: [{ id: 'f1', displayName: 'Busy', customId: 'busy' }] };
+    if (path === '/users/f1/streams/stats') throw new StatsfmApiError(429, 'stats.fm HTTP 429', 30, 'QUOTA_EXCEEDED');
+    throw new Error(`unexpected ${path}`);
+  });
+  const out = await h.find('statsfm_charts_users').handler({ user_id: 'u' });
+  const txt = h.text(out);
+  assert.match(txt, /no friend profile could be read/);
+  assert.match(txt, /Busy — unreadable \(rate limited \(429, retry after 30s\)\)/);
+  assert.doesNotMatch(txt, /0 streams/);
+  assert.equal(h.calls.length, 2, 'friends list + one stats attempt; no retry into the rate limit');
+});
+
+test('statsfm_charts_users claims nothing unreadable when the friend list is empty (#803)', async () => {
+  const h = makeHarness((path) => {
+    if (path === '/users/u/friends') return { items: [] };
+    throw new Error(`unexpected ${path}`);
+  });
+  const out = await h.find('statsfm_charts_users').handler({ user_id: 'u' });
+  const txt = h.text(out);
+  // An empty friend list is a complete answer, not a set of unreadable
+  // profiles — claiming otherwise would be the same fabrication #803 removes.
+  assert.doesNotMatch(txt, /unreadable/);
+  assert.doesNotMatch(txt, /could be read/);
+  assert.equal((out.structuredContent as Record<string, unknown>).unreadable_count, 0);
+  assert.equal(h.calls.length, 1, 'no per-friend lookups when there are no friends');
+});
+
 // ---------------------------------------------------------------- date stats + social + records
 
 test('statsfm_track_date_stats passes the window through', async () => {

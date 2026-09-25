@@ -230,6 +230,28 @@ function formatSummary(sum: ReturnType<typeof summarizeStreams>): string {
   return `${sum.label}: ${sum.count} streams, ${fmtPlayed(sum.totalMs)} total (avg ${fmtPlayed(sum.avgMs)})${span}`;
 }
 
+/** Short, non-guessing reason a per-friend stream lookup could not be read. */
+function unreadableLookupReason(err: unknown): string {
+  if (err instanceof StatsfmApiError) {
+    if (err.status === 429) return `rate limited (429, retry after ${err.retryAfterSec ?? 'an unspecified number of'}s)`;
+    if (err.status === 403) return 'private or gated profile (403)';
+    if (err.status === 404) return 'profile not found (404)';
+    if (err.status === 0) return 'stats.fm unreachable';
+    return `stats.fm HTTP ${err.status}`;
+  }
+  return 'lookup failed';
+}
+
+/** A friend whose stream total was actually read (0 is a real answer). */
+type FriendCount = { friend: J; streams: number };
+/** A friend whose stream total is unknown — never coerced to 0 (#803). */
+type FriendUnreadable = { friend: J; unreadableReason: string };
+type FriendLookup = FriendCount | FriendUnreadable;
+
+function isFriendCount(lookup: FriendLookup): lookup is FriendCount {
+  return 'streams' in lookup;
+}
+
 export function registerStatsfmTools(server: McpServer, client: StatsfmClient = new StatsfmClient()): void {
   // 1. statsfm_resolve_user — GET /users/{id}, search fallback on 404.
   server.tool(
@@ -621,42 +643,70 @@ export function registerStatsfmTools(server: McpServer, client: StatsfmClient = 
       max_results: MaxResults,
     },
     async (args) => {
-      const friendsBody = await client.get<J>(`/users/${encodeURIComponent(args.user_id)}/friends`, {
+      const friendsPath = `/users/${encodeURIComponent(args.user_id)}/friends`;
+      const friendsBody = await client.get<J>(friendsPath, {
         limit: String(args.limit ?? 10),
       });
-      const friends = collectionItems(friendsBody, `/users/${encodeURIComponent(args.user_id)}/friends`);
-      const ranked = await Promise.all(
-        friends.map(async (f) => {
-          let count = 0;
+      const friends = collectionItems(friendsBody, friendsPath);
+      // Every friend is a separate lookup, and a private, registration-gated
+      // or throttled profile fails only that one request. A failed lookup is
+      // "unreadable", never "0 streams" (#803): charting it as zero tells the
+      // reader their friend streamed nothing, which is a fabricated answer.
+      // Each profile is read exactly once — a throttled friend is reported,
+      // never retried into the rate limit.
+      const lookups = await Promise.all(
+        friends.map(async (f): Promise<FriendCount | FriendUnreadable> => {
+          const path = `/users/${encodeURIComponent(String(f.id ?? f.customId))}/streams/stats`;
           try {
-            const stats = await client.get<J>(`/users/${encodeURIComponent(String(f.id ?? f.customId))}/streams/stats`);
-            count = Number(statsPayload(stats, `/users/${encodeURIComponent(String(f.id ?? f.customId))}/streams/stats`).count ?? 0) || 0;
+            const stats = await client.get<J>(path);
+            return { friend: f, streams: Number(statsPayload(stats, path).count ?? 0) || 0 };
           } catch (err) {
+            // A malformed payload breaks our response contract rather than
+            // hiding a profile, so it still fails loudly instead of being
+            // demoted to an unreadable row.
             if (err instanceof StatsfmApiError && err.status === 200) throw err;
-            count = 0;
+            return { friend: f, unreadableReason: unreadableLookupReason(err) };
           }
-          return { friend: f, count };
         }),
       );
-      ranked.sort((a, b) => b.count - a.count);
+      const ranked = lookups.filter(isFriendCount).sort((a, b) => b.streams - a.streams);
+      const unreadable = lookups.filter((l): l is FriendUnreadable => !isFriendCount(l));
       const rows = ranked.map((r) => ({
         ...r.friend,
-        streams: r.count,
-        display: `${r.friend.displayName ?? r.friend.customId ?? '?'} — ${r.count} streams`,
+        streams: r.streams,
+        display: `${r.friend.displayName ?? r.friend.customId ?? '?'} — ${r.streams} streams`,
+      }));
+      const unreadableRows = unreadable.map((r) => ({
+        ...r.friend,
+        streams: null,
+        readable: false,
+        reason: r.unreadableReason,
+        display: `${r.friend.displayName ?? r.friend.customId ?? '?'} — unreadable (${r.unreadableReason})`,
       }));
       if (args.response_format === 'json') {
-        return { content: [{ type: 'text', text: JSON.stringify(rows) }], structuredContent: { items: rows } };
+        const payload = { items: rows, unreadable: unreadableRows, unreadable_count: unreadableRows.length };
+        return { content: [{ type: 'text', text: JSON.stringify(payload) }], structuredContent: payload };
       }
       const shaped = truncateItems(rows, resolveMaxResults(args.max_results));
-      const lines = [`People chart (friends ranked by streams, showing ${shaped.items.length} of ${rows.length}):`];
+      const partial = unreadableRows.length > 0
+        ? `, ${unreadableRows.length} of ${friends.length} unreadable — partial result`
+        : '';
+      const lines = [`People chart (friends ranked by streams, showing ${shaped.items.length} of ${rows.length}${partial}):`];
+      // Only claim a read failure when one happened: an empty friend list is
+      // a complete answer, not a set of unreadable profiles (#803).
+      if (unreadableRows.length > 0) lines.push('  (no friend profile could be read)');
       shaped.items.forEach((r, i) => lines.push(`  ${i + 1}. ${r.display}`));
       if (shaped.footer) lines.push(`(${shaped.footer})`);
+      if (unreadableRows.length > 0) {
+        lines.push(`Unreadable — stream count unknown, not zero (${unreadableRows.length}, excluded from the ranking):`);
+        for (const r of unreadableRows) lines.push(`  - ${r.display}`);
+      }
       return {
         content: [{ type: 'text', text: lines.join('\n') }],
         structuredContent: listStructuredContent(
           shaped.items,
           paginationInfo({ total: rows.length, offset: 0, limit: args.limit ?? 10, returned: rows.length }),
-          { truncated: shaped.truncated, remaining: shaped.remaining },
+          { truncated: shaped.truncated, remaining: shaped.remaining, unreadable: unreadableRows, unreadable_count: unreadableRows.length },
         ),
       };
     },
