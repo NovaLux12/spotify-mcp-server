@@ -102,15 +102,27 @@ function playedAtMs(iso: string): number {
   return new Date(iso).getTime();
 }
 
-function localHour(iso: string): number {
-  return new Date(iso).getHours();
+/** Hour-of-day in the UTC frame: the calendar hour written into played_at, not
+ * the host's local one. Every hour/daypart/weekday bucket in this file reads
+ * its calendar fields this way so a single payload never mixes UTC day metrics
+ * with host-local hour metrics. */
+function utcHour(iso: string): number {
+  return Number.parseInt(iso.slice(11, 13), 10);
 }
 
-function localWeekday(iso: string): string {
-  return WEEKDAYS[(new Date(iso).getDay() + 6) % 7];
+/** Weekday (Mon-Sun) of the UTC calendar date, from a full ISO instant or a
+ * bare YYYY-MM-DD prefix. Parsed as a date, never as a local instant, so the
+ * result cannot drift with the host time zone. */
+function utcWeekday(iso: string): string {
+  const y = Number.parseInt(iso.slice(0, 4), 10);
+  const m = Number.parseInt(iso.slice(5, 7), 10);
+  const d = Number.parseInt(iso.slice(8, 10), 10);
+  return WEEKDAYS[(new Date(Date.UTC(y, m - 1, d)).getUTCDay() + 6) % 7];
 }
 
-function localDate(iso: string): string {
+/** The UTC day of an ISO instant: the raw date prefix, the frame the
+ * day-scoped metrics in this file already used. */
+function utcDate(iso: string): string {
   return iso.slice(0, 10);
 }
 
@@ -276,7 +288,7 @@ function dayStats(chron: RecentlyPlayedItem[]): Array<{
 }> {
   const days = new Map<string, { tracks: Set<string>; artists: Set<string>; plays: number }>();
   for (const r of chron) {
-    const d = localDate(r.played_at);
+    const d = utcDate(r.played_at);
     const cur = days.get(d) ?? { tracks: new Set<string>(), artists: new Set<string>(), plays: 0 };
     cur.plays += 1;
     cur.tracks.add(r.track.id);
@@ -625,7 +637,7 @@ export function registerSwarm3AnalyticsTools(server: McpServer, client: SpotifyC
   // 8. listening_clock — hour-of-day listening profile
   server.tool(
     'listening_clock',
-    'Profile when you listen by local hour (24-bucket histogram plus daypart totals and peak hour) from recently-played history (default 150 items). Quota: GET /me/player/recently-played cursor walk.',
+    'Profile when you listen by UTC hour (24-bucket histogram plus daypart totals, peak hour and quietest hour) from recently-played history (default 150 items); hour buckets come from the UTC clock of played_at, the same frame as the day-scoped metrics, so they agree with them in any host time zone. quietest_hour is set only when a single hour holds the fewest plays; when several tie, it is null and quietest_tied_hours lists them in ascending order, because a thin history cannot identify a quietest hour. Quota: GET /me/player/recently-played cursor walk.',
     {
       max_items: RecentLimit,
       response_format: ResponseFormat,
@@ -638,13 +650,21 @@ export function registerSwarm3AnalyticsTools(server: McpServer, client: SpotifyC
       const dayparts: Record<string, number> = {};
       for (let h = 0; h < 24; h++) hours[`${pad2(h)}:00`] = 0;
       for (const r of walk.items) {
-        const h = localHour(r.played_at);
+        const h = utcHour(r.played_at);
         hours[`${pad2(h)}:00`] += 1;
         bump(dayparts, daypartOf(h));
       }
       const ranked = sortedEntries(hours);
       const peak = ranked[0];
-      const quiet = [...ranked].reverse()[0];
+      // The true minimum, not the tail of the count-descending ranking: all 24
+      // buckets always exist, so a thin history leaves most of them tied at
+      // zero and reversing the ranking names the largest label (23:00) as the
+      // quietest hour. Name one hour only when exactly one bucket holds the
+      // minimum; when several tie the sample cannot identify a quietest hour,
+      // so say that and hand back the tied set instead of an arbitrary pick.
+      const quietestPlays = Math.min(...ranked.map(([, plays]) => plays));
+      const quietestTied = ranked.filter(([, plays]) => plays === quietestPlays).map(([hour]) => hour).sort();
+      const quiet = quietestTied.length === 1 ? quietestTied[0] : null;
       const payload = {
         ok: true,
         history_items: walk.items.length,
@@ -653,16 +673,21 @@ export function registerSwarm3AnalyticsTools(server: McpServer, client: SpotifyC
         dayparts,
         peak_hour: peak?.[0] ?? null,
         peak_plays: peak?.[1] ?? 0,
-        quietest_hour: quiet?.[0] ?? null,
+        quietest_hour: quiet,
+        quietest_plays: quietestPlays,
+        quietest_tied_hours: quietestTied,
       };
-      return shape(rf, `Listening clock: peak ${peak?.[0] ?? '—'} with ${peak?.[1] ?? 0} plays. Dayparts — ${DAYPARTS.map((d) => `${d} ${dayparts[d] ?? 0}`).join(', ')}.`, payload);
+      const quietNote = quiet === null
+        ? `No single quietest hour: ${quietestTied.length} hours tie at ${quietestPlays} play(s).`
+        : `Quietest ${quiet} (${quietestPlays} plays).`;
+      return shape(rf, `Listening clock: peak ${peak?.[0] ?? '—'} with ${peak?.[1] ?? 0} plays. Dayparts — ${DAYPARTS.map((d) => `${d} ${dayparts[d] ?? 0}`).join(', ')}. ${quietNote}`, payload);
     },
   );
 
   // 9. weekday_listening_report — plays + uniqueness per weekday
   server.tool(
     'weekday_listening_report',
-    'Break recently-played history down by weekday (plays, unique tracks, unique artists, busiest day; Mon→Sun ordering, default 150 items). Quota: GET /me/player/recently-played cursor walk.',
+    'Break recently-played history down by UTC weekday (plays, unique tracks, unique artists, busiest day; Mon→Sun ordering, default 150 items). Quota: GET /me/player/recently-played cursor walk.',
     {
       max_items: RecentLimit,
       response_format: ResponseFormat,
@@ -674,7 +699,7 @@ export function registerSwarm3AnalyticsTools(server: McpServer, client: SpotifyC
       const perDay: Record<string, { plays: number; tracks: Set<string>; artists: Set<string> }> = {};
       for (const wd of WEEKDAYS) perDay[wd] = { plays: 0, tracks: new Set(), artists: new Set() };
       for (const r of walk.items) {
-        const wd = localWeekday(r.played_at);
+        const wd = utcWeekday(r.played_at);
         perDay[wd].plays += 1;
         perDay[wd].tracks.add(r.track.id);
         for (const a of r.track.artists) perDay[wd].artists.add(a.id);
@@ -787,7 +812,7 @@ export function registerSwarm3AnalyticsTools(server: McpServer, client: SpotifyC
       const rf = args.response_format;
       const walk = await walkRecentlyPlayed(client, recentDepth(args.max_items));
       if (walk.items.length === 0) return empty(rf, 'No recently-played history available.');
-      const dates = [...new Set(walk.items.map((r) => localDate(r.played_at)))].sort();
+      const dates = [...new Set(walk.items.map((r) => utcDate(r.played_at)))].sort();
       const streaks: Array<{ start: string; end: string; length: number }> = [];
       let start = dates[0];
       let len = 1;
@@ -879,7 +904,7 @@ export function registerSwarm3AnalyticsTools(server: McpServer, client: SpotifyC
   // 14. mood_bucket_report — daypart × familiarity listening buckets
   server.tool(
     'mood_bucket_report',
-    'Segment recently-played plays into daypart × familiarity buckets (fresh tracks vs staples from your top tracks, default medium_term) as a lightweight listening-mood proxy. Quota: GET /me/player/recently-played + 1× GET /me/top/tracks.',
+    'Segment recently-played plays into UTC daypart × familiarity buckets (fresh tracks vs staples from your top tracks, default medium_term) as a lightweight listening-mood proxy. Quota: GET /me/player/recently-played + 1× GET /me/top/tracks.',
     {
       time_range: TimeRange.describe('Top-tracks window defining "staple" music. Default: medium_term'),
       max_items: RecentLimit,
@@ -899,7 +924,7 @@ export function registerSwarm3AnalyticsTools(server: McpServer, client: SpotifyC
         buckets[`${dp}_fresh`] = 0;
       }
       for (const r of walk.items) {
-        const dp = daypartOf(localHour(r.played_at));
+        const dp = daypartOf(utcHour(r.played_at));
         bump(buckets, `${dp}_${staple.has(r.track.id) ? 'staple' : 'fresh'}`);
       }
       const rows = Object.entries(buckets).map(([bucket, plays]) => ({ bucket, plays, share: pct(plays, walk.items.length) })).sort((a, b) => b.plays - a.plays);
@@ -968,7 +993,7 @@ export function registerSwarm3AnalyticsTools(server: McpServer, client: SpotifyC
   // 16. listening_clock_heatmap — weekday × hour matrix
   server.tool(
     'listening_clock_heatmap',
-    'Render a weekday × hour listening heatmap from recently-played history with the peak cell highlighted (default 150 items). Quota: GET /me/player/recently-played cursor walk.',
+    'Render a UTC weekday × UTC hour listening heatmap from recently-played history with the peak cell highlighted (default 150 items). Quota: GET /me/player/recently-played cursor walk.',
     {
       max_items: RecentLimit,
       response_format: ResponseFormat,
@@ -982,7 +1007,7 @@ export function registerSwarm3AnalyticsTools(server: McpServer, client: SpotifyC
         matrix[wd] = {};
         for (let h = 0; h < 24; h++) matrix[wd][`${pad2(h)}:00`] = 0;
       }
-      for (const r of walk.items) matrix[localWeekday(r.played_at)][`${pad2(localHour(r.played_at))}:00`] += 1;
+      for (const r of walk.items) matrix[utcWeekday(r.played_at)][`${pad2(utcHour(r.played_at))}:00`] += 1;
       let peak: { weekday: string; hour: string; plays: number } | null = null;
       for (const wd of WEEKDAYS) {
         for (let h = 0; h < 24; h++) {
@@ -1008,7 +1033,7 @@ export function registerSwarm3AnalyticsTools(server: McpServer, client: SpotifyC
   // 17. artist_listening_clock — one artist's hour-of-day profile
   server.tool(
     'artist_listening_clock',
-    'Profile WHEN you play one specific artist (hour-of-day histogram plus daypart split; defaults to your most-played artist in the history window). Quota: GET /me/player/recently-played cursor walk.',
+    'Profile WHEN you play one specific artist (UTC hour-of-day histogram plus UTC daypart split; defaults to your most-played artist in the history window). Quota: GET /me/player/recently-played cursor walk.',
     {
       artist: spotifyId('artist').optional().describe('Artist ID/URI/URL. Omit to use the most-played artist in the history window.'),
       max_items: RecentLimit,
@@ -1034,7 +1059,7 @@ export function registerSwarm3AnalyticsTools(server: McpServer, client: SpotifyC
       for (const r of walk.items) {
         if (!r.track.artists.some((a) => a.id === target)) continue;
         plays += 1;
-        const h = localHour(r.played_at);
+        const h = utcHour(r.played_at);
         hours[`${pad2(h)}:00`] += 1;
         bump(dayparts, daypartOf(h));
       }
@@ -1150,7 +1175,7 @@ export function registerSwarm3AnalyticsTools(server: McpServer, client: SpotifyC
   // 20. weekly_rotation_report — per-day freshness and variety
   server.tool(
     'weekly_rotation_report',
-    'Track day-by-day rotation from recently-played history: plays, unique tracks/artists, and first-heard-this-window tracks per day (oldest→newest, default 150 items). Quota: GET /me/player/recently-played cursor walk.',
+    'Track UTC day-by-day rotation from recently-played history: plays, unique tracks/artists, and first-heard-this-window tracks per day (oldest→newest, default 150 items). Quota: GET /me/player/recently-played cursor walk.',
     {
       max_items: RecentLimit,
       response_format: ResponseFormat,
@@ -1166,14 +1191,14 @@ export function registerSwarm3AnalyticsTools(server: McpServer, client: SpotifyC
       let idx = 0;
       for (const d of perDay) {
         let fresh = 0;
-        while (idx < chron.length && localDate(chron[idx].played_at) === d.date) {
+        while (idx < chron.length && utcDate(chron[idx].played_at) === d.date) {
           if (!seen.has(chron[idx].track.id)) {
             fresh += 1;
             seen.add(chron[idx].track.id);
           }
           idx += 1;
         }
-        rows.push({ date: d.date, weekday: localWeekday(d.date + 'T12:00:00'), plays: d.plays, unique_tracks: d.unique_tracks, unique_artists: d.unique_artists, fresh_tracks: fresh, fresh_share: pct(fresh, d.plays) });
+        rows.push({ date: d.date, weekday: utcWeekday(d.date), plays: d.plays, unique_tracks: d.unique_tracks, unique_artists: d.unique_artists, fresh_tracks: fresh, fresh_share: pct(fresh, d.plays) });
       }
       const totalFresh = rows.reduce((a, r) => a + r.fresh_tracks, 0);
       const payload = {
@@ -1190,7 +1215,7 @@ export function registerSwarm3AnalyticsTools(server: McpServer, client: SpotifyC
   // 21. listening_consistency_score — 0-100 consistency composite
   server.tool(
     'listening_consistency_score',
-    'Score how consistent your listening is (0-100) from recently-played history: active-day coverage, hour spread, and weekday balance with each component shown (default 150 items). Quota: GET /me/player/recently-played cursor walk.',
+    'Score how consistent your listening is (0-100) from recently-played history: active-day coverage, UTC hour spread, and UTC weekday balance with each component shown (default 150 items). Quota: GET /me/player/recently-played cursor walk.',
     {
       max_items: RecentLimit,
       response_format: ResponseFormat,
@@ -1200,16 +1225,16 @@ export function registerSwarm3AnalyticsTools(server: McpServer, client: SpotifyC
       const walk = await walkRecentlyPlayed(client, recentDepth(args.max_items));
       if (walk.items.length === 0) return empty(rf, 'No recently-played history available.');
       const chron = chronological(walk.items);
-      const activeDays = new Set(chron.map((r) => localDate(r.played_at)));
+      const activeDays = new Set(chron.map((r) => utcDate(r.played_at)));
       const firstDay = [...activeDays][0];
       const lastDay = [...activeDays][activeDays.size - 1];
       const spanDays = Math.max(1, Math.round((playedAtMs(lastDay + 'T00:00:00Z') - playedAtMs(firstDay + 'T00:00:00Z')) / 86_400_000) + 1);
       const dayCoverage = activeDays.size / spanDays;
-      const hours = new Set(chron.map((r) => localHour(r.played_at)));
+      const hours = new Set(chron.map((r) => utcHour(r.played_at)));
       const hourSpread = hours.size / 24;
       const weekdayPlays: Record<string, number> = {};
       for (const wd of WEEKDAYS) weekdayPlays[wd] = 0;
-      for (const r of chron) weekdayPlays[localWeekday(r.played_at)] += 1;
+      for (const r of chron) weekdayPlays[utcWeekday(r.played_at)] += 1;
       const activeWeekdays = WEEKDAYS.filter((wd) => weekdayPlays[wd] > 0).length;
       const weekdayBalance = activeWeekdays / 7;
       const score = Math.round(dayCoverage * 40 + hourSpread * 30 + weekdayBalance * 30);
@@ -1273,7 +1298,7 @@ export function registerSwarm3AnalyticsTools(server: McpServer, client: SpotifyC
   // 23. listening_recap_brief — one-call narrative recap of recent listening
   server.tool(
     'listening_recap_brief',
-    'Produce a one-call recap of your recent listening: headline plays, top artist/track, leaderboard leaders, peak hour, busiest weekday, discovery ratio, and streak status (default 200 history items). Quota: GET /me/player/recently-played + 4× GET /me/top/*.',
+    'Produce a one-call recap of your recent listening: headline plays, top artist/track, leaderboard leaders, peak hour, busiest weekday, discovery ratio, and streak status (default 200 history items; hour and weekday figures are UTC). Quota: GET /me/player/recently-played + 4× GET /me/top/*.',
     {
       max_items: z.coerce.number().int().positive().max(500).optional().default(200).describe('Max history items to walk (default 200).'),
       response_format: ResponseFormat,
@@ -1293,16 +1318,16 @@ export function registerSwarm3AnalyticsTools(server: McpServer, client: SpotifyC
       const { byTrack, byArtist } = playCounts(chron);
       const topRecentArtist = [...byArtist.entries()].sort((a, b) => b[1].plays - a[1].plays)[0];
       const topRecentTrack = [...byTrack.entries()].sort((a, b) => b[1].plays - a[1].plays)[0];
-      const hours = new Set(chron.map((r) => localHour(r.played_at)));
+      const hours = new Set(chron.map((r) => utcHour(r.played_at)));
       const hourHist: Record<string, number> = {};
-      for (const r of chron) bump(hourHist, `${pad2(localHour(r.played_at))}:00`);
+      for (const r of chron) bump(hourHist, `${pad2(utcHour(r.played_at))}:00`);
       const peakHour = sortedEntries(hourHist)[0];
       const weekdayHist: Record<string, number> = {};
-      for (const r of chron) bump(weekdayHist, localWeekday(r.played_at));
+      for (const r of chron) bump(weekdayHist, utcWeekday(r.played_at));
       const busiestDay = sortedEntries(weekdayHist)[0];
       const stIds = new Set(stTracks.map((t) => t.id));
       const fresh = chron.filter((r) => !stIds.has(r.track.id)).length;
-      const dates = [...new Set(chron.map((r) => localDate(r.played_at)))].sort();
+      const dates = [...new Set(chron.map((r) => utcDate(r.played_at)))].sort();
       const yesterday = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
       const today = new Date().toISOString().slice(0, 10);
       const streakAlive = dates[dates.length - 1] === today || dates[dates.length - 1] === yesterday;
