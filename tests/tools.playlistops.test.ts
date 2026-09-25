@@ -200,6 +200,23 @@ describe('playlistops registration', () => {
       ['diff_playlists', 'merge_playlists', 'overlap_playlists'],
     );
   });
+
+  it('rejects legacy array, pair, and ambiguous cap names', async () => {
+    const h = harness();
+    await assert.rejects(
+      () => h.invoke('merge_playlists', { playlists: ['a'], new_name: 'X', max_items: 1 }),
+      (err: unknown) => err instanceof z.ZodError,
+    );
+    await assert.rejects(
+      () => h.invoke('merge_playlists', { sources: ['a'], new_name: 'X' }),
+      (err: unknown) => err instanceof z.ZodError,
+    );
+    await assert.rejects(
+      () => h.invoke('diff_playlists', { a: 'pa', b: 'pb' }),
+      (err: unknown) => err instanceof z.ZodError,
+    );
+    assert.equal(h.client.calls.length, 0);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -210,14 +227,14 @@ describe('merge_playlists', () => {
   it('rejects when neither target_playlist_id nor new_name is given', async () => {
     const h = harness();
     await assert.rejects(() =>
-      h.invoke('merge_playlists', { sources: ['aaa'] }),
+      h.invoke('merge_playlists', { playlists: ['aaa'] }),
     );
   });
 
   it('rejects when both target_playlist_id and new_name are given', async () => {
     const h = harness();
     await assert.rejects(() =>
-      h.invoke('merge_playlists', { sources: ['aaa'], target_playlist_id: 't1', new_name: 'X' }),
+      h.invoke('merge_playlists', { playlists: ['aaa'], target_playlist_id: 't1', new_name: 'X' }),
     );
   });
 
@@ -238,7 +255,7 @@ describe('merge_playlists', () => {
     );
 
     const out = await h.invoke('merge_playlists', {
-      sources: ['srcA', 'spotify:playlist:srcB'],
+      playlists: ['srcA', 'spotify:playlist:srcB'],
       new_name: 'Merged',
       public: true,
     });
@@ -275,7 +292,7 @@ describe('merge_playlists', () => {
     );
 
     await h.invoke('merge_playlists', {
-      sources: ['sa', 'sb'],
+      playlists: ['sa', 'sb'],
       target_playlist_id: 'spotify:playlist:tgt',
     });
 
@@ -295,7 +312,7 @@ describe('merge_playlists', () => {
     const tgt = [item('existing')];
     const h = harness(playlistResponder({ sa: srcA, tgt }, () => ({ snapshot_id: 's' })));
 
-    await h.invoke('merge_playlists', { sources: ['sa'], target_playlist_id: 'tgt' });
+    await h.invoke('merge_playlists', { playlists: ['sa'], target_playlist_id: 'tgt' });
 
     assert.equal(
       wireCalls(h.client.calls).filter((c) => c.method === 'PUT').length,
@@ -310,7 +327,7 @@ describe('merge_playlists', () => {
       playlistResponder({ pl9: [item('z1')] }, () => ({ snapshot_id: 's' })),
     );
     await h.invoke('merge_playlists', {
-      sources: ['spotify:playlist:pl9'],
+      playlists: ['spotify:playlist:pl9'],
       target_playlist_id: 'spotify:playlist:tgt2',
     });
     const gets = wireCalls(h.client.calls)
@@ -331,9 +348,11 @@ describe('merge_playlists', () => {
     const h = harness(playlistResponder({ da: srcA, db: srcB }));
 
     const out = await h.invoke('merge_playlists', {
-      sources: ['da', 'db'],
+      playlists: ['da', 'db'],
       new_name: 'Preview',
       dry_run: true,
+      limit: 25,
+      scan_cap: 40,
     });
 
     const text = textOf(out);
@@ -344,11 +363,19 @@ describe('merge_playlists', () => {
     assert.equal(out.structuredContent!.ok, true);
     assert.equal(out.structuredContent!.dry_run, true);
     assert.ok(Array.isArray(out.structuredContent!.changes));
+    assert.deepEqual(out.structuredContent!.playlists, ['da', 'db']);
+    assert.equal(out.structuredContent!.limit, 25);
+    assert.equal(out.structuredContent!.scan_cap, 40);
     assert.ok(out.structuredContent!.changes.length >= 2);
 
     const methods = wireCalls(h.client.calls).map((c) => c.method);
     assert.equal(methods.filter((m) => m !== 'GET').length, 0, 'no POST/PUT/DELETE allowed');
     assert.ok(methods.filter((m) => m === 'GET').length >= 2, 'sources were read');
+    assert.ok(
+      wireCalls(h.client.calls).every(
+        (call) => (call.arg as Record<string, string>).limit === '25',
+      ),
+    );
   });
 
   it('max_results caps rendered rows while totals stay accurate', async () => {
@@ -356,7 +383,7 @@ describe('merge_playlists', () => {
     const h = harness(playlistResponder({ ma: srcA }, () => ({ snapshot_id: 's' })));
 
     const out = await h.invoke('merge_playlists', {
-      sources: ['ma'],
+      playlists: ['ma'],
       target_playlist_id: 'tgt3',
       response_format: 'concise',
       max_results: 2,
@@ -378,7 +405,7 @@ describe('diff_playlists', () => {
     const b = [item('b2'), item('c3'), item('d4')];
     const h = harness(playlistResponder({ pa: a, pb: b }));
 
-    const out = await h.invoke('diff_playlists', { a: 'pa', b: 'pb' });
+    const out = await h.invoke('diff_playlists', { playlist_a: 'pa', playlist_b: 'pb' });
     const text = textOf(out);
     assert.match(text, /Only in A \(1\)/);
     assert.match(text, /a1 @ position 0/);
@@ -389,7 +416,7 @@ describe('diff_playlists', () => {
     assert.match(text, /c3 @ A:2 → B:1/);
 
     // Identical playlists produce empty sections everywhere.
-    const same = await h.invoke('diff_playlists', { a: 'pa', b: 'pa' });
+    const same = await h.invoke('diff_playlists', { playlist_a: 'pa', playlist_b: 'pa' });
     assert.match(textOf(same), /Only in A \(0\):\n  \(none\)/);
     assert.match(textOf(same), /Moved \(same track, different position\) \(0\)/);
   });
@@ -399,14 +426,22 @@ describe('diff_playlists', () => {
     const b = [item('x3'), item('x1'), item('x2')];
     const h = harness(playlistResponder({ pa: a, pb: b }));
 
-    const out = await h.invoke('diff_playlists', { a: 'pa', b: 'pb', response_format: 'json' });
+    const out = await h.invoke('diff_playlists', { playlist_a: 'pa', playlist_b: 'pb', response_format: 'json', limit: 40, scan_cap: 120 });
     const data = JSON.parse(textOf(out)) as {
+      playlist_a: string;
+      playlist_b: string;
+      limit: number;
+      scan_cap: number;
       a_total: number;
       b_total: number;
       only_in_a: string[];
       only_in_b: string[];
       moved: Array<{ id: string; a_position: number; b_position: number }>;
     };
+    assert.equal(data.playlist_a, 'pa');
+    assert.equal(data.playlist_b, 'pb');
+    assert.equal(data.limit, 40);
+    assert.equal(data.scan_cap, 120);
     assert.equal(data.a_total, 3);
     assert.equal(data.b_total, 3);
     assert.deepEqual(data.only_in_a, []);
@@ -423,8 +458,9 @@ describe('diff_playlists', () => {
     const b = [item('q1'), item('q2'), item('q3'), item('shared')];
     const h = harness(playlistResponder({ pa: a, pb: b }));
 
-    const out = await h.invoke('diff_playlists', { a: 'pa', b: 'pb', max_results: 1 });
+    const out = await h.invoke('diff_playlists', { playlist_a: 'pa', playlist_b: 'pb', max_results: 1, limit: 30, scan_cap: 90 });
     const text = textOf(out);
+    assert.match(text, /limit=30, scan_cap=90/);
     assert.match(text, /Only in A \(3\):/);
     assert.match(text, /Only in B \(3\):/);
     assert.match(text, /2 more/);
@@ -436,7 +472,10 @@ describe('diff_playlists', () => {
     const a = [item('r1')];
     const b = [item('r2')];
     const h = harness(playlistResponder({ pa: a, pb: b }));
-    await h.invoke('diff_playlists', { a: 'pa', b: 'pb', dry_run: true });
+    const out = await h.invoke('diff_playlists', { playlist_a: 'pa', playlist_b: 'pb', dry_run: true });
+    assert.equal(out.structuredContent!.dry_run, true);
+    assert.equal(out.structuredContent!.playlist_a, 'pa');
+    assert.equal(out.structuredContent!.playlist_b, 'pb');
     assert.equal(
       wireCalls(h.client.calls).filter((c) => c.method !== 'GET').length,
       0,
@@ -450,7 +489,7 @@ describe('diff_playlists', () => {
     const b = [...many('a', 120).slice(30), ...many('b', 10)];
     const h = harness(playlistResponder({ pa: a, pb: b }, () => null, 50));
 
-    const out = await h.invoke('diff_playlists', { a: 'pa', b: 'pb', response_format: 'json' });
+    const out = await h.invoke('diff_playlists', { playlist_a: 'pa', playlist_b: 'pb', response_format: 'json' });
     const data = JSON.parse(textOf(out)) as { a_total: number; b_total: number; only_in_b: string[] };
     assert.equal(data.a_total, 120);
     assert.equal(data.b_total, 100);
@@ -473,10 +512,13 @@ describe('overlap_playlists', () => {
     const h = harness(playlistResponder(fixtures()));
     const out = await h.invoke('overlap_playlists', {
       playlists: ['p1', 'p2', 'p3'],
+      limit: 20,
+      scan_cap: 60,
     });
     const text = textOf(out);
     assert.match(text, /at least 3 of 3 playlists: 1/);
     assert.match(text, /y2 "Track y2" — in 3\/3 playlists/);
+    assert.match(text, /limit=20, scan_cap=60/);
   });
 
   it('honors min_overlap=2 and orders most-shared first', async () => {
@@ -495,12 +537,20 @@ describe('overlap_playlists', () => {
       playlists: ['p1', 'p2', 'p3'],
       min_overlap: 1,
       response_format: 'json',
+      limit: 30,
+      scan_cap: 70,
     });
     const data = JSON.parse(textOf(out)) as {
+      playlists: string[];
+      limit: number;
+      scan_cap: number;
       threshold: number;
       total_shared: number;
       shared: Array<{ id: string; count: number }>;
     };
+    assert.deepEqual(data.playlists, ['p1', 'p2', 'p3']);
+    assert.equal(data.limit, 30);
+    assert.equal(data.scan_cap, 70);
     assert.equal(data.threshold, 1);
     assert.equal(data.total_shared, 4);
     assert.deepEqual(data.shared[0], { id: 'y2', name: 'Track y2', count: 3 });
@@ -531,10 +581,12 @@ describe('overlap_playlists', () => {
 
   it('makes zero mutating calls even with dry_run set', async () => {
     const h = harness(playlistResponder(fixtures()));
-    await h.invoke('overlap_playlists', {
+    const out = await h.invoke('overlap_playlists', {
       playlists: ['p1', 'p2'],
       dry_run: true,
     });
+    assert.equal(out.structuredContent!.dry_run, true);
+    assert.deepEqual(out.structuredContent!.playlists, ['p1', 'p2']);
     assert.equal(
       wireCalls(h.client.calls).filter((c) => c.method !== 'GET').length,
       0,

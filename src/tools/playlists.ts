@@ -8,6 +8,7 @@ import {
   describeConfirmation,
   REMOVE_ELICIT_THRESHOLD,
   REPLACE_ELICIT_THRESHOLD,
+  refusalFor,
 } from './confirm.js';
 import {
   DryRun,
@@ -58,6 +59,29 @@ function formatDuration(ms: number): string {
 
 // Hard cap for fetch_all pagination loops (SPOTIFY_MCP_FETCH_ALL_CAP, #55)
 const FETCH_ALL_CAP = () => getConfig().fetchAllCap;
+
+const PlaylistSetPageLimit = z
+  .number()
+  .int()
+  .min(1)
+  .max(100)
+  .default(100)
+  .describe('Spotify API page size per playlist request. Default: 100');
+const PlaylistSetScanCap = z
+  .number()
+  .int()
+  .min(1)
+  .max(2000)
+  .default(FETCH_ALL_CAP())
+  .describe('Maximum items to scan per playlist. Default: fetch-all cap');
+const PlaylistSetRefs = z
+  .array(z.string())
+  .min(1)
+  .describe('Playlist IDs or spotify:playlist: URIs in deterministic input order');
+const PlaylistSetPair = {
+  playlist_a: z.string().describe('Playlist A as an ID or spotify:playlist: URI'),
+  playlist_b: z.string().describe('Playlist B as an ID or spotify:playlist: URI'),
+};
 
 // #157: visibility flips are gated by DIRECTION, not size — any change that
 // makes a playlist more visible (private→public, or enabling collaboration)
@@ -1412,7 +1436,6 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
       const rawDryRun = (args as any).dry_run;
       const rawApply = (args as any).apply;
       const effectiveApply = rawDryRun !== undefined ? !rawDryRun : !!rawApply;
-      const effectiveDryRun = !effectiveApply;
       const playlists = await client.getAllPages<SpotifyPlaylistSimple>('/me/playlists', {
         limit: '50',
       });
@@ -1540,8 +1563,16 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
   );
 
   // Helpers for new exhaustive playlist tools
-  async function getAllUris(playlistId: string): Promise<string[]> {
-    const items = await client.getAllPages<PlaylistItemObject>(`/playlists/${encodeURIComponent(playlistId)}/items`, { limit: '100' }, { maxItems: getConfig().fetchAllCap });
+  async function getAllUris(
+    playlistId: string,
+    limit = 100,
+    scanCap = FETCH_ALL_CAP(),
+  ): Promise<string[]> {
+    const items = await client.getAllPages<PlaylistItemObject>(
+      `/playlists/${encodeURIComponent(playlistId)}/items`,
+      { limit: String(limit) },
+      { maxItems: scanCap },
+    );
     return items.map(i => i.item?.uri).filter((u): u is string => !!u);
   }
   async function replaceWithUris(playlistId: string, uris: string[]): Promise<string | undefined> {
@@ -1557,9 +1588,16 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
   }
 
   // check_playlist_following (#284) — fan-out capped 5
-  server.tool('check_playlist_following', 'Check if you follow 1–50 playlists (fans out one call per playlist, concurrency 5). Quota: 🟢 1–50 GETs.', { playlist_ids: z.array(z.string()).min(1).max(50), ...sharedListFields }, async (args) => {
+  server.registerTool('check_playlist_following', {
+    description:
+      'Check if you follow 1–50 canonical playlists inputs (fans out one call per playlist, concurrency 5). Quota: 🟢 1–50 GETs.',
+    inputSchema: z.object({
+      playlists: PlaylistSetRefs.max(50).describe('Playlist IDs or spotify:playlist: URIs to check'),
+      ...sharedListFields,
+    }).strict(),
+  }, async (args) => {
     const results: Array<{ playlist_id: string; following: boolean }> = [];
-    const ids = args.playlist_ids;
+    const ids = args.playlists;
     for (let i = 0; i < ids.length; i += 5) {
       const batch = ids.slice(i, i + 5);
       const settled = await Promise.all(batch.map(async (pid) => { try { const r = await client.get<boolean[]>(`/playlists/${encodeURIComponent(pid)}/followers/contains`); return { playlist_id: pid, following: r?.[0] ?? false }; } catch { return { playlist_id: pid, following: false }; } }));
@@ -1567,11 +1605,12 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
     }
     const t = truncateItems(results, resolveMaxResults(args.max_results));
     const pag = paginationInfo({ total: results.length, returned: t.items.length });
-    if (args.response_format === 'json') return textResult(jsonText({ results: t.items }), listStructuredContent(t.items, pag));
+    const payload = { playlists: ids, results: t.items };
+    if (args.response_format === 'json') return textResult(jsonText(payload), listStructuredContent(t.items, pag, payload));
     const lines = [`Playlist following (${results.length} checked, showing ${t.items.length}):`];
     for (const r of t.items) lines.push(`  ${r.following ? '✓' : '✗'} ${r.playlist_id}`);
     if (t.footer) lines.push(`(${t.footer})`);
-    return textResult(lines.join('\n'), listStructuredContent(t.items, pag));
+    return textResult(lines.join('\n'), listStructuredContent(t.items, pag, payload));
   });
 
   // clone_playlist_cover (#285)
@@ -1592,15 +1631,19 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
   });
 
   // compare_playlist_covers (#286)
-  server.tool('compare_playlist_covers', 'Compare two playlists covers: URL equality, dimensions. Quota: 🟢 2 GETs.', { playlist_id_a: z.string(), playlist_id_b: z.string(), ...sharedListFields }, async (args) => {
-    const [aImgs, bImgs] = await Promise.all([client.get<SpotifyImage[]>(`/playlists/${encodeURIComponent(args.playlist_id_a)}/images`), client.get<SpotifyImage[]>(`/playlists/${encodeURIComponent(args.playlist_id_b)}/images`)]);
+  server.registerTool('compare_playlist_covers', {
+    description:
+      'Compare playlist_a and playlist_b covers in deterministic A/B order: URL equality and dimensions. Quota: 🟢 2 GETs.',
+    inputSchema: z.object({ ...PlaylistSetPair, ...sharedListFields }).strict(),
+  }, async (args) => {
+    const [aImgs, bImgs] = await Promise.all([client.get<SpotifyImage[]>(`/playlists/${encodeURIComponent(args.playlist_a)}/images`), client.get<SpotifyImage[]>(`/playlists/${encodeURIComponent(args.playlist_b)}/images`)]);
     const a = aImgs?.[0] ?? null; const b = bImgs?.[0] ?? null;
     const sameUrl = a?.url === b?.url && !!a;
-    const payload = { a: a ?? null, b: b ?? null, same: sameUrl, a_has_custom: !!a, b_has_custom: !!b };
+    const payload = { playlist_a: args.playlist_a, playlist_b: args.playlist_b, a: a ?? null, b: b ?? null, same: sameUrl, a_has_custom: !!a, b_has_custom: !!b };
     if (args.response_format === 'json') return textResult(jsonText(payload), payload as unknown as Record<string, unknown>);
     const lines = ['Cover comparison:'];
-    lines.push(`  A (${args.playlist_id_a}): ${a ? `${a.url} ${a.width}x${a.height}` : 'no custom cover (mosaic)'}`);
-    lines.push(`  B (${args.playlist_id_b}): ${b ? `${b.url} ${b.width}x${b.height}` : 'no custom cover (mosaic)'}`);
+    lines.push(`  A (playlist_a=${args.playlist_a}): ${a ? `${a.url} ${a.width}x${a.height}` : 'no custom cover (mosaic)'}`);
+    lines.push(`  B (playlist_b=${args.playlist_b}): ${b ? `${b.url} ${b.width}x${b.height}` : 'no custom cover (mosaic)'}`);
     lines.push(`  Same: ${sameUrl ? 'yes' : 'no'}`);
     return textResult(lines.join('\n'), payload as unknown as Record<string, unknown>);
   });
@@ -1676,42 +1719,148 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
   });
 
   // playlist_union (#290)
-  server.tool('playlist_union', 'Union of 2–10 playlists into target (deduped, first-seen order). Quota: 🟢 N GETs + PUT/POST.', { source_playlist_ids: z.array(z.string()).min(2).max(10), target_playlist_id: z.string().optional(), target_name: z.string().optional(), dedupe: z.boolean().default(true), dry_run: DryRun }, async (args) => {
+  server.registerTool('playlist_union', {
+    description:
+      'Union the canonical playlists array into a target (deduped, deterministic first-seen order). limit controls Spotify page size; scan_cap bounds each source walk. Quota: 🟢 N GETs + PUT/POST.',
+    inputSchema: z.object({
+      playlists: PlaylistSetRefs.min(2).max(10),
+      target_playlist_id: z.string().optional().describe('Existing target playlist ID or spotify:playlist: URI'),
+      target_name: z.string().optional().describe('Name for a new target playlist'),
+      dedupe: z.boolean().default(true).describe('Deduplicate tracks in first-seen order. Default: true'),
+      limit: PlaylistSetPageLimit,
+      scan_cap: PlaylistSetScanCap,
+      ...sharedListFields,
+      dry_run: DryRun,
+    }).strict(),
+  }, async (args) => {
     if (!args.target_playlist_id && !args.target_name) throw new Error('Provide target_playlist_id or target_name');
     const seen = new Set<string>(); const union: string[] = [];
-    for (const pid of args.source_playlist_ids){ const uris = await getAllUris(pid); for (const u of uris) if (!args.dedupe || !seen.has(u)){ seen.add(u); union.push(u); } }
-    if (args.dry_run) return textResult(describeDryRun('union playlists', args.target_playlist_id ?? args.target_name!, [`Would union ${union.length} uri(s) from ${args.source_playlist_ids.length} playlists`]));
+    for (const pid of args.playlists) {
+      const uris = await getAllUris(pid, args.limit, args.scan_cap);
+      for (const uri of uris) if (!args.dedupe || !seen.has(uri)) { seen.add(uri); union.push(uri); }
+    }
+    const view = truncateItems(union, resolveMaxResults(args.max_results));
+    const basePayload: Record<string, unknown> = {
+      playlists: args.playlists,
+      target_playlist_id: args.target_playlist_id ?? null,
+      target_name: args.target_name ?? null,
+      limit: args.limit,
+      scan_cap: args.scan_cap,
+      total: union.length,
+      returned: view.items.length,
+      uris: view.items,
+    };
+    if (args.dry_run) {
+      const payload = { ok: true, dry_run: true, ...basePayload };
+      if (args.response_format === 'json') return textResult(jsonText(payload), payload);
+      return textResult(
+        describeDryRun('union playlists', args.target_playlist_id ?? args.target_name!, [
+          `Would union ${union.length} uri(s) from ${args.playlists.length} playlists [limit=${args.limit}, scan_cap=${args.scan_cap}]`,
+        ]),
+        payload,
+      );
+    }
+    if (union.length >= REPLACE_ELICIT_THRESHOLD) {
+      const verdict = await confirmViaElicitation(server, {
+        message: describeConfirmation('replace target with playlist union', args.target_playlist_id ?? args.target_name!, [
+          `Overwrite ALL existing items with ${union.length} unioned URI(s) in deterministic first-seen order.`,
+        ]),
+      });
+      const refusal = refusalFor(verdict);
+      if (refusal) return textResult(refusal.message, refusal.payload);
+    }
     let targetId = args.target_playlist_id;
     if (!targetId){ const created = await client.post<{id:string}>(`/me/playlists`, { name: args.target_name, public: false }); if(!created?.id) throw new Error('Could not create playlist'); targetId = created.id; }
     const snap = await replaceWithUris(targetId!, union);
-    return textResult(withSnapshot(`Union ${union.length} item(s) → ${targetId}`, snap));
+    const payload = { ok: true, ...basePayload, target_playlist_id: targetId, created: !args.target_playlist_id, ...(snap ? { snapshot_id: snap } : {}) };
+    const prose = withSnapshot(`Union ${union.length} item(s) → ${targetId} [limit=${args.limit}, scan_cap=${args.scan_cap}]`, snap);
+    if (args.response_format === 'json') return textResult(jsonText(payload), payload);
+    return textResult(prose, payload);
   });
 
   // playlist_subtract (#291)
-  server.tool('playlist_subtract', 'Remove tracks of B..N from A. Quota: 🟢 N GETs + DELETE or PUT.', { base_playlist_id: z.string(), subtract_playlist_ids: z.array(z.string()).min(1), dry_run: DryRun }, async (args) => {
-    const baseUris = await getAllUris(args.base_playlist_id);
+  server.registerTool('playlist_subtract', {
+    description:
+      'Subtract B..N from A: playlists[0] is playlist_a and the remaining array entries are subtracted in order. limit controls Spotify page size; scan_cap bounds each source walk. Quota: 🟢 N GETs + PUT.',
+    inputSchema: z.object({
+      playlists: PlaylistSetRefs.min(2).max(10).describe('Playlist A first, then playlists B..N to subtract, in deterministic order'),
+      limit: PlaylistSetPageLimit,
+      scan_cap: PlaylistSetScanCap,
+      ...sharedListFields,
+      dry_run: DryRun,
+    }).strict(),
+  }, async (args) => {
+    const [playlistA, ...subtractPlaylists] = args.playlists;
+    const baseUris = await getAllUris(playlistA, args.limit, args.scan_cap);
     const subtractSet = new Set<string>();
-    for (const pid of args.subtract_playlist_ids){ const uris = await getAllUris(pid); for (const u of uris) subtractSet.add(u); }
-    const remaining = baseUris.filter(u => !subtractSet.has(u));
-    const removed = baseUris.length - remaining.length;
-    if (args.dry_run) return textResult(describeDryRun('subtract playlists', args.base_playlist_id, [`Would remove ${removed} item(s), keep ${remaining.length}`]));
-    const snap = await replaceWithUris(args.base_playlist_id, remaining);
-    return textResult(withSnapshot(`Subtract: removed ${removed}, kept ${remaining.length}`, snap));
+    for (const pid of subtractPlaylists) {
+      const uris = await getAllUris(pid, args.limit, args.scan_cap);
+      for (const uri of uris) subtractSet.add(uri);
+    }
+    const removedUris = baseUris.filter(uri => subtractSet.has(uri));
+    const remaining = baseUris.filter(uri => !subtractSet.has(uri));
+    const removedView = truncateItems(removedUris, resolveMaxResults(args.max_results));
+    const basePayload: Record<string, unknown> = {
+      playlist_a: playlistA,
+      playlists: args.playlists,
+      limit: args.limit,
+      scan_cap: args.scan_cap,
+      removed_total: removedUris.length,
+      removed_uris: removedView.items,
+      kept_total: remaining.length,
+    };
+    if (args.dry_run) {
+      const payload = { ok: true, dry_run: true, ...basePayload };
+      if (args.response_format === 'json') return textResult(jsonText(payload), payload);
+      return textResult(
+        describeDryRun('subtract playlists', playlistA, [
+          `Would remove ${removedUris.length} item(s), keep ${remaining.length} [limit=${args.limit}, scan_cap=${args.scan_cap}]`,
+        ]),
+        payload,
+      );
+    }
+    if (removedUris.length >= REMOVE_ELICIT_THRESHOLD) {
+      const verdict = await confirmViaElicitation(server, {
+        message: describeConfirmation('subtract playlists from', playlistA, [
+          `Remove ${removedUris.length} item(s) found in ${subtractPlaylists.length} subtraction playlist(s), then replace playlist_a with the ${remaining.length} remaining URI(s).`,
+        ]),
+      });
+      const refusal = refusalFor(verdict);
+      if (refusal) return textResult(refusal.message, refusal.payload);
+    }
+    const snap = await replaceWithUris(playlistA, remaining);
+    const payload = { ok: true, ...basePayload, ...(snap ? { snapshot_id: snap } : {}) };
+    const prose = withSnapshot(`Subtract: removed ${removedUris.length}, kept ${remaining.length} [limit=${args.limit}, scan_cap=${args.scan_cap}]`, snap);
+    if (args.response_format === 'json') return textResult(jsonText(payload), payload);
+    return textResult(prose, payload);
   });
 
   // playlist_symmetric_difference (#292)
-  server.tool('playlist_symmetric_difference', 'Tracks in exactly one of two playlists (XOR). Quota: 🟢 2 GETs.', { playlist_id_a: z.string(), playlist_id_b: z.string(), ...sharedListFields }, async (args) => {
-    const [aUris, bUris] = await Promise.all([getAllUris(args.playlist_id_a), getAllUris(args.playlist_id_b)]);
+  server.registerTool('playlist_symmetric_difference', {
+    description:
+      'Tracks in exactly one of playlist_a or playlist_b (XOR), with deterministic A-then-B output order. Quota: 🟢 2 GETs.',
+    inputSchema: z.object({
+      ...PlaylistSetPair,
+      limit: PlaylistSetPageLimit,
+      scan_cap: PlaylistSetScanCap,
+      ...sharedListFields,
+    }).strict(),
+  }, async (args) => {
+    const [aUris, bUris] = await Promise.all([
+      getAllUris(args.playlist_a, args.limit, args.scan_cap),
+      getAllUris(args.playlist_b, args.limit, args.scan_cap),
+    ]);
     const setA = new Set(aUris); const setB = new Set(bUris);
-    const sym = [...aUris.filter(u=>!setB.has(u)), ...bUris.filter(u=>!setA.has(u))];
+    const sym = [...aUris.filter(uri=>!setB.has(uri)), ...bUris.filter(uri=>!setA.has(uri))];
     const uniq = [...new Set(sym)];
     const view = truncateItems(uniq, resolveMaxResults(args.max_results));
     const pag = paginationInfo({ total: uniq.length, returned: view.items.length });
-    if (args.response_format === 'json') return textResult(jsonText({ symmetric_difference: view.items, total: uniq.length }), listStructuredContent(view.items, pag));
-    const lines = [`Symmetric difference: ${uniq.length} uri(s) (showing ${view.items.length}):`];
-    for (const u of view.items) lines.push(`  • ${u}`);
+    const extra = { playlist_a: args.playlist_a, playlist_b: args.playlist_b, limit: args.limit, scan_cap: args.scan_cap };
+    if (args.response_format === 'json') return textResult(jsonText({ ...extra, symmetric_difference: view.items, total: uniq.length }), listStructuredContent(view.items, pag, extra));
+    const lines = [`Symmetric difference (playlist_a then playlist_b): ${uniq.length} uri(s) (showing ${view.items.length}) [limit=${args.limit}, scan_cap=${args.scan_cap}]:`];
+    for (const uri of view.items) lines.push(`  • ${uri}`);
     if (view.footer) lines.push(`(${view.footer})`);
-    return textResult(lines.join('\n'), listStructuredContent(view.items, pag));
+    return textResult(lines.join('\n'), listStructuredContent(view.items, pag, extra));
   });
 
   // playlist_trim (#293)
