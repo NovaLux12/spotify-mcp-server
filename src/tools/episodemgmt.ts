@@ -9,7 +9,17 @@ import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
 import { confirmViaElicitation, describeConfirmation, requiredConfirmationRefusal } from './confirm.js';
+import { formatReceipt, issueReceipt, type Receipt } from '../receipts.js';
 import { DryRun, describeDryRun, ResponseFormat } from '../shaping.js';
+
+/**
+ * Above this many fully-played episodes the bulk archive asks a human through
+ * elicitation (or the server-wide SPOTIFY_MCP_CONFIRM=never). Strictly greater
+ * than: 50 itself is a single delete request, not a bulk operation.
+ */
+export const ARCHIVE_ELICIT_THRESHOLD = 50;
+
+
 
 type ToolResult = { content: Array<{ type: 'text'; text: string }>; structuredContent?: Record<string, unknown> };
 function textResult(text: string, s?: Record<string, unknown>): ToolResult { return { content: [{ type: 'text', text }], ...(s ? { structuredContent: s } : {}) }; }
@@ -18,9 +28,27 @@ function emit(fmt: string | undefined, echo: Record<string, unknown>, text: stri
   return { content: [{ type: 'text', text }], structuredContent: echo };
 }
 
+/**
+ * Success path for the archive: the delete is not invertible on its own, so the
+ * receipt (resolvable via verify_receipt, revertible via undo_mutation) rides
+ * both the prose and structuredContent.
+ */
+function emitWithReceipt(
+  fmt: string | undefined,
+  echo: Record<string, unknown>,
+  text: string,
+  receipt: Receipt,
+): ToolResult {
+  const base = emit(fmt, echo, text);
+  return {
+    content: [{ type: 'text', text: fmt === 'json' ? base.content[0].text : `${base.content[0].text}\n${formatReceipt(receipt, { expectPresent: false })}` }],
+    structuredContent: { ...(base.structuredContent ?? {}), receipt: receipt as unknown as Record<string, unknown> },
+  };
+}
+
 export function registerEpisodeMgmtTools(server: McpServer, client: SpotifyClient): void {
   server.tool('archive_played_episodes',
-    'Remove fully-played episodes from your episode library in bulk (checks resume_point.fully_played). Batch DELETE /me/episodes; archives over 50 episodes require elicitation confirmation (or SPOTIFY_MCP_CONFIRM=never for automation); dry_run supported.',
+    'Remove fully-played episodes from your episode library in bulk (checks resume_point.fully_played). Batch DELETE /me/episodes; archives over 50 episodes require elicitation confirmation (or SPOTIFY_MCP_CONFIRM=never for automation); dry_run supported. Returns a removal receipt (resolvable via verify_receipt, revertible via undo_mutation).',
     {
       dry_run: DryRun,
       response_format: ResponseFormat,
@@ -65,7 +93,7 @@ export function registerEpisodeMgmtTools(server: McpServer, client: SpotifyClien
           },
         );
       }
-      if (played.length > 50) {
+      if (played.length > ARCHIVE_ELICIT_THRESHOLD) {
         const verdict = await confirmViaElicitation(server, {
           message: describeConfirmation('remove from episode library', 'fully-played episodes', [
             `Remove ${played.length} fully-played episode(s):`,
@@ -88,6 +116,10 @@ export function registerEpisodeMgmtTools(server: McpServer, client: SpotifyClien
         await client.delete(`/me/episodes?ids=${batch.join(',')}`);
         removed += batch.length;
       }
-      return emit(args.response_format as string, { ok: true, scanned: items.length, removed, ids, ...(deprecatedInputs.length ? { deprecated_inputs: deprecatedInputs, deprecation_note: '`confirm` was accepted but ignored: it no longer authorises the delete.' } : {}) }, `Archived ${removed} fully-played episodes.`);
+      // A library removal is not invertible on its own: once the DELETEs land the
+      // episodes are gone, so the receipt (resolvable via verify_receipt and
+      // undo_mutation) is the only record that they were ever there.
+      const receipt = await issueReceipt(client, { kind: 'library', uris, expectPresent: false });
+      return emitWithReceipt(args.response_format as string, { ok: true, scanned: items.length, removed, ids, ...(deprecatedInputs.length ? { deprecated_inputs: deprecatedInputs, deprecation_note: '`confirm` was accepted but ignored: it no longer authorises the delete.' } : {}) }, `Archived ${removed} fully-played episodes.`, receipt);
     });
 }

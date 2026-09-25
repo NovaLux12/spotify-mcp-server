@@ -4,6 +4,7 @@ import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { registerEpisodeMgmtTools } from '../src/tools/episodemgmt.js';
 import type { SpotifyClient } from '../src/client.js';
+import { verifyReceipt } from '../src/receipts.js';
 type EpisodeItem = {
   episode: {
     id: string;
@@ -55,7 +56,7 @@ function playedEpisodes(count: number) {
   }));
 }
 
-function harness(overrides: { episodes?: EpisodeItem[]; answer?: ElicitationAnswer } = {}) {
+function harness(overrides: { episodes?: EpisodeItem[]; answer?: ElicitationAnswer; stillPresent?: string[] } = {}) {
   const dels: string[] = [];
   let prompts = 0;
   const episodes: EpisodeItem[] = overrides.episodes ?? [
@@ -64,8 +65,14 @@ function harness(overrides: { episodes?: EpisodeItem[]; answer?: ElicitationAnsw
     { episode: { id: 'ep3', uri: 'spotify:episode:ep3', name: 'Ep 3', resume_point: { fully_played: true } }, added_at: '2026-01-03' },
   ];
   const client = {
-    async get(path: string) {
+    async get(path: string, params?: Record<string, string>) {
       if (path === '/me/episodes') return { items: episodes, total: episodes.length };
+      // Receipt verification refetch: /me/library/contains?uris=a,b
+      if (path === '/me/library/contains') {
+        const asked = (params?.uris ?? '').split(',');
+        const present = new Set(overrides.stillPresent ?? []);
+        return asked.map((u) => present.has(u));
+      }
       return null;
     },
     async getAllPages() { return episodes; },
@@ -194,5 +201,56 @@ describe('episodemgmt', () => {
     assert.equal(out.structuredContent.removed, 51);
     assert.equal(h.promptCount, 0);
     assert.equal(h.dels.length, 2);
+  });
+  it('a successful archive issues a removal receipt verify_receipt can resolve', async () => {
+    const h = harness({ episodes: playedEpisodes(3) });
+    const out = await h.invoke('archive_played_episodes', {});
+    const receipt = out.structuredContent.receipt as { receipt_id?: string };
+    assert.ok(receipt?.receipt_id, 'successful archive must surface a receipt id');
+    // Same process, same in-module store: this is what verify_receipt reads.
+    const stored = verifyReceipt(receipt.receipt_id!);
+    assert.ok(stored, 'receipt id must resolve in the receipt store');
+    assert.equal(stored!.kind, 'library');
+    assert.deepEqual(stored!.uris, ['spotify:episode:ep0', 'spotify:episode:ep1', 'spotify:episode:ep2']);
+  });
+  it('the archive receipt records the episodes as expected ABSENT', async () => {
+    const h = harness({ episodes: playedEpisodes(3) });
+    const out = await h.invoke('archive_played_episodes', {});
+    const receipt = out.structuredContent.receipt as Record<string, unknown>;
+    // A removal receipt: direction removed (so undo re-adds) and no still-present
+    // uris once the refetch confirms they are gone.
+    assert.equal(receipt.direction, 'removed');
+    assert.equal(receipt.verified, true);
+    assert.deepEqual(receipt.missing, []);
+    assert.match(out.content[0].text, /confirmed absent/i);
+  });
+  it('an archive that only partly landed reports the still-present uri', async () => {
+    const h = harness({ episodes: playedEpisodes(3), stillPresent: ['spotify:episode:ep1'] });
+    const out = await h.invoke('archive_played_episodes', {});
+    const receipt = out.structuredContent.receipt as Record<string, unknown>;
+    assert.equal(receipt.verified, false);
+    assert.deepEqual(receipt.missing, ['spotify:episode:ep1']);
+    assert.match(out.content[0].text, /still-present uris: spotify:episode:ep1/);
+  });
+  it('json response_format keeps the text parseable and carries the receipt in structuredContent', async () => {
+    const h = harness({ episodes: playedEpisodes(3) });
+    const out = await h.invoke('archive_played_episodes', { response_format: 'json' });
+    // json stays machine-parseable: no receipt prose leaks into the text
+    // (same contract as library.ts mutationOutVerified).
+    const parsed = JSON.parse(out.content[0].text) as { removed: number };
+    assert.equal(parsed.removed, 3);
+    assert.doesNotMatch(out.content[0].text, /VERIFIED|confirmed absent/);
+    const receipt = out.structuredContent.receipt as { receipt_id?: string };
+    assert.ok(receipt.receipt_id, 'json mode must still expose the receipt via structuredContent');
+    assert.ok(verifyReceipt(receipt.receipt_id!));
+  });
+  it('issues no receipt on any refused or dry-run path', async () => {
+    const refused = harness({ episodes: playedEpisodes(51) });
+    const r = await refused.invoke('archive_played_episodes', {});
+    assert.equal(r.structuredContent.ok, false);
+    assert.equal(r.structuredContent.receipt, undefined);
+    const dry = harness({ episodes: playedEpisodes(3) });
+    const d = await dry.invoke('archive_played_episodes', { dry_run: true });
+    assert.equal(d.structuredContent.receipt, undefined);
   });
 });
