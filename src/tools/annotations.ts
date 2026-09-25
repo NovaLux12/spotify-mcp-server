@@ -24,7 +24,161 @@
  *    as dangerous as `remove_saved_items`;
  *  - no `title` (hosts fall back to the tool name; duplicating it cost ~25 KB).
  */
+
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+/**
+ * v2 registry policy (#909/#918). Prefix allowances are a frozen baseline, not
+ * a target: a new family gets the default budget of three, while these legacy
+ * entity/verb families are allowed to shrink but never to grow silently.
+ */
+export const TOOL_SURFACE_BUDGET = Object.freeze({
+  defaultMaxTools: 620,
+  defaultMaxBytes: 600_000,
+  perToolMaxBytes: 6_000,
+  coreMaxTools: 200,
+  coreMaxBytes: 220_000,
+  defaultPrefixBudget: 3,
+  prefixBudgets: Object.freeze({
+    album: 8, apply: 4, artist: 35, check: 6, episode: 5, export: 10,
+    filter: 4, find: 11, get: 59, library: 8, list: 11, listening: 17,
+    play: 4, playback: 4, playlist: 54, queue: 8, remove: 9, restore: 4,
+    save: 11, saved: 11, search: 22, set: 4, show: 8, snapshot: 12,
+    split: 5, statsfm: 38, taste: 16, top: 6, track: 4, uri: 4,
+  }),
+});
+
+/** v2-retired names and their canonical replacements (#917). */
+export const DEPRECATED_TOOL_ALIASES = Object.freeze({
+  get_show_episodes: 'list_show_episodes',
+});
+
+const LEGACY_BANNED_PREFIXES: Readonly<Record<string, true>> = Object.freeze({
+  normalize: true, format: true, make: true, archive: true, prune: true, trim: true,
+});
+
+/** Existing names retained only until their owning modules can be migrated. */
+export const LEGACY_NAMING_EXCEPTIONS: Readonly<Record<string, true>> = Object.freeze({
+  archive_played_episodes: true,
+  format_spotify_uri: true,
+  normalize_spotify_uri: true,
+  make_spotify_uri: true,
+  prune_old_snapshots: true,
+});
+
+export type ToolClassification = 'read' | 'write';
+
+export interface ToolNamingMetadata {
+  name: string;
+  prefix: string;
+  prefixBudget: number;
+  classification: ToolClassification;
+}
+
+export function toolNamingMetadata(name: string): ToolNamingMetadata {
+  const prefix = name.split('_', 1)[0] ?? name;
+  const budget = (TOOL_SURFACE_BUDGET.prefixBudgets as Record<string, number>)[prefix]
+    ?? TOOL_SURFACE_BUDGET.defaultPrefixBudget;
+  return {
+    name,
+    prefix,
+    prefixBudget: budget,
+    classification: classifyToolAnnotations(name).readOnlyHint === true ? 'read' : 'write',
+  };
+}
+
+/** Fail startup when a newly registered name violates the frozen v2 policy. */
+export function assertToolNamingPolicy(toolNames: Iterable<string>): void {
+  const counts = new Map<string, number>();
+  const violations: string[] = [];
+  for (const name of toolNames) {
+    if (!/^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$/.test(name)) {
+      violations.push(`${name}: expected lower_snake_case verb_entity naming`);
+    }
+    if (Object.hasOwn(LEGACY_BANNED_PREFIXES, name.split('_', 1)[0]) && !Object.hasOwn(LEGACY_NAMING_EXCEPTIONS, name)) {
+      violations.push(`${name}: banned canonical verb`);
+    }
+    const prefix = name.split('_', 1)[0] ?? name;
+    counts.set(prefix, (counts.get(prefix) ?? 0) + 1);
+  }
+  for (const [prefix, count] of counts) {
+    const budget = (TOOL_SURFACE_BUDGET.prefixBudgets as Record<string, number>)[prefix]
+      ?? TOOL_SURFACE_BUDGET.defaultPrefixBudget;
+    if (count > budget) violations.push(`${prefix}*: ${count} tools exceeds prefix budget ${budget}`);
+  }
+  if (violations.length > 0) {
+    throw new Error(`Tool naming policy violation:\n- ${violations.join('\n- ')}`);
+  }
+}
+
+export type ToolErrorKind =
+  | 'auth' | 'forbidden' | 'not_found' | 'rate_limited' | 'unavailable'
+  | 'validation' | 'unknown_tool' | 'unknown_param' | 'internal';
+
+export interface ToolErrorContext {
+  kind?: ToolErrorKind;
+  param?: string;
+  suggestions?: readonly string[];
+}
+
+export interface StructuredToolError {
+  tool: string;
+  kind: ToolErrorKind;
+  status: number | null;
+  retryAfterSec: number | null;
+  reason: string | null;
+  param: string | null;
+  fix: string;
+}
+
+
+/** Convert any tool failure to the one-line + machine-readable MCP envelope. */
+export function toolErrorResult(
+  tool: string,
+  error: unknown,
+  context: ToolErrorContext = {},
+): { isError: true; content: [{ type: 'text'; text: string }]; structuredContent: { error: StructuredToolError } } {
+  let status: number | null = null;
+  let retryAfterSec: number | null = null;
+  let reason: string | null = null;
+  let current: unknown = error;
+  for (let depth = 0; depth < 4 && current && typeof current === 'object'; depth++) {
+    const value = current as { status?: unknown; retryAfterSec?: unknown; reason?: unknown; cause?: unknown };
+    if (typeof value.status === 'number') {
+      status = value.status;
+      retryAfterSec = typeof value.retryAfterSec === 'number' ? value.retryAfterSec : null;
+      reason = typeof value.reason === 'string' ? value.reason : null;
+      break;
+    }
+    current = value.cause;
+  }
+  const kind: ToolErrorKind = context.kind
+    ?? (status === null ? 'internal' : status === 401 ? 'auth' : status === 403 ? 'forbidden' : status === 404 ? 'not_found' : status === 429 ? 'rate_limited' : status === 408 || status === 503 ? 'unavailable' : 'internal');
+  const message = (error instanceof Error ? error.message : String(error)).replace(/^MCP error -?\d+:\s*/i, '').replace(/\s+/g, ' ').trim();
+  const suggestions = context.suggestions ?? [];
+  const fix = kind === 'unknown_param'
+    ? (suggestions.length > 0 ? `Use one of: ${suggestions.join(', ')}.` : 'Use only the parameters advertised by tools/list.')
+    : kind === 'validation' ? 'Check the argument names and values against the tool input schema.'
+      : kind === 'unknown_tool' ? 'Call tools/list and use an advertised tool name.'
+        : kind === 'auth' ? 'Refresh Spotify credentials, then retry once.'
+          : kind === 'forbidden' ? 'Check Premium access, app registration eligibility, and OAuth scopes.'
+            : kind === 'not_found' ? 'Verify the Spotify ID or URI, then retry.'
+              : kind === 'rate_limited' ? (retryAfterSec === null ? 'Retry after the rate-limit window.' : `Wait ${retryAfterSec} seconds before retrying.`)
+                : kind === 'unavailable' ? 'Spotify is temporarily unavailable; retry later.'
+                  : 'Retry once; if the failure persists, inspect the Spotify API response.';
+  const sentence = kind === 'unknown_param'
+    ? `${tool}: unknown argument "${context.param}"; ${fix}`
+    : `${tool}: ${message || 'request failed'} Fix: ${fix}`;
+  const structured: StructuredToolError = {
+    tool,
+    kind,
+    status,
+    retryAfterSec,
+    reason,
+    param: context.param ?? null,
+    fix,
+  };
+  return { isError: true, content: [{ type: 'text', text: sentence }], structuredContent: { error: structured } };
+}
 
 export interface ToolAnnotations {
   title?: string;
@@ -165,6 +319,7 @@ interface RegistryEntry {
   annotations?: unknown;
   update?: (u: { annotations?: ToolAnnotations }) => void;
 }
+type ToolRegistryHolder = { _registeredTools?: Record<string, unknown> };
 
 /**
  * Attach annotations to every registered tool, using the SDK's `update()` when
@@ -192,4 +347,19 @@ export function applyToolAnnotations(server: McpServer): { total: number; annota
     }
   }
   return { total: Object.keys(registry).length, annotated };
+}
+
+/** Remove v2-retired endpoint aliases before the first tools/list handshake. */
+export function removeDeprecatedToolAliases(server: McpServer): string[] {
+  const registryHolder = server as unknown as ToolRegistryHolder;
+  const registry = registryHolder._registeredTools;
+  if (!registry || typeof registry !== 'object') return [];
+  const removed: string[] = [];
+  for (const name of Object.keys(DEPRECATED_TOOL_ALIASES)) {
+    if (Object.hasOwn(registry, name)) {
+      delete registry[name];
+      removed.push(name);
+    }
+  }
+  return removed;
 }

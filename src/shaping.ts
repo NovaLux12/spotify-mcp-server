@@ -65,12 +65,24 @@ export interface TruncationResult<T> {
   /** Human footer when truncated; null otherwise. */
   footer: string | null;
 }
+export interface TruncationCapabilities {
+  maxResults?: boolean;
+  offset?: boolean;
+  fetchAll?: boolean;
+}
+const DEFAULT_TRUNCATION_CAPABILITIES: TruncationCapabilities = Object.freeze({ maxResults: false, offset: true, fetchAll: true });
 
 /**
- * Slice `items` down to `maxResults` (clamped to >= 1) and compute the
- * "(N more — pass offset or fetch_all)" footer.
+ * Slice `items` down to `maxResults` and compute a footer using only
+ * continuation parameters declared by the calling tool. The legacy default is
+ * retained for direct helper consumers; the MCP boundary supplies capabilities
+ * from the live input schema before rendering reaches a model.
  */
-export function truncateItems<T>(items: readonly T[], maxResults: number): TruncationResult<T> {
+export function truncateItems<T>(
+  items: readonly T[],
+  maxResults: number,
+  capabilities: TruncationCapabilities = DEFAULT_TRUNCATION_CAPABILITIES,
+): TruncationResult<T> {
   const cap = Number.isFinite(maxResults) ? Math.max(1, Math.floor(maxResults)) : DEFAULT_MAX_ITEMS;
   if (items.length <= cap) {
     return {
@@ -82,13 +94,18 @@ export function truncateItems<T>(items: readonly T[], maxResults: number): Trunc
       footer: null,
     };
   }
+  const actions: string[] = [];
+  if (capabilities.maxResults) actions.push('raise max_results');
+  if (capabilities.offset) actions.push('pass offset');
+  if (capabilities.fetchAll) actions.push('set fetch_all=true');
+  const advice = actions.length > 0 ? (!capabilities.maxResults && capabilities.offset && capabilities.fetchAll ? 'pass offset or fetch_all' : actions.join(', ')) : 'narrow the query';
   return {
     items: items.slice(0, cap),
     total: items.length,
     returned: cap,
     truncated: true,
     remaining: items.length - cap,
-    footer: `${items.length - cap} more — pass offset or fetch_all`,
+    footer: `${items.length - cap} more — ${advice}`,
   };
 }
 
