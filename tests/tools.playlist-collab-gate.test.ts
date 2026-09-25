@@ -12,12 +12,39 @@
  * Run: node --import tsx --test tests/tools.playlist-collab-gate.test.ts
  */
 
-import { describe, it } from 'node:test';
+import { afterEach, describe, it } from 'node:test';
 import { z } from 'zod';
 import assert from 'node:assert/strict';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../src/client.js';
 import { registerPlaylistTools } from '../src/tools/playlists.js';
+import { readFileSync } from 'node:fs';
+
+// SPOTIFY_MCP_CONFIRM=never makes every gate verdict resolve to "unsupported,
+// allowed", which would silently reopen the "client cannot prompt" case below.
+// The repo's other confirmation suites (tools.confirm, tools.cleanall,
+// tools.undo, tools.episodemgmt) clear it in afterEach; do the same.
+afterEach(() => {
+  delete process.env.SPOTIFY_MCP_CONFIRM;
+});
+
+// ---------------------------------------------------------------------------
+// Structural guard: issue criterion 2
+// ---------------------------------------------------------------------------
+
+// A registration chunk is the source between one `server.tool(...)` name and
+// the next, so a tool's gate and its write are judged together. This mirrors
+// the source-text evidence collection in tests/mutations.conformance.test.ts.
+const REGISTRATION = /server\.(?:tool|registerTool)\(\s*\n?\s*['"]([^'"]+)['"]/g;
+const PLAYLISTS_SRC = new URL('../src/tools/playlists.ts', import.meta.url);
+
+function registrationChunks(src: string): Array<{ name: string; chunk: string }> {
+  const matches = [...src.matchAll(REGISTRATION)];
+  return matches.map((match, i) => ({
+    name: match[1]!,
+    chunk: src.slice(match.index!, i + 1 < matches.length ? matches[i + 1]!.index! : src.length),
+  }));
+}
 
 interface RecordedCall {
   method: 'GET' | 'POST' | 'PUT' | 'PUT_RAW' | 'DELETE';
