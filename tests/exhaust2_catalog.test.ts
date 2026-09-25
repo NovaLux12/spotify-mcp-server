@@ -433,4 +433,3 @@ describe('save_artist_new_releases saved-state safety', () => {
     assert.equal(calls.filter((c) => c.method === 'PUT').length, 0);
   });
 });
-
