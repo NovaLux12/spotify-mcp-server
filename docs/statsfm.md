@@ -1,88 +1,112 @@
 # stats.fm second source
 
-SpotifyMCP reads Spotify first. stats.fm rides alongside as a **second upstream** — long-range listening history, cross-range top lists, and taste aggregates that the Spotify Web API alone cannot give you (Spotify's own top-items endpoints stop at a few bounded time ranges; stats.fm keeps lifetime history once your streams are imported).
+SpotifyMCP reads Spotify first. stats.fm rides alongside as a **second upstream** for long-range listening history, cross-range top lists, and taste aggregates that the Spotify Web API alone cannot provide. stats.fm keeps lifetime history after your imported streams are available.
 
 All stats.fm tools are **read-only**. They never write to your library, playlists, or playback state. Pair them with the Spotify write tools to act on what you learn — see the [flagship taste-profile recipe](cookbook.md#1-taste-profile--playlist-flagship) and the [taste showcase](taste.md).
-
-> **Status:** v2.0.0 (unreleased). Tool names below are the planned contract; the implementation branches own the final schemas. If a name differs after release, the tool description in-host is authoritative.
 
 ## Setup
 
 1. **Create a stats.fm account** at [stats.fm](https://stats.fm) and log in.
-2. **Import your Spotify history.** stats.fm builds lifetime stats from imported streams: in stats.fm go to Settings → Import, connect Spotify, and request your extended history. Lifetime ranges stay thin until the import completes — check coverage with `statsfm_history_status` before trusting `lifetime` results.
-3. **Find your stats.fm user ID.** Open your stats.fm profile page — the numeric ID is in the URL (`stats.fm/user/<id>`). That ID is the identity every stats.fm tool below takes.
-4. **Point the server at it.** Set the user ID once so you don't repeat it per call:
+2. **Import your Spotify history.** In stats.fm, open Settings → Import, connect Spotify, and request your extended history. Lifetime results are only as complete as that import; check `statsfm_streams_stats` and `statsfm_recaps` before relying on lifetime data.
+3. **Find your stats.fm user ID.** Open your profile page. The numeric ID in the `stats.fm/user/<id>` URL is accepted by the endpoint tools. Taste tools use a required `statsfm_user` string; the endpoint tools use a required `user_id` string. Both also accept a stats.fm customId or username where the API supports it.
 
-```bash
-export STATSFM_USER_ID=your_statsfm_user_id_here
-```
-
-```json
-"env": {
-  "SPOTIFY_CLIENT_ID": "your_client_id_here",
-  "STATSFM_USER_ID": "your_statsfm_user_id_here"
-}
-```
-
-No OAuth dance: stats.fm public profile data needs no token. Private profiles need the profile owner's cooperation (see [Privacy](#privacy)).
+There is no stats.fm OAuth dance: public profile data needs no token. Private profiles need the profile owner's cooperation (see [Privacy](#privacy)). These tools require their identity argument on every call; there is no `STATSFM_USER_ID` setting.
 
 ## Taste-tool naming
 
-The eight taste-intelligence tools (the `taste` toolset, `src/tools/statsfm_taste.ts`) use canonical **`statsfm_taste_*`** names so every stats.fm-backed tool shares the `statsfm_` prefix. The original **`taste_*`** names stay registered as backwards-compatible aliases — either name invokes the same handler. Full matrix: [taste showcase naming](taste.md#tool-naming).
+The eight taste-intelligence tools in `src/tools/statsfm_taste.ts` use canonical **`statsfm_taste_*`** names so every stats.fm-backed taste tool shares the `statsfm_` prefix. The original **`taste_*`** names are registered as backwards-compatible aliases to the same handlers. The full matrix is in the [taste showcase naming table](taste.md#tool-naming).
+
+The separate wave-2 composite tools are registered under the `taste` toolset with `taste_` names. They are also live tools, not planned tools; see [taste composites](wave2-composites.md).
 
 ## Tool cheat sheet
 
-The planned stats.fm surface. Every tool accepts `response_format` (`concise` / `detailed` / `json`) like the rest of the server.
+Every tool below is registered. The common `response_format` argument accepts `concise`, `detailed`, or `json` where the tool's schema includes it.
+
+### Endpoint tools
 
 | Tool | What it returns |
 |---|---|
-| `statsfm_get_profile` | Public profile: display name, follower counts, total streams and minutes, account age |
-| `statsfm_top_tracks` | Top tracks for a range (see [Ranges](#ranges)) |
-| `statsfm_top_artists` | Top artists for a range, with stream counts |
-| `statsfm_top_albums` | Top albums for a range |
-| `statsfm_top_genres` | Genre ranking for a range — the input to taste work |
-| `statsfm_recent_streams` | Most recent individual streams (track + timestamp) |
-| `statsfm_stream_stats` | Totals for a range: streams, minutes, distinct tracks/artists, daily average |
-| `statsfm_listening_clock` | Hourly / weekday heatmap of when listening happens |
-| `statsfm_taste_profile` | Aggregate digest: top genres, anchor artists, clock summary, diversity notes — built to feed playlist creation |
-| `statsfm_compare_taste` | Overlap between two stats.fm users: shared artists/tracks, compatibility note |
-| `statsfm_history_status` | Import coverage: how much history stats.fm holds, newest/oldest stream, gaps |
+| `statsfm_resolve_user` | Resolve a stats.fm ID or customId to a profile, with user search as a fallback. |
+| `statsfm_top_tracks` | A user's top tracks for `range` (`weeks`, `months`, or `lifetime`). |
+| `statsfm_top_artists` | A user's top artists for a supported `range`. |
+| `statsfm_top_albums` | A user's top albums for a supported `range`. |
+| `statsfm_top_genres` | A user's genre ranking for a supported `range`. |
+| `statsfm_recent_streams` | Recent individual streams, with optional Unix-ms `after`/`before` bounds. |
+| `statsfm_now_playing` | The user's current stream, or `null` when idle. |
+| `statsfm_track_stats` | Stream totals for one track within a user's history. |
+| `statsfm_artist_stats` | Stream totals for one artist within a user's history. |
+| `statsfm_album_stats` | Stream totals for one album within a user's history. |
+| `statsfm_search` | Search the stats.fm track, artist, album, playlist, or user catalog. |
+| `statsfm_recaps` | Year-in-review totals and catalog breadth for one calendar year. |
+| `statsfm_streams_stats` | Aggregate listening totals and catalog cardinality, optionally bounded by Unix-ms `after`/`before`. |
+| `statsfm_top_tracks_from_artist` | A user's top tracks for one artist. |
+| `statsfm_top_albums_from_artist` | A user's top albums for one artist. |
+| `statsfm_top_tracks_from_album` | A user's top tracks for one album. |
+| `statsfm_catalog_track` | Look up one track in the stats.fm catalog. |
+| `statsfm_catalog_artist` | Look up one artist in the stats.fm catalog. |
+| `statsfm_catalog_album` | Look up one album in the stats.fm catalog. |
+| `statsfm_genre_artists` | Artists carrying a stats.fm genre tag. |
+| `statsfm_charts_tracks` | A user's all-time track chart with movement indicators. |
+| `statsfm_charts_artists` | A user's all-time artist chart with movement indicators. |
+| `statsfm_charts_albums` | A user's all-time album chart with movement indicators. |
+| `statsfm_charts_users` | A user's friends ranked by stream count. |
+| `statsfm_track_date_stats` | Stream totals for one track in a date window. |
+| `statsfm_artist_date_stats` | Stream totals for one artist in a date window. |
+| `statsfm_album_date_stats` | Stream totals for one album in a date window. |
+| `statsfm_friends` | A user's stats.fm friends. |
+| `statsfm_friend_count` | A user's stats.fm friend count. |
+| `statsfm_records_artists` | Artists holding a user's listening records and milestones. |
 
-Typical flow: `statsfm_history_status` (is the data there?) → `statsfm_taste_profile` (what's the shape?) → Spotify search/playlist tools (make something from it).
+Typical flow: `statsfm_streams_stats` (is there imported data?) → `statsfm_taste_profile` (what is the shape?) → Spotify search and playlist tools (make something from it).
+
+### Taste-intelligence tools
+
+| Canonical tool | Legacy alias | What it returns |
+|---|---|---|
+| `statsfm_taste_profile` | `taste_profile` | Core artists, top genres, loyalty versus novelty, and UTC day-parting. |
+| `statsfm_artist_affinity` | `artist_affinity` | Artist intensity, recency half-life, and exposure tier. |
+| `statsfm_exposure_check` | `exposure_check` | An artist's, track's, album's, or genre's exposure tier. |
+| `statsfm_listening_eras` | `listening_eras` | Monthly change points grouped into listening eras. |
+| `statsfm_listening_sessions` | `listening_sessions` | Recent streams grouped by a configurable gap. |
+| `statsfm_forgotten_favorites` | `forgotten_favorites` | Lifetime top tracks absent from the recent sample. |
+| `statsfm_taste_recommendations` | `taste_recommendations` | Bridge-mode candidates with evidence and risk notes. |
+| `statsfm_record_feedback` | `record_feedback` | Local-only taste verdicts; it never contacts stats.fm. |
 
 ## Ranges
 
-Top and stats tools take a `range` argument. stats.fm ranges are **named windows**, not arbitrary dates:
+The endpoint top-list tools accept the named range values **`weeks`**, **`months`**, and **`lifetime`** (the values are lowercase and these schemas default to `lifetime`). The taste-intelligence tools and taste composites use **`week`**, **`month`**, and **`lifetime`** (also defaulting to `lifetime`). Do not interchange the singular and plural spellings.
 
-- `lifetime` needs a completed history import; without it, lifetime looks identical to the imported window and silently undercounts.
-- Short windows (`week`, `month`) reflect current rotation; long windows (`6months`, `lifetime`) reflect identity. Compare a short window against `lifetime` to separate phases from taste.
-- Exact range names and defaults live in each tool's schema — pass `range` explicitly in agents and scripts rather than relying on the default.
+- `lifetime` needs a completed history import; without it, lifetime results are limited to the imported window.
+- `week`/`month` and `weeks`/`months` reflect current rotation. Compare a short window against `lifetime` to separate phases from identity.
+- `statsfm_streams_stats` and date-windowed tools use Unix-millisecond `after`/`before` bounds instead of a named `range`.
+- `statsfm_recaps` uses an optional calendar `year`, not a range.
 
 ## Limits
 
-- Top-list tools page with `limit` / `offset` like the Spotify catalog tools. Ask for what you need; walks over huge offsets cost one upstream request per page.
-- `statsfm_recent_streams` is recency-ordered and most useful with small limits (10–50). It is a window onto recent plays, not a full export — for bulk work, page deliberately and expect rate limiting on deep walks.
-- `max_results` truncation and `structuredContent` pagination behave the same as every other list tool on this server.
+- Top-list tools page with `limit` / `offset`; use the tool schema's maximum rather than assuming a Spotify page size.
+- `statsfm_recent_streams` is recency-ordered and most useful with small limits. It is a window onto recent plays, not a full export.
+- `max_results` truncation and `structuredContent` pagination behave like the server's other list tools.
+- Taste composites may require a public profile and enough imported streams; they return a useful empty result when the upstream has no data.
 
 ## Privacy
 
-- **Public profiles** are queryable by any stats.fm user ID — no credential needed.
-- **Private profiles** return minimal or no data. There is no bypass: ask the owner to make the profile public or share the comparison from their side.
-- **Detailed streams are owner-only.** `statsfm_recent_streams` gives full detail for your own linked account; for other users you get aggregates (tops, stats, clock) but not play-by-play history.
-- `statsfm_compare_taste` only sees what both profiles expose. Private + private compares return nothing — by design.
-- These tools send stats.fm user IDs to the stats.fm API and render what comes back. Nothing is posted, liked, or followed as a side effect.
+- **Public profiles** are queryable by a stats.fm user ID or customId; no credential is needed.
+- **Private profiles** return minimal or no data. There is no bypass: ask the owner to make the profile public or share the result from their side.
+- **Detailed streams are not guaranteed for every public profile.** The tools expose what stats.fm returns; private or owner-only history can be omitted.
+- The tools send the supplied stats.fm ID to the stats.fm API and render the response. Nothing is posted, liked, or followed as a side effect.
 
 ## Gotchas
 
-- **Lifetime lies before import.** A fresh stats.fm account with no history import returns near-empty lifetime ranges. Always call `statsfm_history_status` first in a new setup.
-- **stats.fm ≠ Spotify counts.** Totals come from stats.fm's stream log, not Spotify's API — expect small mismatches against `listening_report` or Spotify Wrapped. Different counters, different windows.
-- **Genres are stats.fm's own taxonomy.** `statsfm_top_genres` labels come from stats.fm, not Spotify (whose API exposes no genre endpoint for tracks). Great for curation, not for exact Spotify-side filtering — use them as search seeds, not IDs.
-- **Clock is timezone-shaped.** `statsfm_listening_clock` buckets by the timezone stats.fm recorded. Late-night vs commute patterns survive; exact-hour claims across timezones don't.
-- **Prior art.** stats.fm continues ideas Last.fm pioneered (scrobbling, taste graphs, compatibility). If you know Last.fm, the mental model transfers; the IDs and ranges don't.
+- **Lifetime lies before import.** A new account with no history import can return near-empty lifetime results. Check `statsfm_streams_stats` first.
+- **stats.fm ≠ Spotify counts.** Totals come from stats.fm's stream log, not Spotify's API — expect mismatches against `listening_report` or Spotify Wrapped. Different counters, different windows.
+- **Genres are stats.fm's own taxonomy.** `statsfm_top_genres` labels come from stats.fm, not Spotify. Use them as search seeds, not Spotify genre IDs.
+- **Clock buckets are UTC in the taste tools.** Exact-hour claims depend on the timestamps returned by stats.fm.
+- **Identity is per call.** Supply `user_id` to endpoint tools and `statsfm_user` to taste tools; no stats.fm identity environment variable is read.
 
 ## See also
 
 - [Cookbook](cookbook.md) — copy-paste recipes including the flagship taste-profile flow
 - [Taste showcase](taste.md) — anonymized end-to-end example driving a real playlist
+- [Wave-2 composites](wave2-composites.md) — playlist specs, briefs, and reports
 - [FAQ](faq.md) — setup and auth troubleshooting
 - [Configuration](configuration.md) — every environment variable
