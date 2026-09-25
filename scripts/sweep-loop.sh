@@ -225,6 +225,12 @@ for i in $(seq 1 "$MAX_BATCHES"); do
     STAGED=''
   fi
 
+  # Both exit-5 messages below used to end "the report is unchanged", which is
+  # only true while no batch of the run has published. A flaky sweep loses one
+  # batch among good ones — the ordinary case — so the claim contradicts the
+  # very artifact the script exists to protect. "Left at its last complete
+  # batch" is the invariant the staging-and-rename above actually holds, and it
+  # stays true whether or not a batch published during the run.
   # Reaching the end of a batch, a quota wall or completion is the gauntlet's
   # own contract; a non-zero exit with none of those means the process died,
   # and three of those is a failure rather than a slow sweep. A batch that
@@ -237,7 +243,7 @@ for i in $(seq 1 "$MAX_BATCHES"); do
     hard_failures=$(( hard_failures + 1 ))
   fi
   if (( hard_failures >= 3 )); then
-    printf 'sweep-loop: the gauntlet failed %d batches running without recording a batch (last exit=%d); the report is unchanged\n' \
+    printf 'sweep-loop: the gauntlet failed %d batches running without recording a batch (last exit=%d); the report is left at its last complete batch\n' \
       "$hard_failures" "$code" >&2
     tail -25 "$batch_log" >&2
     exit 5
@@ -248,7 +254,7 @@ for i in $(seq 1 "$MAX_BATCHES"); do
   # 3 would tell automation to do exactly that. No completion marker was seen
   # above, so 5 is the honest code whatever MAX_BATCHES was.
   if (( i == MAX_BATCHES )) && (( hard_failures > 0 )); then
-    printf 'sweep-loop: MAX_BATCHES (%d) reached with %d batch(es) running that failed to record one — exiting 5, not 3, so a crash is not read as a resumable stop; the report is unchanged\n' \
+    printf 'sweep-loop: MAX_BATCHES (%d) reached with %d batch(es) running that failed to record one — exiting 5, not 3, so a crash is not read as a resumable stop; the report is left at its last complete batch\n' \
       "$MAX_BATCHES" "$hard_failures" >&2
     tail -25 "$batch_log" >&2
     exit 5

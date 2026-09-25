@@ -302,12 +302,14 @@ describe('sweep-loop.sh guard (#656)', () => {
   it('reclaims a lock left behind by a dead loop', () => {
     const box = sandbox(['normal']);
     mkdirSync(box.lock, { recursive: true });
-    // Above the default pid_max, so no live process can own it.
-    writeFileSync(join(box.lock, 'pid'), '4194303\n');
+    // This host's pid_max exactly (4194304). The kernel hands out 1..pid_max-1
+    // and wraps to 1, so pid_max itself is never assigned — unlike pid_max-1,
+    // which is a real, assignable pid and only unreachable by luck.
+    writeFileSync(join(box.lock, 'pid'), '4194304\n');
 
     const result = box.run();
 
-    assert.match(result.output, /reclaiming the lock left by dead pid 4194303/);
+    assert.match(result.output, /reclaiming the lock left by dead pid 4194304/);
     assert.equal(result.invocations.length, 1, result.output);
   });
 
@@ -507,6 +509,48 @@ describe('sweep-loop.sh guard (#656)', () => {
     assert.equal(clean.status, 3, `a run where every batch was accounted for stays resumable:\n${clean.output}`);
   });
 
+  it('does not claim the report is unchanged when a batch of the run did publish', () => {
+    // A flaky sweep loses a batch *among* good ones — the ordinary case, and
+    // the one a plan of nothing but crashes never reaches. Both exit-5 paths
+    // used to end "the report is unchanged" here, so the message denied that
+    // the run had advanced the very artifact the script exists to protect.
+    const lostLast = sandbox(['crash', 'normal']);
+    const maxBatches = lostLast.run({ MAX_BATCHES: '2' });
+
+    assert.equal(maxBatches.status, 5, maxBatches.output);
+    assert.equal(
+      markerOf(lostLast.report),
+      'complete-batch',
+      'the surviving batch must have been published — otherwise there is nothing for the message to be honest about',
+    );
+    assert.doesNotMatch(
+      maxBatches.output,
+      /the report is unchanged/,
+      `batch 2 published over the report, so this claim is false:\n${maxBatches.output}`,
+    );
+    assert.match(maxBatches.output, /the report is left at its last complete batch/, maxBatches.output);
+
+    const lostThird = sandbox(['crash', 'normal', 'crash', 'crash']);
+    const threshold = lostThird.run({ MAX_BATCHES: '10' });
+
+    assert.equal(threshold.status, 5, threshold.output);
+    assert.equal(
+      markerOf(lostThird.report),
+      'complete-batch',
+      'the three-batches-running path reaches the same false claim: batch 2 published before the crashes',
+    );
+    assert.doesNotMatch(
+      threshold.output,
+      /the report is unchanged/,
+      `the threshold message is just as wrong once any batch has published:\n${threshold.output}`,
+    );
+    assert.match(
+      threshold.output,
+      /failed 3 batches running without recording a batch \(last exit=1\); the report is left at its last complete batch/,
+      threshold.output,
+    );
+  });
+
   it('counts a batch that lost its report once, so the threshold really is three batches', () => {
     const box = sandbox(['truncated-silent']);
 
@@ -524,8 +568,9 @@ describe('sweep-loop.sh guard (#656)', () => {
   it('names the live owner when reclaiming a dead lock loses the race', () => {
     const box = sandbox(['normal']);
     mkdirSync(box.lock, { recursive: true });
-    // Above the default pid_max, so no live process can own it.
-    writeFileSync(join(box.lock, 'pid'), '4194303\n');
+    // The never-assigned pid: this host's pid_max itself, so no live process
+    // can own it (see the sibling test for why pid_max-1 will not do).
+    writeFileSync(join(box.lock, 'pid'), '4194304\n');
     // Force the window between the reclaiming rm and the second mkdir: the
     // shim puts the lock back, held by this test's own (live) pid.
     const marker = join(box.dir, 'race-won');
@@ -555,7 +600,7 @@ describe('sweep-loop.sh guard (#656)', () => {
       new RegExp(`another sweep loop \\(pid ${process.pid}\\) already holds`),
       `the refusal has to name the loop that is actually holding the lock:\n${result.output}`,
     );
-    assert.doesNotMatch(result.output, /pid 4194303 already holds/, 'that pid was just reclaimed as dead; reporting it is unactionable');
+    assert.doesNotMatch(result.output, /pid 4194304 already holds/, 'that pid was just reclaimed as dead; reporting it is unactionable');
     assert.deepEqual(result.invocations, [], 'the refused loop must not drive a gauntlet');
   });
 
