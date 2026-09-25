@@ -63,7 +63,7 @@ import { registerStatsfmTasteTools } from './tools/statsfm_taste.js';
 import { registerTasteCompositeTools } from './tools/taste_composites.js';
 import { registerSwarm3RefsTools } from './tools/swarm3_refs.js';
 import { registerSwarm3SnapshotsTools } from './tools/swarm3_snapshots.js';
-import { applyToolAnnotations } from './tools/annotations.js';
+import { applyToolAnnotations, installToolErrorBoundary } from './tools/annotations.js';
 import { registerSwarm3MetaTools } from './tools/swarm3_meta.js';
 import { registerStatsfmTools } from './tools/statsfm.js';
 import { verifyReceipt, formatReceipt } from './receipts.js';
@@ -284,6 +284,10 @@ async function startMcpServer(): Promise<void> {
       `[spotify-mcp] warning: tool annotations applied to ${annotations.annotated}/${annotations.total} registered tools`,
     );
   }
+  // One final tools/list + tools/call boundary runs after every registration:
+  // closed input schemas, pre-handler unknown-key rejection, and structured
+  // error envelopes for all production tools.
+  installToolErrorBoundary(server);
   const transport = new StdioServerTransport();
   await server.connect(transport);
 }
