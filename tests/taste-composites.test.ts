@@ -467,6 +467,72 @@ test('taste_to_playlist treats a 404 search as a genuine miss, not a failed look
   assert.match(text(result), /0 found/);
 });
 
+test('taste_to_playlist reports only the lookups that actually failed when searches fail and miss in the same run', async () => {
+  const client = makeClient();
+  // 'Spring Song' 401s; 'Deep Cut' is looked up and comes back with no items.
+  // Two searches ran, only one errored.
+  client.searchThrows = { 'Spring Song': new SpotifyApiError(401, 'The access token expired') };
+  const { registered } = makeHarness(client);
+  const result = await invoke(findTool(registered, 'taste_to_playlist'), {
+    statsfm_user: 'demo',
+    seed: 'recent',
+    track_count: 2,
+    dry_run: false,
+  });
+  assert.deepEqual(writes(client), [], 'nothing resolved, so nothing is created');
+  const sc = result.structuredContent as {
+    blocked: string;
+    unresolved: string[];
+    search_errors: string[];
+  };
+  assert.equal(sc.blocked, 'search_failed');
+  assert.equal(sc.search_errors.length, 1, 'only the 401 failed; the empty result is not a failure');
+  assert.match(sc.search_errors[0], /Core Band — Spring Song \[search failed: HTTP 401\]/);
+  assert.deepEqual(sc.unresolved, ['Second Act — Deep Cut'], 'the searched-and-empty pick is a miss, not an error');
+  const out = text(result);
+  assert.match(out, /1 of 2 track searches failed/, 'the failed count must be the real one, not the search count');
+  assert.doesNotMatch(out, /all 2 track searches failed/, 'a pick Spotify searched for is not a failed lookup');
+  assert.match(out, /Second Act — Deep Cut/, 'the missed pick is still named for the caller');
+});
+
+test('taste_to_playlist never reports an added track under missing[] on the commit path', async () => {
+  const client = makeClient();
+  // 'recent' carries no stats.fm ids, so all three picks are looked up.
+  // Two resolve and land in the playlist; one matches nothing.
+  client.searchHits = {
+    'Spring Song': ['spotify:track:S1'],
+    'Deep Cut': ['spotify:track:S2'],
+  };
+  const { registered } = makeHarness(client);
+  const result = await invoke(findTool(registered, 'taste_to_playlist'), {
+    statsfm_user: 'demo',
+    seed: 'recent',
+    track_count: 3,
+    dry_run: false,
+  });
+  const added = writes(client).find((c) => c.path.endsWith('/items'))?.body as { uris: string[] };
+  assert.deepEqual(added.uris, ['spotify:track:S1', 'spotify:track:S2']);
+  const sc = result.structuredContent as {
+    missing: string[];
+    unresolved: string[];
+    playlist: { added: number; requested: number };
+  };
+  assert.equal(sc.playlist.added, 2);
+  // renderPicks' pre-search missing[] would name all three; two are in the
+  // playlist that was just created and calling them missing invites a re-add.
+  assert.deepEqual(sc.missing, ['Core Band — Hit Single'], 'missing[] on commit means NOT added');
+  assert.deepEqual(sc.unresolved, ['Core Band — Hit Single']);
+  const out = text(result);
+  assert.doesNotMatch(out, /had no Spotify id at all/, 'the preview guidance is stale once the lookups have run');
+  assert.doesNotMatch(out, /search them by name/, 'the commit path must not tell the caller to search the rows it just added');
+  assert.doesNotMatch(out, /\[search: search_tracks/, 'a committed row must not still be asking for its own lookup');
+  assert.match(out, /do not re-search or re-add/, 'the commit guidance must steer away from a duplicate add');
+  // Each committed row now reports what actually happened to that pick.
+  assert.match(out, /1\. Core Band — Spring Song \[spotify:track:S1\]/);
+  assert.match(out, /2\. Second Act — Deep Cut \[spotify:track:S2\]/);
+  assert.match(out, /3\. Core Band — Hit Single \[search matched nothing — NOT added\]/);
+});
+
 // -------------------------------------------------------- 2. taste_daily_brief
 
 test('taste_daily_brief reports top3 + revivals + novelty', async () => {

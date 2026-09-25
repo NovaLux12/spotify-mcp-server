@@ -226,8 +226,27 @@ function picksFromStreams(streams: TasteStream[], evidence: string): TrackPick[]
   return out;
 }
 
+const DEAD_STATSFM_IDS =
+  'stats.fm externalIds.spotify[] are often dead (~12%) — if a URI 404s, run search_tracks "Artist - Title" and take the top result.';
+
 export const SPOTIFY_FALLBACK_GUIDANCE =
-  'stats.fm externalIds.spotify[] are often dead (~12%) — if a URI 404s, run search_tracks "Artist - Title" and take the top result. Rows under missing[] had no Spotify id at all: search them by name.';
+  `${DEAD_STATSFM_IDS} Rows under missing[] had no Spotify id at all: search them by name.`;
+
+/**
+ * Commit-path replacement for SPOTIFY_FALLBACK_GUIDANCE. By the time a
+ * commit prints, every id-less pick has already been looked up, so the
+ * preview's "search them by name" advice sends the caller back for tracks
+ * the playlist just created already holds.
+ *
+ * It deliberately does not name `unresolved[]` / `search_errors[]` in prose:
+ * the per-track lines carry their own explanations, and printing the bare
+ * tokens here would leave them in the text of a run where both arrays are
+ * empty — which reads as a report of misses that did not happen.
+ */
+const SPOTIFY_COMMIT_GUIDANCE =
+  `${DEAD_STATSFM_IDS} Every id-less pick above was looked up before the playlist was created, so `
+  + 'a row reported as not added either matched nothing or had its lookup fail — resolve those '
+  + 'yourself, and do not re-search or re-add the rows that are in the playlist.';
 
 /** A stats.fm external id that already carries a URI passes through; a bare id is wrapped. */
 function spotifyTrackUri(raw: string): string {
@@ -429,27 +448,58 @@ export function registerTasteCompositeTools(server: McpServer, client: SpotifyCl
       const unresolved: string[] = [];
       const searchErrors: string[] = [];
       let searches = 0;
-      for (const p of shaped.items) {
+      // Commit rows are rendered from the outcome, not from the pre-search pick
+      // shape renderPicks sees: a `[search: search_tracks "…"]` row on a track
+      // that is already in the playlist just created is an instruction to
+      // re-add what was added.
+      const pickedLines: string[] = [];
+      for (const [i, p] of shaped.items.entries()) {
+        const label = `${i + 1}. ${p.artist} — ${p.title}`;
         if (p.spotifyId) {
           uris.push(spotifyTrackUri(p.spotifyId));
+          pickedLines.push(`${label} [${p.spotifyId}]`);
           continue;
         }
         searches++;
         const outcome = await searchTrackUri(client, p);
-        if (outcome.error) searchErrors.push(`${p.artist} — ${p.title} [${outcome.error}]`);
-        else if (outcome.uri) uris.push(outcome.uri);
-        else unresolved.push(`${p.artist} — ${p.title}`);
+        if (outcome.error) {
+          searchErrors.push(`${p.artist} — ${p.title} [${outcome.error}]`);
+          pickedLines.push(`${label} [lookup FAILED — existence unknown]`);
+        } else if (outcome.uri) {
+          uris.push(outcome.uri);
+          pickedLines.push(`${label} [${outcome.uri}]`);
+        } else {
+          unresolved.push(`${p.artist} — ${p.title}`);
+          pickedLines.push(`${label} [search matched nothing — NOT added]`);
+        }
       }
+      // Past this point every id-less pick has been looked up, so the preview's
+      // `missing` (no stats.fm id) is stale: a pick /search then resolved is
+      // now IN the playlist, and calling it missing sends the caller to
+      // re-add what was just added. `notAdded` is the real remainder.
+      // Reaching a blocked branch means uris is empty, which can only happen
+      // when no pick carried an id, so notAdded still names every pick.
+      const notAdded = [...unresolved, ...searchErrors];
       if (uris.length === 0 && searchErrors.length > 0) {
-        return textOut(
-          [`Nothing written: all ${searches} track searches failed, so no pick could be looked up `
-            + 'on Spotify and no playlist was created. That is a Spotify auth/quota/transport '
-            + 'failure, not a statement about the tracks.'],
-          {
-            ok: false, user: u, seed, dryRun, blocked: 'search_failed',
-            search_errors: searchErrors, unresolved, picks: shaped.items, missing,
-          },
-        );
+        // Not every search errored: `searches` also counts the lookups that ran
+        // and came back empty, and those are in unresolved[]. Reporting
+        // `searches` here would tell the caller a track that Spotify actually
+        // searched for and found nothing had also failed.
+        const failed = searchErrors.length === searches
+          ? `all ${searches} track search${searches === 1 ? '' : 'es'} failed`
+          : `${searchErrors.length} of ${searches} track searches failed`;
+        const blockedLines = [
+          `Nothing written: ${failed}, so no pick could be looked up on Spotify `
+            + 'and no playlist was created. That is a Spotify auth/quota/transport '
+            + 'failure, not a statement about the tracks.',
+        ];
+        if (unresolved.length > 0) {
+          blockedLines.push(`unresolved[] (search ran, matched nothing — not a failure): ${unresolved.join(' · ')}`);
+        }
+        return textOut(blockedLines, {
+          ok: false, user: u, seed, dryRun, blocked: 'search_failed',
+          search_errors: searchErrors, unresolved, picks: shaped.items, missing: notAdded,
+        });
       }
       if (uris.length === 0) {
         return textOut(
@@ -457,7 +507,7 @@ export function registerTasteCompositeTools(server: McpServer, client: SpotifyCl
             + `(${searches} searched, 0 found), so no playlist was created.`],
           {
             ok: false, user: u, seed, dryRun, blocked: 'no_resolvable_tracks',
-            search_errors: searchErrors, unresolved, picks: shaped.items, missing,
+            search_errors: searchErrors, unresolved, picks: shaped.items, missing: notAdded,
           },
         );
       }
@@ -495,7 +545,7 @@ export function registerTasteCompositeTools(server: McpServer, client: SpotifyCl
         unresolved,
         search_errors: searchErrors,
         requests: { searches, create: 1, adds },
-        picks: shaped.items, missing,
+        picks: shaped.items, missing: notAdded,
         pagination: paginationInfo({ total: blended.length, offset: 0, limit: null, returned: blended.length }),
       };
       const out = [
@@ -505,8 +555,8 @@ export function registerTasteCompositeTools(server: McpServer, client: SpotifyCl
             ? ` PARTIAL: ${searchErrors.length} lookup${searchErrors.length === 1 ? '' : 's'} FAILED — `
               + 'those tracks may well exist; see search_errors[].'
             : ''),
-        ...lines,
-        SPOTIFY_FALLBACK_GUIDANCE,
+        ...pickedLines,
+        SPOTIFY_COMMIT_GUIDANCE,
       ];
       if (unresolved.length > 0) {
         out.push(`unresolved[] (no Spotify id, search matched nothing — not added): ${unresolved.join(' · ')}`);
