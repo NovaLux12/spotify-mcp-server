@@ -139,6 +139,22 @@ function trackArtists(t: unknown): string[] {
 /** Minimal queue row shape for queue_replace_via_playlist (tracks + episodes). */
 interface QueueRow { uri?: string; name?: string; type?: string; artists?: Array<{ name: string }> }
 
+/** Attribution carried by a single queue row, keyed by that row's own URI. */
+interface QueueRowMeta { name: string | null; artists: string[]; type: string | null }
+
+/** How much a row's own metadata actually says about it (#844). */
+function attributionScore(m: QueueRowMeta): number {
+  return m.artists.length + (m.name ? 1 : 0) + (m.type ? 1 : 0);
+}
+
+/**
+ * A row is attributable only when its own metadata identifies it. Anything
+ * else is UNKNOWN: it is never attributed to a neighbouring queue row.
+ */
+function isAttributable(m: QueueRowMeta | undefined): m is QueueRowMeta {
+  return m !== undefined && attributionScore(m) > 0;
+}
+
 // ---------------------------------------------------------------------------
 // local sidecar store
 // ---------------------------------------------------------------------------
@@ -895,9 +911,28 @@ export function registerExhaust2PlaybackTools(server: McpServer, client: Spotify
       const dryRun = args.dry_run ?? true;
       const q = await client.get<{ currently_playing?: QueueRow | null; queue?: QueueRow[] }>('/me/player/queue');
       const rows: QueueRow[] = [q?.currently_playing, ...(q?.queue ?? [])].filter((r): r is QueueRow => !!r);
+      // Pair every queue row with its OWN metadata by URI (#844). Pairing by
+      // position (snapshot[i] against rows[i]) shifted name/artist/type onto the
+      // wrong track as soon as one row had no URI — an ad or an unavailable item
+      // in a live queue — and that misattribution decided which tracks
+      // keep_artists kept. Nothing is inferred from a neighbour's row here: a
+      // row whose own metadata carries no attribution is reported as unknown.
+      const meta = new Map<string, QueueRowMeta>();
+      let uriLessRows = 0;
+      for (const r of rows) {
+        if (!r.uri) { uriLessRows++; continue; }
+        const candidate: QueueRowMeta = { name: r.name ?? null, artists: (r.artists ?? []).map((a) => a.name), type: r.type ?? null };
+        const seen = meta.get(r.uri);
+        // A live queue repeats URIs; a bare stub must not overwrite the row
+        // that actually carries the artists for that same track.
+        if (seen && attributionScore(seen) >= attributionScore(candidate)) continue;
+        meta.set(r.uri, candidate);
+      }
       const snapshot = rows.map((r) => r.uri).filter((u): u is string => !!u);
-      const meta = new Map<string, { name: string; artists: string[]; type: string }>();
-      rows.forEach((r, i) => { if (snapshot[i]) meta.set(snapshot[i]!, { name: r.name ?? snapshot[i]!, artists: (r.artists ?? []).map((a) => a.name), type: r.type ?? 'track' }); });
+      const unknownUris = [...new Set(snapshot.filter((u) => !isAttributable(meta.get(u))))];
+      const unknownNote = uriLessRows + unknownUris.length > 0
+        ? ` ${uriLessRows} queue row(s) had no URI (ad/unavailable) and ${unknownUris.length} row(s) carried no artist metadata — they are reported as unknown, never attributed to a neighbouring row.`
+        : '';
       let items = snapshot.slice();
       const snapshotMeta = snapshot.length;
       const keepSet = (args.keep_artists ?? []).map((a) => a.toLowerCase());
@@ -908,9 +943,9 @@ export function registerExhaust2PlaybackTools(server: McpServer, client: Spotify
       if (keepSet.length > 0) {
         items = items.filter((u) => {
           const m = meta.get(u);
-          if (!m) return false;
-          if (m.type === 'episode') return false;
-          return m.artists.some((a) => keepSet.includes(a.toLowerCase()));
+          if (!isAttributable(m)) return false;
+          if (m!.type === 'episode') return false;
+          return m!.artists.some((a) => keepSet.includes(a.toLowerCase()));
         });
       }
       if (snapshotMeta === 0) return textResult('Current queue is empty — nothing to snapshot.', { ok: false, error: 'empty_queue' });
@@ -923,7 +958,7 @@ export function registerExhaust2PlaybackTools(server: McpServer, client: Spotify
           `PUT /me/player/play${args.device_id ? `?device_id=${args.device_id}` : ''} { context_uri: "spotify:playlist:{id}" }`,
           'Disclosure: the live queue is replaced via context switch — Spotify has no queue-clear endpoint.',
         ];
-        return { content: [{ type: 'text', text: describeDryRun('queue_replace_via_playlist', name, steps) }], structuredContent: { ok: true, dry_run: true, plan: steps, snapshot: snapshot.length, after_filters: items.length, playlist_name: name } };
+        return { content: [{ type: 'text', text: describeDryRun('queue_replace_via_playlist', name, steps) + unknownNote }], structuredContent: { ok: true, dry_run: true, plan: steps, snapshot: snapshot.length, after_filters: items.length, playlist_name: name, uri_less_rows: uriLessRows, unknown_rows: unknownUris.length, unknown_uris: unknownUris } };
       }
       const pl = await client.post<{ id?: string; uri?: string }>('/me/playlists', { name, description: `Queue snapshot from ${new Date().toISOString()} — ${items.length} items` });
       const plId = pl?.id;
@@ -933,7 +968,7 @@ export function registerExhaust2PlaybackTools(server: McpServer, client: Spotify
       }
       const playQs = args.device_id ? `?device_id=${encodeURIComponent(args.device_id)}` : '';
       await client.put(`/me/player/play${playQs}`, { context_uri: pl.uri ?? `spotify:playlist:${plId}` });
-      return emit(fmt, { ok: true, snapshot: snapshot.length, kept: items.length, playlist_id: plId, playlist_name: name, disclosure: 'live queue replaced via context switch (no queue-clear endpoint exists)' }, `Queued ${items.length} item(s) (snapshot ${snapshot.length}, after filters) into playlist "${name}" and started it as the context — the live queue is effectively replaced.`);
+      return emit(fmt, { ok: true, snapshot: snapshot.length, kept: items.length, playlist_id: plId, playlist_name: name, uri_less_rows: uriLessRows, unknown_rows: unknownUris.length, unknown_uris: unknownUris, disclosure: 'live queue replaced via context switch (no queue-clear endpoint exists)' }, `Queued ${items.length} item(s) (snapshot ${snapshot.length}, after filters) into playlist "${name}" and started it as the context — the live queue is effectively replaced.${unknownNote}`);
     },
   );
 
