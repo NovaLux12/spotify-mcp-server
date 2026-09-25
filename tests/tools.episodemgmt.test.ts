@@ -292,6 +292,14 @@ describe('episodemgmt', () => {
     assert.match(out.content[0].text, /rate limit/i);
     // The old bug verbatim: a failed read reported as a clean empty library.
     assert.doesNotMatch(out.content[0].text, /No fully-played episodes in library/i);
+    // The reason must describe this tool's retained state, not assert something
+    // about the walk. getAllPages fetches page by page and only discards what it
+    // accumulated when a page throws, so "nothing was read" is a claim about the
+    // world that can be false. Pinned so the honest wording cannot regress.
+    const reason = String(out.structuredContent.partial_scan_reason);
+    assert.match(reason, /retained/i);
+    assert.doesNotMatch(reason, /before any episode was read|was not read at all|nothing was read/i);
+    assert.doesNotMatch(out.content[0].text, /No episode was read/i);
   });
 
   it('refuses the destructive path on a failed walk and performs zero writes', async () => {
