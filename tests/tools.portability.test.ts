@@ -341,6 +341,20 @@ describe('import_from_sidecar (#637 validation + executed reporting)',()=>{
     });
   });
 
+  it('mints no receipt on a run that wrote nothing',async()=>{
+    await withSidecar({ tracks: rows('track',3) }, async (p)=>{
+      const {responder}=libraryStub();
+      const h=harness(responder);
+      await h.invoke('import_from_sidecar',{ input_path:p, dry_run:false });
+      const second=await h.invoke('import_from_sidecar',{ input_path:p, dry_run:false });
+      // Everything is already saved: an empty-uri receipt would read VERIFIED
+      // with after=0 and imply a save that never happened.
+      assert.equal(second.structuredContent!.receipt,undefined);
+      assert.doesNotMatch(textOf(second),/VERIFIED|Receipt rcpt/);
+      assert.match(textOf(second),/already in the library/);
+    });
+  });
+
   it('chunks 41 uris into 2 requests at the 40-uri library_writes cap',async()=>{
     await withSidecar({ tracks: rows('track',41) }, async (p)=>{
       const {responder}=libraryStub();

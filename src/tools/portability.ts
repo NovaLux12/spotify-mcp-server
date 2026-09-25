@@ -1106,8 +1106,10 @@ export function registerPortabilityTools(server: McpServer, client: SpotifyClien
         await client.put(`/me/library?${new URLSearchParams(libraryUrisParam(chunk)).toString()}`);
       }
 
-      // #736: the import is invertible through undo_last_mutation.
-      const receipt = await issueReceipt(client, { kind: 'library', uris: missing });
+      // #736: the import is invertible through undo_last_mutation. A run that
+      // wrote nothing mints no receipt — an empty-uri receipt would report
+      // VERIFIED with after=0 and imply a save that never happened.
+      const receipt = missing.length > 0 ? await issueReceipt(client, { kind: 'library', uris: missing }) : null;
       const payload = {
         ok: true,
         dry_run: false,
@@ -1124,7 +1126,7 @@ export function registerPortabilityTools(server: McpServer, client: SpotifyClien
         invalid_samples: plan.invalidSamples,
         total_in_file: plan.inFile,
         sample: missing.slice(0, 5),
-        receipt: receipt.receipt_id,
+        ...(receipt ? { receipt: receipt.receipt_id } : {}),
       };
       const summary = Object.entries(imported)
         .filter(([, n]) => n > 0)
@@ -1136,7 +1138,7 @@ export function registerPortabilityTools(server: McpServer, client: SpotifyClien
         invalidLine,
         absentLine,
         batchSummary(missing.length, missing),
-        formatReceipt(receipt),
+        ...(receipt ? [formatReceipt(receipt)] : []),
       ]
         .filter((l) => l !== '')
         .join('\n');
