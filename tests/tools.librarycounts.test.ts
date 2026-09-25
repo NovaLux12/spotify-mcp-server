@@ -6,7 +6,10 @@
  *          a throttled (429) or gated (403) collection looked empty. It must
  *          distinguish "read it, it was empty" from "could not read it",
  *          exclude the unreadable collection from the total, and say how many
- *          were unreadable. Rate limits are surfaced, never retried.
+ *          were unreadable. Rate limits are surfaced, never retried. It must
+ *          also keep /me/playlists out of the library total — a playlist is an
+ *          owned-or-followed collection, not a save — while still reporting the
+ *          count under its existing key and naming the exclusion.
  *   #750 — search_saved_tracks / search_saved_albums accepted added_after /
  *          added_before without validating them, so a malformed date silently
  *          matched nothing (albums) or everything (tracks). Both must reject a
@@ -142,16 +145,22 @@ describe('get_saved_counts: a collection that could not be read is not 0 (#749)'
     assert.equal(unreadable.shows.reason, 'QUOTA_EXCEEDED');
     assert.equal(unreadable.shows.retry_after_sec, 30);
 
-    // The total covers only what was actually read.
-    assert.equal(payload.total, 50); // 5 readable collections x 10
-    assert.equal(payload.collections_read, 5);
-    assert.equal(payload.collections_total, 6);
+    // The total covers only the library collections that were actually read.
+    // /me/playlists read fine and is still reported under its own key, but a
+    // playlist is an owned-or-followed collection, not a save, so it never
+    // enters the library sum (#749).
+    assert.equal(payload.total, 40); // 4 library collections x 10
+    assert.equal(counts.playlists, 10);
+    assert.equal(payload.collections_read, 4);
+    assert.equal(payload.collections_total, 5);
     assert.equal(payload.unreadable_count, 1);
     assert.equal(payload.total_is_partial, true);
 
-    // The summary says how many were unreadable and names them.
+    // The summary says which library collections were unreadable, names them,
+    // and separately names what was left out of the total for being non-library.
     assert.match(res.content[0].text, /shows: unreadable/);
-    assert.match(res.content[0].text, /1 unreadable \(shows\) and excluded/);
+    assert.match(res.content[0].text, /1 unreadable \(shows\) and excluded from this total/);
+    assert.match(res.content[0].text, /playlists excluded from this total/);
   });
 
   it('distinguishes a gated (403) collection from a throttled (429) one', async () => {
@@ -239,12 +248,126 @@ describe('get_saved_counts: a collection that could not be read is not 0 (#749)'
     const res = await h.invoke('get_saved_counts', { response_format: 'concise' });
     const payload = res.structuredContent as Record<string, never>;
 
-    assert.equal(payload.total, 18);
+    // Complete means every *library* collection was read: five of five.
+    assert.equal(payload.collections_read, 5);
+    assert.equal(payload.collections_total, 5);
     assert.equal(payload.unreadable_count, 0);
     assert.equal(payload.total_is_partial, false);
     assert.deepEqual(payload.unreadable, {});
-    assert.match(res.content[0].text, /^Total: 18$/m);
+
+    // 1 + 2 + 0 + 4 + 5 — the library saves. The playlist count (6) is
+    // reported but is not part of the library figure, so the total is 12
+    // rather than the 18 a six-way sum would have produced.
+    assert.equal(payload.total, 12);
+    assert.match(res.content[0].text, /^Total: 12 — across 5 of 5 library collections;/m);
     assert.doesNotMatch(res.content[0].text, /unreadable/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #749 — the playlist count is not a library save
+// ---------------------------------------------------------------------------
+
+describe('get_saved_counts: /me/playlists stays out of the library total (#749)', () => {
+  // The playlist count is deliberately the largest number in the snapshot. If
+  // it leaked into the sum, `total` would be off by an order of magnitude —
+  // a size-estimate error is exactly what this tool's consumers are harmed by.
+  const mixedSnapshot = totalsResponder({
+    '/me/tracks': 1200,
+    '/me/albums': 300,
+    '/me/shows': 50,
+    '/me/episodes': 40,
+    '/me/audiobooks': 10,
+    '/me/playlists': 5000,
+  });
+  const LIBRARY_SUM = 1600; // 1200 + 300 + 50 + 40 + 10
+  const SIX_WAY_SUM = 6600; // ... + the 5000 playlists the old code summed in
+
+  it('sums only the library collections, and says so in the prose', async () => {
+    const h = harness(mixedSnapshot);
+
+    const res = await h.invoke('get_saved_counts', { response_format: 'concise' });
+    const payload = res.structuredContent as Record<string, never>;
+    const counts = payload.counts as unknown as Record<string, number>;
+
+    // The key is neither renamed nor dropped — the count is still reachable
+    // exactly where a consumer already looks for it.
+    assert.equal(counts.playlists, 5000);
+
+    // Only the library saves are summed.
+    assert.equal(payload.total, LIBRARY_SUM);
+    assert.notEqual(payload.total, SIX_WAY_SUM);
+
+    // The rendered snapshot carries the same figure, and the playlist row is
+    // marked as something other than a library collection.
+    assert.match(res.content[0].text, /^Total: 1600\b/m);
+    assert.doesNotMatch(res.content[0].text, /6600/);
+    assert.match(
+      res.content[0].text,
+      /^ {2}playlists: 5000 — not a library collection \(owned and followed playlists are a separate collection, not a library save\)$/m,
+    );
+  });
+
+  it('names the excluded collection structurally, not only in prose', async () => {
+    const h = harness(mixedSnapshot);
+
+    const res = await h.invoke('get_saved_counts', { response_format: 'concise' });
+    const payload = res.structuredContent as Record<string, never>;
+    const excluded = payload.excluded_from_total as unknown as Record<string, string>;
+
+    // A machine-readable reason, so a caller can filter the total without
+    // scraping the summary line.
+    assert.deepEqual(Object.keys(excluded), ['playlists']);
+    assert.match(excluded.playlists, /not a library save/);
+
+    assert.match(
+      res.content[0].text,
+      /playlists excluded from this total — owned and followed playlists are a separate collection, not a library save/,
+    );
+    assert.match(res.content[0].text, /across 5 of 5 library collections/);
+  });
+
+  it('a fully successful run reports a complete, non-vacuous library total', async () => {
+    const h = harness(mixedSnapshot);
+
+    const res = await h.invoke('get_saved_counts', { response_format: 'concise' });
+    const payload = res.structuredContent as Record<string, never>;
+
+    // Nothing was unreadable, so the total is complete…
+    assert.equal(payload.unreadable_count, 0);
+    assert.equal(payload.total_is_partial, false);
+    assert.equal(payload.collections_read, payload.collections_total);
+    assert.equal(payload.collections_total, 5);
+
+    // …and complete is not the same as empty: the figure is a real sum, and
+    // it is demonstrably not the six-collection one.
+    assert.equal(payload.total, LIBRARY_SUM);
+    assert.notEqual(payload.total, SIX_WAY_SUM);
+  });
+
+  it('an unreadable playlist count leaves the library total whole, not partial', async () => {
+    const h = harness((path) => {
+      if (path === '/me/playlists') throw new FakeSpotifyApiError(429, 'Rate limited — retry later.');
+      return { total: 20 };
+    });
+
+    const res = await h.invoke('get_saved_counts', { response_format: 'concise' });
+    const payload = res.structuredContent as Record<string, never>;
+    const unreadable = payload.unreadable as unknown as Record<string, UnreadableDetail>;
+
+    // Five library collections read cleanly, so the library total is complete
+    // even though one non-library read failed.
+    assert.equal(payload.total, 100);
+    assert.equal(payload.total_is_partial, false);
+    assert.equal(payload.collections_read, 5);
+    assert.equal(payload.collections_total, 5);
+
+    // The failure is still reported — not swallowed by being out of the total.
+    assert.equal(payload.unreadable_count, 1);
+    assert.equal(unreadable.playlists.status, 429);
+    assert.match(res.content[0].text, /playlists: unreadable — Rate limited/);
+    assert.match(res.content[0].text, /not a library collection; the total is unaffected/);
+    assert.doesNotMatch(res.content[0].text, /1 unreadable \(playlists\)/);
   });
 });
 
