@@ -213,8 +213,52 @@ test('get_recently_played truncates with footer and exposes the next cursor (#52
     max_results: 2,
   });
   assert.match(text(result), /\(3 more — pass offset or fetch_all\)/);
-  assert.match(text(result), /Pass after=a9 to continue\./);
+  assert.match(text(result), /Pass before=a9 to continue\./);
   const sc = result.structuredContent as { next_cursor: string | null; truncated: boolean };
   assert.equal(sc.next_cursor, 'a9');
   assert.equal(sc.truncated, true);
+});
+
+test('a full get_recently_played page publishes the cursor, never a next_offset (#806)', async () => {
+  // A page filled to `limit` is exactly the case that used to emit a
+  // `pagination.next_offset`; the tool accepts no `offset`, so an agent
+  // replaying that number re-read page 1 forever.
+  const items = Array.from({ length: 3 }, (_, i) => ({
+    track: trackFixture(`R${i}`),
+    played_at: '2026-08-01T10:00:00Z',
+    context: null,
+  }));
+  const { registered, calls } = makeHarness({
+    getResponse: () => ({
+      items,
+      cursors: { before: 1754032800000, after: 1754036400000 },
+      next: null,
+    }),
+  });
+  const tool = findTool(registered, 'get_recently_played');
+  assert.equal('offset' in tool.schema, false, 'the endpoint has no offset control to publish');
+
+  const result = await invoke(tool, { limit: 3 });
+  const sc = result.structuredContent as {
+    items: unknown[];
+    pagination: Record<string, unknown>;
+    next_cursor: number | null;
+  };
+  assert.equal(sc.items.length, 3, 'fixture must be a full page, not a truncated one');
+  assert.equal('next_offset' in sc.pagination, false, 'no offset continuation the tool cannot accept');
+  assert.equal('offset' in sc.pagination, false);
+  assert.equal(sc.pagination.next_cursor, 1754036400000);
+  assert.equal(sc.pagination.prev_cursor, 1754032800000);
+  assert.equal(sc.next_cursor, 1754036400000);
+  // The default page is the newest one, so the published continuation has to
+  // walk *older* history: cursors.after is passed back as `before`. Handing it
+  // back as `after` would ask for items newer than this page and loop.
+  assert.match(text(result), /Pass before=1754036400000 to continue\./);
+  assert.doesNotMatch(text(result), /Pass after=/);
+
+  // Drive the published continuation through the real handler: it must be
+  // accepted as-is and must reach the endpoint as `before`.
+  await invoke(tool, { limit: 3, before: sc.pagination.next_cursor as number });
+  assert.equal(calls[1]?.params?.before, '1754036400000');
+  assert.equal(calls[1]?.params?.after, undefined, 'continuation must not re-request the same page');
 });

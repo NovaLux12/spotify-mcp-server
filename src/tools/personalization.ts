@@ -247,24 +247,40 @@ export function registerPersonalizationTools(server: McpServer, client: SpotifyC
       if (shaped.footer) lines.push(`(${shaped.footer})`);
       const nextCursor = result.cursors?.after ?? null;
       if (nextCursor !== null) {
-        lines.push(`Pass after=${nextCursor} to continue.`);
+        // The default call returns the newest page, so the only progress is
+        // older history — and the endpoint wants `cursors.after` handed back
+        // as `before`. Passing it as `after` asks for items newer than the
+        // newest item on screen, i.e. this same page again (#806). The three
+        // in-repo walkers chain the same way (analytics.ts, swarm3_analytics.ts,
+        // exhaust2_playback.ts).
+        lines.push(`Pass before=${nextCursor} to continue.`);
       }
 
-      // Recently-played pages by after/before cursors rather than numeric
-      // offsets — expose the cursor alongside the shared pagination shape.
-      const pagination = paginationInfo({
-        total: null,
-        offset: 0,
-        limit: args.limit ?? 20,
-        returned: fetched.length,
-      });
+      // This endpoint pages by `after`/`before` cursor timestamps and the tool
+      // declares no `offset` argument, so the shared offset-shaped pagination
+      // block is a contract it cannot honour (#806): a full page published
+      // `pagination.next_offset`, and an agent that fed that number back here
+      // re-read page 1 forever. Publish the endpoint's own cursors instead.
+      const structuredContent: Record<string, unknown> = {
+        items: [...shaped.items],
+        pagination: {
+          total: null,
+          limit: args.limit ?? 20,
+          returned: fetched.length,
+          // Cursor continuation, never an offset. `next_cursor` is
+          // cursors.after and is the argument to pass as `before` to reach
+          // older history; `prev_cursor` is cursors.before, the argument to
+          // pass as `after` to walk forward from this page.
+          next_cursor: nextCursor,
+          prev_cursor: result.cursors?.before ?? null,
+        },
+        next_cursor: nextCursor,
+        truncated: shaped.truncated,
+        remaining: shaped.remaining,
+      };
       return {
         content: [{ type: 'text', text: lines.join('\n') }],
-        structuredContent: listStructuredContent(shaped.items, pagination, {
-          next_cursor: nextCursor,
-          truncated: shaped.truncated,
-          remaining: shaped.remaining,
-        }),
+        structuredContent,
       };
     },
   );
