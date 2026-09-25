@@ -2,7 +2,9 @@ import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
 import type { FollowedArtistsResponse, SpotifyArtistFull } from '../types/spotify.js';
+import { classifySpotifyReference } from '../refs.js';
 import {
+  CHUNK_CAPS,
   ResponseFormat,
   MaxResults,
   resolveMaxResults,
@@ -90,23 +92,169 @@ function appendPaginationFooters(
   }
 }
 
+/** `/me/following` accepts at most 50 rows per page. */
+const FOLLOWED_PAGE_LIMIT = CHUNK_CAPS.followed;
+
+interface FollowedArtistsWalk {
+  /** Every artist collected, already sliced to the fetch-all cap. */
+  items: SpotifyArtistFull[];
+  /** Server-reported total when Spotify sends one, else the walked count. */
+  total: number;
+  /** The walk stopped at fetchAllCap, so the caller is not seeing everything. */
+  truncatedByCap: boolean;
+  /** Resume cursor for the page the walk stopped on; null when it ran out. */
+  nextCursor: string | null;
+}
+
+/**
+ * Cursor-walk `/me/following?type=artist` (#744).
+ *
+ * This endpoint pages by an `after` cursor, which `client.getAllPages` does
+ * not support, so the walk is explicit — the loop following_analytics already
+ * ran inline, lifted here so the two follow readers cannot drift apart. Every
+ * page is `limit=50`, and the walk stops at `getConfig().fetchAllCap`
+ * (SPOTIFY_MCP_FETCH_ALL_CAP) rather than paging without bound.
+ */
+async function walkFollowedArtists(client: SpotifyClient): Promise<FollowedArtistsWalk> {
+  const cap = getConfig().fetchAllCap;
+  const items: SpotifyArtistFull[] = [];
+  let after: string | undefined;
+  let total = 0;
+  let nextCursor: string | null = null;
+  for (;;) {
+    const params: Record<string, string> = {
+      type: 'artist',
+      limit: String(FOLLOWED_PAGE_LIMIT),
+    };
+    if (after) params.after = after;
+    const res = await client.get<FollowedArtistsResponse>('/me/following', params);
+    const followed = res?.artists;
+    const page = Array.isArray(followed?.items) ? followed!.items! : [];
+    total = typeof followed?.total === 'number' ? followed.total : total + page.length;
+    items.push(...page);
+    nextCursor = followed?.cursors?.after ?? null;
+    // A full page with a cursor is the only case where another request can
+    // return anything; a short page or a missing cursor ends the walk.
+    if (!nextCursor || page.length < FOLLOWED_PAGE_LIMIT) break;
+    if (items.length >= cap) break;
+    after = nextCursor;
+  }
+  const truncatedByCap = items.length >= cap;
+  return {
+    items: truncatedByCap ? items.slice(0, cap) : items,
+    total,
+    truncatedByCap,
+    // A completed walk has nothing left to resume; only a capped walk does.
+    nextCursor: truncatedByCap ? nextCursor : null,
+  };
+}
+
+/**
+ * Normalize one artist reference to the bare ID the follow endpoints expect
+ * (#745). The same policy as `normalizePlaylistReference`: a bare id, a
+ * `spotify:artist:` URI and an open.spotify.com/artist URL are one id on the
+ * wire, and a wrong-kind reference is rejected here rather than sent to
+ * Spotify as an opaque id that comes back as a bare 400. `allowShortIds`
+ * keeps the short ids these tools have always accepted.
+ */
+function normalizeArtistReference(reference: string): string {
+  const parsed = classifySpotifyReference(reference, 'artist', { allowShortIds: true });
+  if (!parsed.valid || !parsed.id) {
+    throw new Error(
+      `Invalid artist reference "${reference}": ${parsed.error ?? 'invalid Spotify artist reference'}`,
+    );
+  }
+  return parsed.id;
+}
+
+/**
+ * The id list actually put on the wire (#745). Hosts that serialise array
+ * parameters as CSV hand us `"a,b"` or `"spotify:artist:a,spotify:artist:b"`,
+ * so a single string is split the same way an array is.
+ */
+function normalizeArtistIds(input: unknown): string[] {
+  const values = Array.isArray(input) ? input : [input];
+  return values
+    .flatMap((value) => String(value).split(','))
+    .map((value) => value.trim())
+    .filter((value) => value.length > 0)
+    .map(normalizeArtistReference);
+}
+
+/** `ids` as an array of references, tolerating a CSV string (#745). */
+const ArtistIds = z.preprocess(
+  (value) => (typeof value === 'string' ? value.split(',') : value),
+  z.array(z.string().min(1)).min(1).max(50),
+);
+
 export function registerFollowingTools(server: McpServer, client: SpotifyClient): void {
 
   // get_followed_artists
   server.tool(
     'get_followed_artists',
-    'Get all artists the user follows (cursor-based pagination)',
+    'Get the artists the user follows. fetch_all=true walks every page; limit/after page manually.',
     {
       limit: z.number().int().min(1).max(50).optional().describe('1–50. Default: 20'),
       after: z
         .string()
         .optional()
         .describe('Artist ID cursor for pagination (from previous response)'),
+      fetch_all: z
+        .boolean()
+        .optional()
+        .describe('Walk every page instead of one page (ignores limit)'),
       response_format: ResponseFormat,
       max_results: MaxResults,
     },
     async (args) => {
       const rf = args.response_format;
+
+      const detailed = rf === 'detailed';
+      const renderArtistLine = (artist: SpotifyArtistFull): string => {
+        const genres =
+          Array.isArray(artist.genres) && artist.genres.length > 0
+            ? artist.genres.join(', ')
+            : 'no genres listed';
+        let line = `  • ${artist.name} — ${genres} | URI: ${artist.uri}`;
+        if (detailed) line += ` | ID: ${artist.id}`;
+        return line;
+      };
+
+      // fetch_all walks the `after` cursor to the end instead of returning the
+      // first page. It deliberately bypasses max_results: the caller asked for
+      // the whole follow list, so everything walked is rendered and the
+      // payload reports when the fetch-all cap cut the walk short.
+      if (args.fetch_all) {
+        const walk = await walkFollowedArtists(client);
+        const pagination = paginationInfo({ total: walk.total, returned: walk.items.length });
+        const extra = {
+          fetch_all: true,
+          next_cursor: walk.nextCursor,
+          truncated_by_cap: walk.truncatedByCap,
+        };
+        if (walk.items.length === 0) {
+          return shapeResult(
+            rf,
+            'Followed artists (0 fetched, showing 0).',
+            listStructuredContent([], pagination, extra),
+          );
+        }
+        const fetched = walk.items.length;
+        const header = walk.truncatedByCap
+          ? `Followed artists (${fetched} fetched of ${walk.total}, showing ${fetched}):`
+          : `Followed artists (${fetched} fetched, showing ${fetched}):`;
+        const lines = [header];
+        for (const artist of walk.items) lines.push(renderArtistLine(artist));
+        if (walk.truncatedByCap) {
+          const remaining = walk.total > fetched ? walk.total - fetched : null;
+          lines.push(
+            remaining === null
+              ? `(fetch-all cap REACHED — more follows may remain; pass after=${walk.nextCursor} to continue)`
+              : `(${remaining} more — fetch-all cap REACHED; pass after=${walk.nextCursor} to continue)`,
+          );
+        }
+        return shapeResult(rf, lines.join('\n'), listStructuredContent(walk.items, pagination, extra));
+      }
       const params: Record<string, string> = {
         type: 'artist',
         limit: String(args.limit ?? 20),
@@ -128,17 +276,6 @@ export function registerFollowingTools(server: McpServer, client: SpotifyClient)
       };
       const items = Array.isArray(followed.items) ? followed.items : [];
       const total = typeof followed.total === 'number' ? followed.total : items.length;
-      const detailed = rf === 'detailed';
-      const renderArtistLine = (artist: SpotifyArtistFull): string => {
-        const genres =
-          Array.isArray(artist.genres) && artist.genres.length > 0
-            ? artist.genres.join(', ')
-            : 'no genres listed';
-        let line = `  • ${artist.name} — ${genres} | URI: ${artist.uri}`;
-        if (detailed) line += ` | ID: ${artist.id}`;
-        return line;
-      };
-
       const t = truncateItems(items, cap(args));
       const pagination = paginationInfo({ total, returned: t.items.length });
       const extra = {
@@ -169,16 +306,17 @@ export function registerFollowingTools(server: McpServer, client: SpotifyClient)
   // check_following_artists
   server.tool(
     'check_following_artists',
-    'Check if the user follows specific artists — this tests FOLLOW state, not library-saved state (for that use check_in_library). Rows carry {id, uri, follows}; returns a boolean per ID. Max 50.',
+    'Check if the user follows specific artists — this tests FOLLOW state, not library-saved state (for that use check_in_library). Accepts IDs or spotify:artist: URIs. Rows carry {id, uri, follows}; returns a boolean per ID. Max 50.',
     {
-      ids: z.array(z.string()).min(1).max(50).describe('Spotify artist IDs to check'),
+      ids: ArtistIds.describe('Artist IDs, spotify:artist: URIs, or artist URLs; CSV accepted'),
       response_format: ResponseFormat,
       max_results: MaxResults,
     },
     async (args) => {
+      const ids = normalizeArtistIds(args.ids);
       const result = await client.get<boolean[]>('/me/following/contains', {
         type: 'artist',
-        ids: args.ids.join(','),
+        ids: ids.join(','),
       });
       if (!result) throw new Error('Could not check following status');
 
@@ -186,7 +324,7 @@ export function registerFollowingTools(server: McpServer, client: SpotifyClient)
       // can chain into other tools without reconstructing URIs. `follows`
       // is the only truthful boolean here — following/contains says nothing
       // about library-saved state.
-      const checks = args.ids.map((id, i) => ({
+      const checks = ids.map((id, i) => ({
         id,
         uri: `spotify:artist:${id}`,
         follows: result[i] ?? false,
@@ -207,9 +345,9 @@ export function registerFollowingTools(server: McpServer, client: SpotifyClient)
   // follow_artists
   server.tool(
     'follow_artists',
-    'Follow one or more artists (1–50 IDs). Requires user-follow-modify. Set dry_run=true to preview.',
+    'Follow artists (1–50 IDs, spotify:artist: URIs, or artist URLs). Requires user-follow-modify. dry_run=true previews.',
     {
-      ids: z.array(z.string()).min(1).max(50).describe('Spotify artist IDs to follow'),
+      ids: ArtistIds.describe('Artist IDs, spotify:artist: URIs, or artist URLs; CSV accepted'),
       dry_run: z
         .boolean()
         .optional()
@@ -217,17 +355,18 @@ export function registerFollowingTools(server: McpServer, client: SpotifyClient)
       response_format: ResponseFormat,
     },
     async (args) => {
-      const artistUris = args.ids.map((id) => `spotify:artist:${id}`);
+      const ids = normalizeArtistIds(args.ids);
+      const artistUris = ids.map((id) => `spotify:artist:${id}`);
       if (args.dry_run) {
         return dryRunOut(args.response_format, 'follow_artists', 'followed artists', artistUris);
       }
       // Spotify takes ids/type as query parameters on PUT /me/following,
       // not a request body.
-      await client.put(`/me/following?type=artist&ids=${args.ids.join(',')}`);
+      await client.put(`/me/following?type=artist&ids=${ids.join(',')}`);
       return mutationOut(
         args.response_format,
-        `Followed ${args.ids.length} artist(s).`,
-        args.ids.length,
+        `Followed ${ids.length} artist(s).`,
+        ids.length,
         artistUris,
       );
     },
@@ -236,9 +375,9 @@ export function registerFollowingTools(server: McpServer, client: SpotifyClient)
   // unfollow_artists
   server.tool(
     'unfollow_artists',
-    'Unfollow one or more artists (1–50 IDs). Requires user-follow-modify. Set dry_run=true to preview.',
+    'Unfollow artists (1–50 IDs, spotify:artist: URIs, or artist URLs). Requires user-follow-modify. dry_run=true previews.',
     {
-      ids: z.array(z.string()).min(1).max(50).describe('Spotify artist IDs to unfollow'),
+      ids: ArtistIds.describe('Artist IDs, spotify:artist: URIs, or artist URLs; CSV accepted'),
       dry_run: z
         .boolean()
         .optional()
@@ -246,16 +385,17 @@ export function registerFollowingTools(server: McpServer, client: SpotifyClient)
       response_format: ResponseFormat,
     },
     async (args) => {
-      const artistUris = args.ids.map((id) => `spotify:artist:${id}`);
+      const ids = normalizeArtistIds(args.ids);
+      const artistUris = ids.map((id) => `spotify:artist:${id}`);
       if (args.dry_run) {
         return dryRunOut(args.response_format, 'unfollow_artists', 'followed artists', artistUris);
       }
       // Symmetric with follow_artists: query parameters, no body.
-      await client.delete(`/me/following?type=artist&ids=${args.ids.join(',')}`);
+      await client.delete(`/me/following?type=artist&ids=${ids.join(',')}`);
       return mutationOut(
         args.response_format,
-        `Unfollowed ${args.ids.length} artist(s).`,
-        args.ids.length,
+        `Unfollowed ${ids.length} artist(s).`,
+        ids.length,
         artistUris,
       );
     },
@@ -273,20 +413,9 @@ export function registerFollowingTools(server: McpServer, client: SpotifyClient)
     },
     async (args) => {
       const rf = args.response_format;
-      // fetch all followed artists via cursor pagination
-      const all: SpotifyArtistFull[] = [];
-      let after: string | undefined;
-      for (let iter = 0; iter < 20; iter++) {
-        const params: Record<string, string> = { type: 'artist', limit: '50' };
-        if (after) params.after = after;
-        const res = await client.get<FollowedArtistsResponse>('/me/following', params);
-        if (!res?.artists?.items?.length) break;
-        all.push(...res.artists.items);
-        const next = res.artists.cursors?.after ?? null;
-        if (!next || all.length >= getConfig().fetchAllCap) break;
-        after = next;
-        if (res.artists.items.length < 50) break;
-      }
+      // The same cursor walk get_followed_artists(fetch_all) uses (#744), so
+      // the two follow readers can never disagree about how far a walk goes.
+      const all = (await walkFollowedArtists(client)).items;
       if (all.length === 0) return shapeResult(rf, 'No followed artists.', listStructuredContent([], paginationInfo({ total: 0, returned: 0 })));
       // Enrich in batches of 50 via /artists?ids=
       const enriched: SpotifyArtistFull[] = [];
