@@ -44,6 +44,32 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// Player-namespace 404s are not missing objects: the /me/player/* endpoints
+// answer 404 with "Player command failed: No active device found" whenever
+// nothing anywhere is playing. That is the most common playback failure, and
+// the generic 404 line gives the agent no diagnosis and no next step (#849).
+const NO_ACTIVE_DEVICE_MESSAGE =
+  'No active Spotify device — playback control needs a device that is ' +
+  'currently active. Next step: start playback in the Spotify app (phone, ' +
+  'desktop, or smart TV), then run device_health to confirm the active ' +
+  'device; if the device is known but not active, select it in the app, or ' +
+  'pass its device_id to target it directly.';
+
+/**
+ * True when Spotify's own 404 body describes a player/device problem rather
+ * than a missing resource. Deliberately narrow: a plain 404 ("Not found." for
+ * a playlist) must keep the generic not-found mapping.
+ */
+function isNoActiveDevice404(message: string | undefined): boolean {
+  if (!message) return false;
+  if (/no active device/i.test(message)) return true;
+  // Some player errors omit the word "active" but still name the device, e.g.
+  // "Player command failed: Device not found". A "Player command failed"
+  // body WITHOUT a device mention (e.g. a restriction failure) is left alone.
+  return /player command failed/i.test(message) && /\bdevice/i.test(message);
+}
+
+
 // Per-status fallback message — used only when Spotify returns no structured
 // error body (or returns one without a `message` field). Each message is
 // intentionally non-prescriptive: it names the likely cause categories rather
@@ -536,7 +562,12 @@ export class SpotifyClient {
         const spotifyMsg = errBody.error?.message;
         reason = errBody.error?.reason;
         if (spotifyMsg && spotifyMsg.trim().length > 0) {
-          message = reason ? `${spotifyMsg} (reason: ${reason})` : spotifyMsg;
+          message =
+            res.status === 404 && isNoActiveDevice404(spotifyMsg)
+              ? NO_ACTIVE_DEVICE_MESSAGE
+              : reason
+                ? `${spotifyMsg} (reason: ${reason})`
+                : spotifyMsg;
         } else {
           message = genericMessageFor(res.status);
         }

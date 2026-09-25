@@ -502,6 +502,75 @@ describe('SpotifyClient', () => {
       });
     });
 
+    it('maps a player-namespace 404 to a no-active-device message with a next step (#849)', async () => {
+      await seedTokens();
+      responder = () =>
+        jsonResponse(
+          {
+            error: {
+              status: 404,
+              message: 'Player command failed: No active device found',
+              reason: 'NO_ACTIVE_DEVICE',
+            },
+          },
+          404,
+        );
+
+      const client = new SpotifyClient();
+      await assert.rejects(client.put('/me/player/play', { uris: [] }), (err: unknown) => {
+        assert.ok(err instanceof SpotifyApiError);
+        assert.equal(err.status, 404);
+        assert.match(err.message, /no active spotify device/i);
+        assert.match(err.message, /next step/i);
+        assert.match(err.message, /device_health/);
+        // The bare not-found line would send the agent hunting for a missing
+        // object; the device diagnosis must replace it.
+        assert.doesNotMatch(err.message, /requested resource was not found/i);
+        return true;
+      });
+      assert.equal(apiCalls().at(-1)?.url, apiUrl('/me/player/play'));
+    });
+
+    it('maps a "Player command failed: Device not found" 404 to the device message (#849)', async () => {
+      await seedTokens();
+      responder = () =>
+        jsonResponse({ error: { status: 404, message: 'Player command failed: Device not found' } }, 404);
+
+      const client = new SpotifyClient();
+      await assert.rejects(client.post('/me/player/next'), (err: unknown) => {
+        assert.ok(err instanceof SpotifyApiError);
+        assert.match(err.message, /no active spotify device/i);
+        return true;
+      });
+    });
+
+    it('leaves a genuinely missing resource 404 on the generic not-found mapping (#849)', async () => {
+      await seedTokens();
+      responder = () => jsonResponse({ error: { status: 404, message: 'Not found.' } }, 404);
+
+      const client = new SpotifyClient();
+      await assert.rejects(client.get('/playlists/37i9dQ'), (err: unknown) => {
+        assert.ok(err instanceof SpotifyApiError);
+        assert.equal(err.status, 404);
+        assert.equal(err.message, 'Not found.');
+        assert.doesNotMatch(err.message, /no active spotify device/i);
+        return true;
+      });
+    });
+
+    it('keeps a non-device "Player command failed" 404 verbatim (#849)', async () => {
+      await seedTokens();
+      responder = () =>
+        jsonResponse({ error: { status: 404, message: 'Player command failed: Restriction violated' } }, 404);
+
+      const client = new SpotifyClient();
+      await assert.rejects(client.put('/me/player/shuffle', { state: true }), (err: unknown) => {
+        assert.ok(err instanceof SpotifyApiError);
+        assert.equal(err.message, 'Player command failed: Restriction violated');
+        return true;
+      });
+    });
+
     it('falls back to the generic 503 message when the body is unparseable', async () => {
       await seedTokens();
       responder = () => new Response('Gateway fell over', { status: 503 });
