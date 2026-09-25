@@ -182,6 +182,31 @@ const baseItems: Record<string, PlaylistItemObject[]> = {
   p3: [trackRow('t3', 'Co Track', ['Artist Gamma'])],
 };
 
+/**
+ * Duplicate-row fixture (#873). `playlists` is a PLAYLIST count, so repeats
+ * inside one playlist must not inflate it:
+ *   pl-dup-target: s1 (Artist Alpha)          ← the only seed
+ *   p1: t5 x3                                    ← 3 rows, 1 playlist
+ *   p2: t5                                       ← t5 now spans 2 playlists → kept
+ *   p3: t6 x3                                    ← t6 spans only 1 playlist → dropped
+ * So the only candidate is t5 with playlists = 2; row-counting would report
+ * playlists = 4 and would also admit t6 at 3.
+ */
+const dupItems: Record<string, PlaylistItemObject[]> = {
+  'pl-dup-target': [trackRow('s1', 'Dup Seed', ['Artist Alpha'])],
+  p1: [
+    trackRow('t5', 'Twice Over', ['Artist Zeta']),
+    trackRow('t5', 'Twice Over', ['Artist Zeta']),
+    trackRow('t5', 'Twice Over', ['Artist Zeta']),
+  ],
+  p2: [trackRow('t5', 'Twice Over', ['Artist Zeta'])],
+  p3: [
+    trackRow('t6', 'Thrice Only', ['Artist Zeta']),
+    trackRow('t6', 'Thrice Only', ['Artist Zeta']),
+    trackRow('t6', 'Thrice Only', ['Artist Zeta']),
+  ],
+};
+
 function makeResponder(opts: {
   items?: Record<string, PlaylistItemObject[]>;
   playlists?: SpotifyPlaylistSimple[];
@@ -199,6 +224,16 @@ function makeResponder(opts: {
     return null;
   };
 }
+
+const dupResponder = () =>
+  makeResponder({
+    items: dupItems,
+    playlists: [
+      playlistSimple('p1', 'One'),
+      playlistSimple('p2', 'Two'),
+      playlistSimple('p3', 'Three'),
+    ],
+  });
 
 // ---------------------------------------------------------------------------
 // Index build, scoring, artist bonus
@@ -231,6 +266,50 @@ describe('grow_playlist — inverted index + scoring', () => {
     assert.deepEqual(items[0]!.shared_seed_artists, ['artist alpha']);
     assert.equal(items[1]!.score, 3);
     assert.deepEqual(items[1]!.shared_seed_artists, []);
+  });
+
+  // #873 — the index must count DISTINCT playlists, not playlist rows.
+  it('counts a track repeated 3x in one playlist plus 1x in another as 2 playlists, not 4 rows', async () => {
+    const h = harness(dupResponder());
+    const out = await h.invoke('grow_playlist', { playlist_id: 'pl-dup-target', exclude_saved: false });
+
+    const items = out.structuredContent!.items as Array<{
+      track_id: string;
+      score: number;
+      playlists: number;
+    }>;
+
+    // t5: 3 rows in p1 + 1 row in p2 = 4 rows, but only 2 playlists contain it.
+    const t5 = items.find((c) => c.track_id === 't5');
+    assert.ok(t5, 't5 spans two other playlists and must be proposed');
+    assert.equal(t5!.playlists, 2);
+    // No seed-artist match, so score is the bare distinct-playlist count.
+    assert.equal(t5!.score, 2);
+  });
+
+  it('drops a track that repeats 3x inside a single playlist — one playlist is not co-occurrence', async () => {
+    const h = harness(dupResponder());
+    const out = await h.invoke('grow_playlist', { playlist_id: 'pl-dup-target', exclude_saved: false });
+
+    const items = out.structuredContent!.items as Array<{ track_id: string; playlists: number }>;
+    // t6 has 3 rows in p3 but lives in exactly one other playlist → below the >=2 gate.
+    assert.equal(
+      items.some((c) => c.track_id === 't6'),
+      false,
+      'a track confined to one playlist must not be proposed',
+    );
+    // Nothing was walked but three playlists, so no candidate may claim more.
+    for (const c of items) {
+      assert.ok(c.playlists <= 3, `${c.track_id} claims ${c.playlists} of 3 walked playlists`);
+    }
+  });
+
+  it('reports the distinct playlist count in the prose evidence line', async () => {
+    const h = harness(dupResponder());
+    const out = await h.invoke('grow_playlist', { playlist_id: 'pl-dup-target', exclude_saved: false });
+    // Row-counting rendered "in 4 of your playlists" and "[score 4]".
+    assert.match(textOf(out), /spotify:track:t5 — in 2 of your playlists/);
+    assert.match(textOf(out), /Twice Over — Artist Zeta \[score 2\]/);
   });
 
   it('excludes the target playlist itself from the index (seed members never proposed)', async () => {
