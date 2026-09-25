@@ -82,10 +82,12 @@ export function shouldBypassCache(method: string, path: string): boolean {
 
 /**
  * Split an API-relative request target into its query-free path and its
- * ordered [name, value] pairs. Callers reach get() with query params either
- * inline in the path (`/albums?ids=a,b`, see tools/library.ts) or as a params
- * object; both must land in the same cache key, so the path query is parsed
- * into pairs rather than kept as an opaque string.
+ * ordered [name, value] pairs. The inline branch is the live one, not
+ * defence: the sole production call site, `cacheKey('GET', relative)` in
+ * SpotifyClient.get (src/client.ts:592), is handed `buildUrl`'s output
+ * (src/client.ts:455-459), which appends `?${new URLSearchParams(params)}`.
+ * The split is therefore what makes a params-bearing read keyable at all,
+ * and what lets a composed target and a params object meet on one key.
  */
 function splitQuery(target: string): { path: string; pairs: Array<[string, string]> } {
   const mark = target.indexOf('?');
@@ -105,6 +107,14 @@ function splitQuery(target: string): { path: string; pairs: Array<[string, strin
  * localeCompare, which varies by environment and would make keys unstable
  * across processes. Requests differing in any name or any value keep distinct
  * keys.
+ *
+ * Callers keep the query out of the path they hand `get`: no `get`/
+ * `getAllPages` call site in `src/` passes a target containing `?`, and the
+ * only `?`-bearing path builders either feed `put`/`delete`, which
+ * `shouldBypassCache` skips (tools/library.ts `savedItemsPath`), or are split
+ * before the call (tools/exhaust2_misc.ts). So `params` is the defensive
+ * argument — no call site in `src/` passes it; production always arrives
+ * through `splitQuery`'s inline branch.
  *
  * Repeated names (`?a=1&a=2`) are value-sorted like any other pair, so
  * `?a=1&a=2` and `?a=2&a=1` share an entry. That is sound for the Spotify Web

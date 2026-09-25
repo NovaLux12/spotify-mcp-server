@@ -238,6 +238,12 @@ describe('cache: policy helpers (#54)', () => {
       cacheKey('GET', '/search?q=rock%20%26%20roll'),
       cacheKey('GET', '/search', { q: 'rock & roll' }),
     );
+    // A repeated name is resolved by the value tiebreak, not by arrival
+    // order, so the same multiset cannot take two entries. Every occurrence
+    // survives: a name→value map would drop all but the last and collapse
+    // two different multisets onto one key.
+    assert.equal(cacheKey('GET', '/search?a=1&a=2'), cacheKey('GET', '/search?a=2&a=1'));
+    assert.notEqual(cacheKey('GET', '/search?a=1&a=2'), cacheKey('GET', '/search?a=2&a=2'));
   });
 
   it('keeps entries apart when any param name or value differs', () => {
