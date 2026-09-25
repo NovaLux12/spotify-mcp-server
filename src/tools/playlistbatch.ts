@@ -57,7 +57,7 @@ async function resolveSourceUris(client: SpotifyClient, uris: string[]): Promise
   for (const raw of uris) {
     const parsed = parseSpotifyUri(raw);
     if (!parsed) { invalid.push(raw); skipped++; continue; }
-    if (parsed.type === 'track' || parsed.type === 'episode') { resolved.push(raw); }
+    if (parsed.type === 'track' || parsed.type === 'episode') { resolved.push(`spotify:${parsed.type}:${parsed.id}`); }
     else if (parsed.type === 'album') {
       try { const tracks = await expandAlbumToTracks(client, { id: parsed.id }, FETCH_ALL_CAP()); if (tracks.length > 0) resolved.push(...tracks); else skipped++; } catch { skipped++; }
     } else if (parsed.type === 'artist') {

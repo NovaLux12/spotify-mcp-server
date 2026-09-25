@@ -119,7 +119,22 @@ describe('batch_add_to_playlist', () => {
     const out = await h.invoke('batch_add_to_playlist', { target_playlist_id: TARGET, source_uris: [track('A')] });
     assert.equal(h.client.calls.filter((c) => c.method === 'POST').length, 1); assert.match(textOf(out), /Added 1/);
   });
+  it('canonicalizes direct spotify:// track and episode links before posting', async () => {
+    const trackId = '1'.repeat(22);
+    const episodeId = '2'.repeat(22);
+    const h = harness((_, _a, method) => {
+      if (method === 'POST') return { snapshot_id: 'snap-links' } as unknown;
+      return { items: [], total: 0, limit: 100, offset: 0, next: null } as unknown;
+    });
+    await h.invoke('batch_add_to_playlist', {
+      target_playlist_id: TARGET,
+      source_uris: [`spotify://track/${trackId}`, `spotify://episode/${episodeId}`],
+    });
+    const add = h.client.calls.find((call) => call.method === 'POST' && call.path === `/playlists/${TARGET}/items`);
+    assert.deepEqual(add?.arg, { uris: [`spotify:track:${trackId}`, `spotify:episode:${episodeId}`] });
+  });
 });
+
 describe('copy_playlist', () => {
   it('preserves track order when copying', async () => {
     const order = [track('C'), track('A'), track('B')];

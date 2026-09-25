@@ -13,7 +13,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
 import { SpotifyApiError } from '../client.js';
 import { readFile } from 'node:fs/promises';
-import { classifySpotifyReference } from '../refs.js';
+import { classifySpotifyReference, spotifyUriFromClassification } from '../refs.js';
 import { ResponseFormat } from '../shaping.js';
 
 type TextContent = { type: 'text'; text: string };
@@ -28,6 +28,15 @@ const textResult = (text: string, structured?: Record<string, unknown>): ToolRes
 function isPlayableUri(value: string): boolean {
   const parsed = classifySpotifyReference(value, undefined, { allowShortIds: true });
   return parsed.valid && parsed.form === 'uri' && (parsed.kind === 'track' || parsed.kind === 'episode');
+}
+
+function canonicalPlayableUri(value: string): string {
+  const parsed = classifySpotifyReference(value, undefined, { allowShortIds: true });
+  const canonical = spotifyUriFromClassification(parsed);
+  if (!canonical || parsed.form !== 'uri' || (parsed.kind !== 'track' && parsed.kind !== 'episode')) {
+    throw new Error(`Invalid playable Spotify URI: ${value}`);
+  }
+  return canonical;
 }
 
 export interface ParsedDocument {
@@ -173,6 +182,7 @@ export function registerImportTools(server: McpServer, client: SpotifyClient): v
           );
         })();
       const parsed = fmt === 'm3u' ? parseM3u(body) : parseCsv(body);
+      const canonicalUris = parsed.uris.map(canonicalPlayableUri);
 
       // Existence probe so an unknown target fails before any parsing effort
       // is reported as success-shaped output. client.get() throws on 404
@@ -229,7 +239,7 @@ export function registerImportTools(server: McpServer, client: SpotifyClient): v
       let snapshotId: string | undefined;
       for (let start = 0; start < parsed.uris.length; start += 100) {
         const res = await client.post<{ snapshot_id?: string }>(itemsPath, {
-          uris: parsed.uris.slice(start, start + 100),
+          uris: canonicalUris.slice(start, start + 100),
         });
         batchesSent++;
         if (res?.snapshot_id) snapshotId = res.snapshot_id;
