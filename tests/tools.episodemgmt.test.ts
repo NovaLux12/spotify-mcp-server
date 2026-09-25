@@ -56,7 +56,15 @@ function playedEpisodes(count: number) {
   }));
 }
 
-function harness(overrides: { episodes?: EpisodeItem[]; answer?: ElicitationAnswer; stillPresent?: string[] } = {}) {
+/**
+ * `pager` shapes what the library walk does, because #746 is entirely about
+ * the scan the tool trusts: 'missing' drops the pager off the client and
+ * 'walk_failed' rejects mid-walk. A library longer than `limit` needs no
+ * mode — just pass more episodes than the limit.
+ */
+type PagerMode = 'normal' | 'missing' | 'walk_failed';
+
+function harness(overrides: { episodes?: EpisodeItem[]; answer?: ElicitationAnswer; stillPresent?: string[]; pager?: PagerMode; walkError?: Error } = {}) {
   const dels: string[] = [];
   let prompts = 0;
   const episodes: EpisodeItem[] = overrides.episodes ?? [
@@ -75,10 +83,24 @@ function harness(overrides: { episodes?: EpisodeItem[]; answer?: ElicitationAnsw
       }
       return null;
     },
-    async getAllPages() { return episodes; },
+    async getAllPages(_path: string, _params?: Record<string, string>, opts?: { maxItems?: number }) {
+      if (overrides.pager === 'walk_failed') {
+        throw overrides.walkError ?? Object.assign(new Error('API rate limit reached'), {
+          name: 'SpotifyApiError',
+          status: 429,
+          retryAfterSec: 12,
+        });
+      }
+      // Mirrors the real getAllPages contract: it stops at maxItems and slices,
+      // so asking for cap+1 is how a caller detects the library runs longer.
+      return episodes.slice(0, opts?.maxItems ?? episodes.length);
+    },
     async delete(path: string) { dels.push(path); return null; },
     async put(path: string) { return null; },
   } as unknown as SpotifyClient;
+  if (overrides.pager === 'missing') {
+    delete (client as unknown as Record<string, unknown>).getAllPages;
+  }
   const registered: RegisteredTool[] = [];
   const server: CapturingServer = {
     tool(name, _description, schema, handler) {
@@ -252,5 +274,140 @@ describe('episodemgmt', () => {
     const dry = harness({ episodes: playedEpisodes(3) });
     const d = await dry.invoke('archive_played_episodes', { dry_run: true });
     assert.equal(d.structuredContent.receipt, undefined);
+  });
+
+  // #746: a scan that fails or truncates must never be reported as a total, and
+  // must never drive a destructive write.
+
+  it('reports a walk that failed as a partial scan carrying the reason', async () => {
+    const h = harness({ episodes: playedEpisodes(51), pager: 'walk_failed', answer: { action: 'accept', content: { confirm: true } } });
+    const out = await h.invoke('archive_played_episodes', {});
+    assert.equal(out.structuredContent.scan_complete, false);
+    assert.equal(out.structuredContent.partial_scan, true);
+    assert.equal(out.structuredContent.scan_failure, 'walk_failed');
+    // The reason must survive to the caller: a 429 and a 500 need different
+    // next steps, and "scan failed" alone throws that away.
+    assert.match(String(out.structuredContent.partial_scan_reason), /rate limit/i);
+    assert.match(String(out.structuredContent.partial_scan_reason), /429/);
+    assert.match(String(out.structuredContent.partial_scan_reason), /Retry-After: 12s/);
+    assert.match(out.content[0].text, /rate limit/i);
+    // The old bug verbatim: a failed read reported as a clean empty library.
+    assert.doesNotMatch(out.content[0].text, /No fully-played episodes in library/i);
+  });
+
+  it('refuses the destructive path on a failed walk and performs zero writes', async () => {
+    const h = harness({ episodes: playedEpisodes(51), pager: 'walk_failed', answer: { action: 'accept', content: { confirm: true } } });
+    const out = await h.invoke('archive_played_episodes', {});
+    assert.equal(out.structuredContent.ok, false);
+    assert.equal(out.structuredContent.reason, 'scan_incomplete');
+    assert.deepEqual(h.dels, [], 'a failed scan must never authorise a delete');
+    // The scan gate runs before elicitation: prompting a human to approve a
+    // list built on a scan the tool could not finish is still a bad delete.
+    assert.equal(h.promptCount, 0);
+    // Nothing was removed, so a removal receipt would be a lie.
+    assert.equal(out.structuredContent.receipt, undefined);
+  });
+
+  it('never reports a partial scan count as a total', async () => {
+    // 60 saved, asked for 50: the walk is capped, so 51 rows come back and the
+    // remaining 9 were never read.
+    const h = harness({ episodes: playedEpisodes(60), answer: { action: 'accept', content: { confirm: true } } });
+    const out = await h.invoke('archive_played_episodes', { limit: 50 });
+    assert.equal(out.structuredContent.scan_failure, 'limit_reached');
+    assert.equal(out.structuredContent.scan_complete, false);
+    assert.match(String(out.structuredContent.partial_scan_reason), /requested limit of 50/);
+    assert.deepEqual(h.dels, []);
+    // 'played' and 'would_remove' are the total-shaped fields. On an untrusted
+    // scan they would read as "that is everything", which is the false clean
+    // bill this issue is about, so the count is explicitly scoped instead.
+    assert.equal(out.structuredContent.played, undefined);
+    assert.equal(out.structuredContent.would_remove, undefined);
+    assert.equal(out.structuredContent.removed, undefined);
+    assert.match(out.content[0].text, /refused/i);
+    assert.match(out.content[0].text, /never read/i);
+  });
+
+  it('a library of exactly the limit is a complete scan, not a truncated one', async () => {
+    // The off-by-one boundary: getAllPages stops at maxItems, so a library of
+    // exactly `cap` is genuinely complete and must still be archivable. Guards
+    // against a `>=` truncation check that would gate every at-limit caller.
+    const h = harness({ episodes: playedEpisodes(50) });
+    const out = await h.invoke('archive_played_episodes', { limit: 50 });
+    assert.equal(out.structuredContent.scan_complete, true);
+    assert.equal(out.structuredContent.ok, true);
+    assert.equal(out.structuredContent.removed, 50);
+    assert.equal(h.dels.length, 1);
+  });
+
+  it('discloses a single-page read as partial when the client cannot page', async () => {
+    const h = harness({ episodes: playedEpisodes(3), pager: 'missing', answer: { action: 'accept', content: { confirm: true } } });
+    const out = await h.invoke('archive_played_episodes', {});
+    assert.equal(out.structuredContent.scan_failure, 'no_pager');
+    assert.equal(out.structuredContent.scan_complete, false);
+    assert.match(String(out.structuredContent.partial_scan_reason), /cannot page through the library/);
+    assert.deepEqual(h.dels, [], 'one page is never the whole library, so it must not delete');
+  });
+
+  it('a partial dry run previews the read episodes and writes nothing', async () => {
+    const h = harness({ episodes: playedEpisodes(60), answer: new Error('must not prompt') });
+    const out = await h.invoke('archive_played_episodes', { dry_run: true, limit: 50 });
+    assert.equal(out.structuredContent.dry_run, true);
+    assert.equal(out.structuredContent.scan_complete, false);
+    assert.equal(out.structuredContent.scanned, 50);
+    assert.match(out.content[0].text, /PARTIAL SCAN/i);
+    assert.match(out.content[0].text, /partial scan/i);
+    assert.deepEqual(h.dels, []);
+    assert.equal(h.promptCount, 0);
+  });
+
+  it('a partial dry run does not present a failed scan as a clean bill', async () => {
+    // The nastiest shape: the walk dies and the one page it could still read
+    // happens to hold nothing played. Reporting "would remove nothing" there is
+    // the original false clean bill in dry-run clothing.
+    const h = harness({
+      episodes: [{ episode: { id: 'x', uri: 'spotify:episode:x', name: 'X', resume_point: { fully_played: false } }, added_at: '2026-01-01' }],
+      pager: 'walk_failed',
+    });
+    const out = await h.invoke('archive_played_episodes', { dry_run: true });
+    assert.equal(out.structuredContent.scan_complete, false);
+    assert.equal(out.structuredContent.scanned, 0, 'a walk that died before reading anything read nothing');
+    assert.match(out.content[0].text, /PARTIAL SCAN/i);
+    assert.match(out.content[0].text, /unread remainder may still contain fully-played episodes/i);
+    assert.deepEqual(h.dels, []);
+  });
+
+  it('keeps the deprecated-confirm notice on the partial refusal path', async () => {
+    // The new early return must not swallow the deprecation notice a legacy
+    // caller needs to learn that `confirm: true` authorised nothing.
+    const h = harness({ episodes: playedEpisodes(60) });
+    const out = await h.invoke('archive_played_episodes', { limit: 50, confirm: true });
+    assert.equal(out.structuredContent.reason, 'scan_incomplete');
+    assert.deepEqual(out.structuredContent.deprecated_inputs, ['confirm']);
+    assert.match(out.content[0].text, /no longer authorises the delete/);
+    assert.deepEqual(h.dels, []);
+  });
+
+  it('an untruncated scan reports a total and still deletes with a receipt', async () => {
+    const h = harness({ answer: new Error('must not prompt') });
+    const out = await h.invoke('archive_played_episodes', {});
+    assert.equal(out.structuredContent.scan_complete, true);
+    assert.equal(out.structuredContent.ok, true);
+    assert.equal(out.structuredContent.scanned, 3);
+    assert.equal(out.structuredContent.removed, 2);
+    assert.equal(h.dels.length, 1);
+    // The complete path must still receipt; the guard sits before it, not on it.
+    const receipt = out.structuredContent.receipt as { receipt_id?: string };
+    assert.ok(receipt.receipt_id);
+  });
+
+  it('a successful complete walk finding nothing played still says so', async () => {
+    // Control for the refusals above: if this ever stops passing, the partial
+    // assertions could be passing vacuously.
+    const h = harness({ episodes: [{ episode: { id: 'x', uri: 'spotify:episode:x', name: 'X', resume_point: { fully_played: false } }, added_at: '2026-01-01' }] });
+    const out = await h.invoke('archive_played_episodes', {});
+    assert.equal(out.structuredContent.scan_complete, true);
+    assert.equal(out.structuredContent.played, 0);
+    assert.match(out.content[0].text, /No fully-played episodes in library \(scanned 1\)/);
+    assert.deepEqual(h.dels, []);
   });
 });
