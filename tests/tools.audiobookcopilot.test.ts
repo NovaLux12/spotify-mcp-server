@@ -12,6 +12,7 @@ import assert from 'node:assert/strict';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../src/client.js';
 import type { SpotifyPaged } from '../src/types/spotify.js';
+import { getConfig } from '../src/config.js';
 import { registerAudiobookCopilotTools } from '../src/tools/audiobookcopilot.js';
 
 // ---------------------------------------------------------------------------
@@ -74,7 +75,7 @@ function makeStubClient(responder: Responder = () => null) {
       params?: Record<string, string>,
       opts?: { maxItems?: number },
     ): Promise<T[]> {
-      const maxItems = opts?.maxItems ?? 2000;
+      const maxItems = opts?.maxItems ?? getConfig().fetchAllCap;
       const all: T[] = [];
       let offset = 0;
       for (;;) {
@@ -253,6 +254,77 @@ describe('list_all_chapters', () => {
       h.invoke('list_all_chapters', { audiobook_id: 'nope' }),
       /not found or has no chapters/,
     );
+  });
+
+  // #786: a walk that stops at the fetch-all cap must not read as complete.
+  it('discloses the fetch-all cap in prose and structuredContent when a long book saturates it', async () => {
+    // 600 chapters exist upstream; the default fetch-all cap is 500, so the
+    // walk must stop mid-collection rather than presenting 600 as the book.
+    const h = harness(pagedChaptersResponder(600));
+    const cap = getConfig().fetchAllCap;
+
+    const out = await h.invoke('list_all_chapters', { audiobook_id: 'book1' });
+
+    // The walk is genuinely bounded: 500 fetched over ten 50-chapter pages,
+    // with no eleventh page request for chapters 501-600.
+    const gets = h.client.calls.filter((c) => c.method === 'GET');
+    assert.equal(gets.length, cap / 50);
+    assert.equal((out.structuredContent as { items: unknown[] }).items.length, cap);
+
+    const text = textOf(out);
+    assert.match(text, new RegExp(`\\(first ${cap} fetched — fetch-all cap ${cap} reached\\)`));
+    assert.match(text, new RegExp(`fetched ${cap} chapters, cap ${cap} — TRUNCATED`));
+    assert.match(text, new RegExp(`PREFIX of the book.*chapters 1-${cap} only`));
+    // The last listed row is chapter 500 — never presented as the final one.
+    assert.match(text, new RegExp(`^  ${cap}\\. "Chapter ${cap}"`, 'm'));
+
+    const structured = out.structuredContent as {
+      truncated_by_cap: boolean;
+      fetch_all_cap: number;
+    };
+    assert.equal(structured.truncated_by_cap, true);
+    assert.equal(structured.fetch_all_cap, cap);
+  });
+
+  it('carries the cap disclosure through the json response format too', async () => {
+    const h = harness(pagedChaptersResponder(600));
+    const cap = getConfig().fetchAllCap;
+
+    const out = await h.invoke('list_all_chapters', {
+      audiobook_id: 'book1',
+      response_format: 'json',
+    });
+
+    const raw = JSON.parse(textOf(out)) as {
+      total: number;
+      truncated_by_cap: boolean;
+      fetch_all_cap: number;
+    };
+    assert.equal(raw.total, cap);
+    assert.equal(raw.truncated_by_cap, true);
+    assert.equal(raw.fetch_all_cap, cap);
+  });
+
+  it('reports an uncapped walk as complete — the flag is not constant true', async () => {
+    const h = harness(pagedChaptersResponder(120));
+    const cap = getConfig().fetchAllCap;
+
+    const out = await h.invoke('list_all_chapters', { audiobook_id: 'book1' });
+
+    const structured = out.structuredContent as {
+      truncated_by_cap: boolean;
+      fetch_all_cap: number;
+      items: unknown[];
+    };
+    assert.equal(structured.truncated_by_cap, false);
+    assert.equal(structured.fetch_all_cap, cap);
+    assert.equal(structured.items.length, 120);
+
+    const text = textOf(out);
+    assert.match(text, /\(120 total\)/);
+    assert.doesNotMatch(text, /TRUNCATED/);
+    assert.doesNotMatch(text, /PREFIX of the book/);
+    assert.doesNotMatch(text, /fetch-all cap/);
   });
 });
 

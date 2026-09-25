@@ -1,7 +1,8 @@
 /**
  * Audiobook chapter copilot (#112 idea 4): tools for navigating long-form
- * audiobooks — full chapter tables regardless of the ~18-chapter app break,
- * 1-based chapter jumps, and "where was I?" resume orientation.
+ * audiobooks — full chapter tables regardless of the ~18-chapter app break
+ * (bounded by the fetch-all cap, and the bound is disclosed), 1-based chapter
+ * jumps, and "where was I?" resume orientation.
  */
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -10,10 +11,12 @@ import type { SpotifyChapterSimple } from '../types/spotify.js';
 import {
   ResponseFormat,
   DryRun,
+  completenessFooter,
   describeDryRun,
   listStructuredContent,
   paginationInfo,
 } from '../shaping.js';
+import { getConfig } from '../config.js';
 
 /**
  * The chapters listing endpoint returns `resume_point` on each item even
@@ -65,41 +68,57 @@ function chapterRow(chapter: ChapterListing, index1: number): Record<string, unk
   };
 }
 
+/** Result of the chapter walk, including whether the fetch-all cap truncated it (#786). */
+interface ChapterWalk {
+  chapters: ChapterListing[];
+  /** Configured fetch-all cap the walk was bounded by. */
+  cap: number;
+  /** True when the walk stopped at the cap, so the listing is a prefix of the book. */
+  truncatedByCap: boolean;
+}
+
 /**
- * Fetch EVERY chapter of an audiobook by walking GET
- * /audiobooks/{id}/chapters at the endpoint's page cap until exhausted.
+ * Fetch every chapter of an audiobook by walking GET
+ * /audiobooks/{id}/chapters at the endpoint's page cap until exhausted or the
+ * configured fetch-all cap is hit. The cap is passed explicitly so the walk
+ * and the reported `cap` can never disagree, and saturation is reported rather
+ * than silently presented as the whole book (#786).
  * Throws when the audiobook does not exist or exposes no chapters.
  */
 async function fetchAllChapters(
   client: SpotifyClient,
   audiobookId: string,
-): Promise<ChapterListing[]> {
+): Promise<ChapterWalk> {
+  const cap = getConfig().fetchAllCap;
   const chapters = await client.getAllPages<ChapterListing>(
     `/audiobooks/${encodeURIComponent(audiobookId)}/chapters`,
     { limit: String(CHAPTERS_PAGE_LIMIT) },
+    { maxItems: cap },
   );
   if (chapters.length === 0) {
     throw new Error(`Audiobook "${audiobookId}" not found or has no chapters`);
   }
-  return chapters;
+  return { chapters, cap, truncatedByCap: chapters.length >= cap };
 }
 
 export function registerAudiobookCopilotTools(server: McpServer, client: SpotifyClient): void {
   // list_all_chapters -------------------------------------------------------
   server.tool(
     'list_all_chapters',
-    'List every chapter of an audiobook in one complete table (index, name, duration, resume point). Walks all pages of the chapters endpoint, so long books are not truncated the way they are in the Spotify app.',
+    'List every chapter of an audiobook in one table (index, name, duration, resume point). Walks all pages of the chapters endpoint, unlike the ~18-chapter app limit, but stops at the configured fetch-all cap: when the cap is reached the result is a PREFIX of the book and reports truncated_by_cap=true with the first N chapters only.',
     {
       audiobook_id: z.string().describe('Spotify audiobook ID'),
       response_format: ResponseFormat,
     },
     async (args) => {
-      const chapters = await fetchAllChapters(client, args.audiobook_id);
+      const { chapters, cap, truncatedByCap } = await fetchAllChapters(client, args.audiobook_id);
 
       if (args.response_format === 'json') {
         const raw = {
           audiobook_id: args.audiobook_id,
           total: chapters.length,
+          fetch_all_cap: cap,
+          truncated_by_cap: truncatedByCap,
           items: chapters.map((c, i) => ({ ...chapterRow(c, i + 1), ...c })),
         };
         return {
@@ -109,16 +128,28 @@ export function registerAudiobookCopilotTools(server: McpServer, client: Spotify
       }
 
       const lines = [
-        `Chapters of audiobook ${args.audiobook_id} (${chapters.length} total):`,
+        truncatedByCap
+          ? `Chapters of audiobook ${args.audiobook_id} (first ${chapters.length} fetched — fetch-all cap ${cap} reached):`
+          : `Chapters of audiobook ${args.audiobook_id} (${chapters.length} total):`,
         ...chapters.map(
           (c, i) =>
             `  ${i + 1}. "${c.name}" (${formatDuration(c.duration_ms)}) | ${describeResumePoint(c)} | URI: ${c.uri}`,
         ),
       ];
+      if (truncatedByCap) {
+        lines.push(
+          `${completenessFooter({ fetched: chapters.length, cap, truncated: true, subject: 'chapters' })}.`,
+          `This is a PREFIX of the book, not the whole book: chapters 1-${chapters.length} only. Later chapters were never fetched — do not summarise this audiobook as fully covered.`,
+        );
+      }
       const structured = listStructuredContent(
         chapters.map((c, i) => chapterRow(c, i + 1)),
         paginationInfo({ total: chapters.length, returned: chapters.length }),
-        { audiobook_id: args.audiobook_id },
+        {
+          audiobook_id: args.audiobook_id,
+          fetch_all_cap: cap,
+          truncated_by_cap: truncatedByCap,
+        },
       );
       return {
         content: [{ type: 'text', text: lines.join('\n') }],
@@ -138,7 +169,7 @@ export function registerAudiobookCopilotTools(server: McpServer, client: Spotify
       dry_run: DryRun,
     },
     async (args) => {
-      const chapters = await fetchAllChapters(client, args.audiobook_id);
+      const { chapters } = await fetchAllChapters(client, args.audiobook_id);
       if (args.chapter > chapters.length) {
         throw new Error(
           `Audiobook "${args.audiobook_id}" has only ${chapters.length} chapters; cannot jump to chapter ${args.chapter}.`,
@@ -205,7 +236,7 @@ export function registerAudiobookCopilotTools(server: McpServer, client: Spotify
       response_format: ResponseFormat,
     },
     async (args) => {
-      const chapters = await fetchAllChapters(client, args.audiobook_id);
+      const { chapters } = await fetchAllChapters(client, args.audiobook_id);
       const state = await client.get<PlaybackState>('/me/player');
 
       if (!state || !state.item) {
