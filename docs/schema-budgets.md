@@ -60,13 +60,13 @@ above either ceiling fails CI and server startup.
 | users | 2 | 1,561 | 2 | 1,561 | 3 | 1,718 |
 | audiobooks | 4 | 3,627 | 4 | 3,627 | 5 | 3,990 |
 | audiobookcopilot | 3 | 1,939 | 3 | 1,939 | 4 | 2,133 |
-| playlists | 26 | 23,768 | 26 | 23,768 | 27 | 26,145 |
+| playlists | 26 | 23,887 | 26 | 23,887 | 27 | 26,276 |
 | playlistops | 3 | 4,737 | 3 | 4,737 | 4 | 5,211 |
 | playlistbatch | 3 | 4,106 | 3 | 4,106 | 4 | 4,517 |
 | playlistmisc | 3 | 2,390 | 3 | 2,390 | 4 | 2,629 |
 | personalization | 3 | 2,601 | 3 | 2,601 | 4 | 2,862 |
 | analytics | 4 | 2,687 | 4 | 2,687 | 5 | 2,956 |
-| statsfm | 30 | 23,639 | 30 | 23,639 | 31 | 26,003 |
+| statsfm | 30 | 23,411 | 30 | 23,411 | 31 | 25,753 |
 | taste | 16 | 14,327 | 16 | 14,327 | 17 | 15,760 |
 | tastecomposites | 11 | 9,354 | 11 | 9,354 | 12 | 10,290 |
 | doctor | 1 | 773 | 1 | 773 | 2 | 851 |
@@ -105,15 +105,15 @@ above either ceiling fails CI and server startup.
 | exhaust2playlists | 18 | 23,858 | 18 | 23,858 | 19 | 26,244 |
 | exhaust2misc | 27 | 23,391 | 27 | 23,391 | 28 | 25,731 |
 | exhaust2extra | 3 | 3,764 | 3 | 3,764 | 4 | 4,141 |
-| swarm3discovery | 24 | 21,775 | 24 | 21,775 | 25 | 23,953 |
-| swarm3bdiscovery | 24 | 19,256 | 24 | 19,256 | 25 | 21,182 |
-| swarm3shows | 24 | 20,575 | 24 | 20,575 | 25 | 22,633 |
+| swarm3discovery | 24 | 22,108 | 24 | 22,108 | 25 | 24,319 |
+| swarm3bdiscovery | 24 | 19,731 | 24 | 19,731 | 25 | 21,705 |
+| swarm3shows | 24 | 20,739 | 24 | 20,739 | 25 | 22,813 |
 | swarm3refs | 6 | 4,433 | 6 | 4,433 | 7 | 4,877 |
-| swarm3analytics | 24 | 18,978 | 24 | 18,978 | 25 | 20,876 |
+| swarm3analytics | 24 | 19,000 | 24 | 19,000 | 25 | 20,900 |
 | swarm3library | 24 | 18,539 | 24 | 18,539 | 25 | 20,393 |
 | swarm3playback | 24 | 14,799 | 24 | 14,799 | 25 | 16,279 |
 | swarm3playlistops | 24 | 32,265 | 24 | 32,265 | 25 | 35,492 |
-| swarm3snapshots | 24 | 24,248 | 24 | 24,248 | 25 | 26,673 |
+| swarm3snapshots | 24 | 24,296 | 24 | 24,296 | 25 | 26,726 |
 | swarm4playlists | 18 | 23,008 | 18 | 23,008 | 19 | 25,309 |
 <!-- END:generated schema-budget-table -->
 
