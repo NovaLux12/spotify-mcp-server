@@ -114,7 +114,7 @@ above either ceiling fails CI and server startup.
 | exhaust2extra | 3 | 3,695 | 3 | 3,695 | 4 | 4,065 |
 | swarm3discovery | 24 | 21,951 | 24 | 21,951 | 25 | 24,147 |
 | swarm3bdiscovery | 24 | 20,048 | 24 | 20,048 | 25 | 22,053 |
-| swarm3shows | 24 | 20,161 | 24 | 20,161 | 25 | 22,178 |
+| swarm3shows | 24 | 21,075 | 24 | 21,075 | 25 | 23,183 |
 | swarm3refs | 6 | 4,331 | 6 | 4,331 | 7 | 4,765 |
 | swarm3analytics | 24 | 18,880 | 24 | 18,880 | 25 | 20,768 |
 | swarm3library | 24 | 17,987 | 24 | 17,987 | 25 | 19,786 |
