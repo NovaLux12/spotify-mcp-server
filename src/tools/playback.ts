@@ -721,7 +721,17 @@ export function registerPlaybackTools(server: McpServer, client: SpotifyClient):
 
       const lines = shaped.items.map((d) => {
         const active = d.is_active ? ' [ACTIVE]' : '';
-        const volume = d.volume_percent !== null ? `, volume: ${d.volume_percent}%` : '';
+        // #855: the API omits `volume_percent` on some devices (and sends null on
+        // others) — a `!== null` guard let the undefined case through and printed
+        // "volume: undefined%". A volume-capable device with no reported level is
+        // unknown, not 0% and not undefined%; a device that cannot report volume
+        // at all says nothing.
+        const reported = typeof d.volume_percent === 'number' && Number.isFinite(d.volume_percent);
+        const volume = reported
+          ? `, volume: ${d.volume_percent}%`
+          : d.supports_volume
+            ? ', volume: unknown'
+            : '';
         return `• ${d.name} (${d.type})${active}${volume} — ID: ${d.id ?? 'n/a'}`;
       });
       if (shaped.footer) lines.push(`(${shaped.footer})`);

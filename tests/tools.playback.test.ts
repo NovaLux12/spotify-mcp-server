@@ -593,6 +593,45 @@ test('get_devices lists devices with active marker, volume, and ids', async () =
   assert.match(out, /• Speaker \(Speaker\) — ID: n\/a/); // null id and volume rendered safely
 });
 
+// #855: a device whose `volume_percent` the API omits rendered as the literal
+// "volume: undefined%" — a confident-looking number. Absent must read as absent.
+test('get_devices never prints "undefined%" when a device omits volume_percent', async () => {
+  const { registered } = makeHarness({
+    getResponse: (path) =>
+      path === '/me/player/devices'
+        ? {
+            devices: [
+              {
+                id: 'dev1',
+                name: 'Living Room',
+                type: 'Computer',
+                is_active: true,
+                is_private_session: false,
+                is_restricted: false,
+                supports_volume: true, // volume_percent key absent entirely
+              },
+              {
+                id: 'dev2',
+                name: 'TV',
+                type: 'TV',
+                is_active: false,
+                is_private_session: false,
+                is_restricted: false,
+                supports_volume: false, // no volume concept at all
+              },
+            ],
+          }
+        : undefined,
+  });
+
+  const out = text(await invoke(findTool(registered, 'get_devices')));
+
+  assert.doesNotMatch(out, /undefined/);
+  assert.doesNotMatch(out, /%/); // no half-formed percentage anywhere
+  assert.match(out, /• Living Room \(Computer\) \[ACTIVE\], volume: unknown — ID: dev1/);
+  assert.match(out, /• TV \(TV\) — ID: dev2/);
+});
+
 test('get_devices reports helpful message when list is empty or null', async () => {
   const { registered } = makeHarness({
     getResponse: (path) => (path === '/me/player/devices' ? { devices: [] } : undefined),
