@@ -555,7 +555,7 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   manifestEntry('artistwatch', 'artistwatch', 'src/tools/artistwatch.ts', registerArtistWatchTools, [6, 5567], { scopeKey: 'catalog' }),
   manifestEntry('queueops', 'queueops', 'src/tools/queueops.ts', registerQueueOpsTools, [3, 3449], { scopeKey: 'playback' }),
   manifestEntry('playbackext', 'playbackext', 'src/tools/playbackext.ts', registerPlaybackExtTools, [13, 7195], { scopeKey: 'playback' }),
-  manifestEntry('playbackintel', 'playbackintel', 'src/tools/playbackintel.ts', registerPlaybackIntelTools, [15, 11615], { scopeKey: 'playback' }),
+  manifestEntry('playbackintel', 'playbackintel', 'src/tools/playbackintel.ts', registerPlaybackIntelTools, [15, 11663], { scopeKey: 'playback' }),
   manifestEntry('scenes', 'playback', 'src/tools/scenes.ts', registerScenesTools, [7, 4456], { scopeKey: 'playback' }),
   manifestEntry('playlisthealth', 'playlisthealth', 'src/tools/playlisthealth.ts', registerPlaylistHealthTools, [8, 5285], { scopeKey: 'playlists' }),
   manifestEntry('playlistdna', 'playlists', 'src/tools/playlistdna.ts', registerPlaylistDnaTools, [1, 1310], { readOnlySafe: true, scopeKey: 'playlists' }),

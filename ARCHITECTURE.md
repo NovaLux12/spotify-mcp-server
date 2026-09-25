@@ -154,7 +154,7 @@ The table is generated from every TypeScript file recursively under `src/`, incl
 | `src/tools/personalization.ts` | Runtime module for src/tools/personalization.ts. (3 registered tools) | 271 |
 | `src/tools/playback.ts` | Runtime module for src/tools/playback.ts. (16 registered tools) | 860 |
 | `src/tools/playbackext.ts` | playbackext (#197, #206, #198, #180, #181): local sidecar persistence for playback states, device naming/volume presets, listening sessions, smart rules, show digest. (13 registered tools) | 334 |
-| `src/tools/playbackintel.ts` | playbackintel — exhaustive playback/queue/player intel (#272-283 slice) 12 tools: play_on, queue_next, describe_queue, describe_listening_session, play_at, device_health, seek_relative, playback_timeline, repeat_queue_toggle, now_playing_history, playback_compare_states, peek_next + triage extras: get_playback_context, volume_step, market_availability Each tool notes quota in description (🟢/🟡). (15 registered tools) | 465 |
+| `src/tools/playbackintel.ts` | playbackintel — exhaustive playback/queue/player intel (#272-283 slice) 12 tools: play_on, queue_next, describe_queue, describe_listening_session, play_at, device_health, seek_relative, playback_timeline, repeat_queue_toggle, now_playing_history, playback_compare_states, peek_next + triage extras: get_playback_context, volume_step, market_availability Each tool notes quota in description (🟢/🟡). (15 registered tools) | 496 |
 | `src/tools/playlistbatch.ts` | Playlist batch operations — Stream D (#183, #189, #200). (3 registered tools) | 147 |
 | `src/tools/playlistdna.ts` | Runtime module for src/tools/playlistdna.ts. (1 registered tool) | 330 |
 | `src/tools/playlisthealth.ts` | Runtime module for src/tools/playlisthealth.ts. (8 registered tools) | 431 |
@@ -178,7 +178,7 @@ The table is generated from every TypeScript file recursively under `src/`, incl
 | `src/tools/swarm3_discovery.ts` | Runtime module for src/tools/swarm3_discovery.ts. (24 registered tools) | 1896 |
 | `src/tools/swarm3_library.ts` | swarm3 library slice — feature swarm v1.25.0 (500-tool push, branch swarm3-500-tools). (24 registered tools) | 1467 |
 | `src/tools/swarm3_meta.ts` | swarm3 meta slice — 500-tool swarm v1.26.0 (issue #442). (3 registered tools) | 179 |
-| `src/tools/swarm3_playback.ts` | Runtime module for src/tools/swarm3_playback.ts. (24 registered tools) | 1299 |
+| `src/tools/swarm3_playback.ts` | Runtime module for src/tools/swarm3_playback.ts. (24 registered tools) | 1304 |
 | `src/tools/swarm3_playlistops.ts` | swarm3 playlistops slice — 500-tool swarm v1.26.0 (issue #442). (24 registered tools) | 1779 |
 | `src/tools/swarm3_refs.ts` | Curated local Spotify-reference tools (#915). (6 registered tools) | 187 |
 | `src/tools/swarm3_shows.ts` | Runtime module for src/tools/swarm3_shows.ts. (24 registered tools) | 1353 |

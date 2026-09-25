@@ -98,7 +98,7 @@ above either ceiling fails CI and server startup.
 | artistwatch | 6 | 5,567 | 6 | 5,567 | 7 | 6,124 |
 | queueops | 3 | 3,449 | 3 | 3,449 | 4 | 3,794 |
 | playbackext | 13 | 7,195 | 13 | 7,195 | 14 | 7,915 |
-| playbackintel | 15 | 11,615 | 15 | 11,615 | 16 | 12,777 |
+| playbackintel | 15 | 11,663 | 15 | 11,663 | 16 | 12,830 |
 | scenes | 7 | 4,456 | 7 | 4,456 | 8 | 4,902 |
 | playlisthealth | 8 | 5,285 | 8 | 5,285 | 9 | 5,814 |
 | playlistdna | 1 | 1,310 | 1 | 1,310 | 2 | 1,442 |
