@@ -16,6 +16,7 @@ import {
   ResponseFormat,
   MaxResults,
   DryRun,
+  CHUNK_CAPS,
   playlistListInputFields,
   resolvePlaylistInput,
   sharedListFields,
@@ -355,6 +356,7 @@ export function registerExhaustMiscTools(server: McpServer, client: SpotifyClien
         owner: { id: string };
         collaborative: boolean;
         public: boolean | null;
+        followers: { total: number } | null;
         tracks: { total: number };
       }>('/me/playlists', { limit: '50' });
       const owned = all.filter((p) => p.owner.id === myId);
@@ -363,12 +365,41 @@ export function registerExhaustMiscTools(server: McpServer, client: SpotifyClien
       const t = truncateItems(list, cap(args));
       const pagination = paginationInfo({ total: list.length, returned: t.items.length });
       const collabCount = list.filter((p) => p.collaborative).length;
+      // #819: the description promises the public/private and follower rollups, so
+      // they are computed from the rows already in hand. `public` is tri-state on
+      // the wire — `null` means the API did not report it, never "private", so it
+      // is counted separately instead of being folded into either bucket (#750).
+      const publicCount = list.filter((p) => p.public === true).length;
+      const privateCount = list.filter((p) => p.public === false).length;
+      const publicUnknown = list.length - publicCount - privateCount;
+      // Follower counts are summed only over rows that actually reported one:
+      // `followers` is absent from some rows (and from the repo's simplified
+      // playlist row entirely), and a `?? 0` default would publish a total that
+      // was never fetched. Coverage is reported so a gap is visible (#750).
+      const followerRows = list.map((p) => ({
+        id: p.id,
+        name: p.name,
+        followers: typeof p.followers?.total === 'number' ? p.followers.total : null,
+      }));
+      const followerReported = followerRows.filter((row) => row.followers !== null);
+      const followerTotal = followerReported.reduce((sum, row) => sum + (row.followers as number), 0);
       const structured: Record<string, unknown> = listStructuredContent(
         t.items as unknown as Record<string, unknown>[],
         pagination,
-        { total_playlists: all.length, owned: owned.length, followed: followed.length, collaborative: collabCount },
+        {
+          total_playlists: all.length,
+          owned: owned.length,
+          followed: followed.length,
+          collaborative: collabCount,
+          public: { count: publicCount, private: privateCount, unknown: publicUnknown },
+          followers: { total: followerTotal, reported: followerReported.length, unknown: followerRows.length - followerReported.length, per_playlist: followerRows },
+        },
       );
-      const text = `Playlists audit: ${all.length} total — ${owned.length} owned, ${followed.length} followed, ${collabCount} collaborative. Showing ${t.items.length}.`;
+      const followerScope = followerReported.length === list.length
+        ? `${followerTotal} follower(s)`
+        : `${followerTotal} follower(s) across ${followerReported.length}/${list.length} playlist(s)`;
+      const text = `Playlists audit: ${all.length} total — ${owned.length} owned, ${followed.length} followed, ${collabCount} collaborative, `
+        + `${publicCount} public / ${privateCount} private / ${publicUnknown} unknown, ${followerScope}. Showing ${t.items.length}.`;
       if (rf === 'json') return { content: [{ type: 'text', text: JSON.stringify(structured, null, 2) }], structuredContent: structured };
       return textResult(text, structured);
     },
@@ -454,18 +485,25 @@ export function registerExhaustMiscTools(server: McpServer, client: SpotifyClien
         const text = describeDryRun('split playlist', `playlist ${args.playlist_id} into ${args.parts} parts`, chunks.map((c, i) => `Part ${i + 1}: ${c.length} tracks`));
         return textResult(text, structured);
       }
-      const me = await client.get<{ id: string }>('/me');
+      // #820: `/me` is a preflight only — creation targets `/me/playlists`, which
+      // is not user-scoped, so a null profile must fail fast with a named error
+      // before any part is written rather than dereferencing `me!.id` mid-loop.
+      const me = await client.get<{ id?: string }>('/me');
+      if (!me?.id) throw new Error('Could not read the current user profile');
       const created: Array<{ id: string; name: string }> = [];
       for (let i = 0; i < chunks.length; i++) {
         const name = `${namePrefix} (Part ${i + 1}/${args.parts})`;
-        const pl = await client.post<{ id: string }>(`/users/${encodeURIComponent(me!.id)}/playlists`, {
+        // #820: the legacy `/users/{id}/playlists` + `/playlists/{id}/tracks`
+        // pair is retired for post-Nov-2024 registrations; `/me/playlists` +
+        // `/playlists/{id}/items` is the form every sibling creator uses.
+        const pl = await client.post<{ id: string }>('/me/playlists', {
           name,
           public: args.public ?? false,
           description: `Split from ${args.playlist_id} part ${i + 1}/${args.parts}`,
         });
         if (pl && chunks[i].length > 0) {
-          for (let j = 0; j < chunks[i].length; j += 100) {
-            await client.post(`/playlists/${encodeURIComponent(pl.id)}/tracks`, { uris: chunks[i].slice(j, j + 100) });
+          for (let j = 0; j < chunks[i].length; j += CHUNK_CAPS.playlist_writes) {
+            await client.post(`/playlists/${encodeURIComponent(pl.id)}/items`, { uris: chunks[i].slice(j, j + CHUNK_CAPS.playlist_writes) });
           }
         }
         if (pl) created.push({ id: pl.id, name });
