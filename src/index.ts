@@ -112,7 +112,6 @@ async function startMcpServer(): Promise<void> {
   if (isModuleActive('prompts', activeSets, overrides) && !moduleBlockedByScopes('prompts', grantedScopes)) registerPrompts(server);
 
   assertModuleSchemaBudgets(collectModuleSchemaBudgets(server));
-  assertAggregateSurfaceBudget(collectAggregateSurfaceMeasurement(server));
 
   // Annotations + titles for every registered tool (#565/A0-002): hosts need to
   // tell reads from destructive writes to auto-approve safely. Applied once here
@@ -124,6 +123,7 @@ async function startMcpServer(): Promise<void> {
       `[spotify-mcp] warning: tool annotations applied to ${annotations.annotated}/${annotations.total} registered tools`,
     );
   }
+  assertAggregateSurfaceBudget(collectAggregateSurfaceMeasurement(server));
   // One final tools/list + tools/call boundary runs after every registration:
   // closed input schemas, pre-handler unknown-key rejection, and structured
   // error envelopes for all production tools.

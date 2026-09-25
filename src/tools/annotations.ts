@@ -380,8 +380,8 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   manifestEntry('users', 'users', 'src/tools/users.ts', registerUsersTools, [2, 1561]),
   manifestEntry('audiobooks', 'audiobooks', 'src/tools/audiobooks.ts', registerAudiobookTools, [4, 3627]),
   manifestEntry('audiobookcopilot', 'audiobooks', 'src/tools/audiobookcopilot.ts', registerAudiobookCopilotTools, [3, 1939]),
-  manifestEntry('playlists', 'playlists', 'src/tools/playlists.ts', registerPlaylistTools, [26, 20356]),
-  manifestEntry('playlistops', 'playlists', 'src/tools/playlistops.ts', registerPlaylistOpsTools, [3, 3541]),
+  manifestEntry('playlists', 'playlists', 'src/tools/playlists.ts', registerPlaylistTools, [26, 23768]),
+  manifestEntry('playlistops', 'playlists', 'src/tools/playlistops.ts', registerPlaylistOpsTools, [3, 4737]),
   manifestEntry('playlistbatch', 'playlistbatch', 'src/tools/playlistbatch.ts', registerPlaylistBatchTools, [3, 4026]),
   manifestEntry('playlistmisc', 'playlistmisc', 'src/tools/playlistmisc.ts', registerPlaylistMiscTools, [3, 2390]),
   manifestEntry('personalization', 'personalization', 'src/tools/personalization.ts', registerPersonalizationTools, [3, 2601], { readOnlySafe: true }),
@@ -402,7 +402,7 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   manifestEntry('backup', 'library', 'src/tools/backup.ts', registerBackupTools, [2, 1489], { readOnlySafe: true, scopeKey: 'library' }),
   manifestEntry('restore', 'library', 'src/tools/restore.ts', registerRestoreTools, [1, 1874], { scopeKey: 'library' }),
   manifestEntry('undo', 'library', 'src/tools/undo.ts', registerUndoTools, [2, 1476], { scopeKey: 'library' }),
-  manifestEntry('receipts', 'library', 'src/index.ts', (server) => {
+  manifestEntry('receipts', 'library', 'src/tools/annotations.ts', (server) => {
     server.tool(
       'verify_receipt',
       'Verify that a previous mutation actually landed on Spotify by looking up its receipt',
@@ -424,7 +424,7 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   manifestEntry('artistwatch', 'artistwatch', 'src/tools/artistwatch.ts', registerArtistWatchTools, [6, 5705], { scopeKey: 'catalog' }),
   manifestEntry('queueops', 'queueops', 'src/tools/queueops.ts', registerQueueOpsTools, [3, 3518], { scopeKey: 'playback' }),
   manifestEntry('playbackext', 'playbackext', 'src/tools/playbackext.ts', registerPlaybackExtTools, [13, 7494], { scopeKey: 'playback' }),
-  manifestEntry('playbackintel', 'playbackintel', 'src/tools/playbackintel.ts', registerPlaybackIntelTools, [15, 11960], { readOnlySafe: true, scopeKey: 'playback' }),
+  manifestEntry('playbackintel', 'playbackintel', 'src/tools/playbackintel.ts', registerPlaybackIntelTools, [15, 11960], { scopeKey: 'playback' }),
   manifestEntry('scenes', 'playback', 'src/tools/scenes.ts', registerScenesTools, [7, 4617], { scopeKey: 'playback' }),
   manifestEntry('playlisthealth', 'playlisthealth', 'src/tools/playlisthealth.ts', registerPlaylistHealthTools, [8, 5469], { scopeKey: 'playlists' }),
   manifestEntry('playlistdna', 'playlists', 'src/tools/playlistdna.ts', registerPlaylistDnaTools, [1, 1333], { readOnlySafe: true, scopeKey: 'playlists' }),
@@ -445,7 +445,7 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   manifestEntry('swarm3analytics', 'swarm3analytics', 'src/tools/swarm3_analytics.ts', registerSwarm3AnalyticsTools, [24, 19000], { readOnlySafe: true, scopeKey: 'personalization' }),
   manifestEntry('swarm3library', 'swarm3library', 'src/tools/swarm3_library.ts', registerSwarm3LibraryTools, [24, 18539], { readOnlySafe: true, scopeKey: 'library' }),
   manifestEntry('swarm3playback', 'swarm3playback', 'src/tools/swarm3_playback.ts', registerSwarm3PlaybackTools, [24, 14799], { scopeKey: 'playback' }),
-  manifestEntry('swarm3playlistops', 'swarm3playlistops', 'src/tools/swarm3_playlistops.ts', registerSwarm3PlaylistopsTools, [24, 28853], { scopeKey: 'playlists' }),
+  manifestEntry('swarm3playlistops', 'swarm3playlistops', 'src/tools/swarm3_playlistops.ts', registerSwarm3PlaylistopsTools, [24, 32265], { scopeKey: 'playlists' }),
   manifestEntry('swarm3snapshots', 'swarm3snapshots', 'src/tools/swarm3_snapshots.ts', registerSwarm3SnapshotsTools, [24, 24296], { scopeKey: 'playlists' }),
   manifestEntry('swarm4playlists', 'swarm4playlists', 'src/tools/swarm4_playlists.ts', registerSwarm4PlaylistsTools, [18, 22128], { scopeKey: 'playlists' }),
 ] as const;

@@ -578,7 +578,7 @@ Search for a track or episode by name and start playing it — combines `search`
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `query` | string | yes | Search text, e.g. a song title or podcast episode name |
-| `type` | `"track"` \| `"episode"` | no | What to search for. Default: `"track"` |
+| `search_type` | `"track"` \| `"episode"` | no | What to search for. Default: `"track"` |
 | `device_id` | string | no | Target device; uses active device if omitted |
 
 ---

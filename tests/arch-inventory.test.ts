@@ -1,13 +1,10 @@
 /**
  * Generated documentation inventory guard (#924, #925, #930).
- *
- * The census owns production-registry enumeration; this test exercises the
- * same offline commands CI runs and independently proves the documented
- * totals came from the JSON it prints.
  */
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -23,9 +20,31 @@ const census = JSON.parse(execFileSync(process.execPath, ['scripts/surface-censu
   prompts: number;
   registrationKeys: number;
   toolModuleFiles: number;
+  toolNames: string[];
+  toolInputSchemas: Record<string, { properties?: Record<string, unknown> }>;
+  registrationUnits: Array<{ registrar: string; file: string; key: string; ungated: boolean }>;
   perModule: Record<string, number>;
   registrySource: string;
 };
+
+async function withFixtures<T>(run: (dir: string) => Promise<T>): Promise<T> {
+  const dir = await mkdtemp(join(ROOT, '.census-fixture-'));
+  try {
+    return await run(dir);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+function runFailure(args: string[]): string {
+  try {
+    execFileSync(process.execPath, args, { cwd: ROOT, encoding: 'utf8', stdio: 'pipe' });
+  } catch (error) {
+    const result = error as { stdout?: string; stderr?: string };
+    return `${result.stdout ?? ''}\n${result.stderr ?? ''}`;
+  }
+  assert.fail(`expected command to fail: ${args.join(' ')}`);
+}
 
 describe('generated architecture and specification inventory', () => {
   it('passes the offline documentation drift guard', () => {
@@ -40,16 +59,52 @@ describe('generated architecture and specification inventory', () => {
     );
   });
 
+  it('exports every production tool input schema', () => {
+    assert.equal(Object.keys(census.toolInputSchemas).length, census.tools);
+    for (const name of census.toolNames) {
+      assert.ok(census.toolInputSchemas[name]?.properties, `${name} is missing tools/list inputSchema.properties`);
+    }
+  });
+
+  it('derives registration keys from production callsites, including ungated units', async () => {
+    const doctor = census.registrationUnits.find(({ registrar }) => registrar === 'registerDoctorTool');
+    assert.deepEqual(doctor, {
+      registrar: 'registerDoctorTool',
+      file: 'src/tools/doctortool.ts',
+      key: 'spotify_doctor',
+      ungated: true,
+    });
+    assert.equal(census.registrationKeys, new Set(census.registrationUnits.map(({ key }) => key)).size);
+
+    await withFixtures(async (dir) => {
+      const source = await readFile(join(ROOT, 'src/index.ts'), 'utf8');
+      const changed = source.replace(
+        "import { registerPlaybackTools } from './tools/playback.js';",
+        "import { registerPlaybackTools } from './tools/playback.js';\nimport { registerChangedTools } from './tools/changed.js';",
+      ).replace(
+        '  if (isModuleActive(\'search\', activeSets, overrides)',
+        "  if (isModuleActive('changedunit', activeSets, overrides)) registerChangedTools(server, client);\n  if (isModuleActive('search', activeSets, overrides)",
+      );
+      const fixture = join(dir, 'changed-index.ts');
+      await writeFile(fixture, changed);
+      const output = execFileSync(process.execPath, ['scripts/surface-census.mjs', '--registration-manifest', fixture], {
+        cwd: ROOT,
+        encoding: 'utf8',
+      });
+      const units = JSON.parse(output) as Array<{ key: string }>;
+      assert.ok(units.some(({ key }) => key === 'changedunit'));
+    });
+  });
+
   it('documents the live tools/list, resources, templates, and prompts totals', () => {
     const architecture = readFileSync(join(ROOT, 'ARCHITECTURE.md'), 'utf8');
     const spec = readFileSync(join(ROOT, 'SPEC.md'), 'utf8');
-    const claims = [
+    for (const claim of [
       `**${census.tools} tools**`,
       `**${census.resources} fixed resources**`,
       `**${census.resourceTemplates} resource templates**`,
       `**${census.prompts} prompts**`,
-    ];
-    for (const claim of claims) {
+    ]) {
       assert.ok(architecture.includes(claim), `ARCHITECTURE.md is missing ${claim}`);
       assert.ok(spec.includes(claim), `SPEC.md is missing ${claim}`);
     }
@@ -64,7 +119,43 @@ describe('generated architecture and specification inventory', () => {
     assert.deepEqual(sections, expected);
   });
 
-  it('checks documented tool names against the same production registry', () => {
+  it('checks documented tool names and schemas against the production registry', () => {
     execFileSync('npm', ['run', 'check:doc-tool-names'], { cwd: ROOT, stdio: 'pipe' });
+  });
+
+  it('rejects unknown documented tools and wrong-tool arguments', async () => {
+    await withFixtures(async (dir) => {
+      const cases = [
+        { name: 'unknown tool', source: 'Call not_a_real_tool with `query: "x"`.', expected: /unknown tool/ },
+        { name: 'wrong-tool JSON argument', source: '```json\n{"tool":"get_me","playlist_id":"x"}\n```', expected: /not an input parameter of .*get_me/ },
+        { name: 'wrong-tool call argument', source: 'Call get_me with `playlist_id: "x"`.', expected: /not an input parameter of .*get_me/ },
+      ];
+      for (const fixture of cases) {
+        const file = join(dir, `${fixture.name.replaceAll(' ', '-')}.md`);
+        await writeFile(file, fixture.source);
+        assert.match(runFailure(['scripts/check-doc-tool-names.mjs', '--check-fixture', file]), fixture.expected);
+      }
+    });
+  });
+
+  it('requires exactly one valid marker pair for every generated block', async () => {
+    await withFixtures(async (dir) => {
+      const name = 'surface-census';
+      const body = 'current';
+      const start = '<!-- BEGIN:generated surface-census -->';
+      const end = '<!-- END:generated surface-census -->';
+      const valid = `${start}\ncurrent\n${end}`;
+      const cases = [
+        { name: 'missing', source: 'current', expected: /exactly one.*found 0/ },
+        { name: 'stale', source: valid.replace('current', 'old'), expected: /stale/ },
+        { name: 'duplicate start', source: `${valid}\n${start}`, expected: /found 2/ },
+        { name: 'duplicate end', source: `${valid}\n${end}`, expected: /found 2/ },
+      ];
+      for (const fixture of cases) {
+        const file = join(dir, `${fixture.name.replaceAll(' ', '-')}.json`);
+        await writeFile(file, JSON.stringify({ source: fixture.source, file: 'README.md', name, body }));
+        assert.match(runFailure(['scripts/surface-census.mjs', '--marker-fixture', file]), fixture.expected);
+      }
+    });
   });
 });

@@ -14,7 +14,7 @@
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { basename, dirname, join, relative } from 'node:path';
+import { basename, dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -28,13 +28,37 @@ if (!process.env.SPOTIFY_MCP_SURFACE_CENSUS) {
   });
   process.exit(child.status ?? 1);
 }
+const { REGISTRAR_MANIFEST } = await import('../src/tools/annotations.ts');
+const productionManifest = REGISTRAR_MANIFEST.map((module) => ({
+  registrar: module.registrar.name || module.key,
+  file: module.file,
+  key: module.key === 'doctor' ? 'spotify_doctor' : module.registrationKey,
+  ungated: module.alwaysActive === true,
+}));
+const markerFixtureIndex = args.indexOf('--marker-fixture');
+if (markerFixtureIndex >= 0) {
+  const fixturePath = args[markerFixtureIndex + 1];
+  if (!fixturePath) throw new Error('--marker-fixture requires a JSON file');
+  const fixture = JSON.parse(readFileSync(resolve(fixturePath), 'utf8'));
+  const error = inspectGeneratedBlock(fixture.source, fixture.file, fixture.name, fixture.body);
+  console.log(JSON.stringify({ error }));
+  process.exit(error ? 1 : 0);
+}
+const manifestArgIndex = args.indexOf('--registration-manifest');
+if (manifestArgIndex >= 0) {
+  const manifestPath = args[manifestArgIndex + 1];
+  if (!manifestPath) throw new Error('--registration-manifest requires a source file');
+  console.log(JSON.stringify(parseProductionManifest(readFileSync(resolve(manifestPath), 'utf8')), null, 2));
+  process.exit(0);
+}
+const { GATED_PATH_PATTERNS, isGatedPath } = await import('../src/tools/exhaust2_enggating.ts');
 const census = await readProductionRegistry();
-const moduleNames = await attributeToolsToModules(census.toolNames);
+const moduleNames = await attributeToolsToModules(census.toolNames, productionManifest);
 const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'));
 
 const perModule = countModuleTools(moduleNames);
 const toolModuleFiles = Object.keys(perModule).filter((file) => file.startsWith('src/tools/')).length;
-const registrationKeyNames = [...new Set(allRegistrationKeysFromSource())].sort();
+const registrationKeyNames = [...new Set(productionManifest.map(({ key }) => key))].sort();
 const result = {
   tools: census.toolNames.length,
   toolModuleFiles,
@@ -44,10 +68,12 @@ const result = {
   prompts: census.promptNames.length,
   toolNames: census.toolNames,
   parameterNames: census.parameterNames,
+  toolInputSchemas: census.toolInputSchemas,
   resourceUris: census.resourceUris,
   resourceTemplateUris: census.resourceTemplateUris,
   promptNames: census.promptNames,
   registrationKeyNames,
+  registrationUnits: productionManifest,
   perModule,
   toolsetNames: toolsetNamesFromSource(),
   registrySource: 'src/index.ts via stdio tools/list after production finalizers',
@@ -133,6 +159,7 @@ async function readProductionRegistry() {
     return {
       toolNames: toolPage.tools.map(({ name }) => name).sort(),
       parameterNames: [...new Set(toolPage.tools.flatMap((tool) => Object.keys(tool.inputSchema?.properties ?? {})))].sort(),
+      toolInputSchemas: Object.fromEntries(toolPage.tools.map(({ name, inputSchema }) => [name, inputSchema])),
       resourceUris: resourcePage.resources.map(({ uri }) => uri).sort(),
       resourceTemplateUris: templatePage.resourceTemplates.map(({ uriTemplate }) => uriTemplate).sort(),
       promptNames: promptPage.prompts.map(({ name }) => name).sort(),
@@ -199,6 +226,56 @@ async function attributeToolsToModules(liveToolNames) {
   for (const [name, owners] of attributed) namesByModule.get(owners[0]).push(name);
   namesByModule.set('src/index.ts', liveToolNames.includes('verify_receipt') ? ['verify_receipt'] : []);
   return namesByModule;
+}
+
+/** Parse the production registrar callsites in src/index.ts into one manifest. */
+function parseProductionManifest(source) {
+  const imports = new Map();
+  const importPattern = /import\s*\{([^}]+)\}\s*from\s*['"]\.\/(tools\/[^'"]+|resources\/index|resources\/templates|prompts\/index)\.js['"]/g;
+  for (const match of source.matchAll(importPattern)) {
+    const [, symbols, path] = match;
+    for (const specifier of symbols.split(',')) {
+      const symbol = specifier.trim().split(/\s+as\s+/).at(-1);
+      if (/^[A-Za-z0-9_]+$/.test(symbol)) imports.set(symbol, `src/${path}.ts`);
+    }
+  }
+
+  const lines = source.split('\n');
+  const keyStack = [];
+  const manifest = [];
+  let braceDepth = 0;
+  for (const line of lines) {
+    const inlineKey = /isModuleActive\('([^']+)'/.exec(line)?.[1];
+    const activeKey = inlineKey ?? keyStack.at(-1)?.key;
+    for (const match of line.matchAll(/\b(register[A-Z][A-Za-z0-9]*)\s*\(/g)) {
+      const registrar = match[1];
+      if (!imports.has(registrar)) continue;
+      const key = activeKey ?? normalizeUngatedKey(registrar);
+      manifest.push({ registrar, file: imports.get(registrar), key, ungated: !activeKey });
+    }
+    if (/server\.tool\(\s*['"]verify_receipt['"]/.test(line)) {
+      manifest.push({ registrar: 'verify_receipt', file: 'src/index.ts', key: 'library', ungated: false });
+    }
+
+    const blockKey = /\bif\s*\(.*isModuleActive\('([^']+)'.*\)\s*\{/.exec(line)?.[1];
+    const opens = (line.match(/\{/g) ?? []).length;
+    const closes = (line.match(/\}/g) ?? []).length;
+    braceDepth += opens - closes;
+    if (blockKey) keyStack.push({ key: blockKey, depth: braceDepth });
+    while (keyStack.length > 0 && braceDepth < keyStack.at(-1).depth) keyStack.pop();
+  }
+  return manifest;
+}
+
+function normalizeUngatedKey(registrar) {
+  if (registrar === 'registerDoctorTool') return 'spotify_doctor';
+  if (registrar === 'registerSwarm3MetaTools') return 'swarm3meta';
+  return registrar
+    .replace(/^register/, '')
+    .replace(/Tools$/, '')
+    .replace(/Tool$/, '')
+    .replace(/([a-z0-9])([A-Z])/g, '$1$2')
+    .toLowerCase();
 }
 
 function toolModuleFilesFromSource() {
@@ -308,12 +385,25 @@ function renderedBlock(file, name, body) {
   return `${start}\n${body}\n${end}`;
 }
 
+export function inspectGeneratedBlock(source, file, name, body) {
+  const [start, end] = markers(file, name);
+  const startCount = source.split(start).length - 1;
+  const endCount = source.split(end).length - 1;
+  if (startCount !== 1) return `${file}: expected exactly one ${start} marker, found ${startCount}`;
+  if (endCount !== 1) return `${file}: expected exactly one ${end} marker, found ${endCount}`;
+  const startAt = source.indexOf(start);
+  const endAt = source.indexOf(end);
+  if (endAt <= startAt) return `${file}: generated ${name} end marker precedes its start marker`;
+  const actual = source.slice(startAt, endAt + end.length);
+  if (actual !== renderedBlock(file, name, body)) return `${file}: generated ${name} block is stale`;
+  return null;
+}
+
 function checkDocumentation(blocks) {
   const errors = [];
   for (const [file, name, body] of blocks) {
-    const expected = renderedBlock(file, name, body);
-    const actual = readFileSync(join(ROOT, file), 'utf8');
-    if (!actual.includes(expected)) errors.push(`${file}: generated ${name} block is stale`);
+    const error = inspectGeneratedBlock(readFileSync(join(ROOT, file), 'utf8'), file, name, body);
+    if (error) errors.push(error);
   }
   errors.push(...checkSpecStructure());
   errors.push(...checkDocReachability());
@@ -363,14 +453,29 @@ function checkGatedEndpointTruth() {
   const readme = readFileSync(join(ROOT, 'README.md'), 'utf8');
   const spec = readFileSync(join(ROOT, 'SPEC.md'), 'utf8');
   const errors = [];
+  const cases = [
+    ['/browse/categories', true], ['/browse/categories/party/playlists', true],
+    ['/browse/new-releases', true], ['/markets', true],
+    ['/artists/artist-id/top-tracks', true], ['/users/user-id', true],
+    ['/me/albums/contains', true], ['/me/tracks/contains', true],
+    ['/me/episodes/contains', true], ['/me/shows/contains', true],
+    ['/me/audiobooks/contains', true], ['/me/following/contains', true],
+    ['/playlists/playlist-id/followers/contains', true],
+    ['/me/player/playback-state', false], ['/tracks/track-id', false],
+  ];
+  for (const [path, expected] of cases) {
+    if (isGatedPath(path) !== expected) errors.push(`GATED_PATH_PATTERNS: ${path} classified as ${isGatedPath(path)}, expected ${expected}`);
+  }
+  if (GATED_PATH_PATTERNS.length !== 7) errors.push(`GATED_PATH_PATTERNS: expected 7 exported patterns, found ${GATED_PATH_PATTERNS.length}`);
   for (const endpoint of ['/artists/{id}/top-tracks', '/me/{type}/contains']) {
     if (!readme.includes(endpoint)) errors.push(`README.md: missing gated endpoint ${endpoint}`);
   }
   if (!spec.includes('GATED_PATH_PATTERNS') || !spec.includes('/artists/{id}/top-tracks') || !spec.includes('/me/{type}/contains')) {
     errors.push('SPEC.md: endpoint constraints do not name GATED_PATH_PATTERNS and the gated batch/top-tracks families');
   }
-  const heading = '### Registration-gated endpoints';
-  if (!readme.includes(heading)) errors.push('README.md: missing Registration-gated endpoints heading');
+  if (!readme.includes('### Registration-gated endpoints')) {
+    errors.push('README.md: missing Registration-gated endpoints heading/anchor');
+  }
   return errors;
 }
 
@@ -378,8 +483,12 @@ function writeBlock(file, name, body) {
   const [start, end] = markers(file, name);
   const expected = `${start}\n${body}\n${end}`;
   const source = readFileSync(file, 'utf8');
+  const startCount = source.split(start).length - 1;
+  const endCount = source.split(end).length - 1;
+  if (startCount !== 1 || endCount !== 1) {
+    throw new Error(`${relative(ROOT, file)}: generated ${name} requires exactly one start and end marker (found ${startCount}/${endCount})`);
+  }
   const pattern = new RegExp(`${escapeRegExp(start)}[\\s\\S]*?${escapeRegExp(end)}`);
-  if (!pattern.test(source)) throw new Error(`${relative(ROOT, file)}: missing generated ${name} markers`);
   writeFileSync(file, source.replace(pattern, expected));
 }
 
