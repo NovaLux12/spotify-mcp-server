@@ -5,6 +5,47 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.31.0](https://github.com/NovaLux12/spotify-mcp-server/compare/v1.30.1...v1.31.0) (2026-09-25)
+
+
+### Features
+
+* add dry_run preview to follow_artists ([#941](https://github.com/NovaLux12/spotify-mcp-server/issues/941)) ([a7082ac](https://github.com/NovaLux12/spotify-mcp-server/commit/a7082ac78c7bdaf5dbfa7393200e294a73b50c8e)), closes [#933](https://github.com/NovaLux12/spotify-mcp-server/issues/933)
+* **quota:** request/quota tracking with pre-flight for heavy scans ([#945](https://github.com/NovaLux12/spotify-mcp-server/issues/945)) ([bf57b13](https://github.com/NovaLux12/spotify-mcp-server/commit/bf57b13f8fe664c9a5fe57ece693759e0cc6c6a9)), closes [#904](https://github.com/NovaLux12/spotify-mcp-server/issues/904)
+* **surface:** annotate every tool and gate the surface budget ([#938](https://github.com/NovaLux12/spotify-mcp-server/issues/938)) ([0addf8c](https://github.com/NovaLux12/spotify-mcp-server/commit/0addf8c8e4c33476319367610d564c20f65545b6))
+* **toolsets:** fail loud on unknown-only SPOTIFY_MCP_TOOLSETS spec ([#942](https://github.com/NovaLux12/spotify-mcp-server/issues/942)) ([1f6da1f](https://github.com/NovaLux12/spotify-mcp-server/commit/1f6da1fb1f3583e006a0afcd4c64fc7bbae841c3)), closes [#910](https://github.com/NovaLux12/spotify-mcp-server/issues/910)
+
+
+### Bug Fixes
+
+* **annotations:** fail-closed classification; stop inflating the payload ([#939](https://github.com/NovaLux12/spotify-mcp-server/issues/939)) ([41a9c59](https://github.com/NovaLux12/spotify-mcp-server/commit/41a9c59cf6b95244332fe7a7b08696f944f7d4e4))
+* capability-based plan/preview annotations with audited never-mutating set ([#940](https://github.com/NovaLux12/spotify-mcp-server/issues/940)) ([233b1f8](https://github.com/NovaLux12/spotify-mcp-server/commit/233b1f8bf04d3103e0668d6e4457410b57937855))
+* **ci:** align Dependabot group schema ([#951](https://github.com/NovaLux12/spotify-mcp-server/issues/951)) ([965427a](https://github.com/NovaLux12/spotify-mcp-server/commit/965427a093d74e2c1276de4fdfce261da8c37a17))
+* data-integrity fixes (positional deletes, coverage reader, undo direction) ([#691](https://github.com/NovaLux12/spotify-mcp-server/issues/691)) ([1fceca5](https://github.com/NovaLux12/spotify-mcp-server/commit/1fceca5c528c86e0f2ff5acd0d2b1844bf502ac2))
+* **discovery:** make find_tool / inspect_tool / toolset_report read the real registry ([#935](https://github.com/NovaLux12/spotify-mcp-server/issues/935)) ([5f0f132](https://github.com/NovaLux12/spotify-mcp-server/commit/5f0f132af5549c3fac6b8302b9eafa0099c5644b))
+* elicitation gate actually gates; SPOTIFY_MCP_READONLY stops leaking writers ([#934](https://github.com/NovaLux12/spotify-mcp-server/issues/934)) ([21bdcd1](https://github.com/NovaLux12/spotify-mcp-server/commit/21bdcd172d7070f2f89f62278d90514abb4a4fc7))
+* **v2:** close first correctness and safety wave ([#950](https://github.com/NovaLux12/spotify-mcp-server/issues/950)) ([14b161c](https://github.com/NovaLux12/spotify-mcp-server/commit/14b161c367ba55165817ed48bd9e02a93a6d1e02))
+
+
+### Documentation
+
+* sync quota tracking and conformance guard into SPEC/ARCH/README/distribution ([#947](https://github.com/NovaLux12/spotify-mcp-server/issues/947)) ([6fb66bf](https://github.com/NovaLux12/spotify-mcp-server/commit/6fb66bf112f90b41ea4c5dcf1db67ac56d0df0bd))
+* sync tool counts, dependency versions and env facts with the code ([#937](https://github.com/NovaLux12/spotify-mcp-server/issues/937)) ([de4c0a3](https://github.com/NovaLux12/spotify-mcp-server/commit/de4c0a31c4f4b26e1543aaa6bc9bfeba08375fa4))
+
+
+### Tests
+
+* **determinism:** remove wall-clock dependence from two time-bombed tests ([#692](https://github.com/NovaLux12/spotify-mcp-server/issues/692)) ([13d7b13](https://github.com/NovaLux12/spotify-mcp-server/commit/13d7b13efb3b6cbdf364e068bbe88029e0d0ebe1))
+* **guard:** registry-wide dry_run/response_format conformance guard ([#944](https://github.com/NovaLux12/spotify-mcp-server/issues/944)) ([fe92183](https://github.com/NovaLux12/spotify-mcp-server/commit/fe92183d5f77fcd5a440f0f99e3546c411f7c233))
+
+
+### Miscellaneous Chores
+
+* **deps-dev:** bump @types/node in the dev-dependencies group ([#563](https://github.com/NovaLux12/spotify-mcp-server/issues/563)) ([ad7088a](https://github.com/NovaLux12/spotify-mcp-server/commit/ad7088ad0c93fd2266872bf22ab3ddf6c5c6c5b9))
+* **deps-dev:** bump @types/node in the dev-dependencies group ([#949](https://github.com/NovaLux12/spotify-mcp-server/issues/949)) ([760c3c0](https://github.com/NovaLux12/spotify-mcp-server/commit/760c3c041231e05ce4ef8ef98a74ab1d55ac390c))
+* **deps:** bump the dependencies group with 2 updates ([#562](https://github.com/NovaLux12/spotify-mcp-server/issues/562)) ([bdb513c](https://github.com/NovaLux12/spotify-mcp-server/commit/bdb513cbab52d0d5411e97bc18b7a1788c7ee75a))
+* **deps:** bump the dependencies group with 2 updates ([#948](https://github.com/NovaLux12/spotify-mcp-server/issues/948)) ([22ae847](https://github.com/NovaLux12/spotify-mcp-server/commit/22ae84786bef02b7f3d4c7416997f35e5cf8af66))
+
 ## [1.30.1](https://github.com/NovaLux12/spotify-mcp-server/compare/v1.30.0...v1.30.1) (2026-09-10)
 
 
