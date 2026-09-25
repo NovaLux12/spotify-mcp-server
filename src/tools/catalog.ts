@@ -56,6 +56,20 @@ export function resetProfileCountryCache(): void {
   profileCountry = null;
 }
 
+// show_episode_search (#790): /shows/{id}/episodes serves at most 50 rows per
+// page, and a fetch_all walk is bounded by FETCH_ALL_EPISODE_CAP episodes.
+const EPISODE_PAGE_MAX = 50;
+const FETCH_ALL_EPISODE_CAP = 500;
+
+/**
+ * Continuation controls `truncateItems` may name in this tool's footer.
+ * `max_results` trims the rendered rows, `offset` starts a later scan window,
+ * `limit` is the page size and `fetch_all` widens one page into a walk. The
+ * scan cap is not a caller knob, so it is never offered as a remedy.
+ */
+const PAGE_CAPABILITIES = { maxResults: true, offset: true, limit: true, fetchAll: true } as const;
+const SCAN_CAPABILITIES = { maxResults: true, offset: true } as const;
+
 // GET with `market` defaulting to the profile country. When the market was
 // defaulted (not caller-supplied) and Spotify rejects the lookup, rethrow
 // with a hint while preserving the original error as `cause`.
@@ -1198,7 +1212,7 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
       limit: z.number().int().min(1).max(50).optional().describe('Results per page for the underlying paging, 1–50. Default: 20'),
       offset: z.number().int().min(0).optional().describe('Offset for underlying paging. Default: 0'),
       market: MARKET_CODE.optional().describe('ISO 3166-1 alpha-2 country code, e.g. \'US\''),
-      fetch_all: z.boolean().optional().describe('When true, walk all pages (up to cap) to find matches'),
+      fetch_all: z.boolean().optional().describe('When true, walk from offset to the end (500-episode cap)'),
       ...sharedListFields,
     },
     async (args) => {
@@ -1209,12 +1223,15 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
       const market = args.market as string | undefined;
       const matches: SpotifyEpisodeSimple[] = [];
       let total = 0;
+      let scanned = 0;
+      let safetyCapHit = false;
       const walk = async (off: number, lim: number) => {
         const params: Record<string, string> = { limit: String(lim), offset: String(off) };
         if (market) params.market = market;
         const page = await client.get<SpotifyPaged<SpotifyEpisodeSimple>>(`/shows/${encodeURIComponent(args.show_id as string)}/episodes`, params);
         if (!page) return null;
         total = page.total;
+        scanned += page.items.length;
         for (const ep of page.items) {
           const hay = `${ep.name} ${ep.description ?? ''}`.toLowerCase();
           if (hay.includes(q)) matches.push(ep);
@@ -1222,28 +1239,70 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
         return page;
       };
       if (fetchAll) {
-        let off = 0;
-        const pageSize = 50;
-        while (true) {
-          const page = await walk(off, pageSize);
-          if (!page || page.items.length < pageSize || off + pageSize >= (page.total ?? 0)) break;
-          off += pageSize;
-          if (off > 500) break; // safety cap
+        // #790: the walk honours the caller's limit/offset and is bounded by
+        // FETCH_ALL_EPISODE_CAP, never by the display cap. The final request is
+        // shortened so the walk can never overshoot the cap, and hitting it with
+        // episodes left is reported rather than passed off as a full search.
+        const pageSize = Math.min(EPISODE_PAGE_MAX, limit);
+        let off = offset;
+        for (;;) {
+          // Reached only after a full page with episodes left, so the cap here
+          // means the walk was cut short, not that the show ended.
+          if (scanned >= FETCH_ALL_EPISODE_CAP) { safetyCapHit = true; break; }
+          const requestSize = Math.min(pageSize, FETCH_ALL_EPISODE_CAP - scanned);
+          const page = await walk(off, requestSize);
+          if (!page) break;
+          const unscanned = Math.max(0, (page.total ?? 0) - (off + page.items.length));
+          if (page.items.length < requestSize) break; // short page: end of show
+          if (unscanned <= 0) break; // whole show covered
+          if (requestSize < pageSize) { safetyCapHit = true; break; } // cap-bound page
+          off += requestSize;
         }
       } else {
         await walk(offset, limit);
       }
+      const scannedFrom = offset;
+      const scannedTo = offset + scanned;
+      const scan: Record<string, unknown> = {
+        scanned_episodes: scanned,
+        scanned_from: scannedFrom,
+        scanned_to: scannedTo,
+        safety_cap_hit: safetyCapHit,
+      };
       if (args.response_format === 'json') {
-        const raw: Record<string, unknown> = { show_id: args.show_id, query: args.query, total_episodes: total, matches };
+        const raw: Record<string, unknown> = { show_id: args.show_id, query: args.query, total_episodes: total, ...scan, matches };
         return { content: [{ type: 'text', text: JSON.stringify(raw) }], structuredContent: raw };
       }
-      if (matches.length === 0) return { content: [{ type: 'text', text: `No episodes matching "${args.query}" in show ${args.show_id}.` }] };
+      if (matches.length === 0) {
+        const lines = [`No episodes matching "${args.query}" in show ${args.show_id}.`];
+        lines.push(`(Scanned ${scanned} episode${scanned === 1 ? '' : 's'} of ${total} in the range ${scannedFrom}–${scannedTo}.)`);
+        if (safetyCapHit) lines.push(`(Stopped at the ${FETCH_ALL_EPISODE_CAP}-episode safety cap — episodes after index ${scannedTo} were not searched, so matches there are unknown.)`);
+        return { content: [{ type: 'text', text: lines.join('\n') }], structuredContent: { show_id: args.show_id, query: args.query, total_episodes: total, ...scan, matches: [] } };
+      }
       const cap = resolveMaxResults(args.max_results as number | undefined);
-      const trunc = truncateItems(matches, cap);
-      const lines = [`Episodes matching "${args.query}" in show ${args.show_id} (${matches.length} of ${total} total):`];
-      trunc.items.forEach((ep) => lines.push(`  \u2022 "${ep.name}" (${formatDuration(ep.duration_ms)}, ${ep.release_date}) | URI: ${ep.uri}`));
+      // fetch_all is already on, so its footer must not advise setting it; the
+      // scan cap is not a caller knob, so it is not offered either.
+      const trunc = truncateItems(matches, cap, fetchAll ? SCAN_CAPABILITIES : PAGE_CAPABILITIES);
+      const lines = [`Episodes matching "${args.query}" in show ${args.show_id} (${matches.length} match${matches.length === 1 ? '' : 'es'} of ${total} total, from ${scanned} scanned episode${scanned === 1 ? '' : 's'} ${scannedFrom}–${scannedTo}):`];
+      trunc.items.forEach((ep) => lines.push(`  • "${ep.name}" (${formatDuration(ep.duration_ms)}, ${ep.release_date}) | URI: ${ep.uri}`));
       if (trunc.footer) lines.push('', `(${trunc.footer})`);
-      return { content: [{ type: 'text', text: lines.join('\n') }], structuredContent: { show_id: args.show_id, query: args.query, total_episodes: total, matches: trunc.items, pagination: paginationInfo({ total: matches.length, offset: 0, limit: null, returned: trunc.items.length }) } };
+      if (safetyCapHit) lines.push(`(Walk stopped at the ${FETCH_ALL_EPISODE_CAP}-episode safety cap: episodes after index ${scannedTo} of ${total} were not searched, so this list is not every match.)`);
+      return {
+        content: [{ type: 'text', text: lines.join('\n') }],
+        structuredContent: {
+          show_id: args.show_id,
+          query: args.query,
+          total_episodes: total,
+          ...scan,
+          matches: trunc.items,
+          // Page mode scans one episode window, so paging over the episode
+          // range is truthful. In fetch_all mode the walk is already as wide as
+          // it will get and the rendered rows are a trimmed view of a
+          // client-side match set, not a page of the endpoint — a next_offset
+          // there would point at episodes, not matches, so it is omitted.
+          ...(fetchAll ? {} : { pagination: paginationInfo({ total, offset, limit, returned: scanned }) }),
+        },
+      };
     },
   );
 }
