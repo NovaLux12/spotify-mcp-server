@@ -310,7 +310,7 @@ describe('get_context_inspect reports what the walk established, not an assumed 
       assert.equal(out.structuredContent?.walk_failed, true);
       assert.equal(out.structuredContent?.walk_complete, false);
       assert.equal(out.structuredContent?.walk_stopped_at_cap, false);
-      assert.match(text, /playlist page request failed after 100 of 500 rows/);
+      assert.match(text, /playlist page request failed after 100 rows \(cap 500\)/);
       assert.doesNotMatch(text, /enumerated context|complete; cap not reached/);
     } finally {
       initConfig();
@@ -355,6 +355,114 @@ describe('get_context_inspect reports what the walk established, not an assumed 
       assert.equal(out.structuredContent?.walk_failed, false);
       assert.match(text, /fetched 6 playlist rows, cap 500 — complete; cap not reached/);
       assert.match(text, /the current track is not among them/);
+    } finally {
+      initConfig();
+    }
+  });
+  it('does not claim enumeration when the album response omits total_tracks', async () => {
+    // `total_tracks` is typed optional and the call site nulls it when absent,
+    // so an album response carrying only `tracks` is a contemplated input.
+    // Nothing proves the 50 rows read were the whole album, so the sentence
+    // must not call the album fully enumerated beside walk_complete: false.
+    const albumState = { ...sparseState, context: { type: 'album', uri: 'spotify:album:al1' } };
+    initConfig({ SPOTIFY_MCP_FETCH_ALL_CAP: '500' });
+    try {
+      const h = makeHarness((path) => {
+        if (path === '/me/player') return albumState;
+        if (path === '/albums/al1/tracks') {
+          return { tracks: { items: Array.from({ length: 50 }, (_, i) => ({ uri: `spotify:track:a${i + 1}` })) } };
+        }
+        throw new Error(`unexpected GET ${path}`);
+      });
+      const out = await h.invoke('get_context_inspect', {});
+      const text = out.content.map((c) => c.text).join('\n');
+      assert.equal(out.structuredContent?.position_in_context, null);
+      assert.equal(out.structuredContent?.context_total, null);
+      assert.equal(out.structuredContent?.walked, 50);
+      assert.equal(out.structuredContent?.walk_complete, false);
+      assert.doesNotMatch(text, /fully enumerated/);
+      assert.match(text, /the album's total track count was not reported, so the context was not enumerated/);
+    } finally {
+      initConfig();
+    }
+  });
+
+  it('does not claim enumeration for an album context that carries no uri', async () => {
+    // The album walk is entered on `ctx.type` alone but needs `ctx.uri` to
+    // issue its request, so this reads zero rows. Reporting a full enumeration
+    // of zero rows is the one claim no flag backs.
+    const requested: string[] = [];
+    const noUriState = { ...sparseState, context: { type: 'album' } };
+    initConfig({ SPOTIFY_MCP_FETCH_ALL_CAP: '500' });
+    try {
+      const h = makeHarness((path) => {
+        requested.push(path);
+        if (path === '/me/player') return noUriState;
+        throw new Error(`unexpected GET ${path}`);
+      });
+      const out = await h.invoke('get_context_inspect', {});
+      const text = out.content.map((c) => c.text).join('\n');
+      assert.deepEqual(requested, ['/me/player']);
+      assert.equal(out.structuredContent?.position_in_context, null);
+      assert.equal(out.structuredContent?.walked, 0);
+      assert.equal(out.structuredContent?.walk_complete, false);
+      assert.match(text, /the playback state carried no album uri, so nothing was read/);
+      assert.doesNotMatch(text, /fully enumerated|enumerated context/);
+    } finally {
+      initConfig();
+    }
+  });
+
+  it('names the cap as a bound, not as the playlist row total, on a mid-walk failure', async () => {
+    // A 150-row playlist and a 5000-row one both fail at row 100 under the same
+    // cap, and the tool never fetches a playlist total — so "100 of 500 rows"
+    // would assert a length nothing measured.
+    const calls: Call[] = [];
+    initConfig({ SPOTIFY_MCP_FETCH_ALL_CAP: '500' });
+    try {
+      const h = makeHarness(failingPagePlaylist(100, 100, calls));
+      const out = await h.invoke('get_context_inspect', {});
+      const text = out.content.map((c) => c.text).join('\n');
+      assert.equal(out.structuredContent?.walked, 100);
+      assert.equal(out.structuredContent?.walk_failed, true);
+      assert.match(text, /failed after 100 rows \(cap 500\)/);
+      assert.doesNotMatch(text, /of 500 rows/);
+    } finally {
+      initConfig();
+    }
+  });
+});
+
+/**
+ * The album branch counts positions on the same basis as `walked`. An
+ * unavailable / local track has no playable uri but still holds a track
+ * position, so its slot must be kept — the same 1:1 rule the playlist walk
+ * uses after #845.
+ */
+describe('get_context_inspect positions albums on the raw row count (#845)', () => {
+  it('counts an unplayable album row as holding a position', async () => {
+    // 3 rows, the first without a uri, current track on row 2. Position must be
+    // 2: dropping the empty slot shifts it to 1 and puts it on a different
+    // basis than the `walked: 3` reported beside it.
+    const albumState = { ...sparseState, context: { type: 'album', uri: 'spotify:album:al1' } };
+    initConfig({ SPOTIFY_MCP_FETCH_ALL_CAP: '500' });
+    try {
+      const h = makeHarness((path) => {
+        if (path === '/me/player') return albumState;
+        if (path === '/albums/al1/tracks') {
+          return {
+            total_tracks: 3,
+            tracks: { items: [{}, { uri: 'spotify:track:t' }, { uri: 'spotify:track:a3' }] },
+          };
+        }
+        throw new Error(`unexpected GET ${path}`);
+      });
+      const out = await h.invoke('get_context_inspect', {});
+      const text = out.content.map((c) => c.text).join('\n');
+      assert.equal(out.structuredContent?.position_in_context, 2);
+      assert.equal(out.structuredContent?.context_total, 3);
+      assert.equal(out.structuredContent?.walked, 3);
+      assert.match(text, /Track 2 of 3 in the context/);
     } finally {
       initConfig();
     }

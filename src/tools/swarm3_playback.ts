@@ -972,7 +972,12 @@ export function registerSwarm3PlaybackTools(server: McpServer, client: SpotifyCl
             { limit: '50' },
           );
           const albumTracks = album?.tracks?.items ?? [];
-          const uris = albumTracks.map((t) => t.uri ?? '').filter(Boolean);
+          // One slot per row, kept 1:1 with the page as the playlist walk does:
+          // an unavailable / local track has no playable uri but still holds a
+          // track position, so dropping the slot shifts every later index low
+          // and leaves `position_in_context` on a different basis than the
+          // `walked` row count reported beside it (#845).
+          const uris = albumTracks.map((t) => t.uri ?? '');
           contextTotal = album?.total_tracks ?? null;
           // One un-paged request: `walked` is what this call actually read.
           walked = albumTracks.length;
@@ -999,13 +1004,28 @@ export function registerSwarm3PlaybackTools(server: McpServer, client: SpotifyCl
       const noPositionReason = ((): string => {
         if (ctx.type === 'album') {
           if (walkFailed) return `the album request failed, so no album tracks were read`;
+          // The album walk is entered on `ctx.type` alone but needs `ctx.uri` to
+          // issue its one request, so an album context carrying no uri reads
+          // nothing at all. That has to be answered before the sentences that
+          // count rows, or it reports a full enumeration of zero rows.
+          if (!ctx.uri) return `the playback state carried no ${ctx.type} uri, so nothing was read`;
+          // "Fully enumerated" is a claim about the album's LENGTH, so it is
+          // stated only where `walkComplete` holds: a reported total that the
+          // one un-paged request covered. A response that omitted `total_tracks`
+          // cannot be shown to have been read to its end, and claiming it
+          // asserts a completeness `walk_complete: false` denies.
+          if (walkComplete) return `read all ${walked} album tracks without a match; the album was fully enumerated`;
           if (contextTotal !== null && walked < contextTotal) {
             return `read the first ${walked} of ${contextTotal} album tracks; the context was not enumerated`;
           }
-          return `read all ${walked} album tracks without a match; the album was fully enumerated`;
+          return `read ${walked} album tracks without a match; the album's total track count was not reported, so the context was not enumerated`;
         }
+        // `cap` is the fetch-all ceiling this tool imposes, not a row total it
+        // read: no playlist total is ever fetched, so "N of cap rows" would
+        // claim a length nothing measured. The cap sentence below names it as
+        // the same bound.
         if (walkFailed) {
-          return `a playlist page request failed after ${walked} of ${cap} rows; the rows past that point were never read`;
+          return `a playlist page request failed after ${walked} rows (cap ${cap}); the rows past that point were never read`;
         }
         if (walkStoppedAtCap) {
           return `walked ${walked} of ${cap} playlist rows and stopped at the fetch-all cap; whether the playlist has more rows is unknown`;
