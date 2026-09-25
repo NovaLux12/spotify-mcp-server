@@ -35,7 +35,6 @@ import {
 } from '../shaping.js';
 import type { ResponseFormatValue } from '../shaping.js';
 import type {
-  SavedEpisodeItem,
   SavedShowItem,
   SpotifyEpisodeFull,
   SpotifyEpisodeSimple,
@@ -137,9 +136,31 @@ function daysBetween(date: string | undefined, nowMs: number): number | null {
 }
 
 const SinceDate = z
+
   .string()
   .regex(/^\d{4}-\d{2}-\d{2}$/, 'since must use the YYYY-MM-DD format')
   .refine((value) => dateKeyEpochDay(value) != null, 'since must be a real calendar date in YYYY-MM-DD format');
+
+// Feb-2026 /search cap: 10 results per type per request (issue #83). The
+// fragment is duplicated per swarm slice by design (mirrors swarm3_discovery.ts
+// and swarm3b_discovery.ts) so no slice imports another slice's internals.
+const SEARCH_PAGE_MAX = 10;
+
+const SearchLimit = z
+  .number()
+  .int()
+  .min(1)
+  .max(SEARCH_PAGE_MAX)
+  .optional()
+  .describe(`Catalogue rows fetched per request, 1-${SEARCH_PAGE_MAX} (Feb-2026 /search cap). Default ${SEARCH_PAGE_MAX}`);
+
+const SearchOffset = z
+  .number()
+  .int()
+  .min(0)
+  .max(1000)
+  .optional()
+  .describe('Catalogue rows to skip before the page (Spotify /search max offset 1000). Default 0');
 
 /** Publisher label tolerating the Feb-2026 removal of `publisher` from payloads. */
 function publisherOf(show: SpotifyShowSimple | SpotifyShowFull): string {
@@ -155,14 +176,6 @@ function fetchSavedShows(client: SpotifyClient): Promise<SavedShowItem[]> {
   );
 }
 
-/** Page the saved-episodes shelf (fetch-all cap). */
-function fetchSavedEpisodes(client: SpotifyClient): Promise<SavedEpisodeItem[]> {
-  return client.getAllPages<SavedEpisodeItem>(
-    '/me/episodes',
-    { limit: '50' },
-    { maxItems: getConfig().fetchAllCap },
-  );
-}
 
 /** Latest episodes for one show, newest first (single GET, ≤50 rows). */
 async function latestShowEpisodes(
@@ -249,6 +262,7 @@ interface EpisodeRow {
   releaseDate: string;
   durationMs: number | null;
   fullyPlayed: boolean | null;
+  resumePositionMs: number | null;
 }
 
 /** Flatten any episode payload into a plain row. */
@@ -262,7 +276,71 @@ function toEpisodeRow(e: SpotifyEpisodeSimple | SpotifyEpisodeFull): EpisodeRow 
     releaseDate: e.release_date ?? '',
     durationMs: e.duration_ms ?? null,
     fullyPlayed: e.resume_point?.fully_played ?? null,
+    resumePositionMs: e.resume_point?.resume_position_ms ?? null,
   };
+}
+
+/**
+ * Play state read off the episode's own `resume_point` — never inferred from
+ * the absence of a library or history flag (#818). A missing `resume_point` is
+ * missing data, not evidence of an unplayed episode, so it yields `unknown`
+ * rather than `new`.
+ */
+type EpisodePlayState = 'played' | 'in_progress' | 'new' | 'unknown';
+
+function playStateOf(ep: { fullyPlayed: boolean | null; resumePositionMs: number | null }): {
+  state: EpisodePlayState;
+  label: string;
+} {
+  if (ep.fullyPlayed === true) return { state: 'played', label: 'played' };
+  if (ep.fullyPlayed === null) {
+    return { state: 'unknown', label: 'play state unknown — Spotify returned no resume_point' };
+  }
+  // `fully_played: false` with no readable offset is unreadable data, not an
+  // observed zero: `?? 0` would invent a 0:00 resume position and a NEW claim
+  // the API never made, and would drop the row out of the undetermined queue.
+  if (ep.resumePositionMs == null) {
+    return { state: 'unknown', label: 'play state unknown — Spotify returned no resume_point offset' };
+  }
+  if (ep.resumePositionMs > 0) {
+    return {
+      state: 'in_progress',
+      label: `in progress (${Math.round(ep.resumePositionMs / 60_000)} min in)`,
+    };
+  }
+  return { state: 'new', label: 'NEW — unplayed (resume 0:00)' };
+}
+
+/**
+ * Library membership for the given episode ids via `/me/episodes/contains`
+ * (50 ids per request). Returns `null` membership when the check could not be
+ * read, so a failed lookup is reported as unavailable instead of being read as
+ * "not saved". `requests` counts the calls actually issued so the caller can
+ * disclose the cost of a wide brief instead of charging it silently.
+ */
+async function fetchSavedEpisodeIdSet(
+  client: SpotifyClient,
+  ids: readonly string[],
+): Promise<{ saved: Set<string> | null; requests: number }> {
+  if (ids.length === 0) return { saved: new Set<string>(), requests: 0 };
+  const saved = new Set<string>();
+  let requests = 0;
+  try {
+    for (let i = 0; i < ids.length; i += 50) {
+      const chunk = ids.slice(i, i + 50);
+      // Counted before the await: a request that throws still consumed quota, and
+      // the caller must be told what the failed library leg cost.
+      requests++;
+      const contains = await client.get<boolean[]>('/me/episodes/contains', { ids: chunk.join(',') });
+      if (!Array.isArray(contains)) return { saved: null, requests };
+      chunk.forEach((id, index) => {
+        if (contains[index] === true) saved.add(id);
+      });
+    }
+  } catch {
+    return { saved: null, requests };
+  }
+  return { saved, requests };
 }
 
 /** Episode meta for up to N ids (best-effort; failed lookups are skipped). */
@@ -1191,21 +1269,47 @@ export function registerSwarm3ShowsTools(server: McpServer, client: SpotifyClien
   server.tool(
     'find_show_by_publisher',
     'Search the catalog and match shows whose PUBLISHER (network) matches your query — the '
-      + 'missing publisher facet on show search. Defaults to 10 search results.',
+      + 'missing publisher facet on show search. Reads ONE catalogue page of 1-10 rows (Feb-2026 '
+      + '/search cap; default 10) and reports catalogue_total plus scan_complete, so a publisher '
+      + 'whose shows fall outside the scanned page is reported as a partial answer, not as absent.',
     {
       query: z.string().describe('Publisher or network name, e.g. "Wondery"'),
       market: MARKET_CODE.optional().describe('ISO 3166-1 alpha-2 market for the search, e.g. \'US\''),
+      limit: SearchLimit,
+      offset: SearchOffset,
       ...sharedListFieldsShow(),
     },
     async (args) => {
       const rf = args.response_format;
-      const params: Record<string, string> = { q: args.query, type: 'show', limit: '50' };
+      const pageLimit = args.limit ?? SEARCH_PAGE_MAX;
+      const offset = args.offset ?? 0;
+      const params: Record<string, string> = { q: args.query, type: 'show', limit: String(pageLimit) };
+      if (offset > 0) params.offset = String(offset);
       if (args.market) params.market = args.market;
       const res = await client.get<{ shows?: { items?: (SpotifyShowSimple | null)[]; total?: number } }>(
         '/search',
         params,
       );
       const all = (res?.shows?.items ?? []).filter((s): s is SpotifyShowSimple => !!s?.id);
+      const catalogueTotal = typeof res?.shows?.total === 'number' ? res.shows.total : null;
+      // A null total means the page size, not the catalogue, is what we know — never call that complete.
+      // `all.length > 0`: past the end of the catalogue the offset alone satisfies the
+      // bound, so a page that examined nothing would certify a complete publisher
+      // census over zero rows — the "reads as absent" failure #822 exists to stop.
+      const scanComplete = catalogueTotal != null && all.length > 0 && offset + all.length >= catalogueTotal;
+      // One count for both branches, so the disclosed figure never goes backwards as
+      // the caller pages deeper; clamped to the catalogue so an offset past the end
+      // cannot print "100 of 25".
+      const rowsExamined = catalogueTotal == null
+        ? all.length
+        : Math.min(offset + all.length, catalogueTotal);
+      const scanNote = catalogueTotal == null
+        ? `Scan: ${all.length} row(s) fetched with limit ${pageLimit} at offset ${offset}; the search envelope reported no total, so the scan is UNVERIFIED — a publisher outside this page reads as absent.`
+        : all.length === 0
+          ? `Scan: 0 of ${catalogueTotal} catalogue row(s) examined (limit ${pageLimit}, offset ${offset}) — PARTIAL page: the offset is at or past the end of the ${catalogueTotal}-row catalogue, so this page examined no row at all; a publisher whose shows fall outside the rows examined reads as absent; lower offset to scan.`
+          : scanComplete
+            ? `Scan: ${rowsExamined} of ${catalogueTotal} catalogue row(s) examined (limit ${pageLimit}, offset ${offset}) — complete page.`
+            : `Scan: ${rowsExamined} of ${catalogueTotal} catalogue row(s) examined (limit ${pageLimit}, offset ${offset}) — PARTIAL page, a publisher whose shows fall outside it reads as absent; raise offset to scan deeper.`;
       const q = args.query.toLowerCase();
       const publisherMatches = all.filter((s) => publisherOf(s).toLowerCase().includes(q));
       const nameMatches = all.filter((s) => !publisherMatches.includes(s) && s.name.toLowerCase().includes(q));
@@ -1218,15 +1322,22 @@ export function registerSwarm3ShowsTools(server: McpServer, client: SpotifyClien
         publisher_match: publisherMatches.includes(s),
       }));
       const prose = [
-        `Shows for "${args.query}": ${publisherMatches.length} publisher match(es), ${nameMatches.length} name-only match(es).`,
+        `Shows for "${args.query}": ${publisherMatches.length} publisher match(es), ${nameMatches.length} name-only match(es) in the scanned page.`,
         ...rows.map((r) => `  ${r.publisher_match ? '★' : '·'} ${r.name} — ${r.publisher} · ${r.total_episodes ?? '?'} eps`),
         '(★ = publisher match)',
+        scanNote,
         view.footer ? `(${view.footer})` : '',
       ].filter(Boolean).join('\n');
       return shape(rf, prose, {
         ok: true,
         query: args.query,
+        search_limit: pageLimit,
+        search_offset: offset,
+        search_limit_max: SEARCH_PAGE_MAX,
         catalog_scanned: all.length,
+        catalogue_total: catalogueTotal,
+        scan_complete: scanComplete,
+        truncated: view.truncated,
         publisher_matches: publisherMatches.length,
         shows: rows,
       });
@@ -1280,12 +1391,15 @@ export function registerSwarm3ShowsTools(server: McpServer, client: SpotifyClien
   // 24. show_recommendation_brief ---------------------------------------------------------
   server.tool(
     'show_recommendation_brief',
-    'Cross-reference newly released episodes against your saved-episode and recently-played '
-      + 'history: which new drops are NOT yet saved or played — a listen-next brief. Defaults to '
-      + 'the last 14 days.',
+    'Cross-reference newly released episodes against your episode library and each episode\'s own '
+      + 'resume_point: which new drops are NOT yet saved or started — a listen-next brief. Every row '
+      + 'is labelled from its own play state, and a row whose resume_point is missing or carries '
+      + 'no readable offset is labelled "play state unknown" rather than called new. Defaults to the last 14 days. Quota: M saved-show '
+      + 'lookups (M = max_shows) + ceil(episodes/50) /me/episodes/contains calls; both counts are '
+      + 'reported as shows_checked and library_requests.',
     {
       since: SinceDate.optional().describe('Inclusive release-date floor YYYY-MM-DD. Default 14 days ago'),
-      max_shows: z.number().int().min(1).max(200).optional().describe('Max per-show episode lookups (request budget). Default 50'),
+      max_shows: z.number().int().min(1).max(200).optional().describe('Max per-show episode lookups (request budget). Default 50; this also bounds the /me/episodes/contains calls (1 per 50 episodes found)'),
       ...sharedListFieldsShow(),
     },
     async (args) => {
@@ -1305,34 +1419,52 @@ export function registerSwarm3ShowsTools(server: McpServer, client: SpotifyClien
           if (releaseKey != null && releaseKey >= sinceKey) newEps.push(toEpisodeRow(ep));
         }
       }
-      // Listen-state cross-reference: saved episodes + recently played (best effort).
-      const [savedEps, recentlyPlayed] = await Promise.all([
-        fetchSavedEpisodes(client),
-        client
-          .get<{ items?: Array<{ track?: SpotifyEpisodeFull | null }> }>('/me/player/recently-played', { limit: '50' })
-          .catch(() => null),
-      ]);
-      const savedIds = new Set(savedEps.map((r) => r.episode?.id).filter(Boolean) as string[]);
-      const playedIds = new Set(
-        (recentlyPlayed?.items ?? [])
-          .map((r) => r.track?.id)
-          .filter(Boolean) as string[],
+      // Library membership via /me/episodes/contains (50 ids per request). The
+      // music /me/player/recently-played feed never carries podcast episodes, so
+      // it is deliberately NOT consulted to decide episode state (#818). The
+      // request count is published: a wide brief costs more than its show lookups.
+      const { saved: savedIds, requests: libraryRequests } = await fetchSavedEpisodeIdSet(
+        client,
+        newEps.map((r) => r.id),
       );
-      const brief = newEps.map((r) => ({
-        ...r,
-        saved_in_library: savedIds.has(r.id),
-        recently_played: playedIds.has(r.id),
-        unlistened: !savedIds.has(r.id) && !playedIds.has(r.id) && r.fullyPlayed !== true,
-      }));
+      const brief = newEps.map((r) => {
+        const { state, label } = playStateOf(r);
+        const savedInLibrary = savedIds == null ? null : savedIds.has(r.id);
+        // "unlistened" is a claim, so it needs positive evidence on both legs:
+        // a readable library check and a known play state. Anything short of
+        // that is undetermined, not unlistened.
+        const unlistened = savedInLibrary === false && (state === 'new' || state === 'in_progress');
+        const undetermined = savedInLibrary === null || state === 'unknown';
+        return {
+          ...r,
+          saved_in_library: savedInLibrary,
+          play_state: state,
+          play_state_label: label,
+          unlistened,
+          undetermined,
+        };
+      });
       brief.sort((a, b) => (dateKeyNum(b.releaseDate) ?? -1) - (dateKeyNum(a.releaseDate) ?? -1));
       const unlistened = brief.filter((b) => b.unlistened);
+      const undetermined = brief.filter((b) => b.undetermined);
       const view = truncateItems(brief, resolveMaxResults(args.max_results, getConfig().maxItems));
       const prose = [
-        `Listen-next brief (episodes since ${since}): ${newEps.length} new, ${unlistened.length} unlistened across ${checked} show(s).`,
+        `Listen-next brief (episodes since ${since}): ${newEps.length} new, ${unlistened.length} unlistened, ${undetermined.length} undetermined across ${checked} show(s).`,
         ...view.items.map((b) => {
-          const flags = [b.saved_in_library ? 'saved' : null, b.recently_played ? 'recently played' : null].filter(Boolean);
-          return `  ${b.unlistened ? '▶' : '·'} ${b.releaseDate || '?'} · ${b.showName}: ${b.name}${flags.length ? ` [${flags.join(', ')}]` : ' [NEW — not in library or history]'}`;
+          const flags = [
+            b.saved_in_library === null ? 'library state unknown' : b.saved_in_library ? 'saved' : null,
+            b.play_state_label,
+          ].filter(Boolean);
+          return `  ${b.unlistened ? '▶' : '·'} ${b.releaseDate || '?'} · ${b.showName}: ${b.name} [${flags.join(', ')}]`;
         }),
+        savedIds == null
+          ? '(library check unavailable — /me/episodes/contains could not be read, so "not saved" is unconfirmed)'
+          : undetermined.length > 0
+            ? `(${undetermined.length} episode(s) have no readable resume_point or no library read — labelled "play state unknown", NOT called new)`
+            : '',
+        libraryRequests > 0
+          ? `(Quota: ${checked} show lookup(s) + ${libraryRequests} /me/episodes/contains call(s) over ${newEps.length} episode(s) — lower max_shows to cut the library leg)`
+          : '',
         view.footer ? `(${view.footer})` : '',
       ].filter(Boolean).join('\n');
       return shape(rf, prose, {
@@ -1341,6 +1473,9 @@ export function registerSwarm3ShowsTools(server: McpServer, client: SpotifyClien
         shows_checked: checked,
         new_episodes: newEps.length,
         unlistened: unlistened.length,
+        undetermined: undetermined.length,
+        library_checked: savedIds != null,
+        library_requests: libraryRequests,
         brief: view.items,
       });
     },

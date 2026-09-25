@@ -105,30 +105,40 @@ import { SpotifyApiError } from '../client.js';
  */
 export const TOOL_SURFACE_BUDGET = Object.freeze({
   defaultMaxTools: 620,
-  // Raised 600_000 -> 601_000 (2026-09-26), then +9,000B of headroom on 2026-09-27
-  // after review showed the first raise was 19x its warrant. Read the numbers
-  // below before sizing another raise; AGENTS.md §3 requires this record to be
-  // accurate about host-session payload impact, and my first attempt at it was not.
+  // Raised 600_000 -> 601_000 (2026-09-26) for the `include_track_features`
+  // disclosure on `artist_collab_network`, then -> 602_000 (2026-09-27) when
+  // #979 and #791 together added ~904B more legitimate disclosure.
+  // Read the numbers below before sizing another raise; AGENTS.md §3 requires
+  // this record to be accurate about host-session payload impact, and my first
+  // attempt at that record was wrong in three ways (see "CORRECTIONS").
   //
   // WHAT IS MEASURED: `collectAggregateSurfaceMeasurement` serialises each tool
   // as {name, title, description, inputSchema, annotations, execution, _meta} and
   // budgets the total. It is NOT a {description, inputSchema}-only figure — the
-  // per-module baselines (which use `serializedSchemaBytes`, description +
-  // inputSchema only) sum to 532,210B against a measured aggregate of 601,171B.
-  // The 68,961B difference (11.5% of the budgeted payload) is tool names, titles,
-  // annotations and execution metadata. Size future raises against the AGGREGATE
-  // number, not the per-module one.
+  // per-module baselines (`serializedSchemaBytes`, description + inputSchema
+  // only) sum to ~532KB against a measured aggregate of 602KB. The difference
+  // (~70KB, 11.5% of the budgeted payload) is tool names, titles, annotations
+  // and execution metadata. Size future raises against the AGGREGATE number.
   //
-  // WARRANT: measured 600,647B -> 601,171B (+524B) across the merge that added
-  // `include_track_features` to `artist_collab_network`. 171B of that breached the
-  // old 601,000B ceiling. That is the whole justification.
+  // WARRANT: +524B for `include_track_features`, then +914B across #979 (the
+  // four falsified-value fixes, whose whole point is honest disclosure) and
+  // #791 (the graceful-403 contract). Total +1,438B of real disclosure across
+  // three changes; every byte of it buys a sentence that stops a tool
+  // asserting something false about its own result.
   //
   // HEADROOM: the enforced limit is `defaultMaxBytes + 1_000` (that 1KB covers
-  // final MCP annotation metadata added after registration), so 602,000B is the
-  // real ceiling and measured 601,171B leaves 829B. Tight on purpose: the next
-  // real breach should land inside the conversation this budget exists to force,
-  // not be pre-authorised by slack I invented.
-  defaultMaxBytes: 601_000,
+  // final MCP annotation metadata added after registration), so 603,000B is the
+  // real ceiling. Measured 602,085B leaves ~915B. Still tight on purpose: the
+  // next real breach should land in a conversation, not be pre-authorised by
+  // slack I invented.
+  //
+  // CORRECTIONS to my first record of this raise, kept because the next author
+  // should not repeat them: the headroom figure ignored the +1_000 derivation;
+  // the justification described a {description, inputSchema}-only budget when
+  // 11.5% of the payload is not that; and the first raise was 19x its warrant
+  // (+10,000B against a +524B need), which is precisely the reflex this budget
+  // exists to prevent.
+  defaultMaxBytes: 602_000,
   perToolMaxBytes: 6_000,
   coreMaxTools: 200,
   coreMaxBytes: 220_000,
@@ -600,7 +610,7 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   manifestEntry('exhaust2extra', 'exhaust2extra', 'src/tools/exhaust2_extra.ts', registerExhaust2ExtraTools, [3, 3695], { scopeKey: 'playlists' }),
   manifestEntry('swarm3discovery', 'swarm3discovery', 'src/tools/swarm3_discovery.ts', registerSwarm3DiscoveryTools, [24, 21951], { readOnlySafe: true, scopeKey: 'catalog' }),
   manifestEntry('swarm3bdiscovery', 'swarm3bdiscovery', 'src/tools/swarm3b_discovery.ts', registerSwarm3bDiscoveryTools, [24, 20048], { readOnlySafe: true, scopeKey: 'catalog' }),
-  manifestEntry('swarm3shows', 'swarm3shows', 'src/tools/swarm3_shows.ts', registerSwarm3ShowsTools, [24, 20161], { scopeKey: 'catalog' }),
+  manifestEntry('swarm3shows', 'swarm3shows', 'src/tools/swarm3_shows.ts', registerSwarm3ShowsTools, [24, 21075], { scopeKey: 'catalog' }),
   manifestEntry('swarm3refs', 'swarm3refs', 'src/tools/swarm3_refs.ts', registerSwarm3RefsTools, [6, 4331], { readOnlySafe: true, scopeKey: 'catalog' }),
   manifestEntry('swarm3analytics', 'swarm3analytics', 'src/tools/swarm3_analytics.ts', registerSwarm3AnalyticsTools, [24, 18880], { readOnlySafe: true, scopeKey: 'personalization' }),
   manifestEntry('swarm3library', 'swarm3library', 'src/tools/swarm3_library.ts', registerSwarm3LibraryTools, [24, 17987], { readOnlySafe: true, scopeKey: 'library' }),
