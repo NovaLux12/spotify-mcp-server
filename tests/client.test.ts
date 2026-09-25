@@ -738,6 +738,155 @@ describe('SpotifyClient', () => {
       assert.deepEqual(all, [{ id: 0 }]);
       assert.equal(apiCalls().length, 2);
     });
+
+    // #864: `getAllPages` returns a bare T[], so a caller that must REPORT
+    // truncation uses `getAllPagesWithTruncation`. These pin WHEN the verdict
+    // is allowed to fire, and that it belongs to the walk that produced it.
+
+    it('reports truncated when the cap leaves rows behind', async () => {
+      await seedTokens();
+      responder = (url) => {
+        const offset = Number(new URL(url).searchParams.get('offset') ?? 0);
+        const items = Array.from({ length: 100 }, (_, i) => ({ id: offset + i }));
+        return jsonResponse({ items, total: 1_204, limit: 100, offset });
+      };
+
+      const client = new SpotifyClient();
+      const walk = await client.getAllPagesWithTruncation<{ id: number }>(
+        '/me/tracks',
+        {},
+        { maxItems: 500 },
+      );
+
+      assert.equal(walk.items.length, 500);
+      assert.equal(walk.truncated, true, '1204 rows behind a 500 cap is a truncation');
+    });
+
+    it('reports not truncated when the cap lands exactly on the reported total', async () => {
+      await seedTokens();
+      responder = (url) => {
+        const offset = Number(new URL(url).searchParams.get('offset') ?? 0);
+        return jsonResponse({
+          items: Array.from({ length: 5 }, (_, i) => ({ id: offset + i })),
+          total: 5,
+          limit: 5,
+          offset,
+        });
+      };
+
+      const client = new SpotifyClient();
+      const walk = await client.getAllPagesWithTruncation<{ id: number }>(
+        '/me/tracks',
+        {},
+        { maxItems: 5 },
+      );
+
+      assert.equal(walk.items.length, 5);
+      assert.equal(
+        walk.truncated,
+        false,
+        'the walk reached the server-reported total, so the cap cut nothing off',
+      );
+    });
+
+    it('reports conservatively when the endpoint reports no total', async () => {
+      await seedTokens();
+      responder = (url) => {
+        const offset = Number(new URL(url).searchParams.get('offset') ?? 0);
+        // No `total` key at all — nothing to prove completeness against.
+        return jsonResponse({ items: Array.from({ length: 5 }, (_, i) => ({ id: offset + i })), limit: 5, offset });
+      };
+
+      const client = new SpotifyClient();
+      const walk = await client.getAllPagesWithTruncation<{ id: number }>(
+        '/me/tracks',
+        {},
+        { maxItems: 5 },
+      );
+
+      assert.equal(walk.truncated, true);
+    });
+
+    it('reports a complete walk as complete after a truncated one', async () => {
+      await seedTokens();
+      responder = (url) => {
+        const offset = Number(new URL(url).searchParams.get('offset') ?? 0);
+        const size = offset === 0 ? 100 : 10;
+        return jsonResponse({
+          items: Array.from({ length: size }, (_, i) => ({ id: offset + i })),
+          total: 110,
+          limit: 100,
+          offset,
+        });
+      };
+
+      const client = new SpotifyClient();
+      const capped = await client.getAllPagesWithTruncation<{ id: number }>(
+        '/me/tracks',
+        {},
+        { maxItems: 50 },
+      );
+      assert.equal(capped.truncated, true, 'precondition: first walk was cut short');
+
+      const complete = await client.getAllPagesWithTruncation<{ id: number }>(
+        '/me/tracks',
+        {},
+        { maxItems: 500 },
+      );
+      assert.equal(complete.items.length, 110);
+      assert.equal(
+        complete.truncated,
+        false,
+        'a walk that read everything must not inherit the previous walk verdict',
+      );
+    });
+
+    // The MCP SDK dispatches `tools/call` without awaiting — protocol.js fires
+    // `_onrequest` straight from the transport's onmessage — so two overlapping
+    // calls interleave their awaits on ONE shared client. A verdict stored on
+    // the instance would then answer with whichever walk finished last, in
+    // both directions. Driven through the real client's request queue with
+    // only `fetch` stubbed.
+    it('gives each overlapping walk its own verdict, in both directions', async () => {
+      await seedTokens();
+      // /small reads 200 rows behind a 500 cap (complete); /big reports 600
+      // and dies at 500 (truncated). Both walks are started before either is
+      // awaited, so their page fetches land in each other's await gaps.
+      responder = (url) => {
+        const parsed = new URL(url);
+        const offset = Number(parsed.searchParams.get('offset') ?? 0);
+        // BASE_URL is https://api.spotify.com/v1, so the walk path is the tail.
+        const total = parsed.pathname.endsWith('/big') ? 600 : 200;
+        const items = Array.from({ length: 100 }, (_, i) => ({ id: offset + i }));
+        return jsonResponse({ items, total, limit: 100, offset });
+      };
+
+      const client = new SpotifyClient();
+      const smallWalk = client.getAllPagesWithTruncation<{ id: number }>(
+        '/small',
+        {},
+        { maxItems: 500 },
+      );
+      const bigWalk = client.getAllPagesWithTruncation<{ id: number }>(
+        '/big',
+        {},
+        { maxItems: 500 },
+      );
+      const [small, big] = await Promise.all([smallWalk, bigWalk]);
+
+      assert.equal(small.items.length, 200);
+      assert.equal(
+        small.truncated,
+        false,
+        'a 200-row walk behind a 500 cap is complete; the interleaved capped walk must not flip it',
+      );
+      assert.equal(big.items.length, 500);
+      assert.equal(
+        big.truncated,
+        true,
+        '600 rows behind a 500 cap is truncated; the interleaved complete walk must not clear it',
+      );
+    });
   });
 
   // -------------------------------------------------------------------------
