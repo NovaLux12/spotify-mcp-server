@@ -8,18 +8,38 @@
  * snapshots and sidecars use owner-only dir 0700 / file 0600 permissions.
  * Restore stays a separate, additive-only concern (#160).
  *
+ * The store is BOUNDED (#697): snapshots expire after
+ * SPOTIFY_MCP_BACKUP_RETENTION_DAYS (default 30, 0 disables), expiry runs
+ * at the start of every backup_library and on every list_backups, and
+ * delete_backup removes one snapshot on request behind a confirmation gate
+ * with a dry run as the default. A snapshot is a dated compilation of the
+ * user's saves, so it must not outlive its purpose by default.
+ *
+ * Incompleteness is recorded, not implied (#735): _meta.reported_totals
+ * carries Spotify's own size for each collection next to the walked
+ * counts, a playlist that could not be read keeps its error, and the prose
+ * names every shortfall through the shared completenessFooter vocabulary.
+ *
  * Every walk is capped at getConfig().fetchAllCap (SPOTIFY_MCP_FETCH_ALL_CAP,
  * default 500); an explicit max_results argument overrides it for this call.
  */
 import { z } from 'zod';
-import { mkdir, open, readdir, stat, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, open, readdir, stat, unlink, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
 import { getConfig } from '../config.js';
-import { ResponseFormat, DryRun, completenessFooter, type ResponseFormatValue } from '../shaping.js';
+import {
+  ResponseFormat,
+  DryRun,
+  completenessFooter,
+  describeDryRun,
+  type ResponseFormatValue,
+} from '../shaping.js';
 import { SpotifyApiError } from '../client.js';
+import { backupRetentionDays, resolveOutputPath } from '../paths.js';
+import { confirmViaElicitation, describeConfirmation, requiredConfirmationRefusal } from './confirm.js';
 import type {
   FollowedArtistsResponse,
   PlaylistItemObject,
@@ -78,9 +98,29 @@ export interface BackupCollectionStatus {
   truncated: boolean;
 }
 
+/** Prose name per collection, for the truncation disclosures (#735). */
+const COLLECTION_SUBJECTS: Record<BackupCollectionName, string> = {
+  liked_tracks: 'liked tracks',
+  saved_albums: 'saved albums',
+  saved_shows: 'saved shows',
+  saved_episodes: 'saved episodes',
+  saved_audiobooks: 'saved audiobooks',
+  followed_artists: 'followed artists',
+  playlists: 'playlists',
+};
+
 /** Cheap top-level block mirrored to an owner-only sidecar for list_backups. */
 export interface BackupMeta {
   created: string;
+  /** True on every file this server writes: the file holds Spotify Content. */
+  spotify_data: true;
+  /**
+   * ISO instant this snapshot falls out of the retention window
+   * (#697), or null when pruning is disabled. The file is
+   * self-describing, so a copy kept outside the server still says how
+   * long it was meant to live.
+   */
+  retention_until: string | null;
   notes?: string;
   snapshot_state: 'complete' | 'partial';
   complete: boolean;
@@ -98,6 +138,13 @@ export interface BackupMeta {
     truncated: boolean;
     truncated_playlists: number;
   };
+  /**
+   * What Spotify itself reported as the collection size, captured from
+   * each page's `total` (#735). Distinct from counts.*, which are the
+   * walked lengths: when the two disagree the walk was cut at the cap and
+   * the snapshot is short by `reported - count`.
+   */
+  reported_totals: Record<BackupCollectionName, number | null>;
   counts: {
     liked_tracks: number;
     saved_albums: number;
@@ -165,6 +212,18 @@ interface WalkResult<T> {
   rows: T[];
   complete: boolean;
   truncated: boolean;
+  /**
+   * The size Spotify itself reported for the whole collection (#735), or
+   * null when no page carried a usable `total`. Always the FULL size, so a
+   * capped walk can be reported as "3 of 5" rather than silently as 3.
+   */
+  reportedTotal: number | null;
+}
+
+/** First numeric `total` seen on a page; later pages cannot lower it. */
+function firstReportedTotal(total: unknown, already: number | null): number | null {
+  if (already !== null) return already;
+  return typeof total === 'number' && Number.isFinite(total) && total >= 0 ? total : null;
 }
 
 /**
@@ -177,6 +236,7 @@ async function walkOffset<T>(client: SpotifyClient, path: string, cap: number): 
   let offset = 0;
   let truncated = false;
   let complete = false;
+  let reportedTotal: number | null = null;
   const maxRequests = Math.ceil((cap + 1) / 50) + 1;
   for (let request = 0; request < maxRequests && offset <= cap; request += 1) {
     const page = await client.get<SpotifyPaged<T>>(path, {
@@ -187,6 +247,7 @@ async function walkOffset<T>(client: SpotifyClient, path: string, cap: number): 
       complete = true;
       break;
     }
+    reportedTotal = firstReportedTotal(page.total, reportedTotal);
     out.push(...page.items);
     if (out.length > cap) {
       out.length = cap;
@@ -203,7 +264,7 @@ async function walkOffset<T>(client: SpotifyClient, path: string, cap: number): 
     }
     offset += page.items.length;
   }
-  return { rows: out, complete, truncated };
+  return { rows: out, complete, truncated, reportedTotal };
 }
 
 async function walkSaved(
@@ -217,7 +278,7 @@ async function walkSaved(
   const rows = walked.rows
     .filter((r) => r[key] !== undefined && r[key] !== null)
     .map((r) => ({ uri: r[key].uri, name: r[key].name, added_at: r.added_at }));
-  return { rows, complete: walked.complete, truncated: walked.truncated };
+  return { rows, complete: walked.complete, truncated: walked.truncated, reportedTotal: walked.reportedTotal };
 }
 
 /** Cursor-walk followed artists, retaining the API's end-of-data signal. */
@@ -226,6 +287,7 @@ async function walkFollowedArtists(client: SpotifyClient, cap: number): Promise<
   let after: string | undefined;
   let complete = false;
   let truncated = false;
+  let reportedTotal: number | null = null;
   const maxRequests = Math.ceil((cap + 1) / 50) + 1;
   for (let request = 0; request < maxRequests; request += 1) {
     const params: Record<string, string> = { type: 'artist', limit: String(Math.min(50, cap + 1 - out.length)) };
@@ -236,6 +298,7 @@ async function walkFollowedArtists(client: SpotifyClient, cap: number): Promise<
       break;
     }
     const items = page.artists?.items ?? [];
+    reportedTotal = firstReportedTotal(page.artists?.total, reportedTotal);
     if (items.length === 0) {
       complete = true;
       break;
@@ -256,7 +319,7 @@ async function walkFollowedArtists(client: SpotifyClient, cap: number): Promise<
       break;
     }
   }
-  return { rows: out, complete, truncated };
+  return { rows: out, complete, truncated, reportedTotal };
 }
 
 /** Per-playlist item cap (#159): at most 500 valid items are stored. */
@@ -274,6 +337,7 @@ async function collectPlaylistItems(
   let offset = 0;
   let complete = false;
   let truncated = false;
+  let reportedTotal: number | null = null;
   const maxRequests = Math.ceil((limit + 1) / 100) + 1;
   for (let request = 0; request < maxRequests; request += 1) {
     const page = await client.get<SpotifyPaged<PlaylistItemObject>>(
@@ -284,6 +348,7 @@ async function collectPlaylistItems(
       complete = true;
       break;
     }
+    reportedTotal = firstReportedTotal(page.total, reportedTotal);
     let validBeyondRemaining = false;
     for (const row of page.items) {
       const item = row.item;
@@ -309,7 +374,7 @@ async function collectPlaylistItems(
     }
     offset += page.items.length;
   }
-  return { rows: out, complete, truncated };
+  return { rows: out, complete, truncated, reportedTotal };
 }
 
 type SnapshotBody = Omit<LibraryBackup, '_meta'>;
@@ -318,6 +383,7 @@ interface DetailedSnapshot {
   collections: BackupMeta['collections'];
   playlistItems: BackupMeta['playlist_items'];
   partialReasons: string[];
+  reportedTotals: BackupMeta['reported_totals'];
 }
 
 /** Gather a snapshot plus truthful end-of-data/truncation metadata. */
@@ -384,6 +450,15 @@ async function collectSnapshotDetailed(client: SpotifyClient, cap: number): Prom
     followed_artists: { fetched: artists.rows.length, cap, complete: artists.complete, truncated: artists.truncated },
     playlists: { fetched: playlistRows.length, cap, complete: playlistWalk.complete, truncated: playlistWalk.truncated },
   };
+  const reportedTotals: BackupMeta['reported_totals'] = {
+    liked_tracks: liked.reportedTotal,
+    saved_albums: albums.reportedTotal,
+    saved_shows: shows.reportedTotal,
+    saved_episodes: episodes.reportedTotal,
+    saved_audiobooks: audiobooks.reportedTotal,
+    followed_artists: artists.reportedTotal,
+    playlists: playlistWalk.reportedTotal,
+  };
   const cappedCollections = Object.entries(statuses)
     .filter(([, status]) => !status.complete || status.truncated)
     .map(([name]) => name);
@@ -397,6 +472,7 @@ async function collectSnapshotDetailed(client: SpotifyClient, cap: number): Prom
       truncated: playlistRows.some((p) => p.items_truncated),
       truncated_playlists: playlistRows.filter((p) => p.items_truncated).length,
     },
+    reportedTotals,
     partialReasons,
   };
 }
@@ -432,6 +508,8 @@ function buildMeta(
   const complete = partialReasons.length === 0;
   return {
     created,
+    spotify_data: true,
+    retention_until: retentionUntil(created, backupRetentionDays()),
     ...(notes !== undefined ? { notes } : {}),
     snapshot_state: complete ? 'complete' : 'partial',
     complete,
@@ -445,6 +523,275 @@ function buildMeta(
     collections: detailed.collections,
     playlist_items: detailed.playlistItems,
     counts: metaCounts(detailed.body),
+    reported_totals: detailed.reportedTotals,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Store envelope: retention, pruning, delete (#697)
+// ---------------------------------------------------------------------------
+
+/** A retention window is whole days; no calendar or DST arithmetic. */
+const DAY_MS = 86_400_000;
+
+/** At or above this many surviving snapshots, the store is flagged. */
+const PRUNE_HINT_THRESHOLD = 5;
+
+/** created + the configured window, or null when pruning is disabled. */
+export function retentionUntil(created: string, retentionDays: number): string | null {
+  if (retentionDays <= 0) return null;
+  const ms = Date.parse(created);
+  if (!Number.isFinite(ms)) return null;
+  return new Date(ms + retentionDays * DAY_MS).toISOString();
+}
+
+function ageInDays(created: string, now: number): number | null {
+  const ms = Date.parse(created);
+  if (!Number.isFinite(ms)) return null;
+  return Math.max(0, Math.floor((now - ms) / DAY_MS));
+}
+
+/** One backup file plus everything list_backups/prune need to judge it. */
+interface StoreEntry {
+  name: string;
+  path: string;
+  /** null when the file could not be stat()ed at all. */
+  bytes: number | null;
+  created: string | null;
+  meta: Record<string, unknown> | null;
+  metadataSource: 'sidecar' | 'legacy_prefix' | 'unavailable';
+  sidecarBytes: number;
+  /** lstat: false for a symlink or directory, which is never unlinked. */
+  regularFile: boolean;
+}
+
+/**
+ * Read one backup file's cheap metadata: bounded sidecar first, bounded
+ * legacy prefix second, file mtime last. The same read serves retention,
+ * the dir envelope and the listing, so a store is never parsed twice.
+ */
+async function readStoreEntry(dir: string, name: string): Promise<StoreEntry> {
+  const path = join(dir, name);
+  const entry: StoreEntry = {
+    name,
+    path,
+    bytes: null,
+    created: null,
+    meta: null,
+    metadataSource: 'unavailable',
+    sidecarBytes: 0,
+    regularFile: false,
+  };
+  const st = await lstat(path).catch(() => null);
+  if (!st) return entry;
+  entry.regularFile = st.isFile();
+  entry.bytes = st.size;
+  const sidecar = await stat(metadataSidecarPath(path)).catch(() => null);
+  if (sidecar?.isFile()) entry.sidecarBytes = sidecar.size;
+  // A symlink planted under a backup name is never opened: realpath could
+  // otherwise walk the read out of the store entirely.
+  if (entry.regularFile) {
+    try {
+      const parsed = await readBoundedJson(metadataSidecarPath(path), MAX_SIDECAR_BYTES);
+      const validated = MetadataSidecarSchema.safeParse(parsed);
+      if (validated.success) {
+        entry.meta = validated.data.meta;
+        entry.metadataSource = 'sidecar';
+      }
+    } catch { /* no usable sidecar */ }
+    if (entry.meta === null) {
+      const legacy = await readLegacySnapshotMeta(path).catch(() => null);
+      if (legacy !== null) {
+        entry.meta = legacy;
+        entry.metadataSource = 'legacy_prefix';
+      }
+    }
+  }
+  entry.created = stringField(entry.meta ?? {}, 'created') ?? st.mtime.toISOString();
+  return entry;
+}
+
+/** Every backup-*.json in dir, newest-metadata-first in listing order. */
+async function readStoreEntries(dir: string): Promise<StoreEntry[]> {
+  let names: string[];
+  try {
+    names = (await readdir(dir)).filter((name) => BACKUP_FILE_RE.test(name));
+  } catch {
+    return [];
+  }
+  return Promise.all(names.map((name) => readStoreEntry(dir, name)));
+}
+
+export interface PrunedBackup {
+  path: string;
+  created: string;
+  age_days: number;
+  bytes: number;
+}
+
+export interface PruneResult {
+  /** Configured window in days; 0 means pruning is switched off. */
+  retention_days: number;
+  enabled: boolean;
+  removed: PrunedBackup[];
+  bytes_freed: number;
+  /** Files that could not be deleted, as `path: errno`. */
+  failed: string[];
+  /** Entries deliberately not judged (unreadable, or not a regular file). */
+  skipped: number;
+}
+
+function emptyPrune(retentionDays: number): PruneResult {
+  return {
+    retention_days: retentionDays,
+    enabled: retentionDays > 0,
+    removed: [],
+    bytes_freed: 0,
+    failed: [],
+    skipped: 0,
+  };
+}
+
+/**
+ * Delete every snapshot older than the retention window and report exactly
+ * what went (#697). Only regular files are considered: a symlink or
+ * directory wearing a backup name is skipped, never followed, and a file
+ * whose date cannot be established is kept rather than guessed at.
+ */
+export async function pruneStore(
+  dir: string,
+  entries: readonly StoreEntry[],
+  retentionDays: number,
+  now: number = Date.now(),
+): Promise<PruneResult> {
+  const result = emptyPrune(retentionDays);
+  if (retentionDays <= 0) return result;
+  const cutoff = now - retentionDays * DAY_MS;
+  for (const entry of entries) {
+    if (!entry.regularFile || entry.created === null) {
+      result.skipped += 1;
+      continue;
+    }
+    const createdMs = Date.parse(entry.created);
+    if (!Number.isFinite(createdMs) || createdMs >= cutoff) continue;
+    try {
+      await unlink(entry.path);
+      if (entry.sidecarBytes > 0) await unlink(metadataSidecarPath(entry.path)).catch(() => undefined);
+      result.removed.push({
+        path: entry.path,
+        created: entry.created,
+        age_days: Math.max(0, Math.floor((now - createdMs) / DAY_MS)),
+        bytes: (entry.bytes ?? 0) + entry.sidecarBytes,
+      });
+    } catch (error) {
+      result.failed.push(`${entry.path}: ${(error as NodeJS.ErrnoException).code ?? 'unknown error'}`);
+    }
+  }
+  result.bytes_freed = result.removed.reduce((n, r) => n + r.bytes, 0);
+  return result;
+}
+
+/** One-shot prune for callers that do not already hold the store listing. */
+export async function pruneBackups(
+  env: NodeJS.ProcessEnv = process.env,
+  now: number = Date.now(),
+): Promise<PruneResult> {
+  const dir = backupDir(env);
+  return pruneStore(dir, await readStoreEntries(dir), backupRetentionDays(env), now);
+}
+
+export interface StoreEnvelope {
+  count: number;
+  /** Bytes on disk for these snapshots plus their sidecars. */
+  dir_bytes: number;
+  oldest_created: string | null;
+  oldest_age_days: number | null;
+  /** When the oldest survivor falls out of the window. */
+  oldest_retention_until: string | null;
+}
+
+/** The accumulation envelope: how much is stored and how stale it is. */
+export function storeEnvelope(
+  entries: readonly StoreEntry[],
+  retentionDays: number,
+  now: number = Date.now(),
+): StoreEnvelope {
+  let dirBytes = 0;
+  let oldestMs = Number.POSITIVE_INFINITY;
+  let oldest: string | null = null;
+  for (const entry of entries) {
+    dirBytes += (entry.bytes ?? 0) + entry.sidecarBytes;
+    if (entry.created === null) continue;
+    const ms = Date.parse(entry.created);
+    if (!Number.isFinite(ms) || ms >= oldestMs) continue;
+    oldestMs = ms;
+    oldest = entry.created;
+  }
+  return {
+    count: entries.length,
+    dir_bytes: dirBytes,
+    oldest_created: oldest,
+    oldest_age_days: oldest === null ? null : ageInDays(oldest, now),
+    oldest_retention_until: oldest === null ? null : retentionUntil(oldest, retentionDays),
+  };
+}
+
+/** Prose for the envelope, shared by backup_library and list_backups. */
+function describeEnvelope(envelope: StoreEnvelope, retentionDays: number): string {
+  const policy = retentionDays > 0
+    ? `retention ${retentionDays} day(s) (SPOTIFY_MCP_BACKUP_RETENTION_DAYS)`
+    : 'retention disabled (SPOTIFY_MCP_BACKUP_RETENTION_DAYS=0 — snapshots are kept until deleted)';
+  const oldest = envelope.oldest_created === null
+    ? 'none stored'
+    : `oldest ${envelope.oldest_created} (${envelope.oldest_age_days} day(s) old)`;
+  return `Store: ${envelope.count} snapshot(s), ${formatBytes(envelope.dir_bytes)} on disk, ${oldest} — ${policy}.`;
+}
+
+/** Prose for a prune pass, or null when nothing was removed. */
+function describePrune(prune: PruneResult): string | null {
+  if (prune.removed.length === 0 && prune.failed.length === 0) return null;
+  const lines = [`Pruned ${prune.removed.length} snapshot(s) past the ${prune.retention_days}-day window (freed ${formatBytes(prune.bytes_freed)}):`];
+  for (const removed of prune.removed) {
+    lines.push(`  - ${removed.path} (created ${removed.created}, ${removed.age_days} day(s) old, ${formatBytes(removed.bytes)})`);
+  }
+  for (const failure of prune.failed) lines.push(`  ! not deleted: ${failure}`);
+  return lines.join('\n');
+}
+
+/**
+ * One row of the list_backups payload: the snapshot's recorded state plus
+ * how much longer it is meant to live. A file whose metadata cannot be read
+ * at all is reported as unreadable, never as a clean snapshot.
+ */
+function storeRecord(entry: StoreEntry, retentionDays: number, now: number) {
+  const partialByName = entry.name.endsWith('.partial.json');
+  const meta = entry.meta;
+  const unreadable = entry.bytes === null;
+  const recordedState = stringField(meta ?? {}, 'snapshot_state');
+  const snapshotState = partialByName ? 'partial' : recordedState ?? 'unknown';
+  const reasons = stringArrayField(meta ?? {}, 'partial_reasons');
+  const recordedReason = stringField(meta ?? {}, 'partial_reason');
+  return {
+    path: entry.path,
+    created: entry.created,
+    notes: stringField(meta ?? {}, 'notes') ?? null,
+    bytes: entry.bytes,
+    counts: meta === null ? null : countsField(meta),
+    cap: meta === null ? null : (typeof meta.cap === 'number' ? meta.cap : null),
+    collections: meta !== null && typeof meta.collections === 'object' && meta.collections !== null
+      ? meta.collections
+      : null,
+    snapshot_state: snapshotState,
+    complete: partialByName || unreadable ? false : booleanField(meta ?? {}, 'complete') ?? null,
+    partial: partialByName || snapshotState === 'partial',
+    partial_reason: partialByName
+      ? recordedReason ?? 'unknown'
+      : recordedReason ?? (reasons[0] ?? null),
+    partial_reasons: partialByName && reasons.length === 0 ? ['unknown'] : reasons,
+    metadata_source: entry.metadataSource,
+    age_days: entry.created === null ? null : ageInDays(entry.created, now),
+    /** When this file falls out of the window, or null when disabled. */
+    retention_until: entry.created === null ? null : retentionUntil(entry.created, retentionDays),
   };
 }
 
@@ -571,6 +918,15 @@ function stringArrayField(record: Record<string, unknown>, key: string): string[
   return value.filter((item): item is string => typeof item === 'string');
 }
 
+/**
+ * delete_backup is opt-OUT of preview (#627): the schema itself advertises
+ * the safe default, so a client that inspects the signature — rather than
+ * reading the prose — sees that a missing dry_run means "delete nothing".
+ */
+const DeleteDryRun = DryRun.default(true).describe(
+  'Preview only, and the default: pass dry_run: false to delete the snapshot.',
+);
+
 
 // ---------------------------------------------------------------------------
 // Registration
@@ -624,6 +980,10 @@ export function registerBackupTools(server: McpServer, client: SpotifyClient): v
         if (args.response_format === 'json') return { content: [{ type: 'text', text: JSON.stringify(payload, null, 2) }], structuredContent: payload };
         return shapeResult(args.response_format, prose, payload);
       }
+
+      // Retention first (#697): an unbounded store is the thing being fixed,
+      // so every run expires what it can BEFORE adding another snapshot.
+      const prune = await pruneBackups();
       let detailed: DetailedSnapshot;
       try {
         detailed = await collectSnapshotDetailed(client, cap);
@@ -658,6 +1018,15 @@ export function registerBackupTools(server: McpServer, client: SpotifyClient): v
               truncated_playlists: 0,
             },
             partialReasons: [],
+            reportedTotals: {
+              liked_tracks: null,
+              saved_albums: null,
+              saved_shows: null,
+              saved_episodes: null,
+              saved_audiobooks: null,
+              followed_artists: null,
+              playlists: null,
+            },
           };
           const created = new Date().toISOString();
           const snapshot: LibraryBackup = {
@@ -687,6 +1056,9 @@ export function registerBackupTools(server: McpServer, client: SpotifyClient): v
             complete: false,
             partial: true,
             partial_reason: 'quota_exceeded',
+            retention_days: prune.retention_days,
+            pruned: prune.removed,
+            bytes_freed: prune.bytes_freed,
           };
           const prose = `Quota hit during backup_library (Retry-After: ${quotaHit.retry_after ?? 'unknown'}s) — partial snapshot${file ? ` written to ${file}` : ' (no file)'} . Retry later or lower max_results.`;
           return shapeResult(args.response_format, prose, payload);
@@ -705,11 +1077,23 @@ export function registerBackupTools(server: McpServer, client: SpotifyClient): v
       const dateStamp = created.slice(0, 10);
       const seq = await nextBackupSeq(dir, dateStamp);
       const file = join(dir, `backup-${dateStamp}-${seq}.json`);
-      const body = `${JSON.stringify(snapshot, null, 2)}\n`;
+      // A partial snapshot says so at the top level too (#735), so a
+      // consumer that never looks inside _meta cannot mistake it for
+      // complete truth.
+      const fileBody = snapshot._meta.complete ? snapshot : { ...snapshot, _partial: true };
+      const body = `${JSON.stringify(fileBody, null, 2)}\n`;
       const bytes = Buffer.byteLength(body);
       // 'wx' refuses to clobber even if sequencing raced another writer.
       await writeFile(file, body, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
       await writeMetadataSidecar(file, snapshot._meta, bytes);
+      // The envelope is read back from the store, not from this call's
+      // bookkeeping: what the operator can actually delete is what is
+      // reported.
+      const envelope = storeEnvelope(await readStoreEntries(dir), prune.retention_days);
+      const retentionWarning = envelope.count >= PRUNE_HINT_THRESHOLD
+        ? `${envelope.count} snapshots are stored (oldest ${envelope.oldest_age_days} day(s) old, ${formatBytes(envelope.dir_bytes)} on disk) — set SPOTIFY_MCP_BACKUP_RETENTION_DAYS or call delete_backup to prune.`
+        : undefined;
+      const pruneNote = describePrune(prune);
 
       const c = snapshot._meta.counts;
       const payload: Record<string, unknown> = {
@@ -724,12 +1108,20 @@ export function registerBackupTools(server: McpServer, client: SpotifyClient): v
         snapshot_state: snapshot._meta.snapshot_state,
         complete: snapshot._meta.complete,
         partial: !snapshot._meta.complete,
+        reported_totals: snapshot._meta.reported_totals,
+        retention_days: prune.retention_days,
+        retention_until: snapshot._meta.retention_until,
+        pruned: prune.removed,
+        pruned_count: prune.removed.length,
+        bytes_freed: prune.bytes_freed,
+        store: envelope,
+        ...(retentionWarning !== undefined ? { retention_warning: retentionWarning } : {}),
         ...(snapshot._meta.partial_reason !== undefined ? { partial_reason: snapshot._meta.partial_reason } : {}),
         ...(args.notes !== undefined ? { notes: args.notes } : {}),
       };
       if (args.response_format === 'json') {
         return {
-          content: [{ type: 'text', text: JSON.stringify(snapshot, null, 2) }],
+          content: [{ type: 'text', text: JSON.stringify(fileBody, null, 2) }],
           structuredContent: payload,
         };
       }
@@ -744,6 +1136,27 @@ export function registerBackupTools(server: McpServer, client: SpotifyClient): v
             total: playlist.item_count,
           })}`,
       );
+      // A playlist that could not be read is stored as an empty one, so it
+      // is named here: silence is what let restore create "Restored - X"
+      // with zero tracks and report success (#735).
+      const unreadablePlaylists = detailed.body.playlists.filter((playlist) => playlist.items_error !== undefined);
+      const unreadableLines = unreadablePlaylists.map(
+        (playlist) =>
+          `\n- WARNING unreadable playlist "${playlist.name}" (${playlist.uri}): stored with ${playlist.items.length} items — ${playlist.items_error}`,
+      );
+      // Category walks that stopped at the cap get the same disclosure
+      // vocabulary, with Spotify's own total as the denominator (#735).
+      const cappedLines = (Object.entries(snapshot._meta.collections) as [BackupCollectionName, BackupCollectionStatus][])
+        .filter(([, status]) => status.truncated || !status.complete)
+        .map(([name, status]) =>
+          `\n- WARNING incomplete ${COLLECTION_SUBJECTS[name]}: ${completenessFooter({
+            fetched: status.fetched,
+            cap: status.cap,
+            truncated: true,
+            subject: COLLECTION_SUBJECTS[name],
+            total: snapshot._meta.reported_totals[name] ?? undefined,
+          })}`,
+        );
       const prose =
         `Library ${snapshot._meta.complete ? 'backup' : 'partial backup'} written → ${file} (${formatBytes(bytes)})\n` +
         `- Liked tracks: ${c.liked_tracks}\n` +
@@ -752,8 +1165,14 @@ export function registerBackupTools(server: McpServer, client: SpotifyClient): v
         `- Saved episodes: ${c.saved_episodes}\n` +
         `- Saved audiobooks: ${c.saved_audiobooks}\n` +
         `- Followed artists: ${c.followed_artists}\n` +
-        `- Playlists: ${c.playlists} (${c.playlist_items} items; ${c.playlists_truncated} truncated)\n` +
+        `- Playlists: ${c.playlists} (${c.playlist_items} items; ${c.playlists_truncated} truncated${unreadablePlaylists.length > 0 ? `; ${unreadablePlaylists.length} unreadable` : ''})\n` +
+        cappedLines.join('') +
         truncationLines.join('') +
+        unreadableLines.join('') +
+        `\n${describeEnvelope(envelope, prune.retention_days)}` +
+        (snapshot._meta.retention_until !== null ? `\nRetention: this snapshot expires ${snapshot._meta.retention_until} unless deleted sooner.` : '') +
+        (pruneNote !== null ? `\n${pruneNote}` : '') +
+        (retentionWarning !== undefined ? `\nWARNING ${retentionWarning}` : '') +
         (snapshot._meta.partial_reason ? `\n- Incomplete: ${snapshot._meta.partial_reason}` : '');
       return shapeResult(args.response_format, prose, payload);
     },
@@ -761,97 +1180,59 @@ export function registerBackupTools(server: McpServer, client: SpotifyClient): v
 
   server.tool(
     'list_backups',
-    'List complete and partial library backups (newest first) using bounded metadata sidecar reads, with a bounded prefix fallback for legacy snapshots',
+    'List complete and partial library backups (newest first) using bounded metadata sidecar reads, with a bounded prefix fallback for legacy snapshots. Expires snapshots past SPOTIFY_MCP_BACKUP_RETENTION_DAYS (default 30, 0 disables) and reports what it removed, plus the store envelope (dir_bytes, oldest_created, retention_until).',
     { response_format: ResponseFormat },
     async (args) => {
       const dir = backupDir();
-      let names: string[] = [];
-      try {
-        names = (await readdir(dir)).filter((name) => BACKUP_FILE_RE.test(name));
-      } catch {
-        names = [];
-      }
+      const retentionDays = backupRetentionDays();
+      const now = Date.now();
+      const entries = await readStoreEntries(dir);
+      // Retention runs on the read path too (#697): an operator asking
+      // "what is stored" must not be shown a year-old snapshot forever.
+      const prune = await pruneStore(dir, entries, retentionDays, now);
+      const removed = new Set(prune.removed.map((entry) => entry.path));
+      const survivors = entries.filter((entry) => !removed.has(entry.path));
+      const envelope = storeEnvelope(survivors, retentionDays, now);
+      const envelopeFields: Record<string, unknown> = {
+        ok: true,
+        dir,
+        count: survivors.length,
+        dir_bytes: envelope.dir_bytes,
+        oldest_created: envelope.oldest_created,
+        oldest_age_days: envelope.oldest_age_days,
+        retention_days: retentionDays,
+        retention_enabled: prune.enabled,
+        oldest_retention_until: envelope.oldest_retention_until,
+        pruned: prune.removed,
+        pruned_count: prune.removed.length,
+        bytes_freed: prune.bytes_freed,
+        ...(envelope.count >= PRUNE_HINT_THRESHOLD
+          ? {
+            retention_warning: `${envelope.count} snapshots are stored (oldest ${envelope.oldest_age_days} day(s) old, ${formatBytes(envelope.dir_bytes)} on disk) — set SPOTIFY_MCP_BACKUP_RETENTION_DAYS or call delete_backup to prune.`,
+          }
+          : {}),
+      };
 
-      if (names.length === 0) {
+      const pruneNote = describePrune(prune);
+      if (survivors.length === 0) {
         return shapeResult(
           args.response_format,
-          `No backups found in ${dir}. Run backup_library first.`,
-          { ok: true, dir, backups: [] },
+          [
+            `No backups found in ${dir}. Run backup_library first.`,
+            describeEnvelope(envelope, retentionDays),
+            ...(pruneNote === null ? [] : [pruneNote]),
+          ].join('\n'),
+          { ...envelopeFields, backups: [] },
         );
       }
 
-      const backups = (
-        await Promise.all(
-          names.map(async (name) => {
-            const path = join(dir, name);
-            const partialByName = name.endsWith('.partial.json');
-            try {
-              const st = await stat(path);
-              let meta: Record<string, unknown> | null = null;
-              let metadataSource = 'unavailable';
-              try {
-                const sidecar = await readBoundedJson(metadataSidecarPath(path), MAX_SIDECAR_BYTES);
-                const validated = MetadataSidecarSchema.safeParse(sidecar);
-                if (validated.success) {
-                  meta = validated.data.meta;
-                  metadataSource = 'sidecar';
-                }
-              } catch { /* no usable sidecar */ }
-              if (meta === null) {
-                meta = await readLegacySnapshotMeta(path);
-                if (meta !== null) metadataSource = 'legacy_prefix';
-              }
-
-              const created = stringField(meta ?? {}, 'created') ?? st.mtime.toISOString();
-              const notes = stringField(meta ?? {}, 'notes');
-              const recordedState = stringField(meta ?? {}, 'snapshot_state');
-              const snapshotState = partialByName ? 'partial' : recordedState ?? 'unknown';
-              const complete = partialByName ? false : booleanField(meta ?? {}, 'complete') ?? null;
-              const reasons = stringArrayField(meta ?? {}, 'partial_reasons');
-              const recordedReason = stringField(meta ?? {}, 'partial_reason');
-              return {
-                path,
-                created,
-                notes: notes ?? null,
-                bytes: st.size,
-                counts: meta === null ? null : countsField(meta),
-                cap: meta === null ? null : (typeof meta.cap === 'number' ? meta.cap : null),
-                collections: meta !== null && typeof meta.collections === 'object' && meta.collections !== null
-                  ? meta.collections
-                  : null,
-                snapshot_state: snapshotState,
-                complete,
-                partial: partialByName || snapshotState === 'partial',
-                partial_reason: partialByName
-                  ? recordedReason ?? 'unknown'
-                  : recordedReason ?? (reasons[0] ?? null),
-                partial_reasons: partialByName && reasons.length === 0 ? ['unknown'] : reasons,
-                metadata_source: metadataSource,
-              };
-            } catch {
-              return {
-                path,
-                created: null,
-                bytes: null,
-                counts: null,
-                cap: null,
-                collections: null,
-                notes: null,
-                snapshot_state: partialByName ? 'partial' : 'unknown',
-                complete: false,
-                partial: partialByName,
-                partial_reason: partialByName ? 'unknown' : null,
-                partial_reasons: partialByName ? ['unknown'] : [],
-                metadata_source: 'unavailable',
-              };
-            }
-          }),
-        )
-      ).sort((a, b) => {
-        const ta = a.created ? Date.parse(a.created) : Number.NEGATIVE_INFINITY;
-        const tb = b.created ? Date.parse(b.created) : Number.NEGATIVE_INFINITY;
-        return tb - ta || b.path.localeCompare(a.path);
-      });
+      const backups = survivors
+        .map((entry) => storeRecord(entry, retentionDays, now))
+        .sort((a, b) => {
+          const ta = a.created ? Date.parse(a.created) : Number.NEGATIVE_INFINITY;
+          const tb = b.created ? Date.parse(b.created) : Number.NEGATIVE_INFINITY;
+          return tb - ta || b.path.localeCompare(a.path);
+        });
 
       const lines = [`Backups in ${dir} (newest first):`];
       for (const b of backups) {
@@ -867,15 +1248,133 @@ export function registerBackupTools(server: McpServer, client: SpotifyClient): v
               ` (${b.counts.playlist_items} items), artists ${b.counts.followed_artists}`,
           );
         }
+        if (b.retention_until !== null) bits.push(`expires ${b.retention_until}`);
         lines.push(`- ${b.path} — ${bits.join(' · ')}`);
       }
+      if (pruneNote !== null) lines.push(pruneNote);
+      lines.push(describeEnvelope(envelope, retentionDays));
+      if (envelope.count >= PRUNE_HINT_THRESHOLD) {
+        lines.push(
+          `WARNING ${envelope.count} snapshots are stored (oldest ${envelope.oldest_age_days} day(s) old) — set SPOTIFY_MCP_BACKUP_RETENTION_DAYS or call delete_backup to prune.`,
+        );
+      }
 
-      return shapeResult(args.response_format, lines.join('\n'), {
-        ok: true,
-        dir,
-        count: backups.length,
-        backups,
+      return shapeResult(args.response_format, lines.join('\n'), { ...envelopeFields, backups });
+    },
+  );
+
+  server.tool(
+    'delete_backup',
+    'Delete one library backup file (and its metadata sidecar) from SPOTIFY_MCP_BACKUP_DIR. Irreversible — the library rows in the file cannot be recovered from anywhere else. Destructive and confirmation-gated: dry_run defaults to true, and executing is refused when the client cannot prompt (SPOTIFY_MCP_CONFIRM=never bypasses). Paths outside the backup directory are refused.',
+    {
+      file: z.string().min(1).describe('Backup file name (e.g. backup-2026-01-02-1.json) or a path inside the backup directory'),
+      response_format: ResponseFormat,
+      dry_run: DeleteDryRun,
+    },
+    async (args) => {
+      const dir = backupDir();
+      const requested = args.file.trim();
+      // Confinement is decided on the REAL path by the shared resolver: a
+      // `..` segment, an absolute path elsewhere, or a symlink planted
+      // under a backup name all resolve first and are refused outside the
+      // store (#622/#697).
+      let resolved: { file: string };
+      try {
+        resolved = await resolveOutputPath({
+          root: dir,
+          target: requested,
+          tool: 'delete_backup',
+          kind: 'file',
+          overwrite: true,
+        });
+      } catch (error) {
+        // The shared resolver's own wording is about writing exports; the
+        // leading sentence says what the caller actually asked for, and the
+        // resolver's line stays as the reason.
+        const detail = error instanceof Error ? error.message : String(error);
+        const message = `delete_backup: "${requested}" is not inside the backup directory (${dir}); nothing was deleted. ${detail}`;
+        return shapeResult(
+          args.response_format,
+          message,
+          { ok: false, reason: 'refused', dir, requested, error: message, detail },
+        );
+      }
+      const name = basename(resolved.file);
+      if (!BACKUP_FILE_RE.test(name)) {
+        const message = `delete_backup: "${name}" is not a library backup file (expected backup-YYYY-MM-DD-N[.partial].json).`;
+        return shapeResult(
+          args.response_format,
+          message,
+          { ok: false, reason: 'not_a_backup', dir, path: resolved.file, error: message },
+        );
+      }
+      const st = await stat(resolved.file).catch(() => null);
+      if (!st?.isFile()) {
+        const message = `delete_backup: no readable backup file at "${resolved.file}".`;
+        return shapeResult(
+          args.response_format,
+          message,
+          { ok: false, reason: 'not_found', dir, path: resolved.file, error: message },
+        );
+      }
+      const sidecarPath = metadataSidecarPath(resolved.file);
+      const sidecar = await stat(sidecarPath).catch(() => null);
+      const sidecarBytes = sidecar?.isFile() ? sidecar.size : 0;
+      const changes = [
+        `Delete ${resolved.file} (${formatBytes(st.size)}) permanently — those library rows exist nowhere else`,
+        ...(sidecarBytes > 0 ? [`Delete its metadata sidecar (${formatBytes(sidecarBytes)})`] : []),
+      ];
+
+      if (args.dry_run !== false) {
+        const payload: Record<string, unknown> = {
+          ok: true,
+          dry_run: true,
+          dir,
+          path: resolved.file,
+          bytes: st.size,
+          sidecar: sidecarBytes > 0 ? sidecarPath : null,
+          sidecar_bytes: sidecarBytes,
+          retention_days: backupRetentionDays(),
+        };
+        return shapeResult(args.response_format, `${describeDryRun('delete backup', name, changes)}\nRe-run with dry_run: false to delete.`, payload);
+      }
+
+      const verdict = await confirmViaElicitation(server, {
+        message: describeConfirmation('delete backup', name, changes),
+        confirmLabel: 'Delete backup',
       });
+      const refusal = requiredConfirmationRefusal(verdict);
+      if (refusal) return shapeResult(args.response_format, refusal.message, refusal.payload);
+
+      try {
+        await unlink(resolved.file);
+      } catch (error) {
+        const message = `delete_backup: could not delete "${resolved.file}": ${(error as NodeJS.ErrnoException).code ?? 'unknown error'}.`;
+        return shapeResult(args.response_format, message, { ok: false, reason: 'delete_failed', dir, path: resolved.file, error: message });
+      }
+      let sidecarDeleted = false;
+      if (sidecarBytes > 0) {
+        try {
+          await unlink(sidecarPath);
+          sidecarDeleted = true;
+        } catch {
+          sidecarDeleted = false;
+        }
+      }
+      return shapeResult(
+        args.response_format,
+        `Deleted backup ${resolved.file} (${formatBytes(st.size)})${sidecarDeleted ? ' and its metadata sidecar' : ''}. ${describeEnvelope(storeEnvelope(await readStoreEntries(dir), backupRetentionDays()), backupRetentionDays())}`,
+        {
+          ok: true,
+          deleted: true,
+          dry_run: false,
+          dir,
+          path: resolved.file,
+          bytes: st.size,
+          sidecar_deleted: sidecarDeleted,
+          retention_days: backupRetentionDays(),
+        },
+      );
     },
   );
 }
