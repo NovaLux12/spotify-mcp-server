@@ -4,6 +4,7 @@ import { mkdir, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { registerPlaybackIntelTools } from '../src/tools/playbackintel.js';
+import { registerPlaybackTools } from '../src/tools/playback.js';
 
 type ToolContent = { content: Array<{ type: string; text: string }>; structuredContent?: Record<string, unknown> };
 type RegisteredTool = { name: string; description: string; schema: Record<string, any>; handler: (args: Record<string, unknown>) => Promise<ToolContent> };
@@ -71,6 +72,80 @@ test('play_at H:MM:SS parsing', async()=>{
   await invoke(find(registered,'play_at'), { context_uri:'spotify:album:alb1', at:'1:30' });
   const put=calls.find(c=>c.method==='PUT'); assert.ok(put); assert.equal((put!.body as any).position_ms, 90000);
 });
+
+// #842 — play_at must enforce the same argument contract as `play`.
+test('play_at refuses context_uri + uris with zero client calls', async()=>{
+  const { registered, calls } = makeHarness();
+  await assert.rejects(
+    () => invoke(find(registered,'play_at'), { context_uri:'spotify:album:alb1', uris:['spotify:track:trk1'], at:'0:30' }),
+    /Provide either context_uri or uris, not both\./,
+  );
+  assert.equal(calls.length, 0, 'no Spotify call may happen for an ambiguous call');
+});
+test('play_at refuses an invalid uri with zero client calls', async()=>{
+  const { registered, calls } = makeHarness();
+  await assert.rejects(
+    () => invoke(find(registered,'play_at'), { uris:['not-a-spotify-uri'], at:'0:30' }),
+    /Invalid Spotify URI\(s\): not-a-spotify-uri/,
+  );
+  assert.equal(calls.length, 0);
+});
+test('play_at refuses offset for ad-hoc uris', async()=>{
+  const { registered, calls } = makeHarness();
+  await assert.rejects(
+    () => invoke(find(registered,'play_at'), { uris:['spotify:track:trk1'], at:'0:30', offset:2 }),
+    /offset is ignored when playing ad-hoc uris/,
+  );
+  assert.equal(calls.length, 0);
+});
+test('play_at refuses a numeric offset on an artist context', async()=>{
+  const { registered, calls } = makeHarness();
+  await assert.rejects(
+    () => invoke(find(registered,'play_at'), { context_uri:'spotify:artist:art1', at:'0:30', offset:2 }),
+    /Numeric offset is not valid for artist contexts/,
+  );
+  assert.equal(calls.length, 0);
+});
+test('play_at uris body matches what play sends for the same uris', async()=>{
+  const uris = ['spotify:track:trk1','spotify:episode:ep1'];
+  const { registered, calls } = makeHarness();
+  await invoke(find(registered,'play_at'), { uris, position_ms:1500, device_id:'dev 1' });
+  const put = calls.find(c=>c.method==='PUT');
+  assert.ok(put);
+  assert.equal(put!.path, '/me/player/play?device_id=dev%201');
+  // Same shape `play` builds — uris verbatim, no context_uri, no offset key
+  // (the endpoint rejects offset for ad-hoc uris). Only position_ms, which is
+  // play_at's whole reason to exist, is added.
+  const playSent = await playBody({ uris, device_id:'dev 1' });
+  assert.deepEqual({ ...(put!.body as Record<string, unknown>), position_ms: 0 }, { ...playSent, position_ms: 0 });
+  assert.equal((put!.body as Record<string, number>).position_ms, 1500);
+});
+test('play_at context_uri body matches what play sends for the same context', async()=>{
+  const { registered, calls } = makeHarness();
+  await invoke(find(registered,'play_at'), { context_uri:'spotify:playlist:pl1', at:'0:30', offset:4 });
+  const put = calls.find(c=>c.method==='PUT');
+  assert.ok(put);
+  const playSent = await playBody({ context_uri:'spotify:playlist:pl1', offset:4 });
+  assert.deepEqual({ ...(put!.body as Record<string, unknown>), position_ms: 0 }, { ...playSent, position_ms: 0 });
+  assert.equal((put!.body as Record<string, number>).position_ms, 30000);
+});
+
+/** The body `play` (src/tools/playback.ts) sends for these args — play_at's parity reference. */
+async function playBody(args: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const calls: Call[] = [];
+  const registered: RegisteredTool[] = [];
+  const server: any = { tool(name:string, desc:string, schema:any, handler:any){ registered.push({ name, description: desc, schema, handler }); } };
+  const client: any = {
+    get: async()=> null,
+    put: async (path:string, body?:unknown) => { calls.push({ method:'PUT', path, body }); },
+    post: async()=> {}, delete: async()=> {}, getAllPages: async()=>[],
+  };
+  registerPlaybackTools(server, client);
+  await find(registered,'play').handler(args);
+  const put = calls.find(c=>c.method==='PUT');
+  assert.ok(put, 'play did not issue a PUT');
+  return (put!.body ?? {}) as Record<string, unknown>;
+}
 test('device_health merges', async()=>{
   const { registered } = makeHarness({ getResponse:(p)=> p==='/me/player/devices'?{ devices:[{ id:'d1', name:'Kitchen', type:'Speaker', volume_percent:70}]} : p==='/me/player'?{ device:{ id:'d1'}} : null });
   const r = await invoke(find(registered,'device_health'), {});
