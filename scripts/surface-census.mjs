@@ -4,9 +4,9 @@
  *
  * The authoritative surface is the real `src/index.ts` stdio entry, driven by
  * the MCP client SDK. Registration gates and production finalizers therefore
- * run exactly as they do for a host. A separate source-derived registrar pass
- * supplies module attribution only; its names are intersected with the live
- * `tools/list` names so it can never inflate the headline.
+ * run exactly as they do for a host. The same shared registrar manifest used
+ * by startup supplies module attribution and schema measurements; its owned
+ * names must equal the finalized `tools/list` names exactly.
  *
  * Plain `node scripts/surface-census.mjs` prints JSON. `--write` refreshes
  * generated documentation blocks and `--check` guards them in CI.
@@ -14,8 +14,8 @@
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { basename, dirname, join, relative, resolve } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { dirname, join, relative, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const args = process.argv.slice(2);
@@ -28,11 +28,16 @@ if (!process.env.SPOTIFY_MCP_SURFACE_CENSUS) {
   });
   process.exit(child.status ?? 1);
 }
-const { REGISTRAR_MANIFEST } = await import('../src/tools/annotations.ts');
+const {
+  collectModuleSchemaBudgets,
+  moduleToolNames,
+  registerManifestModule,
+  REGISTRAR_MANIFEST,
+} = await import('../src/tools/annotations.ts');
 const productionManifest = REGISTRAR_MANIFEST.map((module) => ({
   registrar: module.registrar.name || module.key,
   file: module.file,
-  key: module.key === 'doctor' ? 'spotify_doctor' : module.registrationKey,
+  key: module.registrationKey,
   ungated: module.alwaysActive === true,
 }));
 const markerFixtureIndex = args.indexOf('--marker-fixture');
@@ -48,17 +53,29 @@ const manifestArgIndex = args.indexOf('--registration-manifest');
 if (manifestArgIndex >= 0) {
   const manifestPath = args[manifestArgIndex + 1];
   if (!manifestPath) throw new Error('--registration-manifest requires a source file');
-  console.log(JSON.stringify(parseProductionManifest(readFileSync(resolve(manifestPath), 'utf8')), null, 2));
+  console.log(JSON.stringify(productionManifest, null, 2));
   process.exit(0);
 }
 const { GATED_PATH_PATTERNS, isGatedPath } = await import('../src/tools/exhaust2_enggating.ts');
 const census = await readProductionRegistry();
-const moduleNames = await attributeToolsToModules(census.toolNames, productionManifest);
+const { namesByModule: moduleNames, manifestToolNames, schemaMeasurements } = await attributeToolsToModules(census.toolNames);
 const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'));
 
 const perModule = countModuleTools(moduleNames);
 const toolModuleFiles = Object.keys(perModule).filter((file) => file.startsWith('src/tools/')).length;
-const registrationKeyNames = [...new Set(productionManifest.map(({ key }) => key))].sort();
+const manifestRegistrationKeys = [...new Set(productionManifest.map(({ key }) => key))].sort();
+const toolsetRegistrationKeys = [...new Set(allRegistrationKeysFromSource())].sort();
+const unconditionalRegistrationKeys = ['doctor'];
+const registrationKeyNames = [...new Set([...manifestRegistrationKeys, ...toolsetRegistrationKeys, ...unconditionalRegistrationKeys])].sort();
+const schemaBudgets = REGISTRAR_MANIFEST.map((module) => ({
+  module: module.key,
+  registrationKey: module.registrationKey,
+  file: module.file,
+  baselineToolCount: module.baseline.toolCount,
+  baselineSchemaBytes: module.baseline.schemaBytes,
+  maxToolCount: module.ceiling.toolCount,
+  maxSchemaBytes: module.ceiling.schemaBytes,
+}));
 const result = {
   tools: census.toolNames.length,
   toolModuleFiles,
@@ -67,14 +84,21 @@ const result = {
   resourceTemplates: census.resourceTemplateUris.length,
   prompts: census.promptNames.length,
   toolNames: census.toolNames,
+  manifestToolNames,
   parameterNames: census.parameterNames,
   toolInputSchemas: census.toolInputSchemas,
   resourceUris: census.resourceUris,
   resourceTemplateUris: census.resourceTemplateUris,
   promptNames: census.promptNames,
   registrationKeyNames,
+  manifestRegistrationKeys,
+  toolsetRegistrationKeys,
+  unconditionalRegistrationKeys,
   registrationUnits: productionManifest,
   perModule,
+  perModuleSchemaBytes: Object.fromEntries(schemaMeasurements.map((row) => [row.module, row.schemaBytes])),
+  schemaMeasurements,
+  schemaBudgets,
   toolsetNames: toolsetNamesFromSource(),
   registrySource: 'src/index.ts via stdio tools/list after production finalizers',
 };
@@ -90,14 +114,15 @@ const packageExcerpt = JSON.stringify({
 const shortSurface = `The finalized default MCP registry exposes **${result.tools} tools**, **${result.resources} fixed resources**, **${result.resourceTemplates} resource templates**, and **${result.prompts} prompts**. Toolsets and production gates can trim a configured host; these totals describe the default production \`tools/list\` after finalizers.`;
 const blocks = [
   ['README.md', 'surface-census', shortSurface],
-  ['ARCHITECTURE.md', 'surface-census', `${shortSurface} The tool surface is attributed to ${result.toolModuleFiles} files under \`src/tools/\` plus the inline \`verify_receipt\` registration in \`src/index.ts\`.`],
+  ['ARCHITECTURE.md', 'surface-census', `${shortSurface} The tool surface is attributed to ${result.toolModuleFiles} files under \`src/tools/\`.`],
   ['ARCHITECTURE.md', 'module-map', architecture],
   ['SPEC.md', 'package-contract', ['```json', packageExcerpt, '```'].join('\n')],
   ['SPEC.md', 'tool-surface', toolSurface(result)],
   ['SPEC.md', 'resource-surface', resourceSurface(result)],
   ['SPEC.md', 'prompt-surface', promptSurface(result)],
-  ['docs/distribution.md', 'surface-census', distributionSurface(result)],
+  ['docs/schema-budgets.md', 'schema-budget-table', schemaBudgetTable(result)],
   ['docs/wave2-composites.md', 'surface-census', wave2Surface(result)],
+  ['docs/distribution.md', 'surface-census', distributionSurface(result)],
   ['skills/spotify-exhaustive-feature-sweep/SKILL.md', 'surface-census', skillSurface(result)],
   ['skills/spotify-mcp-competitor-comparison/SKILL.md', 'surface-census', skillSurface(result)],
   ['src/toolsets.ts', 'surface-census', [
@@ -107,12 +132,17 @@ const blocks = [
 ];
 
 const drift = checkDocumentation(blocks);
-if (args.includes('--check') && drift.length > 0) {
+if (args.includes('--write')) {
+  for (const [file, name, body] of blocks) writeBlock(join(ROOT, file), name, body);
+  const remainingDrift = checkDocumentation(blocks);
+  if (remainingDrift.length > 0) {
+    console.error(`Documentation remains out of sync after --write (default tools/list: ${result.tools}):\n${remainingDrift.map((line) => `- ${line}`).join('\n')}`);
+    process.exitCode = 1;
+  }
+} else if (args.includes('--check') && drift.length > 0) {
   console.error(`Documentation drift from the finalized production registry (default tools/list: ${result.tools}):\n${drift.map((line) => `- ${line}`).join('\n')}`);
   console.error('Run `npm run count:tools -- --write` after reviewing registry changes.');
   process.exitCode = 1;
-} else if (args.includes('--write')) {
-  for (const [file, name, body] of blocks) writeBlock(join(ROOT, file), name, body);
 }
 
 console.log(JSON.stringify(result, null, 2));
@@ -174,15 +204,13 @@ async function readProductionRegistry() {
 }
 
 /**
- * Discover registrars from the same import manifest used by src/index.ts.
- * This pass exists only to attribute final live names to files. Its output is
- * intersected with the production registry above before becoming perModule.
+ * Attribute the finalized live names through the same shared manifest used by
+ * src/index.ts. The direct registration pass also measures each module's
+ * current tool count and schema bytes for the generated budget table.
  */
 async function attributeToolsToModules(liveToolNames) {
-  const moduleUrl = pathToFileURL(join(ROOT, 'src/tools/annotations.ts')).href;
-  const { REGISTRAR_MANIFEST } = await import(moduleUrl);
-  const live = new Set(liveToolNames);
-  const attributed = new Map();
+  const { McpServer } = await import('@modelcontextprotocol/sdk/server/mcp.js');
+  const server = new McpServer({ name: 'module-census', version: '0.0.0' });
   const clientStub = {
     get: async () => null,
     post: async () => null,
@@ -191,102 +219,84 @@ async function attributeToolsToModules(liveToolNames) {
     getAllPages: async () => [],
     getRateLimitStatus: () => ({ lastThrottleAt: null, retryAfterSec: null, cooldownRemainingMs: 0 }),
   };
+  const namesByModule = new Map(REGISTRAR_MANIFEST.map((module) => [module.file, []]));
+  const attributed = new Map();
 
-  for (const module of REGISTRAR_MANIFEST) {
-    if (!module.file.startsWith('src/tools/')) continue;
-    const names = new Set();
-    const { McpServer } = await import('@modelcontextprotocol/sdk/server/mcp.js');
-    const server = new McpServer({ name: `module-census-${basename(module.file, '.ts')}`, version: '0.0.0' });
-    const originalTool = server.tool.bind(server);
-    const originalRegisterTool = server.registerTool.bind(server);
-    server.tool = (name, ...rest) => { names.add(name); return originalTool(name, ...rest); };
-    server.registerTool = (name, ...rest) => { names.add(name); return originalRegisterTool(name, ...rest); };
-    try {
-      module.registrar(server, clientStub);
-      for (const name of names) {
-        if (!live.has(name)) continue;
+  try {
+    for (const module of REGISTRAR_MANIFEST) {
+      registerManifestModule(server, clientStub, module, {
+        readOnly: false,
+        isModuleActive: () => true,
+        scopeBlocked: () => false,
+      });
+      for (const name of moduleToolNames(server, module.key)) {
         const owners = attributed.get(name) ?? [];
         owners.push(module.file);
         attributed.set(name, owners);
+        namesByModule.get(module.file).push(name);
       }
-    } finally {
-      await server.close().catch(() => undefined);
-    }
-  }
-
-  const missing = liveToolNames.filter((name) => name !== 'verify_receipt' && !attributed.has(name));
-  if (missing.length > 0) {
-    throw new Error(`finalized tools/list contains ${missing.length} name(s) absent from the shared registrar manifest: ${missing.join(', ')}`);
-  }
-  const ambiguous = [...attributed].filter(([, owners]) => owners.length > 1);
-  if (ambiguous.length > 0) {
-    throw new Error(`finalized tool names have ambiguous module attribution: ${ambiguous.map(([name, owners]) => `${name} (${owners.join(', ')})`).join('; ')}`);
-  }
-  const namesByModule = new Map(REGISTRAR_MANIFEST.filter((module) => module.file.startsWith('src/tools/')).map((module) => [module.file, []]));
-  for (const [name, owners] of attributed) namesByModule.get(owners[0]).push(name);
-  namesByModule.set('src/index.ts', liveToolNames.includes('verify_receipt') ? ['verify_receipt'] : []);
-  return namesByModule;
-}
-
-/** Parse the production registrar callsites in src/index.ts into one manifest. */
-function parseProductionManifest(source) {
-  const imports = new Map();
-  const importPattern = /import\s*\{([^}]+)\}\s*from\s*['"]\.\/(tools\/[^'"]+|resources\/index|resources\/templates|prompts\/index)\.js['"]/g;
-  for (const match of source.matchAll(importPattern)) {
-    const [, symbols, path] = match;
-    for (const specifier of symbols.split(',')) {
-      const symbol = specifier.trim().split(/\s+as\s+/).at(-1);
-      if (/^[A-Za-z0-9_]+$/.test(symbol)) imports.set(symbol, `src/${path}.ts`);
-    }
-  }
-
-  const lines = source.split('\n');
-  const keyStack = [];
-  const manifest = [];
-  let braceDepth = 0;
-  for (const line of lines) {
-    const inlineKey = /isModuleActive\('([^']+)'/.exec(line)?.[1];
-    const activeKey = inlineKey ?? keyStack.at(-1)?.key;
-    for (const match of line.matchAll(/\b(register[A-Z][A-Za-z0-9]*)\s*\(/g)) {
-      const registrar = match[1];
-      if (!imports.has(registrar)) continue;
-      const key = activeKey ?? normalizeUngatedKey(registrar);
-      manifest.push({ registrar, file: imports.get(registrar), key, ungated: !activeKey });
-    }
-    if (/server\.tool\(\s*['"]verify_receipt['"]/.test(line)) {
-      manifest.push({ registrar: 'verify_receipt', file: 'src/index.ts', key: 'library', ungated: false });
     }
 
-    const blockKey = /\bif\s*\(.*isModuleActive\('([^']+)'.*\)\s*\{/.exec(line)?.[1];
-    const opens = (line.match(/\{/g) ?? []).length;
-    const closes = (line.match(/\}/g) ?? []).length;
-    braceDepth += opens - closes;
-    if (blockKey) keyStack.push({ key: blockKey, depth: braceDepth });
-    while (keyStack.length > 0 && braceDepth < keyStack.at(-1).depth) keyStack.pop();
+    const live = new Set(liveToolNames);
+    const missing = liveToolNames.filter((name) => !attributed.has(name));
+    const extra = [...attributed.keys()].filter((name) => !live.has(name)).sort();
+    if (missing.length > 0) {
+      throw new Error(`finalized tools/list contains ${missing.length} name(s) absent from the shared registrar manifest: ${missing.join(', ')}`);
+    }
+    if (extra.length > 0) {
+      throw new Error(`shared registrar manifest owns ${extra.length} name(s) absent from finalized tools/list: ${extra.join(', ')}`);
+    }
+    const ambiguous = [...attributed].filter(([, owners]) => owners.length > 1);
+    if (ambiguous.length > 0) {
+      throw new Error(`finalized tool names have ambiguous module attribution: ${ambiguous.map(([name, owners]) => `${name} (${owners.join(', ')})`).join('; ')}`);
+    }
+
+    return {
+      namesByModule,
+      manifestToolNames: [...attributed.keys()].sort(),
+      schemaMeasurements: collectModuleSchemaBudgets(server),
+    };
+  } finally {
+    await server.close().catch(() => undefined);
   }
-  return manifest;
-}
-
-function normalizeUngatedKey(registrar) {
-  if (registrar === 'registerDoctorTool') return 'spotify_doctor';
-  if (registrar === 'registerSwarm3MetaTools') return 'swarm3meta';
-  return registrar
-    .replace(/^register/, '')
-    .replace(/Tools$/, '')
-    .replace(/Tool$/, '')
-    .replace(/([a-z0-9])([A-Z])/g, '$1$2')
-    .toLowerCase();
-}
-
-function toolModuleFilesFromSource() {
-  return readdirSync(join(ROOT, 'src/tools'))
-    .filter((file) => file.endsWith('.ts'))
-    .sort()
-    .map((file) => [`src/tools/${file}`]);
 }
 
 function countModuleTools(namesByModule) {
   return Object.fromEntries([...namesByModule].map(([file, names]) => [file, names.length]));
+}
+
+
+function schemaBudgetTable(census) {
+  const measured = new Map(census.schemaMeasurements.map((row) => [row.module, row]));
+  const rows = census.schemaBudgets.map((budget) => {
+    const live = measured.get(budget.module);
+    return `| ${budget.module} | ${live?.toolCount ?? 0} | ${formatInteger(live?.schemaBytes ?? 0)} | ${budget.baselineToolCount} | ${formatInteger(budget.baselineSchemaBytes)} | ${budget.maxToolCount} | ${formatInteger(budget.maxSchemaBytes)} |`;
+  });
+  return [
+    '| Module | Tools | Schema bytes | Baseline tools | Baseline bytes | Effective tool ceiling | Effective byte ceiling |',
+    '|---|---:|---:|---:|---:|---:|---:|',
+    ...rows,
+  ].join('\n');
+}
+
+function formatInteger(value) {
+  return String(value).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+}
+
+function checkSchemaBudgetTruth(census) {
+  const errors = [];
+  const measurements = new Map(census.schemaMeasurements.map((row) => [row.module, row]));
+  for (const budget of census.schemaBudgets) {
+    const measured = measurements.get(budget.module);
+    if (!measured) {
+      errors.push(`docs/schema-budgets.md: shared registrar manifest module ${budget.module} has no registry measurement`);
+      continue;
+    }
+    if (measured.toolCount !== budget.baselineToolCount || measured.schemaBytes !== budget.baselineSchemaBytes) {
+      errors.push(`src/tools/annotations.ts: ${budget.module} baseline is ${budget.baselineToolCount} tools/${budget.baselineSchemaBytes}B, measured ${measured.toolCount} tools/${measured.schemaBytes}B`);
+    }
+  }
+  return errors;
 }
 
 function allRegistrationKeysFromSource() {
@@ -315,7 +325,7 @@ function moduleInventory(census) {
   const sentenceSegmenter = new Intl.Segmenter('en', { granularity: 'sentence' });
   const rows = files.map((file) => {
     const source = readFileSync(join(ROOT, file), 'utf8');
-    const description = firstDescription(source, basename(file, '.ts'), sentenceSegmenter)
+    const description = firstDescription(source, file, sentenceSegmenter)
       .replaceAll('|', '\\|')
       .replace(/\s+/g, ' ');
     const registered = census.perModule[file] ?? 0;
@@ -326,19 +336,18 @@ function moduleInventory(census) {
 }
 
 function inventoryFiles() {
-  return [
-    ...readdirSync(join(ROOT, 'src')).filter((file) => file.endsWith('.ts')).map((file) => `src/${file}`),
-    ...readdirSync(join(ROOT, 'src/lib')).filter((file) => file.endsWith('.ts')).map((file) => `src/lib/${file}`),
-    ...readdirSync(join(ROOT, 'src/tools')).filter((file) => file.endsWith('.ts')).map((file) => `src/tools/${file}`),
-  ].sort();
+  return walkFiles(join(ROOT, 'src'))
+    .filter((file) => file.endsWith('.ts'))
+    .map((file) => relative(ROOT, file))
+    .sort();
 }
 
 function firstDescription(source, fallback, segmenter) {
   const doc = /^\/\*\*\s*\n([\s\S]*?)\n\s*\*\//.exec(source);
-  if (!doc) return `Runtime module for ${fallback}.`;
-  const lines = doc[1]
-    .split('\n')
-    .map((line) => line.replace(/^\s*\* ?/, '').trim());
+  const leadingComments = /^(?:\/\/[^\n]*\n)+/.exec(source)?.[0];
+  const lines = doc
+    ? doc[1].split('\n').map((line) => line.replace(/^\s*\* ?/, '').trim())
+    : (leadingComments ?? '').split('\n').map((line) => line.replace(/^\/\/ ?/, '').trim());
   while (lines.length > 0 && lines[0] === '') lines.shift();
   const paragraph = [];
   for (const line of lines) {
@@ -350,7 +359,7 @@ function firstDescription(source, fallback, segmenter) {
 }
 
 function toolSurface(census) {
-  return `The finalized default MCP registry exposes **${census.tools} tools** (${census.tools - 1} attributed to the ${census.toolModuleFiles} files under \`src/tools/\`, plus inline \`verify_receipt\`), organized by ${census.registrationKeys} registration keys and ${census.toolsetNames} named toolsets. Registration keys: ${census.registrationKeyNames.map((key) => `\`${key}\``).join(', ')}. \`node scripts/surface-census.mjs\` derives the authoritative inventory by starting the real \`src/index.ts\` stdio entry and calling \`tools/list\`, \`resources/list\`, \`resources/templates/list\`, and \`prompts/list\` after production gates and finalizers, without network access.`;
+  return `The finalized default MCP registry exposes **${census.tools} tools** (all ${census.tools} attributed to the ${census.toolModuleFiles} files under \`src/tools/\`), organized by ${census.registrationKeys} registration keys and ${census.toolsetNames} named toolsets. Registration keys: ${census.registrationKeyNames.map((key) => `\`${key}\``).join(', ')}. \`node scripts/surface-census.mjs\` derives the authoritative inventory by starting the real \`src/index.ts\` stdio entry and calling \`tools/list\`, \`resources/list\`, \`resources/templates/list\`, and \`prompts/list\` after production gates and finalizers, without network access.`;
 }
 
 function resourceSurface(census) {
@@ -405,6 +414,7 @@ function checkDocumentation(blocks) {
     const error = inspectGeneratedBlock(readFileSync(join(ROOT, file), 'utf8'), file, name, body);
     if (error) errors.push(error);
   }
+  errors.push(...checkSchemaBudgetTruth(result));
   errors.push(...checkSpecStructure());
   errors.push(...checkDocReachability());
   errors.push(...checkGatedEndpointTruth());

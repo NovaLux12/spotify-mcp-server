@@ -21,8 +21,13 @@ const census = JSON.parse(execFileSync(process.execPath, ['scripts/surface-censu
   registrationKeys: number;
   toolModuleFiles: number;
   toolNames: string[];
+  manifestToolNames: string[];
   toolInputSchemas: Record<string, { properties?: Record<string, unknown> }>;
   registrationUnits: Array<{ registrar: string; file: string; key: string; ungated: boolean }>;
+  registrationKeyNames: string[];
+  manifestRegistrationKeys: string[];
+  toolsetRegistrationKeys: string[];
+  unconditionalRegistrationKeys: string[];
   perModule: Record<string, number>;
   registrySource: string;
 };
@@ -54,9 +59,12 @@ describe('generated architecture and specification inventory', () => {
   it('derives headline counts from the finalized production stdio registry', () => {
     assert.match(census.registrySource, /src\/index\.ts via stdio tools\/list after production finalizers/);
     assert.equal(
-      Object.entries(census.perModule).reduce((sum, [file, count]) => sum + (file.startsWith('src/tools/') ? count : 0), 0) + 1,
+      Object.entries(census.perModule).reduce((sum, [file, count]) => sum + (file.startsWith('src/tools/') ? count : 0), 0),
       census.tools,
     );
+  });
+  it('attributes the finalized registry exactly through the shared registrar manifest', () => {
+    assert.deepEqual(census.manifestToolNames, census.toolNames);
   });
 
   it('exports every production tool input schema', () => {
@@ -71,10 +79,16 @@ describe('generated architecture and specification inventory', () => {
     assert.deepEqual(doctor, {
       registrar: 'registerDoctorTool',
       file: 'src/tools/doctortool.ts',
-      key: 'spotify_doctor',
+      key: 'doctor',
       ungated: true,
     });
-    assert.equal(census.registrationKeys, new Set(census.registrationUnits.map(({ key }) => key)).size);
+    const expectedKeys = [...new Set([
+      ...census.manifestRegistrationKeys,
+      ...census.toolsetRegistrationKeys,
+      ...census.unconditionalRegistrationKeys,
+    ])].sort();
+    assert.equal(census.registrationKeys, 44);
+    assert.deepEqual(census.registrationKeyNames, expectedKeys);
 
   });
 
