@@ -1783,23 +1783,35 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
   });
 
   // playlist_sort (#287)
-  server.tool('playlist_sort', 'Sort a playlist in place by added_at/name/artist/duration/popularity. Quota: 🟢 GET all + PUT/POST. Also covers: sort_playlist_plan / sort_playlist_apply (safe plan/apply) — See also: sort_playlist_plan, sort_playlist_apply.', { playlist_id: z.string().describe('Playlist ID, spotify:playlist: URI, or URL'), sort_by: z.enum(['added_asc','added_desc','name_asc','name_desc','artist_asc','duration_asc','duration_desc','popularity_desc']).default('name_asc').describe('Sort key applied to the playlist'), dry_run: DryRun, ...sharedListFields }, async (args) => {
+  server.tool('playlist_sort', 'Sort a playlist in place by added_at/name/artist/duration. Quota: 🟢 GET all + PUT/POST. popularity is not a sort key: the API no longer returns it on playlist items. Also covers: sort_playlist_plan / sort_playlist_apply (safe plan/apply) — See also: sort_playlist_plan, sort_playlist_apply.', { playlist_id: z.string().describe('Playlist ID, spotify:playlist: URI, or URL'), sort_by: z.enum(['added_asc','added_desc','name_asc','name_desc','artist_asc','duration_asc','duration_desc']).default('name_asc').describe('Sort key applied to the playlist'), dry_run: DryRun, ...sharedListFields }, async (args) => {
     const playlistId = normalizePlaylistReference(args.playlist_id);
     const items = await client.getAllPages<PlaylistItemObject>(`/playlists/${encodeURIComponent(playlistId)}/items`, { limit: '100' }, { maxItems: getConfig().fetchAllCap });
-    const entries = items.map((row, idx) => ({ uri: row.item?.uri ?? '', name: (row.item as SpotifyTrack | undefined)?.name ?? '', artist: ((row.item as SpotifyTrack | undefined)?.artists?.[0]?.name ?? ''), duration: (row.item as SpotifyTrack | undefined)?.duration_ms ?? 0, added: row.added_at, popularity: (row.item as unknown as { popularity?: number })?.popularity ?? 0, idx })).filter(e => !!e.uri);
-    const sorted = [...entries].sort((a,b) => {
-      switch(args.sort_by){
-        case 'added_asc': return (a.added ?? '').localeCompare(b.added ?? '');
-        case 'added_desc': return (b.added ?? '').localeCompare(a.added ?? '');
-        case 'name_asc': return a.name.localeCompare(b.name);
-        case 'name_desc': return b.name.localeCompare(a.name);
-        case 'artist_asc': return a.artist.localeCompare(b.artist);
-        case 'duration_asc': return a.duration - b.duration;
-        case 'duration_desc': return b.duration - a.duration;
-        case 'popularity_desc': return b.popularity - a.popularity;
-        default: return 0;
+    const entries = items.map((row, idx) => ({ uri: row.item?.uri ?? '', name: (row.item as SpotifyTrack | undefined)?.name ?? '', artist: ((row.item as SpotifyTrack | undefined)?.artists?.[0]?.name ?? ''), duration: (row.item as SpotifyTrack | undefined)?.duration_ms ?? 0, added: row.added_at, idx })).filter(e => !!e.uri);
+    const keyOf = (e: (typeof entries)[number]): string | number => {
+      switch (args.sort_by) {
+        case 'added_asc':
+        case 'added_desc': return e.added ?? '';
+        case 'artist_asc': return e.artist;
+        case 'duration_asc':
+        case 'duration_desc': return e.duration;
+        default: return e.name;
       }
-    });
+    };
+    const keyed = entries.map((e) => ({ e, k: keyOf(e) }));
+    // #861: the commit path is a full destructive replace, so a key every row
+    // shares — any field the API stopped returning collapses to one value —
+    // cannot move a single item. Compare before the write: afterwards the
+    // playlist has been rewritten to its own order and the tool would still
+    // report a sort that never happened.
+    const distinct = new Set(keyed.map(({ k }) => `${typeof k}:${k}`));
+    if (entries.length > 1 && distinct.size <= 1) {
+      return textResult(
+        `Refused to sort ${playlistId} by ${args.sort_by}: no comparable values — all ${entries.length} item(s) share the same ${args.sort_by} value, so the sort would not change the order. Nothing was changed.`,
+        { ok: false, reason: 'no_comparable_values', playlist: playlistId, sort_by: args.sort_by, items: entries.length, distinct_values: distinct.size, changed: false, dry_run: args.dry_run },
+      );
+    }
+    const sign = args.sort_by.endsWith('_desc') ? -1 : 1;
+    const sorted = keyed.sort((a, b) => (typeof a.k === 'number' && typeof b.k === 'number' ? sign * (a.k - b.k) : sign * String(a.k).localeCompare(String(b.k)))).map(x => x.e);
     const uris = sorted.map(e=>e.uri);
     if (args.dry_run) return textResult(describeDryRun('sort playlist', playlistId, [`Would sort ${uris.length} items by ${args.sort_by}`, ...uris.slice(0,5)]));
     const snap = await replaceWithUris(playlistId, uris);
