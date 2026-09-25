@@ -339,7 +339,11 @@ export function registerAnalyticsTools(server: McpServer, client: SpotifyClient)
       ranges.forEach((tr, idx) => {
         results[tr] = (pages[idx]?.items ?? []).map((a, i) => ({
           id: a.id,
-          name: a.name,
+          // The shared type says `name: string`, but the API is the only thing
+          // that can contradict it. Falling back to the id costs nothing and
+          // cannot itself be wrong; `name: undefined` in a payload is the same
+          // fabrication #804 removes, one field over.
+          name: a.name ?? a.id,
           rank: i + 1,
         }));
       });
