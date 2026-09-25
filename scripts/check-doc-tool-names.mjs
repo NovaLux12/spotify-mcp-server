@@ -23,6 +23,7 @@ const tools = new Set(census.toolNames);
 const prompts = new Set(census.promptNames);
 const resources = new Set(census.resourceUris);
 const parameterAllowlist = new Set([
+  ...(census.parameterNames ?? []),
   'account_premium', 'active_modules', 'active_toolsets', 'additional_types',
   'appears_on', 'authorization_code', 'available_markets', 'budget_shrunk',
   'check_duplicates', 'client_id', 'client_secret', 'code_challenge',

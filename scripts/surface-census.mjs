@@ -43,6 +43,7 @@ const result = {
   resourceTemplates: census.resourceTemplateUris.length,
   prompts: census.promptNames.length,
   toolNames: census.toolNames,
+  parameterNames: census.parameterNames,
   resourceUris: census.resourceUris,
   resourceTemplateUris: census.resourceTemplateUris,
   promptNames: census.promptNames,
@@ -131,6 +132,7 @@ async function readProductionRegistry() {
     ]);
     return {
       toolNames: toolPage.tools.map(({ name }) => name).sort(),
+      parameterNames: [...new Set(toolPage.tools.flatMap((tool) => Object.keys(tool.inputSchema?.properties ?? {})))].sort(),
       resourceUris: resourcePage.resources.map(({ uri }) => uri).sort(),
       resourceTemplateUris: templatePage.resourceTemplates.map(({ uriTemplate }) => uriTemplate).sort(),
       promptNames: promptPage.prompts.map(({ name }) => name).sort(),
