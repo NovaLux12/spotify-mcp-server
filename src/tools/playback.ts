@@ -837,7 +837,7 @@ export function registerPlaybackTools(server: McpServer, client: SpotifyClient):
       // 3) Optional volume normalization on the target.
       if (args.volume !== undefined) {
         await client.put(
-          `/me/player/volume?${new URLSearchParams({ volume: String(args.volume), device_id: args.device_id })}`,
+          `/me/player/volume?${new URLSearchParams({ volume_percent: String(args.volume), device_id: args.device_id })}`,
         );
       }
 

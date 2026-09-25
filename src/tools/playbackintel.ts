@@ -95,11 +95,23 @@ export function registerPlaybackIntelTools(server: McpServer, client: SpotifyCli
       if (args.shuffle !== undefined) {
         try { await client.put(`/me/player/shuffle?state=${args.shuffle}&device_id=${encodeURIComponent(deviceId)}`); } catch {}
       }
+      // The volume write is a secondary effect: a rejected write must not be
+      // reported as applied, but it also must not abort the play that follows.
+      let volumeError: string | undefined;
       if (args.volume !== undefined) {
-        try { await client.put(`/me/player/volume?${new URLSearchParams({ volume:String(args.volume), device_id: deviceId })}`); } catch {}
+        try {
+          await client.put(`/me/player/volume?${new URLSearchParams({ volume_percent: String(args.volume), device_id: deviceId })}`);
+        } catch (e) { volumeError = e instanceof Error ? e.message : String(e); }
       }
       await client.put(`/me/player/play?device_id=${encodeURIComponent(deviceId)}`, playBody);
-      return emit(args.response_format as string, { ok:true, resolved_device_id: deviceId, device_name: devices.find(d=>d.id===deviceId)?.name, playBody }, `Playing ${label} on "${devices.find(d=>d.id===deviceId)?.name ?? deviceId}" (${deviceId})${args.volume!==undefined?` @ ${args.volume}%`:''}.`);
+      const deviceName = devices.find((d) => d.id === deviceId)?.name ?? deviceId;
+      return emit(args.response_format as string, {
+        ok: volumeError === undefined,
+        resolved_device_id: deviceId,
+        device_name: deviceName,
+        playBody,
+        ...(args.volume !== undefined ? { volume_percent: args.volume, volume_applied: volumeError === undefined, ...(volumeError ? { volume_error: volumeError } : {}) } : {}),
+      }, `Playing ${label} on "${deviceName}" (${deviceId})${volumeError ? ` — volume ${args.volume}% was NOT applied: ${volumeError}` : (args.volume !== undefined ? ` @ ${args.volume}%` : '')}.`);
     });
 
   // 273 queue_next — insert-next with honest tail disclosure
@@ -443,7 +455,7 @@ export function registerPlaybackIntelTools(server: McpServer, client: SpotifyCli
       const cur = typeof player?.device?.volume_percent === 'number' ? player.device.volume_percent : 50;
       const target = Math.max(0, Math.min(100, cur + (args.step as number)));
       if (args.dry_run) return { content:[{type:'text', text: describeDryRun('volume_step', `${args.step>0?'+':''}${args.step}`, [`Volume ${cur} → ${target}`])}], structuredContent:{ ok:true, dry_run:true, from: cur, step: args.step, to: target } };
-      const qs = new URLSearchParams({ volume: String(target) });
+      const qs = new URLSearchParams({ volume_percent: String(target) });
       if (args.device_id) qs.set('device_id', args.device_id as string);
       else if (player?.device?.id) qs.set('device_id', player.device.id);
       await client.put(`/me/player/volume?${qs}`);

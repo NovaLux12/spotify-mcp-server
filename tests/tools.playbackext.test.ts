@@ -16,7 +16,7 @@ function makeClient(overrides: Partial<Record<string, any>> = {}) {
       if (path === '/me/player/recently-played') return { items: overrides.recent ?? [] };
       return null;
     },
-    async put(path: string) { puts.push(path); return null; },
+    async put(path: string) { puts.push(path); if (overrides.failPut?.(path)) throw new Error('volume write rejected'); return null; },
     async post(path: string) { posts.push(path); return { id: 'pl1', uri: 'spotify:playlist:pl1' } as any; },
     async getAllPages() { return []; },
   };
@@ -63,6 +63,33 @@ describe('playbackext', () => {
     assert.match(dry.content[0].text, /Would apply|dry run/i);
     const applied = await h.invoke('apply_device_presets', {});
     assert.match(applied.content[0].text, /Applied/);
+  });
+  // #830: Spotify declares volume_percent as the required query parameter; the
+  // `volume` spelling is silently rejected, so every preset write was a no-op.
+  it('apply_device_presets writes volume_percent, not volume', async () => {
+    const { client, puts } = makeClient(); const h = serverHarness(client);
+    await h.invoke('set_device_volume_preset', { device_id: 'dev1', volume_percent: 42 });
+    await h.invoke('set_device_volume_preset', { device_id: 'dev2', volume_percent: 7 });
+    await h.invoke('apply_device_presets', {});
+    const vol = puts.filter((p) => p.startsWith('/me/player/volume'));
+    assert.equal(vol.length, 2, JSON.stringify(puts));
+    const parsed = vol.map((p) => new URLSearchParams(p.split('?')[1]));
+    assert.deepEqual(parsed.map((q) => q.get('volume_percent'))!.sort(), ['42', '7']);
+    for (const q of parsed) {
+      assert.equal(q.get('volume'), null, 'Spotify does not accept `volume`');
+      assert.ok(q.get('device_id'));
+    }
+  });
+  it('apply_device_presets reports ok:false when a write is rejected', async () => {
+    const { client } = makeClient({ failPut: (p: string) => p.startsWith('/me/player/volume') });
+    const h = serverHarness(client);
+    await h.invoke('set_device_volume_preset', { device_id: 'dev1', volume_percent: 42 });
+    const out = await h.invoke('apply_device_presets', {});
+    const sc = out.structuredContent as Record<string, unknown>;
+    assert.equal(sc.ok, false, 'a rejected preset write must not report success');
+    assert.equal(sc.applied, 0);
+    assert.deepEqual(sc.failed, ['dev1']);
+    assert.match(out.content[0].text, /failed: dev1/);
   });
   it('listening sessions tag/list/replay queue', async () => {
     const recent = [

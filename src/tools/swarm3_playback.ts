@@ -195,12 +195,13 @@ function skippedNoIdNote(count: number): string {
 }
 
 /**
- * One preview line per device. Names only the parameters the volume tool
- * actually declares (`volume`) plus the real device id it resolved, so an
- * agent copying the plan reproduces the call the tool would make.
+ * One preview line per device. Names the query parameter the wire call
+ * actually sends (`volume_percent`, the name Spotify declares) plus the real
+ * device id it resolved, so an agent copying the plan reproduces the call the
+ * tool would make. The tool's own input stays `volume`.
  */
 function volumePlanLine(d: VolumeTarget, volume: number): string {
-  return `PUT /me/player/volume — volume=${volume} on "${d.name}" (device ${d.id})`;
+  return `PUT /me/player/volume?volume_percent=${volume} on "${d.name}" (device ${d.id})`;
 }
 
 function deviceLine(d: SpotifyDevice): string {
@@ -645,7 +646,7 @@ export function registerSwarm3PlaybackTools(server: McpServer, client: SpotifyCl
       const failed: string[] = [];
       for (const d of selected) {
         try {
-          await client.put(`/me/player/volume?${new URLSearchParams({ volume: String(args.volume), device_id: d.id })}`);
+          await client.put(`/me/player/volume?${new URLSearchParams({ volume_percent: String(args.volume), device_id: d.id })}`);
           applied.push(d.name);
         } catch {
           failed.push(d.name);

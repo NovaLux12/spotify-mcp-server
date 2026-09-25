@@ -853,8 +853,24 @@ test('handoff preserves position: transfer, resume at offset, set volume (issue 
     assert.equal(puts[1].path, '/me/player/play?device_id=dev2');
     const playBody = puts[1].body as { position_ms: number };
     assert.equal(playBody.position_ms, 185000);
-    assert.equal(puts[2].path, '/me/player/volume?volume=30&device_id=dev2');
+    assert.equal(puts[2].path, '/me/player/volume?volume_percent=30&device_id=dev2');
   });
+
+// #830: Spotify declares volume_percent as the required query parameter; the
+// `volume` spelling is silently rejected, so handoff reported a volume it
+// never applied.
+test('handoff normalizes volume with volume_percent, not volume (#830)', async () => {
+  const h = makeHarness({ getResponse: (path) => (path === '/me/player' ? playbackStateFixture(trackFixture()) : undefined) });
+
+  await invoke(findTool(h.registered, 'handoff'), { device_id: 'dev2', volume: 30 });
+
+  const vol = h.calls.find((c) => c.method === 'PUT' && c.path.startsWith('/me/player/volume'));
+  assert.ok(vol, 'handoff must PUT the requested volume');
+  const qs = new URLSearchParams(vol!.path.split('?')[1]);
+  assert.equal(qs.get('volume_percent'), '30');
+  assert.equal(qs.get('device_id'), 'dev2');
+  assert.equal(qs.get('volume'), null, `Spotify does not accept \`volume\`: ${vol!.path}`);
+});
 
 
 test('handoff dry_run performs zero calls and lists the steps (issue #112)', async () => {
