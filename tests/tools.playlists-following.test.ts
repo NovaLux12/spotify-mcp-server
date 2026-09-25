@@ -1770,3 +1770,147 @@ describe('update_playlist visibility elicitation (#157)', () => {
     assert.match(textOf(out), /\[dry run\] update playlist/);
   });
 });
+
+describe('canonical playlist set-operation contracts', () => {
+  it('rejects legacy array and A/B names before any Spotify call', async () => {
+    const h = harness();
+    await assert.rejects(
+      () => h.invoke('check_playlist_following', { playlist_ids: ['a'] }),
+      (err: unknown) => err instanceof z.ZodError,
+    );
+    await assert.rejects(
+      () => h.invoke('compare_playlist_covers', { playlist_id_a: 'a', playlist_id_b: 'b' }),
+      (err: unknown) => err instanceof z.ZodError,
+    );
+    await assert.rejects(
+      () => h.invoke('playlist_union', { source_playlist_ids: ['a', 'b'], target_name: 'X' }),
+      (err: unknown) => err instanceof z.ZodError,
+    );
+    await assert.rejects(
+      () => h.invoke('playlist_subtract', { base_playlist_id: 'a', subtract_playlist_ids: ['b'] }),
+      (err: unknown) => err instanceof z.ZodError,
+    );
+    await assert.rejects(
+      () => h.invoke('playlist_symmetric_difference', { playlist_id_a: 'a', playlist_id_b: 'b' }),
+      (err: unknown) => err instanceof z.ZodError,
+    );
+    assert.equal(h.client.calls.length, 0);
+  });
+
+  it('uses canonical caps and playlists in zero-write union preview', async () => {
+    const h = harness((path, params) => {
+      const match = /^\/playlists\/([^/]+)\/items$/.exec(path);
+      if (!match) return null;
+      const all = [
+        { item: playableTrack('a', 'From A'), added_at: undefined },
+        { item: playableTrack('shared', 'Shared'), added_at: undefined },
+      ];
+      const query = (params ?? {}) as Record<string, string>;
+      const offset = Number(query.offset ?? 0);
+      const limit = Number(query.limit ?? 100);
+      return { items: all.slice(offset, offset + limit), total: all.length, limit, offset };
+    });
+
+    const out = await h.invoke('playlist_union', {
+      playlists: ['a', 'b'],
+      target_playlist_id: 'target',
+      limit: 1,
+      scan_cap: 2,
+      dry_run: true,
+      response_format: 'json',
+    });
+    const payload = JSON.parse(textOf(out)) as Record<string, unknown>;
+    assert.deepEqual(payload.playlists, ['a', 'b']);
+    assert.equal(payload.limit, 1);
+    assert.equal(payload.scan_cap, 2);
+    assert.equal(payload.dry_run, true);
+    assert.equal(
+      wireCalls(h.client.calls).filter((call) => call.method !== 'GET').length,
+      0,
+    );
+  });
+
+  it('subtract preview identifies playlist_a first and makes zero writes', async () => {
+    const h = harness((path) => {
+      if (path === '/playlists/a/items') {
+        return { items: [{ item: playableTrack('keep', 'Keep') }, { item: playableTrack('shared', 'Shared') }], total: 2, limit: 100 };
+      }
+      if (path === '/playlists/b/items') {
+        return { items: [{ item: playableTrack('shared', 'Shared') }], total: 1, limit: 100 };
+      }
+      return null;
+    });
+
+    const out = await h.invoke('playlist_subtract', {
+      playlists: ['a', 'b'],
+      limit: 25,
+      scan_cap: 50,
+      dry_run: true,
+      response_format: 'json',
+    });
+    const payload = JSON.parse(textOf(out)) as Record<string, unknown>;
+    assert.equal(payload.playlist_a, 'a');
+    assert.deepEqual(payload.playlists, ['a', 'b']);
+    assert.equal(payload.removed_total, 1);
+    assert.equal(payload.kept_total, 1);
+    assert.equal(payload.limit, 25);
+    assert.equal(payload.scan_cap, 50);
+    assert.equal(
+      wireCalls(h.client.calls).filter((call) => call.method !== 'GET').length,
+      0,
+    );
+  });
+
+  it('orders symmetric-difference JSON as playlist_a then playlist_b', async () => {
+    const h = harness((path, _params) => {
+      const match = /^\/playlists\/([^/]+)\/items$/.exec(path);
+      if (!match) return null;
+      const id = match[1];
+      const items = id === 'a' ? ['a', 'shared'] : id === 'b' ? ['b', 'shared'] : [];
+      return { items: items.map((track) => ({ item: playableTrack(track, track) })), total: items.length, limit: 100 };
+    });
+
+    const out = await h.invoke('playlist_symmetric_difference', {
+      playlist_a: 'a',
+      playlist_b: 'b',
+      response_format: 'json',
+    });
+    const payload = JSON.parse(textOf(out)) as {
+      playlist_a: string;
+      playlist_b: string;
+      symmetric_difference: string[];
+    };
+    assert.equal(payload.playlist_a, 'a');
+    assert.equal(payload.playlist_b, 'b');
+    assert.deepEqual(payload.symmetric_difference, [
+      'spotify:track:a',
+      'spotify:track:b',
+    ]);
+  });
+
+  it('declined large union confirmation returns cancelled with zero writes', async () => {
+    const source = Array.from({ length: 50 }, (_, i) => ({
+      item: playableTrack(`t${i}`, `Track ${i}`),
+      added_at: undefined,
+    }));
+    const h = harness(
+      (path) => path === '/playlists/a/items'
+        ? { items: source, total: source.length, limit: 100 }
+        : path === '/playlists/b/items'
+          ? { items: [], total: 0, limit: 100 }
+          : null,
+      registerPlaylistTools,
+      { action: 'decline' },
+    );
+
+    const out = await h.invoke('playlist_union', {
+      playlists: ['a', 'b'],
+      target_playlist_id: 'target',
+    });
+    assert.deepEqual(out.structuredContent, { ok: false, cancelled: true });
+    assert.equal(
+      wireCalls(h.client.calls).filter((call) => call.method !== 'GET').length,
+      0,
+    );
+  });
+});
