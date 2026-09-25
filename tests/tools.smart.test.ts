@@ -66,8 +66,20 @@ function harness(opts: {
         return { items: top.slice(offset, offset + limit) } as T;
       }
       if (path === '/me/player/recently-played') {
+        // Newest-first page; `before` is an index into the history and
+        // `cursors.after` is the argument the next (older) page takes.
+        const offset = Number(params?.before ?? 0);
+        const limit = Number(params?.limit ?? 50);
+        const rows = recent.slice(offset, offset + limit);
+        const end = offset + rows.length;
         return {
-          items: recent.map((t) => ({ track: t, played_at: '2026-08-26T10:00:00Z', context: null })),
+          items: rows.map((t, i) => ({
+            track: t,
+            played_at: new Date(Date.UTC(2026, 7, 26, 10, 0, 0) - (offset + i) * 60_000).toISOString(),
+            context: null,
+          })),
+          cursors: { after: String(end), before: String(Math.max(0, offset - limit)) },
+          next: end < recent.length ? String(end) : null,
         } as T;
       }
       // receipt re-fetch for playlist_meta
@@ -214,5 +226,129 @@ describe('create_smart_playlist creation', () => {
     const p = out.structuredContent as { selected: number };
     assert.equal(p.selected, 2);
     void out;
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #809 — candidate pool caps are disclosed whenever they truncate the ranking.
+// Every source reads a bounded pool: top_tracks stops at 100, recently_played
+// walks the newest-first cursor chain until `limit` candidates exist, and
+// saved_tracks stops at scan_cap. A caller must never read a capped pool as a
+// complete ranking, so the bound is named in BOTH the payload and the prose,
+// and the dry-run and commit paths must agree about it.
+// ---------------------------------------------------------------------------
+
+interface PoolPayload {
+  candidates_scanned: number;
+  pool_capped: boolean;
+  pool_cap: number | null;
+  truncated_at_fetch_all_cap: boolean;
+}
+
+describe('create_smart_playlist pool cap disclosure (#809)', () => {
+  it('top_tracks: a full 100-candidate pool reports pool_capped with cap 100', async () => {
+    // 150 ranked tracks exist; the source only reads two pages of 50.
+    const ranked = Array.from({ length: 150 }, (_, i) => track(`tt${i}`, `Ranked ${i}`, [`Artist${i}`]));
+    const h = harness({ topTracks: ranked });
+    const out = await h.invoke({ source: 'top_tracks', limit: 150, dry_run: true });
+    const p = out.structuredContent as PoolPayload & { selected: number };
+    assert.equal(p.candidates_scanned, 100);
+    assert.equal(p.pool_capped, true);
+    assert.equal(p.pool_cap, 100);
+    // 100 candidates cannot fill a 150-track request: the miss must be visible.
+    assert.equal(p.selected, 100);
+    // The ceiling is in the prose, not just the payload.
+    assert.match(textOf(out), /top_tracks pool capped at 100/);
+    assert.match(textOf(out), /ranks beyond 100 were not read/);
+  });
+
+  it('top_tracks: a short pool is not reported as capped', async () => {
+    const ranked = Array.from({ length: 12 }, (_, i) => track(`s${i}`, `Few ${i}`, [`Artist${i}`]));
+    const h = harness({ topTracks: ranked });
+    const out = await h.invoke({ source: 'top_tracks', dry_run: true });
+    const p = out.structuredContent as PoolPayload;
+    assert.equal(p.candidates_scanned, 12);
+    assert.equal(p.pool_capped, false);
+    assert.equal(p.pool_cap, null);
+    assert.doesNotMatch(textOf(out), /pool capped at/);
+  });
+
+  it('recently_played: walks past the first page to reach the requested limit', async () => {
+    // Three pages of history; a limit of 80 needs two of them.
+    const history = Array.from({ length: 150 }, (_, i) => track(`rp${i}`, `Play ${i}`, [`Artist${i}`]));
+    const h = harness({ recentTracks: history });
+    const out = await h.invoke({ source: 'recently_played', limit: 80, dry_run: true });
+    const p = out.structuredContent as PoolPayload & { selected: number; uris: string[] };
+    assert.equal(p.candidates_scanned, 80);
+    assert.equal(p.selected, 80);
+    assert.equal(p.uris.length, 80);
+    assert.equal(p.pool_cap, 80);
+    assert.equal(p.pool_capped, true);
+    // The oldest pages were not read, and the caller is told so.
+    assert.match(textOf(out), /recently_played pool capped at 80/);
+    assert.match(textOf(out), /older history was not read/);
+    // More than one page of history was actually fetched.
+    const recentGets = h.gets.filter((g) => g.startsWith('/me/player/recently-played'));
+    assert.equal(recentGets.length, 2);
+    // The descent passes cursors.after back as `before`, not the same cursor twice.
+    assert.match(recentGets[1]!, /"before":"50"/);
+  });
+
+  it('recently_played: an exhausted history is not reported as capped', async () => {
+    const history = Array.from({ length: 20 }, (_, i) => track(`e${i}`, `Old ${i}`, [`Artist${i}`]));
+    const h = harness({ recentTracks: history });
+    const out = await h.invoke({ source: 'recently_played', limit: 200, dry_run: true });
+    const p = out.structuredContent as PoolPayload;
+    assert.equal(p.candidates_scanned, 20);
+    assert.equal(p.pool_capped, false);
+    assert.equal(p.pool_cap, null);
+    assert.doesNotMatch(textOf(out), /pool capped at/);
+  });
+
+  it('recently_played: scan_cap is the walk ceiling the schema advertises', async () => {
+    // 300 plays of history, but the caller caps the walk at 50. Reading past 50
+    // would make scan_cap a bound the payload does not honour.
+    const history = Array.from({ length: 300 }, (_, i) => track(`c${i}`, `Capped ${i}`, [`Artist${i}`]));
+    const h = harness({ recentTracks: history });
+    const out = await h.invoke({ source: 'recently_played', limit: 200, scan_cap: 50, dry_run: true });
+    const p = out.structuredContent as PoolPayload;
+    assert.equal(p.candidates_scanned, 50);
+    assert.equal(p.pool_capped, true);
+    assert.equal(p.pool_cap, 50);
+    assert.equal(p.truncated_at_fetch_all_cap, true);
+    assert.match(textOf(out), /recently_played pool capped at 50/);
+    // One page covers the 50-item ceiling; the walk stops there.
+    const recentGets = h.gets.filter((g) => g.startsWith('/me/player/recently-played'));
+    assert.equal(recentGets.length, 1);
+  });
+
+  it('dry-run and commit agree on candidates_scanned and pool_capped', async () => {
+    const ranked = Array.from({ length: 150 }, (_, i) => track(`p${i}`, `Ranked ${i}`, [`Artist${i}`]));
+    const dry = await harness({ topTracks: ranked }).invoke({ source: 'top_tracks', limit: 120, dry_run: true });
+    const real = await harness({ topTracks: ranked }).invoke({ source: 'top_tracks', limit: 120, time_range: 'long_term' });
+    const d = dry.structuredContent as PoolPayload;
+    const c = real.structuredContent as PoolPayload;
+    assert.equal(d.candidates_scanned, c.candidates_scanned);
+    assert.equal(d.pool_capped, c.pool_capped);
+    assert.equal(d.pool_cap, c.pool_cap);
+    assert.equal(c.pool_capped, true);
+    assert.equal(c.pool_cap, 100);
+    // The commit prose carries the same disclosure the dry run does, and names
+    // the range actually requested rather than a defaulted guess.
+    assert.match(textOf(real), /top_tracks pool capped at 100/);
+    assert.match(textOf(real), /100 tracks from the top 100 of your long_term ranking/);
+  });
+
+  it('saved_tracks keeps its scan_cap disclosure and the shared pool fields', async () => {
+    const many = Array.from({ length: 40 }, (_, i) => track(`sv${i}`, `Saved ${i}`, [`Artist${i}`]));
+    const h = harness({ savedTracks: many });
+    const out = await h.invoke({ source: 'saved_tracks', limit: 40, scan_cap: 40 });
+    const p = out.structuredContent as PoolPayload & { added: number };
+    assert.equal(p.candidates_scanned, 40);
+    assert.equal(p.pool_capped, true);
+    assert.equal(p.pool_cap, 40);
+    assert.equal(p.truncated_at_fetch_all_cap, true);
+    assert.equal(p.added, 40);
+    assert.match(textOf(out), /saved_tracks pool truncated at scan_cap=40/);
   });
 });
