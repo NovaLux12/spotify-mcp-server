@@ -268,14 +268,19 @@ describe('exhaustmisc — mop-up 10 tools', () => {
     const sc = res.structuredContent as {
       followed: number;
       public: { count: number; private: number; unknown: number };
-      followers: { total: number; reported: number; unknown: number; per_playlist: Array<{ id: string; followers: number | null }> };
+      followers: { total: number; reported: number; unknown: number; per_playlist?: unknown };
     };
     assert.equal(sc.followed, 3);
     assert.deepEqual(sc.public, { count: 2, private: 1, unknown: 0 });
+    // 5 + 7 + 0 from the fixture, summed by hand rather than recomputed from
+    // the code under test.
     assert.equal(sc.followers.total, 12);
     assert.equal(sc.followers.reported, 3);
     assert.equal(sc.followers.unknown, 0);
-    assert.equal(sc.followers.per_playlist.filter((r) => r.followers !== null).reduce((a, r) => a + (r.followers as number), 0), 12);
+    // `items` already carries each row verbatim under the truncateItems cap; a
+    // second full-length per-playlist copy would walk past the `returned` count
+    // the payload itself advertises.
+    assert.equal(sc.followers.per_playlist, undefined);
     const prose = res.content[0].text;
     assert.ok(prose.includes('2 public'), prose);
     assert.ok(prose.includes('1 private'), prose);
@@ -305,13 +310,14 @@ describe('exhaustmisc — mop-up 10 tools', () => {
     const res = await handler({ response_format: 'concise', max_results: 50 });
     const sc = res.structuredContent as {
       public: { count: number; private: number; unknown: number };
-      followers: { total: number; reported: number; unknown: number; per_playlist: Array<{ id: string; followers: number | null }> };
+      followers: { total: number; reported: number; unknown: number };
     };
     assert.deepEqual(sc.public, { count: 1, private: 0, unknown: 1 });
     assert.equal(sc.followers.total, 4);
+    // A `?? 0` default would report 2/0 here — the bare row's count was never
+    // fetched, so it must not be counted as a reported zero.
     assert.equal(sc.followers.reported, 1);
     assert.equal(sc.followers.unknown, 1);
-    assert.equal(sc.followers.per_playlist.find((r) => r.id === 'pl-bare')!.followers, null);
     assert.ok(res.content[0].text.includes('4 follower(s) across 1/2 playlist(s)'), res.content[0].text);
   });
 
