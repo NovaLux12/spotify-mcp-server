@@ -29,12 +29,17 @@ import { backupDir } from './backup.js';
 import {
   ResponseFormat,
   MaxResults,
+  PlaylistPairFields,
   batchSummary,
   describeDryRun,
+  legacyPlaylistPairFields,
   parseSpotifyUri,
   resolveMaxResults,
+  resolvePlaylistInput,
   sharedListFields,
   truncateItems,
+  withPlaylistInputMetadata,
+  withPlaylistInputNote,
 } from '../shaping.js';
 import type { ResponseFormatValue } from '../shaping.js';
 import type {
@@ -1192,14 +1197,16 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
     'Compare two playlists: what is only in A, only in B, and in both — plus whether the shared '
       + 'tracks appear in the same relative order. Read-only. Quota: 🟢 4 GETs. Also covers: diff_playlists (live playlist diff), playlist_difference_plan (subtract plan) — See also: diff_playlists, playlist_difference_plan.',
     {
-      playlist_a_id: z.string().describe('First playlist, as ID or spotify:playlist: URI'),
-      playlist_b_id: z.string().describe('Second playlist, as ID or spotify:playlist: URI'),
+      ...PlaylistPairFields,
+      ...legacyPlaylistPairFields([['playlist_a_id', 'playlist_b_id']]),
       ...sharedListFields,
     },
     async (args) => {
+      const input = resolvePlaylistInput(args, { kind: 'pair', aliases: [['playlist_a_id', 'playlist_b_id']] });
+      const [playlistA, playlistB] = input.values;
       const rf = args.response_format;
-      const a = await loadPlaylistFull(client, args.playlist_a_id);
-      const b = await loadPlaylistFull(client, args.playlist_b_id);
+      const a = await loadPlaylistFull(client, playlistA);
+      const b = await loadPlaylistFull(client, playlistB);
       const rowsA = toRows(a.items);
       const rowsB = toRows(b.items);
       const setA = new Map<string, OpRow>();
@@ -1221,7 +1228,7 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
         ...(onlyA.length > 0 ? ['', `Only in "${a.name ?? a.id}":`, ...renderRows(onlyA, max, 'A')] : []),
         ...(onlyB.length > 0 ? ['', `Only in "${b.name ?? b.id}":`, ...renderRows(onlyB, max, 'B')] : []),
       ];
-      return shape(rf, prose.join('\n'), {
+      const payload = {
         ok: true,
         playlist_a: { id: a.id, name: a.name, items: rowsA.length },
         playlist_b: { id: b.id, name: b.name, items: rowsB.length },
@@ -1231,7 +1238,8 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
         ...onlyABudget.disclosure,
         ...onlyBBudget.disclosure,
         same_order: sameOrder,
-      });
+      };
+      return shape(rf, withPlaylistInputNote(prose.join('\n'), input), withPlaylistInputMetadata(payload, input));
     },
   );
 
@@ -1496,14 +1504,16 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
       + 'sampled candidates from each side that the other lacks (for merging or splitting '
       + 'decisions). Read-only. Quota: 🟢 4 GETs.',
     {
-      playlist_a_id: z.string().describe('First playlist, as ID or spotify:playlist: URI'),
-      playlist_b_id: z.string().describe('Second playlist, as ID or spotify:playlist: URI'),
+      ...PlaylistPairFields,
+      ...legacyPlaylistPairFields([['playlist_a_id', 'playlist_b_id']]),
       ...sharedListFields,
     },
     async (args) => {
+      const input = resolvePlaylistInput(args, { kind: 'pair', aliases: [['playlist_a_id', 'playlist_b_id']] });
+      const [playlistA, playlistB] = input.values;
       const rf = args.response_format;
-      const a = await loadPlaylistFull(client, args.playlist_a_id);
-      const b = await loadPlaylistFull(client, args.playlist_b_id);
+      const a = await loadPlaylistFull(client, playlistA);
+      const b = await loadPlaylistFull(client, playlistB);
       const rowsA = toRows(a.items).filter((r) => r.uri);
       const rowsB = toRows(b.items).filter((r) => r.uri);
       const setA = new Set(rowsA.map((r) => r.uri));
@@ -1522,7 +1532,7 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
         ...(onlyA.length > 0 ? ['', `"${a.name ?? a.id}" lacks (from B):`, ...renderRows(onlyA, max, '→')] : []),
         ...(onlyB.length > 0 ? ['', `"${b.name ?? b.id}" lacks (from A):`, ...renderRows(onlyB, max, '→')] : []),
       ];
-      return shape(rf, prose.join('\n'), {
+      const payload = {
         ok: true,
         playlist_a: { id: a.id, name: a.name, items: rowsA.length },
         playlist_b: { id: b.id, name: b.name, items: rowsB.length },
@@ -1532,7 +1542,8 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
         ...onlyABudget.disclosure,
         ...onlyBBudget.disclosure,
         jaccard: Number(jaccard.toFixed(4)),
-      });
+      };
+      return shape(rf, withPlaylistInputNote(prose.join('\n'), input), withPlaylistInputMetadata(payload, input));
     },
   );
 
