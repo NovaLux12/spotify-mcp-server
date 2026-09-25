@@ -53,6 +53,232 @@ export const sharedListFields = {
 } as const;
 
 // ---------------------------------------------------------------------------
+// Canonical playlist set-operation inputs (#912)
+// ---------------------------------------------------------------------------
+
+/**
+ * Normalize the public playlist-reference forms to the raw ID used in
+ * `/playlists/{id}` paths. Spotify share URIs and open.spotify.com playlist
+ * URLs are equivalent to bare IDs on the wire.
+ */
+export function normalizePlaylistReference(reference: string): string {
+  const value = reference.trim();
+  if (value.length === 0) throw new Error('Playlist reference must not be empty');
+
+  const spotifyUri = /^spotify:playlist:([^?#]+)/.exec(value);
+  if (spotifyUri) return decodeURIComponent(spotifyUri[1]);
+  if (value.startsWith('spotify:')) {
+    throw new Error(`Expected a spotify:playlist: URI or playlist ID, received "${value}"`);
+  }
+
+  if (/^https?:\/\//i.test(value)) {
+    let url: URL;
+    try {
+      url = new URL(value);
+    } catch {
+      throw new Error(`Invalid playlist URL "${value}"`);
+    }
+    if (!/(^|\.)spotify\.com$/i.test(url.hostname)) {
+      throw new Error(`Expected a Spotify playlist URL, received "${value}"`);
+    }
+    const segments = url.pathname.split('/').filter(Boolean);
+    const playlistAt = segments.indexOf('playlist');
+    const id = playlistAt >= 0 ? segments[playlistAt + 1] : undefined;
+    if (!id) throw new Error(`Spotify URL does not contain a playlist ID: "${value}"`);
+    return decodeURIComponent(id);
+  }
+
+  return value;
+}
+
+/** One playlist reference, normalized before any handler sees it. */
+export const PlaylistRef = z
+  .string()
+  .min(1)
+  .transform(normalizePlaylistReference)
+  .describe('Playlist ID, spotify:playlist: URI, or Spotify playlist URL');
+
+/** Canonical ordered collection used by every set/diff tool. */
+export const PlaylistRefs = z
+  .array(PlaylistRef)
+  .min(2)
+  .max(10)
+  .describe('Ordered playlists (2–10), each as an ID, spotify:playlist: URI, or Spotify playlist URL');
+
+export const PlaylistId = PlaylistRef;
+
+/** Canonical plural input. Optional at schema level so one-release aliases can resolve. */
+export const PlaylistListFields = {
+  playlists: PlaylistRefs.optional(),
+} as const;
+
+/** Canonical A-then-B pair. Optional at schema level so one-release aliases can resolve. */
+export const PlaylistPairFields = {
+  playlist_a: PlaylistRef.optional(),
+  playlist_b: PlaylistRef.optional(),
+} as const;
+
+/** Shared mutation target: an existing playlist or a new playlist name. */
+export const TargetPlaylistFields = {
+  target_playlist_id: PlaylistRef.optional().describe('Existing target playlist (ID, URI, or URL)'),
+  target_name: z.string().optional().describe('Name for a newly created target playlist'),
+} as const;
+
+export type PlaylistListAlias =
+  | 'playlist_ids'
+  | 'source_playlist_ids'
+  | 'subtract_playlist_ids'
+  | 'sources';
+
+export type PlaylistPairAlias = readonly [
+  'playlist_id_a' | 'playlist_a_id' | 'a',
+  'playlist_id_b' | 'playlist_b_id' | 'b',
+];
+
+/** Build only the explicit legacy plural aliases a tool historically accepted. */
+export function legacyPlaylistListFields(
+  aliases: readonly PlaylistListAlias[],
+  limits: { min?: number; max?: number } = {},
+): Record<PlaylistListAlias, z.ZodOptional<z.ZodArray<typeof PlaylistRef>>> {
+  const schema = z.array(PlaylistRef).min(limits.min ?? 2).max(limits.max ?? 10)
+    .describe('Deprecated one-release alias; use playlists');
+  return Object.fromEntries(aliases.map((name) => [name, schema.optional()])) as Record<
+    PlaylistListAlias,
+    z.ZodOptional<z.ZodArray<typeof PlaylistRef>>
+  >;
+}
+
+/** Build only the explicit legacy A/B pairs a tool historically accepted. */
+export function legacyPlaylistPairFields(aliases: readonly PlaylistPairAlias[]): Record<string, z.ZodOptional<typeof PlaylistRef>> {
+  return Object.fromEntries(aliases.flatMap(([a, b]) => [
+    [a, PlaylistRef.optional().describe(`Deprecated one-release alias; use playlist_a`)],
+    [b, PlaylistRef.optional().describe(`Deprecated one-release alias; use playlist_b`)],
+  ]));
+}
+
+export interface PlaylistInputResolution {
+  /** Canonical, normalized values in caller-supplied order. */
+  values: string[];
+  /** Legacy input names actually present on the call. */
+  deprecatedInputs: string[];
+  /** One-line migration note, or null for canonical-only calls. */
+  deprecationNote: string | null;
+}
+
+export type PlaylistInputConfig =
+  | { kind: 'list'; aliases: readonly PlaylistListAlias[] }
+  | { kind: 'pair'; aliases: readonly PlaylistPairAlias[] };
+
+function orderedEqual(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+function normalizeInputList(value: unknown, name: string): string[] {
+  if (!Array.isArray(value)) throw new Error(`${name} must be an array of playlist references`);
+  return value.map((entry) => normalizePlaylistReference(String(entry)));
+}
+
+function resolution(values: string[], deprecatedInputs: string[], canonical: string): PlaylistInputResolution {
+  if (deprecatedInputs.length === 0) {
+    return { values, deprecatedInputs: [], deprecationNote: null };
+  }
+  return {
+    values,
+    deprecatedInputs: [...deprecatedInputs],
+    deprecationNote: `Deprecated input${deprecatedInputs.length === 1 ? '' : 's'} ${deprecatedInputs.join(', ')}; use ${canonical}. Alias support ends after the next release.`,
+  };
+}
+
+/**
+ * Resolve one canonical playlist collection or A/B pair, accepting only the
+ * declared one-release aliases. Matching aliases remain observable; missing,
+ * incomplete, differently ordered, or conflicting values fail before I/O.
+ */
+export function resolvePlaylistInput(
+  args: Readonly<Record<string, unknown>>,
+  config: PlaylistInputConfig,
+): PlaylistInputResolution {
+  if (config.kind === 'list') {
+    const canonical = args.playlists === undefined ? undefined : normalizeInputList(args.playlists, 'playlists');
+    const deprecatedInputs: string[] = [];
+    let selected = canonical;
+    let selectedName = 'playlists';
+
+    for (const alias of config.aliases) {
+      if (args[alias] === undefined) continue;
+      deprecatedInputs.push(alias);
+      const candidate = normalizeInputList(args[alias], alias);
+      if (selected === undefined) {
+        selected = candidate;
+        selectedName = alias;
+      } else if (!orderedEqual(selected, candidate)) {
+        throw new Error(`Conflicting playlist inputs ${selectedName} and ${alias}: values must match in the same order.`);
+      }
+    }
+
+    if (selected === undefined) {
+      const legacy = config.aliases.length > 0 ? ` (legacy aliases: ${config.aliases.join(', ')})` : '';
+      throw new Error(`Missing required playlist input playlists${legacy}`);
+    }
+    return resolution(selected, deprecatedInputs, 'playlists');
+  }
+
+  const canonicalA = args.playlist_a === undefined ? undefined : normalizePlaylistReference(String(args.playlist_a));
+  const canonicalB = args.playlist_b === undefined ? undefined : normalizePlaylistReference(String(args.playlist_b));
+  if ((canonicalA === undefined) !== (canonicalB === undefined)) {
+    throw new Error('Missing playlist pair: playlist_a and playlist_b must be provided together');
+  }
+
+  let selectedA = canonicalA;
+  let selectedB = canonicalB;
+  let selectedNames: readonly string[] = ['playlist_a', 'playlist_b'];
+  const deprecatedInputs: string[] = [];
+
+  for (const [aliasA, aliasB] of config.aliases) {
+    const hasA = args[aliasA] !== undefined;
+    const hasB = args[aliasB] !== undefined;
+    if (!hasA && !hasB) continue;
+    deprecatedInputs.push(aliasA, aliasB);
+    if (hasA !== hasB) {
+      throw new Error(`Incomplete deprecated playlist pair ${aliasA} and ${aliasB}: both values are required`);
+    }
+    const candidateA = normalizePlaylistReference(String(args[aliasA]));
+    const candidateB = normalizePlaylistReference(String(args[aliasB]));
+    if (selectedA === undefined || selectedB === undefined) {
+      selectedA = candidateA;
+      selectedB = candidateB;
+      selectedNames = [aliasA, aliasB];
+    } else if (selectedA !== candidateA || selectedB !== candidateB) {
+      throw new Error(`Conflicting playlist inputs ${selectedNames[0]} and ${aliasA} (or ${selectedNames[1]} and ${aliasB}): A/B values must match.`);
+    }
+  }
+
+  if (selectedA === undefined || selectedB === undefined) {
+    const legacy = config.aliases.length > 0 ? ` (legacy aliases: ${config.aliases.flat().join(', ')})` : '';
+    throw new Error(`Missing required playlist pair playlist_a and playlist_b${legacy}`);
+  }
+  return resolution([selectedA, selectedB], deprecatedInputs, 'playlist_a/playlist_b');
+}
+
+/** Add machine-readable deprecation metadata only when a legacy alias was used. */
+export function withPlaylistInputMetadata<T extends Record<string, unknown>>(
+  payload: T,
+  resolved: PlaylistInputResolution,
+): T | (T & { deprecated_inputs: string[]; deprecation_note: string }) {
+  if (resolved.deprecationNote === null) return payload;
+  return {
+    ...payload,
+    deprecated_inputs: resolved.deprecatedInputs,
+    deprecation_note: resolved.deprecationNote,
+  };
+}
+
+/** Append the same one-line migration note to prose/JSON text. */
+export function withPlaylistInputNote(text: string, resolved: PlaylistInputResolution): string {
+  return resolved.deprecationNote === null ? text : `${text}\n${resolved.deprecationNote}`;
+}
+
+// ---------------------------------------------------------------------------
 // Truncation math (#53)
 // ---------------------------------------------------------------------------
 

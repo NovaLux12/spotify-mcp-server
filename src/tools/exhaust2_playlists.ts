@@ -25,14 +25,20 @@ import { getConfig } from '../config.js';
 import { backupDir } from './backup.js';
 import {
   DryRun,
+  PlaylistId,
+  PlaylistListFields,
   ResponseFormat,
   MaxResults,
   batchSummary,
   describeDryRun,
+  legacyPlaylistListFields,
   parseSpotifyUri,
   resolveMaxResults,
+  resolvePlaylistInput,
   sharedListFields,
   truncateItems,
+  withPlaylistInputMetadata,
+  withPlaylistInputNote,
 } from '../shaping.js';
 import { expandAlbumToTracks } from './playlistbatch.js';
 import type { ResponseFormatValue } from '../shaping.js';
@@ -527,10 +533,7 @@ const SetDedupe = z
 /** Shared args for #380/#399 intersection writes. */
 const SetOpParams = {
   dedupe: SetDedupe,
-  target_playlist_id: z
-    .string()
-    .optional()
-    .describe('Existing playlist (ID or spotify:playlist: URI) to ATOMICALLY OVERWRITE with the result. Omit to compute read-only.'),
+  target_playlist_id: PlaylistId.optional().describe('Existing playlist (ID, URI, or URL) to ATOMICALLY OVERWRITE with the result. Omit to compute read-only.'),
   dry_run: DryRunDefault,
 } as const;
 
@@ -567,17 +570,15 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
       + 'the missing set op (union/subtract/XOR exist). Without a target it reports the '
       + 'intersection read-only. Quota: 🟢 N GETs + 1 PUT when committing. Also covers: playlist_intersection (same op, unified) — See also: playlist_intersection.',
     {
-      source_playlist_ids: z
-        .array(z.string())
-        .min(2)
-        .max(10)
-        .describe('Playlists to intersect, as IDs or spotify:playlist: URIs (2–10)'),
+      ...PlaylistListFields,
+      ...legacyPlaylistListFields(['source_playlist_ids']),
       ...SetOpParams,
       ...sharedListFields,
     },
     async (args) => {
+      const input = resolvePlaylistInput(args, { kind: 'list', aliases: ['source_playlist_ids'] });
       const rf = args.response_format;
-      const loaded = await Promise.all(args.source_playlist_ids.map((ref) => loadPlaylistFull(client, ref)));
+      const loaded = await Promise.all(input.values.map((ref) => loadPlaylistFull(client, ref)));
       const uriLists = loaded.map((p) => trackRows(p.items).map((r) => r.uri));
       const counts = intersectionOf(uriLists).length;
       const intersected = dedupeSequence(intersectionOf(uriLists), args.dedupe);
@@ -600,25 +601,28 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
         if (rows.footer) prose.push(`(${rows.footer})`);
       }
       if (!args.target_playlist_id) {
-        return shape(rf, prose.join('\n'), { ...payload, target: null });
+        return shape(rf, withPlaylistInputNote(prose.join('\n'), input), withPlaylistInputMetadata({ ...payload, target: null }, input));
       }
       if (isDry(args)) {
         const changes = [
           `Overwrite "${args.target_playlist_id}" with ${intersected.length} common track(s)`,
           ...(rows.items.length > 0 ? rows.items.map((uri) => `  - ${uri}`) : ['  (playlist would be emptied)']),
         ];
-        return shape(rf, describeDryRun('intersect', args.target_playlist_id, changes), {
+        return shape(rf, withPlaylistInputNote(describeDryRun('intersect', args.target_playlist_id, changes), input), withPlaylistInputMetadata({
           ...payload,
           target: args.target_playlist_id,
-        });
+        }, input));
       }
       const targetId = normalizePlaylistRef(args.target_playlist_id);
       const res = await atomicReplace(client, targetId, intersected);
       return shape(
         rf,
-        `Wrote ${intersected.length} common track(s) to playlist ${targetId} in ${res.requests} request(s).\n`
-          + batchSummary(intersected.length, intersected),
-        { ...payload, target: targetId, requests: res.requests },
+        withPlaylistInputNote(
+          `Wrote ${intersected.length} common track(s) to playlist ${targetId} in ${res.requests} request(s).\n`
+            + batchSummary(intersected.length, intersected),
+          input,
+        ),
+        withPlaylistInputMetadata({ ...payload, target: targetId, requests: res.requests }, input),
       );
     },
   );
@@ -1381,15 +1385,17 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
     'Pairwise Jaccard overlap for 2–10 playlists — which of your mixes have drifted into the '
       + 'same set. Quota: 🟢 N GETs.',
     {
-      playlist_ids: z.array(z.string()).min(2).max(10).describe('Playlists to compare (2–10)'),
+      ...PlaylistListFields,
+      ...legacyPlaylistListFields(['playlist_ids']),
       min_overlap: z.number().min(0).max(1).optional().describe('Jaccard threshold to report a pair. Default 0.5'),
       response_format: ResponseFormat,
       max_results: MaxResults,
       dry_run: DryRun,
     },
     async (args) => {
+      const input = resolvePlaylistInput(args, { kind: 'list', aliases: ['playlist_ids'] });
       const rf = args.response_format;
-      const loaded = await Promise.all(args.playlist_ids.map((ref) => loadPlaylistFull(client, ref)));
+      const loaded = await Promise.all(input.values.map((ref) => loadPlaylistFull(client, ref)));
       const sets = loaded.map((p) => new Set(trackRows(p.items).map((r) => r.uri)));
       const threshold = args.min_overlap ?? 0.5;
       const pairs: Array<{ a: string; b: string; intersection: number; union: number; jaccard: number }> = [];
@@ -1410,18 +1416,21 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
         threshold,
         pairs,
       };
-      if (args.response_format === 'json') return shape(rf, '', payload);
+      if (args.response_format === 'json') return shape(rf, '', withPlaylistInputMetadata(payload, input));
       return shape(
         rf,
-        [
-          `Overlap (Jaccard ≥ ${threshold}) across ${loaded.length} playlists:`,
-          ...loaded.map((p, i) => `  • ${p.name ?? p.id}: ${sets[i].size} track(s)`),
-          ...pairs.map((p) => `  ~ ${p.a} ↔ ${p.b}: ${p.intersection}/${p.union} = ${p.jaccard}`),
-          pairs.length === 0 ? '  (no pairs above threshold)' : '',
-        ]
-          .filter(Boolean)
-          .join('\n'),
-        payload,
+        withPlaylistInputNote(
+          [
+            `Overlap (Jaccard ≥ ${threshold}) across ${loaded.length} playlists:`,
+            ...loaded.map((p, i) => `  • ${p.name ?? p.id}: ${sets[i].size} track(s)`),
+            ...pairs.map((p) => `  ~ ${p.a} ↔ ${p.b}: ${p.intersection}/${p.union} = ${p.jaccard}`),
+            pairs.length === 0 ? '  (no pairs above threshold)' : '',
+          ]
+            .filter(Boolean)
+            .join('\n'),
+          input,
+        ),
+        withPlaylistInputMetadata(payload, input),
       );
     },
   );

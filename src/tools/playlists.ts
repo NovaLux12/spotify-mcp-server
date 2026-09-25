@@ -11,13 +11,23 @@ import {
 } from './confirm.js';
 import {
   DryRun,
+  PlaylistId,
+  PlaylistListFields,
+  PlaylistPairFields,
+  TargetPlaylistFields,
   describeDryRun,
   batchSummary,
+  legacyPlaylistListFields,
+  legacyPlaylistPairFields,
   listStructuredContent,
+  normalizePlaylistReference,
   paginationInfo,
+  resolvePlaylistInput,
   resolveMaxResults,
   sharedListFields,
   truncateItems,
+  withPlaylistInputMetadata,
+  withPlaylistInputNote,
   type ResponseFormatValue,
 } from '../shaping.js';
 import type {
@@ -1540,7 +1550,8 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
   );
 
   // Helpers for new exhaustive playlist tools
-  async function getAllUris(playlistId: string): Promise<string[]> {
+  async function getAllUris(playlistRef: string): Promise<string[]> {
+    const playlistId = normalizePlaylistReference(playlistRef);
     const items = await client.getAllPages<PlaylistItemObject>(`/playlists/${encodeURIComponent(playlistId)}/items`, { limit: '100' }, { maxItems: getConfig().fetchAllCap });
     return items.map(i => i.item?.uri).filter((u): u is string => !!u);
   }
@@ -1557,9 +1568,10 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
   }
 
   // check_playlist_following (#284) — fan-out capped 5
-  server.tool('check_playlist_following', 'Check if you follow 1–50 playlists (fans out one call per playlist, concurrency 5). Quota: 🟢 1–50 GETs.', { playlist_ids: z.array(z.string()).min(1).max(50), ...sharedListFields }, async (args) => {
+  server.tool('check_playlist_following', 'Check if you follow 2–10 playlists (or the deprecated 1–50 playlist_ids alias). Quota: 🟢 1–50 GETs.', { ...PlaylistListFields, ...legacyPlaylistListFields(['playlist_ids'], { min: 1, max: 50 }), ...sharedListFields }, async (args) => {
+    const input = resolvePlaylistInput(args, { kind: 'list', aliases: ['playlist_ids'] });
     const results: Array<{ playlist_id: string; following: boolean }> = [];
-    const ids = args.playlist_ids;
+    const ids = input.values;
     for (let i = 0; i < ids.length; i += 5) {
       const batch = ids.slice(i, i + 5);
       const settled = await Promise.all(batch.map(async (pid) => { try { const r = await client.get<boolean[]>(`/playlists/${encodeURIComponent(pid)}/followers/contains`); return { playlist_id: pid, following: r?.[0] ?? false }; } catch { return { playlist_id: pid, following: false }; } }));
@@ -1567,15 +1579,16 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
     }
     const t = truncateItems(results, resolveMaxResults(args.max_results));
     const pag = paginationInfo({ total: results.length, returned: t.items.length });
-    if (args.response_format === 'json') return textResult(jsonText({ results: t.items }), listStructuredContent(t.items, pag));
+    const payload = withPlaylistInputMetadata(listStructuredContent(t.items, pag), input);
+    if (args.response_format === 'json') return textResult(jsonText(payload), payload);
     const lines = [`Playlist following (${results.length} checked, showing ${t.items.length}):`];
     for (const r of t.items) lines.push(`  ${r.following ? '✓' : '✗'} ${r.playlist_id}`);
     if (t.footer) lines.push(`(${t.footer})`);
-    return textResult(lines.join('\n'), listStructuredContent(t.items, pag));
+    return textResult(withPlaylistInputNote(lines.join('\n'), input), payload);
   });
 
   // clone_playlist_cover (#285)
-  server.tool('clone_playlist_cover', 'Copy cover image from source playlist to target. Quota: 🟢 GET images + PUT images (plus image fetch).', { source_playlist_id: z.string(), target_playlist_id: z.string(), image_index: z.number().int().min(0).optional(), dry_run: DryRun }, async (args) => {
+  server.tool('clone_playlist_cover', 'Copy cover image from source playlist to target. Quota: 🟢 GET images + PUT images (plus image fetch).', { source_playlist_id: PlaylistId.describe('Source playlist ID, URI, or URL'), target_playlist_id: PlaylistId.describe('Target playlist ID, URI, or URL'), image_index: z.number().int().min(0).optional(), dry_run: DryRun }, async (args) => {
     const images = await client.get<SpotifyImage[]>(`/playlists/${encodeURIComponent(args.source_playlist_id)}/images`);
     if (!images || images.length === 0) throw new Error('Source playlist has no custom cover image');
     const idx = args.image_index ?? 0;
@@ -1592,17 +1605,19 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
   });
 
   // compare_playlist_covers (#286)
-  server.tool('compare_playlist_covers', 'Compare two playlists covers: URL equality, dimensions. Quota: 🟢 2 GETs.', { playlist_id_a: z.string(), playlist_id_b: z.string(), ...sharedListFields }, async (args) => {
-    const [aImgs, bImgs] = await Promise.all([client.get<SpotifyImage[]>(`/playlists/${encodeURIComponent(args.playlist_id_a)}/images`), client.get<SpotifyImage[]>(`/playlists/${encodeURIComponent(args.playlist_id_b)}/images`)]);
+  server.tool('compare_playlist_covers', 'Compare two playlists covers: URL equality, dimensions. Quota: 🟢 2 GETs.', { ...PlaylistPairFields, ...legacyPlaylistPairFields([['playlist_id_a', 'playlist_id_b']]), ...sharedListFields }, async (args) => {
+    const input = resolvePlaylistInput(args, { kind: 'pair', aliases: [['playlist_id_a', 'playlist_id_b']] });
+    const [playlistA, playlistB] = input.values;
+    const [aImgs, bImgs] = await Promise.all([client.get<SpotifyImage[]>(`/playlists/${encodeURIComponent(playlistA)}/images`), client.get<SpotifyImage[]>(`/playlists/${encodeURIComponent(playlistB)}/images`)]);
     const a = aImgs?.[0] ?? null; const b = bImgs?.[0] ?? null;
     const sameUrl = a?.url === b?.url && !!a;
-    const payload = { a: a ?? null, b: b ?? null, same: sameUrl, a_has_custom: !!a, b_has_custom: !!b };
-    if (args.response_format === 'json') return textResult(jsonText(payload), payload as unknown as Record<string, unknown>);
+    const payload = withPlaylistInputMetadata({ a: a ?? null, b: b ?? null, same: sameUrl, a_has_custom: !!a, b_has_custom: !!b }, input);
+    if (args.response_format === 'json') return textResult(jsonText(payload), payload);
     const lines = ['Cover comparison:'];
-    lines.push(`  A (${args.playlist_id_a}): ${a ? `${a.url} ${a.width}x${a.height}` : 'no custom cover (mosaic)'}`);
-    lines.push(`  B (${args.playlist_id_b}): ${b ? `${b.url} ${b.width}x${b.height}` : 'no custom cover (mosaic)'}`);
+    lines.push(`  A (${playlistA}): ${a ? `${a.url} ${a.width}x${a.height}` : 'no custom cover (mosaic)'}`);
+    lines.push(`  B (${playlistB}): ${b ? `${b.url} ${b.width}x${b.height}` : 'no custom cover (mosaic)'}`);
     lines.push(`  Same: ${sameUrl ? 'yes' : 'no'}`);
-    return textResult(lines.join('\n'), payload as unknown as Record<string, unknown>);
+    return textResult(withPlaylistInputNote(lines.join('\n'), input), payload);
   });
 
   // get_playlist_snapshot (#295)
@@ -1676,42 +1691,49 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
   });
 
   // playlist_union (#290)
-  server.tool('playlist_union', 'Union of 2–10 playlists into target (deduped, first-seen order). Quota: 🟢 N GETs + PUT/POST.', { source_playlist_ids: z.array(z.string()).min(2).max(10), target_playlist_id: z.string().optional(), target_name: z.string().optional(), dedupe: z.boolean().default(true), dry_run: DryRun }, async (args) => {
+  server.tool('playlist_union', 'Union of 2–10 playlists into target (deduped, first-seen order). Quota: 🟢 N GETs + PUT/POST.', { ...PlaylistListFields, ...legacyPlaylistListFields(['source_playlist_ids']), ...TargetPlaylistFields, dedupe: z.boolean().default(true), dry_run: DryRun }, async (args) => {
+    const input = resolvePlaylistInput(args, { kind: 'list', aliases: ['source_playlist_ids'] });
     if (!args.target_playlist_id && !args.target_name) throw new Error('Provide target_playlist_id or target_name');
     const seen = new Set<string>(); const union: string[] = [];
-    for (const pid of args.source_playlist_ids){ const uris = await getAllUris(pid); for (const u of uris) if (!args.dedupe || !seen.has(u)){ seen.add(u); union.push(u); } }
-    if (args.dry_run) return textResult(describeDryRun('union playlists', args.target_playlist_id ?? args.target_name!, [`Would union ${union.length} uri(s) from ${args.source_playlist_ids.length} playlists`]));
+    for (const pid of input.values){ const uris = await getAllUris(pid); for (const u of uris) if (!args.dedupe || !seen.has(u)){ seen.add(u); union.push(u); } }
+    if (args.dry_run) { const text = describeDryRun('union playlists', args.target_playlist_id ?? args.target_name!, [`Would union ${union.length} uri(s) from ${input.values.length} playlists`]); return textResult(withPlaylistInputNote(text, input), withPlaylistInputMetadata({ ok: true, dry_run: true, playlists: input.values, uri_count: union.length }, input)); }
     let targetId = args.target_playlist_id;
     if (!targetId){ const created = await client.post<{id:string}>(`/me/playlists`, { name: args.target_name, public: false }); if(!created?.id) throw new Error('Could not create playlist'); targetId = created.id; }
     const snap = await replaceWithUris(targetId!, union);
-    return textResult(withSnapshot(`Union ${union.length} item(s) → ${targetId}`, snap));
+    const payload = withPlaylistInputMetadata({ ok: true, target_playlist: targetId, playlists: input.values, uri_count: union.length, snapshot_id: snap ?? null }, input);
+    return textResult(withPlaylistInputNote(withSnapshot(`Union ${union.length} item(s) → ${targetId}`, snap), input), payload);
   });
 
   // playlist_subtract (#291)
-  server.tool('playlist_subtract', 'Remove tracks of B..N from A. Quota: 🟢 N GETs + DELETE or PUT.', { base_playlist_id: z.string(), subtract_playlist_ids: z.array(z.string()).min(1), dry_run: DryRun }, async (args) => {
+  server.tool('playlist_subtract', 'Remove tracks of B..N from A. Quota: 🟢 N GETs + DELETE or PUT.', { base_playlist_id: PlaylistId.describe('Base playlist ID, URI, or URL'), ...PlaylistListFields, ...legacyPlaylistListFields(['subtract_playlist_ids'], { min: 1, max: 10 }), dry_run: DryRun }, async (args) => {
+    const input = resolvePlaylistInput(args, { kind: 'list', aliases: ['subtract_playlist_ids'] });
     const baseUris = await getAllUris(args.base_playlist_id);
     const subtractSet = new Set<string>();
-    for (const pid of args.subtract_playlist_ids){ const uris = await getAllUris(pid); for (const u of uris) subtractSet.add(u); }
+    for (const pid of input.values){ const uris = await getAllUris(pid); for (const u of uris) subtractSet.add(u); }
     const remaining = baseUris.filter(u => !subtractSet.has(u));
     const removed = baseUris.length - remaining.length;
-    if (args.dry_run) return textResult(describeDryRun('subtract playlists', args.base_playlist_id, [`Would remove ${removed} item(s), keep ${remaining.length}`]));
+    if (args.dry_run) { const text = describeDryRun('subtract playlists', args.base_playlist_id, [`Would remove ${removed} item(s), keep ${remaining.length}`]); return textResult(withPlaylistInputNote(text, input), withPlaylistInputMetadata({ ok: true, dry_run: true, base_playlist: args.base_playlist_id, playlists: input.values, removed, kept: remaining.length }, input)); }
     const snap = await replaceWithUris(args.base_playlist_id, remaining);
-    return textResult(withSnapshot(`Subtract: removed ${removed}, kept ${remaining.length}`, snap));
+    const payload = withPlaylistInputMetadata({ ok: true, base_playlist: args.base_playlist_id, playlists: input.values, removed, kept: remaining.length, snapshot_id: snap ?? null }, input);
+    return textResult(withPlaylistInputNote(withSnapshot(`Subtract: removed ${removed}, kept ${remaining.length}`, snap), input), payload);
   });
 
   // playlist_symmetric_difference (#292)
-  server.tool('playlist_symmetric_difference', 'Tracks in exactly one of two playlists (XOR). Quota: 🟢 2 GETs.', { playlist_id_a: z.string(), playlist_id_b: z.string(), ...sharedListFields }, async (args) => {
-    const [aUris, bUris] = await Promise.all([getAllUris(args.playlist_id_a), getAllUris(args.playlist_id_b)]);
+  server.tool('playlist_symmetric_difference', 'Tracks in exactly one of two playlists (XOR). Quota: 🟢 2 GETs.', { ...PlaylistPairFields, ...legacyPlaylistPairFields([['playlist_id_a', 'playlist_id_b']]), ...sharedListFields }, async (args) => {
+    const input = resolvePlaylistInput(args, { kind: 'pair', aliases: [['playlist_id_a', 'playlist_id_b']] });
+    const [playlistA, playlistB] = input.values;
+    const [aUris, bUris] = await Promise.all([getAllUris(playlistA), getAllUris(playlistB)]);
     const setA = new Set(aUris); const setB = new Set(bUris);
     const sym = [...aUris.filter(u=>!setB.has(u)), ...bUris.filter(u=>!setA.has(u))];
     const uniq = [...new Set(sym)];
     const view = truncateItems(uniq, resolveMaxResults(args.max_results));
     const pag = paginationInfo({ total: uniq.length, returned: view.items.length });
-    if (args.response_format === 'json') return textResult(jsonText({ symmetric_difference: view.items, total: uniq.length }), listStructuredContent(view.items, pag));
+    const payload = withPlaylistInputMetadata(listStructuredContent(view.items, pag, { symmetric_difference: view.items, total: uniq.length }), input);
+    if (args.response_format === 'json') return textResult(jsonText(payload), payload);
     const lines = [`Symmetric difference: ${uniq.length} uri(s) (showing ${view.items.length}):`];
     for (const u of view.items) lines.push(`  • ${u}`);
     if (view.footer) lines.push(`(${view.footer})`);
-    return textResult(lines.join('\n'), listStructuredContent(view.items, pag));
+    return textResult(withPlaylistInputNote(lines.join('\n'), input), payload);
   });
 
   // playlist_trim (#293)
