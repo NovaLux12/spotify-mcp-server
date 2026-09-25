@@ -310,6 +310,12 @@ const ERA_HISTORIES: MonthlySummary[][] = [
     { month: '2026-03', streams: 190, topArtist: 'C', uniqueArtists: 7 },
     { month: '2026-04', streams: 12, topArtist: 'C', uniqueArtists: 3 },
   ],
+  // Stable history: one era, so the opening-reason value is never reassigned.
+  [
+    { month: '2026-01', streams: 50, topArtist: 'A', uniqueArtists: 5 },
+    { month: '2026-02', streams: 55, topArtist: 'A', uniqueArtists: 5 },
+    { month: '2026-03', streams: 48, topArtist: 'A', uniqueArtists: 5 },
+  ],
 ];
 
 for (const [n, months] of ERA_HISTORIES.entries()) {
