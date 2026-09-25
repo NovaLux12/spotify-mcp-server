@@ -921,3 +921,120 @@ test('handoff dry_run performs zero calls and lists the steps (issue #112)', asy
     assert.match(out, /\[dry run\] handoff/);
     assert.match(out, /Resume at 3:05 into/);
   });
+
+// ---------------------------------------------------------------- handoff plan parity (#841)
+
+type WireCall = { method: string; path: string; body: unknown };
+
+/** The dry-run payload's advertised plan, reduced to what a wire call is. */
+function advertisedPlan(sc: Record<string, unknown>): WireCall[] {
+  const plan = sc.plan as Array<{ method: string; path: string; body?: unknown }>;
+  return plan.map((s) => ({ method: s.method, path: s.path, body: s.body ?? null }));
+}
+
+/** What the client actually observed on the committing call, minus the state read. */
+function performedCalls(calls: Call[]): WireCall[] {
+  return calls
+    .filter((c) => c.method !== 'GET')
+    .map((c) => ({ method: c.method, path: c.path, body: c.body ?? null }));
+}
+
+async function planFor(state: unknown, args: Record<string, unknown> = { device_id: 'dev2' }) {
+  const h = makeHarness({ getResponse: (path) => (path === '/me/player' ? state : undefined) });
+  const preview = await invoke(findTool(h.registered, 'handoff'), { ...args, dry_run: true });
+  return { h, sc: preview.structuredContent ?? {}, out: text(preview) };
+}
+
+async function commitFor(state: unknown, args: Record<string, unknown> = { device_id: 'dev2' }) {
+  const h = makeHarness({ getResponse: (path) => (path === '/me/player' ? state : undefined) });
+  await invoke(findTool(h.registered, 'handoff'), args);
+  return h.calls;
+}
+
+// The preview and the commit are compared as OBSERVED: the plan comes from the
+// dry-run payload, the execution from the client's recorded wire traffic. The
+// two sides never share a helper, so a divergence in the tool is a failure
+// here (#841).
+for (const [label, state] of [
+  ['playing', playbackStateFixture(trackFixture())],
+  ['paused', { ...playbackStateFixture(trackFixture()), is_playing: false }],
+  ['paused with a context', { ...playbackStateFixture(trackFixture()), is_playing: false, context: { uri: 'spotify:playlist:pl1' } }],
+  ['playing with a context', { ...playbackStateFixture(trackFixture()), context: { uri: 'spotify:playlist:pl1' } }],
+  ['paused at position zero', { ...playbackStateFixture(trackFixture()), is_playing: false, progress_ms: 0 }],
+  ['nothing playing', { ...playbackStateFixture(null), is_playing: false, progress_ms: null, item: null }],
+  ['playing with an empty item uri', { ...playbackStateFixture(trackFixture()), item: { uri: '' } }],
+  ['paused with an empty item uri', { ...playbackStateFixture(trackFixture()), is_playing: false, item: { uri: '' } }],
+] as Array<[string, unknown]>) {
+  test(`handoff dry-run plan equals the calls the commit performs (${label}, #841)`, async () => {
+    const { h, sc, out } = await planFor(state, { device_id: 'dev2', volume: 30 });
+    assert.equal(h.calls.length, 1, 'dry run performs no mutations');
+
+    const advertised = advertisedPlan(sc);
+
+    // The advertised flag must agree with the plan it describes, or an agent
+    // reading `will_resume` is told something the call list contradicts.
+    assert.equal(
+      sc.will_resume,
+      advertised.some((c) => c.path.startsWith('/me/player/play')),
+      'will_resume must be true exactly when the plan contains the play call',
+    );
+    assert.ok(advertised.length > 0, 'dry run must advertise a plan');
+    assert.deepEqual(advertised, performedCalls(await commitFor(state, { device_id: 'dev2', volume: 30 })));
+
+    // The plan is also readable as prose, and every line describes a real call.
+    const planText = (sc.plan as Array<{ text: string }>).map((s) => s.text);
+    for (const line of planText) assert.match(out, new RegExp(line.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    assert.equal(planText.length, advertised.length);
+  });
+}
+
+test('handoff paused dry run advertises no resume and the commit issues no play call (#841)', async () => {
+  const paused = { ...playbackStateFixture(trackFixture()), is_playing: false };
+  const { out, sc } = await planFor(paused);
+
+  assert.equal(sc.will_resume, false);
+  assert.equal(sc.was_playing, false);
+  assert.doesNotMatch(out, /Resume at/);
+  assert.doesNotMatch(out, /3:05/);
+
+  const played = await commitFor(paused);
+  assert.deepEqual(performedCalls(played), [
+    { method: 'PUT', path: '/me/player', body: { device_ids: ['dev2'] } },
+  ]);
+});
+
+test('handoff plans differ between paused and playing sessions in the promised direction (#841)', async () => {
+  const playing = playbackStateFixture(trackFixture());
+  const paused = { ...playing, is_playing: false };
+
+  const playPlan = advertisedPlan((await planFor(playing)).sc);
+  const pausePlan = advertisedPlan((await planFor(paused)).sc);
+
+  assert.equal(playPlan.some((c) => c.path.startsWith('/me/player/play')), true);
+  assert.equal(pausePlan.some((c) => c.path.startsWith('/me/player/play')), false);
+  // The transfer is common to both; the resume is the only difference.
+  assert.deepEqual(pausePlan, playPlan.slice(0, 1));
+
+  const playCalls = performedCalls(await commitFor(playing));
+  assert.equal(playCalls.filter((c) => c.path.startsWith('/me/player/play')).length, 1);
+  assert.equal(performedCalls(await commitFor(paused)).filter((c) => c.path.startsWith('/me/player/play')).length, 0);
+});
+
+test('handoff play:true resumes a paused session and the plan says so (#841)', async () => {
+  const paused = { ...playbackStateFixture(trackFixture()), is_playing: false };
+  const { out, sc } = await planFor(paused, { device_id: 'dev2', play: true });
+
+  assert.equal(sc.will_resume, true);
+  assert.match(out, /Resume at 3:05 into spotify:track:trk1/);
+  assert.deepEqual(advertisedPlan(sc), performedCalls(await commitFor(paused, { device_id: 'dev2', play: true })));
+});
+
+test('handoff play:false preserves the session state rather than forcing a stop (#841)', async () => {
+  const playing = playbackStateFixture(trackFixture());
+  const { sc } = await planFor(playing, { device_id: 'dev2', play: false });
+
+  // `play` overrides a PAUSED session only; a running one is preserved either
+  // way, and the plan still matches what the commit does.
+  assert.equal(sc.will_resume, true);
+  assert.deepEqual(advertisedPlan(sc), performedCalls(await commitFor(playing, { device_id: 'dev2', play: false })));
+});
