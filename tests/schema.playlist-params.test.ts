@@ -237,7 +237,8 @@ interface UnionGateOptions {
   sourceCount?: number;
   /** Ordered rows the second source yields (p2 -> b*); defaults to sourceCount. */
   source2Count?: number;
-  /** Ordered rows the union target returns from its items endpoint. */
+  /** Ordered rows the subtraction source yields (p2 -> subtractUris). */
+  subtractUris?: string[];
   targetUris?: string[];
   /** Rows the target reports via items.total; defaults to targetUris.length. */
   targetTotal?: number;
@@ -246,7 +247,7 @@ interface UnionGateOptions {
 }
 
 async function makeUnionGateHarness(options: UnionGateOptions): Promise<UnionGateHarness> {
-  const { answer, toolName = 'playlist_union', sourceCount = 50, source2Count, targetUris, targetTotal, targetNullUris = 0 } = options;
+  const { answer, toolName = 'playlist_union', sourceCount = 50, source2Count, targetUris, targetTotal, targetNullUris = 0, subtractUris } = options;
   const calls: string[] = [];
   const prompts: string[] = [];
   const client = {
@@ -262,7 +263,7 @@ async function makeUnionGateHarness(options: UnionGateOptions): Promise<UnionGat
       const first = path.includes(`/${PLAYLIST_1}/items`);
       const second = path.includes(`/${PLAYLIST_2}/items`);
       if (first || second) {
-        if (toolName === 'playlist_subtract' && second) return [] as T[];
+        if (toolName === 'playlist_subtract' && second) return (subtractUris ?? []).map((uri, index) => ({ item: { id: uri, uri, name: `Track ${index}` } })) as T[];
         return Array.from({ length: first ? sourceCount : (source2Count ?? sourceCount) }, (_, index) => {
           const uri = `spotify:track:${first ? 'a' : 'b'}${index}`;
           return { item: { id: uri, uri, name: `Track ${index}` } };
@@ -464,17 +465,44 @@ describe('playlist set/diff schema and resolver contract (#912)', () => {
     }
   });
 
-  it('refuses union and subtract replacement with no elicitation support and performs no writes', async () => {
+  it('refuses destructive union but allows identical subtraction without elicitation support', async () => {
     const cases = [
-      { name: 'playlist_union' as const, args: { playlists: [PLAYLIST_1, PLAYLIST_2], target_playlist_id: TARGET_PLAYLIST } },
-      { name: 'playlist_subtract' as const, args: { base_playlist_id: PLAYLIST_1, subtract_playlist_ids: [PLAYLIST_2] } },
+      { name: 'playlist_union' as const, args: { playlists: [PLAYLIST_1, PLAYLIST_2], target_playlist_id: TARGET_PLAYLIST }, ok: false, writes: 0 },
+      { name: 'playlist_subtract' as const, args: { base_playlist_id: PLAYLIST_1, subtract_playlist_ids: [PLAYLIST_2] }, ok: true, writes: 1 },
     ];
     for (const testCase of cases) {
       const gate = await makeUnionGateHarness({ answer: null, toolName: testCase.name });
       const result = await gate.invoke(testCase.name, testCase.args);
-      assert.equal(result.structuredContent?.ok, false, `${testCase.name} proceeded without confirmation`);
-      assert.equal(result.structuredContent?.reason, 'confirmation_unavailable');
-      assert.deepEqual(gate.calls.filter((call) => call.startsWith('PUT ') || call.startsWith('POST ')), []);
+      assert.equal(result.structuredContent?.ok, testCase.ok, `${testCase.name} no-op impact handling`);
+      if (!testCase.ok) {
+        assert.equal(result.structuredContent?.reason, 'confirmation_unavailable');
+      } else {
+        assert.deepEqual(gate.prompts, []);
+      }
+      assert.equal(gate.calls.filter((call) => call.startsWith('PUT ') || call.startsWith('POST ')).length, testCase.writes);
+      await gate.close();
+    }
+  });
+
+  it('confirms overlapping subtraction even when only ten of 100 rows survive', async () => {
+    const gate = await makeUnionGateHarness({
+      answer: { action: 'accept', confirm: true },
+      toolName: 'playlist_subtract',
+      sourceCount: 100,
+      subtractUris: Array.from({ length: 90 }, (_, index) => `spotify:track:a${index}`),
+    });
+    try {
+      const result = await gate.invoke('playlist_subtract', {
+        base_playlist_id: PLAYLIST_1,
+        subtract_playlist_ids: [PLAYLIST_2],
+      });
+      assert.equal(result.structuredContent?.removed, 90);
+      assert.equal(result.structuredContent?.kept, 10);
+      assert.equal(gate.prompts.length, 1, 'a non-empty destructive impact must prompt');
+      assert.match(gate.prompts[0] ?? '', /removing 90 URI\(s\)/);
+      assert.equal(result.structuredContent?.ok, true);
+      assert.deepEqual(gate.calls.filter((call) => call.startsWith('PUT ')), [`PUT /playlists/${PLAYLIST_1}/items`]);
+    } finally {
       await gate.close();
     }
   });

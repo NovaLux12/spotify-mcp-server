@@ -1816,9 +1816,10 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
     const subtractSet = new Set<string>();
     for (const pid of input.values){ const uris = await getAllUris(pid); for (const u of uris) subtractSet.add(u); }
     const remaining = baseUris.filter(u => !subtractSet.has(u));
-    const removed = baseUris.length - remaining.length;
+    const impact = replacementImpact(baseUris, remaining);
+    const removed = impact.removed;
     if (args.dry_run) { const text = describeDryRun('subtract playlists', args.base_playlist_id, [`Would remove ${removed} item(s), keep ${remaining.length}`]); return textResult(withPlaylistInputNote(text, input), withPlaylistInputMetadata({ ok: true, dry_run: true, base_playlist: args.base_playlist_id, playlists: input.values, removed, kept: remaining.length }, input)); }
-    if (remaining.length >= REPLACE_ELICIT_THRESHOLD) {
+    if (impact.removed > 0) {
       const verdict = await confirmViaElicitation(server, {
         message: describeConfirmation('replace playlist items', args.base_playlist_id, [
           `Overwrite ALL existing items with ${remaining.length} URI(s), removing ${removed} URI(s) from subtraction sources.`,
