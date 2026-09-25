@@ -11,6 +11,7 @@ import {
   MaxResults,
   DryRun,
   resolveMaxResults,
+  completenessFooter,
   truncateItems,
   paginationInfo,
   listStructuredContent,
@@ -125,23 +126,62 @@ export interface GenreRow {
   artists: string[];
 }
 
+/** Per-collection walk accounting, so a capped walk is never read as a whole one. */
+export interface WalkInfo {
+  /** Items the walk actually returned. */
+  fetched: number;
+  /** The fetch-all cap bounding this walk. */
+  cap: number;
+  /** True when the walk stopped at `cap` rather than at end-of-collection. */
+  truncated_by_cap: boolean;
+}
+
 interface ScanResult {
   rows: GenreRow[];
-  savedTracksTotal: number;
-  savedAlbumsTotal: number;
+  tracks: WalkInfo;
+  albums: WalkInfo;
   untaggedArtists: string[];
 }
 
 /**
+ * Wrap a finished `/me/{tracks,albums}` walk in its cap accounting (#755).
+ * getAllPages returns exactly `maxItems` rows when the cap ends a walk, so a
+ * `fetched === cap` walk is cap-reached and anything shorter ran to the end.
+ * A collection holding exactly `cap` items is indistinguishable from a
+ * truncated one and is reported as truncated — the honest direction, since it
+ * never claims more coverage than was proven.
+ */
+function walkInfo(fetched: number, cap: number): WalkInfo {
+  return { fetched, cap, truncated_by_cap: fetched >= cap };
+}
+
+/**
+ * The `library` block of library_genre_report's structured payload: the two
+ * walk accountings plus a top-level `complete` flag, so a consumer reading
+ * only structuredContent can still tell a capped walk from a whole one (#755).
+ */
+function libraryPayload(scan: ScanResult): Record<string, unknown> {
+  return {
+    saved_tracks_total: scan.tracks.fetched,
+    saved_albums_total: scan.albums.fetched,
+    saved_tracks: scan.tracks,
+    saved_albums: scan.albums,
+    complete: !scan.tracks.truncated_by_cap && !scan.albums.truncated_by_cap,
+  };
+}
+
+/**
  * Walk BOTH saved lists end-to-end and aggregate per-genre stats from the
- * sidecar. An item contributes once per distinct genre even when several of
- * its artists share that genre; repeated appearances of the same artist are
- * deduplicated into one entry per row's artist list.
+ * sidecar, reporting each walk's cap accounting (#755). An item contributes
+ * once per distinct genre even when several of its artists share that genre;
+ * repeated appearances of the same artist are deduplicated into one entry per
+ * row's artist list.
  */
 async function scanLibraryGenres(client: SpotifyClient): Promise<ScanResult> {
+  const cap = getConfig().fetchAllCap;
   const [savedTracks, savedAlbums] = await Promise.all([
-    client.getAllPages<SavedTrackItem>('/me/tracks', { limit: '50' }, { maxItems: getConfig().fetchAllCap }),
-    client.getAllPages<SavedAlbumItem>('/me/albums', { limit: '50' }, { maxItems: getConfig().fetchAllCap }),
+    client.getAllPages<SavedTrackItem>('/me/tracks', { limit: '50' }, { maxItems: cap }),
+    client.getAllPages<SavedAlbumItem>('/me/albums', { limit: '50' }, { maxItems: cap }),
   ]);
 
   const store = loadGenreTags();
@@ -194,8 +234,8 @@ async function scanLibraryGenres(client: SpotifyClient): Promise<ScanResult> {
   );
   return {
     rows,
-    savedTracksTotal: savedTracks.length,
-    savedAlbumsTotal: savedAlbums.length,
+    tracks: walkInfo(savedTracks.length, cap),
+    albums: walkInfo(savedAlbums.length, cap),
     untaggedArtists: [...untagged].sort((a, b) => a.localeCompare(b)),
   };
 }
@@ -220,10 +260,10 @@ export function registerLibraryInsightsTools(server: McpServer, client: SpotifyC
       const scan = await scanLibraryGenres(client);
       const maxResults = cap({ max_results });
 
-      if (scan.savedTracksTotal === 0 && scan.savedAlbumsTotal === 0) {
+      if (scan.tracks.fetched === 0 && scan.albums.fetched === 0) {
         const payload = {
           ...listStructuredContent([], paginationInfo({ total: 0, returned: 0 })),
-          library: { saved_tracks_total: 0, saved_albums_total: 0 },
+          library: libraryPayload(scan),
           untagged_artists: [],
         };
         return shapeResult(rf, 'Your saved library (tracks + albums) is empty — nothing to report.', payload);
@@ -236,9 +276,23 @@ export function registerLibraryInsightsTools(server: McpServer, client: SpotifyC
       });
 
       const header =
-        `Genre report over ${scan.savedTracksTotal} saved track(s), ` +
-        `${scan.savedAlbumsTotal} saved album(s):\n`;
-      const lines: string[] = [];
+        `Genre report over ${scan.tracks.fetched} saved track(s), ` +
+        `${scan.albums.fetched} saved album(s):\n`;
+      const lines: string[] = [
+        `Scan: saved tracks — ${completenessFooter({
+          fetched: scan.tracks.fetched,
+          cap: scan.tracks.cap,
+          truncated: scan.tracks.truncated_by_cap,
+          subject: 'saved tracks',
+        })}.`,
+        `Scan: saved albums — ${completenessFooter({
+          fetched: scan.albums.fetched,
+          cap: scan.albums.cap,
+          truncated: scan.albums.truncated_by_cap,
+          subject: 'saved albums',
+        })}.`,
+      ];
+      lines.push('');
       if (t.items.length === 0) {
         lines.push('No tagged artists found — use tag_management to declare genres first.');
       } else {
@@ -259,10 +313,7 @@ export function registerLibraryInsightsTools(server: McpServer, client: SpotifyC
 
       const payload = {
         ...listStructuredContent(t.items, pagination),
-        library: {
-          saved_tracks_total: scan.savedTracksTotal,
-          saved_albums_total: scan.savedAlbumsTotal,
-        },
+        library: libraryPayload(scan),
         untagged_artists: scan.untaggedArtists,
       };
       return shapeResult(rf, header + lines.join('\n'), payload);
@@ -287,9 +338,13 @@ export function registerLibraryInsightsTools(server: McpServer, client: SpotifyC
       const wanted = genre.trim().toLowerCase();
       const tagStore = loadGenreTags().tags;
 
+      const capValue = getConfig().fetchAllCap;
+      const subject = kind === 'tracks' ? 'saved tracks' : 'saved albums';
       const matches: string[] = [];
+      let walk: WalkInfo;
       if (kind === 'tracks') {
-        const saved = await client.getAllPages<SavedTrackItem>('/me/tracks', { limit: '50' }, { maxItems: getConfig().fetchAllCap });
+        const saved = await client.getAllPages<SavedTrackItem>('/me/tracks', { limit: '50' }, { maxItems: capValue });
+        walk = walkInfo(saved.length, capValue);
         for (const item of saved) {
           const artists = item?.track?.artists;
           if (!Array.isArray(artists)) continue;
@@ -298,7 +353,8 @@ export function registerLibraryInsightsTools(server: McpServer, client: SpotifyC
           }
         }
       } else {
-        const saved = await client.getAllPages<SavedAlbumItem>('/me/albums', { limit: '50' }, { maxItems: getConfig().fetchAllCap });
+        const saved = await client.getAllPages<SavedAlbumItem>('/me/albums', { limit: '50' }, { maxItems: capValue });
+        walk = walkInfo(saved.length, capValue);
         for (const item of saved) {
           const artists = item?.album?.artists;
           if (!Array.isArray(artists)) continue;
@@ -313,6 +369,12 @@ export function registerLibraryInsightsTools(server: McpServer, client: SpotifyC
 
       const lines: string[] = [
         `Saved ${kind} matching genre "${genre}": ${t.total}`,
+        `Scan: ${completenessFooter({
+          fetched: walk.fetched,
+          cap: walk.cap,
+          truncated: walk.truncated_by_cap,
+          subject,
+        })}.`,
         ...t.items.map((uri, i) => `${i + 1}. ${uri}`),
       ];
       if (t.footer) lines.push(`(${t.footer})`);
@@ -321,6 +383,7 @@ export function registerLibraryInsightsTools(server: McpServer, client: SpotifyC
         ...listStructuredContent(t.items, pagination),
         genre: wanted,
         kind,
+        scan: { ...walk, subject, complete: !walk.truncated_by_cap },
       };
       return shapeResult(rf, lines.join('\n'), payload);
     },

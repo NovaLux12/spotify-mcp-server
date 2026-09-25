@@ -19,6 +19,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../src/client.js';
 import type { SpotifyPaged } from '../src/types/spotify.js';
 import { registerLibraryInsightsTools, loadGenreTags } from '../src/tools/libraryinsights.js';
+import { initConfig } from '../src/config.js';
 
 // ---------------------------------------------------------------------------
 // Stub plumbing (mirrors tests/tools.playlists-following.test.ts)
@@ -158,6 +159,20 @@ function pagedResponder(fixtures: Record<string, unknown[]>, perPage = 2): Respo
           : null,
     };
   };
+}
+
+/** Run `fn` with env/config overrides applied, restoring both afterwards. */
+async function withEnv(env: Record<string, string>, fn: () => Promise<void>): Promise<void> {
+  const saved = { ...process.env };
+  try {
+    Object.assign(process.env, env);
+    initConfig(process.env);
+    await fn();
+  } finally {
+    for (const key of Object.keys(env)) delete process.env[key];
+    Object.assign(process.env, saved);
+    initConfig(process.env);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -374,6 +389,71 @@ describe('library_genre_report', () => {
     assert.deepEqual(out.structuredContent?.untagged_artists, ['Untagged One']);
     assert.deepEqual(out.structuredContent?.items, []);
   });
+
+  it('discloses the fetch-all cap and that it was REACHED (#755)', async () => {
+    // Cap of 2 with 5 saved tracks: the walk stops at 2 and the report must
+    // say so rather than presenting 2 as the whole library.
+    await withEnv({ SPOTIFY_MCP_FETCH_ALL_CAP: '2' }, async () => {
+      const prep = harness(pagedResponder({ '/me/tracks': [], '/me/albums': [] }));
+      await prep.invoke('tag_management', { action: 'add', artist: 'Aurora', tags: ['pop'] });
+      const h = harness(
+        pagedResponder(
+          {
+            '/me/tracks': [
+              trackItem('t1', ['Aurora']),
+              trackItem('t2', ['Aurora']),
+              trackItem('t3', ['Aurora']),
+              trackItem('t4', ['Aurora']),
+              trackItem('t5', ['Aurora']),
+            ],
+            '/me/albums': [],
+          },
+          2,
+        ),
+      );
+
+      const out = await h.invoke('library_genre_report', {});
+      const text = textOf(out);
+      // Prose names the cap, says TRUNCATED, and says tracks were not analyzed.
+      assert.match(text, /cap 2/);
+      assert.match(text, /TRUNCATED/);
+      assert.match(text, /older saved tracks were not analyzed/);
+      // The untuncated album walk is reported as complete, not truncated.
+      assert.match(text, /saved albums — fetched 0[\s\S]*?complete; cap not reached/);
+
+      // Structured payload carries the same accounting, per collection.
+      const library = out.structuredContent?.library as {
+        saved_tracks: { fetched: number; cap: number; truncated_by_cap: boolean };
+        saved_albums: { fetched: number; cap: number; truncated_by_cap: boolean };
+        complete: boolean;
+      };
+      assert.deepEqual(library.saved_tracks, { fetched: 2, cap: 2, truncated_by_cap: true });
+      assert.deepEqual(library.saved_albums, { fetched: 0, cap: 2, truncated_by_cap: false });
+      assert.equal(library.complete, false);
+      assert.equal(library.saved_tracks_total, 2);
+    });
+  });
+
+  it('reports a walk below the cap as complete (#755)', async () => {
+    await withEnv({ SPOTIFY_MCP_FETCH_ALL_CAP: '10' }, async () => {
+      const prep = harness(pagedResponder({ '/me/tracks': [], '/me/albums': [] }));
+      await prep.invoke('tag_management', { action: 'add', artist: 'Aurora', tags: ['pop'] });
+      const h = harness(
+        pagedResponder({ '/me/tracks': [trackItem('t1', ['Aurora'])], '/me/albums': [] }, 2),
+      );
+
+      const out = await h.invoke('library_genre_report', {});
+      const text = textOf(out);
+      assert.match(text, /fetched 1 saved tracks, cap 10 — complete; cap not reached/);
+      assert.doesNotMatch(text, /TRUNCATED/);
+      const library = out.structuredContent?.library as {
+        saved_tracks: { fetched: number; cap: number; truncated_by_cap: boolean };
+        complete: boolean;
+      };
+      assert.deepEqual(library.saved_tracks, { fetched: 1, cap: 10, truncated_by_cap: false });
+      assert.equal(library.complete, true);
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -446,6 +526,70 @@ describe('filter_by_genre', () => {
     assert.equal(sc.pagination.total, 3);
     assert.equal(sc.pagination.next_offset, 2);
     assert.match(textOf(out), /1 more/);
+  });
+
+  it('discloses the fetch-all cap and that it was REACHED (#755)', async () => {
+    await withEnv({ SPOTIFY_MCP_FETCH_ALL_CAP: '2' }, async () => {
+      const prep = harness(pagedResponder({ '/me/tracks': [], '/me/albums': [] }));
+      await prep.invoke('tag_management', { action: 'add', artist: 'a', tags: ['rock'] });
+      const h = harness(
+        pagedResponder(
+          {
+            '/me/tracks': [
+              trackItem('t1', ['a']),
+              trackItem('t2', ['a']),
+              trackItem('t3', ['a']),
+              trackItem('t4', ['a']),
+            ],
+            '/me/albums': [],
+          },
+          2,
+        ),
+      );
+
+      const out = await h.invoke('filter_by_genre', { genre: 'rock', kind: 'tracks' });
+      const text = textOf(out);
+      assert.match(text, /cap 2/);
+      assert.match(text, /TRUNCATED/);
+      assert.match(text, /older saved tracks were not analyzed/);
+
+      const scan = out.structuredContent?.scan as {
+        fetched: number;
+        cap: number;
+        truncated_by_cap: boolean;
+        subject: string;
+        complete: boolean;
+      };
+      assert.deepEqual(scan, {
+        fetched: 2,
+        cap: 2,
+        truncated_by_cap: true,
+        subject: 'saved tracks',
+        complete: false,
+      });
+      // The URI list itself stays a correct lower bound of the matches.
+      assert.deepEqual(out.structuredContent?.items, ['spotify:track:t1', 'spotify:track:t2']);
+    });
+  });
+
+  it('reports a walk below the cap as complete (#755)', async () => {
+    await withEnv({ SPOTIFY_MCP_FETCH_ALL_CAP: '10' }, async () => {
+      const prep = harness(pagedResponder({ '/me/tracks': [], '/me/albums': [] }));
+      await prep.invoke('tag_management', { action: 'add', artist: 'a', tags: ['rock'] });
+      const h = harness(
+        pagedResponder({ '/me/tracks': [trackItem('t1', ['a'])], '/me/albums': [] }, 2),
+      );
+
+      const out = await h.invoke('filter_by_genre', { genre: 'rock', kind: 'tracks' });
+      assert.match(textOf(out), /fetched 1 saved tracks, cap 10 — complete; cap not reached/);
+      assert.doesNotMatch(textOf(out), /TRUNCATED/);
+      const scan = out.structuredContent?.scan as {
+        truncated_by_cap: boolean;
+        complete: boolean;
+      };
+      assert.equal(scan.truncated_by_cap, false);
+      assert.equal(scan.complete, true);
+    });
   });
 });
 
