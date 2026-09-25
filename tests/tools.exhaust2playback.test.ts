@@ -286,6 +286,23 @@ test('mute remembers the previous volume and zeroes it', async () => {
   assert.equal(store.muteMemory.dev1?.volume, 55);
 });
 
+test('mute that fails to write volume persists no memory, so unmute cannot restore a volume that was never muted (#843)', async () => {
+  await resetSidecar();
+  const { invoke, calls } = makeHarness(registerExhaust2PlaybackTools, {
+    getResponse: (p) => (p === '/me/player' ? playbackState() : undefined),
+    putError: (path) => (path.includes('/me/player/volume') ? new Error('403 Premium required') : undefined),
+  });
+  await assert.rejects(invoke('mute', { dry_run: false }), /403 Premium required/);
+  const store = await loadExhaust2Store();
+  assert.deepEqual(store.muteMemory, {});
+  // A later unmute must not resurrect the never-muted level: it falls back to 50%.
+  const later = makeHarness(registerExhaust2PlaybackTools);
+  const out = await later.invoke('unmute', { device_id: 'dev1', dry_run: false });
+  assert.match(text(out), /volume 50% \(no memory — default 50%\)/);
+  const put = calls.concat(later.calls).find((c) => c.method === 'PUT' && c.path.includes('/me/player/volume'));
+  assert.match(put!.path, /volume_percent=0/);
+});
+
 test('unmute restores the remembered level; default is 50% without memory', async () => {
   await resetSidecar();
   const store = await loadExhaust2Store();
