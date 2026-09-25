@@ -30,14 +30,6 @@ type AnalyticsTrack = SpotifyTrack & {
   album: { release_date?: string } & Record<string, unknown>;
 };
 
-/** /me/top/artists row. `name` is modelled optional because the shared typed
- * client promises it but /me/top/artists has been observed without it; the
- * handlers fall back to the id rather than trusting the field. */
-interface TopArtistRow {
-  id: string;
-  name?: string;
-}
-
 // Index signature keeps the handler's return assignable to the MCP SDK's
 // CallToolResult (which requires {[k:string]: unknown}).
 interface ToolOut {
@@ -337,7 +329,7 @@ export function registerAnalyticsTools(server: McpServer, client: SpotifyClient)
       // below. Quota is unchanged (one call per window); only latency moves.
       const pages = await Promise.all(
         ranges.map((tr) =>
-          client.get<SpotifyPaged<TopArtistRow>>('/me/top/artists', {
+          client.get<SpotifyPaged<{ id: string; name: string }>>('/me/top/artists', {
             time_range: tr,
             limit,
           }),
@@ -347,7 +339,11 @@ export function registerAnalyticsTools(server: McpServer, client: SpotifyClient)
       ranges.forEach((tr, idx) => {
         results[tr] = (pages[idx]?.items ?? []).map((a, i) => ({
           id: a.id,
+<<<<<<< HEAD
           name: a.name ?? a.id,
+=======
+          name: a.name,
+>>>>>>> fix/v4-analytics
           rank: i + 1,
         }));
       });
