@@ -5,6 +5,73 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.1.0](https://github.com/NovaLux12/spotify-mcp-server/compare/v2.0.0...v2.1.0) (2026-09-25)
+
+
+### Features
+
+* **following:** add fetch_all paging and normalise artist references ([846297f](https://github.com/NovaLux12/spotify-mcp-server/commit/846297f24126de07cb31c0e1a46afca821d946b7)), closes [#744](https://github.com/NovaLux12/spotify-mcp-server/issues/744) [#745](https://github.com/NovaLux12/spotify-mcp-server/issues/745)
+
+
+### Bug Fixes
+
+* **#627:** gate undo behind confirmation and default dry_run to true ([241b49a](https://github.com/NovaLux12/spotify-mcp-server/commit/241b49a9fd58d413964b80d4840d437d342879c4)), closes [#627](https://github.com/NovaLux12/spotify-mcp-server/issues/627)
+* **#755:** disclose the fetch-all cap in library genre tools ([d3c3ef6](https://github.com/NovaLux12/spotify-mcp-server/commit/d3c3ef6f2ded4432f21bebcacf05987f826725f2)), closes [#755](https://github.com/NovaLux12/spotify-mcp-server/issues/755)
+* **#829:** report the real playlist length in playlist_cover_from_track ([3c9f2d9](https://github.com/NovaLux12/spotify-mcp-server/commit/3c9f2d9865abb9d2d5a5b4474edf9a8e2d1a4c48)), closes [#829](https://github.com/NovaLux12/spotify-mcp-server/issues/829)
+* **analytics:** cursor pagination and one UTC time frame ([#806](https://github.com/NovaLux12/spotify-mcp-server/issues/806), [#823](https://github.com/NovaLux12/spotify-mcp-server/issues/823), [#824](https://github.com/NovaLux12/spotify-mcp-server/issues/824)) ([fe45fe2](https://github.com/NovaLux12/spotify-mcp-server/commit/fe45fe2d278f09b0d4983cfd3c34685647c9034c))
+* **analytics:** fall back to the id when a top-artist row has no name ([a3c4ef9](https://github.com/NovaLux12/spotify-mcp-server/commit/a3c4ef923b705126f4fe6e593f880d1eaa79e074))
+* **analytics:** honour max_items in listening_streaks; ship top_artists_by_range deltas ([528e00d](https://github.com/NovaLux12/spotify-mcp-server/commit/528e00daf646b005b63e5ab6e00e199fa3e21b46)), closes [#805](https://github.com/NovaLux12/spotify-mcp-server/issues/805) [#804](https://github.com/NovaLux12/spotify-mcp-server/issues/804)
+* **analytics:** honour max_items in listening_streaks; ship top_artists_by_range deltas ([e7e1b57](https://github.com/NovaLux12/spotify-mcp-server/commit/e7e1b5738b0f8c484e1e778e86b917275acc433b)), closes [#805](https://github.com/NovaLux12/spotify-mcp-server/issues/805) [#804](https://github.com/NovaLux12/spotify-mcp-server/issues/804)
+* **analytics:** honour max_items, ship top_artists_by_range deltas, report unreadable stats.fm friends ([#804](https://github.com/NovaLux12/spotify-mcp-server/issues/804), [#805](https://github.com/NovaLux12/spotify-mcp-server/issues/805), [#803](https://github.com/NovaLux12/spotify-mcp-server/issues/803)) ([12ce5bb](https://github.com/NovaLux12/spotify-mcp-server/commit/12ce5bbe1d76c19676f91586d57aae0a97e2c289))
+* **catalog:** route catalog id params through the shared reference resolver ([6aaacd9](https://github.com/NovaLux12/spotify-mcp-server/commit/6aaacd9ed6e863e1567a6aa7a8722c826f2c2799)), closes [#789](https://github.com/NovaLux12/spotify-mcp-server/issues/789)
+* **client:** map player-namespace 404s to a no-active-device message ([#849](https://github.com/NovaLux12/spotify-mcp-server/issues/849)) ([9c0e85c](https://github.com/NovaLux12/spotify-mcp-server/commit/9c0e85cb9daa5733c4900fca35f9d909b66327fb))
+* **exhaust2-misc:** page artist albums, read show.total_episodes ([875500d](https://github.com/NovaLux12/spotify-mcp-server/commit/875500d9e923fe2f88842659dff4359584343c78)), closes [#828](https://github.com/NovaLux12/spotify-mcp-server/issues/828) [#826](https://github.com/NovaLux12/spotify-mcp-server/issues/826)
+* **export:** confine export writes to an output root and neutralise CSV formulas ([a920cb4](https://github.com/NovaLux12/spotify-mcp-server/commit/a920cb4eadbe3ac307e5147b1f7974db74fa201e))
+* **export:** fold attacker-controlled metadata out of #EXTINF lines ([9169318](https://github.com/NovaLux12/spotify-mcp-server/commit/9169318c885a75c309c1f9e45e820b83bb512766))
+* **history:** redact URIs, re-assert 0600, rotate and bound reads ([00fde2c](https://github.com/NovaLux12/spotify-mcp-server/commit/00fde2c0debeba9e13961ac6cd585c6e39150a90)), closes [#628](https://github.com/NovaLux12/spotify-mcp-server/issues/628)
+* **import:** confine local reads, stop metadata hijacking URIs, make imports idempotent ([d1377e9](https://github.com/NovaLux12/spotify-mcp-server/commit/d1377e9428df1d930bad4f2c5abf2a3ec9da59fd))
+* **library-analytics:** truthful coverage, growth and heatmap scopes ([d75b340](https://github.com/NovaLux12/spotify-mcp-server/commit/d75b34016d9914238fac8c1ba8272676761af008)), closes [#738](https://github.com/NovaLux12/spotify-mcp-server/issues/738) [#739](https://github.com/NovaLux12/spotify-mcp-server/issues/739) [#740](https://github.com/NovaLux12/spotify-mcp-server/issues/740) [#741](https://github.com/NovaLux12/spotify-mcp-server/issues/741)
+* **library:** stop reporting unreadable collections and bad date bounds as results ([f7cd930](https://github.com/NovaLux12/spotify-mcp-server/commit/f7cd93027e4aebc5fafc7dc288e4b4bf0855c3e4)), closes [#749](https://github.com/NovaLux12/spotify-mcp-server/issues/749) [#750](https://github.com/NovaLux12/spotify-mcp-server/issues/750)
+* **mute:** remember volume only after the mute write lands ([fc0c3ef](https://github.com/NovaLux12/spotify-mcp-server/commit/fc0c3ef020862b0809fbd4b5f9de55bcde3a4223)), closes [#843](https://github.com/NovaLux12/spotify-mcp-server/issues/843)
+* **personalization:** cursor continuation for get_recently_played, not next_offset ([#806](https://github.com/NovaLux12/spotify-mcp-server/issues/806)) ([98109f1](https://github.com/NovaLux12/spotify-mcp-server/commit/98109f1fa1f57ae1099c5db3acc066bbb4b096cd))
+* **playbackext:** rebuild smart playlists and restore the saved context ([#834](https://github.com/NovaLux12/spotify-mcp-server/issues/834), [#833](https://github.com/NovaLux12/spotify-mcp-server/issues/833)) ([06d4140](https://github.com/NovaLux12/spotify-mcp-server/commit/06d414091ea85047ff9335ae5d0b13205dee5a94))
+* **playbackintel:** play_at contract parity and baseline refresh ([#838](https://github.com/NovaLux12/spotify-mcp-server/issues/838), [#842](https://github.com/NovaLux12/spotify-mcp-server/issues/842)) ([d2c13a9](https://github.com/NovaLux12/spotify-mcp-server/commit/d2c13a914780fe31cebf5c6153e5d28d3c5d9ee4))
+* **playbackintel:** play_at enforces play's URI and offset contract ([#842](https://github.com/NovaLux12/spotify-mcp-server/issues/842)) ([73404aa](https://github.com/NovaLux12/spotify-mcp-server/commit/73404aa41c4efabda99cc70c466f993ab94395df))
+* **playback:** read item/items in get_context_inspect rows ([#838](https://github.com/NovaLux12/spotify-mcp-server/issues/838)) ([649fcb9](https://github.com/NovaLux12/spotify-mcp-server/commit/649fcb910c3d1a1531504cad217f05b58f29bc65))
+* **playback:** read item/items, not deprecated track aliases ([#838](https://github.com/NovaLux12/spotify-mcp-server/issues/838)) ([77d6d31](https://github.com/NovaLux12/spotify-mcp-server/commit/77d6d31e09c4216cf8fec73109ec005589242aec))
+* **playback:** render ad/unknown player items without throwing ([149c257](https://github.com/NovaLux12/spotify-mcp-server/commit/149c25738c1b32136d0862196955f9e12272c32c)), closes [#852](https://github.com/NovaLux12/spotify-mcp-server/issues/852)
+* **playback:** send volume_percent on every /me/player/volume write ([cd478ee](https://github.com/NovaLux12/spotify-mcp-server/commit/cd478ee515d4d833d9a5bed21406c7bd1fb4f6c8)), closes [#830](https://github.com/NovaLux12/spotify-mcp-server/issues/830)
+* **playback:** skip id-less devices in volume plans ([#853](https://github.com/NovaLux12/spotify-mcp-server/issues/853)) ([df5d6a2](https://github.com/NovaLux12/spotify-mcp-server/commit/df5d6a20c4888b3d4e14f81c3513edf7d72329d4))
+* **playback:** stop rendering absent volume as "undefined%" and report a failed play_on shuffle ([5144415](https://github.com/NovaLux12/spotify-mcp-server/commit/51444155dfbaee5cd250f43e0b2925662bfd76a5)), closes [#855](https://github.com/NovaLux12/spotify-mcp-server/issues/855) [#837](https://github.com/NovaLux12/spotify-mcp-server/issues/837)
+* resolve two merge conflicts in source, not tests ([b7f3e73](https://github.com/NovaLux12/spotify-mcp-server/commit/b7f3e7378a9d7808120ce3d42c2b9effc3b13cce))
+* **search:** add offset paging to search_deep ([#792](https://github.com/NovaLux12/spotify-mcp-server/issues/792)) ([2dbd08c](https://github.com/NovaLux12/spotify-mcp-server/commit/2dbd08cc7d63922be18e82f90427aaee8a31f3f2))
+* **showradar:** disclose the /me/shows listing cap and drop mutation dry_run ([64909a5](https://github.com/NovaLux12/spotify-mcp-server/commit/64909a58a9b4225206f00201ea3b067138890ddf)), closes [#673](https://github.com/NovaLux12/spotify-mcp-server/issues/673) [#794](https://github.com/NovaLux12/spotify-mcp-server/issues/794)
+* **statsfm:** do not claim unreadable profiles for an empty friend list ([#803](https://github.com/NovaLux12/spotify-mcp-server/issues/803)) ([214036f](https://github.com/NovaLux12/spotify-mcp-server/commit/214036f3cce46449fa2a7c256f01653e860cd9c6))
+* **statsfm:** report unreadable friends in the people chart instead of charting 0 ([2e2c754](https://github.com/NovaLux12/spotify-mcp-server/commit/2e2c754287ddb6207b5cd5585a0d5c008126b226)), closes [#803](https://github.com/NovaLux12/spotify-mcp-server/issues/803)
+* **statsfm:** report unreadable friends in the people chart instead of charting 0 ([92b35a2](https://github.com/NovaLux12/spotify-mcp-server/commit/92b35a2a993439c2f7b0a1d0502457856affe62e)), closes [#803](https://github.com/NovaLux12/spotify-mcp-server/issues/803)
+* **swarm3-analytics:** report a true quietest hour and one UTC time frame ([c67d6d0](https://github.com/NovaLux12/spotify-mcp-server/commit/c67d6d0de9f902dd2a4f2bda6bb4dd02377e5009)), closes [#823](https://github.com/NovaLux12/spotify-mcp-server/issues/823) [#824](https://github.com/NovaLux12/spotify-mcp-server/issues/824)
+* **users:** guard null playlist owner and route user_id through src/refs ([86ee5c4](https://github.com/NovaLux12/spotify-mcp-server/commit/86ee5c430a00163bcfd2e4e74ead53ad30e66687)), closes [#762](https://github.com/NovaLux12/spotify-mcp-server/issues/762) [#789](https://github.com/NovaLux12/spotify-mcp-server/issues/789)
+
+
+### Documentation
+
+* **agents:** replace CLAUDE.md with AGENTS.md ([0a91ad9](https://github.com/NovaLux12/spotify-mcp-server/commit/0a91ad91ea68de25096e2e535157097d711b6eea))
+* document the six env vars the wave introduced, and the confinement rule ([8fe69bb](https://github.com/NovaLux12/spotify-mcp-server/commit/8fe69bb338a7645cc5fdf681e356741c28f68427))
+* regenerate the module map after the artist-name fallback ([723b3c1](https://github.com/NovaLux12/spotify-mcp-server/commit/723b3c19cddc861662f5982b0e6626dade3395ae))
+* regenerate the module map after the volume-parameter fix ([#830](https://github.com/NovaLux12/spotify-mcp-server/issues/830)) ([a7eb329](https://github.com/NovaLux12/spotify-mcp-server/commit/a7eb329c791303ced837b3796b5de637b1788a9e))
+* regenerate the module map after the wave-3 playback fixes ([#849](https://github.com/NovaLux12/spotify-mcp-server/issues/849), [#843](https://github.com/NovaLux12/spotify-mcp-server/issues/843), [#852](https://github.com/NovaLux12/spotify-mcp-server/issues/852)) ([47c4ea5](https://github.com/NovaLux12/spotify-mcp-server/commit/47c4ea5775f8f111cafa3ad2246dedab7acd9661))
+
+
+### Tests
+
+* **refs:** pin exact open.spotify.com host policy for the reference tools ([562460a](https://github.com/NovaLux12/spotify-mcp-server/commit/562460adb718f2249da5f219dd14eb7aa197aaad)), closes [#825](https://github.com/NovaLux12/spotify-mcp-server/issues/825)
+
+
+### Miscellaneous Chores
+
+* regenerate generated blocks and refresh baselines after waves 5-7 ([aeb31c2](https://github.com/NovaLux12/spotify-mcp-server/commit/aeb31c23e381b7689986d8e6e36318df463cbbe8))
+* regenerate generated blocks and refresh baselines after waves 5-7 ([9f16703](https://github.com/NovaLux12/spotify-mcp-server/commit/9f16703c36294b234b75e44ba6b7bc72590e8787))
+
 ## [2.0.0](https://github.com/NovaLux12/spotify-mcp-server/compare/v1.31.0...v2.0.0) (2026-09-25)
 
 
