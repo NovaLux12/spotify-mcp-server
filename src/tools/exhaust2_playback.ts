@@ -142,9 +142,18 @@ interface QueueRow { uri?: string; name?: string; type?: string; artists?: Array
 /** Attribution carried by a single queue row, keyed by that row's own URI. */
 interface QueueRowMeta { name: string | null; artists: string[]; type: string | null }
 
-/** How much a row's own metadata actually says about it (#844). */
-function attributionScore(m: QueueRowMeta): number {
-  return m.artists.length + (m.name ? 1 : 0) + (m.type ? 1 : 0);
+/**
+ * Two queue rows carrying the same URI are the SAME track, so their
+ * attributions are MERGED, never ranked. Picking a winner by score is what
+ * let a name-only stub erase the artists a sibling row carried for that same
+ * track, which dropped a track that genuinely matched keep_artists (#844).
+ */
+function mergeQueueRowMeta(seen: QueueRowMeta, incoming: QueueRowMeta): QueueRowMeta {
+  return {
+    name: seen.name ?? incoming.name,
+    type: seen.type ?? incoming.type,
+    artists: [...new Set([...seen.artists, ...incoming.artists])],
+  };
 }
 
 /**
@@ -152,7 +161,7 @@ function attributionScore(m: QueueRowMeta): number {
  * else is UNKNOWN: it is never attributed to a neighbouring queue row.
  */
 function isAttributable(m: QueueRowMeta | undefined): m is QueueRowMeta {
-  return m !== undefined && attributionScore(m) > 0;
+  return m !== undefined && (m.artists.length > 0 || !!m.name || !!m.type);
 }
 
 // ---------------------------------------------------------------------------
@@ -923,16 +932,19 @@ export function registerExhaust2PlaybackTools(server: McpServer, client: Spotify
         if (!r.uri) { uriLessRows++; continue; }
         const candidate: QueueRowMeta = { name: r.name ?? null, artists: (r.artists ?? []).map((a) => a.name), type: r.type ?? null };
         const seen = meta.get(r.uri);
-        // A live queue repeats URIs; a bare stub must not overwrite the row
-        // that actually carries the artists for that same track.
-        if (seen && attributionScore(seen) >= attributionScore(candidate)) continue;
-        meta.set(r.uri, candidate);
+        // A live queue repeats a URI; every row for that URI describes the
+        // same track, so their attributions merge instead of overwriting.
+        meta.set(r.uri, seen ? mergeQueueRowMeta(seen, candidate) : candidate);
       }
       const snapshot = rows.map((r) => r.uri).filter((u): u is string => !!u);
       const unknownUris = [...new Set(snapshot.filter((u) => !isAttributable(meta.get(u))))];
       const unknownNote = uriLessRows + unknownUris.length > 0
         ? ` ${uriLessRows} queue row(s) had no URI (ad/unavailable) and ${unknownUris.length} row(s) carried no artist metadata — they are reported as unknown, never attributed to a neighbouring row.`
         : '';
+      // Reported on EVERY return path below, including the two early bail-outs:
+      // an ad in the queue is what drives `all_filtered`, so dropping the
+      // disclosure there would hide exactly the case it exists to explain.
+      const queueDisclosure = { uri_less_rows: uriLessRows, unknown_rows: unknownUris.length, unknown_uris: unknownUris };
       let items = snapshot.slice();
       const snapshotMeta = snapshot.length;
       const keepSet = (args.keep_artists ?? []).map((a) => a.toLowerCase());
@@ -948,8 +960,8 @@ export function registerExhaust2PlaybackTools(server: McpServer, client: Spotify
           return m!.artists.some((a) => keepSet.includes(a.toLowerCase()));
         });
       }
-      if (snapshotMeta === 0) return textResult('Current queue is empty — nothing to snapshot.', { ok: false, error: 'empty_queue' });
-      if (items.length === 0) return textResult('All snapshot items were filtered out — nothing would be queued. Loosen keep_artists / drop_dupes.', { ok: false, error: 'all_filtered' });
+      if (snapshotMeta === 0) return textResult(`Current queue is empty — nothing to snapshot.${unknownNote}`, { ok: false, error: 'empty_queue', ...queueDisclosure });
+      if (items.length === 0) return textResult(`All snapshot items were filtered out — nothing would be queued. Loosen keep_artists / drop_dupes.${unknownNote}`, { ok: false, error: 'all_filtered', ...queueDisclosure });
       const name = args.playlist_name ?? `Queue snapshot ${new Date().toISOString().slice(0, 10)}`;
       if (dryRun) {
         const steps = [
@@ -958,17 +970,17 @@ export function registerExhaust2PlaybackTools(server: McpServer, client: Spotify
           `PUT /me/player/play${args.device_id ? `?device_id=${args.device_id}` : ''} { context_uri: "spotify:playlist:{id}" }`,
           'Disclosure: the live queue is replaced via context switch — Spotify has no queue-clear endpoint.',
         ];
-        return { content: [{ type: 'text', text: describeDryRun('queue_replace_via_playlist', name, steps) + unknownNote }], structuredContent: { ok: true, dry_run: true, plan: steps, snapshot: snapshot.length, after_filters: items.length, playlist_name: name, uri_less_rows: uriLessRows, unknown_rows: unknownUris.length, unknown_uris: unknownUris } };
+        return { content: [{ type: 'text', text: describeDryRun('queue_replace_via_playlist', name, steps) + unknownNote }], structuredContent: { ok: true, dry_run: true, plan: steps, snapshot: snapshot.length, after_filters: items.length, playlist_name: name, ...queueDisclosure } };
       }
       const pl = await client.post<{ id?: string; uri?: string }>('/me/playlists', { name, description: `Queue snapshot from ${new Date().toISOString()} — ${items.length} items` });
       const plId = pl?.id;
-      if (!plId) return textResult('Failed to create the snapshot playlist.', { ok: false, error: 'playlist_create_failed' });
+      if (!plId) return textResult('Failed to create the snapshot playlist.', { ok: false, error: 'playlist_create_failed', ...queueDisclosure });
       for (let i = 0; i < items.length; i += 100) {
         await client.post(`/playlists/${encodeURIComponent(plId)}/items`, { uris: items.slice(i, i + 100) });
       }
       const playQs = args.device_id ? `?device_id=${encodeURIComponent(args.device_id)}` : '';
       await client.put(`/me/player/play${playQs}`, { context_uri: pl.uri ?? `spotify:playlist:${plId}` });
-      return emit(fmt, { ok: true, snapshot: snapshot.length, kept: items.length, playlist_id: plId, playlist_name: name, uri_less_rows: uriLessRows, unknown_rows: unknownUris.length, unknown_uris: unknownUris, disclosure: 'live queue replaced via context switch (no queue-clear endpoint exists)' }, `Queued ${items.length} item(s) (snapshot ${snapshot.length}, after filters) into playlist "${name}" and started it as the context — the live queue is effectively replaced.${unknownNote}`);
+      return emit(fmt, { ok: true, snapshot: snapshot.length, kept: items.length, playlist_id: plId, playlist_name: name, ...queueDisclosure, disclosure: 'live queue replaced via context switch (no queue-clear endpoint exists)' }, `Queued ${items.length} item(s) (snapshot ${snapshot.length}, after filters) into playlist "${name}" and started it as the context — the live queue is effectively replaced.${unknownNote}`);
     },
   );
 
