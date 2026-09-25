@@ -136,21 +136,28 @@ describe('remove_unavailable_playlist_items', () => {
     assert.deepEqual(sc.remaining_positions, [0]);
   });
 
-  it('defaults the destructive cap to all detected unavailable rows', async () => {
-    let items: PlaylistItemObject[] = Array.from({ length: 101 }, mkUnavailable);
-    let writes = 0;
-    const h = makeHarness((_path, arg) => {
-      if (arg && typeof arg === 'object' && 'body' in arg) {
-        writes++;
-        items = [];
-        return { snapshot_id: 'snap1' };
-      }
-      return items;
-    });
-    registerPlaylistHealthTools(h.server as unknown as McpServer, h.client);
-    const out = await h.invoke('remove_unavailable_playlist_items', { playlist_id: 'pl1' });
-    assert.equal(writes, 101);
-    assert.equal((out.structuredContent as { ok: boolean }).ok, true);
+  it('defaults the destructive cap to all detected unavailable rows with the explicit automation bypass', async () => {
+    const previousConfirm = process.env.SPOTIFY_MCP_CONFIRM;
+    process.env.SPOTIFY_MCP_CONFIRM = 'never';
+    try {
+      let items: PlaylistItemObject[] = Array.from({ length: 101 }, mkUnavailable);
+      let writes = 0;
+      const h = makeHarness((_path, arg) => {
+        if (arg && typeof arg === 'object' && 'body' in arg) {
+          writes++;
+          items = [];
+          return { snapshot_id: 'snap1' };
+        }
+        return items;
+      });
+      registerPlaylistHealthTools(h.server as unknown as McpServer, h.client);
+      const out = await h.invoke('remove_unavailable_playlist_items', { playlist_id: 'pl1' });
+      assert.equal(writes, 101);
+      assert.equal((out.structuredContent as { ok: boolean }).ok, true);
+    } finally {
+      if (previousConfirm === undefined) delete process.env.SPOTIFY_MCP_CONFIRM;
+      else process.env.SPOTIFY_MCP_CONFIRM = previousConfirm;
+    }
   });
 
   it('does not write during dry run', async () => {
