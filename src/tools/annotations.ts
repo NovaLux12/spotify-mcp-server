@@ -26,6 +26,7 @@
  */
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
+import { StatsfmApiError } from '../lib/statsfm-client.js';
 import { registerPlaybackTools } from './playback.js';
 import { registerSearchTools } from './search.js';
 import { registerCatalogTools } from './catalog.js';
@@ -638,15 +639,76 @@ function humanList(values: string[]): string {
   return `"${values[0]}", "${values[1]}", or "${values[2]}"`;
 }
 
-function findSpotifyApiError(error: unknown): SpotifyApiError | undefined {
+function findTypedApiError(error: unknown): SpotifyApiError | StatsfmApiError | undefined {
   const seen = new Set<unknown>();
   let current: unknown = error;
   while (current !== null && current !== undefined && !seen.has(current)) {
     seen.add(current);
-    if (current instanceof SpotifyApiError) return current;
+    if (current instanceof SpotifyApiError || current instanceof StatsfmApiError) return current;
     current = current instanceof Error ? current.cause : undefined;
   }
   return undefined;
+}
+
+
+function safeStatsfmReason(reason: unknown): string | undefined {
+  if (typeof reason !== 'string') return undefined;
+  if (/registration[-_ ]?gated/i.test(reason)) return 'registration_gated';
+  return /^[A-Z][A-Z0-9_]{0,63}$/.test(reason) ? reason : undefined;
+}
+
+function statsfmFailure(tool: string, error: StatsfmApiError): ErrorFields {
+  let kind: ErrorKind;
+  let reason: string;
+  let fix: string;
+  let text: string;
+  if (error.status === 401) {
+    kind = 'auth';
+    reason = safeStatsfmReason(error.reason) ?? 'statsfm_authentication_required';
+    fix = 'Retry when stats.fm authentication is available.';
+    text = `${tool} could not authenticate with stats.fm; retry later.`;
+  } else if (error.status === 403) {
+    kind = 'forbidden';
+    reason = safeStatsfmReason(error.reason) ?? (error.reason && /registration[-_ ]?gated/i.test(error.reason)
+      ? 'registration_gated'
+      : 'statsfm_access_forbidden');
+    fix = 'Use a permitted stats.fm tool, or request the required access.';
+    text = `${tool} is not available from stats.fm for this request; use a permitted tool or request access.`;
+  } else if (error.status === 404) {
+    kind = 'not_found';
+    reason = safeStatsfmReason(error.reason) ?? 'statsfm_resource_not_found';
+    fix = 'Verify the stats.fm identifier and retry.';
+    text = `${tool} could not find the requested stats.fm resource; verify its identifier and retry.`;
+  } else if (error.status === 429) {
+    kind = 'rate_limited';
+    reason = safeStatsfmReason(error.reason) ?? 'statsfm_rate_limited';
+    fix = typeof error.retryAfterSec === 'number'
+      ? `Wait ${error.retryAfterSec} seconds before retrying.`
+      : 'Wait before retrying.';
+    text = typeof error.retryAfterSec === 'number'
+      ? `${tool} was rate-limited by stats.fm; retry after ${error.retryAfterSec} seconds.`
+      : `${tool} was rate-limited by stats.fm; retry later.`;
+  } else if (error.status === 503) {
+    kind = 'unavailable';
+    reason = safeStatsfmReason(error.reason) ?? 'statsfm_unavailable';
+    fix = 'Retry shortly.';
+    text = `${tool} could not reach stats.fm because the service is unavailable; retry shortly.`;
+  } else {
+    kind = 'internal';
+    reason = safeStatsfmReason(error.reason) ?? 'statsfm_error';
+    fix = 'Retry once; if the failure persists, inspect protected server diagnostics.';
+    text = `${tool} failed unexpectedly; retry once and inspect protected server diagnostics if it persists.`;
+  }
+  return {
+    kind,
+    reason,
+    fix,
+    text,
+    status: error.status,
+    ...(kind === 'rate_limited' && typeof error.retryAfterSec === 'number'
+      ? { retryAfterSec: error.retryAfterSec }
+      : {}),
+  };
 }
 
 function validationParam(error: unknown): string | undefined {
@@ -681,8 +743,10 @@ function defaultReason(kind: ErrorKind): string {
 }
 
 function publicFailure(tool: string, error: unknown): ErrorFields {
-  const spotifyError = findSpotifyApiError(error);
-  if (spotifyError) {
+  const typedError = findTypedApiError(error);
+  if (typedError instanceof StatsfmApiError) return statsfmFailure(tool, typedError);
+  if (typedError instanceof SpotifyApiError) {
+    const spotifyError = typedError;
     const status = spotifyError.status;
     let kind: ErrorKind;
     let text: string;
@@ -721,7 +785,9 @@ function publicFailure(tool: string, error: unknown): ErrorFields {
     }
     return {
       kind,
-      reason: safeSpotifyReason(spotifyError.reason) ?? defaultReason(kind),
+      reason: status === 403 && safeSpotifyReason(spotifyError.reason) === 'REGISTRATION_GATED'
+        ? 'registration_gated'
+        : safeSpotifyReason(spotifyError.reason) ?? defaultReason(kind),
       fix,
       text,
       status,

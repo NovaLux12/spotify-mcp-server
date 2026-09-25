@@ -5,6 +5,7 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { SpotifyApiError, type SpotifyClient } from '../src/client.js';
+import { StatsfmApiError } from '../src/lib/statsfm-client.js';
 import { installToolErrorBoundary } from '../src/tools/annotations.js';
 import { registerBackupFirstTools } from '../src/tools/backupfirst.js';
 
@@ -47,6 +48,12 @@ async function harness(): Promise<Client> {
   server.tool('not_found_error', '404', throws(new SpotifyApiError(404, 'missing /home/alice/snapshots/private.json')));
   server.tool('rate_limited_error', '429', throws(new SpotifyApiError(429, 'raw /tmp/archive.zip', 37, 'QUOTA_EXCEEDED')));
   server.tool('unavailable_error', '503', throws(new SpotifyApiError(503, 'raw /var/lib/spotify.snapshot')));
+  server.tool('statsfm_auth_error', '401', throws(new StatsfmApiError(401, 'raw stats.fm /private/auth')));
+  server.tool('statsfm_forbidden_error', '403', throws(new StatsfmApiError(403, 'raw stats.fm /private/forbidden')));
+  server.tool('statsfm_registration_forbidden', '403', throws(new Error('wrapper stats.fm failure', { cause: new StatsfmApiError(403, 'raw stats.fm /private/gated', undefined, 'REGISTRATION_GATED') })));
+  server.tool('statsfm_not_found_error', '404', throws(new StatsfmApiError(404, 'raw stats.fm /private/missing')));
+  server.tool('statsfm_rate_limited_error', '429', throws(new StatsfmApiError(429, 'raw stats.fm /private/rate', 17, 'QUOTA_EXCEEDED')));
+  server.tool('statsfm_unavailable_error', '503', throws(new StatsfmApiError(503, 'raw stats.fm /private/unavailable')));
   server.tool('internal_error', 'internal', throws(new Error('ENOENT /home/alice/input/private.m3u and https://example.test/raw?token=secret')));
   server.tool('valid_error', 'validation', { count: z.number() }, async () => ({ content: [{ type: 'text', text: 'ok' }] }));
   server.tool('near_error', 'unknown parameter', { playlist_id: z.string() }, async () => ({ content: [{ type: 'text', text: 'ok' }] }));
@@ -106,10 +113,17 @@ describe('production tool error contract (#921)', () => {
       { tool: 'not_found_error', kind: 'not_found', status: 404 },
       { tool: 'rate_limited_error', kind: 'rate_limited', status: 429, retryAfterSec: 37 },
       { tool: 'unavailable_error', kind: 'unavailable', status: 503 },
+      { tool: 'statsfm_auth_error', kind: 'auth', status: 401, reason: 'statsfm_authentication_required' },
+      { tool: 'statsfm_forbidden_error', kind: 'forbidden', status: 403, reason: 'statsfm_access_forbidden' },
+      { tool: 'statsfm_registration_forbidden', kind: 'forbidden', status: 403, reason: 'registration_gated' },
+      { tool: 'statsfm_not_found_error', kind: 'not_found', status: 404, reason: 'statsfm_resource_not_found' },
+      { tool: 'statsfm_rate_limited_error', kind: 'rate_limited', status: 429, retryAfterSec: 17, reason: 'QUOTA_EXCEEDED' },
+      { tool: 'statsfm_unavailable_error', kind: 'unavailable', status: 503, reason: 'statsfm_unavailable' },
     ] as const;
 
     for (const expected of cases) {
       const error = envelope(await call(client, expected.tool));
+      if ('reason' in expected) assert.equal(error.reason, expected.reason);
       assert.equal(error.tool, expected.tool);
       assert.equal(error.kind, expected.kind);
       assert.equal(error.status, expected.status);
@@ -174,6 +188,9 @@ describe('production tool error contract (#921)', () => {
       await call(client, 'auth_error'),
       await call(client, 'internal_error'),
       await call(client, 'backup_first'),
+      await call(client, 'statsfm_registration_forbidden'),
+      await call(client, 'statsfm_not_found_error'),
+      await call(client, 'statsfm_rate_limited_error'),
     ];
     const publicText = JSON.stringify(publicResults);
     const stderrText = diagnostics.join('\n');
@@ -184,6 +201,9 @@ describe('production tool error contract (#921)', () => {
       'private.json',
       'private.zip',
       'spotify.snapshot',
+      '/private/gated',
+      '/private/missing',
+      '/private/rate',
       'code=secret',
       'token=secret',
       'SENTINEL_BACKUP',
