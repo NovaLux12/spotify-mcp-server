@@ -19,6 +19,7 @@ import { registerPrompts } from './prompts/index.js';
 import { TOOLSETS, resolveToolsets, assertToolsetsUsable, isModuleActive, resolveToolOverrides, toolsetEnvHelp } from './toolsets.js';
 import { moduleBlockedByScopes, scopesFor } from './scopefilter.js';
 import { createRequire } from 'node:module';
+import { installTruncationBoundary } from './shaping.js';
 
 const { version } = createRequire(import.meta.url)('../package.json') as { version: string };
 
@@ -31,6 +32,7 @@ async function startMcpServer(): Promise<void> {
     name: 'spotify-mcp',
     version,
   });
+  installTruncationBoundary(server);
 
   // Toolset segmentation (#95): SPOTIFY_MCP_TOOLSETS=playlists,player,... trims
   // the registered surface for clients that cap tool counts. Default: all.
