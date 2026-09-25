@@ -24,6 +24,22 @@ function registeredTools(client: ReturnType<typeof makeClient>): string[] {
   return names;
 }
 
+/** Request path from a recorded client call, narrowed rather than assumed. */
+function recordedPath(arg: unknown): string {
+  assert.equal(typeof arg, 'string', `recorded request path must be a string, got ${JSON.stringify(arg)}`);
+  return arg;
+}
+
+/** The `uris` array of a recorded request body, narrowed rather than assumed. */
+function recordedUris(body: unknown): string[] {
+  assert.ok(body !== null && typeof body === 'object' && 'uris' in body, `recorded body must carry uris: ${JSON.stringify(body)}`);
+  const { uris } = body;
+  assert.ok(Array.isArray(uris), `uris must be an array: ${JSON.stringify(body)}`);
+  // A non-string entry is dropped rather than coerced, which makes any batch
+  // mismatch fail on the caller's deepEqual instead of passing silently.
+  return uris.filter((u): u is string => typeof u === 'string');
+}
+
 describe('exhaustmisc — mop-up 10 tools', () => {
   it('registers 10 tools', () => {
     const names = registeredTools(makeClient());
@@ -353,7 +369,8 @@ describe('exhaustmisc — mop-up 10 tools', () => {
     const handler = captured as (args: unknown) => Promise<unknown>;
     await handler({ playlist_id: 'src', parts: 2, dry_run: false });
     const postMock = client.post as { mock: { calls: Array<{ arguments: unknown[] }> } };
-    const paths = postMock.mock.calls.map((c) => c.arguments[0] as string);
+    const calls = postMock.mock.calls;
+    const paths = calls.map((c) => recordedPath(c.arguments[0]));
     assert.equal(paths.filter((p) => p === '/me/playlists').length, 2);
     assert.ok(
       paths.every((p) => p === '/me/playlists' || /^\/playlists\/new-\d+\/items$/.test(p)),
@@ -361,6 +378,24 @@ describe('exhaustmisc — mop-up 10 tools', () => {
     );
     assert.ok(!paths.some((p) => /^\/users\/.+\/playlists$/.test(p)), paths.join(', '));
     assert.ok(!paths.some((p) => /\/tracks$/.test(p)), paths.join(', '));
+    // The allow-list above only PERMITS `/items`; it does not require it, so a
+    // handler that created the parts and then wrote nothing at all would still
+    // pass. Require the writes: 205 uris over parts=2 chunks to [103, 102], each
+    // appended in CHUNK_CAPS.playlist_writes (100) batches, so 4 item posts
+    // carrying [100, 3, 100, 2] uris — every source URI written exactly once, in
+    // order, to the playlist created for its own part.
+    const itemCalls = calls.filter((c) => recordedPath(c.arguments[0]).endsWith('/items'));
+    assert.equal(itemCalls.length, 4);
+    assert.deepEqual(itemCalls.map((c) => recordedUris(c.arguments[1]).length), [100, 3, 100, 2]);
+    assert.deepEqual(itemCalls.map((c) => recordedPath(c.arguments[0])), [
+      '/playlists/new-0/items',
+      '/playlists/new-0/items',
+      '/playlists/new-1/items',
+      '/playlists/new-1/items',
+    ]);
+    // The written set is the source set, in source order — a dropped or
+    // reordered batch changes this, and so does a write to the wrong part.
+    assert.deepEqual(itemCalls.flatMap((c) => recordedUris(c.arguments[1])), items.map((i) => i.item.uri));
   });
 
   it('split_playlist fails with a named error when the profile cannot be read', async () => {
