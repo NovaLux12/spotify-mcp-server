@@ -280,6 +280,36 @@ export interface ModuleSchemaBudget {
   readonly withinBudget: boolean;
 }
 
+export const AGGREGATE_SURFACE_LIMITS = {
+  maxTools: 620,
+  maxBytes: 600_000,
+} as const;
+
+export interface AggregateSurfaceMeasurement {
+  readonly toolCount: number;
+  readonly schemaBytes: number;
+}
+
+export function collectAggregateSurfaceMeasurement(server: McpServer): AggregateSurfaceMeasurement {
+  const registry = (server as unknown as { _registeredTools?: Record<string, SchemaRegistryEntry & { annotations?: unknown; title?: string; outputSchema?: unknown; execution?: unknown; _meta?: unknown }> })._registeredTools ?? {};
+  const tools = Object.entries(registry).filter(([, tool]) => tool.enabled !== false).map(([name, tool]) => ({
+    name,
+    title: tool.title,
+    description: tool.description,
+    inputSchema: tool.inputSchema === undefined ? {} : z4.toJSONSchema(tool.inputSchema as Parameters<typeof z4.toJSONSchema>[0], { target: 'draft-7', io: 'input' }),
+    annotations: tool.annotations,
+    execution: tool.execution,
+    _meta: tool._meta,
+  }));
+  return { toolCount: tools.length, schemaBytes: Buffer.byteLength(JSON.stringify(tools), 'utf8') };
+}
+
+export function assertAggregateSurfaceBudget(measurement: AggregateSurfaceMeasurement): void {
+  if (measurement.toolCount > AGGREGATE_SURFACE_LIMITS.maxTools || measurement.schemaBytes > AGGREGATE_SURFACE_LIMITS.maxBytes) {
+    throw new Error(`aggregate tool surface exceeds budget: ${measurement.toolCount} tools/${measurement.schemaBytes}B > ${AGGREGATE_SURFACE_LIMITS.maxTools} tools/${AGGREGATE_SURFACE_LIMITS.maxBytes}B`);
+  }
+}
+
 export interface RegistrarManifestEntry {
   readonly key: string;
   readonly registrationKey: string;

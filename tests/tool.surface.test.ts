@@ -25,7 +25,10 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import {
+  AGGREGATE_SURFACE_LIMITS,
+  assertAggregateSurfaceBudget,
   assertModuleSchemaBudgets,
+  collectAggregateSurfaceMeasurement,
   collectModuleSchemaBudgets,
   NEVER_MUTATING_PLANS,
   moduleToolNames,
@@ -37,9 +40,8 @@ import { SpotifyClient } from '../src/client.js';
 
 const REPO_ROOT = join(import.meta.dirname, '..');
 
-/** Ceilings. Raising one is a deliberate act with a measured reason. */
-const DEFAULT_MAX_TOOLS = 620;          // today 608
-const DEFAULT_MAX_BYTES = 600_000;      // baseline 567,183 + annotations (measured +27,830 B); the delta must stay < ~33 KB
+const DEFAULT_MAX_TOOLS = AGGREGATE_SURFACE_LIMITS.maxTools;
+const DEFAULT_MAX_BYTES = AGGREGATE_SURFACE_LIMITS.maxBytes;
 const PER_TOOL_MAX_BYTES = 6_000;       // worst single schema+description today
 const CORE_MAX_TOOLS = 200;             // today 157
 const CORE_MAX_BYTES = 220_000;         // today 162,592
@@ -225,6 +227,16 @@ describe('tool surface: budget', () => {
     assert.ok(names.size < 608 / 2, `core must be materially smaller than the full surface (got ${names.size})`);
   });
 
+  it('production aggregate gate fails closed on an injected overage', () => {
+    const server = new McpServer({ name: 'aggregate-audit', version: '0.0.0' });
+    for (let i = 0; i <= AGGREGATE_SURFACE_LIMITS.maxTools; i++) {
+      server.tool(`aggregate_probe_${i}`, 'probe', {}, async () => ({ content: [] }));
+    }
+    const measurement = collectAggregateSurfaceMeasurement(server);
+    assert.ok(measurement.toolCount > AGGREGATE_SURFACE_LIMITS.maxTools);
+    assert.throws(() => assertAggregateSurfaceBudget(measurement), /aggregate tool surface exceeds budget/);
+  });
+
   it('manifest audit measures every module and enforces every ceiling', async () => {
     const server = new McpServer({ name: 'schema-audit', version: '0.0.0' });
     const client = new SpotifyClient();
@@ -233,6 +245,7 @@ describe('tool surface: budget', () => {
     const rows = collectModuleSchemaBudgets(server);
     assert.equal(rows.length, REGISTRAR_MANIFEST.length);
     assert.doesNotThrow(() => assertModuleSchemaBudgets(rows));
+    assert.doesNotThrow(() => assertAggregateSurfaceBudget(collectAggregateSurfaceMeasurement(server)));
 
     const tools = new Set(Object.keys((server as unknown as { _registeredTools: Record<string, unknown> })._registeredTools));
     assert.equal(tools.size, rows.reduce((sum, row) => sum + row.toolCount, 0), 'every tool must belong to exactly one manifest module');

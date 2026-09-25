@@ -5,6 +5,8 @@ import { SpotifyClient, SpotifyApiError } from './client.js';
 import { initConfig } from './config.js';
 import {
   applyToolAnnotations,
+  assertAggregateSurfaceBudget,
+  collectAggregateSurfaceMeasurement,
   assertModuleSchemaBudgets,
   collectModuleSchemaBudgets,
   registerManifestModule,
@@ -107,6 +109,7 @@ async function startMcpServer(): Promise<void> {
   if (isModuleActive('prompts', activeSets, overrides) && !moduleBlockedByScopes('prompts', grantedScopes)) registerPrompts(server);
 
   assertModuleSchemaBudgets(collectModuleSchemaBudgets(server));
+  assertAggregateSurfaceBudget(collectAggregateSurfaceMeasurement(server));
 
   // Annotations + titles for every registered tool (#565/A0-002): hosts need to
   // tell reads from destructive writes to auto-approve safely. Applied once here
