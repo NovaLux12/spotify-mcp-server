@@ -7,13 +7,13 @@
     "url": "https://github.com/NovaLux12/spotify-mcp-server",
     "source": "github"
   },
-  "version": "2.0.0",
+  "version": "3.0.0",
   "packages": [
     {
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "@novalux12/spotify-mcp",
-      "version": "2.0.0",
+      "version": "3.0.0",
       "transport": {
         "type": "stdio"
       },
