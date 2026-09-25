@@ -87,13 +87,14 @@ export function genreTagsPath(env: NodeJS.ProcessEnv = process.env): string {
  * The issue's acceptance criterion asks that a later write keep a `.corrupt`
  * copy. Rather than letting the write proceed and reset the store, the corrupt
  * bytes are copied aside at DETECTION time and the read still throws: the
- * payload is preserved twice (original + backup) and no write is ever
- * authorised to destroy it.
+ * payload is preserved and no write is ever authorised to destroy it.
  *
- * The copy never overwrites an existing one. This is exactly the workflow the
+ * The copy NEVER overwrites an existing one. This is exactly the workflow the
  * error message prescribes — the user is pointed at the copy to repair from —
  * so a second, different corrupt state must not clobber the first one's
- * evidence. Later copies get a unique `.corrupt.N` suffix.
+ * evidence. Later copies take the first free `.corrupt.N` slot and are opened
+ * O_EXCL, so even a lost race between the probe and the write cannot truncate
+ * a copy that is already there.
  *
  * Best-effort: a read-only or full directory must not mask the corruption
  * report itself, and the original still names the file to repair either way.
@@ -101,8 +102,8 @@ export function genreTagsPath(env: NodeJS.ProcessEnv = process.env): string {
 function quarantineCorruptSidecar(path: string): string | undefined {
   let backup = `${path}.corrupt`;
   try {
-    for (let n = 2; existsSync(backup); n += 1) backup = `${path}.corrupt.${n}`;
-    writeFileSync(backup, readFileSync(path), { mode: 0o600 });
+    for (let n = 1; existsSync(backup); n += 1) backup = `${path}.corrupt.${n}`;
+    writeFileSync(backup, readFileSync(path), { mode: 0o600, flag: 'wx' });
     chmodSync(backup, 0o600);
     return backup;
   } catch {
@@ -112,11 +113,19 @@ function quarantineCorruptSidecar(path: string): string | undefined {
 
 /** Tail of a corruption report: where the preserved copy is, and that we stopped. */
 function quarantineNote(backup: string | undefined): string {
-  return backup === undefined
-    ? 'It was left untouched — repair or move it aside, then retry; tagging stays blocked so '
-      + 'your existing tags cannot be overwritten.'
-    : `Its exact bytes were preserved at ${backup} and it was left untouched — repair or move `
-      + 'it aside, then retry; tagging stays blocked so your tags cannot be overwritten.';
+  if (backup === undefined) {
+    return 'It was left untouched — repair or move it aside, then retry; tagging stays blocked so '
+      + 'your existing tags cannot be overwritten.';
+  }
+  // Say so when this is not the first copy: the user is told to repair from a
+  // preserved file, and the failure they would hit next is an earlier crash
+  // state being overwritten by this one.
+  const earlier = backup.endsWith('.corrupt')
+    ? ''
+    : ` An earlier detection's copy is still at ${backup.replace(/\.corrupt\.\d+$/, '.corrupt')}, `
+      + 'kept intact so the original post-crash state was not overwritten.';
+  return `Its exact bytes were preserved at ${backup} and it was left untouched — repair or move `
+    + `it aside, then retry; tagging stays blocked so your tags cannot be overwritten.${earlier}`;
 }
 
 
@@ -130,6 +139,10 @@ function quarantineNote(backup: string | undefined): string {
  * stub and report success (#759) — the same class as the shipped bugs that
  * turned unreadable data into a plausible value. Throwing also leaves the file
  * untouched, so nothing is lost while the user repairs it.
+ *
+ * That refusal is per-ARTIST as well as per-file. A value that is not an array
+ * of genre strings, or one that would lose the artist to filtering, is corrupt
+ * in exactly the same way a broken top level is, and is reported the same way.
  */
 export function loadGenreTags(path: string = genreTagsPath()): GenreTagStore {
   let text: string;
@@ -180,9 +193,21 @@ export function loadGenreTags(path: string = genreTagsPath()): GenreTagStore {
         + quarantineNote(quarantineCorruptSidecar(path)),
       );
     }
-    // An empty list is a legitimately empty tag set (every tag was retracted),
-    // not corruption, so it is dropped rather than persisted as an empty entry.
-    if (genres.length > 0) tags[artist] = [...new Set(genres as string[])];
+    // An EMPTY list is corruption too, not a legitimate empty set: retracting an
+    // artist's last tag deletes the entry outright (tag_management remove), so
+    // the writer can never produce `{"Artist": []}`. Reading one as "no tags"
+    // would drop the artist from this read and erase the key on the next write,
+    // reported as a success — the same loss, one step quieter.
+    if (genres.length === 0) {
+      throw new Error(
+        `Genre tag sidecar ${path} has an empty tag list for "${artist}": retracting every tag `
+        + 'removes the entry, so an empty list is not a state this store can hold. '
+        + quarantineNote(quarantineCorruptSidecar(path)),
+      );
+    }
+    // Duplicate strings still collapse: the store is a set of tags, so a repeat
+    // loses no tag and is not the corruption the two cases above are.
+    tags[artist] = [...new Set(genres as string[])];
   }
   return { version: 1, tags };
 }

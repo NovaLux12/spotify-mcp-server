@@ -682,10 +682,42 @@ describe('sidecar robustness', () => {
     assert.throws(() => loadGenreTags(sidecarPath), /malformed entry for "Sigur"/);
   });
 
-  it('an emptied tag list is a legitimate empty set, not corruption', () => {
-    // Retracting every tag is normal and leaves an entry with nothing in it.
+  it('an emptied tag list is corruption, not a silently dropped artist', () => {
+    // Retracting an artist's last tag deletes the entry outright, so the writer
+    // can never produce `{"Sigur": []}`. Reading one as "no tags" drops the
+    // artist here and erases the key on the next write, reported as a success.
     writeFileSync(sidecarPath, JSON.stringify({ version: 1, tags: { Sigur: [] } }), 'utf8');
-    assert.deepEqual(loadGenreTags(sidecarPath).tags, {});
+    assert.throws(() => loadGenreTags(sidecarPath), /empty tag list for "Sigur"/);
+  });
+
+  it('duplicate tags in a well-formed entry collapse instead of failing', () => {
+    // The store is a set of tags, so a repeat loses no tag and must not be
+    // treated as the corruption the cases above are.
+    writeFileSync(
+      sidecarPath,
+      JSON.stringify({ version: 1, tags: { Sigur: ['ambient', 'ambient', 'post-rock'] } }),
+      'utf8',
+    );
+    assert.deepEqual(loadGenreTags(sidecarPath).tags, { Sigur: ['ambient', 'post-rock'] });
+  });
+
+  it('a malformed entry blocks tagging instead of persisting the loss', async () => {
+    // The reported repro end to end: the loss was not just unread, it was
+    // written back and announced as `Tagged "Bonobo" with [electronic].`
+    const onDisk = JSON.stringify({
+      version: 1,
+      tags: { 'Sigur Ros': 'ambient', Bonobo: ['electronic'] },
+    });
+    writeFileSync(sidecarPath, onDisk, 'utf8');
+    const h = harness(pagedResponder({ '/me/tracks': [], '/me/albums': [] }));
+    // Both entry points refuse: the report cannot read it…
+    await assert.rejects(h.invoke('library_genre_report', {}), /malformed entry for "Sigur Ros"/);
+    // …and so does the write that would have deleted Sigur Ros for good.
+    await assert.rejects(
+      h.invoke('tag_management', { action: 'add', artist: 'Bonobo', tags: ['idm'] }),
+      /malformed entry for "Sigur Ros"/,
+    );
+    assert.equal(readFileSync(sidecarPath, 'utf8'), onDisk);
   });
 
   it('a second corrupt state does not destroy the first preserved copy', () => {
@@ -696,10 +728,16 @@ describe('sidecar robustness', () => {
     // The user is told to repair from the copy, so that copy must survive the
     // next distinct corruption rather than being clobbered last-write-wins.
     writeFileSync(sidecarPath, second, 'utf8');
-    assert.throws(() => loadGenreTags(sidecarPath), /is not valid JSON/);
+    assert.throws(() => loadGenreTags(sidecarPath), (err: Error) => {
+      // …and the report says the first copy is still there, so the user knows
+      // which file holds the bytes worth recovering.
+      assert.match(err.message, /still at .*\.corrupt\b/);
+      return true;
+    });
 
     assert.equal(readFileSync(`${sidecarPath}.corrupt`, 'utf8'), first);
-    assert.equal(readFileSync(`${sidecarPath}.corrupt.2`, 'utf8'), second);
+    assert.equal(readFileSync(`${sidecarPath}.corrupt.1`, 'utf8'), second);
+    assert.equal(statSync(`${sidecarPath}.corrupt.1`).mode & 0o777, 0o600);
   });
 
   it('a write interrupted before the rename leaves the previous store intact', async () => {
