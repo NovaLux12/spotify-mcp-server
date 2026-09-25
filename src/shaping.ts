@@ -55,6 +55,22 @@ export const sharedListFields = {
 // Truncation math (#53)
 // ---------------------------------------------------------------------------
 
+export interface TruncationCapabilities {
+  maxResults?: boolean;
+  offset?: boolean;
+  fetchAll?: boolean;
+  scanCap?: boolean;
+  limit?: boolean;
+}
+
+export interface TruncationMetadata {
+  truncated: true;
+  returned: number;
+  total: number;
+  remaining: number;
+  next_offset?: number;
+}
+
 export interface TruncationResult<T> {
   /** Items to render (already sliced). */
   items: T[];
@@ -66,11 +82,38 @@ export interface TruncationResult<T> {
   footer: string | null;
 }
 
+const LEGACY_TRUNCATION_CAPABILITIES: Required<TruncationCapabilities> = {
+  maxResults: true,
+  offset: true,
+  fetchAll: true,
+  scanCap: false,
+  limit: false,
+};
+
+/** Continuation advice containing only controls present in the tool schema. */
+export function truncationAdvice(capabilities: TruncationCapabilities): string {
+  const advice: string[] = [];
+  if (capabilities.maxResults) advice.push('raise max_results');
+  if (capabilities.offset) advice.push('continue with offset');
+  if (capabilities.fetchAll) advice.push('set fetch_all');
+  if (capabilities.scanCap) advice.push('raise scan_cap');
+  if (capabilities.limit) advice.push('raise limit');
+  return advice.length > 0 ? advice.join(', ') : 'narrow the query';
+}
+
 /**
- * Slice `items` down to `maxResults` (clamped to >= 1) and compute the
- * "(N more — pass offset or fetch_all)" footer.
+ * Slice `items` down to `maxResults` (clamped to >= 1) and compute a footer
+ * from the continuation controls accepted by the calling tool.
+ *
+ * The default preserves the historical direct-helper contract. Production
+ * registration passes a schema-derived descriptor, and the result boundary
+ * repairs legacy callers that still use the default.
  */
-export function truncateItems<T>(items: readonly T[], maxResults: number): TruncationResult<T> {
+export function truncateItems<T>(
+  items: readonly T[],
+  maxResults: number,
+  capabilities: TruncationCapabilities = LEGACY_TRUNCATION_CAPABILITIES,
+): TruncationResult<T> {
   const cap = Number.isFinite(maxResults) ? Math.max(1, Math.floor(maxResults)) : DEFAULT_MAX_ITEMS;
   if (items.length <= cap) {
     return {
@@ -82,13 +125,14 @@ export function truncateItems<T>(items: readonly T[], maxResults: number): Trunc
       footer: null,
     };
   }
+  const remaining = items.length - cap;
   return {
     items: items.slice(0, cap),
     total: items.length,
     returned: cap,
     truncated: true,
-    remaining: items.length - cap,
-    footer: `${items.length - cap} more — pass offset or fetch_all`,
+    remaining,
+    footer: `${remaining} more — ${truncationAdvice(capabilities)}`,
   };
 }
 
@@ -109,15 +153,264 @@ export interface CompletenessFooterOptions {
   truncated: boolean;
   subject?: string;
   total?: number | null;
+  capabilities?: TruncationCapabilities;
 }
 
 /** Canonical wording for complete versus cap-truncated collection walks. */
 export function completenessFooter(options: CompletenessFooterOptions): string {
   const subject = options.subject ?? 'items';
   const total = typeof options.total === 'number' ? ` of ${options.total}` : '';
+  const advice = options.truncated && options.capabilities
+    ? `; ${truncationAdvice(options.capabilities)}`
+    : '';
   return options.truncated
-    ? `fetched ${options.fetched}${total} ${subject}, cap ${options.cap} — TRUNCATED; older ${subject} were not analyzed`
+    ? `fetched ${options.fetched}${total} ${subject}, cap ${options.cap} — TRUNCATED; older ${subject} were not analyzed${advice}`
     : `fetched ${options.fetched}${total} ${subject}, cap ${options.cap} — complete; cap not reached`;
+}
+
+type JsonObject = Record<string, unknown>;
+
+const CONTINUATION_KEYS: Record<keyof TruncationCapabilities, string> = {
+  maxResults: 'max_results',
+  offset: 'offset',
+  fetchAll: 'fetch_all',
+  scanCap: 'scan_cap',
+  limit: 'limit',
+};
+
+function schemaKeys(inputSchema: unknown): Set<string> {
+  if (inputSchema == null || typeof inputSchema !== 'object') return new Set();
+  const shape = 'shape' in inputSchema
+    ? (inputSchema as { shape?: unknown }).shape
+    : inputSchema;
+  if (shape == null || typeof shape !== 'object') return new Set();
+  return new Set(Object.keys(shape));
+}
+
+function capabilitiesForSchema(inputSchema: unknown): Required<TruncationCapabilities> {
+  const keys = schemaKeys(inputSchema);
+  return {
+    maxResults: keys.has('max_results'),
+    offset: keys.has('offset'),
+    fetchAll: keys.has('fetch_all'),
+    scanCap: keys.has('scan_cap'),
+    limit: keys.has('limit'),
+  };
+}
+
+function positiveArgument(args: JsonObject, key: string): number | undefined {
+  const value = args[key];
+  return typeof value === 'number' && Number.isFinite(value) && value > 0
+    ? Math.floor(value)
+    : undefined;
+}
+
+function truncationCap(
+  args: JsonObject,
+  capabilities: Required<TruncationCapabilities>,
+): number | undefined {
+  if (capabilities.maxResults) return resolveMaxResults(positiveArgument(args, 'max_results'));
+  if (capabilities.limit) return positiveArgument(args, 'limit');
+  return undefined;
+}
+
+function findReturnedItems(payload: JsonObject): unknown[] | undefined {
+  if (Array.isArray(payload.items)) return payload.items;
+  for (const [key, value] of Object.entries(payload)) {
+    if (Array.isArray(value) && /^(entries|items|rows|results|tracks|albums|artists|episodes|playlists|shows|audiobooks|top_tracks)$/.test(key)) {
+      return value;
+    }
+  }
+  return undefined;
+}
+
+function numberField(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined;
+}
+
+function metadataFromPayload(
+  payload: JsonObject,
+  args: JsonObject,
+  capabilities: Required<TruncationCapabilities>,
+  inferredRemaining: number,
+  itemsWereSliced: boolean,
+  cap: number | undefined,
+): TruncationMetadata {
+  const pagination = payload.pagination != null && typeof payload.pagination === 'object'
+    ? payload.pagination as JsonObject
+    : undefined;
+  const items = findReturnedItems(payload);
+  const explicitReturned = numberField(payload.returned);
+  const returned = itemsWereSliced
+    ? cap!
+    : explicitReturned ?? items?.length ?? cap ?? 0;
+  const explicitTotal = numberField(payload.total) ?? numberField(pagination?.total);
+  const total = explicitTotal ?? returned + inferredRemaining;
+  const remaining = Math.max(0, total - returned);
+  const existingNextOffset = numberField(payload.next_offset) ?? numberField(pagination?.next_offset);
+  const nextOffset = capabilities.offset
+    ? existingNextOffset ?? (
+      itemsWereSliced || remaining > 0
+        ? (numberField(args.offset) ?? 0) + returned
+        : undefined
+    )
+    : undefined;
+  return {
+    truncated: true,
+    returned,
+    total,
+    remaining,
+    ...(nextOffset !== undefined ? { next_offset: nextOffset } : {}),
+  };
+}
+
+function mentionsAcceptedControl(text: string, capabilities: Required<TruncationCapabilities>): boolean {
+  return (Object.entries(capabilities) as Array<[keyof TruncationCapabilities, boolean]>)
+    .some(([capability, accepted]) => accepted && text.includes(CONTINUATION_KEYS[capability]));
+}
+
+export interface TruncationBoundary {
+  shape(toolName: string, args: unknown, result: unknown): unknown;
+  capabilities(toolName: string): Required<TruncationCapabilities> | undefined;
+}
+
+/**
+ * Install the production tools/call result boundary before any tools are
+ * registered. Schemas are inspected once; unchanged successful results are
+ * returned by identity.
+ */
+export function installTruncationBoundary(server: object): TruncationBoundary {
+  const descriptors = new Map<string, Required<TruncationCapabilities>>();
+  const advice = new Map<string, string>();
+  const api = server as {
+    tool: (...args: unknown[]) => unknown;
+    registerTool: (...args: unknown[]) => unknown;
+  };
+  const originalTool = api.tool.bind(server);
+  const originalRegisterTool = api.registerTool.bind(server);
+
+  const remember = (name: string, inputSchema: unknown, callbackIndex: number, args: unknown[]): void => {
+    if (typeof args[callbackIndex] !== 'function') return;
+    const capabilities = capabilitiesForSchema(inputSchema);
+    descriptors.set(name, capabilities);
+    advice.set(name, truncationAdvice(capabilities));
+    const callback = args[callbackIndex] as (...callArgs: unknown[]) => unknown;
+    args[callbackIndex] = async (...callArgs: unknown[]) => shape(
+      name,
+      callArgs[0],
+      await callback(...callArgs),
+    );
+  };
+
+  const shape = (toolName: string, argsValue: unknown, resultValue: unknown): unknown => {
+    const capabilities = descriptors.get(toolName);
+    if (!capabilities || resultValue == null || typeof resultValue !== 'object') return resultValue;
+    const result = resultValue as JsonObject;
+    if (result.isError === true) return resultValue;
+    const content = Array.isArray(result.content) ? result.content : undefined;
+    const textBlock = content?.find((block) =>
+      block != null && typeof block === 'object'
+      && (block as JsonObject).type === 'text'
+      && typeof (block as JsonObject).text === 'string'
+    ) as { type: 'text'; text: string } | undefined;
+    const text = textBlock?.text;
+    const legacy = typeof text === 'string'
+      ? /\b(\d+)\s+more\s+[—-]\s+pass offset or fetch_all\b/i.exec(text)
+      : undefined;
+    const markedTruncated = result.structuredContent != null
+      && typeof result.structuredContent === 'object'
+      && (result.structuredContent as JsonObject).truncated === true;
+    const completeness = typeof text === 'string' ? /\bfetched\s+(\d+)(?:\s+of\s+(\d+))?\b[^—\n]*—\s*TRUNCATED\b/i.exec(text) : undefined;
+    let payload = result.structuredContent != null && typeof result.structuredContent === 'object'
+      ? result.structuredContent as JsonObject
+      : undefined;
+    let parsedJson = false;
+    if (typeof text === 'string' && /^\s*[{[]/.test(text)) {
+      try {
+        const parsed: unknown = JSON.parse(text);
+        if (parsed != null && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          parsedJson = true;
+          if (!payload) payload = parsed as JsonObject;
+        }
+      } catch {
+        // Non-JSON prose beginning with a brace is not a machine result.
+      }
+    }
+    const args = argsValue != null && typeof argsValue === 'object' && !Array.isArray(argsValue)
+      ? argsValue as JsonObject
+      : {};
+    if (!payload && completeness) {
+      const fetched = Number(completeness[1]);
+      const total = Number(completeness[2] ?? completeness[1]);
+      payload = { returned: fetched, total, remaining: Math.max(0, total - fetched) };
+    }
+    if (!payload && legacy != null) payload = {};
+    const items = payload ? findReturnedItems(payload) : undefined;
+    const cap = truncationCap(args, capabilities);
+    const itemsWereSliced = items !== undefined && cap !== undefined && items.length > cap;
+    const declaredTotal = payload ? numberField(payload.total) : undefined;
+    const shortPage = items !== undefined && declaredTotal !== undefined && items.length < declaredTotal;
+    const hasTruncationSignal = markedTruncated || legacy != null || completeness != null || shortPage;
+    if (!payload || (!hasTruncationSignal && !itemsWereSliced)) return resultValue;
+
+    const originalLength = items?.length;
+    let remaining = legacy ? Number(legacy[1])
+      : completeness ? Math.max(0, Number(completeness[2] ?? completeness[1]) - Number(completeness[1]))
+      : numberField(payload.remaining) ?? 0;
+    if (itemsWereSliced) remaining = Math.max(remaining, originalLength! - cap!);
+    const metadata = metadataFromPayload(payload, args, capabilities, remaining, itemsWereSliced, cap);
+    const nextPayload: JsonObject = { ...payload, ...metadata };
+    if (itemsWereSliced && items) {
+      const sliced = items.slice(0, cap!);
+      for (const [key, value] of Object.entries(nextPayload)) {
+        if (value === items) nextPayload[key] = sliced;
+      }
+    }
+    let nextText = text;
+    if (legacy && typeof text === 'string') {
+      nextText = text.replace(legacy[0], `${metadata.remaining} more — ${advice.get(toolName)}`);
+    } else if (typeof text === 'string' && !parsedJson && !mentionsAcceptedControl(text, capabilities)) {
+      nextText = `${text}\n(${metadata.remaining} more — ${advice.get(toolName)})`;
+    }
+    const metadataChanged = Object.keys(metadata).some((key) =>
+      payload[key] !== metadata[key as keyof TruncationMetadata]
+    );
+    const itemsChanged = itemsWereSliced
+      && Object.entries(nextPayload).some(([key, value]) => payload[key] !== value);
+    const textChanged = nextText !== undefined && nextText !== text;
+    if (!metadataChanged && !itemsChanged && !textChanged) return resultValue;
+    const nextResult: JsonObject = { ...result, structuredContent: nextPayload };
+    if (nextText !== undefined) {
+      nextResult.content = content!.map((block) =>
+        block === textBlock
+          ? { ...(block as JsonObject), text: parsedJson ? JSON.stringify(nextPayload, null, 2) : nextText }
+          : block
+      );
+    }
+    return nextResult;
+  };
+
+  api.tool = (...args: unknown[]) => {
+    const name = args[0] as string;
+    const callbackIndex = args.length - 1;
+    const inputSchema = args.slice(1, callbackIndex).find((value) =>
+      value != null && typeof value === 'object'
+      && (Object.keys(value).length === 0 || Object.values(value).some((entry) => entry != null && typeof entry === 'object'))
+    );
+    remember(name, inputSchema, callbackIndex, args);
+    return originalTool(...args);
+  };
+  api.registerTool = (...args: unknown[]) => {
+    const name = args[0] as string;
+    const config = args[1] != null && typeof args[1] === 'object' ? args[1] as JsonObject : {};
+    remember(name, config.inputSchema, 2, args);
+    return originalRegisterTool(...args);
+  };
+
+  return {
+    shape,
+    capabilities: (toolName) => descriptors.get(toolName),
+  };
 }
 
 // ---------------------------------------------------------------------------
