@@ -9,33 +9,13 @@ flowchart TD
     CLI["CLI dispatch (src/index.ts)<br/>auth / doctor / --help / --version / default"] --> MCP["McpServer<br/>name=spotify-mcp, version from package.json"]
     MCP --> T["StdioServerTransport<br/>(JSON-RPC over stdio)"]
 
-    subgraph REG["21 tool modules"]
-        CA["catalog.ts (18 tools)"]
-        PL["playlists.ts (12)"]
-        PB["playback.ts (16)"]
-        LI["library.ts (10)"]
-        AB["audiobooks.ts (4)"]
-        FO["following.ts (4)"]
-        PE["personalization.ts (3)"]
-        US["users.ts (2)"]
-        SE["search.ts (1)"]
-        PO["playlistops.ts (3)"]
-        PD["playlistdna.ts (1)"]
-        SC["scenes.ts (6)"]
-        LH["libraryhygiene.ts (1)"]
-        LIn["libraryinsights.ts (3)"]
-        ABC["audiobookcopilot.ts (3)"]
-        FR["freshness.ts (1)"]
-        AN["analytics.ts (1)"]
-        SD["searchdive.ts (1)"]
-        PS["podcastsession.ts (2)"]
-        DT["doctortool.ts (1)"]
-        CF["confirm.ts (elicitation helper, no tools)"]
+    subgraph REG["generated tool-module inventory"]
+        REGISTRY["src/tools/*.ts<br/>live tools/list registration"]
     end
     MCP --> REG
 
-    MCP --> RES["resources/index.ts: 16 fixed spotify://* URIs<br/>(each + ?format=json twin) + templated playlist-tracks<br/>resources/templates.ts: 7 RFC-6570 templates<br/>(track / artist / album / show / episode / playlist / artist-albums)"]
-    MCP --> PRM["prompts/index.ts<br/>14 prompts (server-only, no client)"]
+    MCP --> RES["resources/index.ts + resources/templates.ts<br/>fixed resources and RFC-6570 templates"]
+    MCP --> PRM["prompts/index.ts<br/>workflow prompts (server-only, no client)"]
 
     REG --> C
     RES --> C
@@ -44,7 +24,7 @@ flowchart TD
     C -- "load + refresh" --> TOK
 ```
 
-`index.ts` wires everything at startup: it creates one `SpotifyClient`, passes that single shared instance to every active tool module and to the resource/prompt registrars, then connects a `StdioServerTransport`. Each module registration is gated twice (#111): by the resolved **toolset** (`SPOTIFY_MCP_TOOLSETS`, with per-key `SPOTIFY_MCP_ENABLE_TOOLS`/`SPOTIFY_MCP_DISABLE_TOOLS` overrides on top — disable beats enable beats set; unknown names are warned about and ignored) and by a **scope gate** (`src/scopefilter.ts`): modules whose write scopes were never granted at auth time (scopes are persisted on `tokens.json`) are hidden entirely instead of failing at call time; read-only modules are never blocked. The one exception is `spotify_doctor` (`doctortool.ts`), which registers unconditionally so diagnostics survive toolset trimming. `SPOTIFY_MCP_READONLY=1` hides every write-capable module regardless of scopes. Mutating tools can verify their writes landed via receipts (`src/receipts.ts`, exposed as the `verify_receipt` tool in `index.ts`). A pagination-progress forwarder still turns client page-walk events into MCP progress notifications. Running `spotify-mcp auth` instead runs `runAuthFlow()` from `auth.ts` and exits; `spotify-mcp doctor` builds a short-lived cache-disabled client to check config, token state, and live API access.
+`index.ts` wires everything at startup: it creates one `SpotifyClient`, passes that shared instance to every active tool module and to the resource/prompt registrars, then connects a `StdioServerTransport`. Registration is filtered by the resolved toolset (`SPOTIFY_MCP_TOOLSETS`, with `SPOTIFY_MCP_ENABLE_TOOLS`/`SPOTIFY_MCP_DISABLE_TOOLS` overrides) and, where applicable, granted Spotify scopes. `spotify_doctor` and the discovery trio (`find_tool`, `inspect_tool`, `toolset_report`) register outside toolset trimming; the trio is the discovery escape hatch for minimal toolsets and remains subject to the catalog scope gate. `verify_receipt` is read-only but is not unconditional: it registers under the `library` key.
 
 ## Authentication flows
 
@@ -97,9 +77,9 @@ Every HTTP call funnels through one private path inside `SpotifyClient`:
 8. **Read cache (#54)** — `src/cache.ts` provides an `LruTtlCache` (5-minute TTL, LRU eviction by default) plus a bypass policy (`shouldBypassCache`: never cache non-GET requests or volatile `/me/player*` and `/me/top*` paths, which covers recently-played). `get()` consults the cache before enqueueing and stores successful JSON responses after fetch; every successful mutation calls `afterMutation()`, which drops the whole cache (a mutation may invalidate any cached object) and records the mutation in the opt-in history JSONL.
 9. **Request/quota usage tracking (#904)** — the drain path maintains a cumulative counter plus per-request timestamps (pruned to the longest exposed window). `getRateLimitStatus()` exposes `requestsTotal` / `requestsLastMinute` / `requestsLastHour`; cache hits bypass the queue and cost nothing, so they are not counted. Heavy composite scans consult the shared cooldown first (`quotaPreflight`: blocked scans return an actionable wait message and issue 0 requests) and otherwise shrink their walk budget to the remaining quota window (`quotaWindowRemaining`), disclosing `requests_made` plus `requests_planned`/`budget_shrunk` in payloads. `spotify_doctor` and the `spotify://me/rate-limit` resource report the same counts.
 
-## Second upstream: stats.fm (v2 — planned)
+## Second upstream: stats.fm (v2 — implemented)
 
-Spotify is the system of record for playback, library, and catalog. stats.fm rides alongside as a **second upstream** for what Spotify's API cannot give: lifetime listening history, cross-range top lists, and taste aggregates. The stats.fm tools (planned `src/tools/statsfm.ts`, SPEC §5.10) are read-only and share the response-shaping contract (`response_format`, `max_results`, `structuredContent`) but not the write path — no `dry_run`, no receipts, no history JSONL. Identity is a stats.fm user ID (`STATSFM_USER_ID`), not OAuth: public profiles need no token, private profiles stay hidden by design. Lifetime ranges depend on a completed history import (`statsfm_history_status` first). Full guide: `docs/statsfm.md`.
+Spotify is the system of record for playback, library, and catalog. stats.fm rides alongside as a **second upstream** for lifetime listening history, cross-range top lists, and taste aggregates. The shipped `src/tools/statsfm.ts` and `src/tools/statsfm_taste.ts` registrars (SPEC §5.10) are read-only and share the response-shaping contract (`response_format`, `max_results`, `structuredContent`) but not the write path — no `dry_run`, no receipts, no history JSONL. Identity is a stats.fm user ID, not OAuth. Full guide: `docs/statsfm.md`.
 
 ```mermaid
 flowchart LR
@@ -117,49 +97,96 @@ Each `register*Tools(server, client)` function calls `server.tool(...)` or, for 
 - **Output formatting** — every tool takes a `response_format` parameter (`'concise'` default, `'detailed'`, or `'json'`): concise renders human-readable lines via helpers like `formatDuration(ms)` and `formatItem(track|episode)`; detailed adds context; json returns a machine-readable payload. List tools take `max_results` (default `SPOTIFY_MCP_MAX_ITEMS`) and attach `structuredContent` plus pagination info; destructive ops take `dry_run` and mutations emit batch summaries.
 - **Transport** — the MCP SDK's `StdioServerTransport` carries JSON-RPC between the host (e.g. Claude Desktop) and this process; nothing else listens on the network during normal operation.
 
-Resources follow the same pattern via `server.resource(name, uri|template, { description }, reader)` for **eleven fixed `spotify://` URIs**: profile, player state, player queue, top tracks/artists, recently played, playlists, saved albums/shows/episodes, and rate-limit status. Each fixed URI is registered twice — once bare (exact-string lookup) and once as a `{?format}` template twin sharing the same renderer, where `?format=json` switches the response to raw JSON. On top of those sits the templated `spotify://playlist/{id}/tracks` resource (with a `{+qs}` twin absorbing any query string), paginated via `?offset`/`?limit`. A second registrar (`src/resources/templates.ts`) adds **five RFC-6570 templates** over single-get catalog endpoints (#111): `artist/{id}`, `album/{id}`, `show/{id}`, `episode/{id}`, and `artist/{id}/albums` (each with its own `{+qs}`/`{?format}` twin). Because `/artists/{id}/albums` hard-caps `limit` at 10 on Spotify's side, that template walks up to 5 pages client-side and appends an explicit truncation footer instead of issuing unbounded fetches. The show and episode templates carry **argument completions** — suggesters drawn from the user's own saved shows/episodes wired into the SDK's `completion/complete` via the `ResourceTemplate.complete` map; the other templates have no cheaply enumerable id space and get no completions. Prompts (`server.prompt`) return canned user-message templates referencing real tool names — dj, playlist-from-mood, music-taste summary, discovery alternative, playlist audit, listening recap, library migration, podcast catch-up, artist deep dive, triage-liked-songs, plus music_briefing, morning_briefing, weekly_digest and crate_digging.
+Resources are registered through `server.resource(...)` as fixed `spotify://` URIs and RFC-6570 templates. Every fixed URI has a `{?format=json}` twin; playlist tracks and catalog entities also have query-absorbing twins where required. The generated inventory below is derived from `resources/list` and `resources/templates/list`, so it includes saved tracks/audiobooks, following, history, and genre heatmap resources without a second hand-maintained list.
 
 ## Module map
 
-| File | Responsibility | Approx LOC |
-|---|---|---|
-| `src/index.ts` | CLI dispatch (`auth` / `doctor` / `--help` / `--version` / start server), toolset resolution + enable/disable overrides, per-module scope gating (`moduleBlockedByScopes`), `SPOTIFY_MCP_READONLY` suppression, the `verify_receipt` tool, pagination-progress forwarding | ~420 |
-| `src/client.ts` | `SpotifyClient`: two-lane request scheduler (normal/low with waiter aging), inter-request pacing, rate-limit hold, request/quota usage tracking (`requestsTotal`/`requestsSince`, `quotaPreflight`/`quotaSnapshot`/`quotaWindowRemaining`/`quotaDelta` helpers, #904), token refresh with cross-process adoption, fetch timeouts, read cache integration, `getAllPages` walker | ~770 |
-| `src/tools/playlists.ts` | 12 tools: create/get/list/modify playlists, add/remove/reorder/replace items (bulk remove ≥10 / replace ≥50 items gated behind elicitation confirmation via `confirm.ts` thresholds when the client supports it), duplicate finder, cover upload (via `putRaw`) | ~980 |
-| `src/tools/playlistops.ts` | 3 tools: merge/diff/overlap between two playlists (set operations over track ID sets) | ~407 |
-| `src/tools/playback.ts` | 16 tools: play/pause/skip/seek/volume/shuffle/repeat/queue/devices/now-playing/search-and-play/transfer plus `handoff` (#112 idea 9) which moves playback to another device preserving track position | ~799 |
-| `src/tools/catalog.ts` | 18 tools: tracks, albums, artists, shows/episodes, audiobooks metadata, `get_me`, markets, `get_several_*` batch lookups; `get_artist_albums` clamps to Spotify's hard limit of 10 per page on `/artists/{id}/albums` (400 above that) | ~846 |
-| `src/tools/library.ts` | 10 tools: per-type saved lists (`get_saved_*`), bulk save/remove/check, URI-based save/remove/check-in-library | ~653 |
-| `src/tools/scenes.ts` | 6 tools: named listening scenes — save/list/delete/apply a scene, schedule wind-down, cancel wind-down | ~619 |
-| `src/tools/libraryinsights.ts` | 3 tools: library genre report, filter-by-genre, tag management | ~466 |
-| `src/tools/podcastsession.ts` | 2 tools: plan a time-boxed podcast session from saved shows, start it on a device | ~369 |
-| `src/tools/audiobookcopilot.ts` | 3 tools: resume position ("where was I"), list all chapters, jump to chapter | ~291 |
-| `src/tools/freshness.ts` | 1 tool: `whats_new` — new releases across followed artists / saved albums / shows | ~386 |
-| `src/tools/playlistdna.ts` | 1 tool: `grow_playlist` — read-only co-occurrence curation: finds tracks appearing in ≥2 of the user's *other* playlists, boosts artist matches with the target, excludes tracks already present, and returns evidence-backed candidates to feed `add_to_playlist` (no recommendations endpoint involved) | ~330 |
-| `src/tools/analytics.ts` | 1 tool: `listening_report` — aggregated stats over top-item time ranges | ~324 |
-| `src/tools/libraryhygiene.ts` | 1 tool: `library_hygiene` — finds orphaned singles and near-complete albums worth saving | ~388 |
-| `src/tools/searchdive.ts` | 1 tool: `search_deep` — multi-entity search with richer per-type detail | ~211 |
-| `src/tools/doctortool.ts` | 1 tool: `spotify_doctor` — runtime diagnostic report (config, tokens, scopes, throttling, API reachability); registered unconditionally, outside toolset trimming | ~312 |
-| `src/tools/confirm.ts` | No tools: elicitation helpers — capability probe (`supportsElicitation`), confirmation message builder, and `confirmViaElicitation`; exports the bulk-action thresholds (remove ≥10, replace ≥50) | ~98 |
-| `src/scopefilter.ts` | Registration key → required write scopes ("either-of" semantics); powers hiding modules whose mutations would 403 | ~69 |
-| `src/receipts.ts` | Mutation receipts (#112 idea 11): after a write succeeds, refetch minimal state to confirm it landed, store the receipt, expose prose summaries; `verify_receipt` looks them up by id | ~170 |
-| `src/toolsets.ts` | Named toolsets (`SPOTIFY_MCP_TOOLSETS`) with enable/disable overrides, module→toolset membership, env help text | ~170 |
-| `src/resources/templates.ts` | 5 RFC-6570 resource templates (artist / album / show / episode / artist-albums), each bare + `{+qs}` twin; artist-albums walks ≤5 client-side pages due to Spotify's limit=10 cap; completions on show/episode ids from the user's saved library | ~273 |
-| `src/resources/index.ts` | 11 fixed `spotify://*` resources (profile, player state/queue, top lists, recently played, playlists, saved library, rate-limit) each with a `?format=json` twin, plus the templated playlist-tracks resource | ~416 |
-| `src/auth.ts` | PKCE generation, browser + headless OAuth flows, callback HTTP server on the port derived from `SPOTIFY_REDIRECT_URI`, HTML-escaped error pages, atomic `loadTokens`/`saveTokens` (tmp + rename, mode 0600), exported pure `parseCallbackUrl` | ~359 |
-| `src/types/spotify.ts` | Hand-written response shapes: `TokenData`, `SpotifyPaged`, track/album/artist/episode/device types | ~382 |
-| `src/tools/audiobooks.ts` | 4 tools: audiobook/chapter lookup + saved-audiobooks list | ~324 |
-| `src/tools/personalization.ts` | 3 tools: top tracks/artists (time-range parameterized), recently played | ~267 |
-| `src/tools/following.ts` | 4 tools: followed-artists list, following check, follow/unfollow | ~245 |
-| `src/tools/search.ts` | 1 multi-type search tool | ~243 |
-| `src/shaping.ts` | Shared response plumbing: `ResponseFormat`/`MaxResults`/`DryRun` schemas, truncation, pagination info, `structuredContent` and batch-summary helpers | ~220 |
-| `src/prompts/index.ts` | 14 prompts: dj, playlist-from-mood, music-taste summary, discovery alternative, playlist audit, listening recap, library migration, podcast catch-up, artist deep dive, triage-liked-songs, music_briefing, morning_briefing, weekly_digest, crate_digging | ~320 |
-| `src/tools/users.ts` | 2 tools: arbitrary user profile + that user's public playlists | ~167 |
-| `src/cache.ts` | `LruTtlCache` (TTL + LRU eviction), `shouldBypassCache` policy, order-insensitive cache keys | ~94 |
-| `src/config.ts` | Central loader for the `SPOTIFY_MCP_*` environment family (timeouts, caps, token file, headless, redirect URI, history flags) | ~63 |
-| `src/history.ts` | Opt-in mutation-history JSONL writer (`SPOTIFY_MCP_HISTORY`), strict field whitelist | ~57 |
+<!-- BEGIN:generated surface-census -->
+The default profile registers **610 tools** from 64 files under `src/tools/` plus the inline `verify_receipt` tool. The live surface also contains **16 fixed resources**, **33 resource templates**, and **14 prompts**; only modules active for the granted toolsets and scopes register at runtime. These values come from the live MCP registry, not a static estimate.
+<!-- END:generated surface-census -->
 
-Totals: 212 registered tools (211 in the 43 modules under `src/tools/`, plus `verify_receipt`) — note that only the modules active for the granted toolset + scopes actually register; 16 fixed resources (each with a `?format=json` twin) plus the templated playlist-tracks resource and 7 RFC-6570 catalog templates (`src/resources/templates.ts`); 14 prompts.
+The table is generated from every TypeScript file directly under `src/`, `src/lib/`, and `src/tools/`. Tool counts come from real registrations (including loop factories), and LOC is the repository line count, not an estimate.
+
+<!-- BEGIN:generated module-map -->
+| File | Responsibility | LOC |
+|---|---|---:|
+| `src/auth.ts` | Runtime module for auth. (0 registered tools) | 631 |
+| `src/cache.ts` | Tiny LRU + TTL cache used by SpotifyClient for immutable catalog reads (0 registered tools) | 94 |
+| `src/client.ts` | Runtime module for client. (0 registered tools) | 770 |
+| `src/config.ts` | Central configuration loader for the SPOTIFY_MCP_* environment family. (0 registered tools) | 227 |
+| `src/history.ts` | Opt-in mutation history JSONL (#64). When SPOTIFY_MCP_HISTORY is truthy, (0 registered tools) | 57 |
+| `src/index.ts` | Runtime module for index. (1 registered tools) | 422 |
+| `src/lib/statsfm-client.ts` | Minimal client for the public stats.fm API (https://api.stats.fm/api/v1). (0 registered tools) | 92 |
+| `src/receipts.ts` | Mutation receipts (#112 idea 11). (0 registered tools) | 331 |
+| `src/refs.ts` | refs (#226): shared resolver accepting bare ID, spotify: URI, (0 registered tools) | 115 |
+| `src/scopefilter.ts` | Scope-aware module gating (#111 item 6). (0 registered tools) | 69 |
+| `src/shaping.ts` | Shared shaping helpers for tool responses (#51/#52/#53/#57/#58): zod schema (0 registered tools) | 242 |
+| `src/tools/analytics.ts` | Runtime module for analytics. (4 registered tools) | 427 |
+| `src/tools/annotations.ts` | MCP tool annotations (#565 / A0-002, A4-005). (0 registered tools) | 195 |
+| `src/tools/artistwatch.ts` | Runtime module for artistwatch. (6 registered tools) | 517 |
+| `src/tools/audiobookcopilot.ts` | Audiobook chapter copilot (#112 idea 4): tools for navigating long-form (3 registered tools) | 291 |
+| `src/tools/audiobooks.ts` | Runtime module for audiobooks. (4 registered tools) | 330 |
+| `src/tools/backup.ts` | Library backup (#159): snapshot the entire reachable library — liked (2 registered tools) | 881 |
+| `src/tools/backupfirst.ts` | backup_first (#216): pre-flight snapshot for account-wide destructive tools. (1 registered tools) | 79 |
+| `src/tools/browse.ts` | Runtime module for browse. (3 registered tools) | 153 |
+| `src/tools/catalog.ts` | Runtime module for catalog. (32 registered tools) | 1275 |
+| `src/tools/confirm.ts` | Elicitation-gated confirmation for destructive playlist operations (#111 item 5). (0 registered tools) | 159 |
+| `src/tools/doctortool.ts` | spotify_doctor (#111 idea 9 + #228): the CLI `doctor` command (runDoctor in (1 registered tools) | 682 |
+| `src/tools/episodemgmt.ts` | episodemgmt (#204, #187, #230): archive_played_episodes. (1 registered tools) | 60 |
+| `src/tools/exhaust2_catalog.ts` | exhaust2 catalog slice — feature swarm v1.24.0 (issues #332–#357). (19 registered tools) | 1371 |
+| `src/tools/exhaust2_enggating.ts` | exhaust2 enggating slice -- the graceful-403 gating contract (#428, #429). (0 registered tools) | 133 |
+| `src/tools/exhaust2_extra.ts` | exhaust2 extra slice — the final three playlists-surface tools (#398-#400). (3 registered tools) | 546 |
+| `src/tools/exhaust2_misc.ts` | exhaust2 misc slice — feature swarm v1.24.0. (27 registered tools) | 1765 |
+| `src/tools/exhaust2_playback.ts` | exhaust2 playback slice — feature swarm v1.24.0 (issues #358-#379). (23 registered tools) | 1300 |
+| `src/tools/exhaust2_playlists.ts` | exhaust2 playlists slice — feature swarm v1.24.0 (issues #380–#400). (18 registered tools) | 1737 |
+| `src/tools/exhaustmisc.ts` | exhaustmisc — mop-up for the 60-issue exhaustive sweep. (10 registered tools) | 573 |
+| `src/tools/export.ts` | export_playlist (#155): dump a playlist's full item list as an M3U or CSV (1 registered tools) | 254 |
+| `src/tools/following.ts` | Runtime module for following. (5 registered tools) | 322 |
+| `src/tools/freshness.ts` | freshness radar (#112 idea 2): personal replacement for the removed (1 registered tools) | 564 |
+| `src/tools/import.ts` | import_playlist (#165): the inverse of export_playlist. Parses an M3U or (1 registered tools) | 244 |
+| `src/tools/library.ts` | Runtime module for library. (16 registered tools) | 899 |
+| `src/tools/libraryanalytics.ts` | Runtime module for libraryanalytics. (4 registered tools) | 506 |
+| `src/tools/libraryhygiene.ts` | Album completion & consolidation hygiene (#112 idea 5). (1 registered tools) | 423 |
+| `src/tools/libraryinsights.ts` | Runtime module for libraryinsights. (3 registered tools) | 466 |
+| `src/tools/personalization.ts` | Runtime module for personalization. (3 registered tools) | 271 |
+| `src/tools/playback.ts` | Runtime module for playback. (16 registered tools) | 829 |
+| `src/tools/playbackext.ts` | playbackext (#197, #206, #198, #180, #181): local sidecar persistence for (13 registered tools) | 334 |
+| `src/tools/playbackintel.ts` | playbackintel — exhaustive playback/queue/player intel (#272-283 slice) (15 registered tools) | 465 |
+| `src/tools/playlistbatch.ts` | Playlist batch operations — Stream D (#183, #189, #200). (3 registered tools) | 117 |
+| `src/tools/playlistdna.ts` | Runtime module for playlistdna. (1 registered tools) | 330 |
+| `src/tools/playlisthealth.ts` | Runtime module for playlisthealth. (8 registered tools) | 425 |
+| `src/tools/playlistmisc.ts` | Playlist misc (#186 + #208): pin/unpin playlist (follow/unfollow) + mood-vibe (3 registered tools) | 199 |
+| `src/tools/playlistops.ts` | Playlist power tools (#96): merge_playlists, diff_playlists, overlap_playlists. (3 registered tools) | 407 |
+| `src/tools/playlists.ts` | Runtime module for playlists. (26 registered tools) | 1729 |
+| `src/tools/podcastsession.ts` | Podcast session composer (#112 idea 3): greedy-packs the user's saved (2 registered tools) | 406 |
+| `src/tools/portability.ts` | Portability (#188 + #192 + #238 + #240 + #223 + #220): save_discover_weekly / save_release_radar (11 registered tools) | 890 |
+| `src/tools/queueops.ts` | queueops (#194, #202, #224, #231): queue_playlist + save_queue_as_playlist. (3 registered tools) | 316 |
+| `src/tools/restore.ts` | restore_library_snapshot (#160): STRICTLY ADDITIVE restore of a library (1 registered tools) | 706 |
+| `src/tools/saveddedupe.ts` | Saved-track duplicate detection (#156). (1 registered tools) | 525 |
+| `src/tools/scenes.ts` | Named playback scenes (#112 ideas 7+12): save/apply/list/delete reusable (7 registered tools) | 727 |
+| `src/tools/search.ts` | Runtime module for search. (1 registered tools) | 256 |
+| `src/tools/searchdive.ts` | Runtime module for searchdive. (1 registered tools) | 212 |
+| `src/tools/searchhistory.ts` | searchhistory (#205): search_history + search_rerun (90-day expiry, sidecar). (2 registered tools) | 101 |
+| `src/tools/showradar.ts` | show_new_episodes (#173): new-episode radar across saved podcast shows. (1 registered tools) | 316 |
+| `src/tools/smart.ts` | create_smart_playlist (#172): rule-based playlist generation from the (1 registered tools) | 241 |
+| `src/tools/statsfm.ts` | stats.fm tools (read-only): listening stats, tops, catalog and social (30 registered tools) | 775 |
+| `src/tools/statsfm_taste.ts` | stats.fm taste-intelligence slice (v2 taste track). (16 registered tools) | 1134 |
+| `src/tools/swarm3_analytics.ts` | swarm3 analytics slice — 500-tool swarm v1.26.0 (issue #442). Owned by ANALYTICS builder. (24 registered tools) | 1376 |
+| `src/tools/swarm3_discovery.ts` | Runtime module for swarm3_discovery. (24 registered tools) | 1896 |
+| `src/tools/swarm3_library.ts` | swarm3 library slice — feature swarm v1.25.0 (500-tool push, branch swarm3-500-tools). (24 registered tools) | 1467 |
+| `src/tools/swarm3_meta.ts` | swarm3 meta slice — 500-tool swarm v1.26.0 (issue #442). (3 registered tools) | 171 |
+| `src/tools/swarm3_playback.ts` | Runtime module for swarm3_playback. (24 registered tools) | 1299 |
+| `src/tools/swarm3_playlistops.ts` | swarm3 playlistops slice — 500-tool swarm v1.26.0 (issue #442). Owned by PLAYLISTOPS builder. (24 registered tools) | 1761 |
+| `src/tools/swarm3_refs.ts` | swarm3 refs slice — 500-tool swarm v1.26.0 (issue #442). Owned by REFS builder. (24 registered tools) | 586 |
+| `src/tools/swarm3_shows.ts` | Runtime module for swarm3_shows. (24 registered tools) | 1353 |
+| `src/tools/swarm3_snapshots.ts` | Runtime module for swarm3_snapshots. (24 registered tools) | 1616 |
+| `src/tools/swarm3b_discovery.ts` | swarm3b discovery slice (second discovery builder) — 500-tool swarm v1.26.0 (issue #442). (24 registered tools) | 1261 |
+| `src/tools/swarm4_playlists.ts` | swarm4 playlists slice — feature swarm v1.25.0 (issues #420–#437). (18 registered tools) | 1632 |
+| `src/tools/taste_composites.ts` | Wave-2 taste composites: 11 read-only composite tools over the stats.fm (11 registered tools) | 811 |
+| `src/tools/undo.ts` | Undo for receipt-driven mutations (#217, #625). (2 registered tools) | 158 |
+| `src/tools/users.ts` | Runtime module for users. (2 registered tools) | 192 |
+| `src/toolsets.ts` | Toolsets (#95): coarse-grained grouping of registration entry points so an (0 registered tools) | 227 |
+<!-- END:generated module-map -->
 
 ## Request scheduling
 
