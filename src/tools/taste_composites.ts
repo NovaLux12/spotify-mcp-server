@@ -1,8 +1,10 @@
 /**
- * Wave-2 taste composites: 11 read-only composite tools over the stats.fm
- * PUBLIC API v1 (no auth), shaping taste data into playlist specs, briefs,
- * and reports. No Spotify writes — playlist-shaped output is a
- * copy-pasteable track list plus a DRY_RUN receipt.
+ * Wave-2 taste composites: 11 composite tools over the stats.fm PUBLIC API v1
+ * (no auth), shaping taste data into playlist specs, briefs, and reports.
+ * `taste_to_playlist` is the one writer: `dry_run` (default true) previews the
+ * plan and issues no Spotify write, `dry_run=false` creates the playlist and
+ * adds the tracks that resolve to a Spotify id. The other ten are read-only
+ * and never touch the Spotify client.
  *
  * Spec: docs/wave2-composites.md
  *
@@ -33,6 +35,7 @@ import {
   type TasteStream,
 } from './statsfm_taste.js';
 import { StatsfmApiError, statsfmApiErrorFromHttp, statsfmTransportError } from '../lib/statsfm-client.js';
+import { readOnlyModeEnabled } from './annotations.js';
 
 // Retry-After parsing, reason extraction and the redaction policy live in
 // lib/statsfm-client.ts; a second copy here would drift back into surfacing
@@ -124,6 +127,20 @@ const rangeSchema = z
   .optional()
   .describe('stats.fm range window. Default: lifetime');
 
+/**
+ * `dry_run` fragment defaulting to TRUE (repo convention: previews are the
+ * default). `.default(true)` puts the default on the wire schema, so a host
+ * reading tools/list sees the safe mode without having to know the convention.
+ */
+const DryRunDefault = z
+  .boolean()
+  .optional()
+  .default(true)
+  .describe(
+    'Preview only: return the plan and write nothing. Pass false to actually create '
+      + 'the playlist in your library and add the tracks that resolve to a Spotify id. Default true',
+  );
+
 interface RawItem {
   [k: string]: unknown;
 }
@@ -212,6 +229,32 @@ function picksFromStreams(streams: TasteStream[], evidence: string): TrackPick[]
 export const SPOTIFY_FALLBACK_GUIDANCE =
   'stats.fm externalIds.spotify[] are often dead (~12%) — if a URI 404s, run search_tracks "Artist - Title" and take the top result. Rows under missing[] had no Spotify id at all: search them by name.';
 
+/** A stats.fm external id that already carries a URI passes through; a bare id is wrapped. */
+function spotifyTrackUri(raw: string): string {
+  const id = raw.trim();
+  return /^spotify:(track|local):/i.test(id) ? id : `spotify:track:${id}`;
+}
+
+/**
+ * One /search GET for a pick that carried no usable stats.fm id. A failed or
+ * empty lookup returns null so the caller can list the track as unresolved —
+ * a dead lookup must not abort the whole commit, and it must never be dropped
+ * silently.
+ */
+async function searchTrackUri(client: SpotifyClient, pick: TrackPick): Promise<string | null> {
+  type SearchHits = { tracks?: { items?: Array<{ uri?: string; id?: string }> } };
+  let res: SearchHits | null = null;
+  try {
+    res = await client.get<SearchHits>('/search', { q: `${pick.artist} ${pick.title}`, type: 'track', limit: '1' });
+  } catch {
+    return null;
+  }
+  const first = res?.tracks?.items?.[0];
+  if (first?.uri) return first.uri;
+  return first?.id ? spotifyTrackUri(first.id) : null;
+}
+
+
 function renderPicks(picks: TrackPick[]): { lines: string[]; missing: string[] } {
   const lines: string[] = [];
   const missing: string[] = [];
@@ -243,21 +286,33 @@ function ymd(ms: number): string {
 }
 
 // ---------------------------------------------------------------------------
-// Registration — 11 composite tools, all taste_ prefixed, all read-only
+// Registration — 11 composite tools, all taste_ prefixed. The first one
+// (taste_to_playlist) is the only writer: it previews by default and commits
+// on dry_run=false. The other ten are read-only over the public stats.fm API.
 // ---------------------------------------------------------------------------
 
-export function registerTasteCompositeTools(server: McpServer, _client: SpotifyClient): void {
-  void _client; // stats.fm public API needs no Spotify client; kept for index.ts uniformity
+export function registerTasteCompositeTools(server: McpServer, client: SpotifyClient): void {
 
   // ---- 1. taste_to_playlist ----
   server.tool(
     'taste_to_playlist',
-    'Taste profile → playlist track list (DRY RUN first): blend lifetime tops with recent streams into a copy-pasteable track list. Read-only — never writes to Spotify.',
+    'Taste profile → playlist: blend lifetime tops with recent streams into a track list. '
+      + 'dry_run (default true) returns the plan and issues NO Spotify write; dry_run=false '
+      + 'creates the playlist in your library and adds the tracks that resolve to a Spotify id '
+      + '(unresolvable ones come back under unresolved[], never silently dropped). '
+      + 'Quota: 2 stats.fm GETs when previewing; + up to track_count /search GETs, 1 create and '
+      + 'chunked adds when committing.',
     {
       statsfm_user: statsfmUserSchema,
       track_count: z.number().int().min(1).max(50).optional().describe('Tracks to list. Default: 20'),
       seed: z.enum(['core', 'recent', 'mixed']).optional().describe('Blend seed. Default: mixed'),
-      dry_run: z.boolean().optional().describe('Preview only (default true). False still only returns the list — writes happen via Spotify tools.'),
+      dry_run: DryRunDefault,
+      playlist_name: z
+        .string()
+        .min(1)
+        .max(100)
+        .optional()
+        .describe('Name for the playlist created when dry_run=false. Default: "Taste: <user> (<seed>)"'),
       response_format: ResponseFormat,
       max_results: MaxResults,
     },
@@ -270,10 +325,6 @@ export function registerTasteCompositeTools(server: McpServer, _client: SpotifyC
         statsfmGet<unknown>(`/users/${encodeURIComponent(u)}/top/tracks`, { range: 'lifetime', limit: String(Math.max(n, 20)) }),
         statsfmGet<unknown>(`/users/${encodeURIComponent(u)}/streams`, { limit: '200' }),
       ]);
-      if (args.response_format === 'json') {
-        const raw = { topTracks: tracksRaw, recentStreams: streamsRaw };
-        return { content: [{ type: 'text', text: JSON.stringify(raw) }], structuredContent: { ...raw } };
-      }
       const core = picksFromTopTracks(tracksRaw, 'lifetime top');
       const recent = picksFromStreams(normalizeStreams(streamsRaw), 'recent stream');
       let blended: TrackPick[];
@@ -298,17 +349,121 @@ export function registerTasteCompositeTools(server: McpServer, _client: SpotifyC
       }
       const shaped = truncateItems(blended, resolveMaxResults(args.max_results, n));
       const { lines, missing } = renderPicks(shaped.items);
-      const header = dryRun
-        ? `DRY RUN — playlist spec for ${u} (seed ${seed}, ${shaped.items.length} tracks; no Spotify writes performed):`
-        : `Playlist spec for ${u} (seed ${seed}, ${shaped.items.length} tracks; create via Spotify create_playlist + add_to_playlist):`;
-      const out = [header, ...lines, SPOTIFY_FALLBACK_GUIDANCE];
-      if (missing.length > 0) out.push(`missing[]: ${missing.join(' · ')}`);
-      if (shaped.footer) out.push(`(${shaped.footer})`);
-      if (blended.length === 0) return textOut([`No taste data for "${u}" — check the stats.fm user ID.`]);
-      return textOut(out, {
-        user: u, seed, dryRun, picks: shaped.items, missing,
-        pagination: paginationInfo({ total: blended.length, offset: 0, limit: null, returned: blended.length }),
+      if (blended.length === 0) {
+        const empty = { topTracks: tracksRaw, recentStreams: streamsRaw, dryRun, picks: [] as TrackPick[], missing };
+        if (args.response_format === 'json') {
+          return { content: [{ type: 'text', text: JSON.stringify(empty) }], structuredContent: { ...empty } };
+        }
+        return textOut([`No taste data for "${u}" — check the stats.fm user ID.`], {
+          user: u, seed, dryRun, picks: [], missing: [],
+          pagination: paginationInfo({ total: 0, offset: 0, limit: null, returned: 0 }),
+        });
+      }
+
+      // ---- preview: no Spotify client call is made anywhere on this path ----
+      if (dryRun) {
+        const out = [
+          `DRY RUN — playlist spec for ${u} (seed ${seed}, ${shaped.items.length} tracks; no Spotify writes performed):`,
+          ...lines,
+          SPOTIFY_FALLBACK_GUIDANCE,
+        ];
+        if (missing.length > 0) out.push(`missing[]: ${missing.join(' · ')}`);
+        if (shaped.footer) out.push(`(${shaped.footer})`);
+        const preview = {
+          ok: true, user: u, seed, dryRun,
+          picks: shaped.items, missing,
+          pagination: paginationInfo({ total: blended.length, offset: 0, limit: null, returned: blended.length }),
+        };
+        if (args.response_format === 'json') {
+          const raw = { ...preview, topTracks: tracksRaw, recentStreams: streamsRaw };
+          return { content: [{ type: 'text', text: JSON.stringify(raw) }], structuredContent: { ...raw } };
+        }
+        return textOut(out, preview);
+      }
+
+      // ---- commit: dry_run=false means the write actually happens ----
+      if (readOnlyModeEnabled()) {
+        return textOut(
+          ['Refused to write: SPOTIFY_MCP_READONLY mode is active, so nothing was created. '
+            + 'Re-run with dry_run=true for the plan, or drop read-only mode to commit.'],
+          { ok: false, user: u, seed, dryRun, blocked: 'read_only_mode' },
+        );
+      }
+      const defaultName = `Taste: ${u} (${seed})`;
+      // Spotify caps names at 100 chars; a long stats.fm user id must not blow the request.
+      const name = ((args.playlist_name ?? defaultName).trim() || defaultName).slice(0, 100);
+      const uris: string[] = [];
+      const unresolved: string[] = [];
+      let searches = 0;
+      for (const p of shaped.items) {
+        if (p.spotifyId) {
+          uris.push(spotifyTrackUri(p.spotifyId));
+          continue;
+        }
+        searches++;
+        const found = await searchTrackUri(client, p);
+        if (found) uris.push(found);
+        else unresolved.push(`${p.artist} — ${p.title}`);
+      }
+      if (uris.length === 0) {
+        return textOut(
+          [`Nothing written: none of the ${shaped.items.length} picks resolved to a Spotify id `
+            + `(${unresolved.length} searched, 0 found), so no playlist was created.`],
+          { ok: false, user: u, seed, dryRun, blocked: 'no_resolvable_tracks', unresolved, picks: shaped.items, missing },
+        );
+      }
+      const created = await client.post<{ id?: string; external_urls?: { spotify?: string } }>('/me/playlists', {
+        name,
+        public: false,
+        description: `stats.fm taste blend for ${u} (seed ${seed})`,
       });
+      const playlistId = created?.id;
+      if (!playlistId) {
+        return textOut(
+          [`Nothing written: Spotify accepted the create request for "${name}" but returned no playlist id, `
+            + 'so no items were added.'],
+          { ok: false, user: u, seed, dryRun, blocked: 'create_returned_no_id', picks: shaped.items },
+        );
+      }
+      let adds = 0;
+      let snapshotId: string | undefined;
+      for (let start = 0; start < uris.length; start += 100) {
+        const path = `/playlists/${encodeURIComponent(playlistId)}/items`;
+        const chunk = uris.slice(start, start + 100);
+        const res = start === 0
+          ? await client.put<{ snapshot_id?: string }>(path, { uris: chunk })
+          : await client.post<{ snapshot_id?: string }>(path, { uris: chunk });
+        if (res?.snapshot_id) snapshotId = res.snapshot_id;
+        adds++;
+      }
+      const url = created.external_urls?.spotify ?? `https://open.spotify.com/playlist/${playlistId}`;
+      const committed = {
+        ok: true, user: u, seed, dryRun,
+        playlist: {
+          id: playlistId, name, url,
+          added: uris.length, requested: shaped.items.length, snapshot_id: snapshotId,
+        },
+        unresolved,
+        requests: { searches, create: 1, adds },
+        picks: shaped.items, missing,
+        pagination: paginationInfo({ total: blended.length, offset: 0, limit: null, returned: blended.length }),
+      };
+      const out = [
+        `COMMITTED — dry_run=false: created playlist "${name}" (${url}) with ${uris.length} of `
+          + `${shaped.items.length} tracks.`,
+        ...lines,
+        SPOTIFY_FALLBACK_GUIDANCE,
+      ];
+      if (unresolved.length > 0) {
+        out.push(`unresolved[] (no Spotify id, search matched nothing — not added): ${unresolved.join(' · ')}`);
+      }
+      out.push(`requests: ${searches} search + 1 create + ${adds} add.`);
+      if (shaped.footer) out.push(`(${shaped.footer})`);
+      if (args.response_format === 'json') {
+        const raw = { ...committed, topTracks: tracksRaw, recentStreams: streamsRaw };
+        return { content: [{ type: 'text', text: JSON.stringify(raw) }], structuredContent: { ...raw } };
+      }
+      return textOut(out, committed);
     },
   );
 

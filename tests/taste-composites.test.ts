@@ -16,9 +16,60 @@ type ToolContent = {
 type RegisteredTool = {
   name: string;
   description: string;
-  schema: Record<string, { safeParse(value: unknown): { success: boolean } }>;
+  schema: Record<string, { safeParse(value: unknown): { success: boolean; data?: unknown } }>;
   handler: (args: Record<string, unknown>) => Promise<ToolContent>;
 };
+
+/** One recorded Spotify wire call — the assertions read these, not prose. */
+type WireCall = {
+  method: 'get' | 'post' | 'put' | 'delete';
+  path: string;
+  params?: Record<string, string>;
+  body?: unknown;
+};
+
+/** Fake SpotifyClient that records every wire call. */
+type RecordingClient = {
+  calls: WireCall[];
+  /** Substring of the /search q → URIs returned for it. Anything unmatched returns no items. */
+  searchHits: Record<string, string[]>;
+  playlistId: string | null;
+  get(path: string, params?: Record<string, string>): Promise<unknown>;
+  post(path: string, body?: unknown): Promise<unknown>;
+  put(path: string, body?: unknown): Promise<unknown>;
+  delete(path: string, body?: unknown): Promise<unknown>;
+};
+
+function makeClient(): RecordingClient {
+  const client: RecordingClient = {
+    calls: [],
+    searchHits: {},
+    playlistId: 'PL-1',
+    async get(path, params) {
+      client.calls.push({ method: 'get', path, params });
+      if (path !== '/search') return null;
+      const q = params?.q ?? '';
+      const hit = Object.entries(client.searchHits).find(([needle]) => q.includes(needle));
+      return { tracks: { items: (hit?.[1] ?? []).map((uri) => ({ uri, id: uri.split(':').pop() })) } };
+    },
+    async post(path, body) {
+      client.calls.push({ method: 'post', path, body });
+      if (path === '/me/playlists') {
+        return client.playlistId ? { id: client.playlistId, external_urls: { spotify: `https://open.spotify.com/playlist/${client.playlistId}` } } : {};
+      }
+      return { snapshot_id: 'snap-post' };
+    },
+    async put(path, body) {
+      client.calls.push({ method: 'put', path, body });
+      return { snapshot_id: 'snap-put' };
+    },
+    async delete(path, body) {
+      client.calls.push({ method: 'delete', path, body });
+      return null;
+    },
+  };
+  return client;
+}
 
 function streamRow(trackId: string, trackName: string, artist: string, iso: string) {
   return {
@@ -116,21 +167,29 @@ function installFixtures() {
   });
 }
 
-function makeHarness() {
+const writes = (client: RecordingClient): WireCall[] =>
+  client.calls.filter((c) => c.method !== 'get');
+function makeHarness(client: RecordingClient = makeClient()) {
   const registered: RegisteredTool[] = [];
   const server = {
+    // The SDK accepts both tool(name, description, schema, cb) and
+    // tool(name, description, schema, annotations, cb); the fake must too.
     tool: (
       name: string,
       description: string,
       schema: RegisteredTool['schema'],
-      handler: RegisteredTool['handler'],
-    ) => registered.push({ name, description, schema, handler }),
+      annotationsOrHandler: unknown,
+      maybeHandler?: unknown,
+    ) => {
+      const handler = (typeof maybeHandler === 'function' ? maybeHandler : annotationsOrHandler) as RegisteredTool['handler'];
+      registered.push({ name, description, schema, handler });
+    },
   };
   registerTasteCompositeTools(
     server as unknown as Parameters<typeof registerTasteCompositeTools>[0],
-    {} as unknown as Parameters<typeof registerTasteCompositeTools>[1],
+    client as unknown as Parameters<typeof registerTasteCompositeTools>[1],
   );
-  return { registered };
+  return { registered, client };
 }
 
 function findTool(registered: RegisteredTool[], name: string): RegisteredTool {
@@ -151,8 +210,14 @@ test.beforeEach(() => {
   installFixtures();
 });
 
+
+const READONLY_ENV = 'SPOTIFY_MCP_READONLY';
+const priorReadonly = process.env[READONLY_ENV];
+
 test.afterEach(() => {
   __resetTasteCompositeFetchImpl();
+  if (priorReadonly === undefined) delete process.env[READONLY_ENV];
+  else process.env[READONLY_ENV] = priorReadonly;
 });
 
 // --------------------------------------------------------------- registry
@@ -180,6 +245,133 @@ test('taste_to_playlist emits a DRY RUN list with fallback guidance', async () =
   const sc = result.structuredContent as { picks: unknown[]; dryRun: boolean };
   assert.equal(sc.dryRun, true);
   assert.ok(sc.picks.length > 0);
+});
+
+test('taste_to_playlist dry_run=true issues no Spotify write and previews the plan', async () => {
+  const { registered, client } = makeHarness();
+  const result = await invoke(findTool(registered, 'taste_to_playlist'), {
+    statsfm_user: 'demo',
+    seed: 'core',
+    track_count: 3,
+    dry_run: true,
+  });
+  assert.deepEqual(client.calls, [], 'a preview must not touch the Spotify client');
+  const sc = result.structuredContent as { dryRun: boolean; picks: unknown[]; playlist?: unknown };
+  assert.equal(sc.dryRun, true);
+  assert.equal(sc.playlist, undefined, 'a preview must not report a created playlist');
+  assert.equal(sc.picks.length, 3);
+  assert.match(text(result), /no Spotify writes performed/);
+});
+
+test('taste_to_playlist defaults to a preview when dry_run is omitted', async () => {
+  const { registered, client } = makeHarness();
+  const result = await invoke(findTool(registered, 'taste_to_playlist'), {
+    statsfm_user: 'demo',
+    seed: 'core',
+    track_count: 3,
+  });
+  assert.deepEqual(client.calls, [], 'the omitted default must not touch the Spotify client');
+  const sc = result.structuredContent as { dryRun: boolean; playlist?: unknown };
+  assert.equal(sc.dryRun, true);
+  assert.equal(sc.playlist, undefined);
+});
+
+test('taste_to_playlist declares the dry_run default on the schema', () => {
+  const { registered } = makeHarness();
+  const parsed = findTool(registered, 'taste_to_playlist').schema.dry_run.safeParse(undefined);
+  assert.equal(parsed.success, true);
+  assert.equal(parsed.data, true, 'dry_run must default to true at the schema level');
+});
+
+test('taste_to_playlist dry_run=false creates the playlist and adds the resolved tracks', async () => {
+  const { registered, client } = makeHarness();
+  const result = await invoke(findTool(registered, 'taste_to_playlist'), {
+    statsfm_user: 'demo',
+    seed: 'core',
+    track_count: 3,
+    dry_run: false,
+    playlist_name: 'Demo taste',
+  });
+  assert.deepEqual(
+    writes(client).map((c) => `${c.method} ${c.path}`),
+    ['post /me/playlists', 'put /playlists/PL-1/items'],
+  );
+  const create = writes(client)[0];
+  assert.deepEqual(create.body, {
+    name: 'Demo taste',
+    public: false,
+    description: 'stats.fm taste blend for demo (seed core)',
+  });
+  assert.deepEqual(writes(client)[1].body, {
+    uris: ['spotify:track:t1', 'spotify:track:t2', 'spotify:track:t3'],
+  });
+  const sc = result.structuredContent as {
+    dryRun: boolean;
+    unresolved: string[];
+    playlist: { id: string; added: number; requested: number; url: string };
+  };
+  assert.equal(sc.dryRun, false);
+  assert.equal(sc.playlist.id, 'PL-1');
+  assert.equal(sc.playlist.added, 3);
+  assert.equal(sc.playlist.requested, 3);
+  assert.equal(sc.playlist.url, 'https://open.spotify.com/playlist/PL-1');
+  assert.deepEqual(sc.unresolved, []);
+  assert.match(text(result), /COMMITTED/);
+});
+
+test('taste_to_playlist dry_run=false falls back to search and reports every unresolved pick', async () => {
+  const client = makeClient();
+  // 'recent' picks come from the streams feed, which carries no Spotify ids.
+  client.searchHits = { 'New Thing': ['spotify:track:SEARCH1'] };
+  const { registered } = makeHarness(client);
+  const result = await invoke(findTool(registered, 'taste_to_playlist'), {
+    statsfm_user: 'demo',
+    seed: 'recent',
+    track_count: 4,
+    dry_run: false,
+  });
+  const searches = client.calls.filter((c) => c.method === 'get' && c.path === '/search');
+  assert.equal(searches.length, 4, 'every id-less pick must be looked up');
+  const added = writes(client).find((c) => c.path.endsWith('/items'))?.body as { uris: string[] };
+  assert.deepEqual(added.uris, ['spotify:track:SEARCH1'], 'only the resolved pick may be added');
+  const sc = result.structuredContent as {
+    unresolved: string[];
+    playlist: { added: number; requested: number };
+  };
+  assert.deepEqual(sc.unresolved, ['Core Band — Spring Song', 'Second Act — Deep Cut', 'Core Band — Hit Single']);
+  assert.equal(sc.playlist.added, 1);
+  assert.equal(sc.playlist.requested, 4);
+  assert.match(text(result), /unresolved\[\]/);
+});
+
+test('taste_to_playlist dry_run=false refuses to write in read-only mode', async () => {
+  process.env[READONLY_ENV] = '1';
+  const { registered, client } = makeHarness();
+  const result = await invoke(findTool(registered, 'taste_to_playlist'), {
+    statsfm_user: 'demo',
+    seed: 'core',
+    track_count: 3,
+    dry_run: false,
+  });
+  assert.deepEqual(client.calls, [], 'read-only mode must block the write before any call');
+  assert.match(text(result), /Refused to write/);
+});
+
+test('taste_to_playlist dry_run=false creates nothing when no pick resolves', async () => {
+  const client = makeClient();
+  const { registered } = makeHarness(client);
+  const result = await invoke(findTool(registered, 'taste_to_playlist'), {
+    statsfm_user: 'demo',
+    seed: 'recent',
+    track_count: 2,
+    dry_run: false,
+  });
+  assert.deepEqual(writes(client), [], 'an empty playlist must never be created');
+  const sc = result.structuredContent as { ok: boolean; blocked: string; unresolved: string[] };
+  assert.equal(sc.ok, false);
+  assert.equal(sc.blocked, 'no_resolvable_tracks');
+  assert.equal(sc.unresolved.length, 2);
+  assert.match(text(result), /Nothing written/);
 });
 
 // -------------------------------------------------------- 2. taste_daily_brief
