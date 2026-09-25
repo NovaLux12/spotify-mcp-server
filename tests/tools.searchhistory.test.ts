@@ -87,6 +87,19 @@ async function readEntries() {
   return z.array(ENTRY).parse(JSON.parse(raw));
 }
 
+/**
+ * Write the sidecar as bytes. The imported / hand-written class this file
+ * defends against never passed through `appendSearchHistory`, so the tests
+ * below must be able to put a value there our own writer never emits.
+ */
+async function writeSidecar(entries: Array<Record<string, unknown>>) {
+  await writeFile(historyFile, `${JSON.stringify(entries, null, 2)}\n`, 'utf8');
+}
+
+function sidecarEntry(id: string, extra: Record<string, unknown>) {
+  return { id, query: 'queen', types: ['track'], timestamp: new Date().toISOString(), top_result_ids: [], ...extra };
+}
+
 describe('searchhistory', () => {
   it('registers 2 tools', () => {
     const h = harness();
@@ -193,6 +206,58 @@ describe('searchhistory', () => {
     assert.equal(out.structuredContent?.limit_used, 7);
     assert.equal(out.structuredContent?.limit_clamped_from, undefined, 'no clamp is claimed when none happened');
     assert.equal(out.structuredContent?.market_used, null, 'an entry without a market reports none');
+  });
+
+  it('search_rerun coerces a sidecar limit that is not a JSON number (#793)', async () => {
+    // The imported / hand-written class named above: the file is under no
+    // obligation to hold a number, and pre-fix `"50"` was dropped for the
+    // default 5 while the payload claimed no adjustment had happened.
+    await writeSidecar([sidecarEntry('stringy', { limit: '50' })]);
+    const h = harness((path, params) => {
+      if (path === '/search' && Number(params?.limit) > 10) throw new Error('400 Invalid limit');
+      return searchResponse();
+    });
+
+    const out = await h.invoke('search_rerun', { history_id: 'stringy' });
+    assert.equal(out.structuredContent?.ok, true);
+    assert.equal(h.gets.find((g) => g.path === '/search')?.params?.limit, '10', 'the string is read, then clamped to the live cap');
+    assert.equal(out.structuredContent?.limit_used, 10);
+    assert.equal(out.structuredContent?.limit_clamped_from, 50, 'the payload reports the adjustment the coercion made visible');
+  });
+
+  it('search_rerun names a stored limit it could not read as a number (#793)', async () => {
+    await writeSidecar([sidecarEntry('garbage', { limit: 'lots' }), sidecarEntry('nulled', { limit: null })]);
+    const h = harness();
+
+    const garbage = await h.invoke('search_rerun', { history_id: 'garbage' });
+    assert.equal(h.gets.find((g) => g.path === '/search')?.params?.limit, '5', 'an unreadable limit falls back to the default');
+    assert.equal(garbage.structuredContent?.limit_used, 5);
+    assert.equal(garbage.structuredContent?.limit_clamped_from, 'lots', 'the discarded value is reported, not passed off as a chosen default');
+
+    const nulled = await h.invoke('search_rerun', { history_id: 'nulled' });
+    assert.equal(nulled.structuredContent?.limit_used, 5);
+    assert.equal(nulled.structuredContent?.limit_clamped_from, null, 'a stored null is a discarded limit, reported as such');
+  });
+
+  it('search_rerun claims no clamp when the sidecar records no limit at all (#793)', async () => {
+    await writeSidecar([sidecarEntry('bare', {})]);
+    const h = harness();
+    const out = await h.invoke('search_rerun', { history_id: 'bare' });
+    assert.equal(h.gets.find((g) => g.path === '/search')?.params?.limit, '5', 'no stored limit means the default');
+    assert.equal(out.structuredContent?.limit_used, 5);
+    assert.equal(out.structuredContent?.limit_clamped_from, undefined, 'a default nobody overrode is not an adjustment');
+  });
+
+  it('search_rerun reports no market when the stored market never reached the wire (#793)', async () => {
+    // `market` is only sent when the stored value is truthy, so an empty one
+    // stays off the wire. `market_used` is read off the entry, so pre-fix it
+    // reported the replay as market-scoped when no market param was sent.
+    await writeSidecar([sidecarEntry('blank', { market: '' })]);
+    const h = harness();
+    const out = await h.invoke('search_rerun', { history_id: 'blank' });
+    const params = h.gets.find((g) => g.path === '/search')?.params;
+    assert.ok(params && !('market' in params), 'no market parameter reached /search');
+    assert.equal(out.structuredContent?.market_used, null, 'the payload describes the wire, not the entry');
   });
 
   it('search_history filters by query substring', async () => {

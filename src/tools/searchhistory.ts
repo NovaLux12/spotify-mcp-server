@@ -21,6 +21,12 @@ import type { SpotifyClient } from '../client.js';
 import { ResponseFormat } from '../shaping.js';
 import { SPOTIFY_SEARCH_MAX_LIMIT } from './search.js';
 
+/**
+ * Results-per-request a replay asks for when the sidecar records no usable
+ * limit — the same default the live search tool applies.
+ */
+const DEFAULT_REPLAY_LIMIT = 5;
+
 type ToolResult = { content: Array<{ type: 'text'; text: string }>; structuredContent?: Record<string, unknown> };
 function textResult(text: string, s?: Record<string, unknown>): ToolResult { return { content: [{ type: 'text', text }], ...(s ? { structuredContent: s } : {}) }; }
 function emit(fmt: string | undefined, echo: Record<string, unknown>, text: string): ToolResult {
@@ -184,10 +190,20 @@ export function registerSearchHistoryTools(server: McpServer, client: SpotifyCli
       // another install, can carry a limit /search will now reject with an
       // opaque 400. The caller cannot fix it — the value comes from disk, not
       // from its own arguments — so clamp on read and report what was sent.
-      const storedLimit = typeof entry.limit === 'number' && Number.isFinite(entry.limit)
-        ? Math.round(entry.limit)
-        : 5;
-      const limit = Math.min(SPOTIFY_SEARCH_MAX_LIMIT, Math.max(1, storedLimit));
+      // An imported or hand-written sidecar is not obliged to hold a *number*
+      // here, so coerce whatever is there; a value that will not coerce is
+      // discarded, and that discard is itself an adjustment the payload has to
+      // name rather than pass off as a five-result replay the caller chose.
+      const asNumber = entry.limit === undefined || entry.limit === null
+        ? Number.NaN
+        : Math.round(Number(entry.limit));
+      const usable = Number.isFinite(asNumber);
+      const limit = Math.min(SPOTIFY_SEARCH_MAX_LIMIT, Math.max(1, usable ? asNumber : DEFAULT_REPLAY_LIMIT));
+      // No recorded limit at all is not a clamp: the default was never an
+      // adjustment of anything the caller can see. Anything else that differs
+      // from what reached the wire is reported, including a value dropped for
+      // not being a number.
+      const adjusted = entry.limit !== undefined && (!usable || limit !== asNumber);
       const params: Record<string, string> = { q: entry.query, type: types.join(','), limit: String(limit) };
       if (entry.market) params.market = entry.market;
       if (entry.offset) params.offset = String(entry.offset);
@@ -198,8 +214,15 @@ export function registerSearchHistoryTools(server: McpServer, client: SpotifyCli
         query: entry.query,
         types,
         limit_used: limit,
-        market_used: entry.market ?? null,
-        ...(limit !== storedLimit ? { limit_clamped_from: storedLimit } : {}),
+        // Read back off the params that were sent, not off the entry: a stored
+        // market that did not survive into `params` was not market-scoped, and
+        // a consumer branching on `market_used !== null` must not be told
+        // otherwise.
+        market_used: 'market' in params ? params.market : null,
+        // A coercible limit reports the number the clamp was computed from; a
+        // value that would not coerce reports the raw sidecar value, which is
+        // the only account of it that exists.
+        ...(adjusted ? { limit_clamped_from: usable ? asNumber : entry.limit } : {}),
         result: res,
       }, `Re-ran search "${entry.query}" (${types.join(',')}, limit ${limit}${entry.market ? `, market ${entry.market}` : ''}) — see structuredContent.result.`);
     });
