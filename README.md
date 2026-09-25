@@ -148,6 +148,32 @@ Full reference: [docs/configuration.md](docs/configuration.md)
 
 `spotify_doctor` (CLI + in-server tool) diagnoses token state, scope gaps, Premium gating, rate-limit cooldowns, and request/quota usage (cumulative + rolling-window counts, #904) without extra setup.
 
+## Upgrading to 2.0
+
+2.0 is a contract release. The tool names are unchanged, but four things moved
+and one guarantee tightened:
+
+1. **Destructive writes fail closed.** Any confirmation-gated bulk write now
+   refuses when the client cannot elicit, instead of proceeding unprompted.
+   `archive_played_episodes`'s `confirm: true` no longer authorises the delete
+   (it is still accepted, and every result says it was ignored). For headless
+   automation, set `SPOTIFY_MCP_CONFIRM=never` deliberately.
+2. **Playlist set-operation inputs are canonical.** A/B pairs are
+   `playlist_a`/`playlist_b`; ordered lists are `playlists`;
+   `playlist_subtract` takes the base as `base_playlist_id`. The old spellings
+   (`a`/`b`, `playlist_ids`, `source_playlist_ids`, `sources`,
+   `playlist_a_id`/`playlist_b_id`, and the positional subtract form) are still
+   accepted through **2.0** and removed in **2.1**; a result that used one
+   carries `deprecated_inputs` and a `deprecation_note`.
+3. **Numeric caps have canonical names.** `max_results` caps what is returned;
+   `limit` and `scan_cap` cap how much of each source is read.
+4. **Unknown arguments are rejected** with a typed `unknown_param` error rather
+   than ignored, so a renamed parameter fails loudly instead of silently
+   doing nothing.
+
+Run `spotify_doctor` after upgrading: it reports the registered surface, the
+gates that hid modules, and the granted scopes in one call.
+
 ## Docs
 
 - [SPEC.md](SPEC.md) — every tool, resource & prompt
