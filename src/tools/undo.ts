@@ -91,6 +91,24 @@ function targetedRemovals(
 }
 
 /**
+ * Split ascending positions into runs of adjacent indices, so re-inserting a
+ * removed block costs one request per block rather than one per row. A run is
+ * inserted at its first index and lands in the given order.
+ */
+function consecutiveRuns(
+  pairs: Array<{ uri: string; position: number }>,
+): Array<Array<{ uri: string; position: number }>> {
+  const runs: Array<Array<{ uri: string; position: number }>> = [];
+  for (const pair of pairs) {
+    const run = runs[runs.length - 1];
+    const previous = run?.[run.length - 1];
+    if (previous && pair.position === previous.position + 1) run.push(pair);
+    else runs.push([pair]);
+  }
+  return runs;
+}
+
+/**
  * Undo a receipt by performing the opposite of its recorded direction.
  * `receipt.direction` is absent only on receipts issued before #625; those were
  * overwhelmingly add/save receipts, so `added` is the conservative default
@@ -143,6 +161,26 @@ async function invertReceipt(
     });
   }
 
+  // Decide whether this undo is even possible BEFORE asking the user to
+  // confirm it: a prompt for a rollback that then refuses wastes the user's
+  // attention, and a client that cannot prompt would report the wrong reason.
+  const rows = receipt.kind === 'playlist_items' ? targetedRemovals(receipt) : [];
+  if (receipt.kind === 'playlist_items' && direction === 'added' && rows === null) {
+    return textResult(
+      `Refusing to undo ${receipt.receipt_id}: the receipt does not record which playlist rows the add created. ` +
+        `A bare-URI delete removes EVERY occurrence of each URI, which would also delete rows that existed before the add. ` +
+        `No write was made — remove the intended rows explicitly instead.`,
+      {
+        ok: false,
+        reason: 'occurrences_unrecorded',
+        receipt_id: receipt.receipt_id,
+        kind: receipt.kind,
+        id: receipt.id,
+        ...(directionAssumed ? { direction_assumed: true as const } : {}),
+      },
+    );
+  }
+
   // Executing is the destructive half: the preview above touches nothing, but
   // this block deletes real library/playlist rows. Ask first, and refuse
   // outright when the client never advertised elicitation (#627) — an
@@ -165,28 +203,13 @@ async function invertReceipt(
       const encId = encodeURIComponent(receipt.id);
       if (direction === 'added') {
         // Undo of an add removes exactly the rows the add created (#625) —
-        // never every copy of the URI.
-        const removals = targetedRemovals(receipt);
-        if (removals === null) {
-          return textResult(
-            `Refusing to undo ${receipt.receipt_id}: the receipt does not record which playlist rows the add created. ` +
-              `A bare-URI delete removes EVERY occurrence of each URI, which would also delete rows that existed before the add. ` +
-              `No write was made — remove the intended rows explicitly instead.`,
-            {
-              ok: false,
-              reason: 'occurrences_unrecorded',
-              receipt_id: receipt.receipt_id,
-              kind: receipt.kind,
-              id: receipt.id,
-              ...(directionAssumed ? { direction_assumed: true as const } : {}),
-            },
-          );
-        }
+        // never every copy of the URI. `rows` is non-null here: the refusal
+        // above already returned for the unrecorded case.
         // Row indices are positions in a list that shrinks with every request,
         // so the removals go lowest-first and each chunk is translated by the
         // rows the previous chunks already deleted. Sending the recorded
         // indices verbatim past the first chunk would address the wrong rows.
-        const ordered = [...removals].sort((a, b) => a.position - b.position);
+        const ordered = [...rows!].sort((a, b) => a.position - b.position);
         let removedSoFar = 0;
         for (const part of chunk(ordered, PLAYLIST_ITEMS_CHUNK)) {
           attemptedRequests++;
@@ -198,9 +221,25 @@ async function invertReceipt(
           requests++;
           removedSoFar += part.length;
         }
+      } else if (rows !== null && rows.length > 0) {
+        // Undo of a positions-targeted removal puts each row back where it
+        // was. `POST /playlists/{id}/items` takes a zero-based `position`
+        // (the same parameter `add_to_playlist` exposes); rows are re-inserted
+        // lowest-first, so every target index still holds the row that
+        // preceded it. Runs of adjacent positions share one request.
+        const ordered = [...rows].sort((a, b) => a.position - b.position);
+        for (const run of consecutiveRuns(ordered)) {
+          attemptedRequests++;
+          const res = await client.post<{ snapshot_id?: string }>(`/playlists/${encId}/items`, {
+            uris: run.map((p) => p.uri),
+            position: run[0]!.position,
+          });
+          snapshotId = res?.snapshot_id ?? snapshotId;
+          requests++;
+        }
       } else {
-        // Undo of a removal re-adds; the public API appends, so the original
-        // row indices are not restored — the receipt lines say so.
+        // A removal with no recorded positions: re-add and append, which is
+        // the strongest guarantee the receipt supports.
         for (const part of chunk(uris, PLAYLIST_ITEMS_CHUNK)) {
           attemptedRequests++;
           const res = await client.post<{ snapshot_id?: string }>(`/playlists/${encId}/items`, { uris: part });

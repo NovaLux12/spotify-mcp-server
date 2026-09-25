@@ -149,6 +149,9 @@ export async function issueReceipt(
     // Capture the full ordered URI list for per-position checks
     const orderedUris: (string | null)[] = [];
     let totalReported: number | undefined;
+    // True only when the walk ended on a short/absent-next page, i.e. it really
+    // did see every row. Running out of pages mid-list leaves it false.
+    let sawWholeList = false;
     for (let page = 0; page < PLAYLIST_ITEM_PAGES_CAP; page++) {
       const res = await client.get<PlaylistItemsResponse>(
         `/playlists/${encodeURIComponent(opts.id ?? '')}/items`,
@@ -161,7 +164,10 @@ export async function issueReceipt(
         orderedUris.push(uri);
         if (uri && counts.has(uri)) counts.set(uri, (counts.get(uri) ?? 0) + 1);
       }
-      if (!res.next || res.items.length < PLAYLIST_ITEMS_PAGE_SIZE) break;
+      if (!res.next || res.items.length < PLAYLIST_ITEMS_PAGE_SIZE) {
+        sawWholeList = true;
+        break;
+      }
     }
     // Detect window exceeded: last fetched page was full and total > fetched
     if (totalReported !== undefined && totalReported > orderedUris.length && orderedUris.length >= PLAYLIST_ITEM_PAGES_CAP * PLAYLIST_ITEMS_PAGE_SIZE) {
@@ -169,29 +175,40 @@ export async function issueReceipt(
     }
     // Occurrence bookkeeping (#625): record WHICH rows this mutation touched,
     // so `undo` reverses exactly those rows instead of every copy of the URI.
-    // An add appends exactly one occurrence per uri, so the row to reverse is
-    // that uri's last occurrence; a positions-targeted removal reports the
-    // positions the caller removed. A bare removal reindexes the rows it
+    // An add appends one row per appearance of a uri, so the rows to reverse
+    // are that uri's LAST k occurrences; a positions-targeted removal reports
+    // the positions the caller removed. A bare removal reindexes the rows it
     // removed, so their positions are unknowable afterwards and stay unrecorded.
+    //
+    // Derivation is gated on having seen the WHOLE list. On a playlist larger
+    // than the window the rows the add appended are off-window, so the last
+    // *visible* occurrence of a duplicated uri is a row that PREDATES the
+    // mutation — recording it would make undo delete pre-existing state, which
+    // is the one thing this bookkeeping exists to prevent. Undo then refuses.
     affected = [];
-    if (opts.expectPresent !== false) {
-      for (const uri of new Set(opts.uris)) {
-        for (let i = orderedUris.length - 1; i >= 0; i--) {
-          if (orderedUris[i] === uri) {
-            affected.push({ uri, positions: [i] });
-            break;
+    if (sawWholeList) {
+      if (opts.expectPresent !== false) {
+        const addedPerUri = new Map<string, number>();
+        for (const uri of opts.uris) addedPerUri.set(uri, (addedPerUri.get(uri) ?? 0) + 1);
+        for (const [uri, added] of addedPerUri) {
+          const positions: number[] = [];
+          for (let i = orderedUris.length - 1; i >= 0 && positions.length < added; i--) {
+            if (orderedUris[i] === uri) positions.push(i);
           }
+          // A uri with fewer visible rows than the add created is not fully
+          // accounted for; recording a partial set would target a wrong row.
+          if (positions.length === added) affected.push({ uri, positions: positions.reverse() });
         }
-      }
-    } else if (isTargeted) {
-      const byUri = new Map<string, number[]>();
-      for (const p of opts.targetedPositions!) {
-        const list = byUri.get(p.uri);
-        if (list) list.push(p.position);
-        else byUri.set(p.uri, [p.position]);
-      }
-      for (const [uri, positions] of byUri) {
-        affected.push({ uri, positions: [...positions].sort((a, b) => a - b) });
+      } else if (isTargeted) {
+        const byUri = new Map<string, number[]>();
+        for (const p of opts.targetedPositions!) {
+          const list = byUri.get(p.uri);
+          if (list) list.push(p.position);
+          else byUri.set(p.uri, [p.position]);
+        }
+        for (const [uri, positions] of byUri) {
+          affected.push({ uri, positions: [...positions].sort((a, b) => a - b) });
+        }
       }
     }
     const expectPresent = opts.expectPresent ?? true;

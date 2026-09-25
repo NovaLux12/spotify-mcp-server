@@ -92,7 +92,15 @@ function stubClient(): {
     async post(path: string, arg?: unknown): Promise<unknown> {
       calls.push({ method: 'POST', path, arg });
       const id = playlistIdOf(path);
-      if (id !== null) playlists[id] = [...(playlists[id] ?? []), ...stringList(arg, 'uris')];
+      if (id !== null) {
+        // `position` inserts at that zero-based index; omitted means append.
+        const rows = playlists[id] ?? [];
+        const at = numberField(arg, 'position');
+        playlists[id] =
+          at === null
+            ? [...rows, ...stringList(arg, 'uris')]
+            : [...rows.slice(0, at), ...stringList(arg, 'uris'), ...rows.slice(at)];
+      }
       return { snapshot_id: 'snap-post' };
     },
     async put(path: string, arg?: unknown): Promise<unknown> {
@@ -132,6 +140,12 @@ function stringList(body: unknown, key: string): string[] {
 function numberList(body: unknown, key: string): number[] | null {
   const value = fieldOf(body, key);
   return Array.isArray(value) && value.every((v) => typeof v === 'number') ? (value as number[]) : null;
+}
+
+/** Read a numeric request-body field; null when absent or not a number. */
+function numberField(body: unknown, key: string): number | null {
+  const value = fieldOf(body, key);
+  return typeof value === 'number' ? value : null;
 }
 
 function fieldOf(body: unknown, key: string): unknown {
@@ -301,6 +315,56 @@ describe('undo_mutation occurrence targeting (#625)', () => {
       'undo must address the added row, not every occurrence');
     assert.deepEqual(playlists.pl1, ['spotify:track:pre'], 'the pre-existing row survives');
     assert.equal(out.structuredContent?.ok, true);
+  });
+
+  it('refuses an add undo on a playlist beyond the walk window, sparing pre-existing rows', async () => {
+    const { server, handlers } = stubServer();
+    const { client, calls, playlists } = stubClient();
+    registerUndoTools(server, client);
+
+    // 600 rows: the walk sees 500, so the copy the add appended is off-window.
+    // The last VISIBLE copy of x is the one that predates the add — undo must
+    // not target it, which means refusing rather than guessing.
+    const rows = Array.from({ length: 600 }, (_, i) => `spotify:track:r${i}`);
+    rows[499] = 'spotify:track:x';
+    playlists.pl1 = [...rows, 'spotify:track:x'];
+    const receipt = await issueReceipt(client, {
+      kind: 'playlist_items',
+      id: 'pl1',
+      uris: ['spotify:track:x'],
+    });
+    assert.equal(receipt.affected, undefined, 'no positions may be derived from a partial walk');
+
+    const out = await handlers.get('undo_mutation')!({ receipt_id: receipt.receipt_id, dry_run: false });
+    assert.equal(out.structuredContent?.ok, false);
+    assert.equal(out.structuredContent?.reason, 'occurrences_unrecorded');
+    assert.equal(writes(calls).length, 0);
+    assert.equal(playlists.pl1.length, 601, 'the pre-existing row survives');
+  });
+
+  it('restores a targeted removal at its recorded position', async () => {
+    const { server, handlers } = stubServer();
+    const { client, calls, playlists } = stubClient();
+    registerUndoTools(server, client);
+
+    playlists.pl1 = ['spotify:track:a', 'spotify:track:b', 'spotify:track:c'];
+    // Remove row 1 (track b) by position.
+    await issueReceipt(client, {
+      kind: 'playlist_items',
+      id: 'pl1',
+      uris: ['spotify:track:b'],
+      expectPresent: false,
+      targetedPositions: [{ uri: 'spotify:track:b', position: 1 }],
+    });
+    playlists.pl1 = ['spotify:track:a', 'spotify:track:c'];
+
+    const out = await handlers.get('undo_last_mutation')!({ dry_run: false });
+    assert.equal(out.structuredContent?.ok, true);
+    const post = writes(calls).find((c) => c.method === 'POST');
+    assert.ok(post, 'expected a re-add');
+    assert.deepEqual(post.arg, { uris: ['spotify:track:b'], position: 1 },
+      'the row goes back where it was, not appended');
+    assert.deepEqual(playlists.pl1, ['spotify:track:a', 'spotify:track:b', 'spotify:track:c']);
   });
 
   it('refuses an add undo when the receipt records no row positions', async () => {

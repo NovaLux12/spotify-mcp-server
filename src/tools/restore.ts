@@ -500,6 +500,8 @@ export interface RestoreFailure {
   items_written: number;
   items_planned: number;
   items_pending: number;
+  /** Planned playlists that were never created (playlists category only). */
+  playlists_not_created?: number;
 }
 
 export interface RestoreOutcome {
@@ -587,7 +589,15 @@ async function executeRestore(
       }
     } else if (category === 'playlists') {
       let addedTotal = 0;
-      for (const creation of plan.playlistCreations) {
+      // Each creation is attempted independently so one failure is attributed
+      // to its own playlist; `plannedPlaylists` tracks how many creations the
+      // plan still owes, so a failure reports every playlist that did NOT
+      // land — not just the one that threw.
+      const plannedPlaylists = plan.playlistCreations;
+      for (let index = 0; index < plannedPlaylists.length; index++) {
+        const creation = plannedPlaylists[index]!;
+        const stillOwed = plannedPlaylists.slice(index);
+        const owedItems = stillOwed.reduce((total, c) => total + c.itemUris.length, 0);
         let created: { id?: string } | null;
         try {
           created = await client.post<{ id?: string }>('/me/playlists', {
@@ -605,10 +615,11 @@ async function executeRestore(
             requests_completed: createdPlaylists.length,
             requests_attempted: createdPlaylists.length + 1,
             items_written: addedTotal,
-            items_planned: addedTotal + creation.itemUris.length,
-            items_pending: creation.itemUris.length,
+            items_planned: addedTotal + owedItems,
+            items_pending: owedItems,
+            playlists_not_created: stillOwed.length,
           });
-          break;
+          continue;
         }
         const r = await writeChunked(chunk(creation.itemUris, ADD_ITEMS_CHUNK), async (uris) => {
           await client.post(`/playlists/${created!.id}/items`, { uris });
@@ -620,16 +631,18 @@ async function executeRestore(
           itemsAdded: r.itemsWritten,
         });
         if (r.failed) {
+          const after = plannedPlaylists.slice(index + 1);
+          const pendingItems = after.reduce((total, c) => total + c.itemUris.length, 0);
           failures.push({
             category,
             stage: 'playlist_items',
             requests_completed: r.completed,
             requests_attempted: r.attempted,
             items_written: r.itemsWritten,
-            items_planned: creation.itemUris.length,
-            items_pending: creation.itemUris.length - r.itemsWritten,
+            items_planned: creation.itemUris.length + pendingItems,
+            items_pending: creation.itemUris.length - r.itemsWritten + pendingItems,
+            playlists_not_created: after.length,
           });
-          break;
         }
       }
       executed[category] = addedTotal;
@@ -730,6 +743,7 @@ function buildProse(
       subject: 'selected collection rows',
     }));
   }
+  for (const shortfall of plan.shortfalls) lines.push(`  · shortfall: ${shortfall}`);
   for (const c of plan.perCategory) {
     for (const uri of c.invalidUris) {
       lines.push(`  · skipped invalid snapshot URI ${uri} (not a spotify:<type>:<id> URI)`);
@@ -746,7 +760,10 @@ function buildProse(
       `  · NOT WRITTEN — ${failure.category} (${failure.stage}): ` +
         `${failure.requests_completed}/${failure.requests_attempted} request(s) succeeded, ` +
         `${failure.items_written}/${failure.items_planned} item(s) landed, ` +
-        `${failure.items_pending} still pending. Re-run the restore to finish them.`,
+        `${failure.items_pending} still pending. Re-run the restore to finish them.` +
+        (failure.playlists_not_created
+          ? ` ${failure.playlists_not_created} planned playlist(s) were never created.`
+          : ''),
     );
   }
 

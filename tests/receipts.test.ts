@@ -330,6 +330,34 @@ describe('issueReceipt occurrence recording (#625)', () => {
     assert.deepEqual(receipt.affected, [{ uri: 'spotify:track:x', positions: [2] }]);
   });
 
+  it('records every row an add created when a uri was added more than once', async () => {
+    // One pre-existing copy at row 0, then the add appended two more.
+    const client = stubClient(() =>
+      pagedItems([track('spotify:track:x'), track('spotify:track:x'), track('spotify:track:x')]),
+    );
+    const receipt = await issueReceipt(client, {
+      kind: 'playlist_items',
+      id: 'pl1',
+      uris: ['spotify:track:x', 'spotify:track:x'],
+    });
+    assert.deepEqual(receipt.affected, [{ uri: 'spotify:track:x', positions: [1, 2] }],
+      'both appended rows are recorded, never the pre-existing one');
+  });
+
+  it('records nothing when the walk stopped short of the end of the playlist', async () => {
+    // Every page is full and `next` never ends: the walk runs out of pages
+    // before the appended row. The last visible copy of x predates the add.
+    const full = pagedItems(Array.from({ length: 100 }, (_, i) => track(`spotify:track:r${i}`)), 600, 'more');
+    const client = stubClient(() => full);
+    const receipt = await issueReceipt(client, {
+      kind: 'playlist_items',
+      id: 'pl1',
+      uris: ['spotify:track:r0'],
+    });
+    assert.equal(receipt.affected, undefined,
+      'a partial walk must not yield positions — undo would target a pre-existing row');
+  });
+
   it('records nothing for a uri the walk never saw, so undo can refuse', async () => {
     const client = stubClient(() => pagedItems([track('spotify:track:seen')]));
     const receipt = await issueReceipt(client, {
