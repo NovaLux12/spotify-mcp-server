@@ -70,7 +70,7 @@ above either ceiling fails CI and server startup.
 | playlists | 26 | 25,998 | 26 | 25,998 | 27 | 28,598 |
 | playlistops | 3 | 5,489 | 3 | 5,489 | 4 | 6,038 |
 | playlistbatch | 3 | 4,784 | 3 | 4,784 | 4 | 5,263 |
-| playlistmisc | 3 | 2,543 | 3 | 2,543 | 4 | 2,798 |
+| playlistmisc | 3 | 2,538 | 3 | 2,538 | 4 | 2,792 |
 | personalization | 3 | 2,532 | 3 | 2,532 | 4 | 2,786 |
 | analytics | 4 | 2,753 | 4 | 2,753 | 5 | 3,029 |
 | statsfm | 30 | 22,721 | 30 | 22,721 | 31 | 24,994 |
