@@ -17,6 +17,10 @@ registry, official Spotify OpenAPI schema, and (when credentials are available)
 a real API response. Historical issue numbers, branch names, and prose counts
 are leads at most, never current truth.
 
+<!-- BEGIN:generated surface-census -->
+Current default production baseline: **610 tools**, **16 fixed resources**, **33 resource templates**, and **14 prompts**. Regenerate with `npm run count:tools -- --write`; never substitute historical prose.
+<!-- END:generated surface-census -->
+
 ## Procedure
 
 1. Inventory current coverage per domain.
@@ -30,7 +34,7 @@ are leads at most, never current truth.
      and the relevant `src/tools/*.ts` modules. A grep count of
      `server.tool` / `registerTool` is not a registry count because it misses
      factories and includes gated or unused modules.
-   - Read `SPEC.md` section 9 as project history, then verify removals and
+   - Read `SPEC.md` section 10 as project history, then verify removals and
      registration gates against the official schema and live responses. Do not
      assume an endpoint is current merely because prose names it.
    - Completion: live primitive counts, active modules, and an endpoint-to-tool

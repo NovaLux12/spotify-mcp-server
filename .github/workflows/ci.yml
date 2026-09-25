@@ -37,7 +37,10 @@ jobs:
         run: npx tsc --noEmit
 
       - name: Check generated documentation inventory
-        run: node scripts/surface-census.mjs --check
+        run: npm run check:docs-counts
+
+      - name: Check documented tool names
+        run: npm run check:doc-tool-names
 
       - name: Test with count and coverage gates
         shell: bash
