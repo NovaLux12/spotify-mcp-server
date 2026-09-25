@@ -6,7 +6,7 @@
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import { z } from 'zod';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, stat } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -252,6 +252,114 @@ describe('sidecar round-trip + permissions', () => {
   it('honours SPOTIFY_MCP_SCENES_FILE override', () => {
     assert.equal(scenesFilePath({ SPOTIFY_MCP_SCENES_FILE: '/tmp/x/scenes.json' }), '/tmp/x/scenes.json');
     assert.match(scenesFilePath({}), /\.spotify-mcp[/\\]scenes\.json$/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// A corrupt sidecar is unknown, not empty (#839)
+// ---------------------------------------------------------------------------
+
+describe('unreadable scenes sidecar is preserved, never reset (#839)', () => {
+  /** Two scenes' worth of hand-written JSON, truncated by a bad edit. */
+  const CORRUPT = '{"focus": {"volume": 42}, "sleep": {"volume": 5}\n';
+  const dir = () => join(sideDir, 'nested');
+
+  async function seed(contents: string = CORRUPT): Promise<void> {
+    await mkdir(dir(), { recursive: true });
+    await writeFile(sideFile, contents, { encoding: 'utf8', mode: 0o600 });
+  }
+
+ const copies = async (): Promise<string[]> =>
+    (await readdir(dir())).filter((n) => n.startsWith('scenes.json.corrupt-'));
+
+  it('save_scene refuses, reports load_error, and keeps the original bytes', async () => {
+    await seed();
+    const out = await harness().invoke('save_scene', { name: 'fresh', volume: 10 });
+
+    assert.equal(out.structuredContent?.ok, false);
+    assert.equal(out.structuredContent?.error, 'store_unreadable');
+    const loadError = out.structuredContent?.load_error;
+    assert.equal(typeof loadError, 'string', 'the response must carry load_error');
+    assert.match(loadError as string, /scenes\.json/);
+    assert.match(textOf(out), /unreadable/i);
+    assert.doesNotMatch(textOf(out), /Saved scene/);
+
+    // The user's bytes are recoverable, byte for byte, owner-only.
+    const preserved = await copies();
+    assert.equal(preserved.length, 1);
+    assert.equal(await readFile(join(dir(), preserved[0]!), 'utf8'), CORRUPT);
+    assert.equal((await stat(join(dir(), preserved[0]!))).mode & 0o777, 0o600);
+    // ...and the store path was not recreated behind their back.
+    await assert.rejects(stat(sideFile), /ENOENT/);
+  });
+
+  it('save_scene with overwrite_corrupt starts a new store and still reports load_error', async () => {
+    await seed();
+    const out = await harness().invoke('save_scene', {
+      name: 'fresh',
+      volume: 10,
+      overwrite_corrupt: true,
+    });
+
+    assert.equal(out.structuredContent?.ok, true);
+    assert.equal(out.structuredContent?.overwrote_corrupt, true);
+    assert.equal(typeof out.structuredContent?.load_error, 'string');
+    // What the unreadable file held is unknown, so nothing claims a scene was replaced.
+    assert.equal(out.structuredContent?.overwritten, undefined);
+    assert.match(textOf(out), /unreadable/i);
+
+    assert.deepEqual(JSON.parse(await readFile(sideFile, 'utf8')), { fresh: { volume: 10 } });
+    const preserved = await copies();
+    assert.equal(await readFile(join(dir(), preserved[0]!), 'utf8'), CORRUPT);
+  });
+
+  it('list_scenes says the list is unknown, not empty', async () => {
+    await seed();
+    const out = await harness().invoke('list_scenes', {});
+    assert.equal(out.structuredContent?.ok, false);
+    assert.equal(out.structuredContent?.error, 'store_unreadable');
+    assert.equal(typeof out.structuredContent?.load_error, 'string');
+    assert.doesNotMatch(textOf(out), /No saved scenes/);
+  });
+
+  it('apply_scene does not report "not found" for a store it could not read', async () => {
+    await seed();
+    const out = await harness().invoke('apply_scene', { name: 'focus' });
+    assert.equal(out.structuredContent?.error, 'store_unreadable');
+    assert.notEqual(out.structuredContent?.error, 'not_found');
+    assert.match(textOf(out), /unknown/i);
+  });
+
+  it('delete_scene deletes nothing and writes nothing', async () => {
+    await seed();
+    const out = await harness().invoke('delete_scene', { name: 'focus' });
+    assert.equal(out.structuredContent?.error, 'store_unreadable');
+    await assert.rejects(stat(sideFile), /ENOENT/);
+    const preserved = await copies();
+    assert.equal(await readFile(join(dir(), preserved[0]!), 'utf8'), CORRUPT);
+  });
+
+  it('valid JSON that is not an object is unreadable, not an empty store', async () => {
+    await seed('"just a string"');
+    const out = await harness().invoke('list_scenes', {});
+    assert.equal(out.structuredContent?.error, 'store_unreadable');
+    assert.match(String(out.structuredContent?.load_error), /not a JSON object/);
+  });
+
+  it('loadScenes rejects instead of handing a writer an empty store', async () => {
+    await seed();
+    await assert.rejects(loadScenes(), (err: unknown) => {
+      assert.ok(err instanceof Error);
+      assert.match(err.message, /unreadable/);
+      return true;
+    });
+    const preserved = await copies();
+    assert.equal(await readFile(join(dir(), preserved[0]!), 'utf8'), CORRUPT);
+  });
+
+  it('a missing sidecar is an empty store, not an error', async () => {
+    assert.deepEqual(await loadScenes(), {});
+    assert.match(textOf(await harness().invoke('list_scenes', {})), /No saved scenes/);
   });
 });
 

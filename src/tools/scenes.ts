@@ -14,9 +14,9 @@
  */
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
+import { readJsonSidecarOrThrow, readJsonSidecar, writeJsonSidecar, type SidecarRead } from '../sidecar.js';
 import type { SpotifyClient } from '../client.js';
 import type { PlaybackState, SpotifyDevice, GetDevicesResponse } from '../types/spotify.js';
 import { ResponseFormat, DryRun, describeDryRun } from '../shaping.js';
@@ -43,22 +43,33 @@ export function scenesFilePath(env: NodeJS.ProcessEnv = process.env): string {
   return env.SPOTIFY_MCP_SCENES_FILE ?? join(homedir(), '.spotify-mcp', 'scenes.json');
 }
 
-/** Load all scenes; missing/corrupt file yields an empty store. */
+/**
+ * Read the scenes sidecar under the #839 policy: a file that cannot be parsed
+ * is an unknown store, not an empty one. Its bytes are moved aside and
+ * `error` says so, naming where they went; the empty `store` alongside it means
+ * "nothing was read", never "you have no scenes". The read that finds the bad
+ * file is the one that reports it: the bytes are moved, not copied, so the
+ * next read sees a genuinely empty store and a later save is an ordinary first
+ * save with nothing left to lose.
+ */
+export async function readScenes(env: NodeJS.ProcessEnv = process.env): Promise<SidecarRead<SceneStore>> {
+  return readJsonSidecar<SceneStore>(scenesFilePath(env), () => ({}));
+}
+
+/**
+ * Scenes store, or throw when the file exists but could not be read. Throwing
+ * is deliberate: a caller that only wants a store must not be handed an empty
+ * one for a file whose contents are unknown, because the next write would
+ * * replace* it. Tools use `readScenes` so the failure can be reported instead
+ * of thrown.
+ */
 export async function loadScenes(env: NodeJS.ProcessEnv = process.env): Promise<SceneStore> {
-  try {
-    const raw = await readFile(scenesFilePath(env), 'utf8');
-    const parsed = JSON.parse(raw) as SceneStore;
-    return parsed && typeof parsed === 'object' ? parsed : {};
-  } catch {
-    return {};
-  }
+  return readJsonSidecarOrThrow<SceneStore>(scenesFilePath(env), () => ({}));
 }
 
 /** Persist the store atomically-enough: owner-only dir and file modes. */
 async function saveScenes(store: SceneStore, env: NodeJS.ProcessEnv = process.env): Promise<void> {
-  const file = scenesFilePath(env);
-  await mkdir(dirname(file), { recursive: true, mode: 0o700 });
-  await writeFile(file, `${JSON.stringify(store, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
+  await writeJsonSidecar(scenesFilePath(env), store);
 }
 
 // ---------------------------------------------------------------------------
@@ -96,6 +107,28 @@ function emit(
     return { content: [{ type: 'text', text: JSON.stringify(echo, null, 2) }], structuredContent: echo };
   }
   return { content: [{ type: 'text', text }], structuredContent: echo };
+}
+
+/** A sidecar read whose store stands for "unknown", not "empty" (#839). */
+function isUnreadable<T>(read: SidecarRead<T>): read is SidecarRead<T> & { error: string } {
+  return read.error !== null;
+}
+
+/**
+ * What every tool returns when the store could not be read: the reason, where
+ * the bytes went, and that nothing was read - so an unreadable store is never
+ * reported as an empty one and never written over (#839).
+ */
+function unreadableStore(
+  format: string | undefined,
+  read: SidecarRead<SceneStore> & { error: string },
+  detail: string,
+) {
+  return emit(
+    format,
+    { ok: false, error: 'store_unreadable', load_error: read.error, preserved_at: read.preserved_at },
+    `⚠ Scenes store unreadable — ${read.error}\n${detail}`,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -448,6 +481,10 @@ export function registerScenesTools(server: McpServer, client: SpotifyClient): v
       name: z.string().min(1).describe('Scene name (key in the sidecar)'),
       ...sceneFields,
       response_format: ResponseFormat,
+      overwrite_corrupt: z
+        .boolean()
+        .optional()
+        .describe('Replace a store that could not be read; its bytes are kept as a .corrupt-* file (#839).'),
     },
     async (args) => {
       // Up-front validation beyond zod: reject scenes with no actionable field.
@@ -461,15 +498,29 @@ export function registerScenesTools(server: McpServer, client: SpotifyClient): v
         return emit(args.response_format, { ok: false, error: 'empty_scene' }, 'Scene has no fields to save — provide at least one of device_hint, volume, shuffle, repeat, context_uri.');
       }
 
-      const store = await loadScenes();
+      const read = await readScenes();
+      if (isUnreadable(read) && !args.overwrite_corrupt) {
+        return unreadableStore(
+          args.response_format,
+          read,
+          'Nothing was saved. Re-run with overwrite_corrupt: true to start a new store, or repair the file from the preserved copy.',
+        );
+      }
+      const store = read.store;
       const existed = args.name in store;
       store[args.name] = scene;
       await saveScenes(store);
 
+      // After an explicit overwrite the previous store's contents are unknown,
+      // so `overwritten` is not reported: the call replaces a file, not a scene.
+      const replaced = isUnreadable(read) ? { overwrote_corrupt: true, load_error: read.error, preserved_at: read.preserved_at } : { overwritten: existed };
+      const prose = `${existed ? 'Updated' : 'Saved'} scene "${args.name}" (${Object.keys(scene).join(', ')}) → ${scenesFilePath()}`;
       return emit(
         args.response_format,
-        { ok: true, name: args.name, scene, overwritten: existed, path: scenesFilePath() },
-        `${existed ? 'Updated' : 'Saved'} scene "${args.name}" (${Object.keys(scene).join(', ')}) → ${scenesFilePath()}`,
+        { ok: true, name: args.name, scene, path: scenesFilePath(), ...replaced },
+        isUnreadable(read)
+          ? `⚠ ${prose}\nThis started a new store: the previous file could not be read and was preserved — ${read.error}`
+          : prose,
       );
     },
   );
@@ -479,7 +530,15 @@ export function registerScenesTools(server: McpServer, client: SpotifyClient): v
     'List saved playback scenes from the local sidecar',
     { response_format: ResponseFormat },
     async (args) => {
-      const store = await loadScenes();
+      const read = await readScenes();
+      if (isUnreadable(read)) {
+        return unreadableStore(
+          args.response_format,
+          read,
+          'The scene list is unknown, not empty: no names could be read, so this says nothing about which scenes you have.',
+        );
+      }
+      const store = read.store;
       const names = Object.keys(store).sort();
       if (names.length === 0) {
         return { content: [{ type: 'text', text: 'No saved scenes. Use save_scene to create one.' }] };
@@ -511,7 +570,15 @@ export function registerScenesTools(server: McpServer, client: SpotifyClient): v
     'Delete a saved playback scene from the local sidecar',
     { name: z.string().min(1).describe('Scene name to delete'), response_format: ResponseFormat },
     async (args) => {
-      const store = await loadScenes();
+      const read = await readScenes();
+      if (isUnreadable(read)) {
+        return unreadableStore(
+          args.response_format,
+          read,
+          `Nothing was deleted: whether a scene named "${args.name}" exists is unknown while the store cannot be read.`,
+        );
+      }
+      const store = read.store;
       if (!(args.name in store)) {
         return emit(args.response_format, { ok: false, error: 'not_found' }, `No scene named "${args.name}".`);
       }
@@ -530,7 +597,15 @@ export function registerScenesTools(server: McpServer, client: SpotifyClient): v
       response_format: ResponseFormat,
     },
     async (args) => {
-      const store = await loadScenes();
+      const read = await readScenes();
+      if (isUnreadable(read)) {
+        return unreadableStore(
+          args.response_format,
+          read,
+          `Nothing was applied: whether a scene named "${args.name}" exists is unknown while the store cannot be read.`,
+        );
+      }
+      const store = read.store;
       const scene = store[args.name];
       if (!scene) {
         const known = Object.keys(store).sort();
