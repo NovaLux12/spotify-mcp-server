@@ -221,8 +221,8 @@ Most gates are threshold-based, and the thresholds are spread across modules,
 not just `confirm.ts`: `REMOVE_ELICIT_THRESHOLD = 10` and
 `REPLACE_ELICIT_THRESHOLD = 50` (confirm.ts), `BATCH_ADD_ELICIT_THRESHOLD =
 100` and `MOVE_ELICIT_THRESHOLD = 50` (playlistbatch.ts),
-`VISIBILITY_ELICIT_THRESHOLD = 1` (playlists.ts), and an inline `> 50` in
-episodemgmt.ts. Four operations gate with no threshold at all and always ask:
+`VISIBILITY_ELICIT_THRESHOLD = 1` (playlists.ts), and
+`ARCHIVE_ELICIT_THRESHOLD = 50` (episodemgmt.ts). Four operations gate with no threshold at all and always ask:
 `unpin_playlist`, the union replace, the subtract replace, and library
 snapshot restore.
 

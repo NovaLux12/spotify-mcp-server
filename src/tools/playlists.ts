@@ -1752,6 +1752,32 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
     const finalPublic = args.public !== undefined ? args.public : current?.public;
     const finalCollab = args.collaborative !== undefined ? args.collaborative : current?.collaborative;
     if (finalPublic === true && finalCollab === true) throw new Error('Result would be public=true && collaborative=true — Spotify rejects this');
+    // #871: this tool performs the same toward-visible flip that
+    // update_playlist gates for #157, so it goes through the same gate. Before
+    // this, the sibling tool re-derived the final state inline and PUT anyway,
+    // which made the #157 privacy guard bypassable by calling the other tool.
+    // Direction, not size, decides: any flip that makes the playlist more
+    // visible (private→public, or collaborative→true) elicits exactly once
+    // against VISIBILITY_ELICIT_THRESHOLD; toward-private flips never prompt.
+    // The current-state GET above is unconditional, so the delta is free here.
+    const increasing = [
+      ...(args.public === true && current?.public !== true
+        ? [`public: ${visibilityLabel(current?.public)} → true`]
+        : []),
+      ...(args.collaborative === true && current?.collaborative !== true
+        ? [`collaborative: ${visibilityLabel(current?.collaborative)} → true`]
+        : []),
+    ];
+    if (increasing.length >= VISIBILITY_ELICIT_THRESHOLD) {
+      const verdict = await confirmViaElicitation(server, {
+        message: describeConfirmation('make playlist public', playlistId, increasing),
+      });
+      // Fails closed: declined, a mid-flight elicitation error, and a client
+      // that cannot prompt all stop the write. Only explicit acceptance — or the
+      // documented SPOTIFY_MCP_CONFIRM=never automation bypass — PUTs.
+      const refusal = requiredConfirmationRefusal(verdict);
+      if (refusal) return textResult(refusal.message, refusal.payload);
+    }
     await client.put(`/playlists/${encodeURIComponent(playlistId)}`, body);
     return textResult(`Playlist ${playlistId} updated: ${JSON.stringify(body)}`);
   });

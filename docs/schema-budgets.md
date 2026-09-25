@@ -90,7 +90,7 @@ above either ceiling fails CI and server startup.
 | restore | 1 | 1,851 | 1 | 1,851 | 2 | 2,037 |
 | undo | 2 | 1,518 | 2 | 1,518 | 3 | 1,670 |
 | receipts | 1 | 315 | 1 | 315 | 2 | 347 |
-| episodemgmt | 1 | 964 | 1 | 964 | 2 | 1,061 |
+| episodemgmt | 1 | 1,053 | 1 | 1,053 | 2 | 1,159 |
 | freshness | 1 | 2,043 | 1 | 2,043 | 2 | 2,248 |
 | searchdive | 1 | 1,561 | 1 | 1,561 | 2 | 1,718 |
 | searchhistory | 2 | 1,004 | 2 | 1,004 | 3 | 1,105 |
