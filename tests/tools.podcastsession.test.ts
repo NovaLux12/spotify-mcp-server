@@ -12,6 +12,7 @@ import assert from 'node:assert/strict';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../src/client.js';
 import type { SpotifyPaged } from '../src/types/spotify.js';
+import { initConfig } from '../src/config.js';
 import { registerPodcastSessionTools } from '../src/tools/podcastsession.js';
 
 // ---------------------------------------------------------------------------
@@ -181,15 +182,42 @@ describe('plan_podcast_session', () => {
     assert.equal(sc.episodes.length, 2); // C (15 min) would overrun 0 left → stop
     assert.equal(sc.planned_ms, 30 * MIN);
     assert.equal(sc.fill_percent, 100);
-    assert.equal(sc.stopped_reason, 'next_episode_exceeds_budget');
+    assert.equal(sc.stopped_reason, 'budget_filled');
     assert.match(res.content[0].text, /100% of 30 min budget/);
   });
 
-  it('exact fit consumes the whole budget', async () => {
+  it('exact fit consumes the whole budget and reports budget filled', async () => {
     const h = harness(savedEpisodes([ep({ name: 'A', duration_ms: 45 * MIN })]));
     const res = await h.byName.get('plan_podcast_session')!.handler({ minutes: 45 });
     assert.equal(res.structuredContent!.fill_percent, 100);
     assert.equal(res.structuredContent!.planned_ms, 45 * MIN);
+    assert.equal(res.structuredContent!.stopped_reason, 'budget_filled');
+    assert.match(res.content[0].text, /budget filled/i);
+    assert.doesNotMatch(res.content[0].text, /exceeds/i);
+  });
+
+  it('reports scan-cap exhaustion when a truncated candidate set leaves budget', async () => {
+    initConfig({ ...process.env, SPOTIFY_MCP_FETCH_ALL_CAP: '2' });
+    try {
+      const h = harness(savedEpisodes([
+        ep({ name: 'A', duration_ms: 10 * MIN }),
+        ep({ name: 'B', duration_ms: 10 * MIN }),
+        ep({ name: 'C', duration_ms: 10 * MIN }),
+      ]));
+      const res = await h.byName.get('plan_podcast_session')!.handler({ minutes: 40 });
+      assert.equal(res.structuredContent!.candidates_truncated, true);
+      assert.equal(res.structuredContent!.stopped_reason, 'scan_cap_reached');
+      assert.match(res.content[0].text, /stopped at scan cap \(2\)/);
+      const fullButNotTruncated = harness(savedEpisodes([
+        ep({ name: 'A', duration_ms: 10 * MIN }),
+        ep({ name: 'B', duration_ms: 10 * MIN }),
+      ]));
+      const fullRes = await fullButNotTruncated.byName.get('plan_podcast_session')!.handler({ minutes: 40 });
+      assert.equal(fullRes.structuredContent!.candidates_truncated, false);
+      assert.equal(fullRes.structuredContent!.stopped_reason, 'candidates_exhausted');
+    } finally {
+      initConfig();
+    }
   });
 
   it('skips fully played episodes without consuming budget', async () => {
@@ -350,6 +378,8 @@ describe('start_podcast_session', () => {
 
     assert.match(res.content[0].text, /resume position/);
     assert.equal(res.structuredContent!.ok, true);
+    assert.equal(res.structuredContent!.queued, 2);
+    assert.deepEqual(res.structuredContent!.failed, []);
   });
 
   it('unresumable first episode queues everything without a PUT play', async () => {
@@ -362,6 +392,47 @@ describe('start_podcast_session', () => {
     assert.equal(mutators.filter((c) => c.method === 'POST').length, 2);
     assert.match(mutators[0].path, new RegExp(`uri=${enc(first.episode.uri)}`));
     assert.match(mutators[1].path, new RegExp(`uri=${enc(second.episode.uri)}`));
+  });
+
+  it('accounts for every URI when all queue writes succeed', async () => {
+    const fixtures = Array.from({ length: 4 }, (_, index) =>
+      ep({ name: `episode-${index + 1}`, duration_ms: 10 * MIN }),
+    );
+    const h = harness(savedEpisodes(fixtures));
+    const res = await h.byName.get('start_podcast_session')!.handler({ minutes: 40 });
+    assert.equal(h.client.calls.filter((call) => call.method === 'POST').length, 4);
+    assert.equal(res.structuredContent!.queued, 4);
+    assert.equal(res.structuredContent!.queue_total, 4);
+    assert.deepEqual(res.structuredContent!.failed, []);
+    assert.match(res.content[0].text, /Queue result: 4\/4 queued/);
+  });
+
+  it('continues after a queue failure and reports the failing URI', async () => {
+    const fixtures = Array.from({ length: 4 }, (_, index) =>
+      ep({ name: `episode-${index + 1}`, duration_ms: 10 * MIN }),
+    );
+    const failingUri = fixtures[1].episode.uri;
+    const h = harness((path) => {
+      if (path === '/me/episodes') {
+        return { items: fixtures, limit: fixtures.length, total: fixtures.length, offset: 0 };
+      }
+      if (path.startsWith('/me/player/queue?')) {
+        const uri = new URL(path, 'https://spotify.test').searchParams.get('uri');
+        if (uri === failingUri) throw Object.assign(new Error('slow down'), { status: 429 });
+      }
+      return null;
+    });
+    const res = await h.byName.get('start_podcast_session')!.handler({ minutes: 40 });
+    const failed = res.structuredContent!.failed as Array<{ uri: string; reason: string }>;
+    assert.equal(h.client.calls.filter((call) => call.method === 'POST').length, 4);
+    assert.equal(res.structuredContent!.queued, 3);
+    assert.equal(res.structuredContent!.queue_total, 4);
+    assert.equal(res.structuredContent!.ok, false);
+    assert.equal(res.structuredContent!.dominant_cause, '429 rate limited');
+    assert.deepEqual(failed, [{ uri: failingUri, reason: '429 rate limited: slow down' }]);
+    assert.match(res.content[0].text, /Queue result: 3\/4 queued/);
+    assert.ok(res.content[0].text.includes(failingUri));
+    assert.match(res.content[0].text, /429 rate limited/);
   });
 
   it('dry_run performs reads only — zero mutating calls', async () => {

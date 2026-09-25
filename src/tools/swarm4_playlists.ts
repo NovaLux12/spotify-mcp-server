@@ -74,6 +74,11 @@ const PublicFlag = z
   .optional()
   .describe('New playlists public? Default false (private)');
 
+const IncludeFullOrder = z
+  .boolean()
+  .optional()
+  .describe('Opt in to the full planned order; otherwise structuredContent is capped');
+
 // ---------------------------------------------------------------------------
 // Shared plumbing
 // ---------------------------------------------------------------------------
@@ -311,6 +316,37 @@ function renderRows(rows: readonly OpRow[], maxResults: number, marker = '✓'):
   return lines;
 }
 
+/** Budget a structuredContent array and disclose exactly what the cap withheld. */
+function budgetedArray<T>(
+  items: readonly T[],
+  maxResults: number,
+  field = 'items',
+  includeFull = false,
+): {
+  value: T[];
+  total: number;
+  returned: number;
+  withheld: number;
+  truncated: boolean;
+  disclosure: Record<string, unknown>;
+} {
+  const cap = includeFull ? items.length : maxResults;
+  const view = truncateItems(items, cap);
+  return {
+    value: view.items,
+    total: view.total,
+    returned: view.returned,
+    withheld: view.remaining,
+    truncated: view.truncated,
+    disclosure: {
+      [`${field}_total`]: view.total,
+      [`${field}_returned`]: view.returned,
+      [`${field}_withheld`]: view.remaining,
+      [`${field}_truncated`]: view.truncated,
+    },
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Backup-file helpers (snapshots live in backupDir from ./backup.js)
 // ---------------------------------------------------------------------------
@@ -398,6 +434,7 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
         .default('asc')
         .describe('Sort direction. Default asc'),
       dry_run: DryRunDefault,
+      include_full_order: IncludeFullOrder,
       ...sharedListFields,
     },
     async (args) => {
@@ -427,6 +464,7 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
         return sign * collator.compare(String(ka), String(kb));
       });
       const uris = sorted.map((r) => r.uri);
+      const orderBudget = budgetedArray(uris, max, 'items', args.include_full_order);
       const prose = [
         `${args.direction === 'desc' ? 'Descending' : 'Ascending'} sort of "${p.name ?? p.id}" by ${args.sort_by}:`,
         `  ${rows.length} item(s) would be reordered.`,
@@ -440,7 +478,8 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
         sort_by: args.sort_by,
         direction: args.direction,
         items: rows.length,
-        order: uris,
+        order: orderBudget.value,
+        ...orderBudget.disclosure,
         dry_run: args.dry_run,
       };
       if (args.dry_run) {
@@ -471,6 +510,7 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
         .int()
         .describe('Rotation amount; positive = first N move to end, negative = last |N| move to front'),
       dry_run: DryRunDefault,
+      include_full_order: IncludeFullOrder,
       ...sharedListFields,
     },
     async (args) => {
@@ -486,6 +526,7 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
       const rotated = [...rows.slice(shift), ...rows.slice(0, shift)];
       const uris = rotated.map((r) => r.uri);
       const max = resolveMaxResults(args.max_results, getConfig().maxItems);
+      const orderBudget = budgetedArray(uris, max, 'items', args.include_full_order);
       const firstNew = rotated[0] ? rowLabel(rotated[0]) : '(empty)';
       const prose = [
         `Rotate "${p.name ?? p.id}" by ${args.positions} (effective ${shift} of ${n}):`,
@@ -499,7 +540,8 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
         positions: args.positions,
         effective_shift: shift,
         items: n,
-        order: uris,
+        order: orderBudget.value,
+        ...orderBudget.disclosure,
         dry_run: args.dry_run,
       };
       if (args.dry_run) {
@@ -532,6 +574,7 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
         .optional()
         .describe('Deterministic seed (0–2^31): the same seed produces the same shuffle. Omit for random'),
       dry_run: DryRunDefault,
+      include_full_order: IncludeFullOrder,
       ...sharedListFields,
     },
     async (args) => {
@@ -543,6 +586,7 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
       const shuffled = shuffleArr(rows, rand);
       const uris = shuffled.map((r) => r.uri);
       const max = resolveMaxResults(args.max_results, getConfig().maxItems);
+      const orderBudget = budgetedArray(uris, max, 'items', args.include_full_order);
       const prose = [
         `Shuffle "${p.name ?? p.id}"${args.seed !== undefined ? ` (seed ${args.seed} — reproducible)` : ''}:`,
         `  ${rows.length} item(s), order randomized.`,
@@ -554,7 +598,8 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
         playlist_name: p.name,
         seed: args.seed ?? null,
         items: rows.length,
-        order: uris,
+        order: orderBudget.value,
+        ...orderBudget.disclosure,
         dry_run: args.dry_run,
       };
       if (args.dry_run) {
@@ -580,6 +625,7 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
     {
       playlist_id: z.string().describe('Playlist to reverse, as ID or spotify:playlist: URI'),
       dry_run: DryRunDefault,
+      include_full_order: IncludeFullOrder,
       ...sharedListFields,
     },
     async (args) => {
@@ -590,6 +636,7 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
       const reversed = [...rows].reverse();
       const uris = reversed.map((r) => r.uri);
       const max = resolveMaxResults(args.max_results, getConfig().maxItems);
+      const orderBudget = budgetedArray(uris, max, 'items', args.include_full_order);
       const prose = [
         `Reverse "${p.name ?? p.id}":`,
         `  ${rows.length} item(s); first becomes "${rows.length ? rowLabel(reversed[0]) : '(empty)'}".`,
@@ -600,7 +647,8 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
         playlist: p.id,
         playlist_name: p.name,
         items: rows.length,
-        order: uris,
+        order: orderBudget.value,
+        ...orderBudget.disclosure,
         dry_run: args.dry_run,
       };
       if (args.dry_run) {
@@ -633,6 +681,7 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
         .min(1)
         .describe('1-based position (ORIGINAL numbering) where the block should land'),
       dry_run: DryRunDefault,
+      include_full_order: IncludeFullOrder,
       ...sharedListFields,
     },
     async (args) => {
@@ -661,6 +710,7 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
       moved.splice(Math.min(idx, moved.length), 0, ...block);
       const uris = moved.map((r) => r.uri);
       const max = resolveMaxResults(args.max_results, getConfig().maxItems);
+      const orderBudget = budgetedArray(uris, max, 'items', args.include_full_order);
       const noOp = idx === start - 1 && t >= start - 1 && t < start - 1 + count;
       const prose = [
         noOp
@@ -678,7 +728,8 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
         to_position: args.to_position,
         no_op: noOp,
         items: n,
-        order: uris,
+        order: orderBudget.value,
+        ...orderBudget.disclosure,
         dry_run: args.dry_run,
       };
       if (args.dry_run) {
@@ -707,6 +758,7 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
       position_a: z.number().int().min(1).describe('First position (1-based)'),
       position_b: z.number().int().min(1).describe('Second position (1-based)'),
       dry_run: DryRunDefault,
+      include_full_order: IncludeFullOrder,
       ...sharedListFields,
     },
     async (args) => {
@@ -730,6 +782,7 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
       [swapped[a], swapped[b]] = [swapped[b], swapped[a]];
       const uris = swapped.map((r) => r.uri);
       const max = resolveMaxResults(args.max_results, getConfig().maxItems);
+      const orderBudget = budgetedArray(uris, max, 'items', args.include_full_order);
       const prose = [
         `Swap positions ${args.position_a} ↔ ${args.position_b} in "${p.name ?? p.id}":`,
         `  ${args.position_a}: ${rowLabel(rows[a])} → ${rowLabel(rows[b])}`,
@@ -743,7 +796,8 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
         position_a: args.position_a,
         position_b: args.position_b,
         items: n,
-        order: uris,
+        order: orderBudget.value,
+        ...orderBudget.disclosure,
         dry_run: args.dry_run,
       };
       if (args.dry_run) {
@@ -777,6 +831,7 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
         .default('uri')
         .describe('Duplicate key: exact URI, or case-insensitive track name (catches same song from different releases). Default uri'),
       dry_run: DryRunDefault,
+      include_full_order: IncludeFullOrder,
       ...sharedListFields,
     },
     async (args) => {
@@ -802,6 +857,8 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
       const finalRows = args.keep === 'first' ? kept : kept.reverse();
       const uris = finalRows.map((r) => r.uri);
       const max = resolveMaxResults(args.max_results, getConfig().maxItems);
+      const orderBudget = budgetedArray(uris, max, 'items', args.include_full_order);
+      const removedBudget = budgetedArray(removed.map((r) => r.uri), max, 'removed');
       const prose = [
         `Dedupe "${p.name ?? p.id}" (match by ${args.match_by}, keep ${args.keep}):`,
         `  ${removed.length} duplicate(s) would be removed, ${finalRows.length} item(s) kept.`,
@@ -813,10 +870,12 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
         playlist_name: p.name,
         match_by: args.match_by,
         keep: args.keep,
-        removed: removed.map((r) => r.uri),
+        removed: removedBudget.value,
         removed_count: removed.length,
         kept_count: finalRows.length,
-        order: uris,
+        order: orderBudget.value,
+        ...removedBudget.disclosure,
+        ...orderBudget.disclosure,
         dry_run: args.dry_run,
       };
       if (args.dry_run) {
@@ -846,6 +905,7 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
         .string()
         .describe('Artist name (case-insensitive) or artist ID / spotify:artist: URI'),
       dry_run: DryRunDefault,
+      include_full_order: IncludeFullOrder,
       ...sharedListFields,
     },
     async (args) => {
@@ -862,6 +922,8 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
       const removed = rows.filter(matches);
       const uris = kept.map((r) => r.uri);
       const max = resolveMaxResults(args.max_results, getConfig().maxItems);
+      const orderBudget = budgetedArray(uris, max, 'items', args.include_full_order);
+      const removedBudget = budgetedArray(removed.map((r) => r.uri), max, 'removed');
       const prose = [
         `Remove ${looksLikeId ? `artist ${artistRef}` : `"${args.artist}"`} from "${p.name ?? p.id}":`,
         `  ${removed.length} track(s) would be removed, ${kept.length} kept.`,
@@ -874,8 +936,10 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
         artist: looksLikeId ? artistRef : args.artist,
         removed_count: removed.length,
         kept_count: kept.length,
-        removed_uris: removed.map((r) => r.uri),
-        order: uris,
+        removed_uris: removedBudget.value,
+        order: orderBudget.value,
+        ...removedBudget.disclosure,
+        ...orderBudget.disclosure,
         dry_run: args.dry_run,
       };
       if (args.dry_run) {
@@ -914,6 +978,7 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
         .default(false)
         .describe('Also keep podcast episodes (they have no artist). Default false'),
       dry_run: DryRunDefault,
+      include_full_order: IncludeFullOrder,
       ...sharedListFields,
     },
     async (args) => {
@@ -930,6 +995,7 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
       const removed = rows.filter((r) => !kept.includes(r));
       const uris = kept.map((r) => r.uri);
       const max = resolveMaxResults(args.max_results, getConfig().maxItems);
+      const orderBudget = budgetedArray(uris, max, 'items', args.include_full_order);
       const prose = [
         `Keep only ${looksLikeId ? `artist ${artistRef}` : `"${args.artist}"`} in "${p.name ?? p.id}":`,
         `  ${kept.length} track(s) kept, ${removed.length} removed${args.keep_episodes ? ' (episodes kept)' : ''}.`,
@@ -942,7 +1008,8 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
         artist: looksLikeId ? artistRef : args.artist,
         kept_count: kept.length,
         removed_count: removed.length,
-        order: uris,
+        order: orderBudget.value,
+        ...orderBudget.disclosure,
         dry_run: args.dry_run,
       };
       if (args.dry_run) {
@@ -971,6 +1038,7 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
       min_sec: z.number().int().min(0).optional().describe('Minimum duration in seconds'),
       max_sec: z.number().int().min(1).optional().describe('Maximum duration in seconds'),
       dry_run: DryRunDefault,
+      include_full_order: IncludeFullOrder,
       ...sharedListFields,
     },
     async (args) => {
@@ -993,6 +1061,8 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
       const totalMs = kept.reduce((s, r) => s + (r.durationMs ?? 0), 0);
       const uris = kept.map((r) => r.uri);
       const max = resolveMaxResults(args.max_results, getConfig().maxItems);
+      const orderBudget = budgetedArray(uris, max, 'items', args.include_full_order);
+      const removedBudget = budgetedArray(removed.map((r) => r.uri), max, 'removed');
       const window = [
         args.min_sec !== undefined ? `≥ ${msToClock(args.min_sec * 1000)}` : null,
         args.max_sec !== undefined ? `≤ ${msToClock(args.max_sec * 1000)}` : null,
@@ -1013,8 +1083,10 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
         kept_count: kept.length,
         removed_count: removed.length,
         kept_runtime_ms: totalMs,
-        removed_uris: removed.map((r) => r.uri),
-        order: uris,
+        removed_uris: removedBudget.value,
+        order: orderBudget.value,
+        ...removedBudget.disclosure,
+        ...orderBudget.disclosure,
         dry_run: args.dry_run,
       };
       if (args.dry_run) {
@@ -1104,6 +1176,10 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
           const to = Math.min(from + args.page_size - 1, start + total - 1);
           return { first_position: from, last_position: to, items: to - from + 1 };
         }),
+        chunks_total: chunkCount,
+        chunks_returned: shown,
+        chunks_withheld: chunkCount - shown,
+        chunks_truncated: chunkCount > shown,
       });
     },
   );
@@ -1136,6 +1212,8 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
       const orderB = rowsB.filter((r) => r.uri && setA.has(r.uri)).map((r) => r.uri);
       const sameOrder = common.map((r) => r.uri).join('|') === orderB.join('|');
       const max = resolveMaxResults(args.max_results, getConfig().maxItems);
+      const onlyABudget = budgetedArray(onlyA.map((r) => r.uri), max, 'only_in_a');
+      const onlyBBudget = budgetedArray(onlyB.map((r) => r.uri), max, 'only_in_b');
       const prose = [
         `Diff "${a.name ?? a.id}" (${rowsA.length}) vs "${b.name ?? b.id}" (${rowsB.length}):`,
         `  common: ${common.length} · only in A: ${onlyA.length} · only in B: ${onlyB.length}`,
@@ -1148,8 +1226,10 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
         playlist_a: { id: a.id, name: a.name, items: rowsA.length },
         playlist_b: { id: b.id, name: b.name, items: rowsB.length },
         common_count: common.length,
-        only_in_a: onlyA.map((r) => r.uri),
-        only_in_b: onlyB.map((r) => r.uri),
+        only_in_a: onlyABudget.value,
+        only_in_b: onlyBBudget.value,
+        ...onlyABudget.disclosure,
+        ...onlyBBudget.disclosure,
         same_order: sameOrder,
       });
     },
@@ -1211,6 +1291,10 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
           playlist_items: r.playlistItems,
           liked_tracks: r.likedTracks,
         })),
+        snapshots_total: files.length,
+        snapshots_returned: rows.length,
+        snapshots_withheld: files.length - rows.length,
+        snapshots_truncated: files.length > rows.length,
       });
     },
   );
@@ -1244,6 +1328,7 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
         artistIds: [],
         album: null,
       }));
+      const itemBudget = budgetedArray(row.items, max);
       const prose = [
         `"${row.name}" in snapshot ${args.backup_file}:`,
         `  recorded item_count: ${row.item_count ?? row.items.length} · items stored: ${row.items.length}`,
@@ -1257,7 +1342,8 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
         playlist_name: row.name,
         recorded_item_count: row.item_count,
         items_stored: row.items.length,
-        items: row.items,
+        items: itemBudget.value,
+        ...itemBudget.disclosure,
       });
     },
   );
@@ -1297,13 +1383,15 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
           artistIds: [],
           album: null,
         }));
+      const itemBudget = budgetedArray(uris, max);
       const payload = {
         ok: true,
         backup_file: args.backup_file,
         source_playlist: row.name,
         new_name: name,
         items: uris.length,
-        uris,
+        uris: itemBudget.value,
+        ...itemBudget.disclosure,
         dry_run: args.dry_run,
       };
       if (args.dry_run) {
@@ -1372,6 +1460,8 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
       for (const p of [...snapA.playlists, ...snapB.playlists]) {
         for (const it of p.items) nameMap.set(it.uri, it.name);
       }
+      const addedBudget = budgetedArray(added.map((u) => ({ uri: u, name: nameMap.get(u) ?? u })), max, 'added');
+      const removedBudget = budgetedArray(removed.map((u) => ({ uri: u, name: nameMap.get(u) ?? u })), max, 'removed');
       const prose = [
         `Changelog for "${rowA.name}" — ${args.backup_file_a} → ${args.backup_file_b}:`,
         `  ${rowA.items.length} → ${rowB.items.length} items · +${added.length} added / -${removed.length} removed / ${keptA.length} kept`,
@@ -1387,8 +1477,10 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
         comparison_file: args.backup_file_b,
         items_before: rowA.items.length,
         items_after: rowB.items.length,
-        added: added.map((u) => ({ uri: u, name: nameMap.get(u) ?? u })),
-        removed: removed.map((u) => ({ uri: u, name: nameMap.get(u) ?? u })),
+        added: addedBudget.value,
+        removed: removedBudget.value,
+        ...addedBudget.disclosure,
+        ...removedBudget.disclosure,
         kept_count: keptA.length,
         reordered,
       });
@@ -1422,19 +1514,23 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
       const union = setA.size + setB.size - overlap.length;
       const jaccard = union === 0 ? 1 : overlap.length / union;
       const max = resolveMaxResults(args.max_results, getConfig().maxItems);
+      const onlyABudget = budgetedArray(onlyA.map((r) => r.uri), max, 'only_in_a');
+      const onlyBBudget = budgetedArray(onlyB.map((r) => r.uri), max, 'only_in_b');
       const prose = [
         `Pair check "${a.name ?? a.id}" (${rowsA.length}) ↔ "${b.name ?? b.id}" (${rowsB.length}):`,
         `  overlap ${overlap.length} · Jaccard ${jaccard.toFixed(3)} · only-A ${onlyA.length} · only-B ${onlyB.length}`,
-        ...(onlyA.length > 0 ? ['', `"${a.name ?? a.id}" lacks (from B):`, ...renderRows(onlyB, max, '→')] : []),
-        ...(onlyB.length > 0 ? ['', `"${b.name ?? b.id}" lacks (from A):`, ...renderRows(onlyA, max, '→')] : []),
+        ...(onlyA.length > 0 ? ['', `"${a.name ?? a.id}" lacks (from B):`, ...renderRows(onlyA, max, '→')] : []),
+        ...(onlyB.length > 0 ? ['', `"${b.name ?? b.id}" lacks (from A):`, ...renderRows(onlyB, max, '→')] : []),
       ];
       return shape(rf, prose.join('\n'), {
         ok: true,
         playlist_a: { id: a.id, name: a.name, items: rowsA.length },
         playlist_b: { id: b.id, name: b.name, items: rowsB.length },
         overlap_count: overlap.length,
-        only_in_a: onlyA.map((r) => r.uri),
-        only_in_b: onlyB.map((r) => r.uri),
+        only_in_a: onlyABudget.value,
+        only_in_b: onlyBBudget.value,
+        ...onlyABudget.disclosure,
+        ...onlyBBudget.disclosure,
         jaccard: Number(jaccard.toFixed(4)),
       });
     },
@@ -1491,6 +1587,7 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
         rows.forEach((r, i) => buckets[i % args.parts].push(r));
       }
       const max = resolveMaxResults(args.max_results, getConfig().maxItems);
+      const bucketBudgets = buckets.map((b) => budgetedArray(b.map((r) => r.uri), max));
       const names = buckets.map((_, i) => `${prefix} ${i + 1}`);
       const prose = [
         `Split "${p.name ?? p.id}" (${n} items) into ${args.parts} ${args.strategy} playlists:`,
@@ -1506,7 +1603,11 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
         parts: args.parts,
         strategy: args.strategy,
         names,
-        buckets: buckets.map((b) => b.map((r) => r.uri)),
+        buckets: bucketBudgets.map((b) => b.value),
+        bucket_totals: bucketBudgets.map((b) => b.total),
+        bucket_items_returned: bucketBudgets.map((b) => b.returned),
+        bucket_items_withheld: bucketBudgets.map((b) => b.withheld),
+        bucket_items_truncated: bucketBudgets.map((b) => b.truncated),
         dry_run: args.dry_run,
       };
       if (args.dry_run) {

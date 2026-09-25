@@ -34,9 +34,11 @@ import {
   sharedListFields,
   truncateItems,
 } from '../shaping.js';
+import { expandAlbumToTracks } from './playlistbatch.js';
 import type { ResponseFormatValue } from '../shaping.js';
 import type {
   PlaylistItemObject,
+  SavedAlbumItem,
   SavedTrackItem,
   SpotifyAlbumItem,
   SpotifyAlbumSimple,
@@ -451,9 +453,7 @@ export async function getWithGating<T>(
   }
 }
 
-// --- paged-library walker for /me/{type} ----------------------------------
-
-type LibraryRow = SavedTrackItem | { added_at: string; album?: SpotifyAlbumSimple };
+type LibraryRow = SavedTrackItem | SavedAlbumItem;
 
 /** Walk a /me/{type}s offset-paged library list (getAllPages, capped). */
 function listAllMeType(client: SpotifyClient, type: 'tracks' | 'albums'): Promise<LibraryRow[]> {
@@ -464,18 +464,53 @@ function listAllMeType(client: SpotifyClient, type: 'tracks' | 'albums'): Promis
   );
 }
 
-function rowUri(row: LibraryRow): string {
-  const t = row as SavedTrackItem;
-  if (t.track?.uri) return t.track.uri;
-  const a = row as { album?: { uri?: string } };
-  return a.album?.uri ?? '';
+function playableUri(playable: SpotifyTrack | SpotifyEpisode | null | undefined): string | null {
+  const uri = playable?.uri?.trim();
+  if (!uri) return null;
+  const parsed = parseSpotifyUri(uri);
+  if (parsed?.type !== 'track' && parsed?.type !== 'episode') return null;
+  return uri;
 }
 
-function rowName(row: LibraryRow): string {
-  const t = row as SavedTrackItem;
-  if (t.track?.name) return t.track.name;
-  const a = row as { album?: { name?: string } };
-  return a.album?.name ?? '';
+interface AlbumShelfExpansion {
+  uris: string[];
+  albums_expanded: number;
+  per_album_cap: number;
+}
+
+/**
+ * Resolve every considered saved album before playlist creation. Any read
+ * failure or album with no playable tracks aborts the operation so a Spotify
+ * rejection cannot leave an orphaned playlist behind.
+ */
+async function expandAlbumShelf(
+  client: SpotifyClient,
+  rows: readonly LibraryRow[],
+  perAlbumCap: number,
+  totalCap = Number.POSITIVE_INFINITY,
+): Promise<AlbumShelfExpansion> {
+  if (rows.length === 0) throw new Error('No saved albums were found; no playlist was created.');
+  const uris: string[] = [];
+  let albumsExpanded = 0;
+  for (const row of rows) {
+    const album = 'album' in row ? row.album : undefined;
+    const label = album?.name ? `"${album.name}" (${album.id ?? album.uri ?? 'unknown album'})` : 'with a missing album entry';
+    if (!album) throw new Error(`Saved album shelf contains ${label}; no playlist was created.`);
+    let tracks: string[];
+    try {
+      tracks = await expandAlbumToTracks(client, album, Math.min(perAlbumCap, totalCap - uris.length));
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      throw new Error(`Could not expand saved album ${label}: ${detail} No playlist was created.`);
+    }
+    if (tracks.length === 0) {
+      throw new Error(`Saved album ${label} is empty or fully region-blocked; no playlist was created.`);
+    }
+    uris.push(...tracks);
+    albumsExpanded += 1;
+    if (uris.length >= totalCap) break;
+  }
+  return { uris: uris.slice(0, totalCap), albums_expanded: albumsExpanded, per_album_cap: perAlbumCap };
 }
 
 // ---------------------------------------------------------------------------
@@ -727,8 +762,9 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
   // -----------------------------------------------------------------------
   server.tool(
     'saved_tracks_roulette',
-    'Deal N random cards from your saved tracks into a FRESH playlist — an instant rediscovery '
-      + 'sampler. Quota: 🟡 getAllPages + 1 create + chunked adds.',
+    'Deal N random cards from a saved shelf into a FRESH playlist. Album shelves are expanded '
+      + 'through bounded /albums/{id}/tracks reads (configured fetch-all cap per album); any '
+      + 'expansion failure or empty/region-blocked album aborts before creation. Quota: 🟡 getAllPages + album fan-out + 1 create + chunked adds.',
     {
       count: z.number().int().min(10).max(100).optional().describe('How many cards to deal (10–100). Default 20'),
       from: z.enum(['tracks', 'albums', 'episodes']).optional().describe('Save shelf to draw from. Default tracks'),
@@ -741,25 +777,38 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
     async (args) => {
       const rf = args.response_format;
       const shelf = args.from ?? 'tracks';
-      const path = shelf === 'tracks' ? '/me/tracks' : '/me/episodes';
-      const rows = await client.getAllPages<{ added_at: string; track?: SpotifyTrack; episode?: SpotifyEpisode }>(
-        path,
-        { limit: '50' },
-        { maxItems: getConfig().fetchAllCap },
-      );
-      const deck = rows
-        .map((r) => (shelf === 'albums' ? null : r.track ?? r.episode ?? null))
-        .filter((p): p is SpotifyTrack | SpotifyEpisode => !!p?.uri);
-      let pool = deck.map((p) => p.uri);
+      let pool: string[];
+      let albumsExpanded = 0;
+      let albumCap: number | null = null;
+      if (shelf === 'albums') {
+        const cap = getConfig().fetchAllCap;
+        const expansion = await expandAlbumShelf(client, await listAllMeType(client, 'albums'), cap);
+        pool = expansion.uris;
+        albumsExpanded = expansion.albums_expanded;
+        albumCap = expansion.per_album_cap;
+      } else {
+        const path = shelf === 'tracks' ? '/me/tracks' : '/me/episodes';
+        const rows = await client.getAllPages<{ added_at: string; track?: SpotifyTrack; episode?: SpotifyEpisode }>(
+          path,
+          { limit: '50' },
+          { maxItems: getConfig().fetchAllCap },
+        );
+        pool = rows
+          .map((row) => playableUri(shelf === 'tracks' ? row.track : row.episode))
+          .filter((uri): uri is string => uri !== null);
+      }
+      if (pool.length === 0) throw new Error(`No playable saved ${shelf} were found; no playlist was created.`);
       if (args.dedupe) pool = [...new Set(pool)];
       const dealt = sampleN(pool, args.count ?? 20);
+      if (dealt.length === 0) throw new Error(`No playable saved ${shelf} remained after resolution; no playlist was created.`);
       const name = args.name ?? `Saved Roulette ${formatDateStamp()}`;
       if (isDry(args)) {
         return dryOut('deal roulette cards', `new playlist "${name}"`, [
-          `Draw ${dealt.length} random uris from ${pool.length} saved ${shelf} (${deck.length} playable):`,
-          ...dealt.map((u) => `  - ${u}`),
+          `Draw ${dealt.length} random uris from ${pool.length} playable saved ${shelf}:`,
+          ...dealt.map((uri) => `  - ${uri}`),
           args.dedupe ? '(duplicates dropped first)' : '(duplicates kept — deck may repeat)',
-        ]);
+          albumCap === null ? '' : `Album expansion read at most ${albumCap} tracks per album before deal selection.`,
+        ], { albums_expanded: albumsExpanded, album_track_cap: albumCap });
       }
       const created = await createPlaylist(client, name, args.public ?? false);
       const add = await addUrisChunked(client, created, dealt);
@@ -770,6 +819,8 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
         deck_size: pool.length,
         dealt: dealt.length,
         requests: add.requests,
+        albums_expanded: albumsExpanded,
+        album_track_cap: albumCap,
       });
     },
   );
@@ -1478,8 +1529,8 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
       const prose: string[] = [`Library delta vs ${fileName}:`];
       if (shelves.includes('tracks')) {
         const fresh = await listAllMeType(client, 'tracks');
-        const freshUris = fresh.map(rowUri);
-        const snapUris = (raw.liked_tracks ?? []).map((t) => t.uri ?? '').filter(Boolean);
+        const freshUris: string[] = fresh.flatMap((row) => ('track' in row && row.track.uri ? [row.track.uri] : []));
+        const snapUris: string[] = (raw.liked_tracks ?? []).flatMap((saved) => saved.uri ? [saved.uri] : []);
         const added = differenceOf(freshUris, snapUris);
         const removed = differenceOf(snapUris, freshUris);
         out.shelves = { ...(out.shelves as object), tracks: { added: added.length, removed: removed.length, added_uris: added, removed_uris: removed } };
@@ -1492,8 +1543,8 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
       }
       if (shelves.includes('albums')) {
         const fresh = await listAllMeType(client, 'albums');
-        const freshUris = fresh.map(rowUri);
-        const snapUris = (raw.saved_albums ?? []).map((t) => t.uri ?? '').filter(Boolean);
+        const freshUris: string[] = fresh.flatMap((row) => ('album' in row && row.album.uri ? [row.album.uri] : []));
+        const snapUris: string[] = (raw.saved_albums ?? []).flatMap((saved) => saved.uri ? [saved.uri] : []);
         const added = differenceOf(freshUris, snapUris);
         const removed = differenceOf(snapUris, freshUris);
         out.shelves = { ...(out.shelves as object), albums: { added: added.length, removed: removed.length, added_uris: added, removed_uris: removed } };
@@ -1508,13 +1559,14 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
   // -----------------------------------------------------------------------
   server.tool(
     'library_to_playlist',
-    'Export your saved tracks (or saved albums\' first tracks) into a NEW playlist — sort by '
-      + 'save order, cap at N, chunked adds. Quota: 🟡 getAllPages + create + chunked adds.',
+    'Export saved tracks, or playable track URIs expanded from saved albums, into a NEW '
+      + 'playlist. Album shelves use bounded /albums/{id}/tracks reads and abort before creation '
+      + 'on any expansion error or empty/region-blocked album. Quota: 🟡 getAllPages + album fan-out + create + chunked adds.',
     {
       from: z.enum(['tracks', 'albums']).optional().describe('Which saved shelf to export. Default tracks'),
       name: z.string().optional().describe('Playlist name. Default "Liked Songs export YYYY-MM-DD"'),
       order: z.enum(['added_asc', 'added_desc']).optional().describe('Export order. Default added_asc'),
-      limit: z.number().int().min(1).optional().describe('Max items to export. Default 500'),
+      limit: z.number().int().min(1).optional().describe('Max playable track URIs to export. Default: configured fetch-all cap'),
       public: PublicFlag,
       response_format: ResponseFormat,
       max_results: MaxResults,
@@ -1527,8 +1579,22 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
       const cap = args.limit ?? getConfig().fetchAllCap;
       const rows = await listAllMeType(client, from);
       const sorted = order === 'added_desc' ? [...rows].reverse() : rows;
-      const selected = sorted.slice(0, cap);
-      const uris = selected.map(rowUri).filter(Boolean);
+      let uris: string[];
+      let albumsExpanded = 0;
+      let albumCap: number | null = null;
+      if (from === 'albums') {
+        const expansion = await expandAlbumShelf(client, sorted, getConfig().fetchAllCap, cap);
+        uris = expansion.uris;
+        albumsExpanded = expansion.albums_expanded;
+        albumCap = expansion.per_album_cap;
+      } else {
+        uris = sorted
+          .filter((row): row is SavedTrackItem => 'track' in row)
+          .map((row) => playableUri(row.track))
+          .filter((uri): uri is string => uri !== null)
+          .slice(0, cap);
+      }
+      if (uris.length === 0) throw new Error(`No playable saved ${from} were found; no playlist was created.`);
       const view = truncateItems(uris, resolveMaxResults(args.max_results, getConfig().maxItems));
       const name = args.name ?? `Liked Songs export ${formatDateStamp()}`;
       const plan: Record<string, unknown> = {
@@ -1538,20 +1604,23 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
         selected: uris.length,
         shelf_size: rows.length,
         resulting_uris: uris,
+        albums_expanded: albumsExpanded,
+        album_track_cap: albumCap,
         dry_run: isDry(args),
       };
       if (isDry(args)) {
         const lines = [
-          `[dry run] Export ${uris.length} saved ${from} (${order}) into new playlist "${name}":`,
-          ...view.items.map((u, i) => `  ${i + 1}. ${u}`),
+          `[dry run] Export ${uris.length} playable saved ${from} items (${order}) into new playlist "${name}":`,
+          ...view.items.map((uri, index) => `  ${index + 1}. ${uri}`),
           view.footer ? `(${view.footer})` : '',
+          albumCap === null ? '' : `Album expansion read at most ${albumCap} tracks per album, capped again at the ${cap}-URI export limit.`,
         ];
         return shape(args.response_format, lines.filter(Boolean).join('\n'), plan);
       }
       const created = await createPlaylist(client, name, args.public ?? false, 'Liked Songs export via library_to_playlist');
-      if (uris.length > 0) await addUrisChunked(client, created, uris);
+      await addUrisChunked(client, created, uris);
       const text =
-        `Exported ${selected.length} saved ${from} (${order}) to new playlist "${name}" (${created}).`
+        `Exported ${uris.length} playable saved ${from} items (${order}) to new playlist "${name}" (${created}).`
         + `\n${batchSummary(uris.length, uris)}`;
       return rf === 'json' ? shape(args.response_format, '', { ...plan, dry_run: false, playlist: created }) : textResult(text, plan);
     },

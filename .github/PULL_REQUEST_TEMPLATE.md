@@ -19,6 +19,7 @@
 - [ ] Only non-deprecated Spotify Web API endpoints used
 - [ ] Conventional Commit title
 - [ ] No tokens, Client IDs, or `.env` contents committed
+- [ ] If this PR changes `publish.yml`, `server.json`, `.release-please-config.json`, or the package version, follow the Releasing runbook in `CONTRIBUTING.md`
 
 ## Summary
 

@@ -17,6 +17,7 @@ import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
 import { getConfig } from '../config.js';
+import { addToQueueBatch, dominantQueueFailureReason, formatQueueFailures } from './queueops.js';
 import {
   DryRun,
   MaxResults,
@@ -61,7 +62,10 @@ interface SessionPlan {
   skipped_fully_played: number;
   /** Total candidates examined before packing stopped. */
   scanned: number;
+  /** Whether the candidate walk stopped at the configured fetch-all cap. */
+  candidates_truncated: boolean;
   stopped_reason:
+    | 'budget_filled'
     | 'next_episode_exceeds_budget'
     | 'candidates_exhausted'
     | 'scan_cap_reached';
@@ -116,22 +120,29 @@ function toPlanned(
 /**
  * Gather candidate episodes. `kind` picks a single source; otherwise saved
  * episodes are used, extended by saved-show episodes when saved_only=false.
- * The combined scan never exceeds fetchAllCap episodes.
+ * The returned candidate set never exceeds fetchAllCap episodes.
  */
-async function gatherCandidates(client: SpotifyClient, kind?: 'episodes' | 'shows', savedOnly = true): Promise<PlannedEpisode[]> {
+async function gatherCandidates(
+  client: SpotifyClient,
+  kind?: 'episodes' | 'shows',
+  savedOnly = true,
+): Promise<{ candidates: PlannedEpisode[]; truncated: boolean }> {
   const cap = getConfig().fetchAllCap;
   const wantSavedEpisodes = kind !== 'shows';
   const wantShowEpisodes = kind === 'shows' || !savedOnly;
 
   const out: PlannedEpisode[] = [];
   const seen = new Set<string>();
+  let truncated = false;
 
   if (wantSavedEpisodes) {
-    const saved = await client.getAllPages<SavedEpisodeItem>('/me/episodes', {
+    // Fetch one sentinel beyond the cap so an exactly-full result is not
+    // mislabeled as truncated when there is no additional candidate.
+    const scanned = await client.getAllPages<SavedEpisodeItem>('/me/episodes', {
       limit: '50',
-    }, { maxItems: cap });
-    for (const item of saved) {
-      if (out.length >= cap) break;
+    }, { maxItems: cap + 1 });
+    if (scanned.length > cap) truncated = true;
+    for (const item of scanned.slice(0, cap)) {
       const ep = item.episode as SpotifyEpisodeFull;
       if (seen.has(ep.uri)) continue;
       seen.add(ep.uri);
@@ -140,19 +151,28 @@ async function gatherCandidates(client: SpotifyClient, kind?: 'episodes' | 'show
   }
 
   if (wantShowEpisodes && out.length < cap) {
-    const shows = await client.getAllPages<SavedShowItem>('/me/shows', { limit: '50' }, {
-      maxItems: cap,
+    const scannedShows = await client.getAllPages<SavedShowItem>('/me/shows', { limit: '50' }, {
+      maxItems: cap + 1,
     });
-    for (const entry of shows) {
-      if (out.length >= cap) break;
+    if (scannedShows.length > cap) truncated = true;
+    const shows = scannedShows.slice(0, cap);
+    for (const [showIndex, entry] of shows.entries()) {
+      if (out.length >= cap) {
+        truncated = true;
+        break;
+      }
       // Bounded probe per show: newest page only — a session composer wants
       // recent episodes, not every archive back-catalogue.
       const res = await client.get<SpotifyPaged<SpotifyEpisodeSimple>>(
         `/shows/${encodeURIComponent(entry.show.id)}/episodes`,
         { limit: '25' },
       );
-      for (const ep of res?.items ?? []) {
-        if (out.length >= cap) break;
+      const items = res?.items ?? [];
+      for (const [episodeIndex, ep] of items.entries()) {
+        if (out.length >= cap) {
+          truncated = truncated || episodeIndex < items.length - 1;
+          break;
+        }
         if (!ep || seen.has(ep.uri)) continue;
         seen.add(ep.uri);
         out.push(
@@ -163,20 +183,30 @@ async function gatherCandidates(client: SpotifyClient, kind?: 'episodes' | 'show
           }),
         );
       }
+      if (out.length >= cap && showIndex < shows.length - 1) {
+        truncated = true;
+        break;
+      }
     }
   }
 
-  return out;
+  return { candidates: out, truncated };
 }
 
 /** Greedy in-order pack: take each playable episode that fits, stop at the first overrun. */
-export function packSession(candidates: PlannedEpisode[], minutes: number): SessionPlan {
+export function packSession(
+  candidates: PlannedEpisode[],
+  minutes: number,
+  candidatesTruncated = false,
+): SessionPlan {
   const budgetMs = minutes * 60_000;
   let left = budgetMs;
   let plannedMs = 0;
   let skippedFullyPlayed = 0;
   let scanned = 0;
-  let stopped: SessionPlan['stopped_reason'] = 'candidates_exhausted';
+  let stopped: SessionPlan['stopped_reason'] = candidatesTruncated
+    ? 'scan_cap_reached'
+    : 'candidates_exhausted';
   const episodes: PlannedEpisode[] = [];
 
   for (const ep of candidates) {
@@ -190,7 +220,7 @@ export function packSession(candidates: PlannedEpisode[], minutes: number): Sess
       plannedMs += ep.remaining_ms;
       left -= ep.remaining_ms;
       if (left === 0) {
-        stopped = 'next_episode_exceeds_budget';
+        stopped = 'budget_filled';
         break;
       }
     } else {
@@ -207,6 +237,7 @@ export function packSession(candidates: PlannedEpisode[], minutes: number): Sess
     fill_percent: budgetMs > 0 ? Math.round((plannedMs / budgetMs) * 100) : 0,
     skipped_fully_played: skippedFullyPlayed,
     scanned,
+    candidates_truncated: candidatesTruncated,
     stopped_reason: stopped,
   };
 }
@@ -217,7 +248,9 @@ function planFooter(plan: SessionPlan): string {
       ? 'all candidates considered'
       : plan.stopped_reason === 'scan_cap_reached'
         ? `stopped at scan cap (${getConfig().fetchAllCap})`
-        : 'next unplayed episode exceeds the remaining budget';
+        : plan.stopped_reason === 'budget_filled'
+          ? 'budget filled'
+          : 'next unplayed episode exceeds the remaining budget';
   return `Total: ${formatDuration(plan.planned_ms)} planned (${plan.fill_percent}% of ${plan.minutes} min budget) · ${plan.episodes.length} episode(s) · ${plan.skipped_fully_played} fully played skipped · ${reason}`;
 }
 
@@ -240,11 +273,6 @@ function renderPlan(plan: SessionPlan, detailed: boolean): string {
   return lines.join('\n');
 }
 
-const queueParams = (uri: string, deviceId?: string): string => {
-  const params = new URLSearchParams({ uri });
-  if (deviceId) params.set('device_id', deviceId);
-  return params.toString();
-};
 
 export function registerPodcastSessionTools(server: McpServer, client: SpotifyClient): void {
   // plan_podcast_session
@@ -263,10 +291,8 @@ export function registerPodcastSessionTools(server: McpServer, client: SpotifyCl
     },
     async (args) => {
       const fmt = args.response_format;
-      const plan = packSession(
-        await gatherCandidates(client, args.kind, args.saved_only ?? true),
-        args.minutes,
-      );
+      const { candidates, truncated } = await gatherCandidates(client, args.kind, args.saved_only ?? true);
+      const plan = packSession(candidates, args.minutes, truncated);
       if (fmt === 'json') {
         return {
           content: [{ type: 'text', text: JSON.stringify(plan, null, 2) }],
@@ -299,10 +325,8 @@ export function registerPodcastSessionTools(server: McpServer, client: SpotifyCl
       max_results: MaxResults,
     },
     async (args) => {
-      const plan = packSession(
-        await gatherCandidates(client, args.kind, args.saved_only ?? true),
-        args.minutes,
-      );
+      const { candidates, truncated } = await gatherCandidates(client, args.kind, args.saved_only ?? true);
+      const plan = packSession(candidates, args.minutes, truncated);
       if (plan.episodes.length === 0) {
         return {
           content: [{ type: 'text', text: renderPlan(plan, false) }],
@@ -348,21 +372,34 @@ export function registerPodcastSessionTools(server: McpServer, client: SpotifyCl
         const suffix = args.device_id ? `?device_id=${encodeURIComponent(args.device_id)}` : '';
         await client.put(`/me/player/play${suffix}`, body);
       }
-      // Queue the remaining URIs. Queue adds always begin at the episode
-      // start — no seek exists on enqueue.
-      for (const ep of queueUris) {
-        await client.post(`/me/player/queue?${queueParams(ep.uri, args.device_id)}`);
-      }
+      // Queue the remaining URIs sequentially through the shared batch path.
+      // Queue adds always begin at the episode start — no seek exists on enqueue.
+      const { queued, failed } = await addToQueueBatch(
+        client,
+        queueUris.map((episode) => episode.uri),
+        args.device_id as string | undefined,
+      );
+      const failureSummary = formatQueueFailures(failed);
+      const queueResult = `Queue result: ${queued}/${queueUris.length} queued${failureSummary ? ` — ${failureSummary}` : ''}`;
       const summary = [
         `Started ${plan.minutes}-minute podcast session on ${target}:`,
         ...changes.map((c) => `  • ${c}`),
         '',
+        queueResult,
         planFooter(plan),
         'Note: only the first episode honored its resume position; queued episodes play from the start.',
       ].join('\n');
       return {
         content: [{ type: 'text', text: summary }],
-        structuredContent: { ok: true, device_id: args.device_id ?? null, ...plan },
+        structuredContent: {
+          ok: failed.length === 0,
+          device_id: args.device_id ?? null,
+          queued,
+          failed,
+          dominant_cause: dominantQueueFailureReason(failed) ?? null,
+          queue_total: queueUris.length,
+          ...plan,
+        },
       };
     },
   );

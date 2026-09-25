@@ -10,11 +10,16 @@
 import { describe, it } from 'node:test';
 import { z } from 'zod';
 import assert from 'node:assert/strict';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../src/client.js';
 import type { SpotifyPaged } from '../src/types/spotify.js';
 import { registerPlaylistTools } from '../src/tools/playlists.js';
 import { registerFollowingTools } from '../src/tools/following.js';
+import { registerPlaylistMiscTools } from '../src/tools/playlistmisc.js';
+import { registerRestoreTools } from '../src/tools/restore.js';
 
 // ---------------------------------------------------------------------------
 // Stub plumbing
@@ -580,7 +585,7 @@ describe('add_to_playlist / remove_from_playlist / update_playlist / reorder_pla
   });
 
   it('update_playlist PUTs only provided fields to /playlists/{id}', async () => {
-    const h = harness();
+    const h = harness(undefined, registerPlaylistTools, { action: 'accept', content: { confirm: true } });
 
     await h.invoke('update_playlist', { playlist_id: 'pl', name: 'New Name', public: false });
     // The mutation receipt adds a trailing verification GET — compare writes only.
@@ -644,7 +649,7 @@ describe('add_to_playlist / remove_from_playlist / update_playlist / reorder_pla
   });
 
   it('#25 remove_from_playlist accepts exactly 100 uris', async () => {
-    const h = harness(() => null);
+    const h = harness(() => null, registerPlaylistTools, { action: 'accept', content: { confirm: true } });
     const exactly100 = Array.from({ length: 100 }, (_, i) => `spotify:track:t${i}`);
 
     await h.invoke('remove_from_playlist', { playlist_id: 'pl', uris: exactly100 });
@@ -862,7 +867,7 @@ describe('replace_playlist_items', () => {
   });
 
   it('chunks longer lists: one atomic PUT followed by POST appends of at most 100 URIs', async () => {
-    const h = harness();
+    const h = harness(undefined, registerPlaylistTools, { action: 'accept', content: { confirm: true } });
     const uris = Array.from({ length: 250 }, (_, i) => `spotify:track:t${i}`);
 
     const out = await h.invoke('replace_playlist_items', { playlist_id: 'pl', uris });
@@ -879,8 +884,11 @@ describe('replace_playlist_items', () => {
   });
 
   it('surfaces the snapshot_id from the final chunk response', async () => {
-    const h = harness((_path, body) =>
-      JSON.stringify(body).includes('t0') ? { snapshot_id: 'snap-put' } : { snapshot_id: 'snap-post' },
+    const h = harness(
+      (_path, body) =>
+        JSON.stringify(body).includes('t0') ? { snapshot_id: 'snap-put' } : { snapshot_id: 'snap-post' },
+      registerPlaylistTools,
+      { action: 'accept', content: { confirm: true } },
     );
     const uris = Array.from({ length: 150 }, (_, i) => `spotify:track:t${i}`);
 
@@ -1456,6 +1464,44 @@ describe('elicitation-gated destructive mutations (#111 item 5)', () => {
     assert.match(textOf(out), /Removed 10 item\(s\)/);
   });
 
+  it('remove_from_playlist unsupported confirmation refuses before any DELETE', async () => {
+    const h = harness(() => ({ snapshot_id: 'snap1' }));
+    const uris = Array.from({ length: 10 }, (_, i) => `spotify:track:u${i}`);
+    await assert.rejects(
+      h.invoke('remove_from_playlist', { playlist_id: 'pl1', uris }),
+      /Elicitation unavailable/,
+    );
+    assert.equal(wireCalls(h.client.calls).filter((c) => c.method === 'DELETE').length, 0);
+  });
+
+  it('remove_from_playlist transport error refuses before any DELETE', async () => {
+    const h = harness(
+      () => ({ snapshot_id: 'snap1' }),
+      registerPlaylistTools,
+      new Error('elicitation transport failed'),
+    );
+    const uris = Array.from({ length: 10 }, (_, i) => `spotify:track:e${i}`);
+    await assert.rejects(
+      h.invoke('remove_from_playlist', { playlist_id: 'pl1', uris }),
+      /Elicitation failed/,
+    );
+    assert.equal(wireCalls(h.client.calls).filter((c) => c.method === 'DELETE').length, 0);
+  });
+
+  it('remove_from_playlist explicit automation bypass still DELETEs', async () => {
+    const previous = process.env.SPOTIFY_MCP_CONFIRM;
+    process.env.SPOTIFY_MCP_CONFIRM = 'never';
+    try {
+      const h = harness(() => ({ snapshot_id: 'snap1' }));
+      const uris = Array.from({ length: 10 }, (_, i) => `spotify:track:b${i}`);
+      await h.invoke('remove_from_playlist', { playlist_id: 'pl1', uris });
+      assert.equal(wireCalls(h.client.calls).filter((c) => c.method === 'DELETE').length, 1);
+    } finally {
+      if (previous === undefined) delete process.env.SPOTIFY_MCP_CONFIRM;
+      else process.env.SPOTIFY_MCP_CONFIRM = previous;
+    }
+  });
+
   it('remove_from_playlist declining stub → zero DELETEs + cancelled result', async () => {
     const h = harness(
       () => ({ snapshot_id: 'snap1' }),
@@ -1515,6 +1561,117 @@ describe('elicitation-gated destructive mutations (#111 item 5)', () => {
     const out = await h.invoke('remove_from_playlist', { playlist_id: 'pl1', uris, dry_run: true });
     assert.equal(h.client.calls.length, 0);
     assert.match(textOf(out), /\[dry run\] remove from playlist/);
+  });
+});
+
+// Unpin and restore share the same fail-closed verdict contract as removal.
+describe('destructive confirmation parity across remove/unpin/restore', () => {
+  const snapshot = {
+    _meta: { created: '2026-09-25T00:00:00.000Z' },
+    followed_artists: [{ uri: 'spotify:artist:a1', name: 'Artist' }],
+  };
+
+  async function withSnapshotFile(run: (path: string) => Promise<void>): Promise<void> {
+    const dir = await mkdtemp(join(tmpdir(), 'spotify-confirm-parity-'));
+    const path = join(dir, 'snapshot.json');
+    await writeFile(path, JSON.stringify(snapshot), 'utf8');
+    try {
+      await run(path);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }
+
+  const restoreResponder: Responder = (path) =>
+    path === '/me/following/contains' ? [false] : null;
+  const restoreArgs = (backup_path: string) => ({
+    backup_path,
+    categories: ['followed_artists'],
+    dry_run: false,
+  });
+
+  it('unpin accepts, declines, refuses unsupported, refuses error, and honors never', async () => {
+    for (const [label, result, shouldWrite] of [
+      ['accepted', accept, true],
+      ['declined', { action: 'decline' }, false],
+      ['error', new Error('transport failed'), false],
+    ] as const) {
+      const h = harness(undefined, registerPlaylistMiscTools, result);
+      if (label === 'error') {
+        await assert.rejects(
+          h.invoke('unpin_playlist', { playlist_id: 'pl1' }),
+          /Elicitation failed/,
+        );
+      } else {
+        await h.invoke('unpin_playlist', { playlist_id: 'pl1' });
+      }
+      assert.equal(
+        h.client.calls.filter((c) => c.method === 'DELETE').length,
+        shouldWrite ? 1 : 0,
+        label,
+      );
+    }
+
+    const unsupported = harness(undefined, registerPlaylistMiscTools);
+    await assert.rejects(
+      unsupported.invoke('unpin_playlist', { playlist_id: 'pl1' }),
+      /Elicitation unavailable/,
+    );
+    assert.equal(unsupported.client.calls.length, 0);
+
+    const previous = process.env.SPOTIFY_MCP_CONFIRM;
+    process.env.SPOTIFY_MCP_CONFIRM = 'never';
+    try {
+      const bypass = harness(undefined, registerPlaylistMiscTools);
+      await bypass.invoke('unpin_playlist', { playlist_id: 'pl1' });
+      assert.equal(bypass.client.calls.filter((c) => c.method === 'DELETE').length, 1);
+    } finally {
+      if (previous === undefined) delete process.env.SPOTIFY_MCP_CONFIRM;
+      else process.env.SPOTIFY_MCP_CONFIRM = previous;
+    }
+  });
+
+  it('restore accepts, declines, refuses unsupported, refuses error, and honors never', async () => {
+    await withSnapshotFile(async (path) => {
+      for (const [label, result, shouldWrite] of [
+        ['accepted', accept, true],
+        ['declined', { action: 'decline' }, false],
+        ['error', new Error('transport failed'), false],
+      ] as const) {
+        const h = harness(restoreResponder, registerRestoreTools, result);
+        if (label === 'error') {
+          await assert.rejects(
+            h.invoke('restore_library_snapshot', restoreArgs(path)),
+            /Elicitation failed/,
+          );
+        } else {
+          await h.invoke('restore_library_snapshot', restoreArgs(path));
+        }
+        assert.equal(
+          h.client.calls.filter((c) => c.method === 'PUT').length,
+          shouldWrite ? 1 : 0,
+          label,
+        );
+      }
+
+      const unsupported = harness(restoreResponder, registerRestoreTools);
+      await assert.rejects(
+        unsupported.invoke('restore_library_snapshot', restoreArgs(path)),
+        /Elicitation unavailable/,
+      );
+      assert.equal(unsupported.client.calls.filter((c) => c.method === 'PUT').length, 0);
+
+      const previous = process.env.SPOTIFY_MCP_CONFIRM;
+      process.env.SPOTIFY_MCP_CONFIRM = 'never';
+      try {
+        const bypass = harness(restoreResponder, registerRestoreTools);
+        await bypass.invoke('restore_library_snapshot', restoreArgs(path));
+        assert.equal(bypass.client.calls.filter((c) => c.method === 'PUT').length, 1);
+      } finally {
+        if (previous === undefined) delete process.env.SPOTIFY_MCP_CONFIRM;
+        else process.env.SPOTIFY_MCP_CONFIRM = previous;
+      }
+    });
   });
 });
 

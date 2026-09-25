@@ -3,26 +3,28 @@
  *
  * Read-only analysis over the user's liked (/me/tracks) library: walks every
  * saved track once, groups tracks that share a normalized name + artist set,
- * and reports groups likely to be the same recording saved more than once
- * (double re-adds, relinks, remasters). Suggestions are prose only — never
- * mutates anything.
+ * and distinguishes probable double re-adds from distinct recordings or
+ * release versions. Suggestions are prose only — never mutate anything.
  *
  * Matching rules:
- *   • Normalized identity  = punctuation-stripped lowercase track name
+ *   • Discovery identity = punctuation-stripped lowercase track name
  *     + lowercase artist-name set (sorted).
- *   • EXACT duplicates     = same identity AND durations within ±2000 ms.
- *   • NEAR duplicates      = same identity but durations differ >2000 ms
- *     (remasters/re-recordings); only surfaced when include_near_duplicates.
+ *   • EXACT duplicates = same non-null ISRC, same album id, and durations
+ *     within ±2000 ms. Only the oldest dated save is retained; undated saves
+ *     sort last and are never preferred as the keeper.
+ *   • NEAR duplicates = same discovery identity but a different ISRC/album or
+ *     duration; review only, with no removals recommended.
  */
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
 import { quotaPreflight, quotaSnapshot, quotaWindowRemaining, quotaDelta } from '../client.js';
-import type { SavedTrackItem, PlaylistItemObject } from '../types/spotify.js';
+import type { SavedTrackItem, PlaylistItemObject, SpotifyArtistSimple, SpotifyTrack } from '../types/spotify.js';
 import {
   ResponseFormat,
   MaxResults,
   resolveMaxResults,
+  completenessFooter,
   truncateItems,
 } from '../shaping.js';
 import type { ResponseFormatValue } from '../shaping.js';
@@ -41,18 +43,27 @@ export interface SavedTrackMember {
   name: string;
   artist_names: string[];
   album_name: string | null;
+  album_id: string | null;
   duration_ms: number;
-  /** Save date; groups are ordered oldest → newest by this field. */
+  /** ISRC identifies the recording when Spotify provides one. */
+  isrc: string | null;
+  /** Save date; groups are ordered oldest dated → newest dated → undated. */
   added_at: string;
 }
 
 export interface DuplicateGroup {
   kind: 'exact' | 'near_duplicate';
+  /** Human-readable explanation of the evidence behind this classification. */
+  match_basis:
+    | 'same_isrc_album_duration_within_2000ms'
+    | 'same_title_artist_different_recording_or_version';
   normalized_name: string;
   artist_names: string[];
-  /** Oldest save first. */
+  /** Oldest dated save first; undated saves last, then URI. */
   members: SavedTrackMember[];
-  /** Every member uri except the oldest save — the removal candidates. */
+  /** Exact groups retain this URI; near-duplicate groups retain every track. */
+  kept_uri: string | null;
+  /** Derived once per exact duplicate bucket; empty for review-only groups. */
   removable_uris: string[];
   /** Member uris that also appear in the cross-referenced playlist ([] without one). */
   playlist_overlap_uris: string[];
@@ -64,7 +75,11 @@ interface AnalysisResult {
   scanned: {
     saved_tracks: number;
     skipped_unplayable: number;
+    fetched: number;
+    cap: number;
     fetch_all_cap: number;
+    snapshot_state: 'complete' | 'partial';
+    complete: boolean;
     truncated_by_cap: boolean;
     /** Present only when a playlist_id cross-reference was requested. */
     playlist_id?: string;
@@ -142,67 +157,107 @@ export function clusterByDuration(members: readonly SavedTrackMember[]): SavedTr
   return clusters;
 }
 
-const byOldest = (a: SavedTrackMember, b: SavedTrackMember): number =>
-  a.added_at.localeCompare(b.added_at) || a.uri.localeCompare(b.uri);
+/** Dated saves precede undated saves; URI is the deterministic final tie-break. */
+const byOldest = (a: SavedTrackMember, b: SavedTrackMember): number => {
+  if (!a.added_at && !b.added_at) return a.uri.localeCompare(b.uri);
+  if (!a.added_at) return 1;
+  if (!b.added_at) return -1;
+  return a.added_at.localeCompare(b.added_at) || a.uri.localeCompare(b.uri);
+};
+
+function recordingKey(member: SavedTrackMember): string | null {
+  const isrc = member.isrc?.trim().toUpperCase();
+  const albumId = member.album_id?.trim();
+  return isrc && albumId ? `${isrc}::${albumId}` : null;
+}
 
 /**
- * Pure grouping over already-fetched members.
- * `includeNearDuplicates` adds groups whose members share name+artists but
- * span more than one duration cluster (>±2000 ms spread — remasters etc.).
+ * Pure grouping over already-fetched members. Exact removal candidates are
+ * computed once for each same-ISRC/same-album/duration bucket. Near groups are
+ * review-only because a different ISRC, release, or version is a distinct save.
  */
 export function findDuplicateGroups(
   members: readonly SavedTrackMember[],
   includeNearDuplicates: boolean,
 ): DuplicateGroup[] {
-  // Bucket by identity (dynamic keys → Map).
   const buckets = new Map<
     string,
     { normalizedName: string; artistNames: string[]; items: SavedTrackMember[] }
   >();
-  for (const m of members) {
-    const normalizedName = normalizeTrackName(m.name);
-    const key = identityKey(normalizedName, m.artist_names);
+  for (const member of members) {
+    const normalizedName = normalizeTrackName(member.name);
+    const key = identityKey(normalizedName, member.artist_names);
     let bucket = buckets.get(key);
     if (!bucket) {
-      bucket = { normalizedName, artistNames: m.artist_names, items: [] };
+      bucket = { normalizedName, artistNames: member.artist_names, items: [] };
       buckets.set(key, bucket);
     }
-    bucket.items.push(m);
+    bucket.items.push(member);
   }
 
   const groups: DuplicateGroup[] = [];
   for (const bucket of buckets.values()) {
-    if (bucket.items.length < 2) continue;
-    // Oldest save first; stable tie-break keeps ordering deterministic.
-    const ordered = [...bucket.items].sort(byOldest);
-    const clusters = clusterByDuration(ordered);
+    // The library is a set, but defensive URI deduplication keeps repeated API
+    // rows from producing self-removal recommendations.
+    const seenUris = new Set<string>();
+    const uniqueItems = bucket.items.filter((member) => {
+      if (seenUris.has(member.uri)) return false;
+      seenUris.add(member.uri);
+      return true;
+    });
+    if (uniqueItems.length < 2) continue;
 
-    // Exact duplicates: any duration cluster holding 2+ members.
-    for (const cluster of clusters) {
-      if (cluster.length < 2) continue;
-      const clusterOrdered = [...cluster].sort(byOldest);
-      groups.push({
-        kind: 'exact',
-        normalized_name: bucket.normalizedName,
-        artist_names: [...new Set(bucket.artistNames.map((n) => n.toLowerCase()))].sort(),
-        members: clusterOrdered,
-        removable_uris: clusterOrdered.slice(1).map((m) => m.uri),
-        playlist_overlap_uris: [],
-        suggestion: 'keep oldest, remove the rest',
-      });
+    const ordered = [...uniqueItems].sort(byOldest);
+    const artistNames = [...new Set(bucket.artistNames.map((n) => n.toLowerCase().trim()))].sort();
+    let exactBucketCount = 0;
+    let exactMemberCount = 0;
+
+    for (const durationCluster of clusterByDuration(ordered)) {
+      const recordingBuckets = new Map<string, SavedTrackMember[]>();
+      for (const member of durationCluster) {
+        const recording = recordingKey(member);
+        if (!recording) continue;
+        const recordingMembers = recordingBuckets.get(recording);
+        if (recordingMembers) recordingMembers.push(member);
+        else recordingBuckets.set(recording, [member]);
+      }
+
+      for (const [recording, recordingMembers] of recordingBuckets) {
+        if (recordingMembers.length < 2) continue;
+        const clusterOrdered = [...recordingMembers].sort(byOldest);
+        const keptUri = clusterOrdered[0].uri;
+        const removableUris = clusterOrdered.slice(1).map((member) => member.uri);
+        const allUndated = clusterOrdered.every((member) => !member.added_at);
+        exactBucketCount++;
+        exactMemberCount += clusterOrdered.length;
+        groups.push({
+          kind: 'exact',
+          match_basis: 'same_isrc_album_duration_within_2000ms',
+          normalized_name: bucket.normalizedName,
+          artist_names: artistNames,
+          members: clusterOrdered,
+          kept_uri: keptUri,
+          removable_uris: removableUris,
+          playlist_overlap_uris: [],
+          suggestion: allUndated
+            ? 'exact recording: same ISRC, album, and duration; save dates unavailable, keep lowest URI, remove the rest'
+            : 'keep oldest, remove the rest (exact match: same ISRC, album, and duration within 2000 ms)',
+        });
+      }
     }
 
-    // Near duplicates: same identity, spread across multiple duration
-    // clusters — remasters/re-recordings. Only on explicit opt-in.
-    if (includeNearDuplicates && clusters.length > 1) {
+    const entirelyOneExactBucket = exactBucketCount === 1 && exactMemberCount === ordered.length;
+    if (includeNearDuplicates && !entirelyOneExactBucket) {
       groups.push({
         kind: 'near_duplicate',
+        match_basis: 'same_title_artist_different_recording_or_version',
         normalized_name: bucket.normalizedName,
-        artist_names: [...new Set(bucket.artistNames.map((n) => n.toLowerCase()))].sort(),
+        artist_names: artistNames,
         members: ordered,
-        removable_uris: ordered.slice(1).map((m) => m.uri),
+        kept_uri: null,
+        removable_uris: [],
         playlist_overlap_uris: [],
-        suggestion: 'keep oldest, remove the rest',
+        suggestion: 'review - different ISRC, release, or duration; no removals recommended',
       });
     }
   }
@@ -251,6 +306,16 @@ async function loadPlaylistTrackUris(
   return { uris, name: meta.name ?? null, trackCount: uris.size + unavailable };
 }
 
+function hasExternalIsrc(
+  track: SpotifyTrack,
+): track is SpotifyTrack & { external_ids: { isrc: string } } {
+  return 'external_ids' in track
+    && typeof track.external_ids === 'object'
+    && track.external_ids !== null
+    && 'isrc' in track.external_ids
+    && typeof track.external_ids.isrc === 'string';
+}
+
 async function analyze(
   client: SpotifyClient,
   includeNearDuplicates: boolean,
@@ -262,11 +327,13 @@ async function analyze(
   // throttle pressure exists; idle clients keep today's budget exactly.
   const fetchAllCap = Math.min(requestedCap, quotaWindowRemaining(client));
   const walkShrunk = fetchAllCap < requestedCap;
-  const saved = await client.getAllPages<SavedTrackItem>(
+  const walked = await client.getAllPages<SavedTrackItem>(
     '/me/tracks',
     { limit: '50' },
-    { maxItems: fetchAllCap },
+    { maxItems: fetchAllCap + 1 },
   );
+  const truncatedByCap = walked.length > fetchAllCap;
+  const saved = walked.slice(0, fetchAllCap);
 
   const members: SavedTrackMember[] = [];
   let skippedUnplayable = 0;
@@ -276,13 +343,18 @@ async function analyze(
       skippedUnplayable++;
       continue;
     }
+    const isrc = hasExternalIsrc(track)
+      ? track.external_ids.isrc.trim().toUpperCase() || null
+      : null;
     members.push({
       id: track.id,
       uri: track.uri,
       name: track.name ?? '',
-      artist_names: (track.artists ?? []).map((a) => a.name),
+      artist_names: (track.artists ?? []).map((artist: SpotifyArtistSimple) => artist.name),
       album_name: track.album?.name ?? null,
+      album_id: track.album?.id ?? null,
       duration_ms: track.duration_ms,
+      isrc,
       added_at: entry.added_at ?? '',
     });
   }
@@ -302,8 +374,12 @@ async function analyze(
     scanned: {
       saved_tracks: members.length,
       skipped_unplayable: skippedUnplayable,
+      fetched: saved.length,
+      cap: fetchAllCap,
       fetch_all_cap: fetchAllCap,
-      truncated_by_cap: saved.length >= fetchAllCap,
+      snapshot_state: truncatedByCap ? 'partial' : 'complete',
+      complete: !truncatedByCap,
+      truncated_by_cap: truncatedByCap,
       ...(playlist ? { playlist_id: playlistId, playlist_name: playlist.name } : {}),
       ...(playlist ? { playlist_tracks: playlist.trackCount } : {}),
     },
@@ -312,7 +388,7 @@ async function analyze(
     counts: {
       exact_groups: groups.filter((g) => g.kind === 'exact').length,
       near_duplicate_groups: groups.filter((g) => g.kind === 'near_duplicate').length,
-      removable_tracks: groups.reduce((n, g) => n + g.removable_uris.length, 0),
+      removable_tracks: new Set(groups.flatMap((group) => group.removable_uris)).size,
       groups_with_playlist_overlap: playlist
         ? groups.filter((g) => g.playlist_overlap_uris.length > 0).length
         : 0,
@@ -332,8 +408,12 @@ function renderProse(result: AnalysisResult, maxResults: number): string {
   lines.push(
     `Scanned ${scanned.saved_tracks} saved track${scanned.saved_tracks === 1 ? '' : 's'} `
       + `${scanned.skipped_unplayable ? `(${scanned.skipped_unplayable} unplayable/local entries skipped) ` : ''}`
-      + `— fetch-all cap ${scanned.fetch_all_cap} `
-      + `${scanned.truncated_by_cap ? 'REACHED — older saved tracks were NOT analyzed' : 'not reached'}.`,
+      + `— ${completenessFooter({
+        fetched: scanned.fetched,
+        cap: scanned.cap,
+        truncated: scanned.truncated_by_cap,
+        subject: 'saved tracks',
+      })}.`,
   );
 
   if (scanned.saved_tracks === 0) {
@@ -347,9 +427,10 @@ function renderProse(result: AnalysisResult, maxResults: number): string {
   }
 
   lines.push(
-    `Found ${groups.length} duplicate group${groups.length === 1 ? '' : 's'} `
+    `Found ${groups.length} potential duplicate group${groups.length === 1 ? '' : 's'} `
       + `(${counts.exact_groups} exact, ${counts.near_duplicate_groups} near) `
-      + `— ${counts.removable_tracks} removable track${counts.removable_tracks === 1 ? '' : 's'}:`,
+      + `— ${counts.removable_tracks} removable track${counts.removable_tracks === 1 ? '' : 's'}. `
+      + 'Only EXACT groups have removal recommendations; NEAR-DUPLICATE groups are review-only.',
   );
   if (scanned.playlist_id) {
     lines.push(
@@ -365,13 +446,22 @@ function renderProse(result: AnalysisResult, maxResults: number): string {
     const label = group.kind === 'near_duplicate' ? 'NEAR-DUPLICATE' : 'EXACT';
     const artists = group.artist_names.join(', ') || 'unknown artist';
     lines.push(`• [${label}] "${group.normalized_name}" — ${artists}`);
-    group.members.forEach((m, i) => {
-      const marker = i === 0 ? 'keep' : 'remove';
-      const album = m.album_name ? ` | album: ${m.album_name}` : '';
+    lines.push(
+      group.kind === 'exact'
+        ? '    Evidence: same non-null ISRC, same album id, and duration within 2000 ms.'
+        : '    Evidence: same title/artist set, but a different recording or release. These are distinct saved tracks; review only.',
+    );
+    group.members.forEach((member) => {
+      const marker = group.kept_uri === null
+        ? 'review'
+        : member.uri === group.kept_uri ? 'keep' : 'remove';
+      const albumId = member.album_id ? ` [${member.album_id}]` : '';
+      const album = member.album_name ? ` | album: ${member.album_name}${albumId}` : albumId;
+      const isrc = member.isrc ? ` | ISRC: ${member.isrc}` : ' | ISRC: unavailable';
       const inPlaylist =
-        scanned.playlist_id && group.playlist_overlap_uris.includes(m.uri) ? ' [in playlist]' : '';
+        scanned.playlist_id && group.playlist_overlap_uris.includes(member.uri) ? ' [in playlist]' : '';
       lines.push(
-        `    ${marker}: saved ${m.added_at || 'unknown date'} | ${Math.round(m.duration_ms)}ms${album}${inPlaylist} | ${m.uri}`,
+        `    ${marker}: saved ${member.added_at || 'unknown date'} | ${Math.round(member.duration_ms)}ms${album}${isrc}${inPlaylist} | ${member.uri}`,
       );
     });
     lines.push(`    → ${group.suggestion}`);
@@ -388,12 +478,13 @@ function renderProse(result: AnalysisResult, maxResults: number): string {
 export function registerSavedDedupeTools(server: McpServer, client: SpotifyClient): void {
   server.tool(
     'find_duplicate_saved_tracks',
-    'Read-only duplicate detection over your saved (liked) tracks: flags the same recording '
-      + 'saved more than once — double re-adds (exact matches within ±2s duration) and, on '
-      + 'opt-in, remasters/re-recordings of the same song (near duplicates). Lists each group '
-      + 'oldest save first with a keep-one-remove-the-rest suggestion. Optionally pass a '
-      + 'playlist_id to cross-reference which duplicates also appear in that playlist. '
-      + 'Never mutates your library. Also covers: find_duplicates_in_playlist — See also: find_duplicates_in_playlist, find_duplicate_tracks_across_playlists.',
+    'Read-only duplicate detection over your saved (liked) tracks. Exact groups require the '
+      + 'same non-null ISRC and album id with duration within ±2s, and keep the oldest dated save. '
+      + 'On opt-in, near-duplicate groups show same-title/artist tracks whose ISRC, release, or '
+      + 'duration differs; these are distinct saved tracks and are review-only with no removals. '
+      + 'Undated saves sort after dated saves. Optionally pass a playlist_id to cross-reference '
+      + 'which group members also appear in that playlist. Never mutates your library. '
+      + 'Also covers: find_duplicates_in_playlist — See also: find_duplicates_in_playlist, find_duplicate_tracks_across_playlists.',
     {
       response_format: ResponseFormat,
       max_results: MaxResults,
@@ -402,15 +493,15 @@ export function registerSavedDedupeTools(server: McpServer, client: SpotifyClien
         .optional()
         .default(false)
         .describe(
-          'Also report same-song groups whose durations differ by more than ±2s '
-            + '(remasters/re-recordings). Default false.',
+          'Also report same-title/artist groups with a different ISRC, release, or duration. '
+            + 'Near duplicates are review-only and never recommend removal. Default false.',
         ),
       playlist_id: z
         .string()
         .optional()
         .describe(
           'Optional playlist ID to cross-reference: members of each duplicate group that '
-            + 'also appear in this playlist are flagged, so removal decisions can account '
+            + 'also appear in this playlist are flagged, so cleanup or review decisions can account '
             + 'for where the track is already curated.',
         ),
     },

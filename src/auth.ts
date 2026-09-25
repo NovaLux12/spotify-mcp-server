@@ -1,8 +1,8 @@
 import { createHash, randomBytes } from 'crypto';
-import { createServer } from 'http';
-import { mkdir, writeFile, readFile, rename } from 'fs/promises';
+import { createServer, type IncomingMessage, type ServerResponse } from 'http';
+import { chmod, mkdir, open as openFile, readFile, rename, stat, unlink } from 'fs/promises';
 import { homedir } from 'os';
-import { join, dirname } from 'path';
+import { basename, join, dirname } from 'path';
 import { createInterface } from 'readline/promises';
 import { stdin as input, stdout as output } from 'process';
 import open from 'open';
@@ -11,9 +11,21 @@ import type { TokenData } from './types/spotify.js';
 const REDIRECT_URI = process.env.SPOTIFY_REDIRECT_URI ?? 'http://127.0.0.1:8888/callback';
 // Derive bind port and route path from SPOTIFY_REDIRECT_URI so an overridden
 // redirect URI (e.g. http://127.0.0.1:9000/callback) is honored end-to-end.
-const REDIRECT_URL = new URL(REDIRECT_URI);
-const CALLBACK_PORT = Number(REDIRECT_URL.port) || 8888;
-const CALLBACK_PATH = REDIRECT_URL.pathname;
+// Invalid values are reported by validateRedirectUri when auth starts rather
+// than crashing module import for unrelated MCP commands.
+let REDIRECT_URL: URL;
+try {
+  REDIRECT_URL = new URL(REDIRECT_URI);
+} catch {
+  REDIRECT_URL = new URL('http://127.0.0.1:8888/callback');
+}
+const CALLBACK_PORT = REDIRECT_URL.port
+  ? Number(REDIRECT_URL.port)
+  : REDIRECT_URL.protocol === 'https:'
+    ? 443
+    : 80;
+const CALLBACK_PATH = REDIRECT_URL.pathname || '/';
+const REDIRECT_EXPECTED = `${REDIRECT_URL.origin}${REDIRECT_URL.pathname}`;
 
 /**
  * True when the host is a loopback address (localhost, 127.0.0.0/8 or ::1).
@@ -28,6 +40,35 @@ function isLoopbackHost(hostname: string): boolean {
     host.startsWith('::ffff:127.') ||
     /^127(\.\d{1,3}){3}$/.test(host)
   );
+}
+
+/** Validate the configured native-app redirect before starting the flow. */
+export function validateRedirectUri(raw: string): URL {
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    throw new Error(
+      'SPOTIFY_REDIRECT_URI must be a valid loopback redirect URL (expected http://127.0.0.1/callback).',
+    );
+  }
+  if (parsed.protocol !== 'http:') {
+    throw new Error(
+      'SPOTIFY_REDIRECT_URI must use http:// because the local callback listener is plain HTTP; loopback redirects only.',
+    );
+  }
+  if (!isLoopbackHost(parsed.hostname)) {
+    throw new Error(
+      'SPOTIFY_REDIRECT_URI must point to a loopback host (localhost, 127.0.0.0/8 or ::1).',
+    );
+  }
+  return parsed;
+}
+
+/** Return the port the plain-HTTP callback listener must bind for a URI. */
+export function getCallbackPort(raw: string): number {
+  const parsed = validateRedirectUri(raw);
+  return parsed.port ? Number(parsed.port) : 80;
 }
 
 /** Escape a value for safe interpolation into an HTML response body. */
@@ -185,37 +226,95 @@ function base64url(buffer: Buffer): string {
     .replace(/=/g, '');
 }
 
+export function isTokenData(value: unknown): value is TokenData {
+  if (typeof value !== 'object' || value === null) return false;
+  const candidate = value as Record<string, unknown>;
+  return (
+    typeof candidate.access_token === 'string' &&
+    candidate.access_token.trim() !== '' &&
+    typeof candidate.refresh_token === 'string' &&
+    candidate.refresh_token.trim() !== '' &&
+    typeof candidate.expires_at === 'number' &&
+    Number.isFinite(candidate.expires_at) &&
+    (candidate.scope === undefined || typeof candidate.scope === 'string')
+  );
+}
+
+function corruptedTokensError(tokenFile: string): Error {
+  return new Error(
+    `Saved Spotify tokens are corrupted at ${tokenFile} — run \`npm run auth\` again.`,
+  );
+}
+
 export async function loadTokens(): Promise<TokenData> {
   const tokenFile = getTokenFile(parseAuthArgs().profile);
   try {
-    const data = await readFile(tokenFile, 'utf8');
-    return JSON.parse(data) as TokenData;
+    const data = JSON.parse(await readFile(tokenFile, 'utf8')) as unknown;
+    if (!isTokenData(data)) throw corruptedTokensError(tokenFile);
+    return data;
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
       const profileHint = parseAuthArgs().profile ? ` (profile: ${parseAuthArgs().profile})` : (process.env.SPOTIFY_MCP_PROFILE ? ` (profile: ${process.env.SPOTIFY_MCP_PROFILE})` : '');
       throw new Error(`Not authenticated — no token file at ${tokenFile}${profileHint}. Run "spotify-mcp auth" (or "npm run auth") first.`);
     }
-    if (err instanceof SyntaxError) {
-      throw new Error('Saved Spotify tokens are corrupted — run `npm run auth` again.');
+    if (err instanceof SyntaxError || (err instanceof Error && err.message.startsWith('Saved Spotify tokens are corrupted'))) {
+      throw corruptedTokensError(tokenFile);
     }
     throw err;
   }
 }
 
+const tightenedTokenDirectories = new Set<string>();
+
 /**
- * Persist tokens atomically (#109): write to a temp sibling with owner-only
- * mode, then rename over the target so a crash mid-write can never leave a
- * truncated or half-written tokens.json behind.
+ * Persist tokens atomically (#109/#615): use a fresh exclusive sidecar,
+ * owner-only directory/file modes, and normalize the final inode after rename.
+ * Mode bits are ignored on Windows, matching the platform's existing behavior.
  */
 export async function saveTokens(tokens: TokenData): Promise<void> {
   const tokenFile = getTokenFile(parseAuthArgs().profile);
-  await mkdir(dirname(tokenFile), { recursive: true });
-  const tmpFile = `${tokenFile}.tmp`;
-  // Restrict to owner read/write only on creation (mode ignored on Windows).
-  await writeFile(tmpFile, JSON.stringify(tokens, null, 2), { encoding: 'utf8', mode: 0o600 });
-  // rename replaces the destination atomically on POSIX; Node maps this to
-  // MoveFileEx(REPLACE_EXISTING) on Windows.
-  await rename(tmpFile, tokenFile);
+  const tokenDirectory = dirname(tokenFile);
+  await mkdir(tokenDirectory, { recursive: true, mode: 0o700 });
+  if (process.platform !== 'win32') {
+    const directoryStat = await stat(tokenDirectory);
+    if ((directoryStat.mode & 0o777) !== 0o700) {
+      await chmod(tokenDirectory, 0o700);
+      if (!tightenedTokenDirectories.has(tokenDirectory)) {
+        console.warn(`Tightened token directory permissions to 0700: ${tokenDirectory}`);
+      }
+    }
+    tightenedTokenDirectories.add(tokenDirectory);
+  }
+
+  // Remove the old fixed sidecar, if any, without following a pre-existing
+  // symlink. New writes always use a unique, exclusively-created sidecar.
+  const legacyTmpFile = `${tokenFile}.tmp`;
+  await unlink(legacyTmpFile).catch((err: NodeJS.ErrnoException) => {
+    if (err.code !== 'ENOENT') throw err;
+  });
+  const tmpFile = join(
+    tokenDirectory,
+    `.${basename(tokenFile, '.json')}.${process.pid}.${randomBytes(16).toString('hex')}.tmp`,
+  );
+  let created = false;
+  try {
+    const handle = await openFile(tmpFile, 'wx', 0o600);
+    created = true;
+    try {
+      await handle.writeFile(JSON.stringify(tokens, null, 2), 'utf8');
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    await rename(tmpFile, tokenFile);
+    if (process.platform !== 'win32') await chmod(tokenFile, 0o600);
+  } finally {
+    if (created) {
+      await unlink(tmpFile).catch((err: NodeJS.ErrnoException) => {
+        if (err.code !== 'ENOENT') throw err;
+      });
+    }
+  }
 }
 
 /**
@@ -306,6 +405,7 @@ async function runHeadlessAuthFlow(
 
 /**
  * Parse and validate a pasted redirect URL from the headless auth flow.
+ * State is checked before any provider error or authorization code handling.
  */
 export function parseCallbackUrl(
   pasted: string,
@@ -315,12 +415,9 @@ export function parseCallbackUrl(
   try {
     parsed = new URL(pasted);
   } catch {
-    throw new Error(`Pasted value is not a valid URL: ${pasted.slice(0, 80)}...`);
-  }
-
-  const errorParam = parsed.searchParams.get('error');
-  if (errorParam) {
-    throw new Error(`Spotify auth error from pasted URL: ${errorParam}`);
+    throw new Error(
+      `Pasted value is not a valid URL (expected a redirect URL starting with ${REDIRECT_EXPECTED}).`,
+    );
   }
 
   const returnedState = parsed.searchParams.get('state');
@@ -329,6 +426,11 @@ export function parseCallbackUrl(
       `State mismatch — pasted URL state does not match the issued state. ` +
         `Possible CSRF or wrong browser session.`,
     );
+  }
+
+  const errorParam = parsed.searchParams.get('error');
+  if (errorParam) {
+    throw new Error(`Spotify auth error from pasted URL: ${errorParam}`);
   }
 
   const code = parsed.searchParams.get('code');
@@ -345,12 +447,10 @@ export async function runAuthFlow(): Promise<void> {
     console.error('Error: SPOTIFY_CLIENT_ID environment variable is not set.');
     process.exit(1);
   }
-  if (!isLoopbackHost(REDIRECT_URL.hostname)) {
-    console.error(
-      `Error: SPOTIFY_REDIRECT_URI (${REDIRECT_URI}) must point to a loopback host ` +
-        '(localhost, 127.0.0.0/8 or ::1); the local callback server cannot receive ' +
-        'redirects for any other host.'
-    );
+  try {
+    validateRedirectUri(REDIRECT_URI);
+  } catch (err) {
+    console.error(`Error: ${err instanceof Error ? err.message : err}`);
     process.exit(1);
   }
 
@@ -402,65 +502,103 @@ export async function runAuthFlow(): Promise<void> {
     return;
   }
 
-  // Determine server bind host: if redirect is localhost, bind dual-stack (no host arg) so both ::1 and 127.0.0.1 work.
-  // Otherwise bind to the explicit loopback host logic.
+  // Bind explicitly to loopback interfaces. A localhost redirect gets both
+  // loopback families for IPv4/IPv6 browser compatibility; neither is a
+  // wildcard bind.
   const isLocalhostRedirect = REDIRECT_URL.hostname.toLowerCase() === 'localhost';
+  const bindHosts = isLocalhostRedirect
+    ? ['127.0.0.1', '::1']
+    : [REDIRECT_URL.hostname.replace(/^\[|\]$/g, '')];
 
   // Start local callback server
   const tokens = await new Promise<TokenData>((resolve, reject) => {
-    const server = createServer(async (req, res) => {
-      const url = new URL(req.url ?? '/', `http://127.0.0.1:${CALLBACK_PORT}`);
+    const servers: ReturnType<typeof createServer>[] = [];
+    let settled = false;
+    let browserOpened = false;
 
+    const closeServers = (): void => {
+      for (const server of servers) {
+        try {
+          server.close();
+        } catch {
+          // A listener that failed during startup has no active handle.
+        }
+      }
+    };
+
+    const handler = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+      if (req.method !== 'GET' && req.method !== 'HEAD') {
+        res.writeHead(405, { Allow: 'GET, HEAD' });
+        res.end('Method not allowed');
+        return;
+      }
+
+      let url: URL;
+      try {
+        url = new URL(req.url ?? '/', `http://127.0.0.1:${CALLBACK_PORT}`);
+      } catch {
+        res.writeHead(400);
+        res.end('Bad request');
+        return;
+      }
       if (url.pathname !== CALLBACK_PATH) {
         res.writeHead(404);
         res.end('Not found');
         return;
       }
 
+      // State is checked before error/code parameters. A forged request must
+      // not be able to terminate an in-flight authorization flow.
       const returnedState = url.searchParams.get('state');
-      const code = url.searchParams.get('code');
-      const error = url.searchParams.get('error');
+      if (returnedState !== state) {
+        res.writeHead(400, { 'Content-Type': 'text/html' });
+        res.end('<h1>State mismatch — possible CSRF. Try again.</h1>');
+        return;
+      }
+      if (settled) {
+        res.writeHead(409, { 'Content-Type': 'text/html' });
+        res.end('<h1>This authentication request was already handled.</h1>');
+        return;
+      }
 
+      const error = url.searchParams.get('error');
       if (error) {
+        settled = true;
         res.writeHead(400, { 'Content-Type': 'text/html' });
         res.end(`<h1>Authentication failed: ${escapeHtml(error)}</h1>`);
-        server.close();
+        closeServers();
         reject(new Error(`Spotify auth error: ${error}`));
         return;
       }
 
-      if (returnedState !== state) {
-        res.writeHead(400, { 'Content-Type': 'text/html' });
-        res.end('<h1>State mismatch — possible CSRF. Try again.</h1>');
-        server.close();
-        reject(new Error('State mismatch in OAuth callback'));
-        return;
-      }
-
+      const code = url.searchParams.get('code');
       if (!code) {
         res.writeHead(400, { 'Content-Type': 'text/html' });
         res.end('<h1>No authorization code received.</h1>');
-        server.close();
-        reject(new Error('No authorization code in callback'));
         return;
       }
 
-      // Exchange code for tokens
+      // Claim the callback before the async exchange so a replay cannot
+      // perform a second token exchange while the first one is in flight.
+      settled = true;
       try {
         const result = await exchangeCodeForTokens(code, codeVerifier, clientId);
         res.writeHead(200, { 'Content-Type': 'text/html' });
         res.end('<h1>Authentication successful. You can close this tab.</h1>');
-        server.close();
+        closeServers();
         resolve(result);
       } catch (err) {
         res.writeHead(500, { 'Content-Type': 'text/html' });
         res.end('<h1>Internal error during token exchange.</h1>');
-        server.close();
+        closeServers();
         reject(err);
       }
-    });
+    };
 
     const onListening = () => {
+      if (browserOpened) return;
+      browserOpened = true;
+      console.log(`Waiting for callback at ${REDIRECT_URI}...`);
       console.log(`Opening Spotify authorization page...`);
       console.log(`If your browser doesn't open, visit:\n${authUrl}`);
       open(authUrl).catch(() => {
@@ -468,15 +606,22 @@ export async function runAuthFlow(): Promise<void> {
       });
     };
 
-    if (isLocalhostRedirect) {
-      // Dual-stack: no host arg lets Node bind to :: (both IPv4 and IPv6) when available.
-      server.listen(CALLBACK_PORT, onListening);
-    } else {
-      server.listen(CALLBACK_PORT, '127.0.0.1', onListening);
-    }
-
-    server.on('error', (err) => {
-      reject(new Error(`Failed to start callback server: ${err.message}`));
+    bindHosts.forEach((host, index) => {
+      const server = createServer(handler);
+      servers.push(server);
+      server.on('error', (err) => {
+        if (index > 0) {
+          // IPv6 is an optional companion for localhost; IPv4 remains the
+          // required loopback listener and keeps the flow usable on IPv4-only hosts.
+          console.warn(`IPv6 callback listener unavailable on ${host}: ${err.message}`);
+          return;
+        }
+        if (settled) return;
+        settled = true;
+        closeServers();
+        reject(new Error(`Failed to start callback server: ${err.message}`));
+      });
+      server.listen(CALLBACK_PORT, host, onListening);
     });
   });
 

@@ -20,45 +20,46 @@
  *
  * Sets and what they enable:
  *   core            → search + playback + playlists (+batch/misc) + library + following + users
- *                     (~75 tools: the smallest set that still covers the daily loop)
- *   playback        → tools/playback.ts        (16 tools)
- *                     tools/queueops.ts        (queue_playlist + reorder stubs)
- *                     tools/playbackext.ts     (save/restore playback, device presets, sessions)
- *                     tools/playbackintel.ts   (queue/context/volume/market intel)
- *                     tools/exhaust2playback.ts + swarm3playback (playback state/queue/bookmarks)
- *   playbackintel   → tools/playbackintel.ts   (queue/context/volume/market intel) — standalone, also enabled via playback
- *   catalog         → tools/search.ts          (1 tool)
- *                     tools/catalog.ts         (25 tools: 18 explicit + 7 typed-search via factory)
- *                     tools/audiobooks.ts      (4 tools)
- *                     tools/browse.ts          (artist genres + browse categories)
- *                     tools/artistwatch.ts     (discography/watchlist)
- *                     tools/searchhistory.ts   (search history)
- *                     tools/exhaust2catalog.ts, exhaust2enggating.ts, swarm3discovery, swarm3bdiscovery, swarm3shows, swarm3refs, swarm3meta (discovery/catalog deep-dives)
- *   playlists       → tools/playlists.ts       (24 tools)
- *                     tools/users.ts           (2 tools)
- *                     tools/playlisthealth.ts  (health/followers/collab/snapshots)
- *                     tools/playlistbatch.ts   (batch add/copy/move)
- *                     tools/playlistmisc.ts    (pin/unpin/templates)
- *                     tools/exhaust2playlists.ts, exhaust2extra.ts, swarm3playlistops, swarm3snapshots, swarm4playlists (playlist set-ops/snapshot/resequence)
- *   library         → tools/library.ts         (16 tools)
- *                     tools/following.ts       (4 tools)
+ *                     (smallest set that still covers the daily loop)
+ *   playback        → tools/playback.ts         (playback controls/state)
+ *                     tools/queueops.ts         (queue_playlist + save_queue_as_playlist)
+ *                     tools/playbackext.ts      (save/restore playback, device presets, sessions)
+ *                     tools/playbackintel.ts    (queue/context/volume/market intel)
+ *                     tools/scenes.ts           (save/apply/list/delete scene + wind-down)
+ *                     tools/exhaust2_playback.ts, tools/swarm3_playback.ts (playback state/queue/bookmarks)
+ *   playbackintel   → tools/playbackintel.ts    (queue/context/volume/market intel) — standalone, also enabled via playback
+ *   catalog         → tools/search.ts           (search)
+ *                     tools/catalog.ts          (catalog and typed search)
+ *                     tools/audiobooks.ts       (audiobook browse)
+ *                     tools/browse.ts           (artist genres + browse categories)
+ *                     tools/artistwatch.ts      (discography/watchlist)
+ *                     tools/searchhistory.ts    (search history)
+ *                     tools/exhaust2_catalog.ts, tools/exhaust2_enggating.ts, tools/swarm3_discovery.ts, tools/swarm3_b_discovery.ts, tools/swarm3_shows.ts, tools/swarm3_refs.ts, tools/swarm3_meta.ts (discovery/catalog deep-dives)
+ *   playlists       → tools/playlists.ts        (playlist read/write)
+ *                     tools/users.ts            (user profiles)
+ *                     tools/playlisthealth.ts   (health/followers/collab/snapshots)
+ *                     tools/playlistbatch.ts    (batch add/copy/move)
+ *                     tools/playlistmisc.ts     (pin/unpin/templates)
+ *                     tools/exhaust2_playlists.ts, tools/exhaust2_extra.ts, tools/swarm3_playlistops.ts, tools/swarm3_snapshots.ts, tools/swarm4_playlists.ts (playlist set-ops/snapshot/resequence)
+ *   library         → tools/library.ts          (saved-library read/write)
+ *                     tools/following.ts        (artist/playlist following)
  *                     tools/libraryanalytics.ts (coverage/heatmap/growth/genre trends)
- *                     tools/portability.ts     (weekly/radar save + full export)
- *                     tools/episodemgmt.ts     (archive/mark episodes)
- *                     tools/exhaust2misc.ts, swarm3library (library hygiene)
- *   personalization → tools/personalization.ts (3 tools) + swarm3analytics (listening analytics)
- *   statsfm         → tools/statsfm.ts         (30 tools, third-party stats.fm API, read-only)
- *   taste           → tools/statsfm_taste.ts   (8 canonical statsfm_taste_* tools + 8 taste_* legacy aliases: stats.fm taste intelligence, read-only, no auth)
- *                     tools/taste_composites.ts (11 tools: wave-2 composites, read-only, no auth)
- *   discovery       → tools/swarm3_meta.ts     (find_tool, inspect_tool, toolset_report) — also in catalog for compat
- *   resources       → resources/index.ts       (16 resources)
- *   prompts         → prompts/index.ts         (14 prompts)
+ *                     tools/portability.ts      (weekly/radar save + full export)
+ *                     tools/episodemgmt.ts      (archive/mark episodes)
+ *                     tools/exhaust2_misc.ts, tools/swarm3_library.ts (library hygiene)
+ *   personalization → tools/personalization.ts (top artists/tracks/recently played) + tools/swarm3_analytics.ts (listening analytics)
+ *   statsfm         → tools/statsfm.ts          (third-party stats.fm API, read-only)
+ *   taste           → tools/statsfm_taste.ts    (canonical statsfm_taste_* tools + legacy taste_* aliases: stats.fm taste intelligence, read-only, no auth)
+ *                     tools/taste_composites.ts (composites, read-only, no auth)
+ *   discovery       → tools/swarm3_meta.ts      (find_tool, inspect_tool, toolset_report) — also in catalog for compat
+ *   resources       → resources/index.ts        (template and standard resources)
+ *   prompts         → prompts/index.ts          (workflow prompts)
  */
 export const TOOLSETS: Record<string, readonly string[]> = {
   // The day-to-day surface: search, playback controls, playlist read/write,
-  // library read/write, following. ~75 tools / ~30k tokens instead of 608 / ~170k
-  // — the practical answer to the 153 KB payload (#565) until the default flips in
-  // v2. Discovery tools and spotify_doctor register unconditionally.
+  // library read/write, following — the practical answer to the 153 KB payload
+  // (#565) until the default flips in v2. Discovery tools and spotify_doctor
+  // register unconditionally.
   core: ['search', 'playback', 'playlists', 'playlistbatch', 'playlistmisc', 'library', 'following', 'users', 'portability', 'statsfm', 'swarm3meta'],
   playback: ['playback', 'queueops', 'playbackext', 'playbackintel', 'exhaust2playback', 'swarm3playback'],
   playbackintel: ['playbackintel'],

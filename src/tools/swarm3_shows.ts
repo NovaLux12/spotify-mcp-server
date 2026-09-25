@@ -85,7 +85,9 @@ function dryOut(label: string, target: string, lines: string[], extra?: Record<s
 // Shared plumbing
 // ---------------------------------------------------------------------------
 
-/** Today as `YYYY-MM-DD`. */
+const MS_PER_DAY = 86_400_000;
+
+/** Today as `YYYY-MM-DD` in UTC, independent of the host timezone. */
 function formatDateStamp(now = new Date()): string {
   return now.toISOString().slice(0, 10);
 }
@@ -101,20 +103,43 @@ function msToClock(ms: number): string {
   return h > 0 ? `${h}:${mm}:${ss}` : `${mm}:${ss}`;
 }
 
-/** `YYYY`, `YYYY-MM`, `YYYY-MM-DD` → comparable number (partial dates pad with zeros). */
-function dateNum(date: string | undefined): number {
-  if (!date) return 0;
-  const digits = date.replace(/\D/g, '').slice(0, 8);
+/** Spotify date precision (`YYYY`, `YYYY-MM`, or `YYYY-MM-DD`) → UTC day. */
+function dateKeyEpochDay(date: string | undefined): number | null {
+  const match = /^(\d{4})(?:-(\d{2})(?:-(\d{2}))?)?$/.exec(date ?? '');
+  if (!match) return null;
+  const year = Number(match[1]);
+  const month = match[2] == null ? 1 : Number(match[2]);
+  const day = match[3] == null ? 1 : Number(match[3]);
+  if (month < 1 || month > 12 || day < 1) return null;
+
+  // setUTCFullYear handles years 0..99 without Date.UTC's 1900 offset.
+  const value = new Date(0);
+  value.setUTCHours(0, 0, 0, 0);
+  value.setUTCFullYear(year, month - 1, day);
+  if (value.getUTCFullYear() !== year || value.getUTCMonth() !== month - 1 || value.getUTCDate() !== day) {
+    return null;
+  }
+  return value.getTime() / MS_PER_DAY;
+}
+
+/** Lexical sort key for Spotify date precision; partial dates remain month/year floors. */
+function dateKeyNum(date: string | undefined): number | null {
+  if (dateKeyEpochDay(date) == null) return null;
+  const digits = (date ?? '').replace(/\D/g, '').slice(0, 8);
   return parseInt(digits.padEnd(8, '0'), 10);
 }
 
-/** Whole days between an ISO timestamp/date and `nowMs` (0 when unparseable/`iso` empty). */
-function daysBetween(iso: string | undefined, nowMs: number): number | null {
-  if (!iso) return null;
-  const t = Date.parse(iso);
-  if (Number.isNaN(t)) return null;
-  return Math.max(0, Math.floor((nowMs - t) / 86_400_000));
+/** Whole UTC days between a Spotify date and `nowMs` (0 when future or invalid). */
+function daysBetween(date: string | undefined, nowMs: number): number | null {
+  const day = dateKeyEpochDay(date);
+  if (day == null) return null;
+  return Math.max(0, Math.floor(nowMs / MS_PER_DAY) - day);
 }
+
+const SinceDate = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/, 'since must use the YYYY-MM-DD format')
+  .refine((value) => dateKeyEpochDay(value) != null, 'since must be a real calendar date in YYYY-MM-DD format');
 
 /** Publisher label tolerating the Feb-2026 removal of `publisher` from payloads. */
 function publisherOf(show: SpotifyShowSimple | SpotifyShowFull): string {
@@ -169,8 +194,8 @@ function median(nums: readonly number[]): number | null {
  */
 function cadenceDays(episodes: readonly SpotifyEpisodeSimple[]): number | null {
   const dates = episodes
-    .map((e) => dateNum(e.release_date))
-    .filter((n) => n > 0)
+    .map((e) => dateKeyEpochDay(e.release_date))
+    .filter((n): n is number => n != null)
     .sort((a, b) => b - a);
   if (dates.length < 2) return null;
   const gaps: number[] = [];
@@ -178,12 +203,13 @@ function cadenceDays(episodes: readonly SpotifyEpisodeSimple[]): number | null {
   return median(gaps.filter((g) => g >= 0));
 }
 
-/** Advance a YYYY-MM-DD date by N days. */
+/** Advance a validated `YYYY-MM-DD` date by N days in UTC. */
 function addDays(iso: string, days: number): string {
-  const base = Date.parse(iso);
-  if (Number.isNaN(base)) return iso;
-  return new Date(base + days * 86_400_000).toISOString().slice(0, 10);
+  const day = dateKeyEpochDay(iso);
+  if (day == null) return iso;
+  return new Date((day + days) * MS_PER_DAY).toISOString().slice(0, 10);
 }
+
 
 /** Strip HTML tags + collapse whitespace from episode/show descriptions. */
 function cleanText(raw: string | undefined): string {
@@ -456,7 +482,7 @@ export function registerSwarm3ShowsTools(server: McpServer, client: SpotifyClien
       const lookback = args.lookback_days ?? 30;
       const budget = args.max_shows ?? 50;
       const now = Date.now();
-      const cutoffNum = dateNum(addDays(formatDateStamp(new Date(now)), -lookback));
+      const cutoff = addDays(formatDateStamp(new Date(now)), -lookback);
       const shows = (await fetchSavedShows(client)).filter((r) => r.show?.id);
       const quiet: Array<{ id: string; name: string; publisher: string; latest_release: string | null; days_since_latest: number | null }> = [];
       let checked = 0;
@@ -465,7 +491,7 @@ export function registerSwarm3ShowsTools(server: McpServer, client: SpotifyClien
         checked++;
         const eps = await latestShowEpisodes(client, r.show.id, 1);
         const latest = eps[0]?.release_date ?? null;
-        if (!latest || dateNum(latest) < cutoffNum) {
+        if (!latest || (dateKeyEpochDay(latest) ?? -Infinity) < dateKeyEpochDay(cutoff)!) {
           quiet.push({
             id: r.show.id,
             name: r.show.name,
@@ -508,7 +534,7 @@ export function registerSwarm3ShowsTools(server: McpServer, client: SpotifyClien
       const threshold = args.threshold_days ?? 90;
       const budget = args.max_shows ?? 50;
       const now = Date.now();
-      const cutoffNum = dateNum(addDays(formatDateStamp(new Date(now)), -threshold));
+      const cutoff = addDays(formatDateStamp(new Date(now)), -threshold);
       const shows = (await fetchSavedShows(client)).filter((r) => r.show?.id);
       const stale: Array<{ id: string; name: string; publisher: string; latest_release: string | null; days_since_latest: number | null }> = [];
       let checked = 0;
@@ -517,7 +543,7 @@ export function registerSwarm3ShowsTools(server: McpServer, client: SpotifyClien
         checked++;
         const eps = await latestShowEpisodes(client, r.show.id, 1);
         const latest = eps[0]?.release_date ?? null;
-        if (!latest || dateNum(latest) < cutoffNum) {
+        if (!latest || (dateKeyEpochDay(latest) ?? -Infinity) < dateKeyEpochDay(cutoff)!) {
           stale.push({
             id: r.show.id,
             name: r.show.name,
@@ -856,14 +882,14 @@ export function registerSwarm3ShowsTools(server: McpServer, client: SpotifyClien
     'Collect episodes released since a date across ALL saved shows, merged newest-first and '
       + 'tagged with their show — the unified new-episode inbox. Defaults to the last 7 days.',
     {
-      since: z.string().optional().describe('Inclusive release-date floor YYYY-MM-DD. Default 7 days ago'),
+      since: SinceDate.optional().describe('Inclusive release-date floor YYYY-MM-DD. Default 7 days ago'),
       max_shows: z.number().int().min(1).max(200).optional().describe('Max per-show episode lookups (request budget). Default 50'),
       ...sharedListFieldsShow(),
     },
     async (args) => {
       const rf = args.response_format;
       const since = args.since ?? addDays(formatDateStamp(), -7);
-      const sinceNum = dateNum(since);
+      const sinceKey = dateKeyNum(since)!;
       const budget = args.max_shows ?? 50;
       const shows = (await fetchSavedShows(client)).filter((r) => r.show?.id);
       const fresh: EpisodeRow[] = [];
@@ -873,10 +899,11 @@ export function registerSwarm3ShowsTools(server: McpServer, client: SpotifyClien
         checked++;
         const eps = await latestShowEpisodes(client, r.show.id, 20);
         for (const ep of eps) {
-          if (dateNum(ep.release_date) >= sinceNum) fresh.push(toEpisodeRow(ep));
+          const releaseKey = dateKeyNum(ep.release_date);
+          if (releaseKey != null && releaseKey >= sinceKey) fresh.push(toEpisodeRow(ep));
         }
       }
-      fresh.sort((a, b) => dateNum(b.releaseDate) - dateNum(a.releaseDate) || a.showName.localeCompare(b.showName));
+      fresh.sort((a, b) => (dateKeyNum(b.releaseDate) ?? -1) - (dateKeyNum(a.releaseDate) ?? -1) || a.showName.localeCompare(b.showName));
       const view = truncateItems(fresh, resolveMaxResults(args.max_results, getConfig().maxItems));
       const prose = [
         `New episodes since ${since}: ${fresh.length} across ${checked} saved show(s)${shows.length > budget ? ` (budget capped at ${budget})` : ''}.`,
@@ -997,30 +1024,45 @@ export function registerSwarm3ShowsTools(server: McpServer, client: SpotifyClien
   // 19. publisher_portfolio -------------------------------------------------------
   server.tool(
     'publisher_portfolio',
-    'Per-publisher portfolio across your saved shows: show count, listed episode totals, and '
-      + 'sampled runtime of their recent episodes — who owns your listening time. Defaults to '
-      + '10 recent episodes per show.',
+    'Per-publisher portfolio across saved shows: show count, listed episode totals, and sampled '
+      + 'runtime of their recent episodes. Defaults to 20 show lookups and 10 recent episodes per show.',
     {
       eps_per_show: z.number().int().min(1).max(50).optional().describe('Recent episodes sampled per show for runtime. Default 10'),
+      max_shows: z.number().int().min(1).max(200).optional().describe('Max per-show episode lookups (request budget). Default 20'),
       ...sharedListFieldsShow(),
     },
     async (args) => {
       const rf = args.response_format;
       const perShow = args.eps_per_show ?? 10;
+      const budget = args.max_shows ?? 20;
       const shows = (await fetchSavedShows(client)).filter((r) => r.show?.id);
       const byPub = new Map<string, { shows: string[]; listed_episodes: number; sampled_ms: number; sampled_eps: number }>();
+      const failedShows: Array<{ id: string; name: string; error: string }> = [];
+      let checked = 0;
       for (const r of shows) {
+        if (checked >= budget) break;
+        checked++;
         const pub = publisherOf(r.show);
-        const entry = byPub.get(pub) ?? { shows: [], listed_episodes: 0, sampled_ms: 0, sampled_eps: 0 };
-        entry.shows.push(r.show.name);
-        entry.listed_episodes += r.show.total_episodes ?? 0;
-        const eps = await latestShowEpisodes(client, r.show.id, perShow);
-        for (const ep of eps) {
-          entry.sampled_ms += ep.duration_ms ?? 0;
-          entry.sampled_eps++;
+        try {
+          const eps = await latestShowEpisodes(client, r.show.id, perShow);
+          const entry = byPub.get(pub) ?? { shows: [], listed_episodes: 0, sampled_ms: 0, sampled_eps: 0 };
+          entry.shows.push(r.show.name);
+          entry.listed_episodes += r.show.total_episodes ?? 0;
+          for (const ep of eps) {
+            entry.sampled_ms += ep.duration_ms ?? 0;
+            entry.sampled_eps++;
+          }
+          byPub.set(pub, entry);
+        } catch (error) {
+          failedShows.push({
+            id: r.show.id,
+            name: r.show.name,
+            error: error instanceof Error ? error.message : String(error),
+          });
         }
-        byPub.set(pub, entry);
       }
+      const showsSkipped = shows.length - checked;
+      const showsScanned = checked - failedShows.length;
       const portfolio = [...byPub.entries()]
         .map(([publisher, v]) => ({
           publisher,
@@ -1034,13 +1076,22 @@ export function registerSwarm3ShowsTools(server: McpServer, client: SpotifyClien
         .sort((a, b) => b.show_count - a.show_count || b.listed_episodes - a.listed_episodes || a.publisher.localeCompare(b.publisher));
       const view = truncateItems(portfolio, resolveMaxResults(args.max_results, getConfig().maxItems));
       const prose = [
-        `Publisher portfolio across ${shows.length} saved show(s), ${portfolio.length} publisher(s):`,
+        `Publisher portfolio — shows_checked: ${checked} of ${shows.length}, shows_scanned: ${showsScanned}${showsSkipped > 0 ? `; ${showsSkipped} show(s) skipped by max_shows budget` : ''}${failedShows.length > 0 ? `; ${failedShows.length} show lookup(s) failed` : ''}; ${portfolio.length} publisher(s):`,
         ...view.items.map((p) => `  • ${p.publisher}: ${p.show_count} show(s), ${p.listed_episodes} listed eps, sampled runtime ${msToClock(p.sampled_runtime_ms)} (avg ${p.avg_episode_ms != null ? msToClock(p.avg_episode_ms) : '?'}/ep)`),
         view.footer ? `(${view.footer})` : '',
       ].filter(Boolean).join('\n');
       return shape(rf, prose, {
         ok: true,
         saved_shows: shows.length,
+        shows_total: shows.length,
+        shows_checked: checked,
+        shows_scanned: showsScanned,
+        shows_skipped: showsSkipped,
+        budget_truncated: showsSkipped > 0,
+        truncated: view.truncated,
+        max_shows: budget,
+        shows_failed: failedShows.length,
+        failed_shows: failedShows,
         portfolio: view.items,
       });
     },
@@ -1070,7 +1121,7 @@ export function registerSwarm3ShowsTools(server: McpServer, client: SpotifyClien
         const eps = await latestShowEpisodes(client, r.show.id, perShow);
         for (const ep of eps) feed.push(toEpisodeRow(ep));
       }
-      feed.sort((a, b) => dateNum(b.releaseDate) - dateNum(a.releaseDate) || a.showName.localeCompare(b.showName));
+      feed.sort((a, b) => (dateKeyNum(b.releaseDate) ?? -1) - (dateKeyNum(a.releaseDate) ?? -1) || a.showName.localeCompare(b.showName));
       const view = truncateItems(feed, resolveMaxResults(args.max_results, getConfig().maxItems));
       const prose = [
         `Activity feed: ${feed.length} episode(s) from ${checked} show(s), newest first.`,
@@ -1233,14 +1284,14 @@ export function registerSwarm3ShowsTools(server: McpServer, client: SpotifyClien
       + 'history: which new drops are NOT yet saved or played — a listen-next brief. Defaults to '
       + 'the last 14 days.',
     {
-      since: z.string().optional().describe('Inclusive release-date floor YYYY-MM-DD. Default 14 days ago'),
+      since: SinceDate.optional().describe('Inclusive release-date floor YYYY-MM-DD. Default 14 days ago'),
       max_shows: z.number().int().min(1).max(200).optional().describe('Max per-show episode lookups (request budget). Default 50'),
       ...sharedListFieldsShow(),
     },
     async (args) => {
       const rf = args.response_format;
       const since = args.since ?? addDays(formatDateStamp(), -14);
-      const sinceNum = dateNum(since);
+      const sinceKey = dateKeyNum(since)!;
       const budget = args.max_shows ?? 50;
       const shows = (await fetchSavedShows(client)).filter((r) => r.show?.id);
       const newEps: EpisodeRow[] = [];
@@ -1250,7 +1301,8 @@ export function registerSwarm3ShowsTools(server: McpServer, client: SpotifyClien
         checked++;
         const eps = await latestShowEpisodes(client, r.show.id, 20);
         for (const ep of eps) {
-          if (dateNum(ep.release_date) >= sinceNum) newEps.push(toEpisodeRow(ep));
+          const releaseKey = dateKeyNum(ep.release_date);
+          if (releaseKey != null && releaseKey >= sinceKey) newEps.push(toEpisodeRow(ep));
         }
       }
       // Listen-state cross-reference: saved episodes + recently played (best effort).
@@ -1272,7 +1324,7 @@ export function registerSwarm3ShowsTools(server: McpServer, client: SpotifyClien
         recently_played: playedIds.has(r.id),
         unlistened: !savedIds.has(r.id) && !playedIds.has(r.id) && r.fullyPlayed !== true,
       }));
-      brief.sort((a, b) => dateNum(b.releaseDate) - dateNum(a.releaseDate));
+      brief.sort((a, b) => (dateKeyNum(b.releaseDate) ?? -1) - (dateKeyNum(a.releaseDate) ?? -1));
       const unlistened = brief.filter((b) => b.unlistened);
       const view = truncateItems(brief, resolveMaxResults(args.max_results, getConfig().maxItems));
       const prose = [

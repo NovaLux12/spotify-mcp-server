@@ -123,7 +123,7 @@ test('search forwards requested types including audiobook (issue #44)', async ()
   assert.equal(calls[0].params?.type, 'audiobook');
 });
 
-test('search forwards limit, offset and market together', async () => {
+test('search clamps handler calls above 10 while forwarding offset and market', async () => {
   const { registered, calls } = makeHarness();
   await invoke(findTool(registered, 'search'), {
     query: 'queen',
@@ -134,7 +134,7 @@ test('search forwards limit, offset and market together', async () => {
   assert.deepEqual(calls[0].params, {
     q: 'queen',
     type: 'track,artist,album',
-    limit: '50',
+    limit: '10',
     offset: '1000',
     market: 'GB',
   });
@@ -270,7 +270,7 @@ test('search honours the offset in its next-page hint arithmetic', async () => {
   const output = text(
     await invoke(findTool(harness.registered, 'search'), { query: 'queen', limit: 50, offset: 50 }),
   );
-  assert.match(output, /Next page: offset=100/);
+  assert.match(output, /Next page: offset=60/);
 });
 
 test('search returns friendly message on null response and empty item lists', async () => {

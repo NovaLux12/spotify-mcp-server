@@ -304,7 +304,7 @@ describe('library_hygiene caps and truncation notes', () => {
     assert.match(textOf(out), /cap 200 REACHED/);
   });
 
-  it('notes when the /me/tracks walk reaches the fetch-all cap (500 default)', async () => {
+  it('reports exact-cap libraries as complete, not truncated', async () => {
     const tracks = Array.from({ length: 500 }, (_, i) =>
       likedTrack({ id: `t${i}`, artistId: 'a1', albumId: `alb${i}` }),
     );
@@ -316,9 +316,32 @@ describe('library_hygiene caps and truncation notes', () => {
     const out = await h.invoke('library_hygiene', {});
     const scanned = out.structuredContent!.scanned as Record<string, unknown>;
     assert.equal(scanned.liked_tracks, 500);
+    assert.equal(scanned.fetched, 500);
+    assert.equal(scanned.cap, 500);
     assert.equal(scanned.fetch_all_cap, 500);
+    assert.equal(scanned.snapshot_state, 'complete');
+    assert.equal(scanned.complete, true);
+    assert.equal(scanned.tracks_truncated_by_cap, false);
+    assert.match(textOf(out), /fetched 500 liked tracks, cap 500 — complete; cap not reached/);
+  });
+
+  it('reports cap-plus-one libraries as partial and truncated', async () => {
+    const tracks = Array.from({ length: 501 }, (_, i) =>
+      likedTrack({ id: `t${i}`, artistId: 'a1', albumId: `alb${i}` }),
+    );
+    const albums: Record<string, SpotifyAlbumFull> = {};
+    for (let i = 0; i < 501; i++) {
+      albums[`alb${i}`] = albumFull(`alb${i}`, { total_tracks: 1, trackIds: [`t${i}`] });
+    }
+    const h = harness(libraryResponder(tracks, albums));
+    const out = await h.invoke('library_hygiene', {});
+    const scanned = out.structuredContent!.scanned as Record<string, unknown>;
+    assert.equal(scanned.fetched, 500);
+    assert.equal(scanned.cap, 500);
+    assert.equal(scanned.snapshot_state, 'partial');
+    assert.equal(scanned.complete, false);
     assert.equal(scanned.tracks_truncated_by_cap, true);
-    assert.match(textOf(out), /Fetch-all cap 500 REACHED/);
+    assert.match(textOf(out), /fetched 500 liked tracks, cap 500 — TRUNCATED/);
   });
 
   it('reports cap not reached for small libraries', async () => {

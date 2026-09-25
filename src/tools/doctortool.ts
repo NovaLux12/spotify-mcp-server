@@ -12,9 +12,16 @@
 import { readFile } from 'node:fs/promises';
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import type { SpotifyClient } from '../client.js';
+import { SpotifyApiError, type SpotifyClient } from '../client.js';
 import { getConfig } from '../config.js';
-import { resolveToolsets, isActive } from '../toolsets.js';
+import {
+  TOOLSETS,
+  allRegistrationKeys,
+  isModuleActive,
+  resolveToolOverrides,
+  resolveToolsets,
+} from '../toolsets.js';
+import { moduleBlockedByScopes } from '../scopefilter.js';
 import { ResponseFormat } from '../shaping.js';
 
 // ---------------------------------------------------------------------------
@@ -31,13 +38,38 @@ export interface DoctorRow {
   summary: string;
   /** Extra context rendered only in verbose prose mode. */
   detail?: string;
+  /** Diagnostic phase that produced an exceptional row. */
+  phase?: string;
+  /** Machine-readable diagnostic message for probe failures. */
+  message?: string;
 }
 
 export interface DoctorReport {
   /** True when no row has status 'fail' (warns/infos don't fail a diagnostic). */
   ok: boolean;
   rows: DoctorRow[];
+  surface: DoctorSurface;
 }
+
+export interface DoctorSurface {
+  registry_available: boolean;
+  registered_tools: number;
+  total_modules: number;
+  active_modules: string[];
+  exposed_modules: string[];
+  hidden_by_trim: string[];
+  hidden_by_scopes: string[];
+  hidden_by_readonly: string[];
+  active_sets: string[];
+  inactive_sets: string[];
+  unknown_toolsets: string[];
+  enable_overrides: string[];
+  disable_overrides: string[];
+  unknown_enable_overrides: string[];
+  unknown_disable_overrides: string[];
+  read_only: boolean;
+}
+
 
 /** Status → glyph used by the prose renderer. */
 const GLYPH: Record<DoctorStatus, string> = { pass: '✓', fail: '✗', warn: '⚠', info: 'ℹ' };
@@ -205,7 +237,7 @@ async function tokenRows(): Promise<{ rows: DoctorRow[]; tokens: ParsedTokens | 
 }
 
 /** Auth-time scopes vs the write tools enabled by the active toolsets. */
-function scopeRows(tokens: ParsedTokens | null): DoctorRow[] {
+function scopeRows(tokens: ParsedTokens | null, surface: DoctorSurface): DoctorRow[] {
   if (!tokens) return [];
   if (typeof tokens.scope !== 'string') {
     return [
@@ -219,15 +251,13 @@ function scopeRows(tokens: ParsedTokens | null): DoctorRow[] {
   }
 
   const granted = new Set(tokens.scope.split(/\s+/).filter(Boolean));
-  const { sets: activeSets } = resolveToolsets(process.env.SPOTIFY_MCP_TOOLSETS);
-
   // Report granted scopes count vs default
   const grantedList = [...granted].sort().join(', ');
 
   const gaps: string[] = [];
   for (const req of WRITE_REQUIREMENTS) {
-    if (!isActive(req.key, activeSets)) continue;
-    const missing = req.scopes.filter((s) => !granted.has(s));
+    if (!surface.exposed_modules.includes(req.key)) continue;
+    const missing = req.scopes.filter((scope) => !granted.has(scope));
     if (missing.length > 0) {
       gaps.push(`${req.label} (${req.tools}): missing ${missing.join(', ')}`);
     }
@@ -238,7 +268,7 @@ function scopeRows(tokens: ParsedTokens | null): DoctorRow[] {
       {
         id: 'scopes',
         status: 'pass',
-        summary: `all write-requiring tools across active toolsets are covered by the granted scopes (${granted.size} scopes)`,
+        summary: `all write-requiring tools on the exposed surface are covered by the granted scopes (${granted.size} scopes)`,
         detail: `granted: ${grantedList}`,
       },
     ];
@@ -251,6 +281,180 @@ function scopeRows(tokens: ParsedTokens | null): DoctorRow[] {
       detail: `${gaps.join('; ')} | granted: ${grantedList}`,
     },
   ];
+}
+
+/** Modules hidden by scope, keyed by the same scope-owner passed in index.ts. */
+const SCOPE_OWNER_BY_MODULE: Record<string, string> = {
+  playback: 'playback',
+  queueops: 'playback',
+  playbackext: 'playback',
+  playbackintel: 'playback',
+  exhaust2playback: 'playback',
+  swarm3playback: 'playback',
+  playlists: 'playlists',
+  exhaust2playlists: 'playlists',
+  exhaust2extra: 'playlists',
+  playlisthealth: 'playlists',
+  playlistbatch: 'playlists',
+  playlistmisc: 'playlists',
+  swarm3playlistops: 'playlists',
+  swarm3snapshots: 'playlists',
+  swarm4playlists: 'playlists',
+  library: 'library',
+  exhaust2misc: 'library',
+  libraryanalytics: 'library',
+  portability: 'library',
+  episodemgmt: 'library',
+  swarm3library: 'library',
+  following: 'following',
+};
+
+const ALWAYS_REGISTERED_MODULES: readonly string[] = ['spotify_doctor', 'swarm3meta'];
+
+interface ToolRegistryHolder {
+  _registeredTools?: Record<string, { enabled?: boolean }>;
+}
+
+/** Registration modules hidden in READONLY mode, matching index.ts. */
+const READONLY_HIDDEN_MODULES: Record<string, true> = {
+  playback: true,
+  exhaustmisc: true,
+  artistwatch: true,
+  exhaust2playback: true,
+  exhaust2playlists: true,
+  exhaust2misc: true,
+  exhaust2extra: true,
+  libraryanalytics: true,
+  portability: true,
+  episodemgmt: true,
+  playlisthealth: true,
+  playlistbatch: true,
+  playlistmisc: true,
+  queueops: true,
+  playbackext: true,
+  playbackintel: true,
+  swarm3playback: true,
+  swarm3playlistops: true,
+  swarm3shows: true,
+  swarm3snapshots: true,
+  swarm4playlists: true,
+  following: true,
+  audiobooks: true,
+  playlists: true,
+  users: true,
+  library: true,
+  import: true,
+  smart: true,
+  saveddedupe: true,
+  freshness: true,
+  scenes: true,
+  undo: true,
+};
+
+function readOnlyEnabled(): boolean {
+  return ['1', 'true', 'yes'].includes(
+    (process.env.SPOTIFY_MCP_READONLY ?? '').toLowerCase(),
+  );
+}
+
+function registeredToolCount(server: McpServer): { available: boolean; count: number } {
+  const holder = server as unknown as ToolRegistryHolder;
+  const registry = holder._registeredTools;
+  if (!registry || typeof registry !== 'object') return { available: false, count: 0 };
+  return {
+    available: true,
+    count: Object.values(registry).filter((tool) => tool?.enabled !== false).length,
+  };
+}
+
+function surfaceFor(server: McpServer, tokens: ParsedTokens | null): DoctorSurface {
+  const { available, count } = registeredToolCount(server);
+  const toolsets = resolveToolsets(process.env.SPOTIFY_MCP_TOOLSETS);
+  const overrides = resolveToolOverrides(
+    process.env.SPOTIFY_MCP_ENABLE_TOOLS,
+    process.env.SPOTIFY_MCP_DISABLE_TOOLS,
+  );
+  const allKeys = [...new Set([...allRegistrationKeys, ...ALWAYS_REGISTERED_MODULES])].sort();
+  const alwaysActive = new Set<string>(ALWAYS_REGISTERED_MODULES);
+  const activeModules = allKeys.filter(
+    (key) => alwaysActive.has(key) || isModuleActive(key, toolsets.sets, overrides),
+  );
+  const activeModuleSet = new Set(activeModules);
+  const granted = new Set(
+    typeof tokens?.scope === 'string' ? tokens.scope.split(/\s+/).filter(Boolean) : [],
+  );
+  const hiddenByScopes = activeModules.filter((key) => {
+    const scopeOwner = SCOPE_OWNER_BY_MODULE[key];
+    return scopeOwner !== undefined && moduleBlockedByScopes(scopeOwner, granted);
+  });
+  const readOnly = readOnlyEnabled();
+  const scopeHidden = new Set(hiddenByScopes);
+  const hiddenByReadonly = readOnly
+    ? activeModules.filter(
+      (key) => !scopeHidden.has(key) && Object.hasOwn(READONLY_HIDDEN_MODULES, key),
+    )
+    : [];
+  const hiddenByReadonlySet = new Set(hiddenByReadonly);
+  const exposedModules = activeModules.filter(
+    (key) => !scopeHidden.has(key) && !hiddenByReadonlySet.has(key),
+  );
+
+  return {
+    registry_available: available,
+    registered_tools: count,
+    total_modules: allKeys.length,
+    active_modules: activeModules,
+    exposed_modules: exposedModules,
+    hidden_by_trim: allKeys.filter((key) => !activeModuleSet.has(key)),
+    hidden_by_scopes: hiddenByScopes,
+    hidden_by_readonly: hiddenByReadonly,
+    active_sets: Object.keys(TOOLSETS).filter((set) => toolsets.sets.has(set)),
+    inactive_sets: Object.keys(TOOLSETS).filter((set) => !toolsets.sets.has(set)),
+    unknown_toolsets: toolsets.unknown,
+    enable_overrides: [...overrides.enable].sort(),
+    disable_overrides: [...overrides.disable].sort(),
+    unknown_enable_overrides: overrides.unknown.enable,
+    unknown_disable_overrides: overrides.unknown.disable,
+    read_only: readOnly,
+  };
+}
+
+function surfaceRow(surface: DoctorSurface): DoctorRow {
+  const trim = surface.hidden_by_trim.length;
+  const scopes = surface.hidden_by_scopes.length;
+  const readonly = surface.hidden_by_readonly.length;
+  const unknown = surface.unknown_toolsets.length
+    + surface.unknown_enable_overrides.length
+    + surface.unknown_disable_overrides.length;
+  const details = [
+    `active_sets=${surface.active_sets.join(',') || '(none)'}`,
+    `inactive_sets=${surface.inactive_sets.join(',') || '(none)'}`,
+    `hidden_by_trim=${surface.hidden_by_trim.join(',') || '(none)'}`,
+    `hidden_by_scopes=${surface.hidden_by_scopes.join(',') || '(none)'}`,
+    `hidden_by_readonly=${surface.hidden_by_readonly.join(',') || '(none)'}`,
+    `enable_overrides=${surface.enable_overrides.join(',') || '(none)'}`,
+    `disable_overrides=${surface.disable_overrides.join(',') || '(none)'}`,
+    `read_only=${surface.read_only}`,
+  ];
+  if (unknown > 0) {
+    details.push(
+      `unknown_toolsets=${surface.unknown_toolsets.join(',') || '(none)'}`,
+      `unknown_enable_overrides=${surface.unknown_enable_overrides.join(',') || '(none)'}`,
+      `unknown_disable_overrides=${surface.unknown_disable_overrides.join(',') || '(none)'}`,
+    );
+  }
+  return {
+    id: 'surface',
+    status: surface.registry_available
+      ? surface.unknown_toolsets.length > 0 && surface.active_sets.length === 0
+        ? 'fail'
+        : trim + scopes + readonly + unknown > 0 ? 'warn' : 'pass'
+      : 'fail',
+    summary: surface.registry_available
+      ? `live registry: ${surface.registered_tools} tool(s); toolset/overrides hide ${trim} module(s), scopes hide ${scopes}, READONLY hides ${readonly}${surface.unknown_toolsets.length > 0 ? `; unknown toolsets: ${surface.unknown_toolsets.join(',')}` : ''}`
+      : 'live registry unavailable — registered tool count cannot be determined',
+    detail: details.join(' '),
+  };
 }
 
 function staticRows(client: SpotifyClient): DoctorRow[] {
@@ -285,7 +489,6 @@ function staticRows(client: SpotifyClient): DoctorRow[] {
     // Stub/test clients without the accessor: skip the row entirely.
   }
 
-  // Config snapshot summary — include profile/market/scopes.
   const cfg = getConfig();
   const parts = [
     `token_file=${cfg.tokenFile}`,
@@ -305,7 +508,7 @@ function staticRows(client: SpotifyClient): DoctorRow[] {
   return rows;
 }
 
-/** Best-effort account probe: GET /me for product/country/display name. Never fails health. */
+/** Live account probe: report classified failures rather than silently omitting them. */
 async function accountRows(client: SpotifyClient): Promise<DoctorRow[]> {
   try {
     const me = await client.get<{
@@ -314,7 +517,15 @@ async function accountRows(client: SpotifyClient): Promise<DoctorRow[]> {
       product?: string;
       country?: string;
     }>('/me');
-    if (!me || !me.id) return [];
+    if (!me?.id) {
+      return [{
+        id: 'account_probe',
+        status: 'info',
+        phase: 'account_probe',
+        message: 'live probe returned no account id',
+        summary: 'live probe returned no account id',
+      }];
+    }
     const rows: DoctorRow[] = [];
     const product = me.product ?? 'unknown';
     const country = me.country ?? 'unknown';
@@ -339,18 +550,91 @@ async function accountRows(client: SpotifyClient): Promise<DoctorRow[]> {
       });
     }
     return rows;
-  } catch {
-    // Network unavailable or not authenticated — skip silently, local checks still valid.
-    return [];
+  } catch (error) {
+    if (error instanceof SpotifyApiError) {
+      const message = `live probe failed: ${error.status} ${error.message}`;
+      if (error.status === 401 || error.status === 403) {
+        return [{
+          id: 'account_probe',
+          status: 'fail',
+          phase: 'account_probe',
+          message,
+          summary: `${message} — token rejected; re-run "spotify-mcp auth"`,
+        }];
+      }
+      if (error.status === 429) {
+        const wait = error.retryAfterSec == null ? '' : `; retry after ${error.retryAfterSec}s`;
+        return [{
+          id: 'account_probe',
+          status: 'warn',
+          phase: 'account_probe',
+          message,
+          summary: `${message}${wait}`,
+        }];
+      }
+      if (error.status === 408) {
+        return [{
+          id: 'account_probe',
+          status: 'info',
+          phase: 'account_probe',
+          message: `live probe skipped (network timeout): ${error.message}`,
+          summary: `live probe skipped (network timeout): ${error.message}`,
+        }];
+      }
+      return [{
+        id: 'account_probe',
+        status: 'fail',
+        phase: 'account_probe',
+        message,
+        summary: message,
+      }];
+    }
+    const message = error instanceof Error ? error.message : String(error);
+    return [{
+      id: 'account_probe',
+      status: 'info',
+      phase: 'account_probe',
+      message: `live probe skipped (network): ${message}`,
+      summary: `live probe skipped (network): ${message}`,
+    }];
   }
 }
 
 /** Run every doctor check. Includes best-effort live account probe when client is network-capable. */
-export async function collectDoctorReport(client: SpotifyClient): Promise<DoctorReport> {
-  const t = await tokenRows();
+export async function collectDoctorReport(
+  client: SpotifyClient,
+  server?: McpServer,
+): Promise<DoctorReport> {
+  const tokens = await tokenRows();
+  const surface = server
+    ? surfaceFor(server, tokens.tokens)
+    : {
+      registry_available: false,
+      registered_tools: 0,
+      total_modules: new Set([...allRegistrationKeys, ...ALWAYS_REGISTERED_MODULES]).size,
+      active_modules: [],
+      exposed_modules: [],
+      hidden_by_trim: [],
+      hidden_by_scopes: [],
+      hidden_by_readonly: [],
+      active_sets: [],
+      inactive_sets: Object.keys(TOOLSETS),
+      unknown_toolsets: [],
+      enable_overrides: [],
+      disable_overrides: [],
+      unknown_enable_overrides: [],
+      unknown_disable_overrides: [],
+      read_only: readOnlyEnabled(),
+    } satisfies DoctorSurface;
   const account = await accountRows(client);
-  const rows = [...t.rows, ...scopeRows(t.tokens), ...account, ...staticRows(client)];
-  return { ok: rows.every((r) => r.status !== 'fail'), rows };
+  const rows = [
+    ...tokens.rows,
+    ...scopeRows(tokens.tokens, surface),
+    ...account,
+    ...staticRows(client),
+    surfaceRow(surface),
+  ];
+  return { ok: rows.every((row) => row.status !== 'fail'), rows, surface };
 }
 
 // ---------------------------------------------------------------------------
@@ -373,18 +657,24 @@ function renderProse(report: DoctorReport, verbose: boolean): string {
 export function registerDoctorTool(server: McpServer, client: SpotifyClient): void {
   server.tool(
     'spotify_doctor',
-    'Run local diagnostics: token presence/expiry, auth-time scopes vs write tools enabled by active toolsets, Premium gating notes, rate-limit cooldown, and a config snapshot. Read-only, best-effort live account probe for product/country when network available.',
+    'Run read-only diagnostics: token presence/expiry, auth-time scopes vs write tools enabled by active toolsets, Premium gating, rate-limit cooldown, config state, visible account details when reachable, and the live registered-tool surface with toolset/scope/READONLY trim causes. The only live request is GET /me; no mutation requests are issued.',
     {
       verbose: z
         .boolean()
         .optional()
-        .describe('Include per-check technical detail lines in the prose output'),
-      response_format: z.enum(['concise','detailed','json']).optional().describe('Response format: concise (default) returns human-readable text, detailed adds metadata, json returns structured data'),
+        .describe('Include per-check technical detail lines when response_format is concise'),
+      response_format: ResponseFormat,
     },
     async (args) => {
-      const report = await collectDoctorReport(client);
+      const report = await collectDoctorReport(client, server);
+      const text = args.response_format === 'json'
+        ? JSON.stringify(report, null, 2)
+        : renderProse(
+          report,
+          args.response_format === 'detailed' || args.verbose === true,
+        );
       return {
-        content: [{ type: 'text', text: renderProse(report, args.verbose === true) }],
+        content: [{ type: 'text', text }],
         structuredContent: { ...report },
       };
     },

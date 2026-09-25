@@ -15,6 +15,9 @@ import {
   paginationInfo,
 } from '../shaping.js';
 
+/** Spotify's February 2026 /search cap: requests above 10 return Invalid limit. */
+export const SPOTIFY_SEARCH_MAX_LIMIT = 10;
+
 // Spotify's search endpoint returns an `audiobooks` key when `type=audiobook`
 // is requested (issue #44), but the shared SearchResponse interface does not
 // carry it yet. Widen locally so the formatter can render that section
@@ -64,15 +67,13 @@ export function registerSearchTools(server: McpServer, client: SpotifyClient): v
             'Pass e.g. ["artist"] for an artist-only search. ' +
             '"audiobook" is only available in the US, UK, CA, IE, NZ and AU markets.',
         ),
-      // Feb 2026: Spotify reduced the /search limit maximum from 50 to 10
-      // (400 "Invalid limit" above 10) and the default from 20 to 5.
       limit: z
         .number()
         .int()
         .min(1)
-        .max(10)
+        .max(SPOTIFY_SEARCH_MAX_LIMIT)
         .optional()
-        .describe('Results per type, 1–10. Default: 5'),
+        .describe(`Results per type, 1–${SPOTIFY_SEARCH_MAX_LIMIT}. Default: 5`),
       offset: z
         .number()
         .int()
@@ -90,7 +91,7 @@ export function registerSearchTools(server: McpServer, client: SpotifyClient): v
     },
     async (args) => {
       const types = args.types ?? ['track', 'artist', 'album'];
-      const limit = args.limit ?? 5;
+      const limit = Math.min(args.limit ?? 5, SPOTIFY_SEARCH_MAX_LIMIT);
       const offset = args.offset ?? 0;
 
       const params: Record<string, string> = {
@@ -98,7 +99,7 @@ export function registerSearchTools(server: McpServer, client: SpotifyClient): v
         type: types.join(','),
         limit: String(limit),
       };
-      if (args.offset !== undefined) params.offset = String(args.offset);
+      if (args.offset !== undefined) params.offset = String(offset);
       if (args.include_external) params.include_external = args.include_external;
       if (args.market) params.market = args.market;
 

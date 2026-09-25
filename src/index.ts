@@ -239,6 +239,8 @@ async function startMcpServer(): Promise<void> {
   if (!readOnly && isModuleActive('following', activeSets, overrides) && !moduleBlockedByScopes('following', grantedScopes)) registerFreshnessTools(server, client)
   if (isModuleActive('search', activeSets, overrides) && !moduleBlockedByScopes('search', grantedScopes)) registerSearchDeepTool(server, client)
   // Wave-4 (#112): podcast sessions, audiobook copilot, scenes + wind-down.
+  // Scenes deliberately share the semantic `playback` registration key: trimming
+  // the playback toolset also trims scene registration.
   if (!readOnly && isModuleActive('library', activeSets, overrides) && !moduleBlockedByScopes('library', grantedScopes)) registerPodcastSessionTools(server, client)
   if (!readOnly && isModuleActive('audiobooks', activeSets, overrides) && !moduleBlockedByScopes('audiobooks', grantedScopes)) registerAudiobookCopilotTools(server, client)
   if (!readOnly && isModuleActive('playback', activeSets, overrides) && !moduleBlockedByScopes('playback', grantedScopes)) registerScenesTools(server, client)

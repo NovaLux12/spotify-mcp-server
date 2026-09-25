@@ -15,6 +15,8 @@
  */
 import { z } from 'zod';
 import { MARKET_CODE } from './catalog.js';
+import { SPOTIFY_SEARCH_MAX_LIMIT } from './search.js';
+
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
 import { DryRun, ResponseFormat, describeDryRun, parseSpotifyUri } from '../shaping.js';
@@ -72,6 +74,41 @@ async function addUrisChunked(client: SpotifyClient, playlistId: string, uris: r
 }
 
 // ---------------------------------------------------------------------------
+type TrackSearchPage = {
+  uris: string[];
+  hasMore: boolean;
+};
+
+/** Fetch one Spotify /search track page without ever exceeding the live API cap. */
+async function fetchTrackSearchPage(
+  client: SpotifyClient,
+  query: string,
+  offset: number,
+  market: string | undefined,
+): Promise<TrackSearchPage> {
+  const body = await client.get<{
+    tracks?: { items?: Array<{ uri?: string } | null>; total?: number };
+  }>('/search', {
+    q: query,
+    type: 'track',
+    limit: String(SPOTIFY_SEARCH_MAX_LIMIT),
+    ...(offset > 0 ? { offset: String(offset) } : {}),
+    ...(market ? { market } : {}),
+  });
+  const items = body?.tracks?.items ?? [];
+  const nextOffset = offset + items.length;
+  const total = body?.tracks?.total;
+  return {
+    uris: items
+      .map((track) => track?.uri ?? '')
+      .filter((uri) => uri.startsWith('spotify:')),
+    hasMore:
+      items.length === SPOTIFY_SEARCH_MAX_LIMIT &&
+      nextOffset <= 1000 &&
+      (total === undefined || nextOffset < total),
+  };
+}
+
 // set algebra (pure, exported for tests)
 // ---------------------------------------------------------------------------
 
@@ -217,7 +254,7 @@ export function pickRoundRobin(
   const picks: RoundRobinPick[] = [];
   const taken = new Set<string>(exclude);
   const cursor = new Array<number>(queryUris.length).fill(0);
-  for (let pass = 0; pass < 50 && picks.length < target; pass++) {
+  while (picks.length < target) {
     let anyNew = false;
     for (let i = 0; i < queryUris.length && picks.length < target; i++) {
       const list = queryUris[i];
@@ -275,7 +312,7 @@ export function registerExhaust2ExtraTools(server: McpServer, client: SpotifyCli
   // 1. playlist_fill_from_search (#398)
   server.tool(
     'playlist_fill_from_search',
-    'Grow a playlist to N items from search queries you supply: round-robin one pick per query per pass, first unseen track match wins, chunked adds. Complements listening-data grow_playlist. Quota: 🟡 len(queries) searches + chunked adds.',
+    'Grow a playlist to N items from search queries you supply: round-robin one pick per query per pass, first unseen track match wins, pages each query in Spotify-compliant 10-result requests, then performs chunked adds. Complements listening-data grow_playlist. Quota: 🟡 one or more 10-result search pages per query + chunked adds.',
     {
       playlist_id: z.string().describe('Playlist to grow (ID or spotify:playlist: URI)'),
       queries: z.array(z.string().min(1)).min(1).max(25).describe('Search queries, cycled round-robin (1–25)'),
@@ -292,30 +329,63 @@ export function registerExhaust2ExtraTools(server: McpServer, client: SpotifyCli
       const meta = await client.get<{ id?: string; name?: string }>(`/playlists/${encodeURIComponent(id)}`);
       if (!meta) throw new Error(`Playlist "${args.playlist_id}" not found`);
       const existing = new Set(await fetchPlaylistUris(client, id));
-      const perQuery: string[][] = [];
-      for (const q of args.queries) {
-        const body = await client.get<{ tracks?: { items?: Array<{ uri?: string }> } }>(
-          '/search',
-          { q, type: 'track', limit: '20', ...(args.market ? { market: args.market } : {}) },
+      const perQuery: string[][] = args.queries.map(() => []);
+      const nextOffsets = args.queries.map(() => 0);
+      const pagesFetched = args.queries.map(() => 0);
+      const exhausted = args.queries.map(() => false);
+      const target = args.target_count ?? 20;
+
+      const fetchNextPage = async (queryIndex: number): Promise<void> => {
+        if (exhausted[queryIndex]) return;
+        const page = await fetchTrackSearchPage(
+          client,
+          args.queries[queryIndex]!,
+          nextOffsets[queryIndex]!,
+          args.market,
         );
-        perQuery.push((body?.tracks?.items ?? []).map((t) => t.uri ?? '').filter((u) => u.startsWith('spotify:')));
+        const seen = new Set(perQuery[queryIndex]);
+        for (const uri of page.uris) {
+          if (!seen.has(uri)) {
+            perQuery[queryIndex]!.push(uri);
+            seen.add(uri);
+          }
+        }
+        nextOffsets[queryIndex] = nextOffsets[queryIndex]! + SPOTIFY_SEARCH_MAX_LIMIT;
+        pagesFetched[queryIndex] = pagesFetched[queryIndex]! + 1;
+        exhausted[queryIndex] = !page.hasMore;
+      };
+
+      for (let i = 0; i < args.queries.length; i++) await fetchNextPage(i);
+      let picks = pickRoundRobin(perQuery, args.queries, target, existing);
+      while (picks.length < target) {
+        const pending = exhausted.findIndex((done) => !done);
+        if (pending === -1) break;
+        await fetchNextPage(pending);
+        picks = pickRoundRobin(perQuery, args.queries, target, existing);
       }
-      const picks = pickRoundRobin(perQuery, args.queries, args.target_count ?? 20, existing);
       const byQuery = new Map<number, number>();
       for (const p of picks) byQuery.set(p.query_index, (byQuery.get(p.query_index) ?? 0) + 1);
       const planLines = [
         `Playlist "${meta.name ?? id}" (${existing.size} item(s)) + ${picks.length} search pick(s):`,
-        ...args.queries.map((q, i) => `  [${i}] "${q}" → ${byQuery.get(i) ?? 0} pick(s) (of ${perQuery[i]?.length ?? 0} result(s))`),
+        ...args.queries.map((q, i) => `  [${i}] "${q}" → ${byQuery.get(i) ?? 0} pick(s) (of ${perQuery[i]?.length ?? 0} candidate(s) across ${pagesFetched[i] ?? 0} page(s))`),
       ];
       const payload: Record<string, unknown> = {
         ok: true,
         playlist: id,
         playlist_name: meta.name ?? null,
         existing: existing.size,
-        target: args.target_count ?? 20,
+        target,
         added: picks.length,
         per_query: Object.fromEntries(args.queries.map((q, i) => [q, byQuery.get(i) ?? 0])),
         picks,
+        candidates_per_query: args.queries.map((query, query_index) => ({
+          query_index,
+          query,
+          candidates: perQuery[query_index]?.length ?? 0,
+          pages_searched: pagesFetched[query_index] ?? 0,
+          candidate_uris: perQuery[query_index] ?? [],
+          exhausted: exhausted[query_index] ?? true,
+        })),
       };
       if (dry) {
         return shape(

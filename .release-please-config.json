@@ -5,6 +5,58 @@
     ".": {
       "package-name": "@novalux12/spotify-mcp",
       "include-component-in-tag": false,
+      "changelog-sections": [
+        {
+          "type": "feat",
+          "section": "Features"
+        },
+        {
+          "type": "fix",
+          "section": "Bug Fixes"
+        },
+        {
+          "type": "perf",
+          "section": "Performance Improvements"
+        },
+        {
+          "type": "deps",
+          "section": "Dependencies"
+        },
+        {
+          "type": "revert",
+          "section": "Reverts"
+        },
+        {
+          "type": "docs",
+          "section": "Documentation",
+          "hidden": false
+        },
+        {
+          "type": "test",
+          "section": "Tests",
+          "hidden": false
+        },
+        {
+          "type": "refactor",
+          "section": "Code Refactoring",
+          "hidden": false
+        },
+        {
+          "type": "style",
+          "section": "Styles",
+          "hidden": false
+        },
+        {
+          "type": "chore",
+          "section": "Miscellaneous Chores",
+          "hidden": false
+        },
+        {
+          "type": "ci",
+          "section": "Continuous Integration",
+          "hidden": false
+        }
+      ],
       "extra-files": [
         {
           "type": "json",

@@ -237,7 +237,7 @@ test('get_artist_albums sends default include_groups and limit params', async ()
   assert.match(out, /"A Night at the Opera" by Queen \(album, 1975-10-31, 12 tracks\)/);
 });
 
-test('get_artist_albums forwards custom include_groups and limit', async () => {
+test('get_artist_albums forwards custom groups with the canonical page limit', async () => {
   resetCatalogMarketCache();
   const { registered, calls } = makeHarness(registerCatalogTools, {
     getResponse: (path) =>
@@ -247,14 +247,48 @@ test('get_artist_albums forwards custom include_groups and limit', async () => {
   await invoke(findTool(registered, 'get_artist_albums'), {
     id: 'art1',
     include_groups: ['appears_on', 'compilation'],
-    limit: 50,
+    limit: 10,
   });
 
   assert.deepEqual(calls.find((c) => c.path === '/artists/art1/albums')!.params, {
     include_groups: 'appears_on,compilation',
-    limit: '50',
+    limit: '10',
     offset: '0',
   });
+});
+
+test('get_artist_albums schema rejects limits above the canonical page cap', () => {
+  const { registered } = makeHarness(registerCatalogTools);
+  const schema = findTool(registered, 'get_artist_albums').schema;
+  assert.equal(schema.limit.safeParse(11).success, false);
+  assert.equal(schema.limit.safeParse(10).success, true);
+});
+
+test('get_artist_albums fetch_all pages at 10 and omits an absent market', async () => {
+  resetCatalogMarketCache();
+  const calls: Call[] = [];
+  const client = {
+    get: async (path: string, params?: Record<string, string>) => {
+      calls.push({ method: 'GET', path, ...(params === undefined ? {} : { params }) });
+      return null;
+    },
+    getAllPages: async (path: string, params?: Record<string, string>) => {
+      calls.push({ method: 'GET', path, params });
+      assert.equal(params?.limit, '10');
+      assert.equal(params?.market, undefined);
+      return [];
+    },
+    post: async () => null,
+    put: async () => undefined,
+    delete: async () => undefined,
+  };
+  const registered: RegisteredTool[] = [];
+  const server = {
+    tool: (name: string, description: string, schema: RegisteredTool['schema'], handler: RegisteredTool['handler']) => registered.push({ name, description, schema, handler }),
+  };
+  registerCatalogTools(server as never, client as never);
+  await invoke(findTool(registered, 'get_artist_albums'), { id: 'art1', fetch_all: true });
+  assert.deepEqual(calls, [{ method: 'GET', path: '/artists/art1/albums', params: { include_groups: 'album,single', limit: '10' } }]);
 });
 
 // ------------------------------------------------------------------ get_album

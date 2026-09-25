@@ -66,6 +66,114 @@ Common types: `feat`, `fix`, `docs`, `test`, `refactor`, `chore`, `ci`.
 - **Changelog is automated.** Release notes/version bumps are handled by release automation from Conventional Commit messages — do not edit CHANGELOG entries manually.
 - Keep PRs focused: one logical change per PR. Update the PR template checklist before submitting.
 
+## Releasing
+
+Releases are cut from `main` by release-please. The release PR is the
+version-bump and changelog change; do not edit `CHANGELOG.md` or
+`package.json` by hand to create a release.
+
+### 1. Prepare and merge the release PR
+
+1. Merge the tested changes to `main` using Conventional Commit titles. A
+   `feat:` merge produces a minor release, while `fix:` and other patch-level
+   changes produce a patch release.
+2. Wait for the **Release Please** workflow to open its
+   `chore(main): release X.Y.Z` pull request. Review the generated version in
+   `package.json`, `.github/release-please-manifest.json`, and `server.json`,
+   plus the new `CHANGELOG.md` section. The configured changelog sections are
+   Features, Bug Fixes, Performance Improvements, Dependencies, Reverts,
+   Documentation, Tests, Code Refactoring, Styles, Miscellaneous Chores, and
+   Continuous Integration.
+3. Merge the release PR only after the normal `CI` check is green. Release
+   Please then creates the `vX.Y.Z` tag and GitHub release.
+
+```bash
+RELEASE_PR="$(gh pr list --state open --search 'chore(main): release' \
+  --json number --jq '.[0].number')"
+test -n "$RELEASE_PR"
+VERSION="$(gh pr view "$RELEASE_PR" --json title \
+  --jq '.title | split("release ")[1]')"
+TAG="v${VERSION}"
+
+gh pr view "$RELEASE_PR"
+gh pr merge "$RELEASE_PR" --merge
+gh release view "$TAG" --json tagName,isDraft,isPrerelease,url
+```
+
+`gh release view` should show the requested tag and a published (not draft)
+release. If release-please did not open a PR, inspect the **Release Please**
+run on the latest `main` push before creating a tag manually.
+
+### 2. Publish the tag (including the GITHUB_TOKEN trigger gap)
+
+`release.yml` creates the tag with `GITHUB_TOKEN`. GitHub does not start a
+workflow from a tag created by that token, so the tag push does **not** reliably
+start `publish.yml`. Manually dispatch the publish workflow at the tag after
+the GitHub release is visible:
+
+```bash
+gh workflow run publish.yml --ref "$TAG"
+
+RUN_ID="$(gh run list --workflow publish.yml --limit 20 \
+  --json databaseId,headBranch,status,conclusion,url \
+  --jq "map(select(.headBranch == \"${TAG}\")) | .[0].databaseId")"
+test -n "$RUN_ID"
+gh run watch "$RUN_ID" --exit-status
+```
+
+The `Publish` workflow checks out the tagged commit, runs `npm ci`,
+`npx tsc --noEmit`, `npm test`, and `npm run build`, publishes
+`@novalux12/spotify-mcp` with provenance (trusted publishing/OIDC or the
+configured `NPM_TOKEN` fallback), and then publishes `server.json` to the
+official MCP Registry using GitHub OIDC. A rerun is safe after a partial
+failure: the npm job skips a version that is already present and the registry
+job can be retried.
+
+
+### 3. Verify the published artifacts
+
+```bash
+git fetch --tags origin
+
+# npm: output must be the exact tag version (without the leading v).
+npm view "@novalux12/spotify-mcp@${VERSION}" version --json
+
+# The tagged metadata must have the same version in both locations.
+git show "${TAG}:server.json" | jq -e \
+  --arg version "$VERSION" \
+  '.version == $version and .packages[0].version == $version'
+
+# The latest Registry response must be this version and marked latest.
+curl --fail --silent --show-error \
+  "https://registry.modelcontextprotocol.io/v0/servers/io.github.NovaLux12%2Fspotify-mcp-server/versions/latest" \
+  | jq -e --arg version "$VERSION" \
+      '.server.version == $version
+       and ._meta["io.modelcontextprotocol.registry/official"].isLatest == true'
+```
+
+Expected results are the exact version (for example, `1.30.1`), `true` for
+the `server.json` check, and `true` for the Registry check. Also inspect the
+workflow URL printed by `gh run view "$RUN_ID"` if any verification fails.
+
+### Rollback and recovery
+
+- **Before the tag:** do not merge the release PR. Correct the Conventional
+  Commit or release input on `main`; release-please will prepare a new release
+  PR. Never manufacture a tag to bypass release-please.
+- **After the tag but before/during publishing:** keep the tag, fix the
+  workflow or release metadata on `main`, merge that fix, and rerun the
+  publish workflow for the same tag with `gh run rerun "$RUN_ID" --failed`.
+  The workflow's version check makes the npm step idempotent. Then repeat all
+  three artifact checks above.
+- **A published version is immutable:** do not retag or try to overwrite the
+  same npm version. If the artifact is unsafe, deprecate the npm version with
+  `npm deprecate "@novalux12/spotify-mcp@${VERSION}" "Please upgrade to a fixed release"`,
+  mark the MCP Registry version `deprecated` through the registry's normal
+  status-management path, and cut a new patch release containing the fix.
+- **A failed check after publication:** record the failed check and its run
+  URL, recover the service with a patch release, and retain the original tag
+  and changelog for traceability.
+
 ## Filing issues
 
 Please use the issue templates:

@@ -8,6 +8,12 @@ import { getConfig } from '../config.js';
 import { SpotifyApiError } from '../client.js';
 import { DryRun, ResponseFormat } from '../shaping.js';
 import type { PlaylistItemObject } from '../types/spotify.js';
+import {
+  confirmViaElicitation,
+  describeConfirmation,
+  refusalFor,
+  REMOVE_ELICIT_THRESHOLD,
+} from './confirm.js';
 
 type TextContent = { type: 'text'; text: string };
 type ToolResult = { content: TextContent[]; structuredContent?: Record<string, unknown> };
@@ -246,11 +252,11 @@ export function registerPlaylistHealthTools(server: McpServer, client: SpotifyCl
 
   server.tool(
     'remove_unavailable_playlist_items',
-    'Remove unavailable (null track) items from a playlist — actionable companion to playlist_health_check. Targets only unavailable occurrences by position so healthy copies are preserved. Read-only dry_run preview available.',
+    'Remove unavailable (null track) rows from a playlist — actionable companion to playlist_health_check. Targets only unavailable occurrences by validated position, highest first, so healthy copies are preserved. Read-only dry_run preview available.',
     {
       playlist_id: z.string().min(1).describe('Playlist ID or Spotify URL/URI'),
       dry_run: z.boolean().optional().describe('Preview only — no writes'),
-      max_results: z.number().int().min(1).max(100).optional().describe('Max unavailable items to remove (default 100)'),
+      max_removals: z.number().int().min(1).optional().describe('Destructive cap: maximum unavailable playlist rows to remove; defaults to all detected unavailable rows'),
       response_format: ResponseFormat,
     },
     async (args) => {
@@ -258,18 +264,75 @@ export function registerPlaylistHealthTools(server: McpServer, client: SpotifyCl
       let playlistId = raw;
       try { const m = raw.match(/playlist\/([a-zA-Z0-9]+)/); if(m) playlistId = m[1]; const m2 = raw.match(/spotify:playlist:([a-zA-Z0-9]+)/); if(m2) playlistId = m2[1]; } catch {}
       const encId = encodeURIComponent(playlistId);
-      const items = await client.getAllPages<PlaylistItemObject>(`/playlists/${encId}/items`, { limit: '100' }, { maxItems: getConfig().fetchAllCap });
-      const unavailable: Array<{ position: number; uri: string }> = [];
-      for (let i=0;i<items.length;i++) { const row = (items[i] as any); if (!row.item) unavailable.push({ position: i, uri: `spotify:track:unavailable:${i}` }); }
-      if (unavailable.length===0) return textResult(`No unavailable items in playlist ${playlistId} (${items.length} tracks).`, { playlist_id: playlistId, total: items.length, unavailable_count: 0, removed: 0 });
-      const toRemove = unavailable.slice(0, args.max_results ?? 100);
-      if (args.dry_run) return textResult(`[dry run] Would remove ${toRemove.length} unavailable item(s) from playlist ${playlistId} at positions ${toRemove.map(r=>r.position).join(', ')}.`, { ok: true, dry_run: true, playlist_id: playlistId, would_remove: toRemove.length, positions: toRemove.map(r=>r.position) });
-      // Use positions targeting: Spotify expects { tracks: [{ uri, positions }] } for precise removal
-      const snapshotRes = await client.delete<{ snapshot_id?: string }>(`/playlists/${encId}/items`, { tracks: toRemove.map(r=>({ uri: r.uri, positions: [r.position] })) } as any);
-      // Re-scan
-      const after = await client.getAllPages<PlaylistItemObject>(`/playlists/${encId}/items`, { limit: '100' }, { maxItems: getConfig().fetchAllCap }).catch(()=>[] as any);
-      const remaining = (after as any[]).filter((r:any)=>!r.item).length;
-      return textResult(`Removed ${toRemove.length} unavailable item(s) from playlist ${playlistId}. Remaining unavailable: ${remaining}. Snapshot: ${snapshotRes?.snapshot_id ?? 'n/a'}`, { ok: true, playlist_id: playlistId, removed: toRemove.length, remaining_unavailable: remaining, snapshot_id: snapshotRes?.snapshot_id ?? null, positions_removed: toRemove.map(r=>r.position) });
+      const itemsPath = `/playlists/${encId}/items`;
+      const items = await client.getAllPages<PlaylistItemObject>(itemsPath, { limit: '100' }, { maxItems: getConfig().fetchAllCap });
+      const unavailable: Array<{ position: number }> = [];
+      for (let i = 0; i < items.length; i++) {
+        const item = items[i]?.item;
+        if (item === null || item === undefined) unavailable.push({ position: i });
+      }
+      if (unavailable.length === 0) {
+        return textResult(`No unavailable items in playlist ${playlistId} (${items.length} tracks).`, { ok: true, playlist_id: playlistId, total: items.length, unavailable_count: 0, removed: 0, removed_positions: [], verification: 'verified' });
+      }
+      const toRemove = unavailable.slice(0, args.max_removals ?? unavailable.length);
+      // Validate every target before the first write. Unavailable rows have no
+      // URI; sending a made-up URI would target the wrong Spotify resource.
+      for (const row of toRemove) {
+        const item = items[row.position]?.item;
+        if (!Number.isSafeInteger(row.position) || row.position < 0 || row.position >= items.length || (item !== null && item !== undefined)) {
+          return textResult(`Cannot remove unavailable items: invalid or stale position ${row.position}.`, { ok: false, playlist_id: playlistId, verification: 'invalid_target' });
+        }
+      }
+      const positions = toRemove.map((row) => row.position);
+      if (args.dry_run) {
+        return textResult(`[dry run] Would remove ${toRemove.length} unavailable item(s) from playlist ${playlistId} at positions ${positions.join(', ')}.`, { ok: true, dry_run: true, playlist_id: playlistId, would_remove: toRemove.length, removed_positions: positions, verification: 'dry_run' });
+      }
+      if (toRemove.length >= REMOVE_ELICIT_THRESHOLD) {
+        const verdict = await confirmViaElicitation(server, {
+          message: describeConfirmation('remove unavailable rows from playlist', playlistId, [
+            `Remove ${toRemove.length} unavailable row(s) at positions ${positions.join(', ')}:`,
+          ]),
+        });
+        const refusal = refusalFor(verdict);
+        if (refusal) return textResult(refusal.message, refusal.payload);
+      }
+      // Delete from the end so earlier positions do not shift. A position-only
+      // track object is intentional: Spotify returned null for these rows, so
+      // there is no legitimate URI to send.
+      let snapshotId: string | null = null;
+      for (const row of [...toRemove].sort((a, b) => b.position - a.position)) {
+        const result = await client.delete<{ snapshot_id?: string }>(itemsPath, { tracks: [{ positions: [row.position] }] });
+        if (result?.snapshot_id) snapshotId = result.snapshot_id;
+      }
+      let after: PlaylistItemObject[];
+      try {
+        after = await client.getAllPages<PlaylistItemObject>(itemsPath, { limit: '100' }, { maxItems: getConfig().fetchAllCap });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        return textResult(`Removal write completed, but post-write verification is unavailable for playlist ${playlistId}: ${message}`, {
+          ok: false,
+          playlist_id: playlistId,
+          verification: 'unavailable',
+          verification_unavailable: true,
+          removed: null,
+          removed_positions: null,
+          remaining_positions: null,
+          snapshot_id: snapshotId,
+          error: message,
+        });
+      }
+      const remainingPositions: number[] = [];
+      for (let i = 0; i < after.length; i++) {
+        const item = after[i]?.item;
+        if (item === null || item === undefined) remainingPositions.push(i);
+      }
+      const removed = unavailable.length - remainingPositions.length;
+      const verified = removed === toRemove.length && remainingPositions.length === 0;
+      const result = { playlist_id: playlistId, removed, removed_positions: positions, remaining_unavailable: remainingPositions.length, remaining_positions: remainingPositions, snapshot_id: snapshotId, verification: verified ? 'verified' : 'failed' };
+      if (!verified) {
+        return textResult(`Post-write verification failed for playlist ${playlistId}: ${remainingPositions.length} unavailable row(s) remain at positions ${remainingPositions.join(', ')}.`, { ok: false, ...result });
+      }
+      return textResult(`Removed ${removed} unavailable item(s) from playlist ${playlistId}. Remaining unavailable: ${remainingPositions.length}. Snapshot: ${snapshotId ?? 'n/a'}`, { ok: true, ...result });
     },
   );
 

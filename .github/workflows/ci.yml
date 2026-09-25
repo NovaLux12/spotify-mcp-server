@@ -8,13 +8,19 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     name: Typecheck & test (Node ${{ matrix.node-version }})
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     strategy:
+      fail-fast: false
       matrix:
-        node-version: [22.x]
+        node-version: [22.x, 24.x]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
@@ -30,5 +36,16 @@ jobs:
       - name: Typecheck
         run: npx tsc --noEmit
 
-      - name: Test
-        run: npm test
+      - name: Test with count and coverage gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run test:coverage | tee test-results.tap
+          test_count="$(sed -n 's/^# tests \([0-9][0-9]*\)$/\1/p' test-results.tap | sed -n '$p')"
+          pass_count="$(sed -n 's/^# pass \([0-9][0-9]*\)$/\1/p' test-results.tap | sed -n '$p')"
+          fail_count="$(sed -n 's/^# fail \([0-9][0-9]*\)$/\1/p' test-results.tap | sed -n '$p')"
+          test -n "$test_count" && test "$test_count" -ge 100
+          test -n "$pass_count" && test "$pass_count" -eq "$test_count"
+          test -n "$fail_count" && test "$fail_count" -eq 0
+          grep -q '^# start of coverage report' test-results.tap
+          grep -q '^# end of coverage report' test-results.tap

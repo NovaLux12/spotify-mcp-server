@@ -140,6 +140,7 @@ test('registers 8 catalog templates plus their {+qs} query twins', async () => {
     'spotify://track/{id}',
     'spotify://track/{id}{+qs}',
   ]);
+  assert.ok(templates.resourceTemplates.every((template) => template.mimeType === 'text/plain'));
 });
 
 // ------------------------------------------------------------ URI parsing
@@ -245,6 +246,35 @@ test('bare URIs render prose; ?format=json returns raw payload per template', as
 
   const episodeJson = await mcp.readResource({ uri: 'spotify://episode/ep1?format=json' });
   assert.deepEqual(JSON.parse(episodeJson.contents[0]?.text ?? '{}'), episodeFull);
+});
+
+test('playlist resource prefers canonical items total and falls back to legacy tracks', async () => {
+  const { client } = makeClientStub({
+    getResponse: (path) => {
+      if (path === '/playlists/canonical') {
+        return {
+          id: 'canonical', name: 'Canonical', uri: 'spotify:playlist:canonical',
+          owner: { id: 'owner' }, items: { total: 42 }, tracks: { total: 3 },
+        };
+      }
+      if (path === '/playlists/legacy') {
+        return {
+          id: 'legacy', name: 'Legacy', uri: 'spotify:playlist:legacy',
+          owner: { id: 'owner' }, tracks: { total: 7 },
+        };
+      }
+      return null;
+    },
+  });
+  const mcp = await connect(client);
+
+  const canonical = await mcp.readResource({ uri: 'spotify://playlist/canonical' });
+  assert.match(canonical.contents[0]?.text ?? '', /Tracks: 42/);
+  const raw = await mcp.readResource({ uri: 'spotify://playlist/canonical?format=json' });
+  assert.equal((JSON.parse(raw.contents[0]?.text ?? '{}') as { items: { total: number } }).items.total, 42);
+
+  const legacy = await mcp.readResource({ uri: 'spotify://playlist/legacy' });
+  assert.match(legacy.contents[0]?.text ?? '', /Tracks: 7/);
 });
 
 test('artist-albums prose lists albums; ?format=json aggregates pages with truncation flag', async () => {

@@ -20,6 +20,7 @@ import {
   ResponseFormat,
   MaxResults,
   resolveMaxResults,
+  completenessFooter,
   truncateItems,
 } from '../shaping.js';
 import type { ResponseFormatValue } from '../shaping.js';
@@ -91,7 +92,11 @@ interface AnalysisResult {
     liked_tracks: number;
     skipped_unplayable: number;
     album_groups: number;
+    fetched: number;
+    cap: number;
     fetch_all_cap: number;
+    snapshot_state: 'complete' | 'partial';
+    complete: boolean;
     tracks_truncated_by_cap: boolean;
   };
   album_lookups: {
@@ -143,11 +148,13 @@ async function analyze(
   // when recent throttle pressure exists; idle clients keep the full cap.
   const lookupCap = Math.min(ALBUM_LOOKUP_CAP, quotaWindowRemaining(client));
   const lookupShrunk = lookupCap < ALBUM_LOOKUP_CAP;
-  const saved = await client.getAllPages<SavedTrackItem>(
+  const walked = await client.getAllPages<SavedTrackItem>(
     '/me/tracks',
     { limit: '50' },
-    { maxItems: fetchAllCap },
+    { maxItems: fetchAllCap + 1 },
   );
+  const tracksTruncatedByCap = walked.length > fetchAllCap;
+  const saved = walked.slice(0, fetchAllCap);
 
   // ---- Group liked tracks by parent album ---------------------------------
   let skippedUnplayable = 0;
@@ -287,8 +294,12 @@ async function analyze(
       liked_tracks: saved.length,
       skipped_unplayable: skippedUnplayable,
       album_groups: groups.length,
+      fetched: saved.length,
+      cap: fetchAllCap,
       fetch_all_cap: fetchAllCap,
-      tracks_truncated_by_cap: saved.length >= fetchAllCap,
+      snapshot_state: tracksTruncatedByCap ? 'partial' : 'complete',
+      complete: !tracksTruncatedByCap,
+      tracks_truncated_by_cap: tracksTruncatedByCap,
     },
     album_lookups: {
       made: lookups,
@@ -319,8 +330,12 @@ function renderProse(result: AnalysisResult, maxResults: number): string {
     `Scanned ${scanned.liked_tracks} liked track${scanned.liked_tracks === 1 ? '' : 's'} `
       + `across ${scanned.album_groups} album${scanned.album_groups === 1 ? '' : 's'}`
       + `${scanned.skipped_unplayable ? ` (${scanned.skipped_unplayable} unplayable/local entries skipped)` : ''}. `
-      + `Fetch-all cap ${scanned.fetch_all_cap} `
-      + `${scanned.tracks_truncated_by_cap ? 'REACHED — older saved tracks were NOT analyzed' : 'not reached'}.`,
+      + `${completenessFooter({
+        fetched: scanned.fetched,
+        cap: scanned.cap,
+        truncated: scanned.tracks_truncated_by_cap,
+        subject: 'liked tracks',
+      })}.`,
   );
   lines.push(
     `Album lookups: ${album_lookups.made} made (cap ${album_lookups.cap} `

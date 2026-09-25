@@ -152,33 +152,39 @@ function chronological(items: RecentlyPlayedItem[]): RecentlyPlayedItem[] {
 }
 
 /**
- * Walk /me/player/recently-played by its `after` cursor. Newest entries come
- * first; at most 10 cursor pages of 50 (API hard cap ≈ 50 recent items of
- * depth in practice, but the walk stays correct regardless).
+ * Walk /me/player/recently-played toward older history. Spotify returns a
+ * freshest-first page whose `cursors.after` must be supplied as `before` on
+ * the next request. At most 10 cursor pages of 50.
  */
 async function walkRecentlyPlayed(
   client: SpotifyClient,
   maxItems: number,
 ): Promise<{ items: RecentlyPlayedItem[]; pages: number }> {
   const items: RecentlyPlayedItem[] = [];
-  let afterCursor: string | undefined;
+  const seen = new Set<string>();
+  let beforeCursor: string | undefined;
   let pages = 0;
   while (pages < 10) {
     const params: Record<string, string> = { limit: String(RECENT_PAGE) };
-    if (afterCursor !== undefined) params.after = afterCursor;
+    if (beforeCursor !== undefined) params.before = beforeCursor;
     const page: RecentlyPlayedResponse | null = await client.get<RecentlyPlayedResponse>(
       '/me/player/recently-played',
       params,
     );
     pages += 1;
-    const rows = (page?.items ?? []).filter((r) => r?.track?.id);
-    items.push(...rows);
-    if (items.length >= maxItems) {
-      items.length = maxItems;
-      break;
+    for (const row of page?.items ?? []) {
+      if (!row?.track?.id) continue;
+      const key = JSON.stringify([row.played_at, row.track.id]);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      items.push(row);
+      if (items.length >= maxItems) {
+        items.length = maxItems;
+        break;
+      }
     }
-    if (!page?.cursors?.after || rows.length < RECENT_PAGE) break;
-    afterCursor = page.cursors.after;
+    if (items.length >= maxItems || !page?.next || !page.cursors?.after) break;
+    beforeCursor = page.cursors.after;
   }
   return { items, pages };
 }

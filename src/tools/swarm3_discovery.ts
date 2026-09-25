@@ -247,6 +247,24 @@ function latestDated(rows: ReleaseRow[]): ReleaseRow | null {
   return best;
 }
 
+interface ArtistProbeResult {
+  latest: ReleaseRow | null;
+  error: string | null;
+}
+
+/** Probe one artist's latest release without turning a failed request into a quiet artist. */
+async function probeArtistLatestRelease(client: SpotifyClient, artistId: string): Promise<ArtistProbeResult> {
+  try {
+    const probe = await client.get<{ items?: ReleaseRow[] }>(
+      `/artists/${encodeURIComponent(artistId)}/albums`,
+      { include_groups: 'album,single', limit: '5' },
+    );
+    return { latest: latestDated(probe?.items ?? []), error: null };
+  } catch (error) {
+    return { latest: null, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
 /** ASCII histogram bar scaled to the max bucket. */
 function bar(count: number, max: number, width = 30): string {
   if (max <= 0 || count <= 0) return '';
@@ -1160,17 +1178,16 @@ export function registerSwarm3DiscoveryTools(server: McpServer, client: SpotifyC
       if (followed.length === 0) throw new Error('You follow no artists (or the follow scope is missing)');
       const additions: Array<Record<string, unknown>> = [];
       const quiet: Array<{ id: string; name: string; latest: string | null }> = [];
+      const probeFailures: Array<{ id: string; name: string; error: string }> = [];
+      let artistsProbed = 0;
       for (const a of followed) {
-        let latest: ReleaseRow | null = null;
-        try {
-          const probe = await client.get<{ items: ReleaseRow[] }>(
-            `/artists/${encodeURIComponent(a.id)}/albums`,
-            { include_groups: 'album,single', limit: '5' },
-          );
-          latest = latestDated(probe?.items ?? []);
-        } catch {
-          latest = null;
+        const probe = await probeArtistLatestRelease(client, a.id);
+        if (probe.error !== null) {
+          probeFailures.push({ id: a.id, name: a.name, error: probe.error });
+          continue;
         }
+        artistsProbed += 1;
+        const latest = probe.latest;
         if (!latest || tsOf(latest.release_date) === null) {
           quiet.push({ id: a.id, name: a.name, latest: null });
           continue;
@@ -1199,10 +1216,16 @@ export function registerSwarm3DiscoveryTools(server: McpServer, client: SpotifyC
           : '(nothing new in the window)',
         '',
         `${quiet.length} followed artist${quiet.length === 1 ? '' : 's'} had no release in the window.`,
+        ...(probeFailures.length
+          ? [`these artists could not be checked: ${probeFailures.map((f) => `${f.name} (${f.id}) — ${f.error}`).join('; ')}.`]
+          : []),
       ];
       return emit(rf, lines.join('\n'), {
         window_days: windowDays,
         followed_scanned: followed.length,
+        artists_probed: artistsProbed,
+        artists_failed: probeFailures.length,
+        probe_failures: probeFailures,
         additions,
         quiet_count: quiet.length,
         quiet,
@@ -1649,17 +1672,16 @@ export function registerSwarm3DiscoveryTools(server: McpServer, client: SpotifyC
       if (artists.length === 0) throw new Error('No top artists returned for this window — listen a little more first');
       const fresh: Array<Record<string, unknown>> = [];
       const quiet: Array<{ id: string; name: string; latest_name: string | null; latest_date: string | null }> = [];
+      const probeFailures: Array<{ id: string; name: string; error: string }> = [];
+      let artistsProbed = 0;
       for (const a of artists) {
-        let latest: ReleaseRow | null = null;
-        try {
-          const probe = await client.get<{ items: ReleaseRow[] }>(
-            `/artists/${encodeURIComponent(a.id)}/albums`,
-            { include_groups: 'album,single', limit: '5' },
-          );
-          latest = latestDated(probe?.items ?? []);
-        } catch {
-          latest = null;
+        const probe = await probeArtistLatestRelease(client, a.id);
+        if (probe.error !== null) {
+          probeFailures.push({ id: a.id, name: a.name, error: probe.error });
+          continue;
         }
+        artistsProbed += 1;
+        const latest = probe.latest;
         if (!latest || tsOf(latest.release_date) === null) {
           quiet.push({ id: a.id, name: a.name, latest_name: null, latest_date: null });
           continue;
@@ -1688,11 +1710,16 @@ export function registerSwarm3DiscoveryTools(server: McpServer, client: SpotifyC
           : '(no fresh releases in the window)',
         '',
         `${quiet.length} top artist${quiet.length === 1 ? '' : 's'} quiet in the window.`,
+        ...(probeFailures.length
+          ? [`these artists could not be checked: ${probeFailures.map((f) => `${f.name} (${f.id}) — ${f.error}`).join('; ')}.`]
+          : []),
       ];
       return emit(rf, lines.join('\n'), {
         window: args.window ?? 'medium_term',
         window_days: windowDays,
-        artists_probed: artists.length,
+        artists_probed: artistsProbed,
+        artists_failed: probeFailures.length,
+        probe_failures: probeFailures,
         fresh,
         quiet,
       });
@@ -1729,17 +1756,16 @@ export function registerSwarm3DiscoveryTools(server: McpServer, client: SpotifyC
       const sections: string[] = [`Discovery digest (window: ${windowDays} days)`, ''];
       const payload: Record<string, unknown> = { window_days: windowDays, top_genre: topGenre };
       const latest: Array<Record<string, unknown>> = [];
+      const probeFailures: Array<{ id: string; name: string; error: string }> = [];
+      let artistsProbed = 0;
       for (const a of artists) {
-        let rel: ReleaseRow | null = null;
-        try {
-          const probe = await client.get<{ items: ReleaseRow[] }>(
-            `/artists/${encodeURIComponent(a.id)}/albums`,
-            { include_groups: 'album,single', limit: '5' },
-          );
-          rel = latestDated(probe?.items ?? []);
-        } catch {
-          rel = null;
+        const probe = await probeArtistLatestRelease(client, a.id);
+        if (probe.error !== null) {
+          probeFailures.push({ id: a.id, name: a.name, error: probe.error });
+          continue;
         }
+        artistsProbed += 1;
+        const rel = probe.latest;
         if (rel && tsOf(rel.release_date) !== null) {
           const age = daysBetween(tsOf(rel.release_date) as number, nowMs());
           latest.push({
@@ -1757,6 +1783,9 @@ export function registerSwarm3DiscoveryTools(server: McpServer, client: SpotifyC
         const ar = x.artist as { name: string };
         return `  - ${ar.name} — "${r.name}" (${r.release_date ?? '?'}, ${x.days_ago}d ago${x.fresh ? ', FRESH' : ''})`;
       }).join('\n') || '  (no dated releases found)');
+      if (probeFailures.length) {
+        sections.push(`these artists could not be checked: ${probeFailures.map((f) => `${f.name} (${f.id}) — ${f.error}`).join('; ')}.`);
+      }
       sections.push('');
       const q = topGenre ? `genre:"${topGenre}" tag:new` : 'tag:new';
       const fresh = await runSearch<SpotifyAlbumItem>(client, 'albums', 'album', q, 5, args.market);
@@ -1775,6 +1804,9 @@ export function registerSwarm3DiscoveryTools(server: McpServer, client: SpotifyC
       payload.latest_from_top_artists = latest;
       payload.tag_new_albums = fresh.items;
       payload.followed_artists_count = followed;
+      payload.artists_probed = artistsProbed;
+      payload.artists_failed = probeFailures.length;
+      payload.probe_failures = probeFailures;
       return emit(rf, sections.join('\n'), payload);
     },
   );

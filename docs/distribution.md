@@ -65,6 +65,55 @@ claude mcp add spotify -- npx -y @novalux12/spotify-mcp
 First run performs the PKCE browser auth (`npm run auth` headless variant
 available). Requires a Spotify developer app with Web API access.
 
+## Release and publish runbook
+
+Distribution is a two-stage release. The `Release Please` workflow opens a
+version-bump PR on `main`; merging it creates the `vX.Y.Z` tag and GitHub
+release. The `Publish` workflow is the only publisher: it runs the locked
+install, typecheck, tests, and build, then publishes the npm package and the
+versioned `server.json` to the official MCP Registry.
+
+Because release-please creates the tag with `GITHUB_TOKEN`, GitHub suppresses
+the tag event that would normally start `Publish`. After the release is
+visible, dispatch it explicitly at the tag:
+
+```bash
+VERSION="X.Y.Z"                 # replace with the release PR version
+TAG="v${VERSION}"
+
+gh release view "$TAG" --json tagName,isDraft,isPrerelease,url
+gh workflow run publish.yml --ref "$TAG"
+RUN_ID="$(gh run list --workflow publish.yml --limit 20 \
+  --json databaseId,headBranch,status,conclusion,url \
+  --jq "map(select(.headBranch == \"${TAG}\")) | .[0].databaseId")"
+test -n "$RUN_ID"
+gh run watch "$RUN_ID" --exit-status
+```
+
+Verify every distribution surface before announcing the release:
+
+```bash
+git fetch --tags origin
+
+npm view "@novalux12/spotify-mcp@${VERSION}" version --json
+git show "${TAG}:server.json" | jq -e --arg version "$VERSION" \
+  '.version == $version and .packages[0].version == $version'
+curl --fail --silent --show-error \
+  "https://registry.modelcontextprotocol.io/v0/servers/io.github.NovaLux12%2Fspotify-mcp-server/versions/latest" \
+  | jq -e --arg version "$VERSION" \
+      '.server.version == $version
+       and ._meta["io.modelcontextprotocol.registry/official"].isLatest == true'
+```
+
+The npm command must print the exact version without the leading `v`; both
+`server.json` checks and the Registry `isLatest` check must return `true`.
+The publish workflow skips an npm version that is already present, so a
+partial failure is recovered with `gh run rerun "$RUN_ID" --failed`; do not
+retag or overwrite an already published version. Deprecate an unsafe npm
+version with `npm deprecate`, mark the corresponding Registry version
+deprecated through the Registry status path, and ship a new patch release with
+the fix.
+
 ## Claim checklist
 
 - [ ] Smithery: https://smithery.ai — repo already carries `smithery.yaml`

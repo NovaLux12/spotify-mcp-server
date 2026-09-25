@@ -10,7 +10,7 @@ import {
 
 type ToolContent = { content: Array<{ type: string; text: string }>; structuredContent?: Record<string, unknown> };
 type RegisteredTool = { name: string; description: string; schema: Record<string, unknown>; handler: (a: Record<string, unknown>) => Promise<ToolContent> };
-type Call = { method: string; path: string; body?: unknown };
+type Call = { method: string; path: string; params?: Record<string, unknown>; body?: unknown };
 
 interface FakeClient {
   get: (path: string, params?: Record<string, unknown>) => Promise<unknown>;
@@ -24,11 +24,13 @@ function makeFakeClient(routes: Record<string, unknown>): FakeClient {
   const calls: Call[] = [];
   const self: FakeClient = {
     calls,
-    get: async (path) => {
-      calls.push({ method: 'GET', path });
+    get: async (path, params) => {
+      calls.push({ method: 'GET', path, params });
       const out = routes[path];
       if (out instanceof Error) throw out;
-      return out ?? null;
+      return typeof out === 'function'
+        ? (out as (params?: Record<string, unknown>) => unknown)(params)
+        : out ?? null;
     },
     post: async (path, body) => {
       calls.push({ method: 'POST', path, body });
@@ -163,6 +165,47 @@ test('playlist_fill_from_search dry run plans picks without POSTing', async () =
   assert.deepEqual(picks.map((x) => x.uri), ['spotify:track:2', 'spotify:track:3']);
   assert.match(text(r), /\[dry run\]/);
   assert.equal(client.calls.filter((c) => c.method === 'POST').length, 0);
+});
+
+test('playlist_fill_from_search caps each search page at 10 and pages deterministically', async () => {
+  const firstPage = Array.from({ length: 10 }, (_, i) => ({ uri: `spotify:track:${i + 1}` }));
+  const secondPage = Array.from({ length: 2 }, (_, i) => ({ uri: `spotify:track:${i + 11}` }));
+  const client = makeFakeClient({
+    '/playlists/mix1': { id: 'mix1', name: 'Mix' },
+    '/playlists/mix1/items': [],
+    '/search': (params?: Record<string, unknown>) => ({
+      tracks: { items: params?.offset === '10' ? secondPage : firstPage, total: 12 },
+    }),
+  });
+  const registered: RegisteredTool[] = [];
+  registerExhaust2ExtraTools(makeServer(registered), client);
+  const r = await find(registered, 'playlist_fill_from_search').handler({
+    playlist_id: 'mix1',
+    queries: ['alpha'],
+    target_count: 12,
+  });
+
+  const searchCalls = client.calls.filter((call) => call.path === '/search');
+  assert.deepEqual(searchCalls.map((call) => call.params), [
+    { q: 'alpha', type: 'track', limit: '10' },
+    { q: 'alpha', type: 'track', limit: '10', offset: '10' },
+  ]);
+  const payload = r.structuredContent as Record<string, unknown>;
+  assert.deepEqual(
+    (payload.candidates_per_query as Array<Record<string, unknown>>)[0],
+    {
+      query_index: 0,
+      query: 'alpha',
+      candidates: 12,
+      pages_searched: 2,
+      candidate_uris: Array.from({ length: 12 }, (_, i) => `spotify:track:${i + 1}`),
+      exhausted: true,
+    },
+  );
+  assert.deepEqual(
+    (payload.picks as Array<{ uri: string }>).map((pick) => pick.uri),
+    Array.from({ length: 12 }, (_, i) => `spotify:track:${i + 1}`),
+  );
 });
 
 test('playlist_fill_from_search commit adds chunked POSTs', async () => {

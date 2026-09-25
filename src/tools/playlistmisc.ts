@@ -104,7 +104,7 @@ export function registerPlaylistMiscTools(server: McpServer, client: SpotifyClie
 
   server.tool(
     'unpin_playlist',
-    'Unfollow (unpin) a playlist. DELETE /playlists/{id}/followers. Supports dry_run and elicitation for bulk use.',
+    'Unfollow (unpin) a playlist. DELETE /playlists/{id}/followers. Supports dry_run; writes require explicit confirmation unless SPOTIFY_MCP_CONFIRM=never.',
     {
       playlist_id: z.string().describe('Playlist ID to unfollow'),
       dry_run: DryRun,
@@ -121,6 +121,12 @@ export function registerPlaylistMiscTools(server: McpServer, client: SpotifyClie
       });
       if (verdict === 'declined') {
         return shapeResult(rf, 'Cancelled \u2014 nothing was changed.', { ok: false, cancelled: true });
+      }
+      if (verdict === 'error') {
+        throw new Error('Elicitation failed — refusing to unpin playlist without confirmation');
+      }
+      if (verdict === 'unsupported' && process.env.SPOTIFY_MCP_CONFIRM !== 'never') {
+        throw new Error('Elicitation unavailable — refusing to unpin playlist without confirmation');
       }
       await client.delete(`/playlists/${encodeURIComponent(args.playlist_id)}/followers`);
       return shapeResult(rf, `Unpinned playlist ${args.playlist_id}.`, { ok: true, playlist_id: args.playlist_id, pinned: false });

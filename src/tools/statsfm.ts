@@ -15,8 +15,6 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import {
   StatsfmClient,
   StatsfmApiError,
-  unwrapItem,
-  unwrapItems,
 } from '../lib/statsfm-client.js';
 import {
   ResponseFormat,
@@ -28,6 +26,60 @@ import {
 } from '../shaping.js';
 
 type J = Record<string, any>;
+
+function invalidResponse(path: string, detail: string): never {
+  throw new StatsfmApiError(200, `stats.fm invalid response for ${path}: ${detail}`);
+}
+
+function responseObject(body: unknown, path: string): J {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    invalidResponse(path, 'expected a JSON object');
+  }
+  return body as J;
+}
+
+function collectionItems(body: unknown, path: string): J[] {
+  const object = responseObject(body, path);
+  if (!Array.isArray(object.items)) invalidResponse(path, 'expected an items array');
+  return object.items;
+}
+
+function nullableItem(body: unknown, path: string): J | null {
+  const object = responseObject(body, path);
+  if (!Object.prototype.hasOwnProperty.call(object, 'item')) {
+    invalidResponse(path, 'expected an item field');
+  }
+  if (object.item !== null && (typeof object.item !== 'object' || Array.isArray(object.item))) {
+    invalidResponse(path, 'expected item to be an object or null');
+  }
+  return object.item as J | null;
+}
+
+function requiredItem(body: unknown, path: string): J {
+  const item = nullableItem(body, path);
+  if (item === null) invalidResponse(path, 'expected a non-null item');
+  return item;
+}
+
+function searchItems(body: unknown, path: string): Record<string, J[]> {
+  const object = responseObject(body, path);
+  const items = object.items;
+  if (!items || typeof items !== 'object' || Array.isArray(items)) {
+    invalidResponse(path, 'expected an items object');
+  }
+  for (const [name, entries] of Object.entries(items)) {
+    if (!Array.isArray(entries)) invalidResponse(path, `expected ${name} to be an array`);
+  }
+  return items as Record<string, J[]>;
+}
+
+function statsPayload(body: unknown, path: string): J {
+  const object = responseObject(body, path);
+  if (object.items !== undefined && (!object.items || typeof object.items !== 'object' || Array.isArray(object.items))) {
+    invalidResponse(path, 'expected items to be an object when present');
+  }
+  return (object.items ?? object) as J;
+}
 
 const userIdSchema = () =>
   z.string().min(1).describe('stats.fm user id or customId (e.g. "martijn")');
@@ -191,11 +243,13 @@ export function registerStatsfmTools(server: McpServer, client: StatsfmClient = 
       } catch (err) {
         if (!(err instanceof StatsfmApiError) || err.status !== 404) throw err;
         const found = await client.get<J>('/search', { query: args.user_id, type: 'user', limit: 5 });
-        const users = (found as J)?.items?.users as J[] | undefined;
-        if (!users || users.length === 0) throw err;
+        const foundItems = searchItems(found, '/search');
+        const users = foundItems.users;
+        if (!Array.isArray(users)) invalidResponse('/search', 'expected users to be an array');
+        if (users.length === 0) throw err;
         body = { item: users[0], via_search: true };
       }
-      const user = unwrapItem<J>(body as { item?: J | null });
+      const user = requiredItem(body, `/users/${encodeURIComponent(args.user_id)}`);
       if (!user) throw new Error(`stats.fm user "${args.user_id}" not found`);
       if (args.response_format === 'json') {
         return { content: [{ type: 'text', text: JSON.stringify(user) }], structuredContent: { ...user } };
@@ -234,7 +288,7 @@ export function registerStatsfmTools(server: McpServer, client: StatsfmClient = 
           limit: String(args.limit ?? 10),
           offset: String(args.offset ?? 0),
         });
-        const items = unwrapItems<J>(body as { items?: J[] } | null);
+        const items = collectionItems(body, `/users/${encodeURIComponent(args.user_id)}/top/${cfg.path}`);
         return shapeCollection(`Top ${cfg.path}`, items, args, topLine(cfg.kind), topDetail(cfg.kind));
       },
     );
@@ -257,7 +311,7 @@ export function registerStatsfmTools(server: McpServer, client: StatsfmClient = 
       if (args.after !== undefined) params.after = String(args.after);
       if (args.before !== undefined) params.before = String(args.before);
       const body = await client.get<J>(`/users/${encodeURIComponent(args.user_id)}/streams/recent`, params);
-      const items = unwrapItems<J>(body as { items?: J[] } | null);
+      const items = collectionItems(body, `/users/${encodeURIComponent(args.user_id)}/streams/recent`);
       return shapeCollection('Recent streams', items, args, streamLine, (s) =>
         s.trackId !== undefined ? `trackId: ${s.trackId} | artists: ${(s.artistIds ?? []).join(', ')}` : null,
       );
@@ -271,7 +325,7 @@ export function registerStatsfmTools(server: McpServer, client: StatsfmClient = 
     { user_id: userIdSchema(), response_format: ResponseFormat },
     async (args) => {
       const body = await client.get<J>(`/users/${encodeURIComponent(args.user_id)}/streams/current`);
-      const current = unwrapItem<J>(body as { item?: J | null });
+      const current = nullableItem(body, `/users/${encodeURIComponent(args.user_id)}/streams/current`);
       if (args.response_format === 'json') {
         return {
           content: [{ type: 'text', text: JSON.stringify(current) }],
@@ -316,7 +370,7 @@ export function registerStatsfmTools(server: McpServer, client: StatsfmClient = 
           [cfg.filter]: entityId,
           limit: String((args as J).limit ?? 50),
         });
-        const streams = unwrapItems<J>(body as { items?: J[] } | null);
+        const streams = collectionItems(body, `/users/${encodeURIComponent((args as J).user_id as string)}/streams`);
         const sum = summarizeStreams(streams, `${cfg.filter} ${entityId}`);
         if ((args as J).response_format === 'json') {
           return {
@@ -354,10 +408,10 @@ export function registerStatsfmTools(server: McpServer, client: StatsfmClient = 
         type: args.type ?? 'track,artist,album',
         limit: String(args.limit ?? 10),
       });
+      const groups = searchItems(body, '/search');
       if (args.response_format === 'json') {
         return { content: [{ type: 'text', text: JSON.stringify(body) }], structuredContent: { ...(body as J) } };
       }
-      const groups = ((body as J)?.items ?? {}) as Record<string, J[]>;
       const lines = [`Search results for "${args.query}":`];
       let total = 0;
       for (const [group, entries] of Object.entries(groups)) {
@@ -391,7 +445,7 @@ export function registerStatsfmTools(server: McpServer, client: StatsfmClient = 
         after: String(Date.UTC(year, 0, 1)),
         before: String(Date.UTC(year + 1, 0, 1)),
       });
-      const stats = (body as J)?.items ?? body;
+      const stats = statsPayload(body, `/users/${encodeURIComponent(args.user_id)}/streams/stats`);
       if (args.response_format === 'json') {
         return { content: [{ type: 'text', text: JSON.stringify({ year, ...((stats as J) ?? {}) }) }], structuredContent: { year, ...((stats as J) ?? {}) } };
       }
@@ -420,7 +474,7 @@ export function registerStatsfmTools(server: McpServer, client: StatsfmClient = 
       if (args.after !== undefined) params.after = String(args.after);
       if (args.before !== undefined) params.before = String(args.before);
       const body = await client.get<J>(`/users/${encodeURIComponent(args.user_id)}/streams/stats`, params);
-      const stats = ((body as J)?.items ?? body ?? {}) as J;
+      const stats = statsPayload(body, `/users/${encodeURIComponent(args.user_id)}/streams/stats`);
       if (args.response_format === 'json') {
         return { content: [{ type: 'text', text: JSON.stringify(stats) }], structuredContent: { ...stats } };
       }
@@ -463,7 +517,7 @@ export function registerStatsfmTools(server: McpServer, client: StatsfmClient = 
             offset: String((args as J).offset ?? 0),
           },
         );
-        const items = unwrapItems<J>(body as { items?: J[] } | null);
+        const items = collectionItems(body, `/users/${encodeURIComponent((args as J).user_id as string)}/top/${cfg.seg(entityId)}`);
         const kind = cfg.name.includes('_albums_') ? 'album' : 'track';
         return shapeCollection(cfg.label, items, args as J, topLine(kind), topDetail(kind));
       },
@@ -487,7 +541,7 @@ export function registerStatsfmTools(server: McpServer, client: StatsfmClient = 
       async (args) => {
         const id = String((args as J)[cfg.idField]);
         const body = await client.get<J>(`/${cfg.seg}/${encodeURIComponent(id)}`);
-        const item = unwrapItem<J>(body as { item?: J | null });
+        const item = nullableItem(body, `/${cfg.seg}/${encodeURIComponent(id)}`);
         if (!item) throw new Error(`stats.fm ${cfg.label} "${id}" not found`);
         if ((args as J).response_format === 'json') {
           return { content: [{ type: 'text', text: JSON.stringify(item) }], structuredContent: { ...item } };
@@ -518,7 +572,7 @@ export function registerStatsfmTools(server: McpServer, client: StatsfmClient = 
         limit: String(args.limit ?? 10),
         offset: String(args.offset ?? 0),
       });
-      const items = unwrapItems<J>(body as { items?: J[] } | null);
+      const items = collectionItems(body, `/genres/${encodeURIComponent(args.genre)}/artists`);
       return shapeCollection(`Artists in "${args.genre}"`, items, args, (a) => {
         const genres = Array.isArray(a.genres) && a.genres.length > 0 ? ` [${a.genres.join(', ')}]` : '';
         return `${a.name ?? '?'}${genres}`;
@@ -549,7 +603,7 @@ export function registerStatsfmTools(server: McpServer, client: StatsfmClient = 
           limit: String(args.limit ?? 20),
           offset: String(args.offset ?? 0),
         });
-        const items = unwrapItems<J>(body as { items?: J[] } | null);
+        const items = collectionItems(body, `/users/${encodeURIComponent(args.user_id)}/top/${cfg.path}`);
         const base = topLine(cfg.kind);
         return shapeCollection(`All-time ${cfg.path} chart`, items, args, (entry) => `${indicatorArrow(entry.indicator)} ${base(entry)}`);
       },
@@ -570,14 +624,15 @@ export function registerStatsfmTools(server: McpServer, client: StatsfmClient = 
       const friendsBody = await client.get<J>(`/users/${encodeURIComponent(args.user_id)}/friends`, {
         limit: String(args.limit ?? 10),
       });
-      const friends = unwrapItems<J>(friendsBody as { items?: J[] } | null);
+      const friends = collectionItems(friendsBody, `/users/${encodeURIComponent(args.user_id)}/friends`);
       const ranked = await Promise.all(
         friends.map(async (f) => {
           let count = 0;
           try {
             const stats = await client.get<J>(`/users/${encodeURIComponent(String(f.id ?? f.customId))}/streams/stats`);
-            count = Number(((stats as J)?.items as J)?.count ?? (stats as J)?.count ?? 0) || 0;
-          } catch {
+            count = Number(statsPayload(stats, `/users/${encodeURIComponent(String(f.id ?? f.customId))}/streams/stats`).count ?? 0) || 0;
+          } catch (err) {
+            if (err instanceof StatsfmApiError && err.status === 200) throw err;
             count = 0;
           }
           return { friend: f, count };
@@ -634,7 +689,7 @@ export function registerStatsfmTools(server: McpServer, client: StatsfmClient = 
         if ((args as J).after !== undefined) params.after = String((args as J).after);
         if ((args as J).before !== undefined) params.before = String((args as J).before);
         const body = await client.get<J>(`/users/${encodeURIComponent((args as J).user_id as string)}/streams`, params);
-        const streams = unwrapItems<J>(body as { items?: J[] } | null);
+        const streams = collectionItems(body, `/users/${encodeURIComponent((args as J).user_id as string)}/streams`);
         const window = (args as J).after !== undefined || (args as J).before !== undefined
           ? ` [${(args as J).after ?? '…'} → ${(args as J).before ?? '…'}]`
           : '';
@@ -669,7 +724,7 @@ export function registerStatsfmTools(server: McpServer, client: StatsfmClient = 
         limit: String(args.limit ?? 10),
         offset: String(args.offset ?? 0),
       });
-      const items = unwrapItems<J>(body as { items?: J[] } | null);
+      const items = collectionItems(body, `/users/${encodeURIComponent(args.user_id)}/friends`);
       return shapeCollection('Friends', items, args, (f) => `${f.displayName ?? '?'} (@${f.customId ?? '?'})${f.isPlus ? ' ★' : ''}`);
     },
   );
@@ -681,7 +736,11 @@ export function registerStatsfmTools(server: McpServer, client: StatsfmClient = 
     { user_id: userIdSchema(), response_format: ResponseFormat },
     async (args) => {
       const body = await client.get<J>(`/users/${encodeURIComponent(args.user_id)}/friends/count`);
-      const count = Number(unwrapItem<J | number>(body as { item?: J | number | null }) ?? 0) || 0;
+      const countBody = responseObject(body, `/users/${encodeURIComponent(args.user_id)}/friends/count`);
+      if (!Object.prototype.hasOwnProperty.call(countBody, 'item') || typeof countBody.item !== 'number' || !Number.isFinite(countBody.item)) {
+        invalidResponse(`/users/${encodeURIComponent(args.user_id)}/friends/count`, 'expected item to be a finite number');
+      }
+      const count = countBody.item as number;
       if (args.response_format === 'json') {
         return { content: [{ type: 'text', text: JSON.stringify({ count }) }], structuredContent: { count } };
       }
@@ -705,7 +764,7 @@ export function registerStatsfmTools(server: McpServer, client: StatsfmClient = 
         limit: String(args.limit ?? 10),
         offset: String(args.offset ?? 0),
       });
-      const items = unwrapItems<J>(body as { items?: J[] } | null);
+      const items = collectionItems(body, `/users/${encodeURIComponent(args.user_id)}/records/artists`);
       return shapeCollection('Record artists', items, args, (r) => {
         const name = r.artist?.name ?? r.name ?? '?';
         const extra = r.record ? ` — ${String(r.record)}` : r.streams !== undefined ? ` — ${r.streams} streams` : '';
