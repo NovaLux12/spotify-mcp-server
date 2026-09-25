@@ -16,6 +16,8 @@ import {
   ResponseFormat,
   batchSummary,
   truncateItems,
+  truncationAdvice,
+  type TruncationCapabilities,
 } from '../shaping.js';
 import { getConfig } from '../config.js';
 import { issueReceipt, formatReceipt } from '../receipts.js';
@@ -75,7 +77,18 @@ function dedupeUris(tracks: readonly SpotifyTrack[]): SpotifyTrack[] {
   });
 }
 
-async function loadCandidates(client: SpotifyClient, source: string, scanCap?: number): Promise<SpotifyTrack[]> {
+/** Fixed candidate-pool ceilings for the non-library sources. */
+const TOP_TRACKS_POOL_CAP = 100; // two pages of 50
+const RECENTLY_PLAYED_POOL_CAP = 50; // the endpoint's own page ceiling
+
+interface CandidatePool {
+  candidates: SpotifyTrack[];
+  /** True when the source's ceiling — not the user's data — ended the pool. */
+  capped: boolean;
+  cap: number;
+}
+
+async function loadCandidates(client: SpotifyClient, source: string, scanCap?: number): Promise<CandidatePool> {
   switch (source) {
     case 'top_tracks': {
       // Two pages of 50 is plenty: filters only shrink the candidate pool.
@@ -87,24 +100,60 @@ async function loadCandidates(client: SpotifyClient, source: string, scanCap?: n
         limit: '50',
         offset: '50',
       });
-      return [...(page1?.items ?? []), ...(page2?.items ?? [])].filter((t) => t?.uri);
+      const first = (page1?.items ?? []).filter((t) => t?.uri);
+      const second = (page2?.items ?? []).filter((t) => t?.uri);
+      return {
+        candidates: [...first, ...second],
+        capped: first.length === 50 && second.length === 50,
+        cap: TOP_TRACKS_POOL_CAP,
+      };
     }
     case 'recently_played': {
       const res = await client.get<{ items?: RecentlyPlayedItem[] }>(
         '/me/player/recently-played',
-        { limit: '50' },
+        { limit: String(RECENTLY_PLAYED_POOL_CAP) },
       );
       if (!res) throw new Error('Could not retrieve recently played tracks');
-      return (res.items ?? [])
+      const candidates = (res.items ?? [])
         .filter((item) => item?.track)
         .map((item) => item.track as SpotifyTrack);
+      return {
+        candidates,
+        // A full page means the history continues past this page.
+        capped: candidates.length >= RECENTLY_PLAYED_POOL_CAP,
+        cap: RECENTLY_PLAYED_POOL_CAP,
+      };
     }
     default: {
       const cap = scanCap ?? getConfig().fetchAllCap;
       const saved = await client.getAllPages<SavedTrackItem>('/me/tracks', { limit: '50' }, { maxItems: cap });
-      return saved.map((entry) => entry?.track).filter((t): t is SpotifyTrack => Boolean(t?.uri));
+      return {
+        candidates: saved.map((entry) => entry?.track).filter((t): t is SpotifyTrack => Boolean(t?.uri)),
+        capped: saved.length >= cap,
+        cap,
+      };
     }
   }
+}
+
+/**
+ * Continuation controls that apply to the *returned* list. `scan_cap` widens
+ * the saved_tracks pool but cannot lengthen a list already capped by `limit`,
+ * so it is not offered as advice for a list footer.
+ */
+const LIST_CAPABILITIES: TruncationCapabilities = { limit: true };
+
+/**
+ * Disclosure for a pool the source ceiling cut short: names the cap and how
+ * many candidates were actually considered, plus the only control that raises
+ * it — `limit` cannot lift a pool ceiling, so it is not offered as advice.
+ */
+function poolCapLine(source: string, cap: number, scanned: number): string {
+  const advice = source === 'saved_tracks'
+    ? truncationAdvice({ scanCap: true })
+    : 'no parameter raises this ceiling — narrow artist_filter or choose another source';
+  return `candidate pool capped at ${cap} for source=${source}: the newest ${scanned} `
+    + `candidate(s) were considered, nothing beyond the cap was read; ${advice}`;
 }
 
 export function registerSmartTools(server: McpServer, client: SpotifyClient): void {
@@ -112,8 +161,9 @@ export function registerSmartTools(server: McpServer, client: SpotifyClient): vo
     'create_smart_playlist',
     'Create a playlist from rules over your own listening data: top tracks (by time range), '
       + 'recently played, or saved tracks — with optional artist-name filtering and a '
-      + 'one-track-per-artist toggle. When source=saved_tracks the pool is the newest N saved tracks '
-      + '(N=scan_cap, default fetchAllCap=500) and truncation is reported. No deprecated recommendations endpoints involved. '
+      + 'one-track-per-artist toggle. Every source has a candidate-pool ceiling (top_tracks 100, '
+      + 'recently_played 50, saved_tracks scan_cap default fetchAllCap=500); when the ceiling '
+      + 'binds, truncated_by_cap + cap report it in the payload and the prose. '
       + 'dry_run previews the exact track list without creating anything.',
     {
       name: z.string().min(1).describe('Playlist name'),
@@ -147,10 +197,10 @@ export function registerSmartTools(server: McpServer, client: SpotifyClient): vo
     },
     async (args) => {
       const scanCap = args.scan_cap ?? getConfig().fetchAllCap;
-      let rawCandidates = await loadCandidates(client, args.source, scanCap);
-      const candidatesScanned = rawCandidates.length;
-      const truncatedAtCap = args.source === 'saved_tracks' && candidatesScanned >= scanCap;
-      let candidates = dedupeUris(rawCandidates);
+      const pool = await loadCandidates(client, args.source, scanCap);
+      const candidatesScanned = pool.candidates.length;
+      const truncatedByCap = pool.capped;
+      let candidates = dedupeUris(pool.candidates);
 
       if (args.artist_filter && args.artist_filter.length > 0) {
         candidates = candidates.filter((t) => matchesArtistFilter(t, args.artist_filter!));
@@ -161,7 +211,7 @@ export function registerSmartTools(server: McpServer, client: SpotifyClient): vo
       const visibility = args.public ? 'public' : 'private';
 
       if (args.dry_run) {
-        const view = truncateItems(picked, 50);
+        const view = truncateItems(picked, 50, LIST_CAPABILITIES);
         const lines = [
           `[dry run] create_smart_playlist — nothing was changed.`,
           `Would create ${visibility} playlist "${args.name}" with ${picked.length} track(s) `
@@ -171,16 +221,16 @@ export function registerSmartTools(server: McpServer, client: SpotifyClient): vo
           ...view.items.map((t) => `• ${t.artists.map((a) => a.name).join(', ')} — ${t.name}`),
           ...(view.footer ? [view.footer] : []),
         ];
-        if (truncatedAtCap) lines.push(`(saved_tracks pool truncated at scan_cap=${scanCap} — newest ${scanCap} only)`);
+        if (truncatedByCap) lines.push(poolCapLine(args.source, pool.cap, candidatesScanned));
         return textResult(lines.join('\n'), {
           ok: true,
           dry_run: true,
           source: args.source,
           selected: picked.length,
           candidates_scanned: candidatesScanned,
-          truncated_at_fetch_all_cap: truncatedAtCap,
+          truncated_by_cap: truncatedByCap,
+          cap: pool.cap,
           newest_first: args.source === 'saved_tracks',
-          scan_cap: scanCap,
           uris: picked.map((t) => t.uri),
         });
       }
@@ -215,11 +265,13 @@ export function registerSmartTools(server: McpServer, client: SpotifyClient): vo
         uris: [],
       });
 
+      const capLine = truncatedByCap ? `\n${poolCapLine(args.source, pool.cap, candidatesScanned)}` : '';
       return textResult(
         `Created ${visibility} smart playlist "${args.name}" (${picked.length} tracks from `
           + `${args.source}${args.time_range && args.source === 'top_tracks' ? `, ${args.time_range}` : ''})`
           + `\nID: ${created.id}\nURI: ${created.uri}\nURL: ${created.external_urls?.spotify ?? '(none)'}`
           + `\n${batchSummary(picked.length, picked.map((t) => t.uri))}`
+          + capLine
           + `\n${formatReceipt(receipt)}`,
         {
           ok: true,
@@ -228,9 +280,9 @@ export function registerSmartTools(server: McpServer, client: SpotifyClient): vo
           source: args.source,
           added: picked.length,
           candidates_scanned: candidatesScanned,
-          truncated_at_fetch_all_cap: truncatedAtCap,
+          truncated_by_cap: truncatedByCap,
+          cap: pool.cap,
           newest_first: args.source === 'saved_tracks',
-          scan_cap: scanCap,
           batches_sent: batches,
           uris: picked.map((t) => t.uri),
           receipt: receipt as unknown as Record<string, unknown>,

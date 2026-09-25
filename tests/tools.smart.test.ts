@@ -216,3 +216,94 @@ describe('create_smart_playlist creation', () => {
     void out;
   });
 });
+
+// ---------------------------------------------------------------------------
+// Candidate-pool cap disclosure (#809)
+// ---------------------------------------------------------------------------
+
+describe('create_smart_playlist candidate pool caps', () => {
+  interface PoolPayload {
+    candidates_scanned: number;
+    truncated_by_cap: boolean;
+    cap: number;
+  }
+
+  it('discloses the 50-item recently_played ceiling when the page is full', async () => {
+    const recent = Array.from({ length: 50 }, (_, i) => track(`r${i}`, `Recent ${i}`, [`Artist${i}`]));
+    const h = harness({ recentTracks: recent });
+    const out = await h.invoke({ source: 'recently_played', limit: 200, dry_run: true });
+    const p = out.structuredContent as PoolPayload;
+    assert.equal(p.truncated_by_cap, true);
+    assert.equal(p.cap, 50);
+    assert.equal(p.candidates_scanned, 50);
+    // The prose must not read as a complete pool.
+    assert.match(textOf(out), /candidate pool capped at 50 for source=recently_played/);
+  });
+
+  it('does not claim a cap when recently_played returns a short page', async () => {
+    const recent = Array.from({ length: 7 }, (_, i) => track(`r${i}`, `Recent ${i}`, [`Artist${i}`]));
+    const h = harness({ recentTracks: recent });
+    const out = await h.invoke({ source: 'recently_played', dry_run: true });
+    const p = out.structuredContent as PoolPayload;
+    assert.equal(p.candidates_scanned, 7);
+    assert.equal(p.truncated_by_cap, false);
+    assert.doesNotMatch(textOf(out), /candidate pool capped/);
+  });
+
+  it('discloses the 100-item top_tracks ceiling only when both pages are full', async () => {
+    const full = Array.from({ length: 120 }, (_, i) => track(`t${i}`, `Top ${i}`, [`Artist${i}`]));
+    const capped = harness({ topTracks: full });
+    const cappedOut = await capped.invoke({ source: 'top_tracks', limit: 200, dry_run: true });
+    const cappedPayload = cappedOut.structuredContent as PoolPayload;
+    assert.equal(cappedPayload.truncated_by_cap, true);
+    assert.equal(cappedPayload.cap, 100);
+    assert.equal(cappedPayload.candidates_scanned, 100);
+    assert.match(textOf(cappedOut), /candidate pool capped at 100 for source=top_tracks/);
+
+    const short = harness({ topTracks: full.slice(0, 40) });
+    const shortOut = await short.invoke({ source: 'top_tracks', dry_run: true });
+    const shortPayload = shortOut.structuredContent as PoolPayload;
+    assert.equal(shortPayload.candidates_scanned, 40);
+    assert.equal(shortPayload.truncated_by_cap, false);
+    assert.doesNotMatch(textOf(shortOut), /candidate pool capped/);
+  });
+
+  it('names the saved_tracks scan_cap that bound the pool on the commit path', async () => {
+    const many = Array.from({ length: 60 }, (_, i) => track(`s${i}`, `Saved ${i}`, [`Artist${i}`]));
+    const h = harness({ savedTracks: many });
+    const out = await h.invoke({ source: 'saved_tracks', scan_cap: 60, limit: 30 });
+    const p = out.structuredContent as PoolPayload;
+    assert.equal(p.truncated_by_cap, true);
+    assert.equal(p.cap, 60);
+    assert.match(textOf(out), /candidate pool capped at 60 for source=saved_tracks/);
+    assert.match(textOf(out), /raise scan_cap/);
+  });
+
+  it('leaves a short saved_tracks pool uncapped', async () => {
+    const h = harness({ savedTracks: [track('s1', 'A'), track('s2', 'B')] });
+    const out = await h.invoke({ source: 'saved_tracks', dry_run: true });
+    const p = out.structuredContent as PoolPayload;
+    assert.equal(p.candidates_scanned, 2);
+    assert.equal(p.truncated_by_cap, false);
+    assert.equal(p.cap, 500);
+  });
+
+  it('offers limit for the list footer and never offset/fetch_all for this tool', async () => {
+    const top = Array.from({ length: 100 }, (_, i) => track(`t${i}`, `Top ${i}`, [`Artist${i}`]));
+    const h = harness({ topTracks: top });
+    const out = await h.invoke({ source: 'top_tracks', limit: 80, dry_run: true });
+    const text = textOf(out);
+    assert.match(text, /30 more — raise limit/);
+    assert.doesNotMatch(text, /fetch_all|pass offset/);
+  });
+
+  it('does not tell the caller to raise limit when limit cannot lift a pool cap', async () => {
+    const full = Array.from({ length: 100 }, (_, i) => track(`t${i}`, `Top ${i}`, [`Artist${i}`]));
+    const h = harness({ topTracks: full });
+    const out = await h.invoke({ source: 'top_tracks', limit: 200, dry_run: true });
+    const poolLine = textOf(out).split('\n').find((l) => l.includes('candidate pool capped'));
+    assert.ok(poolLine, 'the pool cap must be disclosed');
+    assert.match(poolLine, /no parameter raises this ceiling/);
+    assert.doesNotMatch(poolLine, /raise limit|raise scan_cap/);
+  });
+});
