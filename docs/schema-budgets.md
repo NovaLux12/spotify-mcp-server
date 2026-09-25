@@ -8,12 +8,19 @@ startup registration, the CI audit, and the per-module table returned by
 
 ## Measurement
 
-The deterministic audit registers every active module on a real `McpServer` and
-reads the resulting surface over `InMemoryTransport`. For each module it measures:
+The deterministic audit starts the real production entry over stdio, reads the
+result after all finalizers, and attributes those tool names through the shared
+manifest. For each module it measures:
 
 - tool count;
 - UTF-8 bytes of compact JSON containing the tool `description` and emitted
   `inputSchema` JSON Schema (the same schema hosts receive from `tools/list`).
+
+The production `tools/list` boundary, module measurements, and aggregate gate all
+use the same finalized input-schema projection: SDK-compatible normalization,
+input-direction JSON Schema, `additionalProperties: false`, and no `$schema`
+key. The aggregate gate runs after annotations and final boundary metadata are
+applied, so its budget covers the payload hosts actually receive.
 
 Annotations, tool names, resources, and prompts are intentionally excluded from
 this module-attribution measurement. A module is `active`, `toolset_trimmed`,
@@ -52,69 +59,69 @@ above either ceiling fails CI and server startup.
 <!-- BEGIN:generated schema-budget-table -->
 | Module | Tools | Schema bytes | Baseline tools | Baseline bytes | Effective tool ceiling | Effective byte ceiling |
 |---|---:|---:|---:|---:|---:|---:|
-| search | 1 | 1,832 | 1 | 1,832 | 2 | 2,016 |
-| catalog | 32 | 27,331 | 32 | 27,331 | 33 | 30,065 |
-| library | 16 | 14,651 | 16 | 14,651 | 17 | 16,117 |
-| playback | 16 | 12,391 | 16 | 12,391 | 17 | 13,631 |
-| following | 5 | 3,634 | 5 | 3,634 | 6 | 3,998 |
-| users | 2 | 1,561 | 2 | 1,561 | 3 | 1,718 |
-| audiobooks | 4 | 3,627 | 4 | 3,627 | 5 | 3,990 |
-| audiobookcopilot | 3 | 1,939 | 3 | 1,939 | 4 | 2,133 |
-| playlists | 26 | 23,887 | 26 | 23,887 | 27 | 26,276 |
-| playlistops | 3 | 4,737 | 3 | 4,737 | 4 | 5,211 |
-| playlistbatch | 3 | 4,106 | 3 | 4,106 | 4 | 4,517 |
-| playlistmisc | 3 | 2,390 | 3 | 2,390 | 4 | 2,629 |
-| personalization | 3 | 2,601 | 3 | 2,601 | 4 | 2,862 |
-| analytics | 4 | 2,687 | 4 | 2,687 | 5 | 2,956 |
-| statsfm | 30 | 23,411 | 30 | 23,411 | 31 | 25,753 |
-| taste | 16 | 14,327 | 16 | 14,327 | 17 | 15,760 |
-| tastecomposites | 11 | 9,354 | 11 | 9,354 | 12 | 10,290 |
-| doctor | 1 | 773 | 1 | 773 | 2 | 851 |
-| swarm3meta | 3 | 1,693 | 3 | 1,693 | 4 | 1,863 |
-| libraryanalytics | 4 | 3,224 | 4 | 3,224 | 5 | 3,547 |
-| portability | 11 | 9,061 | 11 | 9,061 | 12 | 9,968 |
-| libraryinsights | 3 | 2,820 | 3 | 2,820 | 4 | 3,103 |
-| libraryhygiene | 1 | 704 | 1 | 704 | 2 | 775 |
-| showradar | 1 | 1,552 | 1 | 1,552 | 2 | 1,708 |
-| saveddedupe | 1 | 1,585 | 1 | 1,585 | 2 | 1,744 |
-| podcastsession | 2 | 2,805 | 2 | 2,805 | 3 | 3,086 |
-| backupfirst | 1 | 536 | 1 | 536 | 2 | 590 |
-| backup | 2 | 1,489 | 2 | 1,489 | 3 | 1,638 |
-| restore | 1 | 1,874 | 1 | 1,874 | 2 | 2,062 |
-| undo | 2 | 1,476 | 2 | 1,476 | 3 | 1,624 |
-| receipts | 1 | 338 | 1 | 338 | 2 | 372 |
-| episodemgmt | 1 | 712 | 1 | 712 | 2 | 784 |
-| freshness | 1 | 2,066 | 1 | 2,066 | 2 | 2,273 |
-| searchdive | 1 | 1,349 | 1 | 1,349 | 2 | 1,484 |
-| searchhistory | 2 | 1,050 | 2 | 1,050 | 3 | 1,155 |
-| browse | 3 | 2,734 | 3 | 2,734 | 4 | 3,008 |
-| artistwatch | 6 | 5,705 | 6 | 5,705 | 7 | 6,276 |
-| queueops | 3 | 3,518 | 3 | 3,518 | 4 | 3,870 |
-| playbackext | 13 | 7,494 | 13 | 7,494 | 14 | 8,244 |
-| playbackintel | 15 | 11,960 | 15 | 11,960 | 16 | 13,157 |
-| scenes | 7 | 4,617 | 7 | 4,617 | 8 | 5,079 |
-| playlisthealth | 8 | 5,469 | 8 | 5,469 | 9 | 6,016 |
-| playlistdna | 1 | 1,333 | 1 | 1,333 | 2 | 1,467 |
-| export | 1 | 1,111 | 1 | 1,111 | 2 | 1,223 |
-| import | 1 | 1,158 | 1 | 1,158 | 2 | 1,274 |
-| smart | 1 | 2,205 | 1 | 2,205 | 2 | 2,426 |
-| exhaustmisc | 10 | 8,143 | 10 | 8,143 | 11 | 8,958 |
-| exhaust2catalog | 19 | 18,643 | 19 | 18,643 | 20 | 20,508 |
+| search | 1 | 1,809 | 1 | 1,809 | 2 | 1,990 |
+| catalog | 32 | 26,595 | 32 | 26,595 | 33 | 29,255 |
+| library | 16 | 14,283 | 16 | 14,283 | 17 | 15,712 |
+| playback | 16 | 12,023 | 16 | 12,023 | 17 | 13,226 |
+| following | 5 | 3,519 | 5 | 3,519 | 6 | 3,871 |
+| users | 2 | 1,515 | 2 | 1,515 | 3 | 1,667 |
+| audiobooks | 4 | 3,535 | 4 | 3,535 | 5 | 3,889 |
+| audiobookcopilot | 3 | 1,870 | 3 | 1,870 | 4 | 2,057 |
+| playlists | 26 | 23,322 | 26 | 23,322 | 27 | 25,655 |
+| playlistops | 3 | 4,690 | 3 | 4,690 | 4 | 5,159 |
+| playlistbatch | 3 | 4,037 | 3 | 4,037 | 4 | 4,441 |
+| playlistmisc | 3 | 2,321 | 3 | 2,321 | 4 | 2,554 |
+| personalization | 3 | 2,532 | 3 | 2,532 | 4 | 2,786 |
+| analytics | 4 | 2,595 | 4 | 2,595 | 5 | 2,855 |
+| statsfm | 30 | 22,949 | 30 | 22,949 | 31 | 25,244 |
+| taste | 16 | 13,959 | 16 | 13,959 | 17 | 15,355 |
+| tastecomposites | 11 | 9,101 | 11 | 9,101 | 12 | 10,012 |
+| doctor | 1 | 750 | 1 | 750 | 2 | 826 |
+| swarm3meta | 3 | 1,624 | 3 | 1,624 | 4 | 1,787 |
+| libraryanalytics | 4 | 3,132 | 4 | 3,132 | 5 | 3,446 |
+| portability | 11 | 8,808 | 11 | 8,808 | 12 | 9,689 |
+| libraryinsights | 3 | 2,751 | 3 | 2,751 | 4 | 3,027 |
+| libraryhygiene | 1 | 681 | 1 | 681 | 2 | 750 |
+| showradar | 1 | 1,529 | 1 | 1,529 | 2 | 1,682 |
+| saveddedupe | 1 | 1,562 | 1 | 1,562 | 2 | 1,719 |
+| podcastsession | 2 | 2,759 | 2 | 2,759 | 3 | 3,035 |
+| backupfirst | 1 | 513 | 1 | 513 | 2 | 565 |
+| backup | 2 | 1,443 | 2 | 1,443 | 3 | 1,588 |
+| restore | 1 | 1,851 | 1 | 1,851 | 2 | 2,037 |
+| undo | 2 | 1,430 | 2 | 1,430 | 3 | 1,574 |
+| receipts | 1 | 315 | 1 | 315 | 2 | 347 |
+| episodemgmt | 1 | 689 | 1 | 689 | 2 | 758 |
+| freshness | 1 | 2,043 | 1 | 2,043 | 2 | 2,248 |
+| searchdive | 1 | 1,326 | 1 | 1,326 | 2 | 1,459 |
+| searchhistory | 2 | 1,004 | 2 | 1,004 | 3 | 1,105 |
+| browse | 3 | 2,665 | 3 | 2,665 | 4 | 2,932 |
+| artistwatch | 6 | 5,567 | 6 | 5,567 | 7 | 6,124 |
+| queueops | 3 | 3,449 | 3 | 3,449 | 4 | 3,794 |
+| playbackext | 13 | 7,195 | 13 | 7,195 | 14 | 7,915 |
+| playbackintel | 15 | 11,615 | 15 | 11,615 | 16 | 12,777 |
+| scenes | 7 | 4,456 | 7 | 4,456 | 8 | 4,902 |
+| playlisthealth | 8 | 5,285 | 8 | 5,285 | 9 | 5,814 |
+| playlistdna | 1 | 1,310 | 1 | 1,310 | 2 | 1,442 |
+| export | 1 | 1,088 | 1 | 1,088 | 2 | 1,197 |
+| import | 1 | 1,135 | 1 | 1,135 | 2 | 1,249 |
+| smart | 1 | 2,182 | 1 | 2,182 | 2 | 2,401 |
+| exhaustmisc | 10 | 7,924 | 10 | 7,924 | 11 | 8,717 |
+| exhaust2catalog | 19 | 18,206 | 19 | 18,206 | 20 | 20,027 |
 | exhaust2enggating | 0 | 0 | 0 | 0 | 1 | 0 |
-| exhaust2playback | 23 | 17,835 | 23 | 17,835 | 24 | 19,619 |
-| exhaust2playlists | 18 | 23,858 | 18 | 23,858 | 19 | 26,244 |
-| exhaust2misc | 27 | 23,391 | 27 | 23,391 | 28 | 25,731 |
-| exhaust2extra | 3 | 3,764 | 3 | 3,764 | 4 | 4,141 |
-| swarm3discovery | 24 | 22,108 | 24 | 22,108 | 25 | 24,319 |
-| swarm3bdiscovery | 24 | 19,731 | 24 | 19,731 | 25 | 21,705 |
-| swarm3shows | 24 | 20,739 | 24 | 20,739 | 25 | 22,813 |
-| swarm3refs | 6 | 4,433 | 6 | 4,433 | 7 | 4,877 |
-| swarm3analytics | 24 | 19,000 | 24 | 19,000 | 25 | 20,900 |
-| swarm3library | 24 | 18,539 | 24 | 18,539 | 25 | 20,393 |
-| swarm3playback | 24 | 14,799 | 24 | 14,799 | 25 | 16,279 |
-| swarm3playlistops | 24 | 32,265 | 24 | 32,265 | 25 | 35,492 |
-| swarm3snapshots | 24 | 24,296 | 24 | 24,296 | 25 | 26,726 |
-| swarm4playlists | 18 | 23,008 | 18 | 23,008 | 19 | 25,309 |
+| exhaust2playback | 23 | 17,306 | 23 | 17,306 | 24 | 19,037 |
+| exhaust2playlists | 18 | 23,466 | 18 | 23,466 | 19 | 25,813 |
+| exhaust2misc | 27 | 22,770 | 27 | 22,770 | 28 | 25,048 |
+| exhaust2extra | 3 | 3,695 | 3 | 3,695 | 4 | 4,065 |
+| swarm3discovery | 24 | 21,223 | 24 | 21,223 | 25 | 23,346 |
+| swarm3bdiscovery | 24 | 18,704 | 24 | 18,704 | 25 | 20,575 |
+| swarm3shows | 24 | 20,023 | 24 | 20,023 | 25 | 22,026 |
+| swarm3refs | 6 | 4,295 | 6 | 4,295 | 7 | 4,725 |
+| swarm3analytics | 24 | 18,426 | 24 | 18,426 | 25 | 20,269 |
+| swarm3library | 24 | 17,987 | 24 | 17,987 | 25 | 19,786 |
+| swarm3playback | 24 | 14,247 | 24 | 14,247 | 25 | 15,672 |
+| swarm3playlistops | 24 | 31,777 | 24 | 31,777 | 25 | 34,955 |
+| swarm3snapshots | 24 | 23,696 | 24 | 23,696 | 25 | 26,066 |
+| swarm4playlists | 18 | 22,594 | 18 | 22,594 | 19 | 24,854 |
 <!-- END:generated schema-budget-table -->
 
 To change a baseline, measure the real `tools/list` output, update the shared

@@ -123,11 +123,11 @@ async function startMcpServer(): Promise<void> {
       `[spotify-mcp] warning: tool annotations applied to ${annotations.annotated}/${annotations.total} registered tools`,
     );
   }
-  assertAggregateSurfaceBudget(collectAggregateSurfaceMeasurement(server));
   // One final tools/list + tools/call boundary runs after every registration:
   // closed input schemas, pre-handler unknown-key rejection, and structured
   // error envelopes for all production tools.
   installToolErrorBoundary(server);
+  assertAggregateSurfaceBudget(collectAggregateSurfaceMeasurement(server));
   const transport = new StdioServerTransport();
   await server.connect(transport);
 }

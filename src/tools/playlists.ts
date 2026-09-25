@@ -19,6 +19,7 @@ import {
   describeDryRun,
   batchSummary,
   legacyPlaylistListFields,
+  playlistListInputFields,
   legacyPlaylistPairFields,
   listStructuredContent,
   normalizePlaylistReference,
@@ -1810,7 +1811,7 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
   });
 
   // playlist_subtract (#291)
-  server.tool('playlist_subtract', 'Remove tracks of B..N from A. Quota: 🟢 N GETs + DELETE or PUT.', { base_playlist_id: PlaylistId.describe('Base playlist ID, URI, or URL'), ...PlaylistListFields, ...legacyPlaylistListFields(['subtract_playlist_ids'], { min: 1, max: 10 }), dry_run: DryRun }, async (args) => {
+  server.tool('playlist_subtract', 'Remove tracks of B..N from A. Quota: 🟢 N GETs + DELETE or PUT.', { base_playlist_id: PlaylistId.describe('Base playlist ID, URI, or URL'), ...playlistListInputFields(['subtract_playlist_ids'], { min: 1, max: 10 }), dry_run: DryRun }, async (args) => {
     const input = resolvePlaylistInput(args, { kind: 'list', aliases: ['subtract_playlist_ids'] });
     const baseUris = await getAllUris(args.base_playlist_id);
     const subtractSet = new Set<string>();
