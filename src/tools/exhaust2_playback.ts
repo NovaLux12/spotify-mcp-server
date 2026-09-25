@@ -474,10 +474,10 @@ export function registerExhaust2PlaybackTools(server: McpServer, client: Spotify
         const steps = [`Remember current volume ${previous}% for ${deviceName ?? deviceId ?? 'active device'}`, `PUT ${volumeQuery(0, deviceId)}`];
         return { content: [{ type: 'text', text: describeDryRun('mute', deviceName ?? deviceId ?? 'active device', steps) }], structuredContent: { ok: true, dry_run: true, plan: steps, previous_volume: previous } };
       }
+      await client.put(volumeQuery(0, deviceId)); // remember only after the mute lands — a failed PUT must leave prior memory intact (#843)
       const store = await loadExhaust2Store();
       store.muteMemory[memoryKey] = { volume: previous, muted_at: new Date().toISOString(), device_id: deviceId, device_name: deviceName };
       await saveExhaust2Store(store);
-      await client.put(volumeQuery(0, deviceId));
       return emit(fmt, { ok: true, dry_run: false, previous_volume: previous, device_id: deviceId, remembered_for: memoryKey }, `Muted ${deviceName ?? deviceId ?? 'active device'} (was ${previous}% — remembered for unmute).`);
     },
   );
