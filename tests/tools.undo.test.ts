@@ -459,6 +459,105 @@ describe('undo_mutation occurrence targeting (#625)', () => {
     assert.deepEqual(playlists.pl1, ['spotify:track:a', 'spotify:track:b', 'spotify:track:c']);
   });
 
+  it('refuses to chain an add undo onto a survivor that predates the mutation', async () => {
+    const { server, handlers } = stubServer();
+    const { client, calls, playlists } = stubClient();
+    registerUndoTools(server, client);
+
+    // ['a'] then an add of the same uri -> ['a','a']. Every copy has a
+    // pre-mutation twin, so undoing the add removes its own row and leaves
+    // ['a'] — and the receipt that undo hands back must NOT claim the
+    // survivor as a row it created. That claim is the trap: the rollback only
+    // ever deleted, so chaining an undo onto it read index 0 (the row that
+    // predates everything) as its own and emptied the playlist.
+    playlists.pl1 = ['spotify:track:a'];
+    playlists.pl1 = ['spotify:track:a', 'spotify:track:a'];
+    const add = await issueReceipt(client, {
+      kind: 'playlist_items', id: 'pl1', uris: ['spotify:track:a'], expectPresent: true,
+    });
+    assert.deepEqual(add.affected, [{ uri: 'spotify:track:a', positions: [1] }]);
+
+    const first = await handlers.get('undo_mutation')!({ receipt_id: add.receipt_id, dry_run: false });
+    assert.equal(first.structuredContent?.ok, true);
+    assert.deepEqual(playlists.pl1, ['spotify:track:a'], 'the pre-existing row survives the undo');
+
+    const stay = (first.structuredContent?.receipt ?? null) as { receipt_id?: string; affected?: unknown } | null;
+    assert.ok(stay?.receipt_id, 'the undo issues a receipt for the post-state');
+    assert.equal(stay.affected, undefined,
+      'a delete-only rollback created no rows, so it claims none');
+
+    const before = writes(calls).length;
+    const chained = await handlers.get('undo_mutation')!({ receipt_id: stay.receipt_id!, dry_run: false });
+    assert.equal(chained.structuredContent?.ok, false);
+    assert.equal(chained.structuredContent?.reason, 'occurrences_unrecorded');
+    assert.equal(writes(calls).length, before, 'the refused chain issues zero writes');
+    assert.deepEqual(playlists.pl1, ['spotify:track:a'],
+      'the pre-existing row survives — the playlist is not emptied');
+  });
+
+  it('records the row a positional re-insert created, not the twin that predates it', async () => {
+    const { server, handlers } = stubServer();
+    const { client, playlists } = stubClient();
+    registerUndoTools(server, client);
+    const x = 'spotify:track:x', b = 'spotify:track:b';
+    const y = 'spotify:track:y', z = 'spotify:track:z';
+
+    // [x, b, y, b, z]: removing row 1 leaves a second 'b' at index 2. The undo
+    // re-inserts at index 1, so the row IT created is index 1 — but the append
+    // rule records a re-added uri's LAST occurrence, which is the pre-existing
+    // 'b' now sitting at index 3. Chaining an undo onto that receipt deleted
+    // the wrong row and left the playlist scrambled. A single-uri playlist
+    // like ['a','b','c'] hides this, because there the two rules coincide.
+    playlists.pl1 = [x, b, y, b, z];
+    const rem = await issueReceipt(client, {
+      kind: 'playlist_items', id: 'pl1', uris: [b],
+      expectPresent: false,
+      targetedPositions: [{ uri: b, position: 1 }],
+    });
+    playlists.pl1 = [x, y, b, z];
+
+    const out = await handlers.get('undo_mutation')!({ receipt_id: rem.receipt_id, dry_run: false });
+    assert.equal(out.structuredContent?.ok, true, out.content[0]?.text);
+    assert.deepEqual(playlists.pl1, [x, b, y, b, z], 'the row goes back where it was');
+
+    const stay = (out.structuredContent?.receipt ?? null) as { receipt_id?: string; affected?: unknown } | null;
+    assert.deepEqual(stay.affected, [{ uri: b, positions: [1] }],
+      'records the re-inserted row, not the pre-existing twin at index 3');
+
+    // Chaining now removes the row the re-insert created, so the playlist
+    // returns to its post-removal order rather than being scrambled.
+    const chained = await handlers.get('undo_mutation')!({ receipt_id: stay!.receipt_id!, dry_run: false });
+    assert.equal(chained.structuredContent?.ok, true, chained.content[0]?.text);
+    assert.deepEqual(playlists.pl1, [x, y, b, z], 'the chained undo reverses exactly the re-insert');
+  });
+
+  it('records every row a multi-run re-insert created', async () => {
+    const { server, handlers } = stubServer();
+    const { client, playlists } = stubClient();
+    registerUndoTools(server, client);
+    const row = (n: string) => `spotify:track:${n}`;
+
+    // Removing rows 1 and 3 leaves two separate runs, re-inserted at two
+    // different indices — a shape no single `insertPosition` can describe.
+    playlists.pl1 = [row('a'), row('b'), row('c'), row('d'), row('e')];
+    const rem = await issueReceipt(client, {
+      kind: 'playlist_items', id: 'pl1', uris: [row('b'), row('d')],
+      expectPresent: false,
+      targetedPositions: [{ uri: row('b'), position: 1 }, { uri: row('d'), position: 3 }],
+    });
+    playlists.pl1 = [row('a'), row('c'), row('e')];
+
+    const out = await handlers.get('undo_mutation')!({ receipt_id: rem.receipt_id, dry_run: false });
+    assert.equal(out.structuredContent?.ok, true, out.content[0]?.text);
+    assert.deepEqual(playlists.pl1, [row('a'), row('b'), row('c'), row('d'), row('e')]);
+
+    const stay = (out.structuredContent?.receipt ?? null) as { affected?: unknown } | null;
+    assert.deepEqual(stay.affected, [
+      { uri: row('b'), positions: [1] },
+      { uri: row('d'), positions: [3] },
+    ], 'both created rows are attributed to the rows the re-insert made');
+  });
+
   it('refuses an add undo when the receipt records no row positions', async () => {
     const { server, handlers } = stubServer();
     const { client, calls, playlists } = stubClient();

@@ -115,6 +115,20 @@ export interface IssueReceiptOpts {
    * pass it here or undo will target a row that predates the mutation.
    */
   insertPosition?: number;
+  /**
+   * The exact playlist rows THIS mutation created, for callers that know them
+   * better than a post-mutation walk can infer (#625).
+   *
+   * The walk can only infer an append's last-occurrence rule or one contiguous
+   * `insertPosition`. Neither describes an undo, whose writes are a
+   * delete-only rollback (which created nothing) or re-inserted runs at
+   * scattered indices — and the append rule is actively wrong for both, since
+   * it names a row that PREDATES the mutation, which a chained undo then
+   * deletes. Each position is verified against the observed list, so a wrong
+   * guess records nothing and undo refuses rather than deleting what it cannot
+   * justify. An EMPTY list means the mutation created no rows at all.
+   */
+  createdPositions?: Array<{ uri: string; position: number }>;
   /** Expected number of rows removed (for window-exceeded detection). */
   expectedRemovedCount?: number;
 }
@@ -212,7 +226,28 @@ export async function issueReceipt(
     affected = [];
     if (sawWholeList) {
       if (opts.expectPresent !== false) {
-        if (opts.insertPosition !== undefined) {
+        if (opts.createdPositions !== undefined) {
+          // The caller states exactly which rows this mutation created — the
+          // only honest input for an undo, whose write shape no walk can
+          // infer. Every position is checked against the observed list, so a
+          // guess that does not hold records nothing and a chained undo
+          // refuses rather than deleting a row it cannot justify. An empty
+          // list is meaningful: the mutation created no rows, and the copies
+          // that survive a delete-only rollback PREDATE it, so claiming one
+          // here would let the next undo delete pre-existing state (#625).
+          const created = opts.createdPositions;
+          if (created.every((p) => orderedUris[p.position] === p.uri)) {
+            const byUri = new Map<string, number[]>();
+            for (const { uri, position } of created) {
+              const list = byUri.get(uri);
+              if (list) list.push(position);
+              else byUri.set(uri, [position]);
+            }
+            for (const [uri, positions] of byUri) {
+              affected.push({ uri, positions: [...positions].sort((a, b) => a - b) });
+            }
+          }
+        } else if (opts.insertPosition !== undefined) {
           // A positional add inserts the posted uris IN ORDER at that index, so
           // each one occupies `insertPosition + its own index in the request`.
           // Treating it as an append instead would record the uri's last

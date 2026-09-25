@@ -198,6 +198,11 @@ async function invertReceipt(
   let snapshotId: string | undefined;
   let requests = 0;
   let attemptedRequests = 0;
+  // The playlist rows THIS undo created, which the post-state receipt is told
+  // explicitly. A rollback's write shape cannot be re-derived from the list
+  // afterwards: a delete-only undo created nothing, and a re-insert put rows
+  // back at indices the append rule would never guess (#625).
+  let createdPositions: Array<{ uri: string; position: number }> | undefined;
   try {
     if (receipt.kind === 'playlist_items' && receipt.id) {
       const encId = encodeURIComponent(receipt.id);
@@ -226,6 +231,10 @@ async function invertReceipt(
           requests++;
           removedSoFar += part.length;
         }
+        // This rollback only DELETED rows. Every copy that survives predates
+        // it, so the receipt must claim no created rows — otherwise the next
+        // undo reads a survivor as this mutation's own and deletes it.
+        createdPositions = [];
       } else if (rows !== null && rows.length > 0) {
         // Undo of a positions-targeted removal puts each row back where it
         // was. `POST /playlists/{id}/items` takes a zero-based `position`
@@ -233,6 +242,7 @@ async function invertReceipt(
         // lowest-first, so every target index still holds the row that
         // preceded it. Runs of adjacent positions share one request.
         const ordered = [...rows].sort((a, b) => a.position - b.position);
+        const created: Array<{ uri: string; position: number }> = [];
         for (const run of consecutiveRuns(ordered)) {
           attemptedRequests++;
           const res = await client.post<{ snapshot_id?: string }>(`/playlists/${encId}/items`, {
@@ -241,7 +251,12 @@ async function invertReceipt(
           });
           snapshotId = res?.snapshot_id ?? snapshotId;
           requests++;
+          // The rows this run just created occupy the run's own indices: the
+          // removal left a gap exactly this long there, and runs are restored
+          // lowest-first so no later insert shifts them.
+          run.forEach((p, i) => created.push({ uri: p.uri, position: run[0]!.position + i }));
         }
+        createdPositions = created;
       } else {
         // A removal with no recorded positions: re-add and append, which is
         // the strongest guarantee the receipt supports.
@@ -303,6 +318,10 @@ async function invertReceipt(
     try {
       stayReceipt = await issueReceipt(client, {
         kind: receipt.kind, id: receipt.id, uris: stayUris, expectPresent: true,
+        // Omitted for the append re-add, where the last-occurrence rule is
+        // already the truth; stated for every other playlist shape so the
+        // receipt never claims a row this undo did not create (#625).
+        ...(createdPositions !== undefined ? { createdPositions } : {}),
       });
     } catch { /* best-effort */ }
   }

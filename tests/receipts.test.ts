@@ -445,6 +445,60 @@ describe('issueReceipt occurrence recording (#625)', () => {
     assert.equal(receipt.affected, undefined);
   });
 
+  it('records exactly the rows a caller states it created, at scattered indices', async () => {
+    // An undo re-inserts runs at their own indices, which neither the append
+    // rule nor a single `insertPosition` can express. The caller's rows are
+    // taken as given once each one is corroborated by the observed list.
+    const client = stubClient(() =>
+      pagedItems([track('spotify:track:a'), track('spotify:track:b'), track('spotify:track:c')]),
+    );
+    const receipt = await issueReceipt(client, {
+      kind: 'playlist_items',
+      id: 'pl1',
+      uris: ['spotify:track:b', 'spotify:track:c'],
+      createdPositions: [
+        { uri: 'spotify:track:b', position: 1 },
+        { uri: 'spotify:track:c', position: 2 },
+      ],
+    });
+    assert.deepEqual(receipt.affected, [
+      { uri: 'spotify:track:b', positions: [1] },
+      { uri: 'spotify:track:c', positions: [2] },
+    ]);
+  });
+
+  it('records nothing for a stated row the walk cannot corroborate', async () => {
+    // A stated position is still checked against the list. Row 1 holds 'a',
+    // not the claimed 'z', so the claim is dropped wholesale and undo refuses
+    // rather than deleting a row the mutation cannot justify owning.
+    const client = stubClient(() =>
+      pagedItems([track('spotify:track:a'), track('spotify:track:a')]),
+    );
+    const receipt = await issueReceipt(client, {
+      kind: 'playlist_items',
+      id: 'pl1',
+      uris: ['spotify:track:z'],
+      createdPositions: [{ uri: 'spotify:track:z', position: 1 }],
+    });
+    assert.equal(receipt.affected, undefined);
+  });
+
+  it('records no rows when a caller states it created none, even though the uri is present', async () => {
+    // The delete-only rollback: every surviving copy PREDATES the mutation, so
+    // claiming one as created would let the next undo delete pre-existing
+    // state. Presence is still verified — only the row attribution is withheld.
+    const client = stubClient(() => pagedItems([track('spotify:track:a')]));
+    const receipt = await issueReceipt(client, {
+      kind: 'playlist_items',
+      id: 'pl1',
+      uris: ['spotify:track:a'],
+      createdPositions: [],
+    });
+    assert.equal(receipt.affected, undefined, 'the survivor is not claimed as created');
+    assert.equal(receipt.verified, true, 'presence is still confirmed');
+    assert.deepEqual(receipt.occurrences, { 'spotify:track:a': 1 });
+  });
+
   it('records no occurrence counts when the walk stopped short of the end', async () => {
     // A truncated walk undercounts. Undo reads these counts to decide whether
     // a uri should still be present after the rollback, so an undercount here
