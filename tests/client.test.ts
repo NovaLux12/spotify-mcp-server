@@ -571,6 +571,56 @@ describe('SpotifyClient', () => {
       });
     });
 
+    it('names the rejected device_id in the no-active-device message (#849)', async () => {
+      await seedTokens();
+      responder = () =>
+        jsonResponse(
+          {
+            error: {
+              status: 404,
+              message: 'Player command failed: No active device found',
+              reason: 'NO_ACTIVE_DEVICE',
+            },
+          },
+          404,
+        );
+
+      const client = new SpotifyClient();
+      // The id is the one Spotify actually rejected — the agent must be able
+      // to see it, otherwise "start playback in the app" is followed by a
+      // re-send of the same dead id.
+      await assert.rejects(
+        client.put(`/me/player/pause?device_id=${encodeURIComponent('dead-device-9f2c')}`),
+        (err: unknown) => {
+          assert.ok(err instanceof SpotifyApiError);
+          assert.equal(err.status, 404);
+          assert.match(err.message, /no active spotify device/i);
+          assert.ok(
+            err.message.includes('dead-device-9f2c'),
+            `message must name the rejected device_id, got: ${err.message}`,
+          );
+          assert.match(err.message, /device_health/);
+          return true;
+        },
+      );
+    });
+
+    it('does not invent a device_id clause when the call passed none (#849)', async () => {
+      await seedTokens();
+      responder = () =>
+        jsonResponse({ error: { status: 404, message: 'Player command failed: No active device found' } }, 404);
+
+      const client = new SpotifyClient();
+      await assert.rejects(client.put('/me/player/pause'), (err: unknown) => {
+        assert.ok(err instanceof SpotifyApiError);
+        assert.match(err.message, /no active spotify device/i);
+        // Nothing was rejected by id, so nothing is named: the base message
+        // is the whole truth here.
+        assert.doesNotMatch(err.message, /Spotify rejected device_id/);
+        return true;
+      });
+    });
+
     it('falls back to the generic 503 message when the body is unparseable', async () => {
       await seedTokens();
       responder = () => new Response('Gateway fell over', { status: 503 });
