@@ -8,7 +8,8 @@
  * The same drift class hit the description: npm, the MCP Registry, the README
  * one-liner and the docs blurbs each claimed something different (#655). One
  * canonical sentence is authored in docs/distribution.md and pinned here, plus
- * an offline subset of the registry schema's ServerDetail limits.
+ * the registry schema's ServerDetail limits — mirrored offline here, and
+ * checked against the real pinned $schema with ajv when it can be fetched.
  *
  * Run with: node --import tsx --test tests/registry-meta.test.ts
  */
@@ -18,6 +19,11 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import type { ErrorObject, ValidateFunction } from 'ajv';
+
+/** ajv is a transitive dependency (via @modelcontextprotocol/sdk), never a direct one. */
+const AJV_UNRESOLVED =
+  'ajv/ajv-formats are transitive dependencies of @modelcontextprotocol/sdk and did not resolve here';
 
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const pkg = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8'));
@@ -26,11 +32,19 @@ const docs = readFileSync(path.join(root, 'docs/distribution.md'), 'utf8');
 const readme = readFileSync(path.join(root, 'README.md'), 'utf8');
 
 /**
- * Constraints mirrored from ServerDetail in
+ * Constraints mirrored from the inline `name`/`title`/`description`/`version`
+ * properties of `definitions.ServerDetail` in
  * https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json
- * (definitions.ServerDetail / definitions.BaseMetadata). Mirrored rather than
- * fetched so the guard runs offline; the pinned $schema assertion below fails
+ * (there is no BaseMetadata definition in that revision). Mirrored so the
+ * offline guard needs no network; the pinned $schema assertion below fails
  * loudly if the manifest is bumped to a revision whose limits differ.
+ *
+ * This mirror is deliberately a strict subset of the schema — it omits `name`
+ * length bounds, the Repository required url+source pair, the LocalTransport
+ * anyOf shape and every KeyValueInput constraint. A subset cannot catch a
+ * manifest that already violates the revision it claims, so the ajv gate at
+ * the bottom of this file is the real conformance check; this stays as the
+ * backstop for environments where that gate cannot run.
  */
 const MIRRORED_REGISTRY_SCHEMA = 'https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json';
 const REGISTRY_NAME_PATTERN = /^[a-zA-Z0-9.-]+\/[a-zA-Z0-9._-]+$/;
@@ -97,6 +111,17 @@ function readmeAuthoredLines(md: string): string[] {
   }
   return authored;
 }
+/** Bound on the schema fetch so an unreachable host cannot wedge the suite. */
+const SCHEMA_FETCH_TIMEOUT_MS = 10_000;
+
+const errorText = (error: unknown): string => (error instanceof Error ? error.message : String(error));
+
+/** ajv error objects → one readable line per violation. */
+function formatAjvErrors(errors: ErrorObject[] | null | undefined): string {
+  if (!Array.isArray(errors) || errors.length === 0) return 'ajv reported no error detail';
+  return errors.map((error) => `${error.instancePath || '/'} ${error.message}`).join('; ');
+}
+
 describe('registry metadata sync', () => {
   it('server.json version tracks package.json version', () => {
     assert.equal(
@@ -266,5 +291,50 @@ describe('server.json registry schema conformance (#655)', () => {
     assert.equal(npmPackage.identifier, pkg.name);
     assert.equal(npmPackage.version, pkg.version);
     assert.equal(npmPackage.transport?.type, 'stdio');
+  });
+});
+
+describe('server.json against the pinned registry schema, not the mirror (#655)', () => {
+  it('ajv-compiles the pinned $schema and accepts the committed manifest', async (t) => {
+    // Validate the revision the mirror describes, not whatever the manifest
+    // currently claims — a bumped $schema must fail here, not slip through.
+    assert.equal(
+      server.$schema,
+      MIRRORED_REGISTRY_SCHEMA,
+      `server.json $schema (${server.$schema}) must equal the pinned schema (${MIRRORED_REGISTRY_SCHEMA}) so this gate checks the revision the mirror describes`,
+    );
+
+    let schema: unknown;
+    try {
+      const response = await fetch(MIRRORED_REGISTRY_SCHEMA, { signal: AbortSignal.timeout(SCHEMA_FETCH_TIMEOUT_MS) });
+      if (!response.ok) throw new Error(`HTTP ${response.status} ${response.statusText}`);
+      schema = await response.json();
+    } catch (error) {
+      t.skip(
+        `could not fetch the pinned registry schema (${errorText(error)}); the mirrored ServerDetail limits are the only guard that ran`,
+      );
+      return;
+    }
+
+    let validate: ValidateFunction;
+    try {
+      // Loaded dynamically rather than at the top of the file so a resolution
+      // failure skips this one gate instead of aborting the whole suite.
+      // strict:false is required because the schema is draft-07 carrying
+      // OpenAPI `example` annotations; addFormats still enforces the
+      // `format: "uri"` keywords that non-strict mode would silently drop.
+      const [{ default: Ajv }, { default: addFormats }] = await Promise.all([import('ajv'), import('ajv-formats')]);
+      const ajv = new Ajv({ strict: false, allErrors: true });
+      addFormats(ajv);
+      validate = ajv.compile(schema);
+    } catch (error) {
+      t.skip(`${AJV_UNRESOLVED} (${errorText(error)}); the mirrored ServerDetail limits are the only guard that ran`);
+      return;
+    }
+
+    assert.ok(
+      validate(server),
+      `server.json violates the pinned schema ${MIRRORED_REGISTRY_SCHEMA}: ${formatAjvErrors(validate.errors)}`,
+    );
   });
 });
