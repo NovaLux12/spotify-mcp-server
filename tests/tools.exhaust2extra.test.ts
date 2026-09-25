@@ -312,6 +312,36 @@ test('playlist_cover_from_track commit fetches art and PUTs base64', async () =>
   }
 });
 
+test('playlist_cover_from_track reports the real playlist length, not the bounded walk length', async () => {
+  // The playlist really holds 1000 items; the item walk is capped at 500, so
+  // the row count is not the playlist length and must never be printed as one.
+  const scanned = Array.from({ length: 500 }, (_, i) => ({
+    added_at: '2026-01-01',
+    item: { type: 'track', uri: `spotify:track:${i}`, name: `T${i}`, album: { images: [] } },
+  }));
+  const client = makeFakeClient({
+    '/playlists/big1': { id: 'big1', name: 'Big', tracks: { total: 1000 } },
+    '/playlists/big1/items': scanned,
+    '/tracks/9': { uri: 'spotify:track:9', name: 'Nine', album: { images: [{ url: 'https://img/nine.jpg', width: 640 }] } },
+  });
+  const registered: RegisteredTool[] = [];
+  registerExhaust2ExtraTools(makeServer(registered), client);
+  const t = find(registered, 'playlist_cover_from_track');
+
+  await assert.rejects(() => t.handler({ playlist_id: 'big1', position: 700 }), (err: Error) => {
+    assert.match(err.message, /playlist has 1000 item\(s\)/);
+    assert.match(err.message, /500 item\(s\) scanned/);
+    assert.doesNotMatch(err.message, /out of range \(500 item\(s\)\)/);
+    return true;
+  });
+
+  // The success-shaped answer carries both numbers separately.
+  const r = await t.handler({ playlist_id: 'big1', track_uri: 'spotify:track:9' });
+  const p = r.structuredContent as Record<string, unknown>;
+  assert.equal(p.playlist_total, 1000);
+  assert.equal(p.items_scanned, 0);
+});
+
 test('missing playlist fails fast', async () => {
   const registered: RegisteredTool[] = [];
   registerExhaust2ExtraTools(makeServer(registered), makeFakeClient({}));
