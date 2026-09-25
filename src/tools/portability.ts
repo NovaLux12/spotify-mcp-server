@@ -273,6 +273,51 @@ interface SidecarPlan {
   readonly invalid: number;
   readonly invalidSamples: readonly string[];
   readonly inFile: number;
+  /**
+   * #1008: what the file itself says about its own completeness.
+   *
+   * `truncated` is the exporter's `truncated` flag verbatim, and it is
+   * `null` — not `false` — when the file carries no such flag. A sidecar
+   * that never says whether it was capped leaves completeness unknown, and
+   * reporting that as "not truncated" would invent a guarantee the file
+   * never made. `capReached` keeps only the five collection keys, and
+   * `truncatedKeys` is the subset the exporter named as capped (all
+   * present keys when the file flags truncation without naming them).
+   */
+  readonly truncated: boolean | null;
+  readonly capReached: Readonly<Partial<Record<SidecarKey, boolean>>>;
+  readonly truncatedKeys: readonly SidecarKey[];
+  /** The per-type cap the exporter recorded, or null when it recorded none. */
+  readonly cap: number | null;
+}
+
+/**
+ * Read the completeness metadata `export_library_json` writes beside the
+ * five collections (#1008). Every field is a value the file actually
+ * carries; nothing is inferred from row counts, because a walk that stopped
+ * at the cap and a library that was genuinely that size are indistinguishable
+ * from the rows alone — only the exporter's own flag distinguishes them.
+ */
+function readSidecarTruncation(doc: Record<string, unknown>): Pick<SidecarPlan, 'truncated' | 'capReached' | 'truncatedKeys' | 'cap'> {
+  const rawCapReached = doc.cap_reached;
+  const capReached: Partial<Record<SidecarKey, boolean>> = {};
+  if (rawCapReached !== null && typeof rawCapReached === 'object' && !Array.isArray(rawCapReached)) {
+    for (const { key } of SIDECAR_COLLECTIONS) {
+      const flag = (rawCapReached as Record<string, unknown>)[key];
+      if (typeof flag === 'boolean') capReached[key] = flag;
+    }
+  }
+  const cap = typeof doc.cap === 'number' && Number.isFinite(doc.cap) ? doc.cap : null;
+  // A boolean is read as written; anything else (absent, null, a string) is
+  // unread, and unread stays null rather than collapsing to false.
+  const truncated = typeof doc.truncated === 'boolean' ? doc.truncated : null;
+  const namedCapped = (Object.keys(capReached) as SidecarKey[]).filter((k) => capReached[k]);
+  const truncatedKeys = namedCapped.length > 0
+    ? namedCapped
+    : truncated === true
+      ? [...SIDECAR_COLLECTIONS].map(({ key }) => key)
+      : [];
+  return { truncated, capReached, truncatedKeys, cap };
 }
 
 function planSidecarRestore(doc: Record<string, unknown>): SidecarPlan {
@@ -327,7 +372,8 @@ function planSidecarRestore(doc: Record<string, unknown>): SidecarPlan {
     };
   }
 
-  return { present, absent, candidates, owner, collections, invalid, invalidSamples, inFile };
+  const truncation = readSidecarTruncation(doc);
+  return { present, absent, candidates, owner, collections, invalid, invalidSamples, inFile, ...truncation };
 }
 
 /**
@@ -358,6 +404,37 @@ function countByCollection(plan: SidecarPlan, subset: (uri: string) => boolean):
     if (subset(uri)) counts[plan.owner.get(uri) as SidecarKey]++;
   }
   return counts;
+}
+/**
+ * #1008: prose for what the sidecar itself says about its completeness.
+ *
+ * Three states, none of them collapsed into a fourth:
+ *  - `truncated: true` — the exporter says it stopped at the cap, so this
+ *    restore covers a subset of the library and the missing rows are named.
+ *  - `truncated: false` — the exporter says the walk finished.
+ *  - `truncated: null` — the file carries no flag, so whether the export
+ *    was capped is UNKNOWN. It is reported as unknown, never as complete.
+ */
+function truncationDisclosure(plan: SidecarPlan, inputPath: string): string {
+  if (plan.truncated === true) {
+    const keys = plan.truncatedKeys.length > 0 ? plan.truncatedKeys.join(', ') : 'unknown';
+    const cap = plan.cap !== null ? ` at the per-type cap of ${plan.cap}` : '';
+    return `This sidecar is TRUNCATED: ${inputPath} was written${cap} and only covers part of the library — capped collections: ${keys}. Restoring it adds what the file holds, never the rows left out of it; re-export with a raised SPOTIFY_MCP_FETCH_ALL_CAP for the rest.`;
+  }
+  if (plan.truncated === null) {
+    return `${inputPath} carries no truncation flag, so whether the export was capped is UNKNOWN — the restore below covers exactly the ${plan.inFile} row(s) in the file and completeness of the source export cannot be confirmed from it.`;
+  }
+  return `This sidecar reports a complete export (truncated: false), so the restore below covers the full ${plan.inFile} row(s) it carries.`;
+}
+
+/** The disclosure fields every import_from_sidecar payload carries. */
+function truncationPayload(plan: SidecarPlan) {
+  return {
+    sidecar_truncated: plan.truncated,
+    cap_reached: plan.capReached,
+    truncated_collections: plan.truncatedKeys,
+    cap: plan.cap,
+  };
 }
 
 export function registerPortabilityTools(server: McpServer, client: SpotifyClient): void {
@@ -1008,7 +1085,7 @@ export function registerPortabilityTools(server: McpServer, client: SpotifyClien
   // import_from_sidecar — additive restore from sidecar (dry_run defaults true)
   server.tool(
     'import_from_sidecar',
-    'Additive restore from a library.json sidecar written by export_library_json: re-adds every missing saved item across all five collections (tracks, albums, shows, episodes, audiobooks) through the unified PUT /me/library endpoint, skipping items the library already holds. Rows whose uri is not a canonical spotify:<kind>:<22-char id> URI are counted as invalid and never sent. Collections the file does not carry are named in absent_keys. dry_run=true by default. Quota: 🟢 local read + 🟡 contains-check + writes when dry_run=false (chunked).',
+    'Additive restore from a library.json sidecar written by export_library_json: re-adds every missing saved item across all five collections (tracks, albums, shows, episodes, audiobooks) through the unified PUT /me/library endpoint, skipping items the library already holds. Rows whose uri is not a canonical spotify:<kind>:<22-char id> URI are counted as invalid and never sent. Collections the file does not carry are named in absent_keys. The exporter\'s own truncated / cap_reached flags are surfaced as sidecar_truncated + truncated_collections: a capped sidecar restores only the rows it holds and says so, and a file with no flag reports completeness as UNKNOWN rather than complete. dry_run=true by default. Quota: 🟢 local read + 🟡 contains-check + writes when dry_run=false (chunked).',
     {
       input_path: z.string().optional().describe('Path to sidecar JSON (default: <portability>/library.json)'),
       dry_run: z.boolean().optional().default(true).describe('Preview only, making no API calls at all. Writes happen only when explicitly set to false.'),
@@ -1028,6 +1105,7 @@ export function registerPortabilityTools(server: McpServer, client: SpotifyClien
       const invalidLine = plan.invalid > 0
         ? `${plan.invalid} invalid row(s) skipped (not a canonical spotify:<kind>:<22-char id> URI): ${plan.invalidSamples.join('; ')}`
         : '';
+      const truncationLine = truncationDisclosure(plan, inputPath);
 
       // Dry run: local read only — no contains-check, no write, same per-collection plan.
       if (args.dry_run !== false) {
@@ -1046,6 +1124,7 @@ export function registerPortabilityTools(server: McpServer, client: SpotifyClien
           invalid: plan.invalid,
           invalid_samples: plan.invalidSamples,
           sample: plan.candidates.slice(0, 5),
+          ...truncationPayload(plan),
         };
         const lines = [
           `Would restore ${plan.candidates.length} item(s) from ${plan.present.length} collection(s): ${plan.present.join(', ') || '—'}`,
@@ -1054,6 +1133,7 @@ export function registerPortabilityTools(server: McpServer, client: SpotifyClien
         if (plan.candidates.length > 5) lines.push(`…and ${plan.candidates.length - 5} more`);
         if (absentLine) lines.push(absentLine);
         if (invalidLine) lines.push(invalidLine);
+        lines.push(truncationLine);
         return shapeResult(rf, describeDryRun('import_from_sidecar', inputPath, lines), payload);
       }
 
@@ -1072,10 +1152,11 @@ export function registerPortabilityTools(server: McpServer, client: SpotifyClien
           invalid: plan.invalid,
           invalid_samples: plan.invalidSamples,
           total_in_file: plan.inFile,
+          ...truncationPayload(plan),
         };
         return shapeResult(
           rf,
-          `Import from ${inputPath}: added 0 item(s) — the sidecar carried no valid library URI to restore.${absentLine ? ` ${absentLine}` : ''}${invalidLine ? ` ${invalidLine}` : ''}`,
+          `Import from ${inputPath}: added 0 item(s) — the sidecar carried no valid library URI to restore.${truncationLine} ${absentLine ? `${absentLine} ` : ''}${invalidLine ? ` ${invalidLine}` : ''}`,
           payload,
         );
       }
@@ -1094,6 +1175,11 @@ export function registerPortabilityTools(server: McpServer, client: SpotifyClien
             `Re-add ${missing.length} item(s) across ${Object.entries(imported).filter(([, n]) => n > 0).map(([k, n]) => `${k}: ${n}`).join(', ')}:`,
             ...missing.slice(0, 10).map((u) => `  - ${u}`),
             ...(missing.length > 10 ? [`  (…and ${missing.length - 10} more)`] : []),
+            // #1008: the operator confirms a write, so the subset they are
+            // agreeing to has to be visible in the prompt, not only afterwards.
+            ...(plan.truncated === true || plan.truncated === null
+              ? [`  NOTE — ${truncationLine}`]
+              : []),
           ]),
           confirmLabel: 'Restore library',
         });
@@ -1126,6 +1212,7 @@ export function registerPortabilityTools(server: McpServer, client: SpotifyClien
         invalid_samples: plan.invalidSamples,
         total_in_file: plan.inFile,
         sample: missing.slice(0, 5),
+        ...truncationPayload(plan),
         ...(receipt ? { receipt: receipt.receipt_id } : {}),
       };
       const summary = Object.entries(imported)
@@ -1137,6 +1224,7 @@ export function registerPortabilityTools(server: McpServer, client: SpotifyClien
         skippedExisting > 0 ? `${skippedExisting} item(s) were already in the library and were left untouched.` : '',
         invalidLine,
         absentLine,
+        truncationLine,
         batchSummary(missing.length, missing),
         ...(receipt ? [formatReceipt(receipt)] : []),
       ]
