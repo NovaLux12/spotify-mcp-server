@@ -1,17 +1,27 @@
 /**
- * Tests for src/tools/import.ts (#165): M3U/CSV parsing, format detection,
+ * Tests for src/tools/import.ts: M3U/CSV parsing, format detection,
  * round-trip with export_playlist output, dedupe, batched adds, dry_run,
  * source-validation errors, and unknown-target fail-fast.
+ *
+ * Plus the three local-file/import-safety issues:
+ *   #623 read confinement — allowed roots, regular files only, size cap.
+ *   #631 metadata must not masquerade as a URI (the CSV uri column is
+ *        authoritative, and the sanitised M3U round-trip stays exact).
+ *   #632 idempotent import (skipped_existing), honest
+ *        duplicates_in_document_skipped, elicitation before the first POST.
  */
 
-import { describe, it } from 'node:test';
+import { describe, it, afterEach } from 'node:test';
 import { z } from 'zod';
 import assert from 'node:assert/strict';
-import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { mkdir, mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../src/client.js';
+import type { PlaylistItemObject } from '../src/types/spotify.js';
 import {
   registerImportTools,
   parseM3u,
@@ -31,6 +41,16 @@ interface RecordedCall {
 }
 
 type Responder = (path: string) => unknown;
+/** Items the target playlist already holds, served by the getAllPages walk. */
+type ExistingItems = PlaylistItemObject[];
+
+interface HarnessOptions {
+  responder?: Responder;
+  /** Contents of the target playlist (the idempotency walk reads these). */
+  existingItems?: ExistingItems;
+  /** 'none' models a client that never advertised elicitation. */
+  elicitation?: 'accept' | 'decline' | 'none';
+}
 
 interface RegisteredTool {
   name: string;
@@ -43,8 +63,15 @@ interface RegisteredTool {
   }>;
 }
 
-function harness(responder: Responder = () => null) {
+function harness(input: Responder | HarnessOptions = () => null) {
+  const options: HarnessOptions = typeof input === 'function' ? { responder: input } : input;
+  const responder = options.responder ?? (() => null);
+  const existing = options.existingItems ?? [];
+  const elicitMode = options.elicitation ?? 'accept';
   const registered: RegisteredTool[] = [];
+  // Ordered across prompts and writes so a test can assert the prompt came
+  // BEFORE the first POST, not merely that both happened.
+  const events: string[] = [];
   const fakeServer = {
     tool(
       name: string,
@@ -58,6 +85,13 @@ function harness(responder: Responder = () => null) {
         handler,
       });
     },
+    server: {
+      getClientCapabilities: () => (elicitMode === 'none' ? {} : { elicitation: { form: {} } }),
+      elicitInput: async (request: { message: string }) => {
+        events.push('prompt');
+        return elicitMode === 'decline' ? { action: 'decline' } : { action: 'accept', content: { confirm: true } };
+      },
+    },
   } as unknown as McmShim;
   const calls: RecordedCall[] = [];
   const client = {
@@ -66,8 +100,14 @@ function harness(responder: Responder = () => null) {
       calls.push({ method: 'GET', path });
       return responder(path) as T | null;
     },
+    async getAllPages<T>(path: string, _params?: unknown, opts?: { maxItems?: number }): Promise<T[]> {
+      calls.push({ method: 'GET_ALL', path });
+      const items = existing as unknown as T[];
+      return opts?.maxItems === undefined ? items : items.slice(0, opts.maxItems);
+    },
     async post<T>(path: string, body: unknown): Promise<T | null> {
       calls.push({ method: 'POST', path, arg: body });
+      events.push(`POST ${path}`);
       return responder(`POST ${path}`) as T | null;
     },
   };
@@ -75,6 +115,8 @@ function harness(responder: Responder = () => null) {
   return {
     registered,
     client,
+    events,
+    prompts: () => events.filter((e) => e === 'prompt').length,
     posts: () => calls.filter((c) => c.method === 'POST'),
     invoke: async (name: string, args: Record<string, unknown>) => {
       const tool = registered.find((t) => t.name === name);
@@ -89,6 +131,42 @@ const textOf = (out: { content: Array<{ text: string }> }) => out.content[0].tex
 
 const playlistResponder = (name = 'Restore Target'): Responder => (path) =>
   path === `/playlists/${PLAYLIST_ID}` ? { id: PLAYLIST_ID, name } : null;
+
+// ---------------------------------------------------------------------------
+// Environment / fixture plumbing
+// ---------------------------------------------------------------------------
+
+const ROOT_ENV_KEYS = [
+  'SPOTIFY_MCP_PORTABILITY_DIR',
+  'SPOTIFY_MCP_BACKUP_DIR',
+  'SPOTIFY_MCP_EXPORT_DIR',
+  'SPOTIFY_MCP_ALLOW_PATHS',
+  'SPOTIFY_MCP_MAX_DOCUMENT_MB',
+  'SPOTIFY_MCP_CONFIRM',
+] as const;
+
+const savedEnv = new Map<string, string | undefined>();
+for (const key of ROOT_ENV_KEYS) savedEnv.set(key, process.env[key]);
+
+afterEach(() => {
+  for (const key of ROOT_ENV_KEYS) {
+    const original = savedEnv.get(key);
+    if (original === undefined) delete process.env[key];
+    else process.env[key] = original;
+  }
+});
+
+/** Point every default read root at `dir`, so fixtures are inside the roots. */
+function useRoots(dir: string): void {
+  process.env.SPOTIFY_MCP_PORTABILITY_DIR = dir;
+  process.env.SPOTIFY_MCP_BACKUP_DIR = dir;
+  process.env.SPOTIFY_MCP_EXPORT_DIR = dir;
+}
+
+const execFileAsync = promisify(execFile);
+
+const itemsOf = (uris: string[]): PlaylistItemObject[] =>
+  uris.map((uri) => ({ item: { uri } }) as unknown as PlaylistItemObject);
 
 // ---------------------------------------------------------------------------
 // Parsers (pure)
@@ -306,8 +384,9 @@ describe('import_playlist dry run + add behaviour', () => {
 // ---------------------------------------------------------------------------
 
 describe('import_playlist file source', () => {
-  it('reads the document from input_path', async () => {
+  it('reads the document from input_path inside the allowed roots', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'spotify-import-'));
+    useRoots(dir);
     try {
       const file = join(dir, 'playlist.m3u');
       await writeFile(file, '#EXTM3U\nspotify:track:f1\n', 'utf8');
@@ -322,5 +401,309 @@ describe('import_playlist file source', () => {
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #623 — read confinement: allowed roots, regular files, size cap
+// ---------------------------------------------------------------------------
+
+describe('import_playlist read confinement (#623)', () => {
+  const realId = 'a'.repeat(22);
+
+  it('refuses /etc/passwd and names the allowed roots, without any network call', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'spotify-roots-'));
+    useRoots(dir);
+    try {
+      const h = harness(playlistResponder());
+      await assert.rejects(
+        () => h.invoke('import_playlist', { playlist_id: PLAYLIST_ID, input_path: '/etc/passwd' }),
+        (error: Error) => {
+          assert.match(error.message, /refusing to read outside the allowed read roots/);
+          assert.ok(
+            error.message.includes(dir),
+            `refusal must name the allowed root, got: ${error.message}`,
+          );
+          return true;
+        },
+      );
+      // The probe is refused outright — the file is never opened and the
+      // playlist is never even looked up.
+      assert.equal(h.client.calls.length, 0);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses an existing file reached through a .. escape', async () => {
+    const base = await mkdtemp(join(tmpdir(), 'spotify-escape-'));
+    const root = join(base, 'root');
+    useRoots(root);
+    try {
+      await mkdir(root);
+      const secret = join(base, 'secret.m3u');
+      await writeFile(secret, `#EXTM3U\nspotify:track:${realId}\n`, 'utf8');
+      const h = harness(playlistResponder());
+      await assert.rejects(
+        () =>
+          h.invoke('import_playlist', {
+            playlist_id: PLAYLIST_ID,
+            input_path: join(root, '..', 'secret.m3u'),
+          }),
+        /refusing to read outside the allowed read roots/,
+      );
+      assert.equal(h.client.calls.length, 0);
+    } finally {
+      await rm(base, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses a directory inside the roots instead of failing with EISDIR', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'spotify-dir-'));
+    useRoots(dir);
+    try {
+      const h = harness(playlistResponder());
+      await assert.rejects(
+        () => h.invoke('import_playlist', { playlist_id: PLAYLIST_ID, input_path: dir }),
+        (error: Error) => {
+          assert.match(error.message, /is a directory, not a regular file/);
+          return true;
+        },
+      );
+      assert.equal(h.client.calls.length, 0);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses a FIFO instead of blocking the server on its first read', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'spotify-fifo-'));
+    useRoots(dir);
+    try {
+      const fifo = join(dir, 'pipe.m3u');
+      await execFileAsync('mkfifo', [fifo]);
+      const h = harness(playlistResponder());
+      // No writer is ever attached: if the tool opened the FIFO this call
+      // would hang until the test timeout instead of returning.
+      await assert.rejects(
+        () => h.invoke('import_playlist', { playlist_id: PLAYLIST_ID, input_path: fifo }),
+        /is a FIFO, not a regular file/,
+      );
+      assert.equal(h.client.calls.length, 0);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses a document over the size cap and reports the limit', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'spotify-big-'));
+    useRoots(dir);
+    process.env.SPOTIFY_MCP_MAX_DOCUMENT_MB = '1';
+    try {
+      const file = join(dir, 'huge.m3u');
+      // 1.5 MB of valid document lines — the cap must stop it before parsing.
+      await writeFile(file, `#EXTM3U\n${'spotify:track:aaaaaaaaaaaaaaaaaaaaaa\n'.repeat(40_000)}`, 'utf8');
+      const h = harness(playlistResponder());
+      await assert.rejects(
+        () => h.invoke('import_playlist', { playlist_id: PLAYLIST_ID, input_path: file }),
+        (error: Error) => {
+          assert.match(error.message, /refusing to read \d+ bytes/);
+          assert.match(error.message, /1048576-byte document limit/);
+          assert.match(error.message, /SPOTIFY_MCP_MAX_DOCUMENT_MB/);
+          return true;
+        },
+      );
+      assert.equal(h.client.calls.length, 0);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects inline content over the size cap at the schema, naming the limit', async () => {
+    process.env.SPOTIFY_MCP_MAX_DOCUMENT_MB = '1';
+    const h = harness(playlistResponder());
+    await assert.rejects(
+      () =>
+        h.invoke('import_playlist', {
+          playlist_id: PLAYLIST_ID,
+          content: 'spotify:track:aaaaaaaaaaaaaaaaaaaaaa\n'.repeat(40_000),
+        }),
+      /over the 1048576-byte document limit/,
+    );
+    assert.equal(h.client.calls.length, 0);
+  });
+
+  it('reads a file from a directory opted in through SPOTIFY_MCP_ALLOW_PATHS', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'spotify-root-a-'));
+    const extra = await mkdtemp(join(tmpdir(), 'spotify-root-b-'));
+    useRoots(root);
+    process.env.SPOTIFY_MCP_ALLOW_PATHS = extra;
+    try {
+      const file = join(extra, 'opted-in.m3u');
+      await writeFile(file, `#EXTM3U\nspotify:track:${realId}\n`, 'utf8');
+      const h = harness(playlistResponder());
+      const out = await h.invoke('import_playlist', {
+        playlist_id: PLAYLIST_ID,
+        input_path: file,
+        dry_run: true,
+      });
+      assert.equal((out.structuredContent as { parsed_uris: number }).parsed_uris, 1);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+      await rm(extra, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #631 — metadata must not masquerade as a URI
+// ---------------------------------------------------------------------------
+
+describe('import_playlist metadata cannot masquerade as a URI (#631)', () => {
+  const realUri = `spotify:track:${'a'.repeat(22)}`;
+  const hijackUri = `spotify:track:${'0'.repeat(22)}`;
+
+  it('a CSV title that looks like a URI does not replace the row uri column', () => {
+    const doc = [
+      'track_no,title,artists,album,duration_ms,uri',
+      `1,${hijackUri},Duo,Album X,200000,${realUri}`,
+      '2,Tune,Trio,Album Y,180000,spotify:track:bbbbbbbbbbbbbbbbbbbbbb',
+    ].join('\n');
+    const parsed = parseCsv(doc);
+    assert.deepEqual(parsed.uris, [realUri, 'spotify:track:bbbbbbbbbbbbbbbbbbbbbb']);
+  });
+
+  it('a headerless CSV row takes the last URI-shaped field, not the first', () => {
+    const parsed = parseCsv([`1,${hijackUri},Duo,200000,${realUri}`].join('\n'));
+    assert.deepEqual(parsed.uris, [realUri]);
+  });
+
+  it('round-trips the sanitised M3U a newline-injecting title used to break', () => {
+    // What the exporter now emits for the title `Line\nspotify:track:<0s>`:
+    // the newline is collapsed INSIDE the #EXTINF metadata, so the document
+    // holds exactly one URI line and the parser extracts exactly that one.
+    const sanitised = [
+      '#EXTM3U',
+      `#EXTINF:200,Evil - Line ${hijackUri}`,
+      realUri,
+      '',
+    ].join('\n');
+    const parsed = parseM3u(sanitised);
+    assert.deepEqual(parsed.uris, [realUri]);
+    assert.equal(parsed.uri_occurrences, 1);
+  });
+
+  it('never POSTs a URI lifted out of CSV metadata', async () => {
+    const csv = [
+      'track_no,title,artists,album,duration_ms,uri',
+      `1,${hijackUri},Duo,Album X,200000,${realUri}`,
+    ].join('\n');
+    const h = harness((path) => (path.startsWith('POST ') ? {} : { id: 'pl1', name: 'X' }));
+    await h.invoke('import_playlist', { playlist_id: PLAYLIST_ID, content: csv });
+    assert.deepEqual(h.posts()[0]?.arg, { uris: [realUri] });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #632 — idempotency, honest duplicate count, elicitation gate
+// ---------------------------------------------------------------------------
+
+describe('import_playlist idempotency (#632)', () => {
+  const u1 = 'spotify:track:1111111111111111111111';
+  const u2 = 'spotify:track:2222222222222222222222';
+  const u3 = 'spotify:track:3333333333333333333333';
+
+  it('a second import of the same document adds nothing and reports skipped_existing', async () => {
+    const doc = `${u1}\n${u2}\n${u3}\n`;
+    // The playlist already holds everything the document names — the state a
+    // re-run after a partial failure lands in.
+    const h = harness({ responder: playlistResponder('Re-run'), existingItems: itemsOf([u1, u2, u3]) });
+    const out = await h.invoke('import_playlist', { playlist_id: PLAYLIST_ID, content: doc });
+    assert.equal(h.posts().length, 0);
+    const p = out.structuredContent as { added: number; skipped_existing: number; batches_sent: number };
+    assert.equal(p.added, 0);
+    assert.equal(p.skipped_existing, 3);
+    assert.equal(p.batches_sent, 0);
+    assert.match(textOf(out), /already in "Re-run" — nothing added/);
+  });
+
+  it('adds only the URIs the playlist is missing', async () => {
+    const h = harness({
+      responder: (path) => (path.startsWith('POST ') ? { snapshot_id: 'snap-2' } : { id: 'pl1', name: 'X' }),
+      existingItems: itemsOf([u1, u2]),
+    });
+    const out = await h.invoke('import_playlist', { playlist_id: PLAYLIST_ID, content: `${u1}\n${u2}\n${u3}\n` });
+    assert.deepEqual(h.posts()[0]?.arg, { uris: [u3] });
+    const p = out.structuredContent as { added: number; skipped_existing: number };
+    assert.equal(p.added, 1);
+    assert.equal(p.skipped_existing, 2);
+  });
+
+  it('dry_run reports what is already present without writing', async () => {
+    const h = harness({ responder: playlistResponder(), existingItems: itemsOf([u1]) });
+    const out = await h.invoke('import_playlist', {
+      playlist_id: PLAYLIST_ID,
+      content: `${u1}\n${u2}\n`,
+      dry_run: true,
+    });
+    assert.equal(h.posts().length, 0);
+    const p = out.structuredContent as { skipped_existing: number; added?: number };
+    assert.equal(p.skipped_existing, 1);
+    assert.equal(p.added, undefined);
+    assert.match(textOf(out), /Would append 1 .*\(1 already present\)/);
+  });
+
+  it('counts in-document duplicates from the parse pass, never negative (URI in a later CSV column)', async () => {
+    const csv = [
+      'track_no,title,artists,duration_ms,uri',
+      `1,First,Duo,200000,${u1}`,
+      `2,Again,Trio,180000,${u1}`,
+      `3,Second,Trio,180000,${u2}`,
+    ].join('\n');
+    const h = harness(playlistResponder());
+    const out = await h.invoke('import_playlist', { playlist_id: PLAYLIST_ID, content: csv });
+    const p = out.structuredContent as { duplicates_in_document_skipped: number; added: number };
+    assert.ok(p.duplicates_in_document_skipped >= 0, 'the reported duplicate count must never be negative');
+    assert.equal(p.duplicates_in_document_skipped, 1);
+    assert.equal(p.added, 2);
+  });
+
+  it('prompts before the first POST on a large import', async () => {
+    const uris = Array.from({ length: 150 }, (_, i) => `spotify:track:t${i}`);
+    const h = harness(playlistResponder());
+    await h.invoke('import_playlist', { playlist_id: PLAYLIST_ID, content: uris.join('\n') });
+    assert.equal(h.prompts(), 1);
+    assert.equal(h.events[0], 'prompt', 'the confirmation must precede every write');
+    assert.equal(h.posts().length, 2);
+  });
+
+  it('writes nothing when the confirmation is declined', async () => {
+    const uris = Array.from({ length: 150 }, (_, i) => `spotify:track:t${i}`);
+    const h = harness({ responder: playlistResponder(), elicitation: 'decline' });
+    const out = await h.invoke('import_playlist', { playlist_id: PLAYLIST_ID, content: uris.join('\n') });
+    assert.equal(h.posts().length, 0);
+    assert.equal((out.structuredContent as { ok: boolean; cancelled: boolean }).cancelled, true);
+  });
+
+  it('refuses a large import from a client that cannot be prompted, unless confirmation is disabled', async () => {
+    const uris = Array.from({ length: 150 }, (_, i) => `spotify:track:t${i}`);
+    const silent = harness({ responder: playlistResponder(), elicitation: 'none' });
+    const refused = await silent.invoke('import_playlist', { playlist_id: PLAYLIST_ID, content: uris.join('\n') });
+    assert.equal(silent.posts().length, 0);
+    const payload = refused.structuredContent as { cancelled: boolean; reason?: string };
+    assert.equal(payload.cancelled, true);
+    assert.equal(payload.reason, 'confirmation_unavailable');
+
+    process.env.SPOTIFY_MCP_CONFIRM = 'never';
+    const optedOut = harness({ responder: playlistResponder(), elicitation: 'none' });
+    await optedOut.invoke('import_playlist', { playlist_id: PLAYLIST_ID, content: uris.join('\n') });
+    assert.equal(optedOut.posts().length, 2);
+  });
+
+  it('small imports are not gated', async () => {
+    const h = harness(playlistResponder());
+    await h.invoke('import_playlist', { playlist_id: PLAYLIST_ID, content: `${u1}\n${u2}\n` });
+    assert.equal(h.prompts(), 0);
+    assert.equal(h.posts().length, 1);
   });
 });
