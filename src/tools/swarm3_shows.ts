@@ -1393,8 +1393,8 @@ export function registerSwarm3ShowsTools(server: McpServer, client: SpotifyClien
     'show_recommendation_brief',
     'Cross-reference newly released episodes against your episode library and each episode\'s own '
       + 'resume_point: which new drops are NOT yet saved or started — a listen-next brief. Every row '
-      + 'is labelled from its own play state, and a row whose resume_point is missing is labelled '
-      + '"play state unknown" rather than called new. Defaults to the last 14 days. Quota: M saved-show '
+      + 'is labelled from its own play state, and a row whose resume_point is missing or carries '
+      + 'no readable offset is labelled "play state unknown" rather than called new. Defaults to the last 14 days. Quota: M saved-show '
       + 'lookups (M = max_shows) + ceil(episodes/50) /me/episodes/contains calls; both counts are '
       + 'reported as shows_checked and library_requests.',
     {
