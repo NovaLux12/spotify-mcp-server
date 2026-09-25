@@ -95,7 +95,7 @@ function appendPaginationFooters(
 /** `/me/following` accepts at most 50 rows per page. */
 const FOLLOWED_PAGE_LIMIT = CHUNK_CAPS.followed;
 
-interface FollowedArtistsWalk {
+export interface FollowedArtistsWalk {
   /** Every artist collected, already sliced to the fetch-all cap. */
   items: SpotifyArtistFull[];
   /** Server-reported total when Spotify sends one, else the walked count. */
@@ -115,7 +115,7 @@ interface FollowedArtistsWalk {
  * page is `limit=50`, and the walk stops at `getConfig().fetchAllCap`
  * (SPOTIFY_MCP_FETCH_ALL_CAP) rather than paging without bound.
  */
-async function walkFollowedArtists(client: SpotifyClient): Promise<FollowedArtistsWalk> {
+export async function walkFollowedArtists(client: SpotifyClient): Promise<FollowedArtistsWalk> {
   const cap = getConfig().fetchAllCap;
   const items: SpotifyArtistFull[] = [];
   let after: string | undefined;

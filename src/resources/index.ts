@@ -16,9 +16,10 @@ import type {
   SavedShowItem,
   SavedEpisodeItem,
   SavedTrackItem,
-  FollowedArtistsResponse,
 } from '../types/spotify.js';
 import { getConfig } from '../config.js';
+import { truncationAdvice, type TruncationCapabilities } from '../shaping.js';
+import { walkFollowedArtists } from '../tools/following.js';
 
 function formatDuration(ms: number): string {
   const minutes = Math.floor(ms / 60000);
@@ -128,6 +129,84 @@ function json(uri: string, payload: unknown): ResourceContents {
  */
 function wantsJson(url: URL): boolean {
   return url.searchParams.get('format') === 'json';
+}
+
+/**
+ * For every resource whose walk is bounded by SPOTIFY_MCP_FETCH_ALL_CAP: the
+ * tool a reader should use for the rest, and the continuation controls that
+ * tool actually accepts (#718). The advice is rendered by the shared
+ * `truncationAdvice` helper, so a capped resource names only controls its own
+ * reader takes — the contract #919 established for tool footers.
+ */
+const CAPPED_RESOURCE_READERS: Record<string, { tool: string; capabilities: TruncationCapabilities }> = {
+  'spotify://me/playlists': {
+    tool: 'get_user_playlists',
+    capabilities: { maxResults: true, offset: true, fetchAll: true },
+  },
+  'spotify://me/saved/albums': {
+    tool: 'get_saved_albums',
+    capabilities: { maxResults: true, offset: true, fetchAll: true },
+  },
+  'spotify://me/saved/shows': {
+    tool: 'get_saved_shows',
+    capabilities: { maxResults: true, offset: true, fetchAll: true },
+  },
+  'spotify://me/saved/episodes': {
+    tool: 'get_saved_episodes',
+    capabilities: { maxResults: true, offset: true, fetchAll: true },
+  },
+  'spotify://me/saved/audiobooks': {
+    tool: 'get_saved_audiobooks',
+    capabilities: { maxResults: true, limit: true, offset: true },
+  },
+  'spotify://me/followed/artists': {
+    tool: 'get_followed_artists',
+    capabilities: { maxResults: true, limit: true, fetchAll: true },
+  },
+};
+
+/**
+ * The one truncation footer for a capped resource walk: which cap bit, how
+ * much was read, and the controls the reader tool really has. A missing
+ * reader row is a programming error, not a reason to stay silent.
+ */
+function capFooter(uri: string, fetched: number, cap: number): string {
+  const reader = CAPPED_RESOURCE_READERS[uri];
+  if (!reader) throw new Error(`No reader tool recorded for capped resource ${uri}`);
+  return (
+    `... truncated at SPOTIFY_MCP_FETCH_ALL_CAP (${cap}) — read ${fetched}; ` +
+    `use ${reader.tool} for the rest: ${truncationAdvice(reader.capabilities)}`
+  );
+}
+
+/** Prose body, with the cap footer appended only when the walk was cut short. */
+function withCapFooter(
+  uri: string,
+  body: string,
+  truncated: boolean,
+  fetched: number,
+  cap: number,
+): string {
+  return truncated ? `${body}\n${capFooter(uri, fetched, cap)}` : body;
+}
+
+/**
+ * Machine-readable capped-walk payload (#718). `total` is what the API
+ * reported, and stays null when a capped walk could not read it: the walked
+ * count is the number of rows returned, never the size of the library.
+ */
+function cappedJson(
+  uri: string,
+  items: unknown[],
+  options: { total: number | null; truncated: boolean; cap: number },
+): ResourceContents {
+  return json(uri, {
+    total: options.total,
+    truncated: options.truncated,
+    cap: options.cap,
+    ...(options.truncated ? { truncation_note: capFooter(uri, items.length, options.cap) } : {}),
+    items,
+  });
 }
 
 export function registerResources(server: McpServer, client: SpotifyClient): void {
@@ -313,18 +392,48 @@ export function registerResources(server: McpServer, client: SpotifyClient): voi
     'spotify://me/playlists',
     "All user playlists, names and IDs ('?format=json' returns the raw items)",
     async (url) => {
-      const playlists = await client.getAllPages<SpotifyPlaylistSimple>('/me/playlists', {
+      const cap = getConfig().fetchAllCap;
+      // The API reports the true playlist count on page 1. Reading it means a
+      // walk stopped at the cap can still say how many playlists exist instead
+      // of reporting the rows it managed to collect. It is the same request
+      // the walk's first page makes, so the TTL cache serves it.
+      const firstPage = await client.get<SpotifyPaged<SpotifyPlaylistSimple>>('/me/playlists', {
         limit: '50',
+        offset: '0',
       });
-      if (wantsJson(url)) return json('spotify://me/playlists', { total: playlists.length, items: playlists });
-      if (playlists.length === 0) {
+      const walk = await client.getAllPagesWithTruncation<SpotifyPlaylistSimple>(
+        '/me/playlists',
+        { limit: '50' },
+        { maxItems: cap },
+      );
+      const total =
+        typeof firstPage?.total === 'number' ? firstPage.total : walk.truncated ? null : walk.items.length;
+      if (wantsJson(url)) {
+        return cappedJson('spotify://me/playlists', walk.items, { total, truncated: walk.truncated, cap });
+      }
+      if (walk.items.length === 0) {
         return text('spotify://me/playlists', 'No playlists found.');
       }
-      const lines = playlists.map((pl) => {
+      const lines = walk.items.map((pl) => {
         const count = playlistTotal(pl);
         return `  • "${pl.name}" (${count === 'unknown' ? 'unknown item count' : `${count} items`}) | ID: ${pl.id} | URI: ${pl.uri}`;
       });
-      return text('spotify://me/playlists', `Playlists (${playlists.length} total):\n${lines.join('\n')}`);
+      const shown =
+        total === null
+          ? `${walk.items.length} read`
+          : walk.truncated
+            ? `${total} total, showing ${walk.items.length}`
+            : `${total} total`;
+      return text(
+        'spotify://me/playlists',
+        withCapFooter(
+          'spotify://me/playlists',
+          `Playlists (${shown}):\n${lines.join('\n')}`,
+          walk.truncated,
+          walk.items.length,
+          cap,
+        ),
+      );
     },
   );
 
@@ -339,13 +448,22 @@ export function registerResources(server: McpServer, client: SpotifyClient): voi
     renderProse: (items: T[]) => string,
   ): void => {
     registerResourcePair(name, uri, label, async (url) => {
-      const items = await client.getAllPages<T>(
+      const cap = getConfig().fetchAllCap;
+      const walk = await client.getAllPagesWithTruncation<T>(
         apiPath,
         { limit: '50' },
-        { maxItems: getConfig().fetchAllCap },
+        { maxItems: cap },
       );
-      if (wantsJson(url)) return json(uri, { total: items.length, items });
-      return text(uri, renderProse(items));
+      // A capped walk cannot say how large the library is: the walked count is
+      // the number of rows returned, not the total, so it reports unknown.
+      const total = walk.truncated ? null : walk.items.length;
+      if (wantsJson(url)) {
+        return cappedJson(uri, walk.items, { total, truncated: walk.truncated, cap });
+      }
+      return text(
+        uri,
+        withCapFooter(uri, renderProse(walk.items), walk.truncated, walk.items.length, cap),
+      );
     });
   };
 
@@ -440,26 +558,29 @@ export function registerResources(server: McpServer, client: SpotifyClient): voi
     const uri = 'spotify://me/followed/artists';
     const render = async (url: URL): Promise<ResourceContents> => {
       const cap = getConfig().fetchAllCap;
-      const artists: SpotifyArtistFull[] = [];
-      let after: string | undefined;
-      while (artists.length < cap) {
-        const params: Record<string, string> = { type: 'artist', limit: '50' };
-        if (after) params.after = after;
-        const page = await client.get<FollowedArtistsResponse>('/me/following', params);
-        const items = page?.artists?.items ?? [];
-        if (items.length === 0) break;
-        artists.push(...(items as unknown as SpotifyArtistFull[]));
-        after = page?.artists?.cursors?.after ?? undefined;
-        if (!page?.artists?.next || !after) break;
+      // The same cursor walk get_followed_artists runs (#744): it reports the
+      // cap verdict and the server total instead of slicing silently, so the
+      // resource cannot present a capped walk as the whole follow list.
+      const walk = await walkFollowedArtists(client);
+      const total = walk.truncatedByCap ? null : walk.total;
+      if (wantsJson(url)) {
+        return cappedJson(uri, walk.items, { total, truncated: walk.truncatedByCap, cap });
       }
-      if (artists.length > cap) artists.length = cap;
-      if (wantsJson(url)) return json(uri, { total: artists.length, items: artists });
-      if (artists.length === 0) return text(uri, 'No followed artists.');
-      const lines = artists.map((a, i) => {
+      if (walk.items.length === 0) return text(uri, 'No followed artists.');
+      const lines = walk.items.map((a, i) => {
         const genres = Array.isArray(a.genres) && a.genres.length > 0 ? a.genres.join(', ') : 'no genres';
         return `  ${i + 1}. ${a.name} — ${genres} | URI: ${a.uri}`;
       });
-      return text(uri, `Followed artists (${artists.length}):\n${lines.join('\n')}`);
+      const shown =
+        total === null
+          ? `${walk.items.length} read`
+          : walk.truncatedByCap
+            ? `${total} total, showing ${walk.items.length}`
+            : `${total} total`;
+      return text(
+        uri,
+        withCapFooter(uri, `Followed artists (${shown}):\n${lines.join('\n')}`, walk.truncatedByCap, walk.items.length, cap),
+      );
     };
     registerResourcePair('followed-artists', uri, "Artists you follow ('?format=json' returns the raw items)", render);
   })();
@@ -468,9 +589,18 @@ export function registerResources(server: McpServer, client: SpotifyClient): voi
   (() => {
     const uri = 'spotify://me/saved/audiobooks';
     const render = async (url: URL): Promise<ResourceContents> => {
-      let items: Array<{ added_at: string; audiobook: { id: string; name: string; uri: string; authors?: Array<{ name: string }> } }>;
+      type AudiobookRow = { added_at: string; audiobook: { id: string; name: string; uri: string; authors?: Array<{ name: string }> } };
+      let items: AudiobookRow[];
+      let truncated: boolean;
+      const cap = getConfig().fetchAllCap;
       try {
-        items = await client.getAllPages<{ added_at: string; audiobook: { id: string; name: string; uri: string; authors?: Array<{ name: string }> } }>('/me/audiobooks', { limit: '50' }, { maxItems: getConfig().fetchAllCap });
+        const walk = await client.getAllPagesWithTruncation<AudiobookRow>(
+          '/me/audiobooks',
+          { limit: '50' },
+          { maxItems: cap },
+        );
+        items = walk.items;
+        truncated = walk.truncated;
       } catch (error) {
         const expected = resourceError(error);
         if (expected) {
@@ -479,13 +609,22 @@ export function registerResources(server: McpServer, client: SpotifyClient): voi
         }
         throw error;
       }
-      if (wantsJson(url)) return json(uri, { total: items.length, items });
+      if (wantsJson(url)) {
+        return cappedJson(uri, items, {
+          total: truncated ? null : items.length,
+          truncated,
+          cap,
+        });
+      }
       if (items.length === 0) return text(uri, 'No saved audiobooks.');
       const lines = items.map(({ added_at, audiobook }) => {
         const authors = (audiobook.authors ?? []).map((a) => a.name).join(', ') || 'unknown author';
         return `  • "${audiobook.name}" — ${authors} (added ${added_at.slice(0, 10)}) | ID: ${audiobook.id}`;
       });
-      return text(uri, `Saved audiobooks (${items.length}):\n${lines.join('\n')}`);
+      return text(
+        uri,
+        withCapFooter(uri, `Saved audiobooks (${items.length}):\n${lines.join('\n')}`, truncated, items.length, cap),
+      );
     };
     registerResourcePair('saved-audiobooks', uri, "Audiobooks saved in your library ('?format=json' returns the raw items)", render);
   })();
