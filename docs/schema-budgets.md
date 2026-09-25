@@ -24,8 +24,11 @@ applied, so its budget covers the payload hosts actually receive.
 
 Annotations, tool names, resources, and prompts are intentionally excluded from
 this module-attribution measurement. A module is `active`, `toolset_trimmed`,
-`scope_blocked`, or `read_only_hidden`; inactive rows report zero live tools and
-list what host trimming drops.
+`scope_filtered`, or `read_only_hidden`; inactive rows report zero live tools
+and list what host trimming drops. A `scope_filtered` row is the exception: the
+module registered the tools `classifyToolAnnotations` proves read-only and
+withheld the writers its granted scopes cannot reach (#1020), so it is still
+measured against its ceiling.
 
 ## Registration order
 

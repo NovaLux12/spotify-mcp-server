@@ -451,7 +451,7 @@ export function applyToolAnnotations(server: McpServer): { total: number; annota
 export type ModuleRegistrationStatus =
   | 'active'
   | 'toolset_trimmed'
-  | 'scope_blocked'
+  | 'scope_filtered'
   | 'read_only_hidden';
 
 export interface ModuleSchemaBudget {
@@ -653,13 +653,49 @@ export function moduleRegistrationStatus(
   module: RegistrarManifestEntry,
   context: RegistrarManifestContext,
 ): ModuleRegistrationStatus {
-  if (module.alwaysActive) {
-    return context.scopeBlocked(module.scopeKey ?? module.registrationKey) ? 'scope_blocked' : 'active';
+  // The hard gates stay ahead of the scope filter: a toolset-trimmed or
+  // read-only-hidden module registers nothing at all, so a reduced scope
+  // grant must not become a way to surface its tools in a READONLY session
+  // (#111). Scope filtering only ever splits a module that would otherwise
+  // have been fully active — a missing write scope hides the writes (which
+  // could only 403) instead of the reads the grant still carries (#1020).
+  if (!module.alwaysActive) {
+    if (!context.isModuleActive(module.registrationKey)) return 'toolset_trimmed';
+    if (context.readOnly && module.readOnlySafe !== true) return 'read_only_hidden';
   }
-  if (context.scopeBlocked(module.scopeKey ?? module.registrationKey)) return 'scope_blocked';
-  if (!context.isModuleActive(module.registrationKey)) return 'toolset_trimmed';
-  if (context.readOnly && module.readOnlySafe !== true) return 'read_only_hidden';
-  return 'active';
+  return context.scopeBlocked(module.scopeKey ?? module.registrationKey) ? 'scope_filtered' : 'active';
+}
+
+/**
+ * Wrap `server` so a module whose write scope was not granted can still
+ * register the tools that only read. Registration calls for anything
+ * `classifyToolAnnotations` cannot prove read-only are dropped, so the gate
+ * hides the writes (which could only 403) instead of hiding the reads the
+ * consent screen still asked for — `get_saved_tracks` used to disappear from
+ * tools/list together with `save_to_library` (#1020).
+ *
+ * The classifier is an allowlist: a name that does not start with a read verb
+ * is classified a write, so an unanticipated tool is withheld rather than
+ * exposed. Every other property is forwarded to the real server with `this`
+ * bound to it, so registrars that read `_registeredTools` (doctor, swarm3_meta)
+ * still see the true registry.
+ */
+function readOnlyToolServer(server: McpServer): McpServer {
+  const isReadable = (name: unknown): boolean =>
+    typeof name === 'string' && classifyToolAnnotations(name).readOnlyHint === true;
+  return new Proxy(server, {
+    get(target, property) {
+      if (property === 'tool' || property === 'registerTool') {
+        return (...args: unknown[]): void => {
+          if (!isReadable(args[0])) return;
+          const register = Reflect.get(target, property, target) as (...call: unknown[]) => unknown;
+          register.apply(target, args);
+        };
+      }
+      const value = Reflect.get(target, property, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
 }
 
 /** Register one manifest module and retain its exact tool-name ownership. */
@@ -672,9 +708,9 @@ export function registerManifestModule(
   const metadata = serverMetadata(server);
   const status = moduleRegistrationStatus(module, context);
   metadata.statuses.set(module.key, status);
-  if (status !== 'active') return;
+  if (status === 'toolset_trimmed' || status === 'read_only_hidden') return;
   const before = new Set(registeredToolNames(server));
-  module.registrar(server, client);
+  module.registrar(status === 'scope_filtered' ? readOnlyToolServer(server) : server, client);
   metadata.tools.set(module.key, registeredToolNames(server).filter((name) => !before.has(name)));
   metadata.budgetRows = undefined;
 }
@@ -714,7 +750,10 @@ export function collectModuleSchemaBudgets(server: McpServer): ModuleSchemaBudge
       baselineSchemaBytes: module.baseline.schemaBytes,
       maxToolCount: module.ceiling.toolCount,
       maxSchemaBytes: module.ceiling.schemaBytes,
-      withinBudget: status !== 'active' || (toolCount <= module.ceiling.toolCount && schemaBytes <= module.ceiling.schemaBytes),
+      // Measured whenever the module registered anything: a scope_filtered row
+      // is a real subset of the surface, not an absent module, so it must not
+      // buy budget exemption by being partially withheld.
+      withinBudget: toolCount === 0 || (toolCount <= module.ceiling.toolCount && schemaBytes <= module.ceiling.schemaBytes),
     };
   });
   metadata.budgetRows = rows;
@@ -726,7 +765,7 @@ export function assertModuleSchemaBudgets(rows: readonly ModuleSchemaBudget[]): 
   // precomputed `withinBudget` field: a caller (or a future edit to the row
   // builder) could otherwise flip the flag without the comparison ever running,
   // and the per-module budget gate would be dead while still reporting healthy.
-  const over = rows.filter((row) => row.status === 'active'
+  const over = rows.filter((row) => row.toolCount > 0
     && (row.toolCount > row.maxToolCount || row.schemaBytes > row.maxSchemaBytes));
   if (over.length === 0) return;
   throw new Error(over.map((row) =>
