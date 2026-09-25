@@ -15,7 +15,7 @@
  */
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import type { SpotifyClient } from '../client.js';
+import { SpotifyApiError, type SpotifyClient } from '../client.js';
 import {
   ResponseFormat,
   MaxResults,
@@ -236,22 +236,52 @@ function spotifyTrackUri(raw: string): string {
 }
 
 /**
- * One /search GET for a pick that carried no usable stats.fm id. A failed or
- * empty lookup returns null so the caller can list the track as unresolved —
- * a dead lookup must not abort the whole commit, and it must never be dropped
- * silently.
+ * Outcome of one /search GET for a pick that carried no usable stats.fm id.
+ * `uri` set → resolved. `error` set → the lookup itself failed, so whether
+ * Spotify has the track is UNKNOWN and must never be reported as a miss.
  */
-async function searchTrackUri(client: SpotifyClient, pick: TrackPick): Promise<string | null> {
+interface SearchOutcome {
+  uri: string | null;
+  error: string | null;
+}
+
+/**
+ * A short description of a failed lookup. Only the status and Spotify's own
+ * reason code are quoted — never `err.message`, which upstream error bodies
+ * can fill with private ids and query values (same redaction rule as
+ * lib/statsfm-client.ts).
+ */
+function searchFailureMessage(err: unknown): string {
+  if (err instanceof SpotifyApiError) {
+    return `search failed: HTTP ${err.status}${err.reason ? ` (${err.reason})` : ''}`;
+  }
+  return `search failed: ${err instanceof Error ? err.name : 'unknown error'}`;
+}
+
+/**
+ * One /search GET for a pick that carried no usable stats.fm id.
+ *
+ * Only a 404 or an empty `tracks.items` means "search matched nothing" — a
+ * real answer from Spotify's index. Every other outcome (401, 429, 403, 5xx,
+ * transport) is a FAILED lookup, not a missing track, and is returned in
+ * `error` so the caller can say so; folding it into `uri: null` would report
+ * an expired token as a track that does not exist, and would print a "0
+ * found" count for searches that never returned.
+ */
+async function searchTrackUri(client: SpotifyClient, pick: TrackPick): Promise<SearchOutcome> {
   type SearchHits = { tracks?: { items?: Array<{ uri?: string; id?: string }> } };
-  let res: SearchHits | null = null;
+  let res: SearchHits | null;
   try {
     res = await client.get<SearchHits>('/search', { q: `${pick.artist} ${pick.title}`, type: 'track', limit: '1' });
-  } catch {
-    return null;
+  } catch (err) {
+    // A 404 is Spotify saying "nothing here"; anything else is a failed call.
+    if (err instanceof SpotifyApiError && err.status === 404) return { uri: null, error: null };
+    return { uri: null, error: searchFailureMessage(err) };
   }
   const first = res?.tracks?.items?.[0];
-  if (first?.uri) return first.uri;
-  return first?.id ? spotifyTrackUri(first.id) : null;
+  if (first?.uri) return { uri: first.uri, error: null };
+  if (first?.id) return { uri: spotifyTrackUri(first.id), error: null };
+  return { uri: null, error: null };
 }
 
 
@@ -300,6 +330,7 @@ export function registerTasteCompositeTools(server: McpServer, client: SpotifyCl
       + 'dry_run (default true) returns the plan and issues NO Spotify write; dry_run=false '
       + 'creates the playlist in your library and adds the tracks that resolve to a Spotify id '
       + '(unresolvable ones come back under unresolved[], never silently dropped). '
+      + 'A failed lookup (401/429/5xx) surfaces as search_errors[], or blocked: search_failed. '
       + 'Quota: 2 stats.fm GETs when previewing; + up to track_count /search GETs, 1 create and '
       + 'chunked adds when committing.',
     {
@@ -393,7 +424,10 @@ export function registerTasteCompositeTools(server: McpServer, client: SpotifyCl
       // Spotify caps names at 100 chars; a long stats.fm user id must not blow the request.
       const name = ((args.playlist_name ?? defaultName).trim() || defaultName).slice(0, 100);
       const uris: string[] = [];
+      // unresolved[] = Spotify searched and matched nothing. searchErrors[] =
+      // the lookup itself failed, so the track's existence on Spotify is unknown.
       const unresolved: string[] = [];
+      const searchErrors: string[] = [];
       let searches = 0;
       for (const p of shaped.items) {
         if (p.spotifyId) {
@@ -401,15 +435,30 @@ export function registerTasteCompositeTools(server: McpServer, client: SpotifyCl
           continue;
         }
         searches++;
-        const found = await searchTrackUri(client, p);
-        if (found) uris.push(found);
+        const outcome = await searchTrackUri(client, p);
+        if (outcome.error) searchErrors.push(`${p.artist} — ${p.title} [${outcome.error}]`);
+        else if (outcome.uri) uris.push(outcome.uri);
         else unresolved.push(`${p.artist} — ${p.title}`);
+      }
+      if (uris.length === 0 && searchErrors.length > 0) {
+        return textOut(
+          [`Nothing written: all ${searches} track searches failed, so no pick could be looked up `
+            + 'on Spotify and no playlist was created. That is a Spotify auth/quota/transport '
+            + 'failure, not a statement about the tracks.'],
+          {
+            ok: false, user: u, seed, dryRun, blocked: 'search_failed',
+            search_errors: searchErrors, unresolved, picks: shaped.items, missing,
+          },
+        );
       }
       if (uris.length === 0) {
         return textOut(
           [`Nothing written: none of the ${shaped.items.length} picks resolved to a Spotify id `
-            + `(${unresolved.length} searched, 0 found), so no playlist was created.`],
-          { ok: false, user: u, seed, dryRun, blocked: 'no_resolvable_tracks', unresolved, picks: shaped.items, missing },
+            + `(${searches} searched, 0 found), so no playlist was created.`],
+          {
+            ok: false, user: u, seed, dryRun, blocked: 'no_resolvable_tracks',
+            search_errors: searchErrors, unresolved, picks: shaped.items, missing,
+          },
         );
       }
       const created = await client.post<{ id?: string; external_urls?: { spotify?: string } }>('/me/playlists', {
@@ -444,18 +493,26 @@ export function registerTasteCompositeTools(server: McpServer, client: SpotifyCl
           added: uris.length, requested: shaped.items.length, snapshot_id: snapshotId,
         },
         unresolved,
+        search_errors: searchErrors,
         requests: { searches, create: 1, adds },
         picks: shaped.items, missing,
         pagination: paginationInfo({ total: blended.length, offset: 0, limit: null, returned: blended.length }),
       };
       const out = [
         `COMMITTED — dry_run=false: created playlist "${name}" (${url}) with ${uris.length} of `
-          + `${shaped.items.length} tracks.`,
+          + `${shaped.items.length} tracks.`
+          + (searchErrors.length > 0
+            ? ` PARTIAL: ${searchErrors.length} lookup${searchErrors.length === 1 ? '' : 's'} FAILED — `
+              + 'those tracks may well exist; see search_errors[].'
+            : ''),
         ...lines,
         SPOTIFY_FALLBACK_GUIDANCE,
       ];
       if (unresolved.length > 0) {
         out.push(`unresolved[] (no Spotify id, search matched nothing — not added): ${unresolved.join(' · ')}`);
+      }
+      if (searchErrors.length > 0) {
+        out.push(`search_errors[] (lookup FAILED — existence unknown, not added): ${searchErrors.join(' · ')}`);
       }
       out.push(`requests: ${searches} search + 1 create + ${adds} add.`);
       if (shaped.footer) out.push(`(${shaped.footer})`);

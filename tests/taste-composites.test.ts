@@ -5,6 +5,7 @@ import {
   __setTasteCompositeFetchImpl,
   __resetTasteCompositeFetchImpl,
 } from '../src/tools/taste_composites.js';
+import { SpotifyApiError } from '../src/client.js';
 
 // ---------------------------------------------------------------- fixtures
 
@@ -33,6 +34,8 @@ type RecordingClient = {
   calls: WireCall[];
   /** Substring of the /search q → URIs returned for it. Anything unmatched returns no items. */
   searchHits: Record<string, string[]>;
+  /** Substring of the /search q → error thrown instead of an answer. `'*'` throws for every search. */
+  searchThrows: Record<string, Error>;
   playlistId: string | null;
   get(path: string, params?: Record<string, string>): Promise<unknown>;
   post(path: string, body?: unknown): Promise<unknown>;
@@ -44,11 +47,14 @@ function makeClient(): RecordingClient {
   const client: RecordingClient = {
     calls: [],
     searchHits: {},
+    searchThrows: {},
     playlistId: 'PL-1',
     async get(path, params) {
       client.calls.push({ method: 'get', path, params });
       if (path !== '/search') return null;
       const q = params?.q ?? '';
+      const boom = Object.entries(client.searchThrows).find(([needle]) => needle === '*' || q.includes(needle));
+      if (boom) throw boom[1];
       const hit = Object.entries(client.searchHits).find(([needle]) => q.includes(needle));
       return { tracks: { items: (hit?.[1] ?? []).map((uri) => ({ uri, id: uri.split(':').pop() })) } };
     },
@@ -372,6 +378,93 @@ test('taste_to_playlist dry_run=false creates nothing when no pick resolves', as
   assert.equal(sc.blocked, 'no_resolvable_tracks');
   assert.equal(sc.unresolved.length, 2);
   assert.match(text(result), /Nothing written/);
+});
+
+test('taste_to_playlist dry_run=false blocks with search_failed when every /search errors', async () => {
+  const client = makeClient();
+  client.searchThrows = { '*': new SpotifyApiError(401, 'The access token expired') };
+  const { registered } = makeHarness(client);
+  const result = await invoke(findTool(registered, 'taste_to_playlist'), {
+    statsfm_user: 'demo',
+    seed: 'recent',
+    track_count: 2,
+    dry_run: false,
+  });
+  assert.deepEqual(writes(client), [], 'a run where no lookup was served must write nothing');
+  const sc = result.structuredContent as {
+    ok: boolean;
+    blocked: string;
+    unresolved: string[];
+    search_errors: string[];
+  };
+  assert.equal(sc.ok, false);
+  assert.equal(sc.blocked, 'search_failed');
+  // An errored lookup says nothing about the track, so it must not land in
+  // unresolved[] — that list means "Spotify searched and matched nothing".
+  assert.deepEqual(sc.unresolved, []);
+  assert.equal(sc.search_errors.length, 2);
+  assert.ok(sc.search_errors.every((e) => e.includes('HTTP 401')), `status must survive into the report: ${JSON.stringify(sc.search_errors)}`);
+  const out = text(result);
+  assert.doesNotMatch(out, /matched nothing/, 'an auth failure must never read as a missing track');
+  assert.doesNotMatch(out, /0 found/, 'a count of matches may not be printed for searches that never returned');
+});
+
+test('taste_to_playlist dry_run=false separates failed lookups from genuine misses in a mixed run', async () => {
+  const client = makeClient();
+  client.searchHits = { 'New Thing': ['spotify:track:SEARCH1'] };
+  client.searchThrows = {
+    'Spring Song': new SpotifyApiError(429, 'rate limited', 7, 'QUOTA_EXCEEDED'),
+    'Deep Cut': new SpotifyApiError(429, 'rate limited', 7, 'QUOTA_EXCEEDED'),
+    'Hit Single': new SpotifyApiError(429, 'rate limited', 7, 'QUOTA_EXCEEDED'),
+  };
+  const { registered } = makeHarness(client);
+  const result = await invoke(findTool(registered, 'taste_to_playlist'), {
+    statsfm_user: 'demo',
+    seed: 'recent',
+    track_count: 4,
+    dry_run: false,
+  });
+  const sc = result.structuredContent as {
+    unresolved: string[];
+    search_errors: string[];
+    playlist: { id: string; added: number; requested: number };
+  };
+  assert.equal(sc.playlist.id, 'PL-1', 'the one resolved pick is still committed');
+  assert.equal(sc.playlist.added, 1);
+  assert.equal(sc.playlist.requested, 4);
+  // The three quota-walled lookups are unknown, not misses.
+  assert.deepEqual(sc.unresolved, []);
+  assert.equal(sc.search_errors.length, 3);
+  assert.ok(
+    sc.search_errors.every((e) => e.includes('QUOTA_EXCEEDED')),
+    `quota reason must reach the caller: ${JSON.stringify(sc.search_errors)}`,
+  );
+  const out = text(result);
+  assert.match(out, /search_errors\[\]/);
+  assert.match(out, /PARTIAL/, 'a short commit must say so in the headline, not only in a footer');
+  assert.doesNotMatch(out, /unresolved\[\]/);
+});
+
+test('taste_to_playlist treats a 404 search as a genuine miss, not a failed lookup', async () => {
+  const client = makeClient();
+  client.searchThrows = { '*': new SpotifyApiError(404, 'Not found.') };
+  const { registered } = makeHarness(client);
+  const result = await invoke(findTool(registered, 'taste_to_playlist'), {
+    statsfm_user: 'demo',
+    seed: 'recent',
+    track_count: 2,
+    dry_run: false,
+  });
+  assert.deepEqual(writes(client), [], 'nothing resolved, so nothing is created');
+  const sc = result.structuredContent as {
+    blocked: string;
+    unresolved: string[];
+    search_errors: string[];
+  };
+  assert.equal(sc.blocked, 'no_resolvable_tracks', 'a 404 is Spotify saying "no match", not a failure');
+  assert.equal(sc.unresolved.length, 2);
+  assert.deepEqual(sc.search_errors, []);
+  assert.match(text(result), /0 found/);
 });
 
 // -------------------------------------------------------- 2. taste_daily_brief

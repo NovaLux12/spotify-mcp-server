@@ -55,7 +55,7 @@
  *   personalization → tools/personalization.ts (top artists/tracks/recently played) + tools/swarm3_analytics.ts (listening analytics)
  *   statsfm         → tools/statsfm.ts          (third-party stats.fm API, read-only)
  *   taste           → tools/statsfm_taste.ts    (canonical statsfm_taste_* tools + legacy taste_* aliases: stats.fm taste intelligence, read-only, no auth)
- *                     tools/taste_composites.ts (composites, read-only, no auth)
+ *                     tools/taste_composites.ts (composites, no auth; read-only except taste_to_playlist, which writes only when dry_run=false)
  *   discovery       → tools/swarm3_meta.ts      (find_tool, inspect_tool, toolset_report) — also in catalog for compat
  *   resources       → resources/index.ts        (template and standard resources)
  *   prompts         → prompts/index.ts          (workflow prompts)
