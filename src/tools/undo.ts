@@ -74,10 +74,12 @@ async function invertReceipt(
 
   let snapshotId: string | undefined;
   let requests = 0;
+  let attemptedRequests = 0;
   try {
     if (receipt.kind === 'playlist_items' && receipt.id) {
       const encId = encodeURIComponent(receipt.id);
       for (const part of chunk(uris, PLAYLIST_ITEMS_CHUNK)) {
+        attemptedRequests++;
         if (direction === 'added') {
           const res = await client.delete<{ snapshot_id?: string }>(`/playlists/${encId}/items`, {
             tracks: part.map((uri) => ({ uri })),
@@ -92,14 +94,21 @@ async function invertReceipt(
     } else if (receipt.kind === 'library') {
       for (const part of chunk(uris, LIBRARY_CHUNK)) {
         const qs = `uris=${part.join(',')}`;
+        attemptedRequests++;
         if (direction === 'added') await client.delete(`/me/library?${qs}`);
         else await client.put(`/me/library?${qs}`);
         requests++;
       }
     }
-  } catch (e: unknown) {
-    const msg = e instanceof Error ? e.message : String(e);
-    return textResult(`Undo failed: ${msg}`, { ok: false, error: msg, direction, requests });
+  } catch {
+    if (attemptedRequests === 0) throw new Error('Undo could not start.');
+    return textResult('Undo stopped after a partial write; verify the current library or playlist state before retrying.', {
+      ok: false,
+      reason: 'partial_write_failure',
+      direction,
+      completed_requests: requests,
+      attempted_requests: attemptedRequests,
+    });
   }
 
   let newReceipt: Receipt | undefined;

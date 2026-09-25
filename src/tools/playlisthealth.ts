@@ -11,7 +11,7 @@ import type { PlaylistItemObject } from '../types/spotify.js';
 import {
   confirmViaElicitation,
   describeConfirmation,
-  refusalFor,
+  requiredConfirmationRefusal,
   REMOVE_ELICIT_THRESHOLD,
 } from './confirm.js';
 
@@ -224,7 +224,7 @@ export function registerPlaylistHealthTools(server: McpServer, client: SpotifyCl
     async (args) => {
       const filePath = snapshotPath(args.playlist_id, args.snapshot_id);
       let snapshot: SnapshotData;
-      try { snapshot = JSON.parse(await readFile(filePath, 'utf8')) as SnapshotData; } catch { throw new Error(`Snapshot "${args.snapshot_id}" not found for playlist "${args.playlist_id}"`); }
+      try { snapshot = JSON.parse(await readFile(filePath, 'utf8')) as SnapshotData; } catch { throw new Error('Snapshot could not be read.'); }
       const encId = encodeURIComponent(args.playlist_id);
       const current = await client.getAllPages<PlaylistItemObject>(`/playlists/${encId}/items`, { limit: '100' }, { maxItems: getConfig().fetchAllCap });
       const currentUris = current.map((row) => { const t = row.item as unknown as Record<string, unknown> | null | undefined; return t && typeof t.uri === 'string' ? (t.uri as string) : null; });
@@ -293,7 +293,7 @@ export function registerPlaylistHealthTools(server: McpServer, client: SpotifyCl
             `Remove ${toRemove.length} unavailable row(s) at positions ${positions.join(', ')}:`,
           ]),
         });
-        const refusal = refusalFor(verdict);
+        const refusal = requiredConfirmationRefusal(verdict);
         if (refusal) return textResult(refusal.message, refusal.payload);
       }
       // Delete from the end so earlier positions do not shift. A position-only
@@ -307,9 +307,8 @@ export function registerPlaylistHealthTools(server: McpServer, client: SpotifyCl
       let after: PlaylistItemObject[];
       try {
         after = await client.getAllPages<PlaylistItemObject>(itemsPath, { limit: '100' }, { maxItems: getConfig().fetchAllCap });
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        return textResult(`Removal write completed, but post-write verification is unavailable for playlist ${playlistId}: ${message}`, {
+      } catch {
+        return textResult(`Removal write completed, but post-write verification is unavailable for playlist ${playlistId}.`, {
           ok: false,
           playlist_id: playlistId,
           verification: 'unavailable',
@@ -318,7 +317,7 @@ export function registerPlaylistHealthTools(server: McpServer, client: SpotifyCl
           removed_positions: null,
           remaining_positions: null,
           snapshot_id: snapshotId,
-          error: message,
+          error: 'post_write_verification_unavailable',
         });
       }
       const remainingPositions: number[] = [];

@@ -213,15 +213,15 @@ async function makeHarness(): Promise<PlaylistHarness> {
     },
   };
 }
-type ElicitAnswer = { action: 'accept' | 'decline' | 'cancel'; confirm?: boolean } | Error;
+type ElicitAnswer = { action: 'accept' | 'decline' | 'cancel'; confirm?: boolean } | Error | null;
 
 interface UnionGateHarness {
   calls: string[];
-  invoke: (args: Record<string, unknown>) => Promise<ToolResponse>;
+  invoke: (name: 'playlist_union' | 'playlist_subtract', args: Record<string, unknown>) => Promise<ToolResponse>;
   close: () => Promise<void>;
 }
 
-async function makeUnionGateHarness(answer: ElicitAnswer, useAlias: boolean): Promise<UnionGateHarness> {
+async function makeUnionGateHarness(answer: ElicitAnswer, useAlias: boolean, toolName: 'playlist_union' | 'playlist_subtract' = 'playlist_union'): Promise<UnionGateHarness> {
   const calls: string[] = [];
   const client = {
     async get<T>(path: string): Promise<T | null> {
@@ -230,6 +230,7 @@ async function makeUnionGateHarness(answer: ElicitAnswer, useAlias: boolean): Pr
     },
     async getAllPages<T>(path: string): Promise<T[]> {
       calls.push(path);
+      if (toolName === 'playlist_subtract' && path.includes('p2')) return [] as T[];
       return Array.from({ length: 50 }, (_, index) => ({
         item: { id: `${path.includes('p1') ? 'a' : 'b'}${index}`, uri: `spotify:track:${path.includes('p1') ? 'a' : 'b'}${index}`, name: `Track ${index}` },
       })) as T[];
@@ -250,9 +251,9 @@ async function makeUnionGateHarness(answer: ElicitAnswer, useAlias: boolean): Pr
   registerPlaylistTools(server, client);
   const caller = new Client(
     { name: 'union-confirm-client', version: '0.0.0' },
-    { capabilities: { elicitation: { form: {} } } },
+    answer === null ? undefined : { capabilities: { elicitation: { form: {} } } },
   );
-  caller.setRequestHandler(ElicitRequestSchema, async () => {
+  if (answer !== null) caller.setRequestHandler(ElicitRequestSchema, async () => {
     if (answer instanceof Error) throw answer;
     if (answer.action === 'accept') return { action: answer.action, content: { confirm: answer.confirm ?? true } };
     return { action: answer.action };
@@ -261,8 +262,8 @@ async function makeUnionGateHarness(answer: ElicitAnswer, useAlias: boolean): Pr
   await Promise.all([caller.connect(clientTransport), server.connect(serverTransport)]);
   return {
     calls,
-    invoke: async (args) => {
-      const result = await caller.callTool({ name: 'playlist_union', arguments: args });
+    invoke: async (name, args) => {
+      const result = await caller.callTool({ name, arguments: args });
       return result as unknown as ToolResponse;
     },
     close: async () => {
@@ -396,9 +397,9 @@ describe('playlist set/diff schema and resolver contract (#912)', () => {
       { label: 'transport-error', answer: new Error('elicitation transport failed'), useAlias: false, writes: 0 },
     ] as const;
     for (const testCase of cases) {
-      const gate = await makeUnionGateHarness(testCase.answer, testCase.useAlias);
+      const gate = await makeUnionGateHarness(testCase.answer, testCase.useAlias, 'playlist_union');
       const source = testCase.useAlias ? { source_playlist_ids: ['p1', 'p2'] } : { playlists: ['p1', 'p2'] };
-      const result = await gate.invoke({ ...source, target_playlist_id: 'target' });
+      const result = await gate.invoke('playlist_union', { ...source, target_playlist_id: 'target' });
       const writes = gate.calls.filter((call) => call.startsWith('PUT ') || call.startsWith('POST '));
       assert.equal(writes.length, testCase.writes, `${testCase.label} write count`);
       if (testCase.label === 'confirmed') assert.equal(result.structuredContent?.ok, true);
@@ -411,6 +412,21 @@ describe('playlist set/diff schema and resolver contract (#912)', () => {
           assert.match(textOf(result), /Deprecated input source_playlist_ids/);
         }
       }
+      await gate.close();
+    }
+  });
+
+  it('refuses union and subtract replacement with no elicitation support and performs no writes', async () => {
+    const cases = [
+      { name: 'playlist_union' as const, args: { playlists: ['p1', 'p2'], target_playlist_id: 'target' } },
+      { name: 'playlist_subtract' as const, args: { base_playlist_id: 'p1', subtract_playlist_ids: ['p2'] } },
+    ];
+    for (const testCase of cases) {
+      const gate = await makeUnionGateHarness(null, false, testCase.name);
+      const result = await gate.invoke(testCase.name, testCase.args);
+      assert.equal(result.structuredContent?.ok, false, `${testCase.name} proceeded without confirmation`);
+      assert.equal(result.structuredContent?.reason, 'confirmation_unavailable');
+      assert.deepEqual(gate.calls.filter((call) => call.startsWith('PUT ') || call.startsWith('POST ')), []);
       await gate.close();
     }
   });

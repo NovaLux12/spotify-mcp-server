@@ -7,7 +7,7 @@
  */
 import { z } from 'zod';
 import { classifySpotifyReference } from './refs.js';
-import { DEFAULT_MAX_ITEMS } from './config.js';
+import { DEFAULT_MAX_ITEMS, getConfig } from './config.js';
 
 // ---------------------------------------------------------------------------
 // Shared zod fragments (#51/#53/#57)
@@ -298,7 +298,7 @@ export interface TruncationCapabilities {
 }
 
 export interface TruncationMetadata {
-  truncated: true;
+  truncated: boolean;
   returned: number;
   total: number;
   remaining: number;
@@ -372,7 +372,7 @@ export function truncateItems<T>(
  * Effective per-call cap: explicit argument wins over the configured default
  * (which already reflects SPOTIFY_MCP_MAX_ITEMS via config).
  */
-export function resolveMaxResults(explicit: number | undefined, fallback = DEFAULT_MAX_ITEMS): number {
+export function resolveMaxResults(explicit: number | undefined, fallback = getConfig().maxItems): number {
   if (typeof explicit === 'number' && Number.isFinite(explicit) && explicit > 0) {
     return Math.floor(explicit);
   }
@@ -441,7 +441,7 @@ function truncationCap(
   args: JsonObject,
   capabilities: Required<TruncationCapabilities>,
 ): number | undefined {
-  if (capabilities.maxResults) return resolveMaxResults(positiveArgument(args, 'max_results'));
+  if (capabilities.maxResults) return resolveMaxResults(positiveArgument(args, 'max_results'), getConfig().maxItems);
   if (capabilities.limit) return positiveArgument(args, 'limit');
   return undefined;
 }
@@ -492,12 +492,33 @@ function metadataFromPayload(
     )
     : undefined;
   return {
-    truncated: true,
+    truncated: remaining > 0,
     returned,
     total,
     remaining,
     ...(nextOffset !== undefined ? { next_offset: nextOffset } : {}),
   };
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+interface CanonicalFooterMatch {
+  match: RegExpExecArray;
+  count: number;
+}
+
+function canonicalFooterMatch(text: string, expectedAdvice: string): CanonicalFooterMatch | null {
+  for (const candidate of [expectedAdvice, 'pass offset or fetch_all']) {
+    const body = `\\d+ more — ${escapeRegExp(candidate)}`;
+    const match = new RegExp(`\\((?<parenthesized>${body})\\)|(?<bare>${body})`).exec(text);
+    if (match) {
+      const count = Number(match.groups?.parenthesized ?? match.groups?.bare);
+      return Number.isFinite(count) ? { match, count } : null;
+    }
+  }
+  return null;
 }
 
 function mentionsAcceptedControl(text: string, capabilities: Required<TruncationCapabilities>): boolean {
@@ -550,8 +571,8 @@ export function installTruncationBoundary(server: object): TruncationBoundary {
       && typeof (block as JsonObject).text === 'string'
     ) as { type: 'text'; text: string } | undefined;
     const text = textBlock?.text;
-    const footerMatch = typeof text === 'string'
-      ? /\b(\d+)\s+more\s+[—-]\s+([^)\n]+)(\))?/i.exec(text)
+    let footerMatch = typeof text === 'string'
+      ? canonicalFooterMatch(text, advice.get(toolName) ?? 'narrow the query')
       : undefined;
     const markedTruncated = result.structuredContent != null
       && typeof result.structuredContent === 'object'
@@ -560,18 +581,23 @@ export function installTruncationBoundary(server: object): TruncationBoundary {
     let payload = result.structuredContent != null && typeof result.structuredContent === 'object'
       ? result.structuredContent as JsonObject
       : undefined;
-    let parsedJson = false;
+    let parsedJson: 'object' | 'array' | false = false;
+    let parsedArray: unknown[] | undefined;
     if (typeof text === 'string' && /^\s*[{[]/.test(text)) {
       try {
         const parsed: unknown = JSON.parse(text);
-        if (parsed != null && typeof parsed === 'object' && !Array.isArray(parsed)) {
-          parsedJson = true;
+        if (Array.isArray(parsed)) {
+          parsedJson = 'array';
+          parsedArray = parsed;
+        } else if (parsed != null && typeof parsed === 'object') {
+          parsedJson = 'object';
           if (!payload) payload = parsed as JsonObject;
         }
       } catch {
-        // Non-JSON prose beginning with a brace is not a machine result.
+        // Non-JSON prose beginning with a brace or bracket is not a machine result.
       }
     }
+    if (parsedJson === 'array') footerMatch = undefined;
     const args = argsValue != null && typeof argsValue === 'object' && !Array.isArray(argsValue)
       ? argsValue as JsonObject
       : {};
@@ -581,7 +607,7 @@ export function installTruncationBoundary(server: object): TruncationBoundary {
       payload = { returned: fetched, total, remaining: Math.max(0, total - fetched) };
     }
     if (!payload && footerMatch != null) payload = {};
-    const items = payload ? findReturnedItems(payload) : undefined;
+    let items = payload ? findReturnedItems(payload) : parsedArray;
     const cap = truncationCap(args, capabilities);
     const itemsWereSliced = items !== undefined && cap !== undefined && items.length > cap;
     const declaredTotal = payload
@@ -589,21 +615,35 @@ export function installTruncationBoundary(server: object): TruncationBoundary {
         ?? numberField((payload.pagination as JsonObject | undefined)?.total)
         ?? numberField(payload.unique_tracks)
       : undefined;
-    const returned = numberField(payload?.returned) ?? items?.length ?? (itemsWereSliced ? cap : undefined);
-    const inferredRemaining = footerMatch != null
-      ? Number(footerMatch[1])
-      : completeness != null
-        ? Math.max(0, Number(completeness[2] ?? completeness[1]) - Number(completeness[1]))
-        : itemsWereSliced
-          ? items!.length - cap!
-          : numberField(payload?.remaining)
-            ?? (declaredTotal !== undefined && returned !== undefined ? Math.max(0, declaredTotal - returned) : undefined);
+    const returned = itemsWereSliced ? cap : numberField(payload?.returned) ?? items?.length;
+    const inferredRemaining = declaredTotal !== undefined && returned !== undefined
+      ? Math.max(0, declaredTotal - returned)
+      : footerMatch != null
+        ? footerMatch.count
+        : completeness != null
+          ? Math.max(0, Number(completeness[2] ?? completeness[1]) - Number(completeness[1]))
+          : itemsWereSliced
+            ? items!.length - cap!
+            : numberField(payload?.remaining);
+    if (!payload && parsedArray) payload = { items: parsedArray };
     const shortPage = returned !== undefined && declaredTotal !== undefined && returned < declaredTotal;
     const hasTruncationSignal = markedTruncated || footerMatch != null || completeness != null || shortPage;
     if (!payload || (!hasTruncationSignal && !itemsWereSliced)) return resultValue;
     const metadata = metadataFromPayload(payload, args, capabilities, inferredRemaining, itemsWereSliced, cap);
     if (!metadata) return resultValue;
     const nextPayload: JsonObject = { ...payload, ...metadata };
+    if (capabilities.offset && metadata.remaining > 0 && numberField(nextPayload.next_offset) !== undefined) {
+      nextPayload.next_offset = numberField(nextPayload.next_offset);
+    } else {
+      delete nextPayload.next_offset;
+    }
+    if (nextPayload.pagination != null && typeof nextPayload.pagination === 'object') {
+      const pagination = nextPayload.pagination as JsonObject;
+      if (!capabilities.offset || metadata.remaining <= 0) {
+        const { next_offset: _nextOffset, ...rest } = pagination;
+        nextPayload.pagination = rest;
+      }
+    }
     if (itemsWereSliced && items) {
       const sliced = items.slice(0, cap!);
       for (const [key, value] of Object.entries(nextPayload)) {
@@ -612,8 +652,18 @@ export function installTruncationBoundary(server: object): TruncationBoundary {
     }
     let nextText = text;
     if (footerMatch && typeof text === 'string') {
-      nextText = text.replace(footerMatch[0], `${metadata.remaining} more — ${advice.get(toolName)}${footerMatch[3] ?? ''}`);
-    } else if (typeof text === 'string' && !parsedJson && !mentionsAcceptedControl(text, capabilities)) {
+      const replacement = metadata.remaining > 0
+        ? `(${metadata.remaining} more — ${advice.get(toolName)})`
+        : '';
+      nextText = text.replace(footerMatch.match[0], replacement).trimEnd();
+    } else if (parsedJson === 'array' && itemsWereSliced && items) {
+      nextText = JSON.stringify(items.slice(0, cap!), null, 2);
+    } else if (
+      metadata.remaining > 0
+      && typeof text === 'string'
+      && parsedJson !== 'object'
+      && !mentionsAcceptedControl(text, capabilities)
+    ) {
       nextText = `${text}\n(${metadata.remaining} more — ${advice.get(toolName)})`;
     }
     const metadataChanged = Object.keys(metadata).some((key) =>
@@ -627,7 +677,7 @@ export function installTruncationBoundary(server: object): TruncationBoundary {
     if (nextText !== undefined) {
       nextResult.content = content!.map((block) =>
         block === textBlock
-          ? { ...(block as JsonObject), text: parsedJson ? JSON.stringify(nextPayload, null, 2) : nextText }
+          ? { ...(block as JsonObject), text: parsedJson === 'object' ? JSON.stringify(nextPayload, null, 2) : nextText }
           : block
       );
     }

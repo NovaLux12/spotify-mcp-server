@@ -128,4 +128,50 @@ describe('undo_mutation direction inversion', () => {
     assert.equal(dels.length, 2, 'expected two chunked deletes for 150 URIs');
     assert.equal(dels[0]!.path, '/playlists/pl1/items');
   });
+
+  it('redacts a failed first undo attempt with fixed counts', async () => {
+    const { server, handlers } = stubServer();
+    const { client } = stubClient();
+    (client as unknown as { delete: () => Promise<never> }).delete = async () => {
+      throw new Error('SENTINEL_UNDO https://example.test/raw?token=secret /home/alice/private.json', {
+        cause: new Error('nested Spotify rejection'),
+      });
+    };
+    registerUndoTools(server, client);
+    const receipt = await issueReceipt(client, { kind: 'library', uris: ['spotify:track:a'], expectPresent: true });
+    const out = await handlers.get('undo_mutation')!({ receipt_id: receipt.receipt_id, dry_run: false });
+    assert.equal(out.structuredContent?.reason, 'partial_write_failure');
+    assert.equal(out.structuredContent?.attempted_requests, 1);
+    assert.equal(out.structuredContent?.completed_requests, 0);
+    const publicText = JSON.stringify(out);
+    for (const secret of ['SENTINEL_UNDO', 'token=secret', '/home/alice', 'nested Spotify rejection']) {
+      assert.equal(publicText.includes(secret), false, `undo failure leaked ${secret}`);
+    }
+  });
+
+  it('returns only fixed categories and counts after a partial undo', async () => {
+    const { server, handlers } = stubServer();
+    const { client } = stubClient();
+    let deletes = 0;
+    (client as unknown as { delete: () => Promise<null> }).delete = async () => {
+      deletes++;
+      if (deletes === 2) throw new Error('SENTINEL_UNDO_PARTIAL https://example.test/private?token=secret');
+      return null;
+    };
+    registerUndoTools(server, client);
+    const receipt = await issueReceipt(client, {
+      kind: 'library',
+      uris: Array.from({ length: 41 }, (_, index) => `spotify:track:${index}`),
+      expectPresent: true,
+    });
+    const out = await handlers.get('undo_mutation')!({ receipt_id: receipt.receipt_id, dry_run: false });
+    assert.equal(out.structuredContent?.ok, false);
+    assert.equal(out.structuredContent?.reason, 'partial_write_failure');
+    assert.equal(out.structuredContent?.completed_requests, 1);
+    assert.equal(out.structuredContent?.attempted_requests, 2);
+    const publicText = JSON.stringify(out);
+    for (const secret of ['SENTINEL_UNDO_PARTIAL', 'token=secret', 'https://example.test']) {
+      assert.equal(publicText.includes(secret), false, `partial undo leaked ${secret}`);
+    }
+  });
 });

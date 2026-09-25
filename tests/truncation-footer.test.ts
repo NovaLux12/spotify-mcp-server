@@ -7,6 +7,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { z } from 'zod';
 import type { SpotifyClient } from '../src/client.js';
+import { initConfig } from '../src/config.js';
 import { installTruncationBoundary, truncateItems, type TruncationBoundary } from '../src/shaping.js';
 
 const REPO_ROOT = join(import.meta.dirname, '..');
@@ -201,6 +202,74 @@ describe('production truncation boundary', () => {
     assert.equal(shaped.structuredContent.returned, 2);
     assert.equal(shaped.structuredContent.total, 4);
     assert.equal(shaped.structuredContent.remaining, 2);
+  });
+
+  it('uses a finite declared total before inferring remaining from excess items', () => {
+    const server = new McpServer({ name: 'truncation-total-test', version: '0.0.0' });
+    const boundary = installTruncationBoundary(server);
+    server.tool('finite_total', 'Finite total', { max_results: z.number().optional() }, async () => ({ content: [] }));
+    const shaped = boundary.shape('finite_total', { max_results: 2 }, {
+      content: [{ type: 'text', text: JSON.stringify({ items: ['a', 'b', 'c', 'd', 'e'], total: 3 }) }],
+    }) as { content: Array<{ text: string }>; structuredContent: Record<string, unknown> };
+    assert.deepEqual(shaped.structuredContent.items, ['a', 'b']);
+    assert.equal(shaped.structuredContent.total, 3);
+    assert.equal(shaped.structuredContent.returned, 2);
+    assert.equal(shaped.structuredContent.remaining, 1);
+  });
+
+  it('uses the initialized configured cap when max_results is omitted', () => {
+    const previous = process.env.SPOTIFY_MCP_MAX_ITEMS;
+    try {
+      initConfig({ ...process.env, SPOTIFY_MCP_MAX_ITEMS: '3' });
+      const server = new McpServer({ name: 'truncation-config-test', version: '0.0.0' });
+      const boundary = installTruncationBoundary(server);
+      server.tool('configured_cap', 'Configured cap', { max_results: z.number().optional() }, async () => ({ content: [] }));
+      const shaped = boundary.shape('configured_cap', {}, {
+        content: [{ type: 'text', text: JSON.stringify(['a', 'b', 'c', 'd']) }],
+      }) as { content: Array<{ text: string }>; structuredContent: Record<string, unknown> };
+      assert.deepEqual(shaped.structuredContent.items, ['a', 'b', 'c']);
+      assert.equal(shaped.structuredContent.returned, 3);
+      assert.equal(shaped.structuredContent.remaining, 1);
+    } finally {
+      if (previous === undefined) delete process.env.SPOTIFY_MCP_MAX_ITEMS;
+      else process.env.SPOTIFY_MCP_MAX_ITEMS = previous;
+      initConfig(process.env);
+    }
+  });
+
+  it('keeps shaped top-level JSON arrays as JSON arrays', () => {
+    const server = new McpServer({ name: 'truncation-array-test', version: '0.0.0' });
+    const boundary = installTruncationBoundary(server);
+    server.tool('json_array', 'JSON array', { max_results: z.number().optional() }, async () => ({ content: [] }));
+    const shaped = boundary.shape('json_array', { max_results: 2 }, {
+      content: [{ type: 'text', text: JSON.stringify(['a', 'b', 'c']) }],
+    }) as { content: Array<{ text: string }>; structuredContent: Record<string, unknown> };
+    assert.deepEqual(JSON.parse(shaped.content[0]!.text), ['a', 'b']);
+    assert.equal(Array.isArray(JSON.parse(shaped.content[0]!.text)), true);
+    assert.equal(shaped.structuredContent.returned, 2);
+    assert.equal(shaped.structuredContent.remaining, 1);
+  });
+
+  it('does not rewrite arbitrary more-prose or add continuation to ordinary short pages', () => {
+    const server = new McpServer({ name: 'truncation-short-test', version: '0.0.0' });
+    const boundary = installTruncationBoundary(server);
+    server.tool('short_page', 'Short page', { max_results: z.number().optional() }, async () => ({ content: [] }));
+    const arbitrary = { content: [{ type: 'text' as const, text: '3 more — live' }] };
+    const ordinary = { content: [{ type: 'text' as const, text: 'Only one row' }] };
+    assert.equal(boundary.shape('short_page', {}, arbitrary), arbitrary);
+    assert.equal(boundary.shape('short_page', {}, ordinary), ordinary);
+  });
+
+  it('recognizes bare canonical generated footers without capturing prose', () => {
+    const server = new McpServer({ name: 'truncation-bare-footer-test', version: '0.0.0' });
+    const boundary = installTruncationBoundary(server);
+    server.tool('bare_footer', 'Bare footer', { max_results: z.number().optional() }, async () => ({ content: [] }));
+    const shaped = boundary.shape('bare_footer', { max_results: 2 }, {
+      content: [{ type: 'text', text: '3 more — pass offset or fetch_all' }],
+      structuredContent: { items: ['a'], total: 4 },
+    }) as { content: Array<{ text: string }>; structuredContent: Record<string, unknown> };
+    assert.equal(shaped.structuredContent.remaining, 3);
+    assert.match(shaped.content[0]!.text, /3 more/);
   });
 
   it('preserves successful untouched results by identity', async () => {

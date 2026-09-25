@@ -2,10 +2,10 @@
  * Elicitation-gated confirmation for destructive playlist operations (#111 item 5).
  *
  * Destructive bulk mutations ask the human operator to confirm via MCP
- * elicitation before touching Spotify. Environments that never advertised the
- * capability (or set SPOTIFY_MCP_CONFIRM=never) skip prompting entirely so
- * automation/readonly contexts are never blocked — but a prompt that FAILS
- * mid-flight is a refusal, never a silent proceed (#684).
+ * elicitation before touching Spotify. Callers that require confirmation use
+ * requiredConfirmationRefusal(), which fails closed when the client cannot
+ * prompt; SPOTIFY_MCP_CONFIRM=never is the explicit automation bypass. A
+ * prompt that fails mid-flight is always a refusal, never a silent proceed.
  */
 
 // Gates used by callers: removals at this scale can silently gut a playlist;
@@ -85,14 +85,13 @@ function isElicitResult(value: unknown): value is ElicitResultShape {
   return typeof value === 'object' && value !== null && 'action' in value;
 }
 
-/** Caller-facing refusal for a gate verdict that must block the write. */
 export interface ElicitRefusal {
   /** Why the operation stopped, for structured results. */
-  reason: 'declined' | 'elicitation_failed';
+  reason: 'declined' | 'elicitation_failed' | 'confirmation_unavailable';
   /** Human text to return as the tool result. */
   message: string;
   /** Structured content to return as the tool result. */
-  payload: { ok: false; cancelled: true; reason?: 'elicitation_failed' };
+  payload: { ok: false; cancelled: true; reason?: 'elicitation_failed' | 'confirmation_unavailable' };
 }
 
 /**
@@ -119,6 +118,36 @@ export function refusalFor(verdict: ElicitVerdict): ElicitRefusal | null {
     };
   }
   return null;
+}
+
+/**
+ * Guard a write that requires explicit confirmation. Only `confirmed` proceeds;
+ * an unsupported client is refused unless the operator deliberately disabled
+ * confirmation entirely with SPOTIFY_MCP_CONFIRM=never.
+ */
+export function requiredConfirmationRefusal(verdict: ElicitVerdict): ElicitRefusal | null {
+  if (verdict === 'confirmed') return null;
+  if (verdict === 'unsupported' && process.env.SPOTIFY_MCP_CONFIRM === 'never') return null;
+  if (verdict === 'declined') return refusalFor(verdict);
+  if (verdict === 'unsupported') {
+    return {
+      reason: 'confirmation_unavailable',
+      message: 'Confirmation is unavailable — refusing to proceed; nothing was changed.',
+      payload: { ok: false, cancelled: true, reason: 'confirmation_unavailable' },
+    };
+  }
+  if (verdict === 'error') {
+    return {
+      reason: 'elicitation_failed',
+      message: 'Elicitation failed on the wire — refusing to proceed; nothing was changed.',
+      payload: { ok: false, cancelled: true, reason: 'elicitation_failed' },
+    };
+  }
+  return {
+    reason: 'elicitation_failed',
+    message: 'Confirmation could not be established; refusing to proceed; nothing was changed.',
+    payload: { ok: false, cancelled: true, reason: 'elicitation_failed' },
+  };
 }
 
 /**

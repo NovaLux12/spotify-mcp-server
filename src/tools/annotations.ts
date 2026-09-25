@@ -130,6 +130,8 @@ const OVERRIDES: Record<string, ToolAnnotations> = {
   // Writes that read like reads, and reads that read like writes.
   // Local reference normalization never calls Spotify or mutates server state.
   dedupe_spotify_uris: { readOnlyHint: true, idempotentHint: true },
+  statsfm_record_feedback: { destructiveHint: false },
+  record_feedback: { destructiveHint: false },
   export_playlist: { destructiveHint: false },
   backup_library: { destructiveHint: false },
   play: { destructiveHint: false },

@@ -6,7 +6,7 @@ import { getConfig } from '../config.js';
 import {
   confirmViaElicitation,
   describeConfirmation,
-  refusalFor,
+  requiredConfirmationRefusal,
   REMOVE_ELICIT_THRESHOLD,
   REPLACE_ELICIT_THRESHOLD,
 } from './confirm.js';
@@ -1705,7 +1705,7 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
           `Overwrite ALL existing items with ${union.length} URI(s) from ${input.values.length} playlist(s).`,
         ]),
       });
-      const refusal = refusalFor(verdict);
+      const refusal = requiredConfirmationRefusal(verdict);
       if (refusal) {
         return textResult(
           withPlaylistInputNote(refusal.message, input),
@@ -1729,6 +1729,20 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
     const remaining = baseUris.filter(u => !subtractSet.has(u));
     const removed = baseUris.length - remaining.length;
     if (args.dry_run) { const text = describeDryRun('subtract playlists', args.base_playlist_id, [`Would remove ${removed} item(s), keep ${remaining.length}`]); return textResult(withPlaylistInputNote(text, input), withPlaylistInputMetadata({ ok: true, dry_run: true, base_playlist: args.base_playlist_id, playlists: input.values, removed, kept: remaining.length }, input)); }
+    if (remaining.length >= REPLACE_ELICIT_THRESHOLD) {
+      const verdict = await confirmViaElicitation(server, {
+        message: describeConfirmation('replace playlist items', args.base_playlist_id, [
+          `Overwrite ALL existing items with ${remaining.length} URI(s), removing ${removed} URI(s) from subtraction sources.`,
+        ]),
+      });
+      const refusal = requiredConfirmationRefusal(verdict);
+      if (refusal) {
+        return textResult(
+          withPlaylistInputNote(refusal.message, input),
+          withPlaylistInputMetadata(refusal.payload, input),
+        );
+      }
+    }
     const snap = await replaceWithUris(args.base_playlist_id, remaining);
     const payload = withPlaylistInputMetadata({ ok: true, base_playlist: args.base_playlist_id, playlists: input.values, removed, kept: remaining.length, snapshot_id: snap ?? null }, input);
     return textResult(withPlaylistInputNote(withSnapshot(`Subtract: removed ${removed}, kept ${remaining.length}`, snap), input), payload);
