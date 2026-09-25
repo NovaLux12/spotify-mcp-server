@@ -86,7 +86,7 @@ above either ceiling fails CI and server startup.
 | saveddedupe | 1 | 1,562 | 1 | 1,562 | 2 | 1,719 |
 | podcastsession | 2 | 2,759 | 2 | 2,759 | 3 | 3,035 |
 | backupfirst | 1 | 513 | 1 | 513 | 2 | 565 |
-| backup | 2 | 1,443 | 2 | 1,443 | 3 | 1,588 |
+| backup | 3 | 2,584 | 3 | 2,584 | 4 | 2,843 |
 | restore | 1 | 1,851 | 1 | 1,851 | 2 | 2,037 |
 | undo | 2 | 1,518 | 2 | 1,518 | 3 | 1,670 |
 | receipts | 1 | 315 | 1 | 315 | 2 | 347 |

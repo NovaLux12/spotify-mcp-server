@@ -111,7 +111,12 @@ export const TOOL_SURFACE_BUDGET = Object.freeze({
   coreMaxBytes: 220_000,
   defaultPrefixBudget: 3,
   prefixBudgets: Object.freeze({
-    album: 8, apply: 4, artist: 35, check: 6, episode: 5, export: 10,
+    // `delete` sits at the default budget of 3 (delete_scene, delete_playback_bookmark,
+    // delete_playlist_snapshot). Raised to 4 deliberately for `delete_backup` (#697) rather
+    // than renaming the tool into a fresh verb family: the budget table exists to force this
+    // decision to be visible, not to be routed around. The tool unlinks a file the user cannot
+    // recover, so its name should say what it does.
+    album: 8, apply: 4, artist: 35, check: 6, delete: 4, episode: 5, export: 10,
     filter: 4, find: 11, get: 59, library: 8, list: 11, listening: 17,
     play: 4, playback: 4, playlist: 54, queue: 8, remove: 9, restore: 4,
     save: 11, saved: 11, search: 22, set: 4, show: 8, snapshot: 12,
@@ -531,7 +536,7 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   manifestEntry('saveddedupe', 'library', 'src/tools/saveddedupe.ts', registerSavedDedupeTools, [1, 1562], { scopeKey: 'library' }),
   manifestEntry('podcastsession', 'library', 'src/tools/podcastsession.ts', registerPodcastSessionTools, [2, 2759], { scopeKey: 'library' }),
   manifestEntry('backupfirst', 'library', 'src/tools/backupfirst.ts', registerBackupFirstTools, [1, 513], { readOnlySafe: true, scopeKey: 'library' }),
-  manifestEntry('backup', 'library', 'src/tools/backup.ts', registerBackupTools, [2, 1443], { readOnlySafe: true, scopeKey: 'library' }),
+  manifestEntry('backup', 'library', 'src/tools/backup.ts', registerBackupTools, [3, 2584], { readOnlySafe: false, scopeKey: 'library' }),
   manifestEntry('restore', 'library', 'src/tools/restore.ts', registerRestoreTools, [1, 1851], { scopeKey: 'library' }),
   manifestEntry('undo', 'library', 'src/tools/undo.ts', registerUndoTools, [2, 1518], { scopeKey: 'library' }),
   manifestEntry('receipts', 'library', 'src/tools/annotations.ts', (server) => {
