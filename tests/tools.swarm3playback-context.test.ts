@@ -119,6 +119,27 @@ function endlessPlaylist(pageSize: number, targetRow: number, calls: Call[]) {
   };
 }
 
+/**
+ * Endless playlist whose page starting at `failAt` throws, as a 502 does. The
+ * rows before it are served normally, so the walk has real rows behind it and
+ * the failure lands mid-walk.
+ */
+function failingPagePlaylist(pageSize: number, failAt: number, calls: Call[]) {
+  return (path: string, params?: Record<string, string>) => {
+    if (path === '/me/player') return sparseState;
+    if (path === '/playlists/pl1/items') {
+      const offset = Number(params?.offset ?? 0);
+      const limit = Number(params?.limit ?? 100);
+      calls.push({ offset, limit });
+      if (offset === failAt) throw new Error('502 Bad Gateway');
+      return {
+        items: Array.from({ length: Math.min(limit, pageSize) }, (_, i) => track(`spotify:track:x${offset + i}`)),
+      };
+    }
+    throw new Error(`unexpected GET ${path}`);
+  };
+}
+
 describe('get_context_inspect walks by raw page length (#845)', () => {
   it('reports the true row position for a track on page 2 when page 1 has null rows', async () => {
     // Rows 1-4 = page 1 (rows 2 and 4 unavailable), rows 5-6 = page 2, with the
@@ -136,7 +157,7 @@ describe('get_context_inspect walks by raw page length (#845)', () => {
       // length), never the filtered count of 2.
       assert.deepEqual(calls.map((c) => c.offset), [0, 4]);
       assert.equal(out.structuredContent?.walked, 6);
-      assert.equal(out.structuredContent?.truncated, false);
+      assert.equal(out.structuredContent?.walk_stopped_at_cap, false);
       assert.equal(out.structuredContent?.cap, 500);
     } finally {
       initConfig();
@@ -173,7 +194,9 @@ describe('get_context_inspect walks by raw page length (#845)', () => {
       assert.equal(out.structuredContent?.context_enumerated, false);
       assert.equal(out.structuredContent?.walked, 10);
       assert.equal(out.structuredContent?.cap, 10);
-      assert.equal(out.structuredContent?.truncated, true);
+      assert.equal(out.structuredContent?.walk_stopped_at_cap, true);
+      assert.equal(out.structuredContent?.walk_complete, false);
+      assert.equal(out.structuredContent?.walk_failed, false);
       // Each page asks only for the rows the cap still allows: 10, then 6, 2.
       assert.deepEqual(calls, [
         { offset: 0, limit: 10 },
@@ -195,8 +218,143 @@ describe('get_context_inspect walks by raw page length (#845)', () => {
       const out = await h.invoke('get_context_inspect', {});
       assert.equal(out.structuredContent?.position_in_context, 10);
       assert.equal(out.structuredContent?.walked, 10);
-      assert.equal(out.structuredContent?.truncated, false);
+      assert.equal(out.structuredContent?.walk_stopped_at_cap, false);
+      assert.equal(out.structuredContent?.walk_complete, false);
       assert.match(out.content.map((c) => c.text).join('\n'), /Track 10/);
+    } finally {
+      initConfig();
+    }
+  });
+});
+
+/**
+ * The "could not be determined" sentence may only describe an enumeration the
+ * tool actually performed. An `artist` context issues no request at all, an
+ * album is read in one un-paged request, and a page that throws leaves rows
+ * unread — none of those may claim the context was enumerated (#845).
+ */
+describe('get_context_inspect reports what the walk established, not an assumed enumeration (#845)', () => {
+  it('does not claim enumeration when a 60-track album was only half read', async () => {
+    // `/albums/{id}/tracks` is fetched once with limit=50 and never paged, so a
+    // current track at #60 of 60 was never in a page the tool read.
+    const albumCalls: Array<Record<string, string> | undefined> = [];
+    const albumState = { ...sparseState, context: { type: 'album', uri: 'spotify:album:al1' } };
+    initConfig({ SPOTIFY_MCP_FETCH_ALL_CAP: '500' });
+    try {
+      const h = makeHarness((path, params) => {
+        if (path === '/me/player') return albumState;
+        if (path === '/albums/al1/tracks') {
+          albumCalls.push(params);
+          return {
+            total_tracks: 60,
+            tracks: { items: Array.from({ length: 50 }, (_, i) => ({ uri: `spotify:track:a${i + 1}` })) },
+          };
+        }
+        throw new Error(`unexpected GET ${path}`);
+      });
+      const out = await h.invoke('get_context_inspect', {});
+      const text = out.content.map((c) => c.text).join('\n');
+      assert.equal(out.structuredContent?.position_in_context, null);
+      assert.equal(out.structuredContent?.context_total, 60);
+      assert.equal(out.structuredContent?.walked, 50);
+      assert.equal(out.structuredContent?.walk_complete, false);
+      assert.equal(out.structuredContent?.walk_stopped_at_cap, false);
+      // One un-paged request at the endpoint's own limit: nothing was paged in.
+      assert.deepEqual(albumCalls, [{ limit: '50' }]);
+      assert.match(text, /read the first 50 of 60 album tracks; the context was not enumerated/);
+      assert.doesNotMatch(text, /enumerated context/);
+    } finally {
+      initConfig();
+    }
+  });
+
+  it('does not claim enumeration for an artist context, which issues no request', async () => {
+    const requested: string[] = [];
+    const artistState = { ...sparseState, context: { type: 'artist', uri: 'spotify:artist:ar1' } };
+    initConfig({ SPOTIFY_MCP_FETCH_ALL_CAP: '500' });
+    try {
+      const h = makeHarness((path) => {
+        requested.push(path);
+        if (path === '/me/player') return artistState;
+        throw new Error(`unexpected GET ${path}`);
+      });
+      const out = await h.invoke('get_context_inspect', {});
+      const text = out.content.map((c) => c.text).join('\n');
+      assert.deepEqual(requested, ['/me/player']);
+      assert.equal(out.structuredContent?.position_in_context, null);
+      assert.equal(out.structuredContent?.walked, 0);
+      assert.equal(out.structuredContent?.walk_complete, false);
+      assert.match(text, /the artist context is not enumerable/);
+      assert.doesNotMatch(text, /enumerated/);
+    } finally {
+      initConfig();
+    }
+  });
+
+  it('reports a mid-walk page failure as unread rows, not as a negative finding', async () => {
+    // Page 2 answers 502 after 100 clean rows. The position is genuinely
+    // undetermined — the remaining rows may hold the track — so the tool must
+    // not turn a transport failure into "the track is not in this playlist".
+    const calls: Call[] = [];
+    initConfig({ SPOTIFY_MCP_FETCH_ALL_CAP: '500' });
+    try {
+      const h = makeHarness(failingPagePlaylist(100, 100, calls));
+      const out = await h.invoke('get_context_inspect', {});
+      const text = out.content.map((c) => c.text).join('\n');
+      assert.deepEqual(calls, [
+        { offset: 0, limit: 100 },
+        { offset: 100, limit: 100 },
+      ]);
+      assert.equal(out.structuredContent?.position_in_context, null);
+      assert.equal(out.structuredContent?.walked, 100);
+      assert.equal(out.structuredContent?.walk_failed, true);
+      assert.equal(out.structuredContent?.walk_complete, false);
+      assert.equal(out.structuredContent?.walk_stopped_at_cap, false);
+      assert.match(text, /playlist page request failed after 100 of 500 rows/);
+      assert.doesNotMatch(text, /enumerated context|complete; cap not reached/);
+    } finally {
+      initConfig();
+    }
+  });
+
+  it('says the walk stopped at the cap for a playlist of exactly cap rows', async () => {
+    // 10 rows, cap 10, no match: the walk did stop at the cap, but nothing is
+    // known to be missing, so the flag must not read as "rows are missing".
+    const calls: Call[] = [];
+    initConfig({ SPOTIFY_MCP_FETCH_ALL_CAP: '10' });
+    try {
+      const h = makeHarness(pagedPlaylist(Array.from({ length: 10 }, (_, i) => track(`spotify:track:r${i + 1}`)), 10, calls));
+      const out = await h.invoke('get_context_inspect', {});
+      const text = out.content.map((c) => c.text).join('\n');
+      assert.deepEqual(calls, [{ offset: 0, limit: 10 }]);
+      assert.equal(out.structuredContent?.position_in_context, null);
+      assert.equal(out.structuredContent?.walked, 10);
+      assert.equal(out.structuredContent?.walk_stopped_at_cap, true);
+      assert.equal(out.structuredContent?.walk_complete, false);
+      assert.equal(out.structuredContent?.walk_failed, false);
+      assert.match(text, /walked 10 of 10 playlist rows and stopped at the fetch-all cap/);
+      assert.doesNotMatch(text, /enumerated context/);
+    } finally {
+      initConfig();
+    }
+  });
+
+  it('claims a complete enumeration only when the walk reached the end of the playlist', async () => {
+    // 6 rows under a cap of 500, no match: the walk paged to a short page, so
+    // the context really was enumerated and really does not hold the track.
+    const calls: Call[] = [];
+    initConfig({ SPOTIFY_MCP_FETCH_ALL_CAP: '500' });
+    try {
+      const h = makeHarness(pagedPlaylist(Array.from({ length: 6 }, (_, i) => track(`spotify:track:r${i + 1}`)), 4, calls));
+      const out = await h.invoke('get_context_inspect', {});
+      const text = out.content.map((c) => c.text).join('\n');
+      assert.deepEqual(calls.map((c) => c.offset), [0, 4, 6]);
+      assert.equal(out.structuredContent?.walked, 6);
+      assert.equal(out.structuredContent?.walk_complete, true);
+      assert.equal(out.structuredContent?.walk_stopped_at_cap, false);
+      assert.equal(out.structuredContent?.walk_failed, false);
+      assert.match(text, /fetched 6 playlist rows, cap 500 — complete; cap not reached/);
+      assert.match(text, /the current track is not among them/);
     } finally {
       initConfig();
     }
