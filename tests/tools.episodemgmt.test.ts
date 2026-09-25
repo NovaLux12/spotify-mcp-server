@@ -64,7 +64,7 @@ function playedEpisodes(count: number) {
  */
 type PagerMode = 'normal' | 'missing' | 'walk_failed';
 
-function harness(overrides: { episodes?: EpisodeItem[]; answer?: ElicitationAnswer; stillPresent?: string[]; pager?: PagerMode; walkError?: Error } = {}) {
+function harness(overrides: { episodes?: EpisodeItem[]; answer?: ElicitationAnswer; stillPresent?: string[]; pager?: PagerMode; walkError?: Error; libraryTotal?: number | null } = {}) {
   const dels: string[] = [];
   let prompts = 0;
   const episodes: EpisodeItem[] = overrides.episodes ?? [
@@ -74,7 +74,14 @@ function harness(overrides: { episodes?: EpisodeItem[]; answer?: ElicitationAnsw
   ];
   const client = {
     async get(path: string, params?: Record<string, string>) {
-      if (path === '/me/episodes') return { items: episodes, total: episodes.length };
+      if (path === '/me/episodes') {
+        // `libraryTotal` shapes what the non-paging client says about the size
+        // of the library relative to the one page it can return: the default is
+        // "this page is all of it", a number is a real truncation, and null
+        // omits `total` entirely so the tool has to admit it cannot tell.
+        const total = overrides.libraryTotal === undefined ? episodes.length : overrides.libraryTotal;
+        return total === null ? { items: episodes } : { items: episodes, total };
+      }
       // Receipt verification refetch: /me/library/contains?uris=a,b
       if (path === '/me/library/contains') {
         const asked = (params?.uris ?? '').split(',');
@@ -298,8 +305,10 @@ describe('episodemgmt', () => {
     // world that can be false. Pinned so the honest wording cannot regress.
     const reason = String(out.structuredContent.partial_scan_reason);
     assert.match(reason, /retained/i);
-    assert.doesNotMatch(reason, /before any episode was read|was not read at all|nothing was read/i);
-    assert.doesNotMatch(out.content[0].text, /No episode was read/i);
+    assert.doesNotMatch(reason, /before any episode was read|was not read at all|nothing was read|never read at all/i);
+    // Same rule on the prose half: the old defect shipped as two sentences in
+    // two places, so pinning only the reason would let the prose regress alone.
+    assert.doesNotMatch(out.content[0].text, /no episode was read|nothing was read|not read at all|never read at all/i);
   });
 
   it('refuses the destructive path on a failed walk and performs zero writes', async () => {
@@ -354,13 +363,53 @@ describe('episodemgmt', () => {
     assert.equal(h.dels.length, 1);
   });
 
-  it('discloses a single-page read as partial when the client cannot page', async () => {
+  it('archives a one-page read whose own response says it is the whole library', async () => {
+    // The no_pager branch used to say "the rest of the library was never
+    // scanned" on the strength of one page, which is a claim about the library
+    // the tool never measured. `total` travels in the same response, so when the
+    // page holds that many rows the read did cover the library and refusing
+    // would be refusing an archive the tool can vouch for.
     const h = harness({ episodes: playedEpisodes(3), pager: 'missing', answer: { action: 'accept', content: { confirm: true } } });
+    const out = await h.invoke('archive_played_episodes', {});
+    assert.equal(out.structuredContent.scan_complete, true);
+    assert.equal(out.structuredContent.scan_failure, undefined);
+    assert.equal(out.structuredContent.scanned, 3);
+    assert.equal(out.structuredContent.removed, 3);
+    assert.equal(h.dels.length, 1);
+  });
+
+  it('discloses a page shorter than the reported library total as partial', async () => {
+    // Same branch, a client that admits the page is short: here the truncation
+    // IS an observation (120 reported, 3 delivered), so the partial report and
+    // the refusal are both warranted.
+    const h = harness({ episodes: playedEpisodes(3), pager: 'missing', libraryTotal: 120, answer: { action: 'accept', content: { confirm: true } } });
     const out = await h.invoke('archive_played_episodes', {});
     assert.equal(out.structuredContent.scan_failure, 'no_pager');
     assert.equal(out.structuredContent.scan_complete, false);
+    assert.equal(out.structuredContent.scanned, 3);
+    assert.equal(out.structuredContent.played_among_scanned, 3);
     assert.match(String(out.structuredContent.partial_scan_reason), /cannot page through the library/);
-    assert.deepEqual(h.dels, [], 'one page is never the whole library, so it must not delete');
+    // The number the tool actually holds is the only one that may be quoted.
+    assert.match(String(out.structuredContent.partial_scan_reason), /120/);
+    assert.deepEqual(h.dels, [], 'a short page is not the whole library, so it must not delete');
+  });
+
+  it('never claims a truncation the response did not report when total is absent', async () => {
+    // A client that returns no `total` leaves the tool unable to tell whether
+    // the page is the whole library. That is a fact about this tool, so it is
+    // the only thing the reason may say: asserting "the rest of the library was
+    // never scanned" here is the unobserved claim this branch used to make.
+    const h = harness({ episodes: playedEpisodes(3), pager: 'missing', libraryTotal: null, answer: { action: 'accept', content: { confirm: true } } });
+    const out = await h.invoke('archive_played_episodes', {});
+    assert.equal(out.structuredContent.scan_failure, 'no_pager');
+    assert.equal(out.structuredContent.scan_complete, false);
+    const reason = String(out.structuredContent.partial_scan_reason);
+    assert.match(reason, /cannot tell whether/i);
+    assert.doesNotMatch(reason, /never scanned|rest of the library|never read/i);
+    assert.doesNotMatch(out.content[0].text, /never scanned|rest of the library/i);
+    // Same standard on the prose: it may only speak about this scan.
+    assert.match(out.content[0].text, /cannot show that the whole library was covered/i);
+    assert.deepEqual(h.dels, [], 'an unverifiable page must not delete');
   });
 
   it('a partial dry run previews the read episodes and writes nothing', async () => {
@@ -390,7 +439,10 @@ describe('episodemgmt', () => {
     });
     const out = await h.invoke('archive_played_episodes', { dry_run: true });
     assert.equal(out.structuredContent.scan_complete, false);
-    assert.equal(out.structuredContent.scanned, 0, 'a walk that died before reading anything read nothing');
+    // The count is this tool's own retained total, never a claim about how much
+    // of the walk succeeded: a failed walk retains no rows by construction, and
+    // even that is this scan's state, not a statement that the walk read none.
+    assert.equal(out.structuredContent.scanned, 0, 'a failed walk retains no episode rows');
     assert.match(out.content[0].text, /PARTIAL SCAN/i);
     assert.match(out.content[0].text, /unread remainder may still contain fully-played episodes/i);
     assert.deepEqual(h.dels, []);

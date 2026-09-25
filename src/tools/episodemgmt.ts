@@ -68,20 +68,31 @@ function describeScanError(err: unknown): string {
 async function scanSavedEpisodes(client: SpotifyClient, cap: number): Promise<EpisodeScan> {
   const pager = (client as Partial<SpotifyClient>).getAllPages;
   if (typeof pager !== 'function') {
-    // A client that cannot page can only ever see one page, and one page is
-    // never the library. Disclose that instead of presenting the count as a
-    // total; this is the one fallback that survives, because it is a shaped
-    // "no pager" condition rather than a walk that died partway through.
-    const res = await client.get<{ items?: EpisodeRow[] }>('/me/episodes', {
+    // A client that cannot page can only ever see one page. `total` rides in
+    // that same response and is the server's own count of the library, so it is
+    // an observation rather than a guess: when the page holds that many rows,
+    // the read did cover the whole library, and calling it truncated would be
+    // this tool asserting a fact about the library it never measured — and
+    // refusing an archive it can actually vouch for. A client that omits
+    // `total` leaves the tool unable to tell, and "I cannot tell" is the only
+    // claim this branch is entitled to make.
+    const res = await client.get<{ items?: EpisodeRow[]; total?: number }>('/me/episodes', {
       limit: String(Math.min(cap, 50)),
     });
     const items = Array.isArray(res?.items) ? res.items : [];
+    const librarySize = typeof res?.total === 'number' && Number.isFinite(res.total) ? res.total : null;
+    const readWholeLibrary = librarySize !== null && items.length >= librarySize;
+    if (readWholeLibrary) {
+      return { items, scanned: items.length, complete: true, failure: null, reason: null };
+    }
     return {
       items,
       scanned: items.length,
       complete: false,
       failure: 'no_pager',
-      reason: `this client cannot page through the library, so only the newest ${items.length} saved episode(s) were read and the rest of the library was never scanned`,
+      reason: librarySize === null
+        ? `this client cannot page through the library and its response carried no total, so this tool cannot tell whether the ${items.length} episode(s) it read are the whole library`
+        : `this client cannot page through the library, so only the newest ${items.length} of the library's ${librarySize} saved episode(s) were read and the other ${librarySize - items.length} were never scanned`,
     };
   }
   try {
@@ -198,8 +209,14 @@ export function registerEpisodeMgmtTools(server: McpServer, client: SpotifyClien
         }
         return textResult(
           `Refused to remove episodes — the library scan did not finish: ${scan.reason}. ${scan.scanned === 0
-            ? 'No episode row was retained, so nothing is known about the library.'
-            : `${played.length} fully-played episode(s) were found among the ${scan.scanned} read, but the rest of the library was never read, so that is not a complete list.`} Nothing was removed. Retry with a higher \`limit\` (up to 500) if the scan stopped at the limit, or once the library can be read in full.${deprecatedInputs.length ? ' `confirm` was accepted but ignored: it no longer authorises the delete.' : ''}`,
+            ? 'No episode row was retained, so this scan carries no evidence about what is saved.'
+            // The played count is scoped to the rows this scan retained. The
+            // clause after it is a statement about this tool, not about the
+            // library: where the truncation was actually measured it is in
+            // `scan.reason` above, and where it was not, only "cannot show" is
+            // true. "The rest of the library was never read" is not available
+            // here — that is exactly the unobserved claim #746 exists to kill.
+            : `${played.length} fully-played episode(s) were found among the ${scan.scanned} read. This scan cannot show that the whole library was covered, so that is not a complete list.`} Nothing was removed. Retry with a higher \`limit\` (up to 500) if the scan stopped at the limit, or once the library can be read in full.${deprecatedInputs.length ? ' `confirm` was accepted but ignored: it no longer authorises the delete.' : ''}`,
           partial,
         );
       }
