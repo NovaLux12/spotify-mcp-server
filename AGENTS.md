@@ -295,12 +295,35 @@ the changelog.**
   footer in the commit body — e.g. `feat(registry)!: v2 contract spine`. That
   is what produces a major.
 
-Merging the release PR with CI green creates the `vX.Y.Z` tag. A tag created
-with `GITHUB_TOKEN` does not start a push-triggered workflow, so publish does
-not fire automatically: dispatch it yourself —
-`gh workflow run publish.yml --ref vX.Y.Z` — then verify the npm version, the
-tagged `server.json`, and the MCP Registry's `latest` response. CONTRIBUTING.md
-§Releasing has the exact commands and the rollback rules.
+Merging the release PR with CI green creates the `vX.Y.Z` tag, and **that tag
+push does start `publish.yml`** — the `publish-npm` job runs on its own. Do not
+dispatch it manually. A manual `gh workflow run publish.yml --ref vX.Y.Z` races
+the tag-push run, and npm versions are immutable, so the second attempt fails
+on a version that already exists. This instruction previously said the
+opposite; following it caused a double publish on 2026-09-25.
+
+`publish-mcp-registry` runs after `publish-npm` and validates that npm actually
+serves the new version. **npm propagation is not instantaneous**, so that job
+routinely 400s with *"version 'X.Y.Z' was not found"* moments after a
+successful publish. That is a propagation race, not a broken artifact. Recover
+with a failed-jobs-only re-run, which does not re-attempt the immutable npm
+publish:
+
+```
+gh run rerun <run-id> -R NovaLux12/spotify-mcp-server --failed
+```
+
+Then verify. Do not trust a local `npm view` for this — it served a stale
+`latest` and a 404 for a version that was already published. Query the registry
+directly, cache-busted:
+
+```
+curl -sS "https://registry.npmjs.org/<pkg>?cb=$(date +%s)" | jq '.["dist-tags"]'
+```
+
+Check the npm version, the tagged `server.json`, and the MCP Registry's
+`latest` response. CONTRIBUTING.md §Releasing has the exact commands and the
+rollback rules.
 
 ---
 
