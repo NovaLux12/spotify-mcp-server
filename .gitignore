@@ -13,8 +13,6 @@ coverage/
 # Logs and test/tool caches
 *.log
 npm-debug.log*
-.pytest_cache/
-tests/__pycache__/
 
 # Operating system and editor artifacts
 .DS_Store
