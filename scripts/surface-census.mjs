@@ -28,6 +28,27 @@ if (!process.env.SPOTIFY_MCP_SURFACE_CENSUS) {
   });
   process.exit(child.status ?? 1);
 }
+const CENSUS_ENV = Object.freeze({
+  SPOTIFY_CLIENT_ID: 'surface-census',
+  SPOTIFY_MCP_SURFACE_CENSUS: '1',
+  SPOTIFY_MCP_TOKEN_FILE: '',
+  SPOTIFY_MCP_TOOLSETS: 'all',
+  SPOTIFY_MCP_ENABLE_TOOLS: '',
+  SPOTIFY_MCP_DISABLE_TOOLS: '',
+  SPOTIFY_MCP_READONLY: '0',
+  SPOTIFY_MCP_CONFIRM: 'never',
+  SPOTIFY_MCP_MAX_ITEMS: '50',
+  SPOTIFY_MCP_FETCH_ALL_CAP: '500',
+  SPOTIFY_MCP_FRESHNESS_BUDGET: '25',
+  SPOTIFY_MCP_HISTORY: '0',
+  SPOTIFY_MCP_PROFILE: '',
+  SPOTIFY_SCOPES: '',
+  SPOTIFY_MCP_MARKET: '',
+});
+for (const key of Object.keys(process.env)) {
+  if (key.startsWith('SPOTIFY_')) delete process.env[key];
+}
+Object.assign(process.env, CENSUS_ENV);
 const {
   collectModuleSchemaBudgets,
   moduleToolNames,
@@ -166,13 +187,8 @@ async function readProductionRegistry() {
     env: {
       PATH: process.env.PATH,
       HOME: tempDir,
-      SPOTIFY_CLIENT_ID: 'surface-census',
+      ...CENSUS_ENV,
       SPOTIFY_MCP_TOKEN_FILE: tokenFile,
-      SPOTIFY_MCP_TOOLSETS: 'all',
-      SPOTIFY_MCP_ENABLE_TOOLS: '',
-      SPOTIFY_MCP_DISABLE_TOOLS: '',
-      SPOTIFY_MCP_READONLY: '0',
-      SPOTIFY_MCP_CONFIRM: 'never',
     },
   });
   const client = new Client({ name: 'surface-census-client', version: '0.0.0' });

@@ -188,7 +188,7 @@ SPOTIFY_MCP_TOKEN_FILE — optional; overrides the token storage path (default ~
 ```
 
 > Note: `SPOTIFY_CLIENT_SECRET` is **not used** with the PKCE flow. Only `SPOTIFY_CLIENT_ID` is needed in code. The client secret exists in the Spotify dashboard but is never sent by this application.
-> Browserless environments: set `SPOTIFY_HEADLESS=1` for the paste-flow auth (no local callback server). The full `SPOTIFY_*` configuration family — request timeouts, truncation caps, fetch-all cap, mutation history — is listed under [Configuration](#11-configuration).
+> Browserless environments: set `SPOTIFY_HEADLESS=1` for the paste-flow auth (no local callback server). The full `SPOTIFY_*` configuration family — request timeouts, truncation caps, fetch-all cap, mutation history — is listed under [Configuration](#12-configuration).
 
 ---
 
@@ -1223,7 +1223,7 @@ Known limitations to document and handle:
 | **No audio** | API provides metadata and control only — no audio streams |
 | **Search limit** | Max 10 results per type per `/search` request (schema and runtime cap; default 5). Tools needing deeper results must page with successive offsets. |
 | **Queue opacity** | `GET /me/player/queue` returns items but positions are not editable |
-| **Registration-gated reads** | The batch lookup wrappers (`GET /tracks?ids=` family) and `GET /artists/{id}/top-tracks` remain registered, but current app registrations can return a generic `403`. The single runtime classification source is `GATED_PATH_PATTERNS` in `src/tools/exhaust2_enggating.ts`; see the README's [Registration-gated endpoints](../README.md#registration-gated-endpoints) table for the complete family list, including `/me/{type}/contains`. |
+| **Registration-gated reads** | The batch lookup wrappers (`GET /tracks?ids=` family) and `GET /artists/{id}/top-tracks` remain registered, but current app registrations can return a generic `403`. The single runtime classification source is `GATED_PATH_PATTERNS` in `src/tools/exhaust2_enggating.ts`; see the README's [Registration-gated endpoints](README.md#registration-gated-endpoints) table for the complete family list, including `/me/{type}/contains`. |
 | **Removed fields** | `popularity`, `followers`, `available_markets` no longer returned on tracks, artists, albums |
 | **Unified library API** | `save_to_library`/`remove_from_library`/`check_in_library` use `PUT/DELETE/GET /me/library` with **URIs** in any mix (including artist/user/playlist follow state on check). The legacy helpers (`save_items`, `remove_saved_items`, `check_saved_items`) partition URIs across the per-type `/me/{type}s` endpoints. |
 | **Playlist items path** | All playlist item operations use `/playlists/{id}/items` (not `/tracks`) as of Feb 2026 |

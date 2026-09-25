@@ -450,8 +450,8 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   manifestEntry('swarm3library', 'swarm3library', 'src/tools/swarm3_library.ts', registerSwarm3LibraryTools, [24, 18539], { readOnlySafe: true, scopeKey: 'library' }),
   manifestEntry('swarm3playback', 'swarm3playback', 'src/tools/swarm3_playback.ts', registerSwarm3PlaybackTools, [24, 14799], { scopeKey: 'playback' }),
   manifestEntry('swarm3playlistops', 'swarm3playlistops', 'src/tools/swarm3_playlistops.ts', registerSwarm3PlaylistopsTools, [24, 32265], { scopeKey: 'playlists' }),
-  manifestEntry('swarm3snapshots', 'swarm3snapshots', 'src/tools/swarm3_snapshots.ts', registerSwarm3SnapshotsTools, [24, 24296], { readOnlySafe: true, scopeKey: 'playlists' }),
-  manifestEntry('swarm4playlists', 'swarm4playlists', 'src/tools/swarm4_playlists.ts', registerSwarm4PlaylistsTools, [18, 23008], { readOnlySafe: true, scopeKey: 'playlists' }),
+  manifestEntry('swarm3snapshots', 'swarm3snapshots', 'src/tools/swarm3_snapshots.ts', registerSwarm3SnapshotsTools, [24, 24296], { scopeKey: 'playlists' }),
+  manifestEntry('swarm4playlists', 'swarm4playlists', 'src/tools/swarm4_playlists.ts', registerSwarm4PlaylistsTools, [18, 23008], { scopeKey: 'playlists' }),
 ] as const;
 
 interface SchemaRegistryEntry {
