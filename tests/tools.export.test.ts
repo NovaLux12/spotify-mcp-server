@@ -11,13 +11,14 @@
 import { describe, it } from 'node:test';
 import { z } from 'zod';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../src/client.js';
 import type { SpotifyPaged } from '../src/types/spotify.js';
 import { registerExportTools } from '../src/tools/export.js';
+import { parseCsvDocument, FORMULA_LEAD } from './csv-reader.js';
 
 // ---------------------------------------------------------------------------
 // Stub plumbing
@@ -122,6 +123,22 @@ function harness(responder: Responder = () => null) {
   };
 }
 
+
+/**
+ * Run a file-mode case with SPOTIFY_MCP_EXPORT_DIR pointed at a scratch
+ * directory: since #622 every write is confined to that root, so a test that
+ * wants a real file has to name the root the way a user would configure it.
+ */
+async function withExportRoot<T>(dir: string, run: () => Promise<T>): Promise<T> {
+  const previous = process.env.SPOTIFY_MCP_EXPORT_DIR;
+  process.env.SPOTIFY_MCP_EXPORT_DIR = dir;
+  try {
+    return await run();
+  } finally {
+    if (previous === undefined) delete process.env.SPOTIFY_MCP_EXPORT_DIR;
+    else process.env.SPOTIFY_MCP_EXPORT_DIR = previous;
+  }
+}
 const textOf = (out: { content: Array<{ text: string }> }) => out.content[0].text;
 
 // ---------------------------------------------------------------------------
@@ -333,31 +350,33 @@ describe('export_playlist output_path file mode', () => {
   it('writes the FULL document with mode 0600 and returns a summary', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'spotify-export-test-'));
     try {
-      const filePath = join(dir, 'mix.m3u');
-      const h = harness((path, arg) =>
-        path === `/playlists/${PLAYLIST_ID}` ? { id: PLAYLIST_ID, name: 'Mix' } : mixedResponder(path, arg),
-      );
-      const out = await h.invoke('export_playlist', {
-        playlist_id: PLAYLIST_ID,
-        output_path: filePath,
+      await withExportRoot(dir, async () => {
+        const filePath = join(dir, 'mix.m3u');
+        const h = harness((path, arg) =>
+          path === `/playlists/${PLAYLIST_ID}` ? { id: PLAYLIST_ID, name: 'Mix' } : mixedResponder(path, arg),
+        );
+        const out = await h.invoke('export_playlist', {
+          playlist_id: PLAYLIST_ID,
+          output_path: filePath,
+        });
+        const text = textOf(out);
+
+        assert.match(text, new RegExp(filePath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+        assert.match(text, /5 item\(s\) \(3 track\(s\), 2 episode\(s\)\)/);
+        assert.match(text, /\(\d+ bytes\)/);
+
+        const written = await readFile(filePath, 'utf8');
+        assert.ok(written.startsWith('#EXTM3U\n'));
+        assert.ok(written.includes('#EXTINF:200,Alpha - First Song'));
+        // Full document: episodes skipped, all 3 tracks present.
+        assert.ok(written.includes('spotify:track:t3'));
+        assert.ok(!written.includes('spotify:episode:e2'));
+        assert.ok(written.includes('# 2 episode(s) skipped'));
+
+        // Mode 0600 regardless of umask.
+        const st = await stat(filePath);
+        assert.equal(st.mode & 0o777, 0o600);
       });
-      const text = textOf(out);
-
-      assert.match(text, new RegExp(filePath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
-      assert.match(text, /5 item\(s\) \(3 track\(s\), 2 episode\(s\)\)/);
-      assert.match(text, /\(\d+ bytes\)/);
-
-      const written = await readFile(filePath, 'utf8');
-      assert.ok(written.startsWith('#EXTM3U\n'));
-      assert.ok(written.includes('#EXTINF:200,Alpha - First Song'));
-      // Full document: episodes skipped, all 3 tracks present.
-      assert.ok(written.includes('spotify:track:t3'));
-      assert.ok(!written.includes('spotify:episode:e2'));
-      assert.ok(written.includes('# 2 episode(s) skipped'));
-
-      // Mode 0600 regardless of umask.
-      const st = await stat(filePath);
-      assert.equal(st.mode & 0o777, 0o600);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
@@ -366,21 +385,170 @@ describe('export_playlist output_path file mode', () => {
   it('writes every row in csv file mode (max_results does not truncate writes)', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'spotify-export-test-'));
     try {
-      const filePath = join(dir, 'mix.csv');
-      const h = harness((path, arg) =>
-        path === `/playlists/${PLAYLIST_ID}` ? { id: PLAYLIST_ID } : mixedResponder(path, arg),
-      );
-      const out = await h.invoke('export_playlist', {
-        playlist_id: PLAYLIST_ID,
-        format: 'csv',
-        max_results: 1,
-        output_path: filePath,
+      await withExportRoot(dir, async () => {
+        const filePath = join(dir, 'mix.csv');
+        const h = harness((path, arg) =>
+          path === `/playlists/${PLAYLIST_ID}` ? { id: PLAYLIST_ID } : mixedResponder(path, arg),
+        );
+        const out = await h.invoke('export_playlist', {
+          playlist_id: PLAYLIST_ID,
+          format: 'csv',
+          max_results: 1,
+          output_path: filePath,
+        });
+        assert.doesNotMatch(textOf(out), /truncated/i);
+        const written = await readFile(filePath, 'utf8');
+        assert.equal(written.trimEnd().split('\n').length, 6); // header + 5 rows
       });
-      assert.doesNotMatch(textOf(out), /truncated/i);
-      const written = await readFile(filePath, 'utf8');
-      assert.equal(written.trimEnd().split('\n').length, 6); // header + 5 rows
     } finally {
       await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #622: the destination is confined to the configured output root
+// ---------------------------------------------------------------------------
+
+describe('export_playlist output_path confinement (#622)', () => {
+  const responder: Responder = (path, arg) =>
+    path === `/playlists/${PLAYLIST_ID}` ? { id: PLAYLIST_ID, name: 'Mix' } : mixedResponder(path, arg);
+
+  it('refuses a `..` escape and leaves the target outside the root untouched', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'spotify-export-root-'));
+    const outside = await mkdtemp(join(tmpdir(), 'spotify-export-outside-'));
+    try {
+      const escape = join(root, '..', basename(outside), 'pwned.m3u');
+      await withExportRoot(root, async () => {
+        await assert.rejects(
+          harness(responder).invoke('export_playlist', {
+            playlist_id: PLAYLIST_ID,
+            output_path: escape,
+          }),
+          /refusing to write outside the configured output root/,
+        );
+      });
+      await assert.rejects(stat(escape), 'nothing may be written outside the output root');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+      await rm(outside, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses an absolute path outside the output root', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'spotify-export-root-'));
+    const outside = await mkdtemp(join(tmpdir(), 'spotify-export-outside-'));
+    try {
+      const escape = join(outside, 'pwned.m3u');
+      await withExportRoot(root, async () => {
+        await assert.rejects(
+          harness(responder).invoke('export_playlist', {
+            playlist_id: PLAYLIST_ID,
+            output_path: escape,
+          }),
+          /refusing to write outside the configured output root/,
+        );
+      });
+      await assert.rejects(stat(escape));
+    } finally {
+      await rm(root, { recursive: true, force: true });
+      await rm(outside, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses a symlink inside the root that points out of it', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'spotify-export-root-'));
+    const outside = await mkdtemp(join(tmpdir(), 'spotify-export-outside-'));
+    try {
+      // The literal path stays inside the root; only realpath() reveals the
+      // escape, which is why containment cannot be a string comparison.
+      await symlink(outside, join(root, 'escape'));
+      await withExportRoot(root, async () => {
+        await assert.rejects(
+          harness(responder).invoke('export_playlist', {
+            playlist_id: PLAYLIST_ID,
+            output_path: join(root, 'escape', 'pwned.m3u'),
+          }),
+          /refusing to write outside the configured output root/,
+        );
+      });
+      await assert.rejects(stat(join(outside, 'pwned.m3u')));
+    } finally {
+      await rm(root, { recursive: true, force: true });
+      await rm(outside, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses to clobber an existing file unless overwrite is opted into', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'spotify-export-test-'));
+    try {
+      const filePath = join(dir, 'mix.m3u');
+      await writeFile(filePath, 'ORIGINAL CONTENT');
+      await withExportRoot(dir, async () => {
+        await assert.rejects(
+          harness(responder).invoke('export_playlist', {
+            playlist_id: PLAYLIST_ID,
+            output_path: filePath,
+          }),
+          /refusing to overwrite the existing file/,
+        );
+        assert.equal(await readFile(filePath, 'utf8'), 'ORIGINAL CONTENT');
+
+        const out = await harness(responder).invoke('export_playlist', {
+          playlist_id: PLAYLIST_ID,
+          output_path: filePath,
+          overwrite: true,
+        });
+        assert.match(textOf(out), /Exported 5 item/);
+      });
+      assert.ok((await readFile(filePath, 'utf8')).startsWith('#EXTM3U\n'));
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #630: Spotify metadata is attacker-controlled on any public playlist
+// ---------------------------------------------------------------------------
+
+describe('export_playlist CSV formula neutralisation (#630)', () => {
+  it('emits no cell a spreadsheet would evaluate as a formula', async () => {
+    const payloads = [
+      "=cmd|'/c calc'!A1",
+      '+1+1',
+      '-2+3',
+      '@SUM(1+1)',
+      '\t=1+1',
+      '\r=1+1',
+      '=1+1,HYPERLINK("http://evil.example","click")',
+    ];
+    const items = payloads.map((payload, i) => trackItem(`f${i}`, payload, 1_000, [payload], payload));
+    const responder: Responder = (path, arg) => {
+      if (path === `/playlists/${PLAYLIST_ID}`) return { id: PLAYLIST_ID, name: payloads[0] };
+      const offset = Number(((arg ?? {}) as Record<string, string>).offset ?? 0);
+      return { items: items.slice(offset, offset + 5), total: items.length, limit: 5, offset };
+    };
+
+    const out = await harness(responder).invoke('export_playlist', {
+      playlist_id: PLAYLIST_ID,
+      format: 'csv',
+    });
+    const rows = parseCsvDocument(textOf(out));
+    assert.deepEqual(rows[0], ['track_no', 'title', 'artists', 'album', 'duration_ms', 'uri']);
+    assert.equal(rows.length, items.length + 1);
+    for (const row of rows) {
+      for (const cell of row) {
+        assert.doesNotMatch(
+          cell,
+          FORMULA_LEAD,
+          `cell would execute when opened: ${JSON.stringify(cell)}`,
+        );
+      }
+    }
+    // Neutralised, not dropped: every payload survives with the text marker.
+    for (const [index, payload] of payloads.entries()) {
+      assert.equal(rows[index + 1][1], `'${payload}`);
     }
   });
 });
