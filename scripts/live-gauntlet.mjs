@@ -44,6 +44,8 @@ const MUTATING = new Set([
   'upload_playlist_cover', 'create_playlist', 'add_to_playlist',
   'remove_from_playlist', 'update_playlist', 'reorder_playlist_items',
   'replace_playlist_items',
+  'merge_playlists',
+  'whats_new',
 ]);
 
 // Endpoints Spotify removed in its Feb 2026 Web API changes: registered but
@@ -189,8 +191,9 @@ function record(name, cls, status, ms, extra = {}) {
 
   r = await callTool('get_user_playlists', { max_results: 10, response_format: 'json' });
   if (r.ok) {
-    const p = Array.isArray(r.structured) ? r.structured[0] : r.structured?.items?.[0];
-    seed.playlistId = p?.id;
+    const rows = Array.isArray(r.structured) ? r.structured : r.structured?.items ?? [];
+    seed.playlistIds = rows.map((p) => p?.id).filter(Boolean).slice(0, 3);
+    seed.playlistId = seed.playlistIds[0];
     record('get_user_playlists', 'SAFE', 'PASS', r.ms);
   } else record('get_user_playlists', 'SAFE', 'FAIL', r.ms, { reason: r.error });
 }
@@ -208,7 +211,7 @@ const SAFE_ARGS = {
   get_album: () => seed.albumId ? { id: seed.albumId } : 'no album in seeds',
   get_album_tracks: () => seed.albumId ? { id: seed.albumId, limit: 5 } : 'no album in seeds',
   get_show: () => seed.showId ? { id: seed.showId } : 'no show in seeds',
-  get_show_episodes: () => seed.showId ? { id: seed.showId, limit: 5 } : 'no show in seeds',
+  list_show_episodes: () => seed.showId ? { show_id: seed.showId, max_results: 5 } : 'no show in seeds',
   get_episode: () => seed.episodeId ? { id: seed.episodeId } : 'no episode in seeds',
   get_several_tracks: () => seed.trackId ? { ids: [seed.trackId] } : 'no track in seeds',
   get_several_albums: () => seed.albumId ? { ids: [seed.albumId] } : 'no album in seeds',
@@ -255,15 +258,14 @@ const SAFE_ARGS = {
   filter_by_genre: () => ({ genre: 'rock', kind: 'tracks', max_results: 5 }),
   tag_management: () => ({ action: 'list' }),
   // freshness.ts (#112 idea 2)
-  whats_new: () => ({ days_back: 365, kinds: ['albums', 'podcasts'], max_results: 3 }),
   // libraryhygiene.ts (#112 idea 5)
   library_hygiene: () => ({ max_results: 3 }),
   // playlistdna.ts (#112 idea 6)
   grow_playlist: () => seed.playlistId ? { playlist_id: seed.playlistId, size: 5, exclude_saved: false } : 'no playlist in seeds',
-  // playlistops.ts (#96)
-  merge_playlists: () => seed.playlistId ? { sources: [seed.playlistId], new_name: 'gauntlet-merge-DELETE-ME', dry_run: true } : 'no playlist in seeds',
-  diff_playlists: () => seed.playlistId ? { a: seed.playlistId, b: seed.playlistId } : 'no playlist in seeds',
-  overlap_playlists: () => seed.playlistId ? { playlists: [seed.playlistId] } : 'no playlist in seeds',
+  // Canonical playlist power tools. These keys must name registered tools:
+  // a recipe under a name no tool answers to is silently recorded as a skip.
+  diff_playlists: () => seed.playlistId ? { playlist_a: seed.playlistId, playlist_b: seed.playlistId } : 'no playlist in seeds',
+  overlap_playlists: () => (seed.playlistIds?.length ?? 0) >= 2 ? { playlists: seed.playlistIds.slice(0, 2) } : 'fewer than 2 playlists in seeds',
   // podcastsession.ts (#112 idea 3)
   plan_podcast_session: () => ({ minutes: 30, max_results: 3 }),
   start_podcast_session: () => ({ minutes: 30, dry_run: true }),
@@ -297,6 +299,8 @@ audiobookBuilders();
 // Minimal valid args for allowlisted MUTATING tools — always sent together
 // with dry_run:true.
 const MUTATING_ARGS = {
+  whats_new: () => ({ kinds: ['albums'], since: '2026-01-01', max_results: 5, max_artists: 1 }),
+  merge_playlists: () => seed.playlistId ? { sources: seed.playlistIds ?? [seed.playlistId], new_name: 'gauntlet-merge-DELETE-ME' } : 'no playlist in seeds',
   create_playlist: () => ({ name: 'live-gauntlet dry-run probe', public: false }),
   save_items: () => seed.trackId ? { uris: [`spotify:track:${seed.trackId}`] } : 'no track in seeds',
   remove_saved_items: () => seed.trackId ? { uris: [`spotify:track:${seed.trackId}`] } : 'no track in seeds',
@@ -324,10 +328,11 @@ const MUTATING_ARGS = {
 };
 
 // ------------------------------------------------------------------- gauntlet
+const classFor = (tool) => MUTATING.has(tool) ? 'MUTATING' : 'SAFE';
 
 // SWEEP_COMPLETE fast path: everything recorded (or only FAILs remain) — nothing to do.
 const remaining = tools.filter((t) => t.name !== 'get_me' && t.name !== 'get_user_playlists'
-  && (!done.has(t.name) || done.get(t.name).status === 'FAIL'));
+  && (!done.has(t.name) || done.get(t.name).class !== classFor(t.name) || done.get(t.name).status === 'FAIL'));
 if (remaining.length === 0) {
   console.log('SWEEP_COMPLETE: every registered tool is recorded in the report (no FAILs to retry)');
   child.kill();
@@ -337,9 +342,13 @@ if (batchLimit < Infinity) console.log(`batch mode: up to ${batchLimit} calls th
 
 for (const tool of tools.map((t) => t.name)) {
   if (tool === 'get_me' || tool === 'get_user_playlists') continue; // already run as seeds
-  const cls = MUTATING.has(tool) ? 'MUTATING' : 'SAFE'; // unclassified ⇒ treated as MUTATING
+  const cls = classFor(tool); // unclassified ⇒ treated as mutating
 
-  const prevRec = done.get(tool);
+  let prevRec = done.get(tool);
+  if (prevRec && prevRec.class !== cls) {
+    done.delete(tool);
+    prevRec = undefined;
+  }
   if (prevRec && (prevRec.status !== 'FAIL' || (prevRec.attempts ?? 0) >= RETRY_MAX)) {
     resumed++;
     continue;

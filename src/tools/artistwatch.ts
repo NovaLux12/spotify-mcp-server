@@ -15,6 +15,7 @@ import {
 } from '../shaping.js';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { classifySpotifyReference } from '../refs.js';
 
 type AlbumItem = {
   id: string;
@@ -156,14 +157,14 @@ export function registerArtistWatchTools(server: McpServer, client: SpotifyClien
       ...sharedListFields,
     },
     async (args) => {
-      const uriMatch = /^spotify:artist:(.+)$/.exec(args.query.trim());
-      if (uriMatch) {
-        const id = uriMatch[1];
+      const parsed = classifySpotifyReference(args.query, 'artist', { allowShortIds: true });
+      if (parsed.valid && parsed.form === 'uri' && parsed.id) {
+        const id = parsed.id;
         if (args.response_format === 'json') {
-          const raw: Record<string, unknown> = { id, uri: args.query.trim(), name: null };
+          const raw: Record<string, unknown> = { id, uri: `spotify:artist:${id}`, name: null };
           return { content: [{ type: 'text', text: JSON.stringify(raw, null, 2) }], structuredContent: raw };
         }
-        return { content: [{ type: 'text', text: `Resolved "${args.query}" \u2192 artist ID: ${id} | URI: spotify:artist:${id}` }], structuredContent: { id, uri: `spotify:artist:${id}` } };
+        return { content: [{ type: 'text', text: `Resolved "${args.query}" → artist ID: ${id} | URI: spotify:artist:${id}` }], structuredContent: { id, uri: `spotify:artist:${id}` } };
       }
       const limit = args.limit ?? 5;
       const data = await client.get<{ artists: { items: Array<{ id: string; name: string; uri: string; genres?: string[]; popularity?: number }>; total: number } }>('/search', {

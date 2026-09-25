@@ -250,7 +250,7 @@ export function registerStatsfmTools(server: McpServer, client: StatsfmClient = 
         body = { item: users[0], via_search: true };
       }
       const user = requiredItem(body, `/users/${encodeURIComponent(args.user_id)}`);
-      if (!user) throw new Error(`stats.fm user "${args.user_id}" not found`);
+      if (!user) throw new StatsfmApiError(404, 'stats.fm user not found', undefined, 'RESOURCE_NOT_FOUND');
       if (args.response_format === 'json') {
         return { content: [{ type: 'text', text: JSON.stringify(user) }], structuredContent: { ...user } };
       }
@@ -542,7 +542,7 @@ export function registerStatsfmTools(server: McpServer, client: StatsfmClient = 
         const id = String((args as J)[cfg.idField]);
         const body = await client.get<J>(`/${cfg.seg}/${encodeURIComponent(id)}`);
         const item = nullableItem(body, `/${cfg.seg}/${encodeURIComponent(id)}`);
-        if (!item) throw new Error(`stats.fm ${cfg.label} "${id}" not found`);
+        if (!item) throw new StatsfmApiError(404, `stats.fm ${cfg.label} not found`, undefined, 'RESOURCE_NOT_FOUND');
         if ((args as J).response_format === 'json') {
           return { content: [{ type: 'text', text: JSON.stringify(item) }], structuredContent: { ...item } };
         }

@@ -1,178 +1,290 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { resolveSpotifyId, normaliseToId } from '../src/refs.js';
+import {
+  classifySpotifyReference,
+  normaliseToId,
+  resolveSpotifyId,
+  spotifyId,
+  spotifyUri,
+} from '../src/refs.js';
+import { normalizePlaylistReference, resolvePlaylistInput } from '../src/shaping.js';
 import { registerSwarm3RefsTools } from '../src/tools/swarm3_refs.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../src/client.js';
 
-describe('refs — resolveSpotifyId', () => {
-  const cases: Array<[string, string | null]> = [
-    // Bare ID
-    ['4iV5W9uYEdYUVa79Axb7Rh', '4iV5W9uYEdYUVa79Axb7Rh'],
-    // spotify: URI
-    ['spotify:track:4iV5W9uYEdYUVa79Axb7Rh', '4iV5W9uYEdYUVa79Axb7Rh'],
-    ['spotify:playlist:37i9dQZF1DX0XUsuxWHRQd', '37i9dQZF1DX0XUsuxWHRQd'],
-    ['spotify:album:6akEvsycLGftJxYudPjmq', '6akEvsycLGftJxYudPjmq'],
-    ['spotify:episode:512ojhOuo1ktJprKbVcKyQ', '512ojhOuo1ktJprKbVcKyQ'],
-    // open.spotify.com URLs
-    ['https://open.spotify.com/track/4iV5W9uYEdYUVa79Axb7Rh', '4iV5W9uYEdYUVa79Axb7Rh'],
-    ['https://open.spotify.com/playlist/37i9dQZF1DX0XUsuxWHRQd?si=abc123', '37i9dQZF1DX0XUsuxWHRQd'],
-    ['https://open.spotify.com/album/6akEvsycLGftJxYudPjmq?si=xyz', '6akEvsycLGftJxYudPjmq'],
-    ['https://open.spotify.com/episode/512ojhOuo1ktJprKbVcKyQ', '512ojhOuo1ktJprKbVcKyQ'],
-    ['https://open.spotify.com/track/4iV5W9uYEdYUVa79Axb7Rh?utm_source=copy', '4iV5W9uYEdYUVa79Axb7Rh'],
-    // embed URL
-    ['https://open.spotify.com/embed/track/4iV5W9uYEdYUVa79Axb7Rh', '4iV5W9uYEdYUVa79Axb7Rh'],
-    // spotify:// scheme
-    ['spotify://track/4iV5W9uYEdYUVa79Axb7Rh', '4iV5W9uYEdYUVa79Axb7Rh'],
-    ['spotify://playlist:37i9dQZF1DX0XUsuxWHRQd', '37i9dQZF1DX0XUsuxWHRQd'],
-    // Whitespace trimming
-    ['  spotify:track:4iV5W9uYEdYUVa79Axb7Rh  ', '4iV5W9uYEdYUVa79Axb7Rh'],
-    ['  https://open.spotify.com/track/4iV5W9uYEdYUVa79Axb7Rh  ', '4iV5W9uYEdYUVa79Axb7Rh'],
-  ];
-  for (const [input, expected] of cases) {
-    it(`resolves ${JSON.stringify(input)} → ${expected}`, () => {
-      assert.equal(resolveSpotifyId(input), expected);
-    });
-  }
-  it('returns null for unrecognised input', () => {
-    assert.equal(resolveSpotifyId('not-a-spotify-ref'), null);
-    assert.equal(resolveSpotifyId(''), null);
-  });
-  it('normaliseToId round-trips share URL to bare ID', () => {
-    assert.equal(normaliseToId('https://open.spotify.com/track/4iV5W9uYEdYUVa79Axb7Rh?si=abc'), '4iV5W9uYEdYUVa79Axb7Rh');
-  });
-  it('normaliseToId passes through bare ID unchanged', () => {
-    assert.equal(normaliseToId('4iV5W9uYEdYUVa79Axb7Rh'), '4iV5W9uYEdYUVa79Axb7Rh');
-  });
-});
-
-// ------------------------------------------------------------------
-// swarm3 refs tools: batch_parse_spotify_uris + uri_namespace_census
-// ------------------------------------------------------------------
+const ID = '4iV5W9uYEdYUVa79Axb7Rh';
+const EQUIVALENT_TRACK_REFERENCES = [
+  ID,
+  `spotify:track:${ID}`,
+  `spotify://track/${ID}`,
+  `spotify://track:${ID}`,
+  `https://open.spotify.com/track/${ID}`,
+  `https://open.spotify.com/track/${ID}?si=tracking`,
+  `https://open.spotify.com/embed/track/${ID}`,
+  `https://open.spotify.com/intl-de/track/${ID}`,
+  `https://open.spotify.com/intl-de/embed/track/${ID}`,
+  `https://open.spotify.com/embed/intl-de/track/${ID}`,
+  `https://open.spotify.com/INTL-DE/TRACK/${ID}?utm_source=share`,
+  `https://open.spotify.com/embed/track/${ID}#now-playing`,
+  `  spotify:track:${ID}  `,
+];
+const PARITY_REFERENCES = [
+  ...EQUIVALENT_TRACK_REFERENCES,
+  `spotify:user:wizzler`,
+  `spotify://user/user_name-1`,
+  `https://open.spotify.com/user/wizzler`,
+  `https://open.spotify.com/intl-fr/embed/user/user_name-1`,
+  `https://open.spotify.com/embed/intl-fr/user/user_name-1`,
+  `https://open.spotify.com/track/${ID.slice(0, 21)}`,
+  `spotify:track:${ID}x`,
+  `https://example.com/track/${ID}`,
+  `https://open.spotify.com.example.com/track/${ID}`,
+  `http://open.spotify.com/track/${ID}`,
+  `https://open.spotify.com/device/${ID}`,
+  `https://open.spotify.com/track/${ID}/extra`,
+  `spotify:device:${ID}`,
+  `spotify:track:${ID}?x=1`,
+  `spotify:track:${ID}/extra`,
+];
 
 function makeRefsHarness() {
-  const registered: Array<{ name: string; description: string; schema: Record<string, { safeParse(v: unknown): { success: boolean } }>; handler: (args: Record<string, unknown>) => Promise<{ content: Array<{ type: string; text: string }>; structuredContent?: Record<string, unknown> }> }> = [];
-  const calls: Array<{ method: string; path: string }> = [];
+  const registered: Array<{
+    name: string;
+    description: string;
+    annotations?: { readOnlyHint?: boolean; idempotentHint?: boolean };
+    schema: Record<string, { safeParse(value: unknown): { success: boolean } }>;
+    handler: (args: Record<string, unknown>) => Promise<{
+      content: Array<{ type: string; text: string }>;
+      structuredContent?: Record<string, unknown>;
+    }>;
+  }> = [];
+  type Handler = (args: Record<string, unknown>) => Promise<{
+    content: Array<{ type: string; text: string }>;
+    structuredContent?: Record<string, unknown>;
+  }>;
   const server = {
-    tool(name: string, description: string, schema: Record<string, { safeParse(v: unknown): { success: boolean } }>, handler: (args: Record<string, unknown>) => Promise<{ content: Array<{ type: string; text: string }>; structuredContent?: Record<string, unknown> }>) {
-      registered.push({ name, description, schema, handler });
+    tool(
+      name: string,
+      description: string,
+      schema: Record<string, { safeParse(value: unknown): { success: boolean } }>,
+      annotationsOrHandler: Handler | { readOnlyHint?: boolean; idempotentHint?: boolean },
+      maybeHandler?: Handler,
+    ) {
+      const handler = typeof annotationsOrHandler === 'function' ? annotationsOrHandler : maybeHandler!;
+      const annotations = typeof annotationsOrHandler === 'function' ? undefined : annotationsOrHandler;
+      registered.push({ name, description, annotations, schema, handler });
     },
   } as unknown as McpServer;
-  const client = {
-    async get(_path: string) { calls.push({ method: 'GET', path: _path }); return null; },
-  } as unknown as SpotifyClient;
-  registerSwarm3RefsTools(server, client);
-  const findTool = (name: string) => {
-    const tool = registered.find((t) => t.name === name);
-    assert.ok(tool, `expected tool ${name} to be registered`);
-    return tool;
+  registerSwarm3RefsTools(server, {} as SpotifyClient);
+  return {
+    registered,
+    async invoke(name: string, args: Record<string, unknown>) {
+      const tool = registered.find((candidate) => candidate.name === name);
+      assert.ok(tool, `expected ${name} to be registered`);
+      return tool.handler(args);
+    },
   };
-  return { registered, calls, findTool, invoke: async (name: string, args: Record<string, unknown>) => {
-    const tool = findTool(name);
-    return tool.handler(args);
-  }, text: (r: { content: Array<{ type: string; text: string }> }) => r.content[0].text };
 }
 
-describe('batch_parse_spotify_uris', () => {
-  it('parses a 500-URI batch at the cap without error', async () => {
-    const h = makeRefsHarness();
-    const uris = Array.from({ length: 500 }, (_, i) => `spotify:track:${String(i).padStart(22, '0')}`);
-    const result = await h.invoke('batch_parse_spotify_uris', { uris });
-    const parsed = JSON.parse(h.text(result));
-    assert.equal(parsed.count, 500);
-    assert.equal(parsed.valid, 500);
-    assert.equal(parsed.results.length, 500);
+describe('shared Spotify reference policy', () => {
+  const equivalent = EQUIVALENT_TRACK_REFERENCES;
+  for (const reference of equivalent) {
+    it(`normalises ${reference} to the bare ID`, () => {
+      assert.equal(resolveSpotifyId(reference), ID);
+      assert.equal(normaliseToId(reference), ID);
+    });
+  }
+
+  it('rejects hostile and non-official URL hosts before resolution', () => {
+    for (const reference of [
+      `https://example.com/track/${ID}`,
+      `https://open.spotify.com.example.com/track/${ID}`,
+      `http://open.spotify.com/track/${ID}`,
+    ]) {
+      const parsed = classifySpotifyReference(reference);
+      assert.equal(parsed.valid, false, reference);
+      assert.equal(resolveSpotifyId(reference), null, reference);
+    }
   });
 
-  it('handles mixed valid/invalid URIs — reports valid count and invalid entries', async () => {
-    const h = makeRefsHarness();
-    const uris = [
-      'spotify:track:4iV5W9uYEdYUVa79Axb7Rh',
-      'spotify:album:6akEvsycLGftJxYudPjmq',
-      'not-a-uri',
-      'https://open.spotify.com/artist:art1', // malformed URL (colon in path)
-      '',
-    ];
-    const result = await h.invoke('batch_parse_spotify_uris', { uris });
-    const parsed = JSON.parse(h.text(result));
-    assert.equal(parsed.count, 5);
-    assert.ok(parsed.valid < 5, 'some entries should be invalid');
-    assert.ok(parsed.results.some((r: Record<string, unknown>) => r.valid === false), 'at least one result should be invalid');
+  it('enforces ID and entity-kind boundaries', () => {
+    assert.equal(classifySpotifyReference('short5').valid, false);
+    assert.equal(classifySpotifyReference(`${ID}x`).valid, false);
+    assert.equal(classifySpotifyReference(`spotify:device:${ID}`).valid, false);
+    assert.equal(classifySpotifyReference(`https://open.spotify.com/device/${ID}`).valid, false);
+
+    const mismatch = classifySpotifyReference(`spotify:album:${ID}`, 'track');
+    assert.equal(mismatch.valid, false);
+    assert.match(mismatch.error ?? '', /expected track, received album/);
   });
 
-  it('accepts an empty array (no .min(1) on schema) and returns zero counts', async () => {
-    const h = makeRefsHarness();
-    const result = await h.invoke('batch_parse_spotify_uris', { uris: [] });
-    const parsed = JSON.parse(h.text(result));
-    assert.equal(parsed.count, 0);
-    assert.equal(parsed.valid, 0);
-    assert.deepEqual(parsed.results, []);
+  it('spotifyId normalises equivalent references and rejects hostile input', () => {
+    assert.equal(spotifyId('track').parse(`https://open.spotify.com/track/${ID}`), ID);
+    assert.equal(spotifyId('track').safeParse(`https://example.com/track/${ID}`).success, false);
+    assert.equal(spotifyId('track').safeParse(`spotify:album:${ID}`).success, false);
+  });
+  it('keeps parser and canonicalizer verdicts in parity across 20+ cases', () => {
+    const invalid = new Set([
+      `https://open.spotify.com/track/${ID.slice(0, 21)}`,
+      `spotify:track:${ID}x`,
+      `https://example.com/track/${ID}`,
+      `https://open.spotify.com.example.com/track/${ID}`,
+      `http://open.spotify.com/track/${ID}`,
+      `https://open.spotify.com/device/${ID}`,
+      `https://open.spotify.com/track/${ID}/extra`,
+      `spotify:device:${ID}`,
+      `spotify:track:${ID}?x=1`,
+      `spotify:track:${ID}/extra`,
+    ]);
+    for (const reference of PARITY_REFERENCES) {
+      assert.equal(classifySpotifyReference(reference).valid, !invalid.has(reference), reference);
+    }
+    const cases = [
+      [ID, 'track'],
+      [`spotify:track:${ID}`, 'track'],
+      [`spotify://track/${ID}`, 'track'],
+      [`https://open.spotify.com/track/${ID}`, 'track'],
+      [`https://open.spotify.com/embed/track/${ID}`, 'track'],
+      [`https://open.spotify.com/intl-de/track/${ID}`, 'track'],
+      [`https://open.spotify.com/intl-de/embed/track/${ID}`, 'track'],
+      [`https://open.spotify.com/embed/intl-de/track/${ID}`, 'track'],
+      ['spotify:user:wizzler', 'user'],
+      ['spotify://user/user_name-1', 'user'],
+      ['https://open.spotify.com/user/wizzler', 'user'],
+      ['https://open.spotify.com/embed/intl-fr/user/user_name-1', 'user'],
+      ['user_name-1', 'user'],
+      [ID, 'album'],
+      [`spotify:album:${ID}`, 'album'],
+      [`https://open.spotify.com/album/${ID}`, 'album'],
+      [`https://open.spotify.com/embed/intl-de/artist/${ID}`, 'artist'],
+      [`https://open.spotify.com/intl-de/embed/playlist/${ID}`, 'playlist'],
+      [`spotify:show:${ID}`, 'show'],
+      [`spotify:episode:${ID}`, 'episode'],
+      [`spotify:audiobook:${ID}`, 'audiobook'],
+    ] as const;
+    for (const [reference, kind] of cases) {
+      const parsed = classifySpotifyReference(reference, kind);
+      assert.equal(parsed.valid, true, reference);
+      assert.equal(spotifyUri(reference, kind), `spotify:${kind}:${parsed.id}`, reference);
+    }
   });
 
-  it('rejects arrays exceeding 500 entries via schema', async () => {
-    const h = makeRefsHarness();
-    const uris = Array.from({ length: 501 }, (_, i) => `spotify:track:${String(i).padStart(22, '0')}`);
-    const schema = h.findTool('batch_parse_spotify_uris').schema.uris;
-    assert.equal(schema.safeParse(uris).success, false, 'schema max(500) must reject 501 URIs');
-  });
-
-  it('structuredContent carries census breakdown', async () => {
-    const h = makeRefsHarness();
-    const uris = [
-      'spotify:track:4iV5W9uYEdYUVa79Axb7Rh',
-      'spotify:track:6akEvsycLGftJxYudPjmq',
-      'spotify:album:alb123456789012345678',
-      'not-a-uri',
-    ];
-    const result = await h.invoke('batch_parse_spotify_uris', { uris });
-    assert.ok(result.structuredContent, 'structuredContent must be present');
-    assert.equal(result.structuredContent.count, 4);
-    assert.ok(result.structuredContent.form_counts, 'form_counts must be present');
+  it('canonicalizes bare IDs only when expected_kind is supplied', () => {
+    assert.equal(spotifyUri(ID), null);
+    assert.equal(spotifyUri(ID, 'playlist'), `spotify:playlist:${ID}`);
   });
 });
 
-describe('uri_namespace_census', () => {
-  it('returns empty counts for an empty input array', async () => {
-    const h = makeRefsHarness();
-    const result = await h.invoke('uri_namespace_census', { uris: [] });
-    const parsed = JSON.parse(h.text(result));
-    assert.equal(parsed.total, 0);
-    assert.deepEqual(parsed.forms, {});
-    assert.deepEqual(parsed.kinds, {});
+describe('playlist reference shaping', () => {
+  const secondId = 'B'.repeat(22);
+  const equivalent = [
+    ID,
+    `spotify:playlist:${ID}`,
+    `spotify://playlist/${ID}`,
+    `https://open.spotify.com/playlist/${ID}`,
+    `https://open.spotify.com/embed/playlist/${ID}`,
+    `https://open.spotify.com/intl-de/playlist/${ID}`,
+    `https://open.spotify.com/intl-de/embed/playlist/${ID}`,
+    `https://open.spotify.com/embed/intl-de/playlist/${ID}`,
+  ];
+
+  it('uses the canonical resolver grammar for every accepted playlist form', () => {
+    for (const reference of equivalent) {
+      const canonical = classifySpotifyReference(reference, 'playlist');
+      assert.equal(canonical.valid, true, reference);
+      assert.equal(normalizePlaylistReference(reference), canonical.id, reference);
+    }
   });
 
-  it('groups mixed URI types into form and kind counts', async () => {
-    const h = makeRefsHarness();
-    const uris = [
-      'spotify:track:4iV5W9uYEdYUVa79Axb7Rh',
-      'spotify:album:6akEvsycLGftJxYudPjmq',
-      'https://open.spotify.com/artist:art1', // malformed URL
-      '4iV5W9uYEdYUVa79Axb7Rh', // bare id
-      'spotify:episode:512ojhOuo1ktJprKbVcKyQ',
-    ];
-    const result = await h.invoke('uri_namespace_census', { uris });
-    const parsed = JSON.parse(h.text(result));
-    assert.equal(parsed.total, 5);
-    // forms: at least uri, id, invalid present
-    assert.ok(parsed.forms.uri >= 2, 'at least 2 URIs expected');
-    assert.ok(parsed.forms.id >= 1, 'at least 1 bare id expected');
-    assert.ok(parsed.forms.invalid >= 1, 'at least 1 invalid expected');
-    // kinds: track, album, episode present
-    assert.equal(parsed.kinds.track, 1);
-    assert.equal(parsed.kinds.album, 1);
-    assert.equal(parsed.kinds.episode, 1);
+  it('rejects malformed IDs, wrong kinds, insecure URLs, and hostile hosts', () => {
+    for (const reference of [
+      'short',
+      ID.slice(0, 21),
+      `${ID}x`,
+      `spotify:track:${ID}`,
+      `spotify:device:${ID}`,
+      `spotify:playlist:${ID}?si=tracking`,
+      `http://open.spotify.com/playlist/${ID}`,
+      `https://example.com/playlist/${ID}`,
+      `https://open.spotify.com.example.com/playlist/${ID}`,
+      `https://open.spotify.com/device/${ID}`,
+      `https://open.spotify.com/playlist/${ID}/extra`,
+    ]) {
+      assert.equal(classifySpotifyReference(reference, 'playlist').valid, false, reference);
+      assert.throws(() => normalizePlaylistReference(reference), undefined, reference);
+    }
   });
 
-  it('structuredContent rows mirror the input order', async () => {
-    const h = makeRefsHarness();
-    const uris = ['spotify:track:4iV5W9uYEdYUVa79Axb7Rh', 'nonsense', 'spotify:album:alb123456789012345678'];
-    const result = await h.invoke('uri_namespace_census', { uris });
-    assert.ok(result.structuredContent);
-    const rows = result.structuredContent.rows as Array<{ input: string; form: string; kind: string | null }>;
-    assert.equal(rows.length, 3);
-    assert.equal(rows[0].input, 'spotify:track:4iV5W9uYEdYUVa79Axb7Rh');
-    assert.equal(rows[0].form, 'uri');
-    assert.equal(rows[1].form, 'invalid');
-    assert.equal(rows[2].form, 'uri');
+  it('preserves documented one-release aliases after canonical normalization', () => {
+    const resolved = resolvePlaylistInput(
+      { sources: [`spotify:playlist:${ID}`, `https://open.spotify.com/embed/intl-de/playlist/${secondId}`] },
+      { kind: 'list', aliases: ['sources'] },
+    );
+    assert.deepEqual(resolved.values, [ID, secondId]);
+    assert.deepEqual(resolved.deprecatedInputs, ['sources']);
+    assert.match(resolved.deprecationNote ?? '', /use playlists.*Alias support/);
+  });
+});
+
+describe('curated reference tool surface', () => {
+  it('registers exactly six non-redundant read-only tools', () => {
+    const tools = makeRefsHarness().registered;
+    const names = tools.map((tool) => tool.name);
+    assert.deepEqual(names, [
+      'parse_spotify_uri',
+      'parse_spotify_uris',
+      'format_spotify_uri',
+      'canonicalize_spotify_uri',
+      'dedupe_spotify_uris',
+      'spotify_uri_stats',
+    ]);
+    for (const tool of tools) assert.equal(tool.annotations?.readOnlyHint, true, tool.name);
+  });
+
+  it('parses and canonicalises equivalent references identically', async () => {
+    const harness = makeRefsHarness();
+    const result = await harness.invoke('parse_spotify_uris', {
+      uris: EQUIVALENT_TRACK_REFERENCES,
+      expected_kind: 'track',
+    });
+    assert.equal(result.structuredContent?.valid, EQUIVALENT_TRACK_REFERENCES.length);
+    for (const row of result.structuredContent?.results as Array<{ id: string; canonical_uri: string }>) {
+      assert.equal(row.id, ID);
+      assert.equal(row.canonical_uri, `spotify:track:${ID}`);
+    }
+  });
+  it('deduplicates by full kind and ID and preserves invalid whitespace', async () => {
+    const result = await makeRefsHarness().invoke('dedupe_spotify_uris', {
+      uris: [ID, `spotify:track:${ID}`, `spotify:album:${ID}`, ' bad ', ' bad ', 'bad'],
+    });
+    assert.deepEqual(result.structuredContent?.unique, [ID, `spotify:track:${ID}`, `spotify:album:${ID}`, ' bad ', 'bad']);
+  });
+  it('uses expected_kind to deduplicate a bare ID with its typed URI', async () => {
+    const result = await makeRefsHarness().invoke('dedupe_spotify_uris', {
+      uris: [ID, `spotify:track:${ID}`],
+      expected_kind: 'track',
+    });
+    assert.deepEqual(result.structuredContent?.unique, [ID]);
+  });
+
+  it('deduplicates equivalent references by canonical URI', async () => {
+    const result = await makeRefsHarness().invoke('dedupe_spotify_uris', {
+      uris: [ID, `spotify:track:${ID}`, `https://open.spotify.com/track/${ID}?si=x`],
+      expected_kind: 'track',
+    });
+    assert.deepEqual(result.structuredContent, {
+      count_in: 3,
+      count_out: 1,
+      duplicates_removed: 2,
+      unique: [ID],
+    });
+  });
+
+  it('reports invalid references in batches instead of throwing', async () => {
+    const result = await makeRefsHarness().invoke('parse_spotify_uris', {
+      uris: [`https://example.com/track/${ID}`, `spotify:device:${ID}`],
+    });
+    assert.equal(result.structuredContent?.valid, 0);
+    assert.equal((result.structuredContent?.results as unknown[]).length, 2);
   });
 });

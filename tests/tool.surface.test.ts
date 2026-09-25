@@ -21,16 +21,38 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { join } from 'node:path';
-import { NEVER_MUTATING_PLANS } from '../src/tools/annotations.js';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import {
+  AGGREGATE_SURFACE_LIMITS,
+  assertAggregateSurfaceBudget,
+  assertModuleSchemaBudgets,
+  applyToolAnnotations,
+  collectAggregateSurfaceMeasurement,
+  collectModuleSchemaBudgets,
+  NEVER_MUTATING_PLANS,
+  moduleToolNames,
+  serializedSchemaBytes,
+  registerManifestModule,
+  REGISTRAR_MANIFEST,
+  installToolErrorBoundary,
+  TOOL_SURFACE_BUDGET,
+  STABLE_LIST_DEFAULTS,
+  assertToolNamingPolicy,
+  toolNamingMetadata,
+} from '../src/tools/annotations.js';
+import { SpotifyClient } from '../src/client.js';
 
 const REPO_ROOT = join(import.meta.dirname, '..');
 
-/** Ceilings. Raising one is a deliberate act with a measured reason. */
-const DEFAULT_MAX_TOOLS = 620;          // today 608
-const DEFAULT_MAX_BYTES = 600_000;      // baseline 567,183 + annotations (measured +27,830 B); the delta must stay < ~33 KB
-const PER_TOOL_MAX_BYTES = 6_000;       // worst single schema+description today
-const CORE_MAX_TOOLS = 200;             // today 157
-const CORE_MAX_BYTES = 220_000;         // today 162,592
+const DEFAULT_MAX_TOOLS = AGGREGATE_SURFACE_LIMITS.maxTools;
+const DEFAULT_MAX_BYTES = AGGREGATE_SURFACE_LIMITS.maxBytes;
+// Read the ceilings production enforces at startup; a literal copy here would
+// keep passing after a ceiling is lowered and fail after one is raised.
+const PER_TOOL_MAX_BYTES = TOOL_SURFACE_BUDGET.perToolMaxBytes;
+const CORE_MAX_TOOLS = TOOL_SURFACE_BUDGET.coreMaxTools;
+const CORE_MAX_BYTES = TOOL_SURFACE_BUDGET.coreMaxBytes;
 
 interface Tool {
   name: string;
@@ -44,7 +66,7 @@ interface JsonRpc { id?: number; result?: { tools?: Tool[] }; error?: { code: nu
 async function listTools(env: Record<string, string>): Promise<Tool[]> {
   const child = spawn('node', ['--import', 'tsx/esm', 'src/index.ts'], {
     cwd: REPO_ROOT,
-    env: { ...process.env, SPOTIFY_CLIENT_ID: 'surface-test', ...env },
+    env: { ...process.env, SPOTIFY_CLIENT_ID: 'surface-test', SPOTIFY_MCP_TOOLSETS: 'all', ENABLE_TOOLS: '', DISABLE_TOOLS: '', SPOTIFY_SCOPES: '', ...env },
     stdio: ['pipe', 'pipe', 'pipe'],
   });
   let buffer = '';
@@ -168,12 +190,63 @@ describe('tool surface: annotations', () => {
     const wrong = destructive.filter((t) => !MUTATING_PREFIXES.test(t) && !/snapshot_changes/.test(t));
     assert.deepEqual(wrong, [], `destructive tools outside the mutating verb set: [${wrong.join(', ')}]`);
   });
+
+  it('local feedback aliases are explicit non-read-only writes', async () => {
+    const tools = await listTools({});
+    for (const name of ['statsfm_record_feedback', 'record_feedback']) {
+      const tool = tools.find((entry) => entry.name === name);
+      assert.ok(tool, `${name} is not registered`);
+      assert.notEqual(tool.annotations?.readOnlyHint, true, `${name} is advertised read-only`);
+      assert.equal(tool.annotations?.destructiveHint, false, `${name} must explicitly be non-destructive`);
+    }
+  });
   it('read verbs are not advertised as destructive', async () => {
     const tools = await listTools({});
     const bad = tools
       .filter((t) => READ_ONLY_PREFIXES.test(t.name) && !MUTATING_PREFIXES.test(t.name) && t.annotations?.destructiveHint === true)
       .map((t) => t.name);
     assert.deepEqual(bad, [], `read tools marked destructive: [${bad.join(', ')}]`);
+  });
+
+  it('keeps the read-only freshness radar visible in READONLY mode', async () => {
+    const tools = await listTools({ SPOTIFY_MCP_READONLY: '1' });
+    const freshness = tools.find((tool) => tool.name === 'whats_new');
+    assert.ok(freshness, 'whats_new must remain visible in READONLY mode');
+    assert.equal(freshness.annotations?.readOnlyHint, true);
+  });
+  it('enforces v2 naming and retires the episode alias', async () => {
+    const tools = await listTools({});
+    const names = tools.map((tool) => tool.name);
+    assert.equal(new Set(names).size, names.length, 'tools/list contains duplicate names');
+    assert.equal(names.includes('get_show_episodes'), false, 'deprecated endpoint alias remains reachable');
+    assert.ok(names.includes('list_show_episodes'), 'canonical episode lister is missing');
+    assert.doesNotThrow(() => assertToolNamingPolicy(names));
+    for (const tool of tools) {
+      const metadata = toolNamingMetadata(tool.name);
+      assert.equal(metadata.classification, tool.annotations?.readOnlyHint === true ? 'read' : 'write', tool.name);
+      const properties = (tool.inputSchema as { properties?: Record<string, { description?: string }> } | undefined)?.properties ?? {};
+      for (const [property, schema] of Object.entries(properties)) {
+        assert.equal(typeof schema.description, 'string', `${tool.name}.${property} has no description`);
+        assert.notEqual(schema.description?.trim(), '', `${tool.name}.${property} has an empty description`);
+      }
+    }
+  });
+
+  it('exposes exactly the promised stable defaults, and only where declared', async () => {
+    const tools = await listTools({});
+    const byName = new Map(tools.map((tool) => [tool.name, tool]));
+    for (const [name, promised] of Object.entries(STABLE_LIST_DEFAULTS)) {
+      const tool = byName.get(name);
+      assert.ok(tool, `STABLE_LIST_DEFAULTS names unregistered tool ${name}`);
+      const properties = (tool.inputSchema as { properties?: Record<string, { default?: unknown }> } | undefined)?.properties;
+      assert.ok(properties, `${name} must expose an input schema`);
+      for (const [property, value] of Object.entries(promised)) {
+        // No `if (properties.x)` guard: a promised default the tool does not
+        // declare is dead config, and a guard would let it ship unnoticed.
+        assert.ok(properties[property], `${name} promises a default for ${property} but does not declare it`);
+        assert.equal(properties[property].default, value, `${name}.${property} default`);
+      }
+    }
   });
 });
 
@@ -194,6 +267,38 @@ describe('tool surface: budget', () => {
     assert.deepEqual(oversized, [], `tools exceeding ${PER_TOOL_MAX_BYTES}B: [${oversized.join(', ')}]`);
   });
 
+  it('preserves operation-specific canonical and legacy playlist bounds', async () => {
+    const tools = await listTools({});
+    const expected = {
+      playlist_subtract: { minItems: 1, maxItems: 10 },
+      playlist_difference_plan: { minItems: 1, maxItems: 5 },
+      find_duplicate_tracks_across_playlists: { minItems: 2, maxItems: 20 },
+    } as const;
+    const aliases = {
+      playlist_subtract: 'subtract_playlist_ids',
+      playlist_difference_plan: 'subtract_playlist_ids',
+      find_duplicate_tracks_across_playlists: 'playlist_ids',
+    } as const;
+
+    for (const [name, bounds] of Object.entries(expected)) {
+      const schema = tools.find((tool) => tool.name === name)?.inputSchema as {
+        properties?: Record<string, { minItems?: number; maxItems?: number }>;
+      } | undefined;
+      assert.ok(schema, `${name} must expose an input schema`);
+      assert.deepEqual(
+        [schema.properties?.playlists?.minItems, schema.properties?.playlists?.maxItems],
+        [bounds.minItems, bounds.maxItems],
+        `${name}.playlists bounds`,
+      );
+      const alias = aliases[name as keyof typeof aliases];
+      assert.deepEqual(
+        [schema.properties?.[alias]?.minItems, schema.properties?.[alias]?.maxItems],
+        [bounds.minItems, bounds.maxItems],
+        `${name}.${alias} bounds`,
+      );
+    }
+  });
+
   it('the core preset is small and still covers the daily loop', async () => {
     const tools = await listTools({ SPOTIFY_MCP_TOOLSETS: 'core' });
     const names = new Set(tools.map((t) => t.name));
@@ -211,5 +316,114 @@ describe('tool surface: budget', () => {
       `core preset grew to ${bytes} bytes (ceiling ${CORE_MAX_BYTES})`,
     );
     assert.ok(names.size < 608 / 2, `core must be materially smaller than the full surface (got ${names.size})`);
+  });
+
+  it('production aggregate gate fails closed on an injected overage', () => {
+    const server = new McpServer({ name: 'aggregate-audit', version: '0.0.0' });
+    for (let i = 0; i <= AGGREGATE_SURFACE_LIMITS.maxTools; i++) {
+      server.tool(`aggregate_probe_${i}`, 'probe', {}, async () => ({ content: [] }));
+    }
+    const measurement = collectAggregateSurfaceMeasurement(server);
+    assert.ok(measurement.toolCount > AGGREGATE_SURFACE_LIMITS.maxTools);
+    assert.throws(() => assertAggregateSurfaceBudget(measurement), /aggregate tool surface exceeds budget/);
+  });
+
+  it('manifest audit measures every module and enforces every ceiling', async () => {
+    const server = new McpServer({ name: 'schema-audit', version: '0.0.0' });
+    const client = new SpotifyClient();
+    const context = { readOnly: false, isModuleActive: () => true, scopeBlocked: () => false };
+    for (const module of REGISTRAR_MANIFEST) registerManifestModule(server, client, module, context);
+    const rows = collectModuleSchemaBudgets(server);
+    assert.equal(rows.length, REGISTRAR_MANIFEST.length);
+    assert.doesNotThrow(() => assertModuleSchemaBudgets(rows));
+    assert.doesNotThrow(() => assertAggregateSurfaceBudget(collectAggregateSurfaceMeasurement(server)));
+
+    const tools = new Set(Object.keys((server as unknown as { _registeredTools: Record<string, unknown> })._registeredTools));
+    assert.equal(tools.size, rows.reduce((sum, row) => sum + row.toolCount, 0), 'every tool must belong to exactly one manifest module');
+    // Only the measurements are injected: the verdict is recomputed by the gate,
+    // so a weakened comparison in the row builder cannot hide behind a
+    // hand-supplied `withinBudget: true`.
+    assert.throws(
+      () => assertModuleSchemaBudgets([{ ...rows[0], schemaBytes: rows[0].maxSchemaBytes + 1, withinBudget: true }]),
+      /exceeds schema budget/,
+      'an over-budget measurement must fail the shared gate whatever the flag says',
+    );
+    assert.throws(
+      () => assertModuleSchemaBudgets([{ ...rows[0], toolCount: rows[0].maxToolCount + 1, withinBudget: true }]),
+      /exceeds schema budget/,
+      'an over-count module must fail too',
+    );
+    assert.doesNotThrow(
+      () => assertModuleSchemaBudgets([{ ...rows[0], schemaBytes: rows[0].maxSchemaBytes, toolCount: rows[0].maxToolCount, withinBudget: false }]),
+      'a module exactly at its ceiling is within budget even if a flag says otherwise',
+    );
+  });
+
+  it('registers the exact core-first name sequence with every module once', async () => {
+    const server = new McpServer({ name: 'order-audit', version: '0.0.0' });
+    const client = new SpotifyClient();
+    const context = { readOnly: false, isModuleActive: () => true, scopeBlocked: () => false };
+    for (const module of REGISTRAR_MANIFEST) registerManifestModule(server, client, module, context);
+    const names = Object.keys((server as unknown as { _registeredTools: Record<string, unknown> })._registeredTools);
+    const coreCount = REGISTRAR_MANIFEST.slice(0, 4).reduce((sum, module) => sum + module.baseline.toolCount, 0);
+    assert.deepEqual(names.slice(0, coreCount), [
+      'search',
+      'get_track', 'get_artist', 'get_artist_albums', 'get_album', 'get_album_tracks',
+      'get_show', 'get_episode', 'get_me', 'get_artist_top_tracks',
+      'get_available_markets', 'get_several_tracks', 'get_several_albums', 'get_several_artists',
+      'get_several_episodes', 'get_several_shows', 'get_several_audiobooks', 'get_several_chapters',
+      'get_category', 'search_tracks', 'search_artists', 'search_albums', 'search_playlists',
+      'search_shows', 'search_episodes', 'search_audiobooks', 'catalog_batch_lookup',
+      'get_artist_singles', 'get_artist_appearances', 'market_validate', 'browse_category_deepdive',
+      'show_episode_search',
+      'get_saved_tracks', 'get_saved_albums', 'get_saved_shows', 'get_saved_episodes',
+      'save_items', 'remove_saved_items', 'check_saved_items', 'save_to_library', 'remove_from_library',
+      'get_saved_counts', 'search_saved_albums', 'search_saved_shows', 'search_saved_episodes',
+      'search_saved_audiobooks', 'check_in_library', 'search_saved_tracks',
+      'get_now_playing', 'get_currently_playing', 'play_from_search', 'play', 'pause', 'skip_next',
+      'skip_previous', 'seek', 'set_volume', 'set_shuffle', 'set_repeat', 'get_queue', 'add_to_queue',
+      'get_devices', 'transfer_playback', 'handoff',
+    ]);
+    assert.equal(new Set(names).size, names.length);
+    assert.equal(new Set(REGISTRAR_MANIFEST.map((module) => module.key)).size, REGISTRAR_MANIFEST.length);
+  });
+
+  it('manifest measurements equal the finalized production tools/list projection', async () => {
+    const server = new McpServer({ name: 'wire-audit', version: '0.0.0' });
+    const client = new SpotifyClient();
+    const context = { readOnly: false, isModuleActive: () => true, scopeBlocked: () => false };
+    for (const module of REGISTRAR_MANIFEST) registerManifestModule(server, client, module, context);
+    applyToolAnnotations(server);
+    installToolErrorBoundary(server);
+    const mcpClient = new Client({ name: 'wire-client', version: '0.0.0' });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(serverTransport), mcpClient.connect(clientTransport)]);
+    const wireTools = (await mcpClient.listTools()).tools;
+    const registry = (server as unknown as { _registeredTools: Record<string, { description?: string; inputSchema?: unknown }> })._registeredTools;
+    const wireByName = new Map(wireTools.map((tool) => [tool.name, tool]));
+    for (const module of REGISTRAR_MANIFEST) {
+      const names = moduleToolNames(server, module.key);
+      const measured = names.reduce((sum, name) => sum + serializedSchemaBytes(registry[name] ?? {}, name), 0);
+      const wire = names.reduce((sum, name) => {
+        const tool = wireByName.get(name);
+        return sum + Buffer.byteLength(JSON.stringify({ description: tool?.description ?? '', inputSchema: tool?.inputSchema ?? {} }), 'utf8');
+      }, 0);
+      assert.equal(measured, wire, `${module.key} schema bytes must match tools/list wire payload`);
+    }
+    assert.equal(collectAggregateSurfaceMeasurement(server).schemaBytes, Buffer.byteLength(JSON.stringify(wireTools), 'utf8'));
+    assert.equal(wireTools.length, Object.keys(registry).length);
+    await mcpClient.close();
+    await server.close();
+  });
+
+  it('toolset_report returns the same per-module measurements', async () => {
+    const server = new McpServer({ name: 'report-audit', version: '0.0.0' });
+    const client = new SpotifyClient();
+    const context = { readOnly: false, isModuleActive: () => true, scopeBlocked: () => false };
+    for (const module of REGISTRAR_MANIFEST) registerManifestModule(server, client, module, context);
+    const tool = (server as unknown as { _registeredTools: Record<string, { handler: (args: Record<string, never>) => Promise<{ structuredContent: { module_schema_budgets: unknown[] }; content: Array<{ text: string }> }> }> })._registeredTools.toolset_report;
+    const result = await tool.handler({});
+    assert.deepEqual(result.structuredContent.module_schema_budgets, collectModuleSchemaBudgets(server));
+    assert.match(result.content[0].text, /Per-module schema budget/);
   });
 });

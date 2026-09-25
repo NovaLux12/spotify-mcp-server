@@ -31,6 +31,9 @@ function track(id: string): PlaylistItemObject {
   } as PlaylistItemObject;
 }
 
+const PLAYLIST_A = 'A'.repeat(22);
+const PLAYLIST_B = 'B'.repeat(22);
+
 function harness(playlists: Record<string, PlaylistItemObject[]>) {
   const registered: RegisteredTool[] = [];
   const server = {
@@ -80,19 +83,19 @@ describe('playlist_pair_check exclusive sections and structured budgets', () => 
   for (const responseFormat of ['concise', 'json'] as const) {
     it(`renders the A-only section in ${responseFormat} mode`, async () => {
       const h = harness({
-        A: [track('shared'), track('a-only')],
-        B: [track('shared')],
+        [PLAYLIST_A]: [track('shared'), track('a-only')],
+        [PLAYLIST_B]: [track('shared')],
       });
       const result = await h.invoke('playlist_pair_check', {
-        playlist_a_id: 'A',
-        playlist_b_id: 'B',
+        playlist_a_id: PLAYLIST_A,
+        playlist_b_id: PLAYLIST_B,
         response_format: responseFormat,
       });
 
       if (responseFormat === 'concise') {
-        assert.match(result.content[0].text, /"Playlist A" lacks \(from B\):/);
+        assert.ok(result.content[0].text.includes(`"Playlist ${PLAYLIST_A}" lacks (from B):`));
         assert.match(result.content[0].text, /Track a-only/);
-        assert.doesNotMatch(result.content[0].text, /"Playlist B" lacks \(from A\):/);
+        assert.equal(result.content[0].text.includes(`"Playlist ${PLAYLIST_B}" lacks (from A):`), false);
       }
       assert.ok(result.structuredContent);
       assert.deepEqual(result.structuredContent.only_in_a, ['spotify:track:a-only']);
@@ -101,19 +104,19 @@ describe('playlist_pair_check exclusive sections and structured budgets', () => 
 
     it(`renders the B-only section in ${responseFormat} mode`, async () => {
       const h = harness({
-        A: [track('shared')],
-        B: [track('shared'), track('b-only')],
+        [PLAYLIST_A]: [track('shared')],
+        [PLAYLIST_B]: [track('shared'), track('b-only')],
       });
       const result = await h.invoke('playlist_pair_check', {
-        playlist_a_id: 'A',
-        playlist_b_id: 'B',
+        playlist_a_id: PLAYLIST_A,
+        playlist_b_id: PLAYLIST_B,
         response_format: responseFormat,
       });
 
       if (responseFormat === 'concise') {
-        assert.match(result.content[0].text, /"Playlist B" lacks \(from A\):/);
+        assert.ok(result.content[0].text.includes(`"Playlist ${PLAYLIST_B}" lacks (from A):`));
         assert.match(result.content[0].text, /Track b-only/);
-        assert.doesNotMatch(result.content[0].text, /"Playlist A" lacks \(from B\):/);
+        assert.equal(result.content[0].text.includes(`"Playlist ${PLAYLIST_A}" lacks (from B):`), false);
       }
       assert.ok(result.structuredContent);
       assert.deepEqual(result.structuredContent.only_in_a, []);
@@ -121,10 +124,10 @@ describe('playlist_pair_check exclusive sections and structured budgets', () => 
     });
 
     it(`renders neither section when both exclusive lists are empty in ${responseFormat} mode`, async () => {
-      const h = harness({ A: [track('shared')], B: [track('shared')] });
+      const h = harness({ [PLAYLIST_A]: [track('shared')], [PLAYLIST_B]: [track('shared')] });
       const result = await h.invoke('playlist_pair_check', {
-        playlist_a_id: 'A',
-        playlist_b_id: 'B',
+        playlist_a_id: PLAYLIST_A,
+        playlist_b_id: PLAYLIST_B,
         response_format: responseFormat,
       });
 
@@ -140,12 +143,12 @@ describe('playlist_pair_check exclusive sections and structured budgets', () => 
   it('applies the asymmetric display cap without leaking withheld URIs in either mode', async () => {
     for (const responseFormat of ['concise', 'json'] as const) {
       const h = harness({
-        A: [track('shared'), track('a1'), track('a2'), track('a3')],
-        B: [track('shared'), track('b1')],
+        [PLAYLIST_A]: [track('shared'), track('a1'), track('a2'), track('a3')],
+        [PLAYLIST_B]: [track('shared'), track('b1')],
       });
       const result = await h.invoke('playlist_pair_check', {
-        playlist_a_id: 'A',
-        playlist_b_id: 'B',
+        playlist_a_id: PLAYLIST_A,
+        playlist_b_id: PLAYLIST_B,
         response_format: responseFormat,
         max_results: 2,
       });

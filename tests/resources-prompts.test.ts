@@ -366,6 +366,17 @@ test('all fourteen prompts are registered (#60, #112)', async () => {
   );
 });
 
+test('prompt schemas describe every advertised argument', async () => {
+  const client = await connect(makeClientStub());
+  const prompts = await client.listPrompts();
+  for (const prompt of prompts.prompts) {
+    for (const argument of prompt.arguments ?? []) {
+      assert.equal(typeof argument.description, 'string', `${prompt.name}.${argument.name} has no description`);
+      assert.notEqual(argument.description?.trim(), '', `${prompt.name}.${argument.name} has an empty description`);
+    }
+  }
+});
+
 test('parameterized prompts apply defaults without requiring arguments (#60)', async () => {
   const client = await connect(makeClientStub());
 
@@ -415,7 +426,7 @@ const realToolNames: Record<string, true> = Object.fromEntries([
   'skip_next', 'skip_previous', 'seek', 'set_volume', 'set_shuffle', 'set_repeat',
   'get_queue', 'add_to_queue', 'get_devices', 'transfer_playback',
   'get_track', 'get_artist', 'get_artist_albums', 'get_album', 'get_album_tracks',
-  'get_show', 'get_show_episodes', 'get_episode', 'get_me', 'get_artist_top_tracks',
+  'get_show', 'list_show_episodes', 'get_episode', 'get_me', 'get_artist_top_tracks',
   'get_available_markets', 'get_several_tracks', 'get_several_albums', 'get_several_artists',
   'get_several_episodes', 'get_several_shows', 'get_several_audiobooks', 'get_several_chapters',
   // personalization
@@ -444,7 +455,7 @@ const realToolNames: Record<string, true> = Object.fromEntries([
   'library_genre_report', 'filter_by_genre',
   // catalog helpers for crate_digging etc
   'get_top_tracks', 'get_top_artists', 'get_recently_played', 'get_saved_albums', 'get_saved_tracks',
-  'get_saved_shows', 'get_show_episodes', 'get_followed_artists',
+  'get_saved_shows', 'list_show_episodes', 'get_followed_artists',
   // queueops
   'queue_playlist', 'save_queue_as_playlist', 'batch_add_to_queue',
   // suite helpers

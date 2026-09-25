@@ -1770,3 +1770,156 @@ describe('update_playlist visibility elicitation (#157)', () => {
     assert.match(textOf(out), /\[dry run\] update playlist/);
   });
 });
+
+describe('canonical playlist set-operation contracts', () => {
+
+  it('uses canonical playlists in zero-write union preview', async () => {
+    const playlistA = '1'.repeat(22);
+    const playlistB = '2'.repeat(22);
+    const targetPlaylist = '3'.repeat(22);
+    const h = harness((path) => {
+      if (path === `/playlists/${playlistA}` || path === `/playlists/${playlistB}` || path === `/playlists/${targetPlaylist}`) {
+        return { id: path.split('/').pop(), name: 'Playlist', items: { total: 2 } };
+      }
+      const all = [
+        { item: playableTrack('a', 'From A'), added_at: undefined },
+        { item: playableTrack('shared', 'Shared'), added_at: undefined },
+      ];
+      return { items: all, total: all.length, limit: all.length, offset: 0 };
+    });
+
+    const out = await h.invoke('playlist_union', {
+      playlists: [playlistA, playlistB],
+      target_playlist_id: targetPlaylist,
+      dry_run: true,
+      response_format: 'json',
+    });
+    const payload = out.structuredContent as Record<string, unknown>;
+    assert.deepEqual(payload.playlists, [playlistA, playlistB]);
+    assert.equal(payload.dry_run, true);
+    assert.equal(payload.would_confirm, false);
+    assert.equal(
+      wireCalls(h.client.calls).filter((call) => call.method !== 'GET').length,
+      0,
+    );
+  });
+
+  it('subtract preview identifies the canonical base and makes zero writes', async () => {
+    const playlistA = '1'.repeat(22);
+    const playlistB = '2'.repeat(22);
+    const h = harness((path) => {
+      if (path === `/playlists/${playlistA}` || path === `/playlists/${playlistB}`) {
+        return { id: path.split('/').pop(), name: 'Playlist' };
+      }
+      if (path === `/playlists/${playlistA}/items`) {
+        return { items: [{ item: playableTrack('keep', 'Keep') }, { item: playableTrack('shared', 'Shared') }], total: 2, limit: 2, offset: 0 };
+      }
+      if (path === `/playlists/${playlistB}/items`) {
+        return { items: [{ item: playableTrack('shared', 'Shared') }], total: 1, limit: 1, offset: 0 };
+      }
+      return null;
+    });
+
+    const out = await h.invoke('playlist_subtract', {
+      base_playlist_id: playlistA,
+      playlists: [playlistB],
+      dry_run: true,
+      response_format: 'json',
+    });
+    const payload = out.structuredContent as Record<string, unknown>;
+    assert.equal(payload.base_playlist, playlistA);
+    assert.deepEqual(payload.playlists, [playlistB]);
+    assert.equal(payload.removed, 1);
+    assert.equal(payload.kept, 1);
+    assert.equal(
+      wireCalls(h.client.calls).filter((call) => call.method !== 'GET').length,
+      0,
+    );
+  });
+
+  it('rejects self-subtraction before any Spotify call', async () => {
+    const playlistA = '1'.repeat(22);
+    const h = harness();
+    await assert.rejects(
+      () => h.invoke('playlist_subtract', { base_playlist_id: playlistA, playlists: [playlistA] }),
+      /Invalid arguments: the subtraction sources must not include the base playlist\./,
+    );
+    assert.equal(h.client.calls.length, 0);
+  });
+
+  it('accepts the deprecated positional subtract form and reports it', async () => {
+    const playlistA = '1'.repeat(22);
+    const playlistB = '2'.repeat(22);
+    // Pre-2.0 contract: playlists[0] is the base and the rest are the sources.
+    // Distinct rows per playlist: if the base were also walked as a source, its
+    // own rows would land in the removal set and kept_total would be 0.
+    const h = harness((path) => (path.includes(playlistA)
+      ? { items: [{ item: { uri: 'spotify:track:a1' } }, { item: { uri: 'spotify:track:a2' } }], total: 2, limit: 2 }
+      : { items: [{ item: { uri: 'spotify:track:b1' } }], total: 1, limit: 1 }));
+    const out = await h.invoke('playlist_subtract', { playlists: [playlistA, playlistB], dry_run: true });
+    const sc = out.structuredContent as Record<string, unknown>;
+    assert.equal(sc.base_playlist, playlistA, 'the base must be the first positional entry');
+    assert.deepEqual(sc.playlists, [playlistB], 'only the real sources are reported as sources');
+    assert.match(String(sc.deprecation_note), /positional/i, 'the migration must be named');
+    // The base must never be walked as a source: doing so would subtract the
+    // caller's own rows and offer to empty the playlist.
+    assert.ok(Number(sc.kept_total) > 0, 'the base rows must survive the subtraction');
+    assert.equal(h.client.calls.filter((call) => call.method === 'PUT').length, 0);
+  });
+
+  it('orders symmetric-difference JSON as playlist_a then playlist_b', async () => {
+    const playlistA = '1'.repeat(22);
+    const playlistB = '2'.repeat(22);
+    const h = harness((path, _params) => {
+      const match = /^\/playlists\/([^/]+)\/items$/.exec(path);
+      if (!match) return null;
+      const id = match[1];
+      const items = id === playlistA ? ['a', 'shared'] : id === playlistB ? ['b', 'shared'] : [];
+      return { items: items.map((track) => ({ item: playableTrack(track, track) })), total: items.length, limit: 100 };
+    });
+
+    const out = await h.invoke('playlist_symmetric_difference', {
+      playlist_a: playlistA,
+      playlist_b: playlistB,
+      response_format: 'json',
+    });
+    const payload = JSON.parse(textOf(out)) as {
+      symmetric_difference: string[];
+    };
+    assert.deepEqual(payload.symmetric_difference, [
+      'spotify:track:a',
+      'spotify:track:b',
+    ]);
+  });
+
+  it('declined large union confirmation returns cancelled with zero writes', async () => {
+    const playlistA = '1'.repeat(22);
+    const playlistB = '2'.repeat(22);
+    const targetPlaylist = '3'.repeat(22);
+    const source = Array.from({ length: 50 }, (_, i) => ({
+      item: playableTrack(`t${i}`, `Track ${i}`),
+      added_at: undefined,
+    }));
+    const h = harness(
+      (path) => {
+        if (path === `/playlists/${playlistA}/items`) return { items: source, total: source.length, limit: 100 };
+        if (path === `/playlists/${playlistB}/items`) return { items: [], total: 0, limit: 100 };
+        if (path === `/playlists/${targetPlaylist}/items`) return { items: [], total: 0, limit: 100 };
+        if (path === `/playlists/${targetPlaylist}`) return { items: { total: 0 } };
+        return null;
+      },
+      registerPlaylistTools,
+      { action: 'decline' },
+    );
+
+    const out = await h.invoke('playlist_union', {
+      playlists: [playlistA, playlistB],
+      target_playlist_id: targetPlaylist,
+    });
+    assert.deepEqual(out.structuredContent, { ok: false, cancelled: true });
+    assert.equal(
+      wireCalls(h.client.calls).filter((call) => call.method !== 'GET').length,
+      0,
+    );
+  });
+});

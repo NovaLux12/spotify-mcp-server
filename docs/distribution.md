@@ -10,8 +10,10 @@ with README + server.json when the tool surface changes.
 - MCP Registry name: `io.github.NovaLux12/spotify-mcp-server`
 - Transport: stdio (`npx @novalux12/spotify-mcp` after `npm i -g`, or via client config)
 - Auth: OAuth PKCE (S256) browser flow or headless mode; tokens at `~/.spotify-mcp/tokens.json` (0600)
-- Surface: 608 tools (607 from the 64 files under `src/tools/`, plus the top-level `verify_receipt` diagnostic), 16 resources, 33 resource templates and 14 prompts (toolsets can trim); aligned with Spotify's post-Feb-2026 API plus the stats.fm public API (read-only, no auth). v1.30.0 added the 11 wave-2 taste composites (`taste_*` playlist specs, briefs, and reports — see `docs/wave2-composites.md`); the 8 taste-intelligence tools also answer to canonical `statsfm_taste_*` names with the original `taste_*` names kept as aliases (16 registered names).
-- Tests: 1179-case node:test suite, CI on Node 22
+<!-- BEGIN:generated surface-census -->
+- Surface: 591 tools, 16 fixed resources, 33 resource templates, and 14 prompts in the finalized default production registry (toolsets can trim a configured host); aligned with Spotify's current Web API plus the stats.fm public API (read-only, no auth). The registry-derived counts replace historical release snapshots; v1.30.0 added the taste composite briefs, playlist specs, and reports described in `docs/wave2-composites.md`.
+<!-- END:generated surface-census -->
+- Tests: node:test suite with CI on Node 22 and Node 24; the CI runner reports the exact case count.
 - Safety: `dry_run` + `response_format` on every mutating tool enforced by a registry-wide conformance guard (#920); request/quota usage tracking with pre-flight gating on heavy scans (#904 — blocked scans issue 0 requests, shrunk walks disclose `requests_made`/`budget_shrunk`); elicitation-gated human confirmation on bulk playlist removals (10+ URIs) and replacements (50+); mutation receipts verifiable via `verify_receipt`; opt-in JSONL audit trail; hard read-only mode (`SPOTIFY_MCP_READONLY=1`)
 - Provenance: npm publishes carry SLSA provenance; listed in the official MCP Registry as `io.github.NovaLux12/spotify-mcp-server`
 

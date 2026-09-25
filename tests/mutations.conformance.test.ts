@@ -24,10 +24,10 @@
  * guard then enforces the newly-closed invariant.
  * - dry_run (2): pin_playlist [A6 slice], save_artist_new_releases
  *   [artistwatch unit]; follow_artists already fixed via #933/#941.
- * - response_format (17): add_to_playlist, create_playlist,
+ * - response_format (15): add_to_playlist, create_playlist,
  *   clone_playlist_cover, jump_to_chapter, playlist_collab_toggle,
- *   playlist_reverse, playlist_shuffle, playlist_subtract, playlist_trim,
- *   playlist_union, remove_duplicate_playlist_items, remove_from_playlist,
+ *   playlist_reverse, playlist_shuffle, playlist_trim,
+ *   remove_duplicate_playlist_items, remove_from_playlist,
  *   reorder_playlist_items, replace_playlist_items, split_playlist,
  *   update_playlist, upload_playlist_cover [response_format retrofit unit].
  * - SPEC.md: separate unit.
@@ -36,7 +36,6 @@
  */
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { z } from 'zod';
 import { readFileSync, readdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -44,141 +43,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import type { SpotifyClient } from '../src/client.js';
-import { verifyReceipt, formatReceipt } from '../src/receipts.js';
-import { registerPlaybackTools } from '../src/tools/playback.js';
-import { registerSearchTools } from '../src/tools/search.js';
-import { registerCatalogTools } from '../src/tools/catalog.js';
-import { registerPersonalizationTools } from '../src/tools/personalization.js';
-import { registerLibraryTools } from '../src/tools/library.js';
-import { registerFollowingTools } from '../src/tools/following.js';
-import { registerAudiobookTools } from '../src/tools/audiobooks.js';
-import { registerPlaylistTools } from '../src/tools/playlists.js';
-import { registerUsersTools } from '../src/tools/users.js';
-import { registerPlaylistOpsTools } from '../src/tools/playlistops.js';
-import { registerLibraryInsightsTools } from '../src/tools/libraryinsights.js';
-import { registerFreshnessTools } from '../src/tools/freshness.js';
-import { registerSearchDeepTool } from '../src/tools/searchdive.js';
-import { registerPodcastSessionTools } from '../src/tools/podcastsession.js';
-import { registerAudiobookCopilotTools } from '../src/tools/audiobookcopilot.js';
-import { registerScenesTools } from '../src/tools/scenes.js';
-import { registerPlaylistDnaTools } from '../src/tools/playlistdna.js';
-import { registerAnalyticsTools } from '../src/tools/analytics.js';
-import { registerExportTools } from '../src/tools/export.js';
-import { registerImportTools } from '../src/tools/import.js';
-import { registerSmartTools } from '../src/tools/smart.js';
-import { registerShowRadarTools } from '../src/tools/showradar.js';
-import { registerSavedDedupeTools } from '../src/tools/saveddedupe.js';
-import { registerBackupTools } from '../src/tools/backup.js';
-import { registerRestoreTools } from '../src/tools/restore.js';
-import { registerUndoTools } from '../src/tools/undo.js';
-import { registerBackupFirstTools } from '../src/tools/backupfirst.js';
-import { registerLibraryHygieneTools } from '../src/tools/libraryhygiene.js';
-import { registerBrowseTools } from '../src/tools/browse.js';
-import { registerArtistWatchTools } from '../src/tools/artistwatch.js';
-import { registerLibraryAnalyticsTools } from '../src/tools/libraryanalytics.js';
-import { registerPlaylistHealthTools } from '../src/tools/playlisthealth.js';
-import { registerPlaylistBatchTools } from '../src/tools/playlistbatch.js';
-import { registerPlaylistMiscTools } from '../src/tools/playlistmisc.js';
-import { registerPortabilityTools } from '../src/tools/portability.js';
-import { registerQueueOpsTools } from '../src/tools/queueops.js';
-import { registerPlaybackExtTools } from '../src/tools/playbackext.js';
-import { registerPlaybackIntelTools } from '../src/tools/playbackintel.js';
-import { registerSearchHistoryTools } from '../src/tools/searchhistory.js';
-import { registerExhaustMiscTools } from '../src/tools/exhaustmisc.js';
-import { registerExhaust2CatalogTools } from '../src/tools/exhaust2_catalog.js';
-import { registerExhaust2PlaybackTools } from '../src/tools/exhaust2_playback.js';
-import { registerExhaust2PlaylistsTools } from '../src/tools/exhaust2_playlists.js';
-import { registerExhaust2MiscTools } from '../src/tools/exhaust2_misc.js';
-import { registerExhaust2EnggatingTools } from '../src/tools/exhaust2_enggating.js';
-import { registerExhaust2ExtraTools } from '../src/tools/exhaust2_extra.js';
-import { registerEpisodeMgmtTools } from '../src/tools/episodemgmt.js';
-import { registerDoctorTool } from '../src/tools/doctortool.js';
-import { registerSwarm3PlaybackTools } from '../src/tools/swarm3_playback.js';
-import { registerSwarm3PlaylistopsTools } from '../src/tools/swarm3_playlistops.js';
-import { registerSwarm3DiscoveryTools } from '../src/tools/swarm3_discovery.js';
-import { registerSwarm3bDiscoveryTools } from '../src/tools/swarm3b_discovery.js';
-import { registerSwarm4PlaylistsTools } from '../src/tools/swarm4_playlists.js';
-import { registerSwarm3LibraryTools } from '../src/tools/swarm3_library.js';
-import { registerSwarm3ShowsTools } from '../src/tools/swarm3_shows.js';
-import { registerSwarm3AnalyticsTools } from '../src/tools/swarm3_analytics.js';
-import { registerStatsfmTasteTools } from '../src/tools/statsfm_taste.js';
-import { registerTasteCompositeTools } from '../src/tools/taste_composites.js';
-import { registerSwarm3RefsTools } from '../src/tools/swarm3_refs.js';
-import { registerSwarm3SnapshotsTools } from '../src/tools/swarm3_snapshots.js';
-import { registerSwarm3MetaTools } from '../src/tools/swarm3_meta.js';
-import { registerStatsfmTools } from '../src/tools/statsfm.js';
-
-// ---------------------------------------------------------------------------
-// Module table: key → registrar + source file. Keys mirror src/index.ts;
-// files feed both the chunk analysis and loop-registration fallback below.
-// ---------------------------------------------------------------------------
-
-type Registrar = (server: McpServer, client: SpotifyClient) => void;
-
-const MODULES: Array<{ key: string; register: Registrar }> = [
-  { key: 'playback', register: registerPlaybackTools },
-  { key: 'search', register: registerSearchTools },
-  { key: 'catalog', register: registerCatalogTools },
-  { key: 'personalization', register: registerPersonalizationTools },
-  { key: 'library', register: registerLibraryTools },
-  { key: 'following', register: registerFollowingTools },
-  { key: 'audiobooks', register: registerAudiobookTools },
-  { key: 'playlists', register: registerPlaylistTools },
-  { key: 'users', register: registerUsersTools },
-  { key: 'playlistops', register: registerPlaylistOpsTools },
-  { key: 'libraryinsights', register: registerLibraryInsightsTools },
-  { key: 'freshness', register: registerFreshnessTools },
-  { key: 'searchdeep', register: registerSearchDeepTool },
-  { key: 'podcastsession', register: registerPodcastSessionTools },
-  { key: 'audiobookcopilot', register: registerAudiobookCopilotTools },
-  { key: 'scenes', register: registerScenesTools },
-  { key: 'playlistdna', register: registerPlaylistDnaTools },
-  { key: 'analytics', register: registerAnalyticsTools },
-  { key: 'export', register: registerExportTools },
-  { key: 'import', register: registerImportTools },
-  { key: 'smart', register: registerSmartTools },
-  { key: 'showradar', register: registerShowRadarTools },
-  { key: 'saveddedupe', register: registerSavedDedupeTools },
-  { key: 'backup', register: registerBackupTools },
-  { key: 'restore', register: registerRestoreTools },
-  { key: 'undo', register: registerUndoTools },
-  { key: 'backupfirst', register: registerBackupFirstTools },
-  { key: 'libraryhygiene', register: registerLibraryHygieneTools },
-  { key: 'browse', register: registerBrowseTools },
-  { key: 'artistwatch', register: registerArtistWatchTools },
-  { key: 'libraryanalytics', register: registerLibraryAnalyticsTools },
-  { key: 'playlisthealth', register: registerPlaylistHealthTools },
-  { key: 'playlistbatch', register: registerPlaylistBatchTools },
-  { key: 'playlistmisc', register: registerPlaylistMiscTools },
-  { key: 'portability', register: registerPortabilityTools },
-  { key: 'queueops', register: registerQueueOpsTools },
-  { key: 'playbackext', register: registerPlaybackExtTools },
-  { key: 'playbackintel', register: registerPlaybackIntelTools },
-  { key: 'searchhistory', register: registerSearchHistoryTools },
-  { key: 'exhaustmisc', register: registerExhaustMiscTools },
-  { key: 'exhaust2catalog', register: registerExhaust2CatalogTools },
-  { key: 'exhaust2playback', register: registerExhaust2PlaybackTools },
-  { key: 'exhaust2playlists', register: registerExhaust2PlaylistsTools },
-  { key: 'exhaust2misc', register: registerExhaust2MiscTools },
-  { key: 'exhaust2enggating', register: registerExhaust2EnggatingTools },
-  { key: 'exhaust2extra', register: registerExhaust2ExtraTools },
-  { key: 'episodemgmt', register: registerEpisodeMgmtTools },
-  { key: 'doctor', register: registerDoctorTool },
-  { key: 'swarm3playback', register: registerSwarm3PlaybackTools },
-  { key: 'swarm3playlistops', register: registerSwarm3PlaylistopsTools },
-  { key: 'swarm3discovery', register: registerSwarm3DiscoveryTools },
-  { key: 'swarm3bdiscovery', register: registerSwarm3bDiscoveryTools },
-  { key: 'swarm4playlists', register: registerSwarm4PlaylistsTools },
-  { key: 'swarm3library', register: registerSwarm3LibraryTools },
-  { key: 'swarm3shows', register: registerSwarm3ShowsTools },
-  { key: 'swarm3analytics', register: registerSwarm3AnalyticsTools },
-  { key: 'taste', register: registerStatsfmTasteTools },
-  { key: 'tastecomposites', register: registerTasteCompositeTools },
-  { key: 'swarm3refs', register: registerSwarm3RefsTools },
-  { key: 'swarm3snapshots', register: registerSwarm3SnapshotsTools },
-  { key: 'statsfm', register: registerStatsfmTools as unknown as Registrar },
-  { key: 'meta', register: registerSwarm3MetaTools },
-];
+import { REGISTRAR_MANIFEST } from '../src/tools/annotations.js';
 
 /**
  * Explicit allowlist: genuine non-previewable locals. Each entry needs a
@@ -211,9 +76,7 @@ const KNOWN_MISSING_RESPONSE_FORMAT: string[] = [
   'playlist_collab_toggle',
   'playlist_reverse',
   'playlist_shuffle',
-  'playlist_subtract',
   'playlist_trim',
-  'playlist_union',
   'remove_duplicate_playlist_items',
   'remove_from_playlist',
   'reorder_playlist_items',
@@ -303,29 +166,12 @@ async function enumerateLiveRegistry(): Promise<SurfacedTool[]> {
     observed.add(args[0] as string);
     return origRegisterTool(...args);
   };
-  for (const { key, register } of MODULES) {
+  for (const { key, registrar } of REGISTRAR_MANIFEST) {
     const before = new Set(observed);
-    register(server, stub);
+    registrar(server, stub);
     for (const name of observed) {
       if (!before.has(name) && !moduleByTool.has(name)) moduleByTool.set(name, key);
     }
-  }
-  // verify_receipt is registered inline in src/index.ts (library module,
-  // read-only lookup) — mirror that here so the enumeration is whole.
-  if (!moduleByTool.has('verify_receipt')) {
-    server.tool(
-      'verify_receipt',
-      'Verify that a previous mutation actually landed on Spotify by looking up its receipt',
-      { receipt_id: z.string().min(1).describe('Receipt ID from a receipt-bearing mutation result') },
-      async (args) => {
-        const receipt = verifyReceipt(args.receipt_id as string);
-        if (!receipt) {
-          return { content: [{ type: 'text', text: `Unknown receipt "${args.receipt_id as string}".` }] };
-        }
-        return { content: [{ type: 'text', text: formatReceipt(receipt) }], structuredContent: { ...receipt } };
-      },
-    );
-    moduleByTool.set('verify_receipt', 'library-inline');
   }
   const client = new Client({ name: 'conformance-client', version: '0.0.0' });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();

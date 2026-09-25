@@ -1,6 +1,6 @@
 # Configuration reference
 
-Every environment variable read by `@novalux12/spotify-mcp` — set in your MCP host config, on the command line, or in `.env` (picked up by `npm run dev` on Node 22.9+).
+The variables below are read at the documented call sites; set them in your MCP host config, command line, or `.env` (loaded by `npm run dev` on Node 22.9+). There is no unified environment registry or config file.
 
 ## Summary
 
@@ -8,236 +8,88 @@ Every environment variable read by `@novalux12/spotify-mcp` — set in your MCP 
 | --- | --- | --- |
 | `SPOTIFY_CLIENT_ID` | none (required) | OAuth Client ID of your Spotify app; used for login and token refresh. |
 | `SPOTIFY_REDIRECT_URI` | `http://127.0.0.1:8888/callback` | OAuth redirect URI; must match your Spotify app settings exactly. |
-| `SPOTIFY_MCP_TOKEN_FILE` | `~/.spotify-mcp/tokens.json` | Path of the persistent token cache (written with mode 600). Precedence: `SPOTIFY_MCP_TOKEN_FILE` > `SPOTIFY_MCP_PROFILE` > default. |
-| `SPOTIFY_MCP_PROFILE` | unset | Profile name for multi-account token storage (`~/.spotify-mcp/tokens.<profile>.json`); `auth --profile <name>` is the CLI equivalent. |
-| `SPOTIFY_SCOPES` | unset (all 17 default scopes) | Space- or comma-separated OAuth scopes to request at auth time; token-level read-only when write scopes omitted. |
-| `SPOTIFY_MCP_MARKET` | unset (account country) | Default ISO 3166-1 alpha-2 market for market-gated lookups; precedence: explicit arg > this env > account country. |
-| `SPOTIFY_HEADLESS` | unset | Set to `1`/`true`/`yes`/`on` (case-insensitive) to use the browserless paste-flow authentication. |
-| `SPOTIFY_REQUEST_TIMEOUT_MS` | `30000` | Per-request HTTP timeout in ms for every API call and token refresh. |
-| `SPOTIFY_MCP_MAX_ITEMS` | `50` | Default per-call item cap for list-type tools; `max_results` overrides per call. |
-| `SPOTIFY_MCP_FETCH_ALL_CAP` | `500` | Hard cap on `fetch_all=true` pagination walks. |
-| `SPOTIFY_MCP_HISTORY` | unset | Set to `1` to log one JSONL line per agent-driven mutation. |
-| `SPOTIFY_MCP_HISTORY_DIR` | `~/.spotify-mcp/history` | Directory holding the mutation JSONL log (`mutations.jsonl`). |
-| `SPOTIFY_MCP_TOOLSETS` | unset (all) | Comma-separated toolsets to register: `playback`, `catalog`, `library`, `personalization`, `playlists`, `prompts`, `resources`; `all` or unset registers everything. Unknown-only spec fails startup naming valid sets; mixed known+unknown spec starts and ignores unknown names. |
-| `SPOTIFY_MCP_ENABLE_TOOLS` | unset | Comma-separated module keys forced on top of the toolset trim (`disable` wins over `enable` wins over set membership). |
-| `SPOTIFY_MCP_DISABLE_TOOLS` | unset | Comma-separated module keys forced off. |
-| `SPOTIFY_MCP_FRESHNESS_STATE` | `~/.spotify-mcp/freshness.json` | Watermark file powering `whats_new`'s `since: 'last-check'`. |
-| `SPOTIFY_MCP_FRESHNESS_BUDGET` | `25` | Per-call budget for `whats_new` artist/show lookups; `max_artists` overrides per call. |
-| `SPOTIFY_MCP_SCENES_FILE` | `~/.spotify-mcp/scenes.json` | Location of the playback-scene sidecar written by the scene tools. |
-| `SPOTIFY_MCP_GENRE_TAGS_FILE` | `~/.spotify-mcp/genre-tags.json` | Artist→genre-tags sidecar consumed by the library genre tools. |
-| `SPOTIFY_MCP_READONLY` | unset | Set to `1`/`true`/`yes` to hide every write-capable module (plus resources and prompts) — reads and diagnostics stay available. |
-| `SPOTIFY_MCP_CONFIRM` | unset | Explicit automation bypass for confirmation-gated destructive operations. Unset fails closed when elicitation is unavailable or errors. |
+| `SPOTIFY_MCP_TOKEN_FILE` | `~/.spotify-mcp/tokens.json` | Persistent token cache (written with mode 600). Explicit path wins over profile and default. |
+| `SPOTIFY_MCP_PROFILE` | unset | Profile name for `~/.spotify-mcp/tokens.<profile>.json`; `auth --profile <name>` is the CLI equivalent. |
+| `SPOTIFY_SCOPES` | unset (17 default scopes) | Space- or comma-separated OAuth scopes to request; unknown scopes fail startup. |
+| `SPOTIFY_MCP_MARKET` | unset (account country) | Default ISO 3166-1 alpha-2 market for market-gated lookups; explicit tool argument wins. |
+| `SPOTIFY_HEADLESS` | unset | `1`, `true`, `yes`, or `on` enables browserless paste-flow authentication. |
+| `SPOTIFY_REQUEST_TIMEOUT_MS` | `30000` | Per-request timeout for Spotify API calls and token refresh. |
+| `SPOTIFY_MCP_MAX_ITEMS` | `50` | Default per-call item cap for list tools; `max_results` overrides per call. |
+| `SPOTIFY_MCP_FETCH_ALL_CAP` | `500` | Hard cap for `fetch_all=true` pagination walks. |
+| `SPOTIFY_MCP_HISTORY` | unset | `1`, `true`, `yes`, or `on` logs one JSONL line per agent-driven mutation. |
+| `SPOTIFY_MCP_HISTORY_DIR` | `~/.spotify-mcp/history` | Directory containing `mutations.jsonl`. |
+| `SPOTIFY_MCP_TOOLSETS` | unset (all) | Comma-separated toolsets to register. `all`, empty, or unset registers everything. |
+| `SPOTIFY_MCP_ENABLE_TOOLS` | unset | Comma-separated registration-key overrides forced on. |
+| `SPOTIFY_MCP_DISABLE_TOOLS` | unset | Comma-separated registration-key overrides forced off; disable wins over enable. |
+| `SPOTIFY_MCP_READONLY` | unset | `1`, `true`, `yes`, or `on` (case-insensitive, trimmed) hides Spotify-mutating registration modules. One parser backs this flag, the `spotify_doctor` report, the `whats_new` annotations and the freshness-watermark hold, so they cannot disagree. Read-only modules, resources, and prompts remain subject to their normal gates. |
+| `SPOTIFY_MCP_CONFIRM` | unset | `never` is the only explicit bypass for confirmation-gated destructive operations; callers that require confirmation otherwise fail closed when the client cannot elicit. |
+| `SPOTIFY_MCP_FRESHNESS_STATE` | `~/.spotify-mcp/freshness.json` | Watermark file powering `whats_new` with `since: "last-check"`. |
+| `SPOTIFY_MCP_FRESHNESS_BUDGET` | `25` | Per-call budget for `whats_new` artist and show lookups. |
+| `SPOTIFY_MCP_SCENES_FILE` | `~/.spotify-mcp/scenes.json` | Playback scene sidecar. |
+| `SPOTIFY_MCP_GENRE_TAGS_FILE` | `~/.spotify-mcp/genre-tags.json` | Artist-to-genre-tags sidecar. |
+| `SPOTIFY_MCP_DATA_DIR` | `./data` for watchlists; `~/.spotify-mcp/playlist-snapshots` for playlist-health snapshots | Data directory read by the artist-watchlist, portability-watchlist, and playlist-health call sites. Set it explicitly to avoid cwd-relative watchlist files. |
+| `SPOTIFY_MCP_BACKUP_DIR` | `~/.spotify-mcp/backups` | Directory for `backup_library` snapshots. |
+| `SPOTIFY_MCP_PORTABILITY_DIR` | `~/.spotify-mcp/portability` | Default output directory for library/history portability exports. |
+| `SPOTIFY_MCP_SNAPSHOT_DIR` | `~/.spotify-mcp/playlist-snapshots` | Playlist snapshot sidecar directory. |
+| `SPOTIFY_MCP_SEARCH_HISTORY_FILE` | `~/.spotify-mcp/search-history.json` | Local search-history sidecar. |
+| `SPOTIFY_MCP_PLAYBACKEXT_FILE` | `~/.spotify-mcp/playback-ext.json` | Playback extension sidecar. |
+| `SPOTIFY_MCP_EXHAUST2_PLAYBACK_FILE` | `~/.spotify-mcp/exhaust2-playback.json` | Playback helper sidecar. |
+| `SPOTIFY_MCP_EXHAUST2_MISC_FILE` | `~/.spotify-mcp/exhaust2-misc.json` | Miscellaneous helper sidecar. |
+
 
 ## Details
 
-### `SPOTIFY_CLIENT_ID`
+### Auth and OAuth
 
-Required for both `auth` and normal server operation (refreshing expired
-tokens). Get it from [developer.spotify.com/dashboard](https://developer.spotify.com/dashboard)
-after creating an app. This server uses the PKCE flow, so a client secret is
-never required.
+`SPOTIFY_CLIENT_ID` is required for `auth` and normal server operation because the client refreshes expired tokens. Create an app in the [Spotify Developer Dashboard](https://developer.spotify.com/dashboard). The server uses PKCE, so a client secret is never required.
 
-```bash
-export SPOTIFY_CLIENT_ID=your_client_id_here
-```
+`SPOTIFY_REDIRECT_URI` must match a redirect URI configured in the app character for character. The callback listener derives its loopback bind address, port, and route from this value. Use `http://127.0.0.1` for local development, not `http://localhost`.
 
-```json
-"env": { "SPOTIFY_CLIENT_ID": "your_client_id_here" }
-```
+`SPOTIFY_MCP_TOKEN_FILE` and `SPOTIFY_MCP_PROFILE` select the persistent token file. Explicit `SPOTIFY_MCP_TOKEN_FILE` wins; otherwise a profile uses `~/.spotify-mcp/tokens.<profile>.json`; the unprofiled default is `~/.spotify-mcp/tokens.json`. Token files are created with mode 600.
 
-### `SPOTIFY_REDIRECT_URI`
+`SPOTIFY_HEADLESS=1` affects only the `auth` command. The auth URL is printed for a browserless host; complete it anywhere and paste the redirect URL back.
 
-Overrides the redirect URL sent to Spotify during authentication. It must
-match a Redirect URI configured in your Spotify app settings character for
-character — Spotify rejects the login otherwise.
+`SPOTIFY_SCOPES` accepts spaces or commas and rejects unknown scope names. When unset, the default scopes in `src/config.ts` are requested. `SPOTIFY_MCP_MARKET` accepts a two-letter ISO 3166-1 alpha-2 code; invalid values are ignored with a warning, and an explicit tool `market` argument takes precedence.
 
-The local callback listener derives its bind port and route path from this
-value (default `http://127.0.0.1:8888/callback`), so an override such as
-`http://127.0.0.1:9000/callback` is honored end-to-end. The host must be a
-loopback address (`localhost`, `127.0.0.0/8` or `::1`) — the callback server
-binds loopback only, and Spotify requires loopback redirect URIs for
-native-app flows. Whatever you set here must also match your Spotify app
-settings character for character.
+### Runtime limits and requests
 
-### `SPOTIFY_MCP_TOKEN_FILE`
+`SPOTIFY_REQUEST_TIMEOUT_MS` applies an abort timer to every outbound Spotify request and token refresh. `SPOTIFY_MCP_MAX_ITEMS` sets the default list truncation cap; a call can still pass its own `max_results`. `SPOTIFY_MCP_FETCH_ALL_CAP` bounds `fetch_all=true` pagination and related scan walks; page explicitly with `limit`/`offset` when the cap is reached.
 
-Where access and refresh tokens are persisted after a successful auth flow.
-The file is created with mode 600 and refreshed in place by the client, so
-you only authenticate once per account. Override it when running multiple
-accounts side by side or when the home directory is read-only or ephemeral
-(mount a volume elsewhere and point this at it).
+### Mutation history
 
-```bash
-SPOTIFY_MCP_TOKEN_FILE=/var/lib/spotify-mcp/tokens.json npx -y @novalux12/spotify-mcp@latest
-```
+Set `SPOTIFY_MCP_HISTORY=1` to append one JSONL record per agent-driven mutation. `SPOTIFY_MCP_HISTORY_DIR` changes the directory; the file is `mutations.jsonl`. Records contain only the mutation method, path, and receipt/snapshot metadata — never tokens or request bodies.
 
-### `SPOTIFY_HEADLESS`
+### Toolsets and registration keys
 
-Set to `1` to switch authentication to the paste flow for hosts without a
-browser (cloud VMs, Docker containers, CI runners): instead of opening a
-browser and listening on the callback port, the auth URL is printed to stdout;
-complete it in any browser on any machine, then paste the resulting redirect
-URL back into the prompt.
+`SPOTIFY_MCP_TOOLSETS` accepts a comma-separated subset of these toolsets, or `all`/empty/unset for the full surface:
 
-Only affects the `auth` command; runtime tool calls are unaffected.
+`core`, `playback`, `playbackintel`, `catalog`, `playlists`, `library`, `personalization`, `statsfm`, `portability`, `taste`, `discovery`, `resources`, and `prompts`.
 
-```bash
-SPOTIFY_HEADLESS=1 SPOTIFY_CLIENT_ID=your_client_id_here \
-  npx -y @novalux12/spotify-mcp@latest auth
-```
+`SPOTIFY_MCP_ENABLE_TOOLS` and `SPOTIFY_MCP_DISABLE_TOOLS` take registration keys, not individual tool names. The complete key list is:
 
-### `SPOTIFY_REQUEST_TIMEOUT_MS`
+`search`, `playback`, `playlists`, `playlistbatch`, `playlistmisc`, `library`, `following`, `users`, `portability`, `statsfm`, `swarm3meta`, `queueops`, `playbackext`, `playbackintel`, `exhaust2playback`, `swarm3playback`, `catalog`, `audiobooks`, `browse`, `artistwatch`, `searchhistory`, `exhaust2catalog`, `exhaust2enggating`, `swarm3discovery`, `swarm3bdiscovery`, `swarm3shows`, `swarm3refs`, `playlisthealth`, `exhaust2playlists`, `exhaust2extra`, `swarm3playlistops`, `swarm3snapshots`, `swarm4playlists`, `libraryanalytics`, `episodemgmt`, `exhaust2misc`, `swarm3library`, `personalization`, `swarm3analytics`, `taste`, `tastecomposites`, `resources`, and `prompts`.
 
-Every outbound HTTP request — Spotify API calls and token refreshes alike —
-carries an abort timer so a hung connection cannot stall the server's
-serialized request queue forever. Raise it on slow links or VPNs:
+`disable` wins over `enable`, and both are layered on top of set membership. Unknown keys are reported and ignored. `spotify_doctor` and the discovery metadata tools remain available independently of the trim.
 
-```bash
-SPOTIFY_REQUEST_TIMEOUT_MS=60000
-```
+An unknown-only toolset spec fails startup with the valid set names. A mixed known+unknown spec starts normally and reports the ignored names.
 
-### `SPOTIFY_MCP_MAX_ITEMS`
+### Read-only and confirmation safety
 
-Default per-call cap applied by list-type tools before truncation. A tool
-call can still pass an explicit `max_results` argument to override it for
-that single call; this variable changes the default for the whole process.
+`SPOTIFY_MCP_READONLY=1` (also `true`, `yes` or `on`; case-insensitive, surrounding whitespace ignored) prevents registration of Spotify-mutating modules such as playback and scenes, playlist and library mutations, following, users, audiobooks, and destructive helpers. It does **not** imply that every remaining tool is side-effect-free: local-only tools such as the taste feedback store remain available. It also does not bypass the independent toolset, registration-key, or scope gates. Read-only resources and prompts remain available when their own gates permit.
 
-### `SPOTIFY_MCP_FETCH_ALL_CAP`
+For confirmation-gated destructive operations, a missing MCP elicitation capability produces an `unsupported` result. Callers that require confirmation must treat that result as refusal; they proceed without prompting only when `SPOTIFY_MCP_CONFIRM=never` explicitly selects the automation bypass. A declined prompt or elicitation failure also fails closed.
 
-When a library/playlist listing is called with `fetch_all=true`, the walk of
-every page stops here. This protects against runaway loops over very large
-libraries; beyond the cap, page explicitly with `limit`/`offset`. Also caps
-the saved-library resources (`spotify://me/saved/*`).
+### Freshness and local sidecars
 
-### `SPOTIFY_MCP_HISTORY`
+`SPOTIFY_MCP_FRESHNESS_STATE` is the `whats_new` watermark. `SPOTIFY_MCP_FRESHNESS_BUDGET` limits artist album and show episode lookups; `max_artists` or the relevant per-call argument overrides it for one call. A truncated or quota-hit scan holds the watermark so a later `since: "last-check"` does not skip unseen items. The saved-show radar uses this same freshness budget.
 
-Opt-in audit trail: when set to `1`, every agent-driven mutation (playlist
-create/add/remove/reorder, library saves, follows) appends one JSON line
-recording method, path and `snapshot_id` to `mutations.jsonl` under the
-history directory. Only whitelisted fields are written — tokens and request
-bodies never reach the file.
+`SPOTIFY_MCP_SCENES_FILE` stores named device/volume/shuffle/repeat/context presets. `SPOTIFY_MCP_GENRE_TAGS_FILE` stores user-declared artist genre tags. `SPOTIFY_MCP_SEARCH_HISTORY_FILE`, `SPOTIFY_MCP_PLAYBACKEXT_FILE`, `SPOTIFY_MCP_EXHAUST2_PLAYBACK_FILE`, and `SPOTIFY_MCP_EXHAUST2_MISC_FILE` override their respective local sidecars.
 
-### `SPOTIFY_MCP_HISTORY_DIR`
-
-Overrides where the mutation JSONL lives (default `~/.spotify-mcp/history`,
-file `mutations.jsonl`). Point it at a persistent volume in containers.
-
-### `SPOTIFY_MCP_TOOLSETS`
-
-Trims which modules register at startup for hosts that cap tool counts.
-Toolsets are coarse groups: `playback`, `catalog` (search + catalog +
-audiobooks), `library` (saved items + following), `personalization`,
-`playlists` (playlist tools + user lookups + power ops), `prompts`,
-`resources`. Unset, empty, or `all` registers everything.
-
-```bash
-SPOTIFY_MCP_TOOLSETS=playback,catalog npx -y @novalux12/spotify-mcp@latest
-```
-
-A spec naming only unknown sets fails startup (non-zero exit) naming the valid sets; a mixed spec with at least one known set starts normally, reporting the ignored names and the registered toolset count on stderr.
-
-### `SPOTIFY_MCP_ENABLE_TOOLS` / `SPOTIFY_MCP_DISABLE_TOOLS`
-
-Fine-grained overrides layered on top of the toolset trim. Both take
-comma-separated **module keys** — the registration units, not individual
-tool names: `playback`, `search`, `catalog`, `audiobooks`,
-`personalization`, `library`, `following`, `playlists`, `users`,
-`resources`, `prompts`.
-
-Newer modules ride their parent key rather than adding new ones: `listening_report` under `personalization`, scenes/wind-down under `playback`, `search_deep` under `search`, the audiobook copilot under `audiobooks`, freshness under `following`, merge/diff/overlap/DNA under `playlists`, and library hygiene/genre insights/podcast sessions/receipts under `library`. `spotify_doctor` is unconditional — it always registers so diagnostics survive any trim.
-
-Precedence is `disable` > `enable` > set membership:
-
-```bash
-# library set plus the following module even though it lives in another set
-SPOTIFY_MCP_TOOLSETS=library SPOTIFY_MCP_ENABLE_TOOLS=following
-
-# hide every playlist module everywhere
-SPOTIFY_MCP_DISABLE_TOOLS=playlists
-```
-
-Unknown keys are reported on stderr and ignored. Scope-aware hiding applies
-after both: a write module whose scopes you never granted stays hidden no
-matter what these variables say.
-
-### `SPOTIFY_MCP_FRESHNESS_BUDGET`
-
-Per-call budget for `whats_new` artist album and show episode lookups —
-how many `GET /artists/{id}/albums` / `GET /shows/{id}/episodes` requests
-the walk will make before truncating and reporting the remainder. Default
-`25`; override per call with `max_artists`. The walk is capped at
-`min(SPOTIFY_MCP_FETCH_ALL_CAP, freshness budget)`. `N` followed artists
-means `N+1` API requests (1 follow page + N lookups); a large library can
-exhaust small dev-account quotas in one call — use `dry_run` first to
-preview the cost and keep the budget small. On mid-walk `429
-QUOTA_EXCEEDED` the tool returns partial results with `quota_hit: true`
-and `Retry-After` instead of a bare error. When truncation or a quota hit
-occurs the watermark is held (not advanced) so the next
-`since: 'last-check'` does not permanently skip unreached releases.
-
-### `SPOTIFY_MCP_FRESHNESS_STATE`
-
-Watermark file used by the `whats_new` tool so `since: 'last-check'`
-resolves without you tracking dates. After a successful non-truncated,
-non-quota-hit run the watermark advances to today (UTC); truncated or
-quota-hit scans hold the watermark so the next `since: 'last-check'` does
-not permanently skip unreached releases (see `watermark_advanced` /
-`watermark_held` in the response). Override the default path when running
-multiple accounts side by side.
-
-### `SPOTIFY_MCP_SCENES_FILE`
-
-The playback-scene sidecar (`save_scene` / `list_scenes` / `delete_scene` /
-`apply_scene`) stores named device/volume/shuffle/repeat/context presets
-here. The file never holds credentials — just playback preferences — but is
-kept owner-only (0600 file, 0700 dir) like the token cache. Missing or
-corrupt files yield an empty store.
-
-### `SPOTIFY_MCP_GENRE_TAGS_FILE`
-
-Artist→genre-tags sidecar in the shape
-`{ "version": 1, "tags": { "<Artist Name>": ["pop", "indie"] } }`.
-`tag_management` writes it; `library_genre_report` and `filter_by_genre`
-read it. Lookups are case-insensitive; the first-seen artist-name spelling
-wins.
-
-### `SPOTIFY_MCP_READONLY`
-
-Set to `1`, `true`, or `yes` (case-insensitive) for a hard read-only guarantee:
-every write-capable module is hidden from the tool list at startup — playback
-and scenes, playlists and their power ops, library saves plus insights/sessions/
-receipt verification, following, users, audiobooks — along with resources and
-prompts. Search, catalog, personalization reads, and `spotify_doctor` remain
-available. Unlike scope-aware hiding, which depends on what you granted at auth
-time, this hides modules regardless of granted scopes.
-
-```bash
-SPOTIFY_MCP_READONLY=1 npx -y @novalux12/spotify-mcp@latest
-```
-
-### `SPOTIFY_MCP_CONFIRM`
-
-Confirmation-gated destructive operations require an explicit accepted MCP
-elicitation response. This includes bulk playlist removal and replacement,
-playlist visibility increases, duplicate cleanup, unpinning, and snapshot
-restore. The gate fails closed: a declined response cancels the operation, and
-an unsupported client or elicitation transport error refuses the write.
-
-Set `SPOTIFY_MCP_CONFIRM=never` only as an explicit automation bypass. It skips
-the prompt and permits these operations without confirmation; it is not needed
-for ordinary automation to remain safe. Read-only previews still run before any
-confirmation gate.
-
-```bash
-SPOTIFY_MCP_CONFIRM=never npx -y @novalux12/spotify-mcp@latest
-```
+`SPOTIFY_MCP_DATA_DIR` is read directly by the artist-watchlist, portability-watchlist, and playlist-health paths; there is no shared configuration object behind the variable. Without it, the watchlist call sites use `./data/artist-watchlist.json`, while playlist-health uses `~/.spotify-mcp/playlist-snapshots`. `SPOTIFY_MCP_SNAPSHOT_DIR` separately controls the swarm3 playlist-snapshot sidecar. Set the data and snapshot variables explicitly when the process working directory is not durable. `SPOTIFY_MCP_BACKUP_DIR` and `SPOTIFY_MCP_PORTABILITY_DIR` control backup and export destinations.
 
 ## Registration-gated endpoints
 
-Some Spotify Web API endpoints are denied **at the app-registration level**:
-on current app registrations they return `403 Forbidden` regardless of the
-OAuth scopes granted or the account's subscription tier. Verified by live
-probe on 2026-08-27 ([#329](https://github.com/NovaLux12/spotify-mcp-server/issues/329)):
+Some Spotify Web API endpoints are denied at the app-registration level: on current app registrations they return `403 Forbidden` regardless of the OAuth scopes granted or the account's subscription tier. Verified by live probe on 2026-08-27 ([#329](https://github.com/NovaLux12/spotify-mcp-server/issues/329)):
 
 | Response | Endpoints |
 |---|---|
@@ -245,13 +97,8 @@ probe on 2026-08-27 ([#329](https://github.com/NovaLux12/spotify-mcp-server/issu
 | `404 Not Found` | `/recommendations`, `/recommendations/available-genre-seeds` |
 | `410 Gone` | `/me/apps`, `/me/chapters` |
 
-This is Spotify-side gating, not a server or configuration problem. Tools
-wrapping these endpoints are still exposed because legacy app registrations
-may retain access; on newer registrations the server returns its plain-English
-403 explanation. The undocumented `/me/library/contains` check is not gated
-and powers the duplicate-cleanup tooling.
+Tools wrapping these endpoints remain exposed for legacy registrations and return a plain-English 403 explanation on current registrations. The undocumented `/me/library/contains` check is not gated and powers duplicate-cleanup tooling. Batch lookup and top-tracks tools are wrapped, but registration-gated families are listed above rather than described as generally available.
 
 ## Not used
 
-`SPOTIFY_CLIENT_SECRET` is deliberately not supported: the PKCE flow proves
-the app's identity without a secret, so there is nothing to leak.
+`SPOTIFY_CLIENT_SECRET` is deliberately not supported: the PKCE flow proves the app's identity without a secret, so there is nothing to leak.

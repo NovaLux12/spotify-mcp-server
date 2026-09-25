@@ -370,7 +370,7 @@ export function registerSwarm3DiscoveryTools(server: McpServer, client: SpotifyC
       order: z.enum(['oldest_first', 'newest_first']).optional()
         .describe('Output ordering. Default: oldest_first'),
       response_format: ResponseFormat,
-      max_results: z.number().int().positive().max(2000).optional(),
+      max_results: z.number().int().positive().max(2000).optional().describe('Max items to return (default: SPOTIFY_MCP_MAX_ITEMS env or 50)'),
     },
     async (args) => {
       const rf = args.response_format;
@@ -492,7 +492,7 @@ export function registerSwarm3DiscoveryTools(server: McpServer, client: SpotifyC
       max_releases: z.number().int().min(1).max(100).optional()
         .describe('Releases analyzed (albums + singles, newest first). Default: 30'),
       response_format: ResponseFormat,
-      max_results: z.number().int().positive().max(2000).optional(),
+      max_results: z.number().int().positive().max(2000).optional().describe('Max items to return (default: SPOTIFY_MCP_MAX_ITEMS env or 50)'),
     },
     async (args) => {
       const rf = args.response_format;
@@ -848,7 +848,7 @@ export function registerSwarm3DiscoveryTools(server: McpServer, client: SpotifyC
       max_releases: z.number().int().min(1).max(100).optional()
         .describe('Releases of the central artist scanned. Default: 30'),
       response_format: ResponseFormat,
-      max_results: z.number().int().positive().max(2000).optional(),
+      max_results: z.number().int().positive().max(2000).optional().describe('Max items to return (default: SPOTIFY_MCP_MAX_ITEMS env or 50)'),
     },
     async (args) => {
       const rf = args.response_format;
@@ -927,7 +927,7 @@ export function registerSwarm3DiscoveryTools(server: McpServer, client: SpotifyC
       saved_cap: z.number().int().min(1).max(2000).optional()
         .describe('Max saved albums scanned. Default: 500'),
       response_format: ResponseFormat,
-      max_results: z.number().int().positive().max(2000).optional(),
+      max_results: z.number().int().positive().max(2000).optional().describe('Max items to return (default: SPOTIFY_MCP_MAX_ITEMS env or 50)'),
     },
     async (args) => {
       const rf = args.response_format;
@@ -1373,7 +1373,7 @@ export function registerSwarm3DiscoveryTools(server: McpServer, client: SpotifyC
       max_per_group: z.number().int().min(1).max(60).optional()
         .describe('Releases scanned per group (newest first). Default: 30'),
       response_format: ResponseFormat,
-      max_results: z.number().int().positive().max(2000).optional(),
+      max_results: z.number().int().positive().max(2000).optional().describe('Max items to return (default: SPOTIFY_MCP_MAX_ITEMS env or 50)'),
     },
     async (args) => {
       const rf = args.response_format;

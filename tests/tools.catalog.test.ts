@@ -403,58 +403,6 @@ test('get_show defaults market to profile country when not provided (#29)', asyn
   assert.deepEqual(calls.find((c) => c.path === '/shows/shw1')!.params, { market: 'SE' });
 });
 
-// --------------------------------------------------------- get_show_episodes
-
-test('get_show_episodes sends limit, offset, and market params', async () => {
-  const { registered, calls } = makeHarness(registerCatalogTools, {
-    getResponse: (path) =>
-      path === '/shows/shw1/episodes'
-        ? { items: [episodeSimpleFixture()], total: 12 }
-        : undefined,
-  });
-
-  const out = text(await invoke(findTool(registered, 'get_show_episodes'), {
-    id: 'shw1',
-    limit: 10,
-    offset: 20,
-    market: 'GB',
-  }));
-
-  assert.deepEqual(calls, [
-    {
-      method: 'GET',
-      path: '/shows/shw1/episodes',
-      params: { limit: '10', offset: '20', market: 'GB' },
-    },
-  ]);
-  assert.match(out, /Episodes \(12 total\)/);
-  assert.match(out, /"Episode One" \(30:00, 2026-01-01\) \| URI: spotify:episode:ep1/);
-});
-
-test('get_show_episodes defaults pagination and forwards profile-country market', async () => {
-  resetCatalogMarketCache();
-  const { registered, calls } = makeHarness(registerCatalogTools, {
-    getResponse: (path) => {
-      if (path === '/me') return { country: 'FR' };
-      if (path === '/shows/shw1/episodes') return { items: [], total: 0 };
-      return undefined;
-    },
-  });
-
-  await invoke(findTool(registered, 'get_show_episodes'), { id: 'shw1' });
-
-  assert.deepEqual(calls.find((c) => c.path === '/shows/shw1/episodes')!.params, {
-    limit: '20',
-    offset: '0',
-    market: 'FR',
-  });
-});
-
-test('get_show_episodes description documents user-read-playback-position scope', () => {
-  const { registered } = makeHarness(registerCatalogTools);
-  const tool = findTool(registered, 'get_show_episodes');
-  assert.match(tool.description, /user-read-playback-position/);
-});
 
 // ---------------------------------------------------------------- get_episode
 
@@ -862,7 +810,7 @@ test('catalog registration list contains NO removed audio-feature tools', () => 
     'get_album',
     'get_album_tracks',
     'get_show',
-    'get_show_episodes',
+
     'get_episode',
     'get_me',
   ]) {

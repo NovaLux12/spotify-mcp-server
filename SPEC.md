@@ -11,14 +11,14 @@ A Model Context Protocol (MCP) server that gives Claude full control over Spotif
 3. [Authentication](#3-authentication)
 4. [Implementation Contracts](#4-implementation-contracts)
 5. [Tools](#5-tools)
-6. [Resources](#5-resources)
-7. [Prompts](#6-prompts)
-8. [Error Handling](#7-error-handling)
-9. [Rate Limiting](#8-rate-limiting)
-10. [Spotify API Constraints](#9-spotify-api-constraints)
-11. [Project Structure](#10-project-structure)
-12. [Configuration](#11-configuration)
-13. [Claude Desktop Integration](#12-claude-desktop-integration)
+6. [Resources](#6-resources)
+7. [Prompts](#7-prompts)
+8. [Error Handling](#8-error-handling)
+9. [Rate Limiting](#9-rate-limiting)
+10. [Spotify API Constraints](#10-spotify-api-constraints)
+11. [Project Structure](#11-project-structure)
+12. [Configuration](#12-configuration)
+13. [Claude Desktop Integration](#13-claude-desktop-integration)
 
 ---
 
@@ -59,10 +59,15 @@ A Model Context Protocol (MCP) server that gives Claude full control over Spotif
 
 ### Dependencies
 
+The package contract is generated directly from `package.json`; the census guard fails when dependencies, engines, or scripts drift.
+
+<!-- BEGIN:generated package-contract -->
 ```json
 {
   "type": "module",
-  "engines": { "node": ">=22.9" },
+  "engines": {
+    "node": ">=22.9"
+  },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
     "open": "^11.0.1",
@@ -78,10 +83,18 @@ A Model Context Protocol (MCP) server that gives Claude full control over Spotif
     "dev": "node --env-file-if-exists=.env --import tsx/esm src/index.ts",
     "auth": "node --env-file-if-exists=.env --import tsx/esm src/index.ts auth",
     "start": "node --env-file-if-exists=.env dist/index.js",
-    "test": "node --import tsx --test 'tests/*.test.ts'"
+    "prepack": "npm run build",
+    "test": "npm run build && node --import tsx --test 'tests/*.test.ts'",
+    "test:coverage": "npm run build && node --import tsx --experimental-test-coverage --test-coverage-lines=75 --test-coverage-functions=70 --test-coverage-branches=60 --test-reporter=tap --test 'tests/*.test.ts'",
+    "count:tools": "node scripts/surface-census.mjs",
+    "check:docs-counts": "node scripts/surface-census.mjs --check",
+    "check:doc-tool-names": "node scripts/check-doc-tool-names.mjs",
+    "sweep": "node scripts/live-gauntlet.mjs --batch=40 --resume=memory/live-sweep-report.json --report=memory/live-sweep-report.json",
+    "sweep:loop": "bash scripts/sweep-loop.sh"
   }
 }
 ```
+<!-- END:generated package-contract -->
 
 > `zod` is used for MCP tool input schema definitions. `tsx` is a dev dependency for running TypeScript directly without a build step.
 
@@ -175,7 +188,7 @@ SPOTIFY_MCP_TOKEN_FILE — optional; overrides the token storage path (default ~
 ```
 
 > Note: `SPOTIFY_CLIENT_SECRET` is **not used** with the PKCE flow. Only `SPOTIFY_CLIENT_ID` is needed in code. The client secret exists in the Spotify dashboard but is never sent by this application.
-> Browserless environments: set `SPOTIFY_HEADLESS=1` for the paste-flow auth (no local callback server). The full `SPOTIFY_*` configuration family — request timeouts, truncation caps, fetch-all cap, mutation history — is listed under [Configuration](#11-configuration).
+> Browserless environments: set `SPOTIFY_HEADLESS=1` for the paste-flow auth (no local callback server). The full `SPOTIFY_*` configuration family — request timeouts, truncation caps, fetch-all cap, mutation history — is listed under [Configuration](#12-configuration).
 
 ---
 
@@ -276,17 +289,18 @@ export function registerPlaybackTools(server: McpServer, client: SpotifyClient):
 }
 ```
 
-`src/index.ts` imports and calls all registration functions:
+`src/tools/annotations.ts` owns the `REGISTRAR_MANIFEST`, the single wiring
+source for module registration, toolset keys, schema budgets, and census
+attribution. `src/index.ts` creates the client and iterates that manifest through
+`registerManifestModule`; it does not import each tool registrar individually:
 ```ts
-import { registerPlaybackTools } from './tools/playback.js';
-import { registerSearchTools } from './tools/search.js';
-// ...
-
-const client = new SpotifyClient(); // singleton, holds tokens in memory
-
-registerPlaybackTools(server, client);
-registerSearchTools(server, client);
-// ...
+for (const module of REGISTRAR_MANIFEST) {
+  registerManifestModule(server, client, module, {
+    readOnly,
+    isModuleActive: (key) => isModuleActive(key, activeSets, overrides),
+    scopeBlocked: (key) => moduleBlockedByScopes(key, grantedScopes),
+  });
+}
 ```
 
 **Tool result format** — every tool handler must return:
@@ -310,7 +324,7 @@ All Spotify API calls go through a single `SpotifyClient` instance. Its responsi
 - **Request timeouts**: every outbound HTTP call (API requests and token refresh) carries an `AbortSignal.timeout` — 30 s by default, overridable via `SPOTIFY_REQUEST_TIMEOUT_MS`. Expiry raises a 408-style `SpotifyApiError` so a hung connection can never stall the serialised queue.
 - **Read cache**: immutable catalog reads go through an LRU TTL cache (~5-minute entry lifetime, 200 entries max); mutations and player calls bypass it.
 - **Rate-limit visibility**: the most recent 429 (`Retry-After` seconds, wait time, timestamp) is retained on the client, exposed via the `spotify://me/rate-limit` resource, and appended as a notice to the throttled call's result.
-- **Request/quota usage tracking (#904)**: the drain path maintains a cumulative request counter plus per-request timestamps (pruned to the longest exposed window); `getRateLimitStatus()` exposes `requestsTotal` / `requestsLastMinute` / `requestsLastHour` via the same resource and `spotify_doctor`. Heavy composite scans (`library_hygiene`, `saveddedupe` walks, `whats_new`, `swarm3_library` fan-outs, `dead_library_finder`, `playlist_staleness_report`) consult the shared cooldown first (`quotaPreflight` — blocked scans return an actionable wait message and issue 0 requests) and otherwise shrink their walk budget to the remaining quota window (`quotaWindowRemaining`), disclosing `requests_made` plus `requests_planned`/`budget_shrunk` in payloads. Cache hits bypass the queue and cost no quota, so they are not counted.
+- **Request/quota usage tracking (#904)**: the drain path maintains a cumulative request counter plus per-request timestamps (pruned to the longest exposed window); `getRateLimitStatus()` exposes `requestsTotal` / `requestsLastMinute` / `requestsLastHour` via the same resource and `spotify_doctor`. Heavy composite scans (`library_hygiene`, `saveddedupe` walks, `whats_new`, `swarm3library` fan-outs, `dead_library_finder`, `playlist_staleness_report`) consult the shared cooldown first (`quotaPreflight` — blocked scans return an actionable wait message and issue 0 requests) and otherwise shrink their walk budget to the remaining quota window (`quotaWindowRemaining`), disclosing `requests_made` plus `requests_planned`/`budget_shrunk` in payloads. Cache hits bypass the queue and cost no quota, so they are not counted.
 - **Mutation history**: when `SPOTIFY_MCP_HISTORY=1`, successful mutations append a whitelisted record (method, path, `snapshot_id` when present) to `~/.spotify-mcp/history/mutations.jsonl` (directory overridable via `SPOTIFY_MCP_HISTORY_DIR`). History failures never fail the underlying mutation.
 - **Pagination walks**: `getAllPages` walks offset-paginated endpoints up to `SPOTIFY_MCP_FETCH_ALL_CAP`, accepts an `initialOffset` so callers can resume mid-list, and reports per-page progress — wired in `index.ts` to MCP progress notifications.
 
@@ -365,7 +379,7 @@ Quick reference for all endpoints used. All paths are relative to `https://api.s
 | `get_album_tracks` | GET | `/albums/{id}/tracks` |
 | `get_several_albums` | GET | `/albums?ids=…` — up to 20 per request |
 | `get_show` | GET | `/shows/{id}` |
-| `get_show_episodes` | GET | `/shows/{id}/episodes` |
+| `list_show_episodes` | GET | `/shows/{id}/episodes` |
 | `get_several_shows` | GET | `/shows?ids=…` — up to 50 per request |
 | `get_episode` | GET | `/episodes/{id}` |
 | `get_several_episodes` | GET | `/episodes?ids=…` — up to 50 per request |
@@ -410,7 +424,9 @@ Quick reference for all endpoints used. All paths are relative to `https://api.s
 
 ## 5. Tools
 
-608 registered tools — 607 from the modules under `src/tools/` plus the inline `verify_receipt` in `src/index.ts` — registered by 43 toolset keys (`src/toolsets.ts`: artistwatch, audiobooks, browse, catalog, episodemgmt, exhaust2catalog, exhaust2enggating, exhaust2extra, exhaust2misc, exhaust2playback, exhaust2playlists, following, library, libraryanalytics, personalization, playback, playbackext, playbackintel, playlistbatch, playlisthealth, playlistmisc, playlists, portability, prompts, queueops, resources, search, searchhistory, statsfm, swarm3analytics, swarm3bdiscovery, swarm3discovery, swarm3library, swarm3meta, swarm3playback, swarm3playlistops, swarm3refs, swarm3shows, swarm3snapshots, swarm4playlists, taste, tastecomposites, users), spread over 63 files in `src/tools/` (61 of them register tools; `confirm.ts` is the elicitation helper, `exhaust2_enggating.ts` installs the graceful-403 client contract). `spotify_doctor`, `find_tool`, `inspect_tool` and `toolset_report` register unconditionally so diagnostics and discovery survive toolset trimming. All tools return a structured result object; errors surface as MCP tool errors with a human-readable message.
+<!-- BEGIN:generated tool-surface -->
+The finalized default MCP registry exposes **591 tools** (all 591 attributed to the 63 files under `src/tools/`), organized by 44 registration keys and 13 named toolsets. Registration keys: `artistwatch`, `audiobooks`, `browse`, `catalog`, `doctor`, `episodemgmt`, `exhaust2catalog`, `exhaust2enggating`, `exhaust2extra`, `exhaust2misc`, `exhaust2playback`, `exhaust2playlists`, `following`, `library`, `libraryanalytics`, `personalization`, `playback`, `playbackext`, `playbackintel`, `playlistbatch`, `playlisthealth`, `playlistmisc`, `playlists`, `portability`, `prompts`, `queueops`, `resources`, `search`, `searchhistory`, `statsfm`, `swarm3analytics`, `swarm3bdiscovery`, `swarm3discovery`, `swarm3library`, `swarm3meta`, `swarm3playback`, `swarm3playlistops`, `swarm3refs`, `swarm3shows`, `swarm3snapshots`, `swarm4playlists`, `taste`, `tastecomposites`, `users`. `node scripts/surface-census.mjs` derives the authoritative inventory by starting the real `src/index.ts` stdio entry and calling `tools/list`, `resources/list`, `resources/templates/list`, and `prompts/list` after production gates and finalizers, without network access.
+<!-- END:generated tool-surface -->
 
 ### Shared tool contract
 
@@ -563,7 +579,7 @@ Search for a track or episode by name and start playing it — combines `search`
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `query` | string | yes | Search text, e.g. a song title or podcast episode name |
-| `type` | `"track"` \| `"episode"` | no | What to search for. Default: `"track"` |
+| `search_type` | `"track"` \| `"episode"` | no | What to search for. Default: `"track"` |
 | `device_id` | string | no | Target device; uses active device if omitted |
 
 ---
@@ -677,17 +693,14 @@ Get full details for a podcast episode.
 
 ---
 
-#### `get_show_episodes`
-List a podcast show's episodes with pagination. Resume positions require the `user-read-playback-position` scope.
+#### `list_show_episodes`
+List one podcast show's episodes newest-first from `GET /shows/{id}/episodes`.
 
-**Inputs:**
-| Field | Type | Required | Description |
-|---|---|---|---|
-| `id` | string | yes | Show ID |
-| `limit` | number | no | 1–50. Default: 20 |
-| `offset` | number | no | Pagination offset |
+**Inputs:** `show_id` (string, required), `offset` (number, optional), `market` (string, optional), plus shared `response_format` and `max_results` controls. Use `offset` for the next page; `max_results` caps returned rows.
 
-**Returns:** episode name, description, duration_ms, release_date, resume_point, URI; plus total episode count.
+**Returns:** episode name, release date, duration, URI, and pagination metadata.
+
+---
 
 #### `get_artist_top_tracks`
 Get an artist's ten most-played tracks for a market.
@@ -874,6 +887,22 @@ List the current user's playlists.
 ---
 
 > **Feb 2026 note**: Playlist item endpoints use `/items` (not `/tracks`). The paths below reflect this — `GET/POST/DELETE /playlists/{id}/items`.
+
+#### Playlist set/diff input contract (#912)
+
+All playlist set-operation, diff, overlap, intersection, union, subtraction, merge, following, and pair-analysis tools compose the same typed fragments from `src/shaping.ts`. Playlist references accept a raw ID, `spotify:playlist:` URI, or Spotify playlist URL and are normalized to the ID used in `/playlists/{id}` paths.
+
+| Tool family | Tools | Canonical input | Legacy aliases (supported through v2.0; removed in v2.1) |
+|---|---|---|---|
+| Ordered multi-playlist operation (one alias each, per tool) | `playlist_intersection`, `playlist_overlap_matrix`, `playlist_intersect`, `playlist_union`, `merge_playlists`, `merge_playlists_plan`, `interleave_playlists_plan`, `playlist_union_preview`, `find_duplicate_tracks_across_playlists`, `balance_playlist_pairs` | `playlists` | The tool's prior plural name: `playlist_ids`, `source_playlist_ids`, or `sources` |
+| Ordered overlap analysis | `overlap_playlists` | `playlists` | None; canonical-only input |
+| Base-minus-set operation | `playlist_subtract`, `playlist_difference_plan` | `base_playlist_id` plus `playlists` for the sources to subtract | `subtract_playlist_ids`, and the positional form `playlists: [base, ...sources]` |
+| A/B comparison | `diff_playlists`, `playlist_diff`, `playlist_pair_check`, `compare_playlist_covers`, `playlist_symmetric_difference` | `playlist_a`, then `playlist_b` | one per tool, not a bundle: `diff_playlists` takes `a`/`b`, `compare_playlist_covers` and `playlist_symmetric_difference` take `playlist_id_a`/`playlist_id_b`, `playlist_diff` and `playlist_pair_check` take `playlist_a_id`/`playlist_b_id` |
+| Following fan-out | `check_playlist_following` | `playlists` | `playlist_ids` (retains its historical 1–50 bound) |
+
+**Returned versus total counts.** Where a set operation returns arrays, `removed`/`kept` (and `uris`/`removed_uris` beside them) count only the rows actually returned, bounded by `max_results`; `removed_total`/`kept_total` carry the true impact the confirmation prompt quoted. A capped response therefore never reports a count its own arrays contradict.
+
+**Migration note (v2.0 → v2.1):** legacy names remain callable through v2.0 and are removed in v2.1. Supplying both canonical and legacy values is accepted only when they normalize to the same values in the same order; missing, incomplete, differently ordered, or conflicting inputs fail before any Spotify request and name both conflicting fields. Legacy results include `deprecated_inputs` plus `deprecation_note` in structuredContent and the same one-line note in prose/JSON text. Canonical-only calls omit both fields.
 
 #### `get_playlist`
 Get a playlist's metadata and its items. Makes two calls: `GET /playlists/{id}` for metadata, then `GET /playlists/{id}/items` for the track/episode list.
@@ -1124,66 +1153,41 @@ List another Spotify user's public playlists.
 
 ### 5.10 stats.fm (v2 — implemented)
 
-Second upstream: long-range listening history, cross-range top lists, and taste aggregates from the stats.fm public API (`https://api.stats.fm/api/v1`, no auth). All stats.fm tools are read-only; they pair with the Spotify write tools above (see `docs/cookbook.md` recipe 1 and `docs/taste.md`). Setup, ranges, limits, and privacy: `docs/statsfm.md`.
+Second upstream: long-range listening history, cross-range top lists, and taste aggregates from the stats.fm public API (`https://api.stats.fm/api/v1`, no auth). Network-backed stats.fm tools are read-only; the local feedback tools mutate only process memory. They pair with the Spotify write tools above (see `docs/cookbook.md` recipe 1 and `docs/taste.md`). Setup, ranges, limits, and privacy: `docs/statsfm.md`.
 
-Two registration keys, both default ON: `statsfm` (30 endpoint tools, `src/tools/statsfm.ts` over `src/lib/statsfm-client.ts`) and `taste` (8 taste-intelligence tools, `src/tools/statsfm_taste.ts`). Error envelope everywhere: `{code, message, retryable}`; private sections surface HTTP 404 as `PRIVATE_PROFILE`.
+Three registration keys are default ON: `statsfm` (endpoint tools in `src/tools/statsfm.ts` over `src/lib/statsfm-client.ts`), `taste` (canonical taste-intelligence tools in `src/tools/statsfm_taste.ts`), and `tastecomposites` (composite tools in `src/tools/taste_composites.ts`). Structured failures use `{kind, reason, fix, text, status?, retryAfterSec?}`: stats.fm 401 maps to `auth`, 403 to `forbidden`, 404 to `not_found` with a bounded `statsfm_resource_not_found` reason, 429 to `rate_limited` with `retryAfterSec`, and 503 to `unavailable`. No `PRIVATE_PROFILE` code is emitted.
 
 #### Endpoint tools (`statsfm_*`)
 
 `statsfm_resolve_user` — customId/display name → canonical userId (always call first). `statsfm_top_tracks` / `statsfm_top_artists` / `statsfm_top_albums` / `statsfm_top_genres` — ranked lists for `range` = lifetime|weeks|months (lowercase only), paged `limit` ≤ 100 + `offset`. `statsfm_top_tracks_from_artist` / `statsfm_top_albums_from_artist` / `statsfm_top_tracks_from_album` — scoped tops. `statsfm_recent_streams` — newest-first (API returns a fixed 50, `limit` ignored upstream). `statsfm_now_playing` — live track + device, null when idle. `statsfm_track_stats` / `statsfm_artist_stats` / `statsfm_album_stats` (+ `*_date_stats` per-day variants) — lifetime obsession scores for one entity, Spotify-ID ↔ stats.fm-ID mapped via `externalIds.spotify[]`. `statsfm_streams_stats` — totals + percentiles + cardinality (singular object, not an array). `statsfm_search` — users/tracks/artists/albums. `statsfm_recaps` — weekly/monthly/seasonal/yearly/artist/time-capsule digests. `statsfm_catalog_track` / `statsfm_catalog_artist` / `statsfm_catalog_album` — catalog lookup. `statsfm_genre_artists` — genre drill-down (`genre.tag`, not `.name`). `statsfm_charts_tracks` / `statsfm_charts_artists` / `statsfm_charts_albums` / `statsfm_charts_users` — honest compositions over verified user endpoints (the public API exposes no global charts endpoint). `statsfm_friends` / `statsfm_friend_count` / `statsfm_records_artists` — social + records.
 
-#### Taste-intelligence tools (unprefixed, `taste` key)
+#### Taste-intelligence tools (`statsfm_*` canonical names; `taste`/`tastecomposites` keys)
 
-`taste_profile` — core artists, top genres, loyalty (top-5 share) vs novelty (recent-outside-core share), day-parting + peak. `artist_affinity` — intensity + recency half-life, exposure tier. `exposure_check` — unheard / sampled / explored / established / favorite with lifetime + recent evidence. `listening_eras` — change points on top-artist turnover or >60% volume shifts. `listening_sessions` — gap-grouped sessions (configurable 5–240 min). `forgotten_favorites` — lifetime tops absent from recent + revival pick. `taste_recommendations` — bridge-mode picks (adjacent genres, dormant artists) each with evidence + risk. `record_feedback` — local-only in-memory verdicts (love/like/mixed/boring/dislike); never touches the network.
+Canonical tools are `statsfm_taste_profile`, `statsfm_artist_affinity`, `statsfm_exposure_check`, `statsfm_listening_eras`, `statsfm_listening_sessions`, `statsfm_forgotten_favorites`, `statsfm_taste_recommendations`, and `statsfm_record_feedback`. The corresponding `taste_profile`, `artist_affinity`, `exposure_check`, `listening_eras`, `listening_sessions`, `forgotten_favorites`, `taste_recommendations`, and `record_feedback` names are legacy aliases. `statsfm_record_feedback`/`record_feedback` store local-only in-memory verdicts (love/like/mixed/boring/dislike) and never touch the network.
 
 
-## 5. Resources
+## 6. Resources
 
-MCP Resources expose read-only data as URIs Claude can reference. Eleven fixed URIs are registered, each also available as a `{?format}` template twin — appending `?format=json` to any resource URI returns the raw API payload instead of prose. A twelfth templated resource covers playlist contents.
+MCP Resources expose read-only data as URIs Claude can reference. Fixed resources and template inventories are generated from the live registry:
 
-**Fixed resources:**
+<!-- BEGIN:generated resource-surface -->
+The finalized default registry contains **16 fixed resources** and **33 resource templates**. Fixed URIs: `spotify://me`, `spotify://me/followed/artists`, `spotify://me/genre-heatmap`, `spotify://me/listening-history`, `spotify://me/playlists`, `spotify://me/rate-limit`, `spotify://me/recently-played`, `spotify://me/saved/albums`, `spotify://me/saved/audiobooks`, `spotify://me/saved/episodes`, `spotify://me/saved/shows`, `spotify://me/saved/tracks`, `spotify://me/top/artists`, `spotify://me/top/tracks`, `spotify://player/queue`, `spotify://player/state`. Template URIs: `spotify://album/{id}`, `spotify://album/{id}{+qs}`, `spotify://artist/{id}`, `spotify://artist/{id}/albums`, `spotify://artist/{id}/albums{+qs}`, `spotify://artist/{id}{+qs}`, `spotify://episode/{id}`, `spotify://episode/{id}{+qs}`, `spotify://me/followed/artists{?format}`, `spotify://me/genre-heatmap{?format}`, `spotify://me/listening-history{?format}`, `spotify://me/playlists{?format}`, `spotify://me/rate-limit{?format}`, `spotify://me/recently-played{?format}`, `spotify://me/saved/albums{?format}`, `spotify://me/saved/audiobooks{?format}`, `spotify://me/saved/episodes{?format}`, `spotify://me/saved/shows{?format}`, `spotify://me/saved/tracks{+qs}`, `spotify://me/saved/tracks{?format,offset,limit}`, `spotify://me/top/artists{?format}`, `spotify://me/top/tracks{?format}`, `spotify://me{?format}`, `spotify://player/queue{?format}`, `spotify://player/state{?format}`, `spotify://playlist/{id}`, `spotify://playlist/{id}/tracks`, `spotify://playlist/{id}/tracks{+qs}`, `spotify://playlist/{id}{+qs}`, `spotify://show/{id}`, `spotify://show/{id}{+qs}`, `spotify://track/{id}`, `spotify://track/{id}{+qs}`.
+<!-- END:generated resource-surface -->
 
-| URI | Description |
-|---|---|
-| `spotify://me` | Current user's profile |
-| `spotify://player/state` | Current playback state |
-| `spotify://player/queue` | Current queue |
-| `spotify://me/top/tracks` | User's top tracks (medium term) |
-| `spotify://me/top/artists` | User's top artists (medium term) |
-| `spotify://me/recently-played` | Last 20 played tracks |
-| `spotify://me/playlists` | All user playlists (names + IDs) |
-| `spotify://me/saved/albums` | Albums saved in your library |
-| `spotify://me/saved/shows` | Podcast shows saved in your library |
-| `spotify://me/saved/episodes` | Podcast episodes saved in your library |
-| `spotify://me/rate-limit` | Last rate-limit event: `Retry-After`/wait time, or "never throttled" |
-
-**Templated resource:**
-
-| URI | Description |
-|---|---|
-| `spotify://playlist/{id}/tracks` | A playlist's tracks; paginate on the URI itself via `?offset=N&limit=M` (`?format=json` returns the raw paged payload) |
 
 ---
 
-## 6. Prompts
+## 7. Prompts
 
 Pre-built prompt templates exposed via MCP for common use cases:
 
-| Name | Description |
-|---|---|
-| `dj` | "Act as a DJ. Based on my top artists and current mood, queue up a set of songs." |
-| `playlist_from_mood` | "Create a playlist for a given mood. Searches for tracks and adds them to a new playlist." |
-| `music_taste_summary` | "Summarize the user's music taste based on their top tracks and artists." (parameterized `time_range`, default `'all'` keeps the original three-range behaviour) |
-| `discover_weekly_alternative` | "Based on my top tracks and recently played songs, find lesser-known songs I probably haven't heard." |
-| `playlist_audit` | "Audit a playlist for duplicate tracks and unplayable ('dead') entries, with cleanup suggestions." |
-| `listening_recap` | "Write a recap of recent listening: top tracks/artists plus recently-played context." (weekly/monthly) |
-| `migrate_library` | "Collect tracks from your saved albums into a single playlist." (`playlist_name` defaults to *My Saved Albums*; opt-in `include_singles`) |
-| `podcast_catchup` | "List new podcast episodes published since a date across your saved shows, and queue them if asked." |
-| `artist_deep_dive` | "Tour an artist's discography: profile, albums, standout tracks." |
+<!-- BEGIN:generated prompt-surface -->
+The finalized default registry exposes **14 prompts**: `artist_deep_dive`, `crate_digging`, `discover_weekly_alternative`, `dj`, `listening_recap`, `migrate_library`, `morning_briefing`, `music_briefing`, `music_taste_summary`, `playlist_audit`, `playlist_from_mood`, `podcast_catchup`, `triage_liked_songs`, `weekly_digest`.
+<!-- END:generated prompt-surface -->
 
 ---
 
-## 7. Error Handling
+## 8. Error Handling
 
 ### Spotify API errors → MCP tool errors
 
@@ -1201,7 +1205,7 @@ When playback commands fail because no device is active (204 with no `device_id`
 
 ---
 
-## 8. Rate Limiting
+## 9. Rate Limiting
 
 - All API calls go through a central `SpotifyClient` class with a request queue
 - Requests are serialized with a minimum 100 ms gap to avoid bursts
@@ -1211,7 +1215,7 @@ When playback commands fail because no device is active (204 with no `device_id`
 
 ---
 
-## 9. Spotify API Constraints
+## 10. Spotify API Constraints
 
 Known limitations to document and handle:
 
@@ -1221,7 +1225,7 @@ Known limitations to document and handle:
 | **No audio** | API provides metadata and control only — no audio streams |
 | **Search limit** | Max 10 results per type per `/search` request (schema and runtime cap; default 5). Tools needing deeper results must page with successive offsets. |
 | **Queue opacity** | `GET /me/player/queue` returns items but positions are not editable |
-| **Removed endpoints** | Audio features/analysis, recommendations, related artists, genres, featured playlists, new releases — gone since Feb 2026. The batch lookups (`GET /tracks?ids=` family) and `GET /artists/{id}/top-tracks` returned in v1.1.0. |
+| **Registration-gated reads** | The batch lookup wrappers (`GET /tracks?ids=` family) and `GET /artists/{id}/top-tracks` remain registered, but current app registrations can return a generic `403`. The single runtime classification source is `GATED_PATH_PATTERNS` in `src/tools/exhaust2_enggating.ts`; see the README's [Registration-gated endpoints](README.md#registration-gated-endpoints) table for the complete family list, including `/me/{type}/contains`. |
 | **Removed fields** | `popularity`, `followers`, `available_markets` no longer returned on tracks, artists, albums |
 | **Unified library API** | `save_to_library`/`remove_from_library`/`check_in_library` use `PUT/DELETE/GET /me/library` with **URIs** in any mix (including artist/user/playlist follow state on check). The legacy helpers (`save_items`, `remove_saved_items`, `check_saved_items`) partition URIs across the per-type `/me/{type}s` endpoints. |
 | **Playlist items path** | All playlist item operations use `/playlists/{id}/items` (not `/tracks`) as of Feb 2026 |
@@ -1234,7 +1238,7 @@ Known limitations to document and handle:
 
 ---
 
-## 10. Project Structure
+## 11. Project Structure
 
 ```
 spotify-mcp/
@@ -1253,9 +1257,9 @@ spotify-mcp/
 │   │   ├── audiobookcopilot.ts # list_all_chapters, jump_to_chapter, where_was_i
 │   │   ├── backup.ts         # backup_library, list_backups
 │   │   ├── browse.ts         # get_artist_genres, get_categories, get_category_playlists
-│   │   ├── catalog.ts        # get_me, get_track, get_several_tracks, get_artist, get_artist_top_tracks, get_artist_albums, get_several_artists, get_album, get_album_tracks, get_several_albums, get_show, get_show_episodes, get_several_shows, get_episode, get_several_episodes, get_available_markets, get_several_audiobooks, get_several_chapters
+│   │   ├── catalog.ts        # get_me, get_track, get_several_tracks, get_artist, get_artist_top_tracks, get_artist_albums, get_several_artists, get_album, get_album_tracks, get_several_albums, get_show, get_several_shows, get_episode, get_several_episodes, get_available_markets, get_several_audiobooks, get_several_chapters
 │   │   ├── doctortool.ts     # spotify_doctor
-│   │   ├── episodemgmt.ts    # archive_played_episodes, mark_episode_played
+│   │   ├── episodemgmt.ts    # archive_played_episodes
 │   │   ├── export.ts         # export_playlist (M3U/CSV)
 │   │   ├── following.ts      # get_followed_artists, follow_artists, unfollow_artists, check_following_artists
 │   │   ├── freshness.ts      # whats_new (new-release radar)
@@ -1272,10 +1276,10 @@ spotify-mcp/
 │   │   ├── playlisthealth.ts # playlist_health_check, get_playlist_followers, playlist_collaboration_report, snapshot_playlist, diff_since_snapshot, list_playlist_snapshots
 │   │   ├── playlistmisc.ts   # pin_playlist, unpin_playlist, playlist_template_apply
 │   │   ├── playlistops.ts    # merge_playlists, diff_playlists, overlap_playlists
-│   │   ├── playlists.ts      # get_user_playlists, get_playlist, get_playlist_items, create_playlist, add_to_playlist, remove_from_playlist, update_playlist, reorder_playlist_items, replace_playlist_items, find_duplicates_in_playlist, get_playlist_cover, upload_playlist_cover
+│   │   ├── playlists.ts      # clean_all_playlists, remove_duplicate_playlist_items, get_user_playlists, get_playlist, get_playlist_items, create_playlist, add_to_playlist, remove_from_playlist, update_playlist, reorder_playlist_items, replace_playlist_items, find_duplicates_in_playlist, get_playlist_cover, upload_playlist_cover
 │   │   ├── podcastsession.ts # plan_podcast_session, start_podcast_session
 │   │   ├── portability.ts    # save_discover_weekly, save_release_radar, export_library_json, export_followed_artists
-│   │   ├── queueops.ts       # queue_playlist, queue_reorder, queue_remove, queue_clear
+│   │   ├── queueops.ts       # queue_playlist, save_queue_as_playlist, batch_add_to_queue
 │   │   ├── restore.ts        # restore_library_snapshot
 │   │   ├── saveddedupe.ts    # find_duplicate_saved_tracks
 │   │   ├── scenes.ts         # save_scene, list_scenes, delete_scene, apply_scene, schedule_wind_down, cancel_wind_down
@@ -1283,7 +1287,7 @@ spotify-mcp/
 │   │   ├── searchhistory.ts  # search_history, search_rerun
 │   │   ├── search.ts         # search
 │   │   ├── showradar.ts      # show_new_episodes
-│   │   ├── smart.ts          # create_smart_playlist, clean_all_playlists, remove_duplicate_playlist_items
+│   │   ├── smart.ts          # create_smart_playlist
 │   │   └── users.ts          # get_user_profile, get_user_playlists_by_id
 │   ├── resources/
 │   │   └── index.ts          # MCP resource handlers
@@ -1300,7 +1304,7 @@ spotify-mcp/
 
 ---
 
-## 11. Configuration
+## 12. Configuration
 
 ### Environment variables
 ```env
@@ -1320,7 +1324,7 @@ SPOTIFY_MCP_HISTORY_DIR=      # history directory override (default ~/.spotify-m
 
 ---
 
-## 12. Claude Desktop Integration
+## 13. Claude Desktop Integration
 
 ### `claude_desktop_config.json` entry
 ```json
@@ -1366,8 +1370,8 @@ npm run auth   # or: SPOTIFY_CLIENT_ID=xxx npm run auth
 | **Phase 8** | Package for npm (`spotify-mcp`) + README polish |
 | **Phase 9** | Deprecation cleanup + coverage completion (2026-08): removed deprecated endpoints (audio features/analysis, recommendations, related artists, genres, featured playlists, follow/unfollow artist); create_playlist moved to `POST /me/playlists`; added album tracks, show episodes, get_me, audiobook family, get_currently_playing, play_from_search, playlist cover get/upload; fetch_all pagination via client.getAllPages; SPOTIFY_MCP_TOKEN_FILE override |
 | **Phase 10** | v1.1.0 coverage expansion (2026-08): users module (`get_user_profile`, `get_user_playlists_by_id`); `follow_artists`/`unfollow_artists`; unified-library trio (`save_to_library`, `remove_from_library`, `check_in_library`); `get_playlist_items`, `replace_playlist_items`, `find_duplicates_in_playlist`; `get_artist_top_tracks`, `get_available_markets`, and the seven `get_several_*` batch lookups; shared response shaping (`response_format`/`max_results`/`structuredContent`); fetch timeouts, TTL read cache, rate-limit visibility resource, opt-in mutation history, and the `spotify-mcp doctor` CLI |
-| **Phase 11** | v1.19–1.21 wave: `import_playlist` (M3U/CSV), `remove_duplicate_playlist_items` + `clean_all_playlists`, `create_smart_playlist`, `show_new_episodes`, backup/restore, bug trio (#195/#196/#210), 104 tools |
-| **Phase 12** | **v1.22.0 big-release (2026-08-26): 50 new tools across 11 modules — 6 parallel streams: catalog/browse+artistwatch (8), library analytics (4), playlist health (6), playlist batch (3), playlist misc+portability (7), playback/queue/search/episodes (22) — wired centrally, 169 tools across 38 modules, 837 tests, smoke FORBIDDEN_TOOLS guard** |
-| **Phase 13** | **v1.23.0 exhaust-remnants (2026-08-26): 14 PR gaps to 95/95 — typed search family (7), category helpers (4), catalog batch/validate (4), library insights, playlist ops, freshness/scene/market tools, 16 resources + 14 prompts, 212 tools across 43 modules, 916 tests** |
-| **Phase 14** | **v1.24.0 exhaust2 swarm (2026-08-27): 89 new tools across 5 modules — graceful-403 gating contract (closes #328/#429), playback/device/session tools (22), portability/analytics/workflow (27), playlist set-algebra/curation (21), catalog typed-search depth (19) — 313 tools across 48 modules, 1040 tests, live gauntlet + tools/list ground-truth verified** |
-| **Phase 15** | **v1.26.0 swarm3 push (2026-08-28): 237 new tools across 11 modules — playback state/queue/bookmarks (24), playlist resequence/set-ops/chunking (42), discovery deep-dives ×2 (48), library hygiene analytics (24), podcast/session tooling (24), listening analytics (24), URI/ref utilities (24), local snapshot diff/restore (24), registry introspection (3) — 550 tools across 60 modules, 1042 tests, tools/list ground-truth verified** |
+| **Phase 11** | v1.19–1.21 wave: `import_playlist` (M3U/CSV), `remove_duplicate_playlist_items` + `clean_all_playlists`, `create_smart_playlist`, `show_new_episodes`, backup/restore, bug trio (#195/#196/#210) |
+| **Phase 12** | **v1.22.0 big-release (2026-08-26): catalog/browse and artist-watch, library analytics, playlist health/batch/misc/portability, and playback/queue/search/episode tools — wired centrally with a smoke `FORBIDDEN_TOOLS` guard** |
+| **Phase 13** | **v1.23.0 exhaust-remnants (2026-08-26): typed search, category helpers, catalog batch/validate, library insights, playlist operations, and freshness/scene/market tools** |
+| **Phase 14** | **v1.24.0 exhaust2 swarm (2026-08-27): graceful-403 gating, playback/device/session, portability/analytics/workflow, playlist set-algebra/curation, and catalog typed-search depth** |
+| **Phase 15** | **v1.26.0 swarm3 push (2026-08-28): playback, playlist operations, discovery, library, podcast/session, listening analytics, Spotify reference, local snapshot, and registry-introspection tools — live gauntlet and `tools/list` verified** |

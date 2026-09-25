@@ -355,11 +355,11 @@ export function registerSwarm3ShowsTools(server: McpServer, client: SpotifyClien
     },
   );
 
-  // 3. list_show_episodes — canonical show-episode lister (preferred over deprecated get_show_episodes). Both hit GET /shows/{id}/episodes.
+  // 3. list_show_episodes — canonical show-episode lister for GET /shows/{id}/episodes.
   server.tool(
     'list_show_episodes',
     'Page one show\'s episode list newest-first with duration and release date — the browse view '
-      + "for a single podcast. Default limit 20, 'concise' prose. Canonical for GET /shows/{id}/episodes; get_show_episodes is a deprecated alias. Also covers: paged podcast episodes.",
+      + 'for a single podcast. Page size 50; use max_results to cap the response. Canonical for GET /shows/{id}/episodes; also covers paged podcast episodes.',
     {
       show_id: spotifyId('show').describe('Show ID, spotify:show: URI, or open.spotify.com/show URL'),
       offset: z.number().int().min(0).optional().describe('Offset into the episode list. Default 0'),

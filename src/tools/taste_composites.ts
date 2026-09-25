@@ -32,6 +32,14 @@ import {
   classifyExposure,
   type TasteStream,
 } from './statsfm_taste.js';
+import { StatsfmApiError, statsfmApiErrorFromHttp, statsfmTransportError } from '../lib/statsfm-client.js';
+
+// Retry-After parsing, reason extraction and the redaction policy live in
+// lib/statsfm-client.ts; a second copy here would drift back into surfacing
+// the upstream envelope text, which can echo private paths and query values.
+const statsfmError = (status: number, _upstreamMessage: string, body: unknown, headers: Headers): StatsfmApiError =>
+  statsfmApiErrorFromHttp(status, body, headers);
+
 
 // ---------------------------------------------------------------------------
 // Local minimal stats.fm fetch shim (own seam; does not share fetchImpl
@@ -43,15 +51,39 @@ export const TASTE_COMPOSITE_API_BASE = 'https://api.stats.fm/api/v1';
 export type TasteCompositeFetchImpl = (url: string) => Promise<unknown>;
 
 async function defaultFetchImpl(url: string): Promise<unknown> {
-  const res = await fetch(url, {
-    headers: {
-      accept: 'application/json',
-      'user-agent': 'spotify-mcp/taste-composites',
-    },
-  });
-  if (!res.ok) throw new Error(`stats.fm API HTTP ${res.status} for ${url}`);
-  return res.json() as Promise<unknown>;
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      headers: {
+        accept: 'application/json',
+        'user-agent': 'spotify-mcp/taste-composites',
+      },
+    });
+  } catch (err) {
+    if (err instanceof StatsfmApiError) throw err;
+    throw statsfmTransportError();
+  }
+  let body: unknown = null;
+  try {
+    body = await res.json();
+  } catch {
+    body = null;
+  }
+  if (!res.ok) {
+    const message = body && typeof body === 'object' && 'message' in body && typeof body.message === 'string'
+      ? body.message
+      : `stats.fm HTTP ${res.status}`;
+    throw statsfmError(res.status, message, body, res.headers);
+  }
+  if (body && typeof body === 'object' && 'status' in body && 'message' in body) {
+    const envelope = body as { status: unknown; message: unknown };
+    if (typeof envelope.status === 'number' && envelope.status >= 400 && typeof envelope.message === 'string') {
+      throw statsfmError(envelope.status, envelope.message, body, res.headers);
+    }
+  }
+  return body;
 }
+
 
 let fetchImpl: TasteCompositeFetchImpl = defaultFetchImpl;
 
@@ -70,7 +102,12 @@ async function statsfmGet<T>(path: string, params?: Record<string, string>): Pro
     params && Object.keys(params).length > 0
       ? `?${new URLSearchParams(params).toString()}`
       : '';
-  return (await fetchImpl(`${TASTE_COMPOSITE_API_BASE}${path}${qs}`)) as T;
+  try {
+    return (await fetchImpl(`${TASTE_COMPOSITE_API_BASE}${path}${qs}`)) as T;
+  } catch (err) {
+    if (err instanceof StatsfmApiError) throw err;
+    throw statsfmTransportError();
+  }
 }
 
 // ---------------------------------------------------------------------------

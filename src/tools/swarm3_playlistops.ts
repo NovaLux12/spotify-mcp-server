@@ -32,12 +32,19 @@ import { getConfig } from '../config.js';
 import { backupDir } from './backup.js';
 import {
   MaxResults,
+  PlaylistId,
+  PlaylistListFields,
   ResponseFormat,
   describeDryRun,
+  legacyPlaylistListFields,
+  playlistListInputFields,
   parseSpotifyUri,
   resolveMaxResults,
+  resolvePlaylistInput,
   sharedListFields,
   truncateItems,
+  withPlaylistInputMetadata,
+  withPlaylistInputNote,
 } from '../shaping.js';
 import type { ResponseFormatValue } from '../shaping.js';
 import type {
@@ -606,17 +613,19 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
       'target_playlist_id and dry_run=false it atomically overwrites the target. '
       + 'Quota: 🟢 N GETs + 1 PUT when committing.',
     {
-      playlist_ids: z.array(z.string()).min(2).max(10).describe('Playlists to interleave (2–10), in round order'),
+      ...PlaylistListFields,
+      ...legacyPlaylistListFields(['playlist_ids']),
       strategy: z.enum(['round_robin', 'chunk']).optional().describe('round_robin = 1 track per playlist per pass; chunk = N per pass. Default round_robin'),
       chunk_size: z.number().int().min(1).max(20).optional().describe('chunk strategy: tracks per playlist per pass (1–20). Default 3'),
-      target_playlist_id: z.string().optional().describe('Existing playlist (ID or URI) to atomically overwrite with the interleave. Omit = read-only plan'),
+      target_playlist_id: PlaylistId.optional().describe('Existing playlist (ID, URI, or URL) to atomically overwrite with the interleave. Omit = read-only plan'),
       dry_run: DryRunDefault,
       response_format: ResponseFormatArgName,
       max_results: MaxResultsArgName,
     },
     async (args) => {
+      const input = resolvePlaylistInput(args, { kind: 'list', aliases: ['playlist_ids'] });
       const rf = args.response_format;
-      const loaded = await Promise.all(args.playlist_ids.map((ref) => loadPlaylistFull(client, ref)));
+      const loaded = await Promise.all(input.values.map((ref) => loadPlaylistFull(client, ref)));
       const seqs = loaded.map((p) => trackRows(p.items).map((r) => r.uri));
       const per = args.strategy === 'chunk' ? (args.chunk_size ?? 3) : 1;
       const out: string[] = [];
@@ -649,21 +658,21 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
       if (!args.target_playlist_id) {
         lines.push('', ...view.items.map((u, i) => `  ${i + 1}. ${u}`));
         if (view.footer) lines.push(`(${view.footer})`);
-        return shape(rf, `[plan] ${lines.join('\n')} — read-only, nothing changed.`, { ...payload, target: null });
+        return shape(rf, withPlaylistInputNote(`[plan] ${lines.join('\n')} — read-only, nothing changed.`, input), withPlaylistInputMetadata({ ...payload, target: null }, input));
       }
       if (isDry(args)) {
         lines.push('', ...view.items.map((u, i) => `  ${i + 1}. ${u}`));
         if (view.footer) lines.push(`(${view.footer})`);
-        return shape(rf, describeDryRun('interleave', args.target_playlist_id, lines.slice(1)), { ...payload, target: args.target_playlist_id });
+        return shape(rf, withPlaylistInputNote(describeDryRun('interleave', args.target_playlist_id, lines.slice(1)), input), withPlaylistInputMetadata({ ...payload, target: args.target_playlist_id }, input));
       }
       const targetId = normalizePlaylistRef(args.target_playlist_id);
       const res = await atomicReplace(client, targetId, out);
-      return shape(rf, `Interleaved ${loaded.length} playlists into ${targetId} (${out.length} item(s), ${res.requests} request(s)).`, {
+      return shape(rf, withPlaylistInputNote(`Interleaved ${loaded.length} playlists into ${targetId} (${out.length} item(s), ${res.requests} request(s)).`, input), withPlaylistInputMetadata({
         ...payload,
         target: targetId,
         requests: res.requests,
         snapshot_id: res.snapshot_id ?? null,
-      });
+      }, input));
     },
   );
 
@@ -676,7 +685,8 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
       '(optional first/last dedupe) — dry_run defaults to TRUE so it returns the merged ' +
       'PLAN read-only. Quota: 🟡 N GETs + create + chunked adds when committing.',
     {
-      playlist_ids: z.array(z.string()).min(2).max(10).describe('Playlists to merge (2–10), in order'),
+      ...PlaylistListFields,
+      ...legacyPlaylistListFields(['playlist_ids']),
       dedupe: z.enum(['first', 'last', 'none']).optional().describe('Dedupe across the merge: keep first or last occurrence. Default first'),
       name: z.string().optional().describe('New playlist name. Default "Merged YYYY-MM-DD"'),
       description: z.string().optional().describe('New playlist description'),
@@ -686,25 +696,26 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
       max_results: MaxResultsArgName,
     },
     async (args) => {
+      const input = resolvePlaylistInput(args, { kind: 'list', aliases: ['playlist_ids'] });
       const rf = args.response_format;
-      const loaded = await Promise.all(args.playlist_ids.map((ref) => loadPlaylistFull(client, ref)));
+      const loaded = await Promise.all(input.values.map((ref) => loadPlaylistFull(client, ref)));
       const seqs = loaded.map((p) => trackRows(p.items).map((r) => r.uri));
       const raw = seqs.flat();
       const merged = dedupeSequence(raw, args.dedupe ?? 'first');
       const name = args.name ?? `Merged ${new Date().toISOString().slice(0, 10)}`;
       const view = truncateItems(merged, resolveMaxResults(args.max_results, getConfig().maxItems));
       if (isDry(args)) {
-        return shape(rf, describeDryRun('merge', `new playlist "${name}"`, [
+        return shape(rf, withPlaylistInputNote(describeDryRun('merge', `new playlist "${name}"`, [
           `Concatenate ${loaded.length} playlists (${raw.length} entries) → ${merged.length} after dedupe=${args.dedupe ?? 'first'}:`,
           ...loaded.map((p, i) => `  • ${p.name ?? p.id}: ${seqs[i].length} track(s)`),
           '',
           ...view.items.map((u, i) => `  ${i + 1}. ${u}`),
           view.footer ? `(${view.footer})` : '',
-        ]), { ok: true, dry_run: true, name, merged_count: merged.length, raw_count: raw.length, plan: merged });
+        ]), input), withPlaylistInputMetadata({ ok: true, dry_run: true, name, merged_count: merged.length, raw_count: raw.length, plan: merged }, input));
       }
       const created = await createPlaylist(client, name, args.public ?? false, args.description ?? 'Merged via merge_playlists_plan');
       const add = await addUrisChunked(client, created, merged);
-      return shape(rf, `Merged ${loaded.length} playlists into new playlist "${name}" (${created}): ${merged.length} track(s), ${add.requests} add request(s).`, {
+      return shape(rf, withPlaylistInputNote(`Merged ${loaded.length} playlists into new playlist "${name}" (${created}): ${merged.length} track(s), ${add.requests} add request(s).`, input), withPlaylistInputMetadata({
         ok: true,
         dry_run: false,
         playlist: created,
@@ -712,7 +723,7 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
         merged: merged.length,
         raw: raw.length,
         requests: add.requests,
-      });
+      }, input));
     },
   );
 
@@ -726,17 +737,18 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
       'the PLAN read-only; with target_playlist_id and dry_run=false it atomically overwrites ' +
       'the target. Quota: 🟢 ≤7 GETs + 1 PUT when committing.',
     {
-      base_playlist_id: z.string().describe('Base playlist (ID or URI) whose survivors are kept'),
-      subtract_playlist_ids: z.array(z.string()).min(1).max(5).describe('Playlists whose tracks are removed from the base (1–5)'),
-      target_playlist_id: z.string().optional().describe('Existing playlist (ID or URI) to atomically overwrite with the difference. Omit = read-only plan'),
+      base_playlist_id: PlaylistId.describe('Base playlist (ID, URI, or URL) whose survivors are kept'),
+      ...playlistListInputFields(['subtract_playlist_ids'], { min: 1, max: 5 }),
+      target_playlist_id: PlaylistId.optional().describe('Existing playlist (ID, URI, or URL) to atomically overwrite with the difference. Omit = read-only plan'),
       dry_run: DryRunDefault,
       response_format: ResponseFormatArgName,
       max_results: MaxResultsArgName,
     },
     async (args) => {
+      const input = resolvePlaylistInput(args, { kind: 'list', aliases: ['subtract_playlist_ids'] });
       const rf = args.response_format;
       const base = await loadPlaylistFull(client, args.base_playlist_id);
-      const subs = await Promise.all(args.subtract_playlist_ids.map((ref) => loadPlaylistFull(client, ref)));
+      const subs = await Promise.all(input.values.map((ref) => loadPlaylistFull(client, ref)));
       const baseSeq = trackRows(base.items).map((r) => r.uri);
       const cut = unionOf(subs.map((s) => trackRows(s.items).map((r) => r.uri)));
       const diff = differenceOf(baseSeq, cut);
@@ -749,27 +761,27 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
         remaining: diff.length,
       };
       if (!args.target_playlist_id) {
-        return shape(rf, [
+        return shape(rf, withPlaylistInputNote([
           `[plan] Difference "${base.name ?? base.id}" minus ${subs.length} playlist(s): ${diff.length} of ${baseSeq.length} survive (read-only).`,
           ...view.items.map((u) => `  ✓ ${u}`),
           view.footer ? `(${view.footer})` : '',
-        ].filter(Boolean).join('\n'), { ...payload, target: null });
+        ].filter(Boolean).join('\n'), input), withPlaylistInputMetadata({ ...payload, target: null }, input));
       }
       if (isDry(args)) {
-        return shape(rf, describeDryRun('difference', args.target_playlist_id, [
+        return shape(rf, withPlaylistInputNote(describeDryRun('difference', args.target_playlist_id, [
           `Overwrite with the ${diff.length} surviving track(s):`,
           ...view.items.map((u) => `  - ${u}`),
           view.footer ? `(${view.footer})` : '',
-        ]), { ...payload, target: args.target_playlist_id });
+        ]), input), withPlaylistInputMetadata({ ...payload, target: args.target_playlist_id }, input));
       }
       const targetId = normalizePlaylistRef(args.target_playlist_id);
       const res = await atomicReplace(client, targetId, diff);
-      return shape(rf, `Wrote the difference (${diff.length} track(s)) to ${targetId} in ${res.requests} request(s).`, {
+      return shape(rf, withPlaylistInputNote(`Wrote the difference (${diff.length} track(s)) to ${targetId} in ${res.requests} request(s).`, input), withPlaylistInputMetadata({
         ...payload,
         target: targetId,
         requests: res.requests,
         snapshot_id: res.snapshot_id ?? null,
-      });
+      }, input));
     },
   );
 
@@ -782,13 +794,15 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
       'playlists each common track appears in — the read-only intersection analysis ' +
       '(commit variants live in the set-op plan tools). Quota: 🟢 N GETs.',
     {
-      playlist_ids: z.array(z.string()).min(2).max(10).describe('Playlists to intersect (2–10)'),
+      ...PlaylistListFields,
+      ...legacyPlaylistListFields(['playlist_ids']),
       response_format: ResponseFormatArgName,
       max_results: MaxResultsArgName,
     },
     async (args) => {
+      const input = resolvePlaylistInput(args, { kind: 'list', aliases: ['playlist_ids'] });
       const rf = args.response_format;
-      const loaded = await Promise.all(args.playlist_ids.map((ref) => loadPlaylistFull(client, ref)));
+      const loaded = await Promise.all(input.values.map((ref) => loadPlaylistFull(client, ref)));
       const nameOf = loaded.map((p) => p.name ?? p.id);
       const rowsPer = loaded.map((p) => trackRows(p.items));
       const membership = new Map<string, OpRow[]>();
@@ -810,12 +824,12 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
         intersection_count: common.length,
         common_tracks: common,
       };
-      return shape(rf, [
+      return shape(rf, withPlaylistInputNote([
         `Intersection of ${loaded.length} playlists: ${common.length} common track(s).`,
         ...loaded.map((p, i) => `  • ${nameOf[i]}: ${rowsPer[i].length} track(s)`),
         ...(common.length > 0 ? ['', 'Common:', ...view.items.map((c, i) => `  ${i + 1}. ${c.name} (${c.uri}) — present in ${c.in_playlists.length}/${loaded.length} sources`)] : []),
         view.footer ? `(${view.footer})` : '',
-      ].filter(Boolean).join('\n'), payload);
+      ].filter(Boolean).join('\n'), input), withPlaylistInputMetadata(payload, input));
     },
   );
 
@@ -828,13 +842,15 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
       'counts and how many tracks are unique to each — read-only, no writes. '
       + 'Quota: 🟢 N GETs.',
     {
-      playlist_ids: z.array(z.string()).min(2).max(10).describe('Playlists to union (2–10)'),
+      ...PlaylistListFields,
+      ...legacyPlaylistListFields(['playlist_ids']),
       response_format: ResponseFormatArgName,
       max_results: MaxResultsArgName,
     },
     async (args) => {
+      const input = resolvePlaylistInput(args, { kind: 'list', aliases: ['playlist_ids'] });
       const rf = args.response_format;
-      const loaded = await Promise.all(args.playlist_ids.map((ref) => loadPlaylistFull(client, ref)));
+      const loaded = await Promise.all(input.values.map((ref) => loadPlaylistFull(client, ref)));
       const nameOf = loaded.map((p) => p.name ?? p.id);
       const seqs = loaded.map((p) => trackRows(p.items).map((r) => r.uri));
       const union = unionOf(seqs);
@@ -848,13 +864,13 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
         union_count: union.length,
         union_uris: union,
       };
-      return shape(rf, [
+      return shape(rf, withPlaylistInputNote([
         `Union preview of ${loaded.length} playlists: ${union.length} distinct track(s) (read-only).`,
-        ...loaded.map((p, i) => `  • ${nameOf[i]}: ${seqs[i].length} track(s), ${uniquePer[i]} unique to this playlist`),
+        ...loaded.map((p, i) => `  • ${p.name ?? p.id}: ${seqs[i].length} track(s), ${uniquePer[i]} unique to this playlist`),
         '',
         ...view.items.map((u, i) => `  ${i + 1}. ${u}`),
         view.footer ? `(${view.footer})` : '',
-      ].filter(Boolean).join('\n'), payload);
+      ].filter(Boolean).join('\n'), input), withPlaylistInputMetadata(payload, input));
     },
   );
 
@@ -1600,16 +1616,18 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
       'runtimes: computes surplus moves from the larger to the smaller. dry_run defaults to ' +
       'TRUE so it returns the move PLAN read-only. Quota: 🟡 N GETs + moves when committing.',
     {
-      playlist_ids: z.array(z.string()).min(2).max(10).describe('Playlists to balance (2–10)'),
+      ...PlaylistListFields,
+      ...legacyPlaylistListFields(['playlist_ids']),
       balance_by: z.enum(['count', 'runtime']).optional().describe('Balance metric: track count or total runtime. Default count'),
       dry_run: DryRunDefault,
       response_format: ResponseFormatArgName,
       max_results: MaxResultsArgName,
     },
     async (args) => {
+      const input = resolvePlaylistInput(args, { kind: 'list', aliases: ['playlist_ids'] });
       const rf = args.response_format;
       const metric = args.balance_by ?? 'count';
-      const loaded = await Promise.all(args.playlist_ids.map((ref) => loadPlaylistFull(client, ref)));
+      const loaded = await Promise.all(input.values.map((ref) => loadPlaylistFull(client, ref)));
       const loadedById = new Map(loaded.map((p) => [p.id, p.items]));
       const buckets = loaded.map((p) => {
         const rows = trackRows(p.items).filter((r) => r.uri && (metric === 'count' || r.durationMs != null));
@@ -1653,12 +1671,12 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
       }
       const moveView = truncateItems(moves, resolveMaxResults(args.max_results, getConfig().maxItems));
       if (isDry(args)) {
-        return shape(rf, describeDryRun('balance', `${buckets.length} playlists by ${metric}`, [
+        return shape(rf, withPlaylistInputNote(describeDryRun('balance', `${buckets.length} playlists by ${metric}`, [
           `Total ${metric}: ${metric === 'count' ? String(total) : msToClock(total)}; target per playlist: ${metric === 'count' ? String(target) : msToClock(target)}.`,
           `${moves.length} move(s) planned:`,
           ...moveView.items.map((m, i) => `  ${i + 1}. "${m.name}" ${m.from_name} → ${m.to_name}`),
           moveView.footer ? `(${moveView.footer})` : '',
-        ]), { ok: true, dry_run: true, balance_by: metric, total, target, moves });
+        ]), input), withPlaylistInputMetadata({ ok: true, dry_run: true, balance_by: metric, total, target, moves }, input));
       }
       // BACKUP-FIRST per donating playlist, then delete positions DESCENDING so each
       // chunk's positions stay valid, then append to receivers.
@@ -1693,7 +1711,7 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
           requests += add.requests;
         }
       }
-      return shape(rf, `Balanced ${buckets.length} playlists by ${metric}: ${moves.length} move(s), ${requests} request(s).\nPre-write backups:\n${backupFiles.map((f) => `  - ${f}`).join('\n')}`, {
+      return shape(rf, withPlaylistInputNote(`Balanced ${buckets.length} playlists by ${metric}: ${moves.length} move(s), ${requests} request(s).\nPre-write backups:\n${backupFiles.map((f) => `  - ${f}`).join('\n')}`, input), withPlaylistInputMetadata({
         ok: true,
         dry_run: false,
         balance_by: metric,
@@ -1702,7 +1720,7 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
         moves,
         requests,
         backup_files: backupFiles,
-      });
+      }, input));
     },
   );
 

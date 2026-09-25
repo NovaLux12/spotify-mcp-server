@@ -187,6 +187,32 @@ describe('whats_new', () => {
     assert.deepEqual(h.registered.map((t) => t.name), ['whats_new']);
   });
 
+  it('holds the freshness watermark in READONLY mode', async () => {
+    const temp = await mkdtemp(join(tmpdir(), 'spotify-freshness-'));
+    const state = join(temp, 'freshness.json');
+    try {
+      await withEnv({ SPOTIFY_MCP_READONLY: '1', SPOTIFY_MCP_FRESHNESS_STATE: state }, async () => {
+        const h = harness((path) =>
+          path === '/me/following'
+            ? followedPage(['a1'], null)
+            : albumsOf('a1', [['fresh-one', 'Fresh LP', '2026-08-20']]),
+        );
+        const out = await h.invoke('whats_new', { since: '2026-08-01', kinds: ['albums'] });
+        const payload = out.structuredContent as {
+          watermark_advanced: boolean;
+          watermark_held: boolean;
+          watermark_reason: string;
+        };
+        assert.equal(payload.watermark_advanced, false);
+        assert.equal(payload.watermark_held, true);
+        assert.match(payload.watermark_reason, /READONLY/);
+        await assert.rejects(stat(state), { code: 'ENOENT' });
+      });
+    } finally {
+      await rm(temp, { recursive: true, force: true });
+    }
+  });
+
   it('walks followed artists via the after cursor and fetches each artist album page', async () => {
     const h = harness((path, params) => {
       if (path === '/me/following') {

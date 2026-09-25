@@ -11,11 +11,19 @@ import type { SpotifyClient } from '../client.js';
 import { getConfig } from '../config.js';
 import {
   DryRun,
+  PlaylistListFields,
+  PlaylistPairFields,
+  PlaylistRef,
   batchSummary,
+  legacyPlaylistPairFields,
+  playlistListInputFields,
   parseSpotifyUri,
   resolveMaxResults,
+  resolvePlaylistInput,
   sharedListFields,
   truncateItems,
+  withPlaylistInputMetadata,
+  withPlaylistInputNote,
   type ResponseFormatValue,
 } from '../shaping.js';
 import type {
@@ -37,6 +45,10 @@ const jsonText = (data: unknown): string => JSON.stringify(data, null, 2);
 
 // Hard cap for fetch-all pagination loops (#55), same as playlists.ts.
 const FETCH_ALL_CAP = () => getConfig().fetchAllCap;
+const PlaylistWalkFields = {
+  limit: z.number().int().min(1).max(100).optional().describe('Source page size, 1–100. Default: 100'),
+  scan_cap: z.number().int().min(1).max(10_000).optional().describe('Maximum source rows to scan; bounded by SPOTIFY_MCP_FETCH_ALL_CAP'),
+};
 
 /**
  * Accept a bare playlist ID or a spotify:playlist: URI and return the raw ID.
@@ -61,18 +73,23 @@ function trackKey(track: SpotifyTrack | SpotifyEpisode): string | null {
 async function fetchAllItems(
   client: SpotifyClient,
   ref: string,
-): Promise<PlaylistItemObject[]> {
+  options: { limit?: number; scan_cap?: number } = {},
+): Promise<{ items: PlaylistItemObject[]; truncated: boolean }> {
   const id = encodeURIComponent(normalizePlaylistRef(ref));
-  return client.getAllPages<PlaylistItemObject>(
+  const cap = Math.min(options.scan_cap ?? FETCH_ALL_CAP(), FETCH_ALL_CAP());
+  const pageLimit = Math.min(options.limit ?? 100, 100);
+  const rows = await client.getAllPages<PlaylistItemObject>(
     `/playlists/${id}/items`,
-    { limit: '100' },
-    { maxItems: FETCH_ALL_CAP() },
+    { limit: String(pageLimit) },
+    { maxItems: cap + 1 },
   );
+  return { items: rows.slice(0, cap), truncated: rows.length > cap };
 }
 
 export function registerPlaylistOpsTools(server: McpServer, client: SpotifyClient): void {
   // merge_playlists
-  // Exactly one of target_playlist_id / new_name is enforced via superRefine.
+  // Exactly one of target_playlist_id / new_name is enforced after playlist
+  // input resolution, so conflicting canonical/legacy names fail first.
   // When an existing target is given, semantics are APPEND ONLY — the target
   // is never cleared. Duplicates across sources are dropped, keeping the
   // first-seen order across sources.
@@ -81,42 +98,35 @@ export function registerPlaylistOpsTools(server: McpServer, client: SpotifyClien
     {
       description:
         'Merge multiple playlists into one. Deduplicates tracks across sources (first-seen order wins) and adds them in batches of 100. Pass target_playlist_id to append to an existing playlist (it is NOT cleared) or new_name to create a fresh playlist.',
-      inputSchema: z
-        .object({
-          sources: z
-            .array(z.string())
-            .min(1)
-            .describe('Source playlists as IDs or spotify:playlist: URIs'),
-          target_playlist_id: z
-            .string()
-            .optional()
-            .describe('Existing playlist to APPEND into (never cleared), as ID or spotify:playlist: URI'),
-          new_name: z.string().optional().describe('Name for a newly created target playlist'),
-          public: z.boolean().optional().describe('Visibility of a NEW playlist. Default: false'),
-          ...sharedListFields,
-          dry_run: DryRun,
-        })
-        .superRefine((args, ctx) => {
-          const hasTarget = args.target_playlist_id !== undefined;
-          const hasNew = args.new_name !== undefined;
-          if (hasTarget === hasNew) {
-            ctx.addIssue({
-              code: 'custom',
-              path: [hasTarget ? 'new_name' : 'target_playlist_id'],
-              message:
-                'Provide exactly one of target_playlist_id (append to existing playlist) or new_name (create a new playlist).',
-            });
-          }
-        }),
+      inputSchema: z.object({
+        ...playlistListInputFields(['sources'], { min: 1, max: 10 }),
+        target_playlist_id: PlaylistRef.optional().describe('Existing playlist to APPEND into (never cleared)'),
+        new_name: z.string().optional().describe('Name for a newly created target playlist'),
+        public: z.boolean().optional().describe('Visibility of a NEW playlist. Default: false'),
+        ...sharedListFields,
+        ...PlaylistWalkFields,
+        dry_run: DryRun,
+      }),
     },
     async (args) => {
+      const input = resolvePlaylistInput(args, { kind: 'list', aliases: ['sources'] });
+      const hasTarget = args.target_playlist_id !== undefined;
+      const hasNew = args.new_name !== undefined;
+      if (hasTarget === hasNew) {
+        throw new Error('Invalid arguments: provide exactly one of target_playlist_id (append to existing playlist) or new_name (create a new playlist).');
+      }
       // Reads are safe in preview mode: page every source up front so the
       // dry-run preview can state exactly which tracks would be added.
-      const sourceRefs = args.sources.map(normalizePlaylistRef);
+      const sourceRefs = input.values;
       const sourceLists: PlaylistItemObject[][] = [];
+      let sourceTruncated = false;
       for (const ref of sourceRefs) {
-        sourceLists.push(await fetchAllItems(client, ref));
+        const walk = await fetchAllItems(client, ref, args);
+        sourceLists.push(walk.items);
+        sourceTruncated ||= walk.truncated;
       }
+      const sourceCap = Math.min(args.scan_cap ?? FETCH_ALL_CAP(), FETCH_ALL_CAP());
+      const truncated = sourceTruncated;
 
       // Dedupe by track key preserving first-seen order across sources.
       const seen = new Set<string>();
@@ -157,9 +167,13 @@ export function registerPlaylistOpsTools(server: McpServer, client: SpotifyClien
               ]
             : [`No unique tracks found across ${sourceRefs.length} source playlist(s); nothing would be added.`];
         return textResult(
-          `[dry run] merge_playlists — nothing was changed.\n${changes.join('\n')}` +
-            (duplicates > 0 ? `\n(${duplicates} duplicate(s) across sources would be skipped)` : ''),
-          { ok: true, dry_run: true, changes },
+          withPlaylistInputNote(
+            `[dry run] merge_playlists — nothing was changed.\n${changes.join('\n')}` +
+              (duplicates > 0 ? `\n(${duplicates} duplicate(s) across sources would be skipped)` : '') +
+              (truncated ? `\n(Source walk reached the configured cap of ${sourceCap} rows; totals may be incomplete.)` : ''),
+            input,
+          ),
+          withPlaylistInputMetadata({ ok: true, dry_run: true, changes, playlists: sourceRefs, truncated, scan_cap: sourceCap }, input),
         );
       }
 
@@ -189,9 +203,14 @@ export function registerPlaylistOpsTools(server: McpServer, client: SpotifyClien
       }
 
       const summary = {
+        ok: true,
+        dry_run: args.dry_run ?? false,
+        truncated,
+        scan_cap: sourceCap,
+        limit: args.limit ?? null,
         target_playlist: targetId,
         created_new_playlist: creatingNew,
-        sources: sourceRefs,
+        playlists: sourceRefs,
         added: merged.length,
         duplicates_skipped: duplicates,
         unavailable_items_skipped: unavailable,
@@ -200,7 +219,8 @@ export function registerPlaylistOpsTools(server: McpServer, client: SpotifyClien
       };
 
       if (args.response_format === 'json') {
-        return textResult(jsonText(summary));
+        const payload = withPlaylistInputMetadata(summary, input);
+        return textResult(jsonText(payload), payload);
       }
 
       const lines = [
@@ -220,9 +240,11 @@ export function registerPlaylistOpsTools(server: McpServer, client: SpotifyClien
         lines.push(...view.items.map((row) => `  • ${row}`));
         if (view.footer) lines.push(`(${view.footer})`);
       }
+      if (truncated) lines.push(`(Source walk reached the configured cap of ${sourceCap} rows; totals may be incomplete.)`);
       const summaryText = lines.join('\n');
       return textResult(
-        snapshotId ? `${summaryText}\nSnapshot ID: ${snapshotId}` : summaryText,
+        withPlaylistInputNote(snapshotId ? `${summaryText}\nSnapshot ID: ${snapshotId}` : summaryText, input),
+        withPlaylistInputMetadata(summary, input),
       );
     },
   );
@@ -230,20 +252,27 @@ export function registerPlaylistOpsTools(server: McpServer, client: SpotifyClien
   // diff_playlists
   server.tool(
     'diff_playlists',
-    'Compare two playlists fully paged: tracks only in A, only in B (by track ID), and tracks present in both but at different positions. Rendered rows are capped by max_results; totals are always accurate. Also covers: playlist_diff (snapshot diff), playlist_difference_plan (A minus B plan) — See also: playlist_diff, playlist_difference_plan.',
+    'Compare two playlists up to the configured source cap: tracks only in A, only in B (by track ID), and tracks present in both but at different positions. Rendered rows are capped by max_results; truncation metadata reports when source walks hit scan_cap. Also covers: playlist_diff (snapshot diff), playlist_difference_plan (A minus B plan) — See also: playlist_diff, playlist_difference_plan.',
     {
       ...sharedListFields,
-      a: z.string().describe('First playlist, as ID or spotify:playlist: URI'),
-      b: z.string().describe('Second playlist, as ID or spotify:playlist: URI'),
+      ...PlaylistWalkFields,
+      ...PlaylistPairFields,
+      ...legacyPlaylistPairFields([['a', 'b']]),
       dry_run: DryRun,
     },
     async (args) => {
+      const input = resolvePlaylistInput(args, { kind: 'pair', aliases: [['a', 'b']] });
+      const [playlistA, playlistB] = input.values;
       // This tool never mutates anything, so dry_run changes nothing; it is
       // accepted so agents can pass it uniformly across the family.
-      const [aItems, bItems] = await Promise.all([
-        fetchAllItems(client, args.a),
-        fetchAllItems(client, args.b),
+      const [aWalk, bWalk] = await Promise.all([
+        fetchAllItems(client, playlistA, args),
+        fetchAllItems(client, playlistB, args),
       ]);
+      const aItems = aWalk.items;
+      const bItems = bWalk.items;
+      const sourceCap = Math.min(args.scan_cap ?? FETCH_ALL_CAP(), FETCH_ALL_CAP());
+      const truncated = aWalk.truncated || bWalk.truncated;
 
       // First-occurrence position map over track IDs.
       const posA = new Map<string, number>();
@@ -276,18 +305,28 @@ export function registerPlaylistOpsTools(server: McpServer, client: SpotifyClien
       }
       moved.sort((x, y) => x.a_position - y.a_position);
 
+      const cap = resolveMaxResults(args.max_results);
+      const renderedCount = Math.min(onlyInA.length, cap) + Math.min(onlyInB.length, cap) + Math.min(moved.length, cap);
+      const truncation = { returned: renderedCount, total: onlyInA.length + onlyInB.length + moved.length };
       if (args.response_format === 'json') {
-        return textResult(jsonText({
+        const payload = withPlaylistInputMetadata({
+          ok: true,
+          dry_run: args.dry_run ?? false,
+          truncated,
+          scan_cap: sourceCap,
+          playlist_a: playlistA,
+          playlist_b: playlistB,
           a_total: idsA.length,
           b_total: idsB.length,
           only_in_a: onlyInA,
           only_in_b: onlyInB,
           moved,
-        }));
+          truncation,
+        }, input);
+        return textResult(jsonText(payload), payload);
       }
 
       // Rendered rows are capped per section; the counts stay exact (#53).
-      const cap = resolveMaxResults(args.max_results);
       const section = (title: string, rows: string[]): string[] => {
         const view = truncateItems(rows, cap);
         const out = ['', `${title} (${rows.length}):`];
@@ -298,7 +337,7 @@ export function registerPlaylistOpsTools(server: McpServer, client: SpotifyClien
       };
 
       const lines = [
-        `Diff between A (${idsA.length} tracks) and B (${idsB.length} tracks)`,
+        `Diff between A (playlist_a=${playlistA}, ${idsA.length} tracks) and B (playlist_b=${playlistB}, ${idsB.length} tracks)`,
         ...section('Only in A', onlyInA.map((id) => `${id} @ position ${posA.get(id)}`)),
         ...section('Only in B', onlyInB.map((id) => `${id} @ position ${posB.get(id)}`)),
         ...section(
@@ -306,7 +345,21 @@ export function registerPlaylistOpsTools(server: McpServer, client: SpotifyClien
           moved.map((m) => `${m.id} @ A:${m.a_position} → B:${m.b_position}`),
         ),
       ];
-      return textResult(lines.join('\n'));
+      if (truncated) lines.push(`(Source walk reached the configured cap of ${sourceCap} rows; totals may be incomplete.)`);
+      return textResult(withPlaylistInputNote(lines.join('\n'), input), withPlaylistInputMetadata({
+        ok: true,
+        dry_run: args.dry_run ?? false,
+        truncated,
+        scan_cap: sourceCap,
+        playlist_a: playlistA,
+        playlist_b: playlistB,
+        a_total: idsA.length,
+        b_total: idsB.length,
+        only_in_a: onlyInA,
+        only_in_b: onlyInB,
+        moved,
+        truncation,
+      }, input));
     },
   );
 
@@ -316,10 +369,8 @@ export function registerPlaylistOpsTools(server: McpServer, client: SpotifyClien
     'Find tracks shared across playlists: reports how many playlists each track appears in and lists tracks present in at least min_overlap playlists (default: all of them), most-shared first.',
     {
       ...sharedListFields,
-      playlists: z
-        .array(z.string())
-        .min(2)
-        .describe('Two or more playlists, as IDs or spotify:playlist: URIs'),
+      ...PlaylistWalkFields,
+      ...PlaylistListFields,
       min_overlap: z
         .number()
         .int()
@@ -330,7 +381,8 @@ export function registerPlaylistOpsTools(server: McpServer, client: SpotifyClien
     },
     async (args) => {
       // Read-only analysis; dry_run is accepted for uniformity and is a no-op.
-      const refs = args.playlists.map(normalizePlaylistRef);
+      const input = resolvePlaylistInput(args, { kind: 'list', aliases: [] });
+      const refs = input.values;
       if (args.min_overlap !== undefined && args.min_overlap > refs.length) {
         throw new Error(
           `min_overlap (${args.min_overlap}) cannot exceed the number of playlists (${refs.length})`,
@@ -340,9 +392,14 @@ export function registerPlaylistOpsTools(server: McpServer, client: SpotifyClien
 
       // One full paging pass keeps both the presence sets and display names.
       const itemLists: PlaylistItemObject[][] = [];
+      let walkTruncated = false;
       for (const ref of refs) {
-        itemLists.push(await fetchAllItems(client, ref));
+        const walk = await fetchAllItems(client, ref, args);
+        itemLists.push(walk.items);
+        walkTruncated ||= walk.truncated;
       }
+      const sourceCap = Math.min(args.scan_cap ?? FETCH_ALL_CAP(), FETCH_ALL_CAP());
+      const truncated = walkTruncated;
       const presence = itemLists.map((items) => {
         const ids = new Set<string>();
         for (const item of items) {
@@ -381,27 +438,44 @@ export function registerPlaylistOpsTools(server: McpServer, client: SpotifyClien
         }
       }
 
+      const cap = resolveMaxResults(args.max_results);
+      const view = truncateItems(
+        shared.map((e) => `${e.id}${e.name ? ` "${e.name}"` : ''} — in ${e.count}/${refs.length} playlists`),
+        cap,
+      );
+      const truncation = { returned: view.items.length, total: shared.length };
       if (args.response_format === 'json') {
-        return textResult(jsonText({
+        const payload = withPlaylistInputMetadata({
+          ok: true,
+          dry_run: args.dry_run ?? false,
+          truncated,
+          scan_cap: sourceCap,
           playlists: refs,
           threshold,
           total_shared: shared.length,
           shared: shared.map(({ id, name, count }) => ({ id, name, count })),
-        }));
+          truncation,
+        }, input);
+        return textResult(jsonText(payload), payload);
       }
 
-      const view = truncateItems(
-        shared.map((e) =>
-          `${e.id}${e.name ? ` "${e.name}"` : ''} — in ${e.count}/${refs.length} playlists`,
-        ),
-        resolveMaxResults(args.max_results),
-      );
       const lines = [
         `Tracks present in at least ${threshold} of ${refs.length} playlists: ${shared.length}`,
         ...(view.items.length > 0 ? view.items.map((row) => `  • ${row}`) : ['  (none)']),
       ];
       if (view.footer) lines.push(`(${view.footer})`);
-      return textResult(lines.join('\n'));
+      if (truncated) lines.push(`(Source walk reached the configured cap of ${sourceCap} rows; totals may be incomplete.)`);
+      return textResult(withPlaylistInputNote(lines.join('\n'), input), withPlaylistInputMetadata({
+        ok: true,
+        dry_run: args.dry_run ?? false,
+        truncated,
+        scan_cap: sourceCap,
+        playlists: refs,
+        threshold,
+        total_shared: shared.length,
+        shared: shared.map(({ id, name, count }) => ({ id, name, count })),
+        truncation,
+      }, input));
     },
   );
 }

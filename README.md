@@ -7,7 +7,11 @@
 
 An MCP server that wraps the Spotify Web API — lets Claude and other AI assistants control playback, search the catalog (tracks, podcasts, audiobooks), and manage your library and playlists.
 
-608 tools. Every non-deprecated endpoint, plus extras most servers skip. [Full list →](SPEC.md)
+A broad Spotify Web API tool surface, plus extras most servers skip. Registration-gated wrappers are explained rather than hidden; see the [full list →](SPEC.md).
+
+<!-- BEGIN:generated surface-census -->
+The finalized default MCP registry exposes **591 tools**, **16 fixed resources**, **33 resource templates**, and **14 prompts**. Toolsets and production gates can trim a configured host; these totals describe the default production `tools/list` after finalizers.
+<!-- END:generated surface-census -->
 
 ---
 
@@ -35,9 +39,9 @@ An MCP server that wraps the Spotify Web API — lets Claude and other AI assist
 
 | | |
 |---|---|
-| **Complete** | 608 tools — playback, search, catalog, library, playlists, following + extras like duplicate cleanup, M3U/CSV import-export, podcast sessions, snapshot diffing, listening analytics, market checks, stats.fm taste imports, and 11 taste composite briefs, playlists, and reports. |
-| **Safe** | `dry_run` previews on every write, receipts that prove what landed, human confirmation for bulk deletes, and `READONLY` to hide all writes. |
-| **Honest** | No zombie tools for endpoints Spotify removed. Legacy lookups explain the 403 instead of crashing. |
+| **Complete** | Playback, search, catalog, library, playlists, following, plus extras like duplicate cleanup, M3U/CSV import-export, podcast sessions, snapshot diffing, listening analytics, market checks, stats.fm taste imports, and taste composite briefs, playlists, and reports. |
+| **Safe** | `dry_run` previews on writes, receipts that prove what landed, human confirmation for bulk deletes, and `READONLY` to hide write-capable modules. |
+| **Honest** | No zombie tools for endpoints Spotify removed. Legacy lookups explain the 403 instead of crashing; registration-gated endpoints are listed below. |
 | **Polished** | Paginated (up to 500), podcasts first-class, device-aware playback, `spotify_doctor` self-diagnosis, real test suite. |
 
 ## Quick start
@@ -136,22 +140,67 @@ All via env vars — no config file. Only `SPOTIFY_CLIENT_ID` is required.
 
 | Variable | Example | Purpose |
 |---|---|---|
-| `SPOTIFY_MCP_TOOLSETS` | `playback,catalog` | Trim by group for hosts that cap tool counts |
-| `SPOTIFY_MCP_READONLY` | `1` | Hide every write tool |
-| `SPOTIFY_MCP_HISTORY` | `1` | Log mutations to JSONL for undo |
+| `SPOTIFY_MCP_TOOLSETS` | `playback,catalog` | Trim by group for hosts that cap tool counts; unset or `all` registers everything. |
+| `SPOTIFY_MCP_READONLY` | `1` | Hide write-capable modules; read-only resources and prompts remain available. |
+| `SPOTIFY_MCP_HISTORY` | `1` | Log mutations to JSONL for undo and audit. |
 
 Full reference: [docs/configuration.md](docs/configuration.md)
 
 `spotify_doctor` (CLI + in-server tool) diagnoses token state, scope gaps, Premium gating, rate-limit cooldowns, and request/quota usage (cumulative + rolling-window counts, #904) without extra setup.
+
+## Upgrading to 2.0
+
+2.0 is a contract release. One tool name is gone, four things moved, and one
+guarantee tightened:
+
+0. **`get_show_episodes` is removed.** Use `list_show_episodes` (same endpoint,
+   same arguments, minus the drifted alias). It was the only name that changed;
+   everything else in the 591-tool surface keeps its name.
+
+1. **Destructive writes fail closed.** Any confirmation-gated bulk write now
+   refuses when the client cannot elicit, instead of proceeding unprompted.
+   `archive_played_episodes`'s `confirm: true` no longer authorises the delete
+   (it is still accepted, and every result says it was ignored). For headless
+   automation, set `SPOTIFY_MCP_CONFIRM=never` deliberately.
+2. **Playlist set-operation inputs are canonical.** A/B pairs are
+   `playlist_a`/`playlist_b`; ordered lists are `playlists`;
+   `playlist_subtract` takes the base as `base_playlist_id`. The old spellings
+   are still accepted through **2.0** and removed in **2.1**; a result that used
+   one carries `deprecated_inputs` and a `deprecation_note`. Each tool accepts
+   only its own aliases, so send the one its schema declares rather than the
+   whole list below — SPEC.md's table maps every tool to its exact aliases:
+
+   These are **per-tool** aliases, not a bundle — each tool declares exactly one
+   pair or one list, and the per-tool table in SPEC.md is the contract:
+
+   | family | canonical | the alias that tool declares |
+   |---|---|---|
+   | A/B pair | `playlist_a`, `playlist_b` | `a`/`b`, or `playlist_id_a`/`playlist_id_b`, or `playlist_a_id`/`playlist_b_id` — one of them, per tool |
+   | ordered list | `playlists` | `playlist_ids`, or `source_playlist_ids`, or `sources` — one of them, per tool |
+   | subtraction | `base_playlist_id` + `playlists` | the positional form `playlists: [base, ...sources]` |
+
+   Sending several at once is a `validation` error naming the conflict; a name
+   the tool does not declare is an `unknown_param` error.
+3. **Numeric caps have canonical names.** `max_results` caps what is returned;
+   `limit` and `scan_cap` cap how much of each source is read.
+4. **Unknown arguments are rejected** with a typed `unknown_param` error rather
+   than ignored, so a renamed parameter fails loudly instead of silently
+   doing nothing.
+
+Run `spotify_doctor` after upgrading: it reports the registered surface, the
+gates that hid modules, and the granted scopes in one call.
 
 ## Docs
 
 - [SPEC.md](SPEC.md) — every tool, resource & prompt
 - [ARCHITECTURE.md](ARCHITECTURE.md) — how it's built
 - [docs/configuration.md](docs/configuration.md) — all env vars
+- [docs/schema-budgets.md](docs/schema-budgets.md) — per-module schema budgets and registration order
 - [docs/statsfm.md](docs/statsfm.md) — stats.fm second source: setup, tool cheat sheet, gotchas
 - [docs/cookbook.md](docs/cookbook.md) — ten copy-paste agent recipes
 - [docs/taste.md](docs/taste.md) — anonymized taste showcase driving a playlist
+- [docs/wave2-composites.md](docs/wave2-composites.md) — read-only taste composites
+- [docs/distribution.md](docs/distribution.md) — distribution and release notes
 - [docs/faq.md](docs/faq.md) — auth, Premium, 403s, headless, tokens
 - [CONTRIBUTING.md](CONTRIBUTING.md) — dev setup & conventions
 - [CHANGELOG.md](CHANGELOG.md) — release history

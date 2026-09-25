@@ -88,11 +88,15 @@ type McmShim = McpServer;
 const textOf = (out: { content: Array<{ text: string }> }) => out.content[0].text;
 
 const playlistResponder = (name = 'Restore Target'): Responder => (path) =>
-  path === '/playlists/pl1' ? { id: 'pl1', name } : null;
+  path === `/playlists/${PLAYLIST_ID}` ? { id: PLAYLIST_ID, name } : null;
 
 // ---------------------------------------------------------------------------
 // Parsers (pure)
 // ---------------------------------------------------------------------------
+
+// Real Spotify ids are 22 base62 characters; the shared resolver rejects anything else.
+const PLAYLIST_ID = '1111111111111111111111';
+const MISSING_PLAYLIST_ID = '9999999999999999999999';
 
 describe('import_playlist parsers', () => {
   it('parseM3u extracts bare URI lines and skips comments/blanks', () => {
@@ -164,9 +168,9 @@ describe('import_playlist parsers', () => {
 describe('import_playlist registration + validation', () => {
   it('rejects missing and duplicated document sources before any network call', async () => {
     const h = harness(playlistResponder());
-    await assert.rejects(() => h.invoke('import_playlist', { playlist_id: 'pl1' }), /content or input_path/);
+    await assert.rejects(() => h.invoke('import_playlist', { playlist_id: PLAYLIST_ID }), /content or input_path/);
     await assert.rejects(
-      () => h.invoke('import_playlist', { playlist_id: 'pl1', content: 'x', input_path: '/tmp/x' }),
+      () => h.invoke('import_playlist', { playlist_id: PLAYLIST_ID, content: 'x', input_path: '/tmp/x' }),
       /either content or input_path/,
     );
     assert.equal(h.client.calls.length, 0);
@@ -175,8 +179,8 @@ describe('import_playlist registration + validation', () => {
   it('fails fast on an unknown target playlist', async () => {
     const h = harness(() => null);
     await assert.rejects(
-      () => h.invoke('import_playlist', { playlist_id: 'nope', content: 'spotify:track:a' }),
-      /Playlist "nope" not found/,
+      () => h.invoke('import_playlist', { playlist_id: MISSING_PLAYLIST_ID, content: 'spotify:track:a' }),
+      /Playlist "9999999999999999999999" not found/,
     );
     assert.equal(h.posts().length, 0);
   });
@@ -184,7 +188,7 @@ describe('import_playlist registration + validation', () => {
   it('throws a clear error when no URIs are extractable', async () => {
     const h = harness(playlistResponder());
     await assert.rejects(
-      () => h.invoke('import_playlist', { playlist_id: 'pl1', content: '#EXTM3U\n# only comments' }),
+      () => h.invoke('import_playlist', { playlist_id: PLAYLIST_ID, content: '#EXTM3U\n# only comments' }),
       /No spotify:track:\/spotify:episode: URIs found/,
     );
   });
@@ -200,7 +204,7 @@ describe('import_playlist dry run + add behaviour', () => {
   it('dry_run reports the extraction without POSTing', async () => {
     const h = harness(playlistResponder());
     const out = await h.invoke('import_playlist', {
-      playlist_id: 'pl1',
+      playlist_id: PLAYLIST_ID,
       content: csv,
       dry_run: true,
     });
@@ -218,7 +222,7 @@ describe('import_playlist dry run + add behaviour', () => {
       path.startsWith('POST ') ? { snapshot_id: 'snap-1' } : { id: 'pl1', name: 'X' },
     );
     const out = await h.invoke('import_playlist', {
-      playlist_id: 'pl1',
+      playlist_id: PLAYLIST_ID,
       content: uris.join('\n'),
     });
     const p = out.structuredContent as { added: number; batches_sent: number; snapshot_id?: string };
@@ -232,15 +236,68 @@ describe('import_playlist dry run + add behaviour', () => {
     assert.match(textOf(out), /Imported 250 item\(s\) into "X"/);
   });
 
-  it('normalizes a spotify:playlist: URI target', async () => {
+  it('canonicalizes spotify:// links before M3U writes', async () => {
+    const trackId = '1'.repeat(22);
+    const episodeId = '2'.repeat(22);
     const h = harness((path) =>
-      path.startsWith('POST ') ? {} : path === '/playlists/pl1' ? { id: 'pl1', name: 'N' } : null,
+      path.startsWith('POST ') ? { snapshot_id: 'snap-links' } : { id: 'pl1', name: 'X' },
     );
     await h.invoke('import_playlist', {
-      playlist_id: 'spotify:playlist:pl1',
+      playlist_id: PLAYLIST_ID,
+      content: [
+        '#EXTM3U',
+        `spotify://track/${trackId}`,
+        `spotify://episode/${episodeId}`,
+      ].join('\n'),
+    });
+    assert.deepEqual(h.posts()[0]?.arg, {
+      uris: [`spotify:track:${trackId}`, `spotify:episode:${episodeId}`],
+    });
+  });
+
+  it('deduplicates equivalent canonical URI spellings', async () => {
+    const trackId = '5'.repeat(22);
+    const h = harness((path) =>
+      path.startsWith('POST ') ? { snapshot_id: 'snap-dedupe' } : { id: 'pl1', name: 'X' },
+    );
+    const out = await h.invoke('import_playlist', {
+      playlist_id: PLAYLIST_ID,
+      content: [`spotify:track:${trackId}`, `spotify://track/${trackId}`].join('\n'),
+    });
+    assert.deepEqual(h.posts()[0]?.arg, { uris: [`spotify:track:${trackId}`] });
+    const payload = out.structuredContent as { added: number; duplicates_in_document_skipped: number };
+    assert.equal(payload.added, 1);
+    assert.equal(payload.duplicates_in_document_skipped, 1);
+  });
+
+  it('canonicalizes spotify:// links before CSV writes', async () => {
+    const trackId = '3'.repeat(22);
+    const episodeId = '4'.repeat(22);
+    const h = harness((path) =>
+      path.startsWith('POST ') ? { snapshot_id: 'snap-links' } : { id: 'pl1', name: 'X' },
+    );
+    await h.invoke('import_playlist', {
+      playlist_id: PLAYLIST_ID,
+      content: [
+        'track_no,title,uri',
+        `1,Track,spotify://track/${trackId}`,
+        `2,Episode,spotify://episode/${episodeId}`,
+      ].join('\n'),
+    });
+    assert.deepEqual(h.posts()[0]?.arg, {
+      uris: [`spotify:track:${trackId}`, `spotify:episode:${episodeId}`],
+    });
+  });
+
+  it('normalizes a spotify:playlist: URI target', async () => {
+    const h = harness((path) =>
+      path.startsWith('POST ') ? {} : path === `/playlists/${PLAYLIST_ID}` ? { id: PLAYLIST_ID, name: 'N' } : null,
+    );
+    await h.invoke('import_playlist', {
+      playlist_id: `spotify:playlist:${PLAYLIST_ID}`,
       content: 'spotify:track:a',
     });
-    assert.ok(h.client.calls.some((c) => c.path === '/playlists/pl1/items'));
+    assert.ok(h.client.calls.some((c) => c.path === `/playlists/${PLAYLIST_ID}/items`));
   });
 });
 
@@ -256,7 +313,7 @@ describe('import_playlist file source', () => {
       await writeFile(file, '#EXTM3U\nspotify:track:f1\n', 'utf8');
       const h = harness(playlistResponder());
       const out = await h.invoke('import_playlist', {
-        playlist_id: 'pl1',
+        playlist_id: PLAYLIST_ID,
         input_path: file,
         dry_run: true,
       });

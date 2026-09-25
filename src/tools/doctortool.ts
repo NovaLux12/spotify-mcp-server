@@ -23,6 +23,7 @@ import {
 } from '../toolsets.js';
 import { moduleBlockedByScopes } from '../scopefilter.js';
 import { ResponseFormat } from '../shaping.js';
+import { readOnlyModeEnabled, REGISTRAR_MANIFEST } from './annotations.js';
 
 // ---------------------------------------------------------------------------
 // Row model
@@ -315,46 +316,23 @@ interface ToolRegistryHolder {
   _registeredTools?: Record<string, { enabled?: boolean }>;
 }
 
-/** Registration modules hidden in READONLY mode, matching index.ts. */
-const READONLY_HIDDEN_MODULES: Record<string, true> = {
-  playback: true,
-  exhaustmisc: true,
-  artistwatch: true,
-  exhaust2playback: true,
-  exhaust2playlists: true,
-  exhaust2misc: true,
-  exhaust2extra: true,
-  libraryanalytics: true,
-  portability: true,
-  episodemgmt: true,
-  playlisthealth: true,
-  playlistbatch: true,
-  playlistmisc: true,
-  queueops: true,
-  playbackext: true,
-  playbackintel: true,
-  swarm3playback: true,
-  swarm3playlistops: true,
-  swarm3shows: true,
-  swarm3snapshots: true,
-  swarm4playlists: true,
-  following: true,
-  audiobooks: true,
-  playlists: true,
-  users: true,
-  library: true,
-  import: true,
-  smart: true,
-  saveddedupe: true,
-  freshness: true,
-  scenes: true,
-  undo: true,
-};
+/**
+ * Registration modules hidden in READONLY mode. Derived from the registrar
+ * manifest's own `readOnlySafe` flag — the exact predicate `index.ts` applies
+ * (`readOnly && module.readOnlySafe !== true`) — because a hand-copied list
+ * silently drifts: the doctor happily reports a new write module as
+ * always-visible, and a read-only one as hidden.
+ */
+// Lazy: annotations.ts imports this module, so touching REGISTRAR_MANIFEST at
+// module scope reads it while it is still initialising (TDZ).
+function readOnlyHiddenModules(): ReadonlySet<string> {
+  return new Set(
+    REGISTRAR_MANIFEST.filter((module) => module.readOnlySafe !== true).map((module) => module.registrationKey),
+  );
+}
 
 function readOnlyEnabled(): boolean {
-  return ['1', 'true', 'yes'].includes(
-    (process.env.SPOTIFY_MCP_READONLY ?? '').toLowerCase(),
-  );
+  return readOnlyModeEnabled();
 }
 
 function registeredToolCount(server: McpServer): { available: boolean; count: number } {
@@ -389,10 +367,9 @@ function surfaceFor(server: McpServer, tokens: ParsedTokens | null): DoctorSurfa
   });
   const readOnly = readOnlyEnabled();
   const scopeHidden = new Set(hiddenByScopes);
+  const readOnlyHidden = readOnly ? readOnlyHiddenModules() : new Set<string>();
   const hiddenByReadonly = readOnly
-    ? activeModules.filter(
-      (key) => !scopeHidden.has(key) && Object.hasOwn(READONLY_HIDDEN_MODULES, key),
-    )
+    ? activeModules.filter((key) => !scopeHidden.has(key) && readOnlyHidden.has(key))
     : [];
   const hiddenByReadonlySet = new Set(hiddenByReadonly);
   const exposedModules = activeModules.filter(
