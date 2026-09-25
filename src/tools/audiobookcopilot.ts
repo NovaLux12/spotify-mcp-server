@@ -78,27 +78,33 @@ interface ChapterWalk {
 }
 
 /**
- * Fetch every chapter of an audiobook by walking GET
- * /audiobooks/{id}/chapters at the endpoint's page cap until exhausted or the
- * configured fetch-all cap is hit. The cap is passed explicitly so the walk
- * and the reported `cap` can never disagree, and saturation is reported rather
- * than silently presented as the whole book (#786).
- * Throws when the audiobook does not exist or exposes no chapters.
+ * Fetch chapters by walking GET /audiobooks/{id}/chapters at the endpoint's
+ * page cap until exhausted or the configured fetch-all cap is exceeded. The
+ * walk deliberately asks for one chapter past the cap so saturation can be
+ * proven rather than assumed: a book with exactly `cap` chapters is complete
+ * and must not be reported as truncated, so the listing is only flagged when a
+ * (cap+1)-th chapter was actually seen (#786). Same probe as the saved-library
+ * scan in libraryhygiene.ts. Throws when the audiobook does not exist or
+ * exposes no chapters.
  */
 async function fetchAllChapters(
   client: SpotifyClient,
   audiobookId: string,
 ): Promise<ChapterWalk> {
   const cap = getConfig().fetchAllCap;
-  const chapters = await client.getAllPages<ChapterListing>(
+  const walked = await client.getAllPages<ChapterListing>(
     `/audiobooks/${encodeURIComponent(audiobookId)}/chapters`,
     { limit: String(CHAPTERS_PAGE_LIMIT) },
-    { maxItems: cap },
+    { maxItems: cap + 1 },
   );
-  if (chapters.length === 0) {
+  if (walked.length === 0) {
     throw new Error(`Audiobook "${audiobookId}" not found or has no chapters`);
   }
-  return { chapters, cap, truncatedByCap: chapters.length >= cap };
+  return {
+    chapters: walked.slice(0, cap),
+    cap,
+    truncatedByCap: walked.length > cap,
+  };
 }
 
 export function registerAudiobookCopilotTools(server: McpServer, client: SpotifyClient): void {
@@ -169,10 +175,15 @@ export function registerAudiobookCopilotTools(server: McpServer, client: Spotify
       dry_run: DryRun,
     },
     async (args) => {
-      const { chapters } = await fetchAllChapters(client, args.audiobook_id);
+      const { chapters, cap, truncatedByCap } = await fetchAllChapters(client, args.audiobook_id);
       if (args.chapter > chapters.length) {
+        // A capped walk cannot claim the book "has only N chapters" — it only
+        // knows the first N are addressable (#786).
+        const known = truncatedByCap
+          ? `only the first ${chapters.length} chapters are listed (fetch-all cap ${cap} reached), so chapter ${args.chapter} is not reachable here`
+          : `has only ${chapters.length} chapters`;
         throw new Error(
-          `Audiobook "${args.audiobook_id}" has only ${chapters.length} chapters; cannot jump to chapter ${args.chapter}.`,
+          `Audiobook "${args.audiobook_id}" ${known}; cannot jump to chapter ${args.chapter}.`,
         );
       }
       const target = chapters[args.chapter - 1];

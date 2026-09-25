@@ -265,10 +265,10 @@ describe('list_all_chapters', () => {
 
     const out = await h.invoke('list_all_chapters', { audiobook_id: 'book1' });
 
-    // The walk is genuinely bounded: 500 fetched over ten 50-chapter pages,
-    // with no eleventh page request for chapters 501-600.
+    // The walk is genuinely bounded: 501 chapters probed over eleven
+    // 50-chapter pages, of which only the first 500 are reported.
     const gets = h.client.calls.filter((c) => c.method === 'GET');
-    assert.equal(gets.length, cap / 50);
+    assert.equal(gets.length, Math.ceil((cap + 1) / 50));
     assert.equal((out.structuredContent as { items: unknown[] }).items.length, cap);
 
     const text = textOf(out);
@@ -326,6 +326,27 @@ describe('list_all_chapters', () => {
     assert.doesNotMatch(text, /PREFIX of the book/);
     assert.doesNotMatch(text, /fetch-all cap/);
   });
+
+  it('does not claim truncation for a book of exactly cap chapters', async () => {
+    // Boundary: the cap probe sees no (cap+1)-th chapter, so this book is
+    // complete and must not be labelled a prefix.
+    const cap = getConfig().fetchAllCap;
+    const h = harness(pagedChaptersResponder(cap));
+
+    const out = await h.invoke('list_all_chapters', { audiobook_id: 'book1' });
+
+    const structured = out.structuredContent as {
+      truncated_by_cap: boolean;
+      items: unknown[];
+    };
+    assert.equal(structured.truncated_by_cap, false);
+    assert.equal(structured.items.length, cap);
+
+    const text = textOf(out);
+    assert.match(text, new RegExp(`^Chapters of audiobook book1 \\(${cap} total\\):`, 'm'));
+    assert.doesNotMatch(text, /TRUNCATED/);
+    assert.doesNotMatch(text, /PREFIX of the book/);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -333,6 +354,23 @@ describe('list_all_chapters', () => {
 // ---------------------------------------------------------------------------
 
 describe('jump_to_chapter', () => {
+  it('blames the fetch-all cap, not the book length, for an unreachable chapter', async () => {
+    // 3000 chapters exist; only the first 500 are addressable after the walk.
+    const h = harness(pagedChaptersResponder(3000));
+    const cap = getConfig().fetchAllCap;
+
+    await assert.rejects(
+      h.invoke('jump_to_chapter', { audiobook_id: 'book1', chapter: cap + 1 }),
+      new RegExp(`only the first ${cap} chapters are listed \\(fetch-all cap ${cap} reached\\)`),
+    );
+    // The uncapped wording is reserved for books the walk actually exhausted.
+    const short = harness(pagedChaptersResponder(18));
+    await assert.rejects(
+      short.invoke('jump_to_chapter', { audiobook_id: 'book1', chapter: 19 }),
+      /has only 18 chapters/,
+    );
+  });
+
   it('maps a 1-based chapter to PUT play with context_uri + offset.uri', async () => {
     const h = harness(pagedChaptersResponder(55));
 
