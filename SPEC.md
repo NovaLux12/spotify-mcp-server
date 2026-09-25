@@ -879,13 +879,13 @@ List the current user's playlists.
 
 All playlist set-operation, diff, overlap, intersection, union, subtraction, merge, following, and pair-analysis tools compose the same typed fragments from `src/shaping.ts`. Playlist references accept a raw ID, `spotify:playlist:` URI, or Spotify playlist URL and are normalized to the ID used in `/playlists/{id}` paths.
 
-| Tool family | Tools | Canonical input | One-release legacy aliases |
+| Tool family | Tools | Canonical input | Legacy aliases (supported through v2.0; removed in v2.1) |
 |---|---|---|---|
-| Ordered multi-playlist operation | `overlap_playlists`, `playlist_intersection`, `playlist_overlap_matrix`, `playlist_intersect`, `playlist_union`, `playlist_subtract`, `merge_playlists`, `merge_playlists_plan`, `playlist_difference_plan`, `interleave_playlists_plan`, `playlist_union_preview` | `playlists` | The tool's prior plural name: `playlist_ids`, `source_playlist_ids`, `subtract_playlist_ids`, or `sources` |
+| Ordered multi-playlist operation | `overlap_playlists`, `playlist_intersection`, `playlist_overlap_matrix`, `playlist_intersect`, `playlist_union`, `playlist_subtract`, `merge_playlists`, `merge_playlists_plan`, `playlist_difference_plan`, `interleave_playlists_plan`, `playlist_union_preview`, `find_duplicate_tracks_across_playlists`, `balance_playlist_pairs` | `playlists` | The tool's prior plural name: `playlist_ids`, `source_playlist_ids`, `subtract_playlist_ids`, or `sources` |
 | A/B comparison | `diff_playlists`, `playlist_diff`, `playlist_pair_check`, `compare_playlist_covers`, `playlist_symmetric_difference` | `playlist_a`, then `playlist_b` | `a`/`b`, `playlist_a_id`/`playlist_b_id`, or `playlist_id_a`/`playlist_id_b` |
 | Following fan-out | `check_playlist_following` | `playlists` | `playlist_ids` (retains its historical 1–50 bound) |
 
-**Migration note (v2.0):** legacy names remain callable for exactly one release. Supplying both canonical and legacy values is accepted only when they normalize to the same values in the same order; missing, incomplete, differently ordered, or conflicting inputs fail before any Spotify request and name both conflicting fields. Legacy results include `deprecated_inputs` plus `deprecation_note` in structuredContent and the same one-line note in prose/JSON text. Canonical-only calls omit both fields.
+**Migration note (v2.0 → v2.1):** legacy names remain callable through v2.0 and are removed in v2.1. Supplying both canonical and legacy values is accepted only when they normalize to the same values in the same order; missing, incomplete, differently ordered, or conflicting inputs fail before any Spotify request and name both conflicting fields. Legacy results include `deprecated_inputs` plus `deprecation_note` in structuredContent and the same one-line note in prose/JSON text. Canonical-only calls omit both fields.
 
 #### `get_playlist`
 Get a playlist's metadata and its items. Makes two calls: `GET /playlists/{id}` for metadata, then `GET /playlists/{id}/items` for the track/episode list.

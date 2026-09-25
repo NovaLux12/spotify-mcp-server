@@ -6,6 +6,7 @@ import { getConfig } from '../config.js';
 import {
   confirmViaElicitation,
   describeConfirmation,
+  refusalFor,
   REMOVE_ELICIT_THRESHOLD,
   REPLACE_ELICIT_THRESHOLD,
 } from './confirm.js';
@@ -1550,8 +1551,7 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
   );
 
   // Helpers for new exhaustive playlist tools
-  async function getAllUris(playlistRef: string): Promise<string[]> {
-    const playlistId = normalizePlaylistReference(playlistRef);
+  async function getAllUris(playlistId: string): Promise<string[]> {
     const items = await client.getAllPages<PlaylistItemObject>(`/playlists/${encodeURIComponent(playlistId)}/items`, { limit: '100' }, { maxItems: getConfig().fetchAllCap });
     return items.map(i => i.item?.uri).filter((u): u is string => !!u);
   }
@@ -1671,7 +1671,7 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
 
   // playlist_shuffle (#288)
   server.tool('playlist_shuffle', 'Fisher-Yates shuffle a playlist (seeded optional). Quota: 🟢 GET all + PUT/POST.', { playlist_id: z.string(), seed: z.string().optional(), dry_run: DryRun }, async (args) => {
-    const uris = await getAllUris(args.playlist_id);
+    const uris = await getAllUris(normalizePlaylistReference(args.playlist_id));
     let shuffled = [...uris];
     let rng = Math.random;
     if (args.seed) { let h = 0; for (let i=0;i<args.seed.length;i++) h = (h*31 + args.seed.charCodeAt(i))>>>0; let s=h; rng = () => { s = (s*1664525+1013904223)>>>0; return s/0x100000000; }; }
@@ -1683,7 +1683,7 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
 
   // playlist_reverse (#289)
   server.tool('playlist_reverse', 'Reverse a playlist in one atomic replace. Quota: 🟢 GET all + PUT/POST. Also covers: reverse_playlist_plan — See also: reverse_playlist_plan.', { playlist_id: z.string(), dry_run: DryRun }, async (args) => {
-    const uris = await getAllUris(args.playlist_id);
+    const uris = await getAllUris(normalizePlaylistReference(args.playlist_id));
     const rev = [...uris].reverse();
     if (args.dry_run) return textResult(describeDryRun('reverse playlist', args.playlist_id, [`Would reverse ${uris.length} items`]));
     const snap = await replaceWithUris(args.playlist_id, rev);
@@ -1693,10 +1693,26 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
   // playlist_union (#290)
   server.tool('playlist_union', 'Union of 2–10 playlists into target (deduped, first-seen order). Quota: 🟢 N GETs + PUT/POST.', { ...PlaylistListFields, ...legacyPlaylistListFields(['source_playlist_ids']), ...TargetPlaylistFields, dedupe: z.boolean().default(true), dry_run: DryRun }, async (args) => {
     const input = resolvePlaylistInput(args, { kind: 'list', aliases: ['source_playlist_ids'] });
-    if (!args.target_playlist_id && !args.target_name) throw new Error('Provide target_playlist_id or target_name');
+    if ((args.target_playlist_id === undefined) === (args.target_name === undefined)) {
+      throw new Error('Provide exactly one of target_playlist_id (replace an existing playlist) or target_name (create a new playlist).');
+    }
     const seen = new Set<string>(); const union: string[] = [];
     for (const pid of input.values){ const uris = await getAllUris(pid); for (const u of uris) if (!args.dedupe || !seen.has(u)){ seen.add(u); union.push(u); } }
     if (args.dry_run) { const text = describeDryRun('union playlists', args.target_playlist_id ?? args.target_name!, [`Would union ${union.length} uri(s) from ${input.values.length} playlists`]); return textResult(withPlaylistInputNote(text, input), withPlaylistInputMetadata({ ok: true, dry_run: true, playlists: input.values, uri_count: union.length }, input)); }
+    if (args.target_playlist_id && union.length >= REPLACE_ELICIT_THRESHOLD) {
+      const verdict = await confirmViaElicitation(server, {
+        message: describeConfirmation('replace playlist items', args.target_playlist_id, [
+          `Overwrite ALL existing items with ${union.length} URI(s) from ${input.values.length} playlist(s).`,
+        ]),
+      });
+      const refusal = refusalFor(verdict);
+      if (refusal) {
+        return textResult(
+          withPlaylistInputNote(refusal.message, input),
+          withPlaylistInputMetadata(refusal.payload, input),
+        );
+      }
+    }
     let targetId = args.target_playlist_id;
     if (!targetId){ const created = await client.post<{id:string}>(`/me/playlists`, { name: args.target_name, public: false }); if(!created?.id) throw new Error('Could not create playlist'); targetId = created.id; }
     const snap = await replaceWithUris(targetId!, union);
@@ -1738,7 +1754,7 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
 
   // playlist_trim (#293)
   server.tool('playlist_trim', 'Trim playlist to N items (keep first/last/random). Quota: 🟢 GET all + PUT/POST.', { playlist_id: z.string(), keep: z.number().int().min(1).max(500), keep_which: z.enum(['first','last','random']).default('first'), dry_run: DryRun }, async (args) => {
-    const uris = await getAllUris(args.playlist_id);
+    const uris = await getAllUris(normalizePlaylistReference(args.playlist_id));
     if (uris.length <= args.keep) return textResult(`Playlist already ${uris.length} ≤ ${args.keep} — nothing to trim`);
     let kept: string[];
     if (args.keep_which === 'first') kept = uris.slice(0, args.keep);

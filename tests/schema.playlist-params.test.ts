@@ -3,8 +3,10 @@ import assert from 'node:assert/strict';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { ElicitRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import type { SpotifyClient } from '../src/client.js';
 import { registerExhaust2PlaylistsTools } from '../src/tools/exhaust2_playlists.js';
+import { registerExhaustMiscTools } from '../src/tools/exhaustmisc.js';
 import { registerPlaylistBatchTools } from '../src/tools/playlistbatch.js';
 import { registerPlaylistOpsTools } from '../src/tools/playlistops.js';
 import { registerPlaylistTools } from '../src/tools/playlists.js';
@@ -39,6 +41,8 @@ const TOOL_CONTRACT = {
   interleave_playlists_plan: { kind: 'list', aliases: ['playlist_ids'] },
   playlist_intersection: { kind: 'list', aliases: ['playlist_ids'] },
   playlist_union_preview: { kind: 'list', aliases: ['playlist_ids'] },
+  find_duplicate_tracks_across_playlists: { kind: 'list', aliases: ['playlist_ids'] },
+  balance_playlist_pairs: { kind: 'list', aliases: ['playlist_ids'] },
   playlist_diff: { kind: 'pair', aliases: [['playlist_a_id', 'playlist_b_id']] },
   playlist_pair_check: { kind: 'pair', aliases: [['playlist_a_id', 'playlist_b_id']] },
 } satisfies Record<string, ToolContract>;
@@ -137,6 +141,16 @@ const CALL_CASES: Record<ToolName, CallCase> = {
     alias: { playlist_a_id: 'p1', playlist_b_id: 'p2' },
     aliasNames: ['playlist_a_id', 'playlist_b_id'],
   },
+  find_duplicate_tracks_across_playlists: {
+    canonical: { playlists: ['p1', 'p2'] },
+    alias: { playlist_ids: ['p1', 'p2'] },
+    aliasNames: ['playlist_ids'],
+  },
+  balance_playlist_pairs: {
+    canonical: { playlists: ['p1', 'p2'], dry_run: true },
+    alias: { playlist_ids: ['p1', 'p2'], dry_run: true },
+    aliasNames: ['playlist_ids'],
+  },
 };
 
 function makeClient(calls: string[]): SpotifyClient {
@@ -179,6 +193,7 @@ async function makeHarness(): Promise<PlaylistHarness> {
   registerPlaylistOpsTools(server, client);
   registerPlaylistBatchTools(server, client);
   registerExhaust2PlaylistsTools(server, client);
+  registerExhaustMiscTools(server, client);
   registerSwarm3PlaylistopsTools(server, client);
   registerSwarm4PlaylistsTools(server, client);
 
@@ -191,6 +206,63 @@ async function makeHarness(): Promise<PlaylistHarness> {
     listed,
     invoke: async (name: string, args: Record<string, unknown>): Promise<ToolResponse> => {
       const result = await caller.callTool({ name, arguments: args });
+      return result as unknown as ToolResponse;
+    },
+    close: async () => {
+      await Promise.all([caller.close(), server.close()]);
+    },
+  };
+}
+type ElicitAnswer = { action: 'accept' | 'decline' | 'cancel'; confirm?: boolean } | Error;
+
+interface UnionGateHarness {
+  calls: string[];
+  invoke: (args: Record<string, unknown>) => Promise<ToolResponse>;
+  close: () => Promise<void>;
+}
+
+async function makeUnionGateHarness(answer: ElicitAnswer, useAlias: boolean): Promise<UnionGateHarness> {
+  const calls: string[] = [];
+  const client = {
+    async get<T>(path: string): Promise<T | null> {
+      calls.push(path);
+      return { id: path.split('/').pop() ?? 'playlist', name: 'Playlist' } as T;
+    },
+    async getAllPages<T>(path: string): Promise<T[]> {
+      calls.push(path);
+      return Array.from({ length: 50 }, (_, index) => ({
+        item: { id: `${path.includes('p1') ? 'a' : 'b'}${index}`, uri: `spotify:track:${path.includes('p1') ? 'a' : 'b'}${index}`, name: `Track ${index}` },
+      })) as T[];
+    },
+    async post<T>(path: string): Promise<T | null> {
+      calls.push(`POST ${path}`);
+      return { id: 'created' } as T;
+    },
+    async put<T>(path: string): Promise<T | null> {
+      calls.push(`PUT ${path}`);
+      return { snapshot_id: 'snapshot' } as T;
+    },
+    async delete<T>(): Promise<T | null> {
+      return null;
+    },
+  } as unknown as SpotifyClient;
+  const server = new McpServer({ name: 'union-confirm-contract', version: '0.0.0' });
+  registerPlaylistTools(server, client);
+  const caller = new Client(
+    { name: 'union-confirm-client', version: '0.0.0' },
+    { capabilities: { elicitation: { form: {} } } },
+  );
+  caller.setRequestHandler(ElicitRequestSchema, async () => {
+    if (answer instanceof Error) throw answer;
+    if (answer.action === 'accept') return { action: answer.action, content: { confirm: answer.confirm ?? true } };
+    return { action: answer.action };
+  });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  await Promise.all([caller.connect(clientTransport), server.connect(serverTransport)]);
+  return {
+    calls,
+    invoke: async (args) => {
+      const result = await caller.callTool({ name: 'playlist_union', arguments: args });
       return result as unknown as ToolResponse;
     },
     close: async () => {
@@ -225,7 +297,16 @@ describe('playlist set/diff schema and resolver contract (#912)', () => {
     await harness.close();
   });
 
-  it('enumerates every live set/diff-family tool with only canonical names and explicit aliases', () => {
+  it('discovers every live set/diff-family tool with only canonical names and explicit aliases', () => {
+    const discovered = harness.listed.filter((tool) => {
+      const properties = tool.inputSchema?.properties ?? {};
+      const hasPlaylistCollection = Object.entries(properties).some(([name, schema]) =>
+        schema.type === 'array' && (name.includes('playlist') || name === 'sources'));
+      const hasPair = ['playlist_a', 'playlist_b', 'a', 'b', 'playlist_a_id', 'playlist_b_id', 'playlist_id_a', 'playlist_id_b']
+        .some((name) => name in properties);
+      return hasPlaylistCollection || hasPair;
+    }).map((tool) => tool.name).sort();
+    assert.deepEqual(discovered, Object.keys(TOOL_CONTRACT).sort());
     const byName = new Map(harness.listed.map((tool) => [tool.name, tool]));
     for (const [name, contract] of Object.entries(TOOL_CONTRACT) as Array<[ToolName, (typeof TOOL_CONTRACT)[ToolName]]>) {
       const tool = byName.get(name);
@@ -293,6 +374,44 @@ describe('playlist set/diff schema and resolver contract (#912)', () => {
       if (contract.kind === 'list') assert.match(message, new RegExp(`playlists.*${callCase.aliasNames[0]}`));
       else assert.match(message, new RegExp(`playlist_a.*${callCase.aliasNames[0]}`));
       assert.deepEqual(harness.calls, [], `${name} resolved a conflict before rejecting`);
+    }
+  });
+
+  it('requires exactly one union target before reading sources', async () => {
+    for (const args of [
+      { playlists: ['p1', 'p2'] },
+      { playlists: ['p1', 'p2'], target_playlist_id: 'target', target_name: 'new' },
+    ]) {
+      harness.calls.length = 0;
+      const result = await harness.invoke('playlist_union', args);
+      assert.equal(result.isError, true, 'invalid union target combination succeeded');
+      assert.deepEqual(harness.calls, [], 'union read sources before validating its target');
+    }
+  });
+
+  it('confirms existing-target replacement and refuses declined or transport-error prompts without writes', async () => {
+    const cases = [
+      { label: 'confirmed', answer: { action: 'accept' as const, confirm: true }, useAlias: false, writes: 1 },
+      { label: 'declined', answer: { action: 'decline' as const }, useAlias: true, writes: 0 },
+      { label: 'transport-error', answer: new Error('elicitation transport failed'), useAlias: false, writes: 0 },
+    ] as const;
+    for (const testCase of cases) {
+      const gate = await makeUnionGateHarness(testCase.answer, testCase.useAlias);
+      const source = testCase.useAlias ? { source_playlist_ids: ['p1', 'p2'] } : { playlists: ['p1', 'p2'] };
+      const result = await gate.invoke({ ...source, target_playlist_id: 'target' });
+      const writes = gate.calls.filter((call) => call.startsWith('PUT ') || call.startsWith('POST '));
+      assert.equal(writes.length, testCase.writes, `${testCase.label} write count`);
+      if (testCase.label === 'confirmed') assert.equal(result.structuredContent?.ok, true);
+      else {
+        assert.equal(result.structuredContent?.ok, false);
+        assert.equal(result.structuredContent?.cancelled, true);
+        if (testCase.label === 'transport-error') assert.equal(result.structuredContent?.reason, 'elicitation_failed');
+        if (testCase.useAlias) {
+          assert.deepEqual(result.structuredContent?.deprecated_inputs, ['source_playlist_ids']);
+          assert.match(textOf(result), /Deprecated input source_playlist_ids/);
+        }
+      }
+      await gate.close();
     }
   });
 

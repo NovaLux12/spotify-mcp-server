@@ -16,6 +16,9 @@ import {
   ResponseFormat,
   MaxResults,
   DryRun,
+  PlaylistListFields,
+  legacyPlaylistListFields,
+  resolvePlaylistInput,
   sharedListFields,
   resolveMaxResults,
   truncateItems,
@@ -23,6 +26,8 @@ import {
   listStructuredContent,
   describeDryRun,
   batchSummary,
+  withPlaylistInputMetadata,
+  withPlaylistInputNote,
   type ResponseFormatValue,
 } from '../shaping.js';
 import type { PlaylistItemObject } from '../types/spotify.js';
@@ -476,15 +481,17 @@ export function registerExhaustMiscTools(server: McpServer, client: SpotifyClien
     'find_duplicate_tracks_across_playlists',
     'Find tracks that appear in more than one of the given playlists (cross-playlist dupes). Quota: 🟡 N GETs (one per playlist). Also covers: find_duplicates_in_playlist (single-playlist), find_duplicate_playlists — See also: find_duplicates_in_playlist, find_duplicate_playlists.',
     {
-      playlist_ids: z.array(z.string().min(1)).min(2).max(20).describe('Playlist IDs to compare (2–20)'),
+      ...PlaylistListFields,
+      ...legacyPlaylistListFields(['playlist_ids'], { min: 2, max: 20 }),
       response_format: ResponseFormat,
       max_results: MaxResults,
     },
     async (args) => {
+      const input = resolvePlaylistInput(args, { kind: 'list', aliases: ['playlist_ids'] });
       const rf = args.response_format as ResponseFormatValue | undefined;
       const uriToPlaylists = new Map<string, Set<string>>();
       const uriToName = new Map<string, string>();
-      for (const pid of args.playlist_ids) {
+      for (const pid of input.values) {
         try {
           const items = await client.getAllPages<PlaylistItemObject>(`/playlists/${encodeURIComponent(pid)}/items`, { limit: '50' });
           for (const row of items) {
@@ -503,16 +510,16 @@ export function registerExhaustMiscTools(server: McpServer, client: SpotifyClien
         .sort((a, b) => b.count - a.count);
       const t = truncateItems(dupes, cap(args));
       const pagination = paginationInfo({ total: dupes.length, returned: t.items.length });
-      const structured: Record<string, unknown> = listStructuredContent(
+      const structured = withPlaylistInputMetadata(listStructuredContent(
         t.items as unknown as Record<string, unknown>[],
         pagination,
-        { playlist_ids: args.playlist_ids, duplicate_count: dupes.length },
-      );
-      const lines = [`Cross-playlist duplicates: ${dupes.length} track(s) appear in >1 of ${args.playlist_ids.length} playlists. Showing ${t.items.length}:`];
+        { playlist_ids: input.values, duplicate_count: dupes.length },
+      ), input);
+      const lines = [`Cross-playlist duplicates: ${dupes.length} track(s) appear in >1 of ${input.values.length} playlists. Showing ${t.items.length}:`];
       for (const d of t.items) lines.push(`  ${d.name} (${d.uri}) — in ${d.playlists.join(', ')}`);
       if (t.footer) lines.push(`(${t.footer})`);
       if (rf === 'json') return { content: [{ type: 'text', text: JSON.stringify(structured, null, 2) }], structuredContent: structured };
-      return textResult(lines.join('\n'), structured);
+      return textResult(withPlaylistInputNote(lines.join('\n'), input), structured);
     },
   );
 
