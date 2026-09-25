@@ -166,7 +166,7 @@ export function registerPrompts(server: McpServer): void {
         role: 'user',
         content: {
           type: 'text',
-          text: `Migrate my saved albums into one playlist. Use get_saved_albums with fetch_all=true to list everything saved. Collect every album ID, then fetch album metadata in chunks of 20 using get_several_albums. From those results, pick albums matching the type filter${args.include_singles === 'true' ? '' : ' (keep only album_type=="album", skip "single" and "compilation")'}. Extract track URIs directly from the album objects returned by get_several_albums (they already include tracks.items for albums ≤50 tracks) — do NOT call get_album_tracks per album. Only call get_album_tracks for albums where total_tracks > 50 or where tracks are missing. If no albums match the type filter, report 0 and skip playlist creation. Collect ALL track URIs into one deduplicated ordered list preserving album order. Check whether a playlist named "${args.playlist_name}" already exists via get_user_playlists (fetch_all=true) — that call defaults to a single 20-item page, so on an account with more than 20 playlists a first-page check misses an existing playlist and creates a duplicate on every re-run; if the listing footer says more playlists exist, keep paging before deciding the name is free. If it does, reuse its ID, otherwise create it with create_playlist (description "Tracks migrated from my saved albums"). Use add_to_playlist in batches of at most 100. IMPORTANT: preview the full plan with create_playlist(dry_run=true) and add_to_playlist(dry_run=true) before committing. Finish with counts: albums walked, unique tracks added, duplicates skipped. ${STANDARD_FOOTER}`,
+          text: `Migrate my saved albums into one playlist. Use get_saved_albums with fetch_all=true to list everything saved. Collect every album ID, then fetch album metadata in chunks of 20 using get_several_albums. That batch endpoint hard-errors with 403 for app registrations created after November 2024, because Spotify removed the Get Several endpoints in February 2026; if it 403s, say which step failed and use get_album per album instead — never abandon the migration and never present a partial album list as complete. From those results, pick albums matching the type filter${args.include_singles === 'true' ? '' : ' (keep only album_type=="album", skip "single" and "compilation")'}. Extract track URIs directly from the album objects returned by get_several_albums (they already include tracks.items for albums ≤50 tracks) — do NOT call get_album_tracks per album. Only call get_album_tracks for albums where total_tracks > 50 or where tracks are missing. If no albums match the type filter, report 0 and skip playlist creation. Collect ALL track URIs into one deduplicated ordered list preserving album order. Check whether a playlist named "${args.playlist_name}" already exists via get_user_playlists (fetch_all=true) — that call defaults to a single 20-item page, so on an account with more than 20 playlists a first-page check misses an existing playlist and creates a duplicate on every re-run; if the listing footer says more playlists exist, keep paging before deciding the name is free. If it does, reuse its ID, otherwise create it with create_playlist (description "Tracks migrated from my saved albums"). Use add_to_playlist in batches of at most 100. IMPORTANT: preview the full plan with create_playlist(dry_run=true) and add_to_playlist(dry_run=true) before committing. Finish with counts: albums walked, unique tracks added, duplicates skipped. ${STANDARD_FOOTER}`,
         },
       }],
     });
@@ -189,17 +189,28 @@ export function registerPrompts(server: McpServer): void {
       // and no error (#716). Convert the date here in whole UTC calendar days —
       // a YYYY-MM-DD argument parses as UTC midnight, so the difference is
       // exact no matter what time of day the prompt is rendered at — and
-      // disclose when the requested window cannot be represented.
+      // disclose whenever the requested window cannot be represented, at
+      // either end of the range.
       const sinceMs = Date.parse(args.since);
-      const unparseable = !Number.isFinite(sinceMs);
+      // A finite parse proves the string is *parseable*, not that it is a day
+      // the calendar has: the ISO parser rolls overflow forward, so 2026-02-30
+      // parses as 2026-03-02 and a "February 30" typo became a 207-day scan
+      // with no complaint. Round-trip the date part instead — only a date
+      // that survives the parse unchanged is a real calendar date.
+      const realCalendarDate = Number.isFinite(sinceMs)
+        && new Date(sinceMs).toISOString().slice(0, 10) === args.since;
       const todayUtc = Date.parse(`${new Date().toISOString().slice(0, 10)}T00:00:00.000Z`);
-      const rawDays = unparseable ? 7 : Math.round((todayUtc - sinceMs) / 86_400_000);
+      const rawDays = realCalendarDate ? Math.round((todayUtc - sinceMs) / 86_400_000) : 7;
       const days = Math.min(365, Math.max(1, rawDays));
-      const windowNote = unparseable
+      const windowNote = !realCalendarDate
         ? ` "${args.since}" is not a real calendar date, so days=7 is a placeholder — report the date error and ask me to restate it before scanning.`
-        : days < rawDays
+        : rawDays > days
           ? ` ${args.since} is more than ${days} days back, which exceeds show_new_episodes' 365-day maximum, so days=${days} alone would under-report: use the exact-date path below instead of show_new_episodes.`
-          : '';
+          : rawDays < 0
+            ? ` ${args.since} is in the future, so no episode can be released on or after it; days=${days} would scan the last day instead and answer a different question: report the future date and ask me to confirm the intended start before scanning.`
+            : rawDays === 0
+              ? ` ${args.since} is today, and show_new_episodes' smallest window is days=1, whose cutoff is yesterday: days=1 over-reports by up to a day — say so, or use the exact-date path below to hold the boundary at today.`
+              : '';
       return ({
       messages: [{
         role: 'user',
@@ -257,7 +268,7 @@ export function registerPrompts(server: McpServer): void {
             text: [
               `Write my ${args.interval} music briefing for the ${horizon}. Work through these sections in order; if a tool is unavailable (toolset-trimmed), skip that section with a one-line note and continue — never fail the whole briefing for one missing tool.`,
               `1. New podcast episodes — call show_new_episodes (or get_saved_shows + list_show_episodes if show_new_episodes is unavailable) for up to ${args.max_shows} shows; present as "New podcast episodes" with show, episode title, release date, and URI.`,
-              `2. New releases — call whats_new (kinds=["albums"], max_artists=${args.max_artists}) for up to ${args.max_artists} followed artists; present as "New releases" with artist, release name, type, and URI. artist_release_digest is the watchlist-scoped variant, not the followed-artists one: it reads a local watchlist sidecar, so on a default install with no watchlist it answers "Watchlist \"default\" is empty." and no releases at all. Use it only when I name a watchlist, and when it reports an empty watchlist say so explicitly and offer to seed one with watch_artists (artist_ids=[...]) or fall back to whats_new for followed artists — never present the bare empty-watchlist message as the new-releases section.`,
+              `2. New releases — call whats_new (kinds=["albums"], max_artists=${args.max_artists}) for up to ${args.max_artists} followed artists; present as "New releases" with artist, release name, type, and URI. artist_release_digest is the watchlist-scoped variant, not the followed-artists one: it reads a local watchlist sidecar, so on a default install with no watchlist it scans nothing and answers No artists in watchlist "default" — nothing was scanned. (or Watchlist "default" does not exist. for a name it has never seen). Use it only when I name a watchlist, and when it reports an empty or missing watchlist say so explicitly and offer to seed one with watch_artists (artist_ids=[...]) or fall back to whats_new for followed artists — never present the bare empty-watchlist message as the new-releases section.`,
               `3. Catalog freshness — call whats_new; present as "Catalog freshness" with a one-line freshness summary.`,
               `4. You were listening to — call get_recently_played (limit 10); present as "You were listening to" with track/episode, artist/show, and when played.`,
               `5. Close with a single suggestion line tying the briefing together (e.g. "Try queuing X next" or "Catch up on Y").`,
@@ -302,7 +313,7 @@ export function registerPrompts(server: McpServer): void {
         : 'AUTO MODE: proceed without waiting for approval, but still run each planned write once with dry_run=true before doing it for real.';
       const bucketing =
         args.bucket_by === 'decade'
-          ? 'Collect distinct album IDs from step 1, then fetch album metadata in chunks of 20 using get_several_albums (cache lookups; do not re-fetch). Read each release_date and assign the track to a decade bucket such as "Liked · 2010s".'
+          ? 'Collect distinct album IDs from step 1, then fetch album metadata in chunks of 20 using get_several_albums (cache lookups; do not re-fetch). That batch endpoint hard-errors with 403 for app registrations created after November 2024; if it 403s, say which step failed and use get_album per album instead, or bucket on the release date carried by the saved track rather than the album. Read each album release_date and assign the track to a decade bucket such as "Liked · 2010s".'
           : args.bucket_by === 'genre'
             ? 'Call library_genre_report to see which of my artists carry sidecar genre tags, then filter_by_genre once per tag to collect matching saved-track URIs into genre buckets such as "Liked · Jazz". If the report comes back empty, ask ME for an artist-to-genre mapping on this first pass instead of guessing.'
             : 'Group tracks by their primary artist name straight from the saved-track data (no extra lookups), one bucket per major artist such as "Liked · Queen".';

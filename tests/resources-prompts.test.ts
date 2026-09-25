@@ -22,9 +22,10 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 
 import { registerResources } from '../src/resources/index.js';
 import { registerPrompts } from '../src/prompts/index.js';
-import { SpotifyApiError, type SpotifyClient } from '../src/client.js';
+import { SpotifyApiError, SpotifyClient } from '../src/client.js';
 import { registerArtistWatchTools } from '../src/tools/artistwatch.js';
 import { registerShowRadarTools } from '../src/tools/showradar.js';
+import { registerManifestModule, REGISTRAR_MANIFEST } from '../src/tools/annotations.js';
 
 type ToolContent = {
   content: Array<{ type: string; text?: string }>;
@@ -428,50 +429,54 @@ test('triage_liked_songs is registered and its schema rejects a bogus bucket_by 
   );
 });
 
-// Static lookup table of every tool registered by src/tools/*.
-const realToolNames: Record<string, true> = Object.fromEntries([
-  // playback
-  'get_now_playing', 'get_currently_playing', 'play_from_search', 'play', 'pause',
-  'find_duplicates_in_playlist',
-  'skip_next', 'skip_previous', 'seek', 'set_volume', 'set_shuffle', 'set_repeat',
-  'get_queue', 'add_to_queue', 'get_devices', 'transfer_playback',
-  'get_track', 'get_artist', 'get_artist_albums', 'get_album', 'get_album_tracks',
-  'get_show', 'list_show_episodes', 'get_episode', 'get_me', 'get_artist_top_tracks',
-  'get_available_markets', 'get_several_tracks', 'get_several_albums', 'get_several_artists',
-  'get_several_episodes', 'get_several_shows', 'get_several_audiobooks', 'get_several_chapters',
-  // personalization
-  'get_top_tracks', 'get_top_artists', 'get_recently_played',
-  // library
-  'get_saved_tracks', 'get_saved_albums', 'get_saved_shows', 'get_saved_episodes',
-  'save_items', 'remove_saved_items', 'check_saved_items',
-  'save_to_library', 'remove_from_library', 'check_in_library',
-  // playlists
-  'get_user_playlists', 'get_playlist', 'get_playlist_items', 'get_playlist_cover',
-  'upload_playlist_cover', 'create_playlist', 'add_to_playlist', 'remove_from_playlist',
-  'update_playlist', 'reorder_playlist_items', 'replace_playlist_items',
-  // following / users
-  'get_followed_artists', 'check_following_artists', 'follow_artists', 'unfollow_artists',
-  'get_user_profile', 'get_user_playlists_by_id',
-  // audiobooks
-  'get_audiobook', 'get_audiobook_chapters', 'get_chapter', 'get_saved_audiobooks',
-  // analytics/portability (exhaust-portability)
-  'listening_report', 'listening_streaks', 'top_artists_by_range', 'taste_shift_report',
-  'export_all_playlists', 'export_library_json', 'export_followed_artists', 'library_snapshot_diff', 'history_search', 'import_from_sidecar',
-  'save_discover_weekly', 'save_release_radar',
-  // search/catalog helpers referenced by prompts
-  'search', 'search_deep', 'get_artist_albums', 'get_album_tracks',
-  // radar/briefing tools referenced by music_briefing + others
-  'show_new_episodes', 'artist_release_digest', 'whats_new', 'check_artist_releases', 'watch_artists',
-  'library_genre_report', 'filter_by_genre',
-  // catalog helpers for crate_digging etc
-  'get_top_tracks', 'get_top_artists', 'get_recently_played', 'get_saved_albums', 'get_saved_tracks',
-  'get_saved_shows', 'list_show_episodes', 'get_followed_artists',
-  // queueops
-  'queue_playlist', 'save_queue_as_playlist', 'batch_add_to_queue',
-  // suite helpers
-  'create_playlist', 'add_to_playlist', 'add_to_queue', 'get_user_playlists', 'get_playlist_items',
-  'find_duplicates_in_playlist', 'remove_from_playlist',
-].map((name) => [name, true as const]));
+// ---------------------------------------------------------------------------
+// #716 — the live registry, not a hand transcription of it.
+//
+// The guards below need to know, independently of any prompt, which tools
+// exist and which parameters each one declares. That answer comes from the
+// registry the production bootstrap builds: the same
+// REGISTRAR_MANIFEST → registerManifestModule walk `src/index.ts` does, then
+// the schemas off the resulting server. Reading it here is what makes those
+// guards independent AND drift-proof — the prompt body supplies one side of
+// every assertion (the candidate `tool(key=value)` pair) and the registry
+// supplies the other (the declared parameter set). A hand-copied table was
+// neither: it absorbed a tool dropping a declared parameter and still called
+// the now-invalid prompt argument correct.
+// ---------------------------------------------------------------------------
+
+type RegisteredToolDef = { inputSchema?: { shape?: Record<string, unknown> } };
+
+let registry: Record<string, readonly string[]> | undefined;
+
+function toolRegistry(): Record<string, readonly string[]> {
+  if (registry) return registry;
+  const server = new McpServer({ name: 'registry-probe', version: '0.0.0' });
+  const context = { readOnly: false, isModuleActive: () => true, scopeBlocked: () => false };
+  for (const module of REGISTRAR_MANIFEST) {
+    registerManifestModule(server, new SpotifyClient(), module, context);
+  }
+  // The SDK hangs the registered tool table off the instance under this name
+  // (tests/tool.surface.test.ts reads the same field). If it ever moves, every
+  // assertion below would quietly compare against nothing, so fail loudly.
+  const raw: unknown = Reflect.get(server, '_registeredTools');
+  if (typeof raw !== 'object' || raw === null) {
+    throw new Error('the SDK did not expose _registeredTools: the #716 guards would be vacuous');
+  }
+  const out: Record<string, readonly string[]> = {};
+  for (const [name, value] of Object.entries(raw)) {
+    if (typeof value !== 'object' || value === null) {
+      throw new Error(`tool ${name} registered without an inspectable definition`);
+    }
+    const def: RegisteredToolDef = value;
+    out[name] = Object.keys(def.inputSchema?.shape ?? {});
+  }
+  registry = out;
+  return out;
+}
+
+const realToolNames: Record<string, true> = Object.fromEntries(
+  Object.keys(toolRegistry()).map((name) => [name, true as const]),
+);
 
 test('every prompt only references tool names that are actually registered', async () => {
   const server = new McpServer({ name: 'test', version: '0.0.0' });
@@ -557,43 +562,38 @@ async function allPromptBodies(): Promise<Map<string, string>> {
 }
 
 /**
- * The parameter contract of every tool a prompt passes `key=value` arguments
- * to, transcribed by hand from the tool schemas in src/tools/*.
- *
- * Deliberately NOT derived from the live registry: a table regenerated from
- * the registry would restate whatever the registry happens to declare and so
- * could never contradict a prompt — that is the defect the guard exists to
- * catch. A tool that gains a parameterised mention in a prompt body without a
- * row here fails the test on purpose, so the expectation stays an explicit
- * decision rather than an inherited default.
+ * What every registered tool declares, straight off the live registry built in
+ * toolRegistry() above. The prompt body is the other side of every comparison
+ * below, so deriving this cannot make a guard agree with a prompt by
+ * construction: the two inputs are the prompt's claim and the schema's truth,
+ * and they are free to disagree.
  */
-const realToolParams: Record<string, readonly string[]> = {
-  add_to_playlist: ['playlist_id', 'uris', 'check_duplicates', 'position', 'dry_run'],
-  add_to_queue: ['uri', 'device_id', 'response_format', 'dry_run'],
-  batch_add_to_queue: ['uris', 'device_id', 'response_format', 'dry_run'],
-  create_playlist: ['name', 'description', 'public', 'collaborative', 'dry_run'],
-  get_playlist_items: [
-    'playlist_id', 'id', 'limit', 'offset', 'market', 'fields', 'additional_types',
-    'fetch_all', 'response_format', 'max_results',
-  ],
-  get_recently_played: ['limit', 'after', 'before', 'response_format', 'max_results'],
-  get_saved_shows: ['limit', 'offset', 'fetch_all', 'response_format', 'max_results'],
-  get_top_artists: ['time_range', 'limit', 'offset', 'response_format', 'max_results'],
-  get_top_tracks: ['time_range', 'limit', 'offset', 'response_format', 'max_results'],
-  get_user_playlists: ['limit', 'offset', 'fetch_all', 'response_format', 'max_results'],
-  search: ['query', 'types', 'limit', 'offset', 'include_external', 'market', 'response_format', 'max_results'],
-  show_new_episodes: ['days', 'per_show_limit', 'max_shows', 'cost_preview', 'response_format', 'max_results'],
-  watch_artists: ['artist_ids', 'name', 'response_format'],
-  whats_new: ['since', 'days_back', 'kinds', 'max_artists', 'response_format', 'max_results', 'dry_run'],
-};
+const realToolParams: Record<string, readonly string[]> = toolRegistry();
 
 /**
- * Every parameter name declared above, so the name-only guard can tell a tool
- * parameter such as `per_show_limit` apart from a misspelt tool. Same
- * hand-written source, so this inherits the same independence from the
- * registry.
+ * Every parameter name the registry declares, so the name-only guard can tell
+ * a tool parameter such as `per_show_limit` apart from a misspelt tool.
  */
 const realParamNames = new Set(Object.values(realToolParams).flat());
+
+test('the param guard reads a real registry, not an empty or partial one (#716)', () => {
+  // Every assertion below is a lookup into realToolParams. If the probe
+  // silently yielded nothing they would pass for the wrong reason, so pin
+  // the shape the guards depend on rather than trusting it.
+  assert.ok(
+    Object.keys(realToolParams).length > 500,
+    `the registry probe found ${Object.keys(realToolParams).length} tools; the param guard compares against this map, so a truncated probe makes it vacuous`,
+  );
+  assert.ok(
+    realToolParams.show_new_episodes?.includes('days'),
+    'show_new_episodes must declare `days` for the podcast_catchup window guard to mean anything',
+  );
+  assert.ok(
+    realToolParams.show_new_episodes?.includes('per_show_limit') === true
+      && realToolParams.show_new_episodes?.includes('since') === false,
+    'show_new_episodes takes per_show_limit, not since — the substitution #716 exists to catch',
+  );
+});
 
 test('every parameter a prompt hands to a tool is one the tool declares (#716)', async () => {
   const bodies = await allPromptBodies();
@@ -609,7 +609,7 @@ test('every parameter a prompt hands to a tool is one the tool declares (#716)',
       const declared = realToolParams[token];
       assert.ok(
         declared !== undefined,
-        `prompt '${promptName}' calls ${token} with parameters but realToolParams has no row for it — add ${token}'s real parameter list`,
+        `prompt '${promptName}' calls ${token} with parameters, but ${token} is not in the registry — the probe missed it`,
       );
       for (const key of keys) {
         assert.ok(
@@ -647,6 +647,55 @@ test('podcast_catchup converts its `since` date into show_new_episodes\' real wi
   const clamped = await withPromptClient((c) => promptBody(c, 'podcast_catchup', { since: tooOld }));
   assert.match(clamped, /days=365/);
   assert.match(clamped, /365-day maximum/);
+});
+
+test('podcast_catchup reports a day the calendar does not have, instead of scanning the rolled-over month (#716)', async () => {
+  // V8's ISO parser rolls an out-of-range day forward rather than failing:
+  // 2026-02-30 parses as 2026-03-02. Treating a finite parse as a valid date
+  // turned that typo into a ~7-month scan the user never asked for, silently.
+  // Every one of these is schema-valid (^\d{4}-\d{2}-\d{2}$), so the prompt
+  // layer is the only place the calendar can be checked.
+  for (const impossible of ['2026-02-30', '2026-04-31', '2026-06-31', '2025-02-29']) {
+    assert.ok(
+      Number.isFinite(Date.parse(impossible)),
+      `${impossible} must stay parseable, or this test no longer covers the overflow the parser hides`,
+    );
+    const body = await withPromptClient((c) => promptBody(c, 'podcast_catchup', { since: impossible }));
+    assert.match(
+      body,
+      /is not a real calendar date/,
+      `"${impossible}" is not a day the calendar has, so the prompt must say so instead of emitting a day count for it`,
+    );
+    assert.match(body, /days=7 is a placeholder/, `"${impossible}" must mark the emitted day count as a placeholder`);
+    // The disclosure's own wording is part of the contract: it must name the
+    // offending date, so the model can report which one was wrong.
+    assert.ok(body.includes(impossible), `the note for "${impossible}" must name the date it rejected`);
+  }
+});
+
+test('podcast_catchup discloses a future `since` instead of quietly scanning one day (#716)', async () => {
+  const future = new Date(Date.now() + 200 * 86_400_000).toISOString().slice(0, 10);
+  const body = await withPromptClient((c) => promptBody(c, 'podcast_catchup', { since: future }));
+
+  // A schema-valid future date used to render a one-day window with an empty
+  // note. The disclosure is the claim under test, so assert it first: the
+  // days=1 that follows is just the clamp doing its job.
+  assert.match(body, /is in the future/, 'a future since must be disclosed, not silently floored to days=1');
+  assert.match(body, /no episode can be released on or after it/);
+  assert.match(body, /show_new_episodes \(days=1, per_show_limit=3\)/, 'the clamp still floors at one day; the note is what makes that answerable');
+});
+
+test('podcast_catchup does not call today a future date, and says why days=1 overshoots (#716)', async () => {
+  const today = new Date().toISOString().slice(0, 10);
+  const body = await withPromptClient((c) => promptBody(c, 'podcast_catchup', { since: today }));
+
+  // rawDays is 0 here, not negative. Folding 0 into the future branch would
+  // have told the model to report a date error for a perfectly valid request;
+  // folding it into "no note" would hide that the tool's smallest window
+  // (days=1) starts a day before the date that was actually asked for.
+  assert.doesNotMatch(body, /is in the future/, 'today is not in the future');
+  assert.match(body, /is today/, 'the rawDays=0 case needs its own note, not silence');
+  assert.match(body, /cutoff is yesterday/);
 });
 
 test('the day count podcast_catchup emits makes show_new_episodes cut off ON the requested date (#716)', async () => {
@@ -689,6 +738,15 @@ const REQUIRED_FALLBACK: Array<{ tool: string; mustMention: string[] }> = [
     tool: 'get_artist_top_tracks',
     mustMention: ['403', 'get_artist_albums', 'get_album_tracks', 'hit detection was unavailable'],
   },
+  {
+    // Same wrapper, same 403, same non-degrading rethrow (src/tools/catalog.ts
+    // wraps every "Get Several" batch lookup). The thrown text does carry the
+    // recovery hint, but only once the call has already aborted the run: a
+    // prompt that mandates the batch call with no stated degraded path either
+    // kills the whole task or gets the batch silently dropped.
+    tool: 'get_several_albums',
+    mustMention: ['403', 'use get_album per album instead'],
+  },
 ];
 
 test('a prompt that names a hard-throwing tool documents the degraded path (#716)', async () => {
@@ -698,7 +756,7 @@ test('a prompt that names a hard-throwing tool documents the degraded path (#716
       for (const phrase of mustMention) {
         assert.ok(
           body.includes(phrase),
-          `prompt '${promptName}' mandates ${tool} but never says "${phrase}" — without it the 403 either aborts the run or silently drops the hit filter`,
+          `prompt '${promptName}' mandates ${tool} but never says "${phrase}" — ${tool}'s wrapper rethrows on 403 instead of degrading, so without that phrase the call either aborts the whole run or gets dropped and the step silently does less than the prompt promised`,
         );
       }
     }
@@ -711,13 +769,29 @@ test('a prompt that names a hard-throwing tool documents the degraded path (#716
  * merely somewhere in the body: a first page of 20 turns a >20-playlist
  * account into a duplicate playlist on every re-run.
  */
-const PAGED_NAME_CHECKS: Array<{ tool: string; mustCarry: string }> = [
-  { tool: 'get_user_playlists', mustCarry: 'fetch_all=true' },
+const PAGED_NAME_CHECKS: Array<{ tool: string; mustCarry: string; requiredIn: string[] }> = [
+  {
+    tool: 'get_user_playlists',
+    mustCarry: 'fetch_all=true',
+    // The scan below is per-occurrence, so a prompt that stopped doing the
+    // check at all would go quietly unchecked rather than fail. Name the
+    // prompts that are required to do it, so deleting the check is a failure
+    // too: these three all resolve a playlist by name, and a first page of 20
+    // turns a >20-playlist account into a duplicate playlist on every re-run.
+    requiredIn: ['playlist_audit', 'migrate_library', 'triage_liked_songs'],
+  },
 ];
 
 test('a playlist name-existence check pins fetch_all=true at the call site (#716)', async () => {
-  for (const [promptName, body] of await allPromptBodies()) {
-    for (const { tool, mustCarry } of PAGED_NAME_CHECKS) {
+  const bodies = await allPromptBodies();
+  for (const [promptName, body] of bodies) {
+    for (const { tool, mustCarry, requiredIn } of PAGED_NAME_CHECKS) {
+      if (requiredIn.includes(promptName)) {
+        assert.ok(
+          body.includes(tool),
+          `prompt '${promptName}' is required to check for an existing playlist with ${tool}, but no longer mentions it — deleting the check is not a way to pass this guard`,
+        );
+      }
       let at = body.indexOf(tool);
       while (at !== -1) {
         const window = body.slice(at, at + 240);
@@ -780,6 +854,28 @@ test('artist_release_digest empty watchlist is actionable, not a bare dead end (
     assert.doesNotMatch(emptyText, /Watchlist "seeded" is empty\./, 'the bare dead end is what #716 removed');
     assert.equal(empty.structuredContent?.ok, false);
     assert.equal(empty.structuredContent?.reason, 'empty_watchlist');
+
+    // The briefing prompt quotes the empty-watchlist message so the model
+    // knows what to recognise. Build the expectation from what the tool just
+    // emitted rather than restating the string here — this is the coupling
+    // that broke: the prompt kept quoting `Watchlist "default" is empty.`
+    // after this tool stopped being able to produce it.
+    const promptLine = (await allPromptBodies()).get('music_briefing')?.split('\n')
+      .find((l) => l.startsWith('2. New releases')) ?? '';
+    assert.ok(promptLine !== '', 'music_briefing should have a "2. New releases" section');
+    // The tool's message is "<headline>. <remediation>"; the prompt quotes the
+    // headline, so compare against the headline the tool actually produced.
+    const asDefault = emptyText.replaceAll('"seeded"', '"default"');
+    const headline = asDefault.slice(0, asDefault.indexOf('. ') + 1);
+    assert.ok(
+      promptLine.includes(headline),
+      `music_briefing quotes an empty-watchlist message the tool no longer emits. Tool says: ${JSON.stringify(headline)}`,
+    );
+    assert.doesNotMatch(
+      promptLine,
+      /Watchlist "default" is empty\./,
+      'the bare dead end was removed from artist_release_digest; quoting it teaches the model to look for a message that cannot arrive',
+    );
   } finally {
     if (prev === undefined) delete process.env.SPOTIFY_MCP_DATA_DIR;
     else process.env.SPOTIFY_MCP_DATA_DIR = prev;
