@@ -17,7 +17,7 @@
  * bookmarks, listening journal, archived monthly reports. Owner-only modes.
  */
 import { z } from 'zod';
-import { MARKET_CODE } from './catalog.js';
+import { ARTIST_ALBUM_PAGE_LIMIT, MARKET_CODE } from './catalog.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
@@ -334,21 +334,21 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
         // (live-observed 2026-08-27) — page at 10 instead of 20.
         const page = await client.get<{ items?: Array<{ name?: string; release_date?: string; artists?: Array<{ name: string }> }> }>(
           `/artists/${encodeURIComponent(a.id)}/albums`,
-          { include_groups: 'album,single', limit: '10' },
+          { include_groups: 'album,single', limit: String(ARTIST_ALBUM_PAGE_LIMIT) },
         );
         for (const alb of page?.items ?? []) {
           const rd = alb.release_date ?? '';
           if (rd && Date.parse(rd) >= since) freshAlbums.push({ artist: a.name, album: alb.name ?? 'unknown', release_date: rd });
         }
       }
-      const shows = await client.getAllPages<{ show?: { name?: string; total_episodes?: number }; total?: number }>('/me/shows', { limit: '50' }, { maxItems: args.max_shows });
+      const shows = await client.getAllPages<{ show?: { name?: string; total_episodes?: number } }>('/me/shows', { limit: '50' }, { maxItems: args.max_shows });
       const newEpisodes: Array<{ show: string; episode: string; released: string }> = [];
       const backlog: Array<{ show: string; total_episodes: number | null }> = [];
       let skippedShows = 0;
       for (const row of shows.slice(0, args.max_shows)) {
         const show = row.show;
         if (!show) continue;
-        backlog.push({ show: show.name ?? 'unknown', total_episodes: row.total ?? null });
+        backlog.push({ show: show.name ?? 'unknown', total_episodes: show.total_episodes ?? null });
         let ep: { items?: Array<{ name?: string; release_date?: string; resume_point?: { fully_played?: boolean } }> } | null;
         try {
           ep = await client.get<{ items?: Array<{ name?: string; release_date?: string; resume_point?: { fully_played?: boolean } }> }>(
@@ -1236,9 +1236,9 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
   // -----------------------------------------------------------------------
   server.tool(
     'artist_complete_check',
-    "Collector completeness: the artist's full album list vs your saved albums — what's "
-      + 'missing, with album/single/compilation breakdown. Quota: 2 reads (artist albums + '
-      + 'your saved albums, page-capped).',
+    "Collector completeness: the artist's full album list (page-walked at 10/page) vs your "
+      + 'saved albums — what\'s missing, with album/single/compilation breakdown. Quota: 1 read '
+      + 'per artist-album page (walk stops at the fetch cap) + your saved albums, page-capped.',
     {
       artist_id: z.string().min(1).describe('Spotify artist ID'),
       include_singles: z.boolean().optional().default(true)
@@ -1249,25 +1249,34 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
     async (args) => {
       const rf = args.response_format as ResponseFormatValue;
       const groups = args.include_singles ? 'album,single,compilation' : 'album,compilation';
-      const albums = await client.get<{ name?: string; items?: Array<{ id: string; name: string; album_group?: string; album_type?: string; release_date?: string }> }>(
+      // /artists/{id}/albums rejects limit > 10 with 400 (live-observed 2026-08-27),
+      // so "the full album list" needs a page walk at the shared cap — one fat
+      // request silently truncates any artist with more releases than the page.
+      const cap = getConfig().fetchAllCap;
+      const catalog = await client.getAllPages<{ id: string; name: string; album_group?: string; album_type?: string; release_date?: string }>(
         `/artists/${encodeURIComponent(args.artist_id)}/albums`,
-        { include_groups: groups, limit: '50' },
+        { include_groups: groups, limit: String(ARTIST_ALBUM_PAGE_LIMIT) },
+        { maxItems: cap },
       );
-      const artistName = albums?.name ?? args.artist_id;
-      const savedAlbums = await client.getAllPages<{ album?: { id?: string } }>('/me/albums', { limit: '50' }, { maxItems: getConfig().fetchAllCap });
+      // /artists/{id}/albums is a bare PagingObject (href/items/limit/offset/total) and
+      // carries no artist name, so the ID is the only name this call can report.
+      const artistName = args.artist_id;
+      const savedAlbums = await client.getAllPages<{ album?: { id?: string } }>('/me/albums', { limit: '50' }, { maxItems: cap });
       const savedIds = new Set(savedAlbums.map((r) => r.album?.id).filter((u): u is string => typeof u === 'string'));
-      const missing = (albums?.items ?? []).filter((a) => !savedIds.has(a.id));
+      const missing = catalog.filter((a) => !savedIds.has(a.id));
+      const capped = catalog.length >= cap;
       const breakdown = new Map<string, number>();
       for (const a of missing) breakdown.set(a.album_group ?? a.album_type ?? 'unknown', (breakdown.get(a.album_group ?? a.album_type ?? 'unknown') ?? 0) + 1);
       const maxResults = resolveMaxResults(args.max_results, getConfig().maxItems);
       const t = truncateItems(missing, maxResults);
       const payload = {
-        ok: true, artist: artistName, total_albums: (albums?.items ?? []).length, missing: missing.length,
+        ok: true, artist: artistName, total_albums: catalog.length, missing: missing.length,
         breakdown: Object.fromEntries(breakdown), missing_list: t.items.map((a) => ({ name: a.name, group: a.album_group ?? a.album_type, release_date: a.release_date ?? '' })),
-        truncated: t.truncated,
+        truncated: t.truncated, capped,
       };
       const lines = [`Completeness for ${artistName}:`, ''];
-      lines.push(`Catalog: ${(albums?.items ?? []).length} releases, you have ${(albums?.items ?? []).length - missing.length}, missing ${missing.length}.`);
+      lines.push(`Catalog: ${catalog.length} releases, you have ${catalog.length - missing.length}, missing ${missing.length}.`);
+      if (capped) lines.push(`(scan stopped at the ${cap}-release fetch cap — this artist may have more releases than were counted)`);
       lines.push(`Breakdown of missing: ${[...breakdown.entries()].map(([g, n]) => `${g}: ${n}`).join(', ') || 'nothing'}`);
       if (missing.length) {
         lines.push('', 'Missing releases:');

@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { registerExhaust2MiscTools } from '../src/tools/exhaust2_misc.js';
 import { saveMiscStore } from '../src/tools/exhaust2_misc.js';
+import { ARTIST_ALBUM_PAGE_LIMIT } from '../src/tools/catalog.js';
 import { issueReceipt } from '../src/receipts.js';
 
 // Point every sidecar this slice touches at a throwaway temp dir.
@@ -124,6 +125,27 @@ describe('exhaust2_misc — 27-tool misc slice', () => {
     assert.ok(res.content[0].text.includes('Morning briefing'));
     assert.ok(res.content[0].text.includes('Today so far'));
     assert.equal((res.structuredContent as { listening: { plays: number } }).listening.plays, 1);
+  });
+
+  // #826 — a saved-show item carries `show.total_episodes`; the page envelope's
+  // `total` is the saved-show count and never reaches the per-row read.
+  it('morning_briefing reports the backlog from show.total_episodes', async () => {
+    const h = getHandler('morning_briefing', makeClient({
+      get: mock.fn(async (path: string) => {
+        if (path === '/me/following') return { artists: { items: [{ id: 'a1', name: 'Adele', genres: [] }], cursors: null, next: null } };
+        if (path.startsWith('/artists/a1/albums')) return { items: [] };
+        if (path.includes('/episodes')) return { items: [] };
+        return null;
+      }),
+      // No envelope `total` — mirroring the real /me/shows item shape.
+      getAllPages: mock.fn(async (path: string) => (path === '/me/shows'
+        ? [{ show: { id: 'sh1', name: 'Long Runner', total_episodes: 412 } }]
+        : [])),
+    }));
+    const res = await h({ include_listening: false, max_artists: 5, max_shows: 5, response_format: 'concise' });
+    assert.ok(res.content[0].text.includes('Long Runner: 412 eps'), res.content[0].text);
+    const backlog = (res.structuredContent as { show_backlog: Array<{ show: string; total_episodes: number | null }> }).show_backlog;
+    assert.equal(backlog[0].total_episodes, 412);
   });
 
   // #403
@@ -336,17 +358,57 @@ describe('exhaust2_misc — 27-tool misc slice', () => {
   // #416
   it('artist_complete_check lists missing releases with breakdown', async () => {
     const h = getHandler('artist_complete_check', makeClient({
-      get: mock.fn(async (path: string) => {
-        if (path.startsWith('/artists/aid/albums')) {
-          return { name: 'Adele', items: [{ id: 'al1', name: '30', album_group: 'album', release_date: '2021' }, { id: 'al2', name: 'Missing EP', album_group: 'single', release_date: '2019' }] };
-        }
-        return null;
-      }),
-      getAllPages: mock.fn(async (path: string) => (path.startsWith('/me/albums') ? [{ album: { id: 'al1' } }] : [])),
+      getAllPages: mock.fn(async (path: string) => (path.startsWith('/artists/aid/albums')
+        ? [{ id: 'al1', name: '30', album_group: 'album', release_date: '2021' },
+           { id: 'al2', name: 'Missing EP', album_group: 'single', release_date: '2019' }]
+        : [{ album: { id: 'al1' } }])),
     }));
     const res = await h({ artist_id: 'aid', include_singles: true, response_format: 'concise' });
     assert.ok(res.content[0].text.includes('missing 1'));
     assert.ok(res.content[0].text.includes('Missing EP'));
+  });
+
+  // #828 — the whole point is a catalogue larger than one page: a single-page
+  // fixture would return the same numbers before and after the fix.
+  it('artist_complete_check pages past the first page of an artist catalogue', async () => {
+    const RELEASE_COUNT = 80; // 8 pages of 10; no single request can return this
+    const ALL = Array.from({ length: RELEASE_COUNT }, (_, i) => ({
+      id: `al${i}`, name: `Release ${i}`, album_group: i % 2 === 0 ? 'album' : 'single', release_date: '2020-01-01',
+    }));
+    const OWNED = new Set(ALL.slice(0, 30).map((a) => a.id));
+    const albumRequests: Array<Record<string, string>> = [];
+
+    const h = getHandler('artist_complete_check', makeClient({
+      // Single-request path: honours the caller's limit, exactly as Spotify would.
+      get: mock.fn(async (path: string, params: Record<string, string> = {}) => {
+        if (!path.startsWith('/artists/aid/albums')) return null;
+        albumRequests.push({ path, ...params });
+        const limit = Number(params.limit ?? 50);
+        return { items: ALL.slice(0, limit), limit, offset: 0, total: ALL.length };
+      }),
+      getAllPages: mock.fn(async (path: string, params: Record<string, string> = {}, opts: { maxItems?: number } = {}) => {
+        if (!path.startsWith('/artists/aid/albums')) return [...OWNED].map((id) => ({ album: { id } }));
+        const maxItems = opts.maxItems ?? 500;
+        const limit = Number(params.limit ?? 50);
+        const out: Array<typeof ALL[number]> = [];
+        for (let offset = 0; out.length < maxItems; offset += limit) {
+          albumRequests.push({ path, ...params, offset: String(offset) });
+          const slice = ALL.slice(offset, offset + limit);
+          out.push(...slice);
+          if (slice.length < limit) break;
+        }
+        return out.slice(0, maxItems);
+      }),
+    }));
+
+    const res = await h({ artist_id: 'aid', include_singles: true, response_format: 'concise' });
+    const sc = res.structuredContent as { total_albums: number; missing: number; capped: boolean };
+    assert.equal(sc.total_albums, RELEASE_COUNT, 'every release must be counted, not just page one');
+    assert.equal(sc.missing, RELEASE_COUNT - OWNED.size);
+    assert.equal(sc.capped, false);
+    assert.ok(res.content[0].text.includes(`Catalog: ${RELEASE_COUNT} releases`));
+    assert.ok(albumRequests.length >= RELEASE_COUNT / 10, `expected a page walk, saw ${albumRequests.length} request(s)`);
+    for (const r of albumRequests) assert.equal(r.limit, String(ARTIST_ALBUM_PAGE_LIMIT), `page limit drifted: ${r.limit}`);
   });
 
   // #417
