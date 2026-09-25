@@ -112,27 +112,32 @@ export function normalizeReleaseDate(raw: string): string {
 
 /**
  * Zod schema for the `since` argument: YYYY-MM-DD or the "last-check"
- * sentinel. Beyond shape, the day must actually exist on the calendar so
- * `since=2026-02-30` / `2026-13-01` / `2026-02-29` are rejected by name
- * rather than silently rolling forward into a different window.
+ * sentinel.
+ *
+ * The string branch keeps `.regex(ISO_DATE_RE, ...)` so the published MCP
+ * schema still carries the `pattern` hint clients read. `superRefine` then adds
+ * the check a regex cannot express: the day must actually exist on the
+ * calendar, so `since=2026-02-30` / `2026-13-01` / `2026-02-29` are rejected by
+ * name rather than silently rolling forward into a different window. Both
+ * messages name the `since` field.
  */
-const SinceArg = z.union([z.literal('last-check'), z.string()]).superRefine((value, ctx) => {
-  if (value === 'last-check') return;
-  if (!ISO_DATE_RE.test(value)) {
-    ctx.addIssue({
-      code: 'custom',
-      message: 'since: expected YYYY-MM-DD or "last-check"',
-    });
-    return;
-  }
-  const why = describeImpossibleDate(value);
-  if (why) {
-    ctx.addIssue({
-      code: 'custom',
-      message: `since: "${value}" is not a real calendar date — ${why}. Pick an existing day, or use "last-check".`,
-    });
-  }
-});
+const SinceArg = z
+  .union([
+    z.literal('last-check'),
+    z.string().regex(ISO_DATE_RE, 'since: expected YYYY-MM-DD or "last-check"'),
+  ])
+  .superRefine((value, ctx) => {
+    if (value === 'last-check') return;
+    // Shape already settled by the branch regex; only the calendar is left.
+    if (!ISO_DATE_RE.test(value)) return;
+    const why = describeImpossibleDate(value);
+    if (why) {
+      ctx.addIssue({
+        code: 'custom',
+        message: `since: "${value}" is not a real calendar date — ${why}. Pick an existing day, or use "last-check".`,
+      });
+    }
+  });
 
 function watermarkFilePath(): string {
   return (
