@@ -28,6 +28,9 @@ function result(payload: Record<string, unknown>): ToolResult {
   };
 }
 
+// Share-URL host validation is exact-string (`open.spotify.com`) and lives only
+// in ../refs.js (#825). Never re-check the host here: a looser local check would
+// re-admit lookalike hosts such as `open.spotify.com.evil.test`.
 function parse(input: string, expectedKind?: SpotifyReferenceKind): SpotifyReferenceClassification {
   return classifySpotifyReference(input, expectedKind);
 }
