@@ -167,6 +167,42 @@ function resolveDevice(devices: readonly SpotifyDevice[], hint: string): Spotify
   return devices.find((d) => d.name.toLowerCase().includes(lower)) ?? null;
 }
 
+type VolumeTarget = SpotifyDevice & { id: string };
+
+/**
+ * Devices eligible for a volume write: volume-capable AND carrying a real id.
+ * `PUT /me/player/volume?device_id=` with an empty value addresses the wrong
+ * device (or 400s), so id-less entries are dropped — and counted, so callers
+ * can say how many were skipped instead of silently selecting fewer.
+ */
+function selectVolumeTargets(
+  all: readonly SpotifyDevice[],
+  deviceIds: readonly string[] | undefined,
+): { selected: VolumeTarget[]; skippedNoId: number } {
+  const pool = deviceIds?.length
+    ? deviceIds.map((h) => resolveDevice(all, h)).filter((d): d is SpotifyDevice => d !== null)
+    : [...all];
+  const capable = pool.filter((d) => d.supports_volume);
+  const hasId = (d: SpotifyDevice): d is VolumeTarget => d.id !== null;
+  const selected = capable.filter(hasId);
+  return { selected, skippedNoId: capable.length - selected.length };
+}
+
+/** Human note for id-less devices dropped from a volume plan. */
+function skippedNoIdNote(count: number): string {
+  if (count === 0) return '';
+  return ` — skipped ${count} volume-capable device${count === 1 ? '' : 's'} with no device id`;
+}
+
+/**
+ * One preview line per device. Names only the parameters the volume tool
+ * actually declares (`volume`) plus the real device id it resolved, so an
+ * agent copying the plan reproduces the call the tool would make.
+ */
+function volumePlanLine(d: VolumeTarget, volume: number): string {
+  return `PUT /me/player/volume — volume=${volume} on "${d.name}" (device ${d.id})`;
+}
+
 function deviceLine(d: SpotifyDevice): string {
   const flags: string[] = [];
   if (d.is_active) flags.push('ACTIVE');
@@ -565,17 +601,18 @@ export function registerSwarm3PlaybackTools(server: McpServer, client: SpotifyCl
     async (args: { volume: number; device_ids?: string[]; response_format?: ResponseFormatValue }) => {
       const rf = args.response_format ?? 'concise';
       const all = await fetchDevices(client);
-      let selected = all.filter((d) => d.supports_volume);
-      if (args.device_ids?.length) {
-        const wanted = args.device_ids.map((h) => resolveDevice(all, h)).filter((d): d is SpotifyDevice => d !== null);
-        selected = wanted.filter((d) => d.supports_volume);
-      }
-      const steps = selected.map((d) => `PUT /me/player/volume?volume=${args.volume}&device_id=${d.id} ("${d.name}")`);
+      const { selected, skippedNoId } = selectVolumeTargets(all, args.device_ids);
+      const steps = selected.map((d) => volumePlanLine(d, args.volume));
       const prose = [
-        `[plan] Set volume to ${args.volume}% on ${selected.length} device(s):`,
-        ...(steps.length ? steps.map((s) => `  - ${s}`) : ['  (no volume-capable devices matched)']),
+        `[plan] Set volume to ${args.volume}% on ${selected.length} device(s)${skippedNoIdNote(skippedNoId)}:`,
+        ...(steps.length ? steps.map((s) => `  - ${s}`) : ['  (no volume-capable devices with a device id matched)']),
       ].join('\n');
-      return shape(rf, prose, { volume: args.volume, steps, devices: selected.map((d) => d.id) });
+      return shape(rf, prose, {
+        volume: args.volume,
+        steps,
+        devices: selected.map((d) => d.id),
+        skipped_no_id: skippedNoId,
+      });
     },
   );
 
@@ -594,28 +631,34 @@ export function registerSwarm3PlaybackTools(server: McpServer, client: SpotifyCl
     async (args: { volume: number; device_ids?: string[]; dry_run?: boolean; response_format?: ResponseFormatValue }) => {
       const rf = args.response_format ?? 'concise';
       const all = await fetchDevices(client);
-      let selected = all.filter((d) => d.supports_volume);
-      if (args.device_ids?.length) {
-        const wanted = args.device_ids.map((h) => resolveDevice(all, h)).filter((d): d is SpotifyDevice => d !== null);
-        selected = wanted.filter((d) => d.supports_volume);
-      }
+      const { selected, skippedNoId } = selectVolumeTargets(all, args.device_ids);
       if (isDry(args)) {
-        const steps = selected.map((d) => `PUT /me/player/volume?volume=${args.volume}&device_id=${d.id} ("${d.name}")`);
-        const prose = describeDryRun('apply volume plan', `${selected.length} device(s) → ${args.volume}%`, steps);
-        return shape(rf, prose, { dry_run: true, volume: args.volume, steps });
+        const steps = selected.map((d) => volumePlanLine(d, args.volume));
+        const prose = describeDryRun(
+          'apply volume plan',
+          `${selected.length} device(s) → ${args.volume}%${skippedNoIdNote(skippedNoId)}`,
+          steps,
+        );
+        return shape(rf, prose, { dry_run: true, volume: args.volume, steps, skipped_no_id: skippedNoId });
       }
       const applied: string[] = [];
       const failed: string[] = [];
       for (const d of selected) {
         try {
-          await client.put(`/me/player/volume?${new URLSearchParams({ volume: String(args.volume), device_id: d.id ?? '' })}`);
+          await client.put(`/me/player/volume?${new URLSearchParams({ volume: String(args.volume), device_id: d.id })}`);
           applied.push(d.name);
         } catch {
           failed.push(d.name);
         }
       }
-      const prose = `Volume set to ${args.volume}% on ${applied.length}/${selected.length} device(s)${failed.length ? ` — failed: ${failed.join(', ')}` : ''}.`;
-      return shape(rf, prose, { applied: true, volume: args.volume, applied_devices: applied, failed_devices: failed });
+      const prose = `Volume set to ${args.volume}% on ${applied.length}/${selected.length} device(s)${skippedNoIdNote(skippedNoId)}${failed.length ? ` — failed: ${failed.join(', ')}` : ''}.`;
+      return shape(rf, prose, {
+        applied: true,
+        volume: args.volume,
+        applied_devices: applied,
+        failed_devices: failed,
+        skipped_no_id: skippedNoId,
+      });
     },
   );
 
