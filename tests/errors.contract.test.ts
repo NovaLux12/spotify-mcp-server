@@ -54,6 +54,7 @@ async function harness(): Promise<Client> {
   server.tool('statsfm_not_found_error', '404', throws(new StatsfmApiError(404, 'raw stats.fm /private/missing')));
   server.tool('statsfm_rate_limited_error', '429', throws(new StatsfmApiError(429, 'raw stats.fm /private/rate', 17, 'QUOTA_EXCEEDED')));
   server.tool('statsfm_unavailable_error', '503', throws(new StatsfmApiError(503, 'raw stats.fm /private/unavailable')));
+  server.tool('statsfm_transport_error', 'transport', throws(new StatsfmApiError(0, 'raw stats.fm https://example.test/private?token=secret', undefined, 'transport_error')));
   server.tool('internal_error', 'internal', throws(new Error('ENOENT /home/alice/input/private.m3u and https://example.test/raw?token=secret')));
   server.tool('valid_error', 'validation', { count: z.number() }, async () => ({ content: [{ type: 'text', text: 'ok' }] }));
   server.tool('near_error', 'unknown parameter', { playlist_id: z.string() }, async () => ({ content: [{ type: 'text', text: 'ok' }] }));
@@ -119,6 +120,7 @@ describe('production tool error contract (#921)', () => {
       { tool: 'statsfm_not_found_error', kind: 'not_found', status: 404, reason: 'statsfm_resource_not_found' },
       { tool: 'statsfm_rate_limited_error', kind: 'rate_limited', status: 429, retryAfterSec: 17, reason: 'QUOTA_EXCEEDED' },
       { tool: 'statsfm_unavailable_error', kind: 'unavailable', status: 503, reason: 'statsfm_unavailable' },
+      { tool: 'statsfm_transport_error', kind: 'internal', status: 0, reason: 'statsfm_error' },
     ] as const;
 
     for (const expected of cases) {
@@ -191,6 +193,7 @@ describe('production tool error contract (#921)', () => {
       await call(client, 'statsfm_registration_forbidden'),
       await call(client, 'statsfm_not_found_error'),
       await call(client, 'statsfm_rate_limited_error'),
+      await call(client, 'statsfm_transport_error'),
     ];
     const publicText = JSON.stringify(publicResults);
     const stderrText = diagnostics.join('\n');
@@ -204,6 +207,7 @@ describe('production tool error contract (#921)', () => {
       '/private/gated',
       '/private/missing',
       '/private/rate',
+      'example.test',
       'code=secret',
       'token=secret',
       'SENTINEL_BACKUP',

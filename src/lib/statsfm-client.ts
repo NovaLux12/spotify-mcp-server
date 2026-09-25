@@ -29,7 +29,7 @@ function validRetryAfter(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? Math.ceil(value) : undefined;
 }
 
-function retryAfterSeconds(headers: Headers): number | undefined {
+function statsfmRetryAfterSec(headers: Headers): number | undefined {
   const value = headers.get('retry-after');
   if (!value) return undefined;
   const seconds = validRetryAfter(Number(value));
@@ -41,13 +41,34 @@ function retryAfterSeconds(headers: Headers): number | undefined {
 
 function errorReason(body: unknown): string | undefined {
   if (!body || typeof body !== 'object') return undefined;
-  const direct = 'reason' in body ? (body as { reason: unknown }).reason : undefined;
-  if (typeof direct === 'string' && direct.length > 0) return direct;
+  if ('reason' in body && typeof body.reason === 'string' && body.reason.length > 0) return body.reason;
   if ('error' in body && body.error && typeof body.error === 'object' && 'reason' in body.error) {
-    const nested = (body.error as { reason: unknown }).reason;
+    const nested = body.error.reason;
     if (typeof nested === 'string' && nested.length > 0) return nested;
   }
   return undefined;
+}
+
+/**
+ * Build a public-safe stats.fm failure. Error-envelope messages are deliberately
+ * excluded because stats.fm may echo private request paths or query values.
+ */
+function statsfmApiErrorFromResponse(
+  status: number,
+  body: unknown,
+  retryAfterSec?: number,
+): StatsfmApiError {
+  return new StatsfmApiError(
+    status,
+    `stats.fm HTTP ${status}`,
+    validRetryAfter(retryAfterSec),
+    errorReason(body),
+  );
+}
+
+/** Convert a failed fetch operation into the shared redacted transport type. */
+export function statsfmTransportError(): StatsfmApiError {
+  return new StatsfmApiError(0, 'stats.fm request failed', undefined, 'transport_error');
 }
 
 export type StatsfmFetch = (url: string) => Promise<Response>;
@@ -81,7 +102,7 @@ export class StatsfmClient {
       res = await this.fetchFn(url);
     } catch (err) {
       if (err instanceof StatsfmApiError) throw err;
-      throw new StatsfmApiError(0, 'stats.fm request failed', undefined, 'transport_error');
+      throw statsfmTransportError();
     }
     let body: unknown = null;
     try {
@@ -90,18 +111,13 @@ export class StatsfmClient {
       body = null;
     }
     if (!res.ok) {
-      const msg =
-        body && typeof body === 'object' && 'message' in body && typeof (body as { message: unknown }).message === 'string'
-          ? (body as { message: string }).message
-          : `stats.fm HTTP ${res.status}`;
-      throw new StatsfmApiError(res.status, msg, retryAfterSeconds(res.headers), errorReason(body));
+      throw statsfmApiErrorFromResponse(res.status, body, statsfmRetryAfterSec(res.headers));
     }
     // Error envelope with a 200 status (stats.fm sometimes does this).
     if (body && typeof body === 'object' && 'status' in body && 'message' in body) {
-      const env = body as { status: unknown; message: unknown };
+      const env = body as { status: unknown; message: unknown; retryAfterSec?: unknown };
       if (typeof env.status === 'number' && env.status >= 400 && typeof env.message === 'string') {
-        const retry = validRetryAfter((body as { retryAfterSec?: unknown }).retryAfterSec);
-        throw new StatsfmApiError(env.status, env.message, retry, errorReason(body));
+        throw statsfmApiErrorFromResponse(env.status, body, validRetryAfter(env.retryAfterSec));
       }
     }
     return body as T | null;

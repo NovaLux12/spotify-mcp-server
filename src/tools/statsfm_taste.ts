@@ -4,10 +4,8 @@
  * Eight read-only tools over the stats.fm PUBLIC API v1 (no auth):
  *   https://api.stats.fm/api/v1
  *
- * Local minimal fetch shim lives inside this module on purpose — do NOT
- * depend on sibling-branch client files (e.g. a wt-statsfm shared client);
- * the merge resolves the shared client later. Tests inject fixtures via
- * __setStatsfmFetchImpl.
+ * The shared client owns transport and HTTP error normalization. This module
+ * retains a parsed-payload test seam for the existing pure-analytics suite.
  *
  * Parsing is deliberately lenient: stats.fm shapes vary across endpoints
  * (streams vs top vs stats), so every extractor tolerates missing/renamed
@@ -25,8 +23,10 @@ import {
   listStructuredContent,
 } from '../shaping.js';
 
+import { StatsfmApiError, StatsfmClient } from '../lib/statsfm-client.js';
+
 // ---------------------------------------------------------------------------
-// Local minimal stats.fm fetch shim (merge resolves shared client later)
+// Parsed-payload fixture seam over the shared stats.fm client
 // ---------------------------------------------------------------------------
 
 /** Base for every request in this module. */
@@ -35,35 +35,38 @@ export const STATSFM_API_BASE = 'https://api.stats.fm/api/v1';
 /** Minimal fetch: full URL in, parsed JSON out (or throw). */
 export type StatsfmFetchImpl = (url: string) => Promise<unknown>;
 
-async function defaultFetchImpl(url: string): Promise<unknown> {
-  const res = await fetch(url, {
-    headers: {
-      accept: 'application/json',
-      'user-agent': 'spotify-mcp/statsfm-taste',
-    },
-  });
-  if (!res.ok) throw new Error(`stats.fm API HTTP ${res.status} for ${url}`);
-  return res.json() as Promise<unknown>;
-}
+const liveStatsfmClient = new StatsfmClient(async (url) => fetch(url, {
+  headers: {
+    accept: 'application/json',
+    'user-agent': 'spotify-mcp/statsfm-taste',
+  },
+}));
 
-let fetchImpl: StatsfmFetchImpl = defaultFetchImpl;
+let fetchImpl: StatsfmFetchImpl | undefined;
 
 /** Test seam: inject fixture-backed fetch. */
 export function __setStatsfmFetchImpl(impl: StatsfmFetchImpl): void {
   fetchImpl = impl;
 }
 
-/** Test seam: restore the live fetch shim. */
+/** Test seam: restore live requests through the shared client. */
 export function __resetStatsfmFetchImpl(): void {
-  fetchImpl = defaultFetchImpl;
+  fetchImpl = undefined;
 }
 
 async function statsfmGet<T>(path: string, params?: Record<string, string>): Promise<T> {
-  const qs =
-    params && Object.keys(params).length > 0
+  if (fetchImpl) {
+    const qs = params && Object.keys(params).length > 0
       ? `?${new URLSearchParams(params).toString()}`
       : '';
-  return (await fetchImpl(`${STATSFM_API_BASE}${path}${qs}`)) as T;
+    try {
+      return (await fetchImpl(`${STATSFM_API_BASE}${path}${qs}`)) as T;
+    } catch (err) {
+      if (err instanceof StatsfmApiError) throw err;
+      throw new StatsfmApiError(0, 'stats.fm request failed', undefined, 'transport_error');
+    }
+  }
+  return (await liveStatsfmClient.get<T>(path, params)) as T;
 }
 
 // ---------------------------------------------------------------------------
