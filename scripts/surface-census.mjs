@@ -152,16 +152,8 @@ async function readProductionRegistry() {
  * intersected with the production registry above before becoming perModule.
  */
 async function attributeToolsToModules(liveToolNames) {
-  const source = readFileSync(join(ROOT, 'src/index.ts'), 'utf8');
-  const imports = new Map();
-  for (const match of source.matchAll(/import\s*\{([^}]+)\}\s*from\s*['"]\.\/tools\/([^'"]+)\.js['"]/g)) {
-    const [, symbols, file] = match;
-    for (const specifier of symbols.split(',')) {
-      const parts = specifier.trim().split(/\s+as\s+/);
-      const symbol = parts[1] ?? parts[0];
-      if (/^[A-Za-z0-9_]+$/.test(symbol)) imports.set(symbol, `src/tools/${file}.ts`);
-    }
-  }
+  const moduleUrl = pathToFileURL(join(ROOT, 'src/tools/annotations.ts')).href;
+  const { REGISTRAR_MANIFEST } = await import(moduleUrl);
   const live = new Set(liveToolNames);
   const attributed = new Map();
   const clientStub = {
@@ -173,43 +165,37 @@ async function attributeToolsToModules(liveToolNames) {
     getRateLimitStatus: () => ({ lastThrottleAt: null, retryAfterSec: null, cooldownRemainingMs: 0 }),
   };
 
-  for (const [file] of toolModuleFilesFromSource()) {
+  for (const module of REGISTRAR_MANIFEST) {
+    if (!module.file.startsWith('src/tools/')) continue;
     const names = new Set();
+    const { McpServer } = await import('@modelcontextprotocol/sdk/server/mcp.js');
+    const server = new McpServer({ name: `module-census-${basename(module.file, '.ts')}`, version: '0.0.0' });
+    const originalTool = server.tool.bind(server);
+    const originalRegisterTool = server.registerTool.bind(server);
+    server.tool = (name, ...rest) => { names.add(name); return originalTool(name, ...rest); };
+    server.registerTool = (name, ...rest) => { names.add(name); return originalRegisterTool(name, ...rest); };
     try {
-      const moduleUrl = pathToFileURL(join(ROOT, file)).href;
-      const loaded = await import(`${moduleUrl}?surface-census=${Date.now()}`);
-      for (const [symbol, registrar] of Object.entries(loaded)) {
-        if (!imports.has(symbol) || typeof registrar !== 'function') continue;
-        const { McpServer } = await import('@modelcontextprotocol/sdk/server/mcp.js');
-        const server = new McpServer({ name: `module-census-${basename(file, '.ts')}`, version: '0.0.0' });
-        const originalTool = server.tool.bind(server);
-        const originalRegisterTool = server.registerTool.bind(server);
-        server.tool = (name, ...rest) => { names.add(name); return originalTool(name, ...rest); };
-        server.registerTool = (name, ...rest) => { names.add(name); return originalRegisterTool(name, ...rest); };
-        registrar(server, clientStub);
-        for (const name of names) {
-          if (!live.has(name)) continue;
-          const owners = attributed.get(name) ?? [];
-          owners.push(file);
-          attributed.set(name, owners);
-        }
-        names.clear();
-        await server.close().catch(() => undefined);
+      module.registrar(server, clientStub);
+      for (const name of names) {
+        if (!live.has(name)) continue;
+        const owners = attributed.get(name) ?? [];
+        owners.push(module.file);
+        attributed.set(name, owners);
       }
-    } catch (error) {
-      throw new Error(`failed to attribute ${file}: ${error instanceof Error ? error.message : error}`);
+    } finally {
+      await server.close().catch(() => undefined);
     }
   }
 
   const missing = liveToolNames.filter((name) => name !== 'verify_receipt' && !attributed.has(name));
   if (missing.length > 0) {
-    throw new Error(`finalized tools/list contains ${missing.length} name(s) absent from the src/index.ts registrar manifest: ${missing.join(', ')}`);
+    throw new Error(`finalized tools/list contains ${missing.length} name(s) absent from the shared registrar manifest: ${missing.join(', ')}`);
   }
   const ambiguous = [...attributed].filter(([, owners]) => owners.length > 1);
   if (ambiguous.length > 0) {
     throw new Error(`finalized tool names have ambiguous module attribution: ${ambiguous.map(([name, owners]) => `${name} (${owners.join(', ')})`).join('; ')}`);
   }
-  const namesByModule = new Map(toolModuleFilesFromSource().map(([file]) => [file, []]));
+  const namesByModule = new Map(REGISTRAR_MANIFEST.filter((module) => module.file.startsWith('src/tools/')).map((module) => [module.file, []]));
   for (const [name, owners] of attributed) namesByModule.get(owners[0]).push(name);
   namesByModule.set('src/index.ts', liveToolNames.includes('verify_receipt') ? ['verify_receipt'] : []);
   return namesByModule;

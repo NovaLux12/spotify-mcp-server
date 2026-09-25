@@ -15,7 +15,7 @@
 
 // BEGIN:generated surface-census
 // Production surface (generated; run `npm run count:tools -- --write` after registry changes):
-// 610 tools, 16 fixed resources, 33 resource templates, and 14 prompts.
+// 592 tools, 16 fixed resources, 33 resource templates, and 14 prompts.
 // END:generated surface-census
 
 /**

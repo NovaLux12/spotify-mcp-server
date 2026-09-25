@@ -10,7 +10,7 @@ than X" questions with current in-repo and live-protocol evidence first, then
 web research. Never assert conformance or inventory from memory.
 
 <!-- BEGIN:generated surface-census -->
-Current default production baseline: **610 tools**, **16 fixed resources**, **33 resource templates**, and **14 prompts**. Regenerate with `npm run count:tools -- --write`; never substitute historical prose.
+Current default production baseline: **592 tools**, **16 fixed resources**, **33 resource templates**, and **14 prompts**. Regenerate with `npm run count:tools -- --write`; never substitute historical prose.
 <!-- END:generated surface-census -->
 
 ## Steps

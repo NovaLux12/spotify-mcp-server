@@ -1,6 +1,6 @@
 # Wave 2 composites — shipped read-only taste tools
 <!-- BEGIN:generated surface-census -->
-Current default production surface: **610 tools**, including the shipped taste composites documented below. Earlier release totals in this page's history are not current registry truth; regenerate this block with `npm run count:tools -- --write`.
+Current default production surface: **592 tools**, including the shipped taste composites documented below. Earlier release totals in this page's history are not current registry truth; regenerate this block with `npm run count:tools -- --write`.
 <!-- END:generated surface-census -->
 
 The shipped `taste_composites.ts` module contributes eleven read-only tools in the `taste` toolset. Earlier release totals are historical context, not current registry truth.
