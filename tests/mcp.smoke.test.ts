@@ -26,7 +26,7 @@ const REQUIRED_TOOLS = [
   'check_in_library',
   'get_me',
   'get_album_tracks',
-  'get_show_episodes',
+  'list_show_episodes',
   'get_audiobook',
   'get_audiobook_chapters',
   'get_chapter',
@@ -55,6 +55,7 @@ const FORBIDDEN_TOOLS = [
   'get_audio_analysis',
   'follow_artist',
   'unfollow_artist',
+  'get_show_episodes',
 ];
 
 const READONLY_WRITE_TOOLS = [
