@@ -163,13 +163,24 @@ describe('batch chunking at 100', () => {
       if (path.includes('/playlists/target/items')) return { items: [], total: 0, limit: 100, offset: 0, next: null } as unknown;
       return { items: [], total: 0, limit: 100, offset: 0, next: null } as unknown;
     });
-    const out = await h.invoke('batch_add_to_playlist', { target_playlist_id: 'target', source_uris: uris });
-    const posts = h.client.calls.filter((c) => c.method === 'POST' && c.path.includes('/playlists/target/items'));
-    assert.equal(posts.length, 3, '250 tracks must fan out into 3 POSTs');
-    assert.equal((posts[0].arg as { uris: string[] }).uris.length, 100);
-    assert.equal((posts[1].arg as { uris: string[] }).uris.length, 100);
-    assert.equal((posts[2].arg as { uris: string[] }).uris.length, 50);
-    assert.match(h.text(out), /across 3 batch/);
+    const previousConfirm = process.env.SPOTIFY_MCP_CONFIRM;
+    process.env.SPOTIFY_MCP_CONFIRM = 'never';
+    try {
+      const out = await h.invoke('batch_add_to_playlist', { target_playlist_id: 'target', source_uris: uris });
+      const posts = h.client.calls.filter((c) => c.method === 'POST' && c.path.includes('/playlists/target/items'));
+      assert.equal(posts.length, 3, '250 tracks must fan out into 3 POSTs');
+      const batchSizes = posts.map((post) => {
+        if (!post.arg || typeof post.arg !== 'object' || !('uris' in post.arg) || !Array.isArray(post.arg.uris)) {
+          throw new Error('batch POST did not include a URI array');
+        }
+        return post.arg.uris.length;
+      });
+      assert.deepEqual(batchSizes, [100, 100, 50]);
+      assert.match(h.text(out), /across 3 batch/);
+    } finally {
+      if (previousConfirm === undefined) delete process.env.SPOTIFY_MCP_CONFIRM;
+      else process.env.SPOTIFY_MCP_CONFIRM = previousConfirm;
+    }
   });
 
   it('batch_add_to_playlist dry_run with 250 URIs makes zero POSTs', async () => {
