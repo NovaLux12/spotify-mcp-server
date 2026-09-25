@@ -58,9 +58,9 @@ const OVERRIDES: Record<string, ToolAnnotations> = {
   verify_receipt: { readOnlyHint: true, idempotentHint: true },
   spotify_doctor: { readOnlyHint: true, idempotentHint: true },
   // Writes that read like reads, and reads that read like writes.
+  // Local reference normalization never calls Spotify or mutates server state.
+  dedupe_spotify_uris: { readOnlyHint: true, idempotentHint: true },
   export_playlist: { destructiveHint: false },
-  export_all_playlists: { destructiveHint: false },
-  export_library: { destructiveHint: false },
   backup_library: { destructiveHint: false },
   play: { destructiveHint: false },
   pause: { destructiveHint: false },
@@ -122,6 +122,7 @@ const OVERRIDES: Record<string, ToolAnnotations> = {
  * handlers that accept dry_run=false execute (apply_volume_plan,
  * split_queue_plan, reverse_/rotate_/interleave_/merge_/difference_playlist_plan).
  */
+// dedupe_spotify_uris is local classification/canonicalization only; no API or filesystem writes.
 export const NEVER_MUTATING_PLANS: ReadonlySet<string> = new Set([
   'undo_preview',
   'decade_sampler_plan',
@@ -133,6 +134,7 @@ export const NEVER_MUTATING_PLANS: ReadonlySet<string> = new Set([
   'sort_playlist_plan',
   'playlist_union_preview',
   'dedupe_playlist_plan',
+  'dedupe_spotify_uris',
   'stale_saved_shows_plan',
   'mark_episode_played_plan',
   'show_backlog_plan',
