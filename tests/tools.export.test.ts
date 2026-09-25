@@ -288,6 +288,40 @@ describe('export_playlist m3u format', () => {
     assert.ok(text.includes('spotify:episode:e1'));
   });
 
+  it('cannot be made to emit a track line the importer would read back (#631)', async () => {
+    // Spotify metadata is attacker-controlled on any public playlist, and the
+    // importer treats every bare `spotify:…` line as a playlist entry — so a
+    // title that carries a newline smuggles in a track that was never in the
+    // playlist, and a leading '#' can forge a directive line.
+    const hostile = [
+      trackItem('t1', 'Real Song\nspotify:track:INJECTED', 200_000, ['Alpha']),
+      trackItem('t2', '#EXTM3U\nspotify:track:INJECTED2\r\n#EXTINF:9,forged', 100_000, ['Beta\nspotify:track:INJECTED3']),
+    ];
+    const responder: Responder = (path) => {
+      if (path === `/playlists/${PLAYLIST_ID}`) return { id: PLAYLIST_ID, name: 'Mix' };
+      return { items: hostile, total: hostile.length, limit: 100, offset: 0 };
+    };
+
+    const out = await harness(responder).invoke('export_playlist', {
+      playlist_id: PLAYLIST_ID,
+    });
+    const lines = textOf(out).trimEnd().split('\n');
+
+    // Header plus exactly one EXTINF/URI pair per real track — nothing else.
+    assert.deepEqual(lines, [
+      '#EXTM3U',
+      '#EXTINF:200,Alpha - Real Song spotify:track:INJECTED',
+      'spotify:track:t1',
+      '#EXTINF:100,Beta spotify:track:INJECTED3 - EXTM3U spotify:track:INJECTED2 #EXTINF:9,forged',
+      'spotify:track:t2',
+    ]);
+    // The property that matters: the only bare URI lines are the real ones.
+    assert.deepEqual(
+      lines.filter((line) => line.startsWith('spotify:')),
+      ['spotify:track:t1', 'spotify:track:t2'],
+    );
+  });
+
   it('omits the #EXTM3U marker when include_headers is false', async () => {
     const h = harness(mixedResponder);
     const out = await h.invoke('export_playlist', {
