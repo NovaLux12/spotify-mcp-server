@@ -182,6 +182,16 @@ describe('tool surface: annotations', () => {
     const wrong = destructive.filter((t) => !MUTATING_PREFIXES.test(t) && !/snapshot_changes/.test(t));
     assert.deepEqual(wrong, [], `destructive tools outside the mutating verb set: [${wrong.join(', ')}]`);
   });
+
+  it('local feedback aliases are explicit non-read-only writes', async () => {
+    const tools = await listTools({});
+    for (const name of ['statsfm_record_feedback', 'record_feedback']) {
+      const tool = tools.find((entry) => entry.name === name);
+      assert.ok(tool, `${name} is not registered`);
+      assert.notEqual(tool.annotations?.readOnlyHint, true, `${name} is advertised read-only`);
+      assert.equal(tool.annotations?.destructiveHint, false, `${name} must explicitly be non-destructive`);
+    }
+  });
   it('read verbs are not advertised as destructive', async () => {
     const tools = await listTools({});
     const bad = tools

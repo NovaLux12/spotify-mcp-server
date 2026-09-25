@@ -4,8 +4,9 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
-import { SpotifyApiError } from '../src/client.js';
+import { SpotifyApiError, type SpotifyClient } from '../src/client.js';
 import { installToolErrorBoundary } from '../src/tools/annotations.js';
+import { registerBackupFirstTools } from '../src/tools/backupfirst.js';
 
 interface ErrorEnvelope {
   tool: string;
@@ -50,6 +51,9 @@ async function harness(): Promise<Client> {
   server.tool('valid_error', 'validation', { count: z.number() }, async () => ({ content: [{ type: 'text', text: 'ok' }] }));
   server.tool('near_error', 'unknown parameter', { playlist_id: z.string() }, async () => ({ content: [{ type: 'text', text: 'ok' }] }));
   server.tool('list_show_episodes', 'episodes', { show_id: z.string(), offset: z.number().optional(), max_results: z.number().optional() }, async () => ({ content: [{ type: 'text', text: 'ok' }] }));
+  registerBackupFirstTools(server, {
+    getAllPages: async () => { throw new SpotifyApiError(429, 'SENTINEL_BACKUP https://example.test/raw?token=secret /home/alice/private.json', 9); },
+  } as unknown as SpotifyClient);
 
   installToolErrorBoundary(server);
   const client = new Client({ name: 'error-contract-client', version: '0.0.0' });
@@ -169,8 +173,9 @@ describe('production tool error contract (#921)', () => {
     const publicResults = [
       await call(client, 'auth_error'),
       await call(client, 'internal_error'),
+      await call(client, 'backup_first'),
     ];
-    const publicText = publicResults.flatMap((result) => result.content.map((block) => block.text ?? '')).join('\n');
+    const publicText = JSON.stringify(publicResults);
     const stderrText = diagnostics.join('\n');
     for (const secret of [
       '/home/alice',
@@ -181,6 +186,7 @@ describe('production tool error contract (#921)', () => {
       'spotify.snapshot',
       'code=secret',
       'token=secret',
+      'SENTINEL_BACKUP',
       'MCP error -',
     ]) {
       assert.equal(publicText.includes(secret), false, `public error leaked ${secret}`);

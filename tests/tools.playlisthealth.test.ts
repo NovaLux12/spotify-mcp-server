@@ -82,6 +82,22 @@ describe('snapshot + diff + list', () => {
   it('diff detects added, removed, and reordered', async () => { const initialItems = [mkTrack('a'), mkTrack('b'), mkTrack('c')]; let currentItems: PlaylistItemObject[] = initialItems; const h = makeHarness(() => currentItems); registerPlaylistHealthTools(h.server as unknown as McpServer, h.client); await h.invoke('snapshot_playlist', { playlist_id: 'pl1', snapshot_id: 'snap1' }); currentItems = [mkTrack('c'), mkTrack('a'), mkTrack('d')]; const diff = await h.invoke('diff_since_snapshot', { playlist_id: 'pl1', snapshot_id: 'snap1' }); const sc = diff.structuredContent as { added: unknown[]; removed: unknown[]; reordered: unknown[] }; assert.equal(sc.added.length, 1); assert.equal(sc.removed.length, 1); assert.ok(sc.reordered.length > 0); });
 });
 
+  it('redacts filesystem errors and caller-provided URL or path sentinels', async () => {
+    const h = makeHarness(() => []);
+    registerPlaylistHealthTools(h.server as unknown as McpServer, h.client);
+    await assert.rejects(
+      h.invoke('diff_since_snapshot', {
+        playlist_id: 'https://example.test/SENTINEL_PLAYLIST?token=secret',
+        snapshot_id: '/home/alice/SENTINEL_SNAPSHOT.json',
+      }),
+      (error: unknown) => {
+        assert.ok(error instanceof Error);
+        assert.equal(error.message, 'Snapshot could not be read.');
+        return true;
+      },
+    );
+  });
+
 describe('remove_unavailable_playlist_items', () => {
   it('deletes only validated unavailable positions highest first and verifies the rescan', async () => {
     let items: PlaylistItemObject[] = [mkTrack('a'), mkUnavailable(), mkTrack('b'), mkUnavailable(), mkTrack('c')];
@@ -155,7 +171,7 @@ describe('remove_unavailable_playlist_items', () => {
       if (arg && typeof arg === 'object' && 'body' in arg) return { snapshot_id: 'snap1' };
       gets++;
       if (gets === 1) return [mkUnavailable(), mkTrack('a')];
-      throw new Error('rescan failed');
+      throw new Error('SENTINEL_HEALTH https://example.test/raw?token=secret /home/alice/private.json', { cause: new Error('nested private path') });
     });
     registerPlaylistHealthTools(h.server as unknown as McpServer, h.client);
     const out = await h.invoke('remove_unavailable_playlist_items', { playlist_id: 'pl1' });
@@ -163,5 +179,9 @@ describe('remove_unavailable_playlist_items', () => {
     assert.equal(sc.ok, false);
     assert.equal(sc.verification, 'unavailable');
     assert.equal(sc.removed, null);
+    const publicText = JSON.stringify(out);
+    for (const secret of ['SENTINEL_HEALTH', 'token=secret', '/home/alice', 'nested private path']) {
+      assert.equal(publicText.includes(secret), false, `post-write failure leaked ${secret}`);
+    }
   });
 });
