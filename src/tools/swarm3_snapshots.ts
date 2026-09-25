@@ -49,6 +49,10 @@ export interface SnapMeta {
   taken_at: string;
   track_count: number;
   unique_uris: number;
+  /** Item-walk ceiling applied when this snapshot was taken (#878). */
+  item_walk_cap?: number | null;
+  /** True when the walk hit that ceiling and the playlist is larger. */
+  cap_reached?: boolean;
   notes?: string;
 }
 
@@ -322,31 +326,66 @@ interface LivePlaylist {
   uri: string | null;
   tracks: SnapTrackRow[];
   reported_total: number | null;
+  /** Item-walk ceiling this fetch actually applied (null = client default). */
+  item_walk_cap: number | null;
+  /** True when the walk filled its budget and the playlist is larger than that. */
+  cap_reached: boolean;
 }
 
-/** Fetch a live playlist + its items via /playlists/{id}/items. */
-async function fetchLivePlaylist(client: SpotifyClient, playlistId: string): Promise<LivePlaylist> {
+
+/** Playlist `items.total` from a /playlists/{id} body, or null when absent. */
+function readReportedTotal(meta: unknown): number | null {
+  if (!meta || typeof meta !== 'object' || !('items' in meta)) return null;
+  const items = meta.items;
+  if (!items || typeof items !== 'object' || !('total' in items)) return null;
+  const total = items.total;
+  return typeof total === 'number' ? total : null;
+}
+
+/** Options for a live playlist read; `maxItems` is the item-walk ceiling. */
+interface LiveFetchOptions {
+  maxItems?: number;
+}
+
+/**
+ * Fetch a live playlist + its items via /playlists/{id}/items.
+ *
+ * `opts.maxItems` is the SAME ceiling the dry run advertises, so the plan an
+ * agent previews and the walk the commit performs cannot diverge (#878).
+ */
+async function fetchLivePlaylist(
+  client: SpotifyClient,
+  playlistId: string,
+  opts?: LiveFetchOptions,
+): Promise<LivePlaylist> {
+  const cap = typeof opts?.maxItems === 'number' && Number.isFinite(opts.maxItems) && opts.maxItems > 0
+    ? Math.floor(opts.maxItems)
+    : null;
   const meta = await client.get<{ id?: string; name?: string; uri?: string }>(
     `/playlists/${encodeURIComponent(playlistId)}`,
   );
   const rows = await client.getAllPages<PlaylistItemObject>(
     `/playlists/${encodeURIComponent(playlistId)}/items`,
     { limit: '100' },
+    cap === null ? undefined : { maxItems: cap },
   );
   const tracks: SnapTrackRow[] = [];
   for (const r of rows) {
     const t = itemToTrackRow(r);
     if (t) tracks.push(t);
   }
+  const reported_total = readReportedTotal(meta);
   return {
     id: meta?.id ?? playlistId,
     name: meta?.name ?? '(unknown)',
     uri: meta?.uri ?? null,
     tracks,
-    reported_total:
-      meta && typeof (meta as { items?: { total?: number } }).items?.total === 'number'
-        ? (meta as { items: { total: number } }).items.total
-        : null,
+    reported_total,
+    item_walk_cap: cap,
+    cap_reached:
+      cap !== null
+      && rows.length >= cap
+      && (reported_total === null || reported_total > rows.length),
   };
 }
 
@@ -435,7 +474,9 @@ export function registerSwarm3SnapshotsTools(server: McpServer, client: SpotifyC
     },
     async (args) => {
       const playlistId = normalizePlaylistRef(args.playlist);
-      const cap = args.max_results ?? getConfig().fetchAllCap;
+      // ONE derivation of the walk ceiling: the dry run advertises this exact
+      // number and the commit walk is bounded by this exact number (#878).
+      const cap = resolveMaxResults(args.max_results, getConfig().fetchAllCap);
       if (isDry(args)) {
         const payload: Record<string, unknown> = {
           dry_run: true,
@@ -452,7 +493,7 @@ export function registerSwarm3SnapshotsTools(server: McpServer, client: SpotifyC
         ].join('\n');
         return shape(args.response_format, prose, payload);
       }
-      const live = await fetchLivePlaylist(client, playlistId);
+      const live = await fetchLivePlaylist(client, playlistId, { maxItems: cap });
       const taken = new Date().toISOString();
       const dir = snapshotDir();
       await mkdir(dir, { recursive: true, mode: 0o700 });
@@ -470,6 +511,8 @@ export function registerSwarm3SnapshotsTools(server: McpServer, client: SpotifyC
           taken_at: taken,
           track_count: live.tracks.length,
           unique_uris: unique.size,
+          item_walk_cap: live.item_walk_cap,
+          cap_reached: live.cap_reached,
           ...(args.notes !== undefined ? { notes: args.notes } : {}),
         },
         tracks: live.tracks,
@@ -485,12 +528,17 @@ export function registerSwarm3SnapshotsTools(server: McpServer, client: SpotifyC
         track_count: live.tracks.length,
         unique_uris: unique.size,
         reported_total: live.reported_total,
+        item_walk_cap: live.item_walk_cap,
+        cap_reached: live.cap_reached,
         ...(args.notes !== undefined ? { notes: args.notes } : {}),
       };
       const prose = [
         `Snapshot written → ${file} (${formatBytes(payload.bytes as number)})`,
         `- Playlist: ${live.name} (${live.id})`,
         `- Tracks: ${live.tracks.length} (${unique.size} unique${live.reported_total !== null ? `, reported total ${live.reported_total}` : ''})`,
+        ...(live.cap_reached
+          ? [`- TRUNCATED: item walk stopped at the cap of ${live.item_walk_cap} items; the playlist is larger — raise max_results to cover more.`]
+          : []),
       ].join('\n');
       return shape(args.response_format, prose, payload);
     },
