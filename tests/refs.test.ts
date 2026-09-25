@@ -7,6 +7,7 @@ import {
   spotifyId,
   spotifyUri,
 } from '../src/refs.js';
+import { normalizePlaylistReference, resolvePlaylistInput } from '../src/shaping.js';
 import { registerSwarm3RefsTools } from '../src/tools/swarm3_refs.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../src/client.js';
@@ -171,6 +172,57 @@ describe('shared Spotify reference policy', () => {
   it('canonicalizes bare IDs only when expected_kind is supplied', () => {
     assert.equal(spotifyUri(ID), null);
     assert.equal(spotifyUri(ID, 'playlist'), `spotify:playlist:${ID}`);
+  });
+});
+
+describe('playlist reference shaping', () => {
+  const secondId = 'B'.repeat(22);
+  const equivalent = [
+    ID,
+    `spotify:playlist:${ID}`,
+    `spotify://playlist/${ID}`,
+    `https://open.spotify.com/playlist/${ID}`,
+    `https://open.spotify.com/embed/playlist/${ID}`,
+    `https://open.spotify.com/intl-de/playlist/${ID}`,
+    `https://open.spotify.com/intl-de/embed/playlist/${ID}`,
+    `https://open.spotify.com/embed/intl-de/playlist/${ID}`,
+  ];
+
+  it('uses the canonical resolver grammar for every accepted playlist form', () => {
+    for (const reference of equivalent) {
+      const canonical = classifySpotifyReference(reference, 'playlist');
+      assert.equal(canonical.valid, true, reference);
+      assert.equal(normalizePlaylistReference(reference), canonical.id, reference);
+    }
+  });
+
+  it('rejects malformed IDs, wrong kinds, insecure URLs, and hostile hosts', () => {
+    for (const reference of [
+      'short',
+      ID.slice(0, 21),
+      `${ID}x`,
+      `spotify:track:${ID}`,
+      `spotify:device:${ID}`,
+      `spotify:playlist:${ID}?si=tracking`,
+      `http://open.spotify.com/playlist/${ID}`,
+      `https://example.com/playlist/${ID}`,
+      `https://open.spotify.com.example.com/playlist/${ID}`,
+      `https://open.spotify.com/device/${ID}`,
+      `https://open.spotify.com/playlist/${ID}/extra`,
+    ]) {
+      assert.equal(classifySpotifyReference(reference, 'playlist').valid, false, reference);
+      assert.throws(() => normalizePlaylistReference(reference), undefined, reference);
+    }
+  });
+
+  it('preserves documented one-release aliases after canonical normalization', () => {
+    const resolved = resolvePlaylistInput(
+      { sources: [`spotify:playlist:${ID}`, `https://open.spotify.com/embed/intl-de/playlist/${secondId}`] },
+      { kind: 'list', aliases: ['sources'] },
+    );
+    assert.deepEqual(resolved.values, [ID, secondId]);
+    assert.deepEqual(resolved.deprecatedInputs, ['sources']);
+    assert.match(resolved.deprecationNote ?? '', /use playlists.*Alias support/);
   });
 });
 

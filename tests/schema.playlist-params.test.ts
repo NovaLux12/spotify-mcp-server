@@ -56,100 +56,105 @@ type CallCase = {
   aliasNames: string[];
 };
 
+const PLAYLIST_1 = '1111111111111111111111';
+const PLAYLIST_2 = '2222222222222222222222';
+const TARGET_PLAYLIST = '3333333333333333333333';
+const OTHER_PLAYLIST = '4444444444444444444444';
+
 const CALL_CASES: Record<ToolName, CallCase> = {
   merge_playlists: {
-    canonical: { playlists: ['p1', 'p2'], new_name: 'Merged', dry_run: true },
-    alias: { sources: ['p1', 'p2'], new_name: 'Merged', dry_run: true },
+    canonical: { playlists: [PLAYLIST_1, PLAYLIST_2], new_name: 'Merged', dry_run: true },
+    alias: { sources: [PLAYLIST_1, PLAYLIST_2], new_name: 'Merged', dry_run: true },
     aliasNames: ['sources'],
   },
   diff_playlists: {
-    canonical: { playlist_a: 'p1', playlist_b: 'p2' },
-    alias: { a: 'p1', b: 'p2' },
+    canonical: { playlist_a: PLAYLIST_1, playlist_b: PLAYLIST_2 },
+    alias: { a: PLAYLIST_1, b: PLAYLIST_2 },
     aliasNames: ['a', 'b'],
   },
   overlap_playlists: {
-    canonical: { playlists: ['p1', 'p2'] },
-    alias: { playlists: ['p1', 'p2'] },
+    canonical: { playlists: [PLAYLIST_1, PLAYLIST_2] },
+    alias: { playlists: [PLAYLIST_1, PLAYLIST_2] },
     aliasNames: [],
   },
   check_playlist_following: {
-    canonical: { playlists: ['p1', 'p2'] },
-    alias: { playlist_ids: ['p1', 'p2'] },
+    canonical: { playlists: [PLAYLIST_1, PLAYLIST_2] },
+    alias: { playlist_ids: [PLAYLIST_1, PLAYLIST_2] },
     aliasNames: ['playlist_ids'],
   },
   compare_playlist_covers: {
-    canonical: { playlist_a: 'p1', playlist_b: 'p2' },
-    alias: { playlist_id_a: 'p1', playlist_id_b: 'p2' },
+    canonical: { playlist_a: PLAYLIST_1, playlist_b: PLAYLIST_2 },
+    alias: { playlist_id_a: PLAYLIST_1, playlist_id_b: PLAYLIST_2 },
     aliasNames: ['playlist_id_a', 'playlist_id_b'],
   },
   playlist_union: {
-    canonical: { playlists: ['p1', 'p2'], target_name: 'Union', dry_run: true },
-    alias: { source_playlist_ids: ['p1', 'p2'], target_name: 'Union', dry_run: true },
+    canonical: { playlists: [PLAYLIST_1, PLAYLIST_2], target_name: 'Union', dry_run: true },
+    alias: { source_playlist_ids: [PLAYLIST_1, PLAYLIST_2], target_name: 'Union', dry_run: true },
     aliasNames: ['source_playlist_ids'],
   },
   playlist_subtract: {
-    canonical: { base_playlist_id: 'base', playlists: ['p1', 'p2'], dry_run: true },
-    alias: { base_playlist_id: 'base', subtract_playlist_ids: ['p1', 'p2'], dry_run: true },
+    canonical: { base_playlist_id: PLAYLIST_1, playlists: [PLAYLIST_1, PLAYLIST_2], dry_run: true },
+    alias: { base_playlist_id: PLAYLIST_1, subtract_playlist_ids: [PLAYLIST_1, PLAYLIST_2], dry_run: true },
     aliasNames: ['subtract_playlist_ids'],
   },
   playlist_symmetric_difference: {
-    canonical: { playlist_a: 'p1', playlist_b: 'p2' },
-    alias: { playlist_id_a: 'p1', playlist_id_b: 'p2' },
+    canonical: { playlist_a: PLAYLIST_1, playlist_b: PLAYLIST_2 },
+    alias: { playlist_id_a: PLAYLIST_1, playlist_id_b: PLAYLIST_2 },
     aliasNames: ['playlist_id_a', 'playlist_id_b'],
   },
   playlist_intersect: {
-    canonical: { playlists: ['p1', 'p2'], dry_run: true },
-    alias: { source_playlist_ids: ['p1', 'p2'], dry_run: true },
+    canonical: { playlists: [PLAYLIST_1, PLAYLIST_2], dry_run: true },
+    alias: { source_playlist_ids: [PLAYLIST_1, PLAYLIST_2], dry_run: true },
     aliasNames: ['source_playlist_ids'],
   },
   playlist_overlap_matrix: {
-    canonical: { playlists: ['p1', 'p2'] },
-    alias: { playlist_ids: ['p1', 'p2'] },
+    canonical: { playlists: [PLAYLIST_1, PLAYLIST_2] },
+    alias: { playlist_ids: [PLAYLIST_1, PLAYLIST_2] },
     aliasNames: ['playlist_ids'],
   },
   merge_playlists_plan: {
-    canonical: { playlists: ['p1', 'p2'], dry_run: true },
-    alias: { playlist_ids: ['p1', 'p2'], dry_run: true },
+    canonical: { playlists: [PLAYLIST_1, PLAYLIST_2], dry_run: true },
+    alias: { playlist_ids: [PLAYLIST_1, PLAYLIST_2], dry_run: true },
     aliasNames: ['playlist_ids'],
   },
   playlist_difference_plan: {
-    canonical: { base_playlist_id: 'base', playlists: ['p1', 'p2'], dry_run: true },
-    alias: { base_playlist_id: 'base', subtract_playlist_ids: ['p1', 'p2'], dry_run: true },
+    canonical: { base_playlist_id: PLAYLIST_1, playlists: [PLAYLIST_1, PLAYLIST_2], dry_run: true },
+    alias: { base_playlist_id: PLAYLIST_1, subtract_playlist_ids: [PLAYLIST_1, PLAYLIST_2], dry_run: true },
     aliasNames: ['subtract_playlist_ids'],
   },
   interleave_playlists_plan: {
-    canonical: { playlists: ['p1', 'p2'], dry_run: true },
-    alias: { playlist_ids: ['p1', 'p2'], dry_run: true },
+    canonical: { playlists: [PLAYLIST_1, PLAYLIST_2], dry_run: true },
+    alias: { playlist_ids: [PLAYLIST_1, PLAYLIST_2], dry_run: true },
     aliasNames: ['playlist_ids'],
   },
   playlist_intersection: {
-    canonical: { playlists: ['p1', 'p2'] },
-    alias: { playlist_ids: ['p1', 'p2'] },
+    canonical: { playlists: [PLAYLIST_1, PLAYLIST_2] },
+    alias: { playlist_ids: [PLAYLIST_1, PLAYLIST_2] },
     aliasNames: ['playlist_ids'],
   },
   playlist_union_preview: {
-    canonical: { playlists: ['p1', 'p2'] },
-    alias: { playlist_ids: ['p1', 'p2'] },
+    canonical: { playlists: [PLAYLIST_1, PLAYLIST_2] },
+    alias: { playlist_ids: [PLAYLIST_1, PLAYLIST_2] },
     aliasNames: ['playlist_ids'],
   },
   playlist_diff: {
-    canonical: { playlist_a: 'p1', playlist_b: 'p2' },
-    alias: { playlist_a_id: 'p1', playlist_b_id: 'p2' },
+    canonical: { playlist_a: PLAYLIST_1, playlist_b: PLAYLIST_2 },
+    alias: { playlist_a_id: PLAYLIST_1, playlist_b_id: PLAYLIST_2 },
     aliasNames: ['playlist_a_id', 'playlist_b_id'],
   },
   playlist_pair_check: {
-    canonical: { playlist_a: 'p1', playlist_b: 'p2' },
-    alias: { playlist_a_id: 'p1', playlist_b_id: 'p2' },
+    canonical: { playlist_a: PLAYLIST_1, playlist_b: PLAYLIST_2 },
+    alias: { playlist_a_id: PLAYLIST_1, playlist_b_id: PLAYLIST_2 },
     aliasNames: ['playlist_a_id', 'playlist_b_id'],
   },
   find_duplicate_tracks_across_playlists: {
-    canonical: { playlists: ['p1', 'p2'] },
-    alias: { playlist_ids: ['p1', 'p2'] },
+    canonical: { playlists: [PLAYLIST_1, PLAYLIST_2] },
+    alias: { playlist_ids: [PLAYLIST_1, PLAYLIST_2] },
     aliasNames: ['playlist_ids'],
   },
   balance_playlist_pairs: {
-    canonical: { playlists: ['p1', 'p2'], dry_run: true },
-    alias: { playlist_ids: ['p1', 'p2'], dry_run: true },
+    canonical: { playlists: [PLAYLIST_1, PLAYLIST_2], dry_run: true },
+    alias: { playlist_ids: [PLAYLIST_1, PLAYLIST_2], dry_run: true },
     aliasNames: ['playlist_ids'],
   },
 };
@@ -248,14 +253,14 @@ async function makeUnionGateHarness(options: UnionGateOptions): Promise<UnionGat
     async get<T>(path: string): Promise<T | null> {
       calls.push(path);
       const id = path.split('/').pop() ?? 'playlist';
-      const rows = id === 'p1' ? sourceCount : id === 'p2' ? (source2Count ?? sourceCount) : (targetUris ?? Array.from({ length: 50 }, (_, i) => `spotify:track:b${i}`)).length;
+      const rows = id === PLAYLIST_1 ? sourceCount : id === PLAYLIST_2 ? (source2Count ?? sourceCount) : (targetUris ?? Array.from({ length: 50 }, (_, i) => `spotify:track:b${i}`)).length;
       // `items` is the current PlaylistObject field; `tracks` is deprecated.
       return { id, name: 'Playlist', items: { total: targetTotal ?? rows + targetNullUris } } as T;
     },
     async getAllPages<T>(path: string): Promise<T[]> {
       calls.push(path);
-      const first = path.includes('/p1/items');
-      const second = path.includes('/p2/items');
+      const first = path.includes(`/${PLAYLIST_1}/items`);
+      const second = path.includes(`/${PLAYLIST_2}/items`);
       if (first || second) {
         if (toolName === 'playlist_subtract' && second) return [] as T[];
         return Array.from({ length: first ? sourceCount : (source2Count ?? sourceCount) }, (_, index) => {
@@ -402,7 +407,7 @@ describe('playlist set/diff schema and resolver contract (#912)', () => {
         const aliasB = callCase.aliasNames[1];
         assert.ok(aliasA && aliasB, `${name} test case must name a complete pair alias`);
         conflictArgs[aliasA] = callCase.canonical.playlist_a;
-        conflictArgs[aliasB] = 'different';
+        conflictArgs[aliasB] = OTHER_PLAYLIST;
       }
       harness.calls.length = 0;
       let message: string;
@@ -421,8 +426,8 @@ describe('playlist set/diff schema and resolver contract (#912)', () => {
 
   it('requires exactly one union target before reading sources', async () => {
     for (const args of [
-      { playlists: ['p1', 'p2'] },
-      { playlists: ['p1', 'p2'], target_playlist_id: 'target', target_name: 'new' },
+      { playlists: [PLAYLIST_1, PLAYLIST_2] },
+      { playlists: [PLAYLIST_1, PLAYLIST_2], target_playlist_id: TARGET_PLAYLIST, target_name: 'new' },
     ]) {
       harness.calls.length = 0;
       const result = await harness.invoke('playlist_union', args);
@@ -439,8 +444,10 @@ describe('playlist set/diff schema and resolver contract (#912)', () => {
     ] as const;
     for (const testCase of cases) {
       const gate = await makeUnionGateHarness({ answer: testCase.answer });
-      const source = testCase.useAlias ? { source_playlist_ids: ['p1', 'p2'] } : { playlists: ['p1', 'p2'] };
-      const result = await gate.invoke('playlist_union', { ...source, target_playlist_id: 'target' });
+      const source = testCase.useAlias
+        ? { source_playlist_ids: [PLAYLIST_1, PLAYLIST_2] }
+        : { playlists: [PLAYLIST_1, PLAYLIST_2] };
+      const result = await gate.invoke('playlist_union', { ...source, target_playlist_id: TARGET_PLAYLIST });
       const writes = gate.calls.filter((call) => call.startsWith('PUT ') || call.startsWith('POST '));
       assert.equal(writes.length, testCase.writes, `${testCase.label} write count`);
       if (testCase.label === 'confirmed') assert.equal(result.structuredContent?.ok, true);
@@ -459,8 +466,8 @@ describe('playlist set/diff schema and resolver contract (#912)', () => {
 
   it('refuses union and subtract replacement with no elicitation support and performs no writes', async () => {
     const cases = [
-      { name: 'playlist_union' as const, args: { playlists: ['p1', 'p2'], target_playlist_id: 'target' } },
-      { name: 'playlist_subtract' as const, args: { base_playlist_id: 'p1', subtract_playlist_ids: ['p2'] } },
+      { name: 'playlist_union' as const, args: { playlists: [PLAYLIST_1, PLAYLIST_2], target_playlist_id: TARGET_PLAYLIST } },
+      { name: 'playlist_subtract' as const, args: { base_playlist_id: PLAYLIST_1, subtract_playlist_ids: [PLAYLIST_2] } },
     ];
     for (const testCase of cases) {
       const gate = await makeUnionGateHarness({ answer: null, toolName: testCase.name });
@@ -484,12 +491,12 @@ describe('playlist set/diff schema and resolver contract (#912)', () => {
       targetUris: Array.from({ length: 100 }, (_, index) => `spotify:track:t${index}`),
     });
     try {
-      const result = await gate.invoke('playlist_union', { playlists: ['p1', 'p2'], target_playlist_id: 'target' });
+      const result = await gate.invoke('playlist_union', { playlists: [PLAYLIST_1, PLAYLIST_2], target_playlist_id: TARGET_PLAYLIST });
       assert.equal(result.structuredContent?.uri_count, 1, 'the union must be one row');
       assert.equal(gate.prompts.length, 1, 'a 1-row union deleting 100 rows must still ask');
       assert.match(gate.prompts[0] ?? '', /Remove 100 existing item\(s\)/);
       assert.equal(result.structuredContent?.ok, true);
-      assert.deepEqual(gate.calls.filter((call) => call.startsWith('PUT ')), ['PUT /playlists/target/items']);
+      assert.deepEqual(gate.calls.filter((call) => call.startsWith('PUT ')), [`PUT /playlists/${TARGET_PLAYLIST}/items`]);
     } finally {
       await gate.close();
     }
@@ -505,10 +512,10 @@ describe('playlist set/diff schema and resolver contract (#912)', () => {
       ],
     });
     try {
-      const result = await gate.invoke('playlist_union', { playlists: ['p1', 'p2'], target_playlist_id: 'target' });
+      const result = await gate.invoke('playlist_union', { playlists: [PLAYLIST_1, PLAYLIST_2], target_playlist_id: TARGET_PLAYLIST });
       assert.deepEqual(gate.prompts, [], 'rewriting a playlist with its own rows must not prompt');
       assert.equal(result.structuredContent?.ok, true);
-      assert.deepEqual(gate.calls.filter((call) => call.startsWith('PUT ')), ['PUT /playlists/target/items']);
+      assert.deepEqual(gate.calls.filter((call) => call.startsWith('PUT ')), [`PUT /playlists/${TARGET_PLAYLIST}/items`]);
     } finally {
       await gate.close();
     }
@@ -523,7 +530,7 @@ describe('playlist set/diff schema and resolver contract (#912)', () => {
       targetUris: ['spotify:track:a0', 'spotify:track:a1'],
     });
     try {
-      const result = await gate.invoke('playlist_union', { playlists: ['p1', 'p2'], target_playlist_id: 'target' });
+      const result = await gate.invoke('playlist_union', { playlists: [PLAYLIST_1, PLAYLIST_2], target_playlist_id: TARGET_PLAYLIST });
       assert.equal(gate.prompts.length, 1, 'adding rows rewrites the playlist and must ask');
       assert.match(gate.prompts[0] ?? '', /Add 2 new item\(s\)/);
       assert.equal(gate.prompts[0]?.includes('Remove'), false);
@@ -543,7 +550,7 @@ describe('playlist set/diff schema and resolver contract (#912)', () => {
       targetTotal: 9000,
     });
     try {
-      const result = await gate.invoke('playlist_union', { playlists: ['p1', 'p2'], target_playlist_id: 'target' });
+      const result = await gate.invoke('playlist_union', { playlists: [PLAYLIST_1, PLAYLIST_2], target_playlist_id: TARGET_PLAYLIST });
       assert.equal(gate.prompts.length, 1, 'an incomplete read must not be treated as a no-op');
       assert.match(gate.prompts[0] ?? '', /Only 2 of 9000 existing row\(s\) could be read/);
       assert.equal(result.structuredContent?.ok, true);
@@ -560,7 +567,7 @@ describe('playlist set/diff schema and resolver contract (#912)', () => {
       targetNullUris: 3,
     });
     try {
-      const result = await gate.invoke('playlist_union', { playlists: ['p1', 'p2'], target_playlist_id: 'target' });
+      const result = await gate.invoke('playlist_union', { playlists: [PLAYLIST_1, PLAYLIST_2], target_playlist_id: TARGET_PLAYLIST });
       assert.equal(gate.prompts.length, 1, 'dropping null-URI rows must ask even though the URIs match');
       assert.match(gate.prompts[0] ?? '', /Drop 3 item\(s\) Spotify returned without a URI/);
       assert.equal(result.structuredContent?.ok, true);
@@ -573,11 +580,11 @@ describe('playlist set/diff schema and resolver contract (#912)', () => {
     // No elicitation capability at all: a gate that fired here would refuse.
     const gate = await makeUnionGateHarness({ answer: null, sourceCount: 50 });
     try {
-      const result = await gate.invoke('playlist_union', { playlists: ['p1', 'p2'], target_name: 'Fresh' });
+      const result = await gate.invoke('playlist_union', { playlists: [PLAYLIST_1, PLAYLIST_2], target_name: 'Fresh' });
       assert.deepEqual(gate.prompts, [], 'creating a new playlist prompted');
       assert.equal(result.structuredContent?.ok, true);
       assert.deepEqual(gate.calls.filter((call) => call.startsWith('POST ')), ['POST /me/playlists']);
-      assert.equal(gate.calls.includes('/playlists/target/items'), false);
+      assert.equal(gate.calls.includes(`/playlists/${TARGET_PLAYLIST}/items`), false);
     } finally {
       await gate.close();
     }
@@ -590,7 +597,7 @@ describe('playlist set/diff schema and resolver contract (#912)', () => {
       targetUris: Array.from({ length: 100 }, (_, index) => `spotify:track:t${index}`),
     });
     try {
-      const result = await gate.invoke('playlist_union', { playlists: ['p1', 'p2'], target_playlist_id: 'target' });
+      const result = await gate.invoke('playlist_union', { playlists: [PLAYLIST_1, PLAYLIST_2], target_playlist_id: TARGET_PLAYLIST });
       assert.equal(result.structuredContent?.ok, false, 'destructive union proceeded without confirmation');
       assert.equal(result.structuredContent?.reason, 'confirmation_unavailable');
       assert.deepEqual(gate.calls.filter((call) => call.startsWith('PUT ') || call.startsWith('POST ')), []);
@@ -609,10 +616,10 @@ describe('playlist set/diff schema and resolver contract (#912)', () => {
         targetUris: Array.from({ length: 100 }, (_, index) => `spotify:track:t${index}`),
       });
       try {
-        const result = await gate.invoke('playlist_union', { playlists: ['p1', 'p2'], target_playlist_id: 'target' });
+        const result = await gate.invoke('playlist_union', { playlists: [PLAYLIST_1, PLAYLIST_2], target_playlist_id: TARGET_PLAYLIST });
         assert.deepEqual(gate.prompts, [], 'the never bypass still prompted');
         assert.equal(result.structuredContent?.ok, true);
-        assert.deepEqual(gate.calls.filter((call) => call.startsWith('PUT ')), ['PUT /playlists/target/items']);
+        assert.deepEqual(gate.calls.filter((call) => call.startsWith('PUT ')), [`PUT /playlists/${TARGET_PLAYLIST}/items`]);
       } finally {
         await gate.close();
       }
@@ -626,11 +633,11 @@ describe('playlist set/diff schema and resolver contract (#912)', () => {
     harness.calls.length = 0;
     const result = await harness.invoke('overlap_playlists', {
       playlists: [
-        'spotify:playlist:p1?si=token',
-        'https://open.spotify.com/intl-de/playlist/p2?si=token',
+        `spotify:playlist:${PLAYLIST_1}`,
+        `https://open.spotify.com/embed/intl-de/playlist/${PLAYLIST_2}`,
       ],
     });
     assert.ok(!result.isError, textOf(result));
-    assert.deepEqual(harness.calls, ['/playlists/p1/items', '/playlists/p2/items']);
+    assert.deepEqual(harness.calls, [`/playlists/${PLAYLIST_1}/items`, `/playlists/${PLAYLIST_2}/items`]);
   });
 });

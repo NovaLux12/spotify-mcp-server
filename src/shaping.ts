@@ -62,33 +62,11 @@ export const sharedListFields = {
  * URLs are equivalent to bare IDs on the wire.
  */
 export function normalizePlaylistReference(reference: string): string {
-  const value = reference.trim();
-  if (value.length === 0) throw new Error('Playlist reference must not be empty');
-
-  const spotifyUri = /^spotify:playlist:([^?#]+)/.exec(value);
-  if (spotifyUri) return decodeURIComponent(spotifyUri[1]);
-  if (value.startsWith('spotify:')) {
-    throw new Error(`Expected a spotify:playlist: URI or playlist ID, received "${value}"`);
+  const parsed = classifySpotifyReference(reference, 'playlist');
+  if (!parsed.valid || !parsed.id) {
+    throw new Error(`Invalid playlist reference: ${parsed.error ?? 'invalid Spotify playlist reference'}`);
   }
-
-  if (/^https?:\/\//i.test(value)) {
-    let url: URL;
-    try {
-      url = new URL(value);
-    } catch {
-      throw new Error(`Invalid playlist URL "${value}"`);
-    }
-    if (!/(^|\.)spotify\.com$/i.test(url.hostname)) {
-      throw new Error(`Expected a Spotify playlist URL, received "${value}"`);
-    }
-    const segments = url.pathname.split('/').filter(Boolean);
-    const playlistAt = segments.indexOf('playlist');
-    const id = playlistAt >= 0 ? segments[playlistAt + 1] : undefined;
-    if (!id) throw new Error(`Spotify URL does not contain a playlist ID: "${value}"`);
-    return decodeURIComponent(id);
-  }
-
-  return value;
+  return parsed.id;
 }
 
 /** One playlist reference, normalized before any handler sees it. */
@@ -174,10 +152,7 @@ function orderedEqual(left: readonly string[], right: readonly string[]): boolea
 }
 
 function normalizeResolvedPlaylistValue(value: unknown): string {
-  const text = String(value).trim();
-  return text.startsWith('spotify:') || /^https?:\/\//i.test(text)
-    ? normalizePlaylistReference(text)
-    : text;
+  return normalizePlaylistReference(String(value));
 }
 
 function normalizeInputList(value: unknown, name: string): string[] {
