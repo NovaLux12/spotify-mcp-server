@@ -1201,7 +1201,10 @@ max_results: z.number().int().positive().max(2000).optional().describe('Max item
       const unreadableAlbums: Array<{ album_id: string; album_name: string | null; reason: string }> = [];
       // One request per album, so a long album's credits are only partly read
       // (the page caps at 50). Recorded per album rather than left implicit.
-      const truncatedAlbums: Array<{ album_id: string; album_name: string | null; tracks_read: number; tracks_reported: number }> = [];
+      // `tracks_reported` is the API's own `total`, and stays null when the
+      // response omitted it: substituting items.length would claim "all N were
+      // read" inside a list that exists to say the opposite (#803 class).
+      const truncatedAlbums: Array<{ album_id: string; album_name: string | null; tracks_read: number; tracks_reported: number | null }> = [];
       for (const al of creditAlbums) {
         try {
           const page = await client.get<{ items?: unknown; total?: number; next?: string | null }>(
@@ -1217,12 +1220,14 @@ max_results: z.number().int().positive().max(2000).optional().describe('Max item
           }
           const items = page.items as SpotifyTrackSimple[];
           const tracksReported = typeof page?.total === 'number' ? page.total : null;
+          // A page with a `next` cursor but no `total` cannot say how much is
+          // missing; it says only that this page is not the last one.
           if (page?.next || (tracksReported !== null && tracksReported > items.length)) {
             truncatedAlbums.push({
               album_id: al.id,
               album_name: al.name ?? null,
               tracks_read: items.length,
-              tracks_reported: tracksReported ?? items.length,
+              tracks_reported: tracksReported,
             });
           }
           for (const t of items) for (const a of t.artists ?? []) record(a, false, true);
@@ -1266,7 +1271,7 @@ max_results: z.number().int().positive().max(2000).optional().describe('Max item
         lines.push(
           '',
           `Partial — track credits beyond the first 50 of ${truncatedAlbums.length} album(s) were not read: `
-            + truncatedAlbums.map((t) => `${t.album_name ?? t.album_id} (${t.tracks_read} of ${t.tracks_reported} tracks)`).join(', '),
+            + truncatedAlbums.map((t) => `${t.album_name ?? t.album_id} (${t.tracks_reported === null ? `${t.tracks_read} tracks, total unknown` : `${t.tracks_read} of ${t.tracks_reported} tracks`})`).join(', '),
         );
       }
       return emit(rf, lines.join('\n'), {

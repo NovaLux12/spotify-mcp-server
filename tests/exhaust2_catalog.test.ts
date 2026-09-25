@@ -294,7 +294,7 @@ assert.equal((res.structuredContent as { gaps_flagged: unknown[] }).gaps_flagged
     unreadable_albums?: Array<{ album_id: string; album_name: string | null; reason: string }>;
     albums_credited?: number;
     truncated_count?: number;
-    truncated_albums?: Array<{ album_id: string; album_name: string | null; tracks_read: number; tracks_reported: number }>;
+    truncated_albums?: Array<{ album_id: string; album_name: string | null; tracks_read: number; tracks_reported: number | null }>;
   };
 
   it('artist_collab_network falls back to albums when top-tracks is gated', async () => {
@@ -470,6 +470,42 @@ assert.equal((res.structuredContent as { gaps_flagged: unknown[] }).gaps_flagged
     assert.equal(structured.albums_credited, 1);
     assert.ok(structured.collaborators.some((c) => c.name === 'Third'));
     assert.ok(res.content[0].text.includes('Partial'));
+  });
+
+  // A `next` cursor without a numeric `total` says "this page is not the last
+  // one" and nothing about how much is left. Reporting tracks_read as the total
+  // would put "1 of 1" inside the very list that exists to say credits are
+  // missing, so the unknown has to survive as null.
+  it('artist_collab_network reports an unknown total as unknown rather than inventing one from the page it read', async () => {
+    const client = makeClient({
+      get: mock.fn(async (path: string) => {
+        if (path === '/albums/alb1/tracks') {
+          return {
+            items: [{ id: 't1', name: 'Opener', uri: 'u', duration_ms: 100_000, explicit: false, track_number: 1, artists: [artist, third] }],
+            next: 'https://api.spotify.com/v1/albums/alb1/tracks?offset=1',
+          };
+        }
+        if (path.endsWith('/top-tracks')) return { tracks: [trackPayload({ artists: [artist] })] };
+        if (path.startsWith('/artists/') && !path.includes('/albums')) return { ...artist, genres: [] };
+        return null;
+      }),
+      getAllPages: mock.fn(async () => [simplifiedAlbum]),
+    });
+    const res = await handlerFor('artist_collab_network', client)({ artist_id: 'a1', include_track_features: true, response_format: 'concise' });
+    const structured = res.structuredContent as CollabStructured;
+    assert.equal(structured.truncated_count, 1);
+    assert.deepEqual(structured.truncated_albums, [
+      { album_id: 'alb1', album_name: 'Collab LP', tracks_read: 1, tracks_reported: null },
+    ]);
+    // The credit this page did return still stands, and the disclosure still
+    // fires — only the invented total is gone.
+    assert.equal(structured.unreadable_count, undefined);
+    assert.equal(structured.track_features_partial, true);
+    assert.equal(structured.albums_credited, 1);
+    assert.ok(structured.collaborators.some((c) => c.name === 'Third'));
+    const text = res.content[0].text;
+    assert.ok(text.includes('Collab LP (1 tracks, total unknown)'), text);
+    assert.equal(text.includes('1 of 1 tracks'), false, text);
   });
 
   it('search_market_diff splits result sets by market', async () => {
