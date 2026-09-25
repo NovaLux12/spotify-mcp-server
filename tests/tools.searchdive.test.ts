@@ -203,3 +203,98 @@ test('no results yields a plain empty message', async () => {
   const result = await invoke(findTool(registered, 'search_deep'), { query: 'zzzznothing' });
   assert.equal(text(result), 'No results found.');
 });
+
+/** The handler's structuredContent shape, asserted per call at the boundary. */
+interface SearchDeepStructured {
+  offset: number;
+  sections: Record<string, {
+    items: Array<{ id: string }>;
+    next_offset: number | null;
+  }>;
+}
+
+// ------------------------------------------------------------- offset paging (#792)
+
+// Pages keyed by index so a window reached only via `offset` serves ids the
+// default 0–50 window can never produce, and the last page is short (so the
+// walk stops on its own) with `total` left at 0 to prove an unknown total still
+// yields no bogus continuation.
+function trackPageByOffset(offset: number) {
+  const span = offset < 50 ? 10 : 5;
+  return {
+    tracks: {
+      total: offset < 50 ? 100 : 0,
+      items: Array.from({ length: span }, (_, i) => ({
+        id: `trk-${offset + i}`,
+        name: `Song ${offset + i}`,
+        uri: `spotify:track:trk-${offset + i}`,
+        artists: [{ name: `Artist ${offset + i}` }],
+        album: { name: `Album ${offset + i}` },
+      })),
+    },
+  };
+}
+
+test('offset walks a later window and the advertised next_offset is accepted (#792)', async () => {
+  const { registered, calls } = makeHarness({
+    getResponse: (_path, params) => trackPageByOffset(Number(params?.offset ?? 0)),
+  });
+  const searchDeep = findTool(registered, 'search_deep');
+
+  // Row 55 is past what pages=5 from offset 0 can return, so only a caller
+  // supplied offset reaches it.
+  const later = await invoke(searchDeep, { query: 'queen', offset: 50 });
+  assert.deepEqual(
+    calls.map((c) => c.params?.offset),
+    ['50'],
+  );
+  // One boundary cast per call, named: the handler's structuredContent shape.
+  const laterWindow = later.structuredContent as SearchDeepStructured;
+  assert.equal(laterWindow.sections.tracks.next_offset, null, 'a short page with no declared total is the end');
+  assert.match(text(later), /Song 50/);
+
+  // Continuation from a full page: the advertised offset is the one the next
+  // call must pass, and re-passing it serves rows the first window did not.
+  calls.length = 0;
+  const firstWindow = await invoke(searchDeep, { query: 'queen', pages: 2 });
+  const firstOut = firstWindow.structuredContent as SearchDeepStructured;
+  const advertised = firstOut.sections.tracks.next_offset;
+  assert.equal(advertised, 20);
+  assert.match(text(firstWindow), /Next page: offset=20/);
+  const firstIds = firstOut.sections.tracks.items.map((row) => row.id);
+
+  calls.length = 0;
+  const secondWindow = await invoke(searchDeep, { query: 'queen', offset: advertised ?? 0 });
+  assert.equal(calls[0].params?.offset, '20');
+  const secondOut = secondWindow.structuredContent as SearchDeepStructured;
+  const secondIds = secondOut.sections.tracks.items.map((row) => row.id);
+  assert.ok(secondIds.length > 0);
+  assert.equal(
+    secondIds.some((id) => firstIds.includes(id)),
+    false,
+    'the advertised continuation must not re-serve the window it followed',
+  );
+});
+
+test('offset past Spotify\'s 1000 ceiling is rejected by the schema', () => {
+  const { registered } = makeHarness();
+  const offset = findTool(registered, 'search_deep').schema.offset;
+  assert.ok(offset, 'offset schema field missing');
+  assert.equal(offset.safeParse(1001).success, false);
+  assert.equal(offset.safeParse(-1).success, false);
+  assert.equal(offset.safeParse(1000).success, true);
+});
+
+test('a truncated window footer advertises offset, not a fetch_all this tool lacks', async () => {
+  const { registered } = makeHarness({
+    getResponse: (_path, params) => trackPageByOffset(Number(params?.offset ?? 0)),
+  });
+  const result = await invoke(findTool(registered, 'search_deep'), {
+    query: 'queen',
+    pages: 2,
+    max_results: 5,
+  });
+  const out = text(result);
+  assert.match(out, /\(15 more — raise max_results, continue with offset\)/);
+  assert.doesNotMatch(out, /fetch_all/);
+});
