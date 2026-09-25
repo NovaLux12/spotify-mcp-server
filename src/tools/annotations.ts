@@ -507,7 +507,7 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   manifestEntry('search', 'search', 'src/tools/search.ts', registerSearchTools, [1, 1821], { readOnlySafe: true }),
   manifestEntry('catalog', 'catalog', 'src/tools/catalog.ts', registerCatalogTools, [31, 27013], { readOnlySafe: true }),
   manifestEntry('library', 'library', 'src/tools/library.ts', registerLibraryTools, [16, 14957]),
-  manifestEntry('playback', 'playback', 'src/tools/playback.ts', registerPlaybackTools, [16, 12023]),
+  manifestEntry('playback', 'playback', 'src/tools/playback.ts', registerPlaybackTools, [16, 12287]),
   manifestEntry('following', 'following', 'src/tools/following.ts', registerFollowingTools, [5, 3921]),
   manifestEntry('users', 'users', 'src/tools/users.ts', registerUsersTools, [2, 1613]),
   manifestEntry('audiobooks', 'audiobooks', 'src/tools/audiobooks.ts', registerAudiobookTools, [4, 3535]),
