@@ -27,6 +27,7 @@ import {
   parseSpotifyUri,
   type ResponseFormatValue,
 } from '../shaping.js';
+import { recordSearch } from './searchhistory.js';
 import { getConfig, resolveMarket } from '../config.js';
 import { spotifyId, spotifyIdArray, type SpotifyReferenceKind } from '../refs.js';
 
@@ -906,12 +907,25 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
         if (args.include_external) params.include_external = args.include_external as string;
         const raw = await client.get<Record<string, unknown>>('/search', params);
         if (!raw) return { content: [{ type: 'text', text: 'No results found.' }] };
+        const section = (raw as Record<string, unknown>)[meta.key] as { items?: unknown[]; total?: number } | undefined;
+        const items = (section?.items ?? []).filter(Boolean) as unknown[];
+        // #766: the factory registers seven tools from this one handler, so
+        // this is the only writer for all of them — one entry per user action,
+        // never seven. `kind` is a single type, hence the one-element list.
+        if (items.length > 0) {
+          await recordSearch({
+            query: args.query as string,
+            types: [kind],
+            items,
+            limit,
+            market: args.market as string | undefined,
+            offset: args.offset as number | undefined,
+          });
+        }
         if (args.response_format === 'json') {
           const r = raw as Record<string, unknown>;
           return { content: [{ type: 'text', text: JSON.stringify(r) }], structuredContent: r };
         }
-        const section = (raw as Record<string, unknown>)[meta.key] as { items?: unknown[]; total?: number } | undefined;
-        const items = (section?.items ?? []).filter(Boolean) as unknown[];
         const total = typeof section?.total === 'number' ? section!.total as number : items.length;
         if (items.length === 0) return { content: [{ type: 'text', text: 'No results found.' }] };
         const cap = resolveMaxResults(args.max_results as number | undefined);
