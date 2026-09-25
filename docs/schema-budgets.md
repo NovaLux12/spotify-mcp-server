@@ -72,7 +72,7 @@ above either ceiling fails CI and server startup.
 | playlistbatch | 3 | 4,784 | 3 | 4,784 | 4 | 5,263 |
 | playlistmisc | 3 | 2,321 | 3 | 2,321 | 4 | 2,554 |
 | personalization | 3 | 2,532 | 3 | 2,532 | 4 | 2,786 |
-| analytics | 4 | 2,595 | 4 | 2,595 | 5 | 2,855 |
+| analytics | 4 | 2,753 | 4 | 2,753 | 5 | 3,029 |
 | statsfm | 30 | 22,721 | 30 | 22,721 | 31 | 24,994 |
 | taste | 16 | 13,959 | 16 | 13,959 | 17 | 15,355 |
 | tastecomposites | 11 | 9,101 | 11 | 9,101 | 12 | 10,012 |
