@@ -94,10 +94,6 @@ function makeHarness(devices: DeviceStub[]): Harness {
   };
 }
 
-/** Parameter names the tool's own zod schema declares, e.g. volume / device_ids. */
-function declaredParams(h: Harness, tool: string): Set<string> {
-  return new Set(Object.keys(h.find(tool).schema));
-}
 
 describe('volume plan device selection (#853)', () => {
   // Spotify reports some devices (remotes, restricted sessions) with id: null.
@@ -144,22 +140,35 @@ describe('volume plan device selection (#853)', () => {
     assert.equal(sc.skipped_no_id, 1);
   });
 
-  it('plan text names only parameters the tool schema declares', async () => {
+  // #830: the plan is the request an agent copies, so it must name the query
+  // parameters the wire call really sends (`volume_percent`, `device_id`) —
+  // not the tool's own input name (`volume`).
+  it('plan text names exactly the parameters the real PUT sends', async () => {
     const h = makeHarness(MIXED);
     for (const tool of ['apply_volume_plan', 'plan_volume_level_across_devices']) {
-      const declared = declaredParams(h, tool);
       const out = await h.invoke(tool, { volume: 42 });
       const steps = (h.structured(out).steps as string[]) ?? [];
       assert.ok(steps.length > 0, `${tool} must produce plan steps`);
       for (const step of steps) {
-        for (const [, param] of step.matchAll(/([A-Za-z_][A-Za-z0-9_]*)=/g)) {
-          assert.ok(
-            declared.has(param),
-            `${tool} plan prints undeclared parameter "${param}=": ${step} (declares: ${[...declared].join(', ')})`,
-          );
-        }
+        assert.match(step, /volume_percent=42\b/, `${tool} plan must print the real query param: ${step}`);
+        assert.doesNotMatch(step, /[^_]\bvolume=/, `${tool} plan must not print the rejected \`volume\` spelling: ${step}`);
+        const [, param] = step.match(/([A-Za-z_][A-Za-z0-9_]*)=/)!;
+        assert.equal(param, 'volume_percent');
       }
     }
+  });
+
+  it('apply_volume_plan PUTs volume_percent per selected device', async () => {
+    const h = makeHarness(MIXED);
+    await h.invoke('apply_volume_plan', { volume: 42, dry_run: false });
+    const puts = h.calls.filter((c) => c.method === 'PUT');
+    assert.equal(puts.length, 2, 'one PUT per selectable device only');
+    const seen = puts.map((p) => {
+      const qs = new URLSearchParams(p.path.split('?')[1]);
+      assert.equal(qs.get('volume'), null, `Spotify does not accept \`volume\`: ${p.path}`);
+      return [qs.get('device_id'), qs.get('volume_percent')] as const;
+    });
+    assert.deepEqual(seen.sort(), [['dev_phone', '42'], ['dev_real', '42']]);
   });
 
   it('reports the skip when every volume-capable device lacks an id', async () => {

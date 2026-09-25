@@ -12,13 +12,13 @@ type Call = { method: string; path: string; params?: Record<string, string>; bod
 
 function trackFixture(o: any = {}) { return { id:'trk1', name:'T1', uri:'spotify:track:trk1', type:'track', duration_ms:200000, artists:[{name:'A'}], album:{name:'Alb'}, ...o }; }
 
-function makeHarness(opts: { getResponse?: (path:string, params?:Record<string,string>)=>unknown } = {}) {
+function makeHarness(opts: { getResponse?: (path:string, params?:Record<string,string>)=>unknown; failPut?: (path:string)=>boolean } = {}) {
   const calls: Call[] = [];
   const registered: RegisteredTool[] = [];
   const server: any = { tool(name:string, desc:string, schema:any, handler:any){ registered.push({ name, description: desc, schema, handler }); } };
   const client: any = {
     get: async (path:string, params?:Record<string,string>) => { calls.push({ method:'GET', path, params }); if (opts.getResponse) { const r = opts.getResponse(path, params); if (r!==undefined) return r; } return null; },
-    put: async (path:string, body?:unknown) => { calls.push({ method:'PUT', path, body }); },
+    put: async (path:string, body?:unknown) => { calls.push({ method:'PUT', path, body }); if (opts.failPut?.(path)) throw new Error('volume write rejected'); },
     post: async (path:string, body?:unknown) => { calls.push({ method:'POST', path, body }); },
     delete: async (path:string) => { calls.push({ method:'DELETE', path }); },
     getAllPages: async()=>[],
@@ -195,10 +195,40 @@ test('get_playback_context still reads deprecated tracks.total projection', asyn
   const r = await invoke(find(registered,'get_playback_context'), {});
   assert.equal(playlistTracksTotal(r), 7);
 });
-test('volume_step nudge', async()=>{
+// #830: Spotify declares volume_percent as the required query parameter; the
+// `volume` spelling is silently rejected, so the nudge never applied.
+test('volume_step writes volume_percent, not volume', async()=>{
   const { registered, calls } = makeHarness({ getResponse:(p)=> p==='/me/player'?{ device:{ id:'d1', volume_percent:50}}:null });
   await invoke(find(registered,'volume_step'), { step:10 });
-  assert.ok(calls.some(c=>c.path.includes('/me/player/volume') && c.path.includes('60')));
+  const put = calls.find(c=>c.method==='PUT' && c.path.startsWith('/me/player/volume'));
+  assert.ok(put, 'volume_step must PUT the volume');
+  const qs = new URLSearchParams(put!.path.split('?')[1]);
+  assert.equal(qs.get('volume_percent'), '60');
+  assert.equal(qs.get('device_id'), 'd1');
+  assert.equal(qs.get('volume'), null, 'Spotify does not accept `volume`: ' + put!.path);
+});
+test('play_on writes volume_percent on the resolved device', async()=>{
+  const { registered, calls } = makeHarness({ getResponse:(p)=> p==='/me/player/devices'?{ devices:[{ id:'dev1', name:'Kitchen Speaker'}]}:undefined });
+  await invoke(find(registered,'play_on'), { device:'kitchen', context_uri:'spotify:playlist:abc', volume:25 });
+  const put = calls.find(c=>c.method==='PUT' && c.path.startsWith('/me/player/volume'));
+  assert.ok(put, 'play_on must PUT the requested volume');
+  const qs = new URLSearchParams(put!.path.split('?')[1]);
+  assert.equal(qs.get('volume_percent'), '25');
+  assert.equal(qs.get('device_id'), 'dev1');
+  assert.equal(qs.get('volume'), null, 'Spotify does not accept `volume`: ' + put!.path);
+});
+test('play_on does not report a rejected volume write as applied', async()=>{
+  const { registered } = makeHarness({
+    getResponse:(p)=> p==='/me/player/devices'?{ devices:[{ id:'dev1', name:'Kitchen Speaker'}]}:undefined,
+    failPut:(p)=>p.startsWith('/me/player/volume'),
+  });
+  const r = await invoke(find(registered,'play_on'), { device:'kitchen', context_uri:'spotify:playlist:abc', volume:25 });
+  const sc = r.structuredContent as Record<string, unknown>;
+  assert.equal(sc.ok, false, 'a rejected volume write must not report ok:true');
+  assert.equal(sc.volume_applied, false);
+  assert.match(String(sc.volume_error), /rejected/);
+  assert.doesNotMatch(text(r), /@ 25%/);
+  assert.match(text(r), /NOT applied/);
 });
 test('market_availability', async()=>{
   const { registered } = makeHarness({ getResponse:(p)=> p.startsWith('/tracks/')?{ name:'Hit', available_markets:['US','GB','DE']}:null });

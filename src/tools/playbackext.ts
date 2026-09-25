@@ -181,7 +181,7 @@ export function registerPlaybackExtTools(server: McpServer, client: SpotifyClien
       }
       let applied = 0; const failed: string[] = [];
       for (const [id, p] of presets) {
-        try { await client.put(`/me/player/volume?${new URLSearchParams({ volume: String(p.volume!), device_id: id })}`); applied++; } catch (e) { failed.push(id); }
+        try { await client.put(`/me/player/volume?${new URLSearchParams({ volume_percent: String(p.volume!), device_id: id })}`); applied++; } catch (e) { failed.push(id); }
       }
       return emit(args.response_format as string, { ok: failed.length === 0, applied, failed }, `Applied ${applied}/${presets.length} volume presets${failed.length ? ` — failed: ${failed.join(', ')}` : ''}.`);
     });
