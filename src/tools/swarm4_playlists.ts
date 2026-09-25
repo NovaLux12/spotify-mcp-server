@@ -403,7 +403,7 @@ function findSnapshotPlaylist(
   snap: LibraryBackup,
   file: string,
   wanted: string,
-): { uri: string; name: string; item_count: number | null; items: Array<{ uri: string; name: string }> } {
+): { uri: string; name: string; item_count: number | null; items: Array<{ uri: string; name: string }>; items_error: string | undefined } {
   const wantedLc = wanted.trim().toLowerCase();
   const exact = snap.playlists.find((p) => p.name.toLowerCase() === wantedLc);
   const row = exact ?? snap.playlists.find((p) => p.name.toLowerCase().includes(wantedLc));
@@ -414,7 +414,7 @@ function findSnapshotPlaylist(
         `Playlists present: ${names}${snap.playlists.length > 12 ? '…' : ''}`,
     );
   }
-  return { uri: row.uri, name: row.name, item_count: row.item_count, items: row.items };
+  return { uri: row.uri, name: row.name, item_count: row.item_count, items: row.items, items_error: row.items_error };
 }
 
 // ---------------------------------------------------------------------------
@@ -1441,6 +1441,23 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
       const snapB = await readSnapshot(args.backup_file_b);
       const rowA = findSnapshotPlaylist(snapA, args.backup_file_a, args.playlist_name);
       const rowB = findSnapshotPlaylist(snapB, args.backup_file_b, args.playlist_name);
+      // A playlist whose items could not be read is stored as an EMPTY list
+      // (backup_library, #735), so diffing it against a readable side invents
+      // removals (or additions) out of data nobody read. Same refusal as the
+      // restore plan: a row with items_error is not diffable.
+      const unreadable = ([
+        { side: 'baseline', file: args.backup_file_a, row: rowA },
+        { side: 'comparison', file: args.backup_file_b, row: rowB },
+      ] as const).filter((side) => side.row.items_error !== undefined);
+      if (unreadable.length > 0) {
+        const detail = unreadable
+          .map((side) => `${side.side} (${side.file}): ${side.row.items_error}`)
+          .join('; ');
+        throw new Error(
+          `Cannot diff "${rowA.name}" — the ${unreadable.length === 1 ? 'snapshot' : 'snapshots'} could not read its items. `
+          + `Refusing to report removals from an unreadable row. ${detail}`,
+        );
+      }
       // Multiset semantics, not set membership: gaining or losing one copy of a
       // duplicated URI is a real changelog entry, so counts are compared per URI.
       const rowsA: SnapTrackRow[] = rowA.items.map((it) => ({ uri: it.uri, name: it.name, added_at: null }));

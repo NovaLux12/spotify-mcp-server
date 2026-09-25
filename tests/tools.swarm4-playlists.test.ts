@@ -221,18 +221,33 @@ describe('playlist_changelog multiset diff', () => {
     rmSync(backupRoot, { recursive: true, force: true });
   });
 
-  function writeBackup(file: string, uris: string[]): void {
-    const payload = {
-      _meta: {},
-      liked_tracks: [], saved_albums: [], saved_shows: [], saved_episodes: [],
-      saved_audiobooks: [], followed_artists: [],
-      playlists: [{
+  /** `items_error` reproduces how backup_library stores an unreadable playlist: an EMPTY list. */
+  function writeBackup(
+    file: string,
+    uris: string[],
+    opts: { items_error?: string; extraPlaylists?: Array<Record<string, unknown>> } = {},
+  ): void {
+    const mix = opts.items_error === undefined
+      ? {
         uri: 'spotify:playlist:PL',
         name: 'Mix',
         item_count: uris.length,
         items: uris.map((u) => ({ uri: u, name: `Track ${u.slice(-1)}` })),
         items_truncated: false,
-      }],
+      }
+      : {
+        uri: 'spotify:playlist:PL',
+        name: 'Mix',
+        item_count: 42,
+        items: [],
+        items_truncated: false,
+        items_error: opts.items_error,
+      };
+    const payload = {
+      _meta: {},
+      liked_tracks: [], saved_albums: [], saved_shows: [], saved_episodes: [],
+      saved_audiobooks: [], followed_artists: [],
+      playlists: [mix, ...(opts.extraPlaylists ?? [])],
     };
     writeFileSync(join(backupRoot, file), JSON.stringify(payload), 'utf8');
   }
@@ -273,5 +288,78 @@ describe('playlist_changelog multiset diff', () => {
     assert.deepEqual(sc.added.map((a) => a.uri), ['spotify:track:b']);
     assert.equal(sc.removed.length, 0);
     assert.match(out.content[0].text, /Added:/);
+  });
+
+  // An unreadable playlist is stored as items: [] + items_error, so the diff
+  // would read that empty list as "the playlist lost everything". Reporting
+  // those removals is a falsified delta — the restore plan already refuses
+  // such a row (restore.ts), and so must the changelog.
+  it('refuses to report removals when the BASELINE playlist was unreadable', async () => {
+    writeBackup('backup-2026-02-01-1.json', [], { items_error: '403 forbidden' });
+    writeBackup('backup-2026-02-02-1.json', ['spotify:track:a', 'spotify:track:b']);
+    const h = harness({});
+    await assert.rejects(
+      h.invoke('playlist_changelog', {
+        backup_file_a: 'backup-2026-02-01-1.json',
+        backup_file_b: 'backup-2026-02-02-1.json',
+        playlist_name: 'Mix',
+        response_format: 'concise',
+      }),
+      (err: Error) => {
+        assert.match(err.message, /could not read its items/);
+        // The refusal names WHICH snapshot failed, so the caller knows which
+        // side of the diff is missing — not just that something broke.
+        assert.match(err.message, /baseline \(backup-2026-02-01-1\.json\): 403 forbidden/);
+        return true;
+      },
+    );
+  });
+
+  it('refuses to report removals when the COMPARISON playlist was unreadable', async () => {
+    writeBackup('backup-2026-02-03-1.json', ['spotify:track:a', 'spotify:track:b']);
+    writeBackup('backup-2026-02-04-1.json', [], { items_error: '503 service unavailable' });
+    const h = harness({});
+    await assert.rejects(
+      h.invoke('playlist_changelog', {
+        backup_file_a: 'backup-2026-02-03-1.json',
+        backup_file_b: 'backup-2026-02-04-1.json',
+        playlist_name: 'Mix',
+        response_format: 'json',
+      }),
+      (err: Error) => {
+        assert.match(err.message, /comparison \(backup-2026-02-04-1\.json\): 503 service unavailable/);
+        return true;
+      },
+    );
+  });
+
+  it('still diffs a readable playlist when ANOTHER playlist in the snapshot is unreadable', async () => {
+    // The refusal is per-row: a sibling playlist's items_error must not poison
+    // the diff of a playlist whose items were read fine.
+    const other = {
+      uri: 'spotify:playlist:OTHER',
+      name: 'Other',
+      item_count: 7,
+      items: [],
+      items_truncated: false,
+      items_error: '403 forbidden',
+    };
+    writeBackup('backup-2026-02-05-1.json', ['spotify:track:a', 'spotify:track:b'], { extraPlaylists: [other] });
+    writeBackup('backup-2026-02-06-1.json', ['spotify:track:b', 'spotify:track:c'], { extraPlaylists: [other] });
+    const h = harness({});
+    const out = await h.invoke('playlist_changelog', {
+      backup_file_a: 'backup-2026-02-05-1.json',
+      backup_file_b: 'backup-2026-02-06-1.json',
+      playlist_name: 'Mix',
+      response_format: 'concise',
+    });
+    const sc = out.structuredContent as {
+      added: Array<{ uri: string }>;
+      removed: Array<{ uri: string }>;
+      kept_count: number;
+    };
+    assert.deepEqual(sc.added.map((a) => a.uri), ['spotify:track:c']);
+    assert.deepEqual(sc.removed.map((r) => r.uri), ['spotify:track:a']);
+    assert.equal(sc.kept_count, 1);
   });
 });
