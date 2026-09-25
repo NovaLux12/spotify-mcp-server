@@ -36,6 +36,12 @@ jobs:
       - name: Typecheck
         run: npx tsc --noEmit
 
+      - name: Check generated documentation inventory
+        run: npm run check:docs-counts
+
+      - name: Check documented tool names
+        run: npm run check:doc-tool-names
+
       - name: Test with count and coverage gates
         shell: bash
         run: |

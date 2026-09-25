@@ -7,7 +7,11 @@
 
 An MCP server that wraps the Spotify Web API — lets Claude and other AI assistants control playback, search the catalog (tracks, podcasts, audiobooks), and manage your library and playlists.
 
-608 tools. Every non-deprecated endpoint, plus extras most servers skip. [Full list →](SPEC.md)
+A broad Spotify Web API tool surface, plus extras most servers skip. Registration-gated wrappers are explained rather than hidden; see the [full list →](SPEC.md).
+
+<!-- BEGIN:generated surface-census -->
+The finalized default MCP registry exposes **610 tools**, **16 fixed resources**, **33 resource templates**, and **14 prompts**. Toolsets and production gates can trim a configured host; these totals describe the default production `tools/list` after finalizers.
+<!-- END:generated surface-census -->
 
 ---
 
@@ -35,9 +39,9 @@ An MCP server that wraps the Spotify Web API — lets Claude and other AI assist
 
 | | |
 |---|---|
-| **Complete** | 608 tools — playback, search, catalog, library, playlists, following + extras like duplicate cleanup, M3U/CSV import-export, podcast sessions, snapshot diffing, listening analytics, market checks, stats.fm taste imports, and 11 taste composite briefs, playlists, and reports. |
-| **Safe** | `dry_run` previews on every write, receipts that prove what landed, human confirmation for bulk deletes, and `READONLY` to hide all writes. |
-| **Honest** | No zombie tools for endpoints Spotify removed. Legacy lookups explain the 403 instead of crashing. |
+| **Complete** | Playback, search, catalog, library, playlists, following, plus extras like duplicate cleanup, M3U/CSV import-export, podcast sessions, snapshot diffing, listening analytics, market checks, stats.fm taste imports, and taste composite briefs, playlists, and reports. |
+| **Safe** | `dry_run` previews on writes, receipts that prove what landed, human confirmation for bulk deletes, and `READONLY` to hide write-capable modules. |
+| **Honest** | No zombie tools for endpoints Spotify removed. Legacy lookups explain the 403 instead of crashing; registration-gated endpoints are listed below. |
 | **Polished** | Paginated (up to 500), podcasts first-class, device-aware playback, `spotify_doctor` self-diagnosis, real test suite. |
 
 ## Quick start
@@ -136,9 +140,9 @@ All via env vars — no config file. Only `SPOTIFY_CLIENT_ID` is required.
 
 | Variable | Example | Purpose |
 |---|---|---|
-| `SPOTIFY_MCP_TOOLSETS` | `playback,catalog` | Trim by group for hosts that cap tool counts |
-| `SPOTIFY_MCP_READONLY` | `1` | Hide every write tool |
-| `SPOTIFY_MCP_HISTORY` | `1` | Log mutations to JSONL for undo |
+| `SPOTIFY_MCP_TOOLSETS` | `playback,catalog` | Trim by group for hosts that cap tool counts; unset or `all` registers everything. |
+| `SPOTIFY_MCP_READONLY` | `1` | Hide write-capable modules; read-only resources and prompts remain available. |
+| `SPOTIFY_MCP_HISTORY` | `1` | Log mutations to JSONL for undo and audit. |
 
 Full reference: [docs/configuration.md](docs/configuration.md)
 
@@ -152,6 +156,8 @@ Full reference: [docs/configuration.md](docs/configuration.md)
 - [docs/statsfm.md](docs/statsfm.md) — stats.fm second source: setup, tool cheat sheet, gotchas
 - [docs/cookbook.md](docs/cookbook.md) — ten copy-paste agent recipes
 - [docs/taste.md](docs/taste.md) — anonymized taste showcase driving a playlist
+- [docs/wave2-composites.md](docs/wave2-composites.md) — read-only taste composites
+- [docs/distribution.md](docs/distribution.md) — distribution and release notes
 - [docs/faq.md](docs/faq.md) — auth, Premium, 403s, headless, tokens
 - [CONTRIBUTING.md](CONTRIBUTING.md) — dev setup & conventions
 - [CHANGELOG.md](CHANGELOG.md) — release history

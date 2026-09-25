@@ -71,7 +71,7 @@ It prints a URL — open it on any machine with a browser, approve, and paste th
 
 **Do I need Premium for stats.fm tools?** No. They read stats.fm, not Spotify playback — Free accounts work.
 
-**Lifetime stats look empty.** The history import hasn't completed. Run `statsfm_history_status`; see [stats.fm setup](statsfm.md#setup).
+**Lifetime stats look empty.** The history import hasn't completed. Run `statsfm_streams_stats` and check the imported totals; see [stats.fm setup](statsfm.md#setup).
 
 **Can I query someone else's profile?** Public profiles: yes, by user ID. Private profiles: no — aggregates and streams stay hidden by design. See [Privacy](statsfm.md#privacy).
 

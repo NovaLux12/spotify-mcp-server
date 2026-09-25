@@ -4,7 +4,7 @@ An anonymized end-to-end run of the [flagship recipe](cookbook.md#1-taste-profil
 
 ## Tool naming
 
-The taste tools live under the `taste` toolset with canonical **`statsfm_taste_*`** names. The original **`taste_*`** names remain registered as backwards-compatible aliases pointing at the same handlers — either name works.
+The eight taste-intelligence tools live under the `taste` toolset with canonical **`statsfm_*`** names. Each has a registered legacy alias pointing to the same handler, so either name in a pair below works.
 
 | Canonical (preferred) | Legacy alias |
 |---|---|
@@ -17,41 +17,36 @@ The taste tools live under the `taste` toolset with canonical **`statsfm_taste_*
 | `statsfm_taste_recommendations` | `taste_recommendations` |
 | `statsfm_record_feedback` | `record_feedback` |
 
-> **Live-shape hardening (v1.30.0):** `statsfm_taste_profile` now resolves nested stats.fm entity names — live top payloads wrap entities (`entry.artist` / `entry.track` / `entry.album`, genre as a bare string) while older shapes were flat. Counts always worked; names could come back blank on live data. Fixed with flat backwards-compat plus live-shaped regression tests.
+Network-backed taste tools require an explicit `statsfm_user` string. The local-only `statsfm_record_feedback` / `record_feedback` pair is the identity-free exception: it stores entries in process memory and never contacts stats.fm. Taste schemas use the singular range values `week`, `month`, and `lifetime` where `range` is accepted. User-scoped endpoint tools use plural `weeks` and `months` and require `user_id`; see the [stats.fm tool reference](statsfm.md#ranges).
+
+`statsfm_taste_profile` with `response_format: "json"` returns raw stats.fm payloads under exactly these top-level keys: `topArtists`, `topGenres`, `topTracks`, and `recentStreams`. The server does not translate that JSON mode into the summary fields used by its concise and detailed modes.
+
+> **Live-shape handling:** concise and detailed profile modes resolve nested stats.fm entity names such as `entry.artist`, `entry.track`, and `entry.album`, while genres may be bare strings. JSON mode remains raw as described above.
 
 ## The starting point
 
-Listener A has streamed for about three years, imported fully into stats.fm (`statsfm_history_status` reports continuous coverage, oldest stream 2023). The question: *what does A actually sound like, and can that become a playlist worth keeping?*
+Listener A has streamed for about three years and imported that history into stats.fm. `statsfm_streams_stats` summarizes the imported history, while `statsfm_recaps` provides calendar-year views. The question: *what does A actually sound like, and can that become a playlist worth keeping?*
 
-## Step 1 — check coverage
+## Step 1 — inspect aggregate history
 
 ```json
-{ "tool": "statsfm_history_status" }
+{ "tool": "statsfm_streams_stats", "user_id": "<your-statsfm-user-id>", "response_format": "json" }
 ```
 
-Result (abridged): coverage continuous, no gaps longer than a week, newest stream yesterday. Lifetime ranges are trustworthy — proceed.
+The result contains aggregate stream totals, listening duration, and catalog cardinality; optionally bound it with Unix-millisecond `after` and `before` values. It does not report import coverage, stream gaps, or the newest stream. Use `statsfm_recaps` when you need a calendar-year view.
 
 ## Step 2 — pull the taste profile
 
 ```json
-{ "tool": "statsfm_taste_profile", "range": "lifetime", "response_format": "json" }
+{ "tool": "statsfm_taste_profile", "statsfm_user": "<your-statsfm-user-id>", "range": "lifetime", "response_format": "json" }
 ```
 
-Result (abridged, anonymized):
-
-```json
-{
-  "top_genres": ["indie folk", "ambient", "alt-r&b", "jazz rap", "dream pop"],
-  "anchor_artists": ["Anchor One", "Anchor Two", "Anchor Three"],
-  "listening_clock_note": "heavy 22:00-01:00, steady weekday afternoons",
-  "diversity_note": "narrow core (5 genres > 70% of streams), long tail of electronic one-offs"
-}
-```
+With `response_format: "json"`, the raw payloads appear under `topArtists`, `topGenres`, `topTracks`, and `recentStreams`. With the default concise format, the text and structured summary derive core artists, genres, loyalty versus novelty, and UTC day-parting from those upstream lists. The profile clock is UTC, so use it as a listening-shape signal rather than claiming the listener's local time zone.
 
 ## Step 3 — find the momentum
 
 ```json
-{ "tool": "statsfm_top_genres", "range": "month" }
+{ "tool": "statsfm_top_genres", "user_id": "<your-statsfm-user-id>", "range": "months" }
 ```
 
 This month: alt-r&b climbing past indie folk, dream pop fading. Identity is indie folk; momentum is alt-r&b. The playlist should honor both — familiar core, current edge.
@@ -79,21 +74,22 @@ Discovery candidates get cross-checked against lifetime tops — anything alread
 ## Step 6 — add, verify, narrate
 
 ```json
-{ "tool": "add_to_playlist", "playlist_id": "PLAYLIST_ID", "track_uris": ["..."], "dry_run": true }
+{ "tool": "add_to_playlist", "playlist_id": "PLAYLIST_ID", "uris": ["spotify:track:..."], "dry_run": true }
 ```
 
-Commit for real, then `verify_receipt` on the receipt id. Final reply to the human:
+`add_to_playlist` takes `uris` (1–100 Spotify track or episode URIs). Commit for real, then call `verify_receipt` with the receipt id. Final reply to the human:
 
-> 6 tracks, 3 genres: indie folk roots, ambient middle, alt-r&b edge. Anchors keep it yours; discoveries keep it alive. Late-night order — it plays 22:00 → 01:00 like your clock.
+> 6 tracks, 3 genres: indie folk roots, ambient middle, alt-r&b edge. Anchors keep it yours; discoveries keep it alive. Late-night order — it follows the UTC clock signal from your profile.
 
 ## What this proves
 
-- stats.fm supplies the **evidence** (genres, anchors, clock) Spotify's bounded top-item ranges can't.
+- stats.fm supplies the **evidence** (genres, anchors, UTC listening shape) that this flow uses.
 - Spotify supplies the **action** (search, create, add, receipt).
-- Neither side leaks identity: no real artist, track, or user ID appears anywhere above — the same flow works on any account.
+- The examples contain placeholders and fictional names rather than real IDs, but network-backed calls necessarily send the supplied stats.fm identifier to stats.fm.
 
 ## See also
 
 - [Cookbook flagship recipe](cookbook.md#1-taste-profile--playlist-flagship) — the paste-ready version
 - [stats.fm second source](statsfm.md) — ranges, limits, privacy
+- [Wave-2 composites](wave2-composites.md) — taste-driven playlist specs and reports
 - [FAQ](faq.md) — when a step errors
