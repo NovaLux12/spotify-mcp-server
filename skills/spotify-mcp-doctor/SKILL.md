@@ -92,27 +92,21 @@ app's client ID.
 node --input-type=module -e "const r = await fetch('https://api.spotify.com/v1/search?q=test&type=track&limit=1'); console.log('unauthed probe:', r.status)"
 ```
 
-A network error is an egress/proxy problem. To validate a dashboard app
-credential pair independently of user PKCE auth, exchange a client-credentials
-grant:
+A network error (`fetch` rejects, DNS or TLS failure) is an egress/proxy
+problem — fix that before continuing.
 
-```text
-POST https://accounts.spotify.com/api/token
-Authorization: Basic base64(client_id:client_secret)
-Content-Type: application/x-www-form-urlencoded
+**401 is the expected result of this probe.** Treat it as a pass. Do not
+escalate it, and do not try to "fix" it by fetching a token some other way.
 
-grant_type=client_credentials
-```
+There is no second, credential-based half of this probe. This server is
+PKCE-only: it authenticates with `SPOTIFY_CLIENT_ID` alone and never sends or
+reads a client secret, so there is no dashboard-secret grant to run here. If a
+user proposes one, say it is not applicable and go back to the probes. The
+identity of the app is proven by Probe 0's `token` row and Probe 5's `get_me`
+call, both of which run with only `SPOTIFY_CLIENT_ID`.
 
-- **200**: the app credentials work. Use the returned bearer token for a
-  read-only `GET /v1/search?q=test&type=track`; a valid result has
-  `tracks.items`.
-- **400 invalid_client**: check the dashboard ID/secret pair.
-- **401 on the unauthenticated search** without a bearer token: expected.
-
-No shell access: ask the user to run only the unauthenticated Node probe, or
-skip this optional credential check and rely on the authenticated `get_me`
-probe. The in-server doctor is the primary path.
+No shell access: skip this probe entirely and rely on Probe 0's rows. The
+in-server doctor is the primary path.
 
 ## Probe 4 — Are account tokens present and fresh?
 
@@ -155,6 +149,20 @@ After fixes, call the read-only `get_me` tool through the actual MCP
 connection. It proves transport, token refresh, and read scopes together.
 Restart the host first when its config or environment changed so it starts a
 new server process.
+
+## Guardrails
+
+- This server is PKCE-only. Never request, read, or use
+  `SPOTIFY_CLIENT_SECRET`; it is deliberately unsupported and any copy in
+  configuration should be removed, not consumed. Every probe here completes
+  with `SPOTIFY_CLIENT_ID` alone.
+- Never ask the user to paste a credential into the conversation, and never
+  echo one back. Direct them to set `SPOTIFY_CLIENT_ID` in their MCP host
+  config or a local `.env`. Spotify treats the Client ID as a Security Code
+  under its [Developer Terms](https://developer.spotify.com/terms) (Sec.
+  VI.1.a, with Sec. VI.1.c–d forbidding disclosure).
+- Do not perform any token exchange by hand. Let the server's own auth command
+  and the MCP client handle it.
 
 ## Escalation
 
