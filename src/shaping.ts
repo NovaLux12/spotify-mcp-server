@@ -6,6 +6,7 @@
  * Pure module: no imports from client or tool modules.
  */
 import { z } from 'zod';
+import { classifySpotifyReference } from './refs.js';
 import { DEFAULT_MAX_ITEMS } from './config.js';
 
 // ---------------------------------------------------------------------------
@@ -198,13 +199,11 @@ export function batchSummary(n: number, uris: readonly string[], previewCount = 
 // dry_run validation + description (#57)
 // ---------------------------------------------------------------------------
 
-const URI_RE = /^spotify:(track|album|artist|playlist|show|episode|audiobook|user):(.+)$/;
-
-/** Parse a spotify: URI into { type, id }, or null when malformed. */
+/** Parse a spotify: URI through the shared reference policy. */
 export function parseSpotifyUri(uri: string): { type: string; id: string } | null {
-  const match = URI_RE.exec(uri.trim());
-  if (!match) return null;
-  return { type: match[1], id: match[2] };
+  const parsed = classifySpotifyReference(uri, undefined, { allowShortIds: true });
+  if (!parsed.valid || parsed.form !== 'uri' || !parsed.kind || !parsed.id) return null;
+  return { type: parsed.kind, id: parsed.id };
 }
 
 /**
