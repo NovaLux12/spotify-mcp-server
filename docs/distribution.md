@@ -17,19 +17,31 @@ with README + server.json when the tool surface changes.
 - Safety: `dry_run` + `response_format` on every mutating tool enforced by a registry-wide conformance guard (#920); request/quota usage tracking with pre-flight gating on heavy scans (#904 — blocked scans issue 0 requests, shrunk walks disclose `requests_made`/`budget_shrunk`); elicitation-gated human confirmation on bulk playlist removals (10+ URIs) and replacements (50+); mutation receipts verifiable via `verify_receipt`; opt-in JSONL audit trail; hard read-only mode (`SPOTIFY_MCP_READONLY=1`)
 - Provenance: npm publishes carry SLSA provenance; listed in the official MCP Registry as `io.github.NovaLux12/spotify-mcp-server`
 
+## Canonical copy (single source of truth)
+
+The two blurbs below are the only public-facing copy for this server. The short
+description is authored on the marker line here and repeated verbatim by
+`package.json.description` (npm), `server.json.description` (MCP Registry), the
+README one-liner and the short blurb section; the long description opens with
+the same sentence. `tests/registry-meta.test.ts` fails `npm test` when any of
+those surfaces drifts, so edit the marker line first and re-run the test.
+
+The short description is capped at 100 characters by the MCP Registry schema
+(`maxLength` on `ServerDetail.description`), which is why the detail copy lives
+in the separate long description rather than being appended here.
+
+Canonical short description: Spotify Web API MCP: playback, library, playlists, search, podcasts. Not affiliated with Spotify.
+Canonical non-affiliation notice: Not affiliated with Spotify.
+
 ## Short blurb (directories)
 
-> The most complete Spotify MCP server: playback control, library and playlist
-> management, search, podcasts and audiobooks, personalization, guided prompt
-> workflows and live resources — aligned with Spotify's current Web API, with
-> dry-run previews for every destructive operation, elicitation-gated
-> confirmation on bulk deletions, verifiable mutation receipts, and a hard
-> read-only mode.
+> Spotify Web API MCP: playback, library, playlists, search, podcasts. Not
+> affiliated with Spotify.
 
 ## Long description (Glama / PulseMCP style)
 
-Spotify MCP turns any MCP client into a full Spotify control surface:
-transport-independent playback (play/pause/skip/seek/volume/shuffle/repeat,
+Spotify Web API MCP: playback, library, playlists, search, podcasts. Not
+affiliated with Spotify. Transport-independent playback (play/pause/skip/seek/volume/shuffle/repeat,
 queue, device transfer, mid-track handoff), deep catalog lookups across tracks,
 artists, albums, shows, episodes and audiobooks, complete playlist CRUD with
 power operations (duplicate detection, merge/diff/overlap, listening-data-driven
