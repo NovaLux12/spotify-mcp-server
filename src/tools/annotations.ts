@@ -105,7 +105,17 @@ import { SpotifyApiError } from '../client.js';
  */
 export const TOOL_SURFACE_BUDGET = Object.freeze({
   defaultMaxTools: 620,
-  defaultMaxBytes: 600_000,
+  // Raised 600_000 -> 610_000 (2026-09-26). The growth is real and bought: tool
+  // descriptions that disclose a truncation cap, a scope requirement, a retention
+  // duty or a cloud-sync risk instead of implying completeness. HOST-PAYLOAD
+  // IMPACT per AGENTS.md §3: this is the aggregate serialized
+  // {description, inputSchema} budget across all 592 tools, so the ceiling moving
+  // 600KB -> 610KB is +10KB of worst-case tool-definition payload per host
+  // session, +1.7%. Measured at the raise: 601,171B, i.e. 171B over the old
+  // ceiling and 8,829B of headroom after it. Revisit if a later change wants more
+  // than that — the budget exists to force a deliberate decision, not to be
+  // raised reflexively by every PR that adds a sentence.
+  defaultMaxBytes: 610_000,
   perToolMaxBytes: 6_000,
   coreMaxTools: 200,
   coreMaxBytes: 220_000,
@@ -569,7 +579,7 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   manifestEntry('import', 'playlists', 'src/tools/import.ts', registerImportTools, [1, 1211], { scopeKey: 'playlists' }),
   manifestEntry('smart', 'playlists', 'src/tools/smart.ts', registerSmartTools, [1, 2182], { scopeKey: 'playlists' }),
   manifestEntry('exhaustmisc', 'playlists', 'src/tools/exhaustmisc.ts', registerExhaustMiscTools, [10, 7924], { scopeKey: 'exhaustmisc' }),
-  manifestEntry('exhaust2catalog', 'exhaust2catalog', 'src/tools/exhaust2_catalog.ts', registerExhaust2CatalogTools, [19, 18759], { readOnlySafe: true, scopeKey: 'catalog' }),
+  manifestEntry('exhaust2catalog', 'exhaust2catalog', 'src/tools/exhaust2_catalog.ts', registerExhaust2CatalogTools, [19, 19283], { readOnlySafe: true, scopeKey: 'catalog' }),
   manifestEntry('exhaust2enggating', 'exhaust2enggating', 'src/tools/exhaust2_enggating.ts', registerExhaust2EnggatingTools, [0, 0], { readOnlySafe: true, scopeKey: 'catalog' }),
   manifestEntry('exhaust2playback', 'exhaust2playback', 'src/tools/exhaust2_playback.ts', registerExhaust2PlaybackTools, [23, 17306], { scopeKey: 'playback' }),
   manifestEntry('exhaust2playlists', 'exhaust2playlists', 'src/tools/exhaust2_playlists.ts', registerExhaust2PlaylistsTools, [18, 23511], { scopeKey: 'playlists' }),
