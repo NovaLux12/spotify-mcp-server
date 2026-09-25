@@ -178,6 +178,64 @@ test('get_now_playing returns friendly message on 204/null response', async () =
   assert.equal(text(await invoke(findTool(registered, 'get_now_playing'))), 'Nothing is currently playing.');
 });
 
+// #852: `currently_playing_type` admits 'ad' and 'unknown'; the renderers used
+// to dereference item.show and threw a TypeError mid-playback.
+test('get_now_playing renders an ad item without throwing', async () => {
+  const state = {
+    ...playbackStateFixture({ type: 'ad', uri: 'spotify:ad:spotify:1' }),
+    currently_playing_type: 'ad',
+  };
+  const { registered } = makeHarness({ getResponse: () => state });
+
+  const out = text(await invoke(findTool(registered, 'get_now_playing')));
+
+  assert.match(out, /^Now playing: "Untitled" \(ad\)$/m);
+  assert.match(out, /^Progress: 3:05 \/ unknown$/m);
+  assert.match(out, /^URI: spotify:ad:spotify:1$/m);
+  assert.doesNotMatch(out, /undefined/);
+});
+
+test('get_now_playing renders a named unknown item without throwing', async () => {
+  const state = {
+    ...playbackStateFixture({ type: 'unknown', name: 'Mystery Item', uri: 'spotify:item:x' }),
+    currently_playing_type: 'unknown',
+  };
+  const { registered } = makeHarness({ getResponse: () => state });
+
+  const out = text(await invoke(findTool(registered, 'get_now_playing')));
+
+  assert.match(out, /^Now playing: "Mystery Item" \(unknown\)$/m);
+  assert.doesNotMatch(out, /undefined/);
+});
+
+test('get_currently_playing renders an ad item without throwing', async () => {
+  const { registered } = makeHarness({
+    getResponse: () => ({
+      item: { type: 'ad', name: 'Advertisement', uri: 'spotify:ad:spotify:1' },
+      progress_ms: 5000,
+      is_playing: true,
+    }),
+  });
+
+  const out = text(await invoke(findTool(registered, 'get_currently_playing')));
+
+  assert.match(out, /^Playing: "Advertisement" \(ad\)$/m);
+  assert.match(out, /^Progress: 0:05 \/ unknown$/m);
+  assert.doesNotMatch(out, /undefined/);
+});
+
+test('get_currently_playing renders an unknown item without a uri', async () => {
+  const { registered } = makeHarness({
+    getResponse: () => ({ item: { type: 'unknown' }, progress_ms: null, is_playing: false }),
+  });
+
+  const out = text(await invoke(findTool(registered, 'get_currently_playing')));
+
+  assert.match(out, /^Paused: "Untitled" \(unknown\)$/m);
+  assert.match(out, /^URI: unknown$/m);
+  assert.doesNotMatch(out, /undefined/);
+});
+
 // ------------------------------------------------------ get_currently_playing
 
 test('get_currently_playing renders compact track summary', async () => {

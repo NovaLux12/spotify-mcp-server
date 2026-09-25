@@ -35,13 +35,39 @@ interface CurrentlyPlayingResponse {
   is_playing: boolean;
 }
 
-function formatItem(item: SpotifyTrack | SpotifyEpisode | SpotifyEpisodeSimple): string {
-  if ('artists' in item) {
-    const artists = item.artists.map((a) => a.name).join(', ');
-    return `"${item.name}" by ${artists} (${formatDuration(item.duration_ms)})`;
-  } else {
-    return `"${item.name}" — ${item.show.name} (${formatDuration(item.duration_ms)})`;
+/**
+ * The player state admits item kinds beyond track/episode (`currently_playing_type`
+ * includes 'ad' and 'unknown'), and the typed unions do not model them (#852).
+ * Render structurally so an ad never reaches a `item.show.name` dereference.
+ */
+type RenderableItem = {
+  type?: string;
+  name?: string;
+  uri?: string;
+  duration_ms?: number;
+  artists?: Array<{ name?: string }>;
+  album?: { name?: string; images?: Array<{ url?: string }> };
+  show?: { name?: string };
+};
+
+function formatDurationOrUnknown(ms: number | null | undefined): string {
+  return typeof ms === 'number' && Number.isFinite(ms) ? formatDuration(ms) : 'unknown';
+}
+
+function formatItem(item: RenderableItem): string {
+  const name = item.name ?? 'Untitled';
+  const duration =
+    typeof item.duration_ms === 'number' && Number.isFinite(item.duration_ms)
+      ? ` (${formatDuration(item.duration_ms)})`
+      : '';
+  if (item.artists) {
+    const artists = item.artists.map((a) => a.name ?? 'unknown artist').join(', ');
+    return `"${name}" by ${artists || 'unknown artist'}${duration}`;
   }
+  if (item.show) {
+    return `"${name}" — ${item.show.name ?? 'unknown show'}${duration}`;
+  }
+  return `"${name}" (${item.type ?? 'unknown type'})${duration}`;
 }
 
 const marketSchema = z
@@ -107,25 +133,30 @@ export function registerPlaybackTools(server: McpServer, client: SpotifyClient):
         };
       }
 
-      const { item, is_playing, progress_ms, shuffle_state, repeat_state, device } = state;
+      const { is_playing, progress_ms, shuffle_state, repeat_state, device } = state;
+      const item: RenderableItem = state.item;
       const detailed = args.response_format === 'detailed';
 
       const lines: string[] = [];
 
-      if (item.type === 'track') {
-        const artists = item.artists.map((a) => a.name).join(', ');
-        lines.push(`Now ${is_playing ? 'playing' : 'paused'}: "${item.name}" by ${artists}`);
-        lines.push(`Album: ${item.album.name}`);
-        if (item.album.images[0]) {
-          lines.push(`Art: ${item.album.images[0].url}`);
+      // One renderer for every item kind: `ad` / `unknown` items have no
+      // artists and no show, and must not be dereferenced as episodes (#852).
+      lines.push(`Now ${is_playing ? 'playing' : 'paused'}: ${formatItem(item)}`);
+      if (item.artists) {
+        if (item.album?.name) {
+          lines.push(`Album: ${item.album.name}`);
         }
-      } else {
-        lines.push(`Now ${is_playing ? 'playing' : 'paused'}: "${item.name}"`);
+        const art = item.album?.images?.[0]?.url;
+        if (art) {
+          lines.push(`Art: ${art}`);
+        }
+      } else if (item.show?.name) {
         lines.push(`Show: ${item.show.name}`);
       }
 
-      const progress = progress_ms ?? 0;
-      lines.push(`Progress: ${formatDuration(progress)} / ${formatDuration(item.duration_ms)}`);
+      // A null progress_ms legitimately means "at the start" -> 0:00; only the
+      // duration is genuinely unknown for items that omit it (ads, unknown).
+      lines.push(`Progress: ${formatDuration(progress_ms ?? 0)} / ${formatDurationOrUnknown(item.duration_ms)}`);
       if (device) {
         lines.push(`Device: ${device.name} (${device.type})`);
         if (device.volume_percent !== null && device.volume_percent !== undefined) {
@@ -141,7 +172,7 @@ export function registerPlaybackTools(server: McpServer, client: SpotifyClient):
         lines.push(`Context: ${state.context.uri}`);
       }
       lines.push(`Shuffle: ${shuffle_state ? 'on' : 'off'} | Repeat: ${repeat_state}`);
-      lines.push(`URI: ${item.uri}`);
+      lines.push(`URI: ${item.uri ?? 'unknown'}`);
 
       return { content: [{ type: 'text', text: lines.join('\n') }] };
     },
@@ -179,8 +210,8 @@ export function registerPlaybackTools(server: McpServer, client: SpotifyClient):
 
       const lines = [
         `${cp.is_playing ? 'Playing' : 'Paused'}: ${formatItem(cp.item)}`,
-        `Progress: ${formatDuration(cp.progress_ms ?? 0)} / ${formatDuration(cp.item.duration_ms)}`,
-        `URI: ${cp.item.uri}`,
+        `Progress: ${formatDuration(cp.progress_ms ?? 0)} / ${formatDurationOrUnknown(cp.item.duration_ms)}`,
+        `URI: ${cp.item.uri ?? 'unknown'}`,
       ];
       if (args.response_format === 'detailed' && 'album' in cp.item && cp.item.album?.name) {
         lines.push(`Album: ${cp.item.album.name}`);
