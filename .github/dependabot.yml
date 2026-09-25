@@ -8,6 +8,8 @@ updates:
       interval: weekly
     cooldown:
       default-days: 7
+    labels:
+      - area:ci
     groups:
       production-minor-patch:
         dependency-type: production
@@ -18,9 +20,6 @@ updates:
         dependency-type: production
         update-types:
           - major
-        open-pull-requests-limit: 1
-        labels:
-          - area:ci
       development-minor-patch:
         dependency-type: development
         update-types:
@@ -30,9 +29,6 @@ updates:
         dependency-type: development
         update-types:
           - major
-        open-pull-requests-limit: 1
-        labels:
-          - area:ci
     open-pull-requests-limit: 10
 
   - package-ecosystem: github-actions
