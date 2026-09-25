@@ -280,19 +280,20 @@ describe('cache: policy helpers (#54)', () => {
 describe('client: read cache keys (#678)', () => {
   const realFetch = globalThis.fetch;
   const tokenFile = path.join(infraDir, 'tokens.json');
+  // Every URL the stubbed fetch saw, and how many bodies it served.
+  let urls: string[] = [];
+  let served = 0;
 
-  afterEach(() => {
-    globalThis.fetch = realFetch;
-  });
-
-  it('issues one fetch and one entry for the same params in two orders', async () => {
+  beforeEach(async () => {
+    urls = [];
+    served = 0;
+    // A far-future expiry keeps the client out of its refresh window, so the
+    // request count below counts API reads only.
     await writeFile(
       tokenFile,
       JSON.stringify({ access_token: 'tok-cache', refresh_token: 'ref-cache', expires_at: Date.now() + 3600_000 }),
       'utf8',
     );
-    const urls: string[] = [];
-    let served = 0;
     globalThis.fetch = (async (url: unknown) => {
       urls.push(String(url));
       return new Response(JSON.stringify({ call: ++served }), {
@@ -300,7 +301,13 @@ describe('client: read cache keys (#678)', () => {
         headers: { 'content-type': 'application/json' },
       });
     }) as typeof fetch;
+  });
 
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+  });
+
+  it('issues one fetch and one entry for the same params in two orders', async () => {
     const client = new SpotifyClient();
     const first = await client.get<{ call: number }>('/albums', { limit: '5', offset: '0' });
     // Byte-for-byte the same request, params object in the other key order.
@@ -316,21 +323,6 @@ describe('client: read cache keys (#678)', () => {
   });
 
   it('serves an inline query string from the same entry as the params object', async () => {
-    await writeFile(
-      tokenFile,
-      JSON.stringify({ access_token: 'tok-inline', refresh_token: 'ref-cache', expires_at: Date.now() + 3600_000 }),
-      'utf8',
-    );
-    const urls: string[] = [];
-    let served = 0;
-    globalThis.fetch = (async (url: unknown) => {
-      urls.push(String(url));
-      return new Response(JSON.stringify({ call: ++served }), {
-        status: 200,
-        headers: { 'content-type': 'application/json' },
-      });
-    }) as typeof fetch;
-
     const client = new SpotifyClient();
     const inline = await client.get<{ call: number }>('/search?type=album&q=beatles');
     const viaParams = await client.get<{ call: number }>('/search', { q: 'beatles', type: 'album' });
