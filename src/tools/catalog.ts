@@ -340,11 +340,9 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
         .max(ARTIST_ALBUM_PAGE_LIMIT)
         .optional()
         .describe('Results per page, 1–10. Default: 10'),
-      offset: z.number().int().min(0).optional().describe('Index of the first album to return. Default: 0'),
-      market: MARKET_CODE.optional().describe(
-        'ISO 3166-1 alpha-2 country code. Defaults to the account country; affects album availability.',
-      ),
-      fetch_all: z.boolean().optional().describe('When true, walk all pages via getAllPages up to cap (fetch_all_cap) — use for "all" queries. Default: false'),
+      offset: z.number().int().min(0).optional().describe('Album offset. Default: 0'),
+      market: MARKET_CODE.optional().describe('ISO country code; defaults to account country.'),
+      fetch_all: z.boolean().optional().describe('Fetch all pages up to cap. Default: false'),
       ...sharedListFields,
     },
     async (args) => {
@@ -399,7 +397,7 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
     {
       id: z.string().describe('Spotify album ID'),
       market: MARKET_CODE.optional().describe(
-        'ISO 3166-1 alpha-2 country code. Defaults to the account country; affects track playability.',
+        'ISO country code; defaults to account country.',
       ),
       ...sharedListFields,
     },
@@ -539,7 +537,7 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
   // get_show_episodes — deprecated alias of list_show_episodes (swarm3_shows). Both hit GET /shows/{id}/episodes.
   server.tool(
     'get_show_episodes',
-    '[Deprecated] use list_show_episodes — List a podcast show\'s episodes with pagination. Alias kept for backward compat; forwards to same GET /shows/{id}/episodes as list_show_episodes. Resume positions require the user-read-playback-position scope. Also covers: show episode listing, paged podcast episodes.',
+    '[Deprecated] use list_show_episodes. Lists a podcast show\'s episodes; resume positions require user-read-playback-position scope.',
     {
       id: z.string().describe('Spotify show ID'),
       limit: z
@@ -553,7 +551,7 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
       market: MARKET_CODE.optional().describe(
         'ISO 3166-1 alpha-2 country code. If given, only shows and episodes available in that market are returned.',
       ),
-      fetch_all: z.boolean().optional().describe('When true, walk all pages via getAllPages up to cap (fetch_all_cap) — use for "all" queries. Default: false'),
+      fetch_all: z.boolean().optional().describe('Fetch all pages up to cap. Default: false'),
       ...sharedListFields,
     },
     async (args) => {
