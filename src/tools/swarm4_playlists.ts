@@ -461,15 +461,40 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
         }
       };
       const sign = args.direction === 'desc' ? -1 : 1;
-      const sorted = [...rows].sort((a, b) => {
-        const ka = key(a);
-        const kb = key(b);
+      const keyed = rows.map((r) => ({ r, k: key(r) }));
+      // #861: a key every row shares (an album sort over an all-episode
+      // playlist, a name sort over one track repeated) cannot move anything,
+      // and the commit path is a full atomic replace. Refuse before the
+      // write rather than rewrite the playlist to its own order and report
+      // a sort that never happened.
+      const distinct = new Set(keyed.map(({ k }) => `${typeof k}:${k}`));
+      if (rows.length > 1 && distinct.size <= 1) {
+        return shape(
+          rf,
+          `Refused to sort "${p.name ?? p.id}" by ${args.sort_by}: no comparable values — all ${rows.length} item(s) share the same ${args.sort_by} value, so the sort would not change the order. Nothing was changed.`,
+          {
+            ok: false,
+            reason: 'no_comparable_values',
+            playlist: p.id,
+            playlist_name: p.name,
+            sort_by: args.sort_by,
+            direction: args.direction,
+            items: rows.length,
+            distinct_values: distinct.size,
+            changed: false,
+            dry_run: args.dry_run,
+          },
+        );
+      }
+      const sorted = keyed.sort((a, b) => {
+        const ka = a.k;
+        const kb = b.k;
         if (ka === null && kb === null) return 0;
         if (ka === null) return 1; // nulls last regardless of direction
         if (kb === null) return -1;
         if (typeof ka === 'number' && typeof kb === 'number') return sign * (ka - kb);
         return sign * collator.compare(String(ka), String(kb));
-      });
+      }).map(x => x.r);
       const uris = sorted.map((r) => r.uri);
       const orderBudget = budgetedArray(uris, max, 'items', args.include_full_order);
       const prose = [
