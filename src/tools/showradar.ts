@@ -7,13 +7,16 @@
  *
  * Pure composition over non-deprecated endpoints; mirrors whats_new's radar
  * UX for podcasts. Budget/quota hardening mirrors whats_new (#242/#249).
+ *
+ * Truncation is disclosed on both axes: the /me/shows listing cap (#673) and
+ * the per-call show lookup budget. The cost preview is `cost_preview`, not
+ * the mutation `dry_run` — this tool changes nothing (#794).
  */
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
 import { SpotifyApiError } from '../client.js';
 import {
-  DryRun,
   resolveMaxResults,
   sharedListFields,
   truncateItems,
@@ -33,6 +36,31 @@ const textResult = (text: string, structured?: Record<string, unknown>): ToolRes
   content: [{ type: 'text', text }],
   ...(structured ? { structuredContent: structured } : {}),
 });
+
+/**
+ * Read-only cost preview (#794). The shared `DryRun` fragment is a *mutation*
+ * preview ("describe exactly what would change without performing it"), and
+ * show_new_episodes mutates nothing — a `dry_run: true` call replaced the
+ * requested episode list with a cost estimate, so an agent that set the flag
+ * defensively on this read-only tool got a preview where it expected results.
+ * Renamed to `cost_preview` and described as what it is: no calls, no list.
+ */
+const CostPreview = z
+  .boolean()
+  .optional()
+  .describe(
+    'Cost preview only: make no API calls and return the request budget instead of the '
+      + 'episode list. Use it to size a real call; it does not report any episodes. Default false.',
+  );
+
+/**
+ * Disclosure line for a /me/shows listing that stopped at the fetch-all cap
+ * (#673). Without it a capped listing reads as the whole library, so a
+ * partial scan reports itself as a complete one.
+ */
+function listingCapNote(listed: number, cap: number): string {
+  return ` Saved-show listing stopped at the fetch-all cap of ${cap} (SPOTIFY_MCP_FETCH_ALL_CAP) with ${listed} show(s) listed, so the library may hold more saved shows than were seen; this scan is incomplete. Raise SPOTIFY_MCP_FETCH_ALL_CAP to cover the full library.`;
+}
 
 function cutoffDate(days: number): string {
   return new Date(Date.now() - days * 86400_000).toISOString().slice(0, 10);
@@ -60,7 +88,7 @@ export function registerShowRadarTools(server: McpServer, client: SpotifyClient)
       + 'released within the lookback window (default 7 days), marking which are already '
       + 'saved in your episode library. Fetches /me/shows then each show\'s latest episodes. '
       + 'WARNING: M saved shows → M+1 requests (1 show page + M episode lookups). Use max_shows to budget '
-      + 'and dry_run to preview the cost before running.',
+      + 'and cost_preview to see the cost without making any calls. This tool is read-only: nothing is ever changed.',
     {
       ...sharedListFields,
       days: z
@@ -91,32 +119,35 @@ export function registerShowRadarTools(server: McpServer, client: SpotifyClient)
             + 'Scan caps at min(budget, SPOTIFY_MCP_FETCH_ALL_CAP) and reports truncation. '
             + 'WARNING: each lookup is an API request.',
         ),
-      dry_run: DryRun,
+      cost_preview: CostPreview,
     },
     async (args) => {
       const cutoff = cutoffDate(args.days);
       const freshnessBudget = args.max_shows ?? getConfig().freshnessBudget;
       const effectiveCap = Math.min(freshnessBudget, getConfig().fetchAllCap);
 
-      // ---- dry_run: describe cost without any API calls ---------
-      if (args.dry_run) {
+      // ---- cost_preview: describe cost without any API calls ---------
+      if (args.cost_preview) {
         const costEstimate = `M saved shows → M+1 requests (1 /me/shows page + M per-show episode lookups), capped at max_shows=${freshnessBudget} lookups → at most ${freshnessBudget + 1} requests (effective cap ${effectiveCap} with fetchAllCap=${getConfig().fetchAllCap})`;
         const prose =
-          `[dry run] show_new_episodes preview — no API calls were made and nothing was changed.\n`
+          `[cost preview] show_new_episodes — no API calls were made and the episode list is not returned.\n`
           + `Cutoff: episodes on/after ${cutoff} (last ${args.days} day(s))\n`
           + `Per-show limit: ${args.per_show_limit}\n`
           + `Cost estimate: ${costEstimate}\n`
           + `Budget: max_shows=${freshnessBudget} (SPOTIFY_MCP_FRESHNESS_BUDGET), effective cap ${effectiveCap}.\n`
-          + `Saved show count unknown until executed; scan will cap episode lookups at ${effectiveCap}.`;
+          + `Saved show count unknown until executed; scan will cap episode lookups at ${effectiveCap}.\n`
+          + `Re-run without cost_preview for the new-episode list.`;
         return textResult(prose, {
           ok: true,
-          dry_run: true,
+          cost_preview: true,
+          episodes_returned: false,
           days: args.days,
           cutoff,
           per_show_limit: args.per_show_limit,
           cost_estimate: costEstimate,
           max_shows: freshnessBudget,
           effective_cap: effectiveCap,
+          shows_list_cap: getConfig().fetchAllCap,
           would_check: `up to ${effectiveCap} shows`,
           capped_at: effectiveCap,
         });
@@ -144,6 +175,8 @@ export function registerShowRadarTools(server: McpServer, client: SpotifyClient)
               retry_after: quotaRetryAfter ?? null,
               shows_scanned: 0,
               saved_shows_total: 0,
+              shows_listing_truncated: false,
+              shows_list_cap: getConfig().fetchAllCap,
               truncated_by_budget: false,
               quota_hit_at: 'listing shows',
               days: args.days,
@@ -156,6 +189,17 @@ export function registerShowRadarTools(server: McpServer, client: SpotifyClient)
         throw err;
       }
 
+      // #673: the /me/shows walk stops at the fetch-all cap and reports
+      // nothing about it, so a capped listing used to read as the whole
+      // library — a partial scan reported as a complete one. getAllPages
+      // returns exactly maxItems when it truncates, so reaching the cap is
+      // the signal; the count alone cannot be trusted as the library size.
+      const showsListCap = getConfig().fetchAllCap;
+      const showsListingTruncated = savedShows.length >= showsListCap;
+      const showsListingNote = showsListingTruncated
+        ? listingCapNote(savedShows.length, showsListCap)
+        : '';
+
       if (savedShows.length === 0) {
         return textResult('No saved shows in your library — nothing to scan.', {
           ok: true,
@@ -163,13 +207,14 @@ export function registerShowRadarTools(server: McpServer, client: SpotifyClient)
           cutoff,
           saved_shows: 0,
           saved_shows_total: 0,
+          shows_listing_truncated: showsListingTruncated,
+          shows_list_cap: showsListCap,
           shows_scanned: 0,
           truncated_by_budget: false,
           new_episodes: 0,
           episodes: [],
         });
       }
-
       const truncatedByBudget = savedShows.length > effectiveCap;
       const showsToScan = savedShows.slice(0, effectiveCap);
 
@@ -186,13 +231,15 @@ export function registerShowRadarTools(server: McpServer, client: SpotifyClient)
           quotaRetryAfter = q.retryAfter;
           // Return partial with no episode candidates
           return textResult(
-            `Quota exceeded while listing saved episodes (QUOTA_EXCEEDED). Partial: ${showsToScan.length} shows would be scanned.${quotaRetryAfter != null ? ` Retry-After: ${quotaRetryAfter}s.` : ''}`,
+            `Quota exceeded while listing saved episodes (QUOTA_EXCEEDED). Partial: ${showsToScan.length} shows would be scanned.${quotaRetryAfter != null ? ` Retry-After: ${quotaRetryAfter}s.` : ''}${showsListingNote}`,
             {
               ok: true,
               quota_hit: true,
               retry_after: quotaRetryAfter ?? null,
               shows_scanned: 0,
               saved_shows_total: savedShows.length,
+              shows_listing_truncated: showsListingTruncated,
+              shows_list_cap: showsListCap,
               truncated_by_budget: truncatedByBudget,
               max_shows: freshnessBudget,
               effective_cap: effectiveCap,
@@ -266,6 +313,8 @@ export function registerShowRadarTools(server: McpServer, client: SpotifyClient)
         cutoff,
         saved_shows: savedShows.length,
         saved_shows_total: savedShows.length,
+        shows_listing_truncated: showsListingTruncated,
+        shows_list_cap: showsListCap,
         shows_scanned: quotaHit ? quotaScannedShows : showsScanned,
         truncated_by_budget: truncatedByBudget,
         max_shows: freshnessBudget,
@@ -283,7 +332,7 @@ export function registerShowRadarTools(server: McpServer, client: SpotifyClient)
           ? ` Quota exceeded mid-scan (QUOTA_EXCEEDED) after ${quotaScannedShows} shows.${quotaRetryAfter != null ? ` Retry-After: ${quotaRetryAfter}s.` : ''}`
           : truncatedByBudget ? ` (scan capped at ${effectiveCap} shows; ${savedShows.length - effectiveCap} shows not scanned — raise max_shows to see more)` : '';
         const budgetNote = truncatedByBudget ? ` Truncated by budget: ${effectiveCap} of ${savedShows.length} shows scanned.` : '';
-        return textResult(base + suffix + budgetNote, { ...extra, ok: true, episodes: [] });
+        return textResult(base + suffix + budgetNote + showsListingNote, { ...extra, ok: true, episodes: [] });
       }
 
       const maxResults = resolveMaxResults(args.max_results, getConfig().maxItems);
@@ -305,6 +354,7 @@ export function registerShowRadarTools(server: McpServer, client: SpotifyClient)
         lines.push(`• "${ep.episode_name}" — ${ep.show_name} (${ep.release_date}, ${Math.round(ep.duration_ms / 1000)}s)${flag} | ${ep.uri}`);
       }
       if (view.footer) lines.push(`(${view.footer})`);
+      if (showsListingTruncated) lines.push(`Saved-show listing capped: ${savedShows.length} show(s) listed, stopping at the fetch-all cap of ${showsListCap} (SPOTIFY_MCP_FETCH_ALL_CAP) — shows beyond the cap were never listed, so this scan is incomplete. Raise SPOTIFY_MCP_FETCH_ALL_CAP to cover the full library.`);
       if (truncatedByBudget) lines.push(`Truncated by budget: scanned ${effectiveCap} of ${savedShows.length} saved shows (max_shows=${freshnessBudget}, effective cap ${effectiveCap}). Raise max_shows to scan more.`);
       if (quotaHit) {
         const retryMsg = quotaRetryAfter != null ? ` Retry-After: ${quotaRetryAfter}s.` : '';
