@@ -14,6 +14,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { SpotifyApiError } from '../src/client.js';
 import type { SpotifyClient } from '../src/client.js';
 import type { SpotifyPaged } from '../src/types/spotify.js';
 import { registerPlaylistTools } from '../src/tools/playlists.js';
@@ -1078,6 +1079,163 @@ describe('check_following_artists', () => {
     const h = harness(() => [false], registerFollowingTools);
     const out = await h.invoke('check_following_artists', { ids: ['zzz'] });
     assert.match(textOf(out), /✗ spotify:artist:zzz \(id: zzz\)/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #862 — the follow check must send the ids the endpoint requires, and a
+// rejected read must never be reported as `following: false`
+// ---------------------------------------------------------------------------
+
+describe('check_playlist_following (#862)', () => {
+  interface FollowRow {
+    playlist_id: string;
+    following: boolean | null;
+    error?: string;
+  }
+  // Playlist references are validated as 22 base62 chars by the tool schema.
+  const pid = (tag: string) => (tag + 'x'.repeat(22)).slice(0, 22);
+  /** The ids CSV the tool actually put on the wire for one recorded call. */
+  const sentIds = (arg: unknown): string =>
+    arg !== null && typeof arg === 'object' && 'ids' in arg && typeof arg.ids === 'string' ? arg.ids : '';
+  /** The structured rows, after checking the payload really is a row array. */
+  const rowsOf = (out: { structuredContent?: Record<string, unknown> }): FollowRow[] => {
+    const rows = out.structuredContent?.results;
+    assert.ok(Array.isArray(rows), 'structuredContent.results should be an array');
+    return rows as FollowRow[];
+  };
+
+  it('sends the required ids param to the follow-contains endpoint', async () => {
+    const h = harness(() => [true, false]);
+
+    await h.invoke('check_playlist_following', { playlists: [pid('aa'), pid('bb')] });
+
+    assert.deepEqual(wireCalls(h.client.calls), [
+      {
+        method: 'GET',
+        path: '/me/following/contains',
+        arg: { type: 'playlist', ids: `${pid('aa')},${pid('bb')}` },
+      },
+    ]);
+  });
+
+  it('batches ids 5 at a time, sending every id exactly once', async () => {
+    const h = harness((_path, arg) => sentIds(arg).split(',').filter(Boolean).map(() => true));
+    const tags = ['aa', 'bb', 'cc', 'dd', 'ee', 'ff', 'gg'];
+
+    const out = await h.invoke('check_playlist_following', { playlists: tags.map(pid) });
+
+    assert.deepEqual(
+      wireCalls(h.client.calls).map((c) => sentIds(c.arg)),
+      [tags.slice(0, 5).map(pid).join(','), tags.slice(5).map(pid).join(',')],
+    );
+    const sent = wireCalls(h.client.calls)
+      .flatMap((c) => sentIds(c.arg).split(','))
+      .sort();
+    assert.deepEqual(sent, tags.map(pid).sort());
+    // Every requested id produced a verdict, none silently dropped.
+    assert.match(textOf(out), /Playlist following \(7 checked, showing 7\)/);
+  });
+
+  it('maps verdicts back to input order', async () => {
+    const h = harness(() => [true, false, true]);
+    const out = await h.invoke('check_playlist_following', {
+      playlists: [pid('x1'), pid('x2'), pid('x3')],
+    });
+    assert.deepEqual(
+      rowsOf(out).map((r) => [r.playlist_id, r.following]),
+      [[pid('x1'), true], [pid('x2'), false], [pid('x3'), true]],
+    );
+    const text = textOf(out);
+    assert.ok(
+      text.indexOf(pid('x1')) < text.indexOf(pid('x2')) &&
+        text.indexOf(pid('x2')) < text.indexOf(pid('x3')),
+    );
+  });
+
+  it('reports a 403 as an unreadable item, not `following: false`', async () => {
+    const h = harness(() => {
+      throw new SpotifyApiError(403, 'Forbidden: this playlist is private');
+    });
+
+    const out = await h.invoke('check_playlist_following', { playlists: [pid('secret')] });
+
+    const rows = rowsOf(out);
+    assert.equal(rows[0].playlist_id, pid('secret'));
+    assert.equal(rows[0].following, null, 'a rejected read must not read as `false`');
+    assert.match(rows[0].error ?? '', /this playlist is private/);
+    assert.equal(out.structuredContent?.unreadable_count, 1);
+    assert.equal(out.structuredContent?.total_is_partial, true);
+
+    const text = textOf(out);
+    assert.ok(text.includes(`? ${pid('secret')} — unreadable (`), text);
+    assert.match(text, /could not be read/);
+    // The falsification signature: a ✗ mark would be a confident negative.
+    assert.doesNotMatch(text, /✗/);
+  });
+
+  it('reports a 500 as an unreadable item with the status in the reason', async () => {
+    const h = harness(() => {
+      throw new SpotifyApiError(500, 'Internal Server Error');
+    });
+    const out = await h.invoke('check_playlist_following', { playlists: [pid('p1')] });
+    const rows = rowsOf(out);
+    assert.equal(rows[0].following, null);
+    assert.match(rows[0].error ?? '', /Internal Server Error/);
+  });
+
+  it('isolates a failing batch: a readable id in another batch still gets its verdict', async () => {
+    const h = harness((_path, arg) => {
+      const ids = sentIds(arg).split(',').filter(Boolean);
+      if (ids.includes(pid('bad'))) throw new SpotifyApiError(500, 'boom');
+      return ids.map(() => true);
+    });
+
+    const out = await h.invoke('check_playlist_following', {
+      playlists: [pid('ok1'), pid('ok2'), pid('ok3'), pid('ok4'), pid('ok5'), pid('bad')],
+    });
+
+    assert.deepEqual(
+      rowsOf(out).map((r) => [r.playlist_id, r.following]),
+      [
+        [pid('ok1'), true],
+        [pid('ok2'), true],
+        [pid('ok3'), true],
+        [pid('ok4'), true],
+        [pid('ok5'), true],
+        [pid('bad'), null],
+      ],
+    );
+    const text = textOf(out);
+    assert.ok(text.includes(`✓ ${pid('ok1')}`), text);
+    assert.doesNotMatch(text, /✗/);
+  });
+
+  it('treats a short verdict array as unreadable, not as "not followed"', async () => {
+    // Spotify returned fewer verdicts than ids asked for: the missing one is
+    // an unread, not a negative answer.
+    const h = harness(() => [true]);
+    const out = await h.invoke('check_playlist_following', {
+      playlists: [pid('ok'), pid('missing')],
+    });
+    const rows = rowsOf(out);
+    assert.deepEqual(
+      rows.map((r) => [r.playlist_id, r.following]),
+      [
+        [pid('ok'), true],
+        [pid('missing'), null],
+      ],
+    );
+    assert.match(rows[1].error ?? '', /no follow verdict/);
+  });
+
+  it('treats a non-array response as unreadable for the whole batch', async () => {
+    const h = harness(() => ({ error: 'nope' }));
+    const out = await h.invoke('check_playlist_following', { playlists: [pid('q1'), pid('q2')] });
+    const rows = rowsOf(out);
+    assert.deepEqual(rows.map((r) => r.following), [null, null]);
+    assert.match(rows[0].error ?? '', /no usable follow verdicts/);
+    assert.equal(out.structuredContent?.unreadable_count, 2);
   });
 });
 
