@@ -543,7 +543,7 @@ const manifestEntry = (
 
 export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   manifestEntry('search', 'search', 'src/tools/search.ts', registerSearchTools, [1, 1821], { readOnlySafe: true }),
-  manifestEntry('catalog', 'catalog', 'src/tools/catalog.ts', registerCatalogTools, [31, 27013], { readOnlySafe: true }),
+  manifestEntry('catalog', 'catalog', 'src/tools/catalog.ts', registerCatalogTools, [31, 27012], { readOnlySafe: true }),
   manifestEntry('library', 'library', 'src/tools/library.ts', registerLibraryTools, [16, 14957]),
   manifestEntry('playback', 'playback', 'src/tools/playback.ts', registerPlaybackTools, [16, 12287]),
   manifestEntry('following', 'following', 'src/tools/following.ts', registerFollowingTools, [5, 3921]),
@@ -609,7 +609,7 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   manifestEntry('exhaust2misc', 'exhaust2misc', 'src/tools/exhaust2_misc.ts', registerExhaust2MiscTools, [27, 23234], { scopeKey: 'library' }),
   manifestEntry('exhaust2extra', 'exhaust2extra', 'src/tools/exhaust2_extra.ts', registerExhaust2ExtraTools, [3, 3695], { scopeKey: 'playlists' }),
   manifestEntry('swarm3discovery', 'swarm3discovery', 'src/tools/swarm3_discovery.ts', registerSwarm3DiscoveryTools, [24, 21951], { readOnlySafe: true, scopeKey: 'catalog' }),
-  manifestEntry('swarm3bdiscovery', 'swarm3bdiscovery', 'src/tools/swarm3b_discovery.ts', registerSwarm3bDiscoveryTools, [24, 20048], { readOnlySafe: true, scopeKey: 'catalog' }),
+  manifestEntry('swarm3bdiscovery', 'swarm3bdiscovery', 'src/tools/swarm3b_discovery.ts', registerSwarm3bDiscoveryTools, [24, 20055], { readOnlySafe: true, scopeKey: 'catalog' }),
   manifestEntry('swarm3shows', 'swarm3shows', 'src/tools/swarm3_shows.ts', registerSwarm3ShowsTools, [24, 21075], { scopeKey: 'catalog' }),
   manifestEntry('swarm3refs', 'swarm3refs', 'src/tools/swarm3_refs.ts', registerSwarm3RefsTools, [6, 4331], { readOnlySafe: true, scopeKey: 'catalog' }),
   manifestEntry('swarm3analytics', 'swarm3analytics', 'src/tools/swarm3_analytics.ts', registerSwarm3AnalyticsTools, [24, 18880], { readOnlySafe: true, scopeKey: 'personalization' }),

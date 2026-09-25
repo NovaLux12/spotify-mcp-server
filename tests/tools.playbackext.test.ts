@@ -3,9 +3,10 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { readdir, readFile as readFileRaw, writeFile as writeFileRaw } from 'node:fs/promises';
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { registerPlaybackExtTools, detectSessions } from '../src/tools/playbackext.js';
+import { registerPlaybackExtTools, detectSessions, loadPlaybackExt } from '../src/tools/playbackext.js';
 import type { SpotifyClient } from '../src/client.js';
 
 function makeClient(overrides: Partial<Record<string, any>> = {}) {
@@ -230,5 +231,101 @@ describe('playbackext', () => {
     assert.deepEqual(putCalls[1], { path: '/me/player/play', body: { uris: ['spotify:track:abc'], position_ms: 5000 } });
     assert.equal(echo.context_fallback, true);
     assert.equal(echo.verified, true);
+  });
+
+  // #839: a sidecar that cannot be parsed used to read as an empty store, so
+  // the next mutating call wrote that empty store back over the file and every
+  // saved snapshot, preset, session and rule was gone with no warning. The
+  // bytes must survive and the caller must be told.
+  describe('#839 corrupt sidecar preservation', () => {
+    const file = () => process.env.SPOTIFY_MCP_PLAYBACKEXT_FILE as string;
+    const corruptCopies = async () => (await readdir(dir)).filter((f) => f.startsWith('playback-ext.json.corrupt-'));
+
+    it('preserves the original bytes and reports load_error when a mutating tool saves over unparseable JSON', async () => {
+      const original = '{"states":{"evening":{"name":"evening"';
+      await writeFileRaw(file(), original, 'utf8');
+      const { client } = makeClient();
+      const h = serverHarness(client);
+      const res = await h.invoke('set_device_volume_preset', { device_id: 'dev1', volume_percent: 42 });
+
+      const copies = await corruptCopies();
+      assert.equal(copies.length, 1, `expected exactly one preserved copy, found ${copies.join(', ')}`);
+      assert.equal(await readFileRaw(join(dir, copies[0]), 'utf8'), original, 'the preserved copy must be byte-identical to what was on disk');
+
+      const echo = res.structuredContent as Record<string, unknown>;
+      assert.equal(typeof echo.load_error, 'string', 'structuredContent must carry load_error');
+      assert.match(echo.load_error as string, /playback-ext\.json/);
+      assert.equal(echo.preserved_as, join(dir, copies[0]));
+      assert.match(res.content[0].text, /WARNING/, 'the prose must carry the warning too');
+    });
+
+    it('does not report load_error when the file was simply never written', async () => {
+      const { client } = makeClient();
+      const h = serverHarness(client);
+      const res = await h.invoke('set_device_volume_preset', { device_id: 'dev1', volume_percent: 42 });
+      const echo = res.structuredContent as Record<string, unknown>;
+      assert.equal(echo.load_error, undefined, 'ENOENT is a genuinely empty store, not a failure');
+      assert.deepEqual(await corruptCopies(), []);
+      assert.equal(echo.ok, true);
+    });
+
+    it('keeps a valid store loadable and does not leave a stale load_error on disk', async () => {
+      const { client } = makeClient();
+      const h = serverHarness(client);
+      await h.invoke('rename_device', { device_id: 'dev1', new_name: 'Kitchen' });
+      const res = await h.invoke('list_device_presets', {});
+      const echo = res.structuredContent as Record<string, unknown>;
+      assert.equal(echo.load_error, undefined);
+      assert.equal(JSON.parse(await readFileRaw(file(), 'utf8')).load_error, undefined, 'the report is per-call, never store content');
+    });
+
+    it('preserves a file whose collection fields are the wrong shape rather than throwing on the next write', async () => {
+      await writeFileRaw(file(), '{"states":"oops"}', 'utf8');
+      const store = await loadPlaybackExt();
+      assert.equal(typeof store.load_error, 'string');
+      assert.match(store.load_error as string, /"states" is not a JSON object/);
+      assert.equal((await corruptCopies()).length, 1);
+    });
+
+    it('preserves a file whose top level is not an object', async () => {
+      await writeFileRaw(file(), '[1,2,3]', 'utf8');
+      const store = await loadPlaybackExt();
+      assert.equal(typeof store.load_error, 'string');
+      assert.match(store.load_error as string, /top level is not a JSON object/);
+      assert.equal((await corruptCopies()).length, 1);
+    });
+
+    it('reports load_error on a read tool, so an empty listing is never mistaken for a real one', async () => {
+      await writeFileRaw(file(), '{oops', 'utf8');
+      const { client } = makeClient();
+      const h = serverHarness(client);
+      const res = await h.invoke('list_playback_states', {});
+      const echo = res.structuredContent as Record<string, unknown>;
+      assert.equal(typeof echo.load_error, 'string');
+      assert.equal(echo.count, 0);
+      assert.match(res.content[0].text, /WARNING/);
+    });
+
+    it('survives a second corruption without clobbering the copy already preserved', async () => {
+      await writeFileRaw(file(), '{first', 'utf8');
+      const first = await loadPlaybackExt();
+      await writeFileRaw(file(), '{second', 'utf8');
+      const second = await loadPlaybackExt();
+      assert.notEqual(first.preserved_as, second.preserved_as);
+      assert.equal((await corruptCopies()).length, 2, 'each corruption keeps its own copy');
+      assert.equal(await readFileRaw(first.preserved_as as string, 'utf8'), '{first');
+      assert.equal(await readFileRaw(second.preserved_as as string, 'utf8'), '{second');
+    });
+
+    it('a fresh save after a preserved corruption starts from the new entry only', async () => {
+      await writeFileRaw(file(), '{"states":{"evening"oops}', 'utf8');
+      const { client } = makeClient();
+      const h = serverHarness(client);
+      const res = await h.invoke('save_playback_state', { name: 'morning' });
+      assert.equal(typeof (res.structuredContent as Record<string, unknown>).load_error, 'string');
+      const onDisk = JSON.parse(await readFileRaw(file(), 'utf8')) as Record<string, Record<string, unknown>>;
+      assert.deepEqual(Object.keys(onDisk.states), ['morning']);
+      assert.equal((await corruptCopies()).length, 1, 'the unparseable bytes are still recoverable');
+    });
   });
 });

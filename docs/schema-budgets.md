@@ -60,7 +60,7 @@ above either ceiling fails CI and server startup.
 | Module | Tools | Schema bytes | Baseline tools | Baseline bytes | Effective tool ceiling | Effective byte ceiling |
 |---|---:|---:|---:|---:|---:|---:|
 | search | 1 | 1,821 | 1 | 1,821 | 2 | 2,004 |
-| catalog | 31 | 27,013 | 31 | 27,013 | 32 | 29,715 |
+| catalog | 31 | 27,012 | 31 | 27,012 | 32 | 29,714 |
 | library | 16 | 14,957 | 16 | 14,957 | 17 | 16,453 |
 | playback | 16 | 12,287 | 16 | 12,287 | 17 | 13,516 |
 | following | 5 | 3,921 | 5 | 3,921 | 6 | 4,314 |
@@ -113,7 +113,7 @@ above either ceiling fails CI and server startup.
 | exhaust2misc | 27 | 23,234 | 27 | 23,234 | 28 | 25,558 |
 | exhaust2extra | 3 | 3,695 | 3 | 3,695 | 4 | 4,065 |
 | swarm3discovery | 24 | 21,951 | 24 | 21,951 | 25 | 24,147 |
-| swarm3bdiscovery | 24 | 20,048 | 24 | 20,048 | 25 | 22,053 |
+| swarm3bdiscovery | 24 | 20,055 | 24 | 20,055 | 25 | 22,061 |
 | swarm3shows | 24 | 21,075 | 24 | 21,075 | 25 | 23,183 |
 | swarm3refs | 6 | 4,331 | 6 | 4,331 | 7 | 4,765 |
 | swarm3analytics | 24 | 18,880 | 24 | 18,880 | 25 | 20,768 |
