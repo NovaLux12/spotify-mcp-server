@@ -372,6 +372,50 @@ describe('show_recommendation_brief play-state labelling (#818)', () => {
     assert.match(out.content[0].text, /\[play state unknown — Spotify returned no resume_point\]/);
   });
 
+  it('withholds the label when resume_point carries no readable offset', async () => {
+    // `fully_played: false` with the offset absent or null: unreadable data, not an
+    // observed 0:00. A `?? 0` here would print a resume position nobody reported.
+    const absent = episode(fresh, 'no-offset', '2026-09-20', {
+      fully_played: false,
+    } as Episode['resume_point']);
+    const nulled = episode(fresh, 'null-offset', '2026-09-20', {
+      fully_played: false,
+      resume_position_ms: null as unknown as number,
+    });
+
+    for (const ep of [absent, nulled]) {
+      const h = briefHarness(ep);
+
+      const out = await h.invoke('show_recommendation_brief', { since: '2026-09-01' });
+      const payload = out.structuredContent as BriefPayload;
+
+      assert.equal(payload.brief[0].play_state, 'unknown', `${ep.id}: unreadable offset is not a play state`);
+      assert.equal(payload.brief[0].unlistened, false, `${ep.id}: not placed in the listen-next queue`);
+      assert.equal(payload.brief[0].undetermined, true, `${ep.id}: the caller can see it is undetermined`);
+      assert.equal(payload.unlistened, 0);
+      assert.equal(payload.undetermined, 1);
+      assert.doesNotMatch(out.content[0].text, /NEW/);
+      assert.doesNotMatch(out.content[0].text, /resume 0:00/);
+      assert.match(out.content[0].text, /\[play state unknown — Spotify returned no resume_point offset\]/);
+    }
+  });
+
+  it('counts a /me/episodes/contains call that failed after being issued', async () => {
+    const h = briefHarness(
+      episode(fresh, 'unstarted', '2026-09-20', { fully_played: false, resume_position_ms: 0 }),
+      { containsFails: true },
+    );
+
+    const out = await h.invoke('show_recommendation_brief', { since: '2026-09-01' });
+    const payload = out.structuredContent as BriefPayload & { library_requests: number };
+
+    // The call was issued and consumed quota, so the disclosure must survive the throw.
+    assert.equal(h.getCalls.filter((c) => c.path === '/me/episodes/contains').length, 1);
+    assert.equal(payload.library_requests, 1);
+    assert.equal(payload.library_checked, false);
+    assert.match(out.content[0].text, /Quota: 1 show lookup\(s\) \+ 1 \/me\/episodes\/contains call\(s\)/);
+  });
+
   it('reports an unreadable library check as unavailable rather than as not saved', async () => {
     const h = briefHarness(
       episode(fresh, 'unstarted', '2026-09-20', { fully_played: false, resume_position_ms: 0 }),
@@ -537,5 +581,53 @@ describe('find_show_by_publisher search bound (#822)', () => {
     assert.equal(payload.catalog_scanned, 10);
     assert.equal(payload.scan_complete, false);
     assert.match(out.content[0].text, /30 of 120 catalogue row\(s\) examined/);
+  });
+
+  it('counts examined rows the same way on every page, so the figure never goes backwards', async () => {
+    const page = Array.from({ length: 25 }, (_, i) => show(`p${i + 1}`, 'Wondery Network'));
+    const h = harness({ searchPage: { items: page, total: 25 } });
+    const counts: number[] = [];
+    const complete: boolean[] = [];
+
+    for (const offset of [0, 10, 20]) {
+      const out = await h.invoke('find_show_by_publisher', { query: 'wondery', limit: 10, offset });
+      const text = out.content[0].text;
+      const examined = Number(/Scan: (\d+) of 25 catalogue row\(s\) examined/.exec(text)?.[1]);
+      counts.push(examined);
+      const row = out.structuredContent as { scan_complete: boolean };
+      complete.push(row.scan_complete);
+      // A 5-row page at offset 20 must not report 5 of 25 examined.
+      assert.notEqual(examined, 5, `offset ${offset} reported only this page's rows`);
+    }
+
+    // Paging deeper examines strictly more of the catalogue: 10, 20, then all 25.
+    assert.deepEqual(counts, [10, 20, 25]);
+    assert.deepEqual(complete, [false, false, true]);
+    const last = await h.invoke('find_show_by_publisher', { query: 'wondery', limit: 10, offset: 20 });
+    assert.match(last.content[0].text, /25 of 25 catalogue row\(s\) examined/);
+    assert.match(last.content[0].text, /complete page/);
+  });
+
+  it('refuses to certify a complete scan when the offset pages past the catalogue', async () => {
+    const page = Array.from({ length: 25 }, (_, i) => show(`p${i + 1}`, 'Wondery Network'));
+    const h = harness({ searchPage: { items: page, total: 25 } });
+
+    const out = await h.invoke('find_show_by_publisher', { query: 'wondery', limit: 10, offset: 100 });
+    const payload = out.structuredContent as {
+      catalog_scanned: number;
+      catalogue_total: number | null;
+      scan_complete: boolean;
+    };
+
+    // Zero rows examined is not a publisher census: scan_complete must be false
+    // even though offset alone satisfies the bound.
+    assert.equal(payload.catalog_scanned, 0);
+    assert.equal(payload.catalogue_total, 25);
+    assert.equal(payload.scan_complete, false);
+    assert.match(out.content[0].text, /0 of 25 catalogue row\(s\) examined/);
+    assert.match(out.content[0].text, /PARTIAL page/);
+    assert.doesNotMatch(out.content[0].text, /complete page/);
+    assert.match(out.content[0].text, /at or past the end of the 25-row catalogue/);
+    assert.match(out.content[0].text, /reads as absent/);
   });
 });

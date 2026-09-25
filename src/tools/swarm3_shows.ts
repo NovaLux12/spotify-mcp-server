@@ -296,10 +296,16 @@ function playStateOf(ep: { fullyPlayed: boolean | null; resumePositionMs: number
   if (ep.fullyPlayed === null) {
     return { state: 'unknown', label: 'play state unknown — Spotify returned no resume_point' };
   }
-  if ((ep.resumePositionMs ?? 0) > 0) {
+  // `fully_played: false` with no readable offset is unreadable data, not an
+  // observed zero: `?? 0` would invent a 0:00 resume position and a NEW claim
+  // the API never made, and would drop the row out of the undetermined queue.
+  if (ep.resumePositionMs == null) {
+    return { state: 'unknown', label: 'play state unknown — Spotify returned no resume_point offset' };
+  }
+  if (ep.resumePositionMs > 0) {
     return {
       state: 'in_progress',
-      label: `in progress (${Math.round((ep.resumePositionMs ?? 0) / 60_000)} min in)`,
+      label: `in progress (${Math.round(ep.resumePositionMs / 60_000)} min in)`,
     };
   }
   return { state: 'new', label: 'NEW — unplayed (resume 0:00)' };
@@ -322,8 +328,10 @@ async function fetchSavedEpisodeIdSet(
   try {
     for (let i = 0; i < ids.length; i += 50) {
       const chunk = ids.slice(i, i + 50);
-      const contains = await client.get<boolean[]>('/me/episodes/contains', { ids: chunk.join(',') });
+      // Counted before the await: a request that throws still consumed quota, and
+      // the caller must be told what the failed library leg cost.
       requests++;
+      const contains = await client.get<boolean[]>('/me/episodes/contains', { ids: chunk.join(',') });
       if (!Array.isArray(contains)) return { saved: null, requests };
       chunk.forEach((id, index) => {
         if (contains[index] === true) saved.add(id);
@@ -1285,12 +1293,23 @@ export function registerSwarm3ShowsTools(server: McpServer, client: SpotifyClien
       const all = (res?.shows?.items ?? []).filter((s): s is SpotifyShowSimple => !!s?.id);
       const catalogueTotal = typeof res?.shows?.total === 'number' ? res.shows.total : null;
       // A null total means the page size, not the catalogue, is what we know — never call that complete.
-      const scanComplete = catalogueTotal != null && offset + all.length >= catalogueTotal;
+      // `all.length > 0`: past the end of the catalogue the offset alone satisfies the
+      // bound, so a page that examined nothing would certify a complete publisher
+      // census over zero rows — the "reads as absent" failure #822 exists to stop.
+      const scanComplete = catalogueTotal != null && all.length > 0 && offset + all.length >= catalogueTotal;
+      // One count for both branches, so the disclosed figure never goes backwards as
+      // the caller pages deeper; clamped to the catalogue so an offset past the end
+      // cannot print "100 of 25".
+      const rowsExamined = catalogueTotal == null
+        ? all.length
+        : Math.min(offset + all.length, catalogueTotal);
       const scanNote = catalogueTotal == null
         ? `Scan: ${all.length} row(s) fetched with limit ${pageLimit} at offset ${offset}; the search envelope reported no total, so the scan is UNVERIFIED — a publisher outside this page reads as absent.`
-        : scanComplete
-          ? `Scan: ${all.length} of ${catalogueTotal} catalogue row(s) examined (limit ${pageLimit}, offset ${offset}) — complete page.`
-          : `Scan: ${offset + all.length} of ${catalogueTotal} catalogue row(s) examined (limit ${pageLimit}, offset ${offset}) — PARTIAL page, a publisher whose shows fall outside it reads as absent; raise offset to scan deeper.`;
+        : all.length === 0
+          ? `Scan: 0 of ${catalogueTotal} catalogue row(s) examined (limit ${pageLimit}, offset ${offset}) — PARTIAL page: the offset is at or past the end of the ${catalogueTotal}-row catalogue, so this page examined no row at all; a publisher whose shows fall outside the rows examined reads as absent; lower offset to scan.`
+          : scanComplete
+            ? `Scan: ${rowsExamined} of ${catalogueTotal} catalogue row(s) examined (limit ${pageLimit}, offset ${offset}) — complete page.`
+            : `Scan: ${rowsExamined} of ${catalogueTotal} catalogue row(s) examined (limit ${pageLimit}, offset ${offset}) — PARTIAL page, a publisher whose shows fall outside it reads as absent; raise offset to scan deeper.`;
       const q = args.query.toLowerCase();
       const publisherMatches = all.filter((s) => publisherOf(s).toLowerCase().includes(q));
       const nameMatches = all.filter((s) => !publisherMatches.includes(s) && s.name.toLowerCase().includes(q));
@@ -1441,7 +1460,7 @@ export function registerSwarm3ShowsTools(server: McpServer, client: SpotifyClien
         savedIds == null
           ? '(library check unavailable — /me/episodes/contains could not be read, so "not saved" is unconfirmed)'
           : undetermined.length > 0
-            ? `(${undetermined.length} episode(s) have no resume_point or no library read — labelled "play state unknown", NOT called new)`
+            ? `(${undetermined.length} episode(s) have no readable resume_point or no library read — labelled "play state unknown", NOT called new)`
             : '',
         libraryRequests > 0
           ? `(Quota: ${checked} show lookup(s) + ${libraryRequests} /me/episodes/contains call(s) over ${newEps.length} episode(s) — lower max_shows to cut the library leg)`
