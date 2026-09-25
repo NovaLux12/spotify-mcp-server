@@ -14,7 +14,7 @@ type ToolContent = {
 type RegisteredTool = {
   name: string;
   description: string;
-  schema: Record<string, { safeParse(value: unknown): { success: boolean } }>;
+  schema: Record<string, { safeParse(value: unknown): { success: boolean; data?: unknown } }>;
   handler: (args: Record<string, unknown>) => Promise<ToolContent>;
 };
 
@@ -24,6 +24,11 @@ interface ClientOptions {
   getResponse?: (path: string, params?: Record<string, string>) => unknown;
   getError?: (path: string, params?: Record<string, string>) => unknown;
 }
+
+// A real 22-character Spotify id. The shared resolver grammar (#789) is strict
+// by design, so every catalog reference fixture must be a real id rather than
+// a convenient placeholder.
+const REF_ID = '4uLU6hMCjMI75M1A2tKUQC';
 
 const artist = { id: 'art1', name: 'Queen', uri: 'spotify:artist:art1' };
 const albumSimple = {
@@ -143,6 +148,23 @@ async function invoke(tool: RegisteredTool, args: Record<string, unknown> = {}) 
 
 function text(result: ToolContent): string {
   return result.content.map((c) => c.text).join('\n');
+}
+
+/**
+ * Run args through the tool's zod schema the way the MCP SDK does before the
+ * handler is called. Reference normalisation (URI/URL → bare id) happens in
+ * the schema, so a handler-level call would bypass it entirely.
+ */
+function parseArgs(tool: RegisteredTool, args: Record<string, unknown>): Record<string, unknown> {
+  const parsed: Record<string, unknown> = {};
+  for (const [name, value] of Object.entries(args)) {
+    const field = tool.schema[name];
+    assert.ok(field, `missing schema field ${name}`);
+    const result = field.safeParse(value);
+    assert.equal(result.success, true, `invalid ${name}: ${JSON.stringify(value)}`);
+    parsed[name] = result.data;
+  }
+  return parsed;
 }
 
 // ------------------------------------------------------------------ get_track
@@ -744,7 +766,10 @@ test('get_several_* schemas reject empty lists and non-string ids', () => {
   ]) {
     const schema = findTool(registered, name).schema.ids;
     assert.equal(schema.safeParse([]).success, false, `${name} should reject an empty list`);
-    assert.equal(schema.safeParse(['ok']).success, true, `${name} should accept a single id`);
+    // #789: the six entity kinds now share the strict resolver grammar, so a
+    // valid fixture is a real 22-character id. get_several_chapters has no
+    // resolver kind and keeps accepting short strings.
+    assert.equal(schema.safeParse([REF_ID]).success, true, `${name} should accept a single id`);
     assert.equal(schema.safeParse([42]).success, false, `${name} should reject non-string ids`);
   }
 });
@@ -1393,3 +1418,214 @@ test('catalog_batch_lookup skips unsupported types (playlists) and reports them 
   assert.match(out, /Track 1/);
 });
 
+
+// ---------------------------------------------------------------------------
+// #789: catalog id params share the resolver grammar (bare id / URI / URL)
+// ---------------------------------------------------------------------------
+
+
+/** The three input forms every catalog reference must accept interchangeably. */
+const threeForms = (kind: string) => [
+  REF_ID,
+  `spotify:${kind}:${REF_ID}`,
+  `https://open.spotify.com/${kind}/${REF_ID}`,
+];
+
+/**
+ * One regression per changed tool: for each of the three input forms the wire
+ * call must carry the bare id, never the URI or URL the caller supplied.
+ */
+async function assertWireCarriesBareId(
+  tool: string,
+  argName: string,
+  kind: string,
+  expectedPath: (id: string) => string,
+  extraArgs: Record<string, unknown> = {},
+  response: (path: string, params?: Record<string, string>) => unknown = () => ({}),
+): Promise<void> {
+  for (const form of threeForms(kind)) {
+    const { registered, calls } = makeHarness(registerCatalogTools, {
+      getResponse: response,
+    });
+    const target = findTool(registered, tool);
+    await invoke(target, parseArgs(target, { [argName]: form, ...extraArgs }));
+    // Market-gated tools preflight GET /me for the account country; only the
+    // entity call itself is under test here.
+    const entityCalls = calls.filter((c) => c.path !== '/me');
+    assert.deepEqual(
+      entityCalls.map((c) => c.path),
+      [expectedPath(REF_ID)],
+      `${tool} must send the bare id for input form ${form}`,
+    );
+  }
+}
+
+test('#789 get_track accepts id, URI and URL and always calls /tracks/{bare id}', async () => {
+  await assertWireCarriesBareId(
+    'get_track', 'id', 'track',
+    (id) => `/tracks/${id}`,
+    {},
+    (path) => (path.startsWith('/tracks/') ? trackFixture({ id: REF_ID }) : undefined),
+  );
+});
+
+test('#789 get_artist accepts id, URI and URL and always calls /artists/{bare id}', async () => {
+  await assertWireCarriesBareId(
+    'get_artist', 'id', 'artist',
+    (id) => `/artists/${id}`,
+    {},
+    (path) => (path.startsWith('/artists/') ? { id: REF_ID, name: 'Queen', uri: `spotify:artist:${REF_ID}`, genres: [] } : undefined),
+  );
+});
+
+test('#789 get_artist_albums accepts id, URI and URL and always calls /artists/{bare id}/albums', async () => {
+  resetCatalogMarketCache();
+  await assertWireCarriesBareId(
+    'get_artist_albums', 'id', 'artist',
+    (id) => `/artists/${id}/albums`,
+    {},
+    (path) => (path.endsWith('/albums') ? { items: [], total: 0 } : undefined),
+  );
+});
+
+test('#789 get_album accepts id, URI and URL and always calls /albums/{bare id}', async () => {
+  await assertWireCarriesBareId(
+    'get_album', 'id', 'album',
+    (id) => `/albums/${id}`,
+    {},
+    (path) => (path.startsWith('/albums/') ? albumFullFixture() : undefined),
+  );
+});
+
+test('#789 get_album_tracks accepts id, URI and URL and always calls /albums/{bare id}/tracks', async () => {
+  await assertWireCarriesBareId(
+    'get_album_tracks', 'id', 'album',
+    (id) => `/albums/${id}/tracks`,
+    {},
+    (path) => (path.endsWith('/tracks') ? { items: [], total: 0 } : undefined),
+  );
+});
+
+test('#789 get_show accepts id, URI and URL and always calls /shows/{bare id}', async () => {
+  resetCatalogMarketCache();
+  await assertWireCarriesBareId(
+    'get_show', 'id', 'show',
+    (id) => `/shows/${id}`,
+    {},
+    (path) => (path.startsWith('/shows/') ? { ...showSimpleFixture(), id: REF_ID } : undefined),
+  );
+});
+
+test('#789 get_episode accepts id, URI and URL and always calls /episodes/{bare id}', async () => {
+  resetCatalogMarketCache();
+  await assertWireCarriesBareId(
+    'get_episode', 'id', 'episode',
+    (id) => `/episodes/${id}`,
+    {},
+    (path) => (path.startsWith('/episodes/') ? { ...episodeSimpleFixture(), id: REF_ID, languages: ['en'], show: { name: 'Pod' } } : undefined),
+  );
+});
+
+test('#789 get_artist_top_tracks accepts id, URI and URL and always calls /artists/{bare id}/top-tracks', async () => {
+  resetCatalogMarketCache();
+  await assertWireCarriesBareId(
+    'get_artist_top_tracks', 'id', 'artist',
+    (id) => `/artists/${id}/top-tracks`,
+    {},
+    (path) => (path.endsWith('/top-tracks') ? { tracks: [] } : undefined),
+  );
+});
+
+test('#789 get_several_tracks accepts id, URI and URL and joins bare ids on the wire', async () => {
+  for (const form of threeForms('track')) {
+    const { registered, calls } = makeHarness(registerCatalogTools, {
+      getResponse: (path, params) => (path === '/tracks'
+        ? { tracks: (params!.ids as string).split(',').map((id) => trackFixture({ id })) }
+        : undefined),
+    });
+    const target = findTool(registered, 'get_several_tracks');
+    await invoke(target, parseArgs(target, { ids: [form] }));
+    assert.deepEqual(calls, [{ method: 'GET', path: '/tracks', params: { ids: REF_ID } }],
+      `get_several_tracks must join the bare id for input form ${form}`);
+  }
+});
+
+test('#789 get_artist_singles accepts artist_id, URI and URL and always calls /artists/{bare id}/albums', async () => {
+  resetCatalogMarketCache();
+  await assertWireCarriesBareId(
+    'get_artist_singles', 'artist_id', 'artist',
+    (id) => `/artists/${id}/albums`,
+    {},
+    (path) => (path.endsWith('/albums') ? { items: [], total: 0 } : undefined),
+  );
+});
+
+test('#789 get_artist_appearances accepts artist_id, URI and URL and always calls /artists/{bare id}/albums', async () => {
+  resetCatalogMarketCache();
+  await assertWireCarriesBareId(
+    'get_artist_appearances', 'artist_id', 'artist',
+    (id) => `/artists/${id}/albums`,
+    {},
+    (path) => (path.endsWith('/albums') ? { items: [], total: 0 } : undefined),
+  );
+});
+
+test('#789 show_episode_search accepts show_id, URI and URL and always calls /shows/{bare id}/episodes', async () => {
+  for (const form of threeForms('show')) {
+    const { registered, calls } = makeHarness(registerCatalogTools, {
+      getResponse: (path) => (path.endsWith('/episodes') ? { items: [], total: 0 } : undefined),
+    });
+    const target = findTool(registered, 'show_episode_search');
+    await invoke(target, parseArgs(target, { show_id: form, query: 'needle' }));
+    assert.deepEqual(calls.map((c) => c.path), [`/shows/${REF_ID}/episodes`],
+      `show_episode_search must page the bare show id for input form ${form}`);
+  }
+});
+
+test('#789 get_several_chapters keeps plain string ids — chapters have no resolver kind', () => {
+  const { registered } = makeHarness(registerCatalogTools);
+  const schema = findTool(registered, 'get_several_chapters').schema.ids;
+  // Documented divergence from the six migrated get_several_* siblings: a
+  // `spotify:chapter:` URI is not a real Spotify URI form, so this schema
+  // stays permissive rather than inventing a kind that refs.ts does not have.
+  assert.equal(schema.safeParse([REF_ID]).success, true);
+  assert.equal(schema.safeParse(['chapter-ish-id']).success, true);
+});
+
+/**
+ * One regression per changed get_several_* tool: for each of the three input
+ * forms the batched `ids` query parameter must carry bare ids, comma-joined.
+ */
+async function assertSeveralJoinsBareIds(tool: string, kind: string, path: string, key: string): Promise<void> {
+  for (const form of threeForms(kind)) {
+    const { registered, calls } = makeHarness(registerCatalogTools, {
+      getResponse: (p, params) => (p === path
+        ? { [key]: (params!.ids as string).split(',').map((id) => ({ id, name: `Item ${id}`, uri: `spotify:${kind}:${id}`, genres: [], duration_ms: 60000, release_date: '2026-01-01', publisher: 'Pub', authors: [{ name: 'A' }], total_chapters: 1, chapter_number: 1 })) }
+        : undefined),
+    });
+    const target = findTool(registered, tool);
+    await invoke(target, parseArgs(target, { ids: [form] }));
+    assert.deepEqual(calls, [{ method: 'GET', path, params: { ids: REF_ID } }],
+      `${tool} must join the bare id for input form ${form}`);
+  }
+}
+
+test('#789 get_several_albums accepts id, URI and URL and joins bare ids on the wire', async () => {
+  await assertSeveralJoinsBareIds('get_several_albums', 'album', '/albums', 'albums');
+});
+
+test('#789 get_several_artists accepts id, URI and URL and joins bare ids on the wire', async () => {
+  await assertSeveralJoinsBareIds('get_several_artists', 'artist', '/artists', 'artists');
+});
+
+test('#789 get_several_episodes accepts id, URI and URL and joins bare ids on the wire', async () => {
+  await assertSeveralJoinsBareIds('get_several_episodes', 'episode', '/episodes', 'episodes');
+});
+
+test('#789 get_several_shows accepts id, URI and URL and joins bare ids on the wire', async () => {
+  await assertSeveralJoinsBareIds('get_several_shows', 'show', '/shows', 'shows');
+});
+
+test('#789 get_several_audiobooks accepts id, URI and URL and joins bare ids on the wire', async () => {
+  await assertSeveralJoinsBareIds('get_several_audiobooks', 'audiobook', '/audiobooks', 'audiobooks');
+});

@@ -28,6 +28,7 @@ import {
   type ResponseFormatValue,
 } from '../shaping.js';
 import { getConfig, resolveMarket } from '../config.js';
+import { spotifyId, spotifyIdArray, type SpotifyReferenceKind } from '../refs.js';
 
 
 // Issue #110: market codes are exactly two letters; lowercase input is
@@ -110,6 +111,20 @@ export const ARTIST_ALBUM_PAGE_LIMIT = 10;
 
 type SeveralKind = keyof typeof SEVERAL_LIMITS;
 
+// #789: batch id lists go through the same shared reference grammar as every
+// other tool, so a caller can pass bare ids, `spotify:<kind>:` URIs, or
+// open.spotify.com URLs interchangeably. `chapters` has no Spotify URI form
+// (and no SpotifyReferenceKind), so it keeps plain string ids.
+const SEVERAL_REFERENCE_KINDS: Record<SeveralKind, SpotifyReferenceKind | null> = {
+  tracks: 'track',
+  albums: 'album',
+  artists: 'artist',
+  episodes: 'episode',
+  shows: 'show',
+  audiobooks: 'audiobook',
+  chapters: null,
+};
+
 async function fetchSeveral<T>(
   client: SpotifyClient,
   kind: SeveralKind,
@@ -147,12 +162,15 @@ async function fetchSeveral<T>(
 
 function severalIdsSchema(kind: SeveralKind) {
   const max = SEVERAL_LIMITS[kind];
-  return z
-    .array(z.string().min(1))
-    .min(1)
-    .describe(
-      `Spotify ${kind} IDs (1–${max} per request; longer lists are fetched in chunks of ${max} and merged)`,
-    );
+  const referenceKind = SEVERAL_REFERENCE_KINDS[kind];
+  // spotifyIdArray already returns a ZodArray, so the element list is chosen
+  // here — wrapping either branch in z.array() would nest ids one level deep.
+  const element = referenceKind ? spotifyIdArray(referenceKind) : z.array(z.string().min(1));
+  return element.min(1).describe(
+    referenceKind
+      ? `Spotify ${referenceKind} IDs, spotify:${referenceKind}: URIs, or open.spotify.com/${referenceKind} URLs (1–${max} per request; longer lists are fetched in chunks of ${max} and merged)`
+      : `Spotify ${kind} IDs (1–${max} per request; longer lists are fetched in chunks of ${max} and merged)`,
+  );
 }
 
 function joinArtists(items: { artists?: { name: string }[] }): string {
@@ -275,7 +293,7 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
   server.tool(
     'get_track',
     'Get full details for a track by ID',
-    { id: z.string().describe('Spotify track ID'), response_format: ResponseFormat },
+    { id: spotifyId('track'), response_format: ResponseFormat },
     async (args) => {
       const track = await client.get<SpotifyTrack>(`/tracks/${encodeURIComponent(args.id)}`);
       if (!track) throw new Error(`Track "${args.id}" not found`);
@@ -301,7 +319,7 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
   server.tool(
     'get_artist',
     'Get artist info by ID',
-    { id: z.string().describe('Spotify artist ID'), response_format: ResponseFormat },
+    { id: spotifyId('artist'), response_format: ResponseFormat },
     async (args) => {
       const artist = await client.get<SpotifyArtistFull>(`/artists/${encodeURIComponent(args.id)}`);
       if (!artist) throw new Error(`Artist "${args.id}" not found`);
@@ -327,7 +345,7 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
     'get_artist_albums',
     "List an artist's albums and singles",
     {
-      id: z.string().describe('Spotify artist ID'),
+      id: spotifyId('artist'),
       include_groups: z
         .array(z.enum(['album', 'single', 'appears_on', 'compilation']))
         .optional()
@@ -395,7 +413,7 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
     'get_album',
     'Get album details and track list by ID',
     {
-      id: z.string().describe('Spotify album ID'),
+      id: spotifyId('album'),
       market: MARKET_CODE.optional().describe(
         'ISO country code; defaults to account country.',
       ),
@@ -441,7 +459,7 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
     'get_album_tracks',
     'List the tracks of an album with pagination',
     {
-      id: z.string().describe('Spotify album ID'),
+      id: spotifyId('album'),
       limit: z
         .number()
         .int()
@@ -500,7 +518,7 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
     'get_show',
     'Get full details for a podcast show',
     {
-      id: z.string().describe('Spotify show ID'),
+      id: spotifyId('show'),
       market: MARKET_CODE.optional().describe('ISO 3166-1 alpha-2 country code'),
       response_format: ResponseFormat,
     },
@@ -540,7 +558,7 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
     'get_episode',
     'Get full details for a podcast episode',
     {
-      id: z.string().describe('Spotify episode ID'),
+      id: spotifyId('episode'),
       market: MARKET_CODE.optional().describe('ISO 3166-1 alpha-2 country code, e.g. \'US\''),
       response_format: ResponseFormat,
     },
@@ -599,7 +617,7 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
     'get_artist_top_tracks',
     "Get an artist's ten most-played tracks for a market. Removed by Spotify's February 2026 Web API changes — unavailable for newer app registrations",
     {
-      id: z.string().describe('Spotify artist ID'),
+      id: spotifyId('artist'),
       market: MARKET_CODE.optional().describe('ISO 3166-1 alpha-2 country code, e.g. \'US\' — defaults to the account country'),
       ...sharedListFields,
     },
@@ -998,7 +1016,7 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
     'get_artist_singles',
     "List an artist's singles only (GET /artists/{id}/albums?include_groups=single). Quota: 🟢 single.",
     {
-      artist_id: z.string().describe('Spotify artist ID'),
+      artist_id: spotifyId('artist'),
       limit: z.number().int().min(1).max(ARTIST_ALBUM_PAGE_LIMIT).optional().describe(`Results per page, 1–${ARTIST_ALBUM_PAGE_LIMIT}. Default: ${ARTIST_ALBUM_PAGE_LIMIT}`),
       offset: z.number().int().min(0).optional().describe('Offset. Default: 0'),
       market: MARKET_CODE.optional().describe('ISO 3166-1 alpha-2 country code'),
@@ -1015,7 +1033,7 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
     'get_artist_appearances',
     "List albums an artist appears on (GET /artists/{id}/albums?include_groups=appears_on). Quota: 🟢 single.",
     {
-      artist_id: z.string().describe('Spotify artist ID'),
+      artist_id: spotifyId('artist'),
       limit: z.number().int().min(1).max(ARTIST_ALBUM_PAGE_LIMIT).optional().describe(`Results per page, 1–${ARTIST_ALBUM_PAGE_LIMIT}. Default: ${ARTIST_ALBUM_PAGE_LIMIT}`),
       offset: z.number().int().min(0).optional().describe('Offset. Default: 0'),
       market: MARKET_CODE.optional().describe('ISO 3166-1 alpha-2 country code'),
@@ -1161,7 +1179,7 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
     'show_episode_search',
     'Full-text search within one show\'s episodes (GET /shows/{id}/episodes paged + client-side q). Quota: 🟡 1–N pages (fetch_all walks).',
     {
-      show_id: z.string().min(1).describe('Spotify show ID'),
+      show_id: spotifyId('show'),
       query: z.string().min(1).describe('Case-insensitive substring over name/description'),
       limit: z.number().int().min(1).max(50).optional().describe('Results per page for the underlying paging, 1–50. Default: 20'),
       offset: z.number().int().min(0).optional().describe('Offset for underlying paging. Default: 0'),
