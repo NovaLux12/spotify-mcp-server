@@ -29,6 +29,12 @@ The variables below are read at the documented call sites; set them in your MCP 
 | `SPOTIFY_MCP_GENRE_TAGS_FILE` | `~/.spotify-mcp/genre-tags.json` | Artist-to-genre-tags sidecar. |
 | `SPOTIFY_MCP_DATA_DIR` | `./data` for watchlists; `~/.spotify-mcp/playlist-snapshots` for playlist-health snapshots | Data directory read by the artist-watchlist, portability-watchlist, and playlist-health call sites. Set it explicitly to avoid cwd-relative watchlist files. |
 | `SPOTIFY_MCP_BACKUP_DIR` | `~/.spotify-mcp/backups` | Directory for `backup_library` snapshots. |
+| `SPOTIFY_MCP_PORTABILITY_DIR` | `~/.spotify-mcp/portability` | Output root for the five `export_*` family tools. |
+| `SPOTIFY_MCP_EXPORT_DIR` | `~/.spotify-mcp/exports` | Output root for `export_playlist` and `export_profile_state`. |
+| `SPOTIFY_MCP_ALLOW_PATHS` | unset | Extra directories `import_playlist` may read from, `:`-separated. The default read roots are `SPOTIFY_MCP_PORTABILITY_DIR`, `SPOTIFY_MCP_BACKUP_DIR` and `SPOTIFY_MCP_EXPORT_DIR`. |
+| `SPOTIFY_MCP_MAX_DOCUMENT_MB` | `32` | Per-document read cap. A larger `input_path` or inline `content` is refused before it is read. |
+| `SPOTIFY_MCP_RECEIPTS` | unset | `1`, `true`, `yes`, or `on` persists mutation receipts to a JSONL file so `verify_receipt` and `undo_*` survive a restart. Entries older than 24h are dropped. |
+| `SPOTIFY_MCP_TIMEZONE` | `UTC` | IANA zone for `listening_heatmap` day/hour buckets. Host time is never used implicitly; the same payload is produced in every host zone. |
 | `SPOTIFY_MCP_PORTABILITY_DIR` | `~/.spotify-mcp/portability` | Default output directory for library/history portability exports. |
 | `SPOTIFY_MCP_SNAPSHOT_DIR` | `~/.spotify-mcp/playlist-snapshots` | Playlist snapshot sidecar directory. |
 | `SPOTIFY_MCP_SEARCH_HISTORY_FILE` | `~/.spotify-mcp/search-history.json` | Local search-history sidecar. |
@@ -46,6 +52,14 @@ The variables below are read at the documented call sites; set them in your MCP 
 `SPOTIFY_REDIRECT_URI` must match a redirect URI configured in the app character for character. The callback listener derives its loopback bind address, port, and route from this value. Use `http://127.0.0.1` for local development, not `http://localhost`.
 
 `SPOTIFY_MCP_TOKEN_FILE` and `SPOTIFY_MCP_PROFILE` select the persistent token file. Explicit `SPOTIFY_MCP_TOKEN_FILE` wins; otherwise a profile uses `~/.spotify-mcp/tokens.<profile>.json`; the unprofiled default is `~/.spotify-mcp/tokens.json`. Token files are created with mode 600.
+
+### Local files: reads and writes are confined
+
+Every tool that writes a local file resolves its destination against a configured root — `SPOTIFY_MCP_EXPORT_DIR` for `export_playlist` and `export_profile_state`, `SPOTIFY_MCP_PORTABILITY_DIR` for the five `export_*` family tools. A relative `output_path` or `output_dir` resolves **inside** that root rather than against the process working directory; an absolute path outside it, a `..` escape, or a symlink leaving it is refused with the resolved path and the root in the message. `export_playlist` also refuses to replace an existing file unless you pass `overwrite: true`.
+
+Reads are confined the same way, in reverse. `import_playlist` will read only from `SPOTIFY_MCP_PORTABILITY_DIR`, `SPOTIFY_MCP_BACKUP_DIR`, `SPOTIFY_MCP_EXPORT_DIR`, and anything you add to `SPOTIFY_MCP_ALLOW_PATHS`. Anything else, any non-regular file (directory, FIFO, socket, device), and any document over `SPOTIFY_MCP_MAX_DOCUMENT_MB` is refused before a byte is read.
+
+Containment is decided on the *real* path — every component is resolved before the root comparison, so a symlink is collapsed rather than string-matched. Files are written with mode 600 and `O_NOFOLLOW`.
 
 `SPOTIFY_HEADLESS=1` affects only the `auth` command. The auth URL is printed for a browserless host; complete it anywhere and paste the redirect URL back.
 
