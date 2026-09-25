@@ -1,7 +1,17 @@
 import { z } from 'zod';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import {
+  chmodSync,
+  closeSync,
+  fsyncSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
 import type { SavedTrackItem, SavedAlbumItem } from '../types/spotify.js';
@@ -70,28 +80,123 @@ export function genreTagsPath(env: NodeJS.ProcessEnv = process.env): string {
 }
 
 
-/** Read the sidecar; a missing or unreadable file is an empty store, never a crash. */
-export function loadGenreTags(path: string = genreTagsPath()): GenreTagStore {
+/**
+ * Preserve the exact bytes of a sidecar we could not parse.
+ *
+ * The issue's acceptance criterion asks that a later write keep a `.corrupt`
+ * copy. Rather than letting the write proceed and reset the store, the corrupt
+ * bytes are copied aside at DETECTION time and the read still throws: the
+ * payload is preserved twice (original + backup) and no write is ever
+ * authorised to destroy it. Best-effort — a read-only or full directory must
+ * not mask the corruption report itself.
+ */
+function quarantineCorruptSidecar(path: string): string | undefined {
+  const backup = `${path}.corrupt`;
   try {
-    const raw = JSON.parse(readFileSync(path, 'utf8')) as Partial<GenreTagStore>;
-    if (raw && typeof raw === 'object' && raw.tags && typeof raw.tags === 'object') {
-      const tags: Record<string, string[]> = {};
-      for (const [artist, genres] of Object.entries(raw.tags)) {
-        if (typeof artist !== 'string' || !Array.isArray(genres)) continue;
-        const clean = [...new Set(genres.filter((g): g is string => typeof g === 'string'))];
-        if (clean.length > 0) tags[artist] = clean;
-      }
-      return { version: 1, tags };
-    }
+    writeFileSync(backup, readFileSync(path), { mode: 0o600 });
+    chmodSync(backup, 0o600);
+    return backup;
   } catch {
-    // ENOENT / corrupt JSON / permission issue: treat as no tags yet.
+    return undefined; // the original still names the file the user must repair
   }
-  return { version: 1, tags: {} };
 }
 
+/** Tail of a corruption report: where the preserved copy is, and that we stopped. */
+function quarantineNote(backup: string | undefined): string {
+  return backup === undefined
+    ? 'It was left untouched — repair or move it aside, then retry; tagging stays blocked so '
+      + 'your existing tags cannot be overwritten.'
+    : `Its exact bytes were preserved at ${backup} and it was left untouched — repair or move `
+      + 'it aside, then retry; tagging stays blocked so your tags cannot be overwritten.';
+}
+
+
+/**
+ * Read the sidecar.
+ *
+ * Only a genuinely ABSENT file reads as an empty store. A file that exists but
+ * cannot be parsed is CORRUPTION and is surfaced with its error, never coerced
+ * to "no tags": silently treating unreadable JSON as empty lets the next
+ * tag_management write replace a user's hand-curated store with a one-entry
+ * stub and report success (#759) — the same class as the shipped bugs that
+ * turned unreadable data into a plausible value. Throwing also leaves the file
+ * untouched, so nothing is lost while the user repairs it.
+ */
+export function loadGenreTags(path: string = genreTagsPath()): GenreTagStore {
+  let text: string;
+  try {
+    text = readFileSync(path, 'utf8');
+  } catch (err) {
+    // A store that was never written is the normal bootstrap case.
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return { version: 1, tags: {} };
+    throw new Error(
+      `Genre tag sidecar ${path} could not be read (${(err as Error).message}). `
+      + quarantineNote(quarantineCorruptSidecar(path)),
+      { cause: err },
+    );
+  }
+
+  let raw: unknown;
+  try {
+    raw = JSON.parse(text);
+  } catch (err) {
+    // Includes the zero-length file a crash mid-write leaves behind.
+    throw new Error(
+      `Genre tag sidecar ${path} is not valid JSON (${(err as Error).message}). `
+      + quarantineNote(quarantineCorruptSidecar(path)),
+      { cause: err },
+    );
+  }
+
+  const tagsRaw = raw && typeof raw === 'object' && !Array.isArray(raw)
+    ? (raw as { tags?: unknown }).tags
+    : undefined;
+  if (!tagsRaw || typeof tagsRaw !== 'object' || Array.isArray(tagsRaw)) {
+    throw new Error(
+      `Genre tag sidecar ${path} is not a genre tag store: expected `
+      + '{"version":1,"tags":{"Artist":["genre"]}}. '
+      + quarantineNote(quarantineCorruptSidecar(path)),
+    );
+  }
+
+  const tags: Record<string, string[]> = {};
+  for (const [artist, genres] of Object.entries(tagsRaw as Record<string, unknown>)) {
+    if (typeof artist !== 'string' || !Array.isArray(genres)) continue;
+    const clean = [...new Set(genres.filter((g): g is string => typeof g === 'string'))];
+    if (clean.length > 0) tags[artist] = clean;
+  }
+  return { version: 1, tags };
+}
+
+/**
+ * Persist the sidecar atomically: write a temp file in the SAME directory, fsync
+ * it, then rename it over the target. The rename is the only mutation of the
+ * real path, so a crash before it leaves the previous store intact instead of a
+ * truncated one — the crash-safe update the freshness watermark already uses
+ * (src/tools/freshness.ts), hardened with the fsync #759 asks for so the bytes
+ * are durable before the rename publishes them. The temp file is created and
+ * re-asserted 0600, matching the owner-only rule src/history.ts re-applies on
+ * every write (creation-time mode alone is masked by umask and never applies to
+ * a pre-existing file).
+ */
 function saveGenreTags(store: GenreTagStore, path: string = genreTagsPath()): void {
-  mkdirSync(join(path, '..'), { recursive: true });
-  writeFileSync(path, `${JSON.stringify(store, null, 2)}\n`, 'utf8');
+  const tmp = `${path}.tmp`;
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  let fd: number | undefined;
+  try {
+    fd = openSync(tmp, 'w', 0o600);
+    writeFileSync(fd, `${JSON.stringify(store, null, 2)}\n`, 'utf8');
+    fsyncSync(fd); // on disk before the rename can publish them
+    closeSync(fd);
+    fd = undefined;
+    chmodSync(tmp, 0o600);
+    renameSync(tmp, path);
+  } catch (err) {
+    if (fd !== undefined) { try { closeSync(fd); } catch { /* already closed */ } }
+    // Never strand a partial temp file for the next write to trip over.
+    try { unlinkSync(tmp); } catch { /* nothing left to clean up */ }
+    throw err;
+  }
 }
 
 /** Find the stored key matching `artist` case-insensitively, or null. */

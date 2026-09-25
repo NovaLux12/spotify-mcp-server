@@ -12,13 +12,14 @@
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import { z } from 'zod';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../src/client.js';
 import type { SpotifyPaged } from '../src/types/spotify.js';
-import { registerLibraryInsightsTools, loadGenreTags } from '../src/tools/libraryinsights.js';
+import { registerLibraryInsightsTools, loadGenreTags, type GenreTagStore } from '../src/tools/libraryinsights.js';
 import { initConfig } from '../src/config.js';
 
 // ---------------------------------------------------------------------------
@@ -605,8 +606,156 @@ describe('sidecar robustness', () => {
     assert.match(textOf(out), /Untagged artists \(1\): X/);
   });
 
-  it('corrupt file is tolerated as an empty store rather than crashing tools', async () => {
+  // #759 — a corrupt sidecar is SURFACED, never coerced to an empty store.
+  // The old behaviour (swallow the parse error, read as "no tags") let the very
+  // next tag_management write replace a hand-curated store with a one-entry
+  // stub and report success, destroying it.
+  it('corrupt JSON surfaces the parse error instead of reading as an empty store', () => {
     writeFileSync(sidecarPath, '{not json', 'utf8');
-    assert.deepEqual(loadGenreTags(sidecarPath).tags, {});
+    assert.throws(() => loadGenreTags(sidecarPath), /is not valid JSON/);
+  });
+
+  it('a zero-length sidecar — the crash-mid-write signature — is corruption, not empty', () => {
+    // A non-atomic writeFileSync truncates the target open(); a crash before the
+    // bytes land leaves exactly this. Reading it as "no tags" destroys the store.
+    writeFileSync(sidecarPath, '', 'utf8');
+    assert.throws(() => loadGenreTags(sidecarPath), /is not valid JSON/);
+  });
+
+  it('valid JSON that is not a genre tag store is surfaced too', () => {
+    writeFileSync(sidecarPath, JSON.stringify({ unrelated: true }), 'utf8');
+    assert.throws(() => loadGenreTags(sidecarPath), /is not a genre tag store/);
+  });
+
+  it('tagging against a corrupt sidecar errors and does NOT overwrite the file', async () => {
+    const corrupt = '{not json';
+    writeFileSync(sidecarPath, corrupt, 'utf8');
+    const h = harness();
+    await assert.rejects(
+      h.invoke('tag_management', { action: 'add', artist: 'Aurora', tags: ['pop'] }),
+      /is not valid JSON/,
+    );
+    // The hand-curated bytes are still on disk, byte for byte.
+    assert.equal(readFileSync(sidecarPath, 'utf8'), corrupt);
+  });
+
+  it('reading the sidecar is never itself destructive', async () => {
+    const corrupt = '{"version":1,"tags":{"Sigur Ros":["ambient"]},,';
+    writeFileSync(sidecarPath, corrupt, 'utf8');
+    const h = harness(pagedResponder({ '/me/tracks': [], '/me/albums': [] }));
+    await assert.rejects(h.invoke('library_genre_report', {}), /is not valid JSON/);
+    assert.equal(readFileSync(sidecarPath, 'utf8'), corrupt);
+  });
+
+  it('the sidecar is written owner-only (0600)', async () => {
+    const h = harness();
+    await h.invoke('tag_management', { action: 'add', artist: 'Aurora', tags: ['pop'] });
+    assert.equal(statSync(sidecarPath).mode & 0o777, 0o600);
+  });
+
+  it('a write interrupted before the rename leaves the previous store intact', async () => {
+    const h = harness();
+    await h.invoke('tag_management', { action: 'add', artist: 'Aurora', tags: ['pop'] });
+    const before = readFileSync(sidecarPath, 'utf8');
+
+    // Occupy the temp path so the pre-rename write fails exactly the way a crash
+    // between the write and the rename would. Because the rename is the only
+    // step that touches the real path, the previous store must survive intact.
+    mkdirSync(`${sidecarPath}.tmp`);
+    await assert.rejects(
+      h.invoke('tag_management', { action: 'add', artist: 'Aurora', tags: ['indie'] }),
+      /EISDIR|illegal operation on a directory/i,
+    );
+    assert.equal(readFileSync(sidecarPath, 'utf8'), before);
+  });
+
+  it('a successful write swaps the store in wholesale and strands no temp file', async () => {
+    const h = harness();
+    await h.invoke('tag_management', { action: 'add', artist: 'Aurora', tags: ['pop'] });
+    // The rename replaces the inode, so no residue of the old file survives.
+    await h.invoke('tag_management', { action: 'add', artist: 'Aurora', tags: ['indie'] });
+    const onDisk = JSON.parse(readFileSync(sidecarPath, 'utf8')) as GenreTagStore;
+    assert.deepEqual(onDisk.tags, { Aurora: ['pop', 'indie'] });
+    assert.equal(existsSync(`${sidecarPath}.tmp`), false);
+  });
+
+  // #759 acceptance: a hand-corrupted file warns AND the subsequent write keeps
+  // a `.corrupt` copy. We honour that byte-preservation intent without letting
+  // the write proceed: the read quarantines the bytes and still throws, so the
+  // payload survives twice and no mutation is ever authorised over it.
+  it('preserves the corrupt bytes at <path>.corrupt, 0600, and names the file', () => {
+    const corrupt = '{"version":1,"tags":{"Sigur Ros":["ambient"]},,';
+    writeFileSync(sidecarPath, corrupt, 'utf8');
+    assert.throws(() => loadGenreTags(sidecarPath), (err: Error) => {
+      // The warning must name the file the user has to repair…
+      assert.match(err.message, new RegExp(sidecarPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+      // …and point at the preserved copy.
+      assert.match(err.message, /\.corrupt/);
+      return true;
+    });
+    const backup = `${sidecarPath}.corrupt`;
+    assert.equal(existsSync(backup), true);
+    assert.equal(readFileSync(backup, 'utf8'), corrupt); // byte-for-byte
+    assert.equal(statSync(backup).mode & 0o777, 0o600);
+    assert.equal(readFileSync(sidecarPath, 'utf8'), corrupt); // original untouched
+  });
+
+  it('quarantine does not fire for a valid store or a missing file', () => {
+    assert.equal(existsSync(`${sidecarPath}.corrupt`), false); // missing → no copy
+    writeFileSync(sidecarPath, JSON.stringify({ version: 1, tags: { X: ['pop'] } }), 'utf8');
+    assert.deepEqual(loadGenreTags(sidecarPath).tags, { X: ['pop'] });
+    assert.equal(existsSync(`${sidecarPath}.corrupt`), false);
+  });
+
+  it('killing the writer process mid-write leaves the previous sidecar intact', async () => {
+    const h = harness();
+    await h.invoke('tag_management', { action: 'add', artist: 'Aurora', tags: ['pop'] });
+    const before = readFileSync(sidecarPath, 'utf8');
+
+    // A child that truncates the TEMP file, writes a partial payload, then hangs
+    // forever — the exact state a crash between the write and the rename leaves.
+    // SIGKILL gives it no chance to clean up, so whatever survives is what a real
+    // crash would leave on disk.
+    const child = spawn(
+      process.execPath,
+      [
+        '-e',
+        [
+          'const { openSync, writeSync } = require("node:fs");',
+          'const fd = openSync(process.argv[1] + ".tmp", "w", 0o600);',
+          // A deliberately truncated JSON payload — the crash signature.
+          'writeSync(fd, \'{"version":1,"tags":{"HALF-WRI\');',
+          'process.stdout.write("written\\n");',
+          'setInterval(() => {}, 1000);',
+        ].join(''),
+        sidecarPath,
+      ],
+      { stdio: ['ignore', 'pipe', 'ignore'] },
+    );
+    // Await the real signal the child emits, not a guessed delay. The guard timer
+    // is a hang-breaker only: this drives a separate OS process, so no fake-timer
+    // control can stand in for its lifecycle.
+    const wrote = Promise.withResolvers<void>();
+    const guard = setTimeout(
+      () => wrote.reject(new Error('child never reported its partial write')),
+      10_000,
+    );
+    child.stdout.on('data', (d: Buffer) => { if (String(d).includes('written')) wrote.resolve(); });
+    child.on('error', wrote.reject);
+    try {
+      await wrote.promise;
+    } finally {
+      clearTimeout(guard);
+    }
+    child.kill('SIGKILL');
+    const exited = Promise.withResolvers<unknown>();
+    child.on('exit', exited.resolve);
+    await exited.promise;
+
+    // The partial payload went to the temp path; the published store is intact,
+    // still valid JSON, and still holds the old tags.
+    assert.equal(readFileSync(sidecarPath, 'utf8'), before);
+    const surviving = JSON.parse(readFileSync(sidecarPath, 'utf8')) as GenreTagStore;
+    assert.deepEqual(surviving.tags, { Aurora: ['pop'] });
   });
 });
