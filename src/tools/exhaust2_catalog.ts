@@ -242,9 +242,18 @@ function isGatedError(err: unknown): err is SpotifyApiError {
 export const COLLAB_TRACK_CREDIT_CAP = 10;
 
 /**
+ * Reason recorded when an album's track-credits request comes back without a
+ * usable track list at all — HTTP 204 (`client.get` returns null) or a 200
+ * whose body has no `items` array. That is a failed read, not a
+ * collaborator-free album, so it takes the same #803 path as a throw.
+ */
+export const ALBUM_CREDITS_MISSING_REASON = 'no track list in the response';
+
+/**
  * Short, non-guessing reason one album's track credits could not be read
- * (#770). A failed read is reported as unreadable with its reason — never
- * folded into "this album has no collaborators" (the #803 class).
+ * (#770). Every failed read — a throw, or a response with no track list (see
+ * ALBUM_CREDITS_MISSING_REASON) — is reported as unreadable with its reason,
+ * never folded into "this album has no collaborators" (the #803 class).
  */
 export function albumCreditFailureReason(err: unknown): string {
   if (err instanceof SpotifyApiError) {
@@ -1190,13 +1199,33 @@ max_results: z.number().int().positive().max(2000).optional().describe('Max item
       const creditAlbums = includeTrackFeatures ? albums.slice(0, COLLAB_TRACK_CREDIT_CAP) : [];
       const albumsSkippedByCap = includeTrackFeatures ? albums.length - creditAlbums.length : 0;
       const unreadableAlbums: Array<{ album_id: string; album_name: string | null; reason: string }> = [];
+      // One request per album, so a long album's credits are only partly read
+      // (the page caps at 50). Recorded per album rather than left implicit.
+      const truncatedAlbums: Array<{ album_id: string; album_name: string | null; tracks_read: number; tracks_reported: number }> = [];
       for (const al of creditAlbums) {
         try {
-          const page = await client.get<{ items: SpotifyTrackSimple[] }>(
+          const page = await client.get<{ items?: unknown; total?: number; next?: string | null }>(
             `/albums/${encodeURIComponent(al.id)}/tracks`,
             { limit: '50', ...(args.market ? { market: args.market } : {}) },
           );
-          for (const t of page?.items ?? []) for (const a of t.artists ?? []) record(a, false, true);
+          // A 204 (null) and an item-less 200 are BOTH short reads. `?? []`
+          // here would report the album as read-and-empty, which is the
+          // fabricated zero this tool exists not to produce (#803).
+          if (!Array.isArray(page?.items)) {
+            unreadableAlbums.push({ album_id: al.id, album_name: al.name ?? null, reason: ALBUM_CREDITS_MISSING_REASON });
+            continue;
+          }
+          const items = page.items as SpotifyTrackSimple[];
+          const tracksReported = typeof page?.total === 'number' ? page.total : null;
+          if (page?.next || (tracksReported !== null && tracksReported > items.length)) {
+            truncatedAlbums.push({
+              album_id: al.id,
+              album_name: al.name ?? null,
+              tracks_read: items.length,
+              tracks_reported: tracksReported ?? items.length,
+            });
+          }
+          for (const t of items) for (const a of t.artists ?? []) record(a, false, true);
         } catch (err) {
           // An unreadable album is not a collaborator-free one: recording it
           // keeps a 403/404/429 out of the ranking as a fabricated zero (#803).
@@ -1233,6 +1262,13 @@ max_results: z.number().int().positive().max(2000).optional().describe('Max item
             + unreadableAlbums.map((u) => `${u.album_name ?? u.album_id} (${u.reason})`).join(', '),
         );
       }
+      if (truncatedAlbums.length > 0) {
+        lines.push(
+          '',
+          `Partial — track credits beyond the first 50 of ${truncatedAlbums.length} album(s) were not read: `
+            + truncatedAlbums.map((t) => `${t.album_name ?? t.album_id} (${t.tracks_read} of ${t.tracks_reported} tracks)`).join(', '),
+        );
+      }
       return emit(rf, lines.join('\n'), {
         artist: { id: target.id, name: target.name },
         collaborators: trunc.items,
@@ -1240,11 +1276,19 @@ max_results: z.number().int().positive().max(2000).optional().describe('Max item
         top_tracks_available: topTracksNote === null,
         credits_source: creditsSource,
         track_features_included: includeTrackFeatures,
-        ...(includeTrackFeatures ? { album_credit_cap: COLLAB_TRACK_CREDIT_CAP, albums_credited: creditAlbums.length } : {}),
+        // albums_credited counts reads that actually returned a track list, so
+        // it never reports a credit the tool did not observe.
+        ...(includeTrackFeatures ? { album_credit_cap: COLLAB_TRACK_CREDIT_CAP, albums_credited: creditAlbums.length - unreadableAlbums.length } : {}),
         ...(albumsSkippedByCap > 0 ? { albums_skipped_by_credit_cap: albumsSkippedByCap } : {}),
         ...(unreadableAlbums.length > 0
-          ? { unreadable_albums: unreadableAlbums, unreadable_count: unreadableAlbums.length, track_features_partial: true }
+          ? { unreadable_albums: unreadableAlbums, unreadable_count: unreadableAlbums.length }
           : {}),
+        ...(truncatedAlbums.length > 0
+          ? { truncated_albums: truncatedAlbums, truncated_count: truncatedAlbums.length }
+          : {}),
+        // Set by either a failed read or a partly-read album: in both cases the
+        // network is a subset of the credits, not the whole of them.
+        ...(unreadableAlbums.length > 0 || truncatedAlbums.length > 0 ? { track_features_partial: true } : {}),
         ...(topTracksNote ? { disclosure: topTracksNote } : {}),
         pagination: paginationInfo({ total: collabs.length, returned: trunc.items.length }),
       });

@@ -292,6 +292,9 @@ assert.equal((res.structuredContent as { gaps_flagged: unknown[] }).gaps_flagged
     unreadable_count?: number;
     track_features_partial?: boolean;
     unreadable_albums?: Array<{ album_id: string; album_name: string | null; reason: string }>;
+    albums_credited?: number;
+    truncated_count?: number;
+    truncated_albums?: Array<{ album_id: string; album_name: string | null; tracks_read: number; tracks_reported: number }>;
   };
 
   it('artist_collab_network falls back to albums when top-tracks is gated', async () => {
@@ -358,6 +361,9 @@ assert.equal((res.structuredContent as { gaps_flagged: unknown[] }).gaps_flagged
     // Album credit + track credit = 2 distinct appearances for Guest.
     const guestRow = structured.collaborators.find((c) => c.name === 'Guest');
     assert.equal(guestRow?.co_appearances, 2);
+    // A complete read: nothing here is undisclosed, so no partial flag.
+    assert.equal(structured.track_features_partial, undefined);
+    assert.equal(structured.albums_credited, 1);
   });
 
   it('artist_collab_network lists an unreadable album with its reason instead of zero collaborators', async () => {
@@ -377,9 +383,93 @@ assert.equal((res.structuredContent as { gaps_flagged: unknown[] }).gaps_flagged
     assert.deepEqual(structured.unreadable_albums, [
       { album_id: 'alb1', album_name: 'Collab LP', reason: 'forbidden or app-registration gated (403)' },
     ]);
+    // Every credit count here is observed, not assumed: the only read failed.
+    assert.equal(structured.albums_credited, 0);
     // The readable album credit is still reported — the bad one did not poison it.
     assert.ok(structured.collaborators.some((c) => c.name === 'Guest'));
     assert.ok(res.content[0].text.includes('not zero'));
+  });
+
+  // A 204 (client.get -> null) and a 200 with no `items` are the same defect
+  // as a throw: the credits are unknown, not empty. Both used to fold into
+  // `page?.items ?? []` and report a complete read (the #803 class).
+  it('artist_collab_network reports a short (non-throwing) album-tracks page as unreadable, not as a complete read', async () => {
+    const second = { ...simplifiedAlbum, id: 'alb2', name: 'Second LP' };
+    const client = makeClient({
+      get: mock.fn(async (path: string) => {
+        if (path === '/albums/alb1/tracks') return null; // HTTP 204
+        if (path === '/albums/alb2/tracks') return {}; // HTTP 200, no items
+        if (path.endsWith('/top-tracks')) return { tracks: [trackPayload({ artists: [artist] })] };
+        if (path.startsWith('/artists/') && !path.includes('/albums')) return { ...artist, genres: [] };
+        return null;
+      }),
+      getAllPages: mock.fn(async () => [simplifiedAlbum, second]),
+    });
+    const res = await handlerFor('artist_collab_network', client)({ artist_id: 'a1', include_track_features: true, response_format: 'concise' });
+    const structured = res.structuredContent as CollabStructured;
+    assert.equal(structured.track_features_partial, true);
+    assert.equal(structured.unreadable_count, 2);
+    assert.deepEqual(structured.unreadable_albums, [
+      { album_id: 'alb1', album_name: 'Collab LP', reason: 'no track list in the response' },
+      { album_id: 'alb2', album_name: 'Second LP', reason: 'no track list in the response' },
+    ]);
+    // Neither read happened, so no album is counted as credited and no album
+    // credit is claimed to have come off a track list.
+    assert.equal(structured.albums_credited, 0);
+    assert.equal(structured.collaborators.every((c) => !c.on_album_tracks), true);
+    assert.ok(res.content[0].text.includes('not zero'));
+  });
+
+  // A genuine empty track list IS a read that observed zero collaborators, so
+  // it must not be swept into the unreadable bucket alongside the short pages.
+  it('artist_collab_network treats a real empty track list as a complete zero, not an unreadable album', async () => {
+    const client = makeClient({
+      get: mock.fn(async (path: string) => {
+        if (path === '/albums/alb1/tracks') return { items: [], total: 0 };
+        if (path.endsWith('/top-tracks')) return { tracks: [trackPayload({ artists: [artist] })] };
+        if (path.startsWith('/artists/') && !path.includes('/albums')) return { ...artist, genres: [] };
+        return null;
+      }),
+      getAllPages: mock.fn(async () => [simplifiedAlbum]),
+    });
+    const res = await handlerFor('artist_collab_network', client)({ artist_id: 'a1', include_track_features: true, response_format: 'concise' });
+    const structured = res.structuredContent as CollabStructured;
+    assert.equal(structured.unreadable_count, undefined);
+    assert.equal(structured.track_features_partial, undefined);
+    assert.equal(structured.albums_credited, 1);
+    assert.ok(structured.collaborators.some((c) => c.name === 'Guest' && !c.on_album_tracks));
+  });
+
+  // limit: '50' means a long album is only partly read; the album-level cap is
+  // disclosed, so the track-level one has to be too.
+  it('artist_collab_network discloses an album whose track credits were truncated at the page size', async () => {
+    const client = makeClient({
+      get: mock.fn(async (path: string) => {
+        if (path === '/albums/alb1/tracks') {
+          return {
+            items: [{ id: 't1', name: 'Opener', uri: 'u', duration_ms: 100_000, explicit: false, track_number: 1, artists: [artist, third] }],
+            total: 120,
+            next: 'https://api.spotify.com/v1/albums/alb1/tracks?offset=1',
+          };
+        }
+        if (path.endsWith('/top-tracks')) return { tracks: [trackPayload({ artists: [artist] })] };
+        if (path.startsWith('/artists/') && !path.includes('/albums')) return { ...artist, genres: [] };
+        return null;
+      }),
+      getAllPages: mock.fn(async () => [simplifiedAlbum]),
+    });
+    const res = await handlerFor('artist_collab_network', client)({ artist_id: 'a1', include_track_features: true, response_format: 'concise' });
+    const structured = res.structuredContent as CollabStructured;
+    assert.equal(structured.truncated_count, 1);
+    assert.deepEqual(structured.truncated_albums, [
+      { album_id: 'alb1', album_name: 'Collab LP', tracks_read: 1, tracks_reported: 120 },
+    ]);
+    // A truncated read is not a failed one: the credit it did return stands.
+    assert.equal(structured.unreadable_count, undefined);
+    assert.equal(structured.track_features_partial, true);
+    assert.equal(structured.albums_credited, 1);
+    assert.ok(structured.collaborators.some((c) => c.name === 'Third'));
+    assert.ok(res.content[0].text.includes('Partial'));
   });
 
   it('search_market_diff splits result sets by market', async () => {
