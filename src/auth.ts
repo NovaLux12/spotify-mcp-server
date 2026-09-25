@@ -6,6 +6,16 @@ import { basename, join, dirname } from 'path';
 import { createInterface } from 'readline/promises';
 import { stdin as input, stdout as output } from 'process';
 import open from 'open';
+import {
+  DEFAULT_SCOPES as CONFIG_DEFAULT_SCOPES,
+  KNOWN_SPOTIFY_SCOPES,
+  MUTATION_SCOPES,
+  SCOPE_PROFILE_NAMES,
+  SCOPE_PROFILES,
+  isScopeProfileName,
+  profileForScopes as profileNameFor,
+  scopeGroupFor,
+} from './config.js';
 import type { TokenData } from './types/spotify.js';
 
 const REDIRECT_URI = process.env.SPOTIFY_REDIRECT_URI ?? 'http://127.0.0.1:8888/callback';
@@ -81,38 +91,27 @@ function escapeHtml(value: string): string {
     .replace(/'/g, '&#39;');
 }
 
-export const DEFAULT_SCOPES_LIST: readonly string[] = [
-  'user-read-private',
-  'user-read-email',
-  'user-read-playback-state',
-  'user-modify-playback-state',
-  'user-read-currently-playing',
-  'user-read-recently-played',
-  'user-read-playback-position',
-  'user-top-read',
-  'user-library-read',
-  'user-library-modify',
-  'user-follow-read',
-  'ugc-image-upload',
-  'user-follow-modify',
-  'playlist-read-private',
-  'playlist-read-collaborative',
-  'playlist-modify-public',
-  'playlist-modify-private',
-];
+/**
+ * The scope set requested when neither --scopes nor SPOTIFY_SCOPES is set
+ * (#700). This is the very array config.ts holds — not a second copy — so the
+ * two modules cannot disagree about what a clean run asks for. BREAKING
+ * CHANGE: it is the minimal `core` profile (read scopes plus playback control),
+ * so a fresh auth no
+ * longer grants library/playlist/follow writes, artwork upload or email. Opt
+ * back in explicitly with `--scopes library|playlists|full` (or
+ * `SPOTIFY_SCOPES=full`); an already-issued token keeps whatever it holds.
+ */
+export const DEFAULT_SCOPES_LIST: readonly string[] = CONFIG_DEFAULT_SCOPES;
 
-const DEFAULT_SCOPES = DEFAULT_SCOPES_LIST.join(' ');
-
-/** Known Spotify scope vocab — mirrors src/config.ts KNOWN_SPOTIFY_SCOPES. */
-const KNOWN_SCOPES = new Set<string>([
-  ...DEFAULT_SCOPES_LIST,
-  'app-remote-control',
-  'streaming',
-]);
+/** Known Spotify scope vocabulary — the single set config.ts validates against. */
+const KNOWN_SCOPES = KNOWN_SPOTIFY_SCOPES;
 
 /**
- * Parse SPOTIFY_SCOPES / --scopes CLI flag: space- or comma-separated, validated,
- * de-duplicated. Returns null when not set.
+ * Parse --scopes / SPOTIFY_SCOPES: space- or comma-separated, validated,
+ * de-duplicated. A profile name (`core|library|playlists|full`) expands to
+ * that profile, so `--scopes full` is the opt-in for the mutation scopes the
+ * default withholds (#700). Returns null when not set; throws on an unknown
+ * scope.
  */
 export function parseScopesString(raw: string | undefined): string[] | null {
   if (!raw || raw.trim() === '') return null;
@@ -124,9 +123,17 @@ export function parseScopesString(raw: string | undefined): string[] | null {
   const seen = new Set<string>();
   for (const s of parts) {
     if (seen.has(s)) continue;
+    if (isScopeProfileName(s)) {
+      for (const expanded of SCOPE_PROFILES[s]) {
+        if (seen.has(expanded)) continue;
+        seen.add(expanded);
+        deduped.push(expanded);
+      }
+      continue;
+    }
     if (!KNOWN_SCOPES.has(s)) {
       throw new Error(
-        `Unknown scope "${s}". Known scopes: ${[...KNOWN_SCOPES].sort().join(', ')}`,
+        `Unknown scope "${s}". Known scopes: ${[...KNOWN_SCOPES].sort().join(', ')}. Known profiles: ${SCOPE_PROFILE_NAMES.join(', ')}`,
       );
     }
     seen.add(s);
@@ -136,16 +143,65 @@ export function parseScopesString(raw: string | undefined): string[] | null {
   return deduped;
 }
 
-/** Resolve scopes for the current auth flow: CLI --scopes > SPOTIFY_SCOPES env > default. */
-export function resolveScopes(cliScopes?: string): string {
-  // CLI takes precedence
+/** Where the effective scope set came from. */
+export type ScopeSource = 'cli' | 'env' | 'default';
+
+export interface ScopeSelection {
+  /** Effective scopes, in request order. */
+  scopes: string[];
+  /** Profile the set matches, or "custom" for an explicit scope list. */
+  profile: string;
+  source: ScopeSource;
+}
+
+/**
+ * Resolve scopes for the current auth flow: CLI --scopes > SPOTIFY_SCOPES env
+ * > the default (minimal) profile (#700).
+ */
+export function resolveScopeSelection(cliScopes?: string): ScopeSelection {
   if (cliScopes !== undefined) {
     const parsed = parseScopesString(cliScopes);
-    if (parsed) return parsed.join(' ');
+    if (parsed) return { scopes: parsed, profile: profileNameFor(parsed), source: 'cli' };
   }
   const envParsed = parseScopesString(process.env.SPOTIFY_SCOPES);
-  if (envParsed) return envParsed.join(' ');
-  return DEFAULT_SCOPES;
+  if (envParsed) return { scopes: envParsed, profile: profileNameFor(envParsed), source: 'env' };
+  return {
+    scopes: [...DEFAULT_SCOPES_LIST],
+    profile: profileNameFor(DEFAULT_SCOPES_LIST),
+    source: 'default',
+  };
+}
+
+/** Effective scope string for the OAuth authorize URL. */
+export function resolveScopes(cliScopes?: string): string {
+  return resolveScopeSelection(cliScopes).scopes.join(' ');
+}
+
+/**
+ * Banner printed before the consent screen: which profile is active, each
+ * requested group with a one-line rationale, and — when mutation scopes are
+ * withheld — the exact opt-in (#700).
+ */
+export function describeScopeSelection(cliScopes?: string): string[] {
+  const { scopes, profile, source } = resolveScopeSelection(cliScopes);
+  const origin =
+    source === 'cli' ? '--scopes' : source === 'env' ? 'SPOTIFY_SCOPES' : 'default profile';
+  const lines = [`Scope profile: ${profile} (${origin}) — ${scopes.length} scope(s) to request.`];
+  const byGroup = new Map<string, string[]>();
+  for (const scope of scopes) {
+    const { group } = scopeGroupFor(scope);
+    const bucket = byGroup.get(group);
+    if (bucket) bucket.push(scope);
+    else byGroup.set(group, [scope]);
+  }
+  for (const [group, groupScopes] of byGroup) {
+    lines.push(`  ${group}: ${groupScopes.join(', ')} — ${scopeGroupFor(groupScopes[0]).why}`);
+  }
+  const withheld = [...MUTATION_SCOPES].filter((s) => !scopes.includes(s));
+  if (withheld.length > 0) {
+    lines.push(`  withheld, opt in with --scopes full: ${withheld.sort().join(', ')}`);
+  }
+  return lines;
 }
 
 /** Parse --profile / --scopes from process.argv (auth subcommand). */
@@ -463,6 +519,10 @@ export async function runAuthFlow(): Promise<void> {
       process.exit(1);
     }
   })() as string;
+
+  // Show exactly what the consent screen is about to ask for, and how to widen
+  // it, BEFORE the browser opens (#700).
+  for (const line of describeScopeSelection(authArgs.scopes)) console.log(line);
 
   // Validate profile early so we fail fast
   if (authArgs.profile) {

@@ -13,7 +13,7 @@ import { readFile } from 'node:fs/promises';
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { SpotifyApiError, type SpotifyClient } from '../client.js';
-import { getConfig } from '../config.js';
+import { DEFAULT_SCOPES, MUTATION_SCOPES, SCOPE_PROFILES, getConfig } from '../config.js';
 import {
   TOOLSETS,
   allRegistrationKeys,
@@ -237,6 +237,37 @@ async function tokenRows(): Promise<{ rows: DoctorRow[]; tokens: ParsedTokens | 
   return { rows, tokens };
 }
 
+/**
+ * The scope profile a fresh `spotify-mcp auth` would request right now, and how
+ * to widen it (#700). The default profile withholds every library/follow/playlist
+ * write, so this row is how an operator tells "you did not opt in" apart from
+ * "something is broken".
+ */
+function scopeProfileRow(): DoctorRow {
+  const cfg = getConfig();
+  const profile = cfg.scopes ? cfg.scopeProfile : 'core';
+  const profileScopes = cfg.scopes ?? DEFAULT_SCOPES;
+  const mutations = profileScopes.filter((scope) => MUTATION_SCOPES.has(scope));
+  const summary =
+    mutations.length === 0
+      ? `scope profile "${profile}" — ${profileScopes.length} scopes, no library/follow/playlist write or email requested`
+      : `scope profile "${profile}" — ${profileScopes.length} scopes including ${mutations.length} mutation scope(s): ${mutations.join(', ')}`;
+  return {
+    id: 'scope_profile',
+    status: 'info',
+    summary,
+    detail: `next auth requests: ${profileScopes.join(' ')} | profiles: ${Object.keys(SCOPE_PROFILES).join(', ')} | widen with: --scopes library|playlists|full (or SPOTIFY_SCOPES=full)`,
+  };
+}
+
+/** Opt-in profile that grants a write group's requirement, named in gap hints. */
+const PROFILE_FOR_MODULE: Record<string, string> = {
+  playback: 'core',
+  playlists: 'playlists',
+  library: 'library',
+  following: 'library',
+};
+
 /** Auth-time scopes vs the write tools enabled by the active toolsets. */
 function scopeRows(tokens: ParsedTokens | null, surface: DoctorSurface): DoctorRow[] {
   if (!tokens) return [];
@@ -252,15 +283,17 @@ function scopeRows(tokens: ParsedTokens | null, surface: DoctorSurface): DoctorR
   }
 
   const granted = new Set(tokens.scope.split(/\s+/).filter(Boolean));
-  // Report granted scopes count vs default
   const grantedList = [...granted].sort().join(', ');
+  const profileNote = `auth-time profile "${getConfig().scopes ? getConfig().scopeProfile : 'core'}"`;
 
   const gaps: string[] = [];
   for (const req of WRITE_REQUIREMENTS) {
     if (!surface.exposed_modules.includes(req.key)) continue;
     const missing = req.scopes.filter((scope) => !granted.has(scope));
     if (missing.length > 0) {
-      gaps.push(`${req.label} (${req.tools}): missing ${missing.join(', ')}`);
+      gaps.push(
+        `${req.label} (${req.tools}): missing ${missing.join(', ')} — opt in with "spotify-mcp auth --scopes ${PROFILE_FOR_MODULE[req.key] ?? 'full'}"`,
+      );
     }
   }
 
@@ -269,7 +302,7 @@ function scopeRows(tokens: ParsedTokens | null, surface: DoctorSurface): DoctorR
       {
         id: 'scopes',
         status: 'pass',
-        summary: `all write-requiring tools on the exposed surface are covered by the granted scopes (${granted.size} scopes)`,
+        summary: `all write-requiring tools on the exposed surface are covered by the granted scopes (${granted.size} scopes, ${profileNote})`,
         detail: `granted: ${grantedList}`,
       },
     ];
@@ -278,7 +311,7 @@ function scopeRows(tokens: ParsedTokens | null, surface: DoctorSurface): DoctorR
     {
       id: 'scopes',
       status: 'warn',
-      summary: `${gaps.length} write capability group(s) lack required scopes — affected tools will 403 until you re-run "spotify-mcp auth"`,
+      summary: `${gaps.length} write capability group(s) lack required scopes — affected tools will 403 until you re-run "spotify-mcp auth" with a wider profile (${profileNote})`,
       detail: `${gaps.join('; ')} | granted: ${grantedList}`,
     },
   ];
@@ -476,6 +509,7 @@ function staticRows(client: SpotifyClient): DoctorRow[] {
   if (cfg.profile) parts.push(`profile=${cfg.profile}`);
   if (cfg.market) parts.push(`market=${cfg.market}`);
   if (cfg.scopes) parts.push(`scopes_override=${cfg.scopes.join(',')}`);
+  parts.push(`scope_profile=${cfg.scopes ? cfg.scopeProfile : 'core'}`);
   rows.push({
     id: 'config',
     status: 'pass',
@@ -606,6 +640,7 @@ export async function collectDoctorReport(
   const account = await accountRows(client);
   const rows = [
     ...tokens.rows,
+    scopeProfileRow(),
     ...scopeRows(tokens.tokens, surface),
     ...account,
     ...staticRows(client),

@@ -261,6 +261,47 @@ describe('spotify_doctor', () => {
     assert.doesNotMatch(row!.detail!, /playlist-modify-public/);
   });
 
+  it('reports the active minimal scope profile on an unconfigured run (#700)', async () => {
+    await writeTokenFile({ ...VALID_TOKENS(), scope: '' });
+    const { invoke } = harness();
+    const res = await invoke();
+    const row = res.structuredContent?.rows?.find((r) => r.id === 'scope_profile');
+    assert.ok(row, 'scope_profile row present');
+    assert.equal(row.status, 'info');
+    assert.match(row.summary, /scope profile "core"/);
+    assert.match(row.summary, /10 scopes, no library\/follow\/playlist write or email requested/);
+    assert.match(row.detail!, /--scopes library\|playlists\|full/);
+    // The config snapshot must agree with the profile row.
+    const configRow = res.structuredContent?.rows?.find((r) => r.id === 'config');
+    assert.match(configRow!.summary, /scope_profile=core/);
+  });
+
+  it('reports the opted-in profile and its mutation scopes when SPOTIFY_SCOPES widens it', async () => {
+    const file = await writeTokenFile({ ...VALID_TOKENS(), scope: '' });
+    initConfig({ SPOTIFY_MCP_TOKEN_FILE: file, SPOTIFY_SCOPES: 'playlists' });
+    const { invoke } = harness();
+    const res = await invoke();
+    const row = res.structuredContent?.rows?.find((r) => r.id === 'scope_profile');
+    assert.ok(row, 'scope_profile row present');
+    assert.match(row.summary, /scope profile "playlists"/);
+    assert.match(row.summary, /3 mutation scope\(s\): playlist-modify-public, playlist-modify-private, ugc-image-upload/);
+    const configRow = res.structuredContent?.rows?.find((r) => r.id === 'config');
+    assert.match(configRow!.summary, /scope_profile=playlists/);
+  });
+
+  it('a scope gap names the profile that would grant it (#700)', async () => {
+    process.env.SPOTIFY_MCP_TOOLSETS = 'playlists';
+    // Only one of the two either-of scopes granted: the module stays exposed,
+    // so the grant is genuinely partial and the gap is the missing sibling.
+    await writeTokenFile({ ...VALID_TOKENS(), scope: 'user-read-private playlist-modify-public' });
+    const { invoke } = harness();
+    const res = await invoke();
+    const row = res.structuredContent?.rows?.find((r) => r.id === 'scopes');
+    assert.equal(row?.status, 'warn');
+    assert.match(row!.detail!, /missing playlist-modify-private/);
+    assert.match(row!.detail!, /opt in with "spotify-mcp auth --scopes playlists"/);
+  });
+
   it('rate-limit cooldown surfaces as warn row; idle client passes', async () => {
     await writeTokenFile(VALID_TOKENS());
     const throttled = harness({ rateLimit: { lastThrottleAt: Date.now(), retryAfterSec: 5, cooldownRemainingMs: 4200 } });

@@ -21,9 +21,27 @@ const tokenDir = await mkdtemp(path.join(tmpdir(), 'spotify-mcp-auth-hardening-'
 process.env.SPOTIFY_MCP_TOKEN_FILE = path.join(tokenDir, 'tokens.json');
 process.env.SPOTIFY_CLIENT_ID = 'test-client-id';
 
-const { isTokenData, loadTokens, saveTokens, TOKEN_FILE } = await import('../src/auth.ts');
+const {
+  isTokenData,
+  loadTokens,
+  saveTokens,
+  TOKEN_FILE,
+  DEFAULT_SCOPES_LIST,
+  describeScopeSelection,
+  parseScopesString,
+  resolveScopeSelection,
+  resolveScopes,
+} = await import('../src/auth.ts');
 const { SpotifyClient, SpotifyApiError } = await import('../src/client.ts');
-const { initConfig, getConfig } = await import('../src/config.ts');
+const {
+  initConfig,
+  getConfig,
+  DEFAULT_SCOPES,
+  KNOWN_SPOTIFY_SCOPES,
+  MUTATION_SCOPES,
+  SCOPE_PROFILES,
+  loadConfig,
+} = await import('../src/config.ts');
 
 interface FetchCall {
   url: string;
@@ -370,5 +388,137 @@ describe('request timeout config (#109)', () => {
       clearTimeout(keepAlive);
       initConfig(process.env); // restore the process-wide snapshot
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Scope profiles (#700) — an unconfigured auth run must ask for the minimal
+// `core` profile, and the mutation scopes must require an explicit opt-in.
+// ---------------------------------------------------------------------------
+
+describe('auth scope profiles (#700)', () => {
+  const ORIGINAL_SCOPES = process.env.SPOTIFY_SCOPES;
+
+  afterEach(() => {
+    if (ORIGINAL_SCOPES === undefined) delete process.env.SPOTIFY_SCOPES;
+    else process.env.SPOTIFY_SCOPES = ORIGINAL_SCOPES;
+  });
+
+  it('an unconfigured auth run requests only the minimal profile', () => {
+    delete process.env.SPOTIFY_SCOPES;
+    const selection = resolveScopeSelection();
+    assert.deepEqual(selection.scopes, [...SCOPE_PROFILES.core]);
+    assert.equal(resolveScopes(), SCOPE_PROFILES.core.join(' '));
+    assert.equal(selection.source, 'default');
+    assert.equal(selection.profile, 'core');
+  });
+
+  it('the default profile withholds every mutation scope and the email scope', () => {
+    delete process.env.SPOTIFY_SCOPES;
+    const requested = new Set(resolveScopeSelection().scopes);
+    for (const scope of MUTATION_SCOPES) {
+      assert.ok(!requested.has(scope), `${scope} must not be granted by default`);
+    }
+    assert.ok(!requested.has('user-read-email'));
+    // Playback control deliberately stays in the default (it is the action a
+    // control surface exists to perform). It must be the ONLY write capability
+    // on the consent screen, and MUTATION_SCOPES must not overlap it.
+    assert.ok(!MUTATION_SCOPES.has('user-modify-playback-state'));
+    const WRITE_SCOPES = new Set([...MUTATION_SCOPES, 'user-modify-playback-state']);
+    assert.deepEqual(
+      [...requested].filter((scope) => WRITE_SCOPES.has(scope)),
+      ['user-modify-playback-state'],
+    );
+  });
+
+  it('mutation scopes appear only in the profiles that opt in', () => {
+    delete process.env.SPOTIFY_SCOPES;
+    const byProfile = Object.fromEntries(
+      ['core', 'library', 'playlists', 'full'].map((name) => [name, resolveScopeSelection(name).scopes]),
+    );
+    assert.deepEqual(byProfile.core, [...SCOPE_PROFILES.core]);
+    assert.ok(!byProfile.core.includes('user-library-modify'));
+    assert.ok(byProfile.library.includes('user-library-modify'));
+    assert.ok(byProfile.library.includes('user-follow-modify'));
+    assert.ok(!byProfile.library.includes('playlist-modify-public'));
+    assert.ok(byProfile.playlists.includes('playlist-modify-public'));
+    assert.ok(byProfile.playlists.includes('ugc-image-upload'));
+    assert.ok(!byProfile.playlists.includes('user-library-modify'));
+    assert.ok(byProfile.full.includes('user-read-email'));
+    // `full` is the one profile that grants every withheld scope; the narrower
+    // profiles grant only their own capability group.
+    for (const scope of MUTATION_SCOPES) {
+      assert.ok(byProfile.full.includes(scope), `full must grant ${scope}`);
+    }
+    for (const scope of ['user-library-modify', 'user-follow-modify', 'user-follow-read']) {
+      assert.ok(!byProfile.playlists.includes(scope), `playlists must not grant ${scope}`);
+    }
+    for (const scope of ['playlist-modify-public', 'playlist-modify-private', 'ugc-image-upload']) {
+      assert.ok(!byProfile.library.includes(scope), `library must not grant ${scope}`);
+    }
+  });
+
+  it('--scopes full expands the profile and the error names every profile', () => {
+    delete process.env.SPOTIFY_SCOPES;
+    const selection = resolveScopeSelection('full');
+    assert.deepEqual(selection.scopes, [...SCOPE_PROFILES.full]);
+    assert.equal(selection.source, 'cli');
+    assert.throws(
+      () => parseScopesString('nope'),
+      (err: unknown) => {
+        assert.match((err as Error).message, /Known profiles: core, library, playlists, full/);
+        return true;
+      },
+    );
+  });
+
+  it('an explicit scope list replaces the profile and reports "custom"', () => {
+    delete process.env.SPOTIFY_SCOPES;
+    const selection = resolveScopeSelection('user-read-private,playlist-modify-private');
+    assert.deepEqual(selection.scopes, ['user-read-private', 'playlist-modify-private']);
+    assert.equal(selection.profile, 'custom');
+  });
+
+  it('SPOTIFY_SCOPES names a profile exactly like --scopes, which still wins', () => {
+    process.env.SPOTIFY_SCOPES = 'playlists';
+    const selection = resolveScopeSelection();
+    assert.equal(selection.source, 'env');
+    assert.equal(selection.profile, 'playlists');
+    assert.ok(selection.scopes.includes('playlist-modify-private'));
+    assert.equal(resolveScopeSelection('core').source, 'cli');
+  });
+
+  it('auth.ts and config.ts share one scope list, not two copies', () => {
+    // Reference identity, not deep-equality: a re-export cannot drift, a
+    // duplicated literal can — which is exactly the #700 defect.
+    assert.equal(DEFAULT_SCOPES_LIST, DEFAULT_SCOPES);
+    assert.equal(DEFAULT_SCOPES, SCOPE_PROFILES.core);
+    for (const [name, scopes] of Object.entries(SCOPE_PROFILES)) {
+      for (const scope of scopes) {
+        assert.ok(KNOWN_SPOTIFY_SCOPES.has(scope), `${name} uses unknown scope ${scope}`);
+      }
+      if (name !== 'full') {
+        assert.ok(!scopes.includes('user-read-email'), `${name} must not grant email`);
+      }
+    }
+  });
+
+  it('config reports the active profile the doctor surfaces', () => {
+    assert.equal(loadConfig({}).scopeProfile, 'core');
+    assert.equal(loadConfig({ SPOTIFY_SCOPES: 'full' }).scopeProfile, 'full');
+    assert.equal(loadConfig({ SPOTIFY_SCOPES: 'playlists' }).scopeProfile, 'playlists');
+    assert.equal(loadConfig({ SPOTIFY_SCOPES: 'user-top-read' }).scopeProfile, 'custom');
+    assert.deepEqual(loadConfig({ SPOTIFY_SCOPES: 'library' }).scopes, [
+      ...SCOPE_PROFILES.library,
+    ]);
+  });
+
+  it('the auth banner names the profile, the rationale and the opt-in', () => {
+    delete process.env.SPOTIFY_SCOPES;
+    const banner = describeScopeSelection().join('\n');
+    assert.match(banner, /Scope profile: core \(default profile\)/);
+    assert.match(banner, /playback: .*see what is playing/);
+    assert.match(banner, /withheld, opt in with --scopes full: .*playlist-modify-private/);
+    assert.doesNotMatch(banner, /playlists-write/);
   });
 });

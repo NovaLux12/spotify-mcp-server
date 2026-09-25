@@ -33,8 +33,14 @@ export interface SpotifyMcpConfig {
   spotifyRequestTimeoutMs: number;
   /** Per-call budget for freshness artist/show lookups (#242). */
   freshnessBudget: number;
-  /** OAuth scopes override (SPOTIFY_SCOPES). Null = use DEFAULT_SCOPES. */
+  /** OAuth scopes override (SPOTIFY_SCOPES). Null = use the default profile. */
   scopes: string[] | null;
+  /**
+   * Name of the scope profile the effective scope set matches: a key of
+   * SCOPE_PROFILES, or "custom" when SPOTIFY_SCOPES names a set no shipped
+   * profile covers (#700). Null scopes resolve to the default profile.
+   */
+  scopeProfile: string;
   /** Default market fallback (SPOTIFY_MCP_MARKET). Null = not set / invalid. */
   market: string | null;
 }
@@ -72,10 +78,45 @@ export const KNOWN_SPOTIFY_SCOPES: ReadonlySet<string> = new Set([
   // with a named error at config load.
 ]);
 
-/** Default scopes when SPOTIFY_SCOPES is unset — must match src/auth.ts DEFAULT_SCOPES. */
-export const DEFAULT_SCOPES: readonly string[] = [
+// ---------------------------------------------------------------------------
+// Scope profiles (#700)
+//
+// This table is the ONE source of truth for the scope vocabulary, the default
+// request set and the profile names. src/auth.ts re-exports
+// DEFAULT_SCOPES_LIST from it instead of carrying a second copy of the list
+// (the two lists could and did drift), and `--scopes` accepts a profile name
+// as the documented opt-in for mutation scopes.
+// ---------------------------------------------------------------------------
+
+/**
+ * Scopes withheld from the default profile: every library, follow and playlist
+ * write plus artwork upload. `user-follow-read` sits here because the
+ * followed-artist list is only read to feed the follow write tools, so it is
+ * requested alongside `user-follow-modify` rather than by default.
+ */
+export const MUTATION_SCOPES: ReadonlySet<string> = new Set([
+  'user-library-modify',
+  'user-follow-read',
+  'user-follow-modify',
+  'playlist-modify-public',
+  'playlist-modify-private',
+  'ugc-image-upload',
+]);
+
+/**
+ * Email is a personal-data scope that belongs to no profile but `full`. Its
+ * only shipped consumer is `get_me` (src/tools/catalog.ts), which surfaces
+ * `me.email`; every other tool works without it.
+ */
+export const EMAIL_SCOPE = 'user-read-email';
+
+/**
+ * The default profile: identity reads plus playback control, which is the
+ * action a control surface exists to perform. No library/follow/playlist
+ * write, no artwork upload, no email.
+ */
+const CORE_SCOPES: readonly string[] = [
   'user-read-private',
-  'user-read-email',
   'user-read-playback-state',
   'user-modify-playback-state',
   'user-read-currently-playing',
@@ -83,15 +124,94 @@ export const DEFAULT_SCOPES: readonly string[] = [
   'user-read-playback-position',
   'user-top-read',
   'user-library-read',
-  'user-library-modify',
-  'user-follow-read',
-  'ugc-image-upload',
-  'user-follow-modify',
   'playlist-read-private',
   'playlist-read-collaborative',
-  'playlist-modify-public',
-  'playlist-modify-private',
 ];
+
+/** Named scope sets. `core` is the unconfigured default; the rest are opt-in. */
+export const SCOPE_PROFILES: Readonly<Record<string, readonly string[]>> = {
+  core: CORE_SCOPES,
+  library: [...CORE_SCOPES, 'user-library-modify', 'user-follow-read', 'user-follow-modify'],
+  playlists: [
+    ...CORE_SCOPES,
+    'playlist-modify-public',
+    'playlist-modify-private',
+    'ugc-image-upload',
+  ],
+  full: [...CORE_SCOPES, ...MUTATION_SCOPES, EMAIL_SCOPE],
+};
+
+/** Profile requested when SPOTIFY_SCOPES / --scopes are unset (#700). */
+export const DEFAULT_SCOPE_PROFILE = 'core';
+
+/** Default scope set — exactly what auth requests on a clean home. */
+export const DEFAULT_SCOPES: readonly string[] = SCOPE_PROFILES[DEFAULT_SCOPE_PROFILE];
+
+/** Profile names accepted wherever a scope list is accepted. */
+export const SCOPE_PROFILE_NAMES: readonly string[] = Object.keys(SCOPE_PROFILES);
+
+/** Whether `value` names a scope profile. */
+export function isScopeProfileName(value: string): boolean {
+  return Object.hasOwn(SCOPE_PROFILES, value);
+}
+
+/**
+ * Name the profile `scopes` matches exactly, or "custom" when the set is not
+ * one of the shipped profiles. An unset override resolves to the default
+ * profile, so a clean run always reports a named profile.
+ */
+export function profileForScopes(scopes: readonly string[] | null | undefined): string {
+  if (!scopes) return DEFAULT_SCOPE_PROFILE;
+  const given = [...new Set(scopes)].sort();
+  for (const [name, profile] of Object.entries(SCOPE_PROFILES)) {
+    const candidate = [...new Set(profile)].sort();
+    if (candidate.length === given.length && candidate.every((s, i) => s === given[i])) {
+      return name;
+    }
+  }
+  return 'custom';
+}
+
+/** Scope groups with the one-line rationale the auth banner prints per group. */
+const SCOPE_GROUPS: readonly { group: string; scopes: readonly string[]; why: string }[] = [
+  { group: 'identity', scopes: ['user-read-private'], why: 'read the profile behind the account' },
+  { group: 'email', scopes: [EMAIL_SCOPE], why: 'read me.email (get_me)' },
+  {
+    group: 'playback',
+    scopes: [
+      'user-read-playback-state',
+      'user-modify-playback-state',
+      'user-read-currently-playing',
+      'user-read-recently-played',
+      'user-read-playback-position',
+    ],
+    why: 'see what is playing and drive the player',
+  },
+  { group: 'insights', scopes: ['user-top-read'], why: 'top artists and tracks' },
+  { group: 'library-read', scopes: ['user-library-read'], why: 'read saved tracks and shows' },
+  { group: 'library-write', scopes: ['user-library-modify'], why: 'save and remove library items' },
+  { group: 'follows-read', scopes: ['user-follow-read'], why: 'read the followed-artist list' },
+  { group: 'follows-write', scopes: ['user-follow-modify'], why: 'follow and unfollow artists' },
+  {
+    group: 'playlists-read',
+    scopes: ['playlist-read-private', 'playlist-read-collaborative'],
+    why: 'read private and collaborative playlists',
+  },
+  {
+    group: 'playlists-write',
+    scopes: ['playlist-modify-public', 'playlist-modify-private', 'ugc-image-upload'],
+    why: 'create and edit playlists and upload cover art',
+  },
+  { group: 'remote', scopes: ['app-remote-control', 'streaming'], why: 'act as a Spotify Connect remote' },
+];
+
+/** Group + rationale for one scope; anything unrecognised lands in "other". */
+export function scopeGroupFor(scope: string): { group: string; why: string } {
+  for (const entry of SCOPE_GROUPS) {
+    if (entry.scopes.includes(scope)) return { group: entry.group, why: entry.why };
+  }
+  return { group: 'other', why: 'requested explicitly' };
+}
 
 /** Parse a positive integer env value; anything else falls back to `fallback`. */
 function positiveInt(raw: string | undefined, fallback: number): number {
@@ -138,8 +258,11 @@ export function resolveTokenFile(env: NodeJS.ProcessEnv = process.env): string {
 }
 
 /**
- * Parse SPOTIFY_SCOPES: space- or comma-separated, validated against known
- * vocabulary, de-duplicated. Returns null when unset. Throws on unknown scope.
+ * Parse SPOTIFY_SCOPES / `--scopes`: space- or comma-separated, validated
+ * against the known vocabulary, de-duplicated. A token naming a scope profile
+ * (`core`, `library`, `playlists`, `full`) expands to that profile, so
+ * `--scopes full` is the documented opt-in for mutation scopes (#700).
+ * Returns null when unset. Throws on an unknown scope or profile.
  */
 export function parseScopes(raw: string | undefined): string[] | null {
   if (!raw || raw.trim() === '') return null;
@@ -151,9 +274,17 @@ export function parseScopes(raw: string | undefined): string[] | null {
   const seen = new Set<string>();
   for (const s of parts) {
     if (seen.has(s)) continue;
+    if (isScopeProfileName(s)) {
+      for (const expanded of SCOPE_PROFILES[s]) {
+        if (seen.has(expanded)) continue;
+        seen.add(expanded);
+        deduped.push(expanded);
+      }
+      continue;
+    }
     if (!KNOWN_SPOTIFY_SCOPES.has(s)) {
       throw new Error(
-        `Unknown scope in SPOTIFY_SCOPES: "${s}". Known scopes: ${[...KNOWN_SPOTIFY_SCOPES].sort().join(', ')}`,
+        `Unknown scope in SPOTIFY_SCOPES: "${s}". Known scopes: ${[...KNOWN_SPOTIFY_SCOPES].sort().join(', ')}. Known profiles: ${SCOPE_PROFILE_NAMES.join(', ')}`,
       );
     }
     seen.add(s);
@@ -209,6 +340,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): SpotifyMcpConf
     spotifyRequestTimeoutMs: positiveInt(env.SPOTIFY_REQUEST_TIMEOUT_MS, DEFAULT_REQUEST_TIMEOUT_MS),
     freshnessBudget: positiveInt(env.SPOTIFY_MCP_FRESHNESS_BUDGET, DEFAULT_FRESHNESS_BUDGET),
     scopes,
+    scopeProfile: profileForScopes(scopes),
     market: parseMarket(env.SPOTIFY_MCP_MARKET),
   };
 }
