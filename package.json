@@ -53,6 +53,9 @@
     "prepack": "npm run build",
     "test": "npm run build && node --import tsx --test 'tests/*.test.ts'",
     "test:coverage": "npm run build && node --import tsx --experimental-test-coverage --test-coverage-lines=75 --test-coverage-functions=70 --test-coverage-branches=60 --test-reporter=tap --test 'tests/*.test.ts'",
+    "count:tools": "node scripts/surface-census.mjs",
+    "check:docs-counts": "node scripts/surface-census.mjs --check",
+    "check:doc-tool-names": "node scripts/check-doc-tool-names.mjs",
     "sweep": "node scripts/live-gauntlet.mjs --batch=40 --resume=memory/live-sweep-report.json --report=memory/live-sweep-report.json",
     "sweep:loop": "bash scripts/sweep-loop.sh"
   }

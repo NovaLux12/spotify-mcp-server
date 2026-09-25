@@ -13,6 +13,11 @@
  * of the set trim (disable wins over enable wins over set membership).
  */
 
+// BEGIN:generated surface-census
+// Production surface (generated; run `npm run count:tools -- --write` after registry changes):
+// 610 tools, 16 fixed resources, 33 resource templates, and 14 prompts.
+// END:generated surface-census
+
 /**
  * Registration key → toolset membership map. Every key registered in
  * index.ts must appear in at least one set so 'all' stays equivalent to the

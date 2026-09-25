@@ -1,9 +1,9 @@
-# Wave 2 composites — 11 read-only taste composites (shipped in v1.30.0, surface now 608 tools)
+# Wave 2 composites — shipped read-only taste tools
+<!-- BEGIN:generated surface-census -->
+Current default production surface: **610 tools**, including the shipped taste composites documented below. Earlier release totals in this page's history are not current registry truth; regenerate this block with `npm run count:tools -- --write`.
+<!-- END:generated surface-census -->
 
-Baseline: v1.29.0 ships 38 stats.fm + taste tools (30 `statsfm_*` live names
-via loop registration + 8 `taste_*` in `statsfm_taste.ts`). Total live surface
-≈ 589 tools. Standing rule: every release must expose MORE tools than the
-previous one — this wave adds 11, all in the `taste` toolset.
+The shipped `taste_composites.ts` module contributes eleven read-only tools in the `taste` toolset. Earlier release totals are historical context, not current registry truth.
 
 ## Read-only guarantees
 
