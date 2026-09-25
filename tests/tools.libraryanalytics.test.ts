@@ -5,6 +5,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../src/client.js';
 import { SpotifyApiError } from '../src/client.js';
 import { registerLibraryAnalyticsTools } from '../src/tools/libraryanalytics.js';
+import { initConfig, getConfig } from '../src/config.js';
 
 interface RegisteredTool {
   name: string; validate: (a: Record<string, unknown>) => Record<string, unknown>;
@@ -520,5 +521,43 @@ describe('library_growth_report scanned vs in-window (#741)', () => {
     assert.equal(partial.episodes, undefined);
     assert.equal((out.structuredContent?.scanned_totals as { shows: number }).shows, 0);
     assert.match(textOf(out), /shows unavailable/);
+  });
+
+  // A scan total is only honest if the walk that produced it was complete. All
+  // four collections are capped at fetchAllCap, so any of them hitting the cap
+  // makes "Scanned: N saved item(s) walked" a floor, not a library size (#741).
+  it('flags a capped shows or episodes walk as truncated, not just tracks/albums', async () => {
+    initConfig({ ...process.env, SPOTIFY_MCP_FETCH_ALL_CAP: '3' });
+    const iso = new Date().toISOString();
+    const savedShow = (i: number) => ({ added_at: iso, show: { id: `s${i}`, name: `Show ${i}` } });
+    const savedEpisode = (i: number) => ({ added_at: iso, episode: { id: `e${i}`, name: `Ep ${i}` } });
+    const build = (shows: number, episodes: number) => harness((path, params) => {
+      if (path === '/me/shows') return pagedResponder({ '/me/shows': Array.from({ length: shows }, (_, i) => savedShow(i)) })(path, params);
+      if (path === '/me/episodes') return pagedResponder({ '/me/episodes': Array.from({ length: episodes }, (_, i) => savedEpisode(i)) })(path, params);
+      return pagedResponder({})(path, params);
+    });
+    try {
+      assert.equal(getConfig().fetchAllCap, 3);
+
+      // 5 saved shows, so the walk stops at the cap of 3.
+      const capped = await build(5, 0).invoke('library_growth_report', { period: 'monthly', lookback: 2 });
+      const c = capped.structuredContent as { truncated: boolean; scan_cap: number; scanned_totals: { shows: number } };
+      assert.equal(c.scanned_totals.shows, 3, 'the shows walk really did stop at the cap');
+      assert.equal(c.truncated, true, 'a capped shows walk must not be reported as a complete scan');
+      assert.equal(c.scan_cap, 3);
+      assert.match(textOf(capped), /walk capped at 3/);
+
+      // The episodes walk is capped identically, so it discloses identically.
+      const cappedEp = await build(0, 5).invoke('library_growth_report', { period: 'monthly', lookback: 2 });
+      assert.equal(cappedEp.structuredContent?.truncated, true, 'a capped episodes walk must not be reported as a complete scan');
+      assert.match(textOf(cappedEp), /walk capped at 3/);
+
+      // Nothing at the cap: no false truncation, and no cap note in the prose.
+      const whole = await build(2, 1).invoke('library_growth_report', { period: 'monthly', lookback: 2 });
+      assert.equal(whole.structuredContent?.truncated, false, 'a walk under the cap is not truncated');
+      assert.doesNotMatch(textOf(whole), /walk capped/);
+    } finally {
+      initConfig();
+    }
   });
 });

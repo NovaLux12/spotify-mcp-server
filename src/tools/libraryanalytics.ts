@@ -530,7 +530,14 @@ export function registerLibraryAnalyticsTools(server: McpServer, client: Spotify
         total: tracks.length + albums.length + shows.length + episodes.length,
       };
       const addedInWindow = buckets.reduce((a, b) => a + b.total, 0);
-      const walkCapped = scannedTotals.tracks >= walkCap || scannedTotals.albums >= walkCap;
+      // Every one of the four walks is capped at walkCap, so a cap reached on
+      // shows or episodes is as much a truncated scan as one reached on tracks
+      // or albums. Checking only the first two reported a partial library walk
+      // as a complete one (#741).
+      const walkCapped = (scannedTotals.tracks >= walkCap
+        || scannedTotals.albums >= walkCap
+        || scannedTotals.shows >= walkCap
+        || scannedTotals.episodes >= walkCap);
       const fastest = [...buckets].sort((a, b) => b.total - a.total)[0] ?? null;
 
       const lines: string[] = [];
