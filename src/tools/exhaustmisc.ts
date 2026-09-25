@@ -376,13 +376,16 @@ export function registerExhaustMiscTools(server: McpServer, client: SpotifyClien
       // `followers` is absent from some rows (and from the repo's simplified
       // playlist row entirely), and a `?? 0` default would publish a total that
       // was never fetched. Coverage is reported so a gap is visible (#750).
-      const followerRows = list.map((p) => ({
-        id: p.id,
-        name: p.name,
-        followers: typeof p.followers?.total === 'number' ? p.followers.total : null,
-      }));
-      const followerReported = followerRows.filter((row) => row.followers !== null);
-      const followerTotal = followerReported.reduce((sum, row) => sum + (row.followers as number), 0);
+      // No per-playlist breakdown is emitted: `items` already carries each row
+      // verbatim under `truncateItems`' cap, so a second full-length copy would
+      // walk past the cap the payload's own `returned` count advertises.
+      let followerTotal = 0;
+      let followerReported = 0;
+      for (const p of list) {
+        if (typeof p.followers?.total !== 'number') continue;
+        followerTotal += p.followers.total;
+        followerReported++;
+      }
       const structured: Record<string, unknown> = listStructuredContent(
         t.items as unknown as Record<string, unknown>[],
         pagination,
@@ -392,12 +395,12 @@ export function registerExhaustMiscTools(server: McpServer, client: SpotifyClien
           followed: followed.length,
           collaborative: collabCount,
           public: { count: publicCount, private: privateCount, unknown: publicUnknown },
-          followers: { total: followerTotal, reported: followerReported.length, unknown: followerRows.length - followerReported.length, per_playlist: followerRows },
+          followers: { total: followerTotal, reported: followerReported, unknown: list.length - followerReported },
         },
       );
-      const followerScope = followerReported.length === list.length
+      const followerScope = followerReported === list.length
         ? `${followerTotal} follower(s)`
-        : `${followerTotal} follower(s) across ${followerReported.length}/${list.length} playlist(s)`;
+        : `${followerTotal} follower(s) across ${followerReported}/${list.length} playlist(s)`;
       const text = `Playlists audit: ${all.length} total — ${owned.length} owned, ${followed.length} followed, ${collabCount} collaborative, `
         + `${publicCount} public / ${privateCount} private / ${publicUnknown} unknown, ${followerScope}. Showing ${t.items.length}.`;
       if (rf === 'json') return { content: [{ type: 'text', text: JSON.stringify(structured, null, 2) }], structuredContent: structured };
