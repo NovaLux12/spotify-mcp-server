@@ -34,8 +34,10 @@ Registration is core-first and deterministic:
 
 The first 65 names are the stable core prefix asserted by
 `tests/tool.surface.test.ts`: all of `search`, then all of `catalog`, then all of
-`library`, then all of `playback`. Every manifest module is registered exactly once
-and every current tool remains present.
+`library`, then all of `playback`. Every manifest module is registered exactly once,
+and the audit proves each live tool belongs to exactly one module. The aggregate
+ceilings constrain module weight; they do not constitute a complete historical
+tool-name inventory.
 
 ## Checked-in baseline and ceilings
 

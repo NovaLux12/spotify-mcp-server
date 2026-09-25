@@ -410,6 +410,7 @@ interface SchemaRegistryEntry {
 interface ServerModuleMetadata {
   statuses: Map<string, ModuleRegistrationStatus>;
   tools: Map<string, string[]>;
+  budgetRows?: readonly ModuleSchemaBudget[];
 }
 
 const SERVER_METADATA = new WeakMap<McpServer, ServerModuleMetadata>();
@@ -456,6 +457,12 @@ export function registerManifestModule(
   const before = new Set(registeredToolNames(server));
   module.registrar(server, client);
   metadata.tools.set(module.key, registeredToolNames(server).filter((name) => !before.has(name)));
+  metadata.budgetRows = undefined;
+}
+
+/** Tool names owned by one manifest module for wire-level audit tests/reports. */
+export function moduleToolNames(server: McpServer, moduleKey: string): readonly string[] {
+  return serverMetadata(server).tools.get(moduleKey) ?? [];
 }
 
 /** UTF-8 bytes for description + the same JSON Schema emitted by tools/list. */
@@ -474,8 +481,9 @@ export function serializedSchemaBytes(schema: Pick<SchemaRegistryEntry, 'descrip
 
 export function collectModuleSchemaBudgets(server: McpServer): ModuleSchemaBudget[] {
   const metadata = serverMetadata(server);
+  if (metadata.budgetRows) return [...metadata.budgetRows];
   const registry = (server as unknown as { _registeredTools?: Record<string, SchemaRegistryEntry> })._registeredTools ?? {};
-  return REGISTRAR_MANIFEST.map((module) => {
+  const rows = REGISTRAR_MANIFEST.map((module): ModuleSchemaBudget => {
     const status = metadata.statuses.get(module.key) ?? 'active';
     const names = metadata.tools.get(module.key) ?? [];
     let schemaBytes = 0;
@@ -495,6 +503,8 @@ export function collectModuleSchemaBudgets(server: McpServer): ModuleSchemaBudge
       withinBudget: status !== 'active' || (toolCount <= module.ceiling.toolCount && schemaBytes <= module.ceiling.schemaBytes),
     };
   });
+  metadata.budgetRows = rows;
+  return [...rows];
 }
 
 export function assertModuleSchemaBudgets(rows: readonly ModuleSchemaBudget[]): void {

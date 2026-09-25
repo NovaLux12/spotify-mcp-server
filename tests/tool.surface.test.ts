@@ -28,6 +28,8 @@ import {
   assertModuleSchemaBudgets,
   collectModuleSchemaBudgets,
   NEVER_MUTATING_PLANS,
+  moduleToolNames,
+  serializedSchemaBytes,
   registerManifestModule,
   REGISTRAR_MANIFEST,
 } from '../src/tools/annotations.js';
@@ -279,7 +281,18 @@ describe('tool surface: budget', () => {
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     await Promise.all([server.connect(serverTransport), mcpClient.connect(clientTransport)]);
     const wireTools = (await mcpClient.listTools()).tools;
-    assert.equal(wireTools.length, Object.keys((server as unknown as { _registeredTools: Record<string, unknown> })._registeredTools).length);
+    const registry = (server as unknown as { _registeredTools: Record<string, { description?: string; inputSchema?: unknown }> })._registeredTools;
+    const wireByName = new Map(wireTools.map((tool) => [tool.name, tool]));
+    for (const module of REGISTRAR_MANIFEST) {
+      const names = moduleToolNames(server, module.key);
+      const measured = names.reduce((sum, name) => sum + serializedSchemaBytes(registry[name] ?? {}), 0);
+      const wire = names.reduce((sum, name) => {
+        const tool = wireByName.get(name);
+        return sum + Buffer.byteLength(JSON.stringify({ description: tool?.description ?? '', inputSchema: tool?.inputSchema ?? {} }), 'utf8');
+      }, 0);
+      assert.equal(measured, wire, `${module.key} schema bytes must match tools/list wire payload`);
+    }
+    assert.equal(wireTools.length, Object.keys(registry).length);
     await mcpClient.close();
     await server.close();
   });

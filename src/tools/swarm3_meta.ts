@@ -154,14 +154,14 @@ export function registerSwarm3MetaTools(server: McpServer): void {
       const readOnly = ['1', 'true', 'yes'].includes((process.env.SPOTIFY_MCP_READONLY ?? '').toLowerCase());
       const collectBudgets = (server as unknown as { __spotifyModuleSchemaBudgets?: () => ModuleSchemaBudget[] }).__spotifyModuleSchemaBudgets;
       const moduleBudgets = collectBudgets?.() ?? [];
-      const hostDrops = moduleBudgets.filter((row) => row.status !== 'active').map((row) => `${row.module} (${row.status})`);
+      const registrationExclusions = moduleBudgets.filter((row) => row.status !== 'active').map((row) => `${row.module} (${row.status})`);
       const budgetLines = moduleBudgets
         .map((row) => `• ${row.module}: ${row.status}; ${row.toolCount} tools; ${row.schemaBytes} schema bytes; ceiling ${row.maxToolCount} tools/${row.maxSchemaBytes} bytes${row.withinBudget ? '' : ' — OVER BUDGET'}`)
         .join('\n');
       const head = all.length === 0
         ? REGISTRY_UNAVAILABLE
         : `Registered tools (live): ${all.length}`;
-      const text = `${head}\nActive toolsets: ${activeSets.join(', ') || '(none)'}\nread-only: ${readOnly ? 'yes' : 'no'}\n\nToolsets (SPOTIFY_MCP_TOOLSETS):\n${setLines}\n\nPer-module schema budget (description + inputSchema):\n${budgetLines}\nHost trimming drops: ${hostDrops.join(', ') || '(none)'}`;
+      const text = `${head}\nActive toolsets: ${activeSets.join(', ') || '(none)'}\nread-only: ${readOnly ? 'yes' : 'no'}\n\nToolsets (SPOTIFY_MCP_TOOLSETS):\n${setLines}\n\nPer-module schema budget (description + inputSchema):\n${budgetLines}\nRegistration exclusions: ${registrationExclusions.join(', ') || '(none)'}`;
       return {
         content: [{ type: 'text', text }],
         structuredContent: {
@@ -171,7 +171,7 @@ export function registerSwarm3MetaTools(server: McpServer): void {
           read_only: readOnly,
           toolsets: TOOLSETS,
           module_schema_budgets: moduleBudgets,
-          host_trimming_drops: hostDrops,
+          registration_exclusions: registrationExclusions,
         },
       };
     },
