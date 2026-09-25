@@ -5,6 +5,94 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0](https://github.com/NovaLux12/spotify-mcp-server/compare/v1.31.0...v2.0.0) (2026-09-25)
+
+
+### ⚠ BREAKING CHANGES
+
+* **registry:** destructive writes fail closed when the client cannot elicit (unless SPOTIFY_MCP_CONFIRM=never); playlist_subtract takes an explicit base_playlist_id with the positional form still accepted; the retired get_show_episodes alias is gone (use list_show_episodes); unknown arguments are rejected rather than ignored; union/subtract results report returned counts beside true-impact totals.
+* **registry:** tools whose input schema changed shape or whose required parameters were renamed now reject old callers with a typed `validation` error instead of silently ignoring the input:
+
+### Features
+
+* add structured MCP error boundary ([8ddf4b7](https://github.com/NovaLux12/spotify-mcp-server/commit/8ddf4b76cc58dbfa0a339f564774c1b818942c0a))
+* enforce per-module schema budgets ([99fb345](https://github.com/NovaLux12/spotify-mcp-server/commit/99fb345100e6d6128ed9f400a97c7c1c7b13d874))
+* make truncation advice schema-aware ([44e41e4](https://github.com/NovaLux12/spotify-mcp-server/commit/44e41e43f0dabca756c4506768271a980ca4919c))
+* **registry:** replace inline registration gates with a registrar manifest ([e00adfc](https://github.com/NovaLux12/spotify-mcp-server/commit/e00adfc9f7b5ed4d939ac65cb5c2617568475ca2))
+* **registry:** v2 contract spine — registrar manifest, structured errors, generated docs ([#954](https://github.com/NovaLux12/spotify-mcp-server/issues/954)) ([f88d3cd](https://github.com/NovaLux12/spotify-mcp-server/commit/f88d3cd7a29787cefda54e082575496297b4943e))
+* unify playlist set-operation inputs ([b03be82](https://github.com/NovaLux12/spotify-mcp-server/commit/b03be82bdea70f0e6ad590d4ac1309975c84ccc7))
+
+
+### Bug Fixes
+
+* align census and contract guards with manifest ([9dd2215](https://github.com/NovaLux12/spotify-mcp-server/commit/9dd22154e2509693e914840aa00b5104d7ec2771))
+* align final schema and safety contracts ([7fa2fdb](https://github.com/NovaLux12/spotify-mcp-server/commit/7fa2fdb24a025f3ea4d6c1b4d4cc95cc327ebc06))
+* canonicalize Spotify links before writes ([9f8526e](https://github.com/NovaLux12/spotify-mcp-server/commit/9f8526e6948d2d57ba50678a62cab9049fa97761))
+* **census:** align generated registry documentation ([e84d8ec](https://github.com/NovaLux12/spotify-mcp-server/commit/e84d8ec18355846fba5cb00b79dd14196e3c9ccc))
+* classify curated URI dedupe as read-only ([66b5ed0](https://github.com/NovaLux12/spotify-mcp-server/commit/66b5ed05b63d4e135fed2a8f2d8f5c1b85b6a797))
+* close integrated budget and truncation regressions ([d646d8f](https://github.com/NovaLux12/spotify-mcp-server/commit/d646d8ffa543458c2c0ec764cb513cf9b555e10a))
+* close the merge gate's findings on truncation totals, references and budgets ([68646e4](https://github.com/NovaLux12/spotify-mcp-server/commit/68646e48c44b6371acaec756211e9ff3368aee30))
+* correct the 2.0 migration story in the docs and the two exits it missed ([c9eddf1](https://github.com/NovaLux12/spotify-mcp-server/commit/c9eddf11f017591262f2a0d8bb4237a5adf23e65))
+* derive census attribution from registrar manifest ([c6ee31a](https://github.com/NovaLux12/spotify-mcp-server/commit/c6ee31ac367e0f2c46c2fe16227a407a6209b644))
+* enforce aggregate tool surface budget ([45b5d46](https://github.com/NovaLux12/spotify-mcp-server/commit/45b5d4682ffa61102b2e872431ee77092bb2a20c))
+* fail closed destructive gates and redact caught errors ([a1ed1d0](https://github.com/NovaLux12/spotify-mcp-server/commit/a1ed1d06544c3840bb170ebffb228713803558c7))
+* finalize census and readonly contracts ([bda0543](https://github.com/NovaLux12/spotify-mcp-server/commit/bda054338595674598e66cfa931fbd778221408f))
+* finalize security contracts and documentation ([1aa6097](https://github.com/NovaLux12/spotify-mcp-server/commit/1aa6097dcc791b61814ca6562993cb3d8806dd87))
+* gate playlist replacement on destructive impact ([f02c60e](https://github.com/NovaLux12/spotify-mcp-server/commit/f02c60e45103020eeb9da1407cbf674f5e6c5225))
+* gate playlist subtraction on impact ([9c526c6](https://github.com/NovaLux12/spotify-mcp-server/commit/9c526c65ff215bb3daa7f2969ed5e66b78db4659))
+* hide mixed show writers in readonly mode ([33b62d2](https://github.com/NovaLux12/spotify-mcp-server/commit/33b62d249e33862a2eba364a0b81fa123015e64f))
+* honor max items truncation capability ([0280bce](https://github.com/NovaLux12/spotify-mcp-server/commit/0280bce5768b1f00d7f02073b686349a9eb52f4f))
+* isolate census measurements and readonly gates ([f797b46](https://github.com/NovaLux12/spotify-mcp-server/commit/f797b46b2b5774ad68a7ac9df13645bc8732466c))
+* **playlists:** disclose a truncated source walk in the union confirmation ([f0e3416](https://github.com/NovaLux12/spotify-mcp-server/commit/f0e34166778bce2b8023bcf7a7630c233f092a87))
+* **playlists:** unify plural inputs and gate union replacements ([9401475](https://github.com/NovaLux12/spotify-mcp-server/commit/94014751b7721706fffb74e218fa1cddc1150ae8))
+* preserve live truncation counts ([e95c16f](https://github.com/NovaLux12/spotify-mcp-server/commit/e95c16fbb0183dcd748125fb67d1000a5b65575e))
+* preserve typed statsfm errors ([266e38a](https://github.com/NovaLux12/spotify-mcp-server/commit/266e38a493c4610625e14d316e71e63241990da3))
+* redact protected MCP diagnostics ([1c05d68](https://github.com/NovaLux12/spotify-mcp-server/commit/1c05d685e5749e61f39e36bbb1caa9d24de014b5))
+* refresh measured schema budget baselines ([4705cae](https://github.com/NovaLux12/spotify-mcp-server/commit/4705cae4a80aea1d7276b302af6cf61018b030be))
+* **release:** target repository when dispatching publish ([#952](https://github.com/NovaLux12/spotify-mcp-server/issues/952)) ([940101c](https://github.com/NovaLux12/spotify-mcp-server/commit/940101ce75d21daf4921381ee28c77d2137313bf))
+* require elicitation for bulk episode archive ([22df09f](https://github.com/NovaLux12/spotify-mcp-server/commit/22df09f053bd2363fcd3b87926c027717898ff12))
+* reuse finalized census in docs gates ([456de31](https://github.com/NovaLux12/spotify-mcp-server/commit/456de31d5a6b9060032ea95c345bb355402b8fd4))
+* share canonical playlist reference grammar ([f6355f4](https://github.com/NovaLux12/spotify-mcp-server/commit/f6355f49de171563d988048f31778c71a26d41bc))
+* tighten schema budget parity reporting ([26c17b6](https://github.com/NovaLux12/spotify-mcp-server/commit/26c17b691de32910c2b7f349c8d551e8afffa38a))
+* type taste transport failures ([654b433](https://github.com/NovaLux12/spotify-mcp-server/commit/654b43351b6158e99e78de3adabb7d5fa7565e83))
+
+
+### Documentation
+
+* add the 2.0 upgrade note and the error-kind vocabulary ([56f37ac](https://github.com/NovaLux12/spotify-mcp-server/commit/56f37acfca81ffc8095fb599e76ceb6be8b91aa8))
+* align configuration and endpoint guidance ([216b87d](https://github.com/NovaLux12/spotify-mcp-server/commit/216b87d2c7567be1d7d05458b2e9d000847b54b4))
+* align configuration and endpoint guidance ([be14a14](https://github.com/NovaLux12/spotify-mcp-server/commit/be14a14b3828fb3440d28b4591887d6aabce35a4))
+* correct taste and stats.fm contracts ([2dfdee4](https://github.com/NovaLux12/spotify-mcp-server/commit/2dfdee4112a4b53099140f95169713c2b10e2237))
+* generate live surface and architecture inventory ([22c98a5](https://github.com/NovaLux12/spotify-mcp-server/commit/22c98a5c31ada4fa289eddbf667acc50144cd4b4))
+* generate live surface and architecture inventory ([16c75aa](https://github.com/NovaLux12/spotify-mcp-server/commit/16c75aa64bcb356042fe8a3dca8830e5026af9c1))
+* generate registry-backed architecture truth ([62ce636](https://github.com/NovaLux12/spotify-mcp-server/commit/62ce636efa1b7e05f01d75b25d08b1da1ede056f))
+* link schema budget reference ([61ab3b2](https://github.com/NovaLux12/spotify-mcp-server/commit/61ab3b20e15ad7255c44f1573410e5423cdf0b13))
+* make cookbook recipes executable ([acd6d19](https://github.com/NovaLux12/spotify-mcp-server/commit/acd6d1953f0c5b2427f71841b278da454536cb92))
+* make the alias table per-tool and record the returned/total count split ([cf49192](https://github.com/NovaLux12/spotify-mcp-server/commit/cf4919290df80b1120a264e5848b028c4f0fa46b))
+* make the per-tool alias mapping explicit and fix the list rendering ([8630096](https://github.com/NovaLux12/spotify-mcp-server/commit/8630096501d6985af0346e897d2c88bab11a5b3f))
+* refresh architecture after final budget headroom ([94beefc](https://github.com/NovaLux12/spotify-mcp-server/commit/94beefccf160bf8edf900a52e46d58e1ae0843ea))
+* regenerate surface census after contract cuts ([623a122](https://github.com/NovaLux12/spotify-mcp-server/commit/623a122511752e2fe07baef8065ecda19f703f9a))
+
+
+### Tests
+
+* align surface fixtures with live contracts ([b0de802](https://github.com/NovaLux12/spotify-mcp-server/commit/b0de8025591787baa8632349fb30b6a441a61150))
+* cover truncation boundary integration ([0f4df36](https://github.com/NovaLux12/spotify-mcp-server/commit/0f4df3609ed280793d01ed2c5b550ee8e718cb3c))
+* derive documentation parameter names from registry ([74b7632](https://github.com/NovaLux12/spotify-mcp-server/commit/74b7632b45c2b277ffe29906adff5946c99d0a22))
+* harden registry documentation guards ([55941b5](https://github.com/NovaLux12/spotify-mcp-server/commit/55941b5c74d0488206d3970b9b82a3cdaa69571e))
+* preserve explicit batch confirmation bypass ([4261522](https://github.com/NovaLux12/spotify-mcp-server/commit/426152216006536c0402c9f158afe3e5ec65fc36))
+* preserve playlist health cap coverage ([80e8810](https://github.com/NovaLux12/spotify-mcp-server/commit/80e88104e4cd59f5f58b1038a4333db8afbe0e8c))
+* use canonical artist IDs in swarm fixtures ([c2b512f](https://github.com/NovaLux12/spotify-mcp-server/commit/c2b512fa328be631289106709e26a12d1d34c64b))
+
+
+### Code Refactoring
+
+* complete single-source Spotify references ([8a9f1f6](https://github.com/NovaLux12/spotify-mcp-server/commit/8a9f1f6ce972e550a860a1831b3f75f896ac0b45))
+* enforce MCP surface contracts ([06d8cb5](https://github.com/NovaLux12/spotify-mcp-server/commit/06d8cb5478204eb85e4cdaeb4d90e918d8bd2b3a))
+* standardize playlist operation contracts ([2c3d0de](https://github.com/NovaLux12/spotify-mcp-server/commit/2c3d0de5012016c91a0312dc364f1338615c7a0d))
+* unify Spotify reference contracts ([e311b0b](https://github.com/NovaLux12/spotify-mcp-server/commit/e311b0b7dcb5485d91cacde5eeef133ae2060d95))
+* unify Spotify reference contracts ([336a6d1](https://github.com/NovaLux12/spotify-mcp-server/commit/336a6d1e18e4fd490116875130a63c90cb956bb1))
+
 ## [1.31.0](https://github.com/NovaLux12/spotify-mcp-server/compare/v1.30.1...v1.31.0) (2026-09-25)
 
 
