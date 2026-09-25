@@ -92,8 +92,9 @@ function targetedRemovals(
 
 /**
  * Split ascending positions into runs of adjacent indices, so re-inserting a
- * removed block costs one request per block rather than one per row. A run is
- * inserted at its first index and lands in the given order.
+ * removed block costs one write per block rather than one per row. A run is
+ * inserted at its first index and lands in the given order; a run past the
+ * per-request cap is split, the later parts resuming 100 indices later.
  */
 function consecutiveRuns(
   pairs: Array<{ uri: string; position: number }>,
@@ -240,21 +241,30 @@ async function invertReceipt(
         // was. `POST /playlists/{id}/items` takes a zero-based `position`
         // (the same parameter `add_to_playlist` exposes); rows are re-inserted
         // lowest-first, so every target index still holds the row that
-        // preceded it. Runs of adjacent positions share one request.
+        // preceded it. Runs of adjacent positions share one write, itself
+        // split when it exceeds the API's per-request cap.
         const ordered = [...rows].sort((a, b) => a.position - b.position);
         const created: Array<{ uri: string; position: number }> = [];
+        // Spotify caps one playlist write at `PLAYLIST_ITEMS_CHUNK` uris. A run
+        // longer than that — reachable because `remove_from_playlist` caps
+        // `uris` ENTRIES, not the `positions` inside one entry — must be split:
+        // an oversized request is rejected and the rollback restores nothing.
+        // Sub-request k resumes at the index the earlier ones already filled.
         for (const run of consecutiveRuns(ordered)) {
-          attemptedRequests++;
-          const res = await client.post<{ snapshot_id?: string }>(`/playlists/${encId}/items`, {
-            uris: run.map((p) => p.uri),
-            position: run[0]!.position,
-          });
-          snapshotId = res?.snapshot_id ?? snapshotId;
-          requests++;
-          // The rows this run just created occupy the run's own indices: the
-          // removal left a gap exactly this long there, and runs are restored
-          // lowest-first so no later insert shifts them.
-          run.forEach((p, i) => created.push({ uri: p.uri, position: run[0]!.position + i }));
+          for (const [k, part] of chunk(run, PLAYLIST_ITEMS_CHUNK).entries()) {
+            const at = run[0]!.position + k * PLAYLIST_ITEMS_CHUNK;
+            attemptedRequests++;
+            const res = await client.post<{ snapshot_id?: string }>(`/playlists/${encId}/items`, {
+              uris: part.map((p) => p.uri),
+              position: at,
+            });
+            snapshotId = res?.snapshot_id ?? snapshotId;
+            requests++;
+            // The rows this sub-request created occupy `at` onwards: the removal
+            // left a gap exactly this long there, and rows go back lowest-first
+            // so no later insert shifts them.
+            part.forEach((p, i) => created.push({ uri: p.uri, position: at + i }));
+          }
         }
         createdPositions = created;
       } else {

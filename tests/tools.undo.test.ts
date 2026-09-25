@@ -93,6 +93,11 @@ function stubClient(): {
       calls.push({ method: 'POST', path, arg });
       const id = playlistIdOf(path);
       if (id !== null) {
+        // The documented per-request cap. Encoding it here (not "whatever the
+        // code under test sends") means a caller that batches more than 100
+        // uris fails the way Spotify fails, instead of passing silently.
+        const uris = stringList(arg, 'uris');
+        if (uris.length > 100) throw new Error(`400: a playlist write takes at most 100 uris, got ${uris.length}`);
         // `position` inserts at that zero-based index; omitted means append.
         const rows = playlists[id] ?? [];
         const at = numberField(arg, 'position');
@@ -556,6 +561,39 @@ describe('undo_mutation occurrence targeting (#625)', () => {
       { uri: row('b'), positions: [1] },
       { uri: row('d'), positions: [3] },
     ], 'both created rows are attributed to the rows the re-insert made');
+  });
+
+  it('splits a re-insert run longer than the API cap into 100-uri sub-requests', async () => {
+    const { server, handlers } = stubServer();
+    const { client, playlists, calls } = stubClient();
+    registerUndoTools(server, client);
+    const head = 'spotify:track:head';
+
+    // 101 ADJACENT rows removed by a single call. `remove_from_playlist` caps
+    // `uris` at 100 ENTRIES, but each entry's `positions` is an uncapped
+    // array — so one entry naming 101 positions is a schema-legal removal.
+    // The undo re-inserts them as one run, the only shape that overflows the
+    // 100-uri write cap, and an oversized request is rejected outright: the
+    // rollback would restore nothing at all.
+    const original = Array.from({ length: 101 }, (_, i) => `spotify:track:t${i}`);
+    playlists.pl1 = [head, ...original];
+    const rem = await issueReceipt(client, {
+      kind: 'playlist_items', id: 'pl1', uris: original,
+      expectPresent: false,
+      targetedPositions: original.map((uri, i) => ({ uri, position: i + 1 })),
+    });
+    playlists.pl1 = [head];
+
+    const out = await handlers.get('undo_mutation')!({ receipt_id: rem.receipt_id, dry_run: false });
+    assert.equal(out.structuredContent?.ok, true, out.content[0]?.text);
+
+    const posts = writes(calls).filter((c) => c.method === 'POST');
+    assert.deepEqual(posts.map((p) => stringList(p.arg, 'uris').length), [100, 1],
+      'the run is split at the API cap instead of sent as one 101-uri request');
+    assert.deepEqual(posts.map((p) => numberField(p.arg, 'position')), [1, 101],
+      'the second sub-request resumes at the index the first one filled');
+    assert.deepEqual(playlists.pl1, [head, ...original],
+      'all 101 rows are restored, in their original order');
   });
 
   it('refuses an add undo when the receipt records no row positions', async () => {
