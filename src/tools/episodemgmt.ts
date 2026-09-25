@@ -8,6 +8,7 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
+import { confirmViaElicitation, describeConfirmation, requiredConfirmationRefusal } from './confirm.js';
 import { DryRun, describeDryRun, ResponseFormat } from '../shaping.js';
 
 type ToolResult = { content: Array<{ type: 'text'; text: string }>; structuredContent?: Record<string, unknown> };
@@ -24,7 +25,6 @@ export function registerEpisodeMgmtTools(server: McpServer, client: SpotifyClien
       dry_run: DryRun,
       response_format: ResponseFormat,
       limit: z.number().int().min(1).max(500).optional().describe('Max episodes to scan (default 100).'),
-      confirm: z.boolean().optional().describe('Confirm bulk removal when >50 fully-played episodes found'),
     },
     async (args) => {
       const cap = (args.limit as number) ?? 100;
@@ -46,8 +46,17 @@ export function registerEpisodeMgmtTools(server: McpServer, client: SpotifyClien
         const preview = played.slice(0, 5).map((r) => r.episode.name);
         return { content: [{ type: 'text', text: describeDryRun('archive_played_episodes', `${items.length} saved episodes`, [`would remove ${played.length} fully-played episodes`, ...preview]) }] };
       }
-      if (played.length > 50 && !args.confirm) {
-        return textResult(`Found ${played.length} fully-played episodes — pass confirm:true to proceed (elicitation threshold 50).`, { ok: false, needs_confirm: true, count: played.length, preview: uris.slice(0, 5) });
+      if (played.length > 50) {
+        const verdict = await confirmViaElicitation(server, {
+          message: describeConfirmation('remove from episode library', 'fully-played episodes', [
+            `Remove ${played.length} fully-played episode(s):`,
+            ...uris.slice(0, 5),
+            ...(uris.length > 5 ? [`(…and ${uris.length - 5} more)`] : []),
+          ]),
+          confirmLabel: 'Archive played episodes',
+        });
+        const refusal = requiredConfirmationRefusal(verdict);
+        if (refusal) return textResult(refusal.message, refusal.payload);
       }
       let removed = 0;
       for (let i = 0; i < ids.length; i += 50) {
