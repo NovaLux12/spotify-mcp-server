@@ -110,11 +110,11 @@ function splitQuery(target: string): { path: string; pairs: Array<[string, strin
  *
  * Callers keep the query out of the path they hand `get`: no `get`/
  * `getAllPages` call site in `src/` passes a target containing `?`, and the
- * only `?`-bearing path builders either feed `put`/`delete`, which
- * `shouldBypassCache` skips (tools/library.ts `savedItemsPath`), or are split
- * before the call (tools/exhaust2_misc.ts). So `params` is the defensive
- * argument — no call site in `src/` passes it; production always arrives
- * through `splitQuery`'s inline branch.
+ * only `?`-bearing path builders either feed `put`/`post`/`delete`, all of
+ * which `shouldBypassCache` skips (tools/library.ts `savedItemsPath`), or are
+ * split before the call (tools/exhaust2_misc.ts). So `params` is the
+ * defensive argument — no call site in `src/` passes it; production always
+ * arrives through `splitQuery`'s inline branch.
  *
  * Repeated names (`?a=1&a=2`) are value-sorted like any other pair, so
  * `?a=1&a=2` and `?a=2&a=1` share an entry. That is sound for the Spotify Web
