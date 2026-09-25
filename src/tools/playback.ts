@@ -157,8 +157,11 @@ function planHandoff(
     },
   ];
 
+  // One truthiness test, shared by the flag and the step it gates: an empty
+  // uri would otherwise advertise `will_resume: true` with no play step to
+  // back it up — the same plan/payload divergence this plan exists to remove.
   const willResume =
-    itemUri !== undefined && progress !== null && progress > 0 && (wasPlaying || args.play === true);
+    Boolean(itemUri) && progress !== null && progress > 0 && (wasPlaying || args.play === true);
   if (willResume && itemUri && progress !== null) {
     steps.push({
       method: 'PUT',

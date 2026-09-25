@@ -962,12 +962,22 @@ for (const [label, state] of [
   ['playing with a context', { ...playbackStateFixture(trackFixture()), context: { uri: 'spotify:playlist:pl1' } }],
   ['paused at position zero', { ...playbackStateFixture(trackFixture()), is_playing: false, progress_ms: 0 }],
   ['nothing playing', { ...playbackStateFixture(null), is_playing: false, progress_ms: null, item: null }],
+  ['playing with an empty item uri', { ...playbackStateFixture(trackFixture()), item: { uri: '' } }],
+  ['paused with an empty item uri', { ...playbackStateFixture(trackFixture()), is_playing: false, item: { uri: '' } }],
 ] as Array<[string, unknown]>) {
   test(`handoff dry-run plan equals the calls the commit performs (${label}, #841)`, async () => {
     const { h, sc, out } = await planFor(state, { device_id: 'dev2', volume: 30 });
     assert.equal(h.calls.length, 1, 'dry run performs no mutations');
 
     const advertised = advertisedPlan(sc);
+
+    // The advertised flag must agree with the plan it describes, or an agent
+    // reading `will_resume` is told something the call list contradicts.
+    assert.equal(
+      sc.will_resume,
+      advertised.some((c) => c.path.startsWith('/me/player/play')),
+      'will_resume must be true exactly when the plan contains the play call',
+    );
     assert.ok(advertised.length > 0, 'dry run must advertise a plan');
     assert.deepEqual(advertised, performedCalls(await commitFor(state, { device_id: 'dev2', volume: 30 })));
 
