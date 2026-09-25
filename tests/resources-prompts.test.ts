@@ -778,20 +778,49 @@ const PAGED_NAME_CHECKS: Array<{ tool: string; mustCarry: string; requiredIn: st
     // prompts that are required to do it, so deleting the check is a failure
     // too: these three all resolve a playlist by name, and a first page of 20
     // turns a >20-playlist account into a duplicate playlist on every re-run.
+    // Presence is asserted against ownText() rather than the whole body —
+    // see there for why the whole body proves nothing here.
     requiredIn: ['playlist_audit', 'migrate_library', 'triage_liked_songs'],
   },
 ];
 
+/**
+ * A prompt body with the text it merely inherits from other prompts removed:
+ * the longest trailing segment of `body` that some other registered prompt
+ * also ends with. That segment is boilerplate, not this prompt's own step —
+ * STANDARD_FOOTER hands twelve of the fourteen prompts the identical sentence
+ * "playlist names by resolving via get_user_playlists (fetch_all=true)", so
+ * `body.includes(tool)` is satisfied by the footer whether or not the prompt
+ * still resolves the name itself. Prompts that take no footer share no
+ * trailing text with any other prompt, get nothing stripped, and are judged
+ * on their full text, which is correct: they inherit nothing.
+ */
+function ownText(bodies: ReadonlyMap<string, string>, name: string): string {
+  const body = bodies.get(name) ?? '';
+  const others = [...bodies].filter(([other]) => other !== name).map(([, b]) => b);
+  for (let len = body.length; len > 0; len--) {
+    const tail = body.slice(body.length - len);
+    if (others.some((other) => other.endsWith(tail))) {
+      return body.slice(0, body.length - len).trimEnd();
+    }
+  }
+  return body.trimEnd();
+}
+
 test('a playlist name-existence check pins fetch_all=true at the call site (#716)', async () => {
   const bodies = await allPromptBodies();
   for (const [promptName, body] of bodies) {
+    const own = ownText(bodies, promptName);
     for (const { tool, mustCarry, requiredIn } of PAGED_NAME_CHECKS) {
       if (requiredIn.includes(promptName)) {
         assert.ok(
-          body.includes(tool),
-          `prompt '${promptName}' is required to check for an existing playlist with ${tool}, but no longer mentions it — deleting the check is not a way to pass this guard`,
+          own.includes(tool),
+          `prompt '${promptName}' is required to check for an existing playlist with ${tool}, but its own text no longer mentions it — deleting the check is not a way to pass this guard`,
         );
       }
+      // Scanned over the full body, inherited text included: STANDARD_FOOTER
+      // makes the same call, and dropping the flag from the footer must fail
+      // just as dropping it from a prompt's own step does.
       let at = body.indexOf(tool);
       while (at !== -1) {
         const window = body.slice(at, at + 240);
@@ -803,6 +832,47 @@ test('a playlist name-existence check pins fetch_all=true at the call site (#716
       }
     }
   }
+});
+
+test('the shared footer cannot stand in for a prompt\'s own name check (#716)', async () => {
+  const bodies = await allPromptBodies();
+  for (const { tool, requiredIn } of PAGED_NAME_CHECKS) {
+    for (const promptName of requiredIn) {
+      const own = ownText(bodies, promptName);
+      // Fixture first: these prompts are supposed to carry a call of their
+      // own, so a failure below is about the deletion, not a missing subject.
+      assert.ok(own.includes(tool), `fixture: ${promptName} should resolve the name itself`);
+      // Deleting the step is the edit the guard above exists to catch. Cut the
+      // sentence performing the check out of the prompt's own text and require
+      // the same predicate to reject what is left. This is the half that keeps
+      // the check honest: an ownText() that quietly returned the whole body
+      // would pass the assertion above and fail here, because the inherited
+      // sentence would still be there.
+      const at = own.indexOf(tool);
+      const from = own.lastIndexOf('. ', at) + 1;
+      const to = own.indexOf('. ', at);
+      const withoutStep = own.slice(0, from) + own.slice(to === -1 ? own.length : to);
+      assert.ok(
+        !withoutStep.includes(tool),
+        `${promptName}: dropping the sentence that names ${tool} must turn the own-text check red, or the deletion defense is vacuous`,
+      );
+    }
+  }
+  // And the inherited sentence really is out there. If no prompt ended with
+  // text that another prompt also ends with, ownText() would strip nothing,
+  // the check above would be reading whole bodies again, and it would be green
+  // while defending nothing — so require at least one prompt to inherit
+  // boilerplate naming a required lookup without doing the check itself.
+  const inheriting = [...bodies].filter(([name, body]) => {
+    if (PAGED_NAME_CHECKS.some((c) => c.requiredIn.includes(name))) return false;
+    const own = ownText(bodies, name);
+    if (own.length === body.trimEnd().length) return false; // nothing inherited
+    return PAGED_NAME_CHECKS.some((c) => body.includes(c.tool) && !own.includes(c.tool));
+  });
+  assert.ok(
+    inheriting.length > 0,
+    'no prompt inherits boilerplate naming a required lookup without doing the check itself — the shared-footer case this guard defends against is no longer exercised by the registry',
+  );
 });
 
 test('music_briefing asks whats_new for followed-artist releases, not the watchlist sidecar (#716)', async () => {
