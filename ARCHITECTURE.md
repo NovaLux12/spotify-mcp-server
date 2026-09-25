@@ -102,7 +102,7 @@ Resources are registered through `server.resource(...)` as fixed `spotify://` UR
 ## Module map
 
 <!-- BEGIN:generated surface-census -->
-The default profile registers **610 tools** from 64 files under `src/tools/` plus the inline `verify_receipt` tool. The live surface also contains **16 fixed resources**, **33 resource templates**, and **14 prompts**; only modules active for the granted toolsets and scopes register at runtime. These values come from the live MCP registry, not a static estimate.
+The default profile registers **592 tools** from 64 files under `src/tools/` plus the inline `verify_receipt` tool. The live surface also contains **16 fixed resources**, **33 resource templates**, and **14 prompts**; only modules active for the granted toolsets and scopes register at runtime. These values come from the live MCP registry, not a static estimate.
 <!-- END:generated surface-census -->
 
 The table is generated from every TypeScript file directly under `src/`, `src/lib/`, and `src/tools/`. Tool counts come from real registrations (including loop factories), and LOC is the repository line count, not an estimate.
@@ -118,7 +118,7 @@ The table is generated from every TypeScript file directly under `src/`, `src/li
 | `src/index.ts` | Runtime module for index. (1 registered tools) | 422 |
 | `src/lib/statsfm-client.ts` | Minimal client for the public stats.fm API (https://api.stats.fm/api/v1). (0 registered tools) | 92 |
 | `src/receipts.ts` | Mutation receipts (#112 idea 11). (0 registered tools) | 331 |
-| `src/refs.ts` | refs (#226): shared resolver accepting bare ID, spotify: URI, (0 registered tools) | 115 |
+| `src/refs.ts` | Shared Spotify reference parser and resolver. (0 registered tools) | 218 |
 | `src/scopefilter.ts` | Scope-aware module gating (#111 item 6). (0 registered tools) | 69 |
 | `src/shaping.ts` | Shared shaping helpers for tool responses (#51/#52/#53/#57/#58): zod schema (0 registered tools) | 242 |
 | `src/tools/analytics.ts` | Runtime module for analytics. (4 registered tools) | 427 |
@@ -144,7 +144,7 @@ The table is generated from every TypeScript file directly under `src/`, `src/li
 | `src/tools/following.ts` | Runtime module for following. (5 registered tools) | 322 |
 | `src/tools/freshness.ts` | freshness radar (#112 idea 2): personal replacement for the removed (1 registered tools) | 564 |
 | `src/tools/import.ts` | import_playlist (#165): the inverse of export_playlist. Parses an M3U or (1 registered tools) | 244 |
-| `src/tools/library.ts` | Runtime module for library. (16 registered tools) | 899 |
+| `src/tools/library.ts` | Runtime module for library. (16 registered tools) | 924 |
 | `src/tools/libraryanalytics.ts` | Runtime module for libraryanalytics. (4 registered tools) | 506 |
 | `src/tools/libraryhygiene.ts` | Album completion & consolidation hygiene (#112 idea 5). (1 registered tools) | 423 |
 | `src/tools/libraryinsights.ts` | Runtime module for libraryinsights. (3 registered tools) | 466 |
@@ -152,12 +152,12 @@ The table is generated from every TypeScript file directly under `src/`, `src/li
 | `src/tools/playback.ts` | Runtime module for playback. (16 registered tools) | 829 |
 | `src/tools/playbackext.ts` | playbackext (#197, #206, #198, #180, #181): local sidecar persistence for (13 registered tools) | 334 |
 | `src/tools/playbackintel.ts` | playbackintel — exhaustive playback/queue/player intel (#272-283 slice) (15 registered tools) | 465 |
-| `src/tools/playlistbatch.ts` | Playlist batch operations — Stream D (#183, #189, #200). (3 registered tools) | 117 |
+| `src/tools/playlistbatch.ts` | Playlist batch operations — Stream D (#183, #189, #200). (3 registered tools) | 119 |
 | `src/tools/playlistdna.ts` | Runtime module for playlistdna. (1 registered tools) | 330 |
 | `src/tools/playlisthealth.ts` | Runtime module for playlisthealth. (8 registered tools) | 425 |
 | `src/tools/playlistmisc.ts` | Playlist misc (#186 + #208): pin/unpin playlist (follow/unfollow) + mood-vibe (3 registered tools) | 199 |
-| `src/tools/playlistops.ts` | Playlist power tools (#96): merge_playlists, diff_playlists, overlap_playlists. (3 registered tools) | 407 |
-| `src/tools/playlists.ts` | Runtime module for playlists. (26 registered tools) | 1729 |
+| `src/tools/playlistops.ts` | Playlist power tools (#96): merge_playlists, diff_playlists, overlap_playlists. (3 registered tools) | 472 |
+| `src/tools/playlists.ts` | Runtime module for playlists. (26 registered tools) | 1878 |
 | `src/tools/podcastsession.ts` | Podcast session composer (#112 idea 3): greedy-packs the user's saved (2 registered tools) | 406 |
 | `src/tools/portability.ts` | Portability (#188 + #192 + #238 + #240 + #223 + #220): save_discover_weekly / save_release_radar (11 registered tools) | 890 |
 | `src/tools/queueops.ts` | queueops (#194, #202, #224, #231): queue_playlist + save_queue_as_playlist. (3 registered tools) | 316 |
@@ -177,7 +177,7 @@ The table is generated from every TypeScript file directly under `src/`, `src/li
 | `src/tools/swarm3_meta.ts` | swarm3 meta slice — 500-tool swarm v1.26.0 (issue #442). (3 registered tools) | 171 |
 | `src/tools/swarm3_playback.ts` | Runtime module for swarm3_playback. (24 registered tools) | 1299 |
 | `src/tools/swarm3_playlistops.ts` | swarm3 playlistops slice — 500-tool swarm v1.26.0 (issue #442). Owned by PLAYLISTOPS builder. (24 registered tools) | 1761 |
-| `src/tools/swarm3_refs.ts` | swarm3 refs slice — 500-tool swarm v1.26.0 (issue #442). Owned by REFS builder. (24 registered tools) | 586 |
+| `src/tools/swarm3_refs.ts` | Curated local Spotify-reference tools (#915). (6 registered tools) | 168 |
 | `src/tools/swarm3_shows.ts` | Runtime module for swarm3_shows. (24 registered tools) | 1353 |
 | `src/tools/swarm3_snapshots.ts` | Runtime module for swarm3_snapshots. (24 registered tools) | 1616 |
 | `src/tools/swarm3b_discovery.ts` | swarm3b discovery slice (second discovery builder) — 500-tool swarm v1.26.0 (issue #442). (24 registered tools) | 1261 |
