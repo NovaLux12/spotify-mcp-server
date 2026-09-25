@@ -27,6 +27,30 @@ export function exportRootDir(env: NodeJS.ProcessEnv = process.env): string {
 }
 
 /**
+ * Retention window for the library-backup store (#697). Snapshots are dated
+ * compilations of the user's saves, so an unbounded store accumulates dated
+ * personal data with no path to removal; the window makes expiry the default
+ * and delete_backup the manual escape hatch.
+ *
+ * NEW ENV VAR SPOTIFY_MCP_BACKUP_RETENTION_DAYS — whole days a snapshot is
+ * kept. Default 30. 0 disables pruning entirely. Anything unusable (empty,
+ * non-numeric, negative, fractional) falls back to the default rather than
+ * silently becoming "keep forever"; the floor for an ENABLED window is
+ * MIN_BACKUP_RETENTION_DAYS, so the smallest non-zero window is one day.
+ */
+export const DEFAULT_BACKUP_RETENTION_DAYS = 30;
+export const MIN_BACKUP_RETENTION_DAYS = 1;
+
+export function backupRetentionDays(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env.SPOTIFY_MCP_BACKUP_RETENTION_DAYS;
+  if (raw === undefined || raw.trim() === '') return DEFAULT_BACKUP_RETENTION_DAYS;
+  const days = Number(raw);
+  if (!Number.isFinite(days) || days < 0 || !Number.isInteger(days)) return DEFAULT_BACKUP_RETENTION_DAYS;
+  if (days === 0) return 0;
+  return Math.max(MIN_BACKUP_RETENTION_DAYS, days);
+}
+
+/**
  * realpath() that tolerates a not-yet-created leaf: the deepest existing
  * ancestor is resolved and the missing tail re-attached, so a brand-new
  * directory is still compared by its real location. Any other errno (EACCES,

@@ -11,6 +11,7 @@ import { mkdtemp, mkdir, rm, readdir, readFile, stat, writeFile } from 'node:fs/
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { SpotifyApiError } from '../src/client.js';
 import type { SpotifyClient } from '../src/client.js';
 import { initConfig, getConfig } from '../src/config.js';
 import {
@@ -191,6 +192,7 @@ function baseResponder(path: string, params?: Record<string, string>): unknown {
 
 let tmp: string;
 let prevBackupDirEnv: string | undefined;
+let prevRetentionEnv: string | undefined;
 
 beforeEach(async () => {
   tmp = await mkdtemp(join(tmpdir(), 'spotify-backup-test-'));
@@ -198,12 +200,18 @@ beforeEach(async () => {
   // SPOTIFY_MCP_SCENES_FILE), so the tmpdir override goes on the environment.
   prevBackupDirEnv = process.env.SPOTIFY_MCP_BACKUP_DIR;
   process.env.SPOTIFY_MCP_BACKUP_DIR = tmp;
+  // Retention is read from process.env on every call (same convention as
+  // SPOTIFY_MCP_BACKUP_DIR); each test opts into a window explicitly.
+  prevRetentionEnv = process.env.SPOTIFY_MCP_BACKUP_RETENTION_DAYS;
+  delete process.env.SPOTIFY_MCP_BACKUP_RETENTION_DAYS;
 });
 
 afterEach(async () => {
   await rm(tmp, { recursive: true, force: true });
   if (prevBackupDirEnv === undefined) delete process.env.SPOTIFY_MCP_BACKUP_DIR;
   else process.env.SPOTIFY_MCP_BACKUP_DIR = prevBackupDirEnv;
+  if (prevRetentionEnv === undefined) delete process.env.SPOTIFY_MCP_BACKUP_RETENTION_DAYS;
+  else process.env.SPOTIFY_MCP_BACKUP_RETENTION_DAYS = prevRetentionEnv;
   initConfig(); // restore process-wide config defaults
 });
 
@@ -493,6 +501,10 @@ describe('list_backups', () => {
   });
 
   it('lists backups newest-first with size and counts from _meta', async () => {
+    // The fixture dates are historical on purpose (they prove the
+    // newest-first ordering against a real _meta), so pruning is switched
+    // off here; the retention suite covers expiry on its own.
+    process.env.SPOTIFY_MCP_BACKUP_RETENTION_DAYS = '0';
     // Pre-seed an older backup, then take two live ones today.
     await mkdir(tmp, { recursive: true });
     const older: LibraryBackup = {
@@ -577,6 +589,7 @@ describe('list_backups', () => {
 
 
   it('lists quota partial snapshots visibly with their recorded reason', async () => {
+    process.env.SPOTIFY_MCP_BACKUP_RETENTION_DAYS = '0';
     const partialPath = join(tmp, 'backup-2026-01-02-7.partial.json');
     const meta = {
       created: '2026-01-02T03:04:05.000Z',
@@ -603,6 +616,7 @@ describe('list_backups', () => {
   });
 
   it('uses a bounded legacy metadata prefix without parsing a multi-megabyte body', async () => {
+    process.env.SPOTIFY_MCP_BACKUP_RETENTION_DAYS = '0';
     const legacyPath = join(tmp, 'backup-2026-01-03-1.json');
     const legacyPrefix = `${JSON.stringify({
       _meta: {
@@ -665,5 +679,240 @@ describe('backup_library dry_run + quota', () => {
     assert.equal(listed.length, 1);
     assert.equal(listed[0]!.partial, true);
     assert.equal(listed[0]!.partial_reason, 'quota_exceeded');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Retention window + store envelope (#697)
+// ---------------------------------------------------------------------------
+
+const DAY_MS = 86_400_000;
+
+/** An ISO instant `days` before now — the only clock these fixtures need. */
+function daysAgo(days: number): string {
+  return new Date(Date.now() - days * DAY_MS).toISOString();
+}
+
+/**
+ * Seed a snapshot with a faked `_meta.created`, sidecar included, so
+ * retention judges it by its recorded date rather than by mtime.
+ */
+async function seedBackup(name: string, createdIso: string): Promise<string> {
+  const path = join(tmp, name);
+  const meta = {
+    created: createdIso,
+    snapshot_state: 'complete',
+    complete: true,
+    partial_reasons: [],
+    cap: 500,
+    counts: { liked_tracks: 1, playlists: 0, playlist_items: 0, followed_artists: 0 },
+  };
+  await writeFile(path, `${JSON.stringify({ _meta: meta, liked_tracks: [] }, null, 2)}\n`, { mode: 0o600 });
+  await writeFile(
+    join(tmp, name.replace(/\.json$/, '.meta.json')),
+    `${JSON.stringify({ schema_version: 1, snapshot: path, bytes: 64, meta }, null, 2)}\n`,
+    { mode: 0o600 },
+  );
+  return path;
+}
+
+async function exists(path: string): Promise<boolean> {
+  return stat(path).then(() => true, () => false);
+}
+
+describe('backup retention (#697)', () => {
+  it('defaults to a 30-day window and prunes only what is past it', async () => {
+    const freshCreated = daysAgo(5);
+    const stale = await seedBackup('backup-2025-01-01-1.json', daysAgo(45));
+    const fresh = await seedBackup('backup-2025-02-01-1.json', freshCreated);
+
+    const out = await harness(baseResponder).invoke('list_backups', { response_format: 'concise' });
+    const sc = out.structuredContent as {
+      retention_days: number;
+      retention_enabled: boolean;
+      pruned_count: number;
+      pruned: Array<{ path: string; created: string; age_days: number; bytes: number }>;
+      count: number;
+      backups: Array<{ path: string; retention_until: string; age_days: number }>;
+      bytes_freed: number;
+    };
+
+    assert.equal(sc.retention_days, 30);
+    assert.equal(sc.retention_enabled, true);
+    assert.equal(sc.pruned_count, 1);
+    assert.equal(sc.pruned[0]!.path, stale);
+    assert.equal(sc.pruned[0]!.age_days, 45);
+    assert.ok(sc.pruned[0]!.bytes > 0);
+    assert.ok(sc.bytes_freed > 0);
+
+    // The stale snapshot AND its sidecar are gone; the fresh one is untouched.
+    assert.equal(await exists(stale), false);
+    assert.equal(await exists(stale.replace(/\.json$/, '.meta.json')), false);
+    assert.equal(await exists(fresh), true);
+    assert.equal(await exists(fresh.replace(/\.json$/, '.meta.json')), true);
+
+    assert.equal(sc.count, 1);
+    assert.equal(sc.backups[0]!.path, fresh);
+    assert.equal(sc.backups[0]!.age_days, 5);
+    assert.equal(
+      sc.backups[0]!.retention_until,
+      new Date(Date.parse(freshCreated) + 30 * DAY_MS).toISOString(),
+    );
+    assert.match(textOf(out), /Pruned 1 snapshot\(s\) past the 30-day window/);
+  });
+
+  it('keeps everything when SPOTIFY_MCP_BACKUP_RETENTION_DAYS=0', async () => {
+    process.env.SPOTIFY_MCP_BACKUP_RETENTION_DAYS = '0';
+    const older = await seedBackup('backup-2024-01-01-1.json', daysAgo(900));
+    const older2 = await seedBackup('backup-2024-01-01-2.json', daysAgo(400));
+
+    const out = await harness(baseResponder).invoke('list_backups', { response_format: 'concise' });
+    const sc = out.structuredContent as {
+      retention_days: number;
+      retention_enabled: boolean;
+      pruned_count: number;
+      count: number;
+      bytes_freed: number;
+      backups: Array<{ path: string; retention_until: string | null }>;
+    };
+
+    assert.equal(sc.retention_days, 0);
+    assert.equal(sc.retention_enabled, false);
+    assert.equal(sc.pruned_count, 0);
+    assert.equal(sc.bytes_freed, 0);
+    assert.equal(sc.count, 2);
+    assert.ok(sc.backups.every((b) => b.retention_until === null));
+    assert.equal(await exists(older), true);
+    assert.equal(await exists(older2), true);
+    assert.match(textOf(out), /retention disabled/);
+  });
+
+  it('falls back to the default for an unusable window instead of keeping forever', async () => {
+    process.env.SPOTIFY_MCP_BACKUP_RETENTION_DAYS = 'not-a-number';
+    const stale = await seedBackup('backup-2023-01-01-1.json', daysAgo(120));
+    const out = await harness(baseResponder).invoke('list_backups', { response_format: 'json' });
+    const sc = JSON.parse(textOf(out)) as { retention_days: number; pruned_count: number };
+    assert.equal(sc.retention_days, 30);
+    assert.equal(sc.pruned_count, 1);
+    assert.equal(await exists(stale), false);
+  });
+
+  it('reports the store envelope: dir_bytes, oldest_created, retention_until', async () => {
+    process.env.SPOTIFY_MCP_BACKUP_RETENTION_DAYS = '7';
+    const oldestCreated = daysAgo(6);
+    await seedBackup('backup-2025-03-01-1.json', oldestCreated);
+    const h = harness(baseResponder);
+    await h.invoke('backup_library', { response_format: 'concise' });
+
+    const out = await h.invoke('list_backups', { response_format: 'json' });
+    const sc = JSON.parse(textOf(out)) as {
+      dir_bytes: number;
+      oldest_created: string;
+      oldest_age_days: number;
+      retention_days: number;
+      count: number;
+    };
+
+    // The envelope's byte count is the real on-disk total, sidecars included.
+    let onDisk = 0;
+    for (const name of await readdir(tmp)) {
+      if (!/^backup-\d{4}-\d{2}-\d{2}-\d+(\.partial)?(\.meta)?\.json$/.test(name)) continue;
+      onDisk += (await stat(join(tmp, name))).size;
+    }
+    assert.equal(sc.dir_bytes, onDisk);
+    assert.equal(sc.count, 2);
+    assert.equal(sc.oldest_created, oldestCreated);
+    assert.equal(sc.oldest_age_days, 6);
+    assert.equal(sc.retention_days, 7);
+  });
+
+  it('emits the prune hint once five snapshots are stored', async () => {
+    for (let i = 1; i <= 5; i += 1) await seedBackup(`backup-2025-04-0${i}-1.json`, daysAgo(1));
+    const out = await harness(baseResponder).invoke('list_backups', { response_format: 'concise' });
+    const sc = out.structuredContent as { retention_warning?: string; count: number };
+    assert.equal(sc.count, 5);
+    assert.match(sc.retention_warning!, /5 snapshots are stored/);
+    assert.match(sc.retention_warning!, /delete_backup/);
+    assert.match(textOf(out), /WARNING 5 snapshots are stored/);
+  });
+
+  it('carries the retention stamp into the snapshot itself', async () => {
+    process.env.SPOTIFY_MCP_BACKUP_RETENTION_DAYS = '10';
+    const out = await harness(baseResponder).invoke('backup_library', { response_format: 'concise' });
+    const snap = JSON.parse(await readFile((out.structuredContent as { file: string }).file, 'utf8')) as LibraryBackup;
+    assert.equal(snap._meta.spotify_data, true);
+    assert.equal(
+      snap._meta.retention_until,
+      new Date(Date.parse(snap._meta.created) + 10 * DAY_MS).toISOString(),
+    );
+    assert.equal((out.structuredContent as { retention_until: string }).retention_until, snap._meta.retention_until);
+    assert.match(textOf(out), /Retention: this snapshot expires/);
+  });
+
+  it('prunes before writing a new snapshot, and says so', async () => {
+    process.env.SPOTIFY_MCP_BACKUP_RETENTION_DAYS = '3';
+    const stale = await seedBackup('backup-2022-01-01-1.json', daysAgo(30));
+    const out = await harness(baseResponder).invoke('backup_library', { response_format: 'concise' });
+    const sc = out.structuredContent as { pruned_count: number; pruned: Array<{ path: string }>; store: { count: number } };
+    assert.equal(sc.pruned_count, 1);
+    assert.equal(sc.pruned[0]!.path, stale);
+    assert.equal(sc.store.count, 1);
+    assert.equal(await exists(stale), false);
+    assert.match(textOf(out), /Pruned 1 snapshot\(s\)/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Reported totals + unreadable-playlist disclosure (#735)
+// ---------------------------------------------------------------------------
+
+describe('snapshot completeness disclosure (#735)', () => {
+  it('records Spotify-reported totals for a multi-page walk and names the shortfall', async () => {
+    // Two 2-item pages, then the end: the walk is cut at 3, Spotify says 5.
+    initConfig({ SPOTIFY_MCP_FETCH_ALL_CAP: '3' });
+    const h = harness((path, params) => baseResponder(path, params));
+    const out = await h.invoke('backup_library', { response_format: 'concise' });
+    const snap = JSON.parse(await readFile((out.structuredContent as { file: string }).file, 'utf8')) as LibraryBackup;
+
+    assert.equal(snap._meta.reported_totals.liked_tracks, 5);
+    assert.equal(snap._meta.reported_totals.playlists, 2);
+    assert.equal(snap._meta.reported_totals.followed_artists, 3);
+    // The walked length and the reported total are different numbers, and
+    // the file says which is which.
+    assert.equal(snap._meta.counts.liked_tracks, 3);
+    assert.equal(snap._meta.collections.liked_tracks.truncated, true);
+    assert.match(textOf(out), /WARNING incomplete liked tracks: fetched 3 of 5 liked tracks, cap 3 — TRUNCATED/);
+  });
+
+  it('marks a playlist it could not read, and names it in the prose', async () => {
+    const h = harness((path, params) => {
+      if (path === '/playlists/p1/items') throw new SpotifyApiError(403, 'forbidden', undefined);
+      return baseResponder(path, params);
+    });
+    const out = await h.invoke('backup_library', { response_format: 'concise' });
+    const snap = JSON.parse(await readFile((out.structuredContent as { file: string }).file, 'utf8')) as LibraryBackup;
+
+    const p1 = snap.playlists.find((p) => p.uri === 'spotify:playlist:p1')!;
+    assert.ok(p1.items_error, 'an unreadable playlist must record why it is empty');
+    assert.deepEqual(p1.items, []);
+    // The readable playlist is untouched, so the marker is per-row.
+    assert.equal(snap.playlists.find((p) => p.uri === 'spotify:playlist:p2')!.items_error, undefined);
+    assert.equal(snap._meta.counts.playlist_items, 2);
+    assert.equal(snap._meta.snapshot_state, 'partial');
+    assert.ok(snap._meta.partial_reasons.some((r) => r.startsWith('playlist_read_failed:spotify:playlist:p1')));
+    assert.match(textOf(out), /WARNING unreadable playlist "Playlist One" \(spotify:playlist:p1\)/);
+    assert.match(textOf(out), /Playlists: 2 \(2 items; 0 truncated; 1 unreadable\)/);
+  });
+
+  it('marks a truncated snapshot partial at the top level and a complete one not', async () => {
+    const capped = await harness(baseResponder).invoke('backup_library', { response_format: 'concise', max_results: 3 });
+    const cappedSnap = JSON.parse(await readFile((capped.structuredContent as { file: string }).file, 'utf8')) as Record<string, unknown>;
+    assert.equal(cappedSnap._partial, true);
+
+    const whole = await harness(baseResponder).invoke('backup_library', { response_format: 'concise' });
+    const wholeSnap = JSON.parse(await readFile((whole.structuredContent as { file: string }).file, 'utf8')) as Record<string, unknown>;
+    assert.equal('_partial' in wholeSnap, false);
+    assert.equal((wholeSnap._meta as { complete: boolean }).complete, true);
+    assert.doesNotMatch(textOf(whole), /WARNING/);
   });
 });
