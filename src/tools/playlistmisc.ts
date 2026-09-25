@@ -12,7 +12,7 @@ import {
   batchSummary,
 } from '../shaping.js';
 import type { ResponseFormatValue } from '../shaping.js';
-import { confirmViaElicitation, describeConfirmation } from './confirm.js';
+import { confirmViaElicitation, describeConfirmation, requiredConfirmationRefusal } from './confirm.js';
 import { issueReceipt, formatReceipt } from '../receipts.js';
 import type {
   SpotifyPaged,
@@ -58,6 +58,17 @@ const TEMPLATES = {
 
 type TemplateName = keyof typeof TEMPLATES;
 
+/**
+ * pin_playlist is opt-OUT of preview (#870), so the default lives here rather
+ * than in the shared `DryRun` shape, which every other tool reads as opt-in
+ * preview. Declaring it in the schema is the point: a client that inspects the
+ * tool signature — rather than the prose — sees that a missing dry_run means
+ * "do nothing".
+ */
+const PinDryRun = DryRun.default(true).describe(
+  'Preview only (default): pass dry_run: false to execute the follow.',
+);
+
 async function loadCandidates(client: SpotifyClient, source: string): Promise<SpotifyTrack[]> {
   if (source === 'top_tracks') {
     const p1 = await client.get<SpotifyPaged<SpotifyTrack>>('/me/top/tracks', { limit: '50', offset: '0' });
@@ -84,10 +95,11 @@ function dedupeUris(tracks: readonly SpotifyTrack[]): SpotifyTrack[] {
 export function registerPlaylistMiscTools(server: McpServer, client: SpotifyClient): void {
   server.tool(
     'pin_playlist',
-    'Follow (pin) a playlist to your library. PUT /playlists/{id}/followers.',
+    'Follow (pin) a playlist to your library. PUT /playlists/{id}/followers. Supports dry_run (default true); writes require confirmation unless SPOTIFY_MCP_CONFIRM=never.',
     {
       playlist_id: z.string().describe('Playlist ID to follow'),
       public: z.boolean().optional().describe('Whether the follow should be public (Spotify default: true)'),
+      dry_run: PinDryRun,
       response_format: ResponseFormat,
     },
     async (args) => {
@@ -96,6 +108,17 @@ export function registerPlaylistMiscTools(server: McpServer, client: SpotifyClie
       const body: Record<string, unknown> = {};
       if (args.public !== undefined) body.public = args.public;
       const hasBody = Object.keys(body).length > 0;
+      if (args.dry_run) {
+        const payload = { ok: true, dry_run: true, playlist_id: args.playlist_id, would_pin: true };
+        return shapeResult(rf, describeDryRun('pin playlist', args.playlist_id, [`Follow playlist ${args.playlist_id}`]), payload);
+      }
+      const verdict = await confirmViaElicitation(server, {
+        message: describeConfirmation('pin playlist', args.playlist_id, [
+          `Follow playlist ${args.playlist_id}${args.public === undefined ? '' : ` (public: ${args.public})`}`,
+        ]),
+      });
+      const refusal = requiredConfirmationRefusal(verdict);
+      if (refusal) return shapeResult(rf, refusal.message, refusal.payload);
       await client.put(`/playlists/${id}/followers`, hasBody ? body : undefined);
       const payload = { ok: true, playlist_id: args.playlist_id, pinned: true };
       return shapeResult(rf, `Pinned playlist ${args.playlist_id}.`, payload);
