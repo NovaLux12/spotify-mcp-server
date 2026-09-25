@@ -10,6 +10,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { registerSwarm3MetaTools } from '../src/tools/swarm3_meta.js';
+import { registerSwarm3RefsTools } from '../src/tools/swarm3_refs.js';
 
 interface DiscoveryResult {
   content: Array<{ type: string; text: string }>;
@@ -78,6 +79,42 @@ describe('discovery tools read the live registry', () => {
     } finally {
       if (prev === undefined) delete process.env.SPOTIFY_MCP_TOOLSETS;
       else process.env.SPOTIFY_MCP_TOOLSETS = prev;
+    }
+  });
+});
+
+describe('live discovery excludes redundant owned URI utilities', () => {
+  it('exposes exactly the six curated Spotify reference tools', async () => {
+    const registered = new Map<string, { description: string; enabled: boolean }>();
+    const server = {
+      _registeredTools: registered,
+      tool(name: string, description: string) {
+        registered.set(name, { description, enabled: true });
+        return { name };
+      },
+    };
+    registerSwarm3RefsTools(server as never, {} as never);
+    const handlers = harness(Object.fromEntries(registered));
+
+    const result = await handlers.get('find_tool')!({ query: 'spotify' });
+    const names = (result.structuredContent.tools as Array<{ name: string }>).map((tool) => tool.name);
+    assert.deepEqual(names, [
+      'parse_spotify_uri',
+      'parse_spotify_uris',
+      'format_spotify_uri',
+      'canonicalize_spotify_uri',
+      'dedupe_spotify_uris',
+      'spotify_uri_stats',
+    ]);
+    for (const removed of [
+      'extract_spotify_id',
+      'uri_to_base62',
+      'normalize_spotify_uri',
+      'uri_namespace_census',
+      'find_duplicate_spotify_uris',
+      'classify_spotify_uris',
+    ]) {
+      assert.equal(registered.has(removed), false, removed);
     }
   });
 });
