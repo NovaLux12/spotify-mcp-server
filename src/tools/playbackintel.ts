@@ -11,7 +11,7 @@ import { MARKET_CODE } from './catalog.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
 import type { PlaybackState, SpotifyQueue, GetDevicesResponse, SpotifyDevice, SpotifyTrack, SpotifyEpisode } from '../types/spotify.js';
-import { ResponseFormat, DryRun, MaxResults, resolveMaxResults, truncateItems, parseSpotifyUri, describeDryRun } from '../shaping.js';
+import { ResponseFormat, DryRun, MaxResults, resolveMaxResults, truncateItems, parseSpotifyUri, describeDryRun, validateUris } from '../shaping.js';
 import { loadPlaybackExt, detectSessions } from './playbackext.js';
 
 type ToolResult = { content: Array<{ type: 'text'; text: string }>; structuredContent?: Record<string, unknown> };
@@ -191,8 +191,8 @@ export function registerPlaybackIntelTools(server: McpServer, client: SpotifyCli
   server.tool('play_at',
     'Start playback at a specific position — accepts H:MM:SS / MM:SS / seconds string or position_ms. Wraps PUT /me/player/play with offset/position_ms. 🟢 (1 write).',
     {
-      context_uri: z.string().optional().describe('Context URI (playlist/album URI) — XOR uris'),
-      uris: z.array(z.string()).optional().describe('Track/episode URIs'),
+      context_uri: z.string().optional().describe('Context URI (playlist/album/artist) — XOR uris'),
+      uris: z.array(z.string()).max(100).optional().describe('Up to 100 track/episode URIs — XOR context_uri'),
       at: z.string().optional().describe('Position as "1:23" or "01:02:03" or "90" seconds'),
       position_ms: z.number().int().min(0).optional().describe('Position in ms (alternative to at)'),
       offset_uri: z.string().optional().describe('Offset URI within context to start at'),
@@ -201,6 +201,16 @@ export function registerPlaybackIntelTools(server: McpServer, client: SpotifyCli
       response_format: ResponseFormat, dry_run: DryRun,
     },
     async (args) => {
+      // #842: play_at enforces the same argument contract as `play`
+      // (src/tools/playback.ts) so one argument combination never gets two
+      // different answers for PUT /me/player/play. Every refusal below
+      // happens before any client call.
+      if (args.context_uri && args.uris) {
+        throw new Error('Provide either context_uri or uris, not both.');
+      }
+      if (args.uris && args.uris.length === 0) {
+        throw new Error('uris must contain at least one track/episode URI.');
+      }
       let ms: number | undefined = args.position_ms as number | undefined;
       if (args.at !== undefined) {
         const parsed = parsePosition(args.at as string);
@@ -208,12 +218,33 @@ export function registerPlaybackIntelTools(server: McpServer, client: SpotifyCli
         ms = parsed;
       }
       if (ms === undefined) return textResult('Provide at (time string) or position_ms.', { ok:false });
+      const contextUri = args.context_uri as string | undefined;
+      const candidateUris = (args.uris as string[] | undefined) ?? (contextUri ? [contextUri] : []);
+      const { invalid } = validateUris(candidateUris);
+      if (invalid.length > 0) throw new Error(`Invalid Spotify URI(s): ${invalid.join(', ')}`);
+      // offset selects a position inside a context: ignored for ad-hoc uris
+      // and invalid for artist contexts, exactly as in `play`.
+      if ((args.offset !== undefined || args.offset_uri !== undefined) && args.uris) {
+        throw new Error('offset is ignored when playing ad-hoc uris — reorder the uris array instead.');
+      }
+      if ((args.offset !== undefined || args.offset_uri !== undefined) && !contextUri) {
+        throw new Error(
+          args.offset !== undefined
+            ? 'offset requires a context_uri — it selects a position within an album/playlist context and does nothing for ad-hoc uris.'
+            : 'offset_uri requires a context_uri — it starts at a track inside that context (e.g. an artist page) and cannot queue ad-hoc uris; pass uris instead.',
+        );
+      }
       const body: Record<string, unknown> = { position_ms: ms };
-      if (args.context_uri) (body as any).context_uri = args.context_uri;
-      else if (args.uris?.length) (body as any).uris = args.uris;
+      if (contextUri) body.context_uri = contextUri;
+      else if (args.uris?.length) body.uris = args.uris;
       else return textResult('Provide context_uri or uris.', { ok:false });
-      if (args.offset_uri) (body as any).offset = { uri: args.offset_uri };
-      else if (args.offset !== undefined) (body as any).offset = { position: args.offset };
+      if (args.offset_uri) body.offset = { uri: args.offset_uri };
+      else if (args.offset !== undefined) {
+        if (contextUri?.startsWith('spotify:artist:')) {
+          throw new Error('Numeric offset is not valid for artist contexts — pass offset_uri with a track URI instead.');
+        }
+        body.offset = { position: args.offset };
+      }
       const qs = args.device_id ? `?device_id=${encodeURIComponent(args.device_id as string)}` : '';
       if (args.dry_run) return { content:[{type:'text', text: describeDryRun('play_at', (args.context_uri ?? (args.uris as string[])?.[0]) as string, [`Play at ${formatDuration(ms)} (${ms}ms) — body ${JSON.stringify(body)}`])}], structuredContent:{ ok:true, dry_run:true, position_ms: ms, body } };
       await client.put(`/me/player/play${qs}`, body);
@@ -392,7 +423,7 @@ export function registerPlaybackIntelTools(server: McpServer, client: SpotifyCli
       const parsed = parseSpotifyUri(ctx);
       let resolved: Record<string,unknown> = { uri: ctx, type: parsed?.type ?? 'unknown', id: parsed?.id ?? null };
       try {
-        if (parsed?.type === 'playlist') { const pl:any = await client.get(`/playlists/${parsed.id}`, { fields: 'name,owner(display_name,id),tracks(total),public,collaborative,uri' }); resolved = { ...resolved, name: pl?.name, owner: pl?.owner, tracks_total: pl?.tracks?.total, public: pl?.public }; }
+        if (parsed?.type === 'playlist') { const pl:any = await client.get(`/playlists/${parsed.id}`, { fields: 'name,owner(display_name,id),items(total),public,collaborative,uri' }); resolved = { ...resolved, name: pl?.name, owner: pl?.owner, tracks_total: pl?.items?.total ?? pl?.tracks?.total, public: pl?.public }; }
         else if (parsed?.type === 'album') { const al:any = await client.get(`/albums/${parsed.id}`); resolved = { ...resolved, name: al?.name, artists: al?.artists?.map((a:any)=>a.name), total_tracks: al?.total_tracks, release_date: al?.release_date }; }
         else if (parsed?.type === 'artist') { const ar:any = await client.get(`/artists/${parsed.id}`); resolved = { ...resolved, name: ar?.name, genres: ar?.genres, followers: ar?.followers?.total }; }
         else if (parsed?.type === 'show') { const sh:any = await client.get(`/shows/${parsed.id}`); resolved = { ...resolved, name: sh?.name, publisher: sh?.publisher, total_episodes: sh?.total_episodes }; }
