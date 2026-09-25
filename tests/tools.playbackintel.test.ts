@@ -28,6 +28,10 @@ function makeHarness(opts: { getResponse?: (path:string, params?:Record<string,s
 function find(registered:RegisteredTool[], name:string){ const t=registered.find(x=>x.name===name); assert.ok(t, `tool ${name} not found`); return t!; }
 async function invoke(t:RegisteredTool, args:Record<string,unknown>){ return t.handler(args); }
 function text(r:ToolContent){ return r.content.map(c=>c.text).join('\n'); }
+function playlistTracksTotal(r:ToolContent): unknown {
+  const resolved = r.structuredContent?.resolved;
+  return typeof resolved === 'object' && resolved !== null && 'tracks_total' in resolved ? resolved.tracks_total : undefined;
+}
 
 test('play_on resolves device name and plays', async()=>{
   const { registered, calls } = makeHarness({ getResponse:(p)=> p==='/me/player/devices' ? { devices:[{ id:'dev1', name:'Kitchen Speaker'}]} : p==='/search' ? { tracks:{ items:[{ uri:'spotify:track:xyz', name:'Hit'}]}} : undefined });
@@ -102,6 +106,19 @@ test('get_playback_context resolves playlist', async()=>{
   const { registered } = makeHarness({ getResponse:(p)=> p==='/me/player'?{ context:{uri:'spotify:playlist:pl1'}, item:{ uri:'spotify:track:trk1', name:'T1'}} : p==='/playlists/pl1'?{ name:'My PL', owner:{display_name:'me'}, tracks:{total:20}}:null });
   const r = await invoke(find(registered,'get_playback_context'), {});
   assert.match(text(r), /My PL/);
+});
+test('get_playback_context projects items(total) and reads items.total', async()=>{
+  const { registered, calls } = makeHarness({ getResponse:(p)=> p==='/me/player'?{ context:{uri:'spotify:playlist:pl1'} } : p==='/playlists/pl1'?{ name:'PL', items:{total:20}}:null });
+  const r = await invoke(find(registered,'get_playback_context'), {});
+  const plCall = calls.find(c=>c.path==='/playlists/pl1');
+  assert.ok(plCall, 'playlist must be fetched');
+  assert.equal(plCall!.params?.fields, 'name,owner(display_name,id),items(total),public,collaborative,uri');
+  assert.equal(playlistTracksTotal(r), 20);
+});
+test('get_playback_context still reads deprecated tracks.total projection', async()=>{
+  const { registered } = makeHarness({ getResponse:(p)=> p==='/me/player'?{ context:{uri:'spotify:playlist:pl1'} } : p==='/playlists/pl1'?{ name:'PL', tracks:{total:7}}:null });
+  const r = await invoke(find(registered,'get_playback_context'), {});
+  assert.equal(playlistTracksTotal(r), 7);
 });
 test('volume_step nudge', async()=>{
   const { registered, calls } = makeHarness({ getResponse:(p)=> p==='/me/player'?{ device:{ id:'d1', volume_percent:50}}:null });
