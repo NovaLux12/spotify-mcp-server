@@ -394,6 +394,26 @@ describe('episodemgmt', () => {
     assert.deepEqual(h.dels, [], 'a short page is not the whole library, so it must not delete');
   });
 
+  it('never contradicts its own reason when a short page retains no rows', async () => {
+    // The zero-retained branch is the one clause that talks about what the
+    // scan knows rather than about what it read. On this shape the reason
+    // printed immediately before it says the library holds 120 saved
+    // episodes, so a zero-retained clause claiming nothing is known about the
+    // library denies the sentence in front of it. Assert the shape, not just
+    // the clause: the walk-failed tests all use a reason that carries no
+    // library size, so none of them can expose the contradiction.
+    const h = harness({ episodes: [], pager: 'missing', libraryTotal: 120, answer: { action: 'accept', content: { confirm: true } } });
+    const out = await h.invoke('archive_played_episodes', {});
+    assert.equal(out.structuredContent.scan_failure, 'no_pager');
+    assert.equal(out.structuredContent.scan_complete, false);
+    assert.equal(out.structuredContent.scanned, 0);
+    assert.equal(out.structuredContent.played_among_scanned, 0);
+    // The size the tool holds is what makes the ignorance claim contradictory.
+    assert.match(String(out.structuredContent.partial_scan_reason), /120/);
+    assert.doesNotMatch(out.content[0].text, /nothing is known about the library|no episode was read|nothing was read|not read at all|never read at all/i);
+    assert.deepEqual(h.dels, [], 'an empty page is not the whole library, so it must not delete');
+  });
+
   it('never claims a truncation the response did not report when total is absent', async () => {
     // A client that returns no `total` leaves the tool unable to tell whether
     // the page is the whole library. That is a fact about this tool, so it is
