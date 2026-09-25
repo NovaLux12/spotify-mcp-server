@@ -42,16 +42,53 @@ const textOf=(o:{content:Array<{text:string}>})=>o.content[0].text;
 const track=(id:string)=>({ uri:`spotify:track:${id}`, name:`Track ${id}`, artists:[{name:`Artist ${id}`}] });
 
 describe('pin_playlist',()=>{
-  it('PUTs to /playlists/{id}/followers',async()=>{
-    const h=harness(()=>null);
-    const out=await h.invoke('pin_playlist',{playlist_id:'pl1'});
+  it('PUTs to /playlists/{id}/followers after confirmation',async()=>{
+    const h=harness(()=>null,{action:'accept',content:{confirm:true}});
+    const out=await h.invoke('pin_playlist',{playlist_id:'pl1',dry_run:false});
     assert.equal(h.client.calls[0].method,'PUT'); assert.equal(h.client.calls[0].path,'/playlists/pl1/followers');
     assert.match(textOf(out),/Pinned/);
   });
   it('forwards public flag',async()=>{
-    const h=harness(()=>null);
-    await h.invoke('pin_playlist',{playlist_id:'pl1',public:false});
+    const h=harness(()=>null,{action:'accept',content:{confirm:true}});
+    await h.invoke('pin_playlist',{playlist_id:'pl1',public:false,dry_run:false});
     assert.deepEqual(h.client.calls[0].arg,{public:false});
+  });
+  it('previews by default: an omitted dry_run issues no PUT (#870)',async()=>{
+    const h=harness(()=>null,new Error('must not elicit'));
+    const out=await h.invoke('pin_playlist',{playlist_id:'pl1'});
+    assert.equal(h.client.calls.length,0);
+    assert.match(textOf(out),/dry run/);
+    assert.equal(out.structuredContent?.would_pin,true);
+  });
+  it('declined confirmation refuses without PUTting',async()=>{
+    const h=harness(()=>null,{action:'decline'});
+    const out=await h.invoke('pin_playlist',{playlist_id:'pl1',dry_run:false});
+    assert.equal(h.client.calls.length,0);
+    assert.match(textOf(out),/Cancelled/);
+    assert.equal(out.structuredContent?.cancelled,true);
+  });
+  it('a failed elicitation refuses fail-closed rather than PUTting',async()=>{
+    const h=harness(()=>null,new Error('transport failed'));
+    const out=await h.invoke('pin_playlist',{playlist_id:'pl1',dry_run:false});
+    assert.equal(h.client.calls.length,0);
+    assert.equal(out.structuredContent?.reason,'elicitation_failed');
+  });
+  it('an unpromptable client is refused unless SPOTIFY_MCP_CONFIRM=never',async()=>{
+    const unsupported=harness(()=>null);
+    const out=await unsupported.invoke('pin_playlist',{playlist_id:'pl1',dry_run:false});
+    assert.equal(unsupported.client.calls.length,0);
+    assert.equal(out.structuredContent?.reason,'confirmation_unavailable');
+    const previous=process.env.SPOTIFY_MCP_CONFIRM;
+    process.env.SPOTIFY_MCP_CONFIRM='never';
+    try{
+      const bypass=harness(()=>null);
+      const done=await bypass.invoke('pin_playlist',{playlist_id:'pl1',dry_run:false});
+      assert.equal(bypass.client.calls.filter(c=>c.method==='PUT').length,1);
+      assert.match(textOf(done),/Pinned/);
+    } finally {
+      if(previous===undefined) delete process.env.SPOTIFY_MCP_CONFIRM;
+      else process.env.SPOTIFY_MCP_CONFIRM=previous;
+    }
   });
 });
 describe('unpin_playlist',()=>{

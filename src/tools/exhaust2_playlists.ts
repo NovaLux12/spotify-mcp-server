@@ -128,12 +128,14 @@ function normalizeTrackRef(ref: string): string {
   return ref.trim();
 }
 
-/** Page every item of a playlist (playlist order), capped by the fetch-all cap. */
-async function fetchAllItems(client: SpotifyClient, ref: string): Promise<PlaylistItemObject[]> {
+/** Page every item of a playlist (playlist order), capped by the fetch-all cap.
+ *  `market` is forwarded on the /items query string so album release dates
+ *  resolve for rows unavailable in the default market (#874). */
+async function fetchAllItems(client: SpotifyClient, ref: string, market?: string): Promise<PlaylistItemObject[]> {
   const id = encodeURIComponent(normalizePlaylistRef(ref));
   return client.getAllPages<PlaylistItemObject>(
     `/playlists/${id}/items`,
-    { limit: '100' },
+    { limit: '100', ...(market ? { market } : {}) },
     { maxItems: getConfig().fetchAllCap },
   );
 }
@@ -1314,7 +1316,7 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
       + 'Pairs with playlist_era slices. Quota: 🟢 1 GET (market refetch disclosed).',
     {
       playlist_id: z.string().describe('Playlist to profile (ID or spotify:playlist: URI)'),
-      market: MARKET_CODE.optional().describe('ISO 3166-1 alpha-2 market, e.g. \'US\' — when given, items are REFETCHED with this market so album release dates resolve (disclosed second GET)'),
+      market: MARKET_CODE.optional().describe('ISO 3166-1 alpha-2 market, e.g. \'US\' — when given, items are REFETCHED with this market and the profile is computed from THOSE rows, so album release dates resolve (disclosed second GET)'),
       response_format: ResponseFormat,
       max_results: MaxResults,
       dry_run: DryRun,
@@ -1322,9 +1324,11 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
     async (args) => {
       const rf = args.response_format;
       const p = await loadPlaylistFull(client, args.playlist_id);
-      if (args.market) await fetchAllItems(client, p.id); // market refetch (disclosed)
+      // #874: the market walk is a second paged GET whose rows REPLACE the
+      // initial read for the analysis; previously the result was discarded.
+      const items = args.market ? await fetchAllItems(client, p.id, args.market) : p.items;
       const albums = new Map<string, string>(); // album id → release_date
-      for (const entry of p.items) {
+      for (const entry of items) {
         const t = entry.item;
         if (!isTrack(t) || !t.album?.id) continue;
         const rel = (t.album as SpotifyAlbumSimple & { release_date?: string }).release_date;
