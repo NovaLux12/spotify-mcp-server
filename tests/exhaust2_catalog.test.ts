@@ -259,6 +259,78 @@ assert.equal((res.structuredContent as { gaps_flagged: unknown[] }).gaps_flagged
     assert.ok(res.content[0].text.includes('All versions (2)'));
   });
 
+  // #777: both tools declare `market` but used to drop it, so every /search
+  // ran against the token's default market. The requests themselves are the
+  // assertion — a stub that never sees `market` fails here.
+  it('search_by_isrc sends the requested market on /search and reports market_used', async () => {
+    const seen: Array<Record<string, string | undefined>> = [];
+    const client = makeClient({
+      get: mock.fn(async (_p: string, params?: Record<string, string>) => {
+        seen.push(params ?? {});
+        return { tracks: { items: [trackPayload({ external_ids: { isrc: 'USUM71703861' } })], total: 1 } };
+      }),
+    });
+    const res = await handlerFor('search_by_isrc', client)({
+      isrc: 'USUM71703861', market: 'GB', response_format: 'concise',
+    });
+    assert.equal(seen.length, 1);
+    assert.deepEqual(seen.map((p) => p.market), ['GB']);
+    assert.equal(res.structuredContent!.market_used, 'GB');
+    assert.ok(res.content[0].text.includes('market GB'));
+  });
+
+  it('search_by_isrc reports from_token and sends no market when none is given', async () => {
+    const seen: Array<Record<string, string | undefined>> = [];
+    const client = makeClient({
+      get: mock.fn(async (_p: string, params?: Record<string, string>) => {
+        seen.push(params ?? {});
+        return { tracks: { items: [], total: 0 } };
+      }),
+    });
+    const res = await handlerFor('search_by_isrc', client)({ isrc: 'USUM71703861', response_format: 'concise' });
+    assert.equal(seen.length, 1);
+    assert.equal(seen[0].market, undefined);
+    assert.equal(res.structuredContent!.market_used, 'from_token');
+    assert.ok(res.content[0].text.includes('no track found in market from_token'));
+  });
+
+  it('find_canonical_track sends the market on both the precise and fallback searches', async () => {
+    const seen: Array<Record<string, string | undefined>> = [];
+    let calls = 0;
+    const client = makeClient({
+      get: mock.fn(async (_p: string, params?: Record<string, string>) => {
+        seen.push(params ?? {});
+        calls += 1;
+        // Precise filter comes back empty so the broad fallback also runs.
+        return calls === 1
+          ? { tracks: { items: [], total: 0 } }
+          : { tracks: { items: [trackPayload({ id: 'de', uri: 'spotify:track:de' })], total: 1 } };
+      }),
+    });
+    const res = await handlerFor('find_canonical_track', client)({
+      title: 'Song', artist: 'Artist', market: 'DE', response_format: 'concise',
+    });
+    assert.equal(seen.length, 2);
+    assert.deepEqual(seen.map((p) => p.market), ['DE', 'DE']);
+    assert.equal(res.structuredContent!.market_used, 'DE');
+    assert.equal(res.structuredContent!.fallback_search, true);
+  });
+
+  it('find_canonical_track reports from_token when no market is supplied', async () => {
+    const seen: Array<Record<string, string | undefined>> = [];
+    const client = makeClient({
+      get: mock.fn(async (_p: string, params?: Record<string, string>) => {
+        seen.push(params ?? {});
+        return { tracks: { items: [trackPayload()], total: 1 } };
+      }),
+    });
+    const res = await handlerFor('find_canonical_track', client)({ title: 'Song', artist: 'Artist', response_format: 'concise' });
+    assert.equal(seen.length, 1);
+    assert.equal(seen[0].market, undefined);
+    assert.equal(res.structuredContent!.market_used, 'from_token');
+    assert.ok(res.content[0].text.includes('market searched: from_token'));
+  });
+
   it('audiobook_chapter_map totals runtime and finds midpoint', async () => {
     const client = makeClient({
       get: mock.fn(async (path: string) => (path.startsWith('/audiobooks/') && !path.includes('/chapters')
