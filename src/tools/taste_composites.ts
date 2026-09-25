@@ -32,6 +32,39 @@ import {
   classifyExposure,
   type TasteStream,
 } from './statsfm_taste.js';
+import { StatsfmApiError } from '../lib/statsfm-client.js';
+
+function validRetryAfter(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? Math.ceil(value) : undefined;
+}
+
+function retryAfterSeconds(headers: Headers): number | undefined {
+  const value = headers.get('retry-after');
+  if (!value) return undefined;
+  const seconds = validRetryAfter(Number(value));
+  if (seconds !== undefined) return seconds;
+  const date = Date.parse(value);
+  if (Number.isNaN(date)) return undefined;
+  return Math.max(0, Math.ceil((date - Date.now()) / 1000));
+}
+
+function statsfmError(status: number, message: string, body: unknown, headers: Headers): StatsfmApiError {
+  const bodyRetry = body && typeof body === 'object' && 'retryAfterSec' in body
+    ? (body as { retryAfterSec: unknown }).retryAfterSec
+    : undefined;
+  const retryAfter = validRetryAfter(bodyRetry) ?? retryAfterSeconds(headers);
+  let reason: string | undefined;
+  if (body && typeof body === 'object') {
+    const direct = 'reason' in body ? (body as { reason: unknown }).reason : undefined;
+    reason = typeof direct === 'string' && direct.length > 0 ? direct : undefined;
+    if (!reason && 'error' in body && body.error && typeof body.error === 'object' && 'reason' in body.error) {
+      const nested = (body.error as { reason: unknown }).reason;
+      reason = typeof nested === 'string' && nested.length > 0 ? nested : undefined;
+    }
+  }
+  return new StatsfmApiError(status, message, retryAfter, reason);
+}
+
 
 // ---------------------------------------------------------------------------
 // Local minimal stats.fm fetch shim (own seam; does not share fetchImpl
@@ -43,15 +76,39 @@ export const TASTE_COMPOSITE_API_BASE = 'https://api.stats.fm/api/v1';
 export type TasteCompositeFetchImpl = (url: string) => Promise<unknown>;
 
 async function defaultFetchImpl(url: string): Promise<unknown> {
-  const res = await fetch(url, {
-    headers: {
-      accept: 'application/json',
-      'user-agent': 'spotify-mcp/taste-composites',
-    },
-  });
-  if (!res.ok) throw new Error(`stats.fm API HTTP ${res.status} for ${url}`);
-  return res.json() as Promise<unknown>;
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      headers: {
+        accept: 'application/json',
+        'user-agent': 'spotify-mcp/taste-composites',
+      },
+    });
+  } catch (err) {
+    if (err instanceof StatsfmApiError) throw err;
+    throw new StatsfmApiError(0, 'stats.fm request failed', undefined, 'transport_error');
+  }
+  let body: unknown = null;
+  try {
+    body = await res.json();
+  } catch {
+    body = null;
+  }
+  if (!res.ok) {
+    const message = body && typeof body === 'object' && 'message' in body && typeof body.message === 'string'
+      ? body.message
+      : `stats.fm HTTP ${res.status}`;
+    throw statsfmError(res.status, message, body, res.headers);
+  }
+  if (body && typeof body === 'object' && 'status' in body && 'message' in body) {
+    const envelope = body as { status: unknown; message: unknown };
+    if (typeof envelope.status === 'number' && envelope.status >= 400 && typeof envelope.message === 'string') {
+      throw statsfmError(envelope.status, envelope.message, body, res.headers);
+    }
+  }
+  return body;
 }
+
 
 let fetchImpl: TasteCompositeFetchImpl = defaultFetchImpl;
 
@@ -70,7 +127,12 @@ async function statsfmGet<T>(path: string, params?: Record<string, string>): Pro
     params && Object.keys(params).length > 0
       ? `?${new URLSearchParams(params).toString()}`
       : '';
-  return (await fetchImpl(`${TASTE_COMPOSITE_API_BASE}${path}${qs}`)) as T;
+  try {
+    return (await fetchImpl(`${TASTE_COMPOSITE_API_BASE}${path}${qs}`)) as T;
+  } catch (err) {
+    if (err instanceof StatsfmApiError) throw err;
+    throw new StatsfmApiError(0, 'stats.fm request failed', undefined, 'transport_error');
+  }
 }
 
 // ---------------------------------------------------------------------------

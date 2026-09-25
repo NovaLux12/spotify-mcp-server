@@ -5,7 +5,7 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { StatsfmApiError } from '../src/lib/statsfm-client.js';
+import { StatsfmApiError, StatsfmClient } from '../src/lib/statsfm-client.js';
 import { registerStatsfmTools } from '../src/tools/statsfm.js';
 
 // ---------------------------------------------------------------- fixtures
@@ -151,6 +151,26 @@ test('statsfm_resolve_user rethrows non-404 errors without searching', async () 
   });
   await assert.rejects(() => h.find('statsfm_resolve_user').handler({ user_id: 'x' }), /boom/);
   assert.equal(h.calls.length, 1);
+});
+
+test('StatsfmClient preserves typed 404 and 429 metadata', async () => {
+  const missing = new StatsfmClient(async () => new Response(
+    JSON.stringify({ message: 'raw /private/user', error: { reason: 'RESOURCE_NOT_FOUND' } }),
+    { status: 404, headers: { 'content-type': 'application/json' } },
+  ));
+  await assert.rejects(
+    () => missing.get('/users/missing'),
+    (error: unknown) => error instanceof StatsfmApiError && error.status === 404 && error.reason === 'RESOURCE_NOT_FOUND',
+  );
+
+  const limited = new StatsfmClient(async () => new Response(
+    JSON.stringify({ message: 'raw /private/rate', reason: 'QUOTA_EXCEEDED' }),
+    { status: 429, headers: { 'content-type': 'application/json', 'retry-after': '23' } },
+  ));
+  await assert.rejects(
+    () => limited.get('/users/busy'),
+    (error: unknown) => error instanceof StatsfmApiError && error.status === 429 && error.retryAfterSec === 23 && error.reason === 'QUOTA_EXCEEDED',
+  );
 });
 
 // ---------------------------------------------------------------- tops
