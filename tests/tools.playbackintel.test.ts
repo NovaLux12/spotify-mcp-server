@@ -18,7 +18,7 @@ function makeHarness(opts: { getResponse?: (path:string, params?:Record<string,s
   const server: any = { tool(name:string, desc:string, schema:any, handler:any){ registered.push({ name, description: desc, schema, handler }); } };
   const client: any = {
     get: async (path:string, params?:Record<string,string>) => { calls.push({ method:'GET', path, params }); if (opts.getResponse) { const r = opts.getResponse(path, params); if (r!==undefined) return r; } return null; },
-    put: async (path:string, body?:unknown) => { calls.push({ method:'PUT', path, body }); if (opts.failPut?.(path)) throw new Error('volume write rejected'); },
+    put: async (path:string, body?:unknown) => { calls.push({ method:'PUT', path, body }); if (opts.failPut?.(path)) throw new Error('write rejected'); },
     post: async (path:string, body?:unknown) => { calls.push({ method:'POST', path, body }); },
     delete: async (path:string) => { calls.push({ method:'DELETE', path }); },
     getAllPages: async()=>[],
@@ -229,6 +229,26 @@ test('play_on does not report a rejected volume write as applied', async()=>{
   assert.match(String(sc.volume_error), /rejected/);
   assert.doesNotMatch(text(r), /@ 25%/);
   assert.match(text(r), /NOT applied/);
+});
+
+// #837: a rejected shuffle write used to be swallowed by an empty `catch {}`,
+// so the whole call still reported ok:true and the text claimed success.
+test('play_on does not report a rejected shuffle write as applied, and still plays', async()=>{
+  const { registered, calls } = makeHarness({
+    getResponse:(p)=> p==='/me/player/devices'?{ devices:[{ id:'dev1', name:'Kitchen Speaker'}]}:undefined,
+    failPut:(p)=>p.startsWith('/me/player/shuffle'),
+  });
+  const r = await invoke(find(registered,'play_on'), { device:'kitchen', context_uri:'spotify:playlist:abc', shuffle:true });
+  const sc = r.structuredContent as Record<string, unknown>;
+  assert.equal(sc.ok, false, 'a rejected shuffle write must not report ok:true');
+  assert.equal(sc.shuffle_applied, false);
+  assert.equal(sc.shuffle_state, true);
+  assert.match(String(sc.shuffle_error), /rejected/);
+  assert.match(text(r), /shuffle on was NOT applied/);
+  assert.ok(
+    calls.some(c=>c.method==='PUT' && c.path.startsWith('/me/player/play')),
+    'the primary effect — the play — must still be issued after a rejected shuffle write',
+  );
 });
 test('market_availability', async()=>{
   const { registered } = makeHarness({ getResponse:(p)=> p.startsWith('/tracks/')?{ name:'Hit', available_markets:['US','GB','DE']}:null });

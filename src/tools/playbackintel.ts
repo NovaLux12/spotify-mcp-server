@@ -92,11 +92,16 @@ export function registerPlaybackIntelTools(server: McpServer, client: SpotifyCli
         const steps = [`Resolve "${args.device}" → ${deviceId}`, `Play ${label} on ${deviceId}${args.volume!==undefined?` @ vol ${args.volume}`:''}${args.shuffle!==undefined?` shuffle=${args.shuffle}`:''}`];
         return { content: [{ type:'text', text: describeDryRun('play_on', label, steps) }], structuredContent: { ok:true, dry_run:true, resolved_device_id: deviceId, playBody } };
       }
+      // The shuffle and volume writes are secondary effects: a rejected write
+      // must not be reported as applied, but it also must not abort the play
+      // that follows. Both follow the same partial-outcome shape — the play is
+      // the primary effect, and each auxiliary setting reports its own outcome.
+      let shuffleError: string | undefined;
       if (args.shuffle !== undefined) {
-        try { await client.put(`/me/player/shuffle?state=${args.shuffle}&device_id=${encodeURIComponent(deviceId)}`); } catch {}
+        try {
+          await client.put(`/me/player/shuffle?state=${args.shuffle}&device_id=${encodeURIComponent(deviceId)}`);
+        } catch (e) { shuffleError = e instanceof Error ? e.message : String(e); }
       }
-      // The volume write is a secondary effect: a rejected write must not be
-      // reported as applied, but it also must not abort the play that follows.
       let volumeError: string | undefined;
       if (args.volume !== undefined) {
         try {
@@ -105,13 +110,21 @@ export function registerPlaybackIntelTools(server: McpServer, client: SpotifyCli
       }
       await client.put(`/me/player/play?device_id=${encodeURIComponent(deviceId)}`, playBody);
       const deviceName = devices.find((d) => d.id === deviceId)?.name ?? deviceId;
+      const shuffleState = args.shuffle ? 'on' : 'off';
+      const shuffleNote = shuffleError
+        ? `, shuffle ${shuffleState} was NOT applied: ${shuffleError}`
+        : (args.shuffle !== undefined ? `, shuffle ${shuffleState}` : '');
+      const volumeNote = volumeError
+        ? ` — volume ${args.volume}% was NOT applied: ${volumeError}`
+        : (args.volume !== undefined ? ` @ ${args.volume}%` : '');
       return emit(args.response_format as string, {
-        ok: volumeError === undefined,
+        ok: shuffleError === undefined && volumeError === undefined,
         resolved_device_id: deviceId,
         device_name: deviceName,
         playBody,
+        ...(args.shuffle !== undefined ? { shuffle_state: args.shuffle, shuffle_applied: shuffleError === undefined, ...(shuffleError ? { shuffle_error: shuffleError } : {}) } : {}),
         ...(args.volume !== undefined ? { volume_percent: args.volume, volume_applied: volumeError === undefined, ...(volumeError ? { volume_error: volumeError } : {}) } : {}),
-      }, `Playing ${label} on "${deviceName}" (${deviceId})${volumeError ? ` — volume ${args.volume}% was NOT applied: ${volumeError}` : (args.volume !== undefined ? ` @ ${args.volume}%` : '')}.`);
+      }, `Playing ${label} on "${deviceName}" (${deviceId})${shuffleNote}${volumeNote}.`);
     });
 
   // 273 queue_next — insert-next with honest tail disclosure
