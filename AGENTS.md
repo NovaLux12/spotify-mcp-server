@@ -122,12 +122,28 @@ answer. Any tool still calling one of these is broken, not merely degraded.
 | `GET /artists/{id}/top-tracks` | per-album reads via `GET /artists/{id}/albums` | #594 |
 | Batch `GET /albums\|artists\|episodes\|shows\|audiobooks\|chapters?ids=` | per-id `GET /{type}/{id}` | #638 |
 | `PUT/DELETE /me/{tracks,albums,shows,episodes,audiobooks}` and `GET /me/{type}s/contains` | `PUT/DELETE /me/library`, `GET /me/library/contains` | #37 (shipped) |
-| `PUT/DELETE /me/following?type=artist`, `GET /me/following/contains` | `PUT/DELETE /me/library` | #594 |
+| `GET /me/following/contains` | `GET /me/library/contains` with `spotify:artist:` URIs | #594 |
+| `PUT/DELETE /me/following?type=artist` | **no replacement — unrecoverable, see below** | #594 |
 | `PUT/DELETE /playlists/{id}/followers` | `PUT/DELETE /me/library` with a `spotify:playlist:` URI | #594 |
 | `GET /playlists/{id}/followers/contains` | `GET /me/library/contains` | #594 |
 | `POST/GET/PUT/DELETE /playlists/{id}/tracks` | the `/items` equivalents | #638 |
 | `POST /users/{user_id}/playlists`, `GET /users/{id}/playlists`, `GET /users/{id}` | `/me/*` equivalents | #638 |
 | `GET /markets`, `GET /browse/categories`, `GET /browse/new-releases` | none | #638 |
+
+**Following an artist is no longer expressible, and there is no migration.**
+`PUT`/`DELETE /me/library` accept track, album, episode, show, audiobook, user
+and playlist URIs — **not** `spotify:artist:`. `GET /me/library/contains` *does*
+accept artist URIs, so the read half migrated cleanly and the write half has no
+target. A `PUT /me/library?uris=spotify:artist:<id>` would look migrated and
+follow nothing. The repo already encoded this: `LIBRARY_SAVE_TYPES`
+(`library.ts:228`) omits `artist` while `LIBRARY_CHECK_TYPES` (`:237`) includes
+it. `follow_artists` and `unfollow_artists` are being **removed** rather than
+left permanently failing. Verified against the endpoint reference pages, not
+the changelog summary.
+
+`/me/library` authorises three alternative scopes — `user-library-modify`,
+`user-follow-modify`, **or** `playlist-modify-public`. Check which one a
+caller actually holds before concluding a migration will 403.
 
 `GET /me/following` (the cursor-paged followed-artists **list**) is still available —
 only its `PUT`/`DELETE`/`/contains` siblings were removed. That asymmetry is easy to

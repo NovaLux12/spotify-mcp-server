@@ -105,22 +105,51 @@ gh release view "$TAG" --json tagName,isDraft,isPrerelease,url
 release. If release-please did not open a PR, inspect the **Release Please**
 run on the latest `main` push before creating a tag manually.
 
-### 2. Publish the tag (including the GITHUB_TOKEN trigger gap)
+### 2. Publish the tag
 
-`release.yml` creates the tag with `GITHUB_TOKEN`. GitHub does not start a
-workflow from a tag created by that token, so the tag push does **not** reliably
-start `publish.yml`. Manually dispatch the publish workflow at the tag after
-the GitHub release is visible:
+`release.yml` creates the tag, and **that tag push starts `publish.yml`** — the
+`publish-npm` job runs on its own. Do not dispatch it manually.
+
+This section previously instructed a manual
+`gh workflow run publish.yml --ref "$TAG"` on the grounds that a
+`GITHUB_TOKEN`-created tag does not trigger a workflow. **That is wrong for
+this repo.** The manual dispatch races the tag-push run, and npm versions are
+immutable, so the second attempt fails on a version that already exists. It
+caused a double publish on 2026-09-25.
+
+To watch the run the tag started:
 
 ```bash
-gh workflow run publish.yml --ref "$TAG"
-
 RUN_ID="$(gh run list --workflow publish.yml --limit 20 \
   --json databaseId,headBranch,status,conclusion,url \
   --jq "map(select(.headBranch == \"${TAG}\")) | .[0].databaseId")"
 test -n "$RUN_ID"
 gh run watch "$RUN_ID" --exit-status
 ```
+
+**If `publish-mcp-registry` fails with `version 'X.Y.Z' was not found`, that is
+an npm propagation race, not a broken artifact.** npm takes minutes to serve a
+newly published version, and the registry job validates that npm actually has
+it. Recover with a failed-jobs-only re-run, which does not re-attempt the
+immutable npm publish:
+
+```bash
+gh run rerun "$RUN_ID" --failed
+```
+
+**Do not trust a local `npm view` to verify a release.** During 2.1.0 it served
+a stale `dist-tags.latest` and a 404 for a version that was already published.
+Query the registry directly, cache-busted:
+
+```bash
+curl -sS "https://registry.npmjs.org/@novalux12%2Fspotify-mcp?cb=$(date +%s)" \
+  | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d["dist-tags"])'
+```
+
+Also beware: a green **PR Labeler** check on the same SHA is not a passing
+suite. `pull_request_target` runs the Labeler, which typechecks nothing and runs
+no tests, while `pull_request` runs CI. A per-commit "one failure, one success"
+pairing is the two workflows, not a flaky test.
 
 The `Publish` workflow checks out the tagged commit, runs `npm ci`,
 `npx tsc --noEmit`, `npm test`, and `npm run build`, publishes
