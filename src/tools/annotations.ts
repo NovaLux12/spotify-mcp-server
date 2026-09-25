@@ -402,7 +402,7 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   manifestEntry('backup', 'library', 'src/tools/backup.ts', registerBackupTools, [2, 1489], { readOnlySafe: true, scopeKey: 'library' }),
   manifestEntry('restore', 'library', 'src/tools/restore.ts', registerRestoreTools, [1, 1874], { scopeKey: 'library' }),
   manifestEntry('undo', 'library', 'src/tools/undo.ts', registerUndoTools, [2, 1476], { scopeKey: 'library' }),
-  manifestEntry('receipts', 'library', 'src/tools/annotations.ts', (server) => {
+  manifestEntry('receipts', 'library', 'src/index.ts', (server) => {
     server.tool(
       'verify_receipt',
       'Verify that a previous mutation actually landed on Spotify by looking up its receipt',

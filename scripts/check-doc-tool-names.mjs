@@ -32,7 +32,11 @@ const parameterAllowlist = new Set([
   'time_range', 'to_genre', 'token_refresh', 'top_limit', 'track_count',
   'user_id', 'volume_percent', 'web_search',
 ]);
-const nonToolAllowlist = new Set([...prompts, ...resources, ...parameterAllowlist]);
+const documentedMetadata = new Set([
+  'toolset_trimmed', 'scope_blocked', 'read_only_hidden',
+  'deprecated_inputs', 'deprecation_note',
+]);
+const nonToolAllowlist = new Set([...prompts, ...resources, ...parameterAllowlist, ...documentedMetadata]);
 const markdownFiles = [
   'README.md',
   'SPEC.md',
@@ -87,7 +91,7 @@ function collectDocumentToolContractErrors(source, file, registry) {
 
 function checkBacktickToolNames(file, source, registry = census) {
   const knownTools = new Set(registry.toolNames);
-  const knownNonTools = new Set([...registry.promptNames, ...registry.resourceUris, ...parameterAllowlist]);
+  const knownNonTools = new Set([...registry.promptNames, ...registry.resourceUris, ...parameterAllowlist, ...documentedMetadata]);
   for (const match of source.matchAll(/`([a-z][a-z0-9]*(?:_[a-z0-9]+)+)`/g)) {
     const name = match[1];
     if (knownTools.has(name) || knownNonTools.has(name)) continue;

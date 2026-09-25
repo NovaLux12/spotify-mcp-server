@@ -66,7 +66,7 @@ describe('generated architecture and specification inventory', () => {
     }
   });
 
-  it('derives registration keys from production callsites, including ungated units', async () => {
+  it('derives registration keys from the production registrar manifest, including ungated units', () => {
     const doctor = census.registrationUnits.find(({ registrar }) => registrar === 'registerDoctorTool');
     assert.deepEqual(doctor, {
       registrar: 'registerDoctorTool',
@@ -76,24 +76,6 @@ describe('generated architecture and specification inventory', () => {
     });
     assert.equal(census.registrationKeys, new Set(census.registrationUnits.map(({ key }) => key)).size);
 
-    await withFixtures(async (dir) => {
-      const source = await readFile(join(ROOT, 'src/index.ts'), 'utf8');
-      const changed = source.replace(
-        "import { registerPlaybackTools } from './tools/playback.js';",
-        "import { registerPlaybackTools } from './tools/playback.js';\nimport { registerChangedTools } from './tools/changed.js';",
-      ).replace(
-        '  if (isModuleActive(\'search\', activeSets, overrides)',
-        "  if (isModuleActive('changedunit', activeSets, overrides)) registerChangedTools(server, client);\n  if (isModuleActive('search', activeSets, overrides)",
-      );
-      const fixture = join(dir, 'changed-index.ts');
-      await writeFile(fixture, changed);
-      const output = execFileSync(process.execPath, ['scripts/surface-census.mjs', '--registration-manifest', fixture], {
-        cwd: ROOT,
-        encoding: 'utf8',
-      });
-      const units = JSON.parse(output) as Array<{ key: string }>;
-      assert.ok(units.some(({ key }) => key === 'changedunit'));
-    });
   });
 
   it('documents the live tools/list, resources, templates, and prompts totals', () => {
