@@ -29,9 +29,9 @@ function makeStubClient(responder: Responder=()=>null){
     },
   }; return client;
 }
-function harness(responder: Responder=()=>null){
+function harness(responder: Responder=()=>null, extraServerKeys?:Record<string,unknown>){
   const registered: RegisteredTool[]=[];
-  const fakeServer={ tool(name:string,_d:string,schema:z.ZodRawShape,h:RegisteredTool['handler']){ registered.push({name,validate:(a)=>z.object(schema).parse(a),handler:h}); }, registerTool(name:string,cfg:{description?:string;inputSchema?:z.ZodType},h:RegisteredTool['handler']){ registered.push({name,validate:(a)=>(cfg.inputSchema as z.ZodType).parse(a),handler:h}); } } as unknown as McpServer;
+  const fakeServer={ ...(extraServerKeys??{}), tool(name:string,_d:string,schema:z.ZodRawShape,h:RegisteredTool['handler']){ registered.push({name,validate:(a)=>z.object(schema).parse(a),handler:h}); }, registerTool(name:string,cfg:{description?:string;inputSchema?:z.ZodType},h:RegisteredTool['handler']){ registered.push({name,validate:(a)=>(cfg.inputSchema as z.ZodType).parse(a),handler:h}); } } as unknown as McpServer;
   const client=makeStubClient(responder);
   registerPortabilityTools(fakeServer, client as unknown as SpotifyClient);
   return { registered, client, invoke: async(name:string,args:Record<string,unknown>)=>{ const t=registered.find(x=>x.name===name); assert.ok(t,`tool ${name} registered`); return t.handler(t.validate(args)); } };
@@ -241,5 +241,249 @@ describe('export_all_playlists CSV formula neutralisation (#630)',()=>{
       else process.env.SPOTIFY_MCP_HISTORY_DIR = prev;
       await rm(dir,{recursive:true,force:true});
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #637 + #736: import_from_sidecar
+// ---------------------------------------------------------------------------
+
+/** A canonical library URI of the given kind (Spotify ids are 22 base62 chars). */
+const uri=(kind:string,n:number)=>`spotify:${kind}:${String(n).padStart(22,'0')}`;
+const rows=(kind:string,count:number,start=1)=>Array.from({length:count},(_,i)=>({uri:uri(kind,start+i)}));
+
+/** A stub whose saved-state is real: /me/library/contains answers from a set
+ *  that PUT /me/library?uris= mutates, so a second import genuinely finds
+ *  everything already present. */
+const libraryStub=()=>{
+  const saved=new Set<string>();
+  const responder:Responder=(path,arg)=>{
+    if(path==='/me/library/contains'){
+      const list=String((arg as {uris?:string}|undefined)?.uris??'').split(',').filter(Boolean);
+      return list.map((u)=>saved.has(u));
+    }
+    if(path.startsWith('/me/library?uris=')){
+      for(const u of new URLSearchParams(path.slice('/me/library?'.length)).get('uris')!.split(',')) saved.add(u);
+      return null;
+    }
+    return null;
+  };
+  return {saved,responder};
+};
+
+const withSidecar=async<T>(doc:unknown,run:(p:string)=>Promise<T>)=>{
+  const dir=await mkdtemp(join(tmpdir(),'portability-import-'));
+  try{
+    const p=join(dir,'library.json');
+    await writeFile(p,JSON.stringify(doc));
+    return await run(p);
+  } finally { await rm(dir,{recursive:true,force:true}); }
+};
+const mutating=(c:{calls:RecordedCall[]})=>c.calls.filter((x)=>x.method==='PUT'||x.method==='POST'||x.method==='DELETE');
+const puts=(c:{calls:RecordedCall[]})=>c.calls.filter((x)=>x.method==='PUT');
+const urisOf=(c:RecordedCall)=>new URLSearchParams(c.path.split('?')[1]).get('uris')!.split(',');
+
+describe('import_from_sidecar (#637 validation + executed reporting)',()=>{
+  it('rejects malformed uri rows without sending them, and reports invalid',async()=>{
+    await withSidecar(
+      { tracks:[
+        { uri: uri('track',1) },
+        { uri: 'not-a-uri' },
+        { uri: 'spotify:track:tooshort' },
+        { name: 'no uri at all' },
+        { uri: 42 },
+      ] },
+      async (p)=>{
+        const {responder}=libraryStub();
+        const h=harness(responder);
+        const out=await h.invoke('import_from_sidecar',{ input_path:p, dry_run:false });
+        const payload=out.structuredContent!;
+        assert.equal(payload.invalid,4);
+        assert.equal(payload.added,1);
+        // The one valid URI is sent; nothing else ever reaches the wire.
+        assert.equal(mutating(h.client).length,1);
+        assert.deepEqual(urisOf(puts(h.client)[0]),[uri('track',1)]);
+        assert.match(textOf(out),/4 invalid row\(s\) skipped/);
+        assert.match(textOf(out),/added 1 item/);
+      },
+    );
+  });
+
+  it('sends nothing at all when every row is malformed',async()=>{
+    await withSidecar({ tracks: rows('track',0), albums:[{uri:'junk'},{uri:''}] }, async (p)=>{
+      const {responder}=libraryStub();
+      const h=harness(responder);
+      const out=await h.invoke('import_from_sidecar',{ input_path:p, dry_run:false });
+      assert.equal(h.client.calls.length,0,'a fully malformed sidecar must not reach the API');
+      assert.equal(out.structuredContent!.invalid,2);
+      assert.equal(out.structuredContent!.added,0);
+    });
+  });
+
+  it('never says "would be added" once the writes have run',async()=>{
+    await withSidecar({ tracks: rows('track',3) }, async (p)=>{
+      const {responder}=libraryStub();
+      const h=harness(responder);
+      const out=await h.invoke('import_from_sidecar',{ input_path:p, dry_run:false });
+      assert.doesNotMatch(textOf(out),/would/i);
+      assert.equal(out.structuredContent!.executed,true);
+      assert.equal(out.structuredContent!.added,3);
+    });
+  });
+
+  it('writes through the unified /me/library endpoint, never the deprecated /me/tracks',async()=>{
+    await withSidecar({ tracks: rows('track',3) }, async (p)=>{
+      const {responder}=libraryStub();
+      const h=harness(responder);
+      await h.invoke('import_from_sidecar',{ input_path:p, dry_run:false });
+      for(const c of mutating(h.client)) assert.match(c.path,/^\/me\/library\?uris=/);
+      assert.equal(h.client.calls.filter((c)=>c.path.startsWith('/me/tracks')).length,0);
+    });
+  });
+
+  it('mints no receipt on a run that wrote nothing',async()=>{
+    await withSidecar({ tracks: rows('track',3) }, async (p)=>{
+      const {responder}=libraryStub();
+      const h=harness(responder);
+      await h.invoke('import_from_sidecar',{ input_path:p, dry_run:false });
+      const second=await h.invoke('import_from_sidecar',{ input_path:p, dry_run:false });
+      // Everything is already saved: an empty-uri receipt would read VERIFIED
+      // with after=0 and imply a save that never happened.
+      assert.equal(second.structuredContent!.receipt,undefined);
+      assert.doesNotMatch(textOf(second),/VERIFIED|Receipt rcpt/);
+      assert.match(textOf(second),/already in the library/);
+    });
+  });
+
+  it('chunks 41 uris into 2 requests at the 40-uri library_writes cap',async()=>{
+    await withSidecar({ tracks: rows('track',41) }, async (p)=>{
+      const {responder}=libraryStub();
+      const h=harness(responder);
+      const out=await h.invoke('import_from_sidecar',{ input_path:p, dry_run:false });
+      const writes=puts(h.client);
+      assert.equal(writes.length,2);
+      assert.deepEqual(writes.map((w)=>urisOf(w).length),[40,1]);
+      assert.equal(out.structuredContent!.added,41);
+    });
+  });
+
+  it('reports skipped_existing and adds nothing on a second run',async()=>{
+    await withSidecar({ tracks: rows('track',4) }, async (p)=>{
+      const {responder}=libraryStub();
+      const h=harness(responder);
+      const first=await h.invoke('import_from_sidecar',{ input_path:p, dry_run:false });
+      assert.equal(first.structuredContent!.added,4);
+      const writesAfterFirst=puts(h.client).length;
+      const second=await h.invoke('import_from_sidecar',{ input_path:p, dry_run:false });
+      assert.equal(second.structuredContent!.added,0);
+      assert.equal(second.structuredContent!.skipped_existing,4);
+      assert.equal(puts(h.client).length,writesAfterFirst);
+    });
+  });
+
+  it('previews with zero API calls and keeps "would" for the dry run',async()=>{
+    await withSidecar({ tracks: rows('track',3), albums: rows('album',2) }, async (p)=>{
+      const {responder}=libraryStub();
+      const h=harness(responder);
+      const out=await h.invoke('import_from_sidecar',{ input_path:p });
+      assert.equal(h.client.calls.length,0,'a preview must not touch the API at all');
+      assert.equal(out.structuredContent!.executed,false);
+      assert.match(textOf(out),/would/i);
+      const plan=out.structuredContent!.collections as Record<string,{in_file:number}>;
+      assert.equal(plan.tracks.in_file,3);
+      assert.equal(plan.albums.in_file,2);
+    });
+  });
+
+  it('prompts via elicitation before the first large write',async()=>{
+    const prompts:string[]=[];
+    const order:string[]=[];
+    const elicitHost={
+      getClientCapabilities:()=>({elicitation:{}}),
+      elicitInput:async(req:{message:string})=>{ prompts.push(req.message); order.push('prompt'); return {action:'accept',content:{confirm:true}}; },
+    };
+    const prevConfirm=process.env.SPOTIFY_MCP_CONFIRM;
+    delete process.env.SPOTIFY_MCP_CONFIRM;
+    try{
+      await withSidecar({ tracks: rows('track',120) }, async (p)=>{
+        const {responder}=libraryStub();
+        const h=harness((path,arg)=>{ if(typeof path==='string'&&path.startsWith('/me/library?uris=')) order.push('put'); return responder(path,arg); }, { server: elicitHost });
+        const out=await h.invoke('import_from_sidecar',{ input_path:p, dry_run:false });
+        assert.equal(prompts.length,1,'one confirmation before the writes');
+        assert.match(prompts[0],/120 item/);
+        assert.equal(order[0],'prompt','the prompt must precede the write');
+        assert.ok(order.filter((o)=>o==='put').length>0);
+        assert.equal(out.structuredContent!.added,120);
+      });
+    } finally { if(prevConfirm===undefined) delete process.env.SPOTIFY_MCP_CONFIRM; else process.env.SPOTIFY_MCP_CONFIRM=prevConfirm; }
+  });
+
+  it('performs no write when the operator declines the gate',async()=>{
+    const elicitHost={
+      getClientCapabilities:()=>({elicitation:{}}),
+      elicitInput:async()=>({action:'decline'}),
+    };
+    const prevConfirm=process.env.SPOTIFY_MCP_CONFIRM;
+    delete process.env.SPOTIFY_MCP_CONFIRM;
+    try{
+      await withSidecar({ tracks: rows('track',120) }, async (p)=>{
+        const {responder}=libraryStub();
+        const h=harness(responder,{ server: elicitHost });
+        const out=await h.invoke('import_from_sidecar',{ input_path:p, dry_run:false });
+        assert.equal(mutating(h.client).length,0);
+        assert.equal(out.structuredContent!.cancelled,true);
+      });
+    } finally { if(prevConfirm===undefined) delete process.env.SPOTIFY_MCP_CONFIRM; else process.env.SPOTIFY_MCP_CONFIRM=prevConfirm; }
+  });
+});
+
+describe('import_from_sidecar (#736 restores every collection)',()=>{
+  it('restores all five collections with per-collection counts',async()=>{
+    const firstUri:Record<string,string>={ track:uri('track',1), album:uri('album',101), show:uri('show',201), episode:uri('episode',301), audiobook:uri('audiobook',401) };
+    const doc={
+      counts:{ tracks:2, albums:2, shows:2, episodes:2, audiobooks:2 },
+      tracks: rows('track',2,1),
+      albums: rows('album',2,101),
+      shows: rows('show',2,201),
+      episodes: rows('episode',2,301),
+      audiobooks: rows('audiobook',2,401),
+    };
+    await withSidecar(doc, async (p)=>{
+      const {responder}=libraryStub();
+      const h=harness(responder);
+      const out=await h.invoke('import_from_sidecar',{ input_path:p, dry_run:false });
+      const payload=out.structuredContent!;
+      assert.deepEqual(payload.imported,{ tracks:2, albums:2, shows:2, episodes:2, audiobooks:2 });
+      assert.equal(payload.added,10);
+      assert.deepEqual(payload.absent_keys,[]);
+      // Every one of the ten URIs actually reached the library endpoint.
+      const sent=puts(h.client).flatMap(urisOf);
+      assert.equal(sent.length,10);
+      for(const u of Object.values(firstUri)) assert.ok(sent.includes(u),`${u} never reached the endpoint`);
+    });
+  });
+
+  it('names a collection the file does not carry in absent_keys and in prose',async()=>{
+    await withSidecar({ tracks: rows('track',1) }, async (p)=>{
+      const {responder}=libraryStub();
+      const h=harness(responder);
+      const out=await h.invoke('import_from_sidecar',{ input_path:p, dry_run:false });
+      const absent=out.structuredContent!.absent_keys as string[];
+      for(const key of ['albums','shows','episodes','audiobooks']) assert.ok(absent.includes(key),`${key} must be disclosed as absent`);
+      assert.ok(!absent.includes('tracks'));
+      assert.match(textOf(out),/has no .*shows/);
+    });
+  });
+
+  it('discloses an absent key in the dry-run plan too',async()=>{
+    await withSidecar({ tracks: rows('track',1), shows: rows('show',1) }, async (p)=>{
+      const {responder}=libraryStub();
+      const h=harness(responder);
+      const out=await h.invoke('import_from_sidecar',{ input_path:p });
+      const payload=out.structuredContent!;
+      assert.deepEqual(payload.absent_keys,['albums','episodes','audiobooks']);
+      assert.deepEqual(payload.would_import,{ tracks:1, albums:0, shows:1, episodes:0, audiobooks:0 });
+      assert.match(textOf(out),/has no .*episodes/);
+    });
   });
 });

@@ -1,8 +1,42 @@
-import test from 'node:test';
+import test, { afterEach, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { registerCatalogTools, resetProfileCountryCache as resetCatalogMarketCache } from '../src/tools/catalog.js';
 import { SpotifyApiError } from '../src/client.js';
 import { registerAudiobookTools, resetProfileCountryCache as resetAudiobooksMarketCache } from '../src/tools/audiobooks.js';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { z } from 'zod';
+
+// The typed-search factory records every executed search to the local
+// sidecar (#766). Point it at a temp file so the suite never writes to the
+// developer's real ~/.spotify-mcp/search-history.json.
+let historyDir: string;
+let historyFile: string;
+beforeEach(async () => {
+  historyDir = await mkdtemp(join(tmpdir(), 'cat-sh-'));
+  historyFile = join(historyDir, 'search-history.json');
+  process.env.SPOTIFY_MCP_SEARCH_HISTORY_FILE = historyFile;
+  delete process.env.SPOTIFY_MCP_SEARCH_HISTORY;
+});
+afterEach(async () => {
+  delete process.env.SPOTIFY_MCP_SEARCH_HISTORY_FILE;
+  delete process.env.SPOTIFY_MCP_SEARCH_HISTORY;
+  await rm(historyDir, { recursive: true, force: true });
+});
+
+const HISTORY_ENTRY = z.object({
+  query: z.string(),
+  types: z.array(z.string()).optional(),
+  top_result_ids: z.array(z.string()),
+  limit: z.number().optional(),
+  market: z.string().optional(),
+  offset: z.number().optional(),
+});
+
+async function readHistory() {
+  return z.array(HISTORY_ENTRY).parse(JSON.parse(await readFile(historyFile, 'utf8')));
+}
 
 // ---------------------------------------------------------------- fixtures
 
@@ -1628,4 +1662,63 @@ test('#789 get_several_shows accepts id, URI and URL and joins bare ids on the w
 
 test('#789 get_several_audiobooks accepts id, URI and URL and joins bare ids on the wire', async () => {
   await assertSeveralJoinsBareIds('get_several_audiobooks', 'audiobook', '/audiobooks', 'audiobooks');
+});
+
+// ------------------------------------------------- search history recording
+
+test('a typed search records exactly one history entry, not one per registered tool (#766)', async () => {
+  const { registered } = makeHarness(registerCatalogTools, {
+    getResponse: (p) => (p === '/search' ? { tracks: { items: [{ id: 't1', name: 'Song', uri: 'spotify:track:t1' }], total: 1 } } : undefined),
+  });
+  // Seven typed search tools come from this one factory; one call must record
+  // one entry, and the other six must record nothing.
+  assert.equal(registered.filter((t) => t.name.startsWith('search_')).length, 7);
+  await invoke(findTool(registered, 'search_tracks'), { query: 'hello' });
+  const entries = await readHistory();
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0]!.query, 'hello');
+  assert.deepEqual(entries[0]!.types, ['track']);
+  assert.deepEqual(entries[0]!.top_result_ids, ['spotify:track:t1']);
+});
+
+test('a typed search records its market, offset and limit scope (#766)', async () => {
+  const { registered } = makeHarness(registerCatalogTools, {
+    getResponse: (p) => (p === '/search' ? { artists: { items: [{ id: 'ar1', name: 'Queen', uri: 'spotify:artist:ar1' }], total: 1 } } : undefined),
+  });
+  // MARKET_CODE uppercases before the handler runs; this harness calls the
+  // handler directly, so pass the normalised form the MCP layer would deliver.
+  await invoke(findTool(registered, 'search_artists'), { query: 'queen', market: 'DE', offset: 30, limit: 4 });
+  const [entry] = await readHistory();
+  assert.equal(entry!.market, 'DE');
+  assert.equal(entry!.offset, 30);
+  assert.equal(entry!.limit, 4);
+  assert.deepEqual(entry!.types, ['artist']);
+});
+
+test('a typed search in json mode still records the search (#766)', async () => {
+  const { registered } = makeHarness(registerCatalogTools, {
+    getResponse: (p) => (p === '/search' ? { albums: { items: [{ id: 'al1', name: 'Album', uri: 'spotify:album:al1' }], total: 1 } } : undefined),
+  });
+  await invoke(findTool(registered, 'search_albums'), { query: 'a night', response_format: 'json' });
+  const entries = await readHistory();
+  assert.equal(entries.length, 1);
+  assert.deepEqual(entries[0]!.types, ['album']);
+});
+
+test('a typed search that returns nothing records nothing (#766)', async () => {
+  const { registered } = makeHarness(registerCatalogTools, {
+    getResponse: (p) => (p === '/search' ? { tracks: { items: [], total: 0 } } : undefined),
+  });
+  await invoke(findTool(registered, 'search_tracks'), { query: 'zzz' });
+  await assert.rejects(readFile(historyFile, 'utf8'), { code: 'ENOENT' });
+});
+
+test('SPOTIFY_MCP_SEARCH_HISTORY=0 leaves the typed searches unrecorded (#766)', async () => {
+  process.env.SPOTIFY_MCP_SEARCH_HISTORY = '0';
+  const { registered } = makeHarness(registerCatalogTools, {
+    getResponse: (p) => (p === '/search' ? { tracks: { items: [{ id: 't1', name: 'Song', uri: 'spotify:track:t1' }], total: 1 } } : undefined),
+  });
+  const out = text(await invoke(findTool(registered, 'search_tracks'), { query: 'hello' }));
+  assert.match(out, /Song/);
+  await assert.rejects(readFile(historyFile, 'utf8'), { code: 'ENOENT' });
 });

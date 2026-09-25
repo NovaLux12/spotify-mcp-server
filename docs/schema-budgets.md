@@ -61,7 +61,7 @@ above either ceiling fails CI and server startup.
 |---|---:|---:|---:|---:|---:|---:|
 | search | 1 | 1,821 | 1 | 1,821 | 2 | 2,004 |
 | catalog | 31 | 27,013 | 31 | 27,013 | 32 | 29,715 |
-| library | 16 | 14,797 | 16 | 14,797 | 17 | 16,277 |
+| library | 16 | 14,957 | 16 | 14,957 | 17 | 16,453 |
 | playback | 16 | 12,023 | 16 | 12,023 | 17 | 13,226 |
 | following | 5 | 3,921 | 5 | 3,921 | 6 | 4,314 |
 | users | 2 | 1,613 | 2 | 1,613 | 3 | 1,775 |
@@ -79,7 +79,7 @@ above either ceiling fails CI and server startup.
 | doctor | 1 | 750 | 1 | 750 | 2 | 826 |
 | swarm3meta | 3 | 1,624 | 3 | 1,624 | 4 | 1,787 |
 | libraryanalytics | 4 | 3,350 | 4 | 3,350 | 5 | 3,686 |
-| portability | 11 | 9,159 | 11 | 9,159 | 12 | 10,075 |
+| portability | 11 | 9,514 | 11 | 9,514 | 12 | 10,466 |
 | libraryinsights | 3 | 2,751 | 3 | 2,751 | 4 | 3,027 |
 | libraryhygiene | 1 | 681 | 1 | 681 | 2 | 750 |
 | showradar | 1 | 1,675 | 1 | 1,675 | 2 | 1,843 |
@@ -93,7 +93,7 @@ above either ceiling fails CI and server startup.
 | episodemgmt | 1 | 1,053 | 1 | 1,053 | 2 | 1,159 |
 | freshness | 1 | 2,043 | 1 | 2,043 | 2 | 2,248 |
 | searchdive | 1 | 1,561 | 1 | 1,561 | 2 | 1,718 |
-| searchhistory | 2 | 1,004 | 2 | 1,004 | 3 | 1,105 |
+| searchhistory | 2 | 1,103 | 2 | 1,103 | 3 | 1,214 |
 | browse | 3 | 2,665 | 3 | 2,665 | 4 | 2,932 |
 | artistwatch | 6 | 5,567 | 6 | 5,567 | 7 | 6,124 |
 | queueops | 3 | 3,449 | 3 | 3,449 | 4 | 3,794 |

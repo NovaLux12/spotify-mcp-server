@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { MARKET_CODE } from './catalog.js';
+import { recordSearch } from './searchhistory.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
 import type {
@@ -108,6 +109,24 @@ export function registerSearchTools(server: McpServer, client: SpotifyClient): v
         return { content: [{ type: 'text', text: 'No results found.' }] };
       }
 
+      const all = results as SearchResults;
+      // #766: this is the only thing that ever writes the sidecar the
+      // search_history / search_rerun / search_history_stats readers read.
+      // recordSearch is best-effort: an unwritable sidecar must not fail a
+      // search, so it swallows its own errors.
+      const ranked: unknown[] = [];
+      for (const type of types) ranked.push(...(all[`${type}s`]?.items ?? []));
+      if (ranked.length > 0) {
+        await recordSearch({
+          query: args.query,
+          types,
+          items: ranked,
+          limit,
+          market: args.market,
+          offset: args.offset,
+        });
+      }
+
       // json mode (#51): raw API object — every field the prose drops stays
       // reachable for chaining agents. Spread keeps this a checked literal
       // assignable to Record<string, unknown> without an unchecked cast.
@@ -119,7 +138,6 @@ export function registerSearchTools(server: McpServer, client: SpotifyClient): v
         };
       }
 
-      const all = results as SearchResults;
       const cap = resolveMaxResults(args.max_results);
       const detailed = args.response_format === 'detailed';
 

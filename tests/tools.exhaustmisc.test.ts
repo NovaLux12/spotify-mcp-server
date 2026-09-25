@@ -60,6 +60,11 @@ describe('exhaustmisc — mop-up 10 tools', () => {
     assert.equal((res.structuredContent as { matched: number }).matched, 1);
   });
 
+  // Isolate from the developer's real ~/.spotify-mcp/search-history.json. This
+  // test passes only because nothing used to write there; now that the search
+  // tools record history, a non-empty home sidecar makes it fail on any machine.
+  initConfig({ SPOTIFY_MCP_SEARCH_HISTORY_FILE: '/tmp/smcp-exhaustmisc-test-search-history.json' });
+
   it('search_history_stats handles missing file gracefully', async () => {
     let captured: unknown = null;
     const server = {

@@ -685,20 +685,30 @@ export function registerLibraryTools(server: McpServer, client: SpotifyClient): 
   // get_saved_counts (#296, #749)
   server.tool(
     'get_saved_counts',
-    "Library size snapshot: total counts for tracks/albums/shows/episodes/audiobooks/playlists via limit=1 reads — no item paging. A collection that could not be read (rate limited, gated, or erroring) is reported as unreadable with its reason and left out of the total — it is never reported as 0. One attempt per collection: a rate limit is surfaced, not retried. Quota: 🟢 6 GETs.",
+    "Library size snapshot: counts for tracks/albums/shows/episodes/audiobooks/playlists via limit=1 reads — no item paging. The total covers library saves only: playlists are owned and followed collections, so their count is reported alongside the library rows and excluded from the total. A collection that could not be read (rate limited, gated, or erroring) is reported as unreadable with its reason and left out of the total — it is never reported as 0. One attempt per collection: a rate limit is surfaced, not retried. Quota: 🟢 6 GETs.",
     {
       response_format: ResponseFormat,
     },
     async (args) => {
       const rf = args.response_format;
-      const endpoints: Array<[string, string]> = [
+      // `/me/playlists` is owned *and* followed collections, not a save: it is
+      // a different kind of thing from the five library-save collections, and
+      // folding it into "how big is this user's library" is a category error
+      // that inflates the number a caller sizes a backup or budget from. It is
+      // still read and still reported — just not as a library row, and never
+      // in the total (#749).
+      const libraryEndpoints: Array<[string, string]> = [
         ['tracks', '/me/tracks'],
         ['albums', '/me/albums'],
         ['shows', '/me/shows'],
         ['episodes', '/me/episodes'],
         ['audiobooks', '/me/audiobooks'],
-        ['playlists', '/me/playlists'],
       ];
+      const nonLibraryEndpoints: Array<[string, string]> = [['playlists', '/me/playlists']];
+      const NON_LIBRARY_REASON = 'owned and followed playlists are a separate collection, not a library save';
+      const libraryKeys = new Set(libraryEndpoints.map(([key]) => key));
+      const nonLibraryKeys = new Set(nonLibraryEndpoints.map(([key]) => key));
+      const endpoints = [...libraryEndpoints, ...nonLibraryEndpoints];
       // A count is only recorded when the read actually produced one (#749).
       // Anything else — a thrown 429/403/5xx, a null body, a missing or
       // non-numeric `total` — is "could not read", which is a different fact
@@ -736,25 +746,56 @@ export function registerLibraryTools(server: McpServer, client: SpotifyClient): 
           };
         }
       }
-      const total = Object.values(counts).reduce((a, b) => a + b, 0);
+      // The total is over library saves only. `counts.playlists` is still
+      // reported, under the same key as before, but a playlist is not a
+      // saved track or album, so folding one into "how big is this library"
+      // produces a number no caller can reason about (#749).
+      const libraryCounts = Object.fromEntries(
+        Object.entries(counts).filter(([k]) => libraryKeys.has(k)),
+      );
+      const total = Object.values(libraryCounts).reduce((a, b) => a + b, 0);
       const unreadableKeys = Object.keys(unreadable);
+      // Only a library collection missing from the read can make the total
+      // partial; an unreadable playlist count leaves the library figure whole.
+      const libraryUnreadableKeys = unreadableKeys.filter((k) => libraryKeys.has(k));
       const lines = ['Library counts:'];
-      for (const [k, v] of Object.entries(counts)) lines.push(`  ${k}: ${v}`);
-      for (const k of unreadableKeys) lines.push(`  ${k}: unreadable — ${unreadable[k].message}`);
+      for (const [k, v] of Object.entries(libraryCounts)) lines.push(`  ${k}: ${v}`);
+      // Non-library collections get their own block, never a library row.
+      for (const [k, v] of Object.entries(counts)) {
+        if (nonLibraryKeys.has(k)) lines.push(`  ${k}: ${v} — not a library collection (${NON_LIBRARY_REASON})`);
+      }
+      for (const k of unreadableKeys) {
+        lines.push(
+          nonLibraryKeys.has(k)
+            ? `  ${k}: unreadable — ${unreadable[k].message} (not a library collection; the total is unaffected)`
+            : `  ${k}: unreadable — ${unreadable[k].message}`,
+        );
+      }
+      const notes: string[] = [];
+      if (libraryUnreadableKeys.length > 0) {
+        notes.push(
+          `${libraryUnreadableKeys.length} unreadable (${libraryUnreadableKeys.join(', ')}) and excluded from this total`,
+        );
+      }
+      if (nonLibraryKeys.size > 0) {
+        notes.push(`${[...nonLibraryKeys].join(', ')} excluded from this total — ${NON_LIBRARY_REASON}`);
+      }
       lines.push(
-        unreadableKeys.length === 0
+        notes.length === 0
           ? `Total: ${total}`
-          : `Total: ${total} — across ${Object.keys(counts).length} of ${endpoints.length} collections; ` +
-              `${unreadableKeys.length} unreadable (${unreadableKeys.join(', ')}) and excluded from this total.`,
+          : `Total: ${total} — across ${Object.keys(libraryCounts).length} of ${libraryEndpoints.length} library collections; ${notes.join('; ')}.`,
       );
       const payload = {
         counts,
         total,
         unreadable,
         unreadable_count: unreadableKeys.length,
-        collections_read: Object.keys(counts).length,
-        collections_total: endpoints.length,
-        total_is_partial: unreadableKeys.length > 0,
+        collections_read: Object.keys(libraryCounts).length,
+        collections_total: libraryEndpoints.length,
+        total_is_partial: libraryUnreadableKeys.length > 0,
+        excluded_from_total: Object.fromEntries(
+          [...nonLibraryKeys].map((k) => [k, NON_LIBRARY_REASON]),
+        ),
       };
       if (rf === 'json') return { content: [{ type: 'text', text: JSON.stringify(payload, null, 2) }], structuredContent: payload };
       return shapeResult(rf as ResponseFormatValue, lines.join('\n'), payload as unknown as Record<string, unknown>);

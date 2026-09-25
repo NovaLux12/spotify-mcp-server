@@ -1,6 +1,39 @@
-import test from 'node:test';
+import test, { afterEach, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { registerSearchDeepTool } from '../src/tools/searchdive.js';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { z } from 'zod';
+
+// search_deep records the window it walked (#766); keep that sidecar in a
+// temp dir so the suite never writes to the developer's real home store.
+let historyDir: string;
+let historyFile: string;
+beforeEach(async () => {
+  historyDir = await mkdtemp(join(tmpdir(), 'dive-sh-'));
+  historyFile = join(historyDir, 'search-history.json');
+  process.env.SPOTIFY_MCP_SEARCH_HISTORY_FILE = historyFile;
+  delete process.env.SPOTIFY_MCP_SEARCH_HISTORY;
+});
+afterEach(async () => {
+  delete process.env.SPOTIFY_MCP_SEARCH_HISTORY_FILE;
+  delete process.env.SPOTIFY_MCP_SEARCH_HISTORY;
+  await rm(historyDir, { recursive: true, force: true });
+});
+
+const HISTORY_ENTRY = z.object({
+  query: z.string(),
+  types: z.array(z.string()).optional(),
+  top_result_ids: z.array(z.string()),
+  limit: z.number().optional(),
+  market: z.string().optional(),
+  offset: z.number().optional(),
+});
+
+async function readHistory() {
+  return z.array(HISTORY_ENTRY).parse(JSON.parse(await readFile(historyFile, 'utf8')));
+}
 
 // ---------------------------------------------------------------- fixtures
 
@@ -297,4 +330,35 @@ test('a truncated window footer advertises offset, not a fetch_all this tool lac
   const out = text(result);
   assert.match(out, /\(15 more — raise max_results, continue with offset\)/);
   assert.doesNotMatch(out, /fetch_all/);
+});
+
+// ------------------------------------------------- search history recording
+
+test('search_deep records the window it walked (#766)', async () => {
+  const { registered } = makeHarness({ getResponse: (_p, params) => fullTrackPage(Number(params?.offset ?? 0)) });
+  await invoke(findTool(registered, 'search_deep'), { query: 'queen', pages: 2, market: 'GB', offset: 20 });
+  const entries = await readHistory();
+  assert.equal(entries.length, 1, 'one walk, one entry — not one per page');
+  assert.equal(entries[0]!.query, 'queen');
+  assert.deepEqual(entries[0]!.types, ['track']);
+  // The window the walk started at is what a replay must resume from.
+  assert.equal(entries[0]!.offset, 20);
+  assert.equal(entries[0]!.market, 'GB');
+  // A rerun is a single /search, so the recorded limit is the per-request one.
+  assert.equal(entries[0]!.limit, 10);
+  assert.deepEqual(entries[0]!.top_result_ids, ['spotify:track:trk-20', 'spotify:track:trk-21', 'spotify:track:trk-22']);
+});
+
+test('search_deep records nothing when the walk returns no rows (#766)', async () => {
+  const { registered } = makeHarness({ getResponse: () => ({ tracks: { total: 0, items: [] } }) });
+  await invoke(findTool(registered, 'search_deep'), { query: 'zzz' });
+  await assert.rejects(readFile(historyFile, 'utf8'), { code: 'ENOENT' });
+});
+
+test('SPOTIFY_MCP_SEARCH_HISTORY=0 leaves search_deep unrecorded but still returns rows (#766)', async () => {
+  process.env.SPOTIFY_MCP_SEARCH_HISTORY = '0';
+  const { registered } = makeHarness({ getResponse: (_p, params) => fullTrackPage(Number(params?.offset ?? 0)) });
+  const out = text(await invoke(findTool(registered, 'search_deep'), { query: 'queen' }));
+  assert.match(out, /Song 0/);
+  await assert.rejects(readFile(historyFile, 'utf8'), { code: 'ENOENT' });
 });
