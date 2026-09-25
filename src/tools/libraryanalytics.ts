@@ -178,6 +178,10 @@ export function registerLibraryAnalyticsTools(server: McpServer, client: Spotify
       // A playlist whose items could not be read is neither empty nor scanned:
       // it is recorded so the coverage verdict can say how complete it is (#739).
       const unreadablePlaylists: Array<{ playlist_id: string; name: string | null; error: string }> = [];
+      // A playlist whose item walk reached scan_cap is neither unreadable nor
+      // fully read: only its head was walked, so the ids past the cap are
+      // invisible (#741). It is recorded rather than counted as read.
+      const cappedPlaylists: Array<{ playlist_id: string; name: string | null }> = [];
       let legacyFallbacks = 0;
       // per-playlist quota guard: break on 429 and keep partial ids
       let quotaAtPlaylist: string | null = null;
@@ -220,6 +224,12 @@ export function registerLibraryAnalyticsTools(server: McpServer, client: Spotify
             error: failure instanceof Error ? failure.message : String(failure),
           });
           continue;
+        }
+        // Every playlist item walk is capped at scanCap. A cap reached here
+        // hides the rest of the playlist: saved tracks past it are reported as
+        // orphans that do not exist, and unsaved items past it go uncounted.
+        if (items.length >= scanCap) {
+          cappedPlaylists.push({ playlist_id: pl.id, name: pl.name ?? null });
         }
         const ids: string[] = [];
         for (const it of items) {
@@ -269,8 +279,11 @@ export function registerLibraryAnalyticsTools(server: McpServer, client: Spotify
       const coverageRatio = totalSaved === 0 ? 0 : 1 - orphans.length / totalSaved;
       const playlistsAvailable = allPlaylists.length;
       const playlistsSkipped = Math.max(0, playlistsAvailable - playlists.length);
-      // Complete only when every available playlist was both selected and read.
-      const coverageComplete = unreadablePlaylists.length === 0 && playlistsSkipped === 0;
+      // Complete only when every available playlist was selected AND its items
+      // were walked without hitting the cap. A capped playlist is a partial
+      // read, so it makes the ratio a lower bound exactly as an unreadable or
+      // skipped one does (#741).
+      const coverageComplete = unreadablePlaylists.length === 0 && playlistsSkipped === 0 && cappedPlaylists.length === 0;
 
       const t = truncateItems(orphans, maxResults);
       const pagination = paginationInfo({ total: t.total, returned: t.returned });
@@ -292,10 +305,13 @@ export function registerLibraryAnalyticsTools(server: McpServer, client: Spotify
         }
       }
 
-      const truncated = savedTracks.length >= scanCap || playlistsAvailable >= scanCap;
+      const truncated = savedTracks.length >= scanCap || playlistsAvailable >= scanCap || cappedPlaylists.length > 0;
       if (truncated) lines.push(`(scan truncated at scan_cap=${scanCap} — coverage verdict may be incomplete)`);
       if (playlistsSkipped > 0) {
         lines.push(`(only the first ${playlists.length} of ${playlistsAvailable} playlists were scanned — orphans may be over-reported; raise max_playlists)`);
+      }
+      if (cappedPlaylists.length > 0) {
+        lines.push(`(${cappedPlaylists.length} playlist(s) hit scan_cap=${scanCap} — only the first ${scanCap} item(s) of each were read; orphans may be over-reported and unsaved counts are lower bounds: ${cappedPlaylists.map((c) => c.name ?? c.playlist_id).join(', ')})`);
       }
       if (unreadablePlaylists.length > 0) {
         lines.push(`(${unreadablePlaylists.length} playlist(s) could not be read — coverage is a lower bound: ${unreadablePlaylists.map((u) => `${u.name ?? u.playlist_id} (${u.error})`).join(', ')})`);
@@ -315,6 +331,7 @@ export function registerLibraryAnalyticsTools(server: McpServer, client: Spotify
         playlists_scanned: playlists.length,
         playlists_skipped: playlistsSkipped,
         unreadable_playlists: unreadablePlaylists,
+        capped_playlists: cappedPlaylists,
         legacy_fallbacks: legacyFallbacks,
         unsaved_playlist_items: unsavedByPlaylist,
         total_unsaved: unsavedByPlaylist.reduce((a, b) => a + b.unsaved_count, 0),
@@ -590,7 +607,11 @@ export function registerLibraryAnalyticsTools(server: McpServer, client: Spotify
       const lb = lookback ?? 6;
       const maxResults = cap({ max_results });
 
-      const tracks = await client.getAllPages<SavedTrackItem>('/me/tracks', { limit: '50' }, { maxItems: getConfig().fetchAllCap });
+      // The one walk this tool makes is capped, so every number it derives is a
+      // walk over at most fetchAllCap of the library (#741).
+      const walkCap = getConfig().fetchAllCap;
+      const tracks = await client.getAllPages<SavedTrackItem>('/me/tracks', { limit: '50' }, { maxItems: walkCap });
+      const tracksCapped = tracks.length >= walkCap;
       const keys = enumeratePeriods(p, lb);
       const keySet = new Set(keys);
 
@@ -636,7 +657,7 @@ export function registerLibraryAnalyticsTools(server: McpServer, client: Spotify
       if (tracks.length === 0) {
         lines.push('No saved tracks — nothing to trend.');
       } else {
-        lines.push(`Genre trends (${p}, last ${lb} period(s), ${tracks.length} saved tracks):`);
+        lines.push(`Genre trends (${p}, last ${lb} period(s), ${tracks.length} saved tracks${tracksCapped ? ` — walk capped at ${walkCap}, so every count below is a lower bound` : ''}):`);
         for (const pr of periods) {
           const top = pr.top_genres.map((g) => `${g.genre}(${g.count})`).join(', ') || '—';
           lines.push(`  ${pr.period}: ${top}`);
@@ -653,6 +674,8 @@ export function registerLibraryAnalyticsTools(server: McpServer, client: Spotify
         emerging,
         declining,
         total_saved_tracks: tracks.length,
+        scan_cap: walkCap,
+        truncated: tracksCapped,
       };
       return shapeResult(rf, lines.join('\n'), payload);
     },
