@@ -627,15 +627,41 @@ export class SpotifyClient {
    * continue from there instead of restarting at offset 0. Cursor-paginated
    * endpoints (e.g. followed artists, which use an `after` cursor instead of
    * offset/total) are NOT supported by this helper.
+   *
+   * The returned array is silently capped. A caller that must REPORT that
+   * (#864 — no "all clear" verdict off a partial scan) uses
+   * `getAllPagesWithTruncation`; this method keeps the bare-array signature
+   * the ~35 callers that do not report truncation depend on.
    */
   async getAllPages<T>(
     path: string,
     params?: Record<string, string>,
     opts?: { maxItems?: number; initialOffset?: number },
   ): Promise<T[]> {
+    return (await this.getAllPagesWithTruncation<T>(path, params, opts)).items;
+  }
+
+  /**
+   * `getAllPages` plus the truncation verdict for THIS walk (#864).
+   *
+   * The verdict is RETURNED, never stored on the client. The MCP SDK
+   * dispatches `tools/call` without awaiting — protocol.js fires
+   * `_onrequest` straight from the transport's onmessage — so two
+   * overlapping calls interleave their awaits on ONE shared client and a
+   * stored flag would answer with whichever walk finished last, not the walk
+   * the caller just made.
+   */
+  async getAllPagesWithTruncation<T>(
+    path: string,
+    params?: Record<string, string>,
+    opts?: { maxItems?: number; initialOffset?: number },
+  ): Promise<{ items: T[]; truncated: boolean }> {
     const maxItems = opts?.maxItems ?? this.fetchAllCap;
     const all: T[] = [];
     let offset = opts?.initialOffset ?? 0;
+    // #864: a bare array cannot distinguish "read everything" from "stopped at
+    // the cap", so the verdict travels with the result rather than on the
+    // client.
     // Monotonic per-walk id; index.ts forwards it as the MCP progressToken.
     const walkId = ++this.walkCounter;
     let pageNumber = 0;
@@ -661,13 +687,27 @@ export class SpotifyClient {
           // Progress is best-effort; a throwing reporter must never break a walk.
         }
       }
-      if (all.length >= maxItems) return all.slice(0, maxItems);
+      if (all.length >= maxItems) {
+        // The cap bit. It only TRUNCATED something if rows really are missing:
+        // either the slice dropped overflow the page had already delivered, or
+        // the server's `total` says the walk stopped short of the end. An
+        // endpoint that reports no total gives us nothing to prove
+        // completeness against, so that case stays conservatively truncated.
+        return {
+          items: all.slice(0, maxItems),
+          truncated:
+            all.length > maxItems
+            || typeof page.total !== 'number'
+            || all.length < page.total,
+        };
+      }
       const limit = typeof page.limit === 'number' && page.limit > 0 ? page.limit : page.items.length;
       offset += limit;
       if (page.items.length === 0 || page.items.length < limit) break;
       if (typeof page.total === 'number' && offset >= page.total) break;
     }
-    return all;
+    // Reached the end of the data on its own terms: nothing was cut off.
+    return { items: all, truncated: false };
   }
 
   // Parse a successful response body as JSON, or null for 204 / non-JSON
