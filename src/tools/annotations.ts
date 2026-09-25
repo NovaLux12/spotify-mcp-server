@@ -105,17 +105,30 @@ import { SpotifyApiError } from '../client.js';
  */
 export const TOOL_SURFACE_BUDGET = Object.freeze({
   defaultMaxTools: 620,
-  // Raised 600_000 -> 610_000 (2026-09-26). The growth is real and bought: tool
-  // descriptions that disclose a truncation cap, a scope requirement, a retention
-  // duty or a cloud-sync risk instead of implying completeness. HOST-PAYLOAD
-  // IMPACT per AGENTS.md §3: this is the aggregate serialized
-  // {description, inputSchema} budget across all 592 tools, so the ceiling moving
-  // 600KB -> 610KB is +10KB of worst-case tool-definition payload per host
-  // session, +1.7%. Measured at the raise: 601,171B, i.e. 171B over the old
-  // ceiling and 8,829B of headroom after it. Revisit if a later change wants more
-  // than that — the budget exists to force a deliberate decision, not to be
-  // raised reflexively by every PR that adds a sentence.
-  defaultMaxBytes: 610_000,
+  // Raised 600_000 -> 601_000 (2026-09-26), then +9,000B of headroom on 2026-09-27
+  // after review showed the first raise was 19x its warrant. Read the numbers
+  // below before sizing another raise; AGENTS.md §3 requires this record to be
+  // accurate about host-session payload impact, and my first attempt at it was not.
+  //
+  // WHAT IS MEASURED: `collectAggregateSurfaceMeasurement` serialises each tool
+  // as {name, title, description, inputSchema, annotations, execution, _meta} and
+  // budgets the total. It is NOT a {description, inputSchema}-only figure — the
+  // per-module baselines (which use `serializedSchemaBytes`, description +
+  // inputSchema only) sum to 532,210B against a measured aggregate of 601,171B.
+  // The 68,961B difference (11.5% of the budgeted payload) is tool names, titles,
+  // annotations and execution metadata. Size future raises against the AGGREGATE
+  // number, not the per-module one.
+  //
+  // WARRANT: measured 600,647B -> 601,171B (+524B) across the merge that added
+  // `include_track_features` to `artist_collab_network`. 171B of that breached the
+  // old 601,000B ceiling. That is the whole justification.
+  //
+  // HEADROOM: the enforced limit is `defaultMaxBytes + 1_000` (that 1KB covers
+  // final MCP annotation metadata added after registration), so 602,000B is the
+  // real ceiling and measured 601,171B leaves 829B. Tight on purpose: the next
+  // real breach should land inside the conversation this budget exists to force,
+  // not be pre-authorised by slack I invented.
+  defaultMaxBytes: 601_000,
   perToolMaxBytes: 6_000,
   coreMaxTools: 200,
   coreMaxBytes: 220_000,
