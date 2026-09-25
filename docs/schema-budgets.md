@@ -81,7 +81,7 @@ above either ceiling fails CI and server startup.
 | libraryanalytics | 4 | 3,350 | 4 | 3,350 | 5 | 3,686 |
 | portability | 11 | 9,514 | 11 | 9,514 | 12 | 10,466 |
 | libraryinsights | 3 | 2,751 | 3 | 2,751 | 4 | 3,027 |
-| libraryhygiene | 1 | 681 | 1 | 681 | 2 | 750 |
+| libraryhygiene | 1 | 734 | 1 | 734 | 2 | 808 |
 | showradar | 1 | 1,675 | 1 | 1,675 | 2 | 1,843 |
 | saveddedupe | 1 | 1,562 | 1 | 1,562 | 2 | 1,719 |
 | podcastsession | 2 | 2,759 | 2 | 2,759 | 3 | 3,035 |
@@ -95,7 +95,7 @@ above either ceiling fails CI and server startup.
 | searchdive | 1 | 1,561 | 1 | 1,561 | 2 | 1,718 |
 | searchhistory | 2 | 1,103 | 2 | 1,103 | 3 | 1,214 |
 | browse | 3 | 2,665 | 3 | 2,665 | 4 | 2,932 |
-| artistwatch | 6 | 5,567 | 6 | 5,567 | 7 | 6,124 |
+| artistwatch | 6 | 5,944 | 6 | 5,944 | 7 | 6,539 |
 | queueops | 3 | 3,449 | 3 | 3,449 | 4 | 3,794 |
 | playbackext | 13 | 7,857 | 13 | 7,857 | 14 | 8,643 |
 | playbackintel | 15 | 11,663 | 15 | 11,663 | 16 | 12,830 |
