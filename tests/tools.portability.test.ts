@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { z } from 'zod';
-import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -126,5 +126,35 @@ describe('export_followed_artists',()=>{
       assert.match(csv,/Artist One/);
       assert.match(csv,/rock;pop/);
     } finally { await rm(dir,{recursive:true,force:true}); }
+  });
+});
+
+describe('import_profile_state: mutations_history file mode (#628)',()=>{
+  it('tightens a pre-existing world-readable ledger to 0600 and 0700 on the directory',async()=>{
+    const dir=await mkdtemp(join(tmpdir(),'portability-hist-'));
+    const histDir=join(dir,'history');
+    await mkdir(histDir,{recursive:true,mode:0o755});
+    const histPath=join(histDir,'mutations.jsonl');
+    await writeFile(histPath,'{"method":"PUT","path":"/me/library"}\n');
+    await chmod(histPath,0o644);
+    await chmod(histDir,0o755);
+    const prev=process.env.SPOTIFY_MCP_HISTORY_DIR;
+    process.env.SPOTIFY_MCP_HISTORY_DIR=histDir;
+    try{
+      const archive=join(dir,'state.json');
+      await writeFile(archive,JSON.stringify({
+        schema_version:1,
+        stores:{ mutations_history:[{ method:'DELETE', path:'/me/library', target:'abc' }] },
+      }));
+      const { invoke }=harness();
+      await invoke('import_profile_state',{ input_path:archive, mode:'overwrite', response_format:'concise' });
+
+      assert.equal((await stat(histPath)).mode & 0o777,0o600);
+      assert.equal((await stat(histDir)).mode & 0o777,0o700);
+    } finally {
+      if (prev === undefined) delete process.env.SPOTIFY_MCP_HISTORY_DIR;
+      else process.env.SPOTIFY_MCP_HISTORY_DIR = prev;
+      await rm(dir,{recursive:true,force:true});
+    }
   });
 });

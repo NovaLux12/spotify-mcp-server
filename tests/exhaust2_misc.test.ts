@@ -432,6 +432,19 @@ describe('exhaust2_misc — 27-tool misc slice', () => {
     assert.ok(csv.content[0].text.startsWith('ts,who,method,path,snapshot_id'));
   });
 
+  // #628: a huge ledger must not be loaded whole to render an audit table.
+  it('mutation_log_export reports a bounded window for a 5,000-record ledger', async () => {
+    const big = Array.from({ length: 5000 }, (_, i) =>
+      JSON.stringify({ ts: new Date(Date.UTC(2026, 8, 1, 0, 0, i % 60, i)).toISOString(), who: 'agent', method: 'PUT', path: '/me/library' }),
+    ).join('\n');
+    writeFileSync(join(tmp, 'history', 'mutations.jsonl'), big + '\n');
+    const h = getHandler('mutation_log_export', makeClient());
+    const res = await h({ format: 'csv', response_format: 'concise' });
+    const data = res.structuredContent as { total?: number; rows?: number };
+    assert.equal(data.total, 500, 'reader caps the record window instead of loading all 5,000');
+    assert.ok((res.content[0].text.match(/\n"/g) ?? []).length <= 500);
+  });
+
   // #424
   it('undo_preview reports an unknown receipt gracefully', async () => {
     const h = getHandler('undo_preview', makeClient());
