@@ -5,6 +5,7 @@ import {
   __setTasteCompositeFetchImpl,
   __resetTasteCompositeFetchImpl,
 } from '../src/tools/taste_composites.js';
+import { SpotifyApiError } from '../src/client.js';
 
 // ---------------------------------------------------------------- fixtures
 
@@ -16,9 +17,65 @@ type ToolContent = {
 type RegisteredTool = {
   name: string;
   description: string;
-  schema: Record<string, { safeParse(value: unknown): { success: boolean } }>;
+  schema: Record<string, { safeParse(value: unknown): { success: boolean; data?: unknown } }>;
   handler: (args: Record<string, unknown>) => Promise<ToolContent>;
 };
+
+/** One recorded Spotify wire call — the assertions read these, not prose. */
+type WireCall = {
+  method: 'get' | 'post' | 'put' | 'delete';
+  path: string;
+  params?: Record<string, string>;
+  body?: unknown;
+};
+
+/** Fake SpotifyClient that records every wire call. */
+type RecordingClient = {
+  calls: WireCall[];
+  /** Substring of the /search q → URIs returned for it. Anything unmatched returns no items. */
+  searchHits: Record<string, string[]>;
+  /** Substring of the /search q → error thrown instead of an answer. `'*'` throws for every search. */
+  searchThrows: Record<string, Error>;
+  playlistId: string | null;
+  get(path: string, params?: Record<string, string>): Promise<unknown>;
+  post(path: string, body?: unknown): Promise<unknown>;
+  put(path: string, body?: unknown): Promise<unknown>;
+  delete(path: string, body?: unknown): Promise<unknown>;
+};
+
+function makeClient(): RecordingClient {
+  const client: RecordingClient = {
+    calls: [],
+    searchHits: {},
+    searchThrows: {},
+    playlistId: 'PL-1',
+    async get(path, params) {
+      client.calls.push({ method: 'get', path, params });
+      if (path !== '/search') return null;
+      const q = params?.q ?? '';
+      const boom = Object.entries(client.searchThrows).find(([needle]) => needle === '*' || q.includes(needle));
+      if (boom) throw boom[1];
+      const hit = Object.entries(client.searchHits).find(([needle]) => q.includes(needle));
+      return { tracks: { items: (hit?.[1] ?? []).map((uri) => ({ uri, id: uri.split(':').pop() })) } };
+    },
+    async post(path, body) {
+      client.calls.push({ method: 'post', path, body });
+      if (path === '/me/playlists') {
+        return client.playlistId ? { id: client.playlistId, external_urls: { spotify: `https://open.spotify.com/playlist/${client.playlistId}` } } : {};
+      }
+      return { snapshot_id: 'snap-post' };
+    },
+    async put(path, body) {
+      client.calls.push({ method: 'put', path, body });
+      return { snapshot_id: 'snap-put' };
+    },
+    async delete(path, body) {
+      client.calls.push({ method: 'delete', path, body });
+      return null;
+    },
+  };
+  return client;
+}
 
 function streamRow(trackId: string, trackName: string, artist: string, iso: string) {
   return {
@@ -116,21 +173,29 @@ function installFixtures() {
   });
 }
 
-function makeHarness() {
+const writes = (client: RecordingClient): WireCall[] =>
+  client.calls.filter((c) => c.method !== 'get');
+function makeHarness(client: RecordingClient = makeClient()) {
   const registered: RegisteredTool[] = [];
   const server = {
+    // The SDK accepts both tool(name, description, schema, cb) and
+    // tool(name, description, schema, annotations, cb); the fake must too.
     tool: (
       name: string,
       description: string,
       schema: RegisteredTool['schema'],
-      handler: RegisteredTool['handler'],
-    ) => registered.push({ name, description, schema, handler }),
+      annotationsOrHandler: unknown,
+      maybeHandler?: unknown,
+    ) => {
+      const handler = (typeof maybeHandler === 'function' ? maybeHandler : annotationsOrHandler) as RegisteredTool['handler'];
+      registered.push({ name, description, schema, handler });
+    },
   };
   registerTasteCompositeTools(
     server as unknown as Parameters<typeof registerTasteCompositeTools>[0],
-    {} as unknown as Parameters<typeof registerTasteCompositeTools>[1],
+    client as unknown as Parameters<typeof registerTasteCompositeTools>[1],
   );
-  return { registered };
+  return { registered, client };
 }
 
 function findTool(registered: RegisteredTool[], name: string): RegisteredTool {
@@ -151,8 +216,14 @@ test.beforeEach(() => {
   installFixtures();
 });
 
+
+const READONLY_ENV = 'SPOTIFY_MCP_READONLY';
+const priorReadonly = process.env[READONLY_ENV];
+
 test.afterEach(() => {
   __resetTasteCompositeFetchImpl();
+  if (priorReadonly === undefined) delete process.env[READONLY_ENV];
+  else process.env[READONLY_ENV] = priorReadonly;
 });
 
 // --------------------------------------------------------------- registry
@@ -180,6 +251,286 @@ test('taste_to_playlist emits a DRY RUN list with fallback guidance', async () =
   const sc = result.structuredContent as { picks: unknown[]; dryRun: boolean };
   assert.equal(sc.dryRun, true);
   assert.ok(sc.picks.length > 0);
+});
+
+test('taste_to_playlist dry_run=true issues no Spotify write and previews the plan', async () => {
+  const { registered, client } = makeHarness();
+  const result = await invoke(findTool(registered, 'taste_to_playlist'), {
+    statsfm_user: 'demo',
+    seed: 'core',
+    track_count: 3,
+    dry_run: true,
+  });
+  assert.deepEqual(client.calls, [], 'a preview must not touch the Spotify client');
+  const sc = result.structuredContent as { dryRun: boolean; picks: unknown[]; playlist?: unknown };
+  assert.equal(sc.dryRun, true);
+  assert.equal(sc.playlist, undefined, 'a preview must not report a created playlist');
+  assert.equal(sc.picks.length, 3);
+  assert.match(text(result), /no Spotify writes performed/);
+});
+
+test('taste_to_playlist defaults to a preview when dry_run is omitted', async () => {
+  const { registered, client } = makeHarness();
+  const result = await invoke(findTool(registered, 'taste_to_playlist'), {
+    statsfm_user: 'demo',
+    seed: 'core',
+    track_count: 3,
+  });
+  assert.deepEqual(client.calls, [], 'the omitted default must not touch the Spotify client');
+  const sc = result.structuredContent as { dryRun: boolean; playlist?: unknown };
+  assert.equal(sc.dryRun, true);
+  assert.equal(sc.playlist, undefined);
+});
+
+test('taste_to_playlist declares the dry_run default on the schema', () => {
+  const { registered } = makeHarness();
+  const parsed = findTool(registered, 'taste_to_playlist').schema.dry_run.safeParse(undefined);
+  assert.equal(parsed.success, true);
+  assert.equal(parsed.data, true, 'dry_run must default to true at the schema level');
+});
+
+test('taste_to_playlist dry_run=false creates the playlist and adds the resolved tracks', async () => {
+  const { registered, client } = makeHarness();
+  const result = await invoke(findTool(registered, 'taste_to_playlist'), {
+    statsfm_user: 'demo',
+    seed: 'core',
+    track_count: 3,
+    dry_run: false,
+    playlist_name: 'Demo taste',
+  });
+  assert.deepEqual(
+    writes(client).map((c) => `${c.method} ${c.path}`),
+    ['post /me/playlists', 'put /playlists/PL-1/items'],
+  );
+  const create = writes(client)[0];
+  assert.deepEqual(create.body, {
+    name: 'Demo taste',
+    public: false,
+    description: 'stats.fm taste blend for demo (seed core)',
+  });
+  assert.deepEqual(writes(client)[1].body, {
+    uris: ['spotify:track:t1', 'spotify:track:t2', 'spotify:track:t3'],
+  });
+  const sc = result.structuredContent as {
+    dryRun: boolean;
+    unresolved: string[];
+    playlist: { id: string; added: number; requested: number; url: string };
+  };
+  assert.equal(sc.dryRun, false);
+  assert.equal(sc.playlist.id, 'PL-1');
+  assert.equal(sc.playlist.added, 3);
+  assert.equal(sc.playlist.requested, 3);
+  assert.equal(sc.playlist.url, 'https://open.spotify.com/playlist/PL-1');
+  assert.deepEqual(sc.unresolved, []);
+  assert.match(text(result), /COMMITTED/);
+});
+
+test('taste_to_playlist dry_run=false falls back to search and reports every unresolved pick', async () => {
+  const client = makeClient();
+  // 'recent' picks come from the streams feed, which carries no Spotify ids.
+  client.searchHits = { 'New Thing': ['spotify:track:SEARCH1'] };
+  const { registered } = makeHarness(client);
+  const result = await invoke(findTool(registered, 'taste_to_playlist'), {
+    statsfm_user: 'demo',
+    seed: 'recent',
+    track_count: 4,
+    dry_run: false,
+  });
+  const searches = client.calls.filter((c) => c.method === 'get' && c.path === '/search');
+  assert.equal(searches.length, 4, 'every id-less pick must be looked up');
+  const added = writes(client).find((c) => c.path.endsWith('/items'))?.body as { uris: string[] };
+  assert.deepEqual(added.uris, ['spotify:track:SEARCH1'], 'only the resolved pick may be added');
+  const sc = result.structuredContent as {
+    unresolved: string[];
+    playlist: { added: number; requested: number };
+  };
+  assert.deepEqual(sc.unresolved, ['Core Band — Spring Song', 'Second Act — Deep Cut', 'Core Band — Hit Single']);
+  assert.equal(sc.playlist.added, 1);
+  assert.equal(sc.playlist.requested, 4);
+  assert.match(text(result), /unresolved\[\]/);
+});
+
+test('taste_to_playlist dry_run=false refuses to write in read-only mode', async () => {
+  process.env[READONLY_ENV] = '1';
+  const { registered, client } = makeHarness();
+  const result = await invoke(findTool(registered, 'taste_to_playlist'), {
+    statsfm_user: 'demo',
+    seed: 'core',
+    track_count: 3,
+    dry_run: false,
+  });
+  assert.deepEqual(client.calls, [], 'read-only mode must block the write before any call');
+  assert.match(text(result), /Refused to write/);
+});
+
+test('taste_to_playlist dry_run=false creates nothing when no pick resolves', async () => {
+  const client = makeClient();
+  const { registered } = makeHarness(client);
+  const result = await invoke(findTool(registered, 'taste_to_playlist'), {
+    statsfm_user: 'demo',
+    seed: 'recent',
+    track_count: 2,
+    dry_run: false,
+  });
+  assert.deepEqual(writes(client), [], 'an empty playlist must never be created');
+  const sc = result.structuredContent as { ok: boolean; blocked: string; unresolved: string[] };
+  assert.equal(sc.ok, false);
+  assert.equal(sc.blocked, 'no_resolvable_tracks');
+  assert.equal(sc.unresolved.length, 2);
+  assert.match(text(result), /Nothing written/);
+});
+
+test('taste_to_playlist dry_run=false blocks with search_failed when every /search errors', async () => {
+  const client = makeClient();
+  client.searchThrows = { '*': new SpotifyApiError(401, 'The access token expired') };
+  const { registered } = makeHarness(client);
+  const result = await invoke(findTool(registered, 'taste_to_playlist'), {
+    statsfm_user: 'demo',
+    seed: 'recent',
+    track_count: 2,
+    dry_run: false,
+  });
+  assert.deepEqual(writes(client), [], 'a run where no lookup was served must write nothing');
+  const sc = result.structuredContent as {
+    ok: boolean;
+    blocked: string;
+    unresolved: string[];
+    search_errors: string[];
+  };
+  assert.equal(sc.ok, false);
+  assert.equal(sc.blocked, 'search_failed');
+  // An errored lookup says nothing about the track, so it must not land in
+  // unresolved[] — that list means "Spotify searched and matched nothing".
+  assert.deepEqual(sc.unresolved, []);
+  assert.equal(sc.search_errors.length, 2);
+  assert.ok(sc.search_errors.every((e) => e.includes('HTTP 401')), `status must survive into the report: ${JSON.stringify(sc.search_errors)}`);
+  const out = text(result);
+  assert.doesNotMatch(out, /matched nothing/, 'an auth failure must never read as a missing track');
+  assert.doesNotMatch(out, /0 found/, 'a count of matches may not be printed for searches that never returned');
+});
+
+test('taste_to_playlist dry_run=false separates failed lookups from genuine misses in a mixed run', async () => {
+  const client = makeClient();
+  client.searchHits = { 'New Thing': ['spotify:track:SEARCH1'] };
+  client.searchThrows = {
+    'Spring Song': new SpotifyApiError(429, 'rate limited', 7, 'QUOTA_EXCEEDED'),
+    'Deep Cut': new SpotifyApiError(429, 'rate limited', 7, 'QUOTA_EXCEEDED'),
+    'Hit Single': new SpotifyApiError(429, 'rate limited', 7, 'QUOTA_EXCEEDED'),
+  };
+  const { registered } = makeHarness(client);
+  const result = await invoke(findTool(registered, 'taste_to_playlist'), {
+    statsfm_user: 'demo',
+    seed: 'recent',
+    track_count: 4,
+    dry_run: false,
+  });
+  const sc = result.structuredContent as {
+    unresolved: string[];
+    search_errors: string[];
+    playlist: { id: string; added: number; requested: number };
+  };
+  assert.equal(sc.playlist.id, 'PL-1', 'the one resolved pick is still committed');
+  assert.equal(sc.playlist.added, 1);
+  assert.equal(sc.playlist.requested, 4);
+  // The three quota-walled lookups are unknown, not misses.
+  assert.deepEqual(sc.unresolved, []);
+  assert.equal(sc.search_errors.length, 3);
+  assert.ok(
+    sc.search_errors.every((e) => e.includes('QUOTA_EXCEEDED')),
+    `quota reason must reach the caller: ${JSON.stringify(sc.search_errors)}`,
+  );
+  const out = text(result);
+  assert.match(out, /search_errors\[\]/);
+  assert.match(out, /PARTIAL/, 'a short commit must say so in the headline, not only in a footer');
+  assert.doesNotMatch(out, /unresolved\[\]/);
+});
+
+test('taste_to_playlist treats a 404 search as a genuine miss, not a failed lookup', async () => {
+  const client = makeClient();
+  client.searchThrows = { '*': new SpotifyApiError(404, 'Not found.') };
+  const { registered } = makeHarness(client);
+  const result = await invoke(findTool(registered, 'taste_to_playlist'), {
+    statsfm_user: 'demo',
+    seed: 'recent',
+    track_count: 2,
+    dry_run: false,
+  });
+  assert.deepEqual(writes(client), [], 'nothing resolved, so nothing is created');
+  const sc = result.structuredContent as {
+    blocked: string;
+    unresolved: string[];
+    search_errors: string[];
+  };
+  assert.equal(sc.blocked, 'no_resolvable_tracks', 'a 404 is Spotify saying "no match", not a failure');
+  assert.equal(sc.unresolved.length, 2);
+  assert.deepEqual(sc.search_errors, []);
+  assert.match(text(result), /0 found/);
+});
+
+test('taste_to_playlist reports only the lookups that actually failed when searches fail and miss in the same run', async () => {
+  const client = makeClient();
+  // 'Spring Song' 401s; 'Deep Cut' is looked up and comes back with no items.
+  // Two searches ran, only one errored.
+  client.searchThrows = { 'Spring Song': new SpotifyApiError(401, 'The access token expired') };
+  const { registered } = makeHarness(client);
+  const result = await invoke(findTool(registered, 'taste_to_playlist'), {
+    statsfm_user: 'demo',
+    seed: 'recent',
+    track_count: 2,
+    dry_run: false,
+  });
+  assert.deepEqual(writes(client), [], 'nothing resolved, so nothing is created');
+  const sc = result.structuredContent as {
+    blocked: string;
+    unresolved: string[];
+    search_errors: string[];
+  };
+  assert.equal(sc.blocked, 'search_failed');
+  assert.equal(sc.search_errors.length, 1, 'only the 401 failed; the empty result is not a failure');
+  assert.match(sc.search_errors[0], /Core Band — Spring Song \[search failed: HTTP 401\]/);
+  assert.deepEqual(sc.unresolved, ['Second Act — Deep Cut'], 'the searched-and-empty pick is a miss, not an error');
+  const out = text(result);
+  assert.match(out, /1 of 2 track searches failed/, 'the failed count must be the real one, not the search count');
+  assert.doesNotMatch(out, /all 2 track searches failed/, 'a pick Spotify searched for is not a failed lookup');
+  assert.match(out, /Second Act — Deep Cut/, 'the missed pick is still named for the caller');
+});
+
+test('taste_to_playlist never reports an added track under missing[] on the commit path', async () => {
+  const client = makeClient();
+  // 'recent' carries no stats.fm ids, so all three picks are looked up.
+  // Two resolve and land in the playlist; one matches nothing.
+  client.searchHits = {
+    'Spring Song': ['spotify:track:S1'],
+    'Deep Cut': ['spotify:track:S2'],
+  };
+  const { registered } = makeHarness(client);
+  const result = await invoke(findTool(registered, 'taste_to_playlist'), {
+    statsfm_user: 'demo',
+    seed: 'recent',
+    track_count: 3,
+    dry_run: false,
+  });
+  const added = writes(client).find((c) => c.path.endsWith('/items'))?.body as { uris: string[] };
+  assert.deepEqual(added.uris, ['spotify:track:S1', 'spotify:track:S2']);
+  const sc = result.structuredContent as {
+    missing: string[];
+    unresolved: string[];
+    playlist: { added: number; requested: number };
+  };
+  assert.equal(sc.playlist.added, 2);
+  // renderPicks' pre-search missing[] would name all three; two are in the
+  // playlist that was just created and calling them missing invites a re-add.
+  assert.deepEqual(sc.missing, ['Core Band — Hit Single'], 'missing[] on commit means NOT added');
+  assert.deepEqual(sc.unresolved, ['Core Band — Hit Single']);
+  const out = text(result);
+  assert.doesNotMatch(out, /had no Spotify id at all/, 'the preview guidance is stale once the lookups have run');
+  assert.doesNotMatch(out, /search them by name/, 'the commit path must not tell the caller to search the rows it just added');
+  assert.doesNotMatch(out, /\[search: search_tracks/, 'a committed row must not still be asking for its own lookup');
+  assert.match(out, /do not re-search or re-add/, 'the commit guidance must steer away from a duplicate add');
+  // Each committed row now reports what actually happened to that pick.
+  assert.match(out, /1\. Core Band — Spring Song \[spotify:track:S1\]/);
+  assert.match(out, /2\. Second Act — Deep Cut \[spotify:track:S2\]/);
+  assert.match(out, /3\. Core Band — Hit Single \[search matched nothing — NOT added\]/);
 });
 
 // -------------------------------------------------------- 2. taste_daily_brief

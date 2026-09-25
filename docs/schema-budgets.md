@@ -75,7 +75,7 @@ above either ceiling fails CI and server startup.
 | analytics | 4 | 2,753 | 4 | 2,753 | 5 | 3,029 |
 | statsfm | 30 | 22,721 | 30 | 22,721 | 31 | 24,994 |
 | taste | 16 | 13,959 | 16 | 13,959 | 17 | 15,355 |
-| tastecomposites | 11 | 9,101 | 11 | 9,101 | 12 | 10,012 |
+| tastecomposites | 11 | 9,717 | 11 | 9,717 | 12 | 10,689 |
 | doctor | 1 | 750 | 1 | 750 | 2 | 826 |
 | swarm3meta | 3 | 1,624 | 3 | 1,624 | 4 | 1,787 |
 | libraryanalytics | 4 | 3,350 | 4 | 3,350 | 5 | 3,686 |
