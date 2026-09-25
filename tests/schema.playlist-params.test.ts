@@ -12,6 +12,7 @@ import { registerPlaylistOpsTools } from '../src/tools/playlistops.js';
 import { registerPlaylistTools } from '../src/tools/playlists.js';
 import { registerSwarm3PlaylistopsTools } from '../src/tools/swarm3_playlistops.js';
 import { registerSwarm4PlaylistsTools } from '../src/tools/swarm4_playlists.js';
+import type { PlaylistItemObject, SpotifyTrack } from '../src/types/spotify.js';
 
 type SchemaProperty = { type?: string; items?: unknown; [key: string]: unknown };
 type ListedTool = { name: string; inputSchema?: { properties?: Record<string, SchemaProperty> } };
@@ -217,23 +218,61 @@ type ElicitAnswer = { action: 'accept' | 'decline' | 'cancel'; confirm?: boolean
 
 interface UnionGateHarness {
   calls: string[];
+  /** Message of every elicitation prompt the server raised, in order. */
+  prompts: string[];
   invoke: (name: 'playlist_union' | 'playlist_subtract', args: Record<string, unknown>) => Promise<ToolResponse>;
   close: () => Promise<void>;
 }
 
-async function makeUnionGateHarness(answer: ElicitAnswer, useAlias: boolean, toolName: 'playlist_union' | 'playlist_subtract' = 'playlist_union'): Promise<UnionGateHarness> {
+interface UnionGateOptions {
+  /** null models a client that advertises no elicitation capability at all. */
+  answer: ElicitAnswer;
+  toolName?: 'playlist_union' | 'playlist_subtract';
+  /** Ordered rows the first source yields (p1 -> a*). */
+  sourceCount?: number;
+  /** Ordered rows the second source yields (p2 -> b*); defaults to sourceCount. */
+  source2Count?: number;
+  /** Ordered rows the union target returns from its items endpoint. */
+  targetUris?: string[];
+  /** Rows the target reports via items.total; defaults to targetUris.length. */
+  targetTotal?: number;
+  /** Unavailable rows the target returns as `item: null`, which a replace cannot restore. */
+  targetNullUris?: number;
+}
+
+async function makeUnionGateHarness(options: UnionGateOptions): Promise<UnionGateHarness> {
+  const { answer, toolName = 'playlist_union', sourceCount = 50, source2Count, targetUris, targetTotal, targetNullUris = 0 } = options;
   const calls: string[] = [];
+  const prompts: string[] = [];
   const client = {
     async get<T>(path: string): Promise<T | null> {
       calls.push(path);
-      return { id: path.split('/').pop() ?? 'playlist', name: 'Playlist' } as T;
+      const id = path.split('/').pop() ?? 'playlist';
+      const rows = id === 'p1' ? sourceCount : id === 'p2' ? (source2Count ?? sourceCount) : (targetUris ?? Array.from({ length: 50 }, (_, i) => `spotify:track:b${i}`)).length;
+      // `items` is the current PlaylistObject field; `tracks` is deprecated.
+      return { id, name: 'Playlist', items: { total: targetTotal ?? rows + targetNullUris } } as T;
     },
     async getAllPages<T>(path: string): Promise<T[]> {
       calls.push(path);
-      if (toolName === 'playlist_subtract' && path.includes('p2')) return [] as T[];
-      return Array.from({ length: 50 }, (_, index) => ({
-        item: { id: `${path.includes('p1') ? 'a' : 'b'}${index}`, uri: `spotify:track:${path.includes('p1') ? 'a' : 'b'}${index}`, name: `Track ${index}` },
-      })) as T[];
+      const first = path.includes('/p1/items');
+      const second = path.includes('/p2/items');
+      if (first || second) {
+        if (toolName === 'playlist_subtract' && second) return [] as T[];
+        return Array.from({ length: first ? sourceCount : (source2Count ?? sourceCount) }, (_, index) => {
+          const uri = `spotify:track:${first ? 'a' : 'b'}${index}`;
+          return { item: { id: uri, uri, name: `Track ${index}` } };
+        }) as T[];
+      }
+      const target = targetUris ?? Array.from({ length: 50 }, (_, index) => `spotify:track:b${index}`);
+      const items: PlaylistItemObject[] = target.map((uri, index) => ({
+        added_at: '2024-01-01T00:00:00Z',
+        item: { id: uri, uri, name: `Track ${index}` } as SpotifyTrack,
+      }));
+      // Spotify represents an unavailable/local row as a present row whose
+      // item is null. It still occupies a slot in the playlist, and a
+      // URI-based replace cannot restore it.
+      for (let i = 0; i < targetNullUris; i += 1) items.push({ added_at: '2024-01-01T00:00:00Z', item: null });
+      return items as T[];
     },
     async post<T>(path: string): Promise<T | null> {
       calls.push(`POST ${path}`);
@@ -253,7 +292,8 @@ async function makeUnionGateHarness(answer: ElicitAnswer, useAlias: boolean, too
     { name: 'union-confirm-client', version: '0.0.0' },
     answer === null ? undefined : { capabilities: { elicitation: { form: {} } } },
   );
-  if (answer !== null) caller.setRequestHandler(ElicitRequestSchema, async () => {
+  if (answer !== null) caller.setRequestHandler(ElicitRequestSchema, async (request) => {
+    prompts.push(request.params.message);
     if (answer instanceof Error) throw answer;
     if (answer.action === 'accept') return { action: answer.action, content: { confirm: answer.confirm ?? true } };
     return { action: answer.action };
@@ -262,6 +302,7 @@ async function makeUnionGateHarness(answer: ElicitAnswer, useAlias: boolean, too
   await Promise.all([caller.connect(clientTransport), server.connect(serverTransport)]);
   return {
     calls,
+    prompts,
     invoke: async (name, args) => {
       const result = await caller.callTool({ name, arguments: args });
       return result as unknown as ToolResponse;
@@ -397,7 +438,7 @@ describe('playlist set/diff schema and resolver contract (#912)', () => {
       { label: 'transport-error', answer: new Error('elicitation transport failed'), useAlias: false, writes: 0 },
     ] as const;
     for (const testCase of cases) {
-      const gate = await makeUnionGateHarness(testCase.answer, testCase.useAlias, 'playlist_union');
+      const gate = await makeUnionGateHarness({ answer: testCase.answer });
       const source = testCase.useAlias ? { source_playlist_ids: ['p1', 'p2'] } : { playlists: ['p1', 'p2'] };
       const result = await gate.invoke('playlist_union', { ...source, target_playlist_id: 'target' });
       const writes = gate.calls.filter((call) => call.startsWith('PUT ') || call.startsWith('POST '));
@@ -422,12 +463,162 @@ describe('playlist set/diff schema and resolver contract (#912)', () => {
       { name: 'playlist_subtract' as const, args: { base_playlist_id: 'p1', subtract_playlist_ids: ['p2'] } },
     ];
     for (const testCase of cases) {
-      const gate = await makeUnionGateHarness(null, false, testCase.name);
+      const gate = await makeUnionGateHarness({ answer: null, toolName: testCase.name });
       const result = await gate.invoke(testCase.name, testCase.args);
       assert.equal(result.structuredContent?.ok, false, `${testCase.name} proceeded without confirmation`);
       assert.equal(result.structuredContent?.reason, 'confirmation_unavailable');
       assert.deepEqual(gate.calls.filter((call) => call.startsWith('PUT ') || call.startsWith('POST ')), []);
       await gate.close();
+    }
+  });
+
+  // The union gate is driven by what an overwrite destroys, not by how many
+  // URIs arrive. A tiny union can wipe a large target, and a huge union into a
+  // fresh playlist destroys nothing.
+  it('confirms a one-row union that would gut a 100-row target', async () => {
+    const gate = await makeUnionGateHarness({
+      answer: { action: 'accept', confirm: true },
+      // p1 contributes one row, p2 none, so the union is a single URI.
+      sourceCount: 1,
+      source2Count: 0,
+      targetUris: Array.from({ length: 100 }, (_, index) => `spotify:track:t${index}`),
+    });
+    try {
+      const result = await gate.invoke('playlist_union', { playlists: ['p1', 'p2'], target_playlist_id: 'target' });
+      assert.equal(result.structuredContent?.uri_count, 1, 'the union must be one row');
+      assert.equal(gate.prompts.length, 1, 'a 1-row union deleting 100 rows must still ask');
+      assert.match(gate.prompts[0] ?? '', /Remove 100 existing item\(s\)/);
+      assert.equal(result.structuredContent?.ok, true);
+      assert.deepEqual(gate.calls.filter((call) => call.startsWith('PUT ')), ['PUT /playlists/target/items']);
+    } finally {
+      await gate.close();
+    }
+  });
+
+  it('replaces identical contents without prompting', async () => {
+    const gate = await makeUnionGateHarness({
+      answer: { action: 'accept', confirm: true },
+      sourceCount: 50,
+      targetUris: [
+        ...Array.from({ length: 50 }, (_, index) => `spotify:track:a${index}`),
+        ...Array.from({ length: 50 }, (_, index) => `spotify:track:b${index}`),
+      ],
+    });
+    try {
+      const result = await gate.invoke('playlist_union', { playlists: ['p1', 'p2'], target_playlist_id: 'target' });
+      assert.deepEqual(gate.prompts, [], 'rewriting a playlist with its own rows must not prompt');
+      assert.equal(result.structuredContent?.ok, true);
+      assert.deepEqual(gate.calls.filter((call) => call.startsWith('PUT ')), ['PUT /playlists/target/items']);
+    } finally {
+      await gate.close();
+    }
+  });
+
+  it('confirms a pure addition, which is still a non-identical replacement', async () => {
+    const gate = await makeUnionGateHarness({
+      answer: { action: 'accept', confirm: true },
+      sourceCount: 2,
+      // Target is a strict subset of the union: nothing removed, nothing
+      // reordered, but the replacement is still not identical.
+      targetUris: ['spotify:track:a0', 'spotify:track:a1'],
+    });
+    try {
+      const result = await gate.invoke('playlist_union', { playlists: ['p1', 'p2'], target_playlist_id: 'target' });
+      assert.equal(gate.prompts.length, 1, 'adding rows rewrites the playlist and must ask');
+      assert.match(gate.prompts[0] ?? '', /Add 2 new item\(s\)/);
+      assert.equal(gate.prompts[0]?.includes('Remove'), false);
+      assert.equal(result.structuredContent?.ok, true);
+    } finally {
+      await gate.close();
+    }
+  });
+
+  it('asks when the target read stopped short, instead of assuming a no-op', async () => {
+    // Rows read match the union exactly, but Spotify reports far more rows than
+    // the capped walk returned — the unread tail could all be destroyed.
+    const gate = await makeUnionGateHarness({
+      answer: { action: 'accept', confirm: true },
+      sourceCount: 1,
+      targetUris: ['spotify:track:a0', 'spotify:track:b0'],
+      targetTotal: 9000,
+    });
+    try {
+      const result = await gate.invoke('playlist_union', { playlists: ['p1', 'p2'], target_playlist_id: 'target' });
+      assert.equal(gate.prompts.length, 1, 'an incomplete read must not be treated as a no-op');
+      assert.match(gate.prompts[0] ?? '', /Only 2 of 9000 existing row\(s\) could be read/);
+      assert.equal(result.structuredContent?.ok, true);
+    } finally {
+      await gate.close();
+    }
+  });
+
+  it('asks when the target holds rows a URI-based replace cannot restore', async () => {
+    const gate = await makeUnionGateHarness({
+      answer: { action: 'accept', confirm: true },
+      sourceCount: 1,
+      targetUris: ['spotify:track:a0', 'spotify:track:b0'],
+      targetNullUris: 3,
+    });
+    try {
+      const result = await gate.invoke('playlist_union', { playlists: ['p1', 'p2'], target_playlist_id: 'target' });
+      assert.equal(gate.prompts.length, 1, 'dropping null-URI rows must ask even though the URIs match');
+      assert.match(gate.prompts[0] ?? '', /Drop 3 item\(s\) Spotify returned without a URI/);
+      assert.equal(result.structuredContent?.ok, true);
+    } finally {
+      await gate.close();
+    }
+  });
+
+  it('does not prompt when a large union creates a new target', async () => {
+    // No elicitation capability at all: a gate that fired here would refuse.
+    const gate = await makeUnionGateHarness({ answer: null, sourceCount: 50 });
+    try {
+      const result = await gate.invoke('playlist_union', { playlists: ['p1', 'p2'], target_name: 'Fresh' });
+      assert.deepEqual(gate.prompts, [], 'creating a new playlist prompted');
+      assert.equal(result.structuredContent?.ok, true);
+      assert.deepEqual(gate.calls.filter((call) => call.startsWith('POST ')), ['POST /me/playlists']);
+      assert.equal(gate.calls.includes('/playlists/target/items'), false);
+    } finally {
+      await gate.close();
+    }
+  });
+
+  it('refuses a destructive union with no elicitation support and writes nothing', async () => {
+    const gate = await makeUnionGateHarness({
+      answer: null,
+      sourceCount: 1,
+      targetUris: Array.from({ length: 100 }, (_, index) => `spotify:track:t${index}`),
+    });
+    try {
+      const result = await gate.invoke('playlist_union', { playlists: ['p1', 'p2'], target_playlist_id: 'target' });
+      assert.equal(result.structuredContent?.ok, false, 'destructive union proceeded without confirmation');
+      assert.equal(result.structuredContent?.reason, 'confirmation_unavailable');
+      assert.deepEqual(gate.calls.filter((call) => call.startsWith('PUT ') || call.startsWith('POST ')), []);
+    } finally {
+      await gate.close();
+    }
+  });
+
+  it('lets SPOTIFY_MCP_CONFIRM=never bypass the destructive union gate', async () => {
+    const previous = process.env.SPOTIFY_MCP_CONFIRM;
+    process.env.SPOTIFY_MCP_CONFIRM = 'never';
+    try {
+      const gate = await makeUnionGateHarness({
+        answer: null,
+        sourceCount: 1,
+        targetUris: Array.from({ length: 100 }, (_, index) => `spotify:track:t${index}`),
+      });
+      try {
+        const result = await gate.invoke('playlist_union', { playlists: ['p1', 'p2'], target_playlist_id: 'target' });
+        assert.deepEqual(gate.prompts, [], 'the never bypass still prompted');
+        assert.equal(result.structuredContent?.ok, true);
+        assert.deepEqual(gate.calls.filter((call) => call.startsWith('PUT ')), ['PUT /playlists/target/items']);
+      } finally {
+        await gate.close();
+      }
+    } finally {
+      if (previous === undefined) delete process.env.SPOTIFY_MCP_CONFIRM;
+      else process.env.SPOTIFY_MCP_CONFIRM = previous;
     }
   });
 
