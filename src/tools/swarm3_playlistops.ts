@@ -1157,7 +1157,6 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
       const toleranceMs = (args.tolerance_sec ?? 30) * 1000;
       const prefix = args.prefix ?? `${p.name ?? p.id} — Part`;
       const parts: Array<{ name: string; uris: string[]; runtimeMs: number }> = [];
-      let acc = 0;
       let bucket: string[] = [];
       let runtime = 0;
       for (const row of rows) {
@@ -1166,9 +1165,7 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
           parts.push({ name: `${prefix} ${parts.length + 1}`, uris: bucket, runtimeMs: runtime });
           bucket = [];
           runtime = 0;
-          acc = 0;
         }
-        void acc;
         bucket.push(row.uri);
         runtime += d;
       }

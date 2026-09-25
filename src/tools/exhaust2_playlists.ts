@@ -582,7 +582,6 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
       const rf = args.response_format;
       const loaded = await Promise.all(input.values.map((ref) => loadPlaylistFull(client, ref)));
       const uriLists = loaded.map((p) => trackRows(p.items).map((r) => r.uri));
-      const counts = intersectionOf(uriLists).length;
       const intersected = dedupeSequence(intersectionOf(uriLists), args.dedupe);
       const payload: Record<string, unknown> = {
         ok: true,

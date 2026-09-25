@@ -707,22 +707,34 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
       }
       const t = Math.min(Math.max(args.to_position - 1, 0), Math.max(n - 1, 0));
       const block = rows.slice(start - 1, start - 1 + count);
+      // A target inside the block itself (or clamped into it) rebuilds the exact
+      // row sequence that is already stored, so the replace would change nothing.
+      // It still costs a write request and, per a6-rewrite-unavailable-guard,
+      // can drop unavailable rows — return before touching the playlist, exactly
+      // as playlist_swap_positions does for identical positions.
+      if (t >= start - 1 && t < start - 1 + count) {
+        return shape(rf, `Move is a no-op: target position ${args.to_position} (slot ${t + 1}) is inside the moved block (${start}–${start + count - 1}); the playlist already sits in that order.`, {
+          ok: true,
+          no_op: true,
+          playlist: p.id,
+          playlist_name: p.name,
+          start,
+          count,
+          to_position: args.to_position,
+          items: n,
+          dry_run: args.dry_run,
+        });
+      }
       const rest = [...rows];
       rest.splice(start - 1, count);
-      let idx: number;
-      if (t < start - 1) idx = t;
-      else if (t >= start - 1 + count) idx = t - count;
-      else idx = start - 1; // target inside the block itself → no-op
+      const idx = t < start - 1 ? t : t - count;
       const moved = [...rest];
       moved.splice(Math.min(idx, moved.length), 0, ...block);
       const uris = moved.map((r) => r.uri);
       const max = resolveMaxResults(args.max_results, getConfig().maxItems);
       const orderBudget = budgetedArray(uris, max, 'items', args.include_full_order);
-      const noOp = idx === start - 1 && t >= start - 1 && t < start - 1 + count;
       const prose = [
-        noOp
-          ? `Move is a no-op: target position ${args.to_position} is inside the block itself.`
-          : `Move items ${start}–${start + count - 1} to original position ${args.to_position}:`,
+        `Move items ${start}–${start + count - 1} to original position ${args.to_position}:`,
         `  block: ${block.map(rowLabel).join(' | ')}`,
         ...renderRows(moved, max),
       ];
@@ -733,7 +745,6 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
         start,
         count,
         to_position: args.to_position,
-        no_op: noOp,
         items: n,
         order: orderBudget.value,
         ...orderBudget.disclosure,
