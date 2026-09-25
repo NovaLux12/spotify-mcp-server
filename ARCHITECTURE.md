@@ -151,7 +151,7 @@ The table is generated from every TypeScript file recursively under `src/`, incl
 | `src/tools/freshness.ts` | freshness radar (#112 idea 2): personal replacement for the removed /browse/new-releases surface. (1 registered tool) | 659 |
 | `src/tools/import.ts` | import_playlist (#165): the inverse of export_playlist. (1 registered tool) | 441 |
 | `src/tools/library.ts` | Runtime module for src/tools/library.ts. (16 registered tools) | 1041 |
-| `src/tools/libraryanalytics.ts` | Runtime module for src/tools/libraryanalytics.ts. (4 registered tools) | 660 |
+| `src/tools/libraryanalytics.ts` | Runtime module for src/tools/libraryanalytics.ts. (4 registered tools) | 683 |
 | `src/tools/libraryhygiene.ts` | Album completion & consolidation hygiene (#112 idea 5). (1 registered tool) | 532 |
 | `src/tools/libraryinsights.ts` | Runtime module for src/tools/libraryinsights.ts. (3 registered tools) | 529 |
 | `src/tools/personalization.ts` | Runtime module for src/tools/personalization.ts. (3 registered tools) | 287 |
@@ -161,7 +161,7 @@ The table is generated from every TypeScript file recursively under `src/`, incl
 | `src/tools/playlistbatch.ts` | Playlist batch operations — Stream D (#183, #189, #200). (3 registered tools) | 157 |
 | `src/tools/playlistdna.ts` | Runtime module for src/tools/playlistdna.ts. (1 registered tool) | 346 |
 | `src/tools/playlisthealth.ts` | Runtime module for src/tools/playlisthealth.ts. (8 registered tools) | 481 |
-| `src/tools/playlistmisc.ts` | Playlist misc (#186 + #208): pin/unpin playlist (follow/unfollow) + mood-vibe template playlists composed from the user's existing library/top data. (3 registered tools) | 238 |
+| `src/tools/playlistmisc.ts` | Playlist misc (#186 + #208): pin/unpin playlist (follow/unfollow) + mood-vibe template playlists composed from the user's existing library/top data. (3 registered tools) | 242 |
 | `src/tools/playlistops.ts` | Playlist power tools (#96): merge_playlists, diff_playlists, overlap_playlists. (3 registered tools) | 481 |
 | `src/tools/playlists.ts` | Runtime module for src/tools/playlists.ts. (26 registered tools) | 2289 |
 | `src/tools/podcastsession.ts` | Podcast session composer (#112 idea 3): greedy-packs the user's saved podcast episodes into a listening session of a fixed length in minutes, then (optionally) starts it on a device. (2 registered tools) | 406 |
