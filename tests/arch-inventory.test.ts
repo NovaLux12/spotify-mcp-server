@@ -41,9 +41,9 @@ async function withFixtures<T>(run: (dir: string) => Promise<T>): Promise<T> {
   }
 }
 
-function runFailure(args: string[]): string {
+function runFailure(args: string[], env: NodeJS.ProcessEnv = {}): string {
   try {
-    execFileSync(process.execPath, args, { cwd: ROOT, encoding: 'utf8', stdio: 'pipe' });
+    execFileSync(process.execPath, args, { cwd: ROOT, encoding: 'utf8', stdio: 'pipe', env: { ...process.env, ...env } });
   } catch (error) {
     const result = error as { stdout?: string; stderr?: string };
     return `${result.stdout ?? ''}\n${result.stderr ?? ''}`;
@@ -52,8 +52,12 @@ function runFailure(args: string[]): string {
 }
 
 describe('generated architecture and specification inventory', () => {
-  it('passes the offline documentation drift guard', () => {
-    execFileSync('npm', ['run', 'check:docs-counts'], { cwd: ROOT, stdio: 'pipe' });
+  it('passes the offline documentation drift guard', async () => {
+    await withFixtures(async (dir) => {
+      const file = join(dir, 'census.json');
+      await writeFile(file, JSON.stringify(census));
+      execFileSync(process.execPath, ['scripts/surface-census.mjs', '--check', '--census-file', file], { cwd: ROOT, stdio: 'pipe' });
+    });
   });
 
   it('derives headline counts from the finalized production stdio registry', () => {
@@ -115,12 +119,18 @@ describe('generated architecture and specification inventory', () => {
     assert.deepEqual(sections, expected);
   });
 
-  it('checks documented tool names and schemas against the production registry', () => {
-    execFileSync('npm', ['run', 'check:doc-tool-names'], { cwd: ROOT, stdio: 'pipe' });
+  it('checks documented tool names and schemas against the production registry', async () => {
+    await withFixtures(async (dir) => {
+      const file = join(dir, 'census.json');
+      await writeFile(file, JSON.stringify(census));
+      execFileSync(process.execPath, ['scripts/check-doc-tool-names.mjs', '--census-file', file], { cwd: ROOT, stdio: 'pipe' });
+    });
   });
 
   it('rejects unknown documented tools and wrong-tool arguments', async () => {
     await withFixtures(async (dir) => {
+      const censusFile = join(dir, 'census.json');
+      await writeFile(censusFile, JSON.stringify(census));
       const cases = [
         { name: 'unknown tool', source: 'Call not_a_real_tool with `query: "x"`.', expected: /unknown tool/ },
         { name: 'wrong-tool JSON argument', source: '```json\n{"tool":"get_me","playlist_id":"x"}\n```', expected: /not an input parameter of .*get_me/ },
@@ -129,7 +139,7 @@ describe('generated architecture and specification inventory', () => {
       for (const fixture of cases) {
         const file = join(dir, `${fixture.name.replaceAll(' ', '-')}.md`);
         await writeFile(file, fixture.source);
-        assert.match(runFailure(['scripts/check-doc-tool-names.mjs', '--check-fixture', file]), fixture.expected);
+        assert.match(runFailure(['scripts/check-doc-tool-names.mjs', '--check-fixture', file, '--census-file', censusFile]), fixture.expected);
       }
     });
   });
