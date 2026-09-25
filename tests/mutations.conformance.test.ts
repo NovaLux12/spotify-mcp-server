@@ -22,7 +22,7 @@
  * the guard passes while the only missing tools are the listed known gaps.
  * When a sibling slice lands, delete its entries from the list below; the
  * guard then enforces the newly-closed invariant.
- * - dry_run (2): pin_playlist [A6 slice], save_artist_new_releases
+ * - dry_run (1): save_artist_new_releases
  *   [artistwatch unit]; follow_artists already fixed via #933/#941.
  * - response_format (15): add_to_playlist, create_playlist,
  *   clone_playlist_cover, jump_to_chapter, playlist_collab_toggle,
@@ -65,7 +65,6 @@ const ALLOWLIST: Record<string, string> = {
  * deleting its entries here, which keeps the invariant enforced.
  */
 const KNOWN_MISSING_DRY_RUN: string[] = [
-  'pin_playlist',
   'save_artist_new_releases',
 ];
 const KNOWN_MISSING_RESPONSE_FORMAT: string[] = [

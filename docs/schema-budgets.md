@@ -70,7 +70,7 @@ above either ceiling fails CI and server startup.
 | playlists | 26 | 25,949 | 26 | 25,949 | 27 | 28,544 |
 | playlistops | 3 | 5,489 | 3 | 5,489 | 4 | 6,038 |
 | playlistbatch | 3 | 4,784 | 3 | 4,784 | 4 | 5,263 |
-| playlistmisc | 3 | 2,321 | 3 | 2,321 | 4 | 2,554 |
+| playlistmisc | 3 | 2,543 | 3 | 2,543 | 4 | 2,798 |
 | personalization | 3 | 2,532 | 3 | 2,532 | 4 | 2,786 |
 | analytics | 4 | 2,753 | 4 | 2,753 | 5 | 3,029 |
 | statsfm | 30 | 22,721 | 30 | 22,721 | 31 | 24,994 |
@@ -109,7 +109,7 @@ above either ceiling fails CI and server startup.
 | exhaust2catalog | 19 | 18,759 | 19 | 18,759 | 20 | 20,635 |
 | exhaust2enggating | 0 | 0 | 0 | 0 | 1 | 0 |
 | exhaust2playback | 23 | 17,306 | 23 | 17,306 | 24 | 19,037 |
-| exhaust2playlists | 18 | 23,466 | 18 | 23,466 | 19 | 25,813 |
+| exhaust2playlists | 18 | 23,511 | 18 | 23,511 | 19 | 25,863 |
 | exhaust2misc | 27 | 23,234 | 27 | 23,234 | 28 | 25,558 |
 | exhaust2extra | 3 | 3,695 | 3 | 3,695 | 4 | 4,065 |
 | swarm3discovery | 24 | 21,951 | 24 | 21,951 | 25 | 24,147 |
