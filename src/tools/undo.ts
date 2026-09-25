@@ -205,17 +205,22 @@ async function invertReceipt(
         // Undo of an add removes exactly the rows the add created (#625) —
         // never every copy of the URI. `rows` is non-null here: the refusal
         // above already returned for the unrecorded case.
+        //
+        // The delete body is `{ tracks: [{ uri, positions: [n] }] }` — the
+        // shape every other call site in this repo sends (playlists.ts,
+        // playlistbatch.ts, swarm3_playlistops.ts, swarm3_snapshots.ts) and
+        // the shape the endpoint documents. A top-level `uris`/`positions`
+        // pair is NOT accepted here and 400s.
+        //
         // Row indices are positions in a list that shrinks with every request,
         // so the removals go lowest-first and each chunk is translated by the
-        // rows the previous chunks already deleted. Sending the recorded
-        // indices verbatim past the first chunk would address the wrong rows.
+        // rows the previous chunks already deleted.
         const ordered = [...rows!].sort((a, b) => a.position - b.position);
         let removedSoFar = 0;
         for (const part of chunk(ordered, PLAYLIST_ITEMS_CHUNK)) {
           attemptedRequests++;
           const res = await client.delete<{ snapshot_id?: string }>(`/playlists/${encId}/items`, {
-            uris: part.map((p) => p.uri),
-            positions: part.map((p) => p.position - removedSoFar),
+            tracks: part.map((p) => ({ uri: p.uri, positions: [p.position - removedSoFar] })),
           });
           snapshotId = res?.snapshot_id ?? snapshotId;
           requests++;
@@ -270,12 +275,27 @@ async function invertReceipt(
     });
   }
 
+  // A uri that had copies PREDATING the mutation is still expected to be
+  // present after its added row is removed — the rollback restores the
+  // pre-mutation state, it does not make the uri vanish. Checking for absence
+  // there would report a correct rollback as unconfirmed (#625).
+  const retained = new Set<string>();
+  if (direction === 'added' && receipt.occurrences) {
+    const removedPerUri = new Map<string, number>();
+    for (const pair of rows ?? []) {
+      removedPerUri.set(pair.uri, (removedPerUri.get(pair.uri) ?? 0) + 1);
+    }
+    for (const [uri, removed] of removedPerUri) {
+      if ((receipt.occurrences[uri] ?? 0) > removed) retained.add(uri);
+    }
+  }
+  const expectPresentNow = expectPresentAfter || retained.size > 0;
+
   let newReceipt: Receipt | undefined;
   try {
-    // After undoing an add the URIs are absent; after undoing a removal they are present.
     newReceipt = await issueReceipt(client, {
       kind: receipt.kind, id: receipt.id, uris,
-      expectPresent: expectPresentAfter,
+      expectPresent: expectPresentNow,
     });
   } catch { /* best-effort */ }
 
@@ -283,7 +303,7 @@ async function invertReceipt(
   // did not produce the intended state is the case an agent most needs to see,
   // and "inverted N URI(s)" hides it behind a success the user would believe.
   const confirmed = newReceipt?.verified === true;
-  const wanted = expectPresentAfter ? 'present' : 'absent';
+  const wanted = expectPresentNow ? 'present' : 'absent';
   const target = `${receipt.kind}${receipt.id ? ` ${receipt.id}` : ''}`;
   const lines: string[] = [];
   if (confirmed) {
@@ -305,9 +325,14 @@ async function invertReceipt(
         `Inspect the current state before retrying.`,
     );
   }
+  if (retained.size > 0) {
+    lines.push(
+      `${retained.size} URI(s) kept earlier copies that predate ${receipt.receipt_id} and are expected to remain: ${[...retained].join(', ')}`,
+    );
+  }
   if (directionAssumed) lines.push('NOTE: direction was assumed ("added") — this receipt predates direction tracking.');
   if (snapshotId) lines.push(`Snapshot ID: ${snapshotId}`);
-  if (newReceipt) lines.push(formatReceipt(newReceipt, { expectPresent: expectPresentAfter }));
+  if (newReceipt) lines.push(formatReceipt(newReceipt, { expectPresent: expectPresentNow }));
   return textResult(lines.join('\n'), {
     ok: confirmed,
     undone_receipt: receipt.receipt_id,

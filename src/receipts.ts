@@ -81,6 +81,14 @@ export interface Receipt {
    * of guessing.
    */
   affected?: ReceiptAffected[];
+  /**
+   * Post-mutation occurrence count per recorded uri, when the walk counted
+   * them (#625). Undo needs this to know whether a uri had copies that
+   * PREDATE the mutation: removing the added row must leave those in place, so
+   * the uri is still present afterwards and the post-state check must expect
+   * presence rather than absence.
+   */
+  occurrences?: Record<string, number>;
   /** When true, playlist exceeds verifiable window — verified is false due to cap, not missing data. */
   windowExceeded?: boolean;
   /** Human reason when not verified or window exceeded. */
@@ -100,6 +108,13 @@ export interface IssueReceiptOpts {
   expectPresent?: boolean;
   /** For targeted-position removals: the specific (uri, position) pairs removed. When set, verification is per-position not binary presence. */
   targetedPositions?: Array<{ uri: string; position: number }>;
+  /**
+   * For an add that inserted at a given index rather than appending (#625).
+   * Without it the added rows are assumed to be the uris' LAST occurrences,
+   * which is wrong for a positional add — a caller that used `position` must
+   * pass it here or undo will target a row that predates the mutation.
+   */
+  insertPosition?: number;
   /** Expected number of rows removed (for window-exceeded detection). */
   expectedRemovedCount?: number;
 }
@@ -137,6 +152,7 @@ export async function issueReceipt(
   let verified: boolean;
   let _windowExceeded = false;
   let _reason: string | undefined;
+  let occurrences: Record<string, number> | undefined;
 
   if (opts.kind === 'playlist_items') {
     // Walk /playlists/{id}/items in 100-row pages, at most 5 pages, counting
@@ -173,6 +189,10 @@ export async function issueReceipt(
     if (totalReported !== undefined && totalReported > orderedUris.length && orderedUris.length >= PLAYLIST_ITEM_PAGES_CAP * PLAYLIST_ITEMS_PAGE_SIZE) {
       _windowExceeded = true;
     }
+    // Per-uri counts let a later undo tell a copy that PREDATES the mutation
+    // from one it created, which decides whether absence or presence is the
+    // correct post-state after the rollback.
+    occurrences = Object.fromEntries(opts.uris.map((u) => [u, counts.get(u) ?? 0]));
     // Occurrence bookkeeping (#625): record WHICH rows this mutation touched,
     // so `undo` reverses exactly those rows instead of every copy of the URI.
     // An add appends one row per appearance of a uri, so the rows to reverse
@@ -188,16 +208,37 @@ export async function issueReceipt(
     affected = [];
     if (sawWholeList) {
       if (opts.expectPresent !== false) {
-        const addedPerUri = new Map<string, number>();
-        for (const uri of opts.uris) addedPerUri.set(uri, (addedPerUri.get(uri) ?? 0) + 1);
-        for (const [uri, added] of addedPerUri) {
-          const positions: number[] = [];
-          for (let i = orderedUris.length - 1; i >= 0 && positions.length < added; i--) {
-            if (orderedUris[i] === uri) positions.push(i);
+        if (opts.insertPosition !== undefined) {
+          // A positional add inserts the posted uris IN ORDER at that index, so
+          // each one occupies `insertPosition + its own index in the request`.
+          // Treating it as an append instead would record the uri's last
+          // occurrence — a row that PREDATES the mutation, and the row undo
+          // would then delete. The layout is verified against the observed
+          // list; if it does not hold, nothing is recorded and undo refuses.
+          const at = opts.insertPosition;
+          const holds = opts.uris.every((uri, i) => orderedUris[at + i] === uri);
+          if (holds) {
+            const byUri = new Map<string, number[]>();
+            opts.uris.forEach((uri, i) => {
+              const list = byUri.get(uri);
+              if (list) list.push(at + i);
+              else byUri.set(uri, [at + i]);
+            });
+            for (const [uri, positions] of byUri) affected.push({ uri, positions });
           }
-          // A uri with fewer visible rows than the add created is not fully
-          // accounted for; recording a partial set would target a wrong row.
-          if (positions.length === added) affected.push({ uri, positions: positions.reverse() });
+        } else {
+          // An append: the rows it created are that uri's LAST k occurrences.
+          const addedPerUri = new Map<string, number>();
+          for (const uri of opts.uris) addedPerUri.set(uri, (addedPerUri.get(uri) ?? 0) + 1);
+          for (const [uri, added] of addedPerUri) {
+            const positions: number[] = [];
+            for (let i = orderedUris.length - 1; i >= 0 && positions.length < added; i--) {
+              if (orderedUris[i] === uri) positions.push(i);
+            }
+            // A uri with fewer visible rows than the add created is not fully
+            // accounted for; recording a partial set would target a wrong row.
+            if (positions.length === added) affected.push({ uri, positions: positions.reverse() });
+          }
         }
       } else if (isTargeted) {
         const byUri = new Map<string, number[]>();
@@ -348,6 +389,7 @@ export async function issueReceipt(
     uris: [...opts.uris],
     direction: (opts.expectPresent ?? true) ? 'added' : 'removed',
     ...(affected !== undefined && affected.length > 0 ? { affected } : {}),
+    ...(occurrences !== undefined ? { occurrences } : {}),
     ...(_windowExceeded ? { windowExceeded: true as const, reason: _reason } : {}),
   };
   store.set(receipt.receipt_id, receipt);

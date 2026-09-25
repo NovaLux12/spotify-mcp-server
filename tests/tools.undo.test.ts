@@ -116,13 +116,33 @@ function stubClient(): {
       }
       const id = playlistIdOf(path);
       if (id !== null) {
+        // This stub encodes the DOCUMENTED contract, not whatever the code
+        // under test happens to send: `DELETE /playlists/{id}/items` takes
+        // `{ tracks: [{ uri, positions? }] }`. A body without `tracks` is
+        // rejected the way the real endpoint rejects it, so an implementation
+        // that invents a different shape fails here instead of passing.
+        const tracks = trackList(arg);
+        if (tracks === null) throw new Error('400: body must carry a "tracks" array');
         const rows = playlists[id] ?? [];
-        const positions = numberList(arg, 'positions');
-        // A positional delete drops exactly the addressed occurrences; a
-        // bare-URI delete drops every copy, as Spotify's API does.
-        playlists[id] = positions
-          ? rows.filter((_, index) => !positions.includes(index))
-          : rows.filter((uri) => !stringList(arg, 'uris').includes(uri));
+        const drop = new Set<number>();
+        let anyPositions = false;
+        for (const entry of tracks) {
+          for (const position of entry.positions) {
+            anyPositions = true;
+            if (position < 0 || position >= rows.length) {
+              throw new Error(`400: position ${position} is out of range for ${rows.length} rows`);
+            }
+            if (rows[position] !== entry.uri) {
+              throw new Error(`400: position ${position} does not hold ${entry.uri}`);
+            }
+            drop.add(position);
+          }
+        }
+        // A bare-URI entry drops every copy; a positional entry drops exactly
+        // the rows it names. That is the behaviour being relied on.
+        playlists[id] = anyPositions
+          ? rows.filter((_, index) => !drop.has(index))
+          : rows.filter((uri) => !tracks.some((entry) => entry.uri === uri));
       }
       return { snapshot_id: 'snap-delete' };
     },
@@ -140,6 +160,24 @@ function stringList(body: unknown, key: string): string[] {
 function numberList(body: unknown, key: string): number[] | null {
   const value = fieldOf(body, key);
   return Array.isArray(value) && value.every((v) => typeof v === 'number') ? (value as number[]) : null;
+}
+
+/**
+ * Parse the documented `{ tracks: [{ uri, positions? }] }` body, narrowing
+ * rather than assuming. Returns null when the shape is not the documented one.
+ * An entry with no `positions` means "every occurrence of this uri".
+ */
+function trackList(body: unknown): Array<{ uri: string; positions: number[] }> | null {
+  const value = fieldOf(body, 'tracks');
+  if (!Array.isArray(value)) return null;
+  const out: Array<{ uri: string; positions: number[] }> = [];
+  for (const entry of value) {
+    if (typeof entry !== 'object' || entry === null || !('uri' in entry)) return null;
+    const record = entry as Record<string, unknown>;
+    if (typeof record.uri !== 'string') return null;
+    out.push({ uri: record.uri, positions: numberList(entry, 'positions') ?? [] });
+  }
+  return out;
 }
 
 /** Read a numeric request-body field; null when absent or not a number. */
@@ -231,9 +269,11 @@ describe('undo_mutation direction inversion', () => {
     assert.equal(dels.length, 2, 'expected two chunked deletes for 150 rows');
     assert.equal(dels[0]!.path, '/playlists/pl1/items');
     for (const del of dels) {
-      const body = del.arg as { uris: string[]; positions: number[] };
-      assert.ok(body.positions, 'undo must address rows by position, not by bare URI');
-      assert.equal(body.uris.length, body.positions.length);
+      const tracks = trackList(del.arg);
+      assert.ok(tracks, `delete body must carry a tracks array, got ${JSON.stringify(del.arg)}`);
+      for (const entry of tracks) {
+        assert.ok(entry.positions.length > 0, 'undo must address rows by position, not by bare URI');
+      }
     }
     assert.deepEqual(playlists.pl1, [], 'every added row removed');
   });
@@ -310,11 +350,34 @@ describe('undo_mutation occurrence targeting (#625)', () => {
 
     const del = writes(calls).find((c) => c.method === 'DELETE');
     assert.ok(del, 'expected a playlist delete');
-    const body = del.arg as { uris: string[]; positions: number[] };
-    assert.deepEqual(body, { uris: ['spotify:track:x'], positions: [1] },
-      'undo must address the added row, not every occurrence');
+    assert.deepEqual(del.arg, { tracks: [{ uri: 'spotify:track:x', positions: [1] }] },
+      'the documented tracks shape, addressing the added row and not every occurrence');
     assert.deepEqual(playlists.pl1, ['spotify:track:pre'], 'the pre-existing row survives');
     assert.equal(out.structuredContent?.ok, true);
+  });
+
+  it('undoes a positional add without destroying the row that predated it', async () => {
+    const { server, handlers } = stubServer();
+    const { client, playlists } = stubClient();
+    registerUndoTools(server, client);
+
+    // [A, X, B] with X inserted at 0 -> [X, A, X, B]. Deriving the added row as
+    // "X's last occurrence" would pick index 2, the X that predates the add,
+    // and leave the added row behind. The 4-row playlist is entirely inside
+    // the walk window, so only the insert position can distinguish the two.
+    playlists.pl1 = ['spotify:track:x', 'spotify:track:a', 'spotify:track:x', 'spotify:track:b'];
+    const receipt = await issueReceipt(client, {
+      kind: 'playlist_items',
+      id: 'pl1',
+      uris: ['spotify:track:x'],
+      insertPosition: 0,
+    });
+    assert.deepEqual(receipt.affected, [{ uri: 'spotify:track:x', positions: [0] }]);
+
+    const out = await handlers.get('undo_mutation')!({ receipt_id: receipt.receipt_id, dry_run: false });
+    assert.equal(out.structuredContent?.ok, true);
+    assert.deepEqual(playlists.pl1, ['spotify:track:a', 'spotify:track:x', 'spotify:track:b'],
+      'the pre-add ordering is restored exactly');
   });
 
   it('refuses an add undo on a playlist beyond the walk window, sparing pre-existing rows', async () => {

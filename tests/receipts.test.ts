@@ -398,4 +398,50 @@ describe('issueReceipt occurrence recording (#625)', () => {
     });
     assert.equal(receipt.affected, undefined);
   });
+
+  it('records the INSERTED row for a positional add, not the last occurrence', async () => {
+    // Main's reproduction: [A, X, B] + insert X at 0 -> [X, A, X, B]. The
+    // added row is index 0; index 2 is the X that predates the mutation.
+    const client = stubClient(() =>
+      pagedItems([track('spotify:track:x'), track('spotify:track:a'), track('spotify:track:x'), track('spotify:track:b')]),
+    );
+    const receipt = await issueReceipt(client, {
+      kind: 'playlist_items',
+      id: 'pl1',
+      uris: ['spotify:track:x'],
+      insertPosition: 0,
+    });
+    assert.deepEqual(receipt.affected, [{ uri: 'spotify:track:x', positions: [0] }]);
+  });
+
+  it('records a multi-uri positional add at consecutive indices', async () => {
+    const client = stubClient(() =>
+      pagedItems([track('spotify:track:x'), track('spotify:track:y'), track('spotify:track:a')]),
+    );
+    const receipt = await issueReceipt(client, {
+      kind: 'playlist_items',
+      id: 'pl1',
+      uris: ['spotify:track:x', 'spotify:track:y'],
+      insertPosition: 0,
+    });
+    assert.deepEqual(receipt.affected, [
+      { uri: 'spotify:track:x', positions: [0] },
+      { uri: 'spotify:track:y', positions: [1] },
+    ]);
+  });
+
+  it('records nothing when a claimed insert position does not match the list', async () => {
+    // A caller that supplies a position the walk cannot corroborate gets no
+    // positions at all, so undo refuses instead of deleting a wrong row.
+    const client = stubClient(() =>
+      pagedItems([track('spotify:track:a'), track('spotify:track:x')]),
+    );
+    const receipt = await issueReceipt(client, {
+      kind: 'playlist_items',
+      id: 'pl1',
+      uris: ['spotify:track:x'],
+      insertPosition: 0,
+    });
+    assert.equal(receipt.affected, undefined);
+  });
 });
