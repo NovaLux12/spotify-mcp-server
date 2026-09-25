@@ -11,9 +11,13 @@ import {
   DryRun,
   describeDryRun,
   batchSummary,
+  CHUNK_CAPS,
 } from '../shaping.js';
 import type { ResponseFormatValue } from '../shaping.js';
 import { issueReceipt, formatReceipt } from '../receipts.js';
+import { confirmViaElicitation, describeConfirmation, requiredConfirmationRefusal } from './confirm.js';
+// #637: the batch-add gate constant is shared, never re-declared here.
+import { BATCH_ADD_ELICIT_THRESHOLD } from './playlistbatch.js';
 import { getConfig } from '../config.js';
 // mkdir/writeFile stay for import_profile_state, which writes to the server's
 // own store paths (scenesFilePath(), historyFilePath()) rather than to a
@@ -218,6 +222,142 @@ async function tryReadJson(path: string): Promise<unknown | null> {
 
 function listeningHistoryDir(env: NodeJS.ProcessEnv = process.env): string {
   return env.SPOTIFY_MCP_PORTABILITY_DIR ?? join(homedir(), '.spotify-mcp', 'portability');
+}
+
+// ---------------------------------------------------------------------------
+// #637 + #736: additive restore of a library.json sidecar
+// ---------------------------------------------------------------------------
+
+/**
+ * The five collections export_library_json writes into library.json (#736).
+ * The importer restores every one of them; a key the file does not carry is
+ * reported in `absent_keys` instead of being silently treated as "nothing to
+ * do", so a partial sidecar can never read as a complete restore.
+ */
+const SIDECAR_COLLECTIONS = [
+  { key: 'tracks', kind: 'track' },
+  { key: 'albums', kind: 'album' },
+  { key: 'shows', kind: 'show' },
+  { key: 'episodes', kind: 'episode' },
+  { key: 'audiobooks', kind: 'audiobook' },
+] as const;
+
+type SidecarKey = (typeof SIDECAR_COLLECTIONS)[number]['key'];
+
+/**
+ * A sidecar row is only usable when its `uri` is the canonical library URI
+ * for that collection. Spotify ids are 22 base62 characters; a row with
+ * anything else is a malformed sidecar, not a library item, and is counted as
+ * invalid rather than being turned into an id by string splitting (#637).
+ */
+function sidecarUriRegex(kind: string): RegExp {
+  return new RegExp(`^spotify:${kind}:[A-Za-z0-9]{22}$`);
+}
+
+/** Same query shape as library.ts's `libraryUrisParam` (kept in sync there). */
+function libraryUrisParam(uris: readonly string[]): Record<string, string> {
+  return { uris: uris.join(',') };
+}
+
+interface SidecarPlan {
+  /** Collections the file actually carries, in export order. */
+  readonly present: readonly SidecarKey[];
+  /** Collections the file does not carry. */
+  readonly absent: readonly SidecarKey[];
+  /** Valid, de-duplicated URIs to restore, each owned by one collection. */
+  readonly candidates: readonly string[];
+  /** Which collection each candidate came from (first occurrence wins). */
+  readonly owner: ReadonlyMap<string, SidecarKey>;
+  /** Per-collection { in_file, invalid, candidates }, for every one of the five keys. */
+  readonly collections: Record<SidecarKey, { in_file: number; invalid: number; candidates: number }>;
+  readonly invalid: number;
+  readonly invalidSamples: readonly string[];
+  readonly inFile: number;
+}
+
+function planSidecarRestore(doc: Record<string, unknown>): SidecarPlan {
+  const present: SidecarKey[] = [];
+  const absent: SidecarKey[] = [];
+  const invalidByKey = {} as Record<SidecarKey, number>;
+  const validByKey = {} as Record<SidecarKey, string[]>;
+  const candidates: string[] = [];
+  const owner = new Map<string, SidecarKey>();
+  const invalidSamples: string[] = [];
+  let invalid = 0;
+  let inFile = 0;
+
+  for (const { key, kind } of SIDECAR_COLLECTIONS) {
+    const rows = doc[key];
+    if (!Array.isArray(rows)) {
+      absent.push(key);
+      invalidByKey[key] = 0;
+      validByKey[key] = [];
+      continue;
+    }
+    present.push(key);
+    inFile += rows.length;
+    const regex = sidecarUriRegex(kind);
+    const valid: string[] = [];
+    let bad = 0;
+    for (const row of rows) {
+      const uri = (row as { uri?: unknown } | null | undefined)?.uri;
+      if (typeof uri === 'string' && regex.test(uri)) {
+        valid.push(uri);
+      } else {
+        bad++;
+        if (invalidSamples.length < 5) invalidSamples.push(`${key}: ${JSON.stringify(uri ?? null)}`);
+      }
+    }
+    invalidByKey[key] = bad;
+    invalid += bad;
+    validByKey[key] = valid;
+    for (const uri of valid) {
+      if (owner.has(uri)) continue; // a URI shared by two keys is restored once, under the first key
+      owner.set(uri, key);
+      candidates.push(uri);
+    }
+  }
+
+  const collections = {} as Record<SidecarKey, { in_file: number; invalid: number; candidates: number }>;
+  for (const { key } of SIDECAR_COLLECTIONS) {
+    collections[key] = {
+      in_file: Array.isArray(doc[key]) ? (doc[key] as unknown[]).length : 0,
+      invalid: invalidByKey[key],
+      candidates: validByKey[key].length,
+    };
+  }
+
+  return { present, absent, candidates, owner, collections, invalid, invalidSamples, inFile };
+}
+
+/**
+ * Which of `uris` the library does not already hold. The unified
+ * `/me/library/contains` endpoint is the ungated, type-agnostic drop-in for the
+ * per-type contains calls; a malformed or short reply fails closed rather than
+ * reporting every item as missing.
+ */
+async function findMissingLibraryUris(client: SpotifyClient, uris: readonly string[]): Promise<string[]> {
+  const present = new Set<string>();
+  for (let i = 0; i < uris.length; i += CHUNK_CAPS.library_writes) {
+    const chunk = uris.slice(i, i + CHUNK_CAPS.library_writes);
+    const flags = await client.get<boolean[]>('/me/library/contains', libraryUrisParam(chunk));
+    if (!Array.isArray(flags) || flags.length !== chunk.length) {
+      throw new Error('Could not check library state (/me/library/contains)');
+    }
+    chunk.forEach((uri, idx) => {
+      if (flags[idx]) present.add(uri);
+    });
+  }
+  return uris.filter((uri) => !present.has(uri));
+}
+
+/** Per-key counts over all five collections, counting only owned candidates. */
+function countByCollection(plan: SidecarPlan, subset: (uri: string) => boolean): Record<SidecarKey, number> {
+  const counts: Record<SidecarKey, number> = { tracks: 0, albums: 0, shows: 0, episodes: 0, audiobooks: 0 };
+  for (const uri of plan.candidates) {
+    if (subset(uri)) counts[plan.owner.get(uri) as SidecarKey]++;
+  }
+  return counts;
 }
 
 export function registerPortabilityTools(server: McpServer, client: SpotifyClient): void {
@@ -868,10 +1008,10 @@ export function registerPortabilityTools(server: McpServer, client: SpotifyClien
   // import_from_sidecar — additive restore from sidecar (dry_run defaults true)
   server.tool(
     'import_from_sidecar',
-    'Additive restore from a portability sidecar (library.json / playlists.json): re-adds missing saved items and creates missing playlists. Skips existing. dry_run=true by default. Quota: 🟢 local read + 🟡 contains-check + writes when dry_run=false (chunked).',
+    'Additive restore from a library.json sidecar written by export_library_json: re-adds every missing saved item across all five collections (tracks, albums, shows, episodes, audiobooks) through the unified PUT /me/library endpoint, skipping items the library already holds. Rows whose uri is not a canonical spotify:<kind>:<22-char id> URI are counted as invalid and never sent. Collections the file does not carry are named in absent_keys. dry_run=true by default. Quota: 🟢 local read + 🟡 contains-check + writes when dry_run=false (chunked).',
     {
       input_path: z.string().optional().describe('Path to sidecar JSON (default: <portability>/library.json)'),
-      dry_run: z.boolean().optional().default(true).describe('Preview only when true'),
+      dry_run: z.boolean().optional().default(true).describe('Preview only, making no API calls at all. Writes happen only when explicitly set to false.'),
       response_format: ResponseFormat,
     },
     async (args) => {
@@ -879,27 +1019,128 @@ export function registerPortabilityTools(server: McpServer, client: SpotifyClien
       const inputPath = args.input_path ?? join(portabilityDir(), 'library.json');
       const raw = await readFile(inputPath, 'utf8');
       const doc = JSON.parse(raw) as Record<string, unknown>;
-      const tracks = (doc.tracks as Array<{ uri: string }>) ?? [];
-      const totalTracks = tracks.length;
+      // #736: every collection the exporter writes is planned, not just tracks.
+      const plan = planSidecarRestore(doc);
+
+      const absentLine = plan.absent.length > 0
+        ? `${inputPath} has no ${plan.absent.join(' / ')} key — nothing to restore for ${plan.absent.join(' / ')}.`
+        : '';
+      const invalidLine = plan.invalid > 0
+        ? `${plan.invalid} invalid row(s) skipped (not a canonical spotify:<kind>:<22-char id> URI): ${plan.invalidSamples.join('; ')}`
+        : '';
+
+      // Dry run: local read only — no contains-check, no write, same per-collection plan.
       if (args.dry_run !== false) {
-        const changes = tracks.slice(0, 5).map((t) => t.uri);
-        const payload = { ok: true, dry_run: true, input: inputPath, would_import_tracks: totalTracks, sample: changes };
-        return shapeResult(rf, describeDryRun('import_from_sidecar', inputPath, [`Would re-add up to ${totalTracks} saved track(s) (contains-checked)`, ...changes]) + (totalTracks > 5 ? `\n  …and ${totalTracks - 5} more` : ''), payload);
+        const would_import = {} as Record<SidecarKey, number>;
+        for (const { key } of SIDECAR_COLLECTIONS) would_import[key] = plan.collections[key].candidates;
+        const payload = {
+          ok: true,
+          dry_run: true,
+          executed: false,
+          input: inputPath,
+          present_keys: plan.present,
+          absent_keys: plan.absent,
+          collections: plan.collections,
+          would_import,
+          total_in_file: plan.inFile,
+          invalid: plan.invalid,
+          invalid_samples: plan.invalidSamples,
+          sample: plan.candidates.slice(0, 5),
+        };
+        const lines = [
+          `Would restore ${plan.candidates.length} item(s) from ${plan.present.length} collection(s): ${plan.present.join(', ') || '—'}`,
+          ...plan.candidates.slice(0, 5).map((u) => u),
+        ];
+        if (plan.candidates.length > 5) lines.push(`…and ${plan.candidates.length - 5} more`);
+        if (absentLine) lines.push(absentLine);
+        if (invalidLine) lines.push(invalidLine);
+        return shapeResult(rf, describeDryRun('import_from_sidecar', inputPath, lines), payload);
       }
-      // Real import: check existing then add missing in batches of 50
-      const existing = await client.getAllPages<SavedTrackItem>('/me/tracks', { limit: '50' }, { maxItems: getConfig().fetchAllCap });
-      const existingUris = new Set(existing.map((r) => r.track.uri));
-      const missing = tracks.map((t) => t.uri).filter((u) => u && !existingUris.has(u));
-      let added = 0;
-      for (let i = 0; i < missing.length; i += 50) {
-        const chunk = missing.slice(i, i + 50);
-        const ids = chunk.map((u) => u.split(':').pop()!).join(',');
-        await client.put(`/me/tracks?ids=${encodeURIComponent(ids)}`);
-        // Spotify expects PUT /me/tracks?ids=... with empty body — client.put handles it
-        added += chunk.length;
+
+      if (plan.candidates.length === 0) {
+        const payload = {
+          ok: true,
+          dry_run: false,
+          executed: true,
+          input: inputPath,
+          present_keys: plan.present,
+          absent_keys: plan.absent,
+          collections: plan.collections,
+          imported: countByCollection(plan, () => false),
+          added: 0,
+          skipped_existing: 0,
+          invalid: plan.invalid,
+          invalid_samples: plan.invalidSamples,
+          total_in_file: plan.inFile,
+        };
+        return shapeResult(
+          rf,
+          `Import from ${inputPath}: added 0 item(s) — the sidecar carried no valid library URI to restore.${absentLine ? ` ${absentLine}` : ''}${invalidLine ? ` ${invalidLine}` : ''}`,
+          payload,
+        );
       }
-      void added;
-      return shapeResult(rf, `Import from ${inputPath}: ${missing.length} missing track(s) would be added (checked ${totalTracks} total).`, { ok: true, input: inputPath, total_in_file: totalTracks, missing: missing.length, sample: missing.slice(0, 5) });
+
+      // #637: one contains-check over the whole candidate set, then one gated,
+      // chunked write through the unified endpoint. No deprecated per-type PUT.
+      const missing = await findMissingLibraryUris(client, plan.candidates);
+      const addedSet = new Set(missing);
+      const imported = countByCollection(plan, (u) => addedSet.has(u));
+      const skippedByCollection = countByCollection(plan, (u) => !addedSet.has(u));
+      const skippedExisting = plan.candidates.length - missing.length;
+
+      if (missing.length >= BATCH_ADD_ELICIT_THRESHOLD) {
+        const verdict = await confirmViaElicitation(server, {
+          message: describeConfirmation('restore library items from', inputPath, [
+            `Re-add ${missing.length} item(s) across ${Object.entries(imported).filter(([, n]) => n > 0).map(([k, n]) => `${k}: ${n}`).join(', ')}:`,
+            ...missing.slice(0, 10).map((u) => `  - ${u}`),
+            ...(missing.length > 10 ? [`  (…and ${missing.length - 10} more)`] : []),
+          ]),
+          confirmLabel: 'Restore library',
+        });
+        const refusal = requiredConfirmationRefusal(verdict);
+        if (refusal) return shapeResult(rf, refusal.message, refusal.payload);
+      }
+
+      for (let i = 0; i < missing.length; i += CHUNK_CAPS.library_writes) {
+        const chunk = missing.slice(i, i + CHUNK_CAPS.library_writes);
+        await client.put(`/me/library?${new URLSearchParams(libraryUrisParam(chunk)).toString()}`);
+      }
+
+      // #736: the import is invertible through undo_last_mutation.
+      const receipt = await issueReceipt(client, { kind: 'library', uris: missing });
+      const payload = {
+        ok: true,
+        dry_run: false,
+        executed: true,
+        input: inputPath,
+        present_keys: plan.present,
+        absent_keys: plan.absent,
+        collections: plan.collections,
+        imported,
+        added: missing.length,
+        skipped_existing: skippedExisting,
+        skipped_by_collection: skippedByCollection,
+        invalid: plan.invalid,
+        invalid_samples: plan.invalidSamples,
+        total_in_file: plan.inFile,
+        sample: missing.slice(0, 5),
+        receipt: receipt.receipt_id,
+      };
+      const summary = Object.entries(imported)
+        .filter(([, n]) => n > 0)
+        .map(([k, n]) => `${k}: ${n}`)
+        .join(', ');
+      const prose = [
+        `Import from ${inputPath}: added ${missing.length} item(s) to Your Library (${summary || 'none'}) across ${plan.present.length} collection(s).`,
+        skippedExisting > 0 ? `${skippedExisting} item(s) were already in the library and were left untouched.` : '',
+        invalidLine,
+        absentLine,
+        batchSummary(missing.length, missing),
+        formatReceipt(receipt),
+      ]
+        .filter((l) => l !== '')
+        .join('\n');
+      return shapeResult(rf, prose, payload);
     },
   );
 }
