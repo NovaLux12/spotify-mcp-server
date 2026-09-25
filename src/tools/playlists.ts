@@ -737,6 +737,10 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
         kind: 'playlist_items',
         id: args.playlist_id,
         uris: toAdd,
+        // A positional add is not an append: without this the receipt derives
+        // the added row as the uri's LAST occurrence, which is a row that
+        // predates the add, and `undo` would delete that one instead (#625).
+        ...(args.position !== undefined ? { insertPosition: args.position } : {}),
       });
       // #58: confirmation-friendly batch echo alongside the snapshot anchor.
       const lines = [`Added ${toAdd.length} item(s) to playlist.`];

@@ -191,8 +191,12 @@ export async function issueReceipt(
     }
     // Per-uri counts let a later undo tell a copy that PREDATES the mutation
     // from one it created, which decides whether absence or presence is the
-    // correct post-state after the rollback.
-    occurrences = Object.fromEntries(opts.uris.map((u) => [u, counts.get(u) ?? 0]));
+    // correct post-state after the rollback. Gated on the same condition as
+    // `affected` below: a truncated walk's counts undercount, and an
+    // undercount here becomes a false "the uri is gone" expectation later.
+    if (sawWholeList) {
+      occurrences = Object.fromEntries(opts.uris.map((u) => [u, counts.get(u) ?? 0]));
+    }
     // Occurrence bookkeeping (#625): record WHICH rows this mutation touched,
     // so `undo` reverses exactly those rows instead of every copy of the URI.
     // An add appends one row per appearance of a uri, so the rows to reverse

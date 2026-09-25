@@ -380,6 +380,35 @@ describe('undo_mutation occurrence targeting (#625)', () => {
       'the pre-add ordering is restored exactly');
   });
 
+  it('verifies a mixed add — one duplicate, one new — without a false alarm', async () => {
+    const { server, handlers } = stubServer();
+    const { client, playlists } = stubClient();
+    registerUndoTools(server, client);
+
+    // [X, A] plus an appended add of [X, Y] gives [X, A, X, Y]. Undoing
+    // removes X's added row and Y's row, leaving [X, A, Y]: X is still
+    // present because it predates the mutation, Y is absent. A single
+    // expectPresent flag cannot express that — expecting presence flags Y as
+    // missing, expecting absence flags X — so a correct rollback would be
+    // reported as post_state_mismatch.
+    playlists.pl1 = ['spotify:track:x', 'spotify:track:a', 'spotify:track:x', 'spotify:track:y'];
+    const receipt = await issueReceipt(client, {
+      kind: 'playlist_items',
+      id: 'pl1',
+      uris: ['spotify:track:x', 'spotify:track:y'],
+    });
+
+    const out = await handlers.get('undo_mutation')!({ receipt_id: receipt.receipt_id, dry_run: false });
+
+    assert.equal(out.structuredContent?.ok, true, 'a correct rollback must not be reported as a mismatch');
+    assert.deepEqual(out.structuredContent?.expected_present, ['spotify:track:x']);
+    assert.deepEqual(out.structuredContent?.expected_absent, ['spotify:track:y']);
+    // Back to the pre-add state: X's original row survives, while the X the
+    // add appended and the newly added Y are both gone.
+    assert.deepEqual(playlists.pl1, ['spotify:track:x', 'spotify:track:a']);
+    assert.match(out.content[0]!.text, /1 URI\(s\) confirmed absent; 1 URI\(s\) confirmed present/);
+  });
+
   it('refuses an add undo on a playlist beyond the walk window, sparing pre-existing rows', async () => {
     const { server, handlers } = stubServer();
     const { client, calls, playlists } = stubClient();
@@ -483,7 +512,8 @@ describe('undo_mutation occurrence targeting (#625)', () => {
     assert.equal(out.structuredContent?.reason, 'post_state_mismatch');
     assert.deepEqual(out.structuredContent?.unconfirmed_uris, ['spotify:track:a']);
     assert.doesNotMatch(out.content[0]!.text, /inverted 1 URI/);
-    assert.match(out.content[0]!.text, /did NOT confirm them absent/);
+    assert.match(out.content[0]!.text, /did NOT confirm: spotify:track:a/);
+    assert.deepEqual(out.structuredContent?.expected_absent, ['spotify:track:a']);
   });
 
   it('chunk-writes a 41-URI library undo at the documented 40-uri cap, encoded', async () => {

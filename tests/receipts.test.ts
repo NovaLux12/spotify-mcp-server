@@ -444,4 +444,30 @@ describe('issueReceipt occurrence recording (#625)', () => {
     });
     assert.equal(receipt.affected, undefined);
   });
+
+  it('records no occurrence counts when the walk stopped short of the end', async () => {
+    // A truncated walk undercounts. Undo reads these counts to decide whether
+    // a uri should still be present after the rollback, so an undercount here
+    // becomes a false "the uri is gone" expectation and a false mismatch.
+    const full = pagedItems(Array.from({ length: 100 }, (_, i) => track(`spotify:track:r${i}`)), 600, 'more');
+    const client = stubClient(() => full);
+    const receipt = await issueReceipt(client, {
+      kind: 'playlist_items',
+      id: 'pl1',
+      uris: ['spotify:track:r0'],
+    });
+    assert.equal(receipt.occurrences, undefined);
+  });
+
+  it('records occurrence counts for a fully visible list', async () => {
+    const client = stubClient(() =>
+      pagedItems([track('spotify:track:x'), track('spotify:track:y'), track('spotify:track:x')]),
+    );
+    const receipt = await issueReceipt(client, {
+      kind: 'playlist_items',
+      id: 'pl1',
+      uris: ['spotify:track:x', 'spotify:track:y'],
+    });
+    assert.deepEqual(receipt.occurrences, { 'spotify:track:x': 2, 'spotify:track:y': 1 });
+  });
 });

@@ -277,8 +277,13 @@ async function invertReceipt(
 
   // A uri that had copies PREDATING the mutation is still expected to be
   // present after its added row is removed — the rollback restores the
-  // pre-mutation state, it does not make the uri vanish. Checking for absence
-  // there would report a correct rollback as unconfirmed (#625).
+  // pre-mutation state, it does not make the uri vanish.
+  //
+  // The two groups are verified SEPARATELY. One `expectPresent` flag for the
+  // whole set cannot express "X stays, Y goes": asking for presence puts Y in
+  // `missing`, and asking for absence puts X there. Either way a correct
+  // rollback is reported as unconfirmed, and the natural response to a check
+  // that cries wolf is to delete it (#625).
   const retained = new Set<string>();
   if (direction === 'added' && receipt.occurrences) {
     const removedPerUri = new Map<string, number>();
@@ -289,33 +294,59 @@ async function invertReceipt(
       if ((receipt.occurrences[uri] ?? 0) > removed) retained.add(uri);
     }
   }
-  const expectPresentNow = expectPresentAfter || retained.size > 0;
+  const stayUris = expectPresentAfter ? uris : uris.filter((u) => retained.has(u));
+  const goUris = expectPresentAfter ? [] : uris.filter((u) => !retained.has(u));
 
-  let newReceipt: Receipt | undefined;
-  try {
-    newReceipt = await issueReceipt(client, {
-      kind: receipt.kind, id: receipt.id, uris,
-      expectPresent: expectPresentNow,
-    });
-  } catch { /* best-effort */ }
+  let stayReceipt: Receipt | undefined;
+  let goReceipt: Receipt | undefined;
+  if (stayUris.length > 0) {
+    try {
+      stayReceipt = await issueReceipt(client, {
+        kind: receipt.kind, id: receipt.id, uris: stayUris, expectPresent: true,
+      });
+    } catch { /* best-effort */ }
+  }
+  if (goUris.length > 0) {
+    try {
+      goReceipt = await issueReceipt(client, {
+        kind: receipt.kind, id: receipt.id, uris: goUris, expectPresent: false,
+      });
+    } catch { /* best-effort */ }
+  }
+  const newReceipt = goReceipt ?? stayReceipt;
+  // Both groups must verify, and a group that could not be checked at all
+  // leaves the rollback unconfirmed rather than assumed good.
+  const checked = (stayUris.length === 0 || stayReceipt !== undefined)
+    && (goUris.length === 0 || goReceipt !== undefined);
+  const confirmed = checked
+    && (stayReceipt === undefined || stayReceipt.verified)
+    && (goReceipt === undefined || goReceipt.verified);
 
   // Report the OBSERVED post-state, never an assumed one (#625). A write that
   // did not produce the intended state is the case an agent most needs to see,
   // and "inverted N URI(s)" hides it behind a success the user would believe.
-  const confirmed = newReceipt?.verified === true;
-  const wanted = expectPresentNow ? 'present' : 'absent';
+  // The prose states WHICH expectation was applied: a group verified by
+  // expecting presence was not checked for absence, and saying "all uris are
+  // present" would read as proof the added rows are gone when it is not.
   const target = `${receipt.kind}${receipt.id ? ` ${receipt.id}` : ''}`;
+  const unconfirmed: string[] = [
+    ...(stayReceipt?.verified === false ? stayReceipt.missing : []),
+    ...(goReceipt?.verified === false ? goReceipt.missing : []),
+  ];
   const lines: string[] = [];
   if (confirmed) {
+    const checks: string[] = [];
+    if (goUris.length > 0) checks.push(`${goUris.length} URI(s) confirmed absent`);
+    if (stayUris.length > 0) checks.push(`${stayUris.length} URI(s) confirmed present`);
     lines.push(
       `Undid ${receipt.receipt_id} (${target}) — ${direction} → ${inverse}, ` +
         `${uris.length} URI(s) across ${requests} request(s). ` +
-        `Confirmed by refetch: all ${uris.length} URI(s) are ${wanted}.`,
+        `Post-state refetch: ${checks.join('; ')}.`,
     );
-  } else if (newReceipt) {
+  } else if (unconfirmed.length > 0) {
     lines.push(
       `Undo of ${receipt.receipt_id} (${target}) issued ${requests} request(s) for ${uris.length} URI(s), ` +
-        `but the post-state check did NOT confirm them ${wanted}. ` +
+        `but the post-state check did NOT confirm: ${unconfirmed.join(', ')}. ` +
         `The library/playlist may not match the state before ${receipt.receipt_id}; inspect it before retrying.`,
     );
   } else {
@@ -327,12 +358,14 @@ async function invertReceipt(
   }
   if (retained.size > 0) {
     lines.push(
-      `${retained.size} URI(s) kept earlier copies that predate ${receipt.receipt_id} and are expected to remain: ${[...retained].join(', ')}`,
+      `${retained.size} URI(s) had copies that predate ${receipt.receipt_id} and are expected to remain: ` +
+        `${[...retained].join(', ')}. Their presence was checked; the rows the add created were removed by request, not by this refetch.`,
     );
   }
   if (directionAssumed) lines.push('NOTE: direction was assumed ("added") — this receipt predates direction tracking.');
   if (snapshotId) lines.push(`Snapshot ID: ${snapshotId}`);
-  if (newReceipt) lines.push(formatReceipt(newReceipt, { expectPresent: expectPresentNow }));
+  if (stayReceipt) lines.push(formatReceipt(stayReceipt, { expectPresent: true }));
+  if (goReceipt) lines.push(formatReceipt(goReceipt, { expectPresent: false }));
   return textResult(lines.join('\n'), {
     ok: confirmed,
     undone_receipt: receipt.receipt_id,
@@ -341,9 +374,10 @@ async function invertReceipt(
     inverted_to: inverse,
     requests,
     verified: confirmed,
-    expected_post_state: wanted,
-    ...(confirmed ? {} : { reason: newReceipt ? 'post_state_mismatch' : 'post_state_unverified' }),
-    ...(newReceipt && !newReceipt.verified ? { unconfirmed_uris: [...newReceipt.missing] } : {}),
+    expected_absent: goUris,
+    expected_present: stayUris,
+    ...(confirmed ? {} : { reason: unconfirmed.length > 0 ? 'post_state_mismatch' : 'post_state_unverified' }),
+    ...(unconfirmed.length > 0 ? { unconfirmed_uris: unconfirmed } : {}),
     snapshot_id: snapshotId,
     receipt: (newReceipt ?? null) as unknown as Record<string, unknown>,
   });
