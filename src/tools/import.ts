@@ -14,7 +14,7 @@ import type { SpotifyClient } from '../client.js';
 import { SpotifyApiError } from '../client.js';
 import { readFile } from 'node:fs/promises';
 import { classifySpotifyReference, spotifyUriFromClassification } from '../refs.js';
-import { ResponseFormat } from '../shaping.js';
+import { ResponseFormat, normalizePlaylistReference } from '../shaping.js';
 
 type TextContent = { type: 'text'; text: string };
 type ToolResult = { content: TextContent[]; structuredContent?: Record<string, unknown> };
@@ -142,7 +142,7 @@ export function registerImportTools(server: McpServer, client: SpotifyClient): v
     'import_playlist',
     "Parse an M3U or CSV document (the inverse of export_playlist) and append its Spotify URIs to a target playlist. Pass the document inline via content or read it from input_path. Skips non-Spotify lines, dedupes within the batch, and adds in batches of 100. Use dry_run=true to preview without writing.",
     {
-      playlist_id: z.string().describe('Target playlist ID or spotify:playlist: URI'),
+      playlist_id: z.string().describe('Target playlist ID, spotify:playlist: URI, or share URL'),
       content: z
         .string()
         .optional()
@@ -195,9 +195,7 @@ export function registerImportTools(server: McpServer, client: SpotifyClient): v
       // is reported as success-shaped output. client.get() throws on 404
       // (SpotifyApiError) rather than returning null, so map that to the
       // friendly message (see #210).
-      const playlistId = args.playlist_id.startsWith('spotify:playlist:')
-        ? args.playlist_id.slice('spotify:playlist:'.length)
-        : args.playlist_id;
+      const playlistId = normalizePlaylistReference(args.playlist_id);
       const id = encodeURIComponent(playlistId);
       let meta: { id?: string; name?: string } | null;
       try {

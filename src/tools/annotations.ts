@@ -560,7 +560,7 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   manifestEntry('playlisthealth', 'playlisthealth', 'src/tools/playlisthealth.ts', registerPlaylistHealthTools, [8, 5285], { scopeKey: 'playlists' }),
   manifestEntry('playlistdna', 'playlists', 'src/tools/playlistdna.ts', registerPlaylistDnaTools, [1, 1310], { readOnlySafe: true, scopeKey: 'playlists' }),
   manifestEntry('export', 'playlists', 'src/tools/export.ts', registerExportTools, [1, 1088], { scopeKey: 'playlists' }),
-  manifestEntry('import', 'playlists', 'src/tools/import.ts', registerImportTools, [1, 1135], { scopeKey: 'playlists' }),
+  manifestEntry('import', 'playlists', 'src/tools/import.ts', registerImportTools, [1, 1147], { scopeKey: 'playlists' }),
   manifestEntry('smart', 'playlists', 'src/tools/smart.ts', registerSmartTools, [1, 2182], { scopeKey: 'playlists' }),
   manifestEntry('exhaustmisc', 'playlists', 'src/tools/exhaustmisc.ts', registerExhaustMiscTools, [10, 7924], { scopeKey: 'exhaustmisc' }),
   manifestEntry('exhaust2catalog', 'exhaust2catalog', 'src/tools/exhaust2_catalog.ts', registerExhaust2CatalogTools, [19, 18759], { readOnlySafe: true, scopeKey: 'catalog' }),
@@ -683,7 +683,12 @@ export function collectModuleSchemaBudgets(server: McpServer): ModuleSchemaBudge
 }
 
 export function assertModuleSchemaBudgets(rows: readonly ModuleSchemaBudget[]): void {
-  const over = rows.filter((row) => row.status === 'active' && !row.withinBudget);
+  // Recompute the verdict from the measurements rather than trusting a
+  // precomputed `withinBudget` field: a caller (or a future edit to the row
+  // builder) could otherwise flip the flag without the comparison ever running,
+  // and the per-module budget gate would be dead while still reporting healthy.
+  const over = rows.filter((row) => row.status === 'active'
+    && (row.toolCount > row.maxToolCount || row.schemaBytes > row.maxSchemaBytes));
   if (over.length === 0) return;
   throw new Error(over.map((row) =>
     `${row.module} (${row.file}) exceeds schema budget: ${row.toolCount} tools/${row.schemaBytes}B ` +

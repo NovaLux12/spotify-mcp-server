@@ -100,7 +100,16 @@ describe('generated architecture and specification inventory', () => {
     assert.equal(census.registrationKeyNames.length, census.registrationKeys);
     assert.equal(new Set(census.registrationKeyNames).size, census.registrationKeys, 'registration keys must be unique');
     assert.deepEqual(census.registrationKeyNames, [...census.registrationKeyNames].sort(), 'registration keys must be sorted');
-    assert.deepEqual([...union].sort(), census.registrationKeyNames);
+    // Assert coverage, not the union itself: recomputing it from the same three
+    // census fields would restate the producer and could not fail. Every unit
+    // the manifest declares must appear in the emitted key list.
+    for (const unit of census.registrationUnits) {
+      assert.ok(census.registrationKeyNames.includes(unit.key), `manifest unit ${unit.key} missing from registrationKeyNames`);
+      if (unit.ungated === true) {
+        assert.ok(census.unconditionalRegistrationKeys.includes(unit.key), `${unit.key} is ungated but not listed as unconditional`);
+      }
+    }
+    assert.equal(union.size, census.registrationKeys, 'the three key sources must cover every registration key exactly once');
     assert.ok(census.unconditionalRegistrationKeys.includes('doctor'), 'doctor registers unconditionally');
     assert.ok(census.unconditionalRegistrationKeys.includes('swarm3meta'), 'the toolset report registers unconditionally');
 

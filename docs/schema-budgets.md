@@ -103,7 +103,7 @@ above either ceiling fails CI and server startup.
 | playlisthealth | 8 | 5,285 | 8 | 5,285 | 9 | 5,814 |
 | playlistdna | 1 | 1,310 | 1 | 1,310 | 2 | 1,442 |
 | export | 1 | 1,088 | 1 | 1,088 | 2 | 1,197 |
-| import | 1 | 1,135 | 1 | 1,135 | 2 | 1,249 |
+| import | 1 | 1,147 | 1 | 1,147 | 2 | 1,262 |
 | smart | 1 | 2,182 | 1 | 2,182 | 2 | 2,401 |
 | exhaustmisc | 10 | 7,924 | 10 | 7,924 | 11 | 8,717 |
 | exhaust2catalog | 19 | 18,759 | 19 | 18,759 | 20 | 20,635 |

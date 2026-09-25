@@ -659,14 +659,26 @@ export function installTruncationBoundary(server: object): TruncationBoundary {
     // reports honestly.
     const fetchAllRequested = capabilities.fetchAll === true && args.fetch_all === true;
     const itemsWereSliced = !fetchAllRequested && items !== undefined && cap !== undefined && items.length > cap;
+    // A declared total is only usable as a *truncation* total when it counts the
+    // same population as the array. `truncation.total` and `unique_tracks` do
+    // by construction; a bare `total`/`pagination.total` may be index-wide (a
+    // /search result the caller cannot page through) or a page-scoped count.
+    // Only trust it when the tool is actually paged — it declares an offset or
+    // limit control — and something was returned, so `total - returned` is a
+    // real "there are more" rather than a different denominator.
+    const truncationTotal = payload
+      ? numberField(payload.unique_tracks) ?? numberField((payload.truncation as JsonObject | undefined)?.total)
+      : undefined;
     const declaredTotal = payload
       ? numberField(payload.total)
         ?? numberField((payload.pagination as JsonObject | undefined)?.total)
-        ?? numberField(payload.unique_tracks)
-        ?? numberField((payload.truncation as JsonObject | undefined)?.total)
+        ?? truncationTotal
       : undefined;
+    const pagedTotal = declaredTotal !== undefined
+      && (truncationTotal !== undefined || itemsWereSliced || capabilities.offset === true || capabilities.limit === true)
+      && (numberField(payload?.returned) ?? items?.length ?? 0) > 0;
     const returned = itemsWereSliced ? cap : numberField(payload?.returned) ?? items?.length;
-    const inferredRemaining = declaredTotal !== undefined && returned !== undefined
+    const inferredRemaining = pagedTotal && declaredTotal !== undefined && returned !== undefined
       ? Math.max(0, declaredTotal - returned)
       : footerMatch != null
         ? footerMatch.count

@@ -340,10 +340,22 @@ describe('tool surface: budget', () => {
 
     const tools = new Set(Object.keys((server as unknown as { _registeredTools: Record<string, unknown> })._registeredTools));
     assert.equal(tools.size, rows.reduce((sum, row) => sum + row.toolCount, 0), 'every tool must belong to exactly one manifest module');
+    // Only the measurements are injected: the verdict is recomputed by the gate,
+    // so a weakened comparison in the row builder cannot hide behind a
+    // hand-supplied `withinBudget: true`.
     assert.throws(
-      () => assertModuleSchemaBudgets([{ ...rows[0], schemaBytes: rows[0].maxSchemaBytes + 1, withinBudget: false }]),
+      () => assertModuleSchemaBudgets([{ ...rows[0], schemaBytes: rows[0].maxSchemaBytes + 1, withinBudget: true }]),
       /exceeds schema budget/,
-      'an injected over-budget module must fail the shared gate',
+      'an over-budget measurement must fail the shared gate whatever the flag says',
+    );
+    assert.throws(
+      () => assertModuleSchemaBudgets([{ ...rows[0], toolCount: rows[0].maxToolCount + 1, withinBudget: true }]),
+      /exceeds schema budget/,
+      'an over-count module must fail too',
+    );
+    assert.doesNotThrow(
+      () => assertModuleSchemaBudgets([{ ...rows[0], schemaBytes: rows[0].maxSchemaBytes, toolCount: rows[0].maxToolCount, withinBudget: false }]),
+      'a module exactly at its ceiling is within budget even if a flag says otherwise',
     );
   });
 

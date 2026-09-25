@@ -306,6 +306,47 @@ describe('production truncation boundary', () => {
     assert.doesNotMatch(shaped.content[0].text, /narrow the query|raise limit/);
   });
 
+  // A tool may say "my SOURCE walk was cut off" and also describe render
+  // truncation. The boundary computes its own `truncated` from render counts,
+  // so the tool's flag must survive the spread — otherwise diff_playlists
+  // reports a complete result computed from a walk that stopped at scan_cap.
+  it('preserves a tool-authored truncated flag beside a render-truncation block', () => {
+    const server = new McpServer({ name: 'truncation-authoritative-tool', version: '0.0.0' });
+    const boundary = installTruncationBoundary(server);
+    server.tool('diff_playlists', 'Two-playlist diff', { max_results: z.number().optional(), scan_cap: z.number().optional() }, async () => ({ content: [] }));
+    const rows = Array.from({ length: 5 }, (_, index) => `spotify:track:d${index}`);
+    // Every row fits inside max_results, so the boundary's own render
+    // calculation is `remaining: 0` — the only thing carrying the truth is the
+    // tool's own flag.
+    const shaped = boundary.shape('diff_playlists', { max_results: 50, scan_cap: 5 }, {
+      content: [{ type: 'text', text: 'Diff between A and B' }],
+      structuredContent: {
+        truncated: true,
+        scan_cap: 5,
+        playlist_a: 'aaaaaaaaaaaaaaaaaaaaaa',
+        playlist_b: 'bbbbbbbbbbbbbbbbbbbbbb',
+        only_in_a: rows,
+        only_in_b: rows,
+        moved: [],
+        truncation: { returned: 10, total: 210 },
+      },
+    }) as { structuredContent: Record<string, unknown> };
+    assert.equal(shaped.structuredContent.truncated, true, 'the source-walk flag must survive');
+  });
+
+  it('reports remaining from a declared total only when the tool can actually page', () => {
+    const server = new McpServer({ name: 'truncation-paged-total', version: '0.0.0' });
+    const boundary = installTruncationBoundary(server);
+    // Same index-wide total, but this tool declares no offset/limit and is not
+    // self-truncating: the boundary must not manufacture a `remaining`.
+    server.tool('exact_search', 'Exact match', { market: z.string().optional() }, async () => ({ content: [] }));
+    const shaped = boundary.shape('exact_search', {}, {
+      content: [{ type: 'text', text: 'match' }],
+      structuredContent: { items: ['a'], total: 1841 },
+    }) as { structuredContent: Record<string, unknown> };
+    assert.equal(shaped.structuredContent.remaining, undefined);
+  });
+
   it('uses the initialized configured cap when max_results is omitted', () => {
     const previous = process.env.SPOTIFY_MCP_MAX_ITEMS;
     try {

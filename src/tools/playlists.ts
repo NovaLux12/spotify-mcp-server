@@ -1991,7 +1991,7 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
       const changes = [
         `Overwrite ALL ${base.rowCount} existing item(s) with ${remaining.length} URI(s), removing ${removed} URI(s) from subtraction sources.`,
       ];
-      if (sourceTruncated) changes.push(`Source walk reached the configured cap of ${args.scan_cap ?? getConfig().fetchAllCap} rows; the removal set may be incomplete.`);
+      if (sourceTruncated) changes.push(`Source walk reached the configured cap of ${effectiveScanCap(args)} rows; the removal set may be incomplete.`);
       if (unrepresentable > 0) changes.push(`Drop ${unrepresentable} item(s) Spotify returned without a URI, which a URI-based replace cannot restore.`);
       if (!readWholePlaylist) changes.push(`Only ${base.rowCount} of ${total ?? 'an unknown number of'} existing row(s) could be read, so the true impact may be larger.`);
       const verdict = await confirmViaElicitation(server, {
@@ -2014,9 +2014,9 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
         removed: 0,
         removed_total: 0,
         removed_uris: [],
-        kept: remaining.length,
+        kept: keptView.items.length,
         kept_total: remaining.length,
-        uris: remaining,
+        uris: keptView.items,
         limit: args.limit ?? null,
         scan_cap: effectiveScanCap(args),
         source_truncated: false,
