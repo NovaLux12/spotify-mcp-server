@@ -24,7 +24,7 @@
  *     registration itself is gated -- it is NOT an OAuth scope problem,
  *   - says explicitly that re-running "spotify-mcp auth" / adding scopes
  *     will NOT help,
- *   - points at the README "Registration-gated surface" list and the
+ *   - points at the README "Registration-gated endpoints" list and the
  *     grandfathered-credentials path,
  *   - preserves the original error as `cause`.
  *
@@ -84,7 +84,7 @@ export function graceful403Message(path: string, err: SpotifyApiError): string {
     '\u201cForbidden\u201d with no reason field means the app registration itself cannot ' +
     'access it \u2014 it is not an OAuth scope problem, so re-running "spotify-mcp auth" ' +
     'or adding scopes will not help. Older grandfathered app registrations may still ' +
-    'have access \u2014 see README \u201cRegistration-gated surface\u201d for the full list.'
+    'have access \u2014 see README \u201cRegistration-gated endpoints\u201d (README.md#registration-gated-endpoints) for the full list.'
   );
 }
 

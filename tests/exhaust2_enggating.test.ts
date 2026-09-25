@@ -112,7 +112,7 @@ test('403 on a gated path short-circuits into the graceful contract (#428)', asy
       assert.match(err.message, /spotify-mcp auth/);
       assert.match(err.message, /will not help/);
       assert.match(err.message, /grandfathered/);
-      assert.match(err.message, /Registration-gated surface/);
+      assert.match(err.message, /Registration-gated endpoints/);
       return true;
     },
   );
