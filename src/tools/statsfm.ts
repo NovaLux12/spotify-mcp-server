@@ -692,7 +692,13 @@ export function registerStatsfmTools(server: McpServer, client: StatsfmClient = 
         ? `, ${unreadableRows.length} of ${friends.length} unreadable — partial result`
         : '';
       const lines = [`People chart (friends ranked by streams, showing ${shaped.items.length} of ${rows.length}${partial}):`];
+<<<<<<< HEAD
       if (rows.length === 0) lines.push('  (no friend profile could be read)');
+=======
+      // Only claim a read failure when one happened: an empty friend list is
+      // a complete answer, not a set of unreadable profiles (#803).
+      if (unreadableRows.length > 0) lines.push('  (no friend profile could be read)');
+>>>>>>> fix/v4-statsfm
       shaped.items.forEach((r, i) => lines.push(`  ${i + 1}. ${r.display}`));
       if (shaped.footer) lines.push(`(${shaped.footer})`);
       if (unreadableRows.length > 0) {

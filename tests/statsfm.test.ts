@@ -612,6 +612,21 @@ test('statsfm_charts_users marks a throttled friend unreadable without a stream 
   assert.equal(h.calls.length, 2, 'friends list + one stats attempt; no retry into the rate limit');
 });
 
+test('statsfm_charts_users claims nothing unreadable when the friend list is empty (#803)', async () => {
+  const h = makeHarness((path) => {
+    if (path === '/users/u/friends') return { items: [] };
+    throw new Error(`unexpected ${path}`);
+  });
+  const out = await h.find('statsfm_charts_users').handler({ user_id: 'u' });
+  const txt = h.text(out);
+  // An empty friend list is a complete answer, not a set of unreadable
+  // profiles — claiming otherwise would be the same fabrication #803 removes.
+  assert.doesNotMatch(txt, /unreadable/);
+  assert.doesNotMatch(txt, /could be read/);
+  assert.equal((out.structuredContent as Record<string, unknown>).unreadable_count, 0);
+  assert.equal(h.calls.length, 1, 'no per-friend lookups when there are no friends');
+});
+
 // ---------------------------------------------------------------- date stats + social + records
 
 test('statsfm_track_date_stats passes the window through', async () => {
