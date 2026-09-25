@@ -562,7 +562,7 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   manifestEntry('doctor', 'doctor', 'src/tools/doctortool.ts', registerDoctorTool, [1, 750], { alwaysActive: true, readOnlySafe: true }),
   manifestEntry('swarm3meta', 'swarm3meta', 'src/tools/swarm3_meta.ts', registerSwarm3MetaTools, [3, 1624], { alwaysActive: true, scopeKey: 'catalog', readOnlySafe: true }),
   manifestEntry('libraryanalytics', 'libraryanalytics', 'src/tools/libraryanalytics.ts', registerLibraryAnalyticsTools, [4, 3350], { readOnlySafe: true, scopeKey: 'library' }),
-  manifestEntry('portability', 'portability', 'src/tools/portability.ts', registerPortabilityTools, [11, 9514], { scopeKey: 'library' }),
+  manifestEntry('portability', 'portability', 'src/tools/portability.ts', registerPortabilityTools, [11, 9762], { scopeKey: 'library' }),
   manifestEntry('libraryinsights', 'library', 'src/tools/libraryinsights.ts', registerLibraryInsightsTools, [3, 2751], { scopeKey: 'library' }),
   manifestEntry('libraryhygiene', 'library', 'src/tools/libraryhygiene.ts', registerLibraryHygieneTools, [1, 734], { scopeKey: 'library' }),
   manifestEntry('showradar', 'library', 'src/tools/showradar.ts', registerShowRadarTools, [1, 1675], { readOnlySafe: true, scopeKey: 'library' }),
