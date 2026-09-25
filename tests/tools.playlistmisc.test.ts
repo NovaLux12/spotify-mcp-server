@@ -31,15 +31,16 @@ function makeStubClient(responder: Responder = () => null) {
   }; return client;
 }
 function harness(responder: Responder=()=>null, elicitResult?: unknown) {
+  const prompts: string[] = [];
   const registered: RegisteredTool[] = [];
   const fakeServer = {
     tool(name:string,description:string,schema:z.ZodRawShape,handler:RegisteredTool['handler']){ registered.push({name,description,validate:(a)=>z.object(schema).parse(a),handler}); },
     registerTool(name:string,cfg:{description?:string;inputSchema?:z.ZodType},handler:RegisteredTool['handler']){ registered.push({name,description:cfg.description??'',validate:(a)=>(cfg.inputSchema as z.ZodType).parse(a),handler}); },
-    ...(elicitResult!==undefined?{server:{getClientCapabilities:()=>({elicitation:{form:{}}}),async elicitInput(){ if(elicitResult instanceof Error) throw elicitResult; return elicitResult; }}}:{}),
+    ...(elicitResult!==undefined?{server:{getClientCapabilities:()=>({elicitation:{form:{}}}),async elicitInput(req:{message:string}){ prompts.push(req.message); if(elicitResult instanceof Error) throw elicitResult; return elicitResult; }}}:{}),
   } as unknown as McpServer;
   const client = makeStubClient(responder);
   registerPlaylistMiscTools(fakeServer, client as unknown as SpotifyClient);
-  return { registered, client, invoke: async (name:string,args:Record<string,unknown>)=>{ const t=registered.find(x=>x.name===name); assert.ok(t,`tool ${name} registered`); return t.handler(t.validate(args)); } };
+  return { registered, client, prompts, invoke: async (name:string,args:Record<string,unknown>)=>{ const t=registered.find(x=>x.name===name); assert.ok(t,`tool ${name} registered`); return t.handler(t.validate(args)); } };
 }
 const textOf=(o:{content:Array<{text:string}>})=>o.content[0].text;
 const track=(id:string)=>({ uri:`spotify:track:${id}`, name:`Track ${id}`, artists:[{name:`Artist ${id}`}] });
@@ -71,6 +72,25 @@ describe('pin_playlist',()=>{
     await h.invoke('pin_playlist',{playlist_id:'pl1',public:true,dry_run:false});
     assert.equal(h.client.calls[0].arg,undefined);
     assert.equal(h.client.calls[0].path,'/me/library?uris=spotify%3Aplaylist%3Apl1');
+  });
+  it('the confirmation prompt asserts no visibility the request never sends',async()=>{
+    // public:true and the omitted case issue byte-identical requests, so the
+    // prompt must be byte-identical too. Before the fix the prompt
+    // interpolated "(public: true)" — telling the user their follow would be
+    // public at the exact moment they authorised a private library save.
+    const flagged=harness(()=>null,{action:'accept',content:{confirm:true}});
+    await flagged.invoke('pin_playlist',{playlist_id:'pl1',public:true,dry_run:false});
+    const bare=harness(()=>null,{action:'accept',content:{confirm:true}});
+    await bare.invoke('pin_playlist',{playlist_id:'pl1',dry_run:false});
+    assert.equal(flagged.prompts.length,1);
+    assert.equal(flagged.prompts[0],bare.prompts[0],
+      'public:true must not change the prompt when it does not change the request');
+    assert.doesNotMatch(flagged.prompts[0],/public/i,
+      'the prompt must not claim a visibility the request never sends');
+    assert.equal(flagged.prompts[0],'About to pin playlist "pl1":\n- Follow playlist pl1\n\nProceed?');
+    // ...and the request it authorises really is the bodyless library save.
+    assert.equal(flagged.client.calls[0].arg,undefined);
+    assert.equal(flagged.client.calls[0].path,'/me/library?uris=spotify%3Aplaylist%3Apl1');
   });
   it('previews by default: an omitted dry_run issues no PUT (#870)',async()=>{
     const h=harness(()=>null,new Error('must not elicit'));
@@ -139,16 +159,22 @@ describe('February 2026 removed-endpoint guards (playlist follow family)',()=>{
   const srcPath=join(dirname(fileURLToPath(import.meta.url)),'..','src','tools','playlistmisc.ts');
   const src=readFileSync(srcPath,'utf8');
 
-  it('issues no request to PUT/DELETE /playlists/{id}/followers',()=>{
-    // Structural guard over the source text: catches an inline client call
-    // whose first argument is a template literal naming the removed path.
-    // Scope: it sees only that shape. The path is built by a helper here, so
-    // a helper returning `/playlists/${id}/followers` would not match it —
-    // the recorded-request assertions above are what pin the actual path.
-    // This scan is a redundant second net, not the load-bearing check.
-    const removedCall=/\.(?:put|delete|post|get|getAllPages|putRaw)\s*\(\s*`[^`]*\/followers/;
-    assert.equal(src.match(removedCall),null,
-      'src/tools/playlistmisc.ts still builds a request against the removed /playlists/{id}/followers endpoint');
+  it('names no removed endpoint in code — only in prose',()=>{
+    // Deliberately not a call-site regex. The old guard matched
+    // `client.put(`…/followers`)`, but this module builds the path through
+    // `playlistLibraryPath`, so no real call site could ever match it and a
+    // regression injected into that helper left the guard green. This rule is
+    // shape-agnostic: any `/followers` (or `/me/following`) on a non-comment
+    // line is a removed request path in the making, wherever it is spelled —
+    // inline, helper return, or concatenation. Naming the removed endpoint in
+    // comments stays legal, because that is where the migration note lives.
+    const offenders=src.split('\n')
+      .map((line,i)=>({n:i+1,line}))
+      .filter(({line})=>/\/followers|\/me\/following/.test(line))
+      .filter(({line})=>/^\s*(?:\/\/|\/\*|\*)/.test(line)===false)
+      .map(({n,line})=>`${n}: ${line.trim()}`);
+    assert.deepEqual(offenders,[],
+      'src/tools/playlistmisc.ts names a removed endpoint outside a comment: '+offenders.join(' | '));
   });
 
   it('advertises no removed endpoint in either tool description',()=>{
