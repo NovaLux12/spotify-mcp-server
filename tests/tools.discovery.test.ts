@@ -85,11 +85,11 @@ describe('discovery tools read the live registry', () => {
 
 describe('live discovery excludes redundant owned URI utilities', () => {
   it('exposes exactly the six curated Spotify reference tools', async () => {
-    const registered = new Map<string, { description: string; enabled: boolean }>();
+    const registered = new Map<string, { description: string; enabled: boolean; readOnlyHint?: boolean }>();
     const server = {
       _registeredTools: registered,
-      tool(name: string, description: string) {
-        registered.set(name, { description, enabled: true });
+      tool(name: string, description: string, _schema: unknown, annotations?: { readOnlyHint?: boolean }, _handler?: unknown) {
+        registered.set(name, { description, enabled: true, readOnlyHint: annotations?.readOnlyHint });
         return { name };
       },
     };
@@ -106,6 +106,9 @@ describe('live discovery excludes redundant owned URI utilities', () => {
       'dedupe_spotify_uris',
       'spotify_uri_stats',
     ]);
+    for (const [name, tool] of registered) {
+      assert.equal(tool.readOnlyHint, true, name);
+    }
     for (const removed of [
       'extract_spotify_id',
       'uri_to_base62',

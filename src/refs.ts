@@ -1,10 +1,11 @@
 /**
  * Shared Spotify reference parser and resolver.
  *
- * A reference is a bare 22-character Spotify ID, a canonical spotify: URI,
- * a spotify:// link, or an official open.spotify.com share URL. All accepted
- * forms are normalised to the same bare ID. Unsupported hosts and entity
- * kinds are rejected instead of being passed to the Spotify API.
+ * A reference is a bare catalog ID (or non-fixed user identifier), a
+ * canonical spotify: URI, a spotify:// link, or an official
+ * open.spotify.com share URL. All accepted forms are normalised to the same
+ * bare ID. Unsupported hosts and entity kinds are rejected instead of being
+ * passed to the Spotify API.
  */
 import { z } from 'zod';
 
@@ -41,7 +42,10 @@ export interface ClassifySpotifyReferenceOptions {
 }
 
 const SPOTIFY_ID_RE = /^[A-Za-z0-9]{22}$/;
-const SPOTIFY_URI_RE = /^spotify:(?:([a-z]+):([A-Za-z0-9]+)|\/\/([a-z]+)[/:]([A-Za-z0-9]+))$/i;
+// This is the only Spotify URI grammar in src. Entity-specific ID checks
+// happen after extraction so user identifiers can remain non-fixed length.
+const SPOTIFY_URI_RE = /^spotify:(?:([a-z]+):([^\/?#]+)|\/\/([a-z]+)[/:]([^\/?#]+))$/i;
+const SPOTIFY_USER_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$/;
 const KIND_BY_NAME: Record<string, SpotifyReferenceKind> = {
   track: 'track',
   album: 'album',
@@ -65,7 +69,8 @@ function knownKind(value: string): SpotifyReferenceKind | null {
   return KIND_BY_NAME[value.toLowerCase()] ?? null;
 }
 
-function validId(id: string, allowShortIds: boolean): boolean {
+function validId(id: string, kind: SpotifyReferenceKind, allowShortIds: boolean): boolean {
+  if (kind === 'user') return SPOTIFY_USER_ID_RE.test(id);
   return SPOTIFY_ID_RE.test(id) || (allowShortIds && /^[A-Za-z0-9]+$/.test(id));
 }
 
@@ -79,9 +84,11 @@ function finish(
 ): SpotifyReferenceClassification {
   const kind = knownKind(rawKind);
   if (!kind) return invalid(input, form, `unsupported Spotify entity kind: ${rawKind}`);
-  if (!validId(id, allowShortIds)) {
-    const lengthRule = allowShortIds ? 'one or more' : 'exactly 22';
-    return invalid(input, form, `invalid Spotify ${kind} ID: expected ${lengthRule} base62 characters`);
+  if (!validId(id, kind, allowShortIds)) {
+    const lengthRule = kind === 'user'
+      ? 'one or more URL-safe'
+      : allowShortIds ? 'one or more' : 'exactly 22';
+    return invalid(input, form, `invalid Spotify ${kind} ID: expected ${lengthRule} characters`);
   }
   if (expectedKind && kind !== expectedKind) {
     return {
@@ -114,10 +121,12 @@ function classifyUrl(
     return invalid(input, 'url', `unsupported Spotify share URL host: ${url.hostname}`);
   }
 
+  // Spotify's localized embed routes can put the locale and embed marker in
+  // either order: /intl-xx/embed/kind/id and /embed/intl-xx/kind/id.
   const segments = url.pathname.split('/').filter(Boolean);
-  if (segments[0]?.toLowerCase() === 'embed') segments.shift();
-  if (/^intl-[a-z]{2}$/i.test(segments[0] ?? '')) segments.shift();
-
+  while (segments[0]?.toLowerCase() === 'embed' || /^intl-[a-z]{2}$/i.test(segments[0] ?? '')) {
+    segments.shift();
+  }
   if (segments.length !== 2) {
     return invalid(input, 'url', 'Spotify share URL must contain exactly one entity kind and ID');
   }
@@ -134,9 +143,9 @@ export function classifySpotifyReference(
   const value = reference.trim();
   if (!value) return invalid(input, 'invalid', 'reference must not be empty');
 
-  const bare = /^[A-Za-z0-9]+$/.exec(value);
+  const bare = (expectedKind === 'user' ? SPOTIFY_USER_ID_RE : /^[A-Za-z0-9]+$/).exec(value);
   if (bare) {
-    if (!validId(value, options.allowShortIds ?? false)) {
+    if (!validId(value, expectedKind ?? 'track', options.allowShortIds ?? false)) {
       return invalid(input, 'id', 'invalid Spotify ID: expected exactly 22 base62 characters');
     }
     // A bare ID carries no entity-kind evidence, so an expected kind is a
@@ -159,7 +168,7 @@ export function classifySpotifyReference(
   if (/^https?:\/\//i.test(value)) {
     return classifyUrl(input, value, expectedKind);
   }
-  if (/^spotify:/i.test(value)) {
+  if (value.toLowerCase().startsWith('spotify:')) {
     return invalid(input, 'uri', 'malformed Spotify URI');
   }
   return invalid(input, 'invalid', 'not a recognisable Spotify ID, URI, or official share URL');
@@ -171,16 +180,18 @@ export function resolveSpotifyId(input: string, expectedKind?: SpotifyReferenceK
   return parsed.valid ? parsed.id : null;
 }
 
+/** Format a classification without classifying the same reference twice. */
+export function spotifyUriFromClassification(parsed: SpotifyReferenceClassification): string | null {
+  return parsed.valid && parsed.kind && parsed.id ? `spotify:${parsed.kind}:${parsed.id}` : null;
+}
+
 /** Resolve a reference to its canonical spotify:<kind>:<id> URI. */
 export function spotifyUri(
   input: string,
   expectedKind?: SpotifyReferenceKind,
   options: ClassifySpotifyReferenceOptions = {},
 ): string | null {
-  const parsed = classifySpotifyReference(input, expectedKind, options);
-  return parsed.valid && parsed.kind && parsed.id
-    ? `spotify:${parsed.kind}:${parsed.id}`
-    : null;
+  return spotifyUriFromClassification(classifySpotifyReference(input, expectedKind, options));
 }
 
 /** Normalise valid references; retain rejected text so Zod can report it. */

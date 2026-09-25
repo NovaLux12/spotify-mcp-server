@@ -12,8 +12,8 @@ import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
 import { SpotifyApiError } from '../client.js';
-import { getConfig } from '../config.js';
 import { readFile } from 'node:fs/promises';
+import { classifySpotifyReference } from '../refs.js';
 import { ResponseFormat } from '../shaping.js';
 
 type TextContent = { type: 'text'; text: string };
@@ -25,7 +25,10 @@ const textResult = (text: string, structured?: Record<string, unknown>): ToolRes
 });
 
 /** A playable Spotify URI: tracks AND episodes both import cleanly. */
-const SPOTIFY_URI_RE = /^spotify:(track|episode):[A-Za-z0-9]+$/;
+function isPlayableUri(value: string): boolean {
+  const parsed = classifySpotifyReference(value, undefined, { allowShortIds: true });
+  return parsed.valid && parsed.form === 'uri' && (parsed.kind === 'track' || parsed.kind === 'episode');
+}
 
 export interface ParsedDocument {
   format: 'm3u' | 'csv';
@@ -48,7 +51,7 @@ export function parseM3u(content: string): ParsedDocument {
     const line = rawLine.trim();
     if (line === '') continue;
     if (line.startsWith('#')) continue;
-    if (SPOTIFY_URI_RE.test(line)) {
+    if (isPlayableUri(line)) {
       if (!seen.has(line)) {
         seen.add(line);
         uris.push(line);
@@ -106,7 +109,7 @@ export function parseCsv(content: string): ParsedDocument {
     if (line === '') continue;
     const uri = splitCsvRow(line)
       .map((f) => f.trim())
-      .find((f) => SPOTIFY_URI_RE.test(f));
+      .find((f) => isPlayableUri(f));
     if (uri && !seen.has(uri)) {
       seen.add(uri);
       uris.push(uri);
@@ -120,8 +123,8 @@ export function parseCsv(content: string): ParsedDocument {
 /** Format auto-detection: M3U markers win; otherwise look at the shape. */
 export function detectFormat(content: string): 'm3u' | 'csv' | null {
   if (/^\s*#EXTM3U/m.test(content)) return 'm3u';
-  if (SPOTIFY_URI_RE.test(content.trim())) return 'm3u';
-  if (/(^|\n)\s*[^#\r\n]*\bspotify:(track|episode):/.test(content)) return 'csv';
+  if (isPlayableUri(content.trim())) return 'm3u';
+  if (content.split(/\r?\n/).some((line) => splitCsvRow(line).some(isPlayableUri))) return 'csv';
   return null;
 }
 
@@ -175,7 +178,10 @@ export function registerImportTools(server: McpServer, client: SpotifyClient): v
       // is reported as success-shaped output. client.get() throws on 404
       // (SpotifyApiError) rather than returning null, so map that to the
       // friendly message (see #210).
-      const id = encodeURIComponent(args.playlist_id.replace(/^spotify:playlist:/, ''));
+      const playlistId = args.playlist_id.startsWith('spotify:playlist:')
+        ? args.playlist_id.slice('spotify:playlist:'.length)
+        : args.playlist_id;
+      const id = encodeURIComponent(playlistId);
       let meta: { id?: string; name?: string } | null;
       try {
         meta = await client.get<{ id?: string; name?: string }>(`/playlists/${id}`);
@@ -187,7 +193,10 @@ export function registerImportTools(server: McpServer, client: SpotifyClient): v
       }
       if (!meta) throw new Error(`Playlist "${args.playlist_id}" not found`);
 
-      const uriMatchesInDocument = body.match(new RegExp(SPOTIFY_URI_RE.source, 'gm'))?.length ?? 0;
+      const uriMatchesInDocument = body.split(/\r?\n/).reduce((count, line) => {
+        if (parsed.format === 'm3u') return count + (isPlayableUri(line.trim()) ? 1 : 0);
+        return count + splitCsvRow(line).filter(isPlayableUri).length;
+      }, 0);
       const basePayload = {
         playlist_id: args.playlist_id,
         playlist_name: meta.name ?? null,

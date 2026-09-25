@@ -15,6 +15,7 @@ import { registerSwarm3PlaybackTools } from '../src/tools/swarm3_playback.js';
 import { registerPlaylistBatchTools } from '../src/tools/playlistbatch.js';
 import { registerSwarm3DiscoveryTools } from '../src/tools/swarm3_discovery.js';
 import { registerSwarm3bDiscoveryTools } from '../src/tools/swarm3b_discovery.js';
+const STRICT_ARTIST_ID = 'artist1234567890123456';
 
 type Registered = {
   name: string;
@@ -193,7 +194,7 @@ describe('swarm3b max_results stays consistent across prose and structured outpu
       total_tracks: 1,
       artists: [{ id: 'artist-1', name: 'Artist One' }],
     }));
-    const artistId = 'artist1234567890123456';
+    const artistId = STRICT_ARTIST_ID;
     const h = makeHarness(registerSwarm3bDiscoveryTools, (path) => {
       if (path === `/artists/${artistId}`) return { id: artistId, name: 'Artist One', genres: [] } as unknown;
       if (path === `/artists/${artistId}/albums`) return { items: albums, total: albums.length, limit: 50, offset: 0, next: null } as unknown;
@@ -213,10 +214,10 @@ describe('swarm3b max_results stays consistent across prose and structured outpu
       { id: `studio-${i}`, name: `Album ${i} (Remastered)`, release_date: `202${i % 10}-02-01`, album_type: 'album', total_tracks: 1 },
     ]).flat();
     const h = makeHarness(registerSwarm3bDiscoveryTools, (path) => {
-      if (path === '/artists/artist-1/albums') return { items: albums, total: albums.length, limit: 50, offset: 0, next: null } as unknown;
+      if (path === `/artists/${STRICT_ARTIST_ID}/albums`) return { items: albums, total: albums.length, limit: 50, offset: 0, next: null } as unknown;
       throw new Error(`unexpected path ${path}`);
     });
-    const out = await h.invoke('artist_reissue_detector', { artist_id: 'artist-1', max_results: 5 });
+    const out = await h.invoke('artist_reissue_detector', { artist_id: STRICT_ARTIST_ID, max_results: 5 });
     const payload = out.structuredContent as { items: unknown[]; pagination: { total: number; returned?: number } };
     assert.equal(payload.items.length, 5);
     assert.equal(payload.pagination.total, 12);
@@ -229,11 +230,11 @@ describe('swarm3b max_results stays consistent across prose and structured outpu
     const albums = Array.from({ length: 3 }, (_, i) => ({ id: `album-${i}`, name: `Album ${i}`, release_date: `202${i}-01-01`, album_type: 'album', total_tracks: 1 }));
     const full = albums.map((a) => ({ ...a, tracks: { items: [{ id: `track-${a.id}`, name: `Track ${a.name}`, track_number: 1, duration_ms: 1000 }], total: 1 } }));
     const h = makeHarness(registerSwarm3bDiscoveryTools, (path) => {
-      if (path === '/artists/artist-1/albums') return { items: albums, total: albums.length, limit: 50, offset: 0, next: null } as unknown;
+      if (path === `/artists/${STRICT_ARTIST_ID}/albums`) return { items: albums, total: albums.length, limit: 50, offset: 0, next: null } as unknown;
       if (path === '/albums') return { albums: full } as unknown;
       throw new Error(`unexpected path ${path}`);
     });
-    const out = await h.invoke('album_openers_report', { artist_id: 'artist-1', max_results: 2 });
+    const out = await h.invoke('album_openers_report', { artist_id: STRICT_ARTIST_ID, max_results: 2 });
     const payload = out.structuredContent as { items: unknown[]; total: number; returned: number; withheld: number };
     assert.equal(payload.items.length, 2);
     assert.equal(payload.total, 3);
@@ -253,10 +254,10 @@ describe('swarm3b timeline and anniversary edge cases', () => {
       { id: 'single-3', name: 'Single Three', release_date: '2023-03-01', album_type: 'single', total_tracks: 1 },
     ];
     const h = makeHarness(registerSwarm3bDiscoveryTools, (path) => {
-      if (path === '/artists/artist-1/albums') return { items: singles, total: singles.length, limit: 50, offset: 0, next: null } as unknown;
+      if (path === `/artists/${STRICT_ARTIST_ID}/albums`) return { items: singles, total: singles.length, limit: 50, offset: 0, next: null } as unknown;
       throw new Error(`unexpected path ${path}`);
     });
-    const out = await h.invoke('artist_singles_timeline', { artist_id: 'artist-1' });
+    const out = await h.invoke('artist_singles_timeline', { artist_id: STRICT_ARTIST_ID });
     const payload = out.structuredContent as { items: Array<Record<string, unknown>> };
     assert.equal(payload.items.length, 3);
     for (const item of payload.items) {
@@ -288,10 +289,10 @@ describe('swarm3b timeline and anniversary edge cases', () => {
   it('album_anniversary_check clamps leap-day anniversaries in a non-leap year', async () => {
     const album = { id: 'leap-album', name: 'Leap Album', release_date: '2024-02-29', album_type: 'album', total_tracks: 1 };
     const h = makeHarness(registerSwarm3bDiscoveryTools, (path) => {
-      if (path === '/artists/artist-1/albums') return { items: [album], total: 1, limit: 50, offset: 0, next: null } as unknown;
+      if (path === `/artists/${STRICT_ARTIST_ID}/albums`) return { items: [album], total: 1, limit: 50, offset: 0, next: null } as unknown;
       throw new Error(`unexpected path ${path}`);
     });
-    const out = await withFixedDate('2025-01-15', () => h.invoke('album_anniversary_check', { artist_id: 'artist-1', window_days: 365 }));
+    const out = await withFixedDate('2025-01-15', () => h.invoke('album_anniversary_check', { artist_id: STRICT_ARTIST_ID, window_days: 365 }));
     const payload = out.structuredContent as { items: Array<{ anniversary_date: string; days_until: number; date_adjusted: boolean }> };
     assert.equal(payload.items.length, 1);
     assert.equal(payload.items[0].anniversary_date, '2025-02-28');
@@ -302,10 +303,10 @@ describe('swarm3b timeline and anniversary edge cases', () => {
   it('album_anniversary_check revalidates a passed leap-day date', async () => {
     const album = { id: 'leap-album', name: 'Leap Album', release_date: '2024-02-29', album_type: 'album', total_tracks: 1 };
     const h = makeHarness(registerSwarm3bDiscoveryTools, (path) => {
-      if (path === '/artists/artist-1/albums') return { items: [album], total: 1, limit: 50, offset: 0, next: null } as unknown;
+      if (path === `/artists/${STRICT_ARTIST_ID}/albums`) return { items: [album], total: 1, limit: 50, offset: 0, next: null } as unknown;
       throw new Error(`unexpected path ${path}`);
     });
-    const out = await withFixedDate('2024-03-01', () => h.invoke('album_anniversary_check', { artist_id: 'artist-1', window_days: 365 }));
+    const out = await withFixedDate('2024-03-01', () => h.invoke('album_anniversary_check', { artist_id: STRICT_ARTIST_ID, window_days: 365 }));
     const payload = out.structuredContent as { items: Array<{ anniversary_date: string; days_until: number; date_adjusted: boolean }> };
     assert.equal(payload.items.length, 1);
     assert.equal(payload.items[0].anniversary_date, '2025-02-28');

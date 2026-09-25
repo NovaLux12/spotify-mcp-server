@@ -57,6 +57,12 @@ test('resolve_artist URI passthrough', async () => {
   assert.match(text(r),/abc123/);
   assert.equal(calls.length,0);
 });
+test('resolve_artist accepts typed artist URI through shared policy', async () => {
+  const { registered, calls } = makeHarness(()=>{ throw new Error('should not call search'); });
+  const r = await find(registered,'resolve_artist').handler({ query:'spotify://artist/abc123' });
+  assert.match(text(r),/abc123/);
+  assert.equal(calls.length,0);
+});
 test('save_artist_new_releases saves only unsaved', async () => {
   const puts: unknown[] = [];
   const { registered } = makeHarness((path)=>{
