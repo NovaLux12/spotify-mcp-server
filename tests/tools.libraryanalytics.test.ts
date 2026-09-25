@@ -3,7 +3,7 @@ import { z } from 'zod';
 import assert from 'node:assert/strict';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../src/client.js';
-import type { SpotifyPaged } from '../src/types/spotify.js';
+import { SpotifyApiError } from '../src/client.js';
 import { registerLibraryAnalyticsTools } from '../src/tools/libraryanalytics.js';
 
 interface RegisteredTool {
@@ -179,6 +179,121 @@ describe('listening_heatmap', () => {
   });
 });
 
+describe('listening_heatmap time frame and disclosure (#740)', () => {
+  it('buckets the same played_at identically under any host TZ (default frame is UTC)', async () => {
+    // One play an hour ago, so it is inside the lookback window whatever the clock.
+    const playedAt = new Date(Date.now() - 3600_000).toISOString();
+    const responder = (path: string) => {
+      if (path === '/me/player/recently-played') {
+        return { items: [{ played_at: playedAt, track: { name: 'T', uri: 'spotify:track:t1' } }], cursors: null, next: null };
+      }
+      return { items: [], total: 0, limit: 50, offset: 0, next: null };
+    };
+
+    // The same fixture under four host time zones must produce identical
+    // payloads: the default frame is UTC, never the host's (the #824 contract).
+    const originalTz = process.env.TZ;
+    const payloads: string[] = [];
+    try {
+      for (const tz of ['UTC', 'Pacific/Kiritimati', 'America/Los_Angeles', 'Asia/Tokyo']) {
+        process.env.TZ = tz;
+        const h = harness(responder);
+        const out = await h.invoke('listening_heatmap', {});
+        payloads.push(JSON.stringify(out.structuredContent?.buckets));
+        assert.equal(out.structuredContent?.timezone, 'UTC', `default frame must be UTC under TZ=${tz}`);
+      }
+    } finally {
+      if (originalTz === undefined) delete process.env.TZ; else process.env.TZ = originalTz;
+    }
+    assert.equal(new Set(payloads).size, 1, 'buckets must not depend on the host time zone');
+  });
+
+  it('discloses a truncated walk instead of claiming the whole lookback window', async () => {
+    // 400 plays, 50 per page, so 8 pages exist and the budget must bind.
+    const plays = Array.from({ length: 400 }, (_, i) => ({
+      played_at: new Date(Date.now() - i * 60_000).toISOString(),
+      track: { name: `T${i}`, uri: `spotify:track:t${i}` },
+    }));
+    const h = harness((path, params) => {
+      if (path === '/me/player/recently-played') {
+        const after = Number(params?.after ?? 0);
+        const slice = plays.slice(after, after + 50);
+        const next = after + 50;
+        return { items: slice, cursors: { after: String(next) }, next: next < plays.length ? 'n' : null };
+      }
+      return { items: [], total: 0, limit: 50, offset: 0, next: null };
+    });
+    // lookback 4 => page budget 2, with 8 pages of real history behind it.
+    const out = await h.invoke('listening_heatmap', { lookback_days: 4, limit: 50 });
+    assert.equal(out.structuredContent?.truncated, true);
+    assert.equal(out.structuredContent?.pages_walked, 2);
+    assert.ok(out.structuredContent?.window_covered_from, 'oldest play seen must be reported');
+    assert.ok(out.structuredContent?.total_plays as number > 0);
+    const prose = textOf(out);
+    assert.match(prose, /NOT fully covered/);
+    assert.doesNotMatch(prose, /plays covering the 4-day lookback window/);
+  });
+
+  it('names the least busy slots by real play count, not the first idle hours', async () => {
+    // Activity only Mon-Fri 09:00, with different counts per day. Anchored to
+    // the most recent Monday so the plays are always inside the lookback window.
+    const now = new Date();
+    const monday = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()) - ((now.getUTCDay() + 6) % 7) * 86_400_000;
+    const day = 86_400_000;
+    // [Mon, Tue, Wed, Thu, Fri] play counts.
+    const plays = [3, 1, 2, 1, 4].flatMap((n, i) =>
+      Array.from({ length: n }, (_, k) => ({
+        played_at: new Date(monday + i * day + 9 * 3_600_000 + k * 60_000).toISOString(),
+        track: { name: 'T', uri: 'spotify:track:t1' },
+      })),
+    );
+    const h = harness((path) => {
+      if (path === '/me/player/recently-played') return { items: plays, cursors: null, next: null };
+      return { items: [], total: 0, limit: 50, offset: 0, next: null };
+    });
+    const out = await h.invoke('listening_heatmap', { lookback_days: 7, limit: 50, timezone: 'UTC' });
+    const quiet = out.structuredContent?.quiet_slots as Array<{ day: number; hour: number; count: number }>;
+    assert.ok(quiet.length > 0, 'least-busy slots must be reported');
+    // Counts ascend, and the true minimum (Tue=1, Wed=1) leads.
+    assert.deepEqual(quiet.map((q) => q.count), [...quiet.map((q) => q.count)].sort((a, b) => a - b));
+    assert.equal(quiet[0].count, 1);
+    assert.equal(quiet[0].hour, 9);
+    // Every reported slot actually has plays — never an unmeasured idle hour.
+    for (const q of quiet) assert.ok(q.count > 0, 'quiet slots must exclude unmeasured zero-count hours');
+    const prose = textOf(out);
+    assert.match(prose, /Least busy slots \(non-zero\)/);
+    assert.doesNotMatch(prose, /Sun 00:00/);
+  });
+
+  it('honours an explicit timezone argument: the same instant lands in a different bucket', async () => {
+    const playedAt = new Date(Date.now() - 3600_000).toISOString();
+    const responder = (path: string) => {
+      if (path === '/me/player/recently-played') {
+        return { items: [{ played_at: playedAt, track: { name: 'T', uri: 'spotify:track:t1' } }], cursors: null, next: null };
+      }
+      return { items: [], total: 0, limit: 50, offset: 0, next: null };
+    };
+    const slotOf = (buckets: Array<{ day: number; hour: number; count: number }>) =>
+      buckets.findIndex((b) => b.count > 0);
+
+    const utc = await harness(responder).invoke('listening_heatmap', { timezone: 'UTC' });
+    const tokyo = await harness(responder).invoke('listening_heatmap', { timezone: 'Asia/Tokyo' });
+
+    assert.equal(utc.structuredContent?.timezone, 'UTC');
+    assert.equal(tokyo.structuredContent?.timezone, 'Asia/Tokyo');
+    const uBuckets = utc.structuredContent?.buckets as Array<{ day: number; hour: number; count: number }>;
+    const tBuckets = tokyo.structuredContent?.buckets as Array<{ day: number; hour: number; count: number }>;
+    assert.equal(uBuckets[slotOf(uBuckets)].count, 1);
+    assert.equal(tBuckets[slotOf(tBuckets)].count, 1);
+    // Tokyo is UTC+9, so an hour boundary must move the slot.
+    const uSlot = uBuckets[slotOf(uBuckets)];
+    const tSlot = tBuckets[slotOf(tBuckets)];
+    assert.notDeepEqual([tSlot.day, tSlot.hour], [uSlot.day, uSlot.hour],
+      'Asia/Tokyo must re-frame the same instant into a different day/hour slot');
+    assert.match(textOf(tokyo), /Time zone: Asia\/Tokyo/);
+  });
+});
+
 describe('library_growth_report', () => {
   it('buckets counts per period with deltas', async () => {
     // use current month so it falls in lookback
@@ -262,7 +377,6 @@ describe('library_coverage_report dry_run + quota', () => {
     assert.match(textOf(out), /Warning/);
   });
   it('quota partial recovery on per-playlist 429', async () => {
-    const { SpotifyApiError } = await import('../src/client.js');
     let playlistCall = 0;
     const h = harness((path) => {
       if (path === '/me/tracks') return { items: [{ track: { id: 't1', name: 'T1', uri: 'spotify:track:t1' } }], total: 1, limit: 50, offset: 0, next: null };
@@ -278,5 +392,133 @@ describe('library_coverage_report dry_run + quota', () => {
     assert.equal(out.structuredContent?.quota_hit, true);
     assert.equal(out.structuredContent?.retry_after, 60);
     assert.match(textOf(out), /Quota hit/);
+  });
+});
+
+describe('library_coverage_report unreadable playlists (#739) and scan envelope (#738)', () => {
+  it('records a 403 playlist as unreadable instead of empty, and marks coverage incomplete', async () => {
+    const h = harness((path) => {
+      if (path === '/me/tracks') {
+        return { items: [{ track: { id: 't1', name: 'T1', uri: 'spotify:track:t1' } }], total: 1, limit: 50, offset: 0, next: null };
+      }
+      if (path === '/me/playlists') {
+        return { items: [{ id: 'pl1', name: 'Readable' }, { id: 'pl2', name: 'Collaborative' }], total: 2, limit: 50, offset: 0, next: null };
+      }
+      if (path.includes('pl2')) throw new SpotifyApiError(403, 'Forbidden', undefined, 'FORBIDDEN');
+      if (path.startsWith('/playlists/')) {
+        return { items: [], total: 0, limit: 100, offset: 0, next: null };
+      }
+      return { items: [], total: 0, limit: 50, offset: 0, next: null };
+    });
+    const out = await h.invoke('library_coverage_report', { max_playlists: 2 });
+    const unreadable = out.structuredContent?.unreadable_playlists as Array<{ playlist_id: string; error: string }>;
+    assert.equal(unreadable.length, 1);
+    assert.equal(unreadable[0].playlist_id, 'pl2');
+    assert.match(unreadable[0].error, /Forbidden/);
+    assert.equal(out.structuredContent?.coverage_complete, false);
+    assert.equal(out.structuredContent?.coverage_ratio_is_lower_bound, true);
+    const prose = textOf(out);
+    assert.match(prose, /could not be read/);
+    assert.match(prose, /lower bound/);
+    // The orphan list is not presented as fact when a playlist was unread.
+    assert.match(prose, /NOT a full orphan list/);
+    assert.doesNotMatch(prose, /Orphan saved tracks \(not in any playlist\)/);
+  });
+
+  it('reports coverage_complete true when every playlist was read (non-vacuous)', async () => {
+    const h = harness((path) => {
+      if (path === '/me/tracks') {
+        return { items: [{ track: { id: 't1', name: 'T1', uri: 'spotify:track:t1' } }], total: 1, limit: 50, offset: 0, next: null };
+      }
+      if (path === '/me/playlists') return { items: [{ id: 'pl1', name: 'P1' }], total: 1, limit: 50, offset: 0, next: null };
+      if (path.startsWith('/playlists/')) {
+        return { items: [{ track: { id: 't1', name: 'T1', uri: 'spotify:track:t1' } }], total: 1, limit: 100, offset: 0, next: null };
+      }
+      return { items: [], total: 0, limit: 50, offset: 0, next: null };
+    });
+    const out = await h.invoke('library_coverage_report', { max_playlists: 5 });
+    assert.equal(out.structuredContent?.coverage_complete, true);
+    assert.equal(out.structuredContent?.coverage_ratio_is_lower_bound, false);
+    assert.deepEqual(out.structuredContent?.unreadable_playlists, []);
+    assert.equal(out.structuredContent?.orphan_count, 0);
+    assert.match(textOf(out), /Orphan saved tracks \(not in any playlist\)/);
+  });
+
+  it('scans playlists via /items only, never the legacy /tracks path (#738)', async () => {
+    const h = harness((path) => {
+      if (path === '/me/tracks') return { items: [], total: 0, limit: 50, offset: 0, next: null };
+      if (path === '/me/playlists') {
+        return { items: [{ id: 'pl1', name: 'P1' }, { id: 'pl2', name: 'P2' }, { id: 'pl3', name: 'P3' }], total: 3, limit: 50, offset: 0, next: null };
+      }
+      if (path.startsWith('/playlists/')) {
+        return { items: [{ track: { id: 't1', name: 'T1', uri: 'spotify:track:t1' } }], total: 1, limit: 100, offset: 0, next: null };
+      }
+      return { items: [], total: 0, limit: 50, offset: 0, next: null };
+    });
+    await h.invoke('library_coverage_report', { max_playlists: 3 });
+    const playlistCalls = h.client.calls.filter((c) => c.path.startsWith('/playlists/'));
+    assert.equal(playlistCalls.length, 3, 'exactly one request per playlist');
+    for (const c of playlistCalls) assert.match(c.path, /\/items$/, 'must target /items, not the legacy /tracks path');
+    assert.equal(playlistCalls.filter((c) => c.path.endsWith('/tracks')).length, 0);
+  });
+
+  it('discloses playlists skipped by the max_playlists slice (#738)', async () => {
+    const playlists = Array.from({ length: 60 }, (_, i) => ({ id: `pl${i}`, name: `P${i}` }));
+    const h = harness((path, params) => {
+      if (path === '/me/tracks') return { items: [], total: 0, limit: 50, offset: 0, next: null };
+      if (path === '/me/playlists') return pagedResponder({ '/me/playlists': playlists })(path, params);
+      if (path.startsWith('/playlists/')) return { items: [], total: 0, limit: 100, offset: 0, next: null };
+      return { items: [], total: 0, limit: 50, offset: 0, next: null };
+    });
+    const out = await h.invoke('library_coverage_report', {});
+    assert.equal(out.structuredContent?.playlists_available, 60);
+    assert.equal(out.structuredContent?.playlists_scanned, 50);
+    assert.equal(out.structuredContent?.playlists_skipped, 10);
+    assert.equal(out.structuredContent?.coverage_complete, false);
+    assert.match(textOf(out), /only the first 50 of 60 playlists were scanned/);
+  });
+});
+
+describe('library_growth_report scanned vs in-window (#741)', () => {
+  it('separates the walk total from additions inside the window', async () => {
+    const now = new Date();
+    const curIso = now.toISOString();
+    const oldIso = new Date(Date.UTC(2020, 0, 15, 12, 0, 0)).toISOString();
+    const h = harness((path, params) => {
+      if (path === '/me/tracks') {
+        return pagedResponder({ '/me/tracks': [trackItem('t1', oldIso), trackItem('t2', curIso)] })(path, params);
+      }
+      if (path === '/me/albums' || path === '/me/shows' || path === '/me/episodes') {
+        return { items: [], total: 0, limit: 50, offset: 0, next: null };
+      }
+      return { items: [], total: 0, limit: 50, offset: 0, next: null };
+    });
+    const out = await h.invoke('library_growth_report', { period: 'monthly', lookback: 2 });
+    const sc = out.structuredContent as {
+      scanned_totals: { total: number }; added_in_window: number; older_than_window: number;
+    };
+    assert.equal(sc.scanned_totals.total, 2, 'both saves were walked');
+    assert.equal(sc.added_in_window, 1, 'only the current-month save is an in-window addition');
+    assert.equal(sc.older_than_window, 1, 'the 2020 save is reported as outside the window');
+    const prose = textOf(out);
+    assert.match(prose, /1 item\(s\) added in the window/);
+    assert.match(prose, /Scanned: 2 saved item\(s\) walked/);
+    assert.doesNotMatch(prose, /2 item\(s\) total in lookback/);
+  });
+
+  it('marks a failed shows walk unavailable rather than reporting zero', async () => {
+    const h = harness((path, params) => {
+      if (path === '/me/tracks') return pagedResponder({ '/me/tracks': [] })(path, params);
+      if (path === '/me/albums') return pagedResponder({ '/me/albums': [] })(path, params);
+      if (path === '/me/shows') throw new SpotifyApiError(403, 'Forbidden', undefined, 'FORBIDDEN');
+      if (path === '/me/episodes') return { items: [], total: 0, limit: 50, offset: 0, next: null };
+      return { items: [], total: 0, limit: 50, offset: 0, next: null };
+    });
+    const out = await h.invoke('library_growth_report', { period: 'monthly', lookback: 2 });
+    const partial = out.structuredContent?.partial as Record<string, string>;
+    assert.equal(partial.shows, 'unavailable');
+    assert.equal(partial.episodes, undefined);
+    assert.equal((out.structuredContent?.scanned_totals as { shows: number }).shows, 0);
+    assert.match(textOf(out), /shows unavailable/);
   });
 });
