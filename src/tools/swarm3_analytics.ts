@@ -1,16 +1,18 @@
 /**
  * swarm3 analytics slice — 500-tool swarm v1.26.0 (issue #442). Owned by ANALYTICS builder.
  *
- * 24 tools, all read-only analytics over the personalization surface, of which
- * 7 (discovery_ratio, listening_clock, weekday_listening_report,
- * binge_detector_report, mood_bucket_report, listening_clock_heatmap,
- * artist_listening_clock) are DERIVED listening metrics and are registered
- * only when SPOTIFY_MCP_EXPERIMENTAL_ANALYTICS is set (issue #695, Policy
- * Sec. III.13 — see docs/compliance.md). The default surface is 17 tools.
- * Sources, for the ungated ones:
+ * Every tool here is read-only analytics over the personalization surface:
  *   • /me/player/recently-played (cursor walk — offset pagination NOT supported there)
  *   • /me/top/tracks + /me/top/artists (time_range windows)
  *   • /artists?ids=… batch (genres only, for the genre census)
+ *
+ * Some of them are DERIVED listening metrics rather than re-presentations of
+ * those rows. Those are registered through `derivedServer`, which is null
+ * unless SPOTIFY_MCP_EXPERIMENTAL_ANALYTICS is set, so they are absent from
+ * tools/list by default (issue #695, Policy Sec. III.13 — see
+ * docs/compliance.md for the interpretation and the full gated list). The
+ * numbers below are positions in the ungated source order, not counts of what
+ * any given deployment registers.
  *
  * House conventions honoured here:
  *   • shaping.ts helpers only (ResponseFormat / MaxResults / resolveMaxResults /
