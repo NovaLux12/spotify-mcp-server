@@ -263,8 +263,8 @@ const SAFE_ARGS = {
   // playlistdna.ts (#112 idea 6)
   grow_playlist: () => seed.playlistId ? { playlist_id: seed.playlistId, size: 5, exclude_saved: false } : 'no playlist in seeds',
   // Canonical playlist power tools
-  playlist_diff: () => seed.playlistId ? { playlist_a_id: seed.playlistId, playlist_b_id: seed.playlistId } : 'no playlist in seeds',
-  playlist_overlap_matrix: () => (seed.playlistIds?.length ?? 0) >= 2 ? { playlist_ids: seed.playlistIds.slice(0, 2) } : 'fewer than 2 playlists in seeds',
+  playlist_diff: () => seed.playlistId ? { playlist_a: seed.playlistId, playlist_b: seed.playlistId } : 'no playlist in seeds',
+  playlist_overlap_matrix: () => (seed.playlistIds?.length ?? 0) >= 2 ? { playlists: seed.playlistIds.slice(0, 2) } : 'fewer than 2 playlists in seeds',
   // podcastsession.ts (#112 idea 3)
   plan_podcast_session: () => ({ minutes: 30, max_results: 3 }),
   start_podcast_session: () => ({ minutes: 30, dry_run: true }),

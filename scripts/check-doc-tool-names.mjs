@@ -10,10 +10,13 @@ import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
-const census = JSON.parse(execFileSync(process.execPath, ['scripts/surface-census.mjs'], {
-  cwd: ROOT,
-  encoding: 'utf8',
-}));
+const censusFileIndex = process.argv.indexOf('--census-file');
+if (censusFileIndex >= 0 && !process.argv[censusFileIndex + 1]) {
+  throw new Error('--census-file requires a JSON file');
+}
+const census = JSON.parse(censusFileIndex >= 0
+  ? readFileSync(resolve(process.argv[censusFileIndex + 1]), 'utf8')
+  : execFileSync(process.execPath, ['scripts/surface-census.mjs'], { cwd: ROOT, encoding: 'utf8' }));
 const tools = new Set(census.toolNames);
 const prompts = new Set(census.promptNames);
 const resources = new Set(census.resourceUris);

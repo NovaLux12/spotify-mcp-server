@@ -14,7 +14,7 @@
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join, relative, resolve } from 'node:path';
+import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -50,14 +50,13 @@ for (const key of Object.keys(process.env)) {
 }
 Object.assign(process.env, CENSUS_ENV);
 const {
-  collectModuleSchemaBudgets,
   moduleToolNames,
   registerManifestModule,
   REGISTRAR_MANIFEST,
 } = await import('../src/tools/annotations.ts');
 const productionManifest = REGISTRAR_MANIFEST.map((module) => ({
   registrar: module.registrar.name || module.key,
-  file: module.file,
+  file: normalizeRepoPath(module.file),
   key: module.registrationKey,
   ungated: module.alwaysActive === true,
 }));
@@ -77,9 +76,15 @@ if (manifestArgIndex >= 0) {
   console.log(JSON.stringify(productionManifest, null, 2));
   process.exit(0);
 }
+const censusFileIndex = args.indexOf('--census-file');
+if (censusFileIndex >= 0 && !args[censusFileIndex + 1]) {
+  throw new Error('--census-file requires a JSON file');
+}
 const { GATED_PATH_PATTERNS, isGatedPath } = await import('../src/tools/exhaust2_enggating.ts');
-const census = await readProductionRegistry();
-const { namesByModule: moduleNames, manifestToolNames, schemaMeasurements } = await attributeToolsToModules(census.toolNames);
+const census = censusFileIndex >= 0
+  ? JSON.parse(readFileSync(resolve(args[censusFileIndex + 1]), 'utf8'))
+  : await readProductionRegistry();
+const { namesByModule: moduleNames, manifestToolNames, schemaMeasurements } = await attributeToolsToModules(census.toolNames, census.toolDefinitions);
 const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'));
 
 const perModule = countModuleTools(moduleNames);
@@ -91,7 +96,7 @@ const registrationKeyNames = [...new Set([...manifestRegistrationKeys, ...toolse
 const schemaBudgets = REGISTRAR_MANIFEST.map((module) => ({
   module: module.key,
   registrationKey: module.registrationKey,
-  file: module.file,
+  file: normalizeRepoPath(module.file),
   baselineToolCount: module.baseline.toolCount,
   baselineSchemaBytes: module.baseline.schemaBytes,
   maxToolCount: module.ceiling.toolCount,
@@ -108,6 +113,7 @@ const result = {
   manifestToolNames,
   parameterNames: census.parameterNames,
   toolInputSchemas: census.toolInputSchemas,
+  toolDefinitions: census.toolDefinitions,
   resourceUris: census.resourceUris,
   resourceTemplateUris: census.resourceTemplateUris,
   promptNames: census.promptNames,
@@ -206,6 +212,7 @@ async function readProductionRegistry() {
       toolNames: toolPage.tools.map(({ name }) => name).sort(),
       parameterNames: [...new Set(toolPage.tools.flatMap((tool) => Object.keys(tool.inputSchema?.properties ?? {})))].sort(),
       toolInputSchemas: Object.fromEntries(toolPage.tools.map(({ name, inputSchema }) => [name, inputSchema])),
+      toolDefinitions: toolPage.tools,
       resourceUris: resourcePage.resources.map(({ uri }) => uri).sort(),
       resourceTemplateUris: templatePage.resourceTemplates.map(({ uriTemplate }) => uriTemplate).sort(),
       promptNames: promptPage.prompts.map(({ name }) => name).sort(),
@@ -224,7 +231,7 @@ async function readProductionRegistry() {
  * src/index.ts. The direct registration pass also measures each module's
  * current tool count and schema bytes for the generated budget table.
  */
-async function attributeToolsToModules(liveToolNames) {
+async function attributeToolsToModules(liveToolNames, finalizedTools) {
   const { McpServer } = await import('@modelcontextprotocol/sdk/server/mcp.js');
   const server = new McpServer({ name: 'module-census', version: '0.0.0' });
   const clientStub = {
@@ -235,7 +242,7 @@ async function attributeToolsToModules(liveToolNames) {
     getAllPages: async () => [],
     getRateLimitStatus: () => ({ lastThrottleAt: null, retryAfterSec: null, cooldownRemainingMs: 0 }),
   };
-  const namesByModule = new Map(REGISTRAR_MANIFEST.map((module) => [module.file, []]));
+  const namesByModule = new Map(REGISTRAR_MANIFEST.map((module) => [normalizeRepoPath(module.file), []]));
   const attributed = new Map();
 
   try {
@@ -246,10 +253,11 @@ async function attributeToolsToModules(liveToolNames) {
         scopeBlocked: () => false,
       });
       for (const name of moduleToolNames(server, module.key)) {
+        const file = normalizeRepoPath(module.file);
         const owners = attributed.get(name) ?? [];
-        owners.push(module.file);
+        owners.push(file);
         attributed.set(name, owners);
-        namesByModule.get(module.file).push(name);
+        namesByModule.get(file).push(name);
       }
     }
 
@@ -267,14 +275,40 @@ async function attributeToolsToModules(liveToolNames) {
       throw new Error(`finalized tool names have ambiguous module attribution: ${ambiguous.map(([name, owners]) => `${name} (${owners.join(', ')})`).join('; ')}`);
     }
 
-    return {
-      namesByModule,
-      manifestToolNames: [...attributed.keys()].sort(),
-      schemaMeasurements: collectModuleSchemaBudgets(server),
-    };
+    const finalizedByName = new Map(finalizedTools.map((tool) => [tool.name, tool]));
+    const schemaMeasurements = REGISTRAR_MANIFEST.map((module) => {
+      const names = namesByModule.get(normalizeRepoPath(module.file)) ?? [];
+      const schemaBytes = names.reduce((total, name) => total + serializedFinalizedSchemaBytes(finalizedByName.get(name)), 0);
+      return {
+        module: module.key,
+        registrationKey: module.registrationKey,
+        file: normalizeRepoPath(module.file),
+        status: 'active',
+        toolCount: names.length,
+        schemaBytes,
+        baselineToolCount: module.baseline.toolCount,
+        baselineSchemaBytes: module.baseline.schemaBytes,
+        maxToolCount: module.ceiling.toolCount,
+        maxSchemaBytes: module.ceiling.schemaBytes,
+        withinBudget: names.length <= module.ceiling.toolCount && schemaBytes <= module.ceiling.schemaBytes,
+      };
+    });
+    return { namesByModule, manifestToolNames: [...attributed.keys()].sort(), schemaMeasurements };
   } finally {
     await server.close().catch(() => undefined);
   }
+}
+
+function serializedFinalizedSchemaBytes(tool) {
+  if (!tool) return 0;
+  return Buffer.byteLength(JSON.stringify({
+    description: String(tool.description ?? ''),
+    inputSchema: tool.inputSchema ?? {},
+  }), 'utf8');
+}
+
+function normalizeRepoPath(file) {
+  return file.split(sep).join('/');
 }
 
 function countModuleTools(namesByModule) {
@@ -354,8 +388,7 @@ function moduleInventory(census) {
 function inventoryFiles() {
   return walkFiles(join(ROOT, 'src'))
     .filter((file) => file.endsWith('.ts'))
-    .map((file) => relative(ROOT, file))
-    .sort();
+    .map((file) => normalizeRepoPath(relative(ROOT, file))).sort()
 }
 
 function firstDescription(source, fallback, segmenter) {
