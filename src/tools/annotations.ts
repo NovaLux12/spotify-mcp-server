@@ -91,6 +91,10 @@ import { registerStatsfmTools } from './statsfm.js';
 import { formatReceipt, verifyReceipt } from '../receipts.js';
 import { z } from 'zod';
 import * as z4 from 'zod/v4-mini';
+import { CallToolRequestSchema, ListToolsRequestSchema, type ServerResult } from '@modelcontextprotocol/sdk/types.js';
+import { getObjectShape, normalizeObjectSchema, safeParseAsync } from '@modelcontextprotocol/sdk/server/zod-compat.js';
+import { toJsonSchemaCompat } from '@modelcontextprotocol/sdk/server/zod-json-schema-compat.js';
+import { SpotifyApiError } from '../client.js';
 
 export interface ToolAnnotations {
   title?: string;
@@ -229,8 +233,21 @@ export function classifyToolAnnotations(toolName: string): ToolAnnotations {
   return destructive ? { destructiveHint: true } : { destructiveHint: false };
 }
 
+type SdkSchema = NonNullable<Parameters<typeof getObjectShape>[0]>;
+type ToolHandler =
+  | ((...args: unknown[]) => unknown)
+  | { createTask: (...args: unknown[]) => unknown };
+
 interface RegistryEntry {
+  title?: string;
+  description?: string;
+  inputSchema?: SdkSchema;
+  outputSchema?: SdkSchema;
   annotations?: unknown;
+  handler?: ToolHandler;
+  enabled?: boolean;
+  execution?: unknown;
+  _meta?: Record<string, unknown>;
   update?: (u: { annotations?: ToolAnnotations }) => void;
 }
 
@@ -546,4 +563,390 @@ export function assertModuleSchemaBudgets(rows: readonly ModuleSchemaBudget[]): 
     `${row.module} (${row.file}) exceeds schema budget: ${row.toolCount} tools/${row.schemaBytes}B ` +
     `> ${row.maxToolCount} tools/${row.maxSchemaBytes}B`,
   ).join('; '));
+}
+
+type ErrorKind =
+  | 'auth'
+  | 'forbidden'
+  | 'not_found'
+  | 'rate_limited'
+  | 'unavailable'
+  | 'validation'
+  | 'unknown_tool'
+  | 'unknown_param'
+  | 'internal';
+
+interface ErrorFields {
+  kind: ErrorKind;
+  reason: string;
+  fix: string;
+  text: string;
+  status?: number;
+  retryAfterSec?: number;
+  param?: string;
+}
+
+function getToolRegistry(server: McpServer): Record<string, RegistryEntry> {
+  const registry = (server as unknown as { _registeredTools?: Record<string, RegistryEntry> })._registeredTools;
+  if (!registry || typeof registry !== 'object') {
+    throw new Error('Spotify MCP tool registry is unavailable; refusing to start without its error boundary');
+  }
+  return registry;
+}
+
+function safeIdentifier(value: string): string {
+  const oneLine = value.replace(/[\u0000-\u001f\u007f]/g, ' ').trim();
+  return (oneLine.replace(/[^A-Za-z0-9_.:-]+/g, '?').slice(0, 96) || '(unnamed)');
+}
+
+function levenshtein(left: string, right: string): number {
+  if (left === right) return 0;
+  if (left.length === 0) return right.length;
+  if (right.length === 0) return left.length;
+
+  let previous = Array.from({ length: right.length + 1 }, (_, index) => index);
+  for (let leftIndex = 1; leftIndex <= left.length; leftIndex++) {
+    const current = [leftIndex];
+    for (let rightIndex = 1; rightIndex <= right.length; rightIndex++) {
+      const substitution = previous[rightIndex - 1] + (left[leftIndex - 1] === right[rightIndex - 1] ? 0 : 1);
+      current[rightIndex] = Math.min(
+        current[rightIndex - 1] + 1,
+        previous[rightIndex] + 1,
+        substitution,
+      );
+    }
+    previous = current;
+  }
+  return previous[right.length];
+}
+
+function nearestNames(name: string, candidates: string[]): string[] {
+  return candidates
+    .map((candidate) => ({ candidate, distance: levenshtein(name, candidate) }))
+    .filter(({ distance }) => distance > 0 && distance <= 3)
+    .sort((left, right) => left.distance - right.distance || left.candidate.localeCompare(right.candidate))
+    .slice(0, 3)
+    .map(({ candidate }) => candidate);
+}
+
+function humanList(values: string[]): string {
+  if (values.length === 1) return `"${values[0]}"`;
+  if (values.length === 2) return `"${values[0]}" or "${values[1]}"`;
+  return `"${values[0]}", "${values[1]}", or "${values[2]}"`;
+}
+
+function findSpotifyApiError(error: unknown): SpotifyApiError | undefined {
+  const seen = new Set<unknown>();
+  let current: unknown = error;
+  while (current !== null && current !== undefined && !seen.has(current)) {
+    seen.add(current);
+    if (current instanceof SpotifyApiError) return current;
+    current = current instanceof Error ? current.cause : undefined;
+  }
+  return undefined;
+}
+
+function validationParam(error: unknown): string | undefined {
+  if (error === null || typeof error !== 'object' || !('issues' in error) || !Array.isArray(error.issues)) {
+    return undefined;
+  }
+  for (const issue of error.issues) {
+    if (issue === null || typeof issue !== 'object' || !('path' in issue) || !Array.isArray(issue.path)) continue;
+    const first = issue.path[0];
+    if (typeof first === 'string' && first.length > 0) return safeIdentifier(first);
+    if (typeof first === 'number') return safeIdentifier(String(first));
+  }
+  return undefined;
+}
+
+function safeSpotifyReason(reason: unknown): string | undefined {
+  return typeof reason === 'string' && /^[A-Z][A-Z0-9_]{0,63}$/.test(reason) ? reason : undefined;
+}
+
+function defaultReason(kind: ErrorKind): string {
+  switch (kind) {
+    case 'auth': return 'authentication_required';
+    case 'forbidden': return 'spotify_access_forbidden';
+    case 'not_found': return 'spotify_resource_not_found';
+    case 'rate_limited': return 'spotify_rate_limited';
+    case 'unavailable': return 'spotify_unavailable';
+    case 'validation': return 'validation_failed';
+    case 'unknown_tool': return 'tool_not_registered';
+    case 'unknown_param': return 'parameter_not_accepted';
+    case 'internal': return 'internal_error';
+  }
+}
+
+function publicFailure(tool: string, error: unknown): ErrorFields {
+  const spotifyError = findSpotifyApiError(error);
+  if (spotifyError) {
+    const status = spotifyError.status;
+    let kind: ErrorKind;
+    let text: string;
+    let fix: string;
+    if (status === 401) {
+      kind = 'auth';
+      text = `${tool} could not authenticate with Spotify; run "spotify-mcp auth" and retry.`;
+      fix = 'Run "spotify-mcp auth" and retry.';
+    } else if (status === 403) {
+      kind = 'forbidden';
+      text = `${tool} is not available for this Spotify app registration or account; use a permitted tool or request the required access.`;
+      fix = 'Use a permitted tool, or request the required Spotify access for this app registration.';
+    } else if (status === 404) {
+      kind = 'not_found';
+      text = `${tool} could not find the requested Spotify resource; verify its identifier and retry.`;
+      fix = 'Verify the Spotify identifier and retry.';
+    } else if (status === 429) {
+      kind = 'rate_limited';
+      const wait = spotifyError.retryAfterSec;
+      text = typeof wait === 'number'
+        ? `${tool} was rate-limited by Spotify; retry after ${wait} seconds.`
+        : `${tool} was rate-limited by Spotify; retry later.`;
+      fix = typeof wait === 'number' ? `Wait ${wait} seconds before retrying.` : 'Wait before retrying.';
+    } else if (status === 503) {
+      kind = 'unavailable';
+      text = `${tool} could not reach Spotify because the service is unavailable; retry shortly.`;
+      fix = 'Retry shortly.';
+    } else if (status === 400 || status === 422) {
+      kind = 'validation';
+      text = `${tool} received invalid arguments; pass values that match the tool schema.`;
+      fix = 'Pass values that match the tool schema.';
+    } else {
+      kind = 'internal';
+      text = `${tool} failed unexpectedly; retry once and inspect protected server diagnostics if it persists.`;
+      fix = 'Retry once; if the failure persists, inspect protected server diagnostics.';
+    }
+    return {
+      kind,
+      reason: safeSpotifyReason(spotifyError.reason) ?? defaultReason(kind),
+      fix,
+      text,
+      status,
+      ...(kind === 'rate_limited' && typeof spotifyError.retryAfterSec === 'number'
+        ? { retryAfterSec: spotifyError.retryAfterSec }
+        : {}),
+    };
+  }
+
+  const message = (error instanceof Error ? error.message : String(error)).replace(/^MCP error -\d+:\s*/, '').trim();
+  const lower = message.toLowerCase();
+  if (/not authenticated|no token file|token refresh failed|spotify-mcp auth|spotify auth error/.test(lower)) {
+    return {
+      kind: 'auth',
+      reason: defaultReason('auth'),
+      fix: 'Run "spotify-mcp auth" and retry.',
+      text: `${tool} could not authenticate with Spotify; run "spotify-mcp auth" and retry.`,
+    };
+  }
+  if (/app-registration gated|registration-gated|forbidden|access denied|premium required|oauth scope|scope .*missing|market-gated/.test(lower)) {
+    return {
+      kind: 'forbidden',
+      reason: lower.includes('gated') ? 'registration_gated' : defaultReason('forbidden'),
+      fix: 'Use a permitted tool, or request the required Spotify access for this app registration.',
+      text: `${tool} is not available for this Spotify app registration or account; use a permitted tool or request the required access.`,
+    };
+  }
+  if (/\bnot found\b|does not exist/.test(lower)) {
+    return {
+      kind: 'not_found',
+      reason: defaultReason('not_found'),
+      fix: 'Verify the Spotify identifier and retry.',
+      text: `${tool} could not find the requested Spotify resource; verify its identifier and retry.`,
+    };
+  }
+  if (/rate.?limit|retry-after|quota exceeded/.test(lower)) {
+    return {
+      kind: 'rate_limited',
+      reason: defaultReason('rate_limited'),
+      fix: 'Wait before retrying.',
+      text: `${tool} was rate-limited by Spotify; retry later.`,
+    };
+  }
+  if (/temporarily unavailable|service unavailable|retry shortly|fetch failed|econnreset|socket hang up/.test(lower)) {
+    return {
+      kind: 'unavailable',
+      reason: defaultReason('unavailable'),
+      fix: 'Retry shortly.',
+      text: `${tool} could not reach Spotify because the service is unavailable; retry shortly.`,
+    };
+  }
+  if (/invalid arguments?|input validation|must |required|provide at least|pass either|not both|expected /.test(lower)) {
+    return {
+      kind: 'validation',
+      reason: defaultReason('validation'),
+      fix: 'Pass values that match the tool schema.',
+      text: `${tool} received invalid arguments; pass values that match the tool schema.`,
+    };
+  }
+  return {
+    kind: 'internal',
+    reason: defaultReason('internal'),
+    fix: 'Retry once; if the failure persists, inspect protected server diagnostics.',
+    text: `${tool} failed unexpectedly; retry once and inspect protected server diagnostics if it persists.`,
+  };
+}
+
+function errorResult(tool: string, fields: ErrorFields, _diagnostic: unknown) {
+  const correlationId = globalThis.crypto.randomUUID();
+  const safeReason = /^[a-z][a-z0-9_]{0,63}$/.test(fields.reason) ? fields.reason : 'classified_error';
+  const status = fields.status === undefined ? 'none' : String(fields.status);
+  console.error(
+    `[spotify-mcp] error correlation_id=${correlationId} tool=${safeIdentifier(tool)} kind=${fields.kind} status=${status} reason=${safeReason}`,
+  );
+
+  const error: Record<string, unknown> = {
+    tool,
+    kind: fields.kind,
+    reason: fields.reason,
+    fix: fields.fix,
+  };
+  if (fields.status !== undefined) error.status = fields.status;
+  if (fields.retryAfterSec !== undefined) error.retryAfterSec = fields.retryAfterSec;
+  if (fields.param !== undefined) error.param = fields.param;
+  return {
+    content: [{ type: 'text' as const, text: fields.text }],
+    structuredContent: { error },
+    isError: true,
+  };
+}
+
+function unknownToolResult(registry: Record<string, RegistryEntry>, requested: string) {
+  const tool = safeIdentifier(requested);
+  const suggestions = nearestNames(requested, Object.keys(registry));
+  const suggestionText = suggestions.length > 0
+    ? `call ${humanList(suggestions)} instead.`
+    : 'call a tool advertised by tools/list instead.';
+  return errorResult(tool, {
+    kind: 'unknown_tool',
+    reason: defaultReason('unknown_tool'),
+    fix: suggestions.length > 0 ? `Call ${humanList(suggestions)} instead.` : 'Call a tool advertised by tools/list instead.',
+    text: `${tool} is not an available tool; ${suggestionText}`,
+  }, `unknown tool ${JSON.stringify(requested)}`);
+}
+
+function unknownParamResult(tool: string, param: string, candidates: string[]) {
+  let suggestions = nearestNames(param, candidates);
+  if (suggestions.length === 0 && param === 'limit' && candidates.includes('offset')) {
+    suggestions = ['offset'];
+    if (candidates.includes('max_results')) suggestions.push('max_results');
+  }
+  const replacement = suggestions.length > 0
+    ? `use ${humanList(suggestions)} instead.`
+    : 'use only parameters advertised by the tool schema instead.';
+  return errorResult(tool, {
+    kind: 'unknown_param',
+    reason: defaultReason('unknown_param'),
+    fix: suggestions.length > 0
+      ? `Remove ${safeIdentifier(param)} and use ${humanList(suggestions)}.`
+      : `Remove ${safeIdentifier(param)} and use only advertised parameters.`,
+    text: `${tool} does not accept parameter ${safeIdentifier(param)}; remove it and ${replacement}`,
+    param: safeIdentifier(param),
+  }, `unknown parameter ${JSON.stringify(param)}`);
+}
+
+function validationResult(tool: string, param: string | undefined) {
+  const subject = param ? `parameter ${safeIdentifier(param)}` : 'arguments';
+  return errorResult(tool, {
+    kind: 'validation',
+    reason: defaultReason('validation'),
+    fix: param ? `Pass a valid value for ${safeIdentifier(param)}.` : 'Pass values that match the tool schema.',
+    text: `${tool} rejected ${subject}; pass a valid value according to the tool schema.`,
+    ...(param ? { param: safeIdentifier(param) } : {}),
+  }, param ? `schema validation failed for parameter ${param}` : 'schema validation failed');
+}
+
+async function invokeHandler(entry: RegistryEntry, args: unknown, extra: unknown): Promise<unknown> {
+  const handler = entry.handler;
+  if (typeof handler === 'function') {
+    return entry.inputSchema ? handler(args, extra) : handler(extra);
+  }
+  if (handler && typeof handler.createTask === 'function') {
+    return entry.inputSchema ? handler.createTask(args, extra) : handler.createTask(extra);
+  }
+  throw new Error(`Tool handler is unavailable for ${String(handler)}`);
+}
+
+async function validateOutput(entry: RegistryEntry, result: unknown, tool: string, isTaskRequest: boolean): Promise<void> {
+  if (!entry.outputSchema || isTaskRequest || result === null || typeof result !== 'object' || !('content' in result)) return;
+  const output = result as { isError?: unknown; structuredContent?: unknown };
+  if (output.isError === true) return;
+  if (output.structuredContent === undefined) {
+    throw new Error(`Output validation failed for ${tool}: structured content is required`);
+  }
+  const parsed = await safeParseAsync(entry.outputSchema, output.structuredContent);
+  if (!parsed.success) throw new Error(`Output validation failed for ${tool}`);
+}
+
+/**
+ * Replace the SDK's two early tools handlers with the final production boundary.
+ * It advertises closed root input objects, rejects unknown keys before any
+ * callback runs, preserves parsed handler/output semantics, and turns every
+ * failure into a one-line public envelope with diagnostics confined to stderr.
+ */
+export function installToolErrorBoundary(server: McpServer): number {
+  const registry = getToolRegistry(server);
+  const lowLevelServer = server.server;
+
+  lowLevelServer.removeRequestHandler('tools/list');
+  lowLevelServer.setRequestHandler(ListToolsRequestSchema, () => ({
+    tools: Object.entries(registry)
+      .filter(([, entry]) => entry.enabled !== false)
+      .map(([name, entry]) => {
+        const objectSchema = normalizeObjectSchema(entry.inputSchema);
+        const inputSchema = objectSchema
+          ? toJsonSchemaCompat(objectSchema, { pipeStrategy: 'input' })
+          : { type: 'object', properties: {} };
+        inputSchema.additionalProperties = false;
+        delete inputSchema.$schema;
+
+        const definition: Record<string, unknown> = { name, inputSchema };
+        if (entry.title !== undefined) definition.title = entry.title;
+        if (entry.description !== undefined) definition.description = entry.description;
+        if (entry.annotations !== undefined) definition.annotations = entry.annotations;
+        if (entry.execution !== undefined) definition.execution = entry.execution;
+        if (entry._meta !== undefined) definition._meta = entry._meta;
+        if (entry.outputSchema) {
+          const outputObject = normalizeObjectSchema(entry.outputSchema);
+          if (outputObject) {
+            definition.outputSchema = toJsonSchemaCompat(outputObject, { pipeStrategy: 'output' });
+          }
+        }
+        return definition;
+      }),
+  }) as unknown as ServerResult);
+
+  lowLevelServer.removeRequestHandler('tools/call');
+  lowLevelServer.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
+    const requested = request.params.name;
+    const entry = registry[requested];
+    if (!entry || entry.enabled === false) return unknownToolResult(registry, requested);
+
+    const tool = safeIdentifier(requested);
+    const shape = getObjectShape(entry.inputSchema);
+    const knownParams = shape ? Object.keys(shape) : [];
+    const args = request.params.arguments ?? {};
+    const unknown = Object.keys(args).find((param) => !knownParams.includes(param));
+    if (unknown) return unknownParamResult(tool, unknown, knownParams);
+
+    let parsedArgs: unknown;
+    try {
+      if (entry.inputSchema) {
+        const parsed = await safeParseAsync(entry.inputSchema, args);
+        if (!parsed.success) return validationResult(tool, validationParam(parsed.error));
+        parsedArgs = parsed.data;
+      }
+    } catch {
+      return validationResult(tool, undefined);
+    }
+
+    try {
+      const result = await invokeHandler(entry, parsedArgs, extra);
+      await validateOutput(entry, result, tool, request.params.task !== undefined);
+      return result as ServerResult;
+    } catch (error) {
+      return errorResult(tool, publicFailure(tool, error), error) as ServerResult;
+    }
+  });
+
+  return Object.keys(registry).length;
 }
