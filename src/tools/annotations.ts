@@ -420,7 +420,7 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
       },
     );
   }, [1, 338], { readOnlySafe: true, scopeKey: 'library' }),
-  manifestEntry('episodemgmt', 'episodemgmt', 'src/tools/episodemgmt.ts', registerEpisodeMgmtTools, [1, 815], { scopeKey: 'library' }),
+  manifestEntry('episodemgmt', 'episodemgmt', 'src/tools/episodemgmt.ts', registerEpisodeMgmtTools, [1, 712], { scopeKey: 'library' }),
   manifestEntry('freshness', 'following', 'src/tools/freshness.ts', registerFreshnessTools, [1, 2066], { scopeKey: 'following' }),
   manifestEntry('searchdive', 'search', 'src/tools/searchdive.ts', registerSearchDeepTool, [1, 1349], { readOnlySafe: true, scopeKey: 'search' }),
   manifestEntry('searchhistory', 'searchhistory', 'src/tools/searchhistory.ts', registerSearchHistoryTools, [2, 1050], { readOnlySafe: true, scopeKey: 'search' }),

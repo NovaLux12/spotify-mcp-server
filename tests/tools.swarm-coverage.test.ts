@@ -156,18 +156,19 @@ describe('swarm3_playback dry_run previews', () => {
 
 describe('batch chunking at 100', () => {
   it('batch_add_to_playlist splits 250 unique source URIs into 100/100/50 POSTs', async () => {
+    const targetPlaylistId = 'playlist12345678901234';
     const uris = Array.from({ length: 250 }, (_, i) => `spotify:track:${String(i).padStart(22, '0')}`);
     const h = makeHarness(registerPlaylistBatchTools, (path, _body, method) => {
-      if (method === 'POST' && path.includes('/playlists/target/items')) return { snapshot_id: 'snap' } as unknown;
-      // GET /playlists/target/items pages — return empty so dedupe against existing adds nothing
-      if (path.includes('/playlists/target/items')) return { items: [], total: 0, limit: 100, offset: 0, next: null } as unknown;
+      if (method === 'POST' && path.includes(`/playlists/${targetPlaylistId}/items`)) return { snapshot_id: 'snap' } as unknown;
+      // GET /playlists/{id}/items pages — return empty so dedupe against existing adds nothing
+      if (path.includes(`/playlists/${targetPlaylistId}/items`)) return { items: [], total: 0, limit: 100, offset: 0, next: null } as unknown;
       return { items: [], total: 0, limit: 100, offset: 0, next: null } as unknown;
     });
     const previousConfirm = process.env.SPOTIFY_MCP_CONFIRM;
     process.env.SPOTIFY_MCP_CONFIRM = 'never';
     try {
-      const out = await h.invoke('batch_add_to_playlist', { target_playlist_id: 'target', source_uris: uris });
-      const posts = h.client.calls.filter((c) => c.method === 'POST' && c.path.includes('/playlists/target/items'));
+      const out = await h.invoke('batch_add_to_playlist', { target_playlist_id: targetPlaylistId, source_uris: uris });
+      const posts = h.client.calls.filter((c) => c.method === 'POST' && c.path.includes(`/playlists/${targetPlaylistId}/items`));
       assert.equal(posts.length, 3, '250 tracks must fan out into 3 POSTs');
       const batchSizes = posts.map((post) => {
         if (!post.arg || typeof post.arg !== 'object' || !('uris' in post.arg) || !Array.isArray(post.arg.uris)) {
@@ -184,12 +185,13 @@ describe('batch chunking at 100', () => {
   });
 
   it('batch_add_to_playlist dry_run with 250 URIs makes zero POSTs', async () => {
+    const targetPlaylistId = 'playlist12345678901234';
     const uris = Array.from({ length: 250 }, (_, i) => `spotify:track:${String(i).padStart(22, '0')}`);
     const h = makeHarness(registerPlaylistBatchTools, (path) => {
-      if (path.includes('/playlists/target/items')) return { items: [], total: 0, limit: 100, offset: 0, next: null } as unknown;
+      if (path.includes(`/playlists/${targetPlaylistId}/items`)) return { items: [], total: 0, limit: 100, offset: 0, next: null } as unknown;
       return null as unknown;
     });
-    const out = await h.invoke('batch_add_to_playlist', { target_playlist_id: 'target', source_uris: uris, dry_run: true });
+    const out = await h.invoke('batch_add_to_playlist', { target_playlist_id: targetPlaylistId, source_uris: uris, dry_run: true });
     assert.equal(h.client.calls.filter((c) => c.method === 'POST').length, 0);
     assert.match(h.text(out), /\[dry run\]/);
   });

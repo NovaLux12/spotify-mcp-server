@@ -34,7 +34,8 @@ const parameterAllowlist = new Set([
 ]);
 const documentedMetadata = new Set([
   'toolset_trimmed', 'scope_blocked', 'read_only_hidden',
-  'deprecated_inputs', 'deprecation_note',
+  'deprecated_inputs', 'deprecation_note', 'auth', 'forbidden', 'not_found',
+  'rate_limited', 'unavailable', 'statsfm_resource_not_found',
 ]);
 const nonToolAllowlist = new Set([...prompts, ...resources, ...parameterAllowlist, ...documentedMetadata]);
 const markdownFiles = [

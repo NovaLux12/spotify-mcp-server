@@ -116,14 +116,14 @@ The table is generated from every TypeScript file recursively under `src/`, incl
 | `src/config.ts` | Central configuration loader for the SPOTIFY_MCP_* environment family. (0 registered tools) | 227 |
 | `src/history.ts` | Opt-in mutation history JSONL (#64). (0 registered tools) | 57 |
 | `src/index.ts` | Runtime module for src/index.ts. (0 registered tools) | 266 |
-| `src/lib/statsfm-client.ts` | Minimal client for the public stats.fm API (https://api.stats.fm/api/v1). (0 registered tools) | 121 |
+| `src/lib/statsfm-client.ts` | Minimal client for the public stats.fm API (https://api.stats.fm/api/v1). (0 registered tools) | 137 |
 | `src/prompts/index.ts` | Runtime module for src/prompts/index.ts. (0 registered tools) | 311 |
 | `src/receipts.ts` | Mutation receipts (#112 idea 11). (0 registered tools) | 331 |
 | `src/refs.ts` | Shared Spotify reference parser and resolver. (0 registered tools) | 229 |
 | `src/resources/index.ts` | Runtime module for src/resources/index.ts. (0 registered tools) | 654 |
 | `src/resources/templates.ts` | RFC-6570 resource templates over single-get catalog endpoints (#111, pattern 2). (0 registered tools) | 321 |
 | `src/scopefilter.ts` | Scope-aware module gating (#111 item 6). (0 registered tools) | 69 |
-| `src/shaping.ts` | Shared shaping helpers for tool responses (#51/#52/#53/#57/#58): zod schema fragments, truncation math, pagination info, structuredContent emission, mutation batch summaries and dry-run descriptions. (0 registered tools) | 833 |
+| `src/shaping.ts` | Shared shaping helpers for tool responses (#51/#52/#53/#57/#58): zod schema fragments, truncation math, pagination info, structuredContent emission, mutation batch summaries and dry-run descriptions. (0 registered tools) | 808 |
 | `src/tools/analytics.ts` | Runtime module for src/tools/analytics.ts. (4 registered tools) | 427 |
 | `src/tools/annotations.ts` | MCP tool annotations (#565 / A0-002, A4-005). (1 registered tool) | 1021 |
 | `src/tools/artistwatch.ts` | Runtime module for src/tools/artistwatch.ts. (6 registered tools) | 518 |
@@ -135,7 +135,7 @@ The table is generated from every TypeScript file recursively under `src/`, incl
 | `src/tools/catalog.ts` | Runtime module for src/tools/catalog.ts. (32 registered tools) | 1275 |
 | `src/tools/confirm.ts` | Elicitation-gated confirmation for destructive playlist operations (#111 item 5). (0 registered tools) | 188 |
 | `src/tools/doctortool.ts` | spotify_doctor (#111 idea 9 + #228): the CLI `doctor` command (runDoctor in index.ts) as an in-server TOOL so MCP agents can self-diagnose the most common failure class — missing/expired tokens, scope gaps between the auth-time grant and the write tools exposed by the active toolsets, Premium gating they cannot introspect, and an active rate-limit cooldown. (1 registered tool) | 682 |
-| `src/tools/episodemgmt.ts` | episodemgmt (#204, #187, #230): archive_played_episodes. mark_episode_played was removed in #230 — PUT /me/episodes/{id} with resume_point is not a real Spotify endpoint (real endpoint is PUT /me/episodes? (1 registered tool) | 60 |
+| `src/tools/episodemgmt.ts` | episodemgmt (#204, #187, #230): archive_played_episodes. mark_episode_played was removed in #230 — PUT /me/episodes/{id} with resume_point is not a real Spotify endpoint (real endpoint is PUT /me/episodes? (1 registered tool) | 69 |
 | `src/tools/exhaust2_catalog.ts` | exhaust2 catalog slice — feature swarm v1.24.0 (issues #332–#357). (19 registered tools) | 1371 |
 | `src/tools/exhaust2_enggating.ts` | exhaust2 enggating slice -- the graceful-403 gating contract (#428, #429). (0 registered tools) | 133 |
 | `src/tools/exhaust2_extra.ts` | exhaust2 extra slice — the final three playlists-surface tools (#398-#400). (3 registered tools) | 546 |
@@ -173,7 +173,7 @@ The table is generated from every TypeScript file recursively under `src/`, incl
 | `src/tools/showradar.ts` | show_new_episodes (#173): new-episode radar across saved podcast shows. (1 registered tool) | 316 |
 | `src/tools/smart.ts` | create_smart_playlist (#172): rule-based playlist generation from the user's OWN listening data — top tracks, recently played, or saved tracks — with optional artist filtering and per-artist uniqueness. (1 registered tool) | 241 |
 | `src/tools/statsfm.ts` | stats.fm tools (read-only): listening stats, tops, catalog and social lookups against the public stats.fm API (https://api.stats.fm/api/v1). (30 registered tools) | 775 |
-| `src/tools/statsfm_taste.ts` | stats.fm taste-intelligence slice (v2 taste track). (16 registered tools) | 1134 |
+| `src/tools/statsfm_taste.ts` | stats.fm taste-intelligence slice (v2 taste track). (16 registered tools) | 1137 |
 | `src/tools/swarm3_analytics.ts` | swarm3 analytics slice — 500-tool swarm v1.26.0 (issue #442). (24 registered tools) | 1376 |
 | `src/tools/swarm3_discovery.ts` | Runtime module for src/tools/swarm3_discovery.ts. (24 registered tools) | 1896 |
 | `src/tools/swarm3_library.ts` | swarm3 library slice — feature swarm v1.25.0 (500-tool push, branch swarm3-500-tools). (24 registered tools) | 1467 |
