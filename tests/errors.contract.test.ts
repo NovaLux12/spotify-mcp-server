@@ -164,13 +164,14 @@ describe('production tool error contract (#921)', () => {
     assert.match(episodes.fix, /max_results/);
   });
 
-  it('keeps private paths, query values, suffixes, and RPC prefixes out of public errors', async () => {
+  it('keeps private paths, query values, suffixes, and RPC prefixes out of public and stderr errors', async () => {
     const client = await harness();
     const publicResults = [
       await call(client, 'auth_error'),
       await call(client, 'internal_error'),
     ];
     const publicText = publicResults.flatMap((result) => result.content.map((block) => block.text ?? '')).join('\n');
+    const stderrText = diagnostics.join('\n');
     for (const secret of [
       '/home/alice',
       'tokens.json',
@@ -183,9 +184,12 @@ describe('production tool error contract (#921)', () => {
       'MCP error -',
     ]) {
       assert.equal(publicText.includes(secret), false, `public error leaked ${secret}`);
+      assert.equal(stderrText.includes(secret), false, `stderr leaked ${secret}`);
     }
     assert.ok(diagnostics.some((line) => /correlation_id=[0-9a-f-]{36}/.test(line)));
-    assert.ok(diagnostics.some((line) => line.includes('/home/alice')));
+    assert.ok(diagnostics.some((line) => line.includes('tool=auth_error') && line.includes('kind=auth') && line.includes('status=401')));
+    assert.ok(diagnostics.some((line) => line.includes('tool=internal_error') && line.includes('kind=internal') && line.includes('reason=internal_error')));
+    assert.equal(stderrText.includes('diagnostic='), false);
   });
 });
 

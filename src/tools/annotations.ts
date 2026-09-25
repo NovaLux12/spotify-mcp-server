@@ -433,13 +433,12 @@ function publicFailure(tool: string, error: unknown): ErrorFields {
   };
 }
 
-function errorResult(tool: string, fields: ErrorFields, diagnostic: unknown) {
+function errorResult(tool: string, fields: ErrorFields, _diagnostic: unknown) {
   const correlationId = globalThis.crypto.randomUUID();
-  const rawDiagnostic = diagnostic instanceof Error
-    ? (diagnostic.stack ?? diagnostic.message)
-    : String(diagnostic);
+  const safeReason = /^[a-z][a-z0-9_]{0,63}$/.test(fields.reason) ? fields.reason : 'classified_error';
+  const status = fields.status === undefined ? 'none' : String(fields.status);
   console.error(
-    `[spotify-mcp] error correlation_id=${correlationId} tool=${safeIdentifier(tool)} kind=${fields.kind} diagnostic=${JSON.stringify(rawDiagnostic)}`,
+    `[spotify-mcp] error correlation_id=${correlationId} tool=${safeIdentifier(tool)} kind=${fields.kind} status=${status} reason=${safeReason}`,
   );
 
   const error: Record<string, unknown> = {
