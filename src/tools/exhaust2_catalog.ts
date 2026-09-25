@@ -39,7 +39,20 @@ import {
   listStructuredContent,
 } from '../shaping.js';
 import type { ResponseFormatValue, PaginationInfo } from '../shaping.js';
-import { getConfig } from '../config.js';
+import { getConfig, resolveMarket } from '../config.js';
+
+/**
+ * Prose label for the market a search actually ran against. With no argument
+ * and no SPOTIFY_MCP_MARKET the API answers from the token's own country,
+ * which the payload names (`market_used: 'from_token'`) rather than leaves
+ * implied — the contract the `Market` parameter documents.
+ */
+
+function marketNote(market: string | undefined): string {
+  return market
+    ? `market ${market}`
+    : "the token's default market (no market argument, no SPOTIFY_MCP_MARKET)";
+}
 
 // ---------------------------------------------------------------------------
 // Shared shapes + plumbing
@@ -972,8 +985,9 @@ max_results: z.number().int().positive().max(2000).optional().describe('Max item
       if (!/^[A-Z]{2}[A-Z0-9]{3}\d{7}$/.test(isrc)) {
         throw new Error(`"${args.isrc}" is not a valid ISRC (expected CC-XXX-YYNNNNN shape, 12 alphanumeric chars)`);
       }
+      const market = resolveMarket(args.market, getConfig().market, undefined);
       const { items, total } = await runTypedSearch<TrackPayload>(
-        client, 'tracks', 'track', { query: isrc }, `isrc:${isrc}`,
+        client, 'tracks', 'track', { query: isrc, market }, `isrc:${isrc}`,
       );
       const lines = items.map(
         (t) => `• "${t.name}" — ${(t.artists ?? []).map((a) => a.name).join(', ')} | ${t.album?.name ?? '?'} (${yearOf(t.album?.release_date) ?? '?'}) | ${t.uri}`,
@@ -981,11 +995,11 @@ max_results: z.number().int().positive().max(2000).optional().describe('Max item
       return emitSearchResult(
         rf,
         items.length > 0
-          ? `ISRC ${isrc} resolved to ${items.length} track${items.length === 1 ? '' : 's'}:`
-          : `ISRC ${isrc} — no track found. The recording may not be distributed in this market's catalog.`,
+          ? `ISRC ${isrc} resolved to ${items.length} track${items.length === 1 ? '' : 's'} in ${marketNote(market)}:`
+          : `ISRC ${isrc} — no track found in ${marketNote(market)}. The recording may not be distributed in that market's catalog.`,
         lines,
         items.map((t) => ({ id: t.id, uri: t.uri, name: t.name, artists: (t.artists ?? []).map((a) => a.name), album: t.album?.name ?? null, isrc: t.external_ids?.isrc ?? null })),
-        total, { isrc }, 50,
+        total, { isrc, market_used: market ?? 'from_token' }, 50,
       );
     },
   );
@@ -1004,13 +1018,14 @@ max_results: z.number().int().positive().max(2000).optional().describe('Max item
     },
     async (args) => {
       const rf = args.response_format;
+      const market = resolveMarket(args.market, getConfig().market, undefined);
       const precise = `track:"${args.title.replace(/"/g, '')}" artist:"${args.artist.replace(/"/g, '')}"`;
-      let { items } = await runTypedSearch<TrackPayload>(client, 'tracks', 'track', { query: precise }, precise);
+      let { items } = await runTypedSearch<TrackPayload>(client, 'tracks', 'track', { query: precise, market }, precise);
       let fallback = false;
       if (items.length === 0) {
         fallback = true;
         const broad = await runTypedSearch<TrackPayload>(
-          client, 'tracks', 'track', { query: `${args.title} ${args.artist}` },
+          client, 'tracks', 'track', { query: `${args.title} ${args.artist}`, market },
         );
         items = broad.items;
       }
@@ -1058,6 +1073,7 @@ max_results: z.number().int().positive().max(2000).optional().describe('Max item
         `Canonical version of "${args.title}" by ${args.artist}:`,
         `  "${canonical.name}" — ${(canonical.artists ?? []).map((a) => a.name).join(', ')} | ${canonical.album?.name ?? '?'} (${canonical.album?.release_date ?? '?'})`,
         `  URI: ${canonical.uri}`,
+        `  Searched ${marketNote(market)}`,
         fallback ? '  (precise filter empty — broad search fallback used)' : '',
         '',
         `All versions (${variants.length}):`,
@@ -1068,6 +1084,7 @@ max_results: z.number().int().positive().max(2000).optional().describe('Max item
         variants,
         groups: groupsList.length,
         fallback_search: fallback,
+        market_used: market ?? 'from_token',
       });
     },
   );
