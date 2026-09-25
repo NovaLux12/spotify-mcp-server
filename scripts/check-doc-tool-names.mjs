@@ -16,7 +16,7 @@ if (censusFileIndex >= 0 && !process.argv[censusFileIndex + 1]) {
 }
 const census = JSON.parse(censusFileIndex >= 0
   ? readFileSync(resolve(process.argv[censusFileIndex + 1]), 'utf8')
-  : execFileSync(process.execPath, ['scripts/surface-census.mjs'], { cwd: ROOT, encoding: 'utf8' }));
+  : execFileSync(process.execPath, ['scripts/surface-census.mjs'], { cwd: ROOT, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 }));
 const tools = new Set(census.toolNames);
 const prompts = new Set(census.promptNames);
 const resources = new Set(census.resourceUris);

@@ -73,7 +73,7 @@ above either ceiling fails CI and server startup.
 | playlistmisc | 3 | 2,321 | 3 | 2,321 | 4 | 2,554 |
 | personalization | 3 | 2,532 | 3 | 2,532 | 4 | 2,786 |
 | analytics | 4 | 2,595 | 4 | 2,595 | 5 | 2,855 |
-| statsfm | 30 | 22,949 | 30 | 22,949 | 31 | 25,244 |
+| statsfm | 30 | 22,721 | 30 | 22,721 | 31 | 24,994 |
 | taste | 16 | 13,959 | 16 | 13,959 | 17 | 15,355 |
 | tastecomposites | 11 | 9,101 | 11 | 9,101 | 12 | 10,012 |
 | doctor | 1 | 750 | 1 | 750 | 2 | 826 |
@@ -112,15 +112,15 @@ above either ceiling fails CI and server startup.
 | exhaust2playlists | 18 | 23,466 | 18 | 23,466 | 19 | 25,813 |
 | exhaust2misc | 27 | 22,770 | 27 | 22,770 | 28 | 25,048 |
 | exhaust2extra | 3 | 3,695 | 3 | 3,695 | 4 | 4,065 |
-| swarm3discovery | 24 | 21,223 | 24 | 21,223 | 25 | 23,346 |
-| swarm3bdiscovery | 24 | 18,704 | 24 | 18,704 | 25 | 20,575 |
-| swarm3shows | 24 | 20,023 | 24 | 20,023 | 25 | 22,026 |
+| swarm3discovery | 24 | 21,556 | 24 | 21,556 | 25 | 23,712 |
+| swarm3bdiscovery | 24 | 19,179 | 24 | 19,179 | 25 | 21,097 |
+| swarm3shows | 24 | 20,187 | 24 | 20,187 | 25 | 22,206 |
 | swarm3refs | 6 | 4,295 | 6 | 4,295 | 7 | 4,725 |
-| swarm3analytics | 24 | 18,426 | 24 | 18,426 | 25 | 20,269 |
+| swarm3analytics | 24 | 18,448 | 24 | 18,448 | 25 | 20,293 |
 | swarm3library | 24 | 17,987 | 24 | 17,987 | 25 | 19,786 |
 | swarm3playback | 24 | 14,247 | 24 | 14,247 | 25 | 15,672 |
 | swarm3playlistops | 24 | 31,777 | 24 | 31,777 | 25 | 34,955 |
-| swarm3snapshots | 24 | 23,696 | 24 | 23,696 | 25 | 26,066 |
+| swarm3snapshots | 24 | 23,744 | 24 | 23,744 | 25 | 26,119 |
 | swarm4playlists | 18 | 22,594 | 18 | 22,594 | 19 | 24,854 |
 <!-- END:generated schema-budget-table -->
 

@@ -13,6 +13,7 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const census = JSON.parse(execFileSync(process.execPath, ['scripts/surface-census.mjs'], {
   cwd: ROOT,
   encoding: 'utf8',
+  maxBuffer: 32 * 1024 * 1024,
 })) as {
   tools: number;
   resources: number;
@@ -43,7 +44,7 @@ async function withFixtures<T>(run: (dir: string) => Promise<T>): Promise<T> {
 
 function runFailure(args: string[], env: NodeJS.ProcessEnv = {}): string {
   try {
-    execFileSync(process.execPath, args, { cwd: ROOT, encoding: 'utf8', stdio: 'pipe', env: { ...process.env, ...env } });
+    execFileSync(process.execPath, args, { cwd: ROOT, encoding: 'utf8', stdio: 'pipe', maxBuffer: 32 * 1024 * 1024, env: { ...process.env, ...env } });
   } catch (error) {
     const result = error as { stdout?: string; stderr?: string };
     return `${result.stdout ?? ''}\n${result.stderr ?? ''}`;
@@ -56,7 +57,7 @@ describe('generated architecture and specification inventory', () => {
     await withFixtures(async (dir) => {
       const file = join(dir, 'census.json');
       await writeFile(file, JSON.stringify(census));
-      execFileSync(process.execPath, ['scripts/surface-census.mjs', '--check', '--census-file', file], { cwd: ROOT, stdio: 'pipe' });
+      execFileSync(process.execPath, ['scripts/surface-census.mjs', '--check', '--census-file', file], { cwd: ROOT, stdio: 'pipe', maxBuffer: 32 * 1024 * 1024 });
     });
   });
 

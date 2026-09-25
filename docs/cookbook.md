@@ -2,7 +2,7 @@
 
 Ten recipes you can paste to an agent (or run turn by turn) against SpotifyMCP. Each states the tools it uses and what you get. Recipe 1 is the flagship: stats.fm taste in, Spotify playlist out.
 
-Conventions: JSON tool args are shown inline; replace `PLAYLIST_ID` and IDs with yours. stats.fm endpoint tools require an explicit `user_id`; taste tools require an explicit `statsfm_user`. Identity is per call—never infer it from the Spotify account. Preview Spotify writes with `dry_run: true` when the tool supports it, show the human what will change, and get explicit confirmation immediately before every write or destructive action. There is no `STATSFM_USER_ID` setting.
+Conventions: JSON tool args are shown inline; replace `PLAYLIST_ID` and IDs with yours. User-scoped stats.fm endpoint tools require an explicit `user_id`; network-backed taste tools require an explicit `statsfm_user`; catalog/search tools and local `statsfm_record_feedback`/`record_feedback` are identity-free. Identity is per call—never infer it from the Spotify account. Preview Spotify writes with `dry_run: true` when the tool supports it, show the human what will change, and get explicit confirmation immediately before every write or destructive action. There is no `STATSFM_USER_ID` setting.
 
 ## 1. Taste profile → playlist (flagship)
 

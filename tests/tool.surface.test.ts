@@ -60,7 +60,7 @@ interface JsonRpc { id?: number; result?: { tools?: Tool[] }; error?: { code: nu
 async function listTools(env: Record<string, string>): Promise<Tool[]> {
   const child = spawn('node', ['--import', 'tsx/esm', 'src/index.ts'], {
     cwd: REPO_ROOT,
-    env: { ...process.env, SPOTIFY_CLIENT_ID: 'surface-test', ...env },
+    env: { ...process.env, SPOTIFY_CLIENT_ID: 'surface-test', SPOTIFY_MCP_TOOLSETS: 'all', ENABLE_TOOLS: '', DISABLE_TOOLS: '', SPOTIFY_SCOPES: '', ...env },
     stdio: ['pipe', 'pipe', 'pipe'],
   });
   let buffer = '';
