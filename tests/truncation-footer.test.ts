@@ -35,12 +35,22 @@ function mentionedControls(text: string): string[] {
 async function enumerateLiveBoundary(): Promise<{
   tools: ListedTool[];
   shape: TruncationBoundary['shape'];
+  topTracksResult: Awaited<ReturnType<Client['callTool']>>;
 }> {
   const server = new McpServer({ name: 'truncation-boundary-test', version: '0.0.0' });
   const boundary = installTruncationBoundary(server);
   const client = new Client({ name: 'truncation-boundary-client', version: '0.0.0' });
+  const tracks = Array.from({ length: 4 }, (_, index) => ({
+    id: `track-${index}`,
+    name: `Track ${index}`,
+    uri: `spotify:track:track-${index}`,
+    duration_ms: 1_000,
+    artists: [{ name: 'Artist' }],
+  }));
   const stub = {
-    get: async () => null,
+    get: async (path: string) => path === '/me/top/tracks'
+      ? { items: tracks, total: tracks.length, limit: 4, offset: 0 }
+      : null,
     post: async () => null,
     put: async () => null,
     delete: async () => null,
@@ -50,7 +60,7 @@ async function enumerateLiveBoundary(): Promise<{
   for (const file of (await readdir(TOOL_MODULE_DIR)).filter((name) => name.endsWith('.ts')).sort()) {
     const module = await import(join(TOOL_MODULE_DIR, file)) as Record<string, unknown>;
     for (const [name, exported] of Object.entries(module)) {
-      if (!/^register.*(?:Tools|Resources)$/.test(name) || typeof exported !== 'function') continue;
+      if (!/^register[A-Z]/.test(name) || typeof exported !== 'function') continue;
       try {
         if (name === 'registerStatsfmTools') (exported as (server: McpServer) => void)(server);
         else (exported as (server: McpServer, client: SpotifyClient) => void)(server, stub);
@@ -72,7 +82,11 @@ async function enumerateLiveBoundary(): Promise<{
   await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
   try {
     const listed = await client.listTools();
-    return { tools: listed.tools as ListedTool[], shape: boundary.shape };
+    const topTracksResult = await client.callTool({
+      name: 'get_top_tracks',
+      arguments: { max_results: 2 },
+    });
+    return { tools: listed.tools as ListedTool[], shape: boundary.shape, topTracksResult };
   } finally {
     await client.close();
     await server.close();
@@ -81,7 +95,7 @@ async function enumerateLiveBoundary(): Promise<{
 
 describe('production truncation boundary', () => {
   it('repairs every live tool footer and emits consistent metadata', async () => {
-    const { tools, shape } = await enumerateLiveBoundary();
+    const { tools, shape, topTracksResult } = await enumerateLiveBoundary();
     assert.ok(tools.length > 500, `expected the full live surface, got ${tools.length}`);
     const observedCases = new Set<string>();
 
@@ -126,6 +140,20 @@ describe('production truncation boundary', () => {
     assert.ok(signatures.some((signature) => signature.includes('offset') && signature.includes('fetch_all')), 'fixture must include offset + fetch_all tools');
     assert.ok(signatures.some((signature) => signature.split(',').includes('scan_cap')), 'fixture must include scan_cap tools');
     assert.ok(signatures.includes('none'), 'fixture must include no-continuation tools');
+    const clientText = topTracksResult.content.map((block) => 'text' in block ? block.text : '').join('\n');
+    assert.match(clientText, /2 more — raise max_results, continue with offset, raise limit/);
+    const clientMetadata = topTracksResult.structuredContent as Record<string, unknown>;
+    assert.equal(clientMetadata.returned, 2);
+    assert.equal(clientMetadata.total, 4);
+    assert.equal(clientMetadata.remaining, 2);
+    assert.equal(clientMetadata.next_offset, 2);
+  });
+
+  it('preserves the legacy direct truncateItems footer contract', () => {
+    assert.equal(
+      truncateItems([1, 2, 3], 1).footer,
+      '2 more — pass offset or fetch_all',
+    );
   });
 
   it('caps raw JSON items and keeps its text and structured payload synchronized', async () => {
@@ -167,7 +195,7 @@ describe('production truncation boundary', () => {
       content: Array<{ type: string; text: string }>;
       structuredContent: Record<string, unknown>;
     };
-    assert.match(shaped.content[0]!.text, /2 more — raise limit/);
+    assert.match(shaped.content[0]!.text, /2 more — raise limit\)/);
     assert.doesNotMatch(shaped.content[0]!.text, /0 more|max_results|offset|fetch_all|scan_cap/);
     assert.equal(shaped.structuredContent.returned, 2);
     assert.equal(shaped.structuredContent.total, 4);

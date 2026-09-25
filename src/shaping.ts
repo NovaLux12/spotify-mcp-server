@@ -82,13 +82,11 @@ export interface TruncationResult<T> {
   footer: string | null;
 }
 
-const LEGACY_TRUNCATION_CAPABILITIES: Required<TruncationCapabilities> = {
-  maxResults: true,
-  offset: true,
-  fetchAll: true,
-  scanCap: false,
-  limit: false,
-};
+function directFooterAdvice(capabilities: TruncationCapabilities | undefined): string {
+  return capabilities === undefined
+    ? 'pass offset or fetch_all'
+    : truncationAdvice(capabilities);
+}
 
 /** Continuation advice containing only controls present in the tool schema. */
 export function truncationAdvice(capabilities: TruncationCapabilities): string {
@@ -112,7 +110,7 @@ export function truncationAdvice(capabilities: TruncationCapabilities): string {
 export function truncateItems<T>(
   items: readonly T[],
   maxResults: number,
-  capabilities: TruncationCapabilities = LEGACY_TRUNCATION_CAPABILITIES,
+  capabilities?: TruncationCapabilities,
 ): TruncationResult<T> {
   const cap = Number.isFinite(maxResults) ? Math.max(1, Math.floor(maxResults)) : DEFAULT_MAX_ITEMS;
   if (items.length <= cap) {
@@ -132,7 +130,7 @@ export function truncateItems<T>(
     returned: cap,
     truncated: true,
     remaining,
-    footer: `${remaining} more — ${truncationAdvice(capabilities)}`,
+    footer: `${remaining} more — ${directFooterAdvice(capabilities)}`,
   };
 }
 
@@ -319,7 +317,7 @@ export function installTruncationBoundary(server: object): TruncationBoundary {
     ) as { type: 'text'; text: string } | undefined;
     const text = textBlock?.text;
     const footerMatch = typeof text === 'string'
-      ? /\b(\d+)\s+more\s+[—-]\s+[^)\n]+\)?/i.exec(text)
+      ? /\b(\d+)\s+more\s+[—-]\s+([^)\n]+)(\))?/i.exec(text)
       : undefined;
     const markedTruncated = result.structuredContent != null
       && typeof result.structuredContent === 'object'
@@ -380,7 +378,7 @@ export function installTruncationBoundary(server: object): TruncationBoundary {
     }
     let nextText = text;
     if (footerMatch && typeof text === 'string') {
-      nextText = text.replace(footerMatch[0], `${metadata.remaining} more — ${advice.get(toolName)}`);
+      nextText = text.replace(footerMatch[0], `${metadata.remaining} more — ${advice.get(toolName)}${footerMatch[3] ?? ''}`);
     } else if (typeof text === 'string' && !parsedJson && !mentionsAcceptedControl(text, capabilities)) {
       nextText = `${text}\n(${metadata.remaining} more — ${advice.get(toolName)})`;
     }
