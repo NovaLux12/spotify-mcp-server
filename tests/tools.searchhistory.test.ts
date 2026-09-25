@@ -144,6 +144,57 @@ describe('searchhistory', () => {
     assert.equal(replay.params?.limit, '7');
   });
 
+  it('search_rerun clamps a pre-Feb-2026 stored limit and replays the recorded market (#793)', async () => {
+    // A sidecar written before the February-2026 /search cap — or imported from
+    // another install — can carry limit: 50. The live tool's schema rejects
+    // that value, so a verbatim replay is the only way it reaches the wire,
+    // and it is a 400 the caller cannot fix from its own arguments.
+    await appendSearchHistory({
+      id: 'legacy',
+      query: 'queen',
+      types: ['track'],
+      timestamp: new Date().toISOString(),
+      top_result_ids: ['spotify:track:t1'],
+      limit: 50,
+      market: 'GB',
+    });
+    // Stand in for the live endpoint: it rejects anything above the cap, so a
+    // test that only asserted the params would still pass on a throwing call.
+    const h = harness((path, params) => {
+      if (path === '/search' && Number(params?.limit) > 10) throw new Error('400 Invalid limit');
+      return searchResponse();
+    });
+
+    const out = await h.invoke('search_rerun', { history_id: 'legacy' });
+    assert.equal(out.structuredContent?.ok, true);
+    const call = h.gets.find((g) => g.path === '/search');
+    assert.ok(call, 'the rerun issues a /search');
+    assert.equal(call!.params?.limit, '10', 'replayed limit is clamped to the Feb-2026 cap');
+    assert.equal(call!.params?.q, 'queen');
+    assert.equal(call!.params?.type, 'track');
+    assert.equal(call!.params?.market, 'GB', 'the recorded market reproduces the original scope');
+    assert.equal(out.structuredContent?.limit_used, 10);
+    assert.equal(out.structuredContent?.limit_clamped_from, 50, 'the payload shows what was dropped');
+    assert.equal(out.structuredContent?.market_used, 'GB');
+  });
+
+  it('search_rerun reports no clamp when the stored limit is already in range (#793)', async () => {
+    await appendSearchHistory({
+      id: 'inrange',
+      query: 'bowie',
+      types: ['track'],
+      timestamp: new Date().toISOString(),
+      top_result_ids: ['spotify:track:t1'],
+      limit: 7,
+    });
+    const h = harness();
+    const out = await h.invoke('search_rerun', { history_id: 'inrange' });
+    assert.equal(h.gets.find((g) => g.path === '/search')?.params?.limit, '7', 'in-range limit passes through untouched');
+    assert.equal(out.structuredContent?.limit_used, 7);
+    assert.equal(out.structuredContent?.limit_clamped_from, undefined, 'no clamp is claimed when none happened');
+    assert.equal(out.structuredContent?.market_used, null, 'an entry without a market reports none');
+  });
+
   it('search_history filters by query substring', async () => {
     const h = harness();
     await h.invoke('search', { query: 'radiohead', types: ['track'] });

@@ -6,6 +6,10 @@
  * `search`, `search_deep` and the typed-search factory — it is opt-out
  * (SPOTIFY_MCP_SEARCH_HISTORY=0) and never throws, so a sidecar that cannot be
  * written cannot fail a search.
+ *
+ * Replay (#793): `search_rerun` clamps the stored limit into the live range
+ * before it reaches the wire, so a sidecar written under the older, higher
+ * cap still replays — and reports the limit actually sent.
  */
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -15,6 +19,7 @@ import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import type { SpotifyClient } from '../client.js';
 import { ResponseFormat } from '../shaping.js';
+import { SPOTIFY_SEARCH_MAX_LIMIT } from './search.js';
 
 type ToolResult = { content: Array<{ type: 'text'; text: string }>; structuredContent?: Record<string, unknown> };
 function textResult(text: string, s?: Record<string, unknown>): ToolResult { return { content: [{ type: 'text', text }], ...(s ? { structuredContent: s } : {}) }; }
@@ -165,7 +170,7 @@ export function registerSearchHistoryTools(server: McpServer, client: SpotifyCli
     });
 
   server.tool('search_rerun',
-    'Re-execute a stored search by history id via GET /search.',
+    'Re-execute a stored search, clamping stale limits.',
     {
       history_id: z.string().min(1).describe('History entry id'),
       response_format: ResponseFormat,
@@ -175,10 +180,27 @@ export function registerSearchHistoryTools(server: McpServer, client: SpotifyCli
       const entry = entries.find((e) => e.id === args.history_id);
       if (!entry) return textResult(`No history entry "${args.history_id}".`, { ok: false, available: entries.map((e) => e.id) });
       const types = (entry.types ?? ['track']) as string[];
-      const params: Record<string, string> = { q: entry.query, type: types.join(','), limit: String(entry.limit ?? 5) };
+      // #793: a sidecar written before the February-2026 cap, or imported from
+      // another install, can carry a limit /search will now reject with an
+      // opaque 400. The caller cannot fix it — the value comes from disk, not
+      // from its own arguments — so clamp on read and report what was sent.
+      const storedLimit = typeof entry.limit === 'number' && Number.isFinite(entry.limit)
+        ? Math.round(entry.limit)
+        : 5;
+      const limit = Math.min(SPOTIFY_SEARCH_MAX_LIMIT, Math.max(1, storedLimit));
+      const params: Record<string, string> = { q: entry.query, type: types.join(','), limit: String(limit) };
       if (entry.market) params.market = entry.market;
       if (entry.offset) params.offset = String(entry.offset);
       const res = await client.get<unknown>('/search', params);
-      return emit(args.response_format as string, { ok: true, history_id: entry.id, query: entry.query, types, result: res }, `Re-ran search "${entry.query}" (${types.join(',')}) — see structuredContent.result.`);
+      return emit(args.response_format as string, {
+        ok: true,
+        history_id: entry.id,
+        query: entry.query,
+        types,
+        limit_used: limit,
+        market_used: entry.market ?? null,
+        ...(limit !== storedLimit ? { limit_clamped_from: storedLimit } : {}),
+        result: res,
+      }, `Re-ran search "${entry.query}" (${types.join(',')}, limit ${limit}${entry.market ? `, market ${entry.market}` : ''}) — see structuredContent.result.`);
     });
 }
