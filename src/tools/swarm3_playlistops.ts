@@ -1616,16 +1616,18 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
       'runtimes: computes surplus moves from the larger to the smaller. dry_run defaults to ' +
       'TRUE so it returns the move PLAN read-only. Quota: 🟡 N GETs + moves when committing.',
     {
-      playlist_ids: z.array(z.string()).min(2).max(10).describe('Playlists to balance (2–10)'),
+      ...PlaylistListFields,
+      ...legacyPlaylistListFields(['playlist_ids']),
       balance_by: z.enum(['count', 'runtime']).optional().describe('Balance metric: track count or total runtime. Default count'),
       dry_run: DryRunDefault,
       response_format: ResponseFormatArgName,
       max_results: MaxResultsArgName,
     },
     async (args) => {
+      const input = resolvePlaylistInput(args, { kind: 'list', aliases: ['playlist_ids'] });
       const rf = args.response_format;
       const metric = args.balance_by ?? 'count';
-      const loaded = await Promise.all(args.playlist_ids.map((ref) => loadPlaylistFull(client, ref)));
+      const loaded = await Promise.all(input.values.map((ref) => loadPlaylistFull(client, ref)));
       const loadedById = new Map(loaded.map((p) => [p.id, p.items]));
       const buckets = loaded.map((p) => {
         const rows = trackRows(p.items).filter((r) => r.uri && (metric === 'count' || r.durationMs != null));
@@ -1669,12 +1671,12 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
       }
       const moveView = truncateItems(moves, resolveMaxResults(args.max_results, getConfig().maxItems));
       if (isDry(args)) {
-        return shape(rf, describeDryRun('balance', `${buckets.length} playlists by ${metric}`, [
+        return shape(rf, withPlaylistInputNote(describeDryRun('balance', `${buckets.length} playlists by ${metric}`, [
           `Total ${metric}: ${metric === 'count' ? String(total) : msToClock(total)}; target per playlist: ${metric === 'count' ? String(target) : msToClock(target)}.`,
           `${moves.length} move(s) planned:`,
           ...moveView.items.map((m, i) => `  ${i + 1}. "${m.name}" ${m.from_name} → ${m.to_name}`),
           moveView.footer ? `(${moveView.footer})` : '',
-        ]), { ok: true, dry_run: true, balance_by: metric, total, target, moves });
+        ]), input), withPlaylistInputMetadata({ ok: true, dry_run: true, balance_by: metric, total, target, moves }, input));
       }
       // BACKUP-FIRST per donating playlist, then delete positions DESCENDING so each
       // chunk's positions stay valid, then append to receivers.
@@ -1709,7 +1711,7 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
           requests += add.requests;
         }
       }
-      return shape(rf, `Balanced ${buckets.length} playlists by ${metric}: ${moves.length} move(s), ${requests} request(s).\nPre-write backups:\n${backupFiles.map((f) => `  - ${f}`).join('\n')}`, {
+      return shape(rf, withPlaylistInputNote(`Balanced ${buckets.length} playlists by ${metric}: ${moves.length} move(s), ${requests} request(s).\nPre-write backups:\n${backupFiles.map((f) => `  - ${f}`).join('\n')}`, input), withPlaylistInputMetadata({
         ok: true,
         dry_run: false,
         balance_by: metric,
@@ -1718,7 +1720,7 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
         moves,
         requests,
         backup_files: backupFiles,
-      });
+      }, input));
     },
   );
 
