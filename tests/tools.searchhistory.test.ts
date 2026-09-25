@@ -239,6 +239,37 @@ describe('searchhistory', () => {
     assert.equal(nulled.structuredContent?.limit_clamped_from, null, 'a stored null is a discarded limit, reported as such');
   });
 
+  it('search_rerun does not read a blank or boolean limit as zero (#793)', async () => {
+    // `Number('')`, `Number('  ')` and `Number(false)` are all 0, so a plain
+    // coercion treats them as a recorded 0 — which clamps the replay *up* to a
+    // single result and reports `limit_clamped_from: 0`, a number the sidecar
+    // never carried. A value that holds no number is a discarded value.
+    await writeSidecar([
+      sidecarEntry('blank', { limit: '' }),
+      sidecarEntry('padded', { limit: '  ' }),
+      sidecarEntry('flagged', { limit: false }),
+    ]);
+    const h = harness();
+
+    for (const id of ['blank', 'padded', 'flagged']) {
+      const out = await h.invoke('search_rerun', { history_id: id });
+      assert.equal(h.gets.filter((g) => g.path === '/search').at(-1)?.params?.limit, '5', `${id}: a value that is not a number falls back to the default`);
+      assert.equal(out.structuredContent?.limit_used, 5, `${id}: no fabricated one-result replay`);
+      assert.equal(out.structuredContent?.limit_clamped_from, id === 'blank' ? '' : id === 'padded' ? '  ' : false, `${id}: the raw stored value is what gets reported`);
+    }
+  });
+
+  it('search_rerun clamps a stored zero up to the floor and says so (#793)', async () => {
+    // Unlike a blank, a 0 is a number the sidecar really carried, so it is a
+    // real clamp against a real value rather than a discarded one.
+    await writeSidecar([sidecarEntry('zero', { limit: 0 })]);
+    const h = harness();
+    const out = await h.invoke('search_rerun', { history_id: 'zero' });
+    assert.equal(h.gets.find((g) => g.path === '/search')?.params?.limit, '1', 'zero clamps up to the 1-result floor');
+    assert.equal(out.structuredContent?.limit_used, 1);
+    assert.equal(out.structuredContent?.limit_clamped_from, 0);
+  });
+
   it('search_rerun claims no clamp when the sidecar records no limit at all (#793)', async () => {
     await writeSidecar([sidecarEntry('bare', {})]);
     const h = harness();

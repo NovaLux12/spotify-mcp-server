@@ -151,6 +151,20 @@ export async function appendSearchHistory(entry: SearchHistoryEntry, env: NodeJS
   await saveSearchHistory(entries, env);
 }
 
+/**
+ * The numeric limit a sidecar entry records, or NaN when it records nothing
+ * usable. The sidecar is untrusted input: `"50"` in an imported file is a
+ * limit, but `""`, `null`, `false` and `{}` only *look* coercible — `Number('')`
+ * and `Number(false)` are both 0, and reading those as a recorded 0 would
+ * clamp a replay up to one result and report `limit_clamped_from: 0`, a number
+ * the file never carried.
+ */
+function replayableLimit(stored: unknown): number {
+  if (typeof stored === 'number') return Number.isFinite(stored) ? Math.round(stored) : Number.NaN;
+  if (typeof stored === 'string' && stored.trim() !== '') return Math.round(Number(stored));
+  return Number.NaN;
+}
+
 export function registerSearchHistoryTools(server: McpServer, client: SpotifyClient): void {
   server.tool('search_history',
     'Recall past searches (local sidecar, 90-day expiry). Optionally filter by query substring. Recorded by search/search_deep/search_* tools; set SPOTIFY_MCP_SEARCH_HISTORY=0 to stop recording.',
@@ -191,18 +205,16 @@ export function registerSearchHistoryTools(server: McpServer, client: SpotifyCli
       // opaque 400. The caller cannot fix it — the value comes from disk, not
       // from its own arguments — so clamp on read and report what was sent.
       // An imported or hand-written sidecar is not obliged to hold a *number*
-      // here, so coerce whatever is there; a value that will not coerce is
-      // discarded, and that discard is itself an adjustment the payload has to
-      // name rather than pass off as a five-result replay the caller chose.
-      const asNumber = entry.limit === undefined || entry.limit === null
-        ? Number.NaN
-        : Math.round(Number(entry.limit));
+      // here. Coerce whatever is there; a value that carries no usable number
+      // is discarded, and that discard is itself an adjustment the payload has
+      // to name rather than pass off as a five-result replay the caller chose.
+      const asNumber = replayableLimit(entry.limit);
       const usable = Number.isFinite(asNumber);
       const limit = Math.min(SPOTIFY_SEARCH_MAX_LIMIT, Math.max(1, usable ? asNumber : DEFAULT_REPLAY_LIMIT));
       // No recorded limit at all is not a clamp: the default was never an
       // adjustment of anything the caller can see. Anything else that differs
       // from what reached the wire is reported, including a value dropped for
-      // not being a number.
+      // carrying no usable number.
       const adjusted = entry.limit !== undefined && (!usable || limit !== asNumber);
       const params: Record<string, string> = { q: entry.query, type: types.join(','), limit: String(limit) };
       if (entry.market) params.market = entry.market;
