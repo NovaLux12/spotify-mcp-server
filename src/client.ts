@@ -383,14 +383,26 @@ export class SpotifyClient {
       }
 
       if (grantError === 'invalid_grant') {
-        // Refresh token revoked/expired — only re-auth fixes this.
-        throw new SpotifyApiError(res.status, 'Token refresh failed — re-run "spotify-mcp auth"');
+        // Refresh token revoked/expired — only re-auth fixes this. Thrown as
+        // 401, not the token endpoint's own 400: the request this refresh was
+        // serving carried no bad arguments, and publicFailure maps 400 to
+        // "invalid arguments; pass values that match the tool schema" (#1007).
+        throw new SpotifyApiError(401, 'Token refresh failed — re-run "spotify-mcp auth"');
       }
 
       // Transient outage (5xx) with a still-valid access token: ride it out.
       if (res.status >= 500 && Date.now() < tokens.expires_at) return;
 
-      throw new SpotifyApiError(res.status, 'Spotify token service temporarily unavailable');
+      // Any other token-service failure. 503 rather than the endpoint's own
+      // status, for the same reason as above: the failing request is a call to
+      // accounts.spotify.com, not to the tool's endpoint, so its status says
+      // nothing about the caller's arguments (#1007). The upstream status is
+      // kept in the message so the cause is still visible in diagnostics.
+      throw new SpotifyApiError(
+        503,
+        `Spotify token service temporarily unavailable (token endpoint returned ${res.status})`,
+      );
+
     }
 
     const data = await res.json() as {
@@ -516,7 +528,19 @@ export class SpotifyClient {
 
     // Token expired mid-flight — refresh and retry once
     if (res.status === 401 && retryCount === 0) {
-      await this.doRefreshTokens();
+      try {
+        await this.doRefreshTokens();
+      } catch (err) {
+        // The refresh failure must not replace the 401 that describes what is
+        // actually wrong. A 400 from accounts.spotify.com used to be thrown
+        // in place of this 401 and classified as a validation error, telling
+        // a user with an expired token to fix the arguments of a call that
+        // took none (#1007). The refresh reason is kept in the message for
+        // diagnostics; the status stays 401 so the failure is reported as
+        // "could not authenticate; run spotify-mcp auth".
+        const reason = err instanceof Error ? err.message : String(err);
+        throw new SpotifyApiError(401, `Spotify rejected the access token and refreshing it failed: ${reason}`);
+      }
       return this.rawRequest(method, url, body, retryCount + 1, contentType);
     }
 
