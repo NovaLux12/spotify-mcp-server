@@ -48,6 +48,8 @@ import type {
   SpotifyTrack,
 } from '../types/spotify.js';
 import type { LibraryBackup } from './backup.js';
+import { diffTrackLists } from './swarm3_snapshots.js';
+import type { SnapTrackRow } from './swarm3_snapshots.js';
 
 type TextContent = { type: 'text'; text: string };
 type ToolResult = { content: TextContent[]; structuredContent?: Record<string, unknown> };
@@ -1439,18 +1441,19 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
       const snapB = await readSnapshot(args.backup_file_b);
       const rowA = findSnapshotPlaylist(snapA, args.backup_file_a, args.playlist_name);
       const rowB = findSnapshotPlaylist(snapB, args.backup_file_b, args.playlist_name);
-      const urisA = rowA.items.map((it) => it.uri);
-      const urisB = rowB.items.map((it) => it.uri);
-      const setA = new Set(urisA);
-      const setB = new Set(urisB);
-      const nameOf = (snap: LibraryBackup, uri: string): string =>
-        snap.playlists
-          .flatMap((p) => p.items)
-          .find((it) => it.uri === uri)?.name ?? uri;
-      const added = urisB.filter((u) => !setA.has(u));
-      const removed = urisA.filter((u) => !setB.has(u));
-      const keptA = urisA.filter((u) => setB.has(u));
-      const keptB = urisB.filter((u) => setA.has(u));
+      // Multiset semantics, not set membership: gaining or losing one copy of a
+      // duplicated URI is a real changelog entry, so counts are compared per URI.
+      const rowsA: SnapTrackRow[] = rowA.items.map((it) => ({ uri: it.uri, name: it.name, added_at: null }));
+      const rowsB: SnapTrackRow[] = rowB.items.map((it) => ({ uri: it.uri, name: it.name, added_at: null }));
+      const diff = diffTrackLists(rowsA, rowsB);
+      const added = diff.added.map((r) => r.uri);
+      const removed = diff.removed.map((r) => r.uri);
+      // Kept = the occurrences both sides share; the surplus copies are exactly
+      // the added/removed rows the diff already reported.
+      const removedRows = new Set(diff.removed);
+      const addedRows = new Set(diff.added);
+      const keptA = rowsA.filter((r) => !removedRows.has(r)).map((r) => r.uri);
+      const keptB = rowsB.filter((r) => !addedRows.has(r)).map((r) => r.uri);
       const reordered = keptA.join('|') !== keptB.join('|');
       const max = resolveMaxResults(args.max_results, getConfig().maxItems);
       const asRows = (uris: readonly string[], names: Map<string, string>): OpRow[] =>

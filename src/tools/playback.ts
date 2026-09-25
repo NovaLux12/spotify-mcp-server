@@ -105,6 +105,89 @@ function mutationResult(
   return { content: [{ type: 'text', text }] };
 }
 
+interface HandoffStep {
+  method: 'PUT';
+  path: string;
+  body?: Record<string, unknown>;
+  /** Human rendering of this call, shown verbatim in the dry run. */
+  text: string;
+}
+
+interface HandoffPlan {
+  /** The wire calls, in order. Dry run renders these; the commit replays them. */
+  steps: HandoffStep[];
+  willResume: boolean;
+  progress: number | null;
+  wasPlaying: boolean;
+}
+
+/**
+ * The calls a handoff makes, derived from the captured state and the arguments
+ * alone (#841). The dry run renders exactly this list and the execute path
+ * replays it verbatim, so a plan can never promise a resume the commit does
+ * not perform. The resume is gated on the session having been PLAYING — a
+ * paused session is handed over still paused, unless the caller asks for it
+ * with `play: true`.
+ */
+function planHandoff(
+  args: { device_id: string; volume?: number; play?: boolean },
+  state:
+    | {
+        is_playing?: boolean;
+        progress_ms?: number | null;
+        item?: { uri?: string } | null;
+        context?: { uri?: string | null } | null;
+      }
+    | null
+    | undefined,
+): HandoffPlan {
+  const progress = typeof state?.progress_ms === 'number' ? state.progress_ms : null;
+  const wasPlaying = state?.is_playing === true;
+  const itemUri = state?.item?.uri;
+  const contextUri = state?.context?.uri ?? undefined;
+  const trackLabel = itemUri ?? 'nothing playing';
+
+  // Transfer first, without forcing play: forcing it restarts the track.
+  const steps: HandoffStep[] = [
+    {
+      method: 'PUT',
+      path: '/me/player',
+      body: { device_ids: [args.device_id] },
+      text: `Transfer playback to device ${args.device_id}${wasPlaying ? '' : ' (paused)'}`,
+    },
+  ];
+
+  // One truthiness test, shared by the flag and the step it gates: an empty
+  // uri would otherwise advertise `will_resume: true` with no play step to
+  // back it up — the same plan/payload divergence this plan exists to remove.
+  const willResume =
+    Boolean(itemUri) && progress !== null && progress > 0 && (wasPlaying || args.play === true);
+  if (willResume && itemUri && progress !== null) {
+    steps.push({
+      method: 'PUT',
+      path: `/me/player/play?device_id=${encodeURIComponent(args.device_id)}`,
+      body: {
+        position_ms: progress,
+        ...(contextUri ? { context_uri: contextUri, offset: { uri: itemUri } } : { uris: [itemUri] }),
+      },
+      text: `Resume at ${formatDuration(progress)} into ${trackLabel}`,
+    });
+  }
+
+  if (args.volume !== undefined) {
+    steps.push({
+      method: 'PUT',
+      path: `/me/player/volume?${new URLSearchParams({
+        volume_percent: String(args.volume),
+        device_id: args.device_id,
+      })}`,
+      text: `Set target volume to ${args.volume}`,
+    });
+  }
+
+  return { steps, willResume, progress, wasPlaying };
+}
+
 export function registerPlaybackTools(server: McpServer, client: SpotifyClient): void {
   // get_now_playing
   server.tool(
@@ -790,7 +873,7 @@ export function registerPlaybackTools(server: McpServer, client: SpotifyClient):
   // restarts the track at 0:00 and ignores the new device's volume scale.
   server.tool(
     'handoff',
-    'Move playback to another device preserving the current track and play position (and optionally set the target volume) — a lossless "move to the kitchen speaker"',
+    'Move playback to another device preserving the current track and play position (and optionally set the target volume) — a lossless "move to the kitchen speaker". A paused session stays paused on arrival unless play: true is passed to resume it at the captured position.',
     {
       device_id: z.string().describe('Target device ID to hand playback off to'),
       volume: z
@@ -800,6 +883,10 @@ export function registerPlaybackTools(server: McpServer, client: SpotifyClient):
         .max(100)
         .optional()
         .describe('Volume to set on the target device after transfer, 0–100'),
+      play: z
+        .boolean()
+        .optional()
+        .describe('Resume playback on the target even if the session is currently paused (default: preserve the current play state)'),
       response_format: ResponseFormat,
       dry_run: DryRun,
     },
@@ -811,44 +898,29 @@ export function registerPlaybackTools(server: McpServer, client: SpotifyClient):
         context?: { uri?: string | null } | null;
       }>('/me/player');
 
-      const progress = typeof state?.progress_ms === 'number' ? state.progress_ms : null;
-      const wasPlaying = state?.is_playing === true;
-      const itemUri = state?.item?.uri;
-      const contextUri = state?.context?.uri ?? undefined;
-      const trackLabel = itemUri ?? 'nothing playing';
-
-      const steps: string[] = [
-        `Transfer playback to device ${args.device_id}${wasPlaying ? '' : ' (paused)'}`,
-      ];
-      if (progress !== null && progress > 0) {
-        steps.push(`Resume at ${formatDuration(progress)} into ${trackLabel}`);
-      }
-      if (args.volume !== undefined) {
-        steps.push(`Set target volume to ${args.volume}`);
-      }
+      // Preview and commit read the SAME plan (#841): the dry run renders it,
+      // the execute path replays it, so the two cannot disagree.
+      const plan = planHandoff(args, state);
 
       if (args.dry_run) {
         return {
-          content: [{ type: 'text', text: describeDryRun('handoff', args.device_id, steps) }],
-          structuredContent: { ok: true, dry_run: true, steps },
+          content: [
+            { type: 'text', text: describeDryRun('handoff', args.device_id, plan.steps.map((s) => s.text)) },
+          ],
+          structuredContent: {
+            ok: true,
+            dry_run: true,
+            device_id: args.device_id,
+            will_resume: plan.willResume,
+            was_playing: plan.wasPlaying,
+            volume: args.volume ?? null,
+            plan: plan.steps,
+          },
         };
       }
 
-      // 1) Transfer without forcing play (avoids restarting the track).
-      await client.put('/me/player', { device_ids: [args.device_id] });
-      // 2) Resume at the captured position if something was mid-flight.
-      if (itemUri && progress !== null && progress > 0 && wasPlaying) {
-        const playBody: Record<string, unknown> = {
-          position_ms: progress,
-          ...(contextUri ? { context_uri: contextUri, offset: { uri: itemUri } } : { uris: [itemUri] }),
-        };
-        await client.put(`/me/player/play?device_id=${encodeURIComponent(args.device_id)}`, playBody);
-      }
-      // 3) Optional volume normalization on the target.
-      if (args.volume !== undefined) {
-        await client.put(
-          `/me/player/volume?${new URLSearchParams({ volume_percent: String(args.volume), device_id: args.device_id })}`,
-        );
+      for (const step of plan.steps) {
+        await client.put(step.path, step.body);
       }
 
       return mutationResult(
@@ -856,12 +928,12 @@ export function registerPlaybackTools(server: McpServer, client: SpotifyClient):
         {
           action: 'handoff',
           device_id: args.device_id,
-          resumed_at_ms: progress,
-          was_playing: wasPlaying,
+          resumed_at_ms: plan.willResume ? plan.progress : null,
+          was_playing: plan.wasPlaying,
           volume: args.volume,
         },
         `Handed off to device ${args.device_id}` +
-          (progress !== null && progress > 0 ? ` at ${formatDuration(progress)}` : '') +
+          (plan.willResume && plan.progress !== null ? ` at ${formatDuration(plan.progress)}` : '') +
           (args.volume !== undefined ? ` (volume ${args.volume})` : '') +
           '.',
       );
