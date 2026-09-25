@@ -166,14 +166,17 @@ and one guarantee tightened:
    only its own aliases, so send the one its schema declares rather than the
    whole list below — SPEC.md's table maps every tool to its exact aliases:
 
-> | family | canonical | accepted aliases (per tool, one pair or one list) |
-> |---|---|---|
-> | A/B pair | `playlist_a`, `playlist_b` | `a`/`b` *or* `playlist_id_a`/`playlist_id_b` *or* `playlist_a_id`/`playlist_b_id` — pick the one the tool declares |
-> | ordered list | `playlists` | `playlist_ids` *or* `source_playlist_ids` *or* `sources` |
-> | subtraction | `base_playlist_id` + `playlists` | the positional form `playlists: [base, ...sources]` |
->
-> Sending more than one of these is a `validation` error naming the conflict,
-> and a name the tool does not declare is an `unknown_param` error.
+   These are **per-tool** aliases, not a bundle — each tool declares exactly one
+   pair or one list, and the per-tool table in SPEC.md is the contract:
+
+   | family | canonical | the alias that tool declares |
+   |---|---|---|
+   | A/B pair | `playlist_a`, `playlist_b` | `a`/`b`, or `playlist_id_a`/`playlist_id_b`, or `playlist_a_id`/`playlist_b_id` — one of them, per tool |
+   | ordered list | `playlists` | `playlist_ids`, or `source_playlist_ids`, or `sources` — one of them, per tool |
+   | subtraction | `base_playlist_id` + `playlists` | the positional form `playlists: [base, ...sources]` |
+
+   Sending several at once is a `validation` error naming the conflict; a name
+   the tool does not declare is an `unknown_param` error.
 3. **Numeric caps have canonical names.** `max_results` caps what is returned;
    `limit` and `scan_cap` cap how much of each source is read.
 4. **Unknown arguments are rejected** with a typed `unknown_param` error rather
