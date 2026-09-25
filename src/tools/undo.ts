@@ -27,7 +27,7 @@ import {
   getAllReceipts,
   type Receipt,
 } from '../receipts.js';
-import { DryRun, ResponseFormat } from '../shaping.js';
+import { DryRun, ResponseFormat, LIBRARY_WRITE_CHUNK } from '../shaping.js';
 
 /**
  * Undo is opt-OUT of preview (#627): the schema itself advertises the safe
@@ -44,9 +44,9 @@ function textResult(text: string, s?: Record<string, unknown>): ToolResult {
   return { content: [{ type: 'text', text }], ...(s ? { structuredContent: s } : {}) };
 }
 
-/** Spotify write caps: 100 items per playlist request, 40 per unified-library request. */
+/** Spotify write caps: 100 items per playlist request; `/me/library` uses the
+ * canonical `LIBRARY_WRITE_CHUNK` (40) from shaping.ts. */
 const PLAYLIST_ITEMS_CHUNK = 100;
-const LIBRARY_CHUNK = 40;
 
 function reversibleKind(kind: string): boolean {
   return kind === 'playlist_items' || kind === 'library';
@@ -66,6 +66,31 @@ function undoTarget(receipt: Receipt): string {
 }
 
 /**
+ * The exact playlist rows an add created, as `{uri, position}` pairs (#625).
+ *
+ * `DELETE /playlists/{id}/items` with a bare `{uri}` entry removes EVERY
+ * occurrence of that URI, so undoing an add that duplicated an existing track
+ * would also delete the row that predated the mutation. The receipt records
+ * the occurrence each add created, so undo targets those rows.
+ *
+ * Returns null when the receipt does not account for every recorded URI —
+ * receipts written before #625, and adds whose rows fell outside the
+ * verification window. The caller then refuses rather than guessing.
+ */
+function targetedRemovals(
+  receipt: Receipt,
+): Array<{ uri: string; position: number }> | null {
+  if (receipt.affected === undefined || receipt.affected.length === 0) return null;
+  const recorded = new Set(receipt.affected.map((entry) => entry.uri));
+  if (receipt.uris.some((uri) => !recorded.has(uri))) return null;
+  const pairs: Array<{ uri: string; position: number }> = [];
+  for (const entry of receipt.affected) {
+    for (const position of entry.positions) pairs.push({ uri: entry.uri, position });
+  }
+  return pairs;
+}
+
+/**
  * Undo a receipt by performing the opposite of its recorded direction.
  * `receipt.direction` is absent only on receipts issued before #625; those were
  * overwhelmingly add/save receipts, so `added` is the conservative default
@@ -81,8 +106,14 @@ async function invertReceipt(
   if (!uris || uris.length === 0) {
     return textResult(`Receipt ${receipt.receipt_id} has no stored URIs — cannot undo.`, { ok: false, reason: 'no_uris' });
   }
+  // A receipt written before #625 carries no direction. Those were
+  // overwhelmingly add/save receipts, so `added` is the conservative default
+  // (undoing an add by removing is recoverable; re-adding duplicates is not) —
+  // but it is an ASSUMPTION, so it is labelled as one in every result (#625).
+  const directionAssumed = receipt.direction === undefined;
   const direction = receipt.direction ?? 'added';
   const inverse = direction === 'added' ? 'remove' : 'add';
+  const expectPresentAfter = direction === 'removed';
 
   // Preview unless the caller explicitly asked to execute (#625: undo defaults to dry-run,
   // matching restore_library_snapshot).
@@ -93,9 +124,21 @@ async function invertReceipt(
     ];
     for (const u of uris.slice(0, 10)) lines.push(`  - ${u}`);
     if (uris.length > 10) lines.push(`  (…and ${uris.length - 10} more)`);
+    if (directionAssumed) {
+      lines.push('NOTE: this receipt predates direction tracking — "added" is assumed, not recorded.');
+    }
+    if (receipt.kind === 'playlist_items' && direction === 'added') {
+      const removals = targetedRemovals(receipt);
+      lines.push(
+        removals
+          ? `Targeted at the ${removals.length} recorded row(s) the add created; other copies of these URIs are left alone.`
+          : 'REFUSED at execute time: the receipt records no row positions, and a bare-URI delete would remove every copy of each URI.',
+      );
+    }
     lines.push('Re-run with dry_run: false to execute.');
     return textResult(lines.join('\n'), {
       ok: true, dry_run: true, receipt_id: receipt.receipt_id, kind: receipt.kind,
+      ...(directionAssumed ? { direction_assumed: true as const } : {}),
       direction, would: inverse, uris,
     });
   }
@@ -120,22 +163,56 @@ async function invertReceipt(
   try {
     if (receipt.kind === 'playlist_items' && receipt.id) {
       const encId = encodeURIComponent(receipt.id);
-      for (const part of chunk(uris, PLAYLIST_ITEMS_CHUNK)) {
-        attemptedRequests++;
-        if (direction === 'added') {
+      if (direction === 'added') {
+        // Undo of an add removes exactly the rows the add created (#625) —
+        // never every copy of the URI.
+        const removals = targetedRemovals(receipt);
+        if (removals === null) {
+          return textResult(
+            `Refusing to undo ${receipt.receipt_id}: the receipt does not record which playlist rows the add created. ` +
+              `A bare-URI delete removes EVERY occurrence of each URI, which would also delete rows that existed before the add. ` +
+              `No write was made — remove the intended rows explicitly instead.`,
+            {
+              ok: false,
+              reason: 'occurrences_unrecorded',
+              receipt_id: receipt.receipt_id,
+              kind: receipt.kind,
+              id: receipt.id,
+              ...(directionAssumed ? { direction_assumed: true as const } : {}),
+            },
+          );
+        }
+        // Row indices are positions in a list that shrinks with every request,
+        // so the removals go lowest-first and each chunk is translated by the
+        // rows the previous chunks already deleted. Sending the recorded
+        // indices verbatim past the first chunk would address the wrong rows.
+        const ordered = [...removals].sort((a, b) => a.position - b.position);
+        let removedSoFar = 0;
+        for (const part of chunk(ordered, PLAYLIST_ITEMS_CHUNK)) {
+          attemptedRequests++;
           const res = await client.delete<{ snapshot_id?: string }>(`/playlists/${encId}/items`, {
-            tracks: part.map((uri) => ({ uri })),
+            uris: part.map((p) => p.uri),
+            positions: part.map((p) => p.position - removedSoFar),
           });
           snapshotId = res?.snapshot_id ?? snapshotId;
-        } else {
+          requests++;
+          removedSoFar += part.length;
+        }
+      } else {
+        // Undo of a removal re-adds; the public API appends, so the original
+        // row indices are not restored — the receipt lines say so.
+        for (const part of chunk(uris, PLAYLIST_ITEMS_CHUNK)) {
+          attemptedRequests++;
           const res = await client.post<{ snapshot_id?: string }>(`/playlists/${encId}/items`, { uris: part });
           snapshotId = res?.snapshot_id ?? snapshotId;
+          requests++;
         }
-        requests++;
       }
     } else if (receipt.kind === 'library') {
-      for (const part of chunk(uris, LIBRARY_CHUNK)) {
-        const qs = `uris=${part.join(',')}`;
+      for (const part of chunk(uris, LIBRARY_WRITE_CHUNK)) {
+        // `LIBRARY_WRITE_CHUNK` is the documented 40-uri cap; URLSearchParams
+        // keeps caller-supplied URIs from reshaping the query (#624).
+        const qs = new URLSearchParams({ uris: part.join(',') }).toString();
         attemptedRequests++;
         if (direction === 'added') await client.delete(`/me/library?${qs}`);
         else await client.put(`/me/library?${qs}`);
@@ -148,6 +225,7 @@ async function invertReceipt(
       ok: false,
       reason: 'partial_write_failure',
       direction,
+      ...(directionAssumed ? { direction_assumed: true as const } : {}),
       completed_requests: requests,
       attempted_requests: attemptedRequests,
     });
@@ -158,25 +236,59 @@ async function invertReceipt(
     // After undoing an add the URIs are absent; after undoing a removal they are present.
     newReceipt = await issueReceipt(client, {
       kind: receipt.kind, id: receipt.id, uris,
-      expectPresent: direction === 'removed',
+      expectPresent: expectPresentAfter,
     });
   } catch { /* best-effort */ }
 
-  const lines = [
-    `Undid ${receipt.receipt_id} (${receipt.kind}${receipt.id ? ` ${receipt.id}` : ''}) — ${direction} → ${inverse}, ${uris.length} URI(s) across ${requests} request(s).`,
-  ];
+  // Report the OBSERVED post-state, never an assumed one (#625). A write that
+  // did not produce the intended state is the case an agent most needs to see,
+  // and "inverted N URI(s)" hides it behind a success the user would believe.
+  const confirmed = newReceipt?.verified === true;
+  const wanted = expectPresentAfter ? 'present' : 'absent';
+  const target = `${receipt.kind}${receipt.id ? ` ${receipt.id}` : ''}`;
+  const lines: string[] = [];
+  if (confirmed) {
+    lines.push(
+      `Undid ${receipt.receipt_id} (${target}) — ${direction} → ${inverse}, ` +
+        `${uris.length} URI(s) across ${requests} request(s). ` +
+        `Confirmed by refetch: all ${uris.length} URI(s) are ${wanted}.`,
+    );
+  } else if (newReceipt) {
+    lines.push(
+      `Undo of ${receipt.receipt_id} (${target}) issued ${requests} request(s) for ${uris.length} URI(s), ` +
+        `but the post-state check did NOT confirm them ${wanted}. ` +
+        `The library/playlist may not match the state before ${receipt.receipt_id}; inspect it before retrying.`,
+    );
+  } else {
+    lines.push(
+      `Undo of ${receipt.receipt_id} (${target}) issued ${requests} request(s) for ${uris.length} URI(s), ` +
+        `but the post-state check could not run, so the result is unconfirmed. ` +
+        `Inspect the current state before retrying.`,
+    );
+  }
+  if (directionAssumed) lines.push('NOTE: direction was assumed ("added") — this receipt predates direction tracking.');
   if (snapshotId) lines.push(`Snapshot ID: ${snapshotId}`);
-  if (newReceipt) lines.push(formatReceipt(newReceipt, { expectPresent: direction === 'removed' }));
+  if (newReceipt) lines.push(formatReceipt(newReceipt, { expectPresent: expectPresentAfter }));
   return textResult(lines.join('\n'), {
-    ok: true, undone_receipt: receipt.receipt_id, direction, inverted_to: inverse,
-    requests, snapshot_id: snapshotId, receipt: newReceipt as unknown as Record<string, unknown>,
+    ok: confirmed,
+    undone_receipt: receipt.receipt_id,
+    direction,
+    ...(directionAssumed ? { direction_assumed: true as const } : {}),
+    inverted_to: inverse,
+    requests,
+    verified: confirmed,
+    expected_post_state: wanted,
+    ...(confirmed ? {} : { reason: newReceipt ? 'post_state_mismatch' : 'post_state_unverified' }),
+    ...(newReceipt && !newReceipt.verified ? { unconfirmed_uris: [...newReceipt.missing] } : {}),
+    snapshot_id: snapshotId,
+    receipt: (newReceipt ?? null) as unknown as Record<string, unknown>,
   });
 }
 
 export function registerUndoTools(server: McpServer, client: SpotifyClient): void {
   server.tool(
     'undo_mutation',
-    'Undo a specific mutation by receipt ID. Inverts the recorded direction: an add/save is undone by removing, a removal by re-adding (playlist items or library). Non-reversible kinds return not reversible. Executing needs confirmation and is refused when the client cannot prompt (SPOTIFY_MCP_CONFIRM=never bypasses).',
+    'Undo a specific mutation by receipt ID. Inverts the recorded direction: an add/save is undone by removing, a removal by re-adding (playlist items or library). A playlist add undo removes only the rows it created, refusing when no row positions are recorded. The result reflects the refetched post-state. Non-reversible kinds return not reversible. Executing needs confirmation and is refused when the client cannot prompt (SPOTIFY_MCP_CONFIRM=never bypasses).',
     {
       receipt_id: z.string().min(1).describe('Receipt ID to undo'),
       response_format: ResponseFormat,

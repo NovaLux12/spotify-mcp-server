@@ -311,3 +311,63 @@ describe('playlist_items absence direction (#133-era receipts)', () => {
     assert.equal(receipt.after, 0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// #625 — occurrence rows recorded for undo
+// ---------------------------------------------------------------------------
+
+describe('issueReceipt occurrence recording (#625)', () => {
+  it('records the added row, not the pre-existing copy of a duplicated uri', async () => {
+    // Track X was already at row 0; the add appended a second copy at row 2.
+    const client = stubClient(() =>
+      pagedItems([track('spotify:track:x'), track('spotify:track:y'), track('spotify:track:x')]),
+    );
+    const receipt = await issueReceipt(client, {
+      kind: 'playlist_items',
+      id: 'pl1',
+      uris: ['spotify:track:x'],
+    });
+    assert.deepEqual(receipt.affected, [{ uri: 'spotify:track:x', positions: [2] }]);
+  });
+
+  it('records nothing for a uri the walk never saw, so undo can refuse', async () => {
+    const client = stubClient(() => pagedItems([track('spotify:track:seen')]));
+    const receipt = await issueReceipt(client, {
+      kind: 'playlist_items',
+      id: 'pl1',
+      uris: ['spotify:track:seen', 'spotify:track:unseen'],
+    });
+    assert.deepEqual(receipt.affected, [{ uri: 'spotify:track:seen', positions: [0] }]);
+    assert.equal(
+      receipt.affected?.some((entry) => entry.uri === 'spotify:track:unseen'),
+      false,
+      'an unobserved uri must not get a guessed position',
+    );
+  });
+
+  it('records the removed positions of a targeted removal', async () => {
+    const client = stubClient(() => pagedItems([track('spotify:track:b')]));
+    const receipt = await issueReceipt(client, {
+      kind: 'playlist_items',
+      id: 'pl1',
+      uris: ['spotify:track:a'],
+      expectPresent: false,
+      targetedPositions: [
+        { uri: 'spotify:track:a', position: 3 },
+        { uri: 'spotify:track:a', position: 1 },
+      ],
+    });
+    assert.deepEqual(receipt.affected, [{ uri: 'spotify:track:a', positions: [1, 3] }]);
+  });
+
+  it('records no positions for a bare removal, whose rows reindexed', async () => {
+    const client = stubClient(() => pagedItems([]));
+    const receipt = await issueReceipt(client, {
+      kind: 'playlist_items',
+      id: 'pl1',
+      uris: ['spotify:track:a'],
+      expectPresent: false,
+    });
+    assert.equal(receipt.affected, undefined);
+  });
+});

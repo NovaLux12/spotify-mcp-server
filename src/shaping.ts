@@ -60,6 +60,13 @@ export const CHUNK_CAPS = {
   playlist_writes: 100, library_writes: 40, followed: 50,
 } as const;
 
+/**
+ * Canonical per-request cap for every `/me/library` write (#624). Spotify
+ * rejects a PUT/DELETE carrying more than 40 uris, so the restore, undo and
+ * save/remove tools all import this instead of re-hardcoding the number.
+ */
+export const LIBRARY_WRITE_CHUNK = CHUNK_CAPS.library_writes;
+
 export const sharedListFields = {
   response_format: ResponseFormat,
   max_results: MaxResults,

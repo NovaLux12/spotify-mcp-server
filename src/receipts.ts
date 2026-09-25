@@ -42,6 +42,15 @@ export interface ReceiptClient {
 
 export type ReceiptKind = 'playlist_items' | 'library' | 'playlist_meta';
 
+/**
+ * One entry per URI whose playlist occurrences a mutation touched: the
+ * zero-based row indices the mutation added or removed (#625).
+ */
+export interface ReceiptAffected {
+  uri: string;
+  positions: number[];
+}
+
 export interface Receipt {
   receipt_id: string;
   kind: ReceiptKind;
@@ -63,6 +72,15 @@ export interface Receipt {
    * original operation instead of always deleting.
    */
   direction?: 'added' | 'removed';
+  /**
+   * The exact playlist rows this mutation touched (#625), recorded from the
+   * post-mutation walk. `undo` removes these positions rather than every copy
+   * of the URI, so undoing an add cannot destroy a row that predated it.
+   * Absent when the walk could not observe the affected rows (for example a
+   * playlist larger than the verifiable window) — undo then refuses instead
+   * of guessing.
+   */
+  affected?: ReceiptAffected[];
   /** When true, playlist exceeds verifiable window — verified is false due to cap, not missing data. */
   windowExceeded?: boolean;
   /** Human reason when not verified or window exceeded. */
@@ -113,6 +131,7 @@ export async function issueReceipt(
   client: ReceiptClient,
   opts: IssueReceiptOpts,
 ): Promise<Receipt> {
+  let affected: ReceiptAffected[] | undefined;
   let missing: string[] = [];
   let after: number | undefined;
   let verified: boolean;
@@ -147,6 +166,33 @@ export async function issueReceipt(
     // Detect window exceeded: last fetched page was full and total > fetched
     if (totalReported !== undefined && totalReported > orderedUris.length && orderedUris.length >= PLAYLIST_ITEM_PAGES_CAP * PLAYLIST_ITEMS_PAGE_SIZE) {
       _windowExceeded = true;
+    }
+    // Occurrence bookkeeping (#625): record WHICH rows this mutation touched,
+    // so `undo` reverses exactly those rows instead of every copy of the URI.
+    // An add appends exactly one occurrence per uri, so the row to reverse is
+    // that uri's last occurrence; a positions-targeted removal reports the
+    // positions the caller removed. A bare removal reindexes the rows it
+    // removed, so their positions are unknowable afterwards and stay unrecorded.
+    affected = [];
+    if (opts.expectPresent !== false) {
+      for (const uri of new Set(opts.uris)) {
+        for (let i = orderedUris.length - 1; i >= 0; i--) {
+          if (orderedUris[i] === uri) {
+            affected.push({ uri, positions: [i] });
+            break;
+          }
+        }
+      }
+    } else if (isTargeted) {
+      const byUri = new Map<string, number[]>();
+      for (const p of opts.targetedPositions!) {
+        const list = byUri.get(p.uri);
+        if (list) list.push(p.position);
+        else byUri.set(p.uri, [p.position]);
+      }
+      for (const [uri, positions] of byUri) {
+        affected.push({ uri, positions: [...positions].sort((a, b) => a - b) });
+      }
     }
     const expectPresent = opts.expectPresent ?? true;
     if (expectPresent) {
@@ -284,6 +330,7 @@ export async function issueReceipt(
     missing,
     uris: [...opts.uris],
     direction: (opts.expectPresent ?? true) ? 'added' : 'removed',
+    ...(affected !== undefined && affected.length > 0 ? { affected } : {}),
     ...(_windowExceeded ? { windowExceeded: true as const, reason: _reason } : {}),
   };
   store.set(receipt.receipt_id, receipt);
