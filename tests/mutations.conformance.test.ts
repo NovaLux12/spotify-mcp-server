@@ -24,10 +24,10 @@
  * guard then enforces the newly-closed invariant.
  * - dry_run (2): pin_playlist [A6 slice], save_artist_new_releases
  *   [artistwatch unit]; follow_artists already fixed via #933/#941.
- * - response_format (17): add_to_playlist, create_playlist,
+ * - response_format (15): add_to_playlist, create_playlist,
  *   clone_playlist_cover, jump_to_chapter, playlist_collab_toggle,
- *   playlist_reverse, playlist_shuffle, playlist_subtract, playlist_trim,
- *   playlist_union, remove_duplicate_playlist_items, remove_from_playlist,
+ *   playlist_reverse, playlist_shuffle, playlist_trim,
+ *   remove_duplicate_playlist_items, remove_from_playlist,
  *   reorder_playlist_items, replace_playlist_items, split_playlist,
  *   update_playlist, upload_playlist_cover [response_format retrofit unit].
  * - SPEC.md: separate unit.
@@ -211,9 +211,7 @@ const KNOWN_MISSING_RESPONSE_FORMAT: string[] = [
   'playlist_collab_toggle',
   'playlist_reverse',
   'playlist_shuffle',
-  'playlist_subtract',
   'playlist_trim',
-  'playlist_union',
   'remove_duplicate_playlist_items',
   'remove_from_playlist',
   'reorder_playlist_items',

@@ -115,14 +115,14 @@ The table is generated from every TypeScript file directly under `src/`, `src/li
 | `src/client.ts` | Runtime module for client. (0 registered tools) | 770 |
 | `src/config.ts` | Central configuration loader for the SPOTIFY_MCP_* environment family. (0 registered tools) | 227 |
 | `src/history.ts` | Opt-in mutation history JSONL (#64). When SPOTIFY_MCP_HISTORY is truthy, (0 registered tools) | 57 |
-| `src/index.ts` | Runtime module for index. (1 registered tools) | 422 |
+| `src/index.ts` | Runtime module for index. (1 registered tools) | 578 |
 | `src/lib/statsfm-client.ts` | Minimal client for the public stats.fm API (https://api.stats.fm/api/v1). (0 registered tools) | 92 |
 | `src/receipts.ts` | Mutation receipts (#112 idea 11). (0 registered tools) | 331 |
 | `src/refs.ts` | Shared Spotify reference parser and resolver. (0 registered tools) | 218 |
 | `src/scopefilter.ts` | Scope-aware module gating (#111 item 6). (0 registered tools) | 69 |
-| `src/shaping.ts` | Shared shaping helpers for tool responses (#51/#52/#53/#57/#58): zod schema (0 registered tools) | 242 |
+| `src/shaping.ts` | Shared shaping helpers for tool responses (#51/#52/#53/#57/#58): zod schema (0 registered tools) | 259 |
 | `src/tools/analytics.ts` | Runtime module for analytics. (4 registered tools) | 427 |
-| `src/tools/annotations.ts` | MCP tool annotations (#565 / A0-002, A4-005). (0 registered tools) | 195 |
+| `src/tools/annotations.ts` | MCP tool annotations (#565 / A0-002, A4-005). (0 registered tools) | 365 |
 | `src/tools/artistwatch.ts` | Runtime module for artistwatch. (6 registered tools) | 517 |
 | `src/tools/audiobookcopilot.ts` | Audiobook chapter copilot (#112 idea 4): tools for navigating long-form (3 registered tools) | 291 |
 | `src/tools/audiobooks.ts` | Runtime module for audiobooks. (4 registered tools) | 330 |
