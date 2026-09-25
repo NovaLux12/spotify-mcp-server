@@ -295,8 +295,8 @@ describe('playlist_move_block no-op rewrite guard (#882)', () => {
     });
 
     // The block (positions 2–3) already starts at slot 3, so the computed order
-    // is byte-identical to the stored one — a PUT would only burn a write
-    // request and risk dropping unavailable rows.
+    // is identical to the stored one — a PUT would only burn a write request
+    // and risk dropping unavailable rows.
     assert.deepEqual(h.writes, []);
     const payload = result.structuredContent;
     assert.ok(payload);
@@ -306,7 +306,7 @@ describe('playlist_move_block no-op rewrite guard (#882)', () => {
     assert.equal(payload.start, 2);
     assert.equal(payload.count, 2);
     assert.equal(payload.to_position, 3);
-    assert.match(result.content[0].text, /no-op: target position 3 \(slot 3\) is inside the moved block \(2–3\)/);
+    assert.match(result.content[0].text, /no-op: the resulting order is unchanged \(target position 3 → slot 3, block 2–3\); no write was issued\./);
   });
 
   it('issues zero writes when the target is clamped into the moved block', async () => {
@@ -325,17 +325,36 @@ describe('playlist_move_block no-op rewrite guard (#882)', () => {
     assert.equal(result.structuredContent?.no_op, true);
   });
 
-  it('still writes exactly once for the first target position outside the block', async () => {
+  it('issues zero writes when the block lands immediately past itself', async () => {
     const h = harness({ source: SOURCE });
-    // Slot 4 is the first position NOT covered by a 2–3 block. The early return
-    // must not swallow it: the tool still issues the replace, which happens to
-    // reconstruct the same order (that is its existing index maths, not an
-    // early return).
+    // to_position == start + count resolves back to the original order (the
+    // documented "destination shifts down by range_length" rule puts the block
+    // straight back). The write would rewrite the same URIs, so it is skipped
+    // too — the guard keys on the resulting order, not just on the target.
     const result = await h.invoke('playlist_move_block', {
       playlist_id: 'source',
       start: 2,
       count: 2,
       to_position: 4,
+      dry_run: false,
+      response_format: 'json',
+    });
+
+    assert.deepEqual(h.writes, []);
+    const payload = result.structuredContent;
+    assert.ok(payload);
+    assert.equal(payload.no_op, true);
+    assert.equal(payload.to_position, 4);
+  });
+
+  it('writes exactly once for a move that reorders past the block', async () => {
+    const h = harness({ source: SOURCE });
+    // First item to slot 3 — a genuine reordering, so the write must happen.
+    const result = await h.invoke('playlist_move_block', {
+      playlist_id: 'source',
+      start: 1,
+      count: 1,
+      to_position: 3,
       dry_run: false,
       response_format: 'json',
     });
@@ -346,8 +365,8 @@ describe('playlist_move_block no-op rewrite guard (#882)', () => {
     assert.ok(payload);
     assert.equal(payload.no_op, undefined);
     assert.deepEqual(payload.order, [
-      'spotify:track:a',
       'spotify:track:b',
+      'spotify:track:a',
       'spotify:track:c',
       'spotify:track:d',
     ]);

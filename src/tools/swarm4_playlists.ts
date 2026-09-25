@@ -707,13 +707,25 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
       }
       const t = Math.min(Math.max(args.to_position - 1, 0), Math.max(n - 1, 0));
       const block = rows.slice(start - 1, start - 1 + count);
-      // A target inside the block itself (or clamped into it) rebuilds the exact
-      // row sequence that is already stored, so the replace would change nothing.
-      // It still costs a write request and, per a6-rewrite-unavailable-guard,
-      // can drop unavailable rows — return before touching the playlist, exactly
-      // as playlist_swap_positions does for identical positions.
-      if (t >= start - 1 && t < start - 1 + count) {
-        return shape(rf, `Move is a no-op: target position ${args.to_position} (slot ${t + 1}) is inside the moved block (${start}–${start + count - 1}); the playlist already sits in that order.`, {
+      const rest = [...rows];
+      rest.splice(start - 1, count);
+      // Three-way: a target inside the block itself keeps the block where it is,
+      // which is the no-op the order check below catches. Collapsing this to a
+      // two-way `t < start - 1 ? t : t - count` would instead reorder the block
+      // for an inside-block target.
+      const idx = t < start - 1 ? t : t >= start - 1 + count ? t - count : start - 1;
+      const moved = [...rest];
+      moved.splice(Math.min(idx, moved.length), 0, ...block);
+      const uris = moved.map((r) => r.uri);
+      // A rewrite that changes nothing must not touch the playlist at all: the
+      // replace would rebuild the exact URI sequence already stored, while still
+      // costing a write request and, per a6-rewrite-unavailable-guard, risking a
+      // silent drop of unavailable rows. Comparing the computed order with the
+      // current one — rather than testing only "target inside the block" — also
+      // catches a block that lands immediately past itself and resolves back to
+      // the same order. Mirrors playlist_swap_positions for identical positions.
+      if (uris.length === n && uris.every((uri, i) => uri === rows[i].uri)) {
+        return shape(rf, `Move is a no-op: the resulting order is unchanged (target position ${args.to_position} → slot ${t + 1}, block ${start}–${start + count - 1}); no write was issued.`, {
           ok: true,
           no_op: true,
           playlist: p.id,
@@ -725,12 +737,6 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
           dry_run: args.dry_run,
         });
       }
-      const rest = [...rows];
-      rest.splice(start - 1, count);
-      const idx = t < start - 1 ? t : t - count;
-      const moved = [...rest];
-      moved.splice(Math.min(idx, moved.length), 0, ...block);
-      const uris = moved.map((r) => r.uri);
       const max = resolveMaxResults(args.max_results, getConfig().maxItems);
       const orderBudget = budgetedArray(uris, max, 'items', args.include_full_order);
       const prose = [
