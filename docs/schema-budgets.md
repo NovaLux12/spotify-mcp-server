@@ -60,10 +60,10 @@ above either ceiling fails CI and server startup.
 | Module | Tools | Schema bytes | Baseline tools | Baseline bytes | Effective tool ceiling | Effective byte ceiling |
 |---|---:|---:|---:|---:|---:|---:|
 | search | 1 | 1,821 | 1 | 1,821 | 2 | 2,004 |
-| catalog | 31 | 25,456 | 31 | 25,456 | 32 | 28,002 |
+| catalog | 31 | 27,013 | 31 | 27,013 | 32 | 29,715 |
 | library | 16 | 14,797 | 16 | 14,797 | 17 | 16,277 |
 | playback | 16 | 12,023 | 16 | 12,023 | 17 | 13,226 |
-| following | 5 | 3,567 | 5 | 3,567 | 6 | 3,924 |
+| following | 5 | 3,921 | 5 | 3,921 | 6 | 4,314 |
 | users | 2 | 1,613 | 2 | 1,613 | 3 | 1,775 |
 | audiobooks | 4 | 3,535 | 4 | 3,535 | 5 | 3,889 |
 | audiobookcopilot | 3 | 1,870 | 3 | 1,870 | 4 | 2,057 |
@@ -78,8 +78,8 @@ above either ceiling fails CI and server startup.
 | tastecomposites | 11 | 9,101 | 11 | 9,101 | 12 | 10,012 |
 | doctor | 1 | 750 | 1 | 750 | 2 | 826 |
 | swarm3meta | 3 | 1,624 | 3 | 1,624 | 4 | 1,787 |
-| libraryanalytics | 4 | 3,132 | 4 | 3,132 | 5 | 3,446 |
-| portability | 11 | 8,808 | 11 | 8,808 | 12 | 9,689 |
+| libraryanalytics | 4 | 3,350 | 4 | 3,350 | 5 | 3,686 |
+| portability | 11 | 9,159 | 11 | 9,159 | 12 | 10,075 |
 | libraryinsights | 3 | 2,751 | 3 | 2,751 | 4 | 3,027 |
 | libraryhygiene | 1 | 681 | 1 | 681 | 2 | 750 |
 | showradar | 1 | 1,675 | 1 | 1,675 | 2 | 1,843 |
@@ -92,18 +92,18 @@ above either ceiling fails CI and server startup.
 | receipts | 1 | 315 | 1 | 315 | 2 | 347 |
 | episodemgmt | 1 | 964 | 1 | 964 | 2 | 1,061 |
 | freshness | 1 | 2,043 | 1 | 2,043 | 2 | 2,248 |
-| searchdive | 1 | 1,326 | 1 | 1,326 | 2 | 1,459 |
+| searchdive | 1 | 1,561 | 1 | 1,561 | 2 | 1,718 |
 | searchhistory | 2 | 1,004 | 2 | 1,004 | 3 | 1,105 |
 | browse | 3 | 2,665 | 3 | 2,665 | 4 | 2,932 |
 | artistwatch | 6 | 5,567 | 6 | 5,567 | 7 | 6,124 |
 | queueops | 3 | 3,449 | 3 | 3,449 | 4 | 3,794 |
-| playbackext | 13 | 7,195 | 13 | 7,195 | 14 | 7,915 |
+| playbackext | 13 | 7,857 | 13 | 7,857 | 14 | 8,643 |
 | playbackintel | 15 | 11,663 | 15 | 11,663 | 16 | 12,830 |
 | scenes | 7 | 4,456 | 7 | 4,456 | 8 | 4,902 |
 | playlisthealth | 8 | 5,285 | 8 | 5,285 | 9 | 5,814 |
 | playlistdna | 1 | 1,310 | 1 | 1,310 | 2 | 1,442 |
-| export | 1 | 1,088 | 1 | 1,088 | 2 | 1,197 |
-| import | 1 | 1,147 | 1 | 1,147 | 2 | 1,262 |
+| export | 1 | 1,363 | 1 | 1,363 | 2 | 1,500 |
+| import | 1 | 1,211 | 1 | 1,211 | 2 | 1,333 |
 | smart | 1 | 2,182 | 1 | 2,182 | 2 | 2,401 |
 | exhaustmisc | 10 | 7,924 | 10 | 7,924 | 11 | 8,717 |
 | exhaust2catalog | 19 | 18,759 | 19 | 18,759 | 20 | 20,635 |
