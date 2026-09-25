@@ -2,7 +2,8 @@
  * Tests for the shared infrastructure modules (#51-#58, #64/#65):
  *   - src/config.ts: loadConfig defaults/overrides, truthyEnv, initConfig/getConfig.
  *   - src/cache.ts: LruTtlCache TTL/expiry/recency/eviction, shouldBypassCache,
- *     cacheKey param-order insensitivity.
+ *     cacheKey query-param order normalisation (#678) and the client read
+ *     cache built on it.
  *   - src/shaping.ts: truncateItems truncation math + footer, resolveMaxResults
  *     clamping, describeDryRun output shape.
  *   - src/history.ts: JSONL record whitelist, URI redaction, owner-only mode
@@ -26,6 +27,7 @@ const { loadConfig, truthyEnv, initConfig, getConfig, DEFAULT_MAX_ITEMS, DEFAULT
   await import('../src/config.ts');
 const { LruTtlCache, shouldBypassCache, cacheKey } = await import('../src/cache.ts');
 const { truncateItems, resolveMaxResults, describeDryRun } = await import('../src/shaping.ts');
+const { SpotifyClient } = await import('../src/client.ts');
 const {
   appendHistory,
   isHistoryEnabled,
@@ -207,6 +209,7 @@ describe('cache: policy helpers (#54)', () => {
   });
 
   it('builds order-insensitive keys over method+path+params', () => {
+    assert.equal(cacheKey('GET', '/x', { a: '1', b: '2' }), cacheKey('GET', '/x', { b: '2', a: '1' }));
     assert.equal(
       cacheKey('get', '/albums', { market: 'US', limit: '5' }),
       cacheKey('GET', '/albums', { limit: '5', market: 'US' }),
@@ -216,6 +219,125 @@ describe('cache: policy helpers (#54)', () => {
       cacheKey('GET', '/albums', { limit: '10' }),
     );
     assert.equal(cacheKey('GET', '/me'), 'GET /me ');
+  });
+
+  // #678: the request target carries its query inline, so before this the
+  // two equivalent forms below produced two different keys and the second
+  // read missed the cache.
+  it('treats a query string inside the path as params, order-insensitively', () => {
+    assert.equal(
+      cacheKey('GET', '/search?type=album&q=beatles'),
+      cacheKey('GET', '/search?q=beatles&type=album'),
+    );
+    // Inline query, reordered params object, and a mix of both: one entry.
+    const inline = cacheKey('GET', '/search?type=album&q=beatles&limit=10');
+    assert.equal(inline, cacheKey('GET', '/search?q=beatles&limit=10', { type: 'album' }));
+    assert.equal(inline, cacheKey('GET', '/search?limit=10', { q: 'beatles', type: 'album' }));
+    // Percent-encoded on the wire, decoded in the params object.
+    assert.equal(
+      cacheKey('GET', '/search?q=rock%20%26%20roll'),
+      cacheKey('GET', '/search', { q: 'rock & roll' }),
+    );
+  });
+
+  it('keeps entries apart when any param name or value differs', () => {
+    const base = cacheKey('GET', '/search?q=beatles&type=album');
+    assert.notEqual(base, cacheKey('GET', '/search?q=roller&type=album'), 'value differs');
+    assert.notEqual(base, cacheKey('GET', '/search?q=beatles&type=artist'), 'value differs');
+    assert.notEqual(base, cacheKey('GET', '/search?type=album'), 'a param is missing');
+    assert.notEqual(
+      cacheKey('GET', '/search?q=beatles&type=album'),
+      cacheKey('GET', '/search?q=beatles&type=album&limit=5'),
+      'extra param must not collapse into the shorter key',
+    );
+    assert.notEqual(
+      cacheKey('GET', '/search?q=a&limit=1'),
+      cacheKey('GET', '/search?q=limit&limit=a'),
+      'name/value boundaries must not alias',
+    );
+    assert.notEqual(
+      cacheKey('GET', '/albums?q=beatles'),
+      cacheKey('GET', '/artists?q=beatles'),
+      'different path',
+    );
+  });
+
+  it('is stable across key orderings of more than two params', () => {
+    const orders = [
+      { q: 'beatles', type: 'album', limit: '5', market: 'US' },
+      { market: 'US', limit: '5', type: 'album', q: 'beatles' },
+      { type: 'album', q: 'beatles', market: 'US', limit: '5' },
+    ];
+    const keys = orders.map((o) => cacheKey('GET', '/search', o));
+    assert.equal(new Set(keys).size, 1, keys.join(' | '));
+  });
+ });
+
+// ---------------------------------------------------------------------------
+// Client read cache: order-insensitive keys, no value collisions (#678)
+// ---------------------------------------------------------------------------
+
+describe('client: read cache keys (#678)', () => {
+  const realFetch = globalThis.fetch;
+  const tokenFile = path.join(infraDir, 'tokens.json');
+
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+  });
+
+  it('issues one fetch and one entry for the same params in two orders', async () => {
+    await writeFile(
+      tokenFile,
+      JSON.stringify({ access_token: 'tok-cache', refresh_token: 'ref-cache', expires_at: Date.now() + 3600_000 }),
+      'utf8',
+    );
+    const urls: string[] = [];
+    let served = 0;
+    globalThis.fetch = (async (url: unknown) => {
+      urls.push(String(url));
+      return new Response(JSON.stringify({ call: ++served }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
+
+    const client = new SpotifyClient();
+    const first = await client.get<{ call: number }>('/albums', { limit: '5', offset: '0' });
+    // Byte-for-byte the same request, params object in the other key order.
+    const reordered = await client.get<{ call: number }>('/albums', { offset: '0', limit: '5' });
+    assert.deepEqual(reordered, first, 'the reordered call re-fetched instead of hitting the cache');
+    assert.equal(served, 1, `expected one fetch, got ${urls.join(', ')}`);
+    assert.equal(client.cache?.size, 1, 'reordered params created a second cache entry');
+
+    // A changed VALUE must not collide with the cached entry.
+    const other = await client.get<{ call: number }>('/albums', { limit: '5', offset: '20' });
+    assert.equal(other.call, 2, 'a changed param value reused the cached response');
+    assert.equal(client.cache?.size, 2);
+  });
+
+  it('serves an inline query string from the same entry as the params object', async () => {
+    await writeFile(
+      tokenFile,
+      JSON.stringify({ access_token: 'tok-inline', refresh_token: 'ref-cache', expires_at: Date.now() + 3600_000 }),
+      'utf8',
+    );
+    const urls: string[] = [];
+    let served = 0;
+    globalThis.fetch = (async (url: unknown) => {
+      urls.push(String(url));
+      return new Response(JSON.stringify({ call: ++served }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
+
+    const client = new SpotifyClient();
+    const inline = await client.get<{ call: number }>('/search?type=album&q=beatles');
+    const viaParams = await client.get<{ call: number }>('/search', { q: 'beatles', type: 'album' });
+    assert.deepEqual(viaParams, inline);
+    assert.equal(served, 1, `expected one fetch, got ${urls.join(', ')}`);
+    assert.equal(client.cache?.size, 1);
+    assert.equal(urls[0], 'https://api.spotify.com/v1/search?type=album&q=beatles');
   });
 });
 

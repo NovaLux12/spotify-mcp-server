@@ -584,7 +584,9 @@ export class SpotifyClient {
   async get<T>(path: string, params?: Record<string, string>, opts?: { priority?: 'normal' | 'low' }): Promise<T | null> {
     const url = this.buildUrl(path, params);
     // TTL cache for immutable catalog reads (#54): keyed on the API-relative
-    // URL; volatile paths (/me/player*, /me/top*, recently-played) bypass.
+    // URL, whose query params cacheKey sorts by name then value (#678), so an
+    // inline query and a params object in any order share one entry; volatile
+    // paths (/me/player*, /me/top*, recently-played) bypass.
     const relative = url.startsWith(BASE_URL) ? url.slice(BASE_URL.length) : url;
     const cacheable = this.cache !== null && !shouldBypassCache('GET', relative);
     const key = cacheable ? cacheKey('GET', relative) : '';
