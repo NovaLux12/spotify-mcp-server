@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { MARKET_CODE } from './catalog.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import type { SpotifyClient } from '../client.js';
+import type { SpotifyClient, SpotifyApiError } from '../client.js';
 import type {
   SpotifyPaged,
   SavedTrackItem,
@@ -138,6 +138,40 @@ function formatDuration(ms: number): string {
   const minutes = Math.floor(ms / 60000);
   const seconds = Math.floor((ms % 60000) / 1000);
   return `${minutes}:${seconds.toString().padStart(2, '0')}`;
+}
+
+/**
+ * Why a collection produced no count (#749). `status` separates a gated read
+ * (403) from a throttled one (429); `reason` and `retry_after_sec` appear only
+ * when the client had them to give. Omitted rather than defaulted, so "we don't
+ * know" never renders as a fabricated value.
+ */
+interface UnreadableCollection {
+  message: string;
+  status?: number;
+  reason?: string;
+  retry_after_sec?: number;
+}
+
+/**
+ * Date filter bounds for `search_saved_*` (#750): an unparsable bound is a
+ * caller error, never a filter result. `Date.parse('last tuesday')` is NaN and
+ * every comparison against NaN is false, so a malformed `added_after` used to
+ * match zero items while a malformed `added_before` (guarded by an
+ * `isFinite` check that skipped the filter) matched everything — both silent,
+ * neither named. Parse once, up front — before the walk so a bad bound costs
+ * no API calls — and name the offending parameter in the error.
+ */
+function parseDateBound(param: string, value: string | undefined): number | undefined {
+  if (value === undefined) return undefined;
+  const ms = Date.parse(value);
+  if (!Number.isFinite(ms)) {
+    throw new Error(
+      `${param} is not a valid date: ${JSON.stringify(value)} — ` +
+        'use an ISO 8601 date or datetime, e.g. "2026-01-31" or "2026-01-31T00:00:00Z"',
+    );
+  }
+  return ms;
 }
 
 const SAVED_URI_TYPES = ['track', 'album', 'show', 'episode', 'audiobook'] as const;
@@ -648,10 +682,10 @@ export function registerLibraryTools(server: McpServer, client: SpotifyClient): 
     },
   );
 
-  // get_saved_counts (#296)
+  // get_saved_counts (#296, #749)
   server.tool(
     'get_saved_counts',
-    "Library size snapshot: total counts for tracks/albums/shows/episodes/audiobooks/playlists via limit=1 reads — no item paging. Quota: 🟢 6 GETs.",
+    "Library size snapshot: total counts for tracks/albums/shows/episodes/audiobooks/playlists via limit=1 reads — no item paging. A collection that could not be read (rate limited, gated, or erroring) is reported as unreadable with its reason and left out of the total — it is never reported as 0. One attempt per collection: a rate limit is surfaced, not retried. Quota: 🟢 6 GETs.",
     {
       response_format: ResponseFormat,
     },
@@ -665,18 +699,63 @@ export function registerLibraryTools(server: McpServer, client: SpotifyClient): 
         ['audiobooks', '/me/audiobooks'],
         ['playlists', '/me/playlists'],
       ];
+      // A count is only recorded when the read actually produced one (#749).
+      // Anything else — a thrown 429/403/5xx, a null body, a missing or
+      // non-numeric `total` — is "could not read", which is a different fact
+      // from "read it and it was empty", and must not be flattened into 0.
       const counts: Record<string, number> = {};
+      const unreadable: Record<string, UnreadableCollection> = {};
       for (const [key, path] of endpoints) {
         try {
-          const res = await client.get<{ total: number }>(path, { limit: '1' });
-          counts[key] = res?.total ?? 0;
-        } catch { counts[key] = 0; }
+          // Exactly one attempt: retrying into a rate limit is worse than
+          // reporting the limit. When the client is already cooling down, the
+          // remaining reads fast-fail and land here too — which is precisely
+          // the partial-read case this list exists to surface.
+          const res = await client.get<{ total?: number }>(path, { limit: '1' });
+          const total = res?.total;
+          if (typeof total !== 'number' || !Number.isFinite(total)) {
+            unreadable[key] = {
+              message: 'Spotify returned no usable total for this collection',
+            };
+            continue;
+          }
+          counts[key] = total;
+        } catch (err) {
+          // Carry the API's own diagnosis, not just its prose: `status` tells
+          // a gated (403) collection apart from a throttled one (429), and
+          // `reason`/`retryAfterSec` let a caller decide wait-vs-abort without
+          // pattern-matching the message (#749).
+          const api = err as Partial<SpotifyApiError>;
+          unreadable[key] = {
+            message: err instanceof Error ? err.message : String(err),
+            ...(typeof api.status === 'number' ? { status: api.status } : {}),
+            ...(api.reason ? { reason: api.reason } : {}),
+            ...(typeof api.retryAfterSec === 'number'
+              ? { retry_after_sec: api.retryAfterSec }
+              : {}),
+          };
+        }
       }
       const total = Object.values(counts).reduce((a, b) => a + b, 0);
+      const unreadableKeys = Object.keys(unreadable);
       const lines = ['Library counts:'];
       for (const [k, v] of Object.entries(counts)) lines.push(`  ${k}: ${v}`);
-      lines.push(`Total: ${total}`);
-      const payload = { counts, total };
+      for (const k of unreadableKeys) lines.push(`  ${k}: unreadable — ${unreadable[k].message}`);
+      lines.push(
+        unreadableKeys.length === 0
+          ? `Total: ${total}`
+          : `Total: ${total} — across ${Object.keys(counts).length} of ${endpoints.length} collections; ` +
+              `${unreadableKeys.length} unreadable (${unreadableKeys.join(', ')}) and excluded from this total.`,
+      );
+      const payload = {
+        counts,
+        total,
+        unreadable,
+        unreadable_count: unreadableKeys.length,
+        collections_read: Object.keys(counts).length,
+        collections_total: endpoints.length,
+        total_is_partial: unreadableKeys.length > 0,
+      };
       if (rf === 'json') return { content: [{ type: 'text', text: JSON.stringify(payload, null, 2) }], structuredContent: payload };
       return shapeResult(rf as ResponseFormatValue, lines.join('\n'), payload as unknown as Record<string, unknown>);
     },
@@ -696,12 +775,13 @@ export function registerLibraryTools(server: McpServer, client: SpotifyClient): 
     },
     async (args) => {
       const rf = args.response_format;
+      const addedAfter = parseDateBound('added_after', args.added_after);
       const capN = args.scan_cap ?? getConfig().fetchAllCap;
       const all = await client.getAllPages<SavedAlbumItem>('/me/albums', { limit: '50' }, { maxItems: capN });
       let filtered = all;
       if (args.query) { const q = args.query.toLowerCase(); filtered = filtered.filter(i => i.album.name.toLowerCase().includes(q) || i.album.artists.some(a => a.name.toLowerCase().includes(q))); }
       if (args.artist) { const q = args.artist.toLowerCase(); filtered = filtered.filter(i => i.album.artists.some(a => a.name.toLowerCase().includes(q))); }
-      if (args.added_after) { const after = new Date(args.added_after).getTime(); filtered = filtered.filter(i => new Date(i.added_at).getTime() > after); }
+      if (addedAfter !== undefined) { filtered = filtered.filter(i => Date.parse(i.added_at) > addedAfter); }
       const t = truncateItems(filtered, cap(args));
       const pagination = paginationInfo({ total: filtered.length, returned: t.items.length });
       const lines = [`Saved albums search: ${filtered.length} match(es), showing ${t.items.length} (scanned ${all.length}):`];
@@ -845,6 +925,8 @@ export function registerLibraryTools(server: McpServer, client: SpotifyClient): 
     },
     async (args) => {
       const rf = args.response_format;
+      const addedAfter = parseDateBound('added_after', args.added_after);
+      const addedBefore = parseDateBound('added_before', args.added_before);
       const walkCap = args.max_items ?? getConfig().fetchAllCap;
       const all = await client.getAllPages<SavedTrackItem>('/me/tracks', { limit: '50' }, { maxItems: walkCap });
       const truncated = all.length >= walkCap;
@@ -857,8 +939,8 @@ export function registerLibraryTools(server: McpServer, client: SpotifyClient): 
       });
       if (args.artist) { const a = args.artist.toLowerCase(); filtered = filtered.filter(s => (s.track.artists ?? []).some(ar => ar.name.toLowerCase().includes(a))); }
       if (args.album) { const a = args.album.toLowerCase(); filtered = filtered.filter(s => ((s.track as any).album?.name ?? '').toLowerCase().includes(a)); }
-      if (args.added_after) { const d = Date.parse(args.added_after); if(Number.isFinite(d)) filtered = filtered.filter(s => Date.parse(s.added_at) > d); }
-      if (args.added_before) { const d = Date.parse(args.added_before); if(Number.isFinite(d)) filtered = filtered.filter(s => Date.parse(s.added_at) < d); }
+      if (addedAfter !== undefined) filtered = filtered.filter(s => Date.parse(s.added_at) > addedAfter);
+      if (addedBefore !== undefined) filtered = filtered.filter(s => Date.parse(s.added_at) < addedBefore);
       const sort = args.sort_by ?? 'added_desc';
       filtered = [...filtered].sort((a,b)=>{
         if(sort==='added_asc') return Date.parse(a.added_at)-Date.parse(b.added_at);
