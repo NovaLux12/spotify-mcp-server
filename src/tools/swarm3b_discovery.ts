@@ -636,7 +636,7 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
   // ------------------------------------------------------------------ 10
   server.tool(
     'artist_decade_span',
-    'Histogram of an artist\'s releases per decade with the dominant decade called out — instantly see which era carries the catalog. Quota: 🟡 one paginated /artists/{id}/albums walk.',
+    'Histogram of an artist\'s releases per decade with the dominant decade called out. Quota: 🟡 one paginated /artists/{id}/albums walk.',
     {
       artist_id: spotifyId('artist').describe('Spotify artist ID, URI, or URL'),
       include_groups: IncludeGroups,
@@ -788,7 +788,7 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
   // ------------------------------------------------------------------ 13
   server.tool(
     'deep_cuts_finder',
-    'Surface deep cuts: album tracks past position 2 that are neither the title track nor among the SCANNED singles — the forgotten album material, per album. That walk is bounded (max_singles, default 500); payload: singles_capped. Quota: 🔴 paginated walk + batched /albums lookups.',
+    'Deep cuts per album: tracks past position 2 that are neither the title track nor among the SCANNED singles. Bounded by max_singles (default 500); payload: singles_capped. Quota: 🔴 paginated walk + batched /albums lookups.',
     {
       artist_id: spotifyId('artist').describe('Spotify artist ID, URI, or URL'),
       max_albums: z.number().int().positive().max(100).optional().describe('Studio albums to scan. Default: 20'),
@@ -1156,7 +1156,7 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
   // ------------------------------------------------------------------ 20
   server.tool(
     'artist_live_albums_finder',
-    'List an artist\'s live releases (titles matching live/unplugged/live-at patterns) chronologically — the concert-record shelf. Quota: 🟡 one paginated /artists/{id}/albums walk.',
+    'List an artist\'s live releases (titles matching live/unplugged/live-at patterns) chronologically. Quota: 🟡 one paginated /artists/{id}/albums walk.',
     {
       artist_id: spotifyId('artist').describe('Spotify artist ID, URI, or URL'),
       response_format: ResponseFormat,
@@ -1221,7 +1221,7 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
   // ------------------------------------------------------------------ 22
   server.tool(
     'artist_singles_timeline',
-    'Chronological singles timeline for an artist (date · title · track count) — the 45-rpm history in one table. Quota: 🟡 one paginated /artists/{id}/albums walk (singles group).',
+    'Chronological singles timeline for an artist (date · title · track count). Quota: 🟡 one paginated /artists/{id}/albums walk (singles group).',
     {
       artist_id: spotifyId('artist').describe('Spotify artist ID, URI, or URL'),
       response_format: ResponseFormat,
