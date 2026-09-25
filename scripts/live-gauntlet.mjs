@@ -64,6 +64,8 @@ const MUTATING = new Set([
 const REMOVED = new Set([
   'get_artist_top_tracks', 'get_available_markets', 'get_user_profile', 'get_user_playlists_by_id',
   'follow_artists', 'unfollow_artists',
+  // browse/categories: also removed Feb 2026, with no replacement endpoint. See #1013.
+  'get_categories', 'get_category_playlists',
 ]);
 
 // Endpoints that 403 Forbidden on current app registrations (2026-08-27 edge
