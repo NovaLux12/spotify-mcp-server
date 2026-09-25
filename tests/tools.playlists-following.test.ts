@@ -64,6 +64,9 @@ function makeStubClient(responder: Responder = () => null) {
     setResponder(fn: Responder) {
       respond = fn;
     },
+    // Mirrors SpotifyClient.lastWalkTruncated so tool-side disclosure is
+    // exercised against the same signal the real client publishes (#864).
+    lastWalkTruncated: false,
     async get<T>(path: string, params?: Record<string, string>): Promise<T | null> {
       calls.push({ method: 'GET', path, arg: params });
       return respond(path, params) as T | null;
@@ -94,11 +97,18 @@ function makeStubClient(responder: Responder = () => null) {
       const maxItems = opts?.maxItems ?? 500;
       const all: T[] = [];
       let offset = opts?.initialOffset ?? 0;
+      this.lastWalkTruncated = false;
       for (;;) {
         const page = await this.get<SpotifyPaged<T>>(path, { ...params, offset: String(offset) });
         if (!page || !Array.isArray(page.items)) break;
         all.push(...page.items);
-        if (all.length >= maxItems) return all.slice(0, maxItems);
+        if (all.length >= maxItems) {
+          this.lastWalkTruncated =
+            all.length > maxItems
+            || typeof page.total !== 'number'
+            || all.length < page.total;
+          return all.slice(0, maxItems);
+        }
         const limit =
           typeof page.limit === 'number' && page.limit > 0 ? page.limit : page.items.length;
         offset += limit;
@@ -1312,6 +1322,211 @@ describe('find_duplicates_in_playlist (#63)', () => {
     const out = await h.invoke('find_duplicates_in_playlist', { playlist_id: 'pl' });
 
     assert.match(textOf(out), /Positions \(0-based\): 0, 2/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Capped-walk disclosure (#864)
+//
+// getAllPages stops at SPOTIFY_MCP_FETCH_ALL_CAP (500 by default). Every tool
+// below walks a playlist with no explicit cap, so a 600-item playlist means
+// the last 100 rows were never read — and the response used to say nothing
+// about it, which is how a duplicate scan reported a clean verdict for a
+// playlist it never finished.
+// ---------------------------------------------------------------------------
+
+type PlaylistRow = { item: { type: string; name: string; uri: string; duration_ms: number; artists: Array<{ name: string }> } };
+
+/** 600 rows: unique for the first 500, then a block of repeats (#864 repro). */
+function bigPlaylistItems(total = 600): PlaylistRow[] {
+  const items: PlaylistRow[] = [];
+  for (let i = 0; i < 500; i++) items.push({ item: playableTrack(`t${i}`, `Song ${i}`) });
+  for (let i = 0; i < total - 500; i++) items.push({ item: playableTrack(`t${i}`, `Song ${i}`) });
+  return items;
+}
+
+/** Read the walk's `offset` query param out of the recorded request arg. */
+function offsetOf(arg: unknown): number {
+  if (typeof arg !== 'object' || arg === null || !('offset' in arg)) return 0;
+  return typeof arg.offset === 'string' ? Number(arg.offset) : 0;
+}
+
+/**
+ * Page `rows` 100 at a time the way the real playlist-items endpoint does, so
+ * the walk takes six requests and dies at the 500 cap instead of receiving a
+ * single fat page.
+ */
+function pagedPlaylist(rows: PlaylistRow[]) {
+  return (_path: string, arg: unknown) => {
+    const offset = offsetOf(arg);
+    return { items: rows.slice(offset, offset + 100), total: rows.length, limit: 100, offset };
+  };
+}
+
+describe('capped playlist walks are disclosed (#864)', () => {
+  it('find_duplicates_in_playlist: a clean-looking 600-item scan is not certified clean', async () => {
+    // First 500 rows are unique; the repeats only start past the cap.
+    const rows = bigPlaylistItems();
+    const h = harness(pagedPlaylist(rows));
+
+    const out = await h.invoke('find_duplicates_in_playlist', { playlist_id: 'pl' });
+    const p = out.structuredContent as Record<string, unknown>;
+    const text = textOf(out);
+
+    assert.equal(p.scanned, 500, 'precondition: the walk died at the cap');
+    assert.equal(p.scan_truncated, true, 'structuredContent must carry the truncation fact');
+    assert.equal(p.scan_cap, 500);
+    assert.match(text, /TRUNCATED/);
+    assert.doesNotMatch(
+      text,
+      /no duplicates/i,
+      'a truncated scan may not certify the playlist as duplicate-free',
+    );
+  });
+
+  it('find_duplicates_in_playlist: prefixes a truncated result with the truncation footer', async () => {
+    // Duplicates inside the first 500, so a group IS reported — the footer
+    // must still say the scan stopped short.
+    const rows: PlaylistRow[] = [
+      { item: playableTrack('t1', 'A') },
+      { item: playableTrack('t1', 'A') },
+      ...Array.from({ length: 598 }, (_, i) => ({ item: playableTrack(`u${i}`, `U ${i}`) })),
+    ];
+    const h = harness(pagedPlaylist(rows));
+
+    const out = await h.invoke('find_duplicates_in_playlist', { playlist_id: 'pl' });
+    const text = textOf(out);
+
+    assert.equal((out.structuredContent as Record<string, unknown>).scan_truncated, true);
+    assert.match(text, /TRUNCATED/);
+    assert.ok(
+      text.split('\n')[0].includes('TRUNCATED'),
+      'the disclosure must come before the group list, not after it',
+    );
+    assert.match(text, /Found 1 duplicate group\(s\) across 500 scanned item\(s\):/);
+  });
+
+  it('find_duplicates_in_playlist: an uncapped walk carries no truncation', async () => {
+    const rows: PlaylistRow[] = [
+      { item: playableTrack('t1', 'A') },
+      { item: playableTrack('t2', 'B') },
+    ];
+    const h = harness(pagedPlaylist(rows));
+
+    const out = await h.invoke('find_duplicates_in_playlist', { playlist_id: 'pl' });
+
+    // Nothing was truncated, so the disclosure machinery stays quiet — but
+    // the payload is still attached, so `scan_truncated` is a real `false`
+    // here rather than `undefined`. Same wording as before #864.
+    assert.equal((out.structuredContent as Record<string, unknown>).scan_truncated, false);
+    assert.doesNotMatch(textOf(out), /TRUNCATED/);
+    assert.equal(textOf(out), 'No duplicates found across 2 scanned item(s).');
+  });
+
+  it('add_to_playlist: the dry run discloses how much of the playlist the dedupe saw', async () => {
+    const rows = bigPlaylistItems();
+    const h = harness(pagedPlaylist(rows));
+
+    const out = await h.invoke('add_to_playlist', {
+      playlist_id: 'pl',
+      uris: ['spotify:track:t7'],
+      check_duplicates: true,
+      dry_run: true,
+    });
+    const p = out.structuredContent as Record<string, unknown>;
+
+    assert.equal(h.client.calls.filter((c) => c.method === 'POST').length, 0);
+    assert.equal(p.scan_truncated, true, 'dry run must carry the truncation fact');
+    assert.equal(p.scan_cap, 500);
+    assert.equal(p.scanned, 500);
+    assert.match(textOf(out), /TRUNCATED/);
+  });
+
+  it('add_to_playlist: the commit result discloses it too, without changing the POST', async () => {
+    // t7 sits at position 7, inside the scanned prefix, so the guard still
+    // skips it and nothing is written — the write path is untouched.
+    const rows = bigPlaylistItems();
+    const h = harness(pagedPlaylist(rows));
+
+    const out = await h.invoke('add_to_playlist', {
+      playlist_id: 'pl',
+      uris: ['spotify:track:t7'],
+      check_duplicates: true,
+    });
+    const p = out.structuredContent as Record<string, unknown>;
+
+    assert.deepEqual(
+      h.client.calls.filter((c) => c.method === 'POST').map((c) => c.arg),
+      [],
+    );
+    assert.equal(p.scan_truncated, true, 'commit result must carry the truncation fact');
+    assert.equal(p.scan_cap, 500);
+    assert.equal(p.skipped, 1, 'the one requested URI was found already present');
+    assert.equal(p.added, 0);
+    assert.match(textOf(out), /All 1 URI\(s\) already present in playlist/);
+    assert.match(textOf(out), /TRUNCATED/);
+  });
+
+  it('add_to_playlist: an uncapped dry run stays silent about truncation', async () => {
+    const rows: PlaylistRow[] = [
+      { item: playableTrack('t1', 'A') },
+      { item: playableTrack('t2', 'B') },
+    ];
+    const h = harness(pagedPlaylist(rows));
+
+    const out = await h.invoke('add_to_playlist', {
+      playlist_id: 'pl',
+      uris: ['spotify:track:t9'],
+      check_duplicates: true,
+      dry_run: true,
+    });
+    const p = out.structuredContent as Record<string, unknown>;
+
+    assert.equal(p.scan_truncated, false);
+    assert.equal(p.scan_cap, 500);
+    assert.doesNotMatch(textOf(out), /TRUNCATED/);
+  });
+
+  it('remove_duplicate_playlist_items: reports the short scan instead of a clean verdict', async () => {
+    const rows = bigPlaylistItems();
+    const h = harness((path, arg) =>
+      path === '/playlists/pl' ? { id: 'pl', name: 'Big' } : pagedPlaylist(rows)(path, arg));
+
+    const out = await h.invoke('remove_duplicate_playlist_items', { playlist_id: 'pl' });
+    const p = out.structuredContent as Record<string, unknown>;
+    const text = textOf(out);
+
+    assert.equal(p.scan_truncated, true);
+    assert.equal(p.scan_cap, 500);
+    assert.equal(p.scanned, 500);
+    assert.match(text, /TRUNCATED/);
+    assert.doesNotMatch(text, /no duplicate\(s\) found across 500/);
+  });
+
+  it('remove_duplicate_playlist_items: a truncated re-scan is not a verified clean result', async () => {
+    // One duplicate pair up front, then enough unique rows to push the
+    // post-cleanup verification walk past the cap as well.
+    const rows: PlaylistRow[] = [
+      { item: playableTrack('t1', 'A') },
+      { item: playableTrack('t1', 'A') },
+      ...Array.from({ length: 598 }, (_, i) => ({ item: playableTrack(`u${i}`, `U ${i}`) })),
+    ];
+    const h = harness((path, arg) =>
+      path === '/playlists/pl' ? { id: 'pl', name: 'Big' } : pagedPlaylist(rows)(path, arg));
+
+    const out = await h.invoke('remove_duplicate_playlist_items', { playlist_id: 'pl' });
+    const p = out.structuredContent as Record<string, unknown>;
+    const text = textOf(out);
+
+    assert.equal(p.removed, 1);
+    assert.equal(p.rescan_truncated, true);
+    assert.equal(
+      p.ok,
+      false,
+      'a truncated verification walk must not report a verified-clean result',
+    );
+    assert.match(text, /Re-scan INCOMPLETE/);
+    assert.doesNotMatch(text, /no duplicates remain/);
   });
 });
 

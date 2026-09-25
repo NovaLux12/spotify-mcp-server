@@ -738,6 +738,87 @@ describe('SpotifyClient', () => {
       assert.deepEqual(all, [{ id: 0 }]);
       assert.equal(apiCalls().length, 2);
     });
+
+    // #864: `getAllPages` returns a bare T[], so the truncation fact has to
+    // survive somewhere else. These pin WHEN the signal is allowed to fire.
+
+    it('flags lastWalkTruncated when the cap leaves rows behind', async () => {
+      await seedTokens();
+      responder = (url) => {
+        const offset = Number(new URL(url).searchParams.get('offset') ?? 0);
+        const items = Array.from({ length: 100 }, (_, i) => ({ id: offset + i }));
+        return jsonResponse({ items, total: 1_204, limit: 100, offset });
+      };
+
+      const client = new SpotifyClient();
+      const all = await client.getAllPages<{ id: number }>('/me/tracks', {}, { maxItems: 500 });
+
+      assert.equal(all.length, 500);
+      assert.equal(client.lastWalkTruncated, true, '1204 rows behind a 500 cap is a truncation');
+    });
+
+    it('leaves lastWalkTruncated clear when the cap lands exactly on the reported total', async () => {
+      await seedTokens();
+      responder = (url) => {
+        const offset = Number(new URL(url).searchParams.get('offset') ?? 0);
+        return jsonResponse({
+          items: Array.from({ length: 5 }, (_, i) => ({ id: offset + i })),
+          total: 5,
+          limit: 5,
+          offset,
+        });
+      };
+
+      const client = new SpotifyClient();
+      const all = await client.getAllPages<{ id: number }>('/me/tracks', {}, { maxItems: 5 });
+
+      assert.equal(all.length, 5);
+      assert.equal(
+        client.lastWalkTruncated,
+        false,
+        'the walk reached the server-reported total, so the cap cut nothing off',
+      );
+    });
+
+    it('flags conservatively when the endpoint reports no total', async () => {
+      await seedTokens();
+      responder = (url) => {
+        const offset = Number(new URL(url).searchParams.get('offset') ?? 0);
+        // No `total` key at all — nothing to prove completeness against.
+        return jsonResponse({ items: Array.from({ length: 5 }, (_, i) => ({ id: offset + i })), limit: 5, offset });
+      };
+
+      const client = new SpotifyClient();
+      await client.getAllPages<{ id: number }>('/me/tracks', {}, { maxItems: 5 });
+
+      assert.equal(client.lastWalkTruncated, true);
+    });
+
+    it('clears a previous walk signal when the next walk runs to the end', async () => {
+      await seedTokens();
+      responder = (url) => {
+        const offset = Number(new URL(url).searchParams.get('offset') ?? 0);
+        const size = offset === 0 ? 100 : 10;
+        return jsonResponse({
+          items: Array.from({ length: size }, (_, i) => ({ id: offset + i })),
+          total: 110,
+          limit: 100,
+          offset,
+        });
+      };
+
+      const client = new SpotifyClient();
+      await client.getAllPages<{ id: number }>('/me/tracks', {}, { maxItems: 50 });
+      assert.equal(client.lastWalkTruncated, true, 'precondition: first walk was cut short');
+
+      const complete = await client.getAllPages<{ id: number }>('/me/tracks', {}, { maxItems: 500 });
+      assert.equal(complete.length, 110);
+      assert.equal(
+        client.lastWalkTruncated,
+        false,
+        'a walk that read everything must not inherit the previous walk signal',
+      );
+    });
   });
 
   // -------------------------------------------------------------------------

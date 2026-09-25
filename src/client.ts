@@ -181,6 +181,18 @@ export class SpotifyClient {
   // forwards events as MCP progress notifications.
   private progressReporter: ((info: PageProgress) => void) | null = null;
   private walkCounter = 0;
+  /**
+   * True when the MOST RECENT getAllPages walk stopped at its cap before it
+   * could prove it had reached the end of the data (#864).
+   *
+   * The walk keeps returning a bare `T[]` because ~40 call sites depend on
+   * that signature, so the truncation fact travels here instead. Read it
+   * immediately after the walk — the next walk overwrites it.
+   *
+   * A walk that ran out of data sets it false. So does one that hit the cap
+   * exactly at a server-reported `total`, because that one cut nothing off.
+   */
+  lastWalkTruncated = false;
 
   constructor(opts: SpotifyClientOptions = {}) {
     this.fetchAllCap = opts.fetchAllCap ?? getConfig().fetchAllCap;
@@ -627,6 +639,9 @@ export class SpotifyClient {
    * continue from there instead of restarting at offset 0. Cursor-paginated
    * endpoints (e.g. followed artists, which use an `after` cursor instead of
    * offset/total) are NOT supported by this helper.
+   *
+   * The returned array is silently capped; `lastWalkTruncated` is how a
+   * caller learns the walk stopped short (#864). Read it right after.
    */
   async getAllPages<T>(
     path: string,
@@ -636,6 +651,10 @@ export class SpotifyClient {
     const maxItems = opts?.maxItems ?? this.fetchAllCap;
     const all: T[] = [];
     let offset = opts?.initialOffset ?? 0;
+    // #864: a bare array cannot distinguish "read everything" from "stopped at
+    // the cap", so every walk publishes the answer. Reset first — a walk that
+    // runs to the end must clear the previous walk's signal.
+    this.lastWalkTruncated = false;
     // Monotonic per-walk id; index.ts forwards it as the MCP progressToken.
     const walkId = ++this.walkCounter;
     let pageNumber = 0;
@@ -661,7 +680,18 @@ export class SpotifyClient {
           // Progress is best-effort; a throwing reporter must never break a walk.
         }
       }
-      if (all.length >= maxItems) return all.slice(0, maxItems);
+      if (all.length >= maxItems) {
+        // The cap bit. It only TRUNCATED something if rows really are missing:
+        // either the slice dropped overflow the page had already delivered, or
+        // the server's `total` says the walk stopped short of the end. An
+        // endpoint that reports no total gives us nothing to prove
+        // completeness against, so that case stays conservatively truncated.
+        this.lastWalkTruncated =
+          all.length > maxItems
+          || typeof page.total !== 'number'
+          || all.length < page.total;
+        return all.slice(0, maxItems);
+      }
       const limit = typeof page.limit === 'number' && page.limit > 0 ? page.limit : page.items.length;
       offset += limit;
       if (page.items.length === 0 || page.items.length < limit) break;

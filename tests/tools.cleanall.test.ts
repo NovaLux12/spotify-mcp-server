@@ -76,6 +76,9 @@ function harness(
   } as unknown as McpServer;
 
   const client = {
+    // Mirrors SpotifyClient.getAllPages' fetch-all cap so #864's capped-walk
+    // disclosure is exercised here too.
+    lastWalkTruncated: false,
     async get<T>(path: string): Promise<T | null> {
       if (path === '/me/playlists') {
         return {
@@ -91,9 +94,14 @@ function harness(
       }
       return null;
     },
-    async getAllPages<T>(path: string): Promise<T[]> {
+    async getAllPages<T>(path: string, _params?: Record<string, string>, opts?: { maxItems?: number }): Promise<T[]> {
+      const cap = opts?.maxItems ?? 500;
+      const capped = (rows: T[]): T[] => {
+        this.lastWalkTruncated = rows.length > cap;
+        return this.lastWalkTruncated ? rows.slice(0, cap) : rows;
+      };
       if (path === '/me/playlists') {
-        return playlists.map(
+        return capped(playlists.map(
           (pl) =>
             ({
               id: pl.id,
@@ -102,11 +110,11 @@ function harness(
               description: null,
               owner: { display_name: pl.owner, id: pl.owner },
             }) as T,
-        );
+        ));
       }
       const match = /^\/playlists\/([^/]+)\/items$/.exec(path);
       if (!match) return [];
-      return structuredClone(state.get(decodeURIComponent(match[1])) ?? []) as T[];
+      return capped(structuredClone(state.get(decodeURIComponent(match[1])) ?? []) as T[]);
     },
     async delete<T>(path: string, body: unknown): Promise<T | null> {
       const playlistId = decodeURIComponent(/^\/playlists\/([^/]+)\/items$/.exec(path)![1]);
@@ -233,5 +241,80 @@ describe('clean_all_playlists', () => {
     assert.equal(h.deletes.length, 1);
     assert.match(textOf(out), /Cleaned 1 duplicate item\(s\)/);
     void out;
+  });
+
+  // #864: every per-playlist walk dies at the fetch-all cap, so "scanned N
+  // playlists — no duplicates found" was a verdict on a slice of the
+  // account, presented as the whole thing.
+  describe('capped walks are disclosed (#864)', () => {
+    /** 600 rows whose repeats only start past the 500 cap. */
+    const tailOnlyDupes = (): PlaylistItem[] => [
+      ...Array.from({ length: 500 }, (_, i) => track(`u${i}`, `U ${i}`)),
+      ...Array.from({ length: 100 }, (_, i) => track(`u${i}`, `U ${i}`)),
+    ];
+
+    it('report mode does not certify an account whose walks hit the cap', async () => {
+      const h = harness([{ id: 'big', name: 'Big Clean', owner: 'me', items: tailOnlyDupes() }]);
+
+      const out = await h.invoke({});
+      const p = out.structuredContent as Record<string, unknown>;
+      const text = textOf(out);
+
+      assert.equal(p.scan_truncated, true);
+      assert.equal(p.truncated_playlists, 1);
+      assert.equal(p.scan_cap, 500);
+      assert.match(text, /TRUNCATED|stopped at cap 500/);
+      assert.doesNotMatch(
+        text,
+        /no duplicates found/i,
+        'a capped scan may not certify the account as duplicate-free',
+      );
+      assert.match(text, /scan was incomplete/);
+    });
+
+    it('report mode marks the individual rows whose scan was short', async () => {
+      const items = [
+        track('a', 'A'),
+        track('a', 'A'),
+        ...Array.from({ length: 598 }, (_, i) => track(`u${i}`, `U ${i}`)),
+      ];
+      const h = harness([{ id: 'big', name: 'Big Mess', owner: 'me', items }]);
+
+      const out = await h.invoke({});
+      const p = out.structuredContent as Record<string, unknown>;
+
+      assert.equal(p.scan_truncated, true);
+      assert.equal((p.items as Array<{ scan_truncated: boolean }>)[0].scan_truncated, true);
+      assert.match(textOf(out), /1 removable of 500 \[TRUNCATED\]/);
+    });
+
+    it('apply mode reports the short scan on the write result too', async () => {
+      const items = [
+        track('a', 'A'),
+        track('a', 'A'),
+        ...Array.from({ length: 598 }, (_, i) => track(`u${i}`, `U ${i}`)),
+      ];
+      const h = harness([{ id: 'big', name: 'Big Mess', owner: 'me', items }]);
+
+      const out = await h.invoke({ apply: true });
+      const p = out.structuredContent as Record<string, unknown>;
+
+      assert.equal(p.scan_truncated, true);
+      assert.equal(p.truncated_playlists, 1);
+      assert.equal(p.removed_total, 1);
+      assert.match(textOf(out), /stopped at cap 500/);
+    });
+
+    it('leaves an account whose walks all complete untouched', async () => {
+      const h = harness([{ id: 'ok', name: 'Fine', owner: 'me', items: [track('a', 'A')] }]);
+
+      const out = await h.invoke({});
+      const p = out.structuredContent as Record<string, unknown>;
+
+      assert.equal(p.scan_truncated, false);
+      assert.equal(p.truncated_playlists, 0);
+      assert.match(textOf(out), /no duplicates found/);
+      assert.doesNotMatch(textOf(out), /TRUNCATED|stopped at cap/);
+    });
   });
 });
