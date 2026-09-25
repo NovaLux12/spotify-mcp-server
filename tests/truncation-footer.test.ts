@@ -58,6 +58,7 @@ async function enumerateLiveBoundary(): Promise<{
   } as unknown as SpotifyClient;
 
   for (const file of (await readdir(TOOL_MODULE_DIR)).filter((name) => name.endsWith('.ts')).sort()) {
+    if (file === 'annotations.ts') continue;
     const module = await import(join(TOOL_MODULE_DIR, file)) as Record<string, unknown>;
     for (const [name, exported] of Object.entries(module)) {
       if (!/^register[A-Z]/.test(name) || typeof exported !== 'function') continue;

@@ -301,7 +301,8 @@ export interface ModuleSchemaBudget {
 
 export const AGGREGATE_SURFACE_LIMITS = {
   maxTools: 620,
-  maxBytes: 600_000,
+  // 1 KB headroom covers final MCP annotation metadata added after registration.
+  maxBytes: 601_000,
 } as const;
 
 export interface AggregateSurfaceMeasurement {
