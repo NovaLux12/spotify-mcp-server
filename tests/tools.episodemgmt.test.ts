@@ -1,60 +1,188 @@
-import { describe, it } from 'node:test';
+import { afterEach, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { registerEpisodeMgmtTools } from '../src/tools/episodemgmt.js';
 import type { SpotifyClient } from '../src/client.js';
+type EpisodeItem = {
+  episode: {
+    id: string;
+    uri: string;
+    name: string;
+    resume_point: { fully_played: boolean };
+  };
+  added_at: string;
+};
 
-function harness(overrides: { episodes?: any[] } = {}) {
+type ToolResult = {
+  content: Array<{ type: 'text'; text: string }>;
+  structuredContent?: Record<string, unknown>;
+};
+
+type RegisteredTool = {
+  name: string;
+  schema: z.ZodRawShape;
+  handler: (args: unknown) => Promise<ToolResult>;
+};
+
+type CapturingServer = {
+  tool(
+    name: string,
+    description: string,
+    schema: z.ZodRawShape,
+    handler: (args: unknown) => Promise<ToolResult>,
+  ): void;
+  server?: {
+    getClientCapabilities(): { elicitation: { form: Record<string, never> } };
+    elicitInput(): Promise<ElicitationAnswer>;
+  };
+};
+
+type ElicitationAnswer =
+  | { action: 'accept'; content?: { confirm?: unknown } }
+  | { action: 'decline' | 'cancel' }
+  | Error;
+
+function playedEpisodes(count: number) {
+  return Array.from({ length: count }, (_, i) => ({
+    episode: {
+      id: `ep${i}`,
+      uri: `spotify:episode:ep${i}`,
+      name: `Ep ${i}`,
+      resume_point: { fully_played: true },
+    },
+    added_at: '2026-01-01',
+  }));
+}
+
+function harness(overrides: { episodes?: EpisodeItem[]; answer?: ElicitationAnswer } = {}) {
   const dels: string[] = [];
-  const episodes = overrides.episodes ?? [
+  let prompts = 0;
+  const episodes: EpisodeItem[] = overrides.episodes ?? [
     { episode: { id: 'ep1', uri: 'spotify:episode:ep1', name: 'Ep 1', resume_point: { fully_played: true } }, added_at: '2026-01-01' },
     { episode: { id: 'ep2', uri: 'spotify:episode:ep2', name: 'Ep 2', resume_point: { fully_played: false } }, added_at: '2026-01-02' },
     { episode: { id: 'ep3', uri: 'spotify:episode:ep3', name: 'Ep 3', resume_point: { fully_played: true } }, added_at: '2026-01-03' },
   ];
   const client = {
     async get(path: string) {
-      if (path === '/me/episodes') return { items: episodes, total: episodes.length } as any;
+      if (path === '/me/episodes') return { items: episodes, total: episodes.length };
       return null;
     },
     async getAllPages() { return episodes; },
     async delete(path: string) { dels.push(path); return null; },
     async put(path: string) { return null; },
   } as unknown as SpotifyClient;
-  const registered: any[] = [];
-  const s = { tool(n: string, _d: string, sch: any, h: any) { registered.push({ name: n, schema: sch, handler: h }); } } as unknown as McpServer;
-  registerEpisodeMgmtTools(s, client);
-  const invoke = async (name: string, args: any) => {
-    const t = registered.find((r: any) => r.name === name); assert.ok(t, `tool ${name} not found`);
-    return t.handler(z.object(t.schema).parse(args));
+  const registered: RegisteredTool[] = [];
+  const server: CapturingServer = {
+    tool(name, _description, schema, handler) {
+      registered.push({ name, schema, handler });
+    },
   };
-  return { registered, dels, invoke };
+  if (overrides.answer !== undefined) {
+    server.server = {
+      getClientCapabilities: () => ({ elicitation: { form: {} } }),
+      async elicitInput() {
+        prompts += 1;
+        if (overrides.answer instanceof Error) throw overrides.answer;
+        return overrides.answer;
+      },
+    };
+  }
+  // Test double implements only the registration and elicitation surface used here.
+  registerEpisodeMgmtTools(server as unknown as McpServer, client);
+  const invoke = async (name: string, args: unknown) => {
+    const tool = registered.find((entry) => entry.name === name);
+    assert.ok(tool, `tool ${name} not found`);
+    return tool.handler(z.object(tool.schema).parse(args));
+  };
+  return {
+    registered,
+    dels,
+    invoke,
+    get promptCount() { return prompts; },
+  };
 }
+
+afterEach(() => {
+  delete process.env.SPOTIFY_MCP_CONFIRM;
+});
 
 describe('episodemgmt', () => {
   it('registers exactly 1 tool (archive_played_episodes)', () => {
     const h = harness(); assert.equal(h.registered.length, 1);
-    assert.ok(h.registered.some((r: any) => r.name === 'archive_played_episodes'));
+    assert.ok(h.registered.some((entry) => entry.name === 'archive_played_episodes'));
   });
   it('does not register phantom mark_episode_played', () => {
     const h = harness();
-    assert.ok(!h.registered.some((r: any) => r.name === 'mark_episode_played'), 'mark_episode_played should be removed');
+    assert.ok(!h.registered.some((entry) => entry.name === 'mark_episode_played'), 'mark_episode_played should be removed');
+  });
+  it('does not expose a caller-controlled confirm input', () => {
+    const h = harness();
+    const tool = h.registered[0];
+    assert.ok(tool);
+    assert.equal(tool.schema.confirm, undefined);
   });
   it('archive_played_episodes reports no played when none fully_played', async () => {
     const h = harness({ episodes: [{ episode: { id: 'x', uri: 'spotify:episode:x', name: 'X', resume_point: { fully_played: false } }, added_at: '2026-01-01' }] });
     const out = await h.invoke('archive_played_episodes', {});
     assert.match(out.content[0].text, /No fully-played/i);
   });
-  it('archive_played_episodes dry_run previews', async () => {
-    const h = harness();
+  it('archive_played_episodes dry_run previews without prompting or writing', async () => {
+    const h = harness({ episodes: playedEpisodes(51), answer: new Error('must not prompt') });
     const out = await h.invoke('archive_played_episodes', { dry_run: true });
     assert.match(out.content[0].text, /dry run/i);
-    assert.equal(h.dels.length, 0);
+    assert.equal(h.promptCount, 0);
+    assert.deepEqual(h.dels, []);
   });
-  it('archive_played_episodes requires confirm when >50', async () => {
-    const many = Array.from({ length: 51 }, (_, i) => ({ episode: { id: `ep${i}`, uri: `spotify:episode:ep${i}`, name: `Ep ${i}`, resume_point: { fully_played: true } }, added_at: '2026-01-01' }));
-    const h = harness({ episodes: many });
+  it('refuses >50 episodes without elicitation support and performs zero writes', async () => {
+    const h = harness({ episodes: playedEpisodes(51) });
     const out = await h.invoke('archive_played_episodes', {});
-    assert.match(out.content[0].text, /confirm/i);
+    assert.equal(out.structuredContent.ok, false);
+    assert.equal(out.structuredContent.cancelled, true);
+    assert.equal(out.structuredContent.reason, 'confirmation_unavailable');
+    assert.equal(h.promptCount, 0);
+    assert.deepEqual(h.dels, []);
+  });
+  it('refuses a declined confirmation and performs zero writes', async () => {
+    const h = harness({ episodes: playedEpisodes(51), answer: { action: 'decline' } });
+    const out = await h.invoke('archive_played_episodes', {});
+    assert.equal(out.structuredContent.ok, false);
+    assert.equal(out.structuredContent.cancelled, true);
+    assert.equal(h.promptCount, 1);
+    assert.deepEqual(h.dels, []);
+  });
+  it('treats accept without confirm=true as declined and performs zero writes', async () => {
+    const h = harness({ episodes: playedEpisodes(51), answer: { action: 'accept', content: {} } });
+    const out = await h.invoke('archive_played_episodes', {});
+    assert.equal(out.structuredContent.ok, false);
+    assert.equal(out.structuredContent.cancelled, true);
+    assert.equal(h.promptCount, 1);
+    assert.deepEqual(h.dels, []);
+  });
+  it('refuses a transport error and performs zero writes', async () => {
+    const h = harness({ episodes: playedEpisodes(51), answer: new Error('elicitation transport failed') });
+    const out = await h.invoke('archive_played_episodes', {});
+    assert.equal(out.structuredContent.ok, false);
+    assert.equal(out.structuredContent.cancelled, true);
+    assert.equal(out.structuredContent.reason, 'elicitation_failed');
+    assert.equal(h.promptCount, 1);
+    assert.deepEqual(h.dels, []);
+  });
+  it('archives >50 episodes only after an explicit accepted confirmation', async () => {
+    const h = harness({ episodes: playedEpisodes(51), answer: { action: 'accept', content: { confirm: true } } });
+    const out = await h.invoke('archive_played_episodes', {});
+    assert.equal(out.structuredContent.ok, true);
+    assert.equal(out.structuredContent.removed, 51);
+    assert.equal(h.promptCount, 1);
+    assert.equal(h.dels.length, 2);
+  });
+  it('SPOTIFY_MCP_CONFIRM=never explicitly bypasses prompting and archives >50 episodes', async () => {
+    process.env.SPOTIFY_MCP_CONFIRM = 'never';
+    const h = harness({ episodes: playedEpisodes(51), answer: { action: 'decline' } });
+    const out = await h.invoke('archive_played_episodes', {});
+    assert.equal(out.structuredContent.ok, true);
+    assert.equal(out.structuredContent.removed, 51);
+    assert.equal(h.promptCount, 0);
+    assert.equal(h.dels.length, 2);
   });
 });
