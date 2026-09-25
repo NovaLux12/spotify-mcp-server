@@ -216,14 +216,25 @@ describe('playlist_sort refuses a key with no comparable values (#861)', () => {
   });
 
   it('discloses the refusal on a dry run too, rather than previewing a no-op sort', async () => {
+    // dry_run=true must still take the refusal branch: the distinct-value
+    // check sits above the `if (args.dry_run) return describeDryRun(...)`
+    // early return, and a preview that printed "Would sort N items by
+    // duration_asc" for a key that can move nothing is the same false
+    // claim this guard exists to remove.
     const h = harness([trackRow('a', 'Alpha', 10_000), trackRow('b', 'Beta', 10_000)]);
 
-    const out = await h.invoke('playlist_sort', { playlist_id: PLAYLIST, sort_by: 'duration_desc' });
+    const out = await h.invoke('playlist_sort', {
+      playlist_id: PLAYLIST,
+      sort_by: 'duration_desc',
+      dry_run: true,
+    });
 
     assert.deepEqual(writes(h.calls), []);
+    assert.equal(out.structuredContent?.dry_run, true);
     assert.equal(out.structuredContent?.ok, false);
-    assert.equal(out.structuredContent?.dry_run, undefined, 'dry_run defaults to unset (falsy)');
+    assert.equal(out.structuredContent?.reason, 'no_comparable_values');
     assert.match(textOf(out), /no comparable values/);
+    assert.doesNotMatch(textOf(out), /Would sort/);
   });
 
   it('still sorts and rewrites when the key does vary', async () => {
@@ -275,6 +286,24 @@ describe('playlist_resequence refuses a key with no comparable values (#861)', (
     assert.equal(out.structuredContent?.changed, false);
     assert.match(textOf(out), /no comparable values/);
     assert.doesNotMatch(textOf(out), /^Sorted /m);
+  });
+
+  it('refuses the preview too, instead of describing an order it cannot change', async () => {
+    const h = harness([episodeRow('e1', 'Ep One'), episodeRow('e2', 'Ep Two')]);
+
+    const out = await h.invoke('playlist_resequence', {
+      playlist_id: PLAYLIST,
+      sort_by: 'album',
+      dry_run: true,
+    });
+
+    assert.deepEqual(writes(h.calls), []);
+    assert.equal(out.structuredContent?.dry_run, true);
+    assert.equal(out.structuredContent?.ok, false);
+    assert.equal(out.structuredContent?.reason, 'no_comparable_values');
+    assert.match(textOf(out), /no comparable values/);
+    assert.doesNotMatch(textOf(out), /would be reordered/);
+    assert.doesNotMatch(textOf(out), /Ascending sort of/);
   });
 
   it('still resequences when the key varies', async () => {
