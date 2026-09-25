@@ -10,17 +10,26 @@ import type { SpotifyClient } from '../src/client.js';
 
 function makeClient(overrides: Partial<Record<string, any>> = {}) {
   const puts: string[] = []; const posts: string[] = [];
+  const putCalls: Array<{ path: string; body: unknown }> = [];
+  const postCalls: Array<{ path: string; body: unknown }> = [];
+  let wrote = false;
   const client = {
     async get(path: string) {
-      if (path === '/me/player') return overrides.playback ?? { is_playing: true, progress_ms: 1000, shuffle_state: false, repeat_state: 'off', item: { uri: 'spotify:track:t1', name: 'T1', type: 'track' }, device: { volume_percent: 42 } };
+      if (path === '/me/player') {
+        // After a write the device may be reporting something else entirely —
+        // that is what the restore verification read is for.
+        if (wrote && overrides.playbackAfterWrite) return overrides.playbackAfterWrite;
+        return overrides.playback ?? { is_playing: true, progress_ms: 1000, shuffle_state: false, repeat_state: 'off', item: { uri: 'spotify:track:t1', name: 'T1', type: 'track' }, device: { volume_percent: 42 } };
+      }
       if (path === '/me/player/recently-played') return { items: overrides.recent ?? [] };
+      if (path === '/me/top/tracks') return { items: overrides.topTracks ?? [], total: 0, limit: 50, offset: 0 };
       return null;
     },
-    async put(path: string) { puts.push(path); if (overrides.failPut?.(path)) throw new Error('volume write rejected'); return null; },
-    async post(path: string) { posts.push(path); return { id: 'pl1', uri: 'spotify:playlist:pl1' } as any; },
-    async getAllPages() { return []; },
+    async put(path: string, body?: unknown) { puts.push(path); putCalls.push({ path, body }); wrote = true; if (overrides.failPut?.(path)) throw new Error('write rejected'); return null; },
+    async post(path: string, body?: unknown) { posts.push(path); postCalls.push({ path, body }); wrote = true; return { id: 'pl1', uri: 'spotify:playlist:pl1' }; },
+    async getAllPages() { return overrides.saved ?? []; },
   };
-  return { client: client as unknown as SpotifyClient, puts, posts };
+  return { client: client as unknown as SpotifyClient, puts, posts, putCalls, postCalls };
 }
 function serverHarness(client: SpotifyClient) {
   const registered: any[] = [];
@@ -114,12 +123,112 @@ describe('playbackext', () => {
     const sessions = detectSessions(items as any);
     assert.equal(sessions.length, 2);
   });
-  it('smart rule save + refresh + show digest dry_run', async () => {
+  it('smart rule save + show digest dry_run', async () => {
     const { client } = makeClient(); const h = serverHarness(client);
     await h.invoke('save_smart_playlist_rule', { name: 'rock-top', rule: { source: 'top_tracks' } });
-    const refreshed = await h.invoke('refresh_smart_playlist', { name: 'rock-top', dry_run: true });
-    assert.match(refreshed.content[0].text, /dry run/i);
     const digest = await h.invoke('save_show_digest', { dry_run: true });
     assert.match(digest.content[0].text, /dry run/i);
+  });
+  // #834: refresh_smart_playlist answered `ok: true` without a single API call,
+  // so a saved rule never rebuilt anything. Every non-dry-run refresh must
+  // write to /playlists, and the second refresh must replace the playlist the
+  // first one created rather than creating another.
+  it('refresh_smart_playlist rebuilds the playlist and reuses the id', async () => {
+    const topTracks = Array.from({ length: 150 }, (_, i) => ({ uri: `spotify:track:s${i}`, name: `S${i}`, artists: [{ name: `A${i}` }] }));
+    const { client, putCalls, postCalls } = makeClient({ topTracks });
+    const h = serverHarness(client);
+    await h.invoke('save_smart_playlist_rule', { name: 'rock-top', rule: { source: 'top_tracks', limit: 150 } });
+
+    const planned = await h.invoke('refresh_smart_playlist', { name: 'rock-top', dry_run: true });
+    assert.match(planned.content[0].text, /dry run/i);
+    assert.equal(putCalls.length + postCalls.length, 0, 'a dry run must not write');
+
+    const first = await h.invoke('refresh_smart_playlist', { name: 'rock-top' });
+    const firstEcho = first.structuredContent as Record<string, unknown>;
+    assert.equal(firstEcho.ok, true);
+    assert.equal(firstEcho.playlist_id, 'pl1');
+    assert.deepEqual(postCalls[0], { path: '/me/playlists', body: { name: 'rock-top', public: false } });
+    // 150 uris: PUT replaces the first 100, the remaining 50 are appended.
+    assert.deepEqual(putCalls.map((c) => c.path), ['/playlists/pl1/items']);
+    assert.deepEqual(postCalls.slice(1).map((c) => c.path), ['/playlists/pl1/items']);
+    assert.equal((putCalls[0].body as { uris: string[] }).uris.length, 100);
+    assert.equal((postCalls[1].body as { uris: string[] }).uris.length, 50);
+
+    const before = postCalls.length;
+    const second = await h.invoke('refresh_smart_playlist', { name: 'rock-top' });
+    const secondEcho = second.structuredContent as Record<string, unknown>;
+    assert.equal(secondEcho.playlist_id, 'pl1');
+    assert.equal(secondEcho.created, false);
+    assert.equal(postCalls.filter((c) => c.path === '/me/playlists').length, 1, 'the second refresh must not create a second playlist');
+    assert.equal(putCalls.length, 2, `expected one replace per refresh, got ${JSON.stringify(putCalls.map((c) => c.path))} (posts before: ${before})`);
+  });
+
+  // #833: restore_playback_state replaced an album/playlist session with a
+  // one-track ad-hoc queue and never read the player back, so it claimed
+  // success on a device that was doing something else entirely.
+  it('restore_playback_state round-trips the saved context and offset', async () => {
+    const snapshot = {
+      is_playing: true, progress_ms: 185000, shuffle_state: false, repeat_state: 'off',
+      item: { uri: 'spotify:track:abc', name: 'Abc', type: 'track' },
+      context: { type: 'album', uri: 'spotify:album:alb1' },
+      device: { id: 'dev1', volume_percent: 42 },
+    };
+    const { client, putCalls } = makeClient({ playback: snapshot, playbackAfterWrite: snapshot });
+    const h = serverHarness(client);
+    await h.invoke('save_playback_state', { name: 'evening' });
+    const listed = await h.invoke('list_playback_states', { response_format: 'json' });
+    const savedStates = (listed.structuredContent as { states: Record<string, { playback: { context: { uri: string } } }> }).states;
+    assert.equal(savedStates.evening?.playback.context.uri, 'spotify:album:alb1', 'the context must survive the save');
+
+    const restored = await h.invoke('restore_playback_state', { name: 'evening', device_id: 'dev1' });
+    const echo = restored.structuredContent as Record<string, unknown>;
+    assert.deepEqual(putCalls[0], {
+      path: '/me/player/play?device_id=dev1',
+      body: { context_uri: 'spotify:album:alb1', offset: { uri: 'spotify:track:abc' }, position_ms: 185000 },
+    });
+    assert.equal(echo.verified, true);
+    assert.equal(echo.observed_item, 'spotify:track:abc');
+    assert.equal(echo.context_uri, 'spotify:album:alb1');
+    assert.match(restored.content[0].text, /Restored/);
+  });
+
+  it('restore_playback_state reports verified:false when the device is elsewhere', async () => {
+    const snapshot = {
+      is_playing: true, progress_ms: 5000, shuffle_state: false, repeat_state: 'off',
+      item: { uri: 'spotify:track:abc', name: 'Abc', type: 'track' },
+      context: { type: 'album', uri: 'spotify:album:alb1' },
+    };
+    const elsewhere = { ...snapshot, item: { uri: 'spotify:track:zzz', name: 'Zzz', type: 'track' }, context: { type: 'playlist', uri: 'spotify:playlist:p9' } };
+    const { client } = makeClient({ playback: snapshot, playbackAfterWrite: elsewhere });
+    const h = serverHarness(client);
+    await h.invoke('save_playback_state', { name: 'evening' });
+    const restored = await h.invoke('restore_playback_state', { name: 'evening' });
+    const echo = restored.structuredContent as Record<string, unknown>;
+    assert.equal(echo.verified, false);
+    assert.equal(echo.ok, false);
+    assert.equal(echo.observed_item, 'spotify:track:zzz');
+    assert.match(restored.content[0].text, /spotify:track:zzz/);
+  });
+
+  it('restore_playback_state retries an album without its offset when the context rejects it', async () => {
+    const snapshot = {
+      is_playing: true, progress_ms: 5000, shuffle_state: false, repeat_state: 'off',
+      item: { uri: 'spotify:track:abc', name: 'Abc', type: 'track' },
+      context: { type: 'album', uri: 'spotify:album:alb1' },
+    };
+    let playWrites = 0;
+    const { client, putCalls } = makeClient({
+      playback: snapshot,
+      playbackAfterWrite: snapshot,
+      failPut: (p: string) => p.startsWith('/me/player/play') && ++playWrites === 1,
+    });
+    const h = serverHarness(client);
+    await h.invoke('save_playback_state', { name: 'evening' });
+    const restored = await h.invoke('restore_playback_state', { name: 'evening' });
+    const echo = restored.structuredContent as Record<string, unknown>;
+    assert.equal(playWrites, 2, 'the rejected context write must be retried once');
+    assert.deepEqual(putCalls[1], { path: '/me/player/play', body: { uris: ['spotify:track:abc'], position_ms: 5000 } });
+    assert.equal(echo.context_fallback, true);
+    assert.equal(echo.verified, true);
   });
 });
