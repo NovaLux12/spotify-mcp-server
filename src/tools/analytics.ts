@@ -46,6 +46,7 @@ const timeRangeSchema = z
 const TOP_LIMIT = 50; // per-call fetch cap for /me/top/*
 const RECENT_PAGE_SIZE = 50; // per-call cap for recently-played
 const RECENT_MAX_PAGES = 3; // ≤3 cursor walks ⇒ ≤150 items
+const RECENT_MAX_ITEMS = RECENT_MAX_PAGES * RECENT_PAGE_SIZE; // 150, the hard ceiling
 
 export interface ListeningReport {
   time_range: 'short_term' | 'medium_term' | 'long_term';
@@ -96,18 +97,29 @@ function trackRow(t: AnalyticsTrack): { id: string; name: string; artists: strin
 /**
  * Walk /me/player/recently-played toward older history. Spotify returns a
  * freshest-first page whose `cursors.after` must be supplied as `before` on
- * the next request. At most RECENT_MAX_PAGES calls of RECENT_PAGE_SIZE items
- * each.
+ * the next request.
+ *
+ * Bounded by BOTH the module ceiling (RECENT_MAX_PAGES calls of
+ * RECENT_PAGE_SIZE items) and the caller's `maxItems` budget (#805). Pages are
+ * requested at the smaller of the two, and the walk stops as soon as the
+ * budget is met, so an agent asking for the newest 5 entries pays one 5-item
+ * page instead of a full 150-item three-page walk. Order is freshest-first, so
+ * the trailing slice drops the OLDEST entries and the requested window is
+ * exactly what survives. `budget` is what actually got read — the reported
+ * total, not what the walk would have returned.
  */
 async function walkRecentlyPlayed(
   client: SpotifyClient,
-): Promise<{ items: RecentlyPlayedItem[]; pages: number }> {
+  maxItems: number = RECENT_MAX_ITEMS,
+): Promise<{ items: RecentlyPlayedItem[]; pages: number; budget: number }> {
+  const budget = Math.min(Math.max(Math.floor(maxItems), 1), RECENT_MAX_ITEMS);
+  const pageSize = Math.min(RECENT_PAGE_SIZE, budget);
   const items: RecentlyPlayedItem[] = [];
   const seen = new Set<string>();
   let beforeCursor: string | undefined;
   let pages = 0;
-  while (pages < RECENT_MAX_PAGES) {
-    const params: Record<string, string> = { limit: String(RECENT_PAGE_SIZE) };
+  while (pages < RECENT_MAX_PAGES && items.length < budget) {
+    const params: Record<string, string> = { limit: String(pageSize) };
     if (beforeCursor !== undefined) params.before = beforeCursor;
     const page: RecentlyPlayedResponse | null = await client.get<RecentlyPlayedResponse>(
       '/me/player/recently-played',
@@ -120,11 +132,12 @@ async function walkRecentlyPlayed(
       if (seen.has(key)) continue;
       seen.add(key);
       items.push(row);
+      if (items.length >= budget) break;
     }
     if (!page?.next || !page.cursors?.after) break;
     beforeCursor = page.cursors.after;
   }
-  return { items, pages };
+  return { items, pages, budget };
 }
 
 function buildReport(args: {
@@ -268,16 +281,19 @@ export function registerAnalyticsTools(server: McpServer, client: SpotifyClient)
   // listening_streaks — consecutive-day streaks from recently-played
   server.tool(
     'listening_streaks',
-    'Compute consecutive-day listening streaks from recently-played history (up to 150 items). Quota: GET /me/player/recently-played cursor walk.',
+    "Compute consecutive-day listening streaks from recently-played history (up to 150 items, or max_items if lower). Quota: GET /me/player/recently-played cursor walk, one call per 50 items.",
     {
-      max_items: z.coerce.number().int().positive().max(150).optional().describe('Max history items to walk (default 150)'),
+      max_items: z.coerce.number().int().positive().max(150).optional().describe('Max history items to read (default 150); lower values stop the cursor walk early'),
       response_format: ResponseFormat,
     },
     async (args) => {
       const rf: ResponseFormatValue = args.response_format ?? 'concise';
-      const walk = await walkRecentlyPlayed(client);
+      const walk = await walkRecentlyPlayed(client, args.max_items ?? RECENT_MAX_ITEMS);
       const dates = [...new Set(walk.items.map((r) => r.played_at.slice(0, 10)))].sort();
-      if (dates.length === 0) return shapeResultGeneric(rf, 'No listening history — no streaks.', { ok: true, streaks: [], current_streak: 0, longest_streak: 0, dates: [] });
+      // Same key set as the populated payload below — a `dates` array lived
+      // here next to `dates_count`, so the empty path advertised a shape the
+      // normal path never returns.
+      if (dates.length === 0) return shapeResultGeneric(rf, 'No listening history — no streaks.', { ok: true, items_read: 0, max_items: walk.budget, pages_walked: walk.pages, streaks: [], longest_streak: 0, current_streak: 0, dates_count: 0 });
       const streaks: Array<{ start: string; end: string; length: number }> = [];
       let curStart = dates[0]; let curLen = 1;
       for (let i = 1; i < dates.length; i++) {
@@ -290,15 +306,15 @@ export function registerAnalyticsTools(server: McpServer, client: SpotifyClient)
       const longest = Math.max(...streaks.map((s) => s.length));
       const todayStr = new Date().toISOString().slice(0, 10);
       const current = dates[dates.length - 1] === todayStr ? streaks[streaks.length - 1].length : (dates[dates.length - 1] === new Date(Date.now() - 86400000).toISOString().slice(0, 10) ? streaks[streaks.length - 1].length : 0);
-      const payload = { ok: true, dates_count: dates.length, streaks, longest_streak: longest, current_streak: current };
-      return shapeResultGeneric(rf, `Listening streaks: ${streaks.length} streak(s), longest ${longest} day(s), current ${current} day(s).`, payload);
+      const payload = { ok: true, items_read: walk.items.length, max_items: walk.budget, pages_walked: walk.pages, dates_count: dates.length, streaks, longest_streak: longest, current_streak: current };
+      return shapeResultGeneric(rf, `Listening streaks from ${walk.items.length} item(s) (max ${walk.budget}): ${streaks.length} streak(s), longest ${longest} day(s), current ${current} day(s).`, payload);
     },
   );
 
   // top_artists_by_range — expose /me/top/artists across windows with deltas
   server.tool(
     'top_artists_by_range',
-    'Top artists for each time window with rank deltas (short vs long). Quota: up to 3× GET /me/top/artists.',
+    "Top artists per time window; with time_range 'all' (default) also reports short_term↔long_term rank deltas for artists present in both. Quota: up to 3× GET /me/top/artists.",
     {
       time_range: z.enum(['short_term', 'medium_term', 'long_term', 'all']).optional().default('all').describe('Window or all'),
       limit: z.coerce.number().int().positive().max(50).optional().default(20).describe('Limit per window'),
@@ -308,19 +324,62 @@ export function registerAnalyticsTools(server: McpServer, client: SpotifyClient)
       const rf: ResponseFormatValue = args.response_format ?? 'concise';
       const limit = String(args.limit ?? 20);
       const ranges = args.time_range === 'all' ? (['short_term', 'medium_term', 'long_term'] as const) : [args.time_range as 'short_term' | 'medium_term' | 'long_term'];
+      // The windows are independent reads, so issue them together rather than
+      // serializing three round-trips — same convention as taste_shift_report
+      // below. Quota is unchanged (one call per window); only latency moves.
+      const pages = await Promise.all(
+        ranges.map((tr) =>
+          client.get<SpotifyPaged<{ id: string; name: string }>>('/me/top/artists', {
+            time_range: tr,
+            limit,
+          }),
+        ),
+      );
       const results: Record<string, Array<{ id: string; name: string; rank: number }>> = {};
-      for (const tr of ranges) {
-        const res = await client.get<SpotifyPaged<{ id: string; name: string }>>('/me/top/artists', { time_range: tr, limit });
-        results[tr] = (res?.items ?? []).map((a, i) => ({ id: a.id, name: (a as { name?: string }).name ?? a.id, rank: i + 1 }));
+      ranges.forEach((tr, idx) => {
+        results[tr] = (pages[idx]?.items ?? []).map((a, i) => ({
+          id: a.id,
+          name: a.name,
+          rank: i + 1,
+        }));
+      });
+      const payload: Record<string, unknown> = { ok: true, ranges: results, deltas: null, deltas_basis: null };
+
+      // `ranges` is only ever 3 windows ('all') or 1 (an explicit single
+      // window) — the old `ranges.length === 2` guard could not fire, so the
+      // advertised delta never shipped (#804). A rank delta is meaningful
+      // between exactly two windows, and the pair the tool advertises is
+      // short_term↔long_term, which only 'all' fetches together. So: compute
+      // it whenever both are present, and say so explicitly when they are not
+      // rather than silently omitting the field.
+      const shortTerm = results['short_term'] ?? [];
+      const longTerm = results['long_term'] ?? [];
+      if (shortTerm.length > 0 && longTerm.length > 0) {
+        const longRanks = new Map(longTerm.map((x) => [x.id, x.rank] as const));
+        const shortIds = new Set(shortTerm.map((x) => x.id));
+        const deltas = shortTerm
+          .filter((x) => longRanks.has(x.id))
+          .map((x) => {
+            const longRank = longRanks.get(x.id) as number;
+            return { id: x.id, name: x.name, short_rank: x.rank, long_rank: longRank, delta: longRank - x.rank };
+          })
+          .sort((a, b) => b.delta - a.delta);
+        payload.deltas = deltas;
+        payload.deltas_basis = {
+          from: 'short_term',
+          to: 'long_term',
+          sign: 'delta > 0 ranks higher in short_term than long_term (rising)',
+          compared: deltas.length,
+          // Reported separately: a window that is absent from the other's
+          // capped list has no comparable rank, so it gets no invented one.
+          only_in_short_term: shortTerm.filter((x) => !longRanks.has(x.id)).map((x) => x.id),
+          only_in_long_term: longTerm.filter((x) => !shortIds.has(x.id)).map((x) => x.id),
+        };
       }
-      const payload: Record<string, unknown> = { ok: true, ranges: results };
-      if (ranges.length === 2) {
-        const [a, b] = ranges;
-        const bMap = new Map(results[b].map((x) => [x.id, x.rank]));
-        const deltas = results[a].map((x) => ({ id: x.id, name: x.name, delta: (bMap.get(x.id) ?? 999) - x.rank }));
-        (payload as Record<string, unknown>).deltas = deltas;
-      }
-      return shapeResultGeneric(rf, `Top artists by range: ${ranges.map((r) => `${r}×${results[r].length}`).join(', ')}.`, payload);
+      const deltaNote = Array.isArray(payload.deltas) && payload.deltas.length > 0
+        ? ` ${payload.deltas.length} artist(s) compared short vs long.`
+        : '';
+      return shapeResultGeneric(rf, `Top artists by range: ${ranges.map((r) => `${r}×${results[r].length}`).join(', ')}.${deltaNote}`, payload);
     },
   );
 
