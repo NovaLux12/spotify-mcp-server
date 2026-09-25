@@ -354,7 +354,7 @@ describe('restore_library_snapshot strictly additive', () => {
     }
   });
 
-  it('contains-checks are chunked ≤50 and saves only absent URIs', async () => {
+  it('chunk-checks at 50, writes at 40, and saves only absent URIs', async () => {
     const state = emptyState();
     const present = new Set(['spotify:track:present0', 'spotify:track:present75']);
     state.savedUris = [...present];
@@ -390,9 +390,19 @@ describe('restore_library_snapshot strictly additive', () => {
       const puts = h.client.calls.filter(
         (c) => c.method === 'PUT' && c.path.startsWith('/me/library?'),
       );
-      assert.equal(puts.length, 3, '118 absent uris saved in ≤50 chunks (50/50/18)');
+      assert.equal(puts.length, 3, '118 absent uris saved in ≤40 chunks (40/40/38)');
+      for (const p of puts) {
+        const urisInRequest = new URLSearchParams(p.path.split('?')[1] ?? '').get('uris');
+        assert.ok(urisInRequest !== null, 'library write must carry a uris query param');
+        assert.ok(
+          urisInRequest.split(',').filter(Boolean).length <= 40,
+          'library write chunk ≤40',
+        );
+        // The request must be the request the plan printed: values percent-encoded.
+        assert.equal(p.path.includes('spotify:track:'), false, 'URI values must be percent-encoded');
+      }
       const savedUris = puts.flatMap((p) =>
-        (p.path.split('uris=')[1] ?? '').split(',').filter(Boolean),
+        (new URLSearchParams(p.path.split('?')[1] ?? '').get('uris') ?? '').split(',').filter(Boolean),
       );
       assert.equal(savedUris.length, 118);
       for (const uri of savedUris) {
@@ -425,7 +435,13 @@ describe('restore_library_snapshot strictly additive', () => {
       const puts = h.client.calls.filter(
         (c) => c.method === 'PUT' && c.path.startsWith('/me/following?'),
       );
-      assert.deepEqual(puts.map((p) => p.path), ['/me/following?type=artist&ids=new1']);
+      assert.deepEqual(
+        puts.map((p) => {
+          const params = new URLSearchParams(p.path.split('?')[1] ?? '');
+          return `${p.path.split('?')[0]}?type=${params.get('type')}&ids=${params.get('ids')}`;
+        }),
+        ['/me/following?type=artist&ids=new1'],
+      );
       const payload = out.structuredContent as Record<string, any>;
       assert.equal(payload.categories.followed_artists.executed, 1);
       assert.equal(payload.categories.followed_artists.skipped, 1, 'non-artist URI skipped');
@@ -581,6 +597,184 @@ describe('restore_library_snapshot json mode', () => {
       assert.equal(payload.tool, 'restore_library_snapshot');
       assert.equal(payload.snapshot_created, CREATED);
       assert.equal(payload.playlists.created[0].restored_as, `Restored · Gone Playlist (2026-08-26)`);
+    } finally {
+      await rm(join(path, '..'), { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #624 — write cap, encoding, invalid rows, partial restores
+// ---------------------------------------------------------------------------
+
+describe('restore_library_snapshot write safety (#624)', () => {
+  const trackSnapshot = (uris: string[]) => ({
+    _meta: { created: CREATED },
+    liked_tracks: uris.map((uri, i) => ({ uri, name: `Track ${i}` })),
+  });
+
+  it('chunks a 41-URI category into 2 write requests at the 40-uri cap', async () => {
+    const uris = Array.from({ length: 41 }, (_, i) => `spotify:track:t${i}`);
+    const path = await snapshotFile(trackSnapshot(uris));
+    try {
+      const h = harness(emptyState(), 'accept');
+      const out = await h.invoke('restore_library_snapshot', {
+        backup_path: path,
+        dry_run: false,
+        categories: ['liked_tracks'],
+      });
+      const puts = h.client.calls.filter((c) => c.method === 'PUT' && c.path.startsWith('/me/library?'));
+      assert.equal(puts.length, 2, '41 uris at a 40-uri cap is 2 requests');
+      const sent = puts.map(
+        (p) => new URLSearchParams(p.path.split('?')[1] ?? '').get('uris') ?? '',
+      );
+      assert.deepEqual(sent.map((s) => s.split(',').length), [40, 1]);
+      assert.deepEqual(
+        sent.flatMap((s) => s.split(',')).sort(),
+        [...uris].sort(),
+        'every planned uri is written exactly once',
+      );
+      assert.equal((out.structuredContent as Record<string, any>).status, 'executed');
+    } finally {
+      await rm(join(path, '..'), { recursive: true, force: true });
+    }
+  });
+
+  it('encodes every URI value so the request matches the printed plan', async () => {
+    const path = await snapshotFile(trackSnapshot(['spotify:track:ok1', 'spotify:user:someone']));
+    try {
+      const h = harness(emptyState(), 'accept');
+      const out = await h.invoke('restore_library_snapshot', {
+        backup_path: path,
+        dry_run: false,
+        categories: ['liked_tracks'],
+      });
+      const put = h.client.calls.find((c) => c.method === 'PUT' && c.path.startsWith('/me/library?'));
+      assert.ok(put, 'expected a library write');
+      // Values are percent-encoded, so the emitted request is the planned one.
+      assert.match(put.path, /uris=spotify%3Atrack%3Aok1%2Cspotify%3Auser%3Asomeone/);
+      assert.deepEqual(
+        (new URLSearchParams(put.path.split('?')[1] ?? '').get('uris') ?? '').split(','),
+        ['spotify:track:ok1', 'spotify:user:someone'],
+        'the query round-trips back to exactly the planned URIs',
+      );
+      const planNotes = (out.structuredContent as Record<string, any>).categories.liked_tracks.notes as string[];
+      assert.ok(
+        planNotes.includes('would save spotify:user:someone'),
+        'the plan prints the same unencoded URI the encoded query decodes to',
+      );
+    } finally {
+      await rm(join(path, '..'), { recursive: true, force: true });
+    }
+  });
+
+  it('skips an invalid URI and restores the rest instead of aborting', async () => {
+    const path = await snapshotFile(
+      trackSnapshot(['spotify:track:ok1', 'spotify:track:a&x=1', 'spotify:track:b#frag', 'not-a-spotify-uri', 'spotify:track:ok2']),
+    );
+    try {
+      const h = harness(emptyState(), 'accept');
+      const out = await h.invoke('restore_library_snapshot', {
+        backup_path: path,
+        dry_run: false,
+        categories: ['liked_tracks'],
+      });
+      const payload = out.structuredContent as Record<string, any>;
+      assert.equal(payload.status, 'executed', 'a corrupt row must not abort the restore');
+      assert.equal(payload.skipped_invalid, 3);
+      assert.deepEqual(payload.invalid_uris, ['spotify:track:a&x=1', 'spotify:track:b#frag', 'not-a-spotify-uri']);
+      assert.equal(payload.categories.liked_tracks.executed, 2);
+      const put = h.client.calls.find((c) => c.method === 'PUT' && c.path.startsWith('/me/library?'));
+      const written = (new URLSearchParams(put!.path.split('?')[1] ?? '').get('uris') ?? '').split(',');
+      assert.deepEqual(written, ['spotify:track:ok1', 'spotify:track:ok2'], 'only well-formed uris reach the wire');
+      assert.match(textOf(out), /skipped invalid snapshot URI spotify:track:a&x=1/);
+    } finally {
+      await rm(join(path, '..'), { recursive: true, force: true });
+    }
+  });
+
+  it('reports a partial restore naming what landed and what did not', async () => {
+    const liked = Array.from({ length: 80 }, (_, i) => `spotify:track:l${i}`);
+    const path = await snapshotFile({
+      _meta: { created: CREATED },
+      liked_tracks: liked.map((uri, i) => ({ uri, name: `L ${i}` })),
+      saved_albums: [{ uri: 'spotify:album:a1', name: 'A' }],
+    });
+    try {
+      const h = harness(emptyState(), 'accept');
+      let libraryPuts = 0;
+      const realPut = h.client.put.bind(h.client);
+      h.client.put = async (path: string, body?: unknown) => {
+        if (path.startsWith('/me/library?') && ++libraryPuts === 2) {
+          throw new Error('Spotify rejected the request');
+        }
+        return realPut(path, body);
+      };
+
+      const out = await h.invoke('restore_library_snapshot', {
+        backup_path: path,
+        dry_run: false,
+        categories: ['liked_tracks', 'saved_albums'],
+      });
+
+      const payload = out.structuredContent as Record<string, any>;
+      assert.equal(payload.status, 'partial_restore');
+      assert.equal(payload.partial_restore, true);
+      assert.equal(payload.failures.length, 1);
+      const failure = payload.failures[0];
+      assert.equal(failure.category, 'liked_tracks');
+      assert.equal(failure.requests_completed, 1);
+      assert.equal(failure.items_written, 40);
+      assert.equal(failure.items_planned, 80);
+      assert.equal(failure.items_pending, 40);
+      // The failing category stopped, the later category still landed.
+      assert.equal(payload.categories.saved_albums.executed, 1);
+      assert.match(textOf(out), /Restore PARTIAL/);
+      assert.match(textOf(out), /40\/80 item\(s\) landed, 40 still pending/);
+    } finally {
+      await rm(join(path, '..'), { recursive: true, force: true });
+    }
+  });
+
+  it('does not claim a playlist was created when its create failed', async () => {
+    const path = await snapshotFile({
+      _meta: { created: CREATED },
+      playlists: [
+        { name: 'One', item_count: 1, items: [{ uri: 'spotify:track:o1', name: 'O1' }] },
+        { name: 'Two', item_count: 1, items: [{ uri: 'spotify:track:t1', name: 'T1' }] },
+        { name: 'Three', item_count: 1, items: [{ uri: 'spotify:track:th1', name: 'TH1' }] },
+      ],
+    });
+    try {
+      const h = harness(emptyState(), 'accept');
+      // The FIRST create fails; the loop still attempts the other two, so the
+      // report must credit those two and blame only the one that failed.
+      const realPost = h.client.post.bind(h.client);
+      let creates = 0;
+      h.client.post = async (p: string, body?: unknown) => {
+        if (p === '/me/playlists' && ++creates === 1) throw new Error('Spotify rejected the create');
+        return realPost(p, body);
+      };
+
+      const out = await h.invoke('restore_library_snapshot', {
+        backup_path: path,
+        dry_run: false,
+        categories: ['playlists'],
+      });
+      const payload = out.structuredContent as Record<string, any>;
+      const text = textOf(out);
+
+      assert.equal(payload.status, 'partial_restore');
+      assert.equal(payload.playlists.created.length, 2, 'the two that succeeded are credited');
+      assert.equal(payload.playlists.not_created, 1, 'only the failed create is reported lost');
+      assert.equal(payload.failures.length, 1);
+      assert.equal(payload.failures[0].stage, 'playlist_create');
+      const restored = (name: string) => `Restored · ${name} \\(${CREATED.slice(0, 10)}\\)`;
+      assert.match(text, new RegExp(`NOT created — "${restored('One')}"`));
+      assert.doesNotMatch(text, new RegExp(`· created "${restored('One')}"`));
+      assert.match(text, new RegExp(`created "${restored('Two')}" \\(1 item\\(s\\)\\)`));
+      assert.match(text, new RegExp(`created "${restored('Three')}" \\(1 item\\(s\\)\\)`));
+      assert.match(text, /1 planned playlist\(s\) were never created/);
     } finally {
       await rm(join(path, '..'), { recursive: true, force: true });
     }
