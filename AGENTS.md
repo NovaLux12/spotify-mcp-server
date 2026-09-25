@@ -109,18 +109,34 @@ server ships no tools for them and you should not add any:
 | `GET /browse/new-releases`, `GET /browse/featured-playlists` | Blocked/removed — do not use |
 | Lyrics endpoints | Not available via the Web API — do not use |
 
-### Schema-flagged deprecated but verified operational — wrapped with graceful 403 handling
+### REMOVED by Spotify in February 2026 — do not call these
 
-Verified live against the current schema for this project's app registration.
-Kept during transition; each wrapper catches Spotify's 403 and degrades
-gracefully instead of surfacing a raw failure:
+Spotify removed a large batch of endpoints in the
+[February 2026 changelog](https://developer.spotify.com/documentation/web-api/references/changes/february-2026).
+The graceful-403 wrappers do **not** make these safe: a removed endpoint returns
+an error that a 403-tolerant wrapper will happily degrade into a soft, wrong
+answer. Any tool still calling one of these is broken, not merely degraded.
 
-| Endpoint | Wrapped by |
-|---|---|
-| `GET /artists/{id}/top-tracks` | `get_artist_top_tracks` (#38) |
-| Batch `GET /albums?ids=` / `/artists?ids=` / `/episodes?ids=` / `/shows?ids=` / `/audiobooks?ids=` / `/chapters?ids=` | the `get_several_*` tools (#43) |
-| Per-type library writes `PUT/DELETE /me/tracks\|albums\|shows\|episodes` and `GET /me/{type}s/contains` | `save_items` / `remove_saved_items` / `check_saved_items`; prefer the unified `/me/library` tools (`save_to_library` / `remove_from_library` / `check_in_library`, #37) for new work |
-| `PUT/DELETE /me/following?type=artist`, `GET /me/following/contains` | `follow_artists` / `unfollow_artists` / `check_following_artists` |
+| Removed endpoint | Replacement | Issue |
+|---|---|---|
+| `GET /artists/{id}/top-tracks` | per-album reads via `GET /artists/{id}/albums` | #594 |
+| Batch `GET /albums\|artists\|episodes\|shows\|audiobooks\|chapters?ids=` | per-id `GET /{type}/{id}` | #638 |
+| `PUT/DELETE /me/{tracks,albums,shows,episodes,audiobooks}` and `GET /me/{type}s/contains` | `PUT/DELETE /me/library`, `GET /me/library/contains` | #37 (shipped) |
+| `PUT/DELETE /me/following?type=artist`, `GET /me/following/contains` | `PUT/DELETE /me/library` | #594 |
+| `PUT/DELETE /playlists/{id}/followers` | `PUT/DELETE /me/library` with a `spotify:playlist:` URI | #594 |
+| `GET /playlists/{id}/followers/contains` | `GET /me/library/contains` | #594 |
+| `POST/GET/PUT/DELETE /playlists/{id}/tracks` | the `/items` equivalents | #638 |
+| `POST /users/{user_id}/playlists`, `GET /users/{id}/playlists`, `GET /users/{id}` | `/me/*` equivalents | #638 |
+| `GET /markets`, `GET /browse/categories`, `GET /browse/new-releases` | none | #638 |
+
+`GET /me/following` (the cursor-paged followed-artists **list**) is still available —
+only its `PUT`/`DELETE`/`/contains` siblings were removed. That asymmetry is easy to
+get wrong. `GET /search`'s `limit` maximum also dropped from 50 to **10** and its
+default from 20 to **5**.
+
+**When you touch a tool that calls any endpoint above, check the changelog before
+assuming the endpoint is live.** `AGENTS.md` previously listed this whole family as
+"verified operational", which was true when written and false within months.
 
 ---
 
