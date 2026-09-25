@@ -5,7 +5,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../src/client.js';
 import type { PlaylistItemObject } from '../src/types/spotify.js';
 import { registerSwarm4PlaylistsTools } from '../src/tools/swarm4_playlists.js';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -54,6 +54,7 @@ function harness(playlists: Record<string, PlaylistItemObject[]>) {
     },
   } as unknown as McpServer;
 
+  const writes: Array<{ method: 'POST' | 'PUT'; path: string; body: unknown }> = [];
   const client = {
     async get<T>(path: string): Promise<T | null> {
       const playlistId = decodeURIComponent(path.replace('/playlists/', ''));
@@ -63,10 +64,12 @@ function harness(playlists: Record<string, PlaylistItemObject[]>) {
       const playlistId = decodeURIComponent(path.replace('/playlists/', '').replace('/items', ''));
       return (playlists[playlistId] ?? []) as T[];
     },
-    async post<T>(): Promise<T | null> {
+    async post<T>(path: string, body?: unknown): Promise<T | null> {
+      writes.push({ method: 'POST', path, body });
       return null;
     },
-    async put<T>(): Promise<T | null> {
+    async put<T>(path: string, body?: unknown): Promise<T | null> {
+      writes.push({ method: 'PUT', path, body });
       return null;
     },
   } as unknown as SpotifyClient;
@@ -78,6 +81,7 @@ function harness(playlists: Record<string, PlaylistItemObject[]>) {
       assert.ok(tool, `tool ${name} registered`);
       return tool.handler(tool.validate(args));
     },
+    writes,
   };
 }
 
@@ -273,5 +277,131 @@ describe('playlist_changelog multiset diff', () => {
     assert.deepEqual(sc.added.map((a) => a.uri), ['spotify:track:b']);
     assert.equal(sc.removed.length, 0);
     assert.match(out.content[0].text, /Added:/);
+  });
+});
+
+describe('playlist_move_block no-op rewrite guard (#882)', () => {
+  const SOURCE = [track('a'), track('b'), track('c'), track('d')];
+
+  it('issues zero writes when the target position lands inside the moved block', async () => {
+    const h = harness({ source: SOURCE });
+    const result = await h.invoke('playlist_move_block', {
+      playlist_id: 'source',
+      start: 2,
+      count: 2,
+      to_position: 3,
+      dry_run: false,
+      response_format: 'concise',
+    });
+
+    // The block (positions 2–3) already starts at slot 3, so the computed order
+    // is identical to the stored one — a PUT would only burn a write request
+    // and risk dropping unavailable rows.
+    assert.deepEqual(h.writes, []);
+    const payload = result.structuredContent;
+    assert.ok(payload);
+    assert.equal(payload.ok, true);
+    assert.equal(payload.no_op, true);
+    assert.equal(payload.items, 4);
+    assert.equal(payload.start, 2);
+    assert.equal(payload.count, 2);
+    assert.equal(payload.to_position, 3);
+    assert.match(result.content[0].text, /no-op: the resulting order is unchanged \(target position 3 → slot 3, block 2–3\); no write was issued\./);
+  });
+
+  it('issues zero writes when the target is clamped into the moved block', async () => {
+    const h = harness({ source: SOURCE });
+    // to_position 99 clamps onto the last slot, which is inside a 3–4 block.
+    const result = await h.invoke('playlist_move_block', {
+      playlist_id: 'source',
+      start: 3,
+      count: 2,
+      to_position: 99,
+      dry_run: false,
+      response_format: 'json',
+    });
+
+    assert.deepEqual(h.writes, []);
+    assert.equal(result.structuredContent?.no_op, true);
+  });
+
+  it('issues zero writes when the block lands immediately past itself', async () => {
+    const h = harness({ source: SOURCE });
+    // to_position == start + count resolves back to the original order (the
+    // documented "destination shifts down by range_length" rule puts the block
+    // straight back). The write would rewrite the same URIs, so it is skipped
+    // too — the guard keys on the resulting order, not just on the target.
+    const result = await h.invoke('playlist_move_block', {
+      playlist_id: 'source',
+      start: 2,
+      count: 2,
+      to_position: 4,
+      dry_run: false,
+      response_format: 'json',
+    });
+
+    assert.deepEqual(h.writes, []);
+    const payload = result.structuredContent;
+    assert.ok(payload);
+    assert.equal(payload.no_op, true);
+    assert.equal(payload.to_position, 4);
+  });
+
+  it('writes exactly once for a move that reorders past the block', async () => {
+    const h = harness({ source: SOURCE });
+    // First item to slot 3 — a genuine reordering, so the write must happen.
+    const result = await h.invoke('playlist_move_block', {
+      playlist_id: 'source',
+      start: 1,
+      count: 1,
+      to_position: 3,
+      dry_run: false,
+      response_format: 'json',
+    });
+
+    assert.equal(h.writes.length, 1);
+    assert.equal(h.writes[0].method, 'PUT');
+    const payload = result.structuredContent;
+    assert.ok(payload);
+    assert.equal(payload.no_op, undefined);
+    assert.deepEqual(payload.order, [
+      'spotify:track:b',
+      'spotify:track:a',
+      'spotify:track:c',
+      'spotify:track:d',
+    ]);
+  });
+
+  it('writes exactly once for a move that precedes the block', async () => {
+    const h = harness({ source: SOURCE });
+    const result = await h.invoke('playlist_move_block', {
+      playlist_id: 'source',
+      start: 3,
+      count: 1,
+      to_position: 1,
+      dry_run: false,
+      response_format: 'json',
+    });
+
+    assert.equal(h.writes.length, 1);
+    assert.deepEqual(result.structuredContent?.order, [
+      'spotify:track:c',
+      'spotify:track:a',
+      'spotify:track:b',
+      'spotify:track:d',
+    ]);
+  });
+
+  it('carries no noOp payload field left behind without the early return (#882)', () => {
+    const src = readFileSync(
+      new URL('../src/tools/swarm4_playlists.ts', import.meta.url),
+      'utf8',
+    );
+    const handler = src.slice(src.indexOf("'playlist_move_block'"), src.indexOf("'playlist_swap_positions'"));
+    // With the early return in place the local is unreachable: reporting
+    // no_op in the write payload while still replacing the playlist is exactly
+    // the defect, so the identifier must not survive.
+    assert.doesNotMatch(handler, /noOp/);
+    assert.match(handler, /no_op: true/);
   });
 });
