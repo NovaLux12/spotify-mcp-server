@@ -423,7 +423,19 @@ export function registerArtistWatchTools(server: McpServer, client: SpotifyClien
       const store = await loadStore();
       const entry = store.watchlists[listName];
       if (!entry || entry.artists.length === 0) {
-        return { content: [{ type: 'text', text: `Watchlist "${listName}" is empty.` }] };
+        // An empty watchlist is the DEFAULT state after install, and the bare
+        // `Watchlist "default" is empty.` prose reads as a completed scan with
+        // nothing to show (#716). Say why the answer is empty and name the two
+        // tools that fix it, and mark the result ok:false so a caller can tell
+        // "scanned, nothing new" apart from "nothing to scan".
+        const reason = entry ? 'empty_watchlist' : 'unknown_watchlist';
+        const prose = entry
+          ? `No artists in watchlist "${listName}" — nothing was scanned. Add some with watch_artists (artist_ids=[...]) or use whats_new for your followed artists instead.`
+          : `Watchlist "${listName}" does not exist. Create it with watch_artists (artist_ids=[...]), or use whats_new for your followed artists instead.`;
+        return {
+          content: [{ type: 'text', text: prose }],
+          structuredContent: { ok: false, reason, watchlist_name: listName, artists: 0, items: [], hint: 'watch_artists(artist_ids=[...])' },
+        };
       }
       const watchlistSize = entry.artists.length;
       const budget = args.max_artists ?? getConfig().freshnessBudget;
