@@ -106,7 +106,7 @@ above either ceiling fails CI and server startup.
 | import | 1 | 1,211 | 1 | 1,211 | 2 | 1,333 |
 | smart | 1 | 2,182 | 1 | 2,182 | 2 | 2,401 |
 | exhaustmisc | 10 | 7,924 | 10 | 7,924 | 11 | 8,717 |
-| exhaust2catalog | 19 | 18,759 | 19 | 18,759 | 20 | 20,635 |
+| exhaust2catalog | 19 | 19,283 | 19 | 19,283 | 20 | 21,212 |
 | exhaust2enggating | 0 | 0 | 0 | 0 | 1 | 0 |
 | exhaust2playback | 23 | 17,306 | 23 | 17,306 | 24 | 19,037 |
 | exhaust2playlists | 18 | 23,511 | 18 | 23,511 | 19 | 25,863 |
