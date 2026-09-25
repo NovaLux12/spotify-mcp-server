@@ -266,16 +266,37 @@ describe('MCP stdio smoke (real src/index.ts)', () => {
     });
     assert.equal(parseRes.error, undefined, `parse_spotify_uri must not error: ${JSON.stringify(parseRes.error)}`);
 
-    // Call 2: get_me (real API call — may 403 with test token, but must not
-    // crash the transport; a JSON-RPC error result is acceptable).
+    // Call 2: get_me — the first networked tool on the surface, called with no
+    // arguments against a stub token, so it cannot succeed.
+    //
+    // #667: the old guard was
+    //   assert.ok(meRes.error !== undefined || meRes.result !== undefined)
+    // which holds for every JSON-RPC response the transport can produce, and
+    // StdioClient.request() rejects on a JSON-RPC error, so the error arm was
+    // unreachable. It asserted nothing. What the test can actually pin is the
+    // outcome: a call that cannot succeed must be reported as a failure, and
+    // the failure must be attributed and classified.
+    //
+    // Two neighbouring guarantees are deliberately NOT re-asserted here
+    // because the harness above already fails the run before any assertion
+    // could: a dead process is caught by StdioClient's exit handler (verified
+    // — a `process.exit` inside the tool fails this test with "server exited
+    // early"), and a malformed CallToolResult is rejected by the MCP SDK's own
+    // result validation with JSON-RPC -32602.
     const meRes = await client.request('tools/call', {
       name: 'get_me',
       arguments: {},
     });
-    // The call itself must not crash the server; either a clean result or a
-    // structured error response is fine (test token has no real Spotify scopes).
-    assert.ok(meRes.error !== undefined || meRes.result !== undefined,
-      'get_me must return either a result or a structured error, never crash the server');
+    // request() rejects on a JSON-RPC error, so a resolved call always carries
+    // `result`; the field is merely declared optional on the wire type.
+    const me = meRes.result as { isError?: unknown; structuredContent?: unknown };
+    assert.equal(me.isError, true, 'get_me must not report success against a stub token');
+    const failure = (me.structuredContent as { error?: { tool?: unknown; kind?: unknown; status?: unknown } } | undefined)?.error;
+    assert.ok(failure, 'a failing tool must map its error into structuredContent.error');
+    assert.equal(failure.tool, 'get_me', 'the mapped error must name the failing tool');
+    assert.equal(typeof failure.kind, 'string', 'the mapped error must classify the failure');
+    assert.notEqual(failure.kind, '');
+    assert.equal(typeof failure.status, 'number', 'the mapped error must carry a numeric status');
   });
 });
 
