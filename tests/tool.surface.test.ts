@@ -28,6 +28,7 @@ import {
   AGGREGATE_SURFACE_LIMITS,
   assertAggregateSurfaceBudget,
   assertModuleSchemaBudgets,
+  applyToolAnnotations,
   collectAggregateSurfaceMeasurement,
   collectModuleSchemaBudgets,
   NEVER_MUTATING_PLANS,
@@ -35,6 +36,7 @@ import {
   serializedSchemaBytes,
   registerManifestModule,
   REGISTRAR_MANIFEST,
+  installToolErrorBoundary,
 } from '../src/tools/annotations.js';
 import { SpotifyClient } from '../src/client.js';
 
@@ -199,6 +201,13 @@ describe('tool surface: annotations', () => {
       .map((t) => t.name);
     assert.deepEqual(bad, [], `read tools marked destructive: [${bad.join(', ')}]`);
   });
+
+  it('keeps the read-only freshness radar visible in READONLY mode', async () => {
+    const tools = await listTools({ SPOTIFY_MCP_READONLY: '1' });
+    const freshness = tools.find((tool) => tool.name === 'whats_new');
+    assert.ok(freshness, 'whats_new must remain visible in READONLY mode');
+    assert.equal(freshness.annotations?.readOnlyHint, true);
+  });
 });
 
 describe('tool surface: budget', () => {
@@ -216,6 +225,38 @@ describe('tool surface: budget', () => {
 
     const oversized = tools.filter((t) => bytesOf(t) > PER_TOOL_MAX_BYTES).map((t) => `${t.name} (${bytesOf(t)}B)`);
     assert.deepEqual(oversized, [], `tools exceeding ${PER_TOOL_MAX_BYTES}B: [${oversized.join(', ')}]`);
+  });
+
+  it('preserves operation-specific canonical and legacy playlist bounds', async () => {
+    const tools = await listTools({});
+    const expected = {
+      playlist_subtract: { minItems: 1, maxItems: 10 },
+      playlist_difference_plan: { minItems: 1, maxItems: 5 },
+      find_duplicate_tracks_across_playlists: { minItems: 2, maxItems: 20 },
+    } as const;
+    const aliases = {
+      playlist_subtract: 'subtract_playlist_ids',
+      playlist_difference_plan: 'subtract_playlist_ids',
+      find_duplicate_tracks_across_playlists: 'playlist_ids',
+    } as const;
+
+    for (const [name, bounds] of Object.entries(expected)) {
+      const schema = tools.find((tool) => tool.name === name)?.inputSchema as {
+        properties?: Record<string, { minItems?: number; maxItems?: number }>;
+      } | undefined;
+      assert.ok(schema, `${name} must expose an input schema`);
+      assert.deepEqual(
+        [schema.properties?.playlists?.minItems, schema.properties?.playlists?.maxItems],
+        [bounds.minItems, bounds.maxItems],
+        `${name}.playlists bounds`,
+      );
+      const alias = aliases[name as keyof typeof aliases];
+      assert.deepEqual(
+        [schema.properties?.[alias]?.minItems, schema.properties?.[alias]?.maxItems],
+        [bounds.minItems, bounds.maxItems],
+        `${name}.${alias} bounds`,
+      );
+    }
   });
 
   it('the core preset is small and still covers the daily loop', async () => {
@@ -295,11 +336,13 @@ describe('tool surface: budget', () => {
     assert.equal(new Set(REGISTRAR_MANIFEST.map((module) => module.key)).size, REGISTRAR_MANIFEST.length);
   });
 
-  it('manifest measurements equal tools/list over InMemoryTransport', async () => {
+  it('manifest measurements equal the finalized production tools/list projection', async () => {
     const server = new McpServer({ name: 'wire-audit', version: '0.0.0' });
     const client = new SpotifyClient();
     const context = { readOnly: false, isModuleActive: () => true, scopeBlocked: () => false };
     for (const module of REGISTRAR_MANIFEST) registerManifestModule(server, client, module, context);
+    applyToolAnnotations(server);
+    installToolErrorBoundary(server);
     const mcpClient = new Client({ name: 'wire-client', version: '0.0.0' });
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     await Promise.all([server.connect(serverTransport), mcpClient.connect(clientTransport)]);
@@ -315,6 +358,7 @@ describe('tool surface: budget', () => {
       }, 0);
       assert.equal(measured, wire, `${module.key} schema bytes must match tools/list wire payload`);
     }
+    assert.equal(collectAggregateSurfaceMeasurement(server).schemaBytes, Buffer.byteLength(JSON.stringify(wireTools), 'utf8'));
     assert.equal(wireTools.length, Object.keys(registry).length);
     await mcpClient.close();
     await server.close();

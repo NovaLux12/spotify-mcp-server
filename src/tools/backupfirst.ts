@@ -79,7 +79,7 @@ export function registerBackupFirstTools(server: McpServer, client: SpotifyClien
         return textResult(text, { ok: true, file: snap.file, counts: snap.counts, bytes: snap.bytes });
       } catch (error) {
         if (error instanceof SpotifyApiError) {
-          throw new SpotifyApiError(error.status, 'Pre-flight backup could not be created.', error.retryAfterSec);
+          throw new SpotifyApiError(error.status, 'Pre-flight backup could not be created.', error.retryAfterSec, error.reason);
         }
         throw new BackupFirstError();
       }

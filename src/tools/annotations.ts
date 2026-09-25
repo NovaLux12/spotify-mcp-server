@@ -91,10 +91,10 @@ import { registerSwarm3MetaTools } from './swarm3_meta.js';
 import { registerStatsfmTools } from './statsfm.js';
 import { formatReceipt, verifyReceipt } from '../receipts.js';
 import { z } from 'zod';
-import * as z4 from 'zod/v4-mini';
 import { CallToolRequestSchema, ListToolsRequestSchema, type ServerResult } from '@modelcontextprotocol/sdk/types.js';
 import { getObjectShape, normalizeObjectSchema, safeParseAsync } from '@modelcontextprotocol/sdk/server/zod-compat.js';
 import { toJsonSchemaCompat } from '@modelcontextprotocol/sdk/server/zod-json-schema-compat.js';
+import { finalInputSchema } from '../shaping.js';
 import { SpotifyApiError } from '../client.js';
 
 export interface ToolAnnotations {
@@ -319,7 +319,7 @@ export function collectAggregateSurfaceMeasurement(server: McpServer): Aggregate
     name,
     title: tool.title,
     description: tool.description,
-    inputSchema: tool.inputSchema === undefined ? {} : z4.toJSONSchema(tool.inputSchema as Parameters<typeof z4.toJSONSchema>[0], { target: 'draft-7', io: 'input' }),
+    inputSchema: finalInputSchema(tool.inputSchema),
     annotations: tool.annotations,
     execution: tool.execution,
     _meta: tool._meta,
@@ -376,36 +376,36 @@ const manifestEntry = (
 });
 
 export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
-  manifestEntry('search', 'search', 'src/tools/search.ts', registerSearchTools, [1, 1832], { readOnlySafe: true }),
-  manifestEntry('catalog', 'catalog', 'src/tools/catalog.ts', registerCatalogTools, [32, 27331], { readOnlySafe: true }),
-  manifestEntry('library', 'library', 'src/tools/library.ts', registerLibraryTools, [16, 14651]),
-  manifestEntry('playback', 'playback', 'src/tools/playback.ts', registerPlaybackTools, [16, 12391]),
-  manifestEntry('following', 'following', 'src/tools/following.ts', registerFollowingTools, [5, 3634]),
-  manifestEntry('users', 'users', 'src/tools/users.ts', registerUsersTools, [2, 1561]),
-  manifestEntry('audiobooks', 'audiobooks', 'src/tools/audiobooks.ts', registerAudiobookTools, [4, 3627]),
-  manifestEntry('audiobookcopilot', 'audiobooks', 'src/tools/audiobookcopilot.ts', registerAudiobookCopilotTools, [3, 1939]),
-  manifestEntry('playlists', 'playlists', 'src/tools/playlists.ts', registerPlaylistTools, [26, 23887]),
-  manifestEntry('playlistops', 'playlists', 'src/tools/playlistops.ts', registerPlaylistOpsTools, [3, 4737]),
-  manifestEntry('playlistbatch', 'playlistbatch', 'src/tools/playlistbatch.ts', registerPlaylistBatchTools, [3, 4106]),
-  manifestEntry('playlistmisc', 'playlistmisc', 'src/tools/playlistmisc.ts', registerPlaylistMiscTools, [3, 2390]),
-  manifestEntry('personalization', 'personalization', 'src/tools/personalization.ts', registerPersonalizationTools, [3, 2601], { readOnlySafe: true }),
-  manifestEntry('analytics', 'personalization', 'src/tools/analytics.ts', registerAnalyticsTools, [4, 2687], { readOnlySafe: true }),
-  manifestEntry('statsfm', 'statsfm', 'src/tools/statsfm.ts', (server) => registerStatsfmTools(server), [30, 23411], { readOnlySafe: true }),
-  manifestEntry('taste', 'taste', 'src/tools/statsfm_taste.ts', registerStatsfmTasteTools, [16, 14327], { readOnlySafe: true }),
-  manifestEntry('tastecomposites', 'tastecomposites', 'src/tools/taste_composites.ts', registerTasteCompositeTools, [11, 9354], { readOnlySafe: true }),
-  manifestEntry('doctor', 'doctor', 'src/tools/doctortool.ts', registerDoctorTool, [1, 773], { alwaysActive: true, readOnlySafe: true }),
-  manifestEntry('swarm3meta', 'swarm3meta', 'src/tools/swarm3_meta.ts', registerSwarm3MetaTools, [3, 1693], { alwaysActive: true, scopeKey: 'catalog', readOnlySafe: true }),
-  manifestEntry('libraryanalytics', 'libraryanalytics', 'src/tools/libraryanalytics.ts', registerLibraryAnalyticsTools, [4, 3224], { readOnlySafe: true, scopeKey: 'library' }),
-  manifestEntry('portability', 'portability', 'src/tools/portability.ts', registerPortabilityTools, [11, 9061], { scopeKey: 'library' }),
-  manifestEntry('libraryinsights', 'library', 'src/tools/libraryinsights.ts', registerLibraryInsightsTools, [3, 2820], { scopeKey: 'library' }),
-  manifestEntry('libraryhygiene', 'library', 'src/tools/libraryhygiene.ts', registerLibraryHygieneTools, [1, 704], { scopeKey: 'library' }),
-  manifestEntry('showradar', 'library', 'src/tools/showradar.ts', registerShowRadarTools, [1, 1552], { readOnlySafe: true, scopeKey: 'library' }),
-  manifestEntry('saveddedupe', 'library', 'src/tools/saveddedupe.ts', registerSavedDedupeTools, [1, 1585], { scopeKey: 'library' }),
-  manifestEntry('podcastsession', 'library', 'src/tools/podcastsession.ts', registerPodcastSessionTools, [2, 2805], { scopeKey: 'library' }),
-  manifestEntry('backupfirst', 'library', 'src/tools/backupfirst.ts', registerBackupFirstTools, [1, 536], { readOnlySafe: true, scopeKey: 'library' }),
-  manifestEntry('backup', 'library', 'src/tools/backup.ts', registerBackupTools, [2, 1489], { readOnlySafe: true, scopeKey: 'library' }),
-  manifestEntry('restore', 'library', 'src/tools/restore.ts', registerRestoreTools, [1, 1874], { scopeKey: 'library' }),
-  manifestEntry('undo', 'library', 'src/tools/undo.ts', registerUndoTools, [2, 1476], { scopeKey: 'library' }),
+  manifestEntry('search', 'search', 'src/tools/search.ts', registerSearchTools, [1, 1809], { readOnlySafe: true }),
+  manifestEntry('catalog', 'catalog', 'src/tools/catalog.ts', registerCatalogTools, [32, 26595], { readOnlySafe: true }),
+  manifestEntry('library', 'library', 'src/tools/library.ts', registerLibraryTools, [16, 14283]),
+  manifestEntry('playback', 'playback', 'src/tools/playback.ts', registerPlaybackTools, [16, 12023]),
+  manifestEntry('following', 'following', 'src/tools/following.ts', registerFollowingTools, [5, 3519]),
+  manifestEntry('users', 'users', 'src/tools/users.ts', registerUsersTools, [2, 1515]),
+  manifestEntry('audiobooks', 'audiobooks', 'src/tools/audiobooks.ts', registerAudiobookTools, [4, 3535]),
+  manifestEntry('audiobookcopilot', 'audiobooks', 'src/tools/audiobookcopilot.ts', registerAudiobookCopilotTools, [3, 1870]),
+  manifestEntry('playlists', 'playlists', 'src/tools/playlists.ts', registerPlaylistTools, [26, 23322]),
+  manifestEntry('playlistops', 'playlists', 'src/tools/playlistops.ts', registerPlaylistOpsTools, [3, 4690]),
+  manifestEntry('playlistbatch', 'playlistbatch', 'src/tools/playlistbatch.ts', registerPlaylistBatchTools, [3, 4037]),
+  manifestEntry('playlistmisc', 'playlistmisc', 'src/tools/playlistmisc.ts', registerPlaylistMiscTools, [3, 2321]),
+  manifestEntry('personalization', 'personalization', 'src/tools/personalization.ts', registerPersonalizationTools, [3, 2532], { readOnlySafe: true }),
+  manifestEntry('analytics', 'personalization', 'src/tools/analytics.ts', registerAnalyticsTools, [4, 2595], { readOnlySafe: true }),
+  manifestEntry('statsfm', 'statsfm', 'src/tools/statsfm.ts', (server) => registerStatsfmTools(server), [30, 22949], { readOnlySafe: true }),
+  manifestEntry('taste', 'taste', 'src/tools/statsfm_taste.ts', registerStatsfmTasteTools, [16, 13959], { readOnlySafe: true }),
+  manifestEntry('tastecomposites', 'tastecomposites', 'src/tools/taste_composites.ts', registerTasteCompositeTools, [11, 9101], { readOnlySafe: true }),
+  manifestEntry('doctor', 'doctor', 'src/tools/doctortool.ts', registerDoctorTool, [1, 750], { alwaysActive: true, readOnlySafe: true }),
+  manifestEntry('swarm3meta', 'swarm3meta', 'src/tools/swarm3_meta.ts', registerSwarm3MetaTools, [3, 1624], { alwaysActive: true, scopeKey: 'catalog', readOnlySafe: true }),
+  manifestEntry('libraryanalytics', 'libraryanalytics', 'src/tools/libraryanalytics.ts', registerLibraryAnalyticsTools, [4, 3132], { readOnlySafe: true, scopeKey: 'library' }),
+  manifestEntry('portability', 'portability', 'src/tools/portability.ts', registerPortabilityTools, [11, 8808], { scopeKey: 'library' }),
+  manifestEntry('libraryinsights', 'library', 'src/tools/libraryinsights.ts', registerLibraryInsightsTools, [3, 2751], { scopeKey: 'library' }),
+  manifestEntry('libraryhygiene', 'library', 'src/tools/libraryhygiene.ts', registerLibraryHygieneTools, [1, 681], { scopeKey: 'library' }),
+  manifestEntry('showradar', 'library', 'src/tools/showradar.ts', registerShowRadarTools, [1, 1529], { readOnlySafe: true, scopeKey: 'library' }),
+  manifestEntry('saveddedupe', 'library', 'src/tools/saveddedupe.ts', registerSavedDedupeTools, [1, 1562], { scopeKey: 'library' }),
+  manifestEntry('podcastsession', 'library', 'src/tools/podcastsession.ts', registerPodcastSessionTools, [2, 2759], { scopeKey: 'library' }),
+  manifestEntry('backupfirst', 'library', 'src/tools/backupfirst.ts', registerBackupFirstTools, [1, 513], { readOnlySafe: true, scopeKey: 'library' }),
+  manifestEntry('backup', 'library', 'src/tools/backup.ts', registerBackupTools, [2, 1443], { readOnlySafe: true, scopeKey: 'library' }),
+  manifestEntry('restore', 'library', 'src/tools/restore.ts', registerRestoreTools, [1, 1851], { scopeKey: 'library' }),
+  manifestEntry('undo', 'library', 'src/tools/undo.ts', registerUndoTools, [2, 1430], { scopeKey: 'library' }),
   manifestEntry('receipts', 'library', 'src/tools/annotations.ts', (server) => {
     server.tool(
       'verify_receipt',
@@ -419,39 +419,39 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
         return { content: [{ type: 'text', text: formatReceipt(receipt) }], structuredContent: { ...receipt } };
       },
     );
-  }, [1, 338], { readOnlySafe: true, scopeKey: 'library' }),
-  manifestEntry('episodemgmt', 'episodemgmt', 'src/tools/episodemgmt.ts', registerEpisodeMgmtTools, [1, 712], { scopeKey: 'library' }),
-  manifestEntry('freshness', 'following', 'src/tools/freshness.ts', registerFreshnessTools, [1, 2066], { scopeKey: 'following' }),
-  manifestEntry('searchdive', 'search', 'src/tools/searchdive.ts', registerSearchDeepTool, [1, 1349], { readOnlySafe: true, scopeKey: 'search' }),
-  manifestEntry('searchhistory', 'searchhistory', 'src/tools/searchhistory.ts', registerSearchHistoryTools, [2, 1050], { readOnlySafe: true, scopeKey: 'search' }),
-  manifestEntry('browse', 'browse', 'src/tools/browse.ts', registerBrowseTools, [3, 2734], { readOnlySafe: true, scopeKey: 'catalog' }),
-  manifestEntry('artistwatch', 'artistwatch', 'src/tools/artistwatch.ts', registerArtistWatchTools, [6, 5705], { scopeKey: 'catalog' }),
-  manifestEntry('queueops', 'queueops', 'src/tools/queueops.ts', registerQueueOpsTools, [3, 3518], { scopeKey: 'playback' }),
-  manifestEntry('playbackext', 'playbackext', 'src/tools/playbackext.ts', registerPlaybackExtTools, [13, 7494], { scopeKey: 'playback' }),
-  manifestEntry('playbackintel', 'playbackintel', 'src/tools/playbackintel.ts', registerPlaybackIntelTools, [15, 11960], { scopeKey: 'playback' }),
-  manifestEntry('scenes', 'playback', 'src/tools/scenes.ts', registerScenesTools, [7, 4617], { scopeKey: 'playback' }),
-  manifestEntry('playlisthealth', 'playlisthealth', 'src/tools/playlisthealth.ts', registerPlaylistHealthTools, [8, 5469], { scopeKey: 'playlists' }),
-  manifestEntry('playlistdna', 'playlists', 'src/tools/playlistdna.ts', registerPlaylistDnaTools, [1, 1333], { readOnlySafe: true, scopeKey: 'playlists' }),
-  manifestEntry('export', 'playlists', 'src/tools/export.ts', registerExportTools, [1, 1111], { scopeKey: 'playlists' }),
-  manifestEntry('import', 'playlists', 'src/tools/import.ts', registerImportTools, [1, 1158], { scopeKey: 'playlists' }),
-  manifestEntry('smart', 'playlists', 'src/tools/smart.ts', registerSmartTools, [1, 2205], { scopeKey: 'playlists' }),
-  manifestEntry('exhaustmisc', 'playlists', 'src/tools/exhaustmisc.ts', registerExhaustMiscTools, [10, 8143]),
-  manifestEntry('exhaust2catalog', 'exhaust2catalog', 'src/tools/exhaust2_catalog.ts', registerExhaust2CatalogTools, [19, 18643], { readOnlySafe: true, scopeKey: 'catalog' }),
+  }, [1, 315], { readOnlySafe: true, scopeKey: 'library' }),
+  manifestEntry('episodemgmt', 'episodemgmt', 'src/tools/episodemgmt.ts', registerEpisodeMgmtTools, [1, 689], { scopeKey: 'library' }),
+  manifestEntry('freshness', 'following', 'src/tools/freshness.ts', registerFreshnessTools, [1, 2043], { readOnlySafe: true, scopeKey: 'following' }),
+  manifestEntry('searchdive', 'search', 'src/tools/searchdive.ts', registerSearchDeepTool, [1, 1326], { readOnlySafe: true, scopeKey: 'search' }),
+  manifestEntry('searchhistory', 'searchhistory', 'src/tools/searchhistory.ts', registerSearchHistoryTools, [2, 1004], { readOnlySafe: true, scopeKey: 'search' }),
+  manifestEntry('browse', 'browse', 'src/tools/browse.ts', registerBrowseTools, [3, 2665], { readOnlySafe: true, scopeKey: 'catalog' }),
+  manifestEntry('artistwatch', 'artistwatch', 'src/tools/artistwatch.ts', registerArtistWatchTools, [6, 5567], { scopeKey: 'catalog' }),
+  manifestEntry('queueops', 'queueops', 'src/tools/queueops.ts', registerQueueOpsTools, [3, 3449], { scopeKey: 'playback' }),
+  manifestEntry('playbackext', 'playbackext', 'src/tools/playbackext.ts', registerPlaybackExtTools, [13, 7195], { scopeKey: 'playback' }),
+  manifestEntry('playbackintel', 'playbackintel', 'src/tools/playbackintel.ts', registerPlaybackIntelTools, [15, 11615], { scopeKey: 'playback' }),
+  manifestEntry('scenes', 'playback', 'src/tools/scenes.ts', registerScenesTools, [7, 4456], { scopeKey: 'playback' }),
+  manifestEntry('playlisthealth', 'playlisthealth', 'src/tools/playlisthealth.ts', registerPlaylistHealthTools, [8, 5285], { scopeKey: 'playlists' }),
+  manifestEntry('playlistdna', 'playlistdna', 'src/tools/playlistdna.ts', registerPlaylistDnaTools, [1, 1310], { readOnlySafe: true, scopeKey: 'playlists' }),
+  manifestEntry('export', 'playlists', 'src/tools/export.ts', registerExportTools, [1, 1088], { scopeKey: 'playlists' }),
+  manifestEntry('import', 'playlists', 'src/tools/import.ts', registerImportTools, [1, 1135], { scopeKey: 'playlists' }),
+  manifestEntry('smart', 'playlists', 'src/tools/smart.ts', registerSmartTools, [1, 2182], { scopeKey: 'playlists' }),
+  manifestEntry('exhaustmisc', 'playlists', 'src/tools/exhaustmisc.ts', registerExhaustMiscTools, [10, 7924]),
+  manifestEntry('exhaust2catalog', 'exhaust2catalog', 'src/tools/exhaust2_catalog.ts', registerExhaust2CatalogTools, [19, 18206], { readOnlySafe: true, scopeKey: 'catalog' }),
   manifestEntry('exhaust2enggating', 'exhaust2enggating', 'src/tools/exhaust2_enggating.ts', registerExhaust2EnggatingTools, [0, 0], { readOnlySafe: true, scopeKey: 'catalog' }),
-  manifestEntry('exhaust2playback', 'exhaust2playback', 'src/tools/exhaust2_playback.ts', registerExhaust2PlaybackTools, [23, 17835], { scopeKey: 'playback' }),
-  manifestEntry('exhaust2playlists', 'exhaust2playlists', 'src/tools/exhaust2_playlists.ts', registerExhaust2PlaylistsTools, [18, 23858], { scopeKey: 'playlists' }),
-  manifestEntry('exhaust2misc', 'exhaust2misc', 'src/tools/exhaust2_misc.ts', registerExhaust2MiscTools, [27, 23391], { scopeKey: 'library' }),
-  manifestEntry('exhaust2extra', 'exhaust2extra', 'src/tools/exhaust2_extra.ts', registerExhaust2ExtraTools, [3, 3764], { scopeKey: 'playlists' }),
-  manifestEntry('swarm3discovery', 'swarm3discovery', 'src/tools/swarm3_discovery.ts', registerSwarm3DiscoveryTools, [24, 22108], { readOnlySafe: true, scopeKey: 'catalog' }),
-  manifestEntry('swarm3bdiscovery', 'swarm3bdiscovery', 'src/tools/swarm3b_discovery.ts', registerSwarm3bDiscoveryTools, [24, 19731], { readOnlySafe: true, scopeKey: 'catalog' }),
-  manifestEntry('swarm3shows', 'swarm3shows', 'src/tools/swarm3_shows.ts', registerSwarm3ShowsTools, [24, 20739], { scopeKey: 'catalog' }),
-  manifestEntry('swarm3refs', 'swarm3refs', 'src/tools/swarm3_refs.ts', registerSwarm3RefsTools, [6, 4433], { readOnlySafe: true, scopeKey: 'catalog' }),
-  manifestEntry('swarm3analytics', 'swarm3analytics', 'src/tools/swarm3_analytics.ts', registerSwarm3AnalyticsTools, [24, 19000], { readOnlySafe: true, scopeKey: 'personalization' }),
-  manifestEntry('swarm3library', 'swarm3library', 'src/tools/swarm3_library.ts', registerSwarm3LibraryTools, [24, 18539], { readOnlySafe: true, scopeKey: 'library' }),
-  manifestEntry('swarm3playback', 'swarm3playback', 'src/tools/swarm3_playback.ts', registerSwarm3PlaybackTools, [24, 14799], { scopeKey: 'playback' }),
-  manifestEntry('swarm3playlistops', 'swarm3playlistops', 'src/tools/swarm3_playlistops.ts', registerSwarm3PlaylistopsTools, [24, 32265], { scopeKey: 'playlists' }),
-  manifestEntry('swarm3snapshots', 'swarm3snapshots', 'src/tools/swarm3_snapshots.ts', registerSwarm3SnapshotsTools, [24, 24296], { scopeKey: 'playlists' }),
-  manifestEntry('swarm4playlists', 'swarm4playlists', 'src/tools/swarm4_playlists.ts', registerSwarm4PlaylistsTools, [18, 23008], { scopeKey: 'playlists' }),
+  manifestEntry('exhaust2playback', 'exhaust2playback', 'src/tools/exhaust2_playback.ts', registerExhaust2PlaybackTools, [23, 17306], { scopeKey: 'playback' }),
+  manifestEntry('exhaust2playlists', 'exhaust2playlists', 'src/tools/exhaust2_playlists.ts', registerExhaust2PlaylistsTools, [18, 23466], { scopeKey: 'playlists' }),
+  manifestEntry('exhaust2misc', 'exhaust2misc', 'src/tools/exhaust2_misc.ts', registerExhaust2MiscTools, [27, 22770], { scopeKey: 'library' }),
+  manifestEntry('exhaust2extra', 'exhaust2extra', 'src/tools/exhaust2_extra.ts', registerExhaust2ExtraTools, [3, 3695], { scopeKey: 'playlists' }),
+  manifestEntry('swarm3discovery', 'swarm3discovery', 'src/tools/swarm3_discovery.ts', registerSwarm3DiscoveryTools, [24, 21223], { readOnlySafe: true, scopeKey: 'catalog' }),
+  manifestEntry('swarm3bdiscovery', 'swarm3bdiscovery', 'src/tools/swarm3_b_discovery.ts', registerSwarm3bDiscoveryTools, [24, 18704], { readOnlySafe: true, scopeKey: 'catalog' }),
+  manifestEntry('swarm3shows', 'swarm3shows', 'src/tools/swarm3_shows.ts', registerSwarm3ShowsTools, [24, 20023], { readOnlySafe: true, scopeKey: 'catalog' }),
+  manifestEntry('swarm3refs', 'swarm3refs', 'src/tools/swarm3_refs.ts', registerSwarm3RefsTools, [6, 4295], { readOnlySafe: true, scopeKey: 'catalog' }),
+  manifestEntry('swarm3analytics', 'swarm3analytics', 'src/tools/swarm3_analytics.ts', registerSwarm3AnalyticsTools, [24, 18426], { readOnlySafe: true, scopeKey: 'personalization' }),
+  manifestEntry('swarm3library', 'swarm3library', 'src/tools/swarm3_library.ts', registerSwarm3LibraryTools, [24, 17987], { readOnlySafe: true, scopeKey: 'library' }),
+  manifestEntry('swarm3playback', 'swarm3playback', 'src/tools/swarm3_playback.ts', registerSwarm3PlaybackTools, [24, 14247], { scopeKey: 'playback' }),
+  manifestEntry('swarm3playlistops', 'swarm3playlistops', 'src/tools/swarm3_playlistops.ts', registerSwarm3PlaylistopsTools, [24, 31777], { scopeKey: 'playlists' }),
+  manifestEntry('swarm3snapshots', 'swarm3snapshots', 'src/tools/swarm3_snapshots.ts', registerSwarm3SnapshotsTools, [24, 23696], { scopeKey: 'playlists' }),
+  manifestEntry('swarm4playlists', 'swarm4playlists', 'src/tools/swarm4_playlists.ts', registerSwarm4PlaylistsTools, [18, 22594], { scopeKey: 'playlists' }),
 ] as const;
 
 interface SchemaRegistryEntry {
@@ -520,12 +520,7 @@ export function moduleToolNames(server: McpServer, moduleKey: string): readonly 
 
 /** UTF-8 bytes for description + the same JSON Schema emitted by tools/list. */
 export function serializedSchemaBytes(schema: Pick<SchemaRegistryEntry, 'description' | 'inputSchema'>): number {
-  const inputSchema = schema.inputSchema === undefined
-    ? {}
-    : z4.toJSONSchema(schema.inputSchema as Parameters<typeof z4.toJSONSchema>[0], {
-        target: 'draft-7',
-        io: 'input',
-      });
+  const inputSchema = finalInputSchema(schema.inputSchema);
   return Buffer.byteLength(JSON.stringify({
     description: String(schema.description ?? ''),
     inputSchema,
@@ -839,7 +834,7 @@ function publicFailure(tool: string, error: unknown): ErrorFields {
       text: `${tool} could not reach Spotify because the service is unavailable; retry shortly.`,
     };
   }
-  if (/invalid arguments?|input validation|must |required|provide at least|pass either|not both|expected /.test(lower)) {
+  if (/^(?:invalid (?:(?:playable )?(?:spotify )?(?:reference|uris?)|spotify track\/episode uri|playlist reference)|(?:no resolvable|no valid).*uris?\b)|invalid arguments?|input validation|must |required|provide at least|pass either|not both|expected /.test(lower)) {
     return {
       kind: 'validation',
       reason: defaultReason('validation'),
@@ -961,12 +956,7 @@ export function installToolErrorBoundary(server: McpServer): number {
     tools: Object.entries(registry)
       .filter(([, entry]) => entry.enabled !== false)
       .map(([name, entry]) => {
-        const objectSchema = normalizeObjectSchema(entry.inputSchema);
-        const inputSchema = objectSchema
-          ? toJsonSchemaCompat(objectSchema, { pipeStrategy: 'input' })
-          : { type: 'object', properties: {} };
-        inputSchema.additionalProperties = false;
-        delete inputSchema.$schema;
+        const inputSchema = finalInputSchema(entry.inputSchema);
 
         const definition: Record<string, unknown> = { name, inputSchema };
         if (entry.title !== undefined) definition.title = entry.title;

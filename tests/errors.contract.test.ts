@@ -56,11 +56,12 @@ async function harness(): Promise<Client> {
   server.tool('statsfm_unavailable_error', '503', throws(new StatsfmApiError(503, 'raw stats.fm /private/unavailable')));
   server.tool('statsfm_transport_error', 'transport', throws(new StatsfmApiError(0, 'raw stats.fm https://example.test/private?token=secret', undefined, 'transport_error')));
   server.tool('internal_error', 'internal', throws(new Error('ENOENT /home/alice/input/private.m3u and https://example.test/raw?token=secret')));
+  server.tool('domain_input_error', 'validation', { uri: z.string() }, throws(new Error('Invalid Spotify reference: not-a-spotify-uri')));
   server.tool('valid_error', 'validation', { count: z.number() }, async () => ({ content: [{ type: 'text', text: 'ok' }] }));
   server.tool('near_error', 'unknown parameter', { playlist_id: z.string() }, async () => ({ content: [{ type: 'text', text: 'ok' }] }));
   server.tool('list_show_episodes', 'episodes', { show_id: z.string(), offset: z.number().optional(), max_results: z.number().optional() }, async () => ({ content: [{ type: 'text', text: 'ok' }] }));
   registerBackupFirstTools(server, {
-    getAllPages: async () => { throw new SpotifyApiError(429, 'SENTINEL_BACKUP https://example.test/raw?token=secret /home/alice/private.json', 9); },
+    get: async () => { throw new SpotifyApiError(429, 'SENTINEL_BACKUP https://example.test/raw?token=secret /home/alice/private.json', 9, 'QUOTA_EXCEEDED'); },
   } as unknown as SpotifyClient);
 
   installToolErrorBoundary(server);
@@ -137,6 +138,13 @@ describe('production tool error contract (#921)', () => {
     assert.equal(validation.kind, 'validation');
     assert.equal(validation.param, 'count');
 
+    const domainInput = envelope(await call(client, 'domain_input_error', { uri: 'not-a-spotify-uri' }));
+    assert.equal(domainInput.kind, 'validation');
+
+    const backupFirst = envelope(await call(client, 'backup_first'));
+    assert.equal(backupFirst.kind, 'rate_limited');
+    assert.equal(backupFirst.reason, 'QUOTA_EXCEEDED');
+    assert.equal(backupFirst.retryAfterSec, 9);
     const unknownParam = envelope(await call(client, 'near_error', { playlst_id: 'x' }));
     assert.equal(unknownParam.tool, 'near_error');
     assert.equal(unknownParam.kind, 'unknown_param');

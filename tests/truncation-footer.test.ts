@@ -296,6 +296,21 @@ describe('production truncation boundary', () => {
     assert.match(shaped.content[0]!.text, /3 more/);
   });
 
+  it('preserves an explicit truncation marker without inventing a returned count', () => {
+    const server = new McpServer({ name: 'truncation-marker-test', version: '0.0.0' });
+    const boundary = installTruncationBoundary(server);
+    server.tool('marked_partial', 'Marked partial', { max_results: z.number().optional() }, async () => ({ content: [] }));
+    const result = {
+      content: [],
+      structuredContent: { truncated: true, remaining: 3, status: 'partial' },
+    };
+    const shaped = boundary.shape('marked_partial', { max_results: 2 }, result) as typeof result;
+    assert.equal(shaped.structuredContent.truncated, true);
+    assert.equal(shaped.structuredContent.remaining, 3);
+    assert.equal('returned' in shaped.structuredContent, false);
+    assert.equal('total' in shaped.structuredContent, false);
+  });
+
   it('preserves successful untouched results by identity', async () => {
     const server = new McpServer({ name: 'truncation-identity-test', version: '0.0.0' });
     const boundary = installTruncationBoundary(server);

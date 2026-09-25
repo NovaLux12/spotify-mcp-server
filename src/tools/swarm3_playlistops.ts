@@ -37,6 +37,7 @@ import {
   ResponseFormat,
   describeDryRun,
   legacyPlaylistListFields,
+  playlistListInputFields,
   parseSpotifyUri,
   resolveMaxResults,
   resolvePlaylistInput,
@@ -737,8 +738,7 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
       'the target. Quota: 🟢 ≤7 GETs + 1 PUT when committing.',
     {
       base_playlist_id: PlaylistId.describe('Base playlist (ID, URI, or URL) whose survivors are kept'),
-      ...PlaylistListFields,
-      ...legacyPlaylistListFields(['subtract_playlist_ids'], { min: 1, max: 5 }),
+      ...playlistListInputFields(['subtract_playlist_ids'], { min: 1, max: 5 }),
       target_playlist_id: PlaylistId.optional().describe('Existing playlist (ID, URI, or URL) to atomically overwrite with the difference. Omit = read-only plan'),
       dry_run: DryRunDefault,
       response_format: ResponseFormatArgName,

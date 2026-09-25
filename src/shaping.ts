@@ -8,6 +8,19 @@
 import { z } from 'zod';
 import { classifySpotifyReference } from './refs.js';
 import { DEFAULT_MAX_ITEMS, getConfig } from './config.js';
+import { normalizeObjectSchema } from '@modelcontextprotocol/sdk/server/zod-compat.js';
+import { toJsonSchemaCompat } from '@modelcontextprotocol/sdk/server/zod-json-schema-compat.js';
+
+/** Exact root input schema projected onto the production tools/list boundary. */
+export function finalInputSchema(input: unknown): Record<string, unknown> {
+  const objectSchema = normalizeObjectSchema(input as Parameters<typeof normalizeObjectSchema>[0]);
+  const schema = objectSchema
+    ? toJsonSchemaCompat(objectSchema, { pipeStrategy: 'input' })
+    : { type: 'object', properties: {} };
+  schema.additionalProperties = false;
+  delete schema.$schema;
+  return schema;
+}
 
 // ---------------------------------------------------------------------------
 // Shared zod fragments (#51/#53/#57)
@@ -83,12 +96,27 @@ export const PlaylistRefs = z
   .max(10)
   .describe('Canonical ordered playlists (2–10). Provide this field or the complete documented legacy alias; IDs, spotify:playlist: URIs, and Spotify playlist URLs are accepted.');
 
+export interface PlaylistListLimits {
+  readonly min?: number;
+  readonly max?: number;
+}
+
+/** Canonical ordered collection with an operation-specific cardinality. */
+export function playlistListFields({ min = 2, max = 10 }: PlaylistListLimits = {}) {
+  return {
+    playlists: z
+      .array(PlaylistRef)
+      .min(min)
+      .max(max)
+      .optional()
+      .describe(`Canonical ordered playlists (${min}–${max}), or provide the complete documented legacy alias accepted by this tool`),
+  } as const;
+}
+
 export const PlaylistId = PlaylistRef;
 
 /** Canonical plural input; exactly one canonical/legacy collection is required. */
-export const PlaylistListFields = {
-  playlists: PlaylistRefs.optional().describe('Canonical ordered playlists (2–10), or provide the complete legacy alias accepted by this tool'),
-} as const;
+export const PlaylistListFields = playlistListFields();
 
 /** Canonical A-then-B pair; provide both fields or one complete documented legacy pair. */
 export const PlaylistPairFields = {
@@ -108,30 +136,49 @@ export type PlaylistListAlias =
   | 'subtract_playlist_ids'
   | 'sources';
 
-export type PlaylistPairAlias = readonly [
-  'playlist_id_a' | 'playlist_a_id' | 'a',
-  'playlist_id_b' | 'playlist_b_id' | 'b',
-];
+export type PlaylistPairSide =
+  | 'playlist_id_a' | 'playlist_a_id' | 'a'
+  | 'playlist_id_b' | 'playlist_b_id' | 'b';
+
+export type PlaylistPairAlias = readonly [PlaylistPairSide, PlaylistPairSide];
 
 /** Legacy aliases are supported through v2.0 and removed in v2.1. */
-export function legacyPlaylistListFields(
-  aliases: readonly PlaylistListAlias[],
-  limits: { min?: number; max?: number } = {},
-): Record<PlaylistListAlias, z.ZodOptional<z.ZodArray<typeof PlaylistRef>>> {
+export function legacyPlaylistListFields<const A extends PlaylistListAlias>(
+  aliases: readonly A[],
+  limits: PlaylistListLimits = {},
+): Record<A, z.ZodOptional<z.ZodArray<typeof PlaylistRef>>> {
   const schema = z.array(PlaylistRef).min(limits.min ?? 2).max(limits.max ?? 10)
     .describe('Deprecated one-release alias supported through v2.0; removed in v2.1. Provide this complete alias or canonical playlists.');
   return Object.fromEntries(aliases.map((name) => [name, schema.optional()])) as Record<
-    PlaylistListAlias,
+    A,
     z.ZodOptional<z.ZodArray<typeof PlaylistRef>>
   >;
 }
 
+
+type PairAliasFields<P extends PlaylistPairSide> = {
+  [K in P]: z.ZodOptional<typeof PlaylistRef>;
+};
+
 /** Legacy pair aliases are supported through v2.0 and removed in v2.1. */
-export function legacyPlaylistPairFields(aliases: readonly PlaylistPairAlias[]): Record<string, z.ZodOptional<typeof PlaylistRef>> {
+export function legacyPlaylistPairFields<const P extends PlaylistPairSide>(
+  aliases: readonly (readonly [P, P])[],
+): PairAliasFields<P> {
   return Object.fromEntries(aliases.flatMap(([a, b]) => [
     [a, PlaylistRef.optional().describe('Deprecated one-release alias supported through v2.0; removed in v2.1. Provide a complete pair or canonical playlist_a/playlist_b.')],
     [b, PlaylistRef.optional().describe('Deprecated one-release alias supported through v2.0; removed in v2.1. Provide a complete pair or canonical playlist_a/playlist_b.')],
-  ]));
+  ])) as PairAliasFields<P>;
+}
+
+/** Canonical and legacy list spellings share one cardinality contract. */
+export function playlistListInputFields<const A extends PlaylistListAlias>(
+  aliases: readonly A[],
+  limits: PlaylistListLimits = {},
+) {
+  return {
+    ...playlistListFields(limits),
+    ...legacyPlaylistListFields(aliases, limits),
+  };
 }
 
 export interface PlaylistInputResolution {
@@ -455,7 +502,7 @@ function metadataFromPayload(
   const explicitReturned = numberField(payload.returned);
   const returned = itemsWereSliced
     ? cap!
-    : explicitReturned ?? items?.length ?? cap;
+    : explicitReturned ?? items?.length;
   const explicitTotal = numberField(payload.total)
     ?? numberField(pagination?.total)
     ?? numberField(payload.unique_tracks);
