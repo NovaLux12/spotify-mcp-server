@@ -67,7 +67,7 @@ above either ceiling fails CI and server startup.
 | users | 2 | 1,613 | 2 | 1,613 | 3 | 1,775 |
 | audiobooks | 4 | 3,535 | 4 | 3,535 | 5 | 3,889 |
 | audiobookcopilot | 3 | 1,870 | 3 | 1,870 | 4 | 2,057 |
-| playlists | 26 | 25,949 | 26 | 25,949 | 27 | 28,544 |
+| playlists | 26 | 25,998 | 26 | 25,998 | 27 | 28,598 |
 | playlistops | 3 | 5,489 | 3 | 5,489 | 4 | 6,038 |
 | playlistbatch | 3 | 4,784 | 3 | 4,784 | 4 | 5,263 |
 | playlistmisc | 3 | 2,543 | 3 | 2,543 | 4 | 2,798 |
