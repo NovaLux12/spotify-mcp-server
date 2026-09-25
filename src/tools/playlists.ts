@@ -107,6 +107,50 @@ function formatPlaylistItem(item: PlaylistItemObject): string | null {
   return `"${track.name}" — ${track.show.name} (${formatDuration(track.duration_ms)}) | URI: ${track.uri}`;
 }
 
+// What overwriting an existing playlist actually costs, in rows. The union gate
+// is driven by this rather than by the size of the incoming union: a 2-row
+// union can silently delete 100 rows, while a 400-row union into a brand-new
+// playlist destroys nothing. Multiset-aware, so repeated URIs are classified
+// correctly instead of being collapsed by a plain set difference.
+interface ReplacementImpact {
+  /** True when the target already holds exactly these URIs in this order. */
+  identical: boolean;
+  /** Existing rows the incoming list would drop. */
+  removed: number;
+  /** Rows the incoming list would introduce. */
+  added: number;
+  /** Same rows as today, different order — still a rewrite of every row. */
+  reordered: boolean;
+}
+
+function replacementImpact(current: string[], next: string[]): ReplacementImpact {
+  // Sorted merge walk: one pass, no hashing, and duplicates cancel pairwise.
+  const before = [...current].sort();
+  const after = [...next].sort();
+  let i = 0;
+  let j = 0;
+  let removed = 0;
+  let added = 0;
+  while (i < before.length || j < after.length) {
+    const left = before[i];
+    const right = after[j];
+    if (left === undefined || (right !== undefined && right < left)) {
+      added += 1;
+      j += 1;
+    } else if (right === undefined || left < right) {
+      removed += 1;
+      i += 1;
+    } else {
+      i += 1;
+      j += 1;
+    }
+  }
+  // Equal multisets imply equal lengths, so a positional mismatch here is a
+  // pure reorder rather than an add/remove we have already counted.
+  const reordered = removed === 0 && added === 0 && current.some((uri, index) => uri !== next[index]);
+  return { identical: removed === 0 && added === 0 && !reordered, removed, added, reordered };
+}
+
 // Appends the snapshot_id Spotify returns from playlist mutations so agents
 // can pin versions in concurrent-edit workflows.
 function withSnapshot(text: string, snapshotId: string | undefined): string {
@@ -1551,9 +1595,33 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
   );
 
   // Helpers for new exhaustive playlist tools
-  async function getAllUris(playlistId: string): Promise<string[]> {
+  /**
+   * A playlist's ordered item rows, plus how many rows the endpoint actually
+   * returned. `rowCount` can exceed `uris.length`: Spotify returns
+   * unavailable/local items with a null URI, and a URI-based replace cannot
+   * put them back. Callers that decide whether a rewrite is destructive need
+   * both numbers to avoid calling a lossy overwrite a no-op.
+   */
+  async function getPlaylistRows(playlistId: string): Promise<{ uris: string[]; rowCount: number }> {
     const items = await client.getAllPages<PlaylistItemObject>(`/playlists/${encodeURIComponent(playlistId)}/items`, { limit: '100' }, { maxItems: getConfig().fetchAllCap });
-    return items.map(i => i.item?.uri).filter((u): u is string => !!u);
+    return { uris: items.map(i => i.item?.uri).filter((u): u is string => !!u), rowCount: items.length };
+  }
+  async function getAllUris(playlistId: string): Promise<string[]> {
+    return (await getPlaylistRows(playlistId)).uris;
+  }
+  /**
+   * How many rows Spotify says the playlist holds, or undefined when the
+   * metadata read cannot tell us. The item walk is capped by fetchAllCap, so
+   * this is how a caller proves its read reached the end of the playlist.
+   *
+   * Reads `items.total`, not `tracks.total`: the OpenAPI schema marks
+   * PlaylistObject.tracks deprecated in favour of `items` (which is a
+   * PagingPlaylistTrackObject, and PagingObject requires `total`).
+   */
+  async function getPlaylistRowTotal(playlistId: string): Promise<number | undefined> {
+    const meta = await client.get<{ items?: { total?: number } }>(`/playlists/${encodeURIComponent(playlistId)}`);
+    const total = meta?.items?.total;
+    return typeof total === 'number' ? total : undefined;
   }
   async function replaceWithUris(playlistId: string, uris: string[]): Promise<string | undefined> {
     const enc = encodeURIComponent(playlistId);
@@ -1691,7 +1759,7 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
   });
 
   // playlist_union (#290)
-  server.tool('playlist_union', 'Union of 2–10 playlists into target (deduped, first-seen order). Quota: 🟢 N GETs + PUT/POST.', { ...PlaylistListFields, ...legacyPlaylistListFields(['source_playlist_ids']), ...TargetPlaylistFields, dedupe: z.boolean().default(true), dry_run: DryRun }, async (args) => {
+  server.tool('playlist_union', 'Union of 2–10 playlists into target (deduped, first-seen order). Quota: 🟢 N GETs + PUT/POST; replacing an existing target also reads its current items and its playlist metadata to measure the destructive impact.', { ...PlaylistListFields, ...legacyPlaylistListFields(['source_playlist_ids']), ...TargetPlaylistFields, dedupe: z.boolean().default(true), dry_run: DryRun }, async (args) => {
     const input = resolvePlaylistInput(args, { kind: 'list', aliases: ['source_playlist_ids'] });
     if ((args.target_playlist_id === undefined) === (args.target_name === undefined)) {
       throw new Error('Provide exactly one of target_playlist_id (replace an existing playlist) or target_name (create a new playlist).');
@@ -1699,18 +1767,39 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
     const seen = new Set<string>(); const union: string[] = [];
     for (const pid of input.values){ const uris = await getAllUris(pid); for (const u of uris) if (!args.dedupe || !seen.has(u)){ seen.add(u); union.push(u); } }
     if (args.dry_run) { const text = describeDryRun('union playlists', args.target_playlist_id ?? args.target_name!, [`Would union ${union.length} uri(s) from ${input.values.length} playlists`]); return textResult(withPlaylistInputNote(text, input), withPlaylistInputMetadata({ ok: true, dry_run: true, playlists: input.values, uri_count: union.length }, input)); }
-    if (args.target_playlist_id && union.length >= REPLACE_ELICIT_THRESHOLD) {
-      const verdict = await confirmViaElicitation(server, {
-        message: describeConfirmation('replace playlist items', args.target_playlist_id, [
-          `Overwrite ALL existing items with ${union.length} URI(s) from ${input.values.length} playlist(s).`,
-        ]),
-      });
-      const refusal = requiredConfirmationRefusal(verdict);
-      if (refusal) {
-        return textResult(
-          withPlaylistInputNote(refusal.message, input),
-          withPlaylistInputMetadata(refusal.payload, input),
-        );
+    // Existing target: what the overwrite destroys decides whether we ask, not
+    // how big the union is. Reading the target's current ordered rows is the
+    // only way to know, and it is a read — a refusal below still costs zero
+    // writes. Creating a new target destroys nothing, so it never prompts.
+    if (args.target_playlist_id) {
+      const target = await getPlaylistRows(args.target_playlist_id);
+      const impact = replacementImpact(target.uris, union);
+      // Rows Spotify returned without a URI are removals the multiset diff
+      // cannot see: a URI-based replace cannot restore them.
+      const unrepresentable = target.rowCount - target.uris.length;
+      // The item walk is capped, so a read shorter than the reported total has
+      // not seen the whole playlist and cannot prove anything is a no-op.
+      const total = await getPlaylistRowTotal(args.target_playlist_id);
+      const readWholePlaylist = total === target.rowCount;
+      if (!impact.identical || unrepresentable > 0 || !readWholePlaylist) {
+        const changes = [
+          `Replace ${target.rowCount} existing item(s) with ${union.length} unioned URI(s) from ${input.values.length} playlist(s).`,
+        ];
+        if (impact.removed > 0) changes.push(`Remove ${impact.removed} existing item(s) absent from the union.`);
+        if (impact.reordered) changes.push(`Reorder ${target.uris.length} item(s): the union reorders the rows already there.`);
+        if (impact.added > 0) changes.push(`Add ${impact.added} new item(s).`);
+        if (unrepresentable > 0) changes.push(`Drop ${unrepresentable} item(s) Spotify returned without a URI, which a URI-based replace cannot restore.`);
+        if (!readWholePlaylist) changes.push(`Only ${target.rowCount} of ${total ?? 'an unknown number of'} existing row(s) could be read, so the true impact may be larger.`);
+        const verdict = await confirmViaElicitation(server, {
+          message: describeConfirmation('replace playlist items', args.target_playlist_id, changes),
+        });
+        const refusal = requiredConfirmationRefusal(verdict);
+        if (refusal) {
+          return textResult(
+            withPlaylistInputNote(refusal.message, input),
+            withPlaylistInputMetadata(refusal.payload, input),
+          );
+        }
       }
     }
     let targetId = args.target_playlist_id;
