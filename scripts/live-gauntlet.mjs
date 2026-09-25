@@ -44,6 +44,7 @@ const MUTATING = new Set([
   'upload_playlist_cover', 'create_playlist', 'add_to_playlist',
   'remove_from_playlist', 'update_playlist', 'reorder_playlist_items',
   'replace_playlist_items',
+  'merge_playlists',
 ]);
 
 // Endpoints Spotify removed in its Feb 2026 Web API changes: registered but
@@ -189,8 +190,9 @@ function record(name, cls, status, ms, extra = {}) {
 
   r = await callTool('get_user_playlists', { max_results: 10, response_format: 'json' });
   if (r.ok) {
-    const p = Array.isArray(r.structured) ? r.structured[0] : r.structured?.items?.[0];
-    seed.playlistId = p?.id;
+    const rows = Array.isArray(r.structured) ? r.structured : r.structured?.items ?? [];
+    seed.playlistIds = rows.map((p) => p?.id).filter(Boolean).slice(0, 3);
+    seed.playlistId = seed.playlistIds[0];
     record('get_user_playlists', 'SAFE', 'PASS', r.ms);
   } else record('get_user_playlists', 'SAFE', 'FAIL', r.ms, { reason: r.error });
 }
@@ -260,10 +262,9 @@ const SAFE_ARGS = {
   library_hygiene: () => ({ max_results: 3 }),
   // playlistdna.ts (#112 idea 6)
   grow_playlist: () => seed.playlistId ? { playlist_id: seed.playlistId, size: 5, exclude_saved: false } : 'no playlist in seeds',
-  // playlistops.ts (#96)
-  merge_playlists: () => seed.playlistId ? { sources: [seed.playlistId], new_name: 'gauntlet-merge-DELETE-ME', dry_run: true } : 'no playlist in seeds',
-  diff_playlists: () => seed.playlistId ? { a: seed.playlistId, b: seed.playlistId } : 'no playlist in seeds',
-  overlap_playlists: () => seed.playlistId ? { playlists: [seed.playlistId] } : 'no playlist in seeds',
+  // Canonical playlist power tools
+  playlist_diff: () => seed.playlistId ? { playlist_a_id: seed.playlistId, playlist_b_id: seed.playlistId } : 'no playlist in seeds',
+  playlist_overlap_matrix: () => (seed.playlistIds?.length ?? 0) >= 2 ? { playlist_ids: seed.playlistIds.slice(0, 2) } : 'fewer than 2 playlists in seeds',
   // podcastsession.ts (#112 idea 3)
   plan_podcast_session: () => ({ minutes: 30, max_results: 3 }),
   start_podcast_session: () => ({ minutes: 30, dry_run: true }),
@@ -297,6 +298,7 @@ audiobookBuilders();
 // Minimal valid args for allowlisted MUTATING tools — always sent together
 // with dry_run:true.
 const MUTATING_ARGS = {
+  merge_playlists: () => seed.playlistId ? { sources: seed.playlistIds ?? [seed.playlistId], new_name: 'gauntlet-merge-DELETE-ME' } : 'no playlist in seeds',
   create_playlist: () => ({ name: 'live-gauntlet dry-run probe', public: false }),
   save_items: () => seed.trackId ? { uris: [`spotify:track:${seed.trackId}`] } : 'no track in seeds',
   remove_saved_items: () => seed.trackId ? { uris: [`spotify:track:${seed.trackId}`] } : 'no track in seeds',
