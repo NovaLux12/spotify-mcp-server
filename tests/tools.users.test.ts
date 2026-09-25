@@ -154,10 +154,13 @@ describe('get_user_profile', () => {
     ]);
   });
 
-  it('encodes special characters in user_id', async () => {
+  // #789: text that is not a Spotify user reference is rejected by the shared
+  // resolver before it can be percent-encoded onto the wire. The previous
+  // contract — pass any string through and encode it — is the defect.
+  it('rejects a non-reference user_id before any request is made', async () => {
     const { client, invoke } = harness(() => publicProfile());
-    await invoke('get_user_profile', { user_id: 'a b/c' });
-    assert.equal(client.calls[0].path, '/users/a%20b%2Fc');
+    await assert.rejects(invoke('get_user_profile', { user_id: 'a b/c' }));
+    assert.equal(client.calls.length, 0, 'no request should be made on invalid input');
   });
 
   it('renders display name, follower count and image URL', async () => {
@@ -394,5 +397,85 @@ describe('get_user_playlists_by_id shaping (#51/#52/#53)', () => {
     // Null descriptions add nothing in either mode.
     const concise = textOf(await invoke('get_user_playlists_by_id', { user_id: 'u' }));
     assert.ok(!concise.includes('| |'));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #762 — a null playlist owner must not take down the whole listing
+// ---------------------------------------------------------------------------
+
+describe('get_user_playlists_by_id owner guard (#762)', () => {
+  it('renders an owner-less row as "unknown owner" and still renders every other row', async () => {
+    const ownerless = { ...playlistSimple('p2', 'Deleted Owner List', 4), owner: null };
+    const { client, invoke } = harness(() => ({
+      items: [playlistSimple('p1', 'List One'), ownerless],
+      total: 2,
+      limit: 20,
+      offset: 0,
+    }));
+
+    const text = textOf(await invoke('get_user_playlists_by_id', { user_id: 'otheruser' }));
+    const lines = text.split('\n');
+
+    assert.deepEqual(client.calls, [
+      { method: 'GET', path: '/users/otheruser/playlists', arg: { limit: '20' } },
+    ]);
+    assert.match(lines[0], /^Playlists owned by otheruser \(2 total, showing 2\):$/);
+    // A normal row still renders its display name, so the check cannot pass vacuously ...
+    assert.match(lines[1], /• "List One" by Owner p1 \(3 tracks\) \| ID: p1 \| URI: spotify:playlist:p1/);
+    // ... and the owner-less row degrades to a placeholder instead of throwing.
+    assert.match(
+      lines[2],
+      /• "Deleted Owner List" by unknown owner \(4 tracks\) \| ID: p2 \| URI: spotify:playlist:p2/,
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #789 — user_id accepts a bare ID, a spotify:user: URI and a share URL via
+// the shared resolver in src/refs.ts
+// ---------------------------------------------------------------------------
+
+describe('user_id reference forms (#789)', () => {
+  const forms: Array<[string, string]> = [
+    ['bare id', 'otheruser'],
+    ['spotify:user: URI', 'spotify:user:otheruser'],
+    ['open.spotify.com share URL', 'https://open.spotify.com/user/otheruser'],
+  ];
+
+  for (const [label, userId] of forms) {
+    it(`get_user_playlists_by_id sends the bare id on the wire for a ${label}`, async () => {
+      const { client, invoke } = harness(() => ({
+        items: [playlistSimple('p1', 'List One')],
+        total: 1,
+        limit: 20,
+        offset: 0,
+      }));
+
+      await invoke('get_user_playlists_by_id', { user_id: userId, limit: 5 });
+
+      assert.deepEqual(client.calls, [
+        { method: 'GET', path: '/users/otheruser/playlists', arg: { limit: '5' } },
+      ]);
+    });
+
+    it(`get_user_profile sends the bare id on the wire for a ${label}`, async () => {
+      const { client, invoke } = harness(() => publicProfile());
+
+      await invoke('get_user_profile', { user_id: userId });
+
+      assert.deepEqual(client.calls, [
+        { method: 'GET', path: '/users/otheruser', arg: undefined },
+      ]);
+    });
+  }
+
+  it('rejects a wrong-kind reference before any request is made', async () => {
+    const { client, invoke } = harness(() => publicProfile());
+    await assert.rejects(
+      invoke('get_user_profile', { user_id: 'spotify:playlist:37i9dQZF1DXcBWIGoYBM5M' }),
+      /kind mismatch: expected user, received playlist/,
+    );
+    assert.equal(client.calls.length, 0, 'no request should be made on invalid input');
   });
 });

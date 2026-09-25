@@ -16,6 +16,7 @@ import {
 } from '../shaping.js';
 import type { ResponseFormatValue, PaginationInfo } from '../shaping.js';
 import { getConfig } from '../config.js';
+import { spotifyId } from '../refs.js';
 
 // ---------------------------------------------------------------------------
 // Shared result shaping (#51/#52 helpers composed locally per file)
@@ -74,6 +75,16 @@ interface PublicUserProfile {
   images?: SpotifyImage[] | null;
 }
 
+/**
+ * One listing row (#762). Spotify documents `owner` on a playlist object, but
+ * a deleted user or a private wrapper playlist can return `owner: null`; the
+ * shared type declares it non-nullable, so widen it here rather than trusting
+ * the payload at render time.
+ */
+type PlaylistRow = Omit<SpotifyPlaylistSimple, 'owner'> & {
+  owner: SpotifyPlaylistSimple['owner'] | null;
+};
+
 export function registerUsersTools(server: McpServer, client: SpotifyClient): void {
 
   // get_user_profile
@@ -81,7 +92,7 @@ export function registerUsersTools(server: McpServer, client: SpotifyClient): vo
     'get_user_profile',
     "Get any Spotify user's public profile (display name, follower count, profile image). Removed by Spotify's February 2026 Web API changes — unavailable for newer app registrations",
     {
-      user_id: z.string().min(1).describe('Spotify user ID'),
+      user_id: spotifyId('user'),
       response_format: ResponseFormat,
     },
     async (args) => {
@@ -129,7 +140,7 @@ export function registerUsersTools(server: McpServer, client: SpotifyClient): vo
     'get_user_playlists_by_id',
     "List another Spotify user's public playlists (paginated). Removed by Spotify's February 2026 Web API changes — unavailable for newer app registrations. Output is capped by max_results (default: SPOTIFY_MCP_MAX_ITEMS).",
     {
-      user_id: z.string().min(1).describe('Spotify user ID'),
+      user_id: spotifyId('user'),
       limit: z.number().int().min(1).max(50).optional().describe('1–50. Default: 20'),
       offset: z.number().int().min(0).optional().describe('Pagination offset. Default: 0'),
       response_format: ResponseFormat,
@@ -141,9 +152,9 @@ export function registerUsersTools(server: McpServer, client: SpotifyClient): vo
 
       // Feb 2026: GET /users/{id}/playlists was removed (403 for newer
       // registrations).
-      let result: SpotifyPaged<SpotifyPlaylistSimple> | null;
+      let result: SpotifyPaged<PlaylistRow> | null;
       try {
-        result = await client.get<SpotifyPaged<SpotifyPlaylistSimple>>(
+        result = await client.get<SpotifyPaged<PlaylistRow>>(
           `/users/${encodeURIComponent(args.user_id)}/playlists`,
           params,
         );
@@ -164,9 +175,11 @@ export function registerUsersTools(server: McpServer, client: SpotifyClient): vo
       const total = typeof result.total === 'number' ? result.total : allItems.length;
 
       const detailed = args.response_format === 'detailed';
-      const renderLine = (pl: SpotifyPlaylistSimple): string => {
+      const renderLine = (pl: PlaylistRow): string => {
         const trackCount = pl.items?.total ?? 0;
-        const owner = pl.owner.display_name ?? pl.owner.id;
+        // #762: `owner` can arrive null; fall back to its id, then to a
+        // placeholder, so one malformed row cannot fail the whole listing.
+        const owner = pl.owner?.display_name ?? pl.owner?.id ?? 'unknown owner';
         let line = `  • "${pl.name}" by ${owner} (${trackCount} tracks) | ID: ${pl.id} | URI: ${pl.uri}`;
         if (detailed && pl.description) line += ` | ${pl.description}`;
         return line;
