@@ -97,7 +97,11 @@ function dedupeUris(tracks: readonly SpotifyTrack[]): SpotifyTrack[] {
 // documented URI list explicitly includes spotify:playlist:{id}. So "pin" is
 // saving the playlist URI to the library and "unpin" is removing it. The
 // replacement takes no request body, so the old `public` visibility flag has
-// no equivalent and is rejected below rather than silently dropped.
+// no equivalent: `false` is rejected outright, and `true` is accepted for
+// call-site compatibility but reaches neither the request nor the
+// confirmation prompt — a library save is inherently private, so claiming
+// "public: true" at the moment the user authorises the write is a lie, not a
+// default.
 function playlistLibraryPath(playlistId: string): string {
   const uris = new URLSearchParams({ uris: `spotify:playlist:${playlistId}` }).toString();
   return `/me/library?${uris}`;
@@ -130,7 +134,7 @@ export function registerPlaylistMiscTools(server: McpServer, client: SpotifyClie
       }
       const verdict = await confirmViaElicitation(server, {
         message: describeConfirmation('pin playlist', args.playlist_id, [
-          `Follow playlist ${args.playlist_id}${args.public === undefined ? '' : ` (public: ${args.public})`}`,
+          `Follow playlist ${args.playlist_id}`,
         ]),
       });
       const refusal = requiredConfirmationRefusal(verdict);
