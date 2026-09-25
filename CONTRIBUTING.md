@@ -64,6 +64,7 @@ Common types: `feat`, `fix`, `docs`, `test`, `refactor`, `chore`, `ci`.
 - **Behavior changes need tests.** Add or update tests under `tests/` covering the new or fixed behavior; `npm test` should pass.
 - **Tool contract changes need SPEC.md updates.** If you change what a tool accepts or returns (inputs, outputs, endpoint mapping, pagination behavior), update the matching section of [SPEC.md](SPEC.md).
 - **Changelog is automated.** Release notes/version bumps are handled by release automation from Conventional Commit messages — do not edit CHANGELOG entries manually.
+- **Tool surface growth is budgeted.** Registration order, per-module schema baselines, and ceilings are defined by the shared manifest in `src/tools/annotations.ts`; see [schema budgets](docs/schema-budgets.md). Do not raise a ceiling without updating its measured baseline and explaining the host-payload impact.
 - Keep PRs focused: one logical change per PR. Update the PR template checklist before submitting.
 
 ## Releasing

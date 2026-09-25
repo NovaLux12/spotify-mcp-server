@@ -10,30 +10,22 @@ import {
   isModuleActive,
   toolsetEnvHelp,
 } from '../src/toolsets.js';
+import { REGISTRAR_MANIFEST } from '../src/tools/annotations.js';
 
 describe('TOOLSETS coverage', () => {
-  it('covers every registration entry point in index.ts at least once', () => {
-    // Registration keys as invoked in src/index.ts (registerXxx call sites
-    // plus resources/prompts).
-    const registrationKeys = [
-      'playback',
-      'search',
-      'catalog',
-      'personalization',
-      'library',
-      'following',
-      'audiobooks',
-      'playlists',
-      'users',
-      'resources',
-      'prompts',
-    ];
+  it('covers every manifest registration key at least once', () => {
     const covered = new Set(Object.values(TOOLSETS).flat());
-    for (const key of registrationKeys) {
-      assert.ok(
-        covered.has(key),
-        `registration key '${key}' is not enabled by any toolset`,
-      );
+    for (const module of REGISTRAR_MANIFEST) {
+      if (module.alwaysActive) continue;
+      assert.ok(covered.has(module.registrationKey), `registration key '${module.registrationKey}' for ${module.key} is not enabled by any toolset`);
+    }
+  });
+
+  it('defines every module exactly once with a positive baseline and ceiling', () => {
+    assert.equal(new Set(REGISTRAR_MANIFEST.map((module) => module.key)).size, REGISTRAR_MANIFEST.length);
+    for (const module of REGISTRAR_MANIFEST) {
+      assert.ok(module.ceiling.toolCount >= module.baseline.toolCount, module.key);
+      assert.ok(module.ceiling.schemaBytes >= module.baseline.schemaBytes, module.key);
     }
   });
 });
