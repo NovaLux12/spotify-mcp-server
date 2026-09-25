@@ -140,10 +140,12 @@ describe('February 2026 removed-endpoint guards (playlist follow family)',()=>{
   const src=readFileSync(srcPath,'utf8');
 
   it('issues no request to PUT/DELETE /playlists/{id}/followers',()=>{
-    // Structural guard: any client call whose first argument is a template
-    // literal naming the removed path. A stub client cannot catch this — it
-    // answers whatever path it is given — so the source is the only place the
-    // regression is observable.
+    // Structural guard over the source text: catches an inline client call
+    // whose first argument is a template literal naming the removed path.
+    // Scope: it sees only that shape. The path is built by a helper here, so
+    // a helper returning `/playlists/${id}/followers` would not match it —
+    // the recorded-request assertions above are what pin the actual path.
+    // This scan is a redundant second net, not the load-bearing check.
     const removedCall=/\.(?:put|delete|post|get|getAllPages|putRaw)\s*\(\s*`[^`]*\/followers/;
     assert.equal(src.match(removedCall),null,
       'src/tools/playlistmisc.ts still builds a request against the removed /playlists/{id}/followers endpoint');
