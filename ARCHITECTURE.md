@@ -122,7 +122,7 @@ The table is generated from every TypeScript file directly under `src/`, `src/li
 | `src/scopefilter.ts` | Scope-aware module gating (#111 item 6). (0 registered tools) | 69 |
 | `src/shaping.ts` | Shared shaping helpers for tool responses (#51/#52/#53/#57/#58): zod schema fragments, truncation math, pagination info, structuredContent emission, mutation batch summaries and dry-run descriptions. (0 registered tools) | 777 |
 | `src/tools/analytics.ts` | Runtime module for analytics. (4 registered tools) | 427 |
-| `src/tools/annotations.ts` | MCP tool annotations (#565 / A0-002, A4-005). (0 registered tools) | 952 |
+| `src/tools/annotations.ts` | MCP tool annotations (#565 / A0-002, A4-005). (0 registered tools) | 953 |
 | `src/tools/artistwatch.ts` | Runtime module for artistwatch. (6 registered tools) | 518 |
 | `src/tools/audiobookcopilot.ts` | Audiobook chapter copilot (#112 idea 4): tools for navigating long-form audiobooks — full chapter tables regardless of the ~18-chapter app break, 1-based chapter jumps, and "where was I?" (3 registered tools) | 291 |
 | `src/tools/audiobooks.ts` | Runtime module for audiobooks. (4 registered tools) | 330 |
