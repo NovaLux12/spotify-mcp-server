@@ -551,4 +551,169 @@ describe('where_was_i', () => {
     assert.equal(structured.listening_time_remaining_ms, 0);
     assert.match(textOf(out), /Listening time left: 0s\./);
   });
+
+  // #786: the walk that list_all_chapters discloses here is the SAME walk
+  // where_was_i matches against, so this tool must not present a capped
+  // prefix as the book — a chapter past the cap is not "not started".
+  describe('fetch-all cap disclosure', () => {
+    /** Chapters + playback state for a book of `total` chapters, capped or not. */
+    const capped = (total: number, state: unknown): Responder => (path, arg) => {
+      if (path === '/me/player') return state;
+      return pagedChaptersResponder(total)(path, arg);
+    };
+
+    it('does not call a chapter past the cap "not started" — it names the cap instead', async () => {
+      // 600 chapters exist, cap is 500, playback sits on chapter 550: beyond
+      // anything this walk could see, so the tool cannot claim it is outside
+      // the book, and must not say the listener has not started it.
+      const cap = getConfig().fetchAllCap;
+      const h = harness(
+        capped(600, { item: { uri: 'spotify:chapter:ch550' }, progress_ms: 60_000, is_playing: true }),
+      );
+
+      const out = await h.invoke('where_was_i', { audiobook_id: 'book1' });
+
+      const structured = out.structuredContent as {
+        status: string;
+        total_chapters?: number;
+        chapters_fetched: number;
+        fetch_all_cap: number;
+        truncated_by_cap: boolean;
+        current_item_uri: string;
+      };
+      assert.equal(structured.status, 'match_unresolved_beyond_cap');
+      assert.equal(structured.current_item_uri, 'spotify:chapter:ch550');
+      assert.equal(structured.truncated_by_cap, true);
+      assert.equal(structured.chapters_fetched, cap);
+      assert.equal(structured.fetch_all_cap, cap);
+      // The falsified claim: a 500-long prefix is not the book's length.
+      assert.equal(structured.total_chapters, undefined);
+
+      const text = textOf(out);
+      assert.match(text, /not among the first 500 chapters fetched/);
+      assert.match(text, /fetch-all cap 500 reached/);
+      // The two claims the cap makes unprovable are both withdrawn.
+      assert.doesNotMatch(text, /not currently listening to this audiobook/);
+      assert.doesNotMatch(text, /not started/);
+      assert.doesNotMatch(text, /you will begin at Chapter 1/);
+    });
+
+    it('still reports not_started for a foreign item when the walk saw the whole book', async () => {
+      // Guards the new branch against swallowing the real out-of-book case:
+      // an exhausted walk DID prove the miss, so the old wording must stand.
+      const h = harness(
+        capped(BOOK_TOTAL, {
+          item: { uri: 'spotify:track:somewhere-else' },
+          progress_ms: 40_000,
+          is_playing: false,
+        }),
+      );
+
+      const out = await h.invoke('where_was_i', { audiobook_id: 'book1' });
+
+      const structured = out.structuredContent as {
+        status: string;
+        total_chapters: number;
+        chapters_fetched: number;
+        truncated_by_cap: boolean;
+      };
+      assert.equal(structured.status, 'not_started');
+      assert.equal(structured.total_chapters, BOOK_TOTAL);
+      assert.equal(structured.chapters_fetched, BOOK_TOTAL);
+      assert.equal(structured.truncated_by_cap, false);
+      assert.match(textOf(out), /not currently listening to this audiobook/);
+    });
+
+    it('qualifies the chapter count and listening time when nothing is playing', async () => {
+      // 3000 chapters exist; the prose must not assert "This audiobook has
+      // 500 chapters ... in total" off a capped prefix.
+      const cap = getConfig().fetchAllCap;
+      const h = harness(capped(3000, null));
+
+      const out = await h.invoke('where_was_i', { audiobook_id: 'book1' });
+
+      const text = textOf(out);
+      assert.match(text, /Nothing is currently playing\./);
+      assert.match(text, /Only the first 500 chapters of this audiobook were fetched/);
+      assert.match(text, /fetch-all cap 500 reached/);
+      assert.match(text, /500h 0m of listening time/);
+      assert.doesNotMatch(text, /This audiobook has 500 chapters/);
+      assert.doesNotMatch(text, /of listening time in total/);
+
+      const structured = out.structuredContent as {
+        status: string;
+        total_chapters?: number;
+        chapters_fetched: number;
+        fetch_all_cap: number;
+        truncated_by_cap: boolean;
+        listening_time_remaining_ms: number;
+      };
+      assert.equal(structured.status, 'nothing_playing');
+      assert.equal(structured.total_chapters, undefined);
+      assert.equal(structured.chapters_fetched, cap);
+      assert.equal(structured.fetch_all_cap, cap);
+      assert.equal(structured.truncated_by_cap, true);
+      // Scoped to the fetched prefix, and exactly the 500 hours walked.
+      assert.equal(structured.listening_time_remaining_ms, cap * HOUR_MS);
+    });
+
+    it('keeps the whole-book wording for a short book — the cap prose is not unconditional', async () => {
+      const h = harness(capped(BOOK_TOTAL, null));
+
+      const out = await h.invoke('where_was_i', { audiobook_id: 'book1' });
+
+      const text = textOf(out);
+      assert.match(text, new RegExp(`This audiobook has ${BOOK_TOTAL} chapters\\.`));
+      assert.match(text, new RegExp(`${BOOK_TOTAL}h 0m of listening time in total\\.`));
+      assert.doesNotMatch(text, /fetch-all cap/);
+
+      const structured = out.structuredContent as {
+        total_chapters: number;
+        chapters_fetched: number;
+        truncated_by_cap: boolean;
+      };
+      assert.equal(structured.total_chapters, BOOK_TOTAL);
+      assert.equal(structured.chapters_fetched, BOOK_TOTAL);
+      assert.equal(structured.truncated_by_cap, false);
+    });
+
+    it('scopes remaining chapters and time to the prefix on a capped mid-book match', async () => {
+      // Chapter 300 of 600: the match is real, but "200 chapters remaining"
+      // and the remaining time would each be a lower bound on the book.
+      const cap = getConfig().fetchAllCap;
+      const h = harness(
+        capped(600, {
+          item: { uri: 'spotify:chapter:ch300' },
+          progress_ms: 1_800_000,
+          is_playing: true,
+        }),
+      );
+
+      const out = await h.invoke('where_was_i', { audiobook_id: 'book1' });
+
+      const text = textOf(out);
+      assert.match(
+        text,
+        new RegExp(`^Chapter 300 of the first ${cap} chapters fetched \\(fetch-all cap ${cap} reached\\): "Chapter 300"`, 'm'),
+      );
+      assert.match(text, /200 chapters remaining after this one within the fetched prefix/);
+      assert.match(text, /Listening time left: .* within the fetched prefix/);
+      // The uncapped phrasing would state the book's own length and tail.
+      assert.doesNotMatch(text, /^Chapter 300 of 500/m);
+      assert.doesNotMatch(text, /^200 chapters remaining after this one\.$/m);
+
+      const structured = out.structuredContent as {
+        status: string;
+        chapters_remaining: number;
+        chapters_fetched: number;
+        truncated_by_cap: boolean;
+        total_chapters?: number;
+      };
+      assert.equal(structured.status, 'playing');
+      assert.equal(structured.chapters_remaining, 200);
+      assert.equal(structured.chapters_fetched, cap);
+      assert.equal(structured.truncated_by_cap, true);
+      assert.equal(structured.total_chapters, undefined);
+    });
+  });
 });
