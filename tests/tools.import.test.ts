@@ -232,6 +232,59 @@ describe('import_playlist dry run + add behaviour', () => {
     assert.match(textOf(out), /Imported 250 item\(s\) into "X"/);
   });
 
+  it('canonicalizes spotify:// links before M3U writes', async () => {
+    const trackId = '1'.repeat(22);
+    const episodeId = '2'.repeat(22);
+    const h = harness((path) =>
+      path.startsWith('POST ') ? { snapshot_id: 'snap-links' } : { id: 'pl1', name: 'X' },
+    );
+    await h.invoke('import_playlist', {
+      playlist_id: 'pl1',
+      content: [
+        '#EXTM3U',
+        `spotify://track/${trackId}`,
+        `spotify://episode/${episodeId}`,
+      ].join('\n'),
+    });
+    assert.deepEqual(h.posts()[0]?.arg, {
+      uris: [`spotify:track:${trackId}`, `spotify:episode:${episodeId}`],
+    });
+  });
+
+  it('deduplicates equivalent canonical URI spellings', async () => {
+    const trackId = '5'.repeat(22);
+    const h = harness((path) =>
+      path.startsWith('POST ') ? { snapshot_id: 'snap-dedupe' } : { id: 'pl1', name: 'X' },
+    );
+    const out = await h.invoke('import_playlist', {
+      playlist_id: 'pl1',
+      content: [`spotify:track:${trackId}`, `spotify://track/${trackId}`].join('\n'),
+    });
+    assert.deepEqual(h.posts()[0]?.arg, { uris: [`spotify:track:${trackId}`] });
+    const payload = out.structuredContent as { added: number; duplicates_in_document_skipped: number };
+    assert.equal(payload.added, 1);
+    assert.equal(payload.duplicates_in_document_skipped, 1);
+  });
+
+  it('canonicalizes spotify:// links before CSV writes', async () => {
+    const trackId = '3'.repeat(22);
+    const episodeId = '4'.repeat(22);
+    const h = harness((path) =>
+      path.startsWith('POST ') ? { snapshot_id: 'snap-links' } : { id: 'pl1', name: 'X' },
+    );
+    await h.invoke('import_playlist', {
+      playlist_id: 'pl1',
+      content: [
+        'track_no,title,uri',
+        `1,Track,spotify://track/${trackId}`,
+        `2,Episode,spotify://episode/${episodeId}`,
+      ].join('\n'),
+    });
+    assert.deepEqual(h.posts()[0]?.arg, {
+      uris: [`spotify:track:${trackId}`, `spotify:episode:${episodeId}`],
+    });
+  });
+
   it('normalizes a spotify:playlist: URI target', async () => {
     const h = harness((path) =>
       path.startsWith('POST ') ? {} : path === '/playlists/pl1' ? { id: 'pl1', name: 'N' } : null,

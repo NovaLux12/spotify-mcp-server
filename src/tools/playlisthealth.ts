@@ -11,7 +11,7 @@ import type { PlaylistItemObject } from '../types/spotify.js';
 import {
   confirmViaElicitation,
   describeConfirmation,
-  refusalFor,
+  requiredConfirmationRefusal,
   REMOVE_ELICIT_THRESHOLD,
 } from './confirm.js';
 
@@ -224,7 +224,10 @@ export function registerPlaylistHealthTools(server: McpServer, client: SpotifyCl
     async (args) => {
       const filePath = snapshotPath(args.playlist_id, args.snapshot_id);
       let snapshot: SnapshotData;
-      try { snapshot = JSON.parse(await readFile(filePath, 'utf8')) as SnapshotData; } catch { throw new Error(`Snapshot "${args.snapshot_id}" not found for playlist "${args.playlist_id}"`); }
+      // "not found" is what makes this a client error the caller can act on
+      // (a wrong or expired snapshot id), but the ids themselves must not be
+      // echoed: one is a caller-supplied URL and the other a local path.
+      try { snapshot = JSON.parse(await readFile(filePath, 'utf8')) as SnapshotData; } catch { throw new Error('Snapshot not found for the requested playlist.'); }
       const encId = encodeURIComponent(args.playlist_id);
       const current = await client.getAllPages<PlaylistItemObject>(`/playlists/${encId}/items`, { limit: '100' }, { maxItems: getConfig().fetchAllCap });
       const currentUris = current.map((row) => { const t = row.item as unknown as Record<string, unknown> | null | undefined; return t && typeof t.uri === 'string' ? (t.uri as string) : null; });
@@ -293,7 +296,7 @@ export function registerPlaylistHealthTools(server: McpServer, client: SpotifyCl
             `Remove ${toRemove.length} unavailable row(s) at positions ${positions.join(', ')}:`,
           ]),
         });
-        const refusal = refusalFor(verdict);
+        const refusal = requiredConfirmationRefusal(verdict);
         if (refusal) return textResult(refusal.message, refusal.payload);
       }
       // Delete from the end so earlier positions do not shift. A position-only
@@ -307,9 +310,8 @@ export function registerPlaylistHealthTools(server: McpServer, client: SpotifyCl
       let after: PlaylistItemObject[];
       try {
         after = await client.getAllPages<PlaylistItemObject>(itemsPath, { limit: '100' }, { maxItems: getConfig().fetchAllCap });
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        return textResult(`Removal write completed, but post-write verification is unavailable for playlist ${playlistId}: ${message}`, {
+      } catch {
+        return textResult(`Removal write completed, but post-write verification is unavailable for playlist ${playlistId}.`, {
           ok: false,
           playlist_id: playlistId,
           verification: 'unavailable',
@@ -318,7 +320,7 @@ export function registerPlaylistHealthTools(server: McpServer, client: SpotifyCl
           removed_positions: null,
           remaining_positions: null,
           snapshot_id: snapshotId,
-          error: message,
+          error: 'post_write_verification_unavailable',
         });
       }
       const remainingPositions: number[] = [];
@@ -361,9 +363,13 @@ export function registerPlaylistHealthTools(server: McpServer, client: SpotifyCl
         ].filter(Boolean);
         return textResult((lines as string[]).join('\n'), { dry_run: true, would_scan_playlists: p, scan_cap: cap2, threshold, per_playlist_pages: perPages, estimated_requests: estimatedRequests });
       }
-      const all = await client.getAllPages<import('../types/spotify.js').SpotifyPlaylistSimple>('/me/playlists', { limit: '50' }, { maxItems: cap2 });
+      // cap + 1 as a probe: `all.length >= cap2` reports truncation for a user
+      // who happens to own exactly cap2 playlists, and this listing really did
+      // reach the end. The probe row is dropped before anything uses the list.
+      const walked = await client.getAllPages<import('../types/spotify.js').SpotifyPlaylistSimple>('/me/playlists', { limit: '50' }, { maxItems: cap2 + 1 });
+      const truncated = walked.length > cap2;
+      const all = truncated ? walked.slice(0, cap2) : walked;
       const playlists = all.slice(0, args.max_playlists ?? 50);
-      const truncated = all.length >= cap2;
       // Fetch track sets with quota partial recovery
       const sets: Array<{ id:string; name:string; uris:Set<string> }> = [];
       let quotaHit = false;

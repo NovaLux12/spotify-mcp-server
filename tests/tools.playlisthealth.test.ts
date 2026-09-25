@@ -82,6 +82,24 @@ describe('snapshot + diff + list', () => {
   it('diff detects added, removed, and reordered', async () => { const initialItems = [mkTrack('a'), mkTrack('b'), mkTrack('c')]; let currentItems: PlaylistItemObject[] = initialItems; const h = makeHarness(() => currentItems); registerPlaylistHealthTools(h.server as unknown as McpServer, h.client); await h.invoke('snapshot_playlist', { playlist_id: 'pl1', snapshot_id: 'snap1' }); currentItems = [mkTrack('c'), mkTrack('a'), mkTrack('d')]; const diff = await h.invoke('diff_since_snapshot', { playlist_id: 'pl1', snapshot_id: 'snap1' }); const sc = diff.structuredContent as { added: unknown[]; removed: unknown[]; reordered: unknown[] }; assert.equal(sc.added.length, 1); assert.equal(sc.removed.length, 1); assert.ok(sc.reordered.length > 0); });
 });
 
+  it('redacts filesystem errors and caller-provided URL or path sentinels', async () => {
+    const h = makeHarness(() => []);
+    registerPlaylistHealthTools(h.server as unknown as McpServer, h.client);
+    await assert.rejects(
+      h.invoke('diff_since_snapshot', {
+        playlist_id: 'https://example.test/SENTINEL_PLAYLIST?token=secret',
+        snapshot_id: '/home/alice/SENTINEL_SNAPSHOT.json',
+      }),
+      (error: unknown) => {
+        assert.ok(error instanceof Error);
+        // "not found" keeps it a client error the caller can act on; the ids
+        // themselves stay out (one is a caller URL, the other a local path).
+        assert.equal(error.message, 'Snapshot not found for the requested playlist.');
+        return true;
+      },
+    );
+  });
+
 describe('remove_unavailable_playlist_items', () => {
   it('deletes only validated unavailable positions highest first and verifies the rescan', async () => {
     let items: PlaylistItemObject[] = [mkTrack('a'), mkUnavailable(), mkTrack('b'), mkUnavailable(), mkTrack('c')];
@@ -120,21 +138,28 @@ describe('remove_unavailable_playlist_items', () => {
     assert.deepEqual(sc.remaining_positions, [0]);
   });
 
-  it('defaults the destructive cap to all detected unavailable rows', async () => {
-    let items: PlaylistItemObject[] = Array.from({ length: 101 }, mkUnavailable);
-    let writes = 0;
-    const h = makeHarness((_path, arg) => {
-      if (arg && typeof arg === 'object' && 'body' in arg) {
-        writes++;
-        items = [];
-        return { snapshot_id: 'snap1' };
-      }
-      return items;
-    });
-    registerPlaylistHealthTools(h.server as unknown as McpServer, h.client);
-    const out = await h.invoke('remove_unavailable_playlist_items', { playlist_id: 'pl1' });
-    assert.equal(writes, 101);
-    assert.equal((out.structuredContent as { ok: boolean }).ok, true);
+  it('defaults the destructive cap to all detected unavailable rows with the explicit automation bypass', async () => {
+    const previousConfirm = process.env.SPOTIFY_MCP_CONFIRM;
+    process.env.SPOTIFY_MCP_CONFIRM = 'never';
+    try {
+      let items: PlaylistItemObject[] = Array.from({ length: 101 }, mkUnavailable);
+      let writes = 0;
+      const h = makeHarness((_path, arg) => {
+        if (arg && typeof arg === 'object' && 'body' in arg) {
+          writes++;
+          items = [];
+          return { snapshot_id: 'snap1' };
+        }
+        return items;
+      });
+      registerPlaylistHealthTools(h.server as unknown as McpServer, h.client);
+      const out = await h.invoke('remove_unavailable_playlist_items', { playlist_id: 'pl1' });
+      assert.equal(writes, 101);
+      assert.equal((out.structuredContent as { ok: boolean }).ok, true);
+    } finally {
+      if (previousConfirm === undefined) delete process.env.SPOTIFY_MCP_CONFIRM;
+      else process.env.SPOTIFY_MCP_CONFIRM = previousConfirm;
+    }
   });
 
   it('does not write during dry run', async () => {
@@ -155,7 +180,7 @@ describe('remove_unavailable_playlist_items', () => {
       if (arg && typeof arg === 'object' && 'body' in arg) return { snapshot_id: 'snap1' };
       gets++;
       if (gets === 1) return [mkUnavailable(), mkTrack('a')];
-      throw new Error('rescan failed');
+      throw new Error('SENTINEL_HEALTH https://example.test/raw?token=secret /home/alice/private.json', { cause: new Error('nested private path') });
     });
     registerPlaylistHealthTools(h.server as unknown as McpServer, h.client);
     const out = await h.invoke('remove_unavailable_playlist_items', { playlist_id: 'pl1' });
@@ -163,5 +188,9 @@ describe('remove_unavailable_playlist_items', () => {
     assert.equal(sc.ok, false);
     assert.equal(sc.verification, 'unavailable');
     assert.equal(sc.removed, null);
+    const publicText = JSON.stringify(out);
+    for (const secret of ['SENTINEL_HEALTH', 'token=secret', '/home/alice', 'nested private path']) {
+      assert.equal(publicText.includes(secret), false, `post-write failure leaked ${secret}`);
+    }
   });
 });

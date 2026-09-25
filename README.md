@@ -9,6 +9,10 @@ An MCP server that wraps the Spotify Web API — lets Claude and other AI assist
 
 A broad Spotify Web API tool surface, plus extras most servers skip. Registration-gated wrappers are explained rather than hidden; see the [full list →](SPEC.md).
 
+<!-- BEGIN:generated surface-census -->
+The finalized default MCP registry exposes **591 tools**, **16 fixed resources**, **33 resource templates**, and **14 prompts**. Toolsets and production gates can trim a configured host; these totals describe the default production `tools/list` after finalizers.
+<!-- END:generated surface-census -->
+
 ---
 
 > ### 🤖 Paste this to your agent
@@ -149,6 +153,7 @@ Full reference: [docs/configuration.md](docs/configuration.md)
 - [SPEC.md](SPEC.md) — every tool, resource & prompt
 - [ARCHITECTURE.md](ARCHITECTURE.md) — how it's built
 - [docs/configuration.md](docs/configuration.md) — all env vars
+- [docs/schema-budgets.md](docs/schema-budgets.md) — per-module schema budgets and registration order
 - [docs/statsfm.md](docs/statsfm.md) — stats.fm second source: setup, tool cheat sheet, gotchas
 - [docs/cookbook.md](docs/cookbook.md) — ten copy-paste agent recipes
 - [docs/taste.md](docs/taste.md) — anonymized taste showcase driving a playlist

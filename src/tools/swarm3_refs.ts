@@ -32,8 +32,8 @@ function parse(input: string, expectedKind?: SpotifyReferenceKind): SpotifyRefer
   return classifySpotifyReference(input, expectedKind);
 }
 
-function canonical(input: string): string | null {
-  return spotifyUri(input);
+function canonical(input: string, expectedKind?: SpotifyReferenceKind): string | null {
+  return spotifyUri(input, expectedKind);
 }
 
 function census(rows: SpotifyReferenceClassification[], groupBy: 'form' | 'kind'): Record<string, number> {
@@ -55,6 +55,7 @@ export function registerSwarm3RefsTools(server: McpServer, _client: SpotifyClien
       expected_kind: z.enum(SPOTIFY_REFERENCE_KINDS).optional().describe('Require this entity kind'),
       response_format: ResponseFormat,
     },
+    { readOnlyHint: true, idempotentHint: true },
     async (args) => {
       const parsed = parse(args.uri, args.expected_kind);
       return result({
@@ -77,6 +78,7 @@ export function registerSwarm3RefsTools(server: McpServer, _client: SpotifyClien
       expected_kind: z.enum(SPOTIFY_REFERENCE_KINDS).optional().describe('Require this entity kind for every reference'),
       response_format: ResponseFormat,
     },
+    { readOnlyHint: true, idempotentHint: true },
     async (args) => {
       const rows = args.uris.map((uri) => {
         const parsed = parse(uri, args.expected_kind);
@@ -90,7 +92,12 @@ export function registerSwarm3RefsTools(server: McpServer, _client: SpotifyClien
           error: parsed.error,
         };
       });
-      return result({ count: rows.length, valid: rows.filter((row) => row.valid).length, results: rows });
+      return result({
+        count: rows.length,
+        valid: rows.filter((row) => row.valid).length,
+        invalid: rows.filter((row) => !row.valid).length,
+        results: rows,
+      });
     },
   );
 
@@ -98,13 +105,17 @@ export function registerSwarm3RefsTools(server: McpServer, _client: SpotifyClien
     'format_spotify_uri',
     'Validate an entity kind and Spotify ID pair, then format its canonical spotify: URI.',
     {
-      kind: z.enum(SPOTIFY_REFERENCE_KINDS),
-      id: z.string().min(1).describe('Exactly 22 base62 Spotify ID characters'),
+      kind: z.enum(SPOTIFY_REFERENCE_KINDS).describe('Spotify entity kind'),
+      id: z.string().min(1).describe('Spotify ID (exactly 22 Base62 characters for catalog kinds; user IDs may be non-fixed)'),
       response_format: ResponseFormat,
     },
+    { readOnlyHint: true, idempotentHint: true },
     async (args) => {
-      const canonicalUri = canonical(`spotify:${args.kind}:${args.id}`);
-      return result({ kind: args.kind, id: args.id, canonical_uri: canonicalUri, valid: canonicalUri !== null, error: canonicalUri ? null : `invalid Spotify ${args.kind} ID: expected exactly 22 base62 characters` });
+      const canonicalUri = canonical(`spotify:${args.kind}:${args.id}`, args.kind);
+      const error = canonicalUri
+        ? null
+        : `invalid Spotify ${args.kind} ID: expected ${args.kind === 'user' ? 'one or more URL-safe' : 'exactly 22 base62'} characters`;
+      return result({ kind: args.kind, id: args.id, canonical_uri: canonicalUri, valid: canonicalUri !== null, error });
     },
   );
 
@@ -113,11 +124,13 @@ export function registerSwarm3RefsTools(server: McpServer, _client: SpotifyClien
     'Canonicalise up to 500 equivalent Spotify IDs, URIs, links, and official share URLs to spotify:<kind>:<id>.',
     {
       uris: z.array(z.string().min(1)).max(500).describe('Spotify references to canonicalise'),
+      expected_kind: z.enum(SPOTIFY_REFERENCE_KINDS).optional().describe('Kind used to canonicalise bare IDs'),
       response_format: ResponseFormat,
     },
+    { readOnlyHint: true, idempotentHint: true },
     async (args) => {
       const rows = args.uris.map((input) => {
-        const canonicalUri = canonical(input);
+        const canonicalUri = canonical(input, args.expected_kind);
         return { input, canonical_uri: canonicalUri, valid: canonicalUri !== null };
       });
       return result({ count: rows.length, rows });
@@ -129,17 +142,21 @@ export function registerSwarm3RefsTools(server: McpServer, _client: SpotifyClien
     'Deduplicate equivalent Spotify references by canonical URI, preserving first-seen order and retaining invalid inputs as distinct entries.',
     {
       uris: z.array(z.string().min(1)).max(500).describe('Spotify references to deduplicate'),
+      expected_kind: z.enum(SPOTIFY_REFERENCE_KINDS).optional().describe('Kind used to interpret bare IDs; typed references retain their own kind'),
       response_format: ResponseFormat,
     },
+    { readOnlyHint: true, idempotentHint: true },
     async (args) => {
       const seen = new Set<string>();
       const unique: string[] = [];
       for (const input of args.uris) {
-        const parsed = parse(input);
-        const key = parsed.valid && parsed.id ? `id:${parsed.id}` : `invalid:${input.trim()}`;
+        const parsed = parse(input, args.expected_kind);
+        const key = parsed.valid && parsed.id
+          ? parsed.kind ? `valid:${parsed.kind}:${parsed.id}` : `untyped:${parsed.id}`
+          : `invalid:${input}`;
         if (!seen.has(key)) {
           seen.add(key);
-          unique.push(input.trim());
+          unique.push(parsed.valid ? input.trim() : input);
         }
       }
       return result({ count_in: args.uris.length, count_out: unique.length, duplicates_removed: args.uris.length - unique.length, unique });
@@ -152,10 +169,12 @@ export function registerSwarm3RefsTools(server: McpServer, _client: SpotifyClien
     {
       uris: z.array(z.string().min(1)).max(500).describe('Spotify references to profile'),
       group_by: z.enum(['form', 'kind']).default('form').describe('Grouping dimension'),
+      expected_kind: z.enum(SPOTIFY_REFERENCE_KINDS).optional().describe('Kind used to interpret bare IDs'),
       response_format: ResponseFormat,
     },
+    { readOnlyHint: true, idempotentHint: true },
     async (args) => {
-      const rows = args.uris.map((uri) => parse(uri));
+      const rows = args.uris.map((uri) => parse(uri, args.expected_kind));
       return result({
         total: rows.length,
         valid: rows.filter((row) => row.valid).length,

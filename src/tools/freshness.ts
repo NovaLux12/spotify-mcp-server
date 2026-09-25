@@ -32,6 +32,7 @@ import {
 } from '../shaping.js';
 import type { ResponseFormatValue, PaginationInfo } from '../shaping.js';
 import { getConfig } from '../config.js';
+import { readOnlyModeEnabled } from './annotations.js';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -451,10 +452,13 @@ export function registerFreshnessTools(server: McpServer, client: SpotifyClient)
       let watermarkAdvanced = false;
       let newWatermark: string | null = null;
       let watermarkReason: string | null = null;
-      if (!truncated) {
+      const readOnly = readOnlyModeEnabled();
+      if (!truncated && !readOnly) {
         newWatermark = todayUtc();
         await writeWatermark(newWatermark);
         watermarkAdvanced = true;
+      } else if (readOnly) {
+        watermarkReason = 'READONLY mode is active — watermark held so an auto-approved read cannot change local freshness state';
       } else if (quotaHit) {
         watermarkReason = 'quota exceeded mid-walk — partial results returned, watermark held so next since=last-check retries unscanned artists';
       } else {

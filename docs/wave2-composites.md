@@ -1,9 +1,9 @@
-# Wave 2 composites — 11 read-only taste composites (shipped in v1.30.0, surface now 608 tools)
+# Wave 2 composites — shipped read-only taste tools
+<!-- BEGIN:generated surface-census -->
+Current default production surface: **591 tools**, including the shipped taste composites documented below. Earlier release totals in this page's history are not current registry truth; regenerate this block with `npm run count:tools -- --write`.
+<!-- END:generated surface-census -->
 
-Baseline: v1.29.0 ships 38 stats.fm + taste tools (30 `statsfm_*` live names
-via loop registration + 8 `taste_*` in `statsfm_taste.ts`). Total live surface
-≈ 589 tools. Standing rule: every release must expose MORE tools than the
-previous one — this wave adds 11, all in the `taste` toolset.
+The shipped `taste_composites.ts` module contributes eleven read-only tools in the `taste` toolset. Earlier release totals are historical context, not current registry truth.
 
 ## Read-only guarantees
 
@@ -52,9 +52,11 @@ missing[] had no Spotify id at all: search them by name.
 
 - `registerTasteCompositeTools(server, client)` in
   `src/tools/taste_composites.ts` (11 `server.tool` calls, all `taste_*`).
-- Wired in `src/index.ts` under registration key `tastecomposites`
-  (no Spotify scopes, no readOnly gate — same as `taste`).
-- `src/toolsets.ts`: `taste: ['taste', 'tastecomposites']`, comment
-  `8 tools` → `19 tools` (8 taste + 11 composites).
+- Wired through the `REGISTRAR_MANIFEST` in `src/tools/annotations.ts` under
+  registration key `tastecomposites` (no Spotify scopes, no readOnly gate — same as `taste`).
+- `src/toolsets.ts`: `taste: ['taste', 'tastecomposites']`. Per-set tool counts
+  are not hand-maintained — the generated census header above is the source of
+  truth, and the registrar budgets in `src/tools/annotations.ts` carry the
+  per-module numbers.
 - Tests: `tests/taste-composites.test.ts`, fixture-backed fetch via
   `__setTasteCompositeFetchImpl`, ≥1 test per tool.

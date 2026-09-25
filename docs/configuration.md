@@ -1,6 +1,6 @@
 # Configuration reference
 
-Every environment variable read by `@novalux12/spotify-mcp` — set in your MCP host config, on the command line, or in `.env` (picked up by `npm run dev` on Node 22.9+). Variables are read at their documented call sites; there is no config file.
+The variables below are read at the documented call sites; set them in your MCP host config, command line, or `.env` (loaded by `npm run dev` on Node 22.9+). There is no unified environment registry or config file.
 
 ## Summary
 
@@ -21,13 +21,13 @@ Every environment variable read by `@novalux12/spotify-mcp` — set in your MCP 
 | `SPOTIFY_MCP_TOOLSETS` | unset (all) | Comma-separated toolsets to register. `all`, empty, or unset registers everything. |
 | `SPOTIFY_MCP_ENABLE_TOOLS` | unset | Comma-separated registration-key overrides forced on. |
 | `SPOTIFY_MCP_DISABLE_TOOLS` | unset | Comma-separated registration-key overrides forced off; disable wins over enable. |
-| `SPOTIFY_MCP_READONLY` | unset | `1`, `true`, or `yes` hides write-capable modules. Read-only resources and prompts remain registered. |
-| `SPOTIFY_MCP_CONFIRM` | unset | `never` is the explicit automation bypass for confirmation-gated destructive operations; otherwise the gate fails closed. |
+| `SPOTIFY_MCP_READONLY` | unset | `1`, `true`, `yes`, or `on` (case-insensitive, trimmed) hides Spotify-mutating registration modules. One parser backs this flag, the `spotify_doctor` report, the `whats_new` annotations and the freshness-watermark hold, so they cannot disagree. Read-only modules, resources, and prompts remain subject to their normal gates. |
+| `SPOTIFY_MCP_CONFIRM` | unset | `never` is the only explicit bypass for confirmation-gated destructive operations; callers that require confirmation otherwise fail closed when the client cannot elicit. |
 | `SPOTIFY_MCP_FRESHNESS_STATE` | `~/.spotify-mcp/freshness.json` | Watermark file powering `whats_new` with `since: "last-check"`. |
 | `SPOTIFY_MCP_FRESHNESS_BUDGET` | `25` | Per-call budget for `whats_new` artist and show lookups. |
 | `SPOTIFY_MCP_SCENES_FILE` | `~/.spotify-mcp/scenes.json` | Playback scene sidecar. |
 | `SPOTIFY_MCP_GENRE_TAGS_FILE` | `~/.spotify-mcp/genre-tags.json` | Artist-to-genre-tags sidecar. |
-| `SPOTIFY_MCP_DATA_DIR` | `./data` for watchlists; `~/.spotify-mcp/playlist-snapshots` for playlist-health snapshots | Data directory for the artist watchlist and playlist-health snapshots. Set it explicitly to avoid cwd-relative watchlist files. |
+| `SPOTIFY_MCP_DATA_DIR` | `./data` for watchlists; `~/.spotify-mcp/playlist-snapshots` for playlist-health snapshots | Data directory read by the artist-watchlist, portability-watchlist, and playlist-health call sites. Set it explicitly to avoid cwd-relative watchlist files. |
 | `SPOTIFY_MCP_BACKUP_DIR` | `~/.spotify-mcp/backups` | Directory for `backup_library` snapshots. |
 | `SPOTIFY_MCP_PORTABILITY_DIR` | `~/.spotify-mcp/portability` | Default output directory for library/history portability exports. |
 | `SPOTIFY_MCP_SNAPSHOT_DIR` | `~/.spotify-mcp/playlist-snapshots` | Playlist snapshot sidecar directory. |
@@ -75,9 +75,9 @@ An unknown-only toolset spec fails startup with the valid set names. A mixed kno
 
 ### Read-only and confirmation safety
 
-`SPOTIFY_MCP_READONLY=1` (also `true` or `yes`) hides write-capable modules such as playback and scenes, playlist and library mutations, following, users, audiobooks, and destructive helpers. It does **not** hide read-only resources or prompts. Search, catalog, personalization, stats.fm, and `spotify_doctor` remain available when their set/scope gates permit them.
+`SPOTIFY_MCP_READONLY=1` (also `true`, `yes` or `on`; case-insensitive, surrounding whitespace ignored) prevents registration of Spotify-mutating modules such as playback and scenes, playlist and library mutations, following, users, audiobooks, and destructive helpers. It does **not** imply that every remaining tool is side-effect-free: local-only tools such as the taste feedback store remain available. It also does not bypass the independent toolset, registration-key, or scope gates. Read-only resources and prompts remain available when their own gates permit.
 
-Confirmation-gated destructive operations require an accepted MCP elicitation response. `SPOTIFY_MCP_CONFIRM=never` is an explicit automation bypass, not a requirement for ordinary use; an unsupported client or elicitation error fails closed.
+For confirmation-gated destructive operations, a missing MCP elicitation capability produces an `unsupported` result. Callers that require confirmation must treat that result as refusal; they proceed without prompting only when `SPOTIFY_MCP_CONFIRM=never` explicitly selects the automation bypass. A declined prompt or elicitation failure also fails closed.
 
 ### Freshness and local sidecars
 
@@ -85,7 +85,7 @@ Confirmation-gated destructive operations require an accepted MCP elicitation re
 
 `SPOTIFY_MCP_SCENES_FILE` stores named device/volume/shuffle/repeat/context presets. `SPOTIFY_MCP_GENRE_TAGS_FILE` stores user-declared artist genre tags. `SPOTIFY_MCP_SEARCH_HISTORY_FILE`, `SPOTIFY_MCP_PLAYBACKEXT_FILE`, `SPOTIFY_MCP_EXHAUST2_PLAYBACK_FILE`, and `SPOTIFY_MCP_EXHAUST2_MISC_FILE` override their respective local sidecars.
 
-`SPOTIFY_MCP_DATA_DIR` is read by the artist-watchlist, portability-watchlist, and playlist-health paths. Without it, those current call sites fall back to `./data/artist-watchlist.json` for watchlists or `~/.spotify-mcp/playlist-snapshots` for playlist-health snapshots. `SPOTIFY_MCP_SNAPSHOT_DIR` separately controls the swarm3 playlist-snapshot sidecar. Set the data and snapshot variables explicitly when the process working directory is not a durable location. `SPOTIFY_MCP_BACKUP_DIR` and `SPOTIFY_MCP_PORTABILITY_DIR` control backup and export destinations.
+`SPOTIFY_MCP_DATA_DIR` is read directly by the artist-watchlist, portability-watchlist, and playlist-health paths; there is no shared configuration object behind the variable. Without it, the watchlist call sites use `./data/artist-watchlist.json`, while playlist-health uses `~/.spotify-mcp/playlist-snapshots`. `SPOTIFY_MCP_SNAPSHOT_DIR` separately controls the swarm3 playlist-snapshot sidecar. Set the data and snapshot variables explicitly when the process working directory is not durable. `SPOTIFY_MCP_BACKUP_DIR` and `SPOTIFY_MCP_PORTABILITY_DIR` control backup and export destinations.
 
 ## Registration-gated endpoints
 

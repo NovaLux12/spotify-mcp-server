@@ -25,7 +25,7 @@ import { issueReceipt, formatReceipt } from '../receipts.js';
 import { getConfig } from '../config.js';
 import {
   classifySpotifyReference,
-  spotifyUri,
+  spotifyUriFromClassification,
   type SpotifyReferenceKind,
 } from '../refs.js';
 
@@ -143,7 +143,12 @@ function formatDuration(ms: number): string {
 const SAVED_URI_TYPES = ['track', 'album', 'show', 'episode', 'audiobook'] as const;
 type SavedUriType = (typeof SAVED_URI_TYPES)[number];
 
-function partitionSavedUris(uris: string[]): Record<SavedUriType, string[]> {
+interface ParsedSavedUris {
+  buckets: Record<SavedUriType, string[]>;
+  canonicalUris: string[];
+}
+
+function partitionSavedUris(uris: string[]): ParsedSavedUris {
   const buckets: Record<SavedUriType, string[]> = {
     track: [],
     album: [],
@@ -151,6 +156,7 @@ function partitionSavedUris(uris: string[]): Record<SavedUriType, string[]> {
     episode: [],
     audiobook: [],
   };
+  const canonicalUris: string[] = [];
   for (const uri of uris) {
     const parsed = classifySpotifyReference(uri, undefined, { allowShortIds: true });
     if (!parsed.valid || !parsed.kind || !SAVED_URI_TYPES.includes(parsed.kind as SavedUriType)) {
@@ -158,9 +164,12 @@ function partitionSavedUris(uris: string[]): Record<SavedUriType, string[]> {
         `Unsupported URI type: ${uri} (supported: ${SAVED_URI_TYPES.map((kind) => `spotify:${kind}:`).join(', ')})`,
       );
     }
+    const canonical = spotifyUriFromClassification(parsed);
+    if (!canonical) throw new Error(`Invalid Spotify reference: ${uri}`);
     buckets[parsed.kind as SavedUriType].push(parsed.id!);
+    canonicalUris.push(canonical);
   }
-  return buckets;
+  return { buckets, canonicalUris };
 }
 
 // Shows AND audiobooks take `ids` ONLY as a query parameter (#12, #36): when
@@ -204,7 +213,7 @@ function canonicalLibraryUris(
         `Unsupported URI type: ${ref} (supported: ${supported.map((kind) => `spotify:${kind}:`).join(', ')})`,
       );
     }
-    const uri = spotifyUri(ref, undefined, { allowShortIds: true });
+    const uri = spotifyUriFromClassification(parsed);
     if (!uri) throw new Error(`Invalid Spotify reference: ${ref}`);
     return uri;
   });
@@ -479,12 +488,7 @@ export function registerLibraryTools(server: McpServer, client: SpotifyClient): 
       response_format: ResponseFormat,
     },
     async (args) => {
-      const buckets = partitionSavedUris(args.uris); // validates even in preview mode
-      const uris = args.uris.map((uri) => {
-        const canonical = spotifyUri(uri, undefined, { allowShortIds: true });
-        if (!canonical) throw new Error(`Invalid Spotify reference: ${uri}`);
-        return canonical;
-      });
+      const { buckets, canonicalUris: uris } = partitionSavedUris(args.uris);
       if (args.dry_run) {
         return dryRunOut(args.response_format, 'save_items', 'user library', uris);
       }
@@ -519,12 +523,7 @@ export function registerLibraryTools(server: McpServer, client: SpotifyClient): 
       response_format: ResponseFormat,
     },
     async (args) => {
-      const buckets = partitionSavedUris(args.uris); // validates even in preview mode
-      const uris = args.uris.map((uri) => {
-        const canonical = spotifyUri(uri, undefined, { allowShortIds: true });
-        if (!canonical) throw new Error(`Invalid Spotify reference: ${uri}`);
-        return canonical;
-      });
+      const { buckets, canonicalUris: uris } = partitionSavedUris(args.uris);
       if (args.dry_run) {
         return dryRunOut(args.response_format, 'remove_saved_items', 'user library', uris);
       }
@@ -560,12 +559,7 @@ export function registerLibraryTools(server: McpServer, client: SpotifyClient): 
       max_results: MaxResults,
     },
     async (args) => {
-      const buckets = partitionSavedUris(args.uris);
-      const uris = args.uris.map((uri) => {
-        const canonical = spotifyUri(uri, undefined, { allowShortIds: true });
-        if (!canonical) throw new Error(`Invalid Spotify reference: ${uri}`);
-        return canonical;
-      });
+      const { buckets, canonicalUris: uris } = partitionSavedUris(args.uris);
       const savedByUri = new Map<string, boolean>();
       for (const type of SAVED_URI_TYPES) {
         const ids = buckets[type];
@@ -725,7 +719,7 @@ export function registerLibraryTools(server: McpServer, client: SpotifyClient): 
     {
       query: z.string().optional().describe('Substring match against show name/publisher'),
       max_results: MaxResults,
-      scan_cap: z.number().int().min(1).max(2000).optional(),
+      scan_cap: z.number().int().min(1).max(2000).optional().describe('Maximum saved items to scan; defaults to SPOTIFY_MCP_FETCH_ALL_CAP'),
       response_format: ResponseFormat,
     },
     async (args) => {
@@ -752,7 +746,7 @@ export function registerLibraryTools(server: McpServer, client: SpotifyClient): 
       query: z.string().optional().describe('Substring against episode/show name'),
       show: z.string().optional().describe('Substring against show name'),
       max_results: MaxResults,
-      scan_cap: z.number().int().min(1).max(2000).optional(),
+      scan_cap: z.number().int().min(1).max(2000).optional().describe('Maximum saved items to scan; defaults to SPOTIFY_MCP_FETCH_ALL_CAP'),
       response_format: ResponseFormat,
     },
     async (args) => {
@@ -779,7 +773,7 @@ export function registerLibraryTools(server: McpServer, client: SpotifyClient): 
     {
       query: z.string().optional().describe('Substring against audiobook name/author'),
       max_results: MaxResults,
-      scan_cap: z.number().int().min(1).max(2000).optional(),
+      scan_cap: z.number().int().min(1).max(2000).optional().describe('Maximum saved items to scan; defaults to SPOTIFY_MCP_FETCH_ALL_CAP'),
       response_format: ResponseFormat,
     },
     async (args) => {

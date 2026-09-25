@@ -427,7 +427,6 @@ const realToolNames: Record<string, true> = Object.fromEntries([
   'get_queue', 'add_to_queue', 'get_devices', 'transfer_playback',
   'get_track', 'get_artist', 'get_artist_albums', 'get_album', 'get_album_tracks',
   'get_show', 'list_show_episodes', 'get_episode', 'get_me', 'get_artist_top_tracks',
-  'get_show_episodes',
   'get_available_markets', 'get_several_tracks', 'get_several_albums', 'get_several_artists',
   'get_several_episodes', 'get_several_shows', 'get_several_audiobooks', 'get_several_chapters',
   // personalization

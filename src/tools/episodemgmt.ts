@@ -8,6 +8,7 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
+import { confirmViaElicitation, describeConfirmation, requiredConfirmationRefusal } from './confirm.js';
 import { DryRun, describeDryRun, ResponseFormat } from '../shaping.js';
 
 type ToolResult = { content: Array<{ type: 'text'; text: string }>; structuredContent?: Record<string, unknown> };
@@ -19,12 +20,17 @@ function emit(fmt: string | undefined, echo: Record<string, unknown>, text: stri
 
 export function registerEpisodeMgmtTools(server: McpServer, client: SpotifyClient): void {
   server.tool('archive_played_episodes',
-    'Remove fully-played episodes from your episode library in bulk (checks resume_point.fully_played). Batch DELETE /me/episodes; elicitation >50; dry_run supported.',
+    'Remove fully-played episodes from your episode library in bulk (checks resume_point.fully_played). Batch DELETE /me/episodes; archives over 50 episodes require elicitation confirmation (or SPOTIFY_MCP_CONFIRM=never for automation); dry_run supported.',
     {
       dry_run: DryRun,
       response_format: ResponseFormat,
       limit: z.number().int().min(1).max(500).optional().describe('Max episodes to scan (default 100).'),
-      confirm: z.boolean().optional().describe('Confirm bulk removal when >50 fully-played episodes found'),
+      // Accepted so a 1.31.0 caller does not get a hard unknown_param error, but
+      // deliberately NOT an authorization: this boolean used to bypass the
+      // confirmation gate, which is exactly the write-without-a-human the gate
+      // exists to prevent. It now only records intent; the elicitation (or the
+      // server-wide SPOTIFY_MCP_CONFIRM=never) still decides.
+      confirm: z.boolean().optional().describe('Deprecated and ignored: it no longer authorises the write. Over 50 episodes requires elicitation confirmation, or SPOTIFY_MCP_CONFIRM=never.'),
     },
     async (args) => {
       const cap = (args.limit as number) ?? 100;
@@ -38,16 +44,31 @@ export function registerEpisodeMgmtTools(server: McpServer, client: SpotifyClien
         const res = await client.get<{ items: typeof items } & { total: number }>('/me/episodes', { limit: String(Math.min(cap, 50)) });
         items = res?.items ?? [];
       }
+      const deprecatedInputs = args.confirm === undefined ? [] : ['confirm'];
       const played = items.filter((r) => r?.episode?.resume_point?.fully_played);
-      if (played.length === 0) return textResult(`No fully-played episodes in library (scanned ${items.length}).`, { ok: true, scanned: items.length, played: 0 });
+      if (played.length === 0) return textResult(`No fully-played episodes in library (scanned ${items.length}).`, { ok: true, scanned: items.length, played: 0, ...(deprecatedInputs.length ? { deprecated_inputs: deprecatedInputs, deprecation_note: '`confirm` is accepted but ignored: it no longer authorises the delete. Use elicitation, or set SPOTIFY_MCP_CONFIRM=never to automate.' } : {}) });
       const ids = played.map((r) => r.episode.id);
       const uris = played.map((r) => r.episode.uri);
       if (args.dry_run) {
         const preview = played.slice(0, 5).map((r) => r.episode.name);
         return { content: [{ type: 'text', text: describeDryRun('archive_played_episodes', `${items.length} saved episodes`, [`would remove ${played.length} fully-played episodes`, ...preview]) }] };
       }
-      if (played.length > 50 && !args.confirm) {
-        return textResult(`Found ${played.length} fully-played episodes — pass confirm:true to proceed (elicitation threshold 50).`, { ok: false, needs_confirm: true, count: played.length, preview: uris.slice(0, 5) });
+      if (played.length > 50) {
+        const verdict = await confirmViaElicitation(server, {
+          message: describeConfirmation('remove from episode library', 'fully-played episodes', [
+            `Remove ${played.length} fully-played episode(s):`,
+            ...uris.slice(0, 5),
+            ...(uris.length > 5 ? [`(…and ${uris.length - 5} more)`] : []),
+          ]),
+          confirmLabel: 'Archive played episodes',
+        });
+        const refusal = requiredConfirmationRefusal(verdict);
+        // Tell a legacy caller on every exit, not just the happy path: this is
+        // where a caller that sent `confirm: true` learns it did not authorise
+        // anything.
+        if (refusal) return textResult(refusal.message, deprecatedInputs.length
+          ? { ...refusal.payload, deprecated_inputs: deprecatedInputs, deprecation_note: '`confirm` was accepted but ignored: it no longer authorises the delete.' }
+          : refusal.payload);
       }
       let removed = 0;
       for (let i = 0; i < ids.length; i += 50) {
@@ -55,6 +76,6 @@ export function registerEpisodeMgmtTools(server: McpServer, client: SpotifyClien
         await client.delete(`/me/episodes?ids=${batch.join(',')}`);
         removed += batch.length;
       }
-      return emit(args.response_format as string, { ok: true, scanned: items.length, removed, ids }, `Archived ${removed} fully-played episodes.`);
+      return emit(args.response_format as string, { ok: true, scanned: items.length, removed, ids, ...(deprecatedInputs.length ? { deprecated_inputs: deprecatedInputs, deprecation_note: '`confirm` was accepted but ignored: it no longer authorises the delete.' } : {}) }, `Archived ${removed} fully-played episodes.`);
     });
 }

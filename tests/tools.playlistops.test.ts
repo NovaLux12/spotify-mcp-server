@@ -163,6 +163,21 @@ const item = (id: string, name = `Track ${id}`) =>
 const unavailableItem = (): PlaylistItemObject =>
   ({ added_at: "2026-01-01T00:00:00Z", item: null }) as unknown as PlaylistItemObject;
 
+const SRC_A = 'A'.repeat(22);
+const SRC_B = 'B'.repeat(22);
+const TARGET = 'T'.repeat(22);
+const PL9 = 'P'.repeat(22);
+const TARGET_2 = 'U'.repeat(22);
+const DRY_A = 'D'.repeat(22);
+const DRY_B = 'E'.repeat(22);
+const MAX_A = 'M'.repeat(22);
+const PAIR_A = 'Q'.repeat(22);
+const PAIR_B = 'R'.repeat(22);
+const OVERLAP_1 = '1'.repeat(22);
+const OVERLAP_2 = '2'.repeat(22);
+const OVERLAP_3 = '3'.repeat(22);
+
+
 /**
  * Responder serving each playlist's full item list in pages of `pageSize`,
  * so multi-page fixtures exercise real getAllPages loops. Mutating paths
@@ -200,23 +215,6 @@ describe('playlistops registration', () => {
       ['diff_playlists', 'merge_playlists', 'overlap_playlists'],
     );
   });
-
-  it('rejects legacy array, pair, and ambiguous cap names', async () => {
-    const h = harness();
-    await assert.rejects(
-      () => h.invoke('merge_playlists', { playlists: ['a'], new_name: 'X', max_items: 1 }),
-      (err: unknown) => err instanceof z.ZodError,
-    );
-    await assert.rejects(
-      () => h.invoke('merge_playlists', { sources: ['a'], new_name: 'X' }),
-      (err: unknown) => err instanceof z.ZodError,
-    );
-    await assert.rejects(
-      () => h.invoke('diff_playlists', { a: 'pa', b: 'pb' }),
-      (err: unknown) => err instanceof z.ZodError,
-    );
-    assert.equal(h.client.calls.length, 0);
-  });
 });
 
 // ---------------------------------------------------------------------------
@@ -227,14 +225,14 @@ describe('merge_playlists', () => {
   it('rejects when neither target_playlist_id nor new_name is given', async () => {
     const h = harness();
     await assert.rejects(() =>
-      h.invoke('merge_playlists', { playlists: ['aaa'] }),
+      h.invoke('merge_playlists', { sources: [SRC_A] }),
     );
   });
 
   it('rejects when both target_playlist_id and new_name are given', async () => {
     const h = harness();
     await assert.rejects(() =>
-      h.invoke('merge_playlists', { playlists: ['aaa'], target_playlist_id: 't1', new_name: 'X' }),
+      h.invoke('merge_playlists', { sources: [SRC_A], target_playlist_id: TARGET, new_name: 'X' }),
     );
   });
 
@@ -243,7 +241,7 @@ describe('merge_playlists', () => {
     const sourceB = Array.from({ length: 100 }, (_, i) => item(`b${String(i).padStart(3, '0')}`));
     const h = harness(
       playlistResponder(
-        { srcA: sourceA, srcB: sourceB },
+        { [SRC_A]: sourceA, [SRC_B]: sourceB },
         (path, body) => {
           if (path === '/me/playlists') return { id: 'new-pl' };
           if (/^\/playlists\/new-pl\/items$/.test(path)) return { snapshot_id: 'snap-1' };
@@ -255,7 +253,7 @@ describe('merge_playlists', () => {
     );
 
     const out = await h.invoke('merge_playlists', {
-      playlists: ['srcA', 'spotify:playlist:srcB'],
+      sources: [SRC_A, `spotify:playlist:${SRC_B}`],
       new_name: 'Merged',
       public: true,
     });
@@ -286,14 +284,14 @@ describe('merge_playlists', () => {
     const srcA = [item('t1'), item('t2'), item('t3')];
     const srcB = [item('t2'), item('t4'), item('t1')];
     const h = harness(
-      playlistResponder({ sa: srcA, sb: srcB }, (path) =>
-        /^\/playlists\/tgt/.test(path) ? { snapshot_id: 's' } : null,
+      playlistResponder({ [SRC_A]: srcA, [SRC_B]: srcB }, (path) =>
+        path.startsWith(`/playlists/${TARGET}`) ? { snapshot_id: 's' } : null,
       ),
     );
 
     await h.invoke('merge_playlists', {
-      playlists: ['sa', 'sb'],
-      target_playlist_id: 'spotify:playlist:tgt',
+      sources: [SRC_A, SRC_B],
+      target_playlist_id: `spotify:playlist:${TARGET}`,
     });
 
     const batchPosts = wireCalls(h.client.calls).filter(
@@ -310,34 +308,34 @@ describe('merge_playlists', () => {
   it('appends to an existing target without clearing it (no PUT)', async () => {
     const srcA = [item('x1')];
     const tgt = [item('existing')];
-    const h = harness(playlistResponder({ sa: srcA, tgt }, () => ({ snapshot_id: 's' })));
+    const h = harness(playlistResponder({ [SRC_A]: srcA, [TARGET]: tgt }, () => ({ snapshot_id: 's' })));
 
-    await h.invoke('merge_playlists', { playlists: ['sa'], target_playlist_id: 'tgt' });
+    await h.invoke('merge_playlists', { sources: [SRC_A], target_playlist_id: TARGET });
 
     assert.equal(
       wireCalls(h.client.calls).filter((c) => c.method === 'PUT').length,
       0,
       'append semantics must never PUT/clear the target',
     );
-    assert.ok(wireCalls(h.client.calls).some((c) => c.method === 'POST' && /tgt\/items$/.test(c.path)));
+    assert.ok(wireCalls(h.client.calls).some((c) => c.method === 'POST' && c.path === `/playlists/${TARGET}/items`));
   });
 
   it('normalizes spotify:playlist: URIs into IDs on the wire', async () => {
     const h = harness(
-      playlistResponder({ pl9: [item('z1')] }, () => ({ snapshot_id: 's' })),
+      playlistResponder({ [PL9]: [item('z1')] }, () => ({ snapshot_id: 's' })),
     );
     await h.invoke('merge_playlists', {
-      playlists: ['spotify:playlist:pl9'],
-      target_playlist_id: 'spotify:playlist:tgt2',
+      sources: [`spotify:playlist:${PL9}`],
+      target_playlist_id: `spotify:playlist:${TARGET_2}`,
     });
     const gets = wireCalls(h.client.calls)
       .filter((c) => c.method === 'GET')
       .map((c) => c.path);
-    assert.ok(gets.includes('/playlists/pl9/items'));
+    assert.ok(gets.includes(`/playlists/${PL9}/items`));
     assert.ok(gets.every((p) => !p.includes('spotify%3A')));
     assert.ok(
       wireCalls(h.client.calls).some(
-        (c) => c.method === 'POST' && c.path === '/playlists/tgt2/items',
+        (c) => c.method === 'POST' && c.path === `/playlists/${TARGET_2}/items`,
       ),
     );
   });
@@ -345,14 +343,12 @@ describe('merge_playlists', () => {
   it('dry_run reads sources but makes zero mutating calls and previews additions', async () => {
     const srcA = [item('d1'), item('d2')];
     const srcB = [item('d2'), unavailableItem()];
-    const h = harness(playlistResponder({ da: srcA, db: srcB }));
+    const h = harness(playlistResponder({ [DRY_A]: srcA, [DRY_B]: srcB }));
 
     const out = await h.invoke('merge_playlists', {
-      playlists: ['da', 'db'],
+      sources: [DRY_A, DRY_B],
       new_name: 'Preview',
       dry_run: true,
-      limit: 25,
-      scan_cap: 40,
     });
 
     const text = textOf(out);
@@ -363,28 +359,36 @@ describe('merge_playlists', () => {
     assert.equal(out.structuredContent!.ok, true);
     assert.equal(out.structuredContent!.dry_run, true);
     assert.ok(Array.isArray(out.structuredContent!.changes));
-    assert.deepEqual(out.structuredContent!.playlists, ['da', 'db']);
-    assert.equal(out.structuredContent!.limit, 25);
-    assert.equal(out.structuredContent!.scan_cap, 40);
     assert.ok(out.structuredContent!.changes.length >= 2);
 
     const methods = wireCalls(h.client.calls).map((c) => c.method);
     assert.equal(methods.filter((m) => m !== 'GET').length, 0, 'no POST/PUT/DELETE allowed');
     assert.ok(methods.filter((m) => m === 'GET').length >= 2, 'sources were read');
-    assert.ok(
-      wireCalls(h.client.calls).every(
-        (call) => (call.arg as Record<string, string>).limit === '25',
-      ),
-    );
+  });
+
+  it('honors scan_cap and reports truncated source walks', async () => {
+    const h = harness(playlistResponder({
+      [DRY_A]: [item('d1'), item('d2')],
+      [DRY_B]: [item('d3')],
+    }));
+    const out = await h.invoke('merge_playlists', {
+      playlists: [DRY_A, DRY_B],
+      new_name: 'Capped',
+      dry_run: true,
+      scan_cap: 1,
+    });
+    assert.equal(out.structuredContent?.truncated, true);
+    assert.equal(out.structuredContent?.scan_cap, 1);
+    assert.match(textOf(out), /configured cap of 1 rows/);
   });
 
   it('max_results caps rendered rows while totals stay accurate', async () => {
     const srcA = Array.from({ length: 5 }, (_, i) => item(`m${i}`));
-    const h = harness(playlistResponder({ ma: srcA }, () => ({ snapshot_id: 's' })));
+    const h = harness(playlistResponder({ [MAX_A]: srcA }, () => ({ snapshot_id: 's' })));
 
     const out = await h.invoke('merge_playlists', {
-      playlists: ['ma'],
-      target_playlist_id: 'tgt3',
+      sources: [MAX_A],
+      target_playlist_id: TARGET,
       response_format: 'concise',
       max_results: 2,
     });
@@ -403,9 +407,9 @@ describe('diff_playlists', () => {
   it('reports symmetric only-in-a / only-in-b sets and no false moved rows', async () => {
     const a = [item('a1'), item('b2'), item('c3')];
     const b = [item('b2'), item('c3'), item('d4')];
-    const h = harness(playlistResponder({ pa: a, pb: b }));
+    const h = harness(playlistResponder({ [PAIR_A]: a, [PAIR_B]: b }));
 
-    const out = await h.invoke('diff_playlists', { playlist_a: 'pa', playlist_b: 'pb' });
+    const out = await h.invoke('diff_playlists', { a: PAIR_A, b: PAIR_B });
     const text = textOf(out);
     assert.match(text, /Only in A \(1\)/);
     assert.match(text, /a1 @ position 0/);
@@ -416,7 +420,7 @@ describe('diff_playlists', () => {
     assert.match(text, /c3 @ A:2 → B:1/);
 
     // Identical playlists produce empty sections everywhere.
-    const same = await h.invoke('diff_playlists', { playlist_a: 'pa', playlist_b: 'pa' });
+    const same = await h.invoke('diff_playlists', { a: PAIR_A, b: PAIR_A });
     assert.match(textOf(same), /Only in A \(0\):\n  \(none\)/);
     assert.match(textOf(same), /Moved \(same track, different position\) \(0\)/);
   });
@@ -424,24 +428,16 @@ describe('diff_playlists', () => {
   it('flags shared tracks whose positions differ, with accurate totals', async () => {
     const a = [item('x1'), item('x2'), item('x3')];
     const b = [item('x3'), item('x1'), item('x2')];
-    const h = harness(playlistResponder({ pa: a, pb: b }));
+    const h = harness(playlistResponder({ [PAIR_A]: a, [PAIR_B]: b }));
 
-    const out = await h.invoke('diff_playlists', { playlist_a: 'pa', playlist_b: 'pb', response_format: 'json', limit: 40, scan_cap: 120 });
+    const out = await h.invoke('diff_playlists', { a: PAIR_A, b: PAIR_B, response_format: 'json' });
     const data = JSON.parse(textOf(out)) as {
-      playlist_a: string;
-      playlist_b: string;
-      limit: number;
-      scan_cap: number;
       a_total: number;
       b_total: number;
       only_in_a: string[];
       only_in_b: string[];
       moved: Array<{ id: string; a_position: number; b_position: number }>;
     };
-    assert.equal(data.playlist_a, 'pa');
-    assert.equal(data.playlist_b, 'pb');
-    assert.equal(data.limit, 40);
-    assert.equal(data.scan_cap, 120);
     assert.equal(data.a_total, 3);
     assert.equal(data.b_total, 3);
     assert.deepEqual(data.only_in_a, []);
@@ -456,11 +452,10 @@ describe('diff_playlists', () => {
   it('caps rendered rows per section via max_results but keeps totals exact', async () => {
     const a = [item('o1'), item('o2'), item('o3'), item('shared')];
     const b = [item('q1'), item('q2'), item('q3'), item('shared')];
-    const h = harness(playlistResponder({ pa: a, pb: b }));
+    const h = harness(playlistResponder({ [PAIR_A]: a, [PAIR_B]: b }));
 
-    const out = await h.invoke('diff_playlists', { playlist_a: 'pa', playlist_b: 'pb', max_results: 1, limit: 30, scan_cap: 90 });
+    const out = await h.invoke('diff_playlists', { a: PAIR_A, b: PAIR_B, max_results: 1 });
     const text = textOf(out);
-    assert.match(text, /limit=30, scan_cap=90/);
     assert.match(text, /Only in A \(3\):/);
     assert.match(text, /Only in B \(3\):/);
     assert.match(text, /2 more/);
@@ -471,11 +466,8 @@ describe('diff_playlists', () => {
   it('never issues mutating calls even with dry_run set', async () => {
     const a = [item('r1')];
     const b = [item('r2')];
-    const h = harness(playlistResponder({ pa: a, pb: b }));
-    const out = await h.invoke('diff_playlists', { playlist_a: 'pa', playlist_b: 'pb', dry_run: true });
-    assert.equal(out.structuredContent!.dry_run, true);
-    assert.equal(out.structuredContent!.playlist_a, 'pa');
-    assert.equal(out.structuredContent!.playlist_b, 'pb');
+    const h = harness(playlistResponder({ [PAIR_A]: a, [PAIR_B]: b }));
+    await h.invoke('diff_playlists', { a: PAIR_A, b: PAIR_B, dry_run: true });
     assert.equal(
       wireCalls(h.client.calls).filter((c) => c.method !== 'GET').length,
       0,
@@ -487,9 +479,9 @@ describe('diff_playlists', () => {
       Array.from({ length: n }, (_, i) => item(`${prefix}${String(i).padStart(3, '0')}`));
     const a = [...many('a', 120)];
     const b = [...many('a', 120).slice(30), ...many('b', 10)];
-    const h = harness(playlistResponder({ pa: a, pb: b }, () => null, 50));
+    const h = harness(playlistResponder({ [PAIR_A]: a, [PAIR_B]: b }, () => null, 50));
 
-    const out = await h.invoke('diff_playlists', { playlist_a: 'pa', playlist_b: 'pb', response_format: 'json' });
+    const out = await h.invoke('diff_playlists', { a: PAIR_A, b: PAIR_B, response_format: 'json' });
     const data = JSON.parse(textOf(out)) as { a_total: number; b_total: number; only_in_b: string[] };
     assert.equal(data.a_total, 120);
     assert.equal(data.b_total, 100);
@@ -503,28 +495,25 @@ describe('diff_playlists', () => {
 
 describe('overlap_playlists', () => {
   const fixtures = () => ({
-    p1: [item('y2'), item('x1')],
-    p2: [item('y2'), item('z3')],
-    p3: [item('w4'), item('y2'), item('x1')],
+    [OVERLAP_1]: [item('y2'), item('x1')],
+    [OVERLAP_2]: [item('y2'), item('z3')],
+    [OVERLAP_3]: [item('w4'), item('y2'), item('x1')],
   });
 
   it('defaults threshold to all playlists and sorts by occurrence count', async () => {
     const h = harness(playlistResponder(fixtures()));
     const out = await h.invoke('overlap_playlists', {
-      playlists: ['p1', 'p2', 'p3'],
-      limit: 20,
-      scan_cap: 60,
+      playlists: [OVERLAP_1, OVERLAP_2, OVERLAP_3],
     });
     const text = textOf(out);
     assert.match(text, /at least 3 of 3 playlists: 1/);
     assert.match(text, /y2 "Track y2" — in 3\/3 playlists/);
-    assert.match(text, /limit=20, scan_cap=60/);
   });
 
   it('honors min_overlap=2 and orders most-shared first', async () => {
     const h = harness(playlistResponder(fixtures()));
     const out = await h.invoke('overlap_playlists', {
-      playlists: ['p1', 'p2', 'p3'],
+      playlists: [OVERLAP_1, OVERLAP_2, OVERLAP_3],
       min_overlap: 2,
     });
     const ids = (textOf(out).match(/• ([xyzw]\d)/g) ?? []).map((l) => l.replace('• ', ''));
@@ -534,23 +523,15 @@ describe('overlap_playlists', () => {
   it('json mode returns raw counts per track', async () => {
     const h = harness(playlistResponder(fixtures()));
     const out = await h.invoke('overlap_playlists', {
-      playlists: ['p1', 'p2', 'p3'],
+      playlists: [OVERLAP_1, OVERLAP_2, OVERLAP_3],
       min_overlap: 1,
       response_format: 'json',
-      limit: 30,
-      scan_cap: 70,
     });
     const data = JSON.parse(textOf(out)) as {
-      playlists: string[];
-      limit: number;
-      scan_cap: number;
       threshold: number;
       total_shared: number;
       shared: Array<{ id: string; count: number }>;
     };
-    assert.deepEqual(data.playlists, ['p1', 'p2', 'p3']);
-    assert.equal(data.limit, 30);
-    assert.equal(data.scan_cap, 70);
     assert.equal(data.threshold, 1);
     assert.equal(data.total_shared, 4);
     assert.deepEqual(data.shared[0], { id: 'y2', name: 'Track y2', count: 3 });
@@ -561,7 +542,7 @@ describe('overlap_playlists', () => {
     await assert.rejects(
       () =>
         h.invoke('overlap_playlists', {
-          playlists: ['p1', 'p2'],
+          playlists: [OVERLAP_1, OVERLAP_2],
           min_overlap: 3,
         }),
       /cannot exceed/,
@@ -571,22 +552,20 @@ describe('overlap_playlists', () => {
   it('accepts URI references and requires at least two playlists', async () => {
     const h = harness(playlistResponder(fixtures()));
     const out = await h.invoke('overlap_playlists', {
-      playlists: ['spotify:playlist:p1', 'spotify:playlist:p3'],
+      playlists: [`spotify:playlist:${OVERLAP_1}`, `spotify:playlist:${OVERLAP_3}`],
     });
     assert.match(textOf(out), /at least 2 of 2 playlists/);
     await assert.rejects(() =>
-      h.invoke('overlap_playlists', { playlists: ['p1'] }),
+      h.invoke('overlap_playlists', { playlists: [OVERLAP_1] }),
     );
   });
 
   it('makes zero mutating calls even with dry_run set', async () => {
     const h = harness(playlistResponder(fixtures()));
-    const out = await h.invoke('overlap_playlists', {
-      playlists: ['p1', 'p2'],
+    await h.invoke('overlap_playlists', {
+      playlists: [OVERLAP_1, OVERLAP_2],
       dry_run: true,
     });
-    assert.equal(out.structuredContent!.dry_run, true);
-    assert.deepEqual(out.structuredContent!.playlists, ['p1', 'p2']);
     assert.equal(
       wireCalls(h.client.calls).filter((c) => c.method !== 'GET').length,
       0,

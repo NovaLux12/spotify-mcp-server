@@ -12,7 +12,6 @@
  */
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import type { SpotifyClient } from '../client.js';
 import {
   TOOLSETS,
   isModuleActive,
@@ -21,6 +20,7 @@ import {
   resolveToolOverrides,
 } from '../toolsets.js';
 import { ResponseFormat } from '../shaping.js';
+import { type ModuleSchemaBudget, readOnlyModeEnabled } from './annotations.js';
 
 interface RegisteredToolInfo {
   name: string;
@@ -69,7 +69,7 @@ function activeModules(): string[] {
   return allRegistrationKeys.filter((key) => isModuleActive(key, sets, overrides));
 }
 
-export function registerSwarm3MetaTools(server: McpServer, client: SpotifyClient): void {
+export function registerSwarm3MetaTools(server: McpServer): void {
   server.tool(
     'find_tool',
     'Search the live tool registry by name or description substring — the fastest way to discover which of the 500+ tools handles a job. Discovery set: find_tool/inspect_tool/toolset_report are always available (also via catalog). Use this first when unsure which verb to use (e.g., playlist vs snapshot vs search).',
@@ -151,11 +151,17 @@ export function registerSwarm3MetaTools(server: McpServer, client: SpotifyClient
           return `• ${set}: ${active}/${keys.length} modules active (${keys.join(', ')})`;
         })
         .join('\n');
-      const readOnly = ['1', 'true', 'yes'].includes((process.env.SPOTIFY_MCP_READONLY ?? '').toLowerCase());
+      const readOnly = readOnlyModeEnabled();
+      const collectBudgets = (server as unknown as { __spotifyModuleSchemaBudgets?: () => ModuleSchemaBudget[] }).__spotifyModuleSchemaBudgets;
+      const moduleBudgets = collectBudgets?.() ?? [];
+      const registrationExclusions = moduleBudgets.filter((row) => row.status !== 'active').map((row) => `${row.module} (${row.status})`);
+      const budgetLines = moduleBudgets
+        .map((row) => `• ${row.module}: ${row.status}; ${row.toolCount} tools; ${row.schemaBytes} schema bytes; ceiling ${row.maxToolCount} tools/${row.maxSchemaBytes} bytes${row.withinBudget ? '' : ' — OVER BUDGET'}`)
+        .join('\n');
       const head = all.length === 0
         ? REGISTRY_UNAVAILABLE
         : `Registered tools (live): ${all.length}`;
-      const text = `${head}\nActive toolsets: ${activeSets.join(', ') || '(none)'}\nread-only: ${readOnly ? 'yes' : 'no'}\n\nToolsets (SPOTIFY_MCP_TOOLSETS):\n${setLines}`;
+      const text = `${head}\nActive toolsets: ${activeSets.join(', ') || '(none)'}\nread-only: ${readOnly ? 'yes' : 'no'}\n\nToolsets (SPOTIFY_MCP_TOOLSETS):\n${setLines}\n\nPer-module schema budget (description + inputSchema):\n${budgetLines}\nRegistration exclusions: ${registrationExclusions.join(', ') || '(none)'}`;
       return {
         content: [{ type: 'text', text }],
         structuredContent: {
@@ -164,6 +170,8 @@ export function registerSwarm3MetaTools(server: McpServer, client: SpotifyClient
           active_modules: modules,
           read_only: readOnly,
           toolsets: TOOLSETS,
+          module_schema_budgets: moduleBudgets,
+          registration_exclusions: registrationExclusions,
         },
       };
     },

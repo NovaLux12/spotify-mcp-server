@@ -15,6 +15,8 @@ import { registerSwarm3PlaybackTools } from '../src/tools/swarm3_playback.js';
 import { registerPlaylistBatchTools } from '../src/tools/playlistbatch.js';
 import { registerSwarm3DiscoveryTools } from '../src/tools/swarm3_discovery.js';
 import { registerSwarm3bDiscoveryTools } from '../src/tools/swarm3b_discovery.js';
+import { registerSwarm3ShowsTools } from '../src/tools/swarm3_shows.js';
+const STRICT_ARTIST_ID = 'artist1234567890123456';
 
 type Registered = {
   name: string;
@@ -92,6 +94,31 @@ function makeHarness(register: (s: McpServer, c: SpotifyClient) => void, respond
   return { registered, client: client as unknown as { calls: typeof calls }, find, invoke, text: (r: { content: Array<{ type: string; text: string }> }) => r.content[0].text };
 }
 
+describe('canonical list_show_episodes', () => {
+  it('forwards offset and market and renders the episode page', async () => {
+    const showId = 's'.repeat(22);
+    const h = makeHarness(registerSwarm3ShowsTools, (path) => {
+      assert.equal(path, `/shows/${showId}/episodes`);
+      return {
+        items: [{ name: 'Episode One', release_date: '2026-01-01', duration_ms: 1_800_000 }],
+        total: 12,
+        limit: 50,
+      };
+    });
+    const out = await h.invoke('list_show_episodes', {
+      show_id: showId,
+      offset: 20,
+      market: 'GB',
+      response_format: 'json',
+    });
+    assert.deepEqual(h.client.calls[0]?.arg, { limit: '50', offset: '20', market: 'GB' });
+    const payload = out.structuredContent as { ok: boolean; show_id: string; episodes: unknown[] };
+    assert.equal(payload.ok, true);
+    assert.equal(payload.show_id, showId);
+    assert.equal(payload.episodes.length, 1);
+  });
+});
+
 // swarm3_library — dry_run cost preview must not touch the network
 
 describe('swarm3_library dry_run previews make zero API calls', () => {
@@ -155,29 +182,42 @@ describe('swarm3_playback dry_run previews', () => {
 
 describe('batch chunking at 100', () => {
   it('batch_add_to_playlist splits 250 unique source URIs into 100/100/50 POSTs', async () => {
+    const targetPlaylistId = 'playlist12345678901234';
     const uris = Array.from({ length: 250 }, (_, i) => `spotify:track:${String(i).padStart(22, '0')}`);
     const h = makeHarness(registerPlaylistBatchTools, (path, _body, method) => {
-      if (method === 'POST' && path.includes('/playlists/target/items')) return { snapshot_id: 'snap' } as unknown;
-      // GET /playlists/target/items pages — return empty so dedupe against existing adds nothing
-      if (path.includes('/playlists/target/items')) return { items: [], total: 0, limit: 100, offset: 0, next: null } as unknown;
+      if (method === 'POST' && path.includes(`/playlists/${targetPlaylistId}/items`)) return { snapshot_id: 'snap' } as unknown;
+      // GET /playlists/{id}/items pages — return empty so dedupe against existing adds nothing
+      if (path.includes(`/playlists/${targetPlaylistId}/items`)) return { items: [], total: 0, limit: 100, offset: 0, next: null } as unknown;
       return { items: [], total: 0, limit: 100, offset: 0, next: null } as unknown;
     });
-    const out = await h.invoke('batch_add_to_playlist', { target_playlist_id: 'target', source_uris: uris });
-    const posts = h.client.calls.filter((c) => c.method === 'POST' && c.path.includes('/playlists/target/items'));
-    assert.equal(posts.length, 3, '250 tracks must fan out into 3 POSTs');
-    assert.equal((posts[0].arg as { uris: string[] }).uris.length, 100);
-    assert.equal((posts[1].arg as { uris: string[] }).uris.length, 100);
-    assert.equal((posts[2].arg as { uris: string[] }).uris.length, 50);
-    assert.match(h.text(out), /across 3 batch/);
+    const previousConfirm = process.env.SPOTIFY_MCP_CONFIRM;
+    process.env.SPOTIFY_MCP_CONFIRM = 'never';
+    try {
+      const out = await h.invoke('batch_add_to_playlist', { target_playlist_id: targetPlaylistId, source_uris: uris });
+      const posts = h.client.calls.filter((c) => c.method === 'POST' && c.path.includes(`/playlists/${targetPlaylistId}/items`));
+      assert.equal(posts.length, 3, '250 tracks must fan out into 3 POSTs');
+      const batchSizes = posts.map((post) => {
+        if (!post.arg || typeof post.arg !== 'object' || !('uris' in post.arg) || !Array.isArray(post.arg.uris)) {
+          throw new Error('batch POST did not include a URI array');
+        }
+        return post.arg.uris.length;
+      });
+      assert.deepEqual(batchSizes, [100, 100, 50]);
+      assert.match(h.text(out), /across 3 batch/);
+    } finally {
+      if (previousConfirm === undefined) delete process.env.SPOTIFY_MCP_CONFIRM;
+      else process.env.SPOTIFY_MCP_CONFIRM = previousConfirm;
+    }
   });
 
   it('batch_add_to_playlist dry_run with 250 URIs makes zero POSTs', async () => {
+    const targetPlaylistId = 'playlist12345678901234';
     const uris = Array.from({ length: 250 }, (_, i) => `spotify:track:${String(i).padStart(22, '0')}`);
     const h = makeHarness(registerPlaylistBatchTools, (path) => {
-      if (path.includes('/playlists/target/items')) return { items: [], total: 0, limit: 100, offset: 0, next: null } as unknown;
+      if (path.includes(`/playlists/${targetPlaylistId}/items`)) return { items: [], total: 0, limit: 100, offset: 0, next: null } as unknown;
       return null as unknown;
     });
-    const out = await h.invoke('batch_add_to_playlist', { target_playlist_id: 'target', source_uris: uris, dry_run: true });
+    const out = await h.invoke('batch_add_to_playlist', { target_playlist_id: targetPlaylistId, source_uris: uris, dry_run: true });
     assert.equal(h.client.calls.filter((c) => c.method === 'POST').length, 0);
     assert.match(h.text(out), /\[dry run\]/);
   });
@@ -193,7 +233,7 @@ describe('swarm3b max_results stays consistent across prose and structured outpu
       total_tracks: 1,
       artists: [{ id: 'artist-1', name: 'Artist One' }],
     }));
-    const artistId = 'artist1234567890123456';
+    const artistId = STRICT_ARTIST_ID;
     const h = makeHarness(registerSwarm3bDiscoveryTools, (path) => {
       if (path === `/artists/${artistId}`) return { id: artistId, name: 'Artist One', genres: [] } as unknown;
       if (path === `/artists/${artistId}/albums`) return { items: albums, total: albums.length, limit: 50, offset: 0, next: null } as unknown;
@@ -212,12 +252,11 @@ describe('swarm3b max_results stays consistent across prose and structured outpu
       { id: `live-${i}`, name: `Album ${i} (Live)`, release_date: `202${i % 10}-01-01`, album_type: 'album', total_tracks: 1 },
       { id: `studio-${i}`, name: `Album ${i} (Remastered)`, release_date: `202${i % 10}-02-01`, album_type: 'album', total_tracks: 1 },
     ]).flat();
-    const artistId = 'artist1234567890123456';
     const h = makeHarness(registerSwarm3bDiscoveryTools, (path) => {
-      if (path === `/artists/${artistId}/albums`) return { items: albums, total: albums.length, limit: 50, offset: 0, next: null } as unknown;
+      if (path === `/artists/${STRICT_ARTIST_ID}/albums`) return { items: albums, total: albums.length, limit: 50, offset: 0, next: null } as unknown;
       throw new Error(`unexpected path ${path}`);
     });
-    const out = await h.invoke('artist_reissue_detector', { artist_id: artistId, max_results: 5 });
+    const out = await h.invoke('artist_reissue_detector', { artist_id: STRICT_ARTIST_ID, max_results: 5 });
     const payload = out.structuredContent as { items: unknown[]; pagination: { total: number; returned?: number } };
     assert.equal(payload.items.length, 5);
     assert.equal(payload.pagination.total, 12);
@@ -229,13 +268,12 @@ describe('swarm3b max_results stays consistent across prose and structured outpu
   it('album_openers_report exposes and honors max_results', async () => {
     const albums = Array.from({ length: 3 }, (_, i) => ({ id: `album-${i}`, name: `Album ${i}`, release_date: `202${i}-01-01`, album_type: 'album', total_tracks: 1 }));
     const full = albums.map((a) => ({ ...a, tracks: { items: [{ id: `track-${a.id}`, name: `Track ${a.name}`, track_number: 1, duration_ms: 1000 }], total: 1 } }));
-    const artistId = 'artist1234567890123456';
     const h = makeHarness(registerSwarm3bDiscoveryTools, (path) => {
-      if (path === `/artists/${artistId}/albums`) return { items: albums, total: albums.length, limit: 50, offset: 0, next: null } as unknown;
+      if (path === `/artists/${STRICT_ARTIST_ID}/albums`) return { items: albums, total: albums.length, limit: 50, offset: 0, next: null } as unknown;
       if (path === '/albums') return { albums: full } as unknown;
       throw new Error(`unexpected path ${path}`);
     });
-    const out = await h.invoke('album_openers_report', { artist_id: artistId, max_results: 2 });
+    const out = await h.invoke('album_openers_report', { artist_id: STRICT_ARTIST_ID, max_results: 2 });
     const payload = out.structuredContent as { items: unknown[]; total: number; returned: number; withheld: number };
     assert.equal(payload.items.length, 2);
     assert.equal(payload.total, 3);
@@ -254,12 +292,11 @@ describe('swarm3b timeline and anniversary edge cases', () => {
       { id: 'single-2', name: 'Single Two', release_date: '2023-02-01', album_type: 'single', total_tracks: 1 },
       { id: 'single-3', name: 'Single Three', release_date: '2023-03-01', album_type: 'single', total_tracks: 1 },
     ];
-    const artistId = 'artist1234567890123456';
     const h = makeHarness(registerSwarm3bDiscoveryTools, (path) => {
-      if (path === `/artists/${artistId}/albums`) return { items: singles, total: singles.length, limit: 50, offset: 0, next: null } as unknown;
+      if (path === `/artists/${STRICT_ARTIST_ID}/albums`) return { items: singles, total: singles.length, limit: 50, offset: 0, next: null } as unknown;
       throw new Error(`unexpected path ${path}`);
     });
-    const out = await h.invoke('artist_singles_timeline', { artist_id: artistId });
+    const out = await h.invoke('artist_singles_timeline', { artist_id: STRICT_ARTIST_ID });
     const payload = out.structuredContent as { items: Array<Record<string, unknown>> };
     assert.equal(payload.items.length, 3);
     for (const item of payload.items) {
@@ -290,12 +327,11 @@ describe('swarm3b timeline and anniversary edge cases', () => {
 
   it('album_anniversary_check clamps leap-day anniversaries in a non-leap year', async () => {
     const album = { id: 'leap-album', name: 'Leap Album', release_date: '2024-02-29', album_type: 'album', total_tracks: 1 };
-    const artistId = 'artist1234567890123456';
     const h = makeHarness(registerSwarm3bDiscoveryTools, (path) => {
-      if (path === `/artists/${artistId}/albums`) return { items: [album], total: 1, limit: 50, offset: 0, next: null } as unknown;
+      if (path === `/artists/${STRICT_ARTIST_ID}/albums`) return { items: [album], total: 1, limit: 50, offset: 0, next: null } as unknown;
       throw new Error(`unexpected path ${path}`);
     });
-    const out = await withFixedDate('2025-01-15', () => h.invoke('album_anniversary_check', { artist_id: artistId, window_days: 365 }));
+    const out = await withFixedDate('2025-01-15', () => h.invoke('album_anniversary_check', { artist_id: STRICT_ARTIST_ID, window_days: 365 }));
     const payload = out.structuredContent as { items: Array<{ anniversary_date: string; days_until: number; date_adjusted: boolean }> };
     assert.equal(payload.items.length, 1);
     assert.equal(payload.items[0].anniversary_date, '2025-02-28');
@@ -305,13 +341,13 @@ describe('swarm3b timeline and anniversary edge cases', () => {
 
   it('album_anniversary_check revalidates a passed leap-day date', async () => {
     const album = { id: 'leap-album', name: 'Leap Album', release_date: '2024-02-29', album_type: 'album', total_tracks: 1 };
-    const artistId = 'artist1234567890123456';
     const h = makeHarness(registerSwarm3bDiscoveryTools, (path) => {
-      if (path === `/artists/${artistId}/albums`) return { items: [album], total: 1, limit: 50, offset: 0, next: null } as unknown;
+      if (path === `/artists/${STRICT_ARTIST_ID}/albums`) return { items: [album], total: 1, limit: 50, offset: 0, next: null } as unknown;
       throw new Error(`unexpected path ${path}`);
     });
-    const out = await withFixedDate('2024-03-01', () => h.invoke('album_anniversary_check', { artist_id: artistId, window_days: 365 }));
+    const out = await withFixedDate('2024-03-01', () => h.invoke('album_anniversary_check', { artist_id: STRICT_ARTIST_ID, window_days: 365 }));
     const payload = out.structuredContent as { items: Array<{ anniversary_date: string; days_until: number; date_adjusted: boolean }> };
+    assert.equal(payload.items.length, 1);
     assert.equal(payload.items[0].anniversary_date, '2025-02-28');
     assert.equal(payload.items[0].date_adjusted, true);
     assert.ok(Number.isFinite(payload.items[0].days_until));

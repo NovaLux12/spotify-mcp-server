@@ -299,7 +299,7 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
       artist_id: spotifyId('artist').describe('Spotify artist ID, URI, or URL'),
       include_groups: IncludeGroups,
       response_format: ResponseFormat,
-      max_results: z.number().int().positive().max(2000).optional(),
+      max_results: z.number().int().positive().max(2000).optional().describe('Max items to return (default: SPOTIFY_MCP_MAX_ITEMS env or 50)'),
     },
     async (args) => {
       const rf = args.response_format;
@@ -543,7 +543,7 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
       artist_id: spotifyId('artist').describe('Spotify artist ID, URI, or URL'),
       include_groups: IncludeGroups,
       response_format: ResponseFormat,
-      max_results: z.number().int().positive().max(2000).optional(),
+      max_results: z.number().int().positive().max(2000).optional().describe('Max items to return (default: SPOTIFY_MCP_MAX_ITEMS env or 50)'),
     },
     async (args) => {
       const rf = args.response_format;
@@ -588,7 +588,7 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
       query: z.string().min(1).describe('Case-insensitive text to match against release titles'),
       include_groups: IncludeGroups,
       response_format: ResponseFormat,
-      max_results: z.number().int().positive().max(2000).optional(),
+      max_results: z.number().int().positive().max(2000).optional().describe('Max items to return (default: SPOTIFY_MCP_MAX_ITEMS env or 50)'),
     },
     async (args) => {
       const rf = args.response_format;
@@ -659,7 +659,7 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
     {
       album_id: spotifyId('album').describe('Spotify album ID, URI, or URL'),
       response_format: ResponseFormat,
-      max_results: z.number().int().positive().max(2000).optional(),
+      max_results: z.number().int().positive().max(2000).optional().describe('Max items to return (default: SPOTIFY_MCP_MAX_ITEMS env or 50)'),
     },
     async (args) => {
       const rf = args.response_format;
@@ -760,7 +760,7 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
       max_albums: z.number().int().positive().max(100).optional().describe('Studio albums to scan. Default: 20'),
       cuts_per_album: z.number().int().min(1).max(10).optional().describe('Deep-cut picks per album. Default: 3'),
       response_format: ResponseFormat,
-      max_results: z.number().int().positive().max(2000).optional(),
+      max_results: z.number().int().positive().max(2000).optional().describe('Max items to return (default: SPOTIFY_MCP_MAX_ITEMS env or 50)'),
     },
     async (args) => {
       const rf = args.response_format;
@@ -803,7 +803,7 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
       artist_id: spotifyId('artist').describe('Spotify artist ID, URI, or URL'),
       max_singles: z.number().int().positive().max(200).optional().describe('Singles to scan. Default: 50'),
       response_format: ResponseFormat,
-      max_results: z.number().int().positive().max(2000).optional(),
+      max_results: z.number().int().positive().max(2000).optional().describe('Max items to return (default: SPOTIFY_MCP_MAX_ITEMS env or 50)'),
     },
     async (args) => {
       const rf = args.response_format;
@@ -931,7 +931,7 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
       artist_id: spotifyId('artist').describe('Spotify artist ID, URI, or URL'),
       max_albums: z.number().int().positive().max(100).optional().describe('Albums to scan. Default: 30'),
       response_format: ResponseFormat,
-      max_results: z.number().int().positive().max(2000).optional(),
+      max_results: z.number().int().positive().max(2000).optional().describe('Max items to return (default: SPOTIFY_MCP_MAX_ITEMS env or 50)'),
     },
     async (args) => {
       const rf = args.response_format;
@@ -977,7 +977,7 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
       artist_limit: z.number().int().positive().max(50).optional().describe('Max artists to check. Default: 20'),
       include_saved_album_artists: z.boolean().optional().describe('Also include artists from your saved albums. Default: true'),
       response_format: ResponseFormat,
-      max_results: z.number().int().positive().max(2000).optional(),
+      max_results: z.number().int().positive().max(2000).optional().describe('Max items to return (default: SPOTIFY_MCP_MAX_ITEMS env or 50)'),
     },
     async (args) => {
       const rf = args.response_format;
@@ -1109,7 +1109,7 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
     {
       artist_id: spotifyId('artist').describe('Spotify artist ID, URI, or URL'),
       response_format: ResponseFormat,
-      max_results: z.number().int().positive().max(2000).optional(),
+      max_results: z.number().int().positive().max(2000).optional().describe('Max items to return (default: SPOTIFY_MCP_MAX_ITEMS env or 50)'),
     },
     async (args) => {
       const rf = args.response_format;
@@ -1141,7 +1141,7 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
     {
       artist_id: spotifyId('artist').describe('Spotify artist ID, URI, or URL'),
       response_format: ResponseFormat,
-      max_results: z.number().int().positive().max(2000).optional(),
+      max_results: z.number().int().positive().max(2000).optional().describe('Max items to return (default: SPOTIFY_MCP_MAX_ITEMS env or 50)'),
     },
     async (args) => {
       const rf = args.response_format;
@@ -1174,7 +1174,7 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
     {
       artist_id: spotifyId('artist').describe('Spotify artist ID, URI, or URL'),
       response_format: ResponseFormat,
-      max_results: z.number().int().positive().max(2000).optional(),
+      max_results: z.number().int().positive().max(2000).optional().describe('Max items to return (default: SPOTIFY_MCP_MAX_ITEMS env or 50)'),
     },
     async (args) => {
       const rf = args.response_format;

@@ -272,7 +272,7 @@ export function registerExhaust2CatalogTools(server: McpServer, client: SpotifyC
       limit: SearchLimit,
       market: Market,
       response_format: ResponseFormat,
-      max_results: z.number().int().positive().max(2000).optional(),
+      max_results: z.number().int().positive().max(2000).optional().describe('Max items to return (default: SPOTIFY_MCP_MAX_ITEMS env or 50)'),
     },
     async (args) => {
       const rf = args.response_format;
@@ -398,7 +398,7 @@ export function registerExhaust2CatalogTools(server: McpServer, client: SpotifyC
         .describe('Comma-separated album groups: album,single,appears_on,compilation. Default: album,single'),
       since_year: z.number().int().min(1900).max(2100).optional().describe('Only releases from this year onward'),
       response_format: ResponseFormat,
-      max_results: z.number().int().positive().max(2000).optional(),
+      max_results: z.number().int().positive().max(2000).optional().describe('Max items to return (default: SPOTIFY_MCP_MAX_ITEMS env or 50)'),
     },
     async (args) => {
       const rf = args.response_format;
@@ -454,7 +454,7 @@ export function registerExhaust2CatalogTools(server: McpServer, client: SpotifyC
       limit: SearchLimit,
       market: Market,
       response_format: ResponseFormat,
-      max_results: z.number().int().positive().max(2000).optional(),
+      max_results: z.number().int().positive().max(2000).optional().describe('Max items to return (default: SPOTIFY_MCP_MAX_ITEMS env or 50)'),
     },
     async (args) => {
       const rf = args.response_format;
@@ -504,7 +504,7 @@ export function registerExhaust2CatalogTools(server: McpServer, client: SpotifyC
         .optional()
         .describe('Projection of enrichment columns. Default: all four'),
       response_format: ResponseFormat,
-max_results: z.number().int().positive().max(2000).optional(),
+max_results: z.number().int().positive().max(2000).optional().describe('Max items to return (default: SPOTIFY_MCP_MAX_ITEMS env or 50)'),
     },
     async (args) => {
       const rf = args.response_format;
@@ -812,7 +812,7 @@ max_results: z.number().int().positive().max(2000).optional(),
         .optional()
         .describe('Minimum gap to flag as a hiatus, in days. Default: 14'),
       response_format: ResponseFormat,
-      max_results: z.number().int().positive().max(2000).optional(),
+      max_results: z.number().int().positive().max(2000).optional().describe('Max items to return (default: SPOTIFY_MCP_MAX_ITEMS env or 50)'),
     },
     async (args) => {
       const rf = args.response_format;
@@ -1049,7 +1049,7 @@ max_results: z.number().int().positive().max(2000).optional(),
     {
       audiobook_id: z.string().min(1).describe('Spotify audiobook ID'),
       response_format: ResponseFormat,
-      max_results: z.number().int().positive().max(2000).optional(),
+      max_results: z.number().int().positive().max(2000).optional().describe('Max items to return (default: SPOTIFY_MCP_MAX_ITEMS env or 50)'),
     },
     async (args) => {
       const rf = args.response_format;
@@ -1110,7 +1110,7 @@ max_results: z.number().int().positive().max(2000).optional(),
         .optional()
         .describe('How many recent albums to walk. Default: 10'),
       response_format: ResponseFormat,
-      max_results: z.number().int().positive().max(2000).optional(),
+      max_results: z.number().int().positive().max(2000).optional().describe('Max items to return (default: SPOTIFY_MCP_MAX_ITEMS env or 50)'),
     },
     async (args) => {
       const rf = args.response_format;

@@ -36,8 +36,14 @@ jobs:
       - name: Typecheck
         run: npx tsc --noEmit
 
+      - name: Generate finalized surface census
+        run: node scripts/surface-census.mjs > .surface-census.json
+
       - name: Check generated documentation inventory
-        run: node scripts/surface-census.mjs --check
+        run: npm run check:docs-counts -- --census-file .surface-census.json
+
+      - name: Check documented tool names
+        run: npm run check:doc-tool-names -- --census-file .surface-census.json
 
       - name: Test with count and coverage gates
         shell: bash

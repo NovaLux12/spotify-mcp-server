@@ -534,64 +534,6 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
     },
   );
 
-  // get_show_episodes — deprecated alias of list_show_episodes (swarm3_shows). Both hit GET /shows/{id}/episodes.
-  server.tool(
-    'get_show_episodes',
-    '[Deprecated] use list_show_episodes. Lists a podcast show\'s episodes; resume positions require user-read-playback-position scope.',
-    {
-      id: z.string().describe('Spotify show ID'),
-      limit: z
-        .number()
-        .int()
-        .min(1)
-        .max(50)
-        .optional()
-        .describe('Results per page, 1–50. Default: 20'),
-      offset: z.number().int().min(0).optional().describe('Index of the first episode to return. Default: 0'),
-      market: MARKET_CODE.optional().describe(
-        'ISO 3166-1 alpha-2 country code. If given, only shows and episodes available in that market are returned.',
-      ),
-      fetch_all: z.boolean().optional().describe('Fetch all pages up to cap. Default: false'),
-      ...sharedListFields,
-    },
-    async (args) => {
-      let result: SpotifyPaged<SpotifyEpisodeSimple> | null;
-      if ((args as unknown as { fetch_all?: boolean }).fetch_all) {
-        const items = await client.getAllPages<SpotifyEpisodeSimple>(
-          `/shows/${encodeURIComponent(args.id)}/episodes`,
-          args.market ? { market: args.market } : undefined,
-          { maxItems: args.max_results }
-        );
-        result = { items, total: items.length, limit: items.length, offset: 0, next: null } as SpotifyPaged<SpotifyEpisodeSimple>;
-      } else {
-        result = await getWithMarketFallback<SpotifyPaged<SpotifyEpisodeSimple>>(
-          client,
-          `/shows/${encodeURIComponent(args.id)}/episodes`,
-          args.market,
-          {
-            limit: String(args.limit ?? 20),
-            offset: String(args.offset ?? 0),
-          },
-        );
-      }
-      if (!result) throw new Error(`Show "${args.id}" not found`);
-
-      if (args.response_format === 'json') {
-        return jsonResult(result as unknown as Record<string, unknown>);
-      }
-      return renderList(args.response_format, result.items, {
-        header: `Episodes (${result.total} total):`,
-        line: (ep) => {
-          const played = ep.resume_point?.fully_played ? ' [played]' : '';
-          return `  • "${ep.name}" (${formatDuration(ep.duration_ms)}, ${ep.release_date})${played} | URI: ${ep.uri}`;
-        },
-        total: result.total,
-        offset: args.offset,
-        limit: args.limit ?? 20,
-        maxResults: args.max_results,
-      });
-    },
-  );
 
   // get_episode
   server.tool(

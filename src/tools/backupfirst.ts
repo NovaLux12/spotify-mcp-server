@@ -6,7 +6,7 @@ import { z } from 'zod';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import type { SpotifyClient } from '../client.js';
+import { SpotifyApiError, type SpotifyClient } from '../client.js';
 import { getConfig } from '../config.js';
 import { backupDir, nextBackupSeq, collectSnapshot } from './backup.js';
 import { ResponseFormat } from '../shaping.js';
@@ -14,6 +14,13 @@ import { ResponseFormat } from '../shaping.js';
 type ToolResult = { content: Array<{ type: 'text'; text: string }>; structuredContent?: Record<string, unknown> };
 function textResult(text: string, s?: Record<string, unknown>): ToolResult {
   return { content: [{ type: 'text', text }], ...(s ? { structuredContent: s } : {}) };
+}
+
+class BackupFirstError extends Error {
+  constructor() {
+    super('Pre-flight backup could not be created.');
+    this.name = 'BackupFirstError';
+  }
 }
 
 /** Create a pre-flight snapshot and return its path + counts. Throws on failure. */
@@ -70,9 +77,11 @@ export function registerBackupFirstTools(server: McpServer, client: SpotifyClien
         const snap = await createPreflightSnapshot(client, { notes: args.notes });
         const text = `Pre-flight backup written → ${snap.file} (${snap.bytes} bytes)\nCounts: ${JSON.stringify(snap.counts)}`;
         return textResult(text, { ok: true, file: snap.file, counts: snap.counts, bytes: snap.bytes });
-      } catch (e: unknown) {
-        const msg = e instanceof Error ? e.message : String(e);
-        return textResult(`Pre-flight backup failed: ${msg}`, { ok: false, error: msg });
+      } catch (error) {
+        if (error instanceof SpotifyApiError) {
+          throw new SpotifyApiError(error.status, 'Pre-flight backup could not be created.', error.retryAfterSec, error.reason);
+        }
+        throw new BackupFirstError();
       }
     },
   );

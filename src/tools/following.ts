@@ -266,7 +266,7 @@ export function registerFollowingTools(server: McpServer, client: SpotifyClient)
     'following_analytics',
     'Analytics over followed artists: genre/popularity rollups via batch /artists?ids= enrichment. Quota: 🟢 GET /me/following + GET /artists batches.',
     {
-      group_by: z.enum(['genre', 'popularity', 'followers']).default('genre'),
+      group_by: z.enum(['genre', 'popularity', 'followers']).default('genre').describe('Rollup dimension for the report'),
       top_n: z.number().int().min(1).max(50).optional().describe('Top N groups to show'),
       response_format: ResponseFormat,
       max_results: MaxResults,

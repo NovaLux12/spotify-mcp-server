@@ -12,8 +12,8 @@ import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
 import { SpotifyApiError } from '../client.js';
-import { getConfig } from '../config.js';
 import { readFile } from 'node:fs/promises';
+import { classifySpotifyReference, spotifyUriFromClassification } from '../refs.js';
 import { ResponseFormat } from '../shaping.js';
 
 type TextContent = { type: 'text'; text: string };
@@ -25,7 +25,19 @@ const textResult = (text: string, structured?: Record<string, unknown>): ToolRes
 });
 
 /** A playable Spotify URI: tracks AND episodes both import cleanly. */
-const SPOTIFY_URI_RE = /^spotify:(track|episode):[A-Za-z0-9]+$/;
+function isPlayableUri(value: string): boolean {
+  const parsed = classifySpotifyReference(value, undefined, { allowShortIds: true });
+  return parsed.valid && parsed.form === 'uri' && (parsed.kind === 'track' || parsed.kind === 'episode');
+}
+
+function canonicalPlayableUri(value: string): string {
+  const parsed = classifySpotifyReference(value, undefined, { allowShortIds: true });
+  const canonical = spotifyUriFromClassification(parsed);
+  if (!canonical || parsed.form !== 'uri' || (parsed.kind !== 'track' && parsed.kind !== 'episode')) {
+    throw new Error(`Invalid playable Spotify URI: ${value}`);
+  }
+  return canonical;
+}
 
 export interface ParsedDocument {
   format: 'm3u' | 'csv';
@@ -48,7 +60,7 @@ export function parseM3u(content: string): ParsedDocument {
     const line = rawLine.trim();
     if (line === '') continue;
     if (line.startsWith('#')) continue;
-    if (SPOTIFY_URI_RE.test(line)) {
+    if (isPlayableUri(line)) {
       if (!seen.has(line)) {
         seen.add(line);
         uris.push(line);
@@ -106,7 +118,7 @@ export function parseCsv(content: string): ParsedDocument {
     if (line === '') continue;
     const uri = splitCsvRow(line)
       .map((f) => f.trim())
-      .find((f) => SPOTIFY_URI_RE.test(f));
+      .find((f) => isPlayableUri(f));
     if (uri && !seen.has(uri)) {
       seen.add(uri);
       uris.push(uri);
@@ -120,8 +132,8 @@ export function parseCsv(content: string): ParsedDocument {
 /** Format auto-detection: M3U markers win; otherwise look at the shape. */
 export function detectFormat(content: string): 'm3u' | 'csv' | null {
   if (/^\s*#EXTM3U/m.test(content)) return 'm3u';
-  if (SPOTIFY_URI_RE.test(content.trim())) return 'm3u';
-  if (/(^|\n)\s*[^#\r\n]*\bspotify:(track|episode):/.test(content)) return 'csv';
+  if (isPlayableUri(content.trim())) return 'm3u';
+  if (content.split(/\r?\n/).some((line) => splitCsvRow(line).some(isPlayableUri))) return 'csv';
   return null;
 }
 
@@ -170,12 +182,23 @@ export function registerImportTools(server: McpServer, client: SpotifyClient): v
           );
         })();
       const parsed = fmt === 'm3u' ? parseM3u(body) : parseCsv(body);
+      const canonicalUris: string[] = [];
+      const seenCanonicalUris = new Set<string>();
+      for (const uri of parsed.uris) {
+        const canonical = canonicalPlayableUri(uri);
+        if (seenCanonicalUris.has(canonical)) continue;
+        seenCanonicalUris.add(canonical);
+        canonicalUris.push(canonical);
+      }
 
       // Existence probe so an unknown target fails before any parsing effort
       // is reported as success-shaped output. client.get() throws on 404
       // (SpotifyApiError) rather than returning null, so map that to the
       // friendly message (see #210).
-      const id = encodeURIComponent(args.playlist_id.replace(/^spotify:playlist:/, ''));
+      const playlistId = args.playlist_id.startsWith('spotify:playlist:')
+        ? args.playlist_id.slice('spotify:playlist:'.length)
+        : args.playlist_id;
+      const id = encodeURIComponent(playlistId);
       let meta: { id?: string; name?: string } | null;
       try {
         meta = await client.get<{ id?: string; name?: string }>(`/playlists/${id}`);
@@ -187,13 +210,16 @@ export function registerImportTools(server: McpServer, client: SpotifyClient): v
       }
       if (!meta) throw new Error(`Playlist "${args.playlist_id}" not found`);
 
-      const uriMatchesInDocument = body.match(new RegExp(SPOTIFY_URI_RE.source, 'gm'))?.length ?? 0;
+      const uriMatchesInDocument = body.split(/\r?\n/).reduce((count, line) => {
+        if (parsed.format === 'm3u') return count + (isPlayableUri(line.trim()) ? 1 : 0);
+        return count + splitCsvRow(line).filter(isPlayableUri).length;
+      }, 0);
       const basePayload = {
         playlist_id: args.playlist_id,
         playlist_name: meta.name ?? null,
         format: parsed.format,
-        parsed_uris: parsed.uris.length,
-        duplicates_in_document_skipped: uriMatchesInDocument - parsed.uris.length,
+        parsed_uris: canonicalUris.length,
+        duplicates_in_document_skipped: uriMatchesInDocument - canonicalUris.length,
         skipped_rows: parsed.skipped_rows,
         dry_run: args.dry_run,
       };
@@ -201,14 +227,14 @@ export function registerImportTools(server: McpServer, client: SpotifyClient): v
       if (args.dry_run) {
         return textResult(
           `[dry run] import_playlist — nothing was changed.\n`
-            + `Parsed ${parsed.uris.length} unique URI(s) from ${parsed.format.toUpperCase()}`
+            + `Parsed ${canonicalUris.length} unique URI(s) from ${parsed.format.toUpperCase()}`
             + (parsed.skipped_rows > 0 ? ` (${parsed.skipped_rows} unusable row(s) skipped)` : '')
             + `. Would append to "${meta.name ?? args.playlist_id}".`,
           { ...basePayload, ok: true },
         );
       }
 
-      if (parsed.uris.length === 0) {
+      if (canonicalUris.length === 0) {
         throw new Error(
           `No spotify:track:/spotify:episode: URIs found in the ${fmt.toUpperCase()} document`,
         );
@@ -218,9 +244,9 @@ export function registerImportTools(server: McpServer, client: SpotifyClient): v
       const itemsPath = `/playlists/${id}/items`;
       let batchesSent = 0;
       let snapshotId: string | undefined;
-      for (let start = 0; start < parsed.uris.length; start += 100) {
+      for (let start = 0; start < canonicalUris.length; start += 100) {
         const res = await client.post<{ snapshot_id?: string }>(itemsPath, {
-          uris: parsed.uris.slice(start, start + 100),
+          uris: canonicalUris.slice(start, start + 100),
         });
         batchesSent++;
         if (res?.snapshot_id) snapshotId = res.snapshot_id;
@@ -228,12 +254,12 @@ export function registerImportTools(server: McpServer, client: SpotifyClient): v
 
       const summary = {
         ...basePayload,
-        added: parsed.uris.length,
+        added: canonicalUris.length,
         batches_sent: batchesSent,
         ...(snapshotId ? { snapshot_id: snapshotId } : {}),
       };
       return textResult(
-        `Imported ${parsed.uris.length} item(s) into "${meta.name ?? args.playlist_id}" `
+        `Imported ${canonicalUris.length} item(s) into "${meta.name ?? args.playlist_id}" `
           + `from ${parsed.format.toUpperCase()} across ${batchesSent} batch request(s)`
           + (parsed.skipped_rows > 0 ? `; skipped ${parsed.skipped_rows} unusable row(s)` : '')
           + '.',

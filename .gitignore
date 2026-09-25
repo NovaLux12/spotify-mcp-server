@@ -32,6 +32,7 @@ memory/*
 
 # Ephemeral / local audit artifacts
 .tmp/
+.surface-census.json
 AGENTS.md
 USABILITY_AUDIT_*.md
 audit-quota-lurkers.md

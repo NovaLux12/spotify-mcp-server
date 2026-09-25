@@ -987,7 +987,7 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
         .describe('How many playlists to scan. Default 50.'),
       per_playlist_cap: z.number().int().min(10).max(2000).optional().default(500)
         .describe('Max items paged per playlist. Default 500.'),
-      sort: z.enum(['median_age', 'oldest', 'name']).optional().default('median_age'),
+      sort: z.enum(['median_age', 'oldest', 'name']).optional().default('median_age').describe('Report sort order'),
       max_results: MaxResults,
       response_format: ResponseFormat,
     },
@@ -1061,7 +1061,7 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
     'Per saved podcast show: unplayed episodes (resume_point), hours of backlog and '
       + 'newest-episode age — decide what to unsubscribe from. Quota: 1 + N reads (budgeted).',
     {
-      sort: z.enum(['backlog_hours', 'newest', 'name']).optional().default('backlog_hours'),
+      sort: z.enum(['backlog_hours', 'newest', 'name']).optional().default('backlog_hours').describe('Report sort order'),
       min_hours: z.number().min(0).max(10000).optional().default(0)
         .describe('Only surface shows with at least this many backlog hours. Default 0 (all).'),
       max_shows: z.number().int().min(1).max(200).optional().default(25)
@@ -1130,8 +1130,8 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
       + 'what am I actually reading. Quota: 1 + N reads. NOTE: audiobook endpoints are '
       + 'market-gated (US/UK/CA/IE/NZ/AU) — outside these a clear error is returned.',
     {
-      sort: z.enum(['progress', 'remaining', 'title']).optional().default('progress'),
-      max_audiobooks: z.number().int().min(1).max(100).optional().default(25),
+      sort: z.enum(['progress', 'remaining', 'title']).optional().default('progress').describe('Report sort order'),
+      max_audiobooks: z.number().int().min(1).max(100).optional().default(25).describe('How many audiobooks to scan (default 25, max 100)'),
       max_results: MaxResults,
       response_format: ResponseFormat,
     },
@@ -1187,7 +1187,7 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
     'Named chapter+position bookmarks per audiobook, stored in the local sidecar (jump later '
       + 'via jump_to_chapter). save/list/delete. Zero API calls — pure sidecar.',
     {
-      op: z.enum(['save', 'list', 'delete']).optional().default('list'),
+      op: z.enum(['save', 'list', 'delete']).optional().default('list').describe('Action to take: list bookmarks, save a chapter, or delete one. Default list'),
       book_uri: z.string().optional().describe('Audiobook URI, e.g. spotify:audiobook:abc (required for save/delete)'),
       label: z.string().optional().describe('Bookmark name (required for save)'),
       position_ms: z.number().int().min(0).optional().default(0).describe('Position in the book, ms. Default 0.'),
@@ -1288,7 +1288,7 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
       + 'Quota: 2+ reads + 1-3 writes. dry_run previews the match list.',
     {
       tags: z.array(z.string()).min(1).describe('Genre tags to match (same values declared via tag_management)'),
-      mode: z.enum(['create', 'refresh']).optional().default('create'),
+      mode: z.enum(['create', 'refresh']).optional().default('create').describe('create builds a new playlist; refresh rewrites the existing one. Default create'),
       playlist_name: z.string().optional().describe('Playlist name (create mode). Default: "Tagged: <tags>".'),
       playlist_id: z.string().optional().describe('Playlist to refresh (refresh mode). Auto-resolved from playlist_name if omitted.'),
       dry_run: z.boolean().optional().default(true).describe('Preview the match list (default true).'),
@@ -1538,7 +1538,7 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
     {
       from: z.string().optional().describe('Start date (inclusive), YYYY-MM-DD'),
       to: z.string().optional().describe('End date (inclusive), YYYY-MM-DD'),
-      format: z.enum(['markdown', 'csv']).optional().default('markdown'),
+      format: z.enum(['markdown', 'csv']).optional().default('markdown').describe('Export format. Default markdown'),
       max_results: MaxResults,
       response_format: ResponseFormat,
     },
