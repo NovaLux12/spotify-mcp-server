@@ -83,6 +83,12 @@ function effectiveScanCap(args: { scan_cap?: number }): number {
   return Math.min(args.scan_cap ?? getConfig().fetchAllCap, getConfig().fetchAllCap);
 }
 
+/** Walk controls for a two-playlist (A/B) read: the read bounds, not a list. */
+const PlaylistPairWalkFields = {
+  limit: z.number().int().min(1).max(100).optional().describe('Source page size, 1–100. Default: 100'),
+  scan_cap: z.number().int().min(1).max(10_000).optional().describe('Maximum rows to read from each playlist; bounded by SPOTIFY_MCP_FETCH_ALL_CAP'),
+};
+
 const PlaylistSetWalkFields = {
   // Walk controls: how much of each source is READ.
   limit: z.number().int().min(1).max(100).optional().describe('Source page size, 1–100. Default: 100'),
@@ -1708,7 +1714,7 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
   });
 
   // compare_playlist_covers (#286)
-  server.tool('compare_playlist_covers', 'Compare two playlists covers: URL equality, dimensions. Quota: 🟢 2 GETs.', { ...PlaylistPairFields, ...legacyPlaylistPairFields([['playlist_id_a', 'playlist_id_b']]), ...sharedListFields }, async (args) => {
+  server.tool('compare_playlist_covers', 'Compare two playlists covers: URL equality, dimensions. Quota: 🟢 2 GETs.', { ...PlaylistPairFields, ...legacyPlaylistPairFields([['playlist_id_a', 'playlist_id_b']]), ...PlaylistPairWalkFields, ...sharedListFields }, async (args) => {
     const input = resolvePlaylistInput(args, { kind: 'pair', aliases: [['playlist_id_a', 'playlist_id_b']] });
     const [playlistA, playlistB] = input.values;
     const [aImgs, bImgs] = await Promise.all([client.get<SpotifyImage[]>(`/playlists/${encodeURIComponent(playlistA)}/images`), client.get<SpotifyImage[]>(`/playlists/${encodeURIComponent(playlistB)}/images`)]);
@@ -2004,8 +2010,10 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
       });
       const refusal = requiredConfirmationRefusal(verdict);
       if (refusal) {
-        const payload = withPlaylistInputMetadata(refusal.payload, input);
-        return textResult(args.response_format === 'json' ? jsonText(payload) : withPlaylistInputNote(refusal.message, input), payload);
+        // The refusal is the path a headless legacy caller hits first, and it is
+        // exactly when the positional note matters most — so it rides along.
+        const payload = withPlaylistInputMetadata(refusal.payload, input, positionalNote);
+        return textResult(args.response_format === 'json' ? jsonText(payload) : withPlaylistInputNote(refusal.message, input, positionalNote), payload);
       }
     }
     if (!destructive && impact.identical && readWholePlaylist && unrepresentable === 0) {
@@ -2056,10 +2064,10 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
   });
 
   // playlist_symmetric_difference (#292)
-  server.tool('playlist_symmetric_difference', 'Tracks in exactly one of two playlists (XOR). Quota: 🟢 2 GETs.', { ...PlaylistPairFields, ...legacyPlaylistPairFields([['playlist_id_a', 'playlist_id_b']]), ...sharedListFields }, async (args) => {
+  server.tool('playlist_symmetric_difference', 'Tracks in exactly one of two playlists (XOR). Quota: 🟢 2 GETs.', { ...PlaylistPairFields, ...legacyPlaylistPairFields([['playlist_id_a', 'playlist_id_b']]), ...PlaylistPairWalkFields, ...sharedListFields }, async (args) => {
     const input = resolvePlaylistInput(args, { kind: 'pair', aliases: [['playlist_id_a', 'playlist_id_b']] });
     const [playlistA, playlistB] = input.values;
-    const [aUris, bUris] = await Promise.all([getAllUris(playlistA), getAllUris(playlistB)]);
+    const [aUris, bUris] = await Promise.all([getAllUris(playlistA, args), getAllUris(playlistB, args)]);
     const setA = new Set(aUris); const setB = new Set(bUris);
     const sym = [...aUris.filter(u=>!setB.has(u)), ...bUris.filter(u=>!setA.has(u))];
     const uniq = [...new Set(sym)];

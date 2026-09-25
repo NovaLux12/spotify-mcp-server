@@ -150,8 +150,12 @@ Full reference: [docs/configuration.md](docs/configuration.md)
 
 ## Upgrading to 2.0
 
-2.0 is a contract release. The tool names are unchanged, but four things moved
-and one guarantee tightened:
+2.0 is a contract release. One tool name is gone, four things moved, and one
+guarantee tightened:
+
+0. **`get_show_episodes` is removed.** Use `list_show_episodes` (same endpoint,
+   same arguments, minus the drifted alias). It was the only name that changed;
+   everything else in the 591-tool surface keeps its name.
 
 1. **Destructive writes fail closed.** Any confirmation-gated bulk write now
    refuses when the client cannot elicit, instead of proceeding unprompted.

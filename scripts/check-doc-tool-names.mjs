@@ -43,6 +43,12 @@ const parameterAllowlist = new Set([
 ]);
 /** Registration keys are module names, not tools; docs legitimately name them. */
 const registrationKeyNames = new Set(census.registrationKeyNames ?? []);
+/**
+ * Tool names this release RETIRED. A migration note has to be able to name what
+ * it replaces; every other retired name still fails the gate, so this cannot
+ * become a graveyard.
+ */
+const retiredToolNames = new Set(['get_show_episodes']);
 const documentedMetadata = new Set([
   'toolset_trimmed', 'scope_blocked', 'read_only_hidden',
   'deprecated_inputs', 'deprecation_note', 'auth', 'forbidden', 'not_found',
@@ -102,7 +108,7 @@ function collectDocumentToolContractErrors(source, file, registry) {
 
 function checkBacktickToolNames(file, source, registry = census) {
   const knownTools = new Set(registry.toolNames);
-  const knownNonTools = new Set([...registry.promptNames, ...registry.resourceUris, ...parameterAllowlist, ...documentedMetadata, ...(registry.registrationKeyNames ?? registrationKeyNames)]);
+  const knownNonTools = new Set([...registry.promptNames, ...registry.resourceUris, ...parameterAllowlist, ...documentedMetadata, ...(registry.registrationKeyNames ?? registrationKeyNames), ...retiredToolNames]);
   for (const match of source.matchAll(/`([a-z][a-z0-9]*(?:_[a-z0-9]+)+)`/g)) {
     const name = match[1];
     if (knownTools.has(name) || knownNonTools.has(name)) continue;
@@ -118,7 +124,7 @@ function checkBacktickToolNames(file, source, registry = census) {
  */
 function checkModuleMapEntries(file, source, registry = census) {
   const knownTools = new Set(registry.toolNames);
-  const knownNonTools = new Set([...registry.promptNames, ...registry.resourceUris, ...parameterAllowlist, ...documentedMetadata, ...(registry.registrationKeyNames ?? registrationKeyNames)]);
+  const knownNonTools = new Set([...registry.promptNames, ...registry.resourceUris, ...parameterAllowlist, ...documentedMetadata, ...(registry.registrationKeyNames ?? registrationKeyNames), ...retiredToolNames]);
   const lines = source.split('\n');
   for (let index = 0; index < lines.length; index += 1) {
     const entry = /^\s*(?:[│|├└─\s])*([a-z0-9_]+\.ts)\s+#\s*(.+?)\s*$/.exec(lines[index]);

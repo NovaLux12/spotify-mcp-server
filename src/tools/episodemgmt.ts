@@ -51,7 +51,19 @@ export function registerEpisodeMgmtTools(server: McpServer, client: SpotifyClien
       const uris = played.map((r) => r.episode.uri);
       if (args.dry_run) {
         const preview = played.slice(0, 5).map((r) => r.episode.name);
-        return { content: [{ type: 'text', text: describeDryRun('archive_played_episodes', `${items.length} saved episodes`, [`would remove ${played.length} fully-played episodes`, ...preview]) }] };
+        // Every exit carries the note, this one included: a dry run is the first
+        // call a legacy caller makes, and a preview that says nothing is how an
+        // ignored `confirm` stays invisible.
+        return textResult(
+          `${describeDryRun('archive_played_episodes', `${items.length} saved episodes`, [`would remove ${played.length} fully-played episodes`, ...preview])}${deprecatedInputs.length ? `\n\`confirm\` was accepted but ignored: it no longer authorises the delete.` : ''}`,
+          {
+            ok: true,
+            dry_run: true,
+            scanned: items.length,
+            would_remove: played.length,
+            ...(deprecatedInputs.length ? { deprecated_inputs: deprecatedInputs, deprecation_note: '`confirm` is accepted but ignored: it no longer authorises the delete. Use elicitation, or set SPOTIFY_MCP_CONFIRM=never to automate.' } : {}),
+          },
+        );
       }
       if (played.length > 50) {
         const verdict = await confirmViaElicitation(server, {
