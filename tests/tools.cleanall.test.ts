@@ -76,9 +76,6 @@ function harness(
   } as unknown as McpServer;
 
   const client = {
-    // Mirrors SpotifyClient.getAllPages' fetch-all cap so #864's capped-walk
-    // disclosure is exercised here too.
-    lastWalkTruncated: false,
     async get<T>(path: string): Promise<T | null> {
       if (path === '/me/playlists') {
         return {
@@ -94,12 +91,20 @@ function harness(
       }
       return null;
     },
-    async getAllPages<T>(path: string, _params?: Record<string, string>, opts?: { maxItems?: number }): Promise<T[]> {
+    // Mirrors SpotifyClient.getAllPagesWithTruncation over the canned data so
+    // #864's capped-walk disclosure is exercised here too. The verdict rides
+    // on the result, exactly as the real client returns it (#864: the SDK
+    // dispatches without awaiting, so a stored flag would be cross-talk).
+    async getAllPagesWithTruncation<T>(
+      path: string,
+      _params?: Record<string, string>,
+      opts?: { maxItems?: number },
+    ): Promise<{ items: T[]; truncated: boolean }> {
       const cap = opts?.maxItems ?? 500;
-      const capped = (rows: T[]): T[] => {
-        this.lastWalkTruncated = rows.length > cap;
-        return this.lastWalkTruncated ? rows.slice(0, cap) : rows;
-      };
+      const capped = (rows: T[]) => ({
+        items: (rows.length > cap ? rows.slice(0, cap) : rows) as T[],
+        truncated: rows.length > cap,
+      });
       if (path === '/me/playlists') {
         return capped(playlists.map(
           (pl) =>
@@ -113,7 +118,7 @@ function harness(
         ));
       }
       const match = /^\/playlists\/([^/]+)\/items$/.exec(path);
-      if (!match) return [];
+      if (!match) return capped([]);
       return capped(structuredClone(state.get(decodeURIComponent(match[1])) ?? []) as T[]);
     },
     async delete<T>(path: string, body: unknown): Promise<T | null> {

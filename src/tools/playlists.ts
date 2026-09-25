@@ -11,7 +11,6 @@ import {
   REPLACE_ELICIT_THRESHOLD,
 } from './confirm.js';
 import {
-  completenessFooter,
   DryRun,
   PlaylistId,
   PlaylistListFields,
@@ -87,10 +86,17 @@ function effectiveScanCap(args: { scan_cap?: number }): number {
 /**
  * Truncation disclosure for a capped playlist walk (#864). One wording for
  * every playlist-family call site so "this scan stopped short" always reads
- * the same: the shared completenessFooter clause, the offset the walk died
- * at, and the one knob that lifts the ceiling. Returns null when the walk
- * reached the end, so callers can splice it straight into prose and payloads
- * and stay silent on every ordinary playlist.
+ * the same. Returns null when the walk reached the end, so callers can splice
+ * it straight into prose and payloads and stay silent on every ordinary
+ * playlist.
+ *
+ * The clause names the OFFSET the walk died at, not an age. Spotify's
+ * offset-paged playlist endpoints are append-ordered, so the rows past a
+ * 500-row cap are the NEWER ones; the shared `completenessFooter` says
+ * "older items were not analyzed", which is false here and reads as a
+ * self-contradiction when appended to this clause. Its wording is left alone
+ * for the offset-paged endpoints it was written for — #864 fixes only the
+ * playlist walks, which compose their own clause.
  */
 export function walkTruncationNotice(
   scanned: number,
@@ -98,7 +104,7 @@ export function walkTruncationNotice(
   truncated: boolean,
 ): string | null {
   if (!truncated) return null;
-  return `${completenessFooter({ fetched: scanned, cap, truncated: true, subject: 'items' })}`
+  return `TRUNCATED: scanned ${scanned} item(s), cap ${cap}`
     + ` — items past offset ${scanned} were not analyzed; resume at offset ${scanned}`
     + ' or raise SPOTIFY_MCP_FETCH_ALL_CAP to scan the rest';
 }
@@ -705,18 +711,18 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
         let wouldAdd = args.uris;
         if (args.check_duplicates) {
           scanCap = getConfig().fetchAllCap;
-          const existing = await client.getAllPages<PlaylistItemObject>(
+          const existing = await client.getAllPagesWithTruncation<PlaylistItemObject>(
             `/playlists/${id}/items`,
             { limit: '100' },
             { maxItems: scanCap },
           );
           const present = new Set<string>();
-          for (const item of existing) {
+          for (const item of existing.items) {
             if (item.item?.uri) present.add(item.item.uri);
           }
           wouldAdd = args.uris.filter((u) => !present.has(u));
-          scanned = existing.length;
-          scanTruncated = Boolean(client.lastWalkTruncated);
+          scanned = existing.items.length;
+          scanTruncated = existing.truncated;
         }
         const notice = scanCap === null ? null : walkTruncationNotice(scanned, scanCap, scanTruncated);
         return {
@@ -743,17 +749,17 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
       let skipped = 0;
       if (args.check_duplicates) {
         scanCap = getConfig().fetchAllCap;
-        const existing = await client.getAllPages<PlaylistItemObject>(
+        const existing = await client.getAllPagesWithTruncation<PlaylistItemObject>(
           `/playlists/${id}/items`,
           { limit: '100' },
           { maxItems: scanCap },
         );
         const present = new Set<string>();
-        for (const item of existing) {
+        for (const item of existing.items) {
           if (item.item?.uri) present.add(item.item.uri);
         }
-        scanned = existing.length;
-        scanTruncated = Boolean(client.lastWalkTruncated);
+        scanned = existing.items.length;
+        scanTruncated = existing.truncated;
         toAdd = [];
         for (const uri of args.uris) {
           if (present.has(uri)) skipped++;
@@ -1188,14 +1194,16 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
     },
     async (args) => {
       const id = encodeURIComponent(args.playlist_id);
-      const items = await client.getAllPages<PlaylistItemObject>(`/playlists/${id}/items`, {
-        limit: '100',
-      });
+      const scan = await client.getAllPagesWithTruncation<PlaylistItemObject>(
+        `/playlists/${id}/items`,
+        { limit: '100' },
+      );
+      const items = scan.items;
       // #864: the scan above dies at fetchAllCap, and a scan that stopped
       // short cannot certify a clean playlist. Carry the fact in the payload
       // and the prose rather than reporting a clean bill of health for rows
       // nobody read.
-      const scanTruncated = Boolean(client.lastWalkTruncated);
+      const scanTruncated = scan.truncated;
       const scanCap = getConfig().fetchAllCap;
       const notice = walkTruncationNotice(items.length, scanCap, scanTruncated);
 
@@ -1426,14 +1434,15 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
       const meta = await client.get<{ id?: string; name?: string }>(`/playlists/${id}`);
       if (!meta) throw new Error(`Playlist "${args.playlist_id}" not found`);
 
-      const items = await client.getAllPages<PlaylistItemObject>(`/playlists/${id}/items`, {
-        limit: '100',
-      });
-
+      const scan = await client.getAllPagesWithTruncation<PlaylistItemObject>(
+        `/playlists/${id}/items`,
+        { limit: '100' },
+      );
+      const items = scan.items;
       // #864: a walk that stopped at the cap is a partial duplicate scan —
       // both the removals it planned and the "nothing to remove" verdict it
       // did NOT reach are only statements about the rows it actually read.
-      const scanTruncated = Boolean(client.lastWalkTruncated);
+      const scanTruncated = scan.truncated;
       const scanCap = getConfig().fetchAllCap;
       const notice = walkTruncationNotice(items.length, scanCap, scanTruncated);
 
@@ -1508,13 +1517,14 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
       }
 
       // Post-mutation re-scan proves the cleanup actually landed.
-      const after = await client.getAllPages<PlaylistItemObject>(`/playlists/${id}/items`, {
+      const rescan = await client.getAllPagesWithTruncation<PlaylistItemObject>(`/playlists/${id}/items`, {
         limit: '100',
       });
+      const after = rescan.items;
       // #864: the re-scan is a second capped walk. A truncated re-scan cannot
       // certify the playlist is clean, so it must not report "no duplicates
       // remain" — nor may the payload claim ok:true off the back of it.
-      const rescanTruncated = Boolean(client.lastWalkTruncated);
+      const rescanTruncated = rescan.truncated;
       const rescanNotice = walkTruncationNotice(after.length, scanCap, rescanTruncated);
       const seenUris = new Set<string>();
       let remainingExact = 0;
@@ -1600,14 +1610,15 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
       const rawApply = (args as any).apply;
       const effectiveApply = rawDryRun !== undefined ? !rawDryRun : !!rawApply;
       const effectiveDryRun = !effectiveApply;
-      const playlists = await client.getAllPages<SpotifyPlaylistSimple>('/me/playlists', {
+      const listScan = await client.getAllPagesWithTruncation<SpotifyPlaylistSimple>('/me/playlists', {
         limit: '50',
       });
+      const playlists = listScan.items;
       // #864: two independent ways this scan can come up short — the playlist
       // list itself hitting the cap, and each per-playlist item walk hitting
       // it. Both have to be reported, or "scanned 12 playlists — no
       // duplicates found" is a claim about a slice of the account.
-      const playlistsTruncated = Boolean(client.lastWalkTruncated);
+      const playlistsTruncated = listScan.truncated;
       let truncatedPlaylists = 0;
 
       interface PlaylistFinding {
@@ -1627,11 +1638,12 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
       for (const pl of playlists) {
         if (!pl?.id) continue;
         playlistsScanned++;
-        const items = await client.getAllPages<PlaylistItemObject>(
+        const plScan = await client.getAllPagesWithTruncation<PlaylistItemObject>(
           `/playlists/${encodeURIComponent(pl.id)}/items`,
           { limit: '100' },
         );
-        const plTruncated = Boolean(client.lastWalkTruncated);
+        const items = plScan.items;
+        const plTruncated = plScan.truncated;
         if (plTruncated) truncatedPlaylists++;
         const { ordered, groups } = collectDuplicateRemovals(items, args.include_relinked);
         totalRemovable += ordered.length;

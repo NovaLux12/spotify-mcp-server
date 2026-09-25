@@ -181,18 +181,6 @@ export class SpotifyClient {
   // forwards events as MCP progress notifications.
   private progressReporter: ((info: PageProgress) => void) | null = null;
   private walkCounter = 0;
-  /**
-   * True when the MOST RECENT getAllPages walk stopped at its cap before it
-   * could prove it had reached the end of the data (#864).
-   *
-   * The walk keeps returning a bare `T[]` because ~40 call sites depend on
-   * that signature, so the truncation fact travels here instead. Read it
-   * immediately after the walk — the next walk overwrites it.
-   *
-   * A walk that ran out of data sets it false. So does one that hit the cap
-   * exactly at a server-reported `total`, because that one cut nothing off.
-   */
-  lastWalkTruncated = false;
 
   constructor(opts: SpotifyClientOptions = {}) {
     this.fetchAllCap = opts.fetchAllCap ?? getConfig().fetchAllCap;
@@ -640,21 +628,40 @@ export class SpotifyClient {
    * endpoints (e.g. followed artists, which use an `after` cursor instead of
    * offset/total) are NOT supported by this helper.
    *
-   * The returned array is silently capped; `lastWalkTruncated` is how a
-   * caller learns the walk stopped short (#864). Read it right after.
+   * The returned array is silently capped. A caller that must REPORT that
+   * (#864 — no "all clear" verdict off a partial scan) uses
+   * `getAllPagesWithTruncation`; this method keeps the bare-array signature
+   * the ~35 callers that do not report truncation depend on.
    */
   async getAllPages<T>(
     path: string,
     params?: Record<string, string>,
     opts?: { maxItems?: number; initialOffset?: number },
   ): Promise<T[]> {
+    return (await this.getAllPagesWithTruncation<T>(path, params, opts)).items;
+  }
+
+  /**
+   * `getAllPages` plus the truncation verdict for THIS walk (#864).
+   *
+   * The verdict is RETURNED, never stored on the client. The MCP SDK
+   * dispatches `tools/call` without awaiting — protocol.js fires
+   * `_onrequest` straight from the transport's onmessage — so two
+   * overlapping calls interleave their awaits on ONE shared client and a
+   * stored flag would answer with whichever walk finished last, not the walk
+   * the caller just made.
+   */
+  async getAllPagesWithTruncation<T>(
+    path: string,
+    params?: Record<string, string>,
+    opts?: { maxItems?: number; initialOffset?: number },
+  ): Promise<{ items: T[]; truncated: boolean }> {
     const maxItems = opts?.maxItems ?? this.fetchAllCap;
     const all: T[] = [];
     let offset = opts?.initialOffset ?? 0;
     // #864: a bare array cannot distinguish "read everything" from "stopped at
-    // the cap", so every walk publishes the answer. Reset first — a walk that
-    // runs to the end must clear the previous walk's signal.
-    this.lastWalkTruncated = false;
+    // the cap", so the verdict travels with the result rather than on the
+    // client.
     // Monotonic per-walk id; index.ts forwards it as the MCP progressToken.
     const walkId = ++this.walkCounter;
     let pageNumber = 0;
@@ -686,18 +693,21 @@ export class SpotifyClient {
         // the server's `total` says the walk stopped short of the end. An
         // endpoint that reports no total gives us nothing to prove
         // completeness against, so that case stays conservatively truncated.
-        this.lastWalkTruncated =
-          all.length > maxItems
-          || typeof page.total !== 'number'
-          || all.length < page.total;
-        return all.slice(0, maxItems);
+        return {
+          items: all.slice(0, maxItems),
+          truncated:
+            all.length > maxItems
+            || typeof page.total !== 'number'
+            || all.length < page.total,
+        };
       }
       const limit = typeof page.limit === 'number' && page.limit > 0 ? page.limit : page.items.length;
       offset += limit;
       if (page.items.length === 0 || page.items.length < limit) break;
       if (typeof page.total === 'number' && offset >= page.total) break;
     }
-    return all;
+    // Reached the end of the data on its own terms: nothing was cut off.
+    return { items: all, truncated: false };
   }
 
   // Parse a successful response body as JSON, or null for 204 / non-JSON

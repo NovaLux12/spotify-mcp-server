@@ -16,7 +16,7 @@ import { join } from 'node:path';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../src/client.js';
 import type { SpotifyPaged } from '../src/types/spotify.js';
-import { registerPlaylistTools } from '../src/tools/playlists.js';
+import { registerPlaylistTools, walkTruncationNotice } from '../src/tools/playlists.js';
 import { registerFollowingTools } from '../src/tools/following.js';
 import { registerPlaylistMiscTools } from '../src/tools/playlistmisc.js';
 import { registerRestoreTools } from '../src/tools/restore.js';
@@ -64,9 +64,6 @@ function makeStubClient(responder: Responder = () => null) {
     setResponder(fn: Responder) {
       respond = fn;
     },
-    // Mirrors SpotifyClient.lastWalkTruncated so tool-side disclosure is
-    // exercised against the same signal the real client publishes (#864).
-    lastWalkTruncated: false,
     async get<T>(path: string, params?: Record<string, string>): Promise<T | null> {
       calls.push({ method: 'GET', path, arg: params });
       return respond(path, params) as T | null;
@@ -88,26 +85,37 @@ function makeStubClient(responder: Responder = () => null) {
       return respond(path, body) as T | null;
     },
     // Mirrors SpotifyClient.getAllPages over the stubbed get() so fetch_all
-    // refactors (issue #67) are exercised against real pagination semantics.
+    // refactors (issue #67) are exercised against real pagination semantics,
+    // and returns the truncation verdict alongside the rows (#864) because
+    // the real client does: the MCP SDK dispatches without awaiting, so a
+    // verdict stored on the client would be another walk's answer.
     async getAllPages<T>(
       path: string,
       params?: Record<string, string>,
       opts?: { maxItems?: number; initialOffset?: number },
     ): Promise<T[]> {
+      return (await this.getAllPagesWithTruncation<T>(path, params, opts)).items;
+    },
+    async getAllPagesWithTruncation<T>(
+      path: string,
+      params?: Record<string, string>,
+      opts?: { maxItems?: number; initialOffset?: number },
+    ): Promise<{ items: T[]; truncated: boolean }> {
       const maxItems = opts?.maxItems ?? 500;
       const all: T[] = [];
       let offset = opts?.initialOffset ?? 0;
-      this.lastWalkTruncated = false;
       for (;;) {
         const page = await this.get<SpotifyPaged<T>>(path, { ...params, offset: String(offset) });
         if (!page || !Array.isArray(page.items)) break;
         all.push(...page.items);
         if (all.length >= maxItems) {
-          this.lastWalkTruncated =
-            all.length > maxItems
-            || typeof page.total !== 'number'
-            || all.length < page.total;
-          return all.slice(0, maxItems);
+          return {
+            items: all.slice(0, maxItems),
+            truncated:
+              all.length > maxItems
+              || typeof page.total !== 'number'
+              || all.length < page.total,
+          };
         }
         const limit =
           typeof page.limit === 'number' && page.limit > 0 ? page.limit : page.items.length;
@@ -115,7 +123,7 @@ function makeStubClient(responder: Responder = () => null) {
         if (page.items.length === 0 || page.items.length < limit) break;
         if (typeof page.total === 'number' && offset >= page.total) break;
       }
-      return all;
+      return { items: all, truncated: false };
     },
   };
   return client;
@@ -1404,6 +1412,55 @@ describe('capped playlist walks are disclosed (#864)', () => {
       'the disclosure must come before the group list, not after it',
     );
     assert.match(text, /Found 1 duplicate group\(s\) across 500 scanned item\(s\):/);
+  });
+
+  it('walkTruncationNotice: names the offset, never an age', () => {
+    // The rendered sentence is pinned, not just the /TRUNCATED/ token: the
+    // notice used to append the shared `completenessFooter` clause, which
+    // reads "older items were not analyzed" for an append-ordered playlist
+    // whose rows past the cap are the NEWER ones — a sentence that contradicts
+    // its own second half.
+    const notice = walkTruncationNotice(500, 500, true);
+    assert.ok(notice, 'a truncated walk must produce a notice');
+    assert.equal(
+      notice,
+      'TRUNCATED: scanned 500 item(s), cap 500'
+      + ' — items past offset 500 were not analyzed; resume at offset 500'
+      + ' or raise SPOTIFY_MCP_FETCH_ALL_CAP to scan the rest',
+    );
+    assert.doesNotMatch(
+      notice,
+      /older/i,
+      'a higher offset means NEWER rows on an append-ordered playlist, so the notice must not claim otherwise',
+    );
+  });
+
+  it('walkTruncationNotice: stays silent on a complete walk', () => {
+    assert.equal(walkTruncationNotice(120, 500, false), null);
+  });
+
+  it('find_duplicates_in_playlist: the rendered notice makes no age claim', async () => {
+    const rows: PlaylistRow[] = [
+      { item: playableTrack('t1', 'A') },
+      { item: playableTrack('t1', 'A') },
+      ...Array.from({ length: 598 }, (_, i) => ({ item: playableTrack(`u${i}`, `U ${i}`) })),
+    ];
+    const h = harness(pagedPlaylist(rows));
+
+    const out = await h.invoke('find_duplicates_in_playlist', { playlist_id: 'pl' });
+    const text = textOf(out);
+
+    // The end-to-end rendering, not the helper in isolation: this is the
+    // string a reader actually gets.
+    assert.ok(
+      text.includes(
+        'TRUNCATED: scanned 500 item(s), cap 500'
+        + ' — items past offset 500 were not analyzed; resume at offset 500'
+        + ' or raise SPOTIFY_MCP_FETCH_ALL_CAP to scan the rest',
+      ),
+      `notice not rendered verbatim, got:\n${text}`,
+    );
+    assert.doesNotMatch(text, /older/i);
   });
 
   it('find_duplicates_in_playlist: an uncapped walk carries no truncation', async () => {
