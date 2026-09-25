@@ -234,6 +234,29 @@ function isGatedError(err: unknown): err is SpotifyApiError {
   return err instanceof SpotifyApiError && err.status === 403;
 }
 
+/**
+ * Opt-in /albums/{id}/tracks fan-out cap for `artist_collab_network`. Each
+ * album read costs one extra request, so the walk is bounded and anything past
+ * the cap is disclosed rather than silently skipped.
+ */
+export const COLLAB_TRACK_CREDIT_CAP = 10;
+
+/**
+ * Short, non-guessing reason one album's track credits could not be read
+ * (#770). A failed read is reported as unreadable with its reason — never
+ * folded into "this album has no collaborators" (the #803 class).
+ */
+export function albumCreditFailureReason(err: unknown): string {
+  if (err instanceof SpotifyApiError) {
+    if (err.status === 429) {
+      return `rate limited (429${err.retryAfterSec != null ? `, retry after ${err.retryAfterSec}s` : ''})`;
+    }
+    if (err.status === 403) return 'forbidden or app-registration gated (403)';
+    if (err.status === 404) return 'album not found (404)';
+    return `Spotify error ${err.status}${err.reason ? ` (${err.reason})` : ''}`;
+  }
+  return err instanceof Error ? err.message : String(err);
+}
 // ---------------------------------------------------------------------------
 // Registration
 // ---------------------------------------------------------------------------
@@ -1097,6 +1120,8 @@ max_results: z.number().int().positive().max(2000).optional().describe('Max item
     'artist_collab_network',
     '[local-compute] Featured/collab artists extracted from an artist\'s top tracks and recent albums with '
       + 'co-appearance counts — computed from real payloads, not the dead related-artists endpoint. '
+      + 'NOTE: /artists/{id}/albums returns SIMPLIFIED album objects (no track list), so the default is '
+      + 'album-level co-billing only; pass include_track_features to read track credits for real. '
       + 'NOTE: /artists/{id}/top-tracks is on the #329 registration-gated surface; if it 403s the network is '
       + 'computed from recent albums only, with an explicit disclosure. Quota: 🟡 1 + paginated API calls.',
     {
@@ -1111,19 +1136,28 @@ max_results: z.number().int().positive().max(2000).optional().describe('Max item
         .describe('How many recent albums to walk. Default: 10'),
       response_format: ResponseFormat,
       max_results: z.number().int().positive().max(2000).optional().describe('Max items to return (default: SPOTIFY_MCP_MAX_ITEMS env or 50)'),
+      include_track_features: z
+        .boolean()
+        .optional()
+        .describe(
+          `Opt in: also read track-level credits (1 extra GET /albums/{id}/tracks per album, up to ${COLLAB_TRACK_CREDIT_CAP} `
+            + 'albums) so featured-artist collaborations are counted. Default: false. Albums whose credits could not be '
+            + 'read are listed as unreadable with the reason, never counted as zero collaborators.',
+        ),
     },
     async (args) => {
       const rf = args.response_format;
       const target = await client.get<SpotifyArtistFull>(`/artists/${encodeURIComponent(args.artist_id)}`);
       if (!target) throw new Error(`Artist "${args.artist_id}" not found`);
-      const counts = new Map<string, { name: string; count: number; via_top: boolean }>();
-      const record = (artist: SpotifyArtistSimple | undefined, viaTop: boolean) => {
+      const counts = new Map<string, { name: string; count: number; via_top: boolean; via_album_tracks: boolean }>();
+      const record = (artist: SpotifyArtistSimple | undefined, viaTop: boolean, viaAlbumTracks: boolean) => {
         if (!artist || artist.id === target.id) return;
         const prev = counts.get(artist.id);
         counts.set(artist.id, {
           name: artist.name,
           count: (prev?.count ?? 0) + 1,
           via_top: (prev?.via_top ?? false) || viaTop,
+          via_album_tracks: (prev?.via_album_tracks ?? false) || viaAlbumTracks,
         });
       };
       let topTracksNote: string | null = null;
@@ -1132,7 +1166,7 @@ max_results: z.number().int().positive().max(2000).optional().describe('Max item
           `/artists/${encodeURIComponent(args.artist_id)}/top-tracks`,
           args.market ? { market: args.market } : {},
         );
-        for (const t of top?.tracks ?? []) for (const a of t.artists ?? []) record(a, true);
+        for (const t of top?.tracks ?? []) for (const a of t.artists ?? []) record(a, true, false);
       } catch (err) {
         if (isGatedError(err)) {
           topTracksNote = gatedEndpointMessage('/artists/{id}/top-tracks') + ' Falling back to recent albums only.';
@@ -1141,32 +1175,76 @@ max_results: z.number().int().positive().max(2000).optional().describe('Max item
         }
       }
       const maxAlbums = args.max_albums ?? 10;
-      const albums = await client.getAllPages<AlbumPayload>(
+      // Typed as SpotifyAlbumItem, NOT AlbumPayload: /artists/{id}/albums returns
+      // simplified objects with no `tracks` key, so the compiler rejects the
+      // impossible album-track read that #770 used to pretend worked.
+      const albums = await client.getAllPages<SpotifyAlbumItem>(
         `/artists/${encodeURIComponent(args.artist_id)}/albums`,
         { include_groups: 'album,single', limit: String(ARTIST_ALBUM_PAGE_LIMIT) },
         { maxItems: maxAlbums },
       );
-      for (const al of albums) {
-        for (const a of al.artists ?? []) record(a, false);
-        for (const track of al.tracks?.items ?? []) for (const a of track.artists ?? []) record(a, false);
+      for (const al of albums) for (const a of al.artists ?? []) record(a, false, false);
+      // Track-level credits cost one request per album, so they are opt-in and
+      // bounded; both the cap and any failed read are disclosed.
+      const includeTrackFeatures = args.include_track_features === true;
+      const creditAlbums = includeTrackFeatures ? albums.slice(0, COLLAB_TRACK_CREDIT_CAP) : [];
+      const albumsSkippedByCap = includeTrackFeatures ? albums.length - creditAlbums.length : 0;
+      const unreadableAlbums: Array<{ album_id: string; album_name: string | null; reason: string }> = [];
+      for (const al of creditAlbums) {
+        try {
+          const page = await client.get<{ items: SpotifyTrackSimple[] }>(
+            `/albums/${encodeURIComponent(al.id)}/tracks`,
+            { limit: '50', ...(args.market ? { market: args.market } : {}) },
+          );
+          for (const t of page?.items ?? []) for (const a of t.artists ?? []) record(a, false, true);
+        } catch (err) {
+          // An unreadable album is not a collaborator-free one: recording it
+          // keeps a 403/404/429 out of the ranking as a fabricated zero (#803).
+          unreadableAlbums.push({ album_id: al.id, album_name: al.name ?? null, reason: albumCreditFailureReason(err) });
+        }
       }
+      const creditsSource = includeTrackFeatures ? 'album_and_track_credits' : 'album_credits';
       const collabs = [...counts.entries()]
-        .map(([id, v]) => ({ id, name: v.name, co_appearances: v.count, on_top_tracks: v.via_top }))
+        .map(([id, v]) => ({ id, name: v.name, co_appearances: v.count, on_top_tracks: v.via_top, on_album_tracks: v.via_album_tracks }))
         .sort((a, b) => b.co_appearances - a.co_appearances || a.name.localeCompare(b.name));
       const cap = resolveMaxResults(args.max_results, getConfig().maxItems);
       const trunc = truncateItems(collabs, cap);
       const lines = [
         `Collab network for "${target.name}" — ${collabs.length} distinct collaborator(s) from ${albums.length} recent album(s)/single(s)${topTracksNote ? ' (top-tracks GATED — albums only)' : ' and top tracks'}:`,
         '',
-        ...trunc.items.map((c) => `• ${c.name} — ${c.co_appearances} co-appearance${c.co_appearances === 1 ? '' : 's'}${c.on_top_tracks ? ' [top tracks]' : ''} | spotify:artist:${c.id}`),
+        ...trunc.items.map((c) => `• ${c.name} — ${c.co_appearances} co-appearance${c.co_appearances === 1 ? '' : 's'}${c.on_top_tracks ? ' [top tracks]' : ''}${c.on_album_tracks ? ' [album tracks]' : ''} | spotify:artist:${c.id}`),
       ];
       if (trunc.footer) lines.push(`(${trunc.footer})`);
       if (topTracksNote) lines.push('', topTracksNote);
+      if (!includeTrackFeatures) {
+        lines.push(
+          '',
+          'Album-level co-billing only: /artists/{id}/albums returns simplified album objects with no track list, '
+            + 'so track-level features are not counted. Re-run with include_track_features: true to read album track credits.',
+        );
+      }
+      if (albumsSkippedByCap > 0) {
+        lines.push('', `${albumsSkippedByCap} older album(s) beyond the ${COLLAB_TRACK_CREDIT_CAP}-album track-credit cap were walked but not read for track credits.`);
+      }
+      if (unreadableAlbums.length > 0) {
+        lines.push(
+          '',
+          `Unreadable — track credits unknown, not zero (${unreadableAlbums.length} album(s) excluded from the network): `
+            + unreadableAlbums.map((u) => `${u.album_name ?? u.album_id} (${u.reason})`).join(', '),
+        );
+      }
       return emit(rf, lines.join('\n'), {
         artist: { id: target.id, name: target.name },
         collaborators: trunc.items,
         albums_walked: albums.length,
         top_tracks_available: topTracksNote === null,
+        credits_source: creditsSource,
+        track_features_included: includeTrackFeatures,
+        ...(includeTrackFeatures ? { album_credit_cap: COLLAB_TRACK_CREDIT_CAP, albums_credited: creditAlbums.length } : {}),
+        ...(albumsSkippedByCap > 0 ? { albums_skipped_by_credit_cap: albumsSkippedByCap } : {}),
+        ...(unreadableAlbums.length > 0
+          ? { unreadable_albums: unreadableAlbums, unreadable_count: unreadableAlbums.length, track_features_partial: true }
+          : {}),
         ...(topTracksNote ? { disclosure: topTracksNote } : {}),
         pagination: paginationInfo({ total: collabs.length, returned: trunc.items.length }),
       });
