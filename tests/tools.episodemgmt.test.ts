@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { registerEpisodeMgmtTools } from '../src/tools/episodemgmt.js';
-import type { SpotifyClient } from '../src/client.js';
+import { SpotifyApiError, type SpotifyClient } from '../src/client.js';
 import { verifyReceipt } from '../src/receipts.js';
 type EpisodeItem = {
   episode: {
@@ -85,11 +85,10 @@ function harness(overrides: { episodes?: EpisodeItem[]; answer?: ElicitationAnsw
     },
     async getAllPages(_path: string, _params?: Record<string, string>, opts?: { maxItems?: number }) {
       if (overrides.pager === 'walk_failed') {
-        throw overrides.walkError ?? Object.assign(new Error('API rate limit reached'), {
-          name: 'SpotifyApiError',
-          status: 429,
-          retryAfterSec: 12,
-        });
+        // The real error class, not a hand-rolled object with the right field
+        // names: describeScanError reads status/retryAfterSec off whatever the
+        // client throws, and only a real SpotifyApiError proves that contract.
+        throw overrides.walkError ?? new SpotifyApiError(429, 'API rate limit reached', 12, 'QUOTA_EXCEEDED');
       }
       // Mirrors the real getAllPages contract: it stops at maxItems and slices,
       // so asking for cap+1 is how a caller detects the library runs longer.
@@ -323,6 +322,14 @@ describe('episodemgmt', () => {
     assert.equal(out.structuredContent.played, undefined);
     assert.equal(out.structuredContent.would_remove, undefined);
     assert.equal(out.structuredContent.removed, undefined);
+    // The cap+1 probe row exists only to prove truncation and must never reach
+    // the numerator: the report claims `cap` read, so the played count can
+    // never exceed it. This is the invariant the earlier revision violated.
+    assert.equal(out.structuredContent.played_among_scanned, 50);
+    assert.ok(
+      Number(out.structuredContent.played_among_scanned) <= Number(out.structuredContent.scanned),
+      `played_among_scanned (${out.structuredContent.played_among_scanned}) must not exceed scanned (${out.structuredContent.scanned})`,
+    );
     assert.match(out.content[0].text, /refused/i);
     assert.match(out.content[0].text, /never read/i);
   });
@@ -354,6 +361,11 @@ describe('episodemgmt', () => {
     assert.equal(out.structuredContent.dry_run, true);
     assert.equal(out.structuredContent.scan_complete, false);
     assert.equal(out.structuredContent.scanned, 50);
+    assert.equal(out.structuredContent.played_among_scanned, 50);
+    assert.ok(
+      Number(out.structuredContent.played_among_scanned) <= Number(out.structuredContent.scanned),
+      `played_among_scanned (${out.structuredContent.played_among_scanned}) must not exceed scanned (${out.structuredContent.scanned})`,
+    );
     assert.match(out.content[0].text, /PARTIAL SCAN/i);
     assert.match(out.content[0].text, /partial scan/i);
     assert.deepEqual(h.dels, []);

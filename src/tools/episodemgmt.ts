@@ -89,7 +89,11 @@ async function scanSavedEpisodes(client: SpotifyClient, cap: number): Promise<Ep
     const items = Array.isArray(rows) ? rows : [];
     if (items.length > cap) {
       return {
-        items,
+        // The cap+1 row exists only to prove truncation. Keeping it would count
+        // an episode this tool never claims to have read, and the partial report
+        // would then say "51 found among the 50 read". Slice it off so the row
+        // set and the count agree, as libraryhygiene.ts and import.ts do.
+        items: items.slice(0, cap),
         scanned: cap,
         complete: false,
         failure: 'limit_reached',
@@ -99,14 +103,16 @@ async function scanSavedEpisodes(client: SpotifyClient, cap: number): Promise<Ep
     return { items, scanned: items.length, complete: true, failure: null, reason: null };
   } catch (err) {
     // The walk rejects, it does not truncate, so there is nothing trustworthy
-    // left to report: no rows were kept and the library was not read at all.
-    // Say so with the reason attached rather than quietly degrading to a page.
+    // left to report. Describe this tool's own state, not the walk's: getAllPages
+    // fetches page by page and only discards what it accumulated when a page
+    // throws, so "nothing was read" would be a claim about the world rather
+    // than an observation, and pages may well have been served.
     return {
       items: [],
       scanned: 0,
       complete: false,
       failure: 'walk_failed',
-      reason: `the library walk failed before any episode was read: ${describeScanError(err)}`,
+      reason: `the library walk did not finish, so no episode rows were retained: ${describeScanError(err)}`,
     };
   }
 }
@@ -192,7 +198,7 @@ export function registerEpisodeMgmtTools(server: McpServer, client: SpotifyClien
         }
         return textResult(
           `Refused to remove episodes — the library scan did not finish: ${scan.reason}. ${scan.scanned === 0
-            ? 'No episode was read, so nothing is known about the library.'
+            ? 'No episode row was retained, so nothing is known about the library.'
             : `${played.length} fully-played episode(s) were found among the ${scan.scanned} read, but the rest of the library was never read, so that is not a complete list.`} Nothing was removed. Retry with a higher \`limit\` (up to 500) if the scan stopped at the limit, or once the library can be read in full.${deprecatedInputs.length ? ' `confirm` was accepted but ignored: it no longer authorises the delete.' : ''}`,
           partial,
         );
