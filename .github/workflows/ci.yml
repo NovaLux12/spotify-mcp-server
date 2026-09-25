@@ -36,6 +36,9 @@ jobs:
       - name: Typecheck
         run: npx tsc --noEmit
 
+      - name: Check generated documentation inventory
+        run: node scripts/surface-census.mjs --check
+
       - name: Test with count and coverage gates
         shell: bash
         run: |
