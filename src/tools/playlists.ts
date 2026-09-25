@@ -1884,6 +1884,11 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
       if (targetImpact.added > 0) changes.push(`Add ${targetImpact.added} new item(s).`);
       if (targetUnrepresentable > 0) changes.push(`Drop ${targetUnrepresentable} item(s) Spotify returned without a URI, which a URI-based replace cannot restore.`);
       if (!targetReadWhole) changes.push(`Only ${target.rowCount} of ${targetTotal ?? 'an unknown number of'} existing row(s) could be read, so the true impact may be larger.`);
+      // The impact above was measured against a union that may be missing rows.
+      // Without this the operator is shown a definitive-looking set difference
+      // computed from a partial read — the one case where the prompt is the
+      // only place the incompleteness can still be disclosed.
+      if (sourceTruncated) changes.push(`Source walk reached the configured cap of ${effectiveScanCap(args)} rows; the union is incomplete, so items missing from it would be removed.`);
       const verdict = await confirmViaElicitation(server, {
         message: describeConfirmation('replace playlist items', args.target_playlist_id!, changes),
       });
@@ -1970,10 +1975,10 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
         base_playlist: basePlaylistId,
         playlist_a: basePlaylistId,
         playlists: subtractValues,
-        removed,
+        removed: removedView.items.length,
         removed_total: removed,
         removed_uris: removedView.items,
-        kept: remaining.length,
+        kept: keptView.items.length,
         kept_total: remaining.length,
         uris: keptView.items,
         limit: args.limit ?? null,
@@ -1985,7 +1990,7 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
         would_confirm: destructive,
         impact,
       }, input, positionalNote);
-      return textResult(args.response_format === 'json' ? jsonText(payload) : withPlaylistInputNote(text, input), payload);
+      return textResult(args.response_format === 'json' ? jsonText(payload) : withPlaylistInputNote(text, input, positionalNote), payload);
     }
     if (destructive) {
       const changes = [
@@ -2036,10 +2041,10 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
       base_playlist: basePlaylistId,
       playlist_a: basePlaylistId,
       playlists: subtractValues,
-      removed,
+      removed: removedView.items.length,
       removed_total: removed,
       removed_uris: removedView.items,
-      kept: remaining.length,
+      kept: keptView.items.length,
       kept_total: remaining.length,
       uris: keptView.items,
       source_truncated: sourceTruncated,
@@ -2047,7 +2052,7 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
       scan_cap: effectiveScanCap(args),
       snapshot_id: snap ?? null,
     }, input, positionalNote);
-    return textResult(args.response_format === 'json' ? jsonText(payload) : withPlaylistInputNote(withSnapshot(`Subtract: removed ${removed}, kept ${remaining.length}`, snap), input), payload);
+    return textResult(args.response_format === 'json' ? jsonText(payload) : withPlaylistInputNote(withSnapshot(`Subtract: removed ${removed}, kept ${remaining.length}`, snap), input, positionalNote), payload);
   });
 
   // playlist_symmetric_difference (#292)

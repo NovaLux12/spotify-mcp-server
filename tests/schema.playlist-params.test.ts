@@ -549,8 +549,13 @@ describe('playlist set/diff schema and resolver contract (#912)', () => {
         base_playlist_id: PLAYLIST_1,
         subtract_playlist_ids: [PLAYLIST_2],
       });
-      assert.equal(result.structuredContent?.removed, 90);
+      // `removed`/`kept` are the returned row counts (bounded by max_results);
+      // the `*_total` fields carry the true impact the confirmation quoted.
+      assert.equal(result.structuredContent?.removed_total, 90);
+      assert.equal(result.structuredContent?.kept_total, 10);
+      assert.equal(result.structuredContent?.removed, 50, 'the removed array is capped by max_results');
       assert.equal(result.structuredContent?.kept, 10);
+      assert.equal((result.structuredContent?.removed_uris as string[]).length, 50);
       assert.equal(gate.prompts.length, 1, 'a non-empty destructive impact must prompt');
       assert.match(gate.prompts[0] ?? '', /removing 90 URI\(s\)/);
       assert.equal(result.structuredContent?.ok, true);

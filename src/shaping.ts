@@ -305,8 +305,9 @@ export function withPlaylistInputMetadata<T extends Record<string, unknown>>(
 }
 
 /** Append the same one-line migration note to prose/JSON text. */
-export function withPlaylistInputNote(text: string, resolved: PlaylistInputResolution): string {
-  return resolved.deprecationNote === null ? text : `${text}\n${resolved.deprecationNote}`;
+export function withPlaylistInputNote(text: string, resolved: PlaylistInputResolution, extraNote?: string): string {
+  const note = [resolved.deprecationNote, extraNote].filter((part): part is string => typeof part === 'string' && part.length > 0).join(' ');
+  return note === '' ? text : `${text}\n${note}`;
 }
 
 // ---------------------------------------------------------------------------
