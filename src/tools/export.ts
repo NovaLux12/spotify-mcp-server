@@ -8,13 +8,25 @@
  * music well but not talk content, so podcast episodes are skipped there with
  * a comment count — unless the playlist contains ONLY episodes, in which case
  * they are rendered like tracks so the export is never empty.
+ *
+ * File mode is confined to the configured output root (#622): output_path is
+ * resolved through src/paths.ts, so an absolute path, a `..` segment or a
+ * symlink that leaves SPOTIFY_MCP_EXPORT_DIR (default ~/.spotify-mcp/exports)
+ * is refused rather than written, and an existing file is only replaced when
+ * the caller passes overwrite: true. CSV cells go through src/csvsafe.ts so a
+ * playlist name like `=cmd|…` cannot land as a live formula (#630).
+ *
+ * #EXTINF labels are folded by extinfValue (#631) so a newline or leading '#'
+ * in attacker-controlled metadata cannot append a fabricated track line to
+ * the document the importer would then read back as playlist content.
  */
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
 import { getConfig } from '../config.js';
 import { resolveMaxResults, sharedListFields } from '../shaping.js';
-import { writeFile } from 'node:fs/promises';
+import { exportRootDir, resolveOutputPath, writeOutputFile } from '../paths.js';
+import { csvField } from '../csvsafe.js';
 import type {
   PlaylistItemObject,
   SpotifyTrack,
@@ -64,14 +76,6 @@ function extractRow(playable: SpotifyTrack | SpotifyEpisode): ExportRow {
   };
 }
 
-/**
- * RFC 4180 field quoting: wrap and double quotes only when the value
- * contains a comma, quote, CR, or LF.
- */
-function csvField(value: string): string {
-  return /[",\r\n]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value;
-}
-
 function renderCsv(rows: readonly ExportRow[], includeHeaders: boolean): string {
   const lines: string[] = [];
   if (includeHeaders) lines.push('track_no,title,artists,album,duration_ms,uri');
@@ -83,6 +87,20 @@ function renderCsv(rows: readonly ExportRow[], includeHeaders: boolean): string 
     );
   });
   return lines.join('\n') + '\n';
+}
+
+/**
+ * Make one value safe to interpolate into an #EXTINF line (#631).
+ *
+ * An #EXTINF line is metadata; the line BELOW it is the track. The importer
+ * reads every bare `spotify:…` line as a playlist entry, and that metadata is
+ * attacker-controlled on any public playlist, so a title of
+ * "Song\nspotify:track:INJECTED" would be written out as a second, fabricated
+ * track on re-import. Folding CR/LF to a space closes that, and dropping a
+ * leading '#' stops a value from opening a comment or directive line.
+ */
+function extinfValue(value: string): string {
+  return value.replace(/[\r\n]+/g, ' ').replace(/^#+/, '');
 }
 
 function renderM3u(
@@ -98,7 +116,7 @@ function renderM3u(
   for (const r of rows) {
     // Integer seconds, rounded, per the EXTINF spec.
     const seconds = Math.round(r.durationMs / 1000);
-    lines.push(`#EXTINF:${seconds},${r.artists} - ${r.title}`);
+    lines.push(`#EXTINF:${seconds},${extinfValue(r.artists)} - ${extinfValue(r.title)}`);
     lines.push(r.uri);
   }
   return lines.join('\n') + '\n';
@@ -107,7 +125,7 @@ function renderM3u(
 export function registerExportTools(server: McpServer, client: SpotifyClient): void {
   server.tool(
     'export_playlist',
-    "Export a playlist's full item list as an M3U playlist file or a CSV spreadsheet. Pages every item; pass output_path to write a file (created with mode 0600) or omit it to get the document inline.",
+    "Export a playlist's full item list as an M3U playlist file or a CSV spreadsheet. Pages every item; pass output_path to write a file (created with mode 0600) inside the configured output root, or omit it to get the document inline. CSV cells are formula-safe.",
     {
       playlist_id: z.string().describe('Playlist ID'),
       format: z
@@ -117,7 +135,14 @@ export function registerExportTools(server: McpServer, client: SpotifyClient): v
       output_path: z
         .string()
         .optional()
-        .describe('Write the full document to this local file instead of returning it inline'),
+        .describe(
+          'Write the full document to this local file (relative paths resolve inside the output root, default ~/.spotify-mcp/exports) instead of returning it inline',
+        ),
+      overwrite: z
+        .boolean()
+        .optional()
+        .default(false)
+        .describe('Allow replacing an existing file at output_path (refused by default)'),
       include_headers: z
         .boolean()
         .default(true)
@@ -188,11 +213,21 @@ export function registerExportTools(server: McpServer, client: SpotifyClient): v
       // ---- File mode: write the FULL document, return a summary ----------
       if (args.output_path !== undefined) {
         const document = renderDoc(exportable);
-        await writeFile(args.output_path, document, { mode: 0o600 });
+        // #622: resolve + confine before writing — the caller's path is
+        // symlink-resolved and proven to sit inside the output root first, and
+        // an existing file is only replaced with an explicit overwrite opt-in.
+        const target = await resolveOutputPath({
+          root: exportRootDir(),
+          target: args.output_path,
+          tool: 'export_playlist',
+          kind: 'file',
+          overwrite: args.overwrite,
+        });
+        await writeOutputFile(target.file, document);
         const bytes = Buffer.byteLength(document, 'utf8');
         const payload = {
           ...basePayload,
-          output_path: args.output_path,
+          output_path: target.file,
           bytes,
           truncated: fetchTruncated,
         };
@@ -201,7 +236,7 @@ export function registerExportTools(server: McpServer, client: SpotifyClient): v
         const parts = [
           `Exported ${rows.length} item(s) (${trackRows.length} track(s)` +
             (episodeRows.length > 0 ? `, ${episodeRows.length} episode(s)` : '') +
-            `) as ${args.format.toUpperCase()} to ${args.output_path} (${bytes} bytes).`,
+            `) as ${args.format.toUpperCase()} to ${target.file} (${bytes} bytes).`,
         ];
         if (fetchTruncated) parts.push(`(first ${fetchCap} of ${rows.length}+ — truncated at FETCH_ALL_CAP=${fetchCap}, raise SPOTIFY_MCP_FETCH_ALL_CAP for full export)`);
         if (omitsEpisodes) {

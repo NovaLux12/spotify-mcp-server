@@ -15,9 +15,14 @@ import {
 import type { ResponseFormatValue } from '../shaping.js';
 import { issueReceipt, formatReceipt } from '../receipts.js';
 import { getConfig } from '../config.js';
+// mkdir/writeFile stay for import_profile_state, which writes to the server's
+// own store paths (scenesFilePath(), historyFilePath()) rather than to a
+// caller-supplied destination.
 import { mkdir, writeFile, readFile, readdir } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
+import { exportRootDir, resolveOutputPath, writeOutputFile } from '../paths.js';
+import { csvTable } from '../csvsafe.js';
 import type {
   SpotifyPaged,
   PlaylistItemObject,
@@ -52,9 +57,6 @@ function portabilityDir(env: NodeJS.ProcessEnv = process.env): string {
   return env.SPOTIFY_MCP_PORTABILITY_DIR ?? join(homedir(), '.spotify-mcp', 'portability');
 }
 
-function csvField(v: string): string {
-  return /[",\r\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v;
-}
 
 // ---------------------------------------------------------------------------
 // #238: resolve personalized playlist via /me/playlists exact match first
@@ -252,13 +254,20 @@ export function registerPortabilityTools(server: McpServer, client: SpotifyClien
     'export_library_json',
     'Export your full library (saved tracks, albums, shows, episodes, audiobooks) to a local directory as JSON or CSV sidecar files. Respects SPOTIFY_MCP_FETCH_ALL_CAP per type; when capped, reports cap_reached + truncated and a prose footer ("first N of … — raise SPOTIFY_MCP_FETCH_ALL_CAP").',
     {
-      output_dir: z.string().optional().describe('Local directory to write files into (default: ~/.spotify-mcp/portability)'),
+      output_dir: z.string().optional().describe('Local directory to write into, confined to the output root (default ~/.spotify-mcp/portability, set SPOTIFY_MCP_PORTABILITY_DIR to move it)'),
       format: z.enum(['json', 'csv']).optional().default('json').describe('Output format: json (single file) or csv (one file per type)'),
       response_format: ResponseFormat,
     },
     async (args) => {
       const rf = args.response_format as ResponseFormatValue;
-      const dir = args.output_dir ?? portabilityDir();
+      // #622: the caller's output_dir is symlink-resolved and must stay inside
+      // the configured root; a relative value is taken as root-relative.
+      const { dir } = await resolveOutputPath({
+        root: portabilityDir(),
+        target: args.output_dir ?? '.',
+        tool: 'export_library_json',
+        kind: 'directory',
+      });
       const cap = getConfig().fetchAllCap;
 
       const [tracks, albums, shows, episodes] = await Promise.all([
@@ -274,7 +283,6 @@ export function registerPortabilityTools(server: McpServer, client: SpotifyClien
         audiobooks = [];
       }
 
-      await mkdir(dir, { recursive: true, mode: 0o700 });
       const capReached = {
         tracks: tracks.length >= cap,
         albums: albums.length >= cap,
@@ -286,9 +294,8 @@ export function registerPortabilityTools(server: McpServer, client: SpotifyClien
 
       if (args.format === 'csv') {
         const writeCsv = async (name: string, rows: string[][], headers: string[]) => {
-          const lines = [headers.map(csvField).join(','), ...rows.map((r) => r.map(csvField).join(','))].join('\n') + '\n';
           const p = join(dir, `${name}.csv`);
-          await writeFile(p, lines, { mode: 0o600 });
+          await writeOutputFile(p, csvTable(headers, rows));
           return { path: p, rows: rows.length };
         };
         const results = await Promise.all([
@@ -319,7 +326,7 @@ export function registerPortabilityTools(server: McpServer, client: SpotifyClien
       };
       const filePath = join(dir, 'library.json');
       const body = `${JSON.stringify(doc, null, 2)}\n`;
-      await writeFile(filePath, body, { mode: 0o600 });
+      await writeOutputFile(filePath, body);
       const bytes = Buffer.byteLength(body);
       const cappedTypes = Object.entries(capReached).filter(([, v]) => v).map(([k]) => k).join(', ');
       const footer = truncated ? ` [truncated — first ${cap} per type; capped types: ${cappedTypes} — raise SPOTIFY_MCP_FETCH_ALL_CAP for the full library]` : '';
@@ -332,13 +339,18 @@ export function registerPortabilityTools(server: McpServer, client: SpotifyClien
     'export_followed_artists',
     'Export your followed artists to a local directory as JSON or CSV. Fields: uri, name, genres. The file\'s exported_at is the export time, not a per-artist follow date (Spotify does not expose followed_at).',
     {
-      output_dir: z.string().optional().describe('Local directory to write files into (default: ~/.spotify-mcp/portability)'),
+      output_dir: z.string().optional().describe('Local directory to write into, confined to the output root (default ~/.spotify-mcp/portability, set SPOTIFY_MCP_PORTABILITY_DIR to move it)'),
       format: z.enum(['json', 'csv']).optional().default('json').describe('Output format: json or csv'),
       response_format: ResponseFormat,
     },
     async (args) => {
       const rf = args.response_format as ResponseFormatValue;
-      const dir = args.output_dir ?? portabilityDir();
+      const { dir } = await resolveOutputPath({
+        root: portabilityDir(),
+        target: args.output_dir ?? '.',
+        tool: 'export_followed_artists',
+        kind: 'directory',
+      });
       const cap = getConfig().fetchAllCap;
 
       const artists: Array<{ uri: string; name: string; genres: string[] }> = [];
@@ -355,7 +367,6 @@ export function registerPortabilityTools(server: McpServer, client: SpotifyClien
       }
       if (artists.length > cap) artists.length = cap;
 
-      await mkdir(dir, { recursive: true, mode: 0o700 });
       const exportedAt = new Date().toISOString();
       const capReached = artists.length >= cap;
       const truncated = capReached;
@@ -363,9 +374,9 @@ export function registerPortabilityTools(server: McpServer, client: SpotifyClien
       if (args.format === 'csv') {
         const headers = ['uri', 'name', 'genres'];
         const rows = artists.map((a) => [a.uri, a.name, a.genres.join(';')]);
-        const lines = [headers.map(csvField).join(','), ...rows.map((r) => r.map(csvField).join(','))].join('\n') + '\n';
+        const lines = csvTable(headers, rows);
         const filePath = join(dir, 'followed_artists.csv');
-        await writeFile(filePath, lines, { mode: 0o600 });
+        await writeOutputFile(filePath, lines);
         const footer = truncated ? ` [truncated — first ${cap}; raise SPOTIFY_MCP_FETCH_ALL_CAP for the full list]` : '';
         const payload = { ok: true, dir, file: filePath, format: 'csv', total: artists.length, cap_reached: capReached, truncated, cap, exported_at: exportedAt };
         return shapeResult(rf, `Exported ${artists.length} followed artist(s) to ${filePath} as CSV.${footer}`, payload);
@@ -374,7 +385,7 @@ export function registerPortabilityTools(server: McpServer, client: SpotifyClien
       const doc = { exported_at: exportedAt, total: artists.length, cap_reached: capReached, truncated, cap, artists: artists.map((a) => ({ uri: a.uri, name: a.name, genres: a.genres })) };
       const filePath = join(dir, 'followed_artists.json');
       const body = `${JSON.stringify(doc, null, 2)}\n`;
-      await writeFile(filePath, body, { mode: 0o600 });
+      await writeOutputFile(filePath, body);
       const bytes = Buffer.byteLength(body);
       const footer = truncated ? ` [truncated — first ${cap}; raise SPOTIFY_MCP_FETCH_ALL_CAP for the full list]` : '';
       return shapeResult(rf, `Exported ${artists.length} followed artist(s) to ${filePath} (${bytes} bytes).${footer}`, { ok: true, dir, file: filePath, format: 'json', bytes, total: artists.length, cap_reached: capReached, truncated, cap, exported_at: exportedAt });
@@ -389,14 +400,18 @@ export function registerPortabilityTools(server: McpServer, client: SpotifyClien
     'export_profile_state',
     'Export local sidecar stores (scenes, genre-tags, playback-ext, search-history, mutations, artist-watchlist) to a single schema-versioned JSON archive. Note: artist-watchlist defaults to ./data/artist-watchlist.json (cwd-relative, not ~/.spotify-mcp/) — a quirk flagged for future alignment.',
     {
-      output_dir: z.string().optional().describe('Directory to write the archive into (default: ~/.spotify-mcp/exports)'),
+      output_dir: z.string().optional().describe('Directory to write the archive into, confined to the output root (default ~/.spotify-mcp/exports, set SPOTIFY_MCP_EXPORT_DIR to move it)'),
       include_history: z.boolean().optional().default(false).describe('Include mutation history JSONL (can be large)'),
       response_format: ResponseFormat,
     },
     async (args) => {
       const rf = args.response_format as ResponseFormatValue;
-      const dir = args.output_dir ?? join(homedir(), '.spotify-mcp', 'exports');
-      await mkdir(dir, { recursive: true, mode: 0o700 });
+      const { dir } = await resolveOutputPath({
+        root: exportRootDir(),
+        target: args.output_dir ?? '.',
+        tool: 'export_profile_state',
+        kind: 'directory',
+      });
       const ts = new Date().toISOString().replace(/[:.]/g, '-');
       const filePath = join(dir, `profile-state-${ts}.json`);
 
@@ -488,7 +503,7 @@ export function registerPortabilityTools(server: McpServer, client: SpotifyClien
       };
 
       const body = `${JSON.stringify(doc, null, 2)}\n`;
-      await writeFile(filePath, body, { mode: 0o600 });
+      await writeOutputFile(filePath, body);
       const bytes = Buffer.byteLength(body);
       const payload = { ok: true, path: filePath, bytes, counts, schema_version: PROFILE_STATE_SCHEMA_VERSION };
       return shapeResult(rf, `Exported profile state to ${filePath} (${bytes} bytes) — ${Object.entries(counts).map(([k, v]) => `${k}:${v}`).join(', ')}.`, payload);
@@ -642,7 +657,7 @@ export function registerPortabilityTools(server: McpServer, client: SpotifyClien
     'export_listening_history',
     'Export your listening history (recently played) to a JSON or CSV sidecar by walking /me/player/recently-played with before-cursor pagination. Respects SPOTIFY_MCP_FETCH_ALL_CAP; writes file 0600 and reports path + counts. Analogous to export_library_json.',
     {
-      output_dir: z.string().optional().describe('Local directory to write files into (default: ~/.spotify-mcp/portability)'),
+      output_dir: z.string().optional().describe('Local directory to write into, confined to the output root (default ~/.spotify-mcp/portability, set SPOTIFY_MCP_PORTABILITY_DIR to move it)'),
       format: z.enum(['json', 'csv']).optional().default('json').describe('Output format: json or csv'),
       limit: z.number().int().min(1).max(10000).optional().describe('Alias for max_items'),
       max_items: z.number().int().min(1).max(10000).optional().describe('Max history items to export (default: SPOTIFY_MCP_FETCH_ALL_CAP)'),
@@ -652,7 +667,12 @@ export function registerPortabilityTools(server: McpServer, client: SpotifyClien
     },
     async (args) => {
       const rf = args.response_format as ResponseFormatValue;
-      const dir = args.output_dir ?? listeningHistoryDir();
+      const { dir } = await resolveOutputPath({
+        root: listeningHistoryDir(),
+        target: args.output_dir ?? '.',
+        tool: 'export_listening_history',
+        kind: 'directory',
+      });
       const cap = args.max_items ?? args.limit ?? getConfig().fetchAllCap;
 
       const items: RecentlyPlayedItem[] = [];
@@ -697,7 +717,6 @@ export function registerPortabilityTools(server: McpServer, client: SpotifyClien
       }
       if (items.length > cap) items.length = cap;
 
-      await mkdir(dir, { recursive: true, mode: 0o700 });
       const exportedAt = new Date().toISOString();
       const capReached = items.length >= cap;
       const truncated = capReached;
@@ -712,9 +731,9 @@ export function registerPortabilityTools(server: McpServer, client: SpotifyClien
           it.track?.album?.name ?? '',
           it.track?.uri ?? '',
         ]);
-        const lines = [headers.map(csvField).join(','), ...rows.map((r) => r.map(csvField).join(','))].join('\n') + '\n';
+        const lines = csvTable(headers, rows);
         const filePath = join(dir, 'listening_history.csv');
-        await writeFile(filePath, lines, { mode: 0o600 });
+        await writeOutputFile(filePath, lines);
         const footer = truncated ? ` [truncated — first ${cap}; raise SPOTIFY_MCP_FETCH_ALL_CAP or max_items for more]` : '';
         const payload = { ok: true, dir, file: filePath, format: 'csv', total: items.length, cap_reached: capReached, truncated, cap, exported_at: exportedAt };
         return shapeResult(rf, `Exported ${items.length} listening-history item(s) to ${filePath} as CSV.${footer}`, payload);
@@ -738,7 +757,7 @@ export function registerPortabilityTools(server: McpServer, client: SpotifyClien
       };
       const filePath = join(dir, 'listening_history.json');
       const body = `${JSON.stringify(doc, null, 2)}\n`;
-      await writeFile(filePath, body, { mode: 0o600 });
+      await writeOutputFile(filePath, body);
       const bytes = Buffer.byteLength(body);
       const footer = truncated ? ` [truncated — first ${cap}; raise SPOTIFY_MCP_FETCH_ALL_CAP or max_items for more]` : '';
       return shapeResult(rf, `Exported ${items.length} listening-history item(s) to ${filePath} (${bytes} bytes).${footer}`, { ok: true, dir, file: filePath, format: 'json', bytes, total: items.length, cap_reached: capReached, truncated, cap, exported_at: exportedAt });
@@ -750,7 +769,7 @@ export function registerPortabilityTools(server: McpServer, client: SpotifyClien
     'export_all_playlists',
     'Export every owned (or all) playlist with metadata + items to a sidecar file. Quota: GET /me/playlists + N×GET /playlists/{id}/items; capped by fetchAllCap.',
     {
-      output_dir: z.string().optional().describe('Local directory (default: ~/.spotify-mcp/portability)'),
+      output_dir: z.string().optional().describe('Local directory to write into, confined to the output root (default ~/.spotify-mcp/portability, set SPOTIFY_MCP_PORTABILITY_DIR to move it)'),
       format: z.enum(['json', 'csv']).optional().default('json').describe('Output format'),
       include_items: z.boolean().optional().default(true).describe('Include track items per playlist'),
       scope: z.enum(['owned', 'all']).optional().default('all').describe('owned = only playlists you own'),
@@ -758,7 +777,12 @@ export function registerPortabilityTools(server: McpServer, client: SpotifyClien
     },
     async (args) => {
       const rf = args.response_format as ResponseFormatValue;
-      const dir = args.output_dir ?? portabilityDir();
+      const { dir } = await resolveOutputPath({
+        root: portabilityDir(),
+        target: args.output_dir ?? '.',
+        tool: 'export_all_playlists',
+        kind: 'directory',
+      });
       const cap = getConfig().fetchAllCap;
       const me = await client.get<{ id?: string }>('/me');
       const myId = me?.id as string | undefined;
@@ -774,7 +798,6 @@ export function registerPortabilityTools(server: McpServer, client: SpotifyClien
           } catch { row.items = []; }
         }
       }
-      await mkdir(dir, { recursive: true, mode: 0o700 });
       if (args.format === 'csv') {
         const headers = ['playlist_id', 'playlist_name', 'item_uri', 'item_name'];
         const rows: string[][] = [];
@@ -782,15 +805,15 @@ export function registerPortabilityTools(server: McpServer, client: SpotifyClien
           if (pl.items.length === 0) rows.push([pl.id, pl.name, '', '']);
           else for (const it of pl.items) rows.push([pl.id, pl.name, it.uri, it.name]);
         }
-        const lines = [headers.map(csvField).join(','), ...rows.map((r) => r.map(csvField).join(','))].join('\n') + '\n';
+        const lines = csvTable(headers, rows);
         const fp = join(dir, 'playlists.csv');
-        await writeFile(fp, lines, { mode: 0o600 });
+        await writeOutputFile(fp, lines);
         return shapeResult(rf, `Exported ${playlistRows.length} playlist(s) (${rows.length} rows) to ${fp}.`, { ok: true, dir, file: fp, format: 'csv', total: playlistRows.length, rows: rows.length });
       }
       const doc = { exported_at: exportedAt, total: playlistRows.length, scope: args.scope, playlists: playlistRows };
       const fp = join(dir, 'playlists.json');
       const body = `${JSON.stringify(doc, null, 2)}\n`;
-      await writeFile(fp, body, { mode: 0o600 });
+      await writeOutputFile(fp, body);
       return shapeResult(rf, `Exported ${playlistRows.length} playlist(s) to ${fp} (${Buffer.byteLength(body)} bytes).`, { ok: true, dir, file: fp, format: 'json', bytes: Buffer.byteLength(body), total: playlistRows.length, scope: args.scope });
     },
   );
