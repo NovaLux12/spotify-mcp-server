@@ -2,21 +2,21 @@
 
 SpotifyMCP reads Spotify first. stats.fm rides alongside as a **second upstream** for long-range listening history, cross-range top lists, and taste aggregates that the Spotify Web API alone cannot provide. stats.fm keeps lifetime history after your imported streams are available.
 
-All stats.fm tools are **read-only**. They never write to your library, playlists, or playback state. Pair them with the Spotify write tools to act on what you learn — see the [flagship taste-profile recipe](cookbook.md#1-taste-profile--playlist-flagship) and the [taste showcase](taste.md).
+Stats.fm-backed calls never write to Spotify. The only taste tool with local state is `statsfm_record_feedback` / `record_feedback`, whose identity-free entries live in memory for the current server process and are not sent to stats.fm or persisted. Pair stats.fm results with Spotify write tools to act on what you learn — see the [flagship taste-profile recipe](cookbook.md#1-taste-profile--playlist-flagship) and the [taste showcase](taste.md).
 
 ## Setup
 
 1. **Create a stats.fm account** at [stats.fm](https://stats.fm) and log in.
-2. **Import your Spotify history.** In stats.fm, open Settings → Import, connect Spotify, and request your extended history. Lifetime results are only as complete as that import; check `statsfm_streams_stats` and `statsfm_recaps` before relying on lifetime data.
-3. **Find your stats.fm user ID.** Open your profile page. The numeric ID in the `stats.fm/user/<id>` URL is accepted by the endpoint tools. Taste tools use a required `statsfm_user` string; the endpoint tools use a required `user_id` string. Both also accept a stats.fm customId or username where the API supports it.
+2. **Import your Spotify history.** In stats.fm, open Settings → Import, connect Spotify, and request your extended history. Lifetime results are only as complete as that import. `statsfm_streams_stats` reports aggregate totals for the history visible to stats.fm, and `statsfm_recaps` provides per-calendar-year views; neither proves import completeness.
+3. **Find your stats.fm user ID.** Open your profile page. The numeric ID in the `stats.fm/user/<id>` URL is accepted by user-scoped endpoint tools through required `user_id`; network-backed taste tools use required `statsfm_user`. These identifiers also accept a stats.fm customId or username where the API supports it.
 
-There is no stats.fm OAuth dance: public profile data needs no token. Private profiles need the profile owner's cooperation (see [Privacy](#privacy)). These tools require their identity argument on every call; there is no `STATSFM_USER_ID` setting.
+There is no stats.fm OAuth dance: public profile data needs no token. Private profiles need the profile owner's cooperation (see [Privacy](#privacy)). User-scoped calls pass identity explicitly on every call; there is no `STATSFM_USER_ID` setting. Catalog searches and catalog-entity lookups do not require an identity argument.
 
 ## Taste-tool naming
 
-The eight taste-intelligence tools in `src/tools/statsfm_taste.ts` use canonical **`statsfm_taste_*`** names so every stats.fm-backed taste tool shares the `statsfm_` prefix. The original **`taste_*`** names are registered as backwards-compatible aliases to the same handlers. The full matrix is in the [taste showcase naming table](taste.md#tool-naming).
+The eight taste-intelligence tools in `src/tools/statsfm_taste.ts` use canonical **`statsfm_*`** names. Each also has a registered legacy alias pointing to the same handler; the complete pair-by-pair mapping is in the [taste showcase naming table](taste.md#tool-naming).
 
-The separate wave-2 composite tools are registered under the `taste` toolset with `taste_` names. They are also live tools, not planned tools; see [taste composites](wave2-composites.md).
+The separate wave-2 composite tools are registered under the `taste` toolset with canonical `taste_*` names. They are live tools, not planned tools; see [taste composites](wave2-composites.md).
 
 ## Tool cheat sheet
 
@@ -57,7 +57,7 @@ Every tool below is registered. The common `response_format` argument accepts `c
 | `statsfm_friend_count` | A user's stats.fm friend count. |
 | `statsfm_records_artists` | Artists holding a user's listening records and milestones. |
 
-Typical flow: `statsfm_streams_stats` (is there imported data?) → `statsfm_taste_profile` (what is the shape?) → Spotify search and playlist tools (make something from it).
+Typical flow: `statsfm_streams_stats` (how much history is visible?) → `statsfm_taste_profile` (what is its shape?) → Spotify search and playlist tools (make something from it). The first call reports aggregate history, not import coverage or recency gaps.
 
 ### Taste-intelligence tools
 
@@ -72,9 +72,17 @@ Typical flow: `statsfm_streams_stats` (is there imported data?) → `statsfm_tas
 | `statsfm_taste_recommendations` | `taste_recommendations` | Bridge-mode candidates with evidence and risk notes. |
 | `statsfm_record_feedback` | `record_feedback` | Local-only taste verdicts; it never contacts stats.fm. |
 
+`statsfm_record_feedback` defaults to `action: "record"`, which requires `subject_type`, `subject`, and `rating`; `action: "list"` returns the current process-local entries. It accepts no `user_id` or `statsfm_user` because it never makes a network call. For example:
+
+```json
+{ "tool": "statsfm_record_feedback", "action": "record", "subject_type": "track", "subject": "Anchor Song", "rating": "love" }
+```
+
+Use the registered `record_feedback` alias for the same call. Entries survive neither a server restart nor a move to another process; they are not uploaded to stats.fm.
+
 ## Ranges
 
-The endpoint top-list tools accept the named range values **`weeks`**, **`months`**, and **`lifetime`** (the values are lowercase and these schemas default to `lifetime`). The taste-intelligence tools and taste composites use **`week`**, **`month`**, and **`lifetime`** (also defaulting to `lifetime`). Do not interchange the singular and plural spellings.
+The endpoint top-list tools accept the named range values **`weeks`**, **`months`**, and **`lifetime`** (lowercase, defaulting to `lifetime`). Taste-intelligence tools and taste composites accept **`week`**, **`month`**, and **`lifetime`** only where their schemas include `range`; many taste tools instead use fixed windows or no range argument. Do not interchange the singular and plural spellings.
 
 - `lifetime` needs a completed history import; without it, lifetime results are limited to the imported window.
 - `week`/`month` and `weeks`/`months` reflect current rotation. Compare a short window against `lifetime` to separate phases from identity.
@@ -97,11 +105,11 @@ The endpoint top-list tools accept the named range values **`weeks`**, **`months
 
 ## Gotchas
 
-- **Lifetime lies before import.** A new account with no history import can return near-empty lifetime results. Check `statsfm_streams_stats` first.
+- **Lifetime lies before import.** A new account with no history import can return near-empty lifetime results. `statsfm_streams_stats` can confirm that aggregate history is present, but it cannot establish import completeness.
 - **stats.fm ≠ Spotify counts.** Totals come from stats.fm's stream log, not Spotify's API — expect mismatches against `listening_report` or Spotify Wrapped. Different counters, different windows.
 - **Genres are stats.fm's own taxonomy.** `statsfm_top_genres` labels come from stats.fm, not Spotify. Use them as search seeds, not Spotify genre IDs.
 - **Clock buckets are UTC in the taste tools.** Exact-hour claims depend on the timestamps returned by stats.fm.
-- **Identity is per call.** Supply `user_id` to endpoint tools and `statsfm_user` to taste tools; no stats.fm identity environment variable is read.
+- **Identity is per call.** User-scoped endpoint tools require `user_id`; network-backed taste tools require `statsfm_user`. Catalog search and entity-lookup tools need no user identity. No stats.fm identity environment variable is read.
 
 ## See also
 

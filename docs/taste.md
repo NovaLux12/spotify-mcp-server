@@ -4,7 +4,7 @@ An anonymized end-to-end run of the [flagship recipe](cookbook.md#1-taste-profil
 
 ## Tool naming
 
-The taste tools live under the `taste` toolset with canonical **`statsfm_taste_*`** names. The original **`taste_*`** names remain registered as backwards-compatible aliases pointing at the same handlers — either name works.
+The eight taste-intelligence tools live under the `taste` toolset with canonical **`statsfm_*`** names. Each has a registered legacy alias pointing to the same handler, so either name in a pair below works.
 
 | Canonical (preferred) | Legacy alias |
 |---|---|
@@ -17,21 +17,23 @@ The taste tools live under the `taste` toolset with canonical **`statsfm_taste_*
 | `statsfm_taste_recommendations` | `taste_recommendations` |
 | `statsfm_record_feedback` | `record_feedback` |
 
-The taste-intelligence schemas use the singular range values `week`, `month`, and `lifetime`; all tools require an explicit `statsfm_user` string. The separate endpoint tools use plural `weeks` and `months` and require `user_id`; see the [stats.fm tool reference](statsfm.md#ranges).
+Network-backed taste tools require an explicit `statsfm_user` string. The local-only `statsfm_record_feedback` / `record_feedback` pair is the identity-free exception: it stores entries in process memory and never contacts stats.fm. Taste schemas use the singular range values `week`, `month`, and `lifetime` where `range` is accepted. User-scoped endpoint tools use plural `weeks` and `months` and require `user_id`; see the [stats.fm tool reference](statsfm.md#ranges).
 
-> **Live-shape hardening (v1.30.0):** `statsfm_taste_profile` now resolves nested stats.fm entity names — live top payloads wrap entities (`entry.artist` / `entry.track` / `entry.album`, genre as a bare string) while older shapes were flat. Counts always worked; names could come back blank on live data. Fixed with flat backwards-compat plus live-shaped regression tests.
+`statsfm_taste_profile` with `response_format: "json"` returns raw stats.fm payloads under exactly these top-level keys: `topArtists`, `topGenres`, `topTracks`, and `recentStreams`. The server does not translate that JSON mode into the summary fields used by its concise and detailed modes.
+
+> **Live-shape handling:** concise and detailed profile modes resolve nested stats.fm entity names such as `entry.artist`, `entry.track`, and `entry.album`, while genres may be bare strings. JSON mode remains raw as described above.
 
 ## The starting point
 
-Listener A has streamed for about three years, imported fully into stats.fm (`statsfm_streams_stats` reports coverage, and `statsfm_recaps` provides a yearly view). The question: *what does A actually sound like, and can that become a playlist worth keeping?*
+Listener A has streamed for about three years and imported that history into stats.fm. `statsfm_streams_stats` summarizes the imported history, while `statsfm_recaps` provides calendar-year views. The question: *what does A actually sound like, and can that become a playlist worth keeping?*
 
-## Step 1 — check coverage
+## Step 1 — inspect aggregate history
 
 ```json
 { "tool": "statsfm_streams_stats", "user_id": "<your-statsfm-user-id>", "response_format": "json" }
 ```
 
-Result (abridged): imported streams are available, with no gaps longer than a week and the newest stream yesterday. Check `statsfm_recaps` when you need a calendar-year view. Lifetime results are trustworthy — proceed.
+The result contains aggregate stream totals, listening duration, and catalog cardinality; optionally bound it with Unix-millisecond `after` and `before` values. It does not report import coverage, stream gaps, or the newest stream. Use `statsfm_recaps` when you need a calendar-year view.
 
 ## Step 2 — pull the taste profile
 
@@ -39,18 +41,7 @@ Result (abridged): imported streams are available, with no gaps longer than a we
 { "tool": "statsfm_taste_profile", "statsfm_user": "<your-statsfm-user-id>", "range": "lifetime", "response_format": "json" }
 ```
 
-Result (abridged, anonymized):
-
-```json
-{
-  "top_genres": ["indie folk", "ambient", "alt-r&b", "jazz rap", "dream pop"],
-  "coreArtists": ["Anchor One", "Anchor Two", "Anchor Three"],
-  "dayParting": { "night": 38, "morning": 12, "afternoon": 18, "evening": 32, "peak": "night" },
-  "loyaltyVsNovelty": { "loyaltyShareTop5": 0.71, "recentNoveltyShare": 0.24 }
-}
-```
-
-The profile's clock is UTC, so use it as a listening-shape signal rather than claiming the listener's local time zone.
+With `response_format: "json"`, the raw payloads appear under `topArtists`, `topGenres`, `topTracks`, and `recentStreams`. With the default concise format, the text and structured summary derive core artists, genres, loyalty versus novelty, and UTC day-parting from those upstream lists. The profile clock is UTC, so use it as a listening-shape signal rather than claiming the listener's local time zone.
 
 ## Step 3 — find the momentum
 
@@ -92,9 +83,9 @@ Discovery candidates get cross-checked against lifetime tops — anything alread
 
 ## What this proves
 
-- stats.fm supplies the **evidence** (genres, anchors, clock) Spotify's bounded top-item ranges can't.
+- stats.fm supplies the **evidence** (genres, anchors, UTC listening shape) that this flow uses.
 - Spotify supplies the **action** (search, create, add, receipt).
-- Neither side leaks identity: no real artist, track, or user ID appears anywhere above — the same flow works on any account.
+- The examples contain placeholders and fictional names rather than real IDs, but network-backed calls necessarily send the supplied stats.fm identifier to stats.fm.
 
 ## See also
 
