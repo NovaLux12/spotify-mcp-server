@@ -339,11 +339,7 @@ export function registerAnalyticsTools(server: McpServer, client: SpotifyClient)
       ranges.forEach((tr, idx) => {
         results[tr] = (pages[idx]?.items ?? []).map((a, i) => ({
           id: a.id,
-<<<<<<< HEAD
-          name: a.name ?? a.id,
-=======
           name: a.name,
->>>>>>> fix/v4-analytics
           rank: i + 1,
         }));
       });
