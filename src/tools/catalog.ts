@@ -1132,7 +1132,7 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
   // ----- browse_category_deepdive (rank 59 / #317) -----
   server.tool(
     'browse_category_deepdive',
-    'Category → playlists → optional items peek in one call (GET /browse/categories/{id} + /playlists (+ /playlists/{id}/tracks peek)). Quota: 🟡 2–3 calls.',
+    'Category → playlists → optional items peek in one call (GET /browse/categories/{id} + /playlists (+ /playlists/{id}/items peek)). Quota: 🟡 2–3 calls.',
     {
       category_id: z.string().min(1).describe('Category ID from get_categories'),
       country: MARKET_CODE.optional().describe('ISO 3166-1 alpha-2 country code, e.g. \'US\''),
@@ -1152,18 +1152,32 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
       if (args.limit !== undefined) plParams.limit = String(args.limit);
       const plData = await client.get<{ playlists: SpotifyPaged<SpotifyAlbumItem & { owner?: { display_name?: string; id?: string } }> }>(`/browse/categories/${encodeURIComponent(args.category_id as string)}/playlists`, plParams);
       const playlists = plData?.playlists;
-      let peek: unknown[] | null = null;
+      let peek: Array<Record<string, unknown>> | null = null;
+      // A peek that could not be read is unknown, not empty: report the
+      // failure instead of collapsing it into "this playlist has no rows" (#773).
+      let peekError: string | null = null;
       if (args.peek_items && playlists?.items?.length) {
         const first = playlists.items[0] as { id?: string };
         if (first?.id) {
           try {
-            const itemsData = await client.get<{ items: unknown[] }>(`/playlists/${encodeURIComponent(first.id)}/tracks`, { limit: '2' });
-            peek = itemsData?.items ?? null;
-          } catch { peek = null; }
+            // /playlists/{id}/items returns { added_at, item } rows; the
+            // legacy /tracks path is gone. Read every row shape defensively.
+            const itemsData = await client.get<{ items?: unknown[] }>(
+              `/playlists/${encodeURIComponent(first.id)}/items`,
+              { limit: '2', additional_types: 'track' },
+            );
+            peek = (itemsData?.items ?? []).map((it) => {
+              const row = (it ?? {}) as Record<string, unknown>;
+              return (row.item ?? row.track ?? row) as Record<string, unknown>;
+            });
+          } catch (err) {
+            peek = null;
+            peekError = err instanceof Error ? err.message : String(err);
+          }
         }
       }
       if (args.response_format === 'json') {
-        const raw: Record<string, unknown> = { category, playlists, peek };
+        const raw: Record<string, unknown> = { category, playlists, peek, peek_error: peekError };
         return { content: [{ type: 'text', text: JSON.stringify(raw) }], structuredContent: raw };
       }
       const cap = resolveMaxResults(args.max_results as number | undefined);
@@ -1176,15 +1190,16 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
           lines.push(`  \u2022 "${o.name as string}" | URI: ${o.uri as string}`);
         });
         if (trunc.footer) lines.push(`  (${trunc.footer})`);
-        if (peek?.length) {
+        if (peekError) {
+          lines.push(`  (preview unavailable: ${peekError})`);
+        } else if (peek?.length) {
           lines.push('', 'Peek (first playlist, 2 tracks):');
-          (peek as Array<Record<string, unknown>>).slice(0, 2).forEach((it) => {
-            const track = (it.track ?? it) as Record<string, unknown>;
+          peek.slice(0, 2).forEach((track) => {
             lines.push(`  - "${(track.name as string) ?? 'unknown'}" | URI: ${(track.uri as string) ?? ''}`);
           });
         }
       }
-      return { content: [{ type: 'text', text: lines.join('\n') }], structuredContent: { category, playlists, peek } };
+      return { content: [{ type: 'text', text: lines.join('\n') }], structuredContent: { category, playlists, peek, peek_error: peekError } };
     },
   );
 

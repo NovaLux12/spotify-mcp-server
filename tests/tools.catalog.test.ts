@@ -1376,6 +1376,72 @@ test('browse_category_deepdive fetches category + playlists', async () => {
   assert.equal(calls.length, 2);
 });
 
+// The peek reads /playlists/{id}/items, whose rows are { added_at, item }.
+// #773: the legacy /tracks path returned plain track rows, so the peek
+// rendered a table of `unknown` for every row.
+test('browse_category_deepdive peek reads /playlists/{id}/items rows', async () => {
+  const { registered, calls } = makeHarness(registerCatalogTools, {
+    getResponse: (p) => {
+      if (p === '/browse/categories/mood') return { id: 'mood', name: 'Mood', href: 'h', icons: [] };
+      if (p === '/browse/categories/mood/playlists') return { playlists: { items: [{ id: 'pl1', name: 'Chill Hits', uri: 'spotify:playlist:pl1' }], total: 1 } };
+      if (p === '/playlists/pl1/items') {
+        return {
+          items: [
+            { added_at: '2026-01-01T00:00:00Z', item: { id: 'trkA', name: 'Sunset Drive', uri: 'spotify:track:trkA', type: 'track' } },
+            { added_at: '2026-01-01T00:00:00Z', item: { id: 'trkB', name: 'Night Bus', uri: 'spotify:track:trkB', type: 'track' } },
+          ],
+          total: 2,
+        };
+      }
+      return undefined;
+    },
+  });
+  const result = await invoke(findTool(registered, 'browse_category_deepdive'), { category_id: 'mood', peek_items: true });
+  const out = text(result);
+  assert.match(out, /Sunset Drive/);
+  assert.match(out, /spotify:track:trkA/);
+  assert.match(out, /Night Bus/);
+  assert.ok(!/unknown/.test(out), `peek rendered unknown rows: ${out}`);
+  assert.equal(result.structuredContent?.peek_error, null);
+  const peekCall = calls.find((c) => c.path === '/playlists/pl1/items');
+  assert.ok(peekCall, `expected a peek on /playlists/pl1/items, saw ${JSON.stringify(calls)}`);
+  assert.equal(peekCall?.params?.additional_types, 'track');
+});
+
+// A peek that could not be read is unknown, not an empty playlist.
+test('browse_category_deepdive reports peek_error instead of an empty peek', async () => {
+  const { registered } = makeHarness(registerCatalogTools, {
+    getResponse: (p) => {
+      if (p === '/browse/categories/mood') return { id: 'mood', name: 'Mood', href: 'h', icons: [] };
+      if (p === '/browse/categories/mood/playlists') return { playlists: { items: [{ id: 'pl1', name: 'Chill Hits', uri: 'spotify:playlist:pl1' }], total: 1 } };
+      return undefined;
+    },
+    getError: (p) => (p === '/playlists/pl1/items' ? new SpotifyApiError(403, 'Forbidden') : undefined),
+  });
+  const result = await invoke(findTool(registered, 'browse_category_deepdive'), { category_id: 'mood', peek_items: true });
+  const out = text(result);
+  assert.equal(result.structuredContent?.peek, null);
+  assert.equal(typeof result.structuredContent?.peek_error, 'string');
+  assert.match(String(result.structuredContent?.peek_error), /Forbidden/);
+  assert.match(out, /preview unavailable/);
+  assert.ok(!/Peek \(first playlist/.test(out), `failed peek must not read as a populated peek: ${out}`);
+});
+
+test('browse_category_deepdive peek_error is present in json mode', async () => {
+  const { registered } = makeHarness(registerCatalogTools, {
+    getResponse: (p) => {
+      if (p === '/browse/categories/mood') return { id: 'mood', name: 'Mood', href: 'h', icons: [] };
+      if (p === '/browse/categories/mood/playlists') return { playlists: { items: [{ id: 'pl1', name: 'Chill Hits', uri: 'spotify:playlist:pl1' }], total: 1 } };
+      return undefined;
+    },
+    getError: (p) => (p === '/playlists/pl1/items' ? new SpotifyApiError(500, 'boom') : undefined),
+  });
+  const result = await invoke(findTool(registered, 'browse_category_deepdive'), { category_id: 'mood', peek_items: true, response_format: 'json' });
+  const parsed = JSON.parse(text(result)) as Record<string, unknown>;
+  assert.ok('peek_error' in parsed, 'json payload must carry peek_error');
+  assert.match(String(parsed.peek_error), /boom/);
+});
+
 test('show_episode_search filters by query', async () => {
   const { registered } = makeHarness(registerCatalogTools, { getResponse: (p) => (p === '/shows/shw1/episodes' ? { items: [episodeSimpleFixture({ id: 'ep1', name: 'AMA with Jack', description: 'ask me anything' }), episodeSimpleFixture({ id: 'ep2', name: 'Other', description: 'nothing' })], total: 2 } : undefined) });
   const out = text(await invoke(findTool(registered, 'show_episode_search'), { show_id: 'shw1', query: 'AMA' }));
