@@ -9,6 +9,33 @@ import type {
 } from '../types/spotify.js';
 import { ResponseFormat, MaxResults, resolveMaxResults } from '../shaping.js';
 import type { ResponseFormatValue } from '../shaping.js';
+import { truthyEnv } from '../config.js';
+
+// ---------------------------------------------------------------------------
+// Derived listening analytics opt-in (issue #695, Policy Sec. III.13)
+//
+// Spotify's Developer Policy forbids using Spotify Content to build "new or
+// derived listenership metrics … or profiles of users". The analytics family
+// derives exactly that — discovery ratios, era histograms, hour-of-day
+// buckets — so it is registered only when the operator explicitly opts in.
+// Unset (the default) means those tools are absent from tools/list entirely
+// and listening_report computes no derived field; see docs/compliance.md.
+
+/** Env var that opts in to derived listening analytics. Default: off. */
+export const ANALYTICS_OPT_IN_ENV = 'SPOTIFY_MCP_EXPERIMENTAL_ANALYTICS';
+
+/**
+ * Whether derived listening analytics are enabled. Read once per registration
+ * (a server's env is fixed for its lifetime) so every tool in a registry
+ * advertises the same surface it computes.
+ */
+export function analyticsOptIn(env: NodeJS.ProcessEnv = process.env): boolean {
+  return truthyEnv(env[ANALYTICS_OPT_IN_ENV]);
+}
+
+/** One-line provenance note appended to every analytics tool description. */
+export const LOCAL_METRICS_DISCLAIMER =
+  ' Metrics are computed locally from your own account data; not derived from third-party listening data.';
 
 // ---------------------------------------------------------------------------
 // Listening report (issue #97)
@@ -55,17 +82,22 @@ export interface ListeningReport {
     top_tracks_short_term: number;
     top_artists_time_range: number;
     top_artists_short_term: number;
-    recently_played: number | null; // null when include_recent=false
+    // null when include_recent=false, and always null when the derived
+    // analytics opt-in is off (the walk is never issued then)
+    recently_played: number | null;
     recent_pages_walked: number;
   };
   rising: Array<{ id: string; name: string; artists: string }>;
   constant: Array<{ id: string; name: string; artists: string }>;
   fading: Array<{ id: string; name: string; artists: string }>;
-  era_histogram: Record<string, number>;
-  discovery_ratio: number;
-  discovery_counts: { new_in_short: number; short_total: number };
-  repeat_overlap_count: number | null; // null when include_recent=false
-  hour_buckets: Record<string, number> | null; // null when include_recent=false
+  // The five fields below are the derived metrics. They are null (never zero,
+  // never an empty object) when the opt-in is off, so a consumer can tell
+  // "not computed because it is gated" apart from "computed, and empty".
+  era_histogram: Record<string, number> | null;
+  discovery_ratio: number | null;
+  discovery_counts: { new_in_short: number; short_total: number } | null;
+  repeat_overlap_count: number | null; // null when include_recent=false or gated
+  hour_buckets: Record<string, number> | null; // null when include_recent=false or gated
 }
 
 /** Decade bucket for an album release_date ("YYYY…" ISO form), or "unknown". */
@@ -143,13 +175,14 @@ async function walkRecentlyPlayed(
 function buildReport(args: {
   time_range: 'short_term' | 'medium_term' | 'long_term';
   include_recent: boolean;
+  derived: boolean;
   trTracks: AnalyticsTrack[];
   stTracks: AnalyticsTrack[];
   recent: RecentlyPlayedItem[] | null;
   recentPages: number;
   artistCounts: { tr: number; st: number };
 }): ListeningReport {
-  const { time_range, include_recent, trTracks, stTracks, recent, recentPages, artistCounts } =
+  const { time_range, include_recent, derived, trTracks, stTracks, recent, recentPages, artistCounts } =
     args;
 
   const trIds = new Set(trTracks.map((t) => t.id));
@@ -159,29 +192,40 @@ function buildReport(args: {
   const constant = stTracks.filter((t) => trIds.has(t.id)).map(trackRow);
   const fading = trTracks.filter((t) => !stIds.has(t.id)).map(trackRow);
 
-  // Era histogram across the requested window's tracks.
-  const era_histogram: Record<string, number> = {};
-  for (const t of trTracks) {
-    const decade = decadeOf(t.album?.release_date);
-    era_histogram[decade] = (era_histogram[decade] ?? 0) + 1;
-  }
-
-  const shortTotal = stTracks.length;
-  const newInShort = rising.length;
-  const discovery_ratio =
-    shortTotal === 0 ? 0 : Math.round((newInShort / shortTotal) * 1000) / 1000;
-
+  // Every field below this line is a derived metric, so all of them are
+  // produced only when the opt-in is on. Off means null — not zero and not an
+  // empty object, which would both read as a real measurement of an empty or
+  // uninteresting history (#695).
+  let era_histogram: Record<string, number> | null = null;
+  let discovery_ratio: number | null = null;
+  let discovery_counts: { new_in_short: number; short_total: number } | null = null;
   let repeat_overlap_count: number | null = null;
   let hour_buckets: Record<string, number> | null = null;
-  if (include_recent && recent) {
-    const recentTrackIds = new Set(recent.map((r) => r.track.id));
-    // UNIQUE top-track IDs across either window that show up in history.
-    const topIds = new Set([...trIds, ...stIds]);
-    repeat_overlap_count = [...topIds].filter((id) => recentTrackIds.has(id)).length;
-    hour_buckets = {};
-    for (const r of recent) {
-      const bucket = hourBucketOf(r.played_at);
-      hour_buckets[bucket] = (hour_buckets[bucket] ?? 0) + 1;
+
+  if (derived) {
+    // Era histogram across the requested window's tracks.
+    era_histogram = {};
+    for (const t of trTracks) {
+      const decade = decadeOf(t.album?.release_date);
+      era_histogram[decade] = (era_histogram[decade] ?? 0) + 1;
+    }
+
+    const shortTotal = stTracks.length;
+    const newInShort = rising.length;
+    discovery_ratio =
+      shortTotal === 0 ? 0 : Math.round((newInShort / shortTotal) * 1000) / 1000;
+    discovery_counts = { new_in_short: newInShort, short_total: shortTotal };
+
+    if (include_recent && recent) {
+      const recentTrackIds = new Set(recent.map((r) => r.track.id));
+      // UNIQUE top-track IDs across either window that show up in history.
+      const topIds = new Set([...trIds, ...stIds]);
+      repeat_overlap_count = [...topIds].filter((id) => recentTrackIds.has(id)).length;
+      hour_buckets = {};
+      for (const r of recent) {
+        const bucket = hourBucketOf(r.played_at);
+        hour_buckets[bucket] = (hour_buckets[bucket] ?? 0) + 1;
+      }
     }
   }
 
@@ -200,13 +244,13 @@ function buildReport(args: {
     fading,
     era_histogram,
     discovery_ratio,
-    discovery_counts: { new_in_short: newInShort, short_total: shortTotal },
+    discovery_counts,
     repeat_overlap_count,
     hour_buckets,
   };
 }
 
-function proseDigest(report: ListeningReport, maxNames: number): string {
+function proseDigest(report: ListeningReport, maxNames: number, derived: boolean): string {
   const lines: string[] = [];
   lines.push(`Listening report (${report.time_range} vs short_term):`);
   lines.push(
@@ -222,7 +266,10 @@ function proseDigest(report: ListeningReport, maxNames: number): string {
 
   lines.push(
     `Rising: ${report.rising.length} | Constant: ${report.constant.length} | ` +
-      `Fading: ${report.fading.length} | Discovery ratio: ${report.discovery_ratio}`,
+      `Fading: ${report.fading.length}` +
+      // The ratio is advertised only when it is computed, so the prose can
+      // never claim a metric the gated payload left null.
+      (derived ? ` | Discovery ratio: ${report.discovery_ratio}` : ''),
   );
   const namedLists = [
     ['Rising', report.rising],
@@ -239,7 +286,7 @@ function proseDigest(report: ListeningReport, maxNames: number): string {
     }
   }
 
-  const eras = Object.entries(report.era_histogram);
+  const eras = Object.entries(report.era_histogram ?? {});
   if (eras.length > 0) {
     lines.push(`Eras: ${eras.map(([decade, n]) => `${decade}×${n}`).join(', ')}`);
   }
@@ -257,6 +304,10 @@ function proseDigest(report: ListeningReport, maxNames: number): string {
     if (buckets.length > 0) {
       lines.push(`Hours: ${buckets.map(([b, n]) => `${b}×${n}`).join(', ')}`);
     }
+  } else if (!derived) {
+    lines.push(
+      `Derived metrics (era histogram, discovery ratio, recently-played overlap, hour buckets) are not computed: set ${ANALYTICS_OPT_IN_ENV}=1 to enable them.`,
+    );
   } else {
     lines.push('Recently played skipped (include_recent=false).');
   }
@@ -278,6 +329,12 @@ function shapeResult(rf: ResponseFormatValue, prose: string, payload: ListeningR
 }
 
 export function registerAnalyticsTools(server: McpServer, client: SpotifyClient): void {
+  // Read once: the derived fields this module can compute (era histogram,
+  // discovery ratio, repeat overlap, hour buckets) are gated behind an
+  // explicit opt-in, and the description below advertises exactly the fields
+  // the handler goes on to compute (#695).
+  const derived = analyticsOptIn();
+
   // listening_streaks — consecutive-day streaks from recently-played
   server.tool(
     'listening_streaks',
@@ -420,21 +477,27 @@ export function registerAnalyticsTools(server: McpServer, client: SpotifyClient)
 
   server.tool(
     'listening_report',
-    'Aggregate listening report: compares your top tracks between two time windows (rising / constant / fading), plus era histogram, discovery ratio, repeat overlap with recently played, and hour-of-day buckets',
+    (derived
+      ? 'Aggregate listening report: compares your top tracks between two time windows (rising / constant / fading), plus era histogram, discovery ratio, repeat overlap with recently played, and hour-of-day buckets'
+      : `Aggregate listening report: compares your top tracks between two time windows (rising / constant / fading). Derived metrics (era histogram, discovery ratio, repeat overlap, hour-of-day buckets) are gated: set ${ANALYTICS_OPT_IN_ENV}=1 for them`) + LOCAL_METRICS_DISCLAIMER,
     {
       time_range: timeRangeSchema,
       include_recent: z
         .boolean()
         .optional()
         .describe(
-          'Include recently-played analysis (repeat overlap + hour buckets). Default: true',
+          derived
+            ? 'Include recently-played analysis (repeat overlap + hour buckets). Default: true'
+            : `Ignored unless ${ANALYTICS_OPT_IN_ENV}=1, which is when no recently-played call is made. Default: true`,
         ),
       response_format: ResponseFormat,
       max_results: MaxResults,
     },
     async (args) => {
       const time_range = args.time_range ?? 'medium_term';
-      const include_recent = args.include_recent ?? true;
+      // Gated off ⇒ the walk is never issued, so the caller's opt-in cannot
+      // buy a derived metric (or its quota cost) the server will not compute.
+      const include_recent = (args.include_recent ?? true) && derived;
       const rf: ResponseFormatValue = args.response_format ?? 'concise';
       const topParams = { limit: String(TOP_LIMIT) };
 
@@ -472,6 +535,7 @@ export function registerAnalyticsTools(server: McpServer, client: SpotifyClient)
 
       const payload = buildReport({
         time_range,
+        derived,
         include_recent,
         trTracks,
         stTracks,
@@ -484,7 +548,7 @@ export function registerAnalyticsTools(server: McpServer, client: SpotifyClient)
       });
 
       const maxNames = resolveMaxResults(args.max_results);
-      return shapeResult(rf, proseDigest(payload, maxNames), payload);
+      return shapeResult(rf, proseDigest(payload, maxNames, derived), payload);
     },
   );
 }

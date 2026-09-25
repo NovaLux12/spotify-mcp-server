@@ -18,6 +18,13 @@ import {
 } from '../src/tools/analytics.js';
 import { registerSwarm3AnalyticsTools } from '../src/tools/swarm3_analytics.js';
 
+/**
+ * Spelled out rather than imported: the opt-in's env-var name IS the public
+ * contract of #695, and importing it from the registrar would let a rename
+ * silently keep both the implementation and its tests agreeing.
+ */
+const ANALYTICS_OPT_IN_ENV = 'SPOTIFY_MCP_EXPERIMENTAL_ANALYTICS';
+
 // ---------------------------------------------------------------------------
 // Stub plumbing
 // ---------------------------------------------------------------------------
@@ -47,9 +54,15 @@ const payloadOf = (out: {
   structuredContent?: Record<string, unknown>;
 }): ReportPayload => out.structuredContent as unknown as ReportPayload; // same module owns both shapes
 
-function harness(responder: Responder = () => null) {
+/**
+ * Register the analytics module with the derived-analytics opt-in in a known
+ * state. Default is opted in so the pre-existing expectations describe the
+ * enabled surface; pass `{ analyticsOptIn: false }` for the default surface.
+ */
+function harness(responder: Responder = () => null, options: { analyticsOptIn?: boolean } = {}) {
   const registered: Array<{
     name: string;
+    description: string;
     validate: (args: Record<string, unknown>) => Record<string, unknown>;
     handler: (
       args: Record<string, unknown>,
@@ -61,7 +74,7 @@ function harness(responder: Responder = () => null) {
   const fakeServer = {
     tool(
       name: string,
-      _description: string,
+      description: string,
       schema: z.ZodRawShape,
       handler: (args: Record<string, unknown>) => Promise<{
         content: Array<{ type: string; text: string }>;
@@ -70,6 +83,7 @@ function harness(responder: Responder = () => null) {
     ) {
       registered.push({
         name,
+        description,
         validate: (args) => z.object(schema).parse(args),
         handler,
       });
@@ -83,7 +97,16 @@ function harness(responder: Responder = () => null) {
       return responder(path, params) as T | null;
     },
   };
-  registerAnalyticsTools(fakeServer, client as unknown as SpotifyClient);
+  const optIn = options.analyticsOptIn ?? true;
+  const previous = process.env[ANALYTICS_OPT_IN_ENV];
+  if (optIn) process.env[ANALYTICS_OPT_IN_ENV] = '1';
+  else delete process.env[ANALYTICS_OPT_IN_ENV];
+  try {
+    registerAnalyticsTools(fakeServer, client as unknown as SpotifyClient);
+  } finally {
+    if (previous === undefined) delete process.env[ANALYTICS_OPT_IN_ENV];
+    else process.env[ANALYTICS_OPT_IN_ENV] = previous;
+  }
 
   const invoke = async (args: Record<string, unknown> = {}) => {
     const tool = registered.find((t) => t.name === 'listening_report');
@@ -665,5 +688,74 @@ describe('listening_report empty results edge', () => {
       payload.constant.map((t) => t.id),
       ['ok-1'],
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Derived-analytics opt-in (#695)
+// ---------------------------------------------------------------------------
+
+describe('listening_report derived-analytics opt-in', () => {
+  const descriptionOf = (registered: Array<{ name: string; description: string }>) => {
+    const tool = registered.find((t) => t.name === 'listening_report');
+    assert.ok(tool, 'listening_report should be registered');
+    return tool.description;
+  };
+
+  it('computes no derived field when the opt-in is unset', async () => {
+    const { invoke } = harness(standardResponder(), { analyticsOptIn: false });
+    const out = await invoke({});
+    const payload = out.structuredContent as Record<string, unknown>;
+    assert.equal(payload.era_histogram, null);
+    assert.equal(payload.discovery_ratio, null);
+    assert.equal(payload.discovery_counts, null);
+    assert.equal(payload.repeat_overlap_count, null);
+    assert.equal(payload.hour_buckets, null);
+    // The window comparison is not a derived metric, so it still reports.
+    assert.deepEqual(
+      (payload.rising as Array<{ id: string }>).map((t) => t.id),
+      ['t-rise'],
+    );
+  });
+
+  it('issues no recently-played walk without the opt-in, even when asked for one', async () => {
+    const { calls, invoke } = harness(standardResponder(), { analyticsOptIn: false });
+    await invoke({ include_recent: true });
+    assert.equal(calls.length, 4);
+    assert.ok(calls.every((c) => c.path !== '/me/player/recently-played'));
+  });
+
+  it('advertises only the fields it computes when the opt-in is unset', async () => {
+    const { registered, invoke } = harness(standardResponder(), { analyticsOptIn: false });
+    const description = descriptionOf(registered);
+    for (const advertised of ['discovery ratio', 'era histogram', 'hour-of-day', 'repeat overlap']) {
+      // "Derived metrics (…) are gated" still names them; what must be absent
+      // is any claim that this call produces them.
+      const claimed = new RegExp(`(plus|including)[^.]*${advertised}`, 'i');
+      assert.ok(!claimed.test(description), `description must not claim it computes ${advertised}: ${description}`);
+    }
+    const out = await invoke({});
+    assert.match(textOf(out), /Derived metrics .* are not computed/);
+    assert.doesNotMatch(textOf(out), /Discovery ratio:/);
+    assert.doesNotMatch(textOf(out), /Hours:/);
+  });
+
+  it('advertises and computes the derived fields when the opt-in is set', async () => {
+    const { registered, invoke } = harness(standardResponder(), { analyticsOptIn: true });
+    const description = descriptionOf(registered);
+    for (const advertised of ['discovery ratio', 'era histogram', 'hour-of-day buckets', 'repeat overlap']) {
+      assert.ok(
+        description.toLowerCase().includes(advertised),
+        `description should advertise ${advertised}: ${description}`,
+      );
+    }
+    const out = await invoke({});
+    const payload = out.structuredContent as Record<string, unknown>;
+    assert.notEqual(payload.era_histogram, null);
+    assert.deepEqual(payload.discovery_counts, { new_in_short: 1, short_total: 3 });
+    // Rounded to three decimals, like every ratio the report emits.
+    assert.equal(payload.discovery_ratio, 0.333);
+    assert.equal(payload.repeat_overlap_count, 2);
+    assert.ok(payload.hour_buckets !== null);
   });
 });

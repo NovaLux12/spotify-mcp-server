@@ -1,7 +1,13 @@
 /**
  * swarm3 analytics slice — 500-tool swarm v1.26.0 (issue #442). Owned by ANALYTICS builder.
  *
- * All 24 tools are read-only analytics over the personalization surface:
+ * 24 tools, all read-only analytics over the personalization surface, of which
+ * 7 (discovery_ratio, listening_clock, weekday_listening_report,
+ * binge_detector_report, mood_bucket_report, listening_clock_heatmap,
+ * artist_listening_clock) are DERIVED listening metrics and are registered
+ * only when SPOTIFY_MCP_EXPERIMENTAL_ANALYTICS is set (issue #695, Policy
+ * Sec. III.13 — see docs/compliance.md). The default surface is 17 tools.
+ * Sources, for the ungated ones:
  *   • /me/player/recently-played (cursor walk — offset pagination NOT supported there)
  *   • /me/top/tracks + /me/top/artists (time_range windows)
  *   • /artists?ids=… batch (genres only, for the genre census)
@@ -36,6 +42,7 @@ import type {
   RecentlyPlayedResponse,
   SpotifyTrack,
 } from '../types/spotify.js';
+import { analyticsOptIn, LOCAL_METRICS_DISCLAIMER } from './analytics.js';
 
 type TextContent = { type: 'text'; text: string };
 interface ToolOut {
@@ -317,6 +324,12 @@ function median(nums: number[]): number {
 // ---------------------------------------------------------------------------
 
 export function registerSwarm3AnalyticsTools(server: McpServer, client: SpotifyClient): void {
+  // #695: the derived listening metrics below (discovery ratio, hour/daypart
+  // profiles, weekday profiles, binge detection) are registered only when the
+  // operator sets SPOTIFY_MCP_EXPERIMENTAL_ANALYTICS. `derivedServer` is null
+  // otherwise, so those calls are no-ops and the tools never reach tools/list.
+  const derivedServer: McpServer | null = analyticsOptIn() ? server : null;
+
   // 1. top_artist_ranking_delta — rank movement between two top-artist windows
   server.tool(
     'top_artist_ranking_delta',
@@ -593,9 +606,9 @@ export function registerSwarm3AnalyticsTools(server: McpServer, client: SpotifyC
   );
 
   // 7. discovery_ratio — how much of recent history is new music vs top staples
-  server.tool(
+  derivedServer?.tool(
     'discovery_ratio',
-    'Measure what share of your recently-played tracks are NOT in your top tracks (discovery vs staple listening; default compares against medium_term). Quota: GET /me/player/recently-played + 1× GET /me/top/tracks.',
+    'Measure what share of your recently-played tracks are NOT in your top tracks (discovery vs staple listening; default compares against medium_term). Quota: GET /me/player/recently-played + 1× GET /me/top/tracks.' + LOCAL_METRICS_DISCLAIMER,
     {
       time_range: TimeRange.describe('Top-tracks window defining "known" music. Default: medium_term'),
       max_items: RecentLimit,
@@ -635,9 +648,9 @@ export function registerSwarm3AnalyticsTools(server: McpServer, client: SpotifyC
   );
 
   // 8. listening_clock — hour-of-day listening profile
-  server.tool(
+  derivedServer?.tool(
     'listening_clock',
-    'Profile when you listen by UTC hour (24-bucket histogram plus daypart totals, peak hour and quietest hour) from recently-played history (default 150 items); hour buckets come from the UTC clock of played_at, the same frame as the day-scoped metrics, so they agree with them in any host time zone. quietest_hour is set only when a single hour holds the fewest plays; when several tie, it is null and quietest_tied_hours lists them in ascending order, because a thin history cannot identify a quietest hour. Quota: GET /me/player/recently-played cursor walk.',
+    'Profile when you listen by UTC hour (24-bucket histogram plus daypart totals, peak hour and quietest hour) from recently-played history (default 150 items); hour buckets come from the UTC clock of played_at, the same frame as the day-scoped metrics, so they agree with them in any host time zone. quietest_hour is set only when a single hour holds the fewest plays; when several tie, it is null and quietest_tied_hours lists them in ascending order, because a thin history cannot identify a quietest hour. Quota: GET /me/player/recently-played cursor walk.' + LOCAL_METRICS_DISCLAIMER,
     {
       max_items: RecentLimit,
       response_format: ResponseFormat,
@@ -685,9 +698,9 @@ export function registerSwarm3AnalyticsTools(server: McpServer, client: SpotifyC
   );
 
   // 9. weekday_listening_report — plays + uniqueness per weekday
-  server.tool(
+  derivedServer?.tool(
     'weekday_listening_report',
-    'Break recently-played history down by UTC weekday (plays, unique tracks, unique artists, busiest day; Mon→Sun ordering, default 150 items). Quota: GET /me/player/recently-played cursor walk.',
+    'Break recently-played history down by UTC weekday (plays, unique tracks, unique artists, busiest day; Mon→Sun ordering, default 150 items). Quota: GET /me/player/recently-played cursor walk.' + LOCAL_METRICS_DISCLAIMER,
     {
       max_items: RecentLimit,
       response_format: ResponseFormat,
@@ -718,9 +731,9 @@ export function registerSwarm3AnalyticsTools(server: McpServer, client: SpotifyC
   );
 
   // 10. binge_detector_report — artists played far beyond normal in the window
-  server.tool(
+  derivedServer?.tool(
     'binge_detector_report',
-    'Flag artists whose recently-played counts exceed a play threshold (default ≥5 plays) with span and track coverage, sorted by intensity. Quota: GET /me/player/recently-played cursor walk.',
+    'Flag artists whose recently-played counts exceed a play threshold (default ≥5 plays) with span and track coverage, sorted by intensity. Quota: GET /me/player/recently-played cursor walk.' + LOCAL_METRICS_DISCLAIMER,
     {
       threshold: z.coerce.number().int().positive().max(50).optional().default(5).describe('Minimum plays per artist to count as a binge (default 5).'),
       max_items: RecentLimit,
@@ -902,9 +915,9 @@ export function registerSwarm3AnalyticsTools(server: McpServer, client: SpotifyC
   );
 
   // 14. mood_bucket_report — daypart × familiarity listening buckets
-  server.tool(
+  derivedServer?.tool(
     'mood_bucket_report',
-    'Segment recently-played plays into UTC daypart × familiarity buckets (fresh tracks vs staples from your top tracks, default medium_term) as a lightweight listening-mood proxy. Quota: GET /me/player/recently-played + 1× GET /me/top/tracks.',
+    'Segment recently-played plays into UTC daypart × familiarity buckets (fresh tracks vs staples from your top tracks, default medium_term) as a lightweight listening-mood proxy. Quota: GET /me/player/recently-played + 1× GET /me/top/tracks.' + LOCAL_METRICS_DISCLAIMER,
     {
       time_range: TimeRange.describe('Top-tracks window defining "staple" music. Default: medium_term'),
       max_items: RecentLimit,
@@ -991,9 +1004,9 @@ export function registerSwarm3AnalyticsTools(server: McpServer, client: SpotifyC
   );
 
   // 16. listening_clock_heatmap — weekday × hour matrix
-  server.tool(
+  derivedServer?.tool(
     'listening_clock_heatmap',
-    'Render a UTC weekday × UTC hour listening heatmap from recently-played history with the peak cell highlighted (default 150 items). Quota: GET /me/player/recently-played cursor walk.',
+    'Render a UTC weekday × UTC hour listening heatmap from recently-played history with the peak cell highlighted (default 150 items). Quota: GET /me/player/recently-played cursor walk.' + LOCAL_METRICS_DISCLAIMER,
     {
       max_items: RecentLimit,
       response_format: ResponseFormat,
@@ -1031,9 +1044,9 @@ export function registerSwarm3AnalyticsTools(server: McpServer, client: SpotifyC
   );
 
   // 17. artist_listening_clock — one artist's hour-of-day profile
-  server.tool(
+  derivedServer?.tool(
     'artist_listening_clock',
-    'Profile WHEN you play one specific artist (UTC hour-of-day histogram plus UTC daypart split; defaults to your most-played artist in the history window). Quota: GET /me/player/recently-played cursor walk.',
+    'Profile WHEN you play one specific artist (UTC hour-of-day histogram plus UTC daypart split; defaults to your most-played artist in the history window). Quota: GET /me/player/recently-played cursor walk.' + LOCAL_METRICS_DISCLAIMER,
     {
       artist: spotifyId('artist').optional().describe('Artist ID/URI/URL. Omit to use the most-played artist in the history window.'),
       max_items: RecentLimit,
