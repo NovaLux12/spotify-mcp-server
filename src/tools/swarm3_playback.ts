@@ -109,6 +109,11 @@ async function fetchPlaybackState(client: SpotifyClient): Promise<PlaybackState 
   return client.get<PlaybackState>('/me/player');
 }
 
+// Playlist rows carry the playable under `item` since the Feb 2026 rename;
+// `track` is the deprecated alias, still accepted so either projection works.
+type PlaylistItemRow = { item?: { uri?: string } | null; track?: { uri?: string } | null };
+
+
 async function fetchDevices(client: SpotifyClient): Promise<SpotifyDevice[]> {
   const res = await client.get<GetDevicesResponse>('/me/player/devices');
   return res?.devices ?? [];
@@ -862,11 +867,11 @@ export function registerSwarm3PlaybackTools(server: McpServer, client: SpotifyCl
       try {
         if (ctx.type === 'playlist' && ctx.uri) {
           const pid = ctx.uri.split(':').pop() ?? '';
-          const page = await client.get<{ items?: Array<{ track?: { uri?: string } | null }> }>(
+          const page = await client.get<{ items?: PlaylistItemRow[] }>(
             `/playlists/${encodeURIComponent(pid)}/items`,
             { limit: String(Math.min(100, cap)) },
           );
-          let items = (page?.items ?? []).map((r) => r.track?.uri ?? '').filter(Boolean);
+          let items = (page?.items ?? []).map((r) => r?.item?.uri ?? r?.track?.uri ?? '').filter(Boolean);
           let offset = 0;
           // Walk pages (offset-based) until the track is found or the cap is hit.
           while (positionInContext === null && items.length > 0 && offset < cap) {
@@ -876,11 +881,11 @@ export function registerSwarm3PlaybackTools(server: McpServer, client: SpotifyCl
               break;
             }
             offset += items.length;
-            const next = await client.get<{ items?: Array<{ track?: { uri?: string } | null }> }>(
+            const next = await client.get<{ items?: PlaylistItemRow[] }>(
               `/playlists/${encodeURIComponent(pid)}/items`,
               { limit: String(Math.min(100, cap)), offset: String(offset) },
             );
-            items = (next?.items ?? []).map((r) => r.track?.uri ?? '').filter(Boolean);
+            items = (next?.items ?? []).map((r) => r?.item?.uri ?? r?.track?.uri ?? '').filter(Boolean);
             if (items.length === 0) break;
           }
         } else if (ctx.type === 'album' && ctx.uri) {
