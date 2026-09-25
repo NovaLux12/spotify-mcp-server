@@ -309,6 +309,17 @@ describe('import_from_sidecar (#637 validation + executed reporting)',()=>{
     );
   });
 
+  it('sends nothing at all when every row is malformed',async()=>{
+    await withSidecar({ tracks: rows('track',0), albums:[{uri:'junk'},{uri:''}] }, async (p)=>{
+      const {responder}=libraryStub();
+      const h=harness(responder);
+      const out=await h.invoke('import_from_sidecar',{ input_path:p, dry_run:false });
+      assert.equal(h.client.calls.length,0,'a fully malformed sidecar must not reach the API');
+      assert.equal(out.structuredContent!.invalid,2);
+      assert.equal(out.structuredContent!.added,0);
+    });
+  });
+
   it('never says "would be added" once the writes have run',async()=>{
     await withSidecar({ tracks: rows('track',3) }, async (p)=>{
       const {responder}=libraryStub();
