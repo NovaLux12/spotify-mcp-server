@@ -88,14 +88,14 @@ describe('find_duplicate_playlists dry_run + quota', () => {
     const out = await h.invoke('find_duplicate_playlists', { max_playlists: 3 });
     const sc = out.structuredContent as {
       groups: Array<{ type: string; playlists: Array<{ id: string }> }>;
-      failed: number;
+      failed_count: number;
       unreadable: Array<{ id: string; error: string }>;
       empty_playlists: Array<{ id: string }>;
     };
     // A failed fetch is not an empty playlist: it must not group with the two
     // real empty ones, and it must not be silently dropped either.
     assert.equal(sc.groups.length, 0);
-    assert.equal(sc.failed, 1);
+    assert.equal(sc.failed_count, 1);
     assert.deepEqual(sc.unreadable.map((u) => u.id), ['plForbidden']);
     assert.match(sc.unreadable[0].error, /Insufficient client scope/);
     assert.deepEqual(sc.empty_playlists.map((p) => p.id), ['plEmpty1', 'plEmpty2']);

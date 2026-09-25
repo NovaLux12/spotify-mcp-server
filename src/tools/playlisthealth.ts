@@ -453,7 +453,7 @@ export function registerPlaylistHealthTools(server: McpServer, client: SpotifyCl
       for(const g of groups) lines.push(`  ${g.type} overlap=${g.overlap} shared=${g.shared}/${g.union}: ${g.playlists.map(p=>'"'+p.name+'" ('+p.id+')').join(' ↔ ')}`);
       for(const f of failed) lines.push(`  unreadable: "${f.name}" (${f.id}) — ${f.error}`);
       if (empties.length > 0) lines.push(`  empty, not compared: ${empties.map(p=>'"'+p.name+'" ('+p.id+')').join(', ')}`);
-      return textResult(lines.join('\n'), { ok:true, scanned: sets.length + failed.length, compared: comparable.length, failed: failed.length, unreadable: failed, empty_playlists: empties.map((p) => ({ id: p.id, name: p.name })), requested: playlists.length, total_playlists: all.length, truncated, threshold, groups, ...(quotaHit ? { quota_hit: true, quota_at_playlist: quotaAtPlaylist, retry_after: quotaRetryAfter } : {}) });
+      return textResult(lines.join('\n'), { ok:true, scanned: sets.length + failed.length, compared: comparable.length, failed_count: failed.length, unreadable: failed, empty_playlists: empties.map((p) => ({ id: p.id, name: p.name })), requested: playlists.length, total_playlists: all.length, truncated, threshold, groups, ...(quotaHit ? { quota_hit: true, quota_at_playlist: quotaAtPlaylist, retry_after: quotaRetryAfter } : {}) });
     },
   );
 
