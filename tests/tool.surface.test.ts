@@ -21,13 +21,27 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { join } from 'node:path';
-import { NEVER_MUTATING_PLANS } from '../src/tools/annotations.js';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import {
+  AGGREGATE_SURFACE_LIMITS,
+  assertAggregateSurfaceBudget,
+  assertModuleSchemaBudgets,
+  collectAggregateSurfaceMeasurement,
+  collectModuleSchemaBudgets,
+  NEVER_MUTATING_PLANS,
+  moduleToolNames,
+  serializedSchemaBytes,
+  registerManifestModule,
+  REGISTRAR_MANIFEST,
+} from '../src/tools/annotations.js';
+import { SpotifyClient } from '../src/client.js';
 
 const REPO_ROOT = join(import.meta.dirname, '..');
 
-/** Ceilings. Raising one is a deliberate act with a measured reason. */
-const DEFAULT_MAX_TOOLS = 620;          // today 608
-const DEFAULT_MAX_BYTES = 600_000;      // baseline 567,183 + annotations (measured +27,830 B); the delta must stay < ~33 KB
+const DEFAULT_MAX_TOOLS = AGGREGATE_SURFACE_LIMITS.maxTools;
+const DEFAULT_MAX_BYTES = AGGREGATE_SURFACE_LIMITS.maxBytes;
 const PER_TOOL_MAX_BYTES = 6_000;       // worst single schema+description today
 const CORE_MAX_TOOLS = 200;             // today 157
 const CORE_MAX_BYTES = 220_000;         // today 162,592
@@ -211,5 +225,99 @@ describe('tool surface: budget', () => {
       `core preset grew to ${bytes} bytes (ceiling ${CORE_MAX_BYTES})`,
     );
     assert.ok(names.size < 608 / 2, `core must be materially smaller than the full surface (got ${names.size})`);
+  });
+
+  it('production aggregate gate fails closed on an injected overage', () => {
+    const server = new McpServer({ name: 'aggregate-audit', version: '0.0.0' });
+    for (let i = 0; i <= AGGREGATE_SURFACE_LIMITS.maxTools; i++) {
+      server.tool(`aggregate_probe_${i}`, 'probe', {}, async () => ({ content: [] }));
+    }
+    const measurement = collectAggregateSurfaceMeasurement(server);
+    assert.ok(measurement.toolCount > AGGREGATE_SURFACE_LIMITS.maxTools);
+    assert.throws(() => assertAggregateSurfaceBudget(measurement), /aggregate tool surface exceeds budget/);
+  });
+
+  it('manifest audit measures every module and enforces every ceiling', async () => {
+    const server = new McpServer({ name: 'schema-audit', version: '0.0.0' });
+    const client = new SpotifyClient();
+    const context = { readOnly: false, isModuleActive: () => true, scopeBlocked: () => false };
+    for (const module of REGISTRAR_MANIFEST) registerManifestModule(server, client, module, context);
+    const rows = collectModuleSchemaBudgets(server);
+    assert.equal(rows.length, REGISTRAR_MANIFEST.length);
+    assert.doesNotThrow(() => assertModuleSchemaBudgets(rows));
+    assert.doesNotThrow(() => assertAggregateSurfaceBudget(collectAggregateSurfaceMeasurement(server)));
+
+    const tools = new Set(Object.keys((server as unknown as { _registeredTools: Record<string, unknown> })._registeredTools));
+    assert.equal(tools.size, rows.reduce((sum, row) => sum + row.toolCount, 0), 'every tool must belong to exactly one manifest module');
+    assert.throws(
+      () => assertModuleSchemaBudgets([{ ...rows[0], schemaBytes: rows[0].maxSchemaBytes + 1, withinBudget: false }]),
+      /exceeds schema budget/,
+      'an injected over-budget module must fail the shared gate',
+    );
+  });
+
+  it('registers the exact core-first name sequence with every module once', async () => {
+    const server = new McpServer({ name: 'order-audit', version: '0.0.0' });
+    const client = new SpotifyClient();
+    const context = { readOnly: false, isModuleActive: () => true, scopeBlocked: () => false };
+    for (const module of REGISTRAR_MANIFEST) registerManifestModule(server, client, module, context);
+    const names = Object.keys((server as unknown as { _registeredTools: Record<string, unknown> })._registeredTools);
+    const coreCount = REGISTRAR_MANIFEST.slice(0, 4).reduce((sum, module) => sum + module.baseline.toolCount, 0);
+    assert.deepEqual(names.slice(0, coreCount), [
+      'search',
+      'get_track', 'get_artist', 'get_artist_albums', 'get_album', 'get_album_tracks',
+      'get_show', 'get_show_episodes', 'get_episode', 'get_me', 'get_artist_top_tracks',
+      'get_available_markets', 'get_several_tracks', 'get_several_albums', 'get_several_artists',
+      'get_several_episodes', 'get_several_shows', 'get_several_audiobooks', 'get_several_chapters',
+      'get_category', 'search_tracks', 'search_artists', 'search_albums', 'search_playlists',
+      'search_shows', 'search_episodes', 'search_audiobooks', 'catalog_batch_lookup',
+      'get_artist_singles', 'get_artist_appearances', 'market_validate', 'browse_category_deepdive',
+      'show_episode_search',
+      'get_saved_tracks', 'get_saved_albums', 'get_saved_shows', 'get_saved_episodes',
+      'save_items', 'remove_saved_items', 'check_saved_items', 'save_to_library', 'remove_from_library',
+      'get_saved_counts', 'search_saved_albums', 'search_saved_shows', 'search_saved_episodes',
+      'search_saved_audiobooks', 'check_in_library', 'search_saved_tracks',
+      'get_now_playing', 'get_currently_playing', 'play_from_search', 'play', 'pause', 'skip_next',
+      'skip_previous', 'seek', 'set_volume', 'set_shuffle', 'set_repeat', 'get_queue', 'add_to_queue',
+      'get_devices', 'transfer_playback', 'handoff',
+    ]);
+    assert.equal(new Set(names).size, names.length);
+    assert.equal(new Set(REGISTRAR_MANIFEST.map((module) => module.key)).size, REGISTRAR_MANIFEST.length);
+  });
+
+  it('manifest measurements equal tools/list over InMemoryTransport', async () => {
+    const server = new McpServer({ name: 'wire-audit', version: '0.0.0' });
+    const client = new SpotifyClient();
+    const context = { readOnly: false, isModuleActive: () => true, scopeBlocked: () => false };
+    for (const module of REGISTRAR_MANIFEST) registerManifestModule(server, client, module, context);
+    const mcpClient = new Client({ name: 'wire-client', version: '0.0.0' });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(serverTransport), mcpClient.connect(clientTransport)]);
+    const wireTools = (await mcpClient.listTools()).tools;
+    const registry = (server as unknown as { _registeredTools: Record<string, { description?: string; inputSchema?: unknown }> })._registeredTools;
+    const wireByName = new Map(wireTools.map((tool) => [tool.name, tool]));
+    for (const module of REGISTRAR_MANIFEST) {
+      const names = moduleToolNames(server, module.key);
+      const measured = names.reduce((sum, name) => sum + serializedSchemaBytes(registry[name] ?? {}), 0);
+      const wire = names.reduce((sum, name) => {
+        const tool = wireByName.get(name);
+        return sum + Buffer.byteLength(JSON.stringify({ description: tool?.description ?? '', inputSchema: tool?.inputSchema ?? {} }), 'utf8');
+      }, 0);
+      assert.equal(measured, wire, `${module.key} schema bytes must match tools/list wire payload`);
+    }
+    assert.equal(wireTools.length, Object.keys(registry).length);
+    await mcpClient.close();
+    await server.close();
+  });
+
+  it('toolset_report returns the same per-module measurements', async () => {
+    const server = new McpServer({ name: 'report-audit', version: '0.0.0' });
+    const client = new SpotifyClient();
+    const context = { readOnly: false, isModuleActive: () => true, scopeBlocked: () => false };
+    for (const module of REGISTRAR_MANIFEST) registerManifestModule(server, client, module, context);
+    const tool = (server as unknown as { _registeredTools: Record<string, { handler: (args: Record<string, never>) => Promise<{ structuredContent: { module_schema_budgets: unknown[] }; content: Array<{ text: string }> }> }> })._registeredTools.toolset_report;
+    const result = await tool.handler({});
+    assert.deepEqual(result.structuredContent.module_schema_budgets, collectModuleSchemaBudgets(server));
+    assert.match(result.content[0].text, /Per-module schema budget/);
   });
 });
