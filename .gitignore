@@ -28,6 +28,12 @@ memory/*
 !memory/live-sweep-report.md
 !memory/live-sweep-plan.md
 
+# sweep-loop.sh runtime state: the lock it holds and the report it stages
+# before an atomic rename. A REPORT outside memory/ would otherwise dirty the
+# tree on every batch.
+.sweep-loop.lock/
+.*.tmp.*
+
 # Ephemeral / local audit artifacts
 .tmp/
 .surface-census.json
