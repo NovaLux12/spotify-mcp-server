@@ -87,6 +87,38 @@ export const DryRunDefault = DryRun.default(true).describe(
 export const isDryRun = (args: { dry_run?: boolean }): boolean => args.dry_run ?? true;
 
 /**
+ * The playback mutation contract (#836). Two contradictory `dry_run` contracts
+ * used to ship under one parameter name: `exhaust2_playback.ts` defaulted an
+ * omitted field to a preview, while `playback.ts` / `queueops.ts` /
+ * `playbackext.ts` / `playbackintel.ts` / `scenes.ts` / `swarm3_playback.ts`
+ * defaulted it to a commit, and the shared `DryRun` above advertised no default
+ * at all. A schema-driven host could not tell which one it was getting, and an
+ * agent that learned "omitted means preview" from `mute` would commit a
+ * destructive write through `play`. One convention now for the playback family:
+ * omitting `dry_run` commits, and the published schema says so via
+ * `default: false` rather than leaving it to a handler-side fallback.
+ *
+ * Deliberately a separate export, and deliberately the OPPOSITE default to
+ * `DryRunDefault` above (#827). `DryRunDefault` exists because a
+ * replace-shaped write with no preview and no receipt is a silent destructive
+ * default. The playback mutations are additive and reversible through
+ * `resume_*`/undo tooling, and their handlers already committed on an omitted
+ * flag before this issue existed; flipping them to preview-by-default would be
+ * a second, larger breaking change riding along silently. The playback family
+ * therefore gets an explicit `default: false` in the schema, which is the
+ * property the host actually lacked — before #836 the schema said nothing and
+ * the handler decided.
+ *
+ * Rolling the rest of the server onto one fragment is a separate sweep; what
+ * matters here is that the playback family no longer has two of its own.
+ */
+export const PlaybackDryRun = z
+  .boolean()
+  .optional()
+  .default(false)
+  .describe('Preview only: describe what would change without performing it. Default false — pass true to preview.');
+
+/**
  * Per-request cap for a `/me/library` write (#624). Spotify rejects a PUT or
  * DELETE carrying more than 40 uris. `restore.ts` and `undo.ts` import this
  * rather than each hardcoding the number, which is how the two drifted apart.

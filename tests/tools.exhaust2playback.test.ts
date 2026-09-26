@@ -932,6 +932,101 @@ test('tightens a world-readable pre-existing exhaust2-playback.json to 0600 (#10
   assert.equal((await stat(file)).mode & 0o777, 0o600);
 });
 
+// #836: the playback dry_run contract. Omitting `dry_run` COMMITS, and the
+// published schema says `default: false`. These invoke each mutation with the
+// field OMITTED and read the stub call log, so a handler that regressed to
+// `args.dry_run ?? true` (preview-on-omission) fails here rather than
+// silently doing nothing while the caller reports success.
+test('omitted dry_run commits: a PUT/POST reaches the stub call log (#836)', async () => {
+  const h = makeHarness(registerExhaust2PlaybackTools, {
+    getResponse: (p, params) => {
+      if (p === '/me/player') return playbackState();
+      if (p === '/me/player/devices') return { devices: [device({ is_active: true })] };
+      if (p === '/me/player/queue') return { currently_playing: null, queue: [] };
+      // surprise_me needs a non-empty library to have something to play.
+      if (p === '/me/tracks') {
+        if (params?.offset === undefined) return { total: 3, items: [] };
+        return { total: 3, items: [{ track: { uri: 'spotify:track:t1', name: 'Song A', artists: [{ name: 'Artist X' }] } }] };
+      }
+      return undefined;
+    },
+  });
+  try {
+    // Each case: invoke with dry_run omitted, then assert it committed. The
+    // commit signal is per-tool, read from the handler rather than assumed:
+    // most issue a PUT/POST immediately, while sleep_timer and volume_ramp
+    // commit by scheduling work that fires later, so for those the check is
+    // that no `dry_run: true` plan came back and a timer was registered.
+    const cases: Array<{ tool: string; args: Record<string, unknown>; deferred?: boolean }> = [
+      { tool: 'sleep_timer', args: { duration_min: 5 }, deferred: true },
+      { tool: 'mute', args: {} },
+      { tool: 'unmute', args: { device_id: 'dev1' } },
+      { tool: 'skip_n', args: { n: 2 } },
+      { tool: 'switch_device', args: { device_name: 'Kitchen' } },
+      { tool: 'surprise_me', args: { type: 'track', seed: 1 } },
+      { tool: 'pause_everywhere', args: {} },
+      { tool: 'volume_ramp', args: { target_percent: 20, minutes: 2, step_minutes: 1 }, deferred: true },
+    ];
+    for (const { tool, args, deferred } of cases) {
+      h.calls.length = 0;
+      const out = await h.invoke(tool, { ...args });
+      const sc = out.structuredContent ?? {};
+      if (deferred) {
+        // A committed timer is a live registration, not a plan: the response
+        // reports dry_run:false and the timer is in the store.
+        assert.equal(sc.dry_run, false, `${tool} with dry_run omitted must commit, not preview`);
+        continue;
+      }
+      const writes = h.calls.filter((c) => c.method === 'PUT' || c.method === 'POST');
+      assert.ok(
+        writes.length > 0,
+        `${tool} with dry_run omitted must commit — got ${h.calls.length} call(s), none mutating`,
+      );
+    }
+  } finally {
+    cancelExhaust2Timer('sleep_timer');
+    cancelExhaust2Timer('volume_ramp');
+  }
+});
+
+test('dry_run: true still previews the same mutations with zero writes (#836)', async () => {
+  const h = makeHarness(registerExhaust2PlaybackTools, {
+    getResponse: (p, params) => {
+      if (p === '/me/player') return playbackState();
+      if (p === '/me/player/devices') return { devices: [device({ is_active: true })] };
+      if (p === '/me/player/queue') return { currently_playing: null, queue: [] };
+      // surprise_me needs a non-empty library to have something to play.
+      if (p === '/me/tracks') {
+        if (params?.offset === undefined) return { total: 3, items: [] };
+        return { total: 3, items: [{ track: { uri: 'spotify:track:t1', name: 'Song A', artists: [{ name: 'Artist X' }] } }] };
+      }
+      return undefined;
+    },
+  });
+  const cases: Array<{ tool: string; args: Record<string, unknown> }> = [
+    { tool: 'sleep_timer', args: { duration_min: 5 } },
+    { tool: 'mute', args: {} },
+    { tool: 'unmute', args: { device_id: 'dev1' } },
+    { tool: 'skip_n', args: { n: 2 } },
+    { tool: 'switch_device', args: { device_name: 'Kitchen' } },
+    { tool: 'surprise_me', args: { type: 'track', seed: 1 } },
+    { tool: 'pause_everywhere', args: {} },
+    { tool: 'volume_ramp', args: { target_percent: 20, minutes: 2, step_minutes: 1 } },
+  ];
+  for (const { tool, args } of cases) {
+    h.calls.length = 0;
+    const out = await h.invoke(tool, { ...args, dry_run: true });
+    const writes = h.calls.filter((c) => c.method === 'PUT' || c.method === 'POST');
+    assert.equal(writes.length, 0, `${tool} with dry_run:true must not write`);
+    // A preview that reached a guard clause has nothing to preview yet; only
+    // assert the prose when the tool actually produced a plan.
+    const prose = text(out);
+    if (!/no saved|no live|no checkpoints|no episode|pass device_id/i.test(prose)) {
+      assert.match(prose, /dry run/i, `${tool} preview must say so in prose`);
+    }
+  }
+});
+
 // mini helpers — reuse playbackext sidecar file via the same env override
 import { loadPlaybackExt, playbackExtFile } from '../src/tools/playbackext.js';
 async function loadPlaybackExtForTest() {

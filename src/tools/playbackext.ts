@@ -25,7 +25,7 @@ import type {
   PlaybackState,
   SpotifyTrack,
 } from '../types/spotify.js';
-import { DryRun, ResponseFormat } from '../shaping.js';
+import { PlaybackDryRun, ResponseFormat } from '../shaping.js';
 import { getConfig } from '../config.js';
 import { dedupeUris, loadCandidates, matchesArtistFilter, uniqueByArtist } from './smart.js';
 import { addToQueueBatch } from './queueops.js';
@@ -287,7 +287,7 @@ export function registerPlaybackExtTools(server: McpServer, client: SpotifyClien
 
   server.tool('restore_playback_state',
     'Restore a saved playback state snapshot: replays the saved item at its offset inside the saved context (album/playlist) when one was captured, then shuffle/repeat, then verifies via GET /me/player (verified:false if the device is elsewhere).',
-    { name: z.string().min(1).describe('Snapshot name'), device_id: z.string().optional().describe('Target device id'), dry_run: DryRun, response_format: ResponseFormat },
+    { name: z.string().min(1).describe('Snapshot name'), device_id: z.string().optional().describe('Target device id'), dry_run: PlaybackDryRun, response_format: ResponseFormat },
     async (args) => {
       const fmt = args.response_format as string;
       const store = await loadPlaybackExt();
@@ -409,7 +409,7 @@ export function registerPlaybackExtTools(server: McpServer, client: SpotifyClien
 
   server.tool('apply_device_presets',
     'Apply all stored per-device volume presets via PUT /me/player/volume.',
-    { dry_run: DryRun, response_format: ResponseFormat },
+    { dry_run: PlaybackDryRun, response_format: ResponseFormat },
     async (args) => {
       const store = await loadPlaybackExt();
       const presets = Object.entries(store.devicePresets).filter(([, v]) => typeof v.volume === 'number');
@@ -473,7 +473,7 @@ export function registerPlaybackExtTools(server: McpServer, client: SpotifyClien
     {
       session_id: z.string().min(1).describe('Session id'),
       mode: z.enum(['queue', 'playlist']).default('queue').describe('Replay via queue or new playlist'),
-      dry_run: DryRun,
+      dry_run: PlaybackDryRun,
       response_format: ResponseFormat,
     },
     async (args) => {
@@ -543,7 +543,7 @@ export function registerPlaybackExtTools(server: McpServer, client: SpotifyClien
     {
       name: z.string().min(1).describe('Rule name saved via save_smart_playlist_rule'),
       playlist_id: z.string().optional().describe('Playlist id to rebuild in place. Defaults to the id recorded by the previous refresh; otherwise the playlist is created.'),
-      dry_run: DryRun,
+      dry_run: PlaybackDryRun,
       response_format: ResponseFormat,
     },
     async (args) => {
@@ -617,7 +617,7 @@ export function registerPlaybackExtTools(server: McpServer, client: SpotifyClien
     'Show-radar digest: create or append. Later calls reuse the first call\'s playlist (#835).',
     {
       playlist_name: z.string().min(1).optional().describe('Digest playlist name (default: Show Digest)'),
-      dry_run: DryRun,
+      dry_run: PlaybackDryRun,
       response_format: ResponseFormat,
     },
     async (args) => {

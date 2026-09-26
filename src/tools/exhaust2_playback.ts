@@ -39,7 +39,7 @@ import type {
 } from '../types/spotify.js';
 import {
   ResponseFormat,
-  DryRun,
+  PlaybackDryRun,
   truncateItems,
   describeDryRun,
 } from '../shaping.js';
@@ -450,11 +450,11 @@ export function registerExhaust2PlaybackTools(server: McpServer, client: Spotify
       duration_min: z.number().int().min(1).max(480).describe('Minutes until auto-pause (1-480)'),
       device_id: z.string().optional().describe('Device to pause on expiry (defaults to the active device at expiry time)'),
       response_format: ResponseFormat,
-      dry_run: DryRun,
+      dry_run: PlaybackDryRun,
     },
     async (args) => {
       const fmt = args.response_format as ResponseFormatValue | undefined;
-      const dryRun = args.dry_run ?? true;
+      const dryRun = args.dry_run;
       const state = await client.get<PlaybackState>('/me/player');
       const current = state?.item ? `"${state.item.name}"` : 'nothing playing';
       const device = state?.device?.name ?? args.device_id ?? 'active device';
@@ -498,11 +498,11 @@ export function registerExhaust2PlaybackTools(server: McpServer, client: Spotify
     {
       device_id: z.string().optional().describe('Device to mute (defaults to active device)'),
       response_format: ResponseFormat,
-      dry_run: DryRun,
+      dry_run: PlaybackDryRun,
     },
     async (args) => {
       const fmt = args.response_format as ResponseFormatValue | undefined;
-      const dryRun = args.dry_run ?? true;
+      const dryRun = args.dry_run;
       const state = await client.get<PlaybackState>('/me/player');
       if (!state?.device && !args.device_id) {
         return textResult('No active device — pass device_id to mute a specific device (volume memory is per device id).', { ok: false, error: 'no_active_device' });
@@ -530,11 +530,11 @@ export function registerExhaust2PlaybackTools(server: McpServer, client: Spotify
     {
       device_id: z.string().optional().describe('Device to unmute (defaults to the key mute remembered / active device)'),
       response_format: ResponseFormat,
-      dry_run: DryRun,
+      dry_run: PlaybackDryRun,
     },
     async (args) => {
       const fmt = args.response_format as ResponseFormatValue | undefined;
-      const dryRun = args.dry_run ?? true;
+      const dryRun = args.dry_run;
       const store = await loadExhaust2Store();
       let deviceId = args.device_id ?? null;
       let memory = deviceId ? store.muteMemory[deviceId] ?? null : store.muteMemory.active ?? null;
@@ -563,11 +563,11 @@ export function registerExhaust2PlaybackTools(server: McpServer, client: Spotify
       device_name: z.string().min(1).describe('Device name substring (case-insensitive), exact id, or sidecar label'),
       play: z.boolean().optional().default(true).describe('true = keep playing on the target (default); false = transfer paused'),
       response_format: ResponseFormat,
-      dry_run: DryRun,
+      dry_run: PlaybackDryRun,
     },
     async (args) => {
       const fmt = args.response_format as ResponseFormatValue | undefined;
-      const dryRun = args.dry_run ?? true;
+      const dryRun = args.dry_run;
       const { deviceId, devices } = await resolveDeviceHint(client, args.device_name as string);
       if (!deviceId) {
         const names = devices.map((d) => d.name).join(', ') || 'no devices';
@@ -592,11 +592,11 @@ export function registerExhaust2PlaybackTools(server: McpServer, client: Spotify
       device_id: z.string().optional().describe('Target device id'),
       seed: z.number().optional().describe('Seed for reproducible picks (omit for true randomness)'),
       response_format: ResponseFormat,
-      dry_run: DryRun,
+      dry_run: PlaybackDryRun,
     },
     async (args) => {
       const fmt = args.response_format as ResponseFormatValue | undefined;
-      const dryRun = args.dry_run ?? true;
+      const dryRun = args.dry_run;
       const rng = rngFor(args.seed);
       const chosen = args.type === 'any' ? (['track', 'album', 'playlist'] as const)[Math.floor(rng() * 3)]! : args.type;
       let pickLabel = '';
@@ -657,11 +657,11 @@ export function registerExhaust2PlaybackTools(server: McpServer, client: Spotify
       n: z.number().int().min(1).max(20).optional().default(1).describe('How many tracks to skip (1-20)'),
       device_id: z.string().optional().describe('Device to skip on'),
       response_format: ResponseFormat,
-      dry_run: DryRun,
+      dry_run: PlaybackDryRun,
     },
     async (args) => {
       const fmt = args.response_format as ResponseFormatValue | undefined;
-      const dryRun = args.dry_run ?? true;
+      const dryRun = args.dry_run;
       if (dryRun) {
         const steps = [`POST /me/player/next ×${args.n}${args.device_id ? ` (device ${args.device_id})` : ''} — ${args.n} separate API calls, no batch-skip endpoint exists`];
         return { content: [{ type: 'text', text: describeDryRun('skip_n', `next ${args.n} track(s)`, steps) }], structuredContent: { ok: true, dry_run: true, n: args.n, api_calls: args.n } };
@@ -682,11 +682,11 @@ export function registerExhaust2PlaybackTools(server: McpServer, client: Spotify
     'Pause every live Connect device (attempts PUT /me/player/pause per non-restricted device) — kills the "which speaker is still playing" hunt. Quota: 🟡 1 read + N writes (one pause per live device).',
     {
       response_format: ResponseFormat,
-      dry_run: DryRun,
+      dry_run: PlaybackDryRun,
     },
     async (args) => {
       const fmt = args.response_format as ResponseFormatValue | undefined;
-      const dryRun = args.dry_run ?? true;
+      const dryRun = args.dry_run;
       const res = await client.get<GetDevicesResponse>('/me/player/devices');
       const live = (res?.devices ?? []).filter((d) => d.id && !d.is_restricted);
       if (live.length === 0) return textResult('No live Connect devices found to pause.', { ok: true, paused: 0 });
@@ -714,11 +714,11 @@ export function registerExhaust2PlaybackTools(server: McpServer, client: Spotify
       end_state: z.enum(['pause', 'play', 'none']).optional().default('none').describe('Applied after the final step (default none)'),
       device_id: z.string().optional().describe('Target device id (defaults to active device)'),
       response_format: ResponseFormat,
-      dry_run: DryRun,
+      dry_run: PlaybackDryRun,
     },
     async (args) => {
       const fmt = args.response_format as ResponseFormatValue | undefined;
-      const dryRun = args.dry_run ?? true;
+      const dryRun = args.dry_run;
       const state = await client.get<PlaybackState>('/me/player');
       const from = typeof state?.device?.volume_percent === 'number' ? state.device.volume_percent : 50;
       const deviceId = args.device_id ?? state?.device?.id ?? null;
@@ -855,11 +855,11 @@ export function registerExhaust2PlaybackTools(server: McpServer, client: Spotify
       bookmark_id: z.string().optional().describe('Bookmark id (default: newest by saved_at)'),
       device_id: z.string().optional().describe('Target device id (defaults to bookmarked device)'),
       response_format: ResponseFormat,
-      dry_run: DryRun,
+      dry_run: PlaybackDryRun,
     },
     async (args) => {
       const fmt = args.response_format as ResponseFormatValue | undefined;
-      const dryRun = args.dry_run ?? true;
+      const dryRun = args.dry_run;
       const store = await loadExhaust2Store();
       const bookmarks = Object.values(store.episodeBookmarks).sort((a, b) => b.saved_at.localeCompare(a.saved_at));
       if (bookmarks.length === 0) return textResult('No episode bookmarks. Use episode_bookmark while an episode is playing.', { ok: false, error: 'no_bookmarks' });
@@ -893,11 +893,11 @@ export function registerExhaust2PlaybackTools(server: McpServer, client: Spotify
       episodes_back: z.number().int().min(1).max(50).optional().default(10).describe('How many of the newest episodes to look back through (default 10)'),
       device_id: z.string().optional().describe('Target device id for the queue add'),
       response_format: ResponseFormat,
-      dry_run: DryRun,
+      dry_run: PlaybackDryRun,
     },
     async (args) => {
       const fmt = args.response_format as ResponseFormatValue | undefined;
-      const dryRun = args.dry_run ?? true;
+      const dryRun = args.dry_run;
       const showId = args.show_id.startsWith('spotify:show:') ? args.show_id.split(':')[2]! : args.show_id;
       const eps = await client.get<SpotifyPaged<{ id: string; name: string; uri: string; release_date?: string; resume_point?: { fully_played?: boolean } }>>(`/shows/${encodeURIComponent(showId)}/episodes`, { limit: '50' }); // one page covers the whole 1-50 lookahead
       const candidates = (eps?.items ?? []).slice(0, args.episodes_back);
@@ -929,11 +929,11 @@ export function registerExhaust2PlaybackTools(server: McpServer, client: Spotify
       playlist_name: z.string().optional().describe('Playlist name (default "Queue snapshot <date>")'),
       device_id: z.string().optional().describe('Device to start the new context on'),
       response_format: ResponseFormat,
-      dry_run: DryRun,
+      dry_run: PlaybackDryRun,
     },
     async (args) => {
       const fmt = args.response_format as ResponseFormatValue | undefined;
-      const dryRun = args.dry_run ?? true;
+      const dryRun = args.dry_run;
       const q = await client.get<{ currently_playing?: QueueRow | null; queue?: QueueRow[] }>('/me/player/queue');
       const rows: QueueRow[] = [q?.currently_playing, ...(q?.queue ?? [])].filter((r): r is QueueRow => !!r);
       // Pair every queue row with its OWN metadata by URI (#844). Pairing by
@@ -1239,11 +1239,11 @@ export function registerExhaust2PlaybackTools(server: McpServer, client: Spotify
     {
       device_id: z.string().optional().describe('Target device id'),
       response_format: ResponseFormat,
-      dry_run: DryRun,
+      dry_run: PlaybackDryRun,
     },
     async (args) => {
       const fmt = args.response_format as ResponseFormatValue | undefined;
-      const dryRun = args.dry_run ?? true;
+      const dryRun = args.dry_run;
       const store = await loadExhaust2Store();
       const newest = Object.values(store.checkpoints).sort((a, b) => b.saved_at.localeCompare(a.saved_at))[0];
       if (!newest) return textResult('No checkpoints. Use checkpoint_playback first.', { ok: false, error: 'no_checkpoints' });
@@ -1274,11 +1274,11 @@ export function registerExhaust2PlaybackTools(server: McpServer, client: Spotify
     {
       exclude_device_id: z.string().optional().describe('Additional device id to leave untouched'),
       response_format: ResponseFormat,
-      dry_run: DryRun,
+      dry_run: PlaybackDryRun,
     },
     async (args) => {
       const fmt = args.response_format as ResponseFormatValue | undefined;
-      const dryRun = args.dry_run ?? true;
+      const dryRun = args.dry_run;
       const res = await client.get<GetDevicesResponse>('/me/player/devices');
       const devices = (res?.devices ?? []).filter((d) => d.id);
       const active = devices.find((d) => d.is_active && typeof d.volume_percent === 'number');

@@ -205,8 +205,8 @@ describe('resume_playback_position (#833) — bookmarked item + context restored
   it('dry_run advertises PUT /me/player/play with the bookmark URI in the plan', async () => {
     await seedBookmark(tmp, ALBUM_BOOKMARK);
     const h = makeHarness(DEVICES);
-    const out = await h.invoke('resume_playback_position', { bookmark_id: ALBUM_BOOKMARK.id });
-    // dry_run defaults to true — no PUT must be issued.
+    // #836: an omitted dry_run COMMITS. Ask for the preview explicitly.
+    const out = await h.invoke('resume_playback_position', { bookmark_id: ALBUM_BOOKMARK.id, dry_run: true });
     assert.equal(h.calls.filter((c) => c.method === 'PUT').length, 0, 'dry_run must not PUT');
     const steps = (out.structuredContent as { dry_run: boolean; steps: string[] }).steps;
     const playStep = steps.find((s) => s.startsWith('PUT /me/player/play'));
@@ -219,7 +219,7 @@ describe('resume_playback_position (#833) — bookmarked item + context restored
   it('dry_run uses the uris[] form when the bookmark captured no context', async () => {
     await seedBookmark(tmp, SINGLE_BOOKMARK);
     const h = makeHarness(DEVICES);
-    const out = await h.invoke('resume_playback_position', { bookmark_id: SINGLE_BOOKMARK.id });
+    const out = await h.invoke('resume_playback_position', { bookmark_id: SINGLE_BOOKMARK.id, dry_run: true });
     const steps = (out.structuredContent as { dry_run: boolean; steps: string[] }).steps;
     const playStep = steps.find((s) => s.startsWith('PUT /me/player/play'));
     assert.ok(playStep, 'dry_run plan must include PUT /me/player/play');

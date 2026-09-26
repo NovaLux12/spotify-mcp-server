@@ -12,7 +12,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
 import type { PlaybackState, SpotifyQueue, GetDevicesResponse, SpotifyDevice, SpotifyTrack, SpotifyEpisode } from '../types/spotify.js';
 import { playlistItemTotal } from '../types/spotify.js';
-import { ResponseFormat, DryRun, MaxResults, resolveMaxResults, truncateItems, parseSpotifyUri, describeDryRun, validateUris } from '../shaping.js';
+import { ResponseFormat, PlaybackDryRun, MaxResults, resolveMaxResults, truncateItems, parseSpotifyUri, describeDryRun, validateUris } from '../shaping.js';
 import { loadPlaybackExt, detectSessions } from './playbackext.js';
 
 type ToolResult = { content: Array<{ type: 'text'; text: string }>; structuredContent?: Record<string, unknown> };
@@ -63,7 +63,7 @@ export function registerPlaybackIntelTools(server: McpServer, client: SpotifyCli
       shuffle: z.boolean().optional().describe('Set shuffle before play'),
       volume: z.number().int().min(0).max(100).optional().describe('Set volume (0-100) before play'),
       search_type: z.enum(['track','album','playlist']).optional().describe('When query mode: type to search (default track)'),
-      response_format: ResponseFormat, dry_run: DryRun,
+      response_format: ResponseFormat, dry_run: PlaybackDryRun,
     },
     async (args) => {
       const { deviceId, devices } = await resolveDeviceHint(client, args.device as string);
@@ -134,7 +134,7 @@ export function registerPlaybackIntelTools(server: McpServer, client: SpotifyCli
     {
       uri: z.string().min(1).describe('Spotify track or episode URI (spotify:track:… / spotify:episode:…)'),
       device_id: z.string().optional().describe('Target device id'),
-      response_format: ResponseFormat, dry_run: DryRun,
+      response_format: ResponseFormat, dry_run: PlaybackDryRun,
     },
     async (args) => {
       const uri = args.uri as string;
@@ -224,7 +224,7 @@ export function registerPlaybackIntelTools(server: McpServer, client: SpotifyCli
       offset_uri: z.string().optional().describe('Offset URI within context to start at'),
       offset: z.number().int().min(0).optional().describe('Offset index within context'),
       device_id: z.string().optional().describe('Target device id'),
-      response_format: ResponseFormat, dry_run: DryRun,
+      response_format: ResponseFormat, dry_run: PlaybackDryRun,
     },
     async (args) => {
       // #842: play_at enforces the same argument contract as `play`
@@ -309,7 +309,7 @@ export function registerPlaybackIntelTools(server: McpServer, client: SpotifyCli
   // 278 seek_relative
   server.tool('seek_relative',
     'Relative seek — forward/back by delta_ms from current progress (GET /me/player then PUT /me/player/seek, clamped to [0, duration]). 🟢 (1 read + 1 write).',
-    { delta_ms: z.number().int().describe('Delta in ms (+ forward, - backward), e.g. 30000 or -15000'), device_id: z.string().optional().describe('Target device id'), response_format: ResponseFormat, dry_run: DryRun },
+    { delta_ms: z.number().int().describe('Delta in ms (+ forward, - backward), e.g. 30000 or -15000'), device_id: z.string().optional().describe('Target device id'), response_format: ResponseFormat, dry_run: PlaybackDryRun },
     async (args) => {
       const state: any = await client.get('/me/player');
       const progress = typeof state?.progress_ms === 'number' ? state.progress_ms : 0;
@@ -352,7 +352,7 @@ export function registerPlaybackIntelTools(server: McpServer, client: SpotifyCli
   // 280 repeat_queue_toggle
   server.tool('repeat_queue_toggle',
     'One-call queue-repeat helper — sets repeat=context/off and optionally shuffle in 1-2 writes. 🟢.',
-    { enable: z.boolean().describe('true → repeat=context, false → repeat=off'), shuffle: z.boolean().optional().describe('Also set shuffle state'), device_id: z.string().optional().describe('Target device id'), response_format: ResponseFormat, dry_run: DryRun },
+    { enable: z.boolean().describe('true → repeat=context, false → repeat=off'), shuffle: z.boolean().optional().describe('Also set shuffle state'), device_id: z.string().optional().describe('Target device id'), response_format: ResponseFormat, dry_run: PlaybackDryRun },
     async (args) => {
       const state = args.enable ? 'context' : 'off';
       const qs = args.device_id ? `&device_id=${encodeURIComponent(args.device_id as string)}` : '';
@@ -465,7 +465,7 @@ export function registerPlaybackIntelTools(server: McpServer, client: SpotifyCli
   // volume_step — relative volume nudge
   server.tool('volume_step',
     'Nudge volume up/down by a step (reads current volume via GET /me/player, then PUT /me/player/volume clamped 0-100). 🟡 (1 read + 1 write).',
-    { step: z.number().int().min(-100).max(100).describe('Delta, e.g. +10 or -10'), device_id: z.string().optional().describe('Target device id (else active)'), response_format: ResponseFormat, dry_run: DryRun },
+    { step: z.number().int().min(-100).max(100).describe('Delta, e.g. +10 or -10'), device_id: z.string().optional().describe('Target device id (else active)'), response_format: ResponseFormat, dry_run: PlaybackDryRun },
     async (args) => {
       const player:any = await client.get('/me/player');
       const cur = typeof player?.device?.volume_percent === 'number' ? player.device.volume_percent : 50;

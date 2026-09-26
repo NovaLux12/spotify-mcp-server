@@ -153,13 +153,28 @@ describe('swarm3_playback dry_run previews', () => {
       if (path.startsWith('/me/player/volume')) return null as unknown;
       throw new Error(`unexpected GET ${path}`);
     });
-    // apply_volume_plan dry_run defaults true — omit dry_run to exercise default
-    const out = await h.invoke('apply_volume_plan', { volume: 42 } as Record<string, unknown>);
+    // #836: an omitted dry_run COMMITS across the playback set, so the preview
+    // is requested explicitly here rather than relied on as an implicit default.
+    const out = await h.invoke('apply_volume_plan', { volume: 42, dry_run: true } as Record<string, unknown>);
     const sc = out.structuredContent as { dry_run: boolean; steps: string[] };
     assert.equal(sc.dry_run, true);
     assert.ok(Array.isArray(sc.steps) && sc.steps.length === 1);
     // Must not have issued any PUT — only the GET /me/player/devices read
     assert.equal(h.client.calls.filter((c) => c.method === 'PUT').length, 0, 'dry_run must not PUT');
+  });
+
+  it('apply_volume_plan with dry_run omitted commits (#836)', async () => {
+    const h = makeHarness(registerSwarm3PlaybackTools, (path) => {
+      if (path === '/me/player/devices') {
+        return { devices: [{ id: 'd1', name: 'Speaker', type: 'Speaker', is_active: true, is_restricted: false, is_private_session: false, volume_percent: 30, supports_volume: true }] } as unknown;
+      }
+      if (path.startsWith('/me/player/volume')) return null as unknown;
+      throw new Error(`unexpected GET ${path}`);
+    });
+    const out = await h.invoke('apply_volume_plan', { volume: 42 } as Record<string, unknown>);
+    const sc = out.structuredContent as { applied: boolean };
+    assert.equal(sc.applied, true, 'an omitted dry_run must commit, not preview');
+    assert.equal(h.client.calls.filter((c) => c.method === 'PUT').length, 1);
   });
 
   it('apply_volume_plan dry_run=false issues one PUT per device', async () => {

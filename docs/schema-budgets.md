@@ -109,7 +109,7 @@ if you lower the limit to force one.
 | search | 1 | 1,821 | 1 | 1,821 | 2 | 2,004 |
 | catalog | 31 | 26,953 | 31 | 26,953 | 32 | 29,649 |
 | library | 16 | 14,957 | 16 | 14,957 | 17 | 16,453 |
-| playback | 16 | 12,287 | 16 | 12,287 | 17 | 13,516 |
+| playback | 16 | 12,635 | 16 | 12,635 | 17 | 13,899 |
 | following | 5 | 3,953 | 5 | 3,953 | 6 | 4,349 |
 | users | 2 | 1,613 | 2 | 1,613 | 3 | 1,775 |
 | audiobooks | 4 | 3,715 | 4 | 3,715 | 5 | 4,087 |
@@ -146,10 +146,10 @@ if you lower the limit to force one.
 | searchhistory | 2 | 1,096 | 2 | 1,096 | 3 | 1,206 |
 | browse | 3 | 2,634 | 3 | 2,634 | 4 | 2,898 |
 | artistwatch | 6 | 6,284 | 6 | 6,284 | 7 | 6,913 |
-| queueops | 3 | 3,449 | 3 | 3,449 | 4 | 3,794 |
-| playbackext | 13 | 8,033 | 13 | 8,033 | 14 | 8,837 |
-| playbackintel | 15 | 11,663 | 15 | 11,663 | 16 | 12,830 |
-| scenes | 7 | 4,456 | 7 | 4,456 | 8 | 4,902 |
+| queueops | 3 | 3,536 | 3 | 3,536 | 4 | 3,890 |
+| playbackext | 13 | 8,178 | 13 | 8,178 | 14 | 8,996 |
+| playbackintel | 15 | 11,837 | 15 | 11,837 | 16 | 13,021 |
+| scenes | 7 | 4,514 | 7 | 4,514 | 8 | 4,966 |
 | playlisthealth | 8 | 5,285 | 8 | 5,285 | 9 | 5,814 |
 | playlistdna | 1 | 1,310 | 1 | 1,310 | 2 | 1,442 |
 | export | 1 | 1,363 | 1 | 1,363 | 2 | 1,500 |
@@ -158,7 +158,7 @@ if you lower the limit to force one.
 | exhaustmisc | 10 | 8,528 | 10 | 8,528 | 11 | 9,381 |
 | exhaust2catalog | 19 | 19,467 | 19 | 19,467 | 20 | 21,414 |
 | exhaust2enggating | 0 | 0 | 0 | 0 | 1 | 0 |
-| exhaust2playback | 23 | 17,306 | 23 | 17,306 | 24 | 19,037 |
+| exhaust2playback | 23 | 17,683 | 23 | 17,683 | 24 | 19,452 |
 | exhaust2playlists | 18 | 23,507 | 18 | 23,507 | 19 | 25,858 |
 | exhaust2misc | 27 | 23,866 | 27 | 23,866 | 28 | 26,253 |
 | exhaust2extra | 3 | 3,695 | 3 | 3,695 | 4 | 4,065 |
@@ -168,7 +168,7 @@ if you lower the limit to force one.
 | swarm3refs | 6 | 4,331 | 6 | 4,331 | 7 | 4,765 |
 | swarm3analytics | 24 | 18,951 | 24 | 18,951 | 25 | 20,847 |
 | swarm3library | 24 | 18,092 | 24 | 18,092 | 25 | 19,902 |
-| swarm3playback | 24 | 14,247 | 24 | 14,247 | 25 | 15,672 |
+| swarm3playback | 24 | 14,155 | 24 | 14,155 | 25 | 15,571 |
 | swarm3playlistops | 24 | 31,777 | 24 | 31,777 | 25 | 34,955 |
 | swarm3snapshots | 24 | 23,744 | 24 | 23,744 | 25 | 26,119 |
 | swarm4playlists | 18 | 22,590 | 18 | 22,590 | 19 | 24,850 |
