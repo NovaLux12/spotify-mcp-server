@@ -66,6 +66,77 @@ export class LruTtlCache<V> {
   }
 }
 
+/**
+ * How long a stored ETag stays usable as an `If-None-Match` validator (#601).
+ * Longer than the payload TTL on purpose: an expired TTL only means the body
+ * must be re-validated, not re-downloaded.
+ */
+export const DEFAULT_VALIDATOR_TTL_MS = 60 * 60_000;
+
+interface ValidatorEntry<V> {
+  value: V;
+  etag: string;
+  savedAt: number;
+}
+
+/**
+ * Per-key store of the last payload that carried an ETag, so a later read can
+ * revalidate with `If-None-Match` and answer a 304 from here instead of
+ * re-downloading the body (#601).
+ *
+ * Unlike {@link LruTtlCache} this is not a freshness cache: a stored payload is
+ * never served on its own. It is only ever returned after the origin has
+ * confirmed, with a 304, that it is still current — so a short `ttlMs` costs
+ * bandwidth, not accuracy.
+ */
+export class ValidatorStore<V> {
+  private readonly map = new Map<string, ValidatorEntry<V>>();
+  private readonly ttlMs: number;
+  private readonly maxEntries: number;
+
+  constructor(ttlMs: number = DEFAULT_VALIDATOR_TTL_MS, maxEntries: number = DEFAULT_CACHE_MAX_ENTRIES) {
+    this.ttlMs = ttlMs;
+    this.maxEntries = maxEntries;
+  }
+
+  get size(): number {
+    return this.map.size;
+  }
+
+  /** The stored validator for `key`, or undefined when absent or expired. */
+  get(key: string): { value: V; etag: string } | undefined {
+    const entry = this.map.get(key);
+    if (!entry) return undefined;
+    if (Date.now() - entry.savedAt >= this.ttlMs) {
+      this.map.delete(key);
+      return undefined;
+    }
+    // Refresh recency: delete + re-insert moves the key to Map's tail.
+    this.map.delete(key);
+    this.map.set(key, entry);
+    return { value: entry.value, etag: entry.etag };
+  }
+
+  /** Store (or refresh the window of) a payload and the ETag that identifies it. */
+  set(key: string, value: V, etag: string): void {
+    if (this.map.has(key)) this.map.delete(key);
+    this.map.set(key, { value, etag, savedAt: Date.now() });
+    while (this.map.size > this.maxEntries) {
+      const oldest = this.map.keys().next().value;
+      if (oldest === undefined) break;
+      this.map.delete(oldest);
+    }
+  }
+
+  delete(key: string): void {
+    this.map.delete(key);
+  }
+
+  clear(): void {
+    this.map.clear();
+  }
+}
+
 // Paths whose responses change out from under us (live playback state,
 // personal charts) or that mutate server state — never cached (#54).
 const VOLATILE_PATH_PREFIXES = ['/me/player', '/me/top'];

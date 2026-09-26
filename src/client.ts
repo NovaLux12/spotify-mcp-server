@@ -1,6 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { loadTokens, saveTokens, TOKEN_FILE } from './auth.js';
-import { LruTtlCache, shouldBypassCache, cacheKey } from './cache.js';
+import { LruTtlCache, ValidatorStore, shouldBypassCache, cacheKey } from './cache.js';
 import { getConfig } from './config.js';
 import { appendHistory } from './history.js';
 
@@ -128,6 +128,11 @@ export interface SpotifyClientOptions {
   fetchAllCap?: number;
   /** TTL cache tuning (#54); omit for defaults. */
   cache?: { ttlMs?: number; maxEntries?: number };
+  /**
+   * How long a stored ETag stays usable as an `If-None-Match` validator
+   * (#601); omit for the default window. Ignored when `disableCache` is set.
+   */
+  validatorTtlMs?: number;
   /** Disable the read cache entirely (tests, special flows). */
   disableCache?: boolean;
 }
@@ -185,6 +190,18 @@ export interface RateLimitStatus {
   requestsLastHour: number;
 }
 
+/**
+ * Per-`get` options. `onNotModified` fires exactly when the origin answered
+ * 304 and the returned payload is the locally stored one the ETag
+ * identifies — the signal a watch loop branches on (#601). It is a callback
+ * rather than a field on the client because concurrent tool calls interleave:
+ * a shared "last read was a 304" flag would be attributable to the wrong call.
+ */
+export interface GetOptions {
+  priority?: 'normal' | 'low';
+  onNotModified?: () => void;
+}
+
 export class SpotifyClient {
   private tokens: TokenData | null = null;
   private loadPromise: Promise<TokenData> | null = null;
@@ -203,6 +220,9 @@ export class SpotifyClient {
 
   // Immutable-read TTL cache (#54) — null when disabled.
   readonly cache: LruTtlCache<unknown> | null;
+  // ETag validators for conditional reads (#601) — null when disabled. Holds
+  // the payload an ETag identifies so a 304 can be answered without a body.
+  readonly validators: ValidatorStore<unknown> | null;
   private readonly fetchAllCap: number;
 
   // Long-walk progress reporting (#65); index.ts installs a notifier that
@@ -213,6 +233,9 @@ export class SpotifyClient {
   constructor(opts: SpotifyClientOptions = {}) {
     this.fetchAllCap = opts.fetchAllCap ?? getConfig().fetchAllCap;
     this.cache = opts.disableCache ? null : new LruTtlCache<unknown>(opts.cache);
+    this.validators = opts.disableCache
+      ? null
+      : new ValidatorStore<unknown>(opts.validatorTtlMs, opts.cache?.maxEntries);
   }
 
   /**
@@ -303,6 +326,7 @@ export class SpotifyClient {
    */
   private afterMutation(method: string, path: string, response: unknown): void {
     this.cache?.clear();
+    this.validators?.clear();
     void this.recordMutation(method, path, response);
   }
 
@@ -504,6 +528,7 @@ export class SpotifyClient {
     body?: unknown,
     retryCount = 0,
     contentType?: string,
+    conditional?: { ifNoneMatch?: string },
   ): Promise<Response> {
     await this.ensureValidToken();
 
@@ -515,6 +540,9 @@ export class SpotifyClient {
     } else if (body !== undefined) {
       headers['Content-Type'] = 'application/json';
     }
+    // Conditional read (#601): offer the ETag we already hold, so an unchanged
+    // resource comes back as a bodiless 304 instead of a full re-download.
+    if (conditional?.ifNoneMatch) headers['If-None-Match'] = conditional.ifNoneMatch;
 
     const res = await fetchWithTimeout(url, {
       method,
@@ -541,7 +569,7 @@ export class SpotifyClient {
         const reason = err instanceof Error ? err.message : String(err);
         throw new SpotifyApiError(401, `Spotify rejected the access token and refreshing it failed: ${reason}`);
       }
-      return this.rawRequest(method, url, body, retryCount + 1, contentType);
+      return this.rawRequest(method, url, body, retryCount + 1, contentType, conditional);
     }
 
     // Rate limited — differentiate a quota wall from a burst limit (#108).
@@ -592,8 +620,14 @@ export class SpotifyClient {
 
       this._lastThrottle = { retryAfterSec: retryAfter, waitedMs: retryAfter * 1000, at: Date.now() };
       await sleep(retryAfter * 1000);
-      return this.rawRequest(method, url, body, retryCount + 1, contentType);
+      return this.rawRequest(method, url, body, retryCount + 1, contentType, conditional);
     }
+
+    // 304 Not Modified is a successful conditional read, not a failure: the
+    // caller holds the payload this ETag identifies. Returned before the
+    // !res.ok mapping below, whose body-less 304 would be read as an error and
+    // reported as one.
+    if (res.status === 304) return res;
 
     if (!res.ok) {
       // Always try to surface Spotify's own error message first — it's the
@@ -633,7 +667,7 @@ export class SpotifyClient {
     return res;
   }
 
-  async get<T>(path: string, params?: Record<string, string>, opts?: { priority?: 'normal' | 'low' }): Promise<T | null> {
+  async get<T>(path: string, params?: Record<string, string>, opts?: GetOptions): Promise<T | null> {
     const url = this.buildUrl(path, params);
     // TTL cache for immutable catalog reads (#54): keyed on the API-relative
     // URL, whose query params cacheKey sorts by name then value (#678), so an
@@ -641,14 +675,47 @@ export class SpotifyClient {
     // paths (/me/player*, /me/top*, recently-played) bypass.
     const relative = url.startsWith(BASE_URL) ? url.slice(BASE_URL.length) : url;
     const cacheable = this.cache !== null && !shouldBypassCache('GET', relative);
-    const key = cacheable ? cacheKey('GET', relative) : '';
+    // The same key indexes the ETag validator store, which serves volatile
+    // paths too: a 304 there means "unchanged", and the stored payload the
+    // ETag identifies is the answer (#601). Only its freshness is never
+    // assumed — it is returned only after the origin confirms it.
+    const key = cacheKey('GET', relative);
     if (cacheable) {
       const hit = this.cache!.get(key);
       if (hit !== undefined) return hit as T;
     }
+    const validator = this.validators?.get(key);
+    let servedFrom304 = false;
+    let responseEtag: string | null = null;
     const result = await this.enqueue(
       async () => {
-        const res = await this.rawRequest('GET', url);
+        const res = await this.rawRequest(
+          'GET',
+          url,
+          undefined,
+          0,
+          undefined,
+          validator ? { ifNoneMatch: validator.etag } : undefined,
+        );
+        if (res.status === 304) {
+          // A 304 with no stored validator cannot be answered: the request
+          // carried no If-None-Match, so the payload this names was never
+          // held. Report it rather than inventing an empty result.
+          if (!validator) {
+            throw new SpotifyApiError(
+              304,
+              `GET ${path} answered 304 Not Modified but no stored ETag backs it — re-read without a validator`,
+            );
+          }
+          servedFrom304 = true;
+          // A 304 is a cache hit: refresh the payload TTL and the validator
+          // window so the next read revalidates against the same ETag.
+          if (cacheable) this.cache!.set(key, validator.value);
+          this.validators?.set(key, validator.value, validator.etag);
+          opts?.onNotModified?.();
+          return validator.value as T;
+        }
+        responseEtag = res.headers.get('etag');
         if (res.status === 204) return null;
         try {
           return (await res.json()) as T;
@@ -664,7 +731,12 @@ export class SpotifyClient {
       },
       opts?.priority,
     );
+    if (servedFrom304) return result;
     if (cacheable && result !== null) this.cache!.set(key, result);
+    // A body that no longer carries an ETag supersedes any stored validator:
+    // keeping the old one would offer a tag whose payload we just replaced.
+    if (responseEtag && result !== null) this.validators?.set(key, result, responseEtag);
+    else this.validators?.delete(key);
     return result;
   }
 
