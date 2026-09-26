@@ -97,7 +97,8 @@ function formatDuration(ms: number): string {
 // ------------------------------------------------ get_several_* family (#43)
 // Per-request ID caps for GET /<type>?ids=. Inputs larger than the cap are
 // chunked into multiple queued calls and merged in request order; items
-// Spotify could not resolve come back null and are dropped.
+// Spotify could not resolve come back null; every requested id is accounted
+// for, so an id the batch dropped is named in the tool's own output (#778).
 const SEVERAL_LIMITS = {
   tracks: 50,
   albums: 20,
@@ -131,7 +132,7 @@ async function fetchSeveral<T>(
   kind: SeveralKind,
   responseKey: string,
   ids: string[],
-): Promise<T[]> {
+): Promise<{ items: T[]; missing: string[] }> {
   const limit = SEVERAL_LIMITS[kind];
   const chunks: string[][] = [];
   for (let i = 0; i < ids.length; i += limit) {
@@ -155,10 +156,48 @@ async function fetchSeveral<T>(
         }
         throw err;
       }
-      return (res?.[responseKey] ?? []).filter((item): item is T => item != null);
-    })
+      // #778: the endpoint answers with one slot per requested id, in request
+      // order. A null slot — or a slot the response never carried — is an id
+      // Spotify did not resolve, so it is reported instead of vanishing: the
+      // caller must be able to tell a smaller lookup from a fully-resolved one.
+      const slots: Array<T | null> = res?.[responseKey] ?? [];
+      const items: T[] = [];
+      const missing: string[] = [];
+      for (let i = 0; i < Math.max(chunk.length, slots.length); i += 1) {
+        const slot = slots[i];
+        if (slot != null) {
+          items.push(slot);
+          continue;
+        }
+        const id = chunk[i];
+        if (id !== undefined) missing.push(id);
+      }
+      return { items, missing };
+    }),
   );
-  return __chunkResults.flat();
+  return {
+    items: __chunkResults.flatMap((chunk) => chunk.items),
+    missing: __chunkResults.flatMap((chunk) => chunk.missing),
+  };
+}
+
+/** #778: one-line disclosure of the ids a batch could not resolve. */
+function unresolvedIdsNote(missing: readonly string[]): string {
+  if (missing.length === 0) return '';
+  const shown = missing.slice(0, 10).join(', ');
+  const more = missing.length > 10 ? ', …' : '';
+  return `${missing.length} ${missing.length === 1 ? 'id' : 'ids'} unresolved: ${shown}${more}`;
+}
+
+/** #778: id accounting published in structuredContent and json payloads. */
+function severalCounts(resolved: number, missing: readonly string[]): Record<string, unknown> {
+  return { requested: resolved + missing.length, resolved, missing_ids: [...missing] };
+}
+
+/** #778: a fully-unresolved batch must still name what it could not resolve. */
+function noMatchingSeveral(kind: SeveralKind, missing: readonly string[]): string {
+  const note = unresolvedIdsNote(missing);
+  return note ? `No matching ${kind} found (${note})` : `No matching ${kind} found`;
 }
 
 function severalIdsSchema(kind: SeveralKind) {
@@ -258,6 +297,13 @@ function renderList<T>(
     limit?: number | null;
     /** False when the list cannot continue server-side (several_* lookups). */
     continuable?: boolean;
+    /**
+     * Ids the endpoint could not resolve (#778). When present, they are named
+     * in prose and counted in `counts.missing_ids`; an empty array still
+     * publishes `counts`, so "nothing was dropped" is distinguishable from a
+     * lookup that never accounted for the request at all.
+     */
+    unresolved?: readonly string[];
   },
 ): ShapedToolResult {
   const cap = resolveMaxResults(opts.maxResults);
@@ -265,6 +311,13 @@ function renderList<T>(
   const lines = [opts.header];
   trunc.items.forEach((item, i) => lines.push(opts.line(item, i)));
   if (trunc.footer) lines.push('', `(${trunc.footer})`);
+  const extra: Record<string, unknown> = {};
+  if (opts.unresolved) {
+    const missingIds = [...opts.unresolved];
+    extra.counts = severalCounts(pageItems.length, missingIds);
+    const note = unresolvedIdsNote(missingIds);
+    if (note) lines.push('', note);
+  }
   const continuable = opts.continuable !== false;
   const pagination = paginationInfo({
     total: opts.total ?? trunc.total,
@@ -286,7 +339,7 @@ function renderList<T>(
   }
   return {
     content: [{ type: 'text', text: lines.join('\n') }],
-    structuredContent: listStructuredContent(trunc.items, pagination),
+    structuredContent: listStructuredContent(trunc.items, pagination, extra),
   };
 }
 export function registerCatalogTools(server: McpServer, client: SpotifyClient): void {
@@ -703,16 +756,19 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
     'Get full details for several tracks by ID in a single call (up to 50 per request)',
     { ids: severalIdsSchema('tracks'), ...sharedListFields },
     async (args) => {
-      const tracks = await fetchSeveral<SpotifyTrack>(client, 'tracks', 'tracks', args.ids);
-      if (!tracks.length) throw new Error('No matching tracks found');
+      const { items: tracks, missing } = await fetchSeveral<SpotifyTrack>(client, 'tracks', 'tracks', args.ids);
+      if (!tracks.length) throw new Error(noMatchingSeveral('tracks', missing));
 
-      if (args.response_format === 'json') return jsonResult({ items: tracks });
+      if (args.response_format === 'json') {
+        return jsonResult({ items: tracks, counts: severalCounts(tracks.length, missing) });
+      }
       return renderList(args.response_format, tracks, {
         header: `Tracks (${tracks.length}):`,
         line: (track) =>
           `  • "${track.name}" by ${joinArtists(track)} (${formatDuration(track.duration_ms)}) | URI: ${track.uri}`,
         continuable: false,
         maxResults: args.max_results,
+        unresolved: missing,
       });
     },
   );
@@ -723,16 +779,19 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
     'Get full details for several albums by ID in a single call (up to 20 per request)',
     { ids: severalIdsSchema('albums'), ...sharedListFields },
     async (args) => {
-      const albums = await fetchSeveral<SpotifyAlbumItem>(client, 'albums', 'albums', args.ids);
-      if (!albums.length) throw new Error('No matching albums found');
+      const { items: albums, missing } = await fetchSeveral<SpotifyAlbumItem>(client, 'albums', 'albums', args.ids);
+      if (!albums.length) throw new Error(noMatchingSeveral('albums', missing));
 
-      if (args.response_format === 'json') return jsonResult({ items: albums });
+      if (args.response_format === 'json') {
+        return jsonResult({ items: albums, counts: severalCounts(albums.length, missing) });
+      }
       return renderList(args.response_format, albums, {
         header: `Albums (${albums.length}):`,
         line: (album) =>
           `  • "${album.name}" by ${joinArtists(album)} (${album.album_type}, ${album.release_date}, ${album.total_tracks} tracks) | URI: ${album.uri}`,
         continuable: false,
         maxResults: args.max_results,
+        unresolved: missing,
       });
     },
   );
@@ -743,10 +802,12 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
     'Get full details for several artists by ID in a single call (up to 50 per request)',
     { ids: severalIdsSchema('artists'), ...sharedListFields },
     async (args) => {
-      const artists = await fetchSeveral<SpotifyArtistFull>(client, 'artists', 'artists', args.ids);
-      if (!artists.length) throw new Error('No matching artists found');
+      const { items: artists, missing } = await fetchSeveral<SpotifyArtistFull>(client, 'artists', 'artists', args.ids);
+      if (!artists.length) throw new Error(noMatchingSeveral('artists', missing));
 
-      if (args.response_format === 'json') return jsonResult({ items: artists });
+      if (args.response_format === 'json') {
+        return jsonResult({ items: artists, counts: severalCounts(artists.length, missing) });
+      }
       return renderList(args.response_format, artists, {
         header: `Artists (${artists.length}):`,
         line: (item) => {
@@ -757,6 +818,7 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
         },
         continuable: false,
         maxResults: args.max_results,
+        unresolved: missing,
       });
     },
   );
@@ -767,16 +829,19 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
     'Get full details for several podcast episodes by ID in a single call (up to 50 per request)',
     { ids: severalIdsSchema('episodes'), ...sharedListFields },
     async (args) => {
-      const episodes = await fetchSeveral<SpotifyEpisodeFull>(client, 'episodes', 'episodes', args.ids);
-      if (!episodes.length) throw new Error('No matching episodes found');
+      const { items: episodes, missing } = await fetchSeveral<SpotifyEpisodeFull>(client, 'episodes', 'episodes', args.ids);
+      if (!episodes.length) throw new Error(noMatchingSeveral('episodes', missing));
 
-      if (args.response_format === 'json') return jsonResult({ items: episodes });
+      if (args.response_format === 'json') {
+        return jsonResult({ items: episodes, counts: severalCounts(episodes.length, missing) });
+      }
       return renderList(args.response_format, episodes, {
         header: `Episodes (${episodes.length}):`,
         line: (ep) =>
           `  • "${ep.name}" (${formatDuration(ep.duration_ms)}, ${ep.release_date}) | URI: ${ep.uri}`,
         continuable: false,
         maxResults: args.max_results,
+        unresolved: missing,
       });
     },
   );
@@ -787,16 +852,19 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
     'Get full details for several podcast shows by ID in a single call (up to 50 per request)',
     { ids: severalIdsSchema('shows'), ...sharedListFields },
     async (args) => {
-      const shows = await fetchSeveral<SpotifyShowFull>(client, 'shows', 'shows', args.ids);
-      if (!shows.length) throw new Error('No matching shows found');
+      const { items: shows, missing } = await fetchSeveral<SpotifyShowFull>(client, 'shows', 'shows', args.ids);
+      if (!shows.length) throw new Error(noMatchingSeveral('shows', missing));
 
-      if (args.response_format === 'json') return jsonResult({ items: shows });
+      if (args.response_format === 'json') {
+        return jsonResult({ items: shows, counts: severalCounts(shows.length, missing) });
+      }
       return renderList(args.response_format, shows, {
         header: `Shows (${shows.length}):`,
         line: (show) =>
           `  • "${show.name}" by ${show.publisher ?? 'unknown publisher'} (${show.total_episodes} episodes) | URI: ${show.uri}`,
         continuable: false,
         maxResults: args.max_results,
+        unresolved: missing,
       });
     },
   );
@@ -807,10 +875,12 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
     'Get full details for several audiobooks by ID in a single call (up to 50 per request). Audiobooks are only available in the US, UK, Canada, Ireland, New Zealand and Australia markets.',
     { ids: severalIdsSchema('audiobooks'), ...sharedListFields },
     async (args) => {
-      const books = await fetchSeveral<SpotifyAudiobookSimple>(client, 'audiobooks', 'audiobooks', args.ids);
-      if (!books.length) throw new Error('No matching audiobooks found');
+      const { items: books, missing } = await fetchSeveral<SpotifyAudiobookSimple>(client, 'audiobooks', 'audiobooks', args.ids);
+      if (!books.length) throw new Error(noMatchingSeveral('audiobooks', missing));
 
-      if (args.response_format === 'json') return jsonResult({ items: books });
+      if (args.response_format === 'json') {
+        return jsonResult({ items: books, counts: severalCounts(books.length, missing) });
+      }
       return renderList(args.response_format, books, {
         header: `Audiobooks (${books.length}):`,
         line: (book) => {
@@ -819,6 +889,7 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
         },
         continuable: false,
         maxResults: args.max_results,
+        unresolved: missing,
       });
     },
   );
@@ -829,16 +900,19 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
     'Get full details for several audiobook chapters by ID in a single call (up to 50 per request)',
     { ids: severalIdsSchema('chapters'), ...sharedListFields },
     async (args) => {
-      const chapters = await fetchSeveral<SpotifyChapterSimple>(client, 'chapters', 'chapters', args.ids);
-      if (!chapters.length) throw new Error('No matching chapters found');
+      const { items: chapters, missing } = await fetchSeveral<SpotifyChapterSimple>(client, 'chapters', 'chapters', args.ids);
+      if (!chapters.length) throw new Error(noMatchingSeveral('chapters', missing));
 
-      if (args.response_format === 'json') return jsonResult({ items: chapters });
+      if (args.response_format === 'json') {
+        return jsonResult({ items: chapters, counts: severalCounts(chapters.length, missing) });
+      }
       return renderList(args.response_format, chapters, {
         header: `Chapters (${chapters.length}):`,
         line: (chapter) =>
           `  ${chapter.chapter_number}. "${chapter.name}" (${formatDuration(chapter.duration_ms)}) | URI: ${chapter.uri}`,
         continuable: false,
         maxResults: args.max_results,
+        unresolved: missing,
       });
     },
   );
@@ -985,6 +1059,9 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
     async (args) => {
       const uris = args.uris as string[];
       const groups = new Map<string, string[]>();
+      // #778: the URI each id was requested under, so an id the endpoint
+      // answers with null is reported the way the caller spelled it.
+      const requestedUri = new Map<string, string>();
       const invalid: string[] = [];
       for (const uri of uris) {
         const parsed = parseSpotifyUri(uri);
@@ -999,29 +1076,33 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
         const arr = groups.get(kind) ?? [];
         arr.push(parsed.id);
         groups.set(kind, arr);
+        requestedUri.set(`${kind}:${parsed.id}`, uri);
       }
       if (groups.size === 0) throw new Error(`No resolvable URIs. Invalid: ${invalid.join(', ')}`);
       const responseKeyMap: Record<string, string> = { tracks: 'tracks', albums: 'albums', artists: 'artists', shows: 'shows', episodes: 'episodes', audiobooks: 'audiobooks', chapters: 'chapters' };
       const allItems: Array<{ type: string; item: unknown }> = [];
+      const unresolved: string[] = [];
       for (const [kind, ids] of groups) {
         const key = responseKeyMap[kind] ?? kind;
-        const items = await fetchSeveral<Record<string, unknown>>(client, kind as SeveralKind, key, ids);
+        const { items, missing } = await fetchSeveral<Record<string, unknown>>(client, kind as SeveralKind, key, ids);
+        for (const id of missing) unresolved.push(requestedUri.get(`${kind}:${id}`) ?? id);
         for (const it of items) allItems.push({ type: kind, item: it });
       }
       if (args.response_format === 'json') {
-        const raw: Record<string, unknown> = { items: allItems, invalid };
+        const raw: Record<string, unknown> = { items: allItems, invalid, unresolved };
         return { content: [{ type: 'text', text: JSON.stringify(raw) }], structuredContent: raw };
       }
       const cap = resolveMaxResults(args.max_results);
       const trunc = truncateItems(allItems, cap);
-      const lines = [`Batch lookup (${allItems.length} resolved${invalid.length ? `, ${invalid.length} invalid skipped` : ''}):`];
+      const lines = [`Batch lookup (${allItems.length} resolved${invalid.length ? `, ${invalid.length} invalid skipped` : ''}${unresolved.length ? `, ${unresolvedIdsNote(unresolved)}` : ''}):`];
       trunc.items.forEach(({ type, item }) => {
         const o = item as Record<string, unknown>;
         lines.push(`  \u2022 [${type}] "${(o.name as string) ?? (o.id as string)}" | URI: ${(o.uri as string) ?? ''}`);
       });
       if (trunc.footer) lines.push('', `(${trunc.footer})`);
       if (invalid.length) lines.push('', `Invalid URIs skipped: ${invalid.join(', ')}`);
-      return { content: [{ type: 'text', text: lines.join('\n') }], structuredContent: { items: trunc.items, total: allItems.length, invalid } };
+      if (unresolved.length) lines.push('', `IDs the endpoint could not resolve: ${unresolved.join(', ')}`);
+      return { content: [{ type: 'text', text: lines.join('\n') }], structuredContent: { items: trunc.items, total: allItems.length, invalid, unresolved } };
     },
   );
 
