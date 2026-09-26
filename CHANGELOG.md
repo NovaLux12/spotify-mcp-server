@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.1.3](https://github.com/NovaLux12/spotify-mcp-server/compare/v2.1.2...v2.1.3) (2026-09-26)
+
+
+### Bug Fixes
+
+* **#1052:** bound the .corrupt.N chain and reuse identical copies ([e5caad7](https://github.com/NovaLux12/spotify-mcp-server/commit/e5caad73c38e6854162736b7ea2b23f4a7b33e4d))
+* **#1053:** playlist_from_tags honours genre-tag corruption contract ([b440c64](https://github.com/NovaLux12/spotify-mcp-server/commit/b440c64253664e25e8c8614256ead4660c6d2e51))
+* **#1070:** device_sync_state reads stores independently, surfaces scenes load_error ([422b7c1](https://github.com/NovaLux12/spotify-mcp-server/commit/422b7c10b2c5dff411ce2c2db215d3e455ab6cfa))
+* **#1092:** collapse resolveRuleCandidates onto shared loadCandidates and disclose ceilings ([ecad765](https://github.com/NovaLux12/spotify-mcp-server/commit/ecad765e71b1b18590180729114a9366de53c24a))
+* **#1093:** three exhaust2_catalog batch tools disclose unresolved ids ([3a01226](https://github.com/NovaLux12/spotify-mcp-server/commit/3a01226c79f416e79c734f3c06f99cff5e0ded7a))
+* **#1095:** receipt routing records per-type writes so undo targets the right endpoint ([d765e79](https://github.com/NovaLux12/spotify-mcp-server/commit/d765e7947aae503938a3c68f6f0542c13428b82d))
+* **#1101:** classify backup_library as read-only via OVERRIDES ([55ea363](https://github.com/NovaLux12/spotify-mcp-server/commit/55ea363c093327a43ff42a02ffc4d7bfd9c567aa))
+* **#1126:** retry the registry publish so npm propagation lag is not a red build ([c252534](https://github.com/NovaLux12/spotify-mcp-server/commit/c252534a0fdbe47c82b8e6bd3b39e8845fa96978))
+* **#1128:** size a gated module's ceiling for the surface it can reach ([f7b8f93](https://github.com/NovaLux12/spotify-mcp-server/commit/f7b8f938fff656492c410e1f10fa90449b61332e))
+* **#1130:** identify and fix the intermittent suite failure ([#1132](https://github.com/NovaLux12/spotify-mcp-server/issues/1132)) ([8d81c05](https://github.com/NovaLux12/spotify-mcp-server/commit/8d81c05ce95f882cf2d957e53db022c37a636a58))
+* **#1135:** unique per-writer temp name in artistwatch saveStore ([534d951](https://github.com/NovaLux12/spotify-mcp-server/commit/534d9519f0aab049650d6883e9e16c0af993e505))
+* **statsfm:** name what the read actually selected, in both disclosure branches ([0c93346](https://github.com/NovaLux12/spotify-mcp-server/commit/0c93346b9b420c0ef7aa313e07a7e84fd0cca1ab))
+* **statsfm:** restore the lifetime clause, drop guessed parameter names ([4dc98e0](https://github.com/NovaLux12/spotify-mcp-server/commit/4dc98e0898a7f064ff135446aede66539d957b64))
+* **statsfm:** stop reporting one stream page as a lifetime total ([#997](https://github.com/NovaLux12/spotify-mcp-server/issues/997)) ([15a15e4](https://github.com/NovaLux12/spotify-mcp-server/commit/15a15e43507daff3d4f5daaec1a30fd0c789b316)), closes [#810](https://github.com/NovaLux12/spotify-mcp-server/issues/810)
+
+
+### Documentation
+
+* **#1052:** refresh module-map after rebasing onto current main ([7be0d5b](https://github.com/NovaLux12/spotify-mcp-server/commit/7be0d5b3ae278e49d5e7895b390c21c58b5e67d4))
+* **#1127:** say which Registry endpoint is authoritative, and why ([#1134](https://github.com/NovaLux12/spotify-mcp-server/issues/1134)) ([e0cf35c](https://github.com/NovaLux12/spotify-mcp-server/commit/e0cf35c89685e1d0095c7f3e7e049f5363fd8735))
+
 ## [2.1.2](https://github.com/NovaLux12/spotify-mcp-server/compare/v2.1.1...v2.1.2) (2026-09-26)
 
 

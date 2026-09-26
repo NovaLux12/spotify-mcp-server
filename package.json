@@ -1,6 +1,6 @@
 {
   "name": "@novalux12/spotify-mcp",
-  "version": "2.1.2",
+  "version": "2.1.3",
   "description": "Spotify Web API MCP: playback, library, playlists, search, podcasts. Not affiliated with Spotify.",
   "type": "module",
   "bin": {
