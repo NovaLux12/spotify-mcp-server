@@ -38,36 +38,154 @@ import { SpotifyApiError } from './client.js';
 import type { SpotifyClient } from './client.js';
 
 /**
- * The #329 app-registration-gated endpoint families (probe 2026-08-26):
- *   /browse/categories*           -- list, single {id}, {id}/playlists (#428)
- *   /browse/new-releases          -- removed for newer registrations
- *   /markets                      -- app-gated
- *   /artists/{id}/top-tracks      -- app-gated
- *   /users/{id}*                  -- profile + playlists (Feb 2026 removal)
- *   documented /me/<type>/contains -- albums/tracks/episodes/shows/audiobooks/following
- *   /playlists/{id}/followers/contains
- *   #725 (Feb 2026 removal):
- *     /tracks|albums|artists|episodes|shows|audiobooks|chapters
- *       -- the multi-id `?ids=` batch endpoints; per-id GETs are the
- *          single-id replacements and are NOT gated (#638). The fallback
- *          lives in `fetchSeveral` and emits `degraded: true` on its result.
+ * One app-registration-gated endpoint family: the runtime classifier, the
+ * paths it is documented by, and what the server does about a 403 there.
  *
- * Exported so the #330 gauntlet SKIP set and future callers classify against
- * the same single source of truth.
+ * `example` is the representative path the README names for the family. It is
+ * asserted against `pattern` by `checkGatedEndpointTruth()` in
+ * `scripts/surface-census.mjs`, so a family cannot ship with a doc example its
+ * own classifier rejects. `tools` is the hand-maintained list of shipped tools
+ * that call the family; the census cross-checks it against a static scan of
+ * `client.get` / `client.getAllPages` call sites under `src/tools/`, so a new
+ * wrapper has to be named here in the same change that adds it.
+ *
+ * `fallback` is what a tool does when the family answers 403 on the active
+ * registration -- the honest third half of every "this is gated" claim, and
+ * the reason the README cannot describe these families as simply "unavailable".
  */
-export const GATED_PATH_PATTERNS: readonly RegExp[] = [
-  /^\/browse\/categories(?:\/|$)/,
-  /^\/browse\/new-releases(?:\/|$)/,
-  /^\/markets$/,
-  /^\/artists\/[^/]+\/top-tracks$/,
-  /^\/users\/[^/]+(?:\/.+)?$/,
-  /^\/me\/(?:albums|tracks|episodes|shows|audiobooks|following)\/contains$/,
-  /^\/playlists\/[^/]+\/followers\/contains$/,
-  // #725: the multi-id batch endpoints. The bare plural path is the only
-  // form the wrapper sees -- per-id GETs go through `/(tracks|...)/{id}` and
-  // are not gated, so the `$` anchor is load-bearing (see isGatedPath tests).
-  /^\/(?:tracks|albums|artists|episodes|shows|audiobooks|chapters)$/,
+export interface GatedFamily {
+  /** Family id, stable; used in README anchors and census errors. */
+  id: string;
+  /** Human label for the README table. */
+  label: string;
+  /** The runtime classifier. This is what `isGatedPath` applies. */
+  pattern: RegExp;
+  /** A path this pattern must accept; asserted by the census. */
+  example: string;
+  /** Shipped tools that issue a request against this family. */
+  tools: readonly string[];
+  /**
+   * What the server does on 403. `'replaced'` means a documented replacement
+   * endpoint is used instead (or per-id reads), so the tool still answers;
+   * `'explained'` means the call is still made and the 403 is disclosed.
+   */
+  fallback: 'replaced' | 'explained';
+  /**
+   * Why a 403 is expected. `removal` = Spotify's Feb 2026 changelog marks the
+   * operation REMOVED; `gated` = observed 403 on a current registration while
+   * the operation is not listed as removed. Both are registration-dependent:
+   * a grandfathered registration may still answer 200.
+   */
+  reason: 'removal' | 'gated';
+}
+
+/**
+ * The #329 app-registration-gated endpoint families (probe 2026-08-26).
+ *
+ * Three sources describe this class and only two of them are binaries:
+ * Spotify's Feb 2026 changelog marks some operations `[REMOVED]`, while the
+ * live OpenAPI schema still publishes them carrying `deprecated: true` (e.g.
+ * `/artists/{id}/top-tracks`, all seven `Get Several` batch paths). Neither
+ * source is the runtime truth: the runtime truth is what a *given* app
+ * registration is allowed to read. A registration without the grant answers
+ * 403/404/410; a grandfathered one still answers 200. That is why every
+ * family here carries a `fallback` -- see the README section generated from
+ * this array.
+ *
+ * A family in this list is a runtime CLASSIFIER, not a claim that a shipped
+ * tool calls it. Two families (`browse-new-releases`,
+ * `playlist-followers-contains`) have no live call site left -- the tools that
+ * used them were migrated onto replacements -- and the pattern is retained so
+ * a future caller is still covered rather than losing the 403 contract.
+ *
+ * Exported so the #330 gauntlet SKIP set, the README, and the surface census
+ * all classify against this one array.
+ */
+export const GATED_FAMILIES: readonly GatedFamily[] = [
+  {
+    id: 'browse-categories',
+    label: '`/browse/categories*` (list, `{id}`, `{id}/playlists`)',
+    pattern: /^\/browse\/categories(?:\/|$)/,
+    example: '/browse/categories/party/playlists',
+    tools: ['browse_category_deepdive'],
+    fallback: 'explained',
+    reason: 'removal',
+  },
+  {
+    id: 'browse-new-releases',
+    label: '`/browse/new-releases`',
+    pattern: /^\/browse\/new-releases(?:\/|$)/,
+    example: '/browse/new-releases',
+    // No live call site: freshness and the "what just dropped" tools derive the
+    // same answer from search + saved reads instead. Pattern retained for coverage.
+    tools: [],
+    fallback: 'replaced',
+    reason: 'removal',
+  },
+  {
+    id: 'markets',
+    label: '`/markets`',
+    pattern: /^\/markets$/,
+    example: '/markets',
+    tools: ['get_available_markets', 'market_validate'],
+    fallback: 'explained',
+    reason: 'removal',
+  },
+  {
+    id: 'artist-top-tracks',
+    label: '`/artists/{id}/top-tracks`',
+    pattern: /^\/artists\/[^/]+\/top-tracks$/,
+    example: '/artists/artist-id/top-tracks',
+    tools: ['get_artist_top_tracks', 'queue_playlist'],
+    fallback: 'explained',
+    reason: 'removal',
+  },
+  {
+    id: 'user-profile',
+    label: '`/users/{id}` and `/users/{id}/playlists`',
+    pattern: /^\/users\/[^/]+(?:\/.+)?$/,
+    example: '/users/user-id',
+    tools: ['get_user_profile', 'get_user_playlists', 'get_playlist_followers'],
+    fallback: 'explained',
+    reason: 'removal',
+  },
+  {
+    id: 'me-type-contains',
+    label: 'the documented `/me/{type}/contains` checks (tracks, albums, shows, episodes, audiobooks, following)',
+    pattern: /^\/me\/(?:albums|tracks|episodes|shows|audiobooks|following)\/contains$/,
+    example: '/me/episodes/contains',
+    tools: ['check_episode_saved', 'remove_saved_episode', 'check_following_artists', 'restore_library_snapshot'],
+    fallback: 'explained',
+    reason: 'removal',
+  },
+  {
+    id: 'playlist-followers-contains',
+    label: '`/playlists/{id}/followers/contains`',
+    pattern: /^\/playlists\/[^/]+\/followers\/contains$/,
+    example: '/playlists/playlist-id/followers/contains',
+    // #862 migrated check_playlist_following onto GET /me/library/contains,
+    // which is NOT gated (it returned 200 on the same probe). Pattern retained
+    // for coverage; no shipped tool reads this path any more.
+    tools: [],
+    fallback: 'replaced',
+    reason: 'removal',
+  },
+  {
+    id: 'batch-several',
+    label: 'the multi-id `?ids=` batch endpoints (`/tracks`, `/albums`, `/artists`, `/episodes`, `/shows`, `/audiobooks`, `/chapters`)',
+    // The bare plural path is the only form the wrapper sees -- per-id GETs go
+    // through `/(tracks|...)/{id}` and are not gated, so the `$` anchor is
+    // load-bearing (see isGatedPath tests).
+    pattern: /^\/(?:tracks|albums|artists|episodes|shows|audiobooks|chapters)$/,
+    example: '/tracks',
+    tools: ['get_several_tracks', 'get_several_albums', 'get_several_artists'],
+    fallback: 'replaced',
+    reason: 'removal',
+  },
 ];
+
+/** The runtime classifier list, derived from the documented families above. */
+export const GATED_PATH_PATTERNS: readonly RegExp[] = GATED_FAMILIES.map((f) => f.pattern);
 
 /** Whether an API-relative request path belongs to the #329 gated class. */
 export function isGatedPath(path: string): boolean {

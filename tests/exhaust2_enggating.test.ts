@@ -297,6 +297,53 @@ test('every canonical family regex is anchored at the start', () => {
   for (const re of GATED_PATH_PATTERNS) assert.ok(re.source.startsWith('^'), `unanchored: ${re.source}`);
 });
 
+// ------------------------------------------------- #605 documented family metadata
+
+test('GATED_PATH_PATTERNS is derived from GATED_FAMILIES, not maintained beside it (#605)', async () => {
+  // The README's gated table is generated from GATED_FAMILIES, and the runtime
+  // classifier from GATED_PATH_PATTERNS. If those are two lists, the table
+  // drifts from the code -- which is the bug #605 exists to close. Assert the
+  // classifier IS the families, in order.
+  const { GATED_FAMILIES } = await import('../src/gating.js');
+  assert.deepEqual(
+    GATED_PATH_PATTERNS.map((re) => re.source),
+    GATED_FAMILIES.map((f) => f.pattern.source),
+    'GATED_PATH_PATTERNS must be GATED_FAMILIES.map(f => f.pattern); a second list is what let the README disagree with the code',
+  );
+});
+
+test('every documented family example is accepted by its own pattern (#605)', async () => {
+  // A family whose README row names a path its own classifier rejects is the
+  // exact drift this guards. Revert the fix and this must fail.
+  const { GATED_FAMILIES } = await import('../src/gating.js');
+  for (const family of GATED_FAMILIES) {
+    assert.ok(
+      family.pattern.test(family.example),
+      `family ${family.id} documents ${family.example}, which its own pattern rejects`,
+    );
+  }
+});
+
+test('every family names the tools it ships, and a shipped tool names a real family (#605)', async () => {
+  const { GATED_FAMILIES } = await import('../src/gating.js');
+  const ids = GATED_FAMILIES.map((f) => f.id);
+  assert.equal(new Set(ids).size, ids.length, 'family ids must be unique — the README keys its rows on them');
+  for (const family of GATED_FAMILIES) {
+    assert.ok(family.label.trim().length > 0, `family ${family.id} has no label`);
+    assert.ok(['replaced', 'explained'].includes(family.fallback), `family ${family.id} has an unknown fallback`);
+    assert.ok(['removal', 'gated'].includes(family.reason), `family ${family.id} has an unknown reason`);
+  }
+  // Two families are retained with no call site after their tools migrated onto
+  // replacements. They must stay in the list — a family with no caller today is
+  // still the classifier that covers a future one — but the README has to say so.
+  const callSiteFree = GATED_FAMILIES.filter((f) => f.tools.length === 0);
+  assert.deepEqual(
+    callSiteFree.map((f) => f.id).sort(),
+    ['browse-new-releases', 'playlist-followers-contains'],
+    'the set of families with no shipped call site changed; update the README notes that explain why they are kept',
+  );
+});
+
 // ------------------------------------------------- #765 composition over real tools
 
 /**
