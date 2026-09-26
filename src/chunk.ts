@@ -11,9 +11,14 @@
  *   - `GET/POST/DELETE /playlists/{id}/items` takes 100 uris or positions.
  *   - `PUT|DELETE /me/library` takes 40 uris; the read
  *     `GET /me/library/contains` takes 50, so the two are separate keys.
- *   - `PUT /me/tracks`, `GET /me/library/contains`, `GET /artists?ids=` and
- *     `/me/following` pages take 50.
+ *   - `PUT /me/tracks`, `GET /me/library/contains` and `/me/following` pages
+ *     take 50.
  *   - `GET /albums?ids=` / `PUT /me/albums` are batched at 20.
+ *   - `artists: 50` no longer describes a request Spotify will serve. Spotify's
+ *     February 2026 changelog removed the multi-id artist lookup (#1004), so
+ *     the key now bounds the `get_several_artists` request size only; the
+ *     per-id replacement reads one artist at a time and is faned out by
+ *     `ARTIST_FANOUT_WIDTH` in `tools/catalog.ts`, not from here.
  *
  * Pure module: no imports.
  */

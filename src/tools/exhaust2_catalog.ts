@@ -13,7 +13,7 @@
  * Forbidden errors.
  */
 import { z } from 'zod';
-import { ARTIST_ALBUM_PAGE_LIMIT, MARKET_CODE } from './catalog.js';
+import { ARTIST_ALBUM_PAGE_LIMIT, MARKET_CODE, fetchArtistsPerId } from './catalog.js';
 import { chunk } from '../chunk.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
@@ -498,9 +498,9 @@ export function registerExhaust2CatalogTools(server: McpServer, client: SpotifyC
   // ------------------------------------------------------------------ #343
   server.tool(
     'track_enrichment_batch',
-    'Up to 50 track IDs → enriched rows: album release date, label and artist genres joined back onto each track '
-      + 'via chunked several-tracks + several-albums + several-artists fan-in. '
-      + 'Quota: 🟡 ~3 chunked API calls (one per several-* endpoint, more when chunking splits).',
+    'Up to 50 track IDs → enriched rows: album release date, label and artist genres joined back onto each track. '
+      + 'Quota: 🟡 1 GET /tracks?ids= + 1 GET /albums?ids= per 20 albums + 1 GET /artists/{id} per distinct '
+      + 'artist (Feb 2026 removed the batch artist lookup; counts carry the real request total).',
     {
       track_ids: z.array(z.string().min(1)).min(1).max(50).describe('Up to 50 Spotify track IDs'),
       fields: z
@@ -545,15 +545,14 @@ max_results: z.number().int().positive().max(2000).optional().describe('Max item
       for (const res of albumResponses) {
         for (const al of res?.albums ?? []) if (al?.id) albums.set(al.id, al);
       }
-      const artistIds = [...new Set(tracks.flatMap((t) => (t.artists ?? []).map((a) => a.id)).filter((x): x is string => !!x))];
+      const artistIds = tracks.flatMap((t) => (t.artists ?? []).map((a) => a.id)).filter((x): x is string => !!x);
+      // #1004: `GET /artists?ids=` is one of the endpoints Spotify's February
+      // 2026 changelog removed outright, so genres are read per id. The count
+      // of requests that actually went out is published below rather than the
+      // batch endpoint's old "one call".
+      const artistRead = await fetchArtistsPerId(client, artistIds);
       const genresByArtist = new Map<string, string[]>();
-      const artistGroups = chunk(artistIds, 'artists');
-      const artistResponses = await Promise.all(
-        artistGroups.map((group) => client.get<{ artists: (SpotifyArtistFull | null)[] }>('/artists', { ids: group.join(',') })),
-      );
-      for (const res of artistResponses) {
-        for (const ar of res?.artists ?? []) if (ar?.id) genresByArtist.set(ar.id, ar.genres ?? []);
-      }
+      for (const [id, artist] of artistRead.byId) genresByArtist.set(id, artist.genres ?? []);
 
       const cap = resolveMaxResults(args.max_results, getConfig().maxItems);
       const trunc = truncateItems(tracks, cap);
@@ -591,6 +590,13 @@ max_results: z.number().int().positive().max(2000).optional().describe('Max item
           missing_ids: [...missingTrackIds],
           albums_fetched: albums.size,
           artists_fetched: genresByArtist.size,
+          // #1004: the artist leg is a per-id fan-out, so its real request
+          // count and its unreadable ids are published. A row whose artist
+          // could not be read reports `artist_genres: []`, which the caller
+          // must be able to tell apart from an artist Spotify has no tags for.
+          artist_requests: artistRead.requests,
+          artist_ids_unresolved: artistRead.unresolved.map((u) => u.id),
+          artist_unresolved: artistRead.unresolved,
         },
         pagination: paginationInfo({ total: tracks.length, returned: trunc.items.length }),
       });
@@ -1509,8 +1515,8 @@ max_results: z.number().int().positive().max(2000).optional().describe('Max item
   // ------------------------------------------------------------------ #357
   server.tool(
     'artist_genres_compact',
-    'Up to 50 artist IDs → name·genres two-column projection (compact roster view over several-artists). '
-      + 'Quota: 🟢 one GET /artists?ids= call.',
+    'Up to 50 artist IDs → name·genres two-column projection (compact roster view). '
+      + 'Quota: 🟡 1 GET /artists/{id} per distinct id (Feb 2026 removed the batch GET /artists?ids=).',
     {
       artist_ids: z.array(z.string().min(1)).min(1).max(50).describe('Up to 50 Spotify artist IDs'),
       response_format: ResponseFormat,
@@ -1518,23 +1524,17 @@ max_results: z.number().int().positive().max(2000).optional().describe('Max item
     async (args) => {
       const rf = args.response_format;
       const ids = [...new Set(args.artist_ids)];
-      const res = await client.get<{ artists: (SpotifyArtistFull | null)[] }>('/artists', { ids: ids.join(',') });
-      // #1093: null slots are ids the endpoint could not resolve. Account for
-      // them by index so the caller can tell a smaller lookup from a fully-
-      // resolved one. The de-duped `ids` array is what was sent to Spotify, so
-      // requested == resolved + missing_ids.length always holds.
-      const artistSlots = res?.artists ?? [];
-      const artists: SpotifyArtistFull[] = [];
-      const missingArtistIds: string[] = [];
-      for (let i = 0; i < Math.max(ids.length, artistSlots.length); i += 1) {
-        const slot = artistSlots[i];
-        if (slot != null) {
-          artists.push(slot);
-          continue;
-        }
-        const id = ids[i];
-        if (id !== undefined) missingArtistIds.push(id);
-      }
+      // #1004: the batch lookup this tool used to open with is one of the
+      // endpoints Spotify's February 2026 changelog removed outright, and the
+      // changelog names no replacement for it, so there is no batch to try
+      // first. Per-id GET /artists/{id} is the read that still answers.
+      const read = await fetchArtistsPerId(client, ids);
+      // #1093: an id the lookup could not resolve is named, not dropped, so a
+      // smaller roster can be told from a fully-resolved one. `ids` is the
+      // de-duped list that was looked up, so requested == resolved +
+      // missing_ids.length always holds.
+      const artists = ids.map((id) => read.byId.get(id)).filter((a): a is SpotifyArtistFull => a !== undefined);
+      const missingArtistIds = read.unresolved.map((u) => u.id);
       if (artists.length === 0) throw new Error('No artists found for the given IDs');
       const cap = resolveMaxResults(undefined, getConfig().maxItems);
       const trunc = truncateItems(artists, cap);
@@ -1549,6 +1549,10 @@ max_results: z.number().int().positive().max(2000).optional().describe('Max item
           resolved: artists.length,
           missing_ids: [...missingArtistIds],
           without_genres: noGenres,
+          // #1004: what the per-id fan-out cost, and why each missing id is
+          // missing, so a caller can tell a dead id from a transport failure.
+          requests: read.requests,
+          unresolved: read.unresolved,
         },
         pagination: paginationInfo({ total: artists.length, returned: trunc.items.length }),
       });

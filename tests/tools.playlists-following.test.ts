@@ -11,11 +11,13 @@ import { describe, it } from 'node:test';
 import { z } from 'zod';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { readdirSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { SpotifyApiError } from '../src/client.js';
 import type { SpotifyClient } from '../src/client.js';
+import { isGatedPath } from '../src/gating.js';
 import type { SpotifyPaged } from '../src/types/spotify.js';
 import { registerPlaylistTools, walkTruncationNotice } from '../src/tools/playlists.js';
 import { registerFollowingTools } from '../src/tools/following.js';
@@ -1486,6 +1488,55 @@ const FEB_2026_REMOVED_FOLLOW_READS = [
   '/me/albums/contains',
   '/me/tracks/contains',
 ];
+
+// #1004: this file's per-tool tests pin what `check_playlist_following` does,
+// but nothing pinned the whole `src/` tree, which is how a second tool could
+// quietly re-introduce the removed route later. The scan below covers one
+// route on purpose: `followers/contains` is unambiguously dead, so there is no
+// surviving code that may name it. (The other Feb 2026 removals are not in
+// scope here — `get_several_*` still wraps the batch family, which is #638.)
+describe('the removed follow-contains route is not in shipped source (#1004)', () => {
+  /** Files allowed to mention the route: the one that classifies it. */
+  const CLASSIFIER = 'src/gating.ts';
+
+  function walk(dir: string, out: string[] = []): string[] {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) walk(full, out);
+      else if (entry.name.endsWith('.ts')) out.push(full);
+    }
+    return out;
+  }
+
+  /**
+   * Strip comments so a note ABOUT the removal (which every honest fix wants
+   * to leave behind) is not counted as a call to it. A string literal is not a
+   * comment and is deliberately not stripped: `'/playlists/' + id +
+   * '/followers/contains'` is exactly the shape this must catch.
+   */
+  function stripComments(source: string): string {
+    return source
+      .replace(/\/\*[\s\S]*?\*\//g, ' ')
+      .split('\n')
+      .map((line) => line.replace(/\/\/.*$/, ''))
+      .join('\n');
+  }
+
+  it('no src file but the classifier contains the path', () => {
+    const root = join(import.meta.dirname, '..');
+    const offenders: string[] = [];
+    for (const file of walk(join(root, 'src'))) {
+      const rel = relative(root, file);
+      if (rel === CLASSIFIER) continue;
+      if (stripComments(readFileSync(file, 'utf8')).includes('followers/contains')) offenders.push(rel);
+    }
+    assert.deepEqual(offenders, [], `shipped source still references the removed route: ${offenders.join(', ')}`);
+  });
+
+  it('the classifier still recognises the path, so a 403 on it is annotated', () => {
+    assert.ok(isGatedPath('/playlists/37i9dQZF1DXcBWIGoYBM5M/followers/contains'));
+  });
+});
 
 describe('check_playlist_following (#862)', () => {
   interface FollowRow {

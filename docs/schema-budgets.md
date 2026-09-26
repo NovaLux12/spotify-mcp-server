@@ -59,6 +59,50 @@ matches the finalized registry. The source manifest derives current ceilings as
 ceilings are authoritative and are reported by `toolset_report`. A schema change
 above either ceiling fails CI and server startup.
 
+### Aggregate ceiling and the payload it guards
+
+The per-module ceilings above bound one module each. A second gate bounds the
+whole default surface: `AGGREGATE_SURFACE_LIMITS` in `src/tools/annotations.ts`
+caps the total serialized `tools/list` payload a host session receives. It is
+**not** a description-plus-inputSchema figure — each tool is serialized as
+`{name, title, description, inputSchema, annotations, execution, _meta}`, so
+roughly 11.5% of the budgeted bytes are names, titles and metadata that the
+per-module table excludes. Size a raise against the aggregate number.
+
+`defaultMaxBytes` is 607,000B and the enforced limit is that plus 1,000B for
+annotation metadata applied after registration, so **608,000B is the real
+ceiling**. Measured on the tree carrying #1004 and the whole wave (592 tools):
+**607,715B — 285B of headroom, which is not headroom.**
+
+**The budget is effectively exhausted.** The wave the 607,000 raise was sized
+for has spent the headroom again, without a single PR asking to: the same
+condition that forced that raise (94B left) is back. #1004's own warrant is
++136B, so raising for it here would be a ~7x raise against its warrant — the
+reflex this budget exists to prevent. The next honest sentence should land in a
+conversation with whoever owns the surface, not in a failed startup.
+
+#1004 needed no raise of its own. It cost +136B in the per-module metric —
+`exhaust2catalog` 19,176 -> 19,241 and `swarm3analytics` 18,880 -> 18,951 — and
+that is the three artist-reading tools having to re-quote their request quota
+now that they read `GET /artists/{id}` one at a time
+(`track_enrichment_batch`, `artist_genres_compact`, `top_genre_census`), since
+the batch lookup they used to cite was removed by Spotify in February 2026. Its
+branch proposed a 604,000B raise, sized against a 603,999B base that predated
+the in-flight wave; the 607,000B raise that landed on `main` first supersedes
+it, and the merged tree still measures under that ceiling.
+
+**Re-measure before trusting any figure here.** The number recorded with the
+603,000 raise said "measured 603,100B" and was already stale by ~900B: the figure
+had drifted as later changes landed, leaving one byte of real headroom — a budget
+whose stated headroom has silently evaporated breaches on the next honest
+sentence. One recorded on a sibling branch (#782) was *low* by ~27KB, quietly
+overstating the headroom by many times over. Both errors are in the same
+direction the prose invites: write the number you expect, not the one you
+measured. Measure by building the registry the way `src/index.ts` does and
+calling `collectAggregateSurfaceMeasurement`;
+`assertAggregateSurfaceBudget` puts the measured byte count in its error message
+if you lower the limit to force one.
+
 <!-- BEGIN:generated schema-budget-table -->
 | Module | Tools | Schema bytes | Baseline tools | Baseline bytes | Effective tool ceiling | Effective byte ceiling |
 |---|---:|---:|---:|---:|---:|---:|
@@ -112,7 +156,7 @@ above either ceiling fails CI and server startup.
 | import | 1 | 1,211 | 1 | 1,211 | 2 | 1,333 |
 | smart | 1 | 2,364 | 1 | 2,364 | 2 | 2,601 |
 | exhaustmisc | 10 | 7,924 | 10 | 7,924 | 11 | 8,717 |
-| exhaust2catalog | 19 | 19,176 | 19 | 19,176 | 20 | 21,094 |
+| exhaust2catalog | 19 | 19,241 | 19 | 19,241 | 20 | 21,166 |
 | exhaust2enggating | 0 | 0 | 0 | 0 | 1 | 0 |
 | exhaust2playback | 23 | 17,306 | 23 | 17,306 | 24 | 19,037 |
 | exhaust2playlists | 18 | 23,507 | 18 | 23,507 | 19 | 25,858 |
@@ -122,7 +166,7 @@ above either ceiling fails CI and server startup.
 | swarm3bdiscovery | 24 | 20,039 | 24 | 20,039 | 25 | 22,043 |
 | swarm3shows | 24 | 21,075 | 24 | 21,075 | 25 | 23,183 |
 | swarm3refs | 6 | 4,331 | 6 | 4,331 | 7 | 4,765 |
-| swarm3analytics | 24 | 18,880 | 24 | 18,880 | 25 | 20,768 |
+| swarm3analytics | 24 | 18,951 | 24 | 18,951 | 25 | 20,847 |
 | swarm3library | 24 | 18,092 | 24 | 18,092 | 25 | 19,902 |
 | swarm3playback | 24 | 14,247 | 24 | 14,247 | 25 | 15,672 |
 | swarm3playlistops | 24 | 31,777 | 24 | 31,777 | 25 | 34,955 |
