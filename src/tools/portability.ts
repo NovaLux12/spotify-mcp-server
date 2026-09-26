@@ -840,6 +840,33 @@ function truncationPayload(plan: SidecarPlan) {
   };
 }
 
+/**
+ * #760: a store that exists but cannot be read is UNREAD, not empty.
+ * tryReadJson collapses "no such file" and "unparseable bytes" into the same
+ * null, so a corrupt scenes.json used to export as `counts.scenes: 0` — a
+ * count the archive then carried into every later import.
+ */
+type StoreRead =
+  | { readonly state: 'read'; readonly value: unknown }
+  | { readonly state: 'absent' }
+  | { readonly state: 'unreadable'; readonly reason: string };
+
+async function readStoreForExport(path: string): Promise<StoreRead> {
+  let raw: string;
+  try {
+    raw = await readFile(path, 'utf8');
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT') return { state: 'absent' };
+    return { state: 'unreadable', reason: code ?? (e instanceof Error ? e.message : String(e)) };
+  }
+  try {
+    return { state: 'read', value: JSON.parse(raw) };
+  } catch (e) {
+    return { state: 'unreadable', reason: `invalid JSON: ${e instanceof Error ? e.message : String(e)}` };
+  }
+}
+
 export function registerPortabilityTools(server: McpServer, client: SpotifyClient): void {
   server.tool(
     'save_discover_weekly',
@@ -883,27 +910,44 @@ export function registerPortabilityTools(server: McpServer, client: SpotifyClien
       });
       const cap = getConfig().fetchAllCap;
 
-      const [tracks, albums, shows, episodes] = await Promise.all([
-        client.getAllPages<SavedTrackItem>('/me/tracks', { limit: '50' }, { maxItems: cap }),
-        client.getAllPages<SavedAlbumItem>('/me/albums', { limit: '50' }, { maxItems: cap }),
-        client.getAllPages<SavedShowItem>('/me/shows', { limit: '50' }, { maxItems: cap }),
-        client.getAllPages<SavedEpisodeItem>('/me/episodes', { limit: '50' }, { maxItems: cap }),
+      // #864: the verdict comes from the walk that produced the rows, not from
+      // `rows.length === cap`. A library that is exactly `cap` long and one the
+      // cap cut short hold the same rows; only the walk knows which it saw.
+      const [trackWalk, albumWalk, showWalk, episodeWalk] = await Promise.all([
+        client.getAllPagesWithTruncation<SavedTrackItem>('/me/tracks', { limit: '50' }, { maxItems: cap }),
+        client.getAllPagesWithTruncation<SavedAlbumItem>('/me/albums', { limit: '50' }, { maxItems: cap }),
+        client.getAllPagesWithTruncation<SavedShowItem>('/me/shows', { limit: '50' }, { maxItems: cap }),
+        client.getAllPagesWithTruncation<SavedEpisodeItem>('/me/episodes', { limit: '50' }, { maxItems: cap }),
       ]);
       let audiobooks: Array<{ added_at: string; audiobook: { uri: string; name: string } }> = [];
+      let audiobooksTruncated = false;
+      // A failed read is not a zero: an unreadable /me/audiobooks is reported
+      // as unread, never as an account that saved no audiobooks.
+      let audiobooksUnreadable: string | null = null;
       try {
-        audiobooks = await client.getAllPages<{ added_at: string; audiobook: { uri: string; name: string } }>('/me/audiobooks', { limit: '50' }, { maxItems: cap });
-      } catch {
-        audiobooks = [];
+        const walk = await client.getAllPagesWithTruncation<{ added_at: string; audiobook: { uri: string; name: string } }>('/me/audiobooks', { limit: '50' }, { maxItems: cap });
+        audiobooks = walk.items;
+        audiobooksTruncated = walk.truncated;
+      } catch (e) {
+        audiobooksUnreadable = e instanceof Error ? e.message : String(e);
       }
+      const tracks = trackWalk.items;
+      const albums = albumWalk.items;
+      const shows = showWalk.items;
+      const episodes = episodeWalk.items;
 
       const capReached = {
-        tracks: tracks.length >= cap,
-        albums: albums.length >= cap,
-        shows: shows.length >= cap,
-        episodes: episodes.length >= cap,
-        audiobooks: audiobooks.length >= cap,
+        tracks: trackWalk.truncated,
+        albums: albumWalk.truncated,
+        shows: showWalk.truncated,
+        episodes: episodeWalk.truncated,
+        audiobooks: audiobooksTruncated,
       };
       const truncated = Object.values(capReached).some(Boolean);
+      const unreadable = audiobooksUnreadable === null ? {} : { audiobooks: audiobooksUnreadable };
+      const unreadableLine = audiobooksUnreadable === null
+        ? ''
+        : ` /me/audiobooks could not be read (${audiobooksUnreadable}) — audiobooks are reported as UNREAD, not as zero saved.`;
 
       if (args.format === 'csv') {
         const writeCsv = async (name: string, rows: string[][], headers: string[]) => {
@@ -921,8 +965,8 @@ export function registerPortabilityTools(server: McpServer, client: SpotifyClien
         const total = tracks.length + albums.length + shows.length + episodes.length + audiobooks.length;
         const cappedTypes = Object.entries(capReached).filter(([, v]) => v).map(([k]) => k).join(', ');
         const footer = truncated ? ` [truncated — first ${cap} per type; capped types: ${cappedTypes} — raise SPOTIFY_MCP_FETCH_ALL_CAP for the full library]` : '';
-        const payload = { ok: true, dir, format: 'csv', total, counts: { tracks: tracks.length, albums: albums.length, shows: shows.length, episodes: episodes.length, audiobooks: audiobooks.length }, cap_reached: capReached, truncated, cap, files: results.map((r) => r.path) };
-        return shapeResult(rf, `Exported library to ${dir} as CSV (${total} items across ${results.length} files).${footer}`, payload);
+        const payload = { ok: audiobooksUnreadable === null, dir, format: 'csv', total, counts: { tracks: tracks.length, albums: albums.length, shows: shows.length, episodes: episodes.length, audiobooks: audiobooks.length }, cap_reached: capReached, truncated, cap, unreadable, files: results.map((r) => r.path) };
+        return shapeResult(rf, `Exported library to ${dir} as CSV (${total} items across ${results.length} files).${footer}${unreadableLine}`, payload);
       }
 
       const doc = {
@@ -930,6 +974,7 @@ export function registerPortabilityTools(server: McpServer, client: SpotifyClien
         counts: { tracks: tracks.length, albums: albums.length, shows: shows.length, episodes: episodes.length, audiobooks: audiobooks.length },
         cap_reached: capReached,
         truncated,
+        unreadable,
         cap,
         tracks: tracks.map((r) => ({ uri: r.track.uri, name: r.track.name, artists: r.track.artists.map((a) => a.name), added_at: r.added_at })),
         albums: albums.map((r) => ({ uri: r.album.uri, name: r.album.name, added_at: r.added_at })),
@@ -943,8 +988,8 @@ export function registerPortabilityTools(server: McpServer, client: SpotifyClien
       const bytes = Buffer.byteLength(body);
       const cappedTypes = Object.entries(capReached).filter(([, v]) => v).map(([k]) => k).join(', ');
       const footer = truncated ? ` [truncated — first ${cap} per type; capped types: ${cappedTypes} — raise SPOTIFY_MCP_FETCH_ALL_CAP for the full library]` : '';
-      const payload = { ok: true, dir, file: filePath, format: 'json', bytes, counts: doc.counts, cap_reached: capReached, truncated, cap, total: tracks.length + albums.length + shows.length + episodes.length + audiobooks.length };
-      return shapeResult(rf, `Exported library to ${filePath} (${payload.total} items, ${bytes} bytes).${footer}`, payload);
+      const payload = { ok: audiobooksUnreadable === null, dir, file: filePath, format: 'json', bytes, counts: doc.counts, cap_reached: capReached, truncated, cap, total: tracks.length + albums.length + shows.length + episodes.length + audiobooks.length, unreadable };
+      return shapeResult(rf, `Exported library to ${filePath} (${payload.total} items, ${bytes} bytes).${footer}${unreadableLine}`, payload);
     },
   );
 
@@ -968,6 +1013,11 @@ export function registerPortabilityTools(server: McpServer, client: SpotifyClien
 
       const artists: Array<{ uri: string; name: string; genres: string[] }> = [];
       let after: string | undefined;
+      // #864: `artists.length >= cap` is not a verdict — a following list that
+      // is exactly `cap` long is a complete list. The walk records WHY it
+      // stopped: only the cap stopping it while the server still offered a
+      // next cursor means rows were left behind.
+      let capReached = false;
       while (artists.length < cap) {
         const params: Record<string, string> = { type: 'artist', limit: '50' };
         if (after) params.after = after;
@@ -975,13 +1025,18 @@ export function registerPortabilityTools(server: McpServer, client: SpotifyClien
         const items = page?.artists?.items ?? [];
         if (items.length === 0) break;
         for (const a of items) artists.push({ uri: a.uri, name: a.name, genres: a.genres ?? [] });
-        after = page?.artists?.cursors?.after ?? undefined;
-        if (!page?.artists?.next || !after) break;
+        const next = page?.artists?.cursors?.after ?? undefined;
+        const hasMore = !!page?.artists?.next && !!next;
+        if (artists.length >= cap) {
+          capReached = hasMore || artists.length > cap;
+          if (artists.length > cap) artists.length = cap;
+          break;
+        }
+        if (!hasMore) break;
+        after = next;
       }
-      if (artists.length > cap) artists.length = cap;
 
       const exportedAt = new Date().toISOString();
-      const capReached = artists.length >= cap;
       const truncated = capReached;
 
       if (args.format === 'csv') {
@@ -1029,47 +1084,60 @@ export function registerPortabilityTools(server: McpServer, client: SpotifyClien
       const filePath = join(dir, `profile-state-${ts}.json`);
 
       const stores: Record<string, unknown> = {};
-      const counts: Record<string, number> = {};
+      const counts: Record<string, number | null> = {};
+      // #760: `undefined` means the store could not be read at all and `null`
+      // means the file is genuinely not there. A corrupt sidecar used to land
+      // in the second bucket and export as a real count of zero.
+      const unreadable: Record<string, string> = {};
+      const read = async (key: string, path: string): Promise<unknown> => {
+        const store = await readStoreForExport(path);
+        if (store.state === 'unreadable') {
+          unreadable[key] = `${path}: ${store.reason}`;
+          return undefined;
+        }
+        return store.state === 'absent' ? null : store.value;
+      };
+      const empty = (value: unknown): number | null => (value === undefined ? null : 0);
 
       // scenes
-      const scenes = await tryReadJson(scenesFilePath());
+      const scenes = await read('scenes', scenesFilePath());
       if (scenes && typeof scenes === 'object') {
         stores.scenes = scenes;
         counts.scenes = Object.keys(scenes as Record<string, unknown>).length;
       } else {
-        stores.scenes = null;
-        counts.scenes = 0;
+        stores.scenes = scenes ?? null;
+        counts.scenes = empty(scenes);
       }
 
       // genre-tags
-      const genreTags = await tryReadJson(genreTagsPath());
+      const genreTags = await read('genre_tags', genreTagsPath());
       if (genreTags && typeof genreTags === 'object' && (genreTags as Record<string, unknown>).tags) {
         stores.genre_tags = genreTags;
         const tags = (genreTags as { tags: Record<string, unknown> }).tags;
         counts.genre_tags = Object.keys(tags).length;
       } else if (genreTags) {
         stores.genre_tags = genreTags;
-        counts.genre_tags = 0;
+        counts.genre_tags = empty(genreTags);
       } else {
-        stores.genre_tags = null;
-        counts.genre_tags = 0;
+        stores.genre_tags = genreTags ?? null;
+        counts.genre_tags = empty(genreTags);
       }
 
       // playback-ext
-      const playbackExt = await tryReadJson(playbackExtFile());
+      const playbackExt = await read('playback_ext', playbackExtFile());
       if (playbackExt && typeof playbackExt === 'object') {
         stores.playback_ext = playbackExt;
         const pe = playbackExt as Record<string, unknown>;
         counts.playback_ext_states = pe.states ? Object.keys(pe.states as Record<string, unknown>).length : 0;
         counts.playback_ext_sessions = pe.sessions ? Object.keys(pe.sessions as Record<string, unknown>).length : 0;
       } else {
-        stores.playback_ext = null;
-        counts.playback_ext_states = 0;
-        counts.playback_ext_sessions = 0;
+        stores.playback_ext = playbackExt ?? null;
+        counts.playback_ext_states = empty(playbackExt);
+        counts.playback_ext_sessions = empty(playbackExt);
       }
 
       // search-history
-      const searchHistory = await tryReadJson(searchHistoryFile());
+      const searchHistory = await read('search_history', searchHistoryFile());
       if (Array.isArray(searchHistory)) {
         stores.search_history = searchHistory;
         counts.search_history = searchHistory.length;
@@ -1079,19 +1147,22 @@ export function registerPortabilityTools(server: McpServer, client: SpotifyClien
         counts.search_history = entries.length;
       } else {
         stores.search_history = searchHistory ?? null;
-        counts.search_history = 0;
+        counts.search_history = empty(searchHistory);
       }
 
       // artist-watchlist (cwd-relative default quirk!)
-      const watchlist = await tryReadJson(watchlistFilePath());
+      const watchlist = await read('artist_watchlist', watchlistFilePath());
       if (watchlist && typeof watchlist === 'object') {
         stores.artist_watchlist = watchlist;
         const wl = watchlist as { watchlists?: Record<string, unknown> };
         counts.artist_watchlist = wl.watchlists ? Object.keys(wl.watchlists).length : 0;
       } else {
-        stores.artist_watchlist = null;
-        counts.artist_watchlist = 0;
+        stores.artist_watchlist = watchlist ?? null;
+        counts.artist_watchlist = empty(watchlist);
       }
+      const unreadableLine = Object.keys(unreadable).length > 0
+        ? ` ${Object.keys(unreadable).length} store(s) could not be read and are counted as UNREAD, not zero: ${Object.entries(unreadable).map(([k, why]) => `${k} (${why})`).join('; ')}. Their contents are not in this archive.`
+        : '';
 
       // mutations history (optional) — bounded tail read (#628)
       if (args.include_history) {
@@ -1105,6 +1176,7 @@ export function registerPortabilityTools(server: McpServer, client: SpotifyClien
         exported_at: new Date().toISOString(),
         include_history: !!args.include_history,
         watchlist_path_note: 'artist-watchlist defaults to ./data/artist-watchlist.json (cwd-relative) unless SPOTIFY_MCP_DATA_DIR is set — this is a known quirk',
+        unreadable,
         counts,
         stores,
       };
@@ -1112,8 +1184,8 @@ export function registerPortabilityTools(server: McpServer, client: SpotifyClien
       const body = `${JSON.stringify(doc, null, 2)}\n`;
       await writeOutputFile(filePath, body);
       const bytes = Buffer.byteLength(body);
-      const payload = { ok: true, path: filePath, bytes, counts, schema_version: PROFILE_STATE_SCHEMA_VERSION };
-      return shapeResult(rf, `Exported profile state to ${filePath} (${bytes} bytes) — ${Object.entries(counts).map(([k, v]) => `${k}:${v}`).join(', ')}.`, payload);
+      const payload = { ok: Object.keys(unreadable).length === 0, path: filePath, bytes, counts, schema_version: PROFILE_STATE_SCHEMA_VERSION, unreadable };
+      return shapeResult(rf, `Exported profile state to ${filePath} (${bytes} bytes) — ${Object.entries(counts).map(([k, v]) => `${k}:${v}`).join(', ')}.${unreadableLine}`, payload);
     },
   );
 
@@ -1186,7 +1258,14 @@ export function registerPortabilityTools(server: McpServer, client: SpotifyClien
 
       const writeStore = async (filePath: string, data: unknown) => {
         await mkdir(dirname(filePath), { recursive: true, mode: 0o700 });
+        // A mode argument only applies at CREATION, so a store that was already
+        // on disk keeps whatever mode it had — a copied-in or
+        // previously-world-readable scenes.json / search-history.json would
+        // still be readable by anyone after the import. This is the same
+        // re-assert the mutations-history ledger already does (#628); these
+        // five stores were the call site it missed.
         await writeFile(filePath, `${JSON.stringify(data, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
+        await chmod(filePath, 0o600);
       };
 
       const planStore = async (
@@ -1428,8 +1507,11 @@ export function registerPortabilityTools(server: McpServer, client: SpotifyClien
       let before: string | undefined = args.before;
       // after cursor is not natively supported for pagination but we filter
       const afterMs = args.after ? new Date(args.after).getTime() : undefined;
-      const beforeMsInitial = args.before ? new Date(args.before).getTime() : undefined;
-
+      // #864: the verdict is the reason the walk stopped, never
+      // `items.length === cap`. Landing exactly on the cap is a cap hit only
+      // when the server still had a full page to give; a short page means it
+      // had run out of history.
+      let capReached = false;
       while (items.length < cap) {
         const params: Record<string, string> = { limit: '50' };
         if (before) params.before = before;
@@ -1451,7 +1533,10 @@ export function registerPortabilityTools(server: McpServer, client: SpotifyClien
           items.push(item);
           if (items.length >= cap) break;
         }
-        if (items.length >= cap) break;
+        if (items.length >= cap) {
+          capReached = pageItems.length >= 50;
+          break;
+        }
         // Advance cursor: use the oldest item's played_at as next before
         const oldest = pageItems.at(-1);
         const nextBefore = page?.cursors?.before ?? (oldest ? String(new Date(oldest.played_at).getTime()) : undefined);
@@ -1464,10 +1549,8 @@ export function registerPortabilityTools(server: McpServer, client: SpotifyClien
         if (pageItems.length < 50) break;
         before = nextBefore;
       }
-      if (items.length > cap) items.length = cap;
 
       const exportedAt = new Date().toISOString();
-      const capReached = items.length >= cap;
       const truncated = capReached;
 
       if (args.format === 'csv') {
@@ -1535,18 +1618,39 @@ export function registerPortabilityTools(server: McpServer, client: SpotifyClien
       const cap = getConfig().fetchAllCap;
       const me = await client.get<{ id?: string }>('/me');
       const myId = me?.id as string | undefined;
-      let playlists = await client.getAllPages<SpotifyPlaylistSimple>('/me/playlists', { limit: '50' }, { maxItems: cap });
+      // #864/#1008: both walks report their own truncation verdict, and an
+      // item read that fails is named as unread rather than exported as an
+      // empty playlist. A capped walk and an unreadable playlist are different
+      // facts and both used to read as "this playlist has no items".
+      const listWalk = await client.getAllPagesWithTruncation<SpotifyPlaylistSimple>('/me/playlists', { limit: '50' }, { maxItems: cap });
+      const playlistsTruncated = listWalk.truncated;
+      let playlists = listWalk.items;
       if (args.scope === 'owned' && myId) playlists = playlists.filter((p) => p?.owner?.id === myId);
       const exportedAt = new Date().toISOString();
-      let playlistRows: Array<{ id: string; name: string; uri: string; total: number; items: Array<{ uri: string; name: string }> }> = playlists.map((p) => ({ id: p.id, name: p.name, uri: p.uri, total: p.items?.total ?? 0, items: [] }));
+      const playlistRows: Array<{ id: string; name: string; uri: string; total: number; items: Array<{ uri: string; name: string }>; items_unreadable?: string }> = playlists.map((p) => ({ id: p.id, name: p.name, uri: p.uri, total: p.items?.total ?? 0, items: [] }));
+      const cappedPlaylists: string[] = [];
+      const unreadablePlaylists: string[] = [];
       if (args.include_items !== false) {
         for (const row of playlistRows) {
           try {
-            const items = await client.getAllPages<PlaylistItemObject>(`/playlists/${encodeURIComponent(row.id)}/items`, { limit: '100' }, { maxItems: cap });
-            row.items = items.map((r) => ({ uri: (r?.item as { uri?: string })?.uri ?? '', name: (r?.item as { name?: string })?.name ?? '' })).filter((x) => x.uri);
-          } catch { row.items = []; }
+            const walk = await client.getAllPagesWithTruncation<PlaylistItemObject>(`/playlists/${encodeURIComponent(row.id)}/items`, { limit: '100' }, { maxItems: cap });
+            row.items = walk.items.map((r) => ({ uri: (r?.item as { uri?: string })?.uri ?? '', name: (r?.item as { name?: string })?.name ?? '' })).filter((x) => x.uri);
+            if (walk.truncated) cappedPlaylists.push(row.id);
+          } catch (e) {
+            row.items = [];
+            row.items_unreadable = e instanceof Error ? e.message : String(e);
+            unreadablePlaylists.push(row.id);
+          }
         }
       }
+      const truncated = playlistsTruncated || cappedPlaylists.length > 0;
+      const unreadable: Record<string, string> = {};
+      for (const row of playlistRows) if (row.items_unreadable) unreadable[row.id] = row.items_unreadable;
+      const notes: string[] = [];
+      if (playlistsTruncated) notes.push(`The /me/playlists walk hit the cap of ${cap}, so this export covers only the first ${playlists.length} playlist(s) — raise SPOTIFY_MCP_FETCH_ALL_CAP for the rest.`);
+      if (cappedPlaylists.length > 0) notes.push(`Item walks hit the cap of ${cap} for ${cappedPlaylists.length} playlist(s) (${cappedPlaylists.join(', ')}) — their item lists are partial.`);
+      if (unreadablePlaylists.length > 0) notes.push(`Item list UNREADABLE for ${unreadablePlaylists.length} playlist(s) (${unreadablePlaylists.join(', ')}): ${Object.entries(unreadable).map(([id, why]) => `${id} (${why})`).join('; ')} — they are exported with an empty item list, not as playlists that hold nothing.`);
+      const notesSuffix = notes.length > 0 ? `\n${notes.join('\n')}` : '';
       if (args.format === 'csv') {
         const headers = ['playlist_id', 'playlist_name', 'item_uri', 'item_name'];
         const rows: string[][] = [];
@@ -1557,13 +1661,13 @@ export function registerPortabilityTools(server: McpServer, client: SpotifyClien
         const lines = csvTable(headers, rows);
         const fp = join(dir, 'playlists.csv');
         await writeOutputFile(fp, lines);
-        return shapeResult(rf, `Exported ${playlistRows.length} playlist(s) (${rows.length} rows) to ${fp}.`, { ok: true, dir, file: fp, format: 'csv', total: playlistRows.length, rows: rows.length });
+        return shapeResult(rf, `Exported ${playlistRows.length} playlist(s) (${rows.length} rows) to ${fp}.${notesSuffix}`, { ok: unreadablePlaylists.length === 0, dir, file: fp, format: 'csv', total: playlistRows.length, rows: rows.length, cap, cap_reached: playlistsTruncated, truncated, capped_playlists: cappedPlaylists, unreadable });
       }
-      const doc = { exported_at: exportedAt, total: playlistRows.length, scope: args.scope, playlists: playlistRows };
+      const doc = { exported_at: exportedAt, total: playlistRows.length, scope: args.scope, cap, cap_reached: playlistsTruncated, truncated, capped_playlists: cappedPlaylists, unreadable, playlists: playlistRows };
       const fp = join(dir, 'playlists.json');
       const body = `${JSON.stringify(doc, null, 2)}\n`;
       await writeOutputFile(fp, body);
-      return shapeResult(rf, `Exported ${playlistRows.length} playlist(s) to ${fp} (${Buffer.byteLength(body)} bytes).`, { ok: true, dir, file: fp, format: 'json', bytes: Buffer.byteLength(body), total: playlistRows.length, scope: args.scope });
+      return shapeResult(rf, `Exported ${playlistRows.length} playlist(s) to ${fp} (${Buffer.byteLength(body)} bytes).${notesSuffix}`, { ok: unreadablePlaylists.length === 0, dir, file: fp, format: 'json', bytes: Buffer.byteLength(body), total: playlistRows.length, scope: args.scope, cap, cap_reached: playlistsTruncated, truncated, capped_playlists: cappedPlaylists, unreadable });
     },
   );
 
