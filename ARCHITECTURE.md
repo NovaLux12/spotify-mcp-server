@@ -117,7 +117,7 @@ The table is generated from every TypeScript file recursively under `src/`, incl
 | `src/client.ts` | Runtime module for src/client.ts. (0 registered tools) | 1027 |
 | `src/config.ts` | Central configuration loader for the SPOTIFY_MCP_* environment family. (0 registered tools) | 227 |
 | `src/csvsafe.ts` | CSV cell rendering shared by every writer that emits a spreadsheet (#630). (0 registered tools) | 32 |
-| `src/gating.ts` | The app-registration-gated error contract (#791, #428, #429; audit A14-016/A8-036) -- the graceful 403 mapping for Spotify's app-registration-gated endpoint family (probed 2026-08-26, memory/edge-probe-2026-08-26.json). (0 registered tools) | 151 |
+| `src/gating.ts` | The app-registration-gated error contract (#791, #428, #429; audit A14-016/A8-036) -- the graceful 403 mapping for Spotify's app-registration-gated endpoint family (probed 2026-08-26, memory/edge-probe-2026-08-26.json). (0 registered tools) | 195 |
 | `src/history.ts` | Opt-in mutation history JSONL (#64, hardened in #628). (0 registered tools) | 375 |
 | `src/index.ts` | Runtime module for src/index.ts. (0 registered tools) | 275 |
 | `src/lib/statsfm-client.ts` | Minimal client for the public stats.fm API (https://api.stats.fm/api/v1). (0 registered tools) | 138 |

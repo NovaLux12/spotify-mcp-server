@@ -223,10 +223,10 @@ test('#1013 a non-removal failure from the categories family is passed through u
 });
 
 test('#1013 get_categories names the removal when the gated contract re-raises the 403', async () => {
-  // The production shape: index.ts installs installGatedPathContract on every
-  // client, so the 403 arrives as a plain Error, not a SpotifyApiError. The
-  // tool must still recognise it as the removed endpoint rather than passing
-  // on a message that only says "gated".
+  // #765: the contract annotates the original SpotifyApiError instead of
+  // raising a new plain Error, so isRemovedEndpointFailure still matches on
+  // the 403 status and browseCategoriesUnavailable names the removal with
+  // the Spotify message embedded in the detail line.
   const client = {
     get: async () => {
       throw new SpotifyApiError(403, 'Forbidden');
@@ -241,10 +241,14 @@ test('#1013 get_categories names the removal when the gated contract re-raises t
   registerBrowseTools(server as never, client as never);
   await assert.rejects(
     () => find(registered, 'get_categories').handler({}),
-    (err: Error) => {
+    (err: Error & { cause?: unknown }) => {
       assert.match(err.message, /February 2026 Web API changes/);
-      assert.match(err.message, /Spotify returned 403 for \/browse\/categories/);
-      assert.match(err.message, /app-registration-gated/);
+      assert.match(err.message, /Spotify answered 403/);
+      assert.match(err.message, /Forbidden/);
+      // The annotated SpotifyApiError survives as the cause chain so callers
+      // walking `err.cause` still land on the gated instance.
+      assert.ok(err.cause instanceof SpotifyApiError);
+      assert.equal((err.cause as unknown as { gatedSurface?: boolean }).gatedSurface, true);
       return true;
     },
   );
