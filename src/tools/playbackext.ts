@@ -28,6 +28,7 @@ import { getConfig } from '../config.js';
 import { dedupeUris, loadCandidates, matchesArtistFilter, uniqueByArtist } from './smart.js';
 import { addToQueueBatch } from './queueops.js';
 import { loadSidecar, SidecarUnreadableError } from '../sidecar.js';
+import { collectShowRadarEpisodes } from './showradar.js';
 
 type ToolResult = { content: Array<{ type: 'text'; text: string }>; structuredContent?: Record<string, unknown> };
 function textResult(text: string, structured?: Record<string, unknown>): ToolResult {
@@ -603,25 +604,85 @@ export function registerPlaybackExtTools(server: McpServer, client: SpotifyClien
       }, `Refreshed smart playlist "${name}" → ${targetId === null ? 'created' : 'rebuilt'} playlist ${playlistId} with ${uris.length} track(s) from ${rule.source} (${steps.length} write call(s))${poolNote ? `\n${poolNote}` : ''}.`);
     });
 
-  // #181 show radar digest
+  // #181 / #835 show radar digest
   server.tool('save_show_digest',
-    'Create or update a digest playlist from the latest show_new_episodes radar (auto-save helper).',
+    'Show-radar digest: create or append. Later calls reuse the first call\'s playlist (#835).',
     {
       playlist_name: z.string().min(1).optional().describe('Digest playlist name (default: Show Digest)'),
       dry_run: DryRun,
       response_format: ResponseFormat,
     },
     async (args) => {
-      const showRadarModule = await import('./showradar.js').catch(() => null);
-      // fallback: just create an empty digest playlist signalling intent
-      if (args.dry_run) return { content: [{ type: 'text', text: `[dry run] Would save show digest → playlist "${(args.playlist_name as string) ?? 'Show Digest'}"` }] };
+      const fmt = args.response_format as string;
       const name = (args.playlist_name as string) ?? 'Show Digest';
+      // #835: defer the radar — and therefore any API call — to dry-run or
+      // commit only, so a tool lookup that never executes still works.
+      if (args.dry_run) {
+        const r = await collectShowRadarEpisodes(client, { days: 7, per_show_limit: 3 });
+        const store = await loadPlaybackExt();
+        const existing = store.showDigest?.playlist_id ?? null;
+        const plan = existing
+          ? [`POST /playlists/${existing}/items — ${r.episodes.length} uri(s) (append; existing digest playlist reused)`]
+          : [
+              `POST /me/playlists { name: "${name}", description: "Auto-saved show radar digest" }`,
+              `POST /playlists/<new>/items — ${r.episodes.length} uri(s)`,
+            ];
+        return respond(fmt, store, {
+          ok: true, dry_run: true, name, playlist_id: existing, would_create: existing === null,
+          new_episodes: r.episodes.length, episodes: r.episodes.map((e) => e.uri),
+          shows_scanned: r.quota_hit ? r.quota_scanned_shows : r.shows_scanned,
+          saved_shows_total: r.saved_shows_total,
+          truncated_by_budget: r.truncated_by_budget,
+          shows_listing_truncated: r.shows_listing_truncated,
+          quota_hit: r.quota_hit,
+          plan,
+        }, `[dry run] Would save show digest → ${existing ? `append to existing playlist ${existing}` : `new playlist "${name}"`} with ${r.episodes.length} episode(s) (${r.quota_hit ? `quota-hit, partial: ${r.quota_scanned_shows} shows scanned` : `from ${r.shows_scanned} show(s)`})${r.truncated_by_budget ? ` — scan capped at ${r.effective_cap} of ${r.saved_shows_total} shows` : ''}.\n${plan.map((s) => `  ${s}`).join('\n')}`);
+      }
+
       const store = await loadPlaybackExt();
-      // create playlist
-      const pl = await client.post<{ id: string; uri: string }>('/me/playlists', { name, description: 'Auto-saved show radar digest' });
-      const id = (pl as any)?.id ?? 'unknown';
-      store.showDigest = { playlist_id: id, last_saved: new Date().toISOString() };
+      const r = await collectShowRadarEpisodes(client, { days: 7, per_show_limit: 3 });
+      const existingId = store.showDigest?.playlist_id ?? null;
+      let playlistId: string | null = existingId;
+      let created = false;
+      if (!playlistId) {
+        const created_ = await client.post<{ id: string; uri: string }>('/me/playlists', {
+          name,
+          description: 'Auto-saved show radar digest',
+        });
+        playlistId = created_?.id ?? null;
+        if (!playlistId) return respond(fmt, store, { ok: false, error: 'create_failed', name }, `Show radar returned ${r.episodes.length} episode(s) but Spotify did not return a playlist id — nothing was created.`);
+        created = true;
+      }
+
+      let episodesAdded = 0;
+      if (r.episodes.length > 0) {
+        const writeCap = capFor('playlist_writes');
+        const itemsPath = `/playlists/${encodeURIComponent(playlistId)}/items`;
+        for (let start = 0; start < r.episodes.length; start += writeCap) {
+          const chunk = r.episodes.slice(start, start + writeCap).map((e) => e.uri);
+          await client.post(itemsPath, { uris: chunk });
+          episodesAdded += chunk.length;
+        }
+      }
+
+      const savedAt = new Date().toISOString();
+      store.showDigest = { playlist_id: playlistId, last_saved: savedAt };
       await savePlaybackExt(store);
-      return respond(args.response_format as string, store, { ok: true, playlist_id: id, name }, `Saved show digest → playlist "${name}" (${id}).`);
+
+      const verb = created ? 'Created' : 'Updated';
+      return respond(fmt, store, {
+        ok: true,
+        playlist_id: playlistId,
+        playlist_name: name,
+        created,
+        episodes_added: episodesAdded,
+        shows_scanned: r.quota_hit ? r.quota_scanned_shows : r.shows_scanned,
+        saved_shows_total: r.saved_shows_total,
+        truncated_by_budget: r.truncated_by_budget,
+        shows_listing_truncated: r.shows_listing_truncated,
+        quota_hit: r.quota_hit,
+        last_saved: savedAt,
+        calls: created ? 1 + Math.ceil(episodesAdded / capFor('playlist_writes')) : Math.ceil(episodesAdded / capFor('playlist_writes')),
+      }, `${verb} show digest → playlist "${name}" (${playlistId}) with ${episodesAdded} new episode(s)${r.truncated_by_budget ? ` (scan capped at ${r.effective_cap} of ${r.saved_shows_total} shows)` : ''}${r.quota_hit ? ` — quota hit mid-scan after ${r.quota_scanned_shows} show(s); partial digest` : ''}.`);
     });
 }
