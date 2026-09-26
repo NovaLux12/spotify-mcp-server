@@ -185,21 +185,36 @@ Expected results are the exact version (for example, `1.30.1`), `true` for
 the `server.json` check, and `true` for the Registry check. Also inspect the
 workflow URL printed by `gh run view "$RUN_ID"` if any verification fails.
 
-Only `…/versions/latest` is authoritative, and the other two endpoints look
-like verification while reporting the opposite of the truth:
+Two other Registry read paths are easy to mistake for this one. They are not
+equally wrong:
 
-| Query | What it actually reports |
-|---|---|
-| `…/versions/latest` | the published version — **authoritative** |
-| `/v0/servers?search=…` | a stale index version, many releases behind |
-| `…/versions` | an empty array, even for a server that is published |
+| Query | What it reports | Trust it? |
+|---|---|---|
+| `…/versions/latest` | the current version, with `isLatest` | yes — this is the check above |
+| `…/versions` | every published version, newest first, each with `isLatest` and timestamps | yes — correct, and the way to audit an *older* version or its deprecation status |
+| `/v0/servers?search=…` | a **paginated** slice of published versions, and a lagging one | no — see below |
 
-A stale `?search=` result is the expensive one: it looks like the project
-stopped shipping, and it invites re-publishing a version that is already out.
-Before concluding a publish failed, check npm — if
-`@novalux12/spotify-mcp@$VERSION` resolves, the release shipped and what you
-are looking at is registry-side indexing. Do not re-publish on the strength of
-a search or list result.
+`?search=` is the trap, and the shape matters. Its response carries
+`metadata.nextCursor` and a `metadata.count`, and the versions it returns can
+stop short of the newest published — a page of results is not the full history,
+so the highest version in a search result is not evidence of what is live.
+Worse, its ordering looks alphabetical rather than semantic, so the first row
+is not the newest (`1.10.0` sorts ahead of `1.2.1`); reading one row off a
+search and believing it is how a stale-looking number gets quoted as fact.
+
+The failure this guards against is concluding a publish failed and
+re-publishing a version that is already out. npm versions are immutable and the
+publish workflow skips a version that is already present, so a re-publish is
+never the remedy — recover with `gh run rerun <run-id> --failed` instead, which
+re-runs the registry job without re-attempting the npm publish.
+
+If the two Registry answers disagree and you need a third read, do not reach for
+a bare `npm view`: it has served a stale `latest` and a 404 for a version that
+was already published. Cache-bust it —
+
+```
+curl -sS "https://registry.npmjs.org/@novalux12/spotify-mcp?cb=$(date +%s)" | jq '.["dist-tags"]'
+```
 
 ### Rollback and recovery
 

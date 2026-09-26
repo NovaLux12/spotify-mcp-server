@@ -136,13 +136,13 @@ version with `npm deprecate`, mark the corresponding Registry version
 deprecated through the Registry status path, and ship a new patch release with
 the fix.
 
-Verify against `…/versions/latest` only. The other two Registry read paths
-disagree with it and with each other, and neither indicates a failed publish:
-`/v0/servers?search=…` returns a stale index version many releases behind, and
-`…/versions` returns an empty array for a server that is in fact published. A
-stale search result reads like the project stopped shipping and invites
-re-publishing a version that already exists; if npm resolves the version, the
-release shipped and what you are seeing is registry-side indexing.
+Verify against `…/versions/latest`. `…/versions` is equally correct and is the
+right query when auditing an older version or its deprecation status, but
+`/v0/servers?search=…` is a paginated, lagging index and is not a substitute
+for either — it can omit the newest release, and its rows sort alphabetically
+rather than by recency, so a single row read off it is not the current
+version. That distinction, and what to do when the two disagree, is set out in
+CONTRIBUTING.md §3.
 
 ## Claim checklist
 
