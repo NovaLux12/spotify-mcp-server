@@ -245,8 +245,10 @@ describe('conditional reads (#601)', () => {
     assert.ok(raised instanceof SpotifyApiError, 'the read must fail, not return an empty result');
 
     // Through the real error boundary: the host is told WHICH failure this is.
-    // A bare internal_error — or, worse, a "received invalid arguments" line
-    // about arguments that were fine — would be unactionable: #1007's shape.
+    // The boundary owns the vocabulary (#1119), so this pins its contract —
+    // an unnamed internal failure, a "received invalid arguments" line about
+    // arguments that were fine, and an "unavailable" health claim about a
+    // resource that was merely unchanged are all wrong answers here.
     const server = new McpServer({ name: 'conditional-classification', version: '0.0.0' });
     server.tool('read_album', 'rethrows the client error', {}, async () => { throw raised; });
     installToolErrorBoundary(server);
@@ -255,19 +257,27 @@ describe('conditional reads (#601)', () => {
     await Promise.all([server.connect(serverTransport), mcp.connect(clientTransport)]);
     try {
       const result = await mcp.callTool({ name: 'read_album', arguments: {} }) as {
+        content: Array<{ text?: string }>;
         isError?: boolean;
-        structuredContent?: { error?: { kind: string; reason: string; status?: number } };
+        structuredContent?: { error?: { kind: string; reason: string; fix: string; status?: number } };
       };
       assert.equal(result.isError, true);
       const error = result.structuredContent?.error;
       assert.ok(error, 'structuredContent.error is required');
       assert.equal(error.status, 304, 'the true status survives, not a relabelled one');
       assert.equal(
-        error.reason,
-        'NOT_MODIFIED_WITHOUT_VALIDATOR',
-        'a host can branch on this reason; internal_error could not be acted on',
+        error.kind,
+        'not_modified',
+        'a missing validator is its own condition, not an outage and not a bad argument',
       );
-      assert.notEqual(error.kind, 'validation', 'the caller passed nothing wrong');
+      assert.equal(error.reason, 'not_modified_without_validator', 'one vocabulary for one condition');
+      assert.match(error.fix, /without a validator/i, 'the fix names the real next step');
+      // The dangerous mislabel: a validator-backed 304 means the resource is
+      // unchanged, so reporting Spotify as unavailable would be a false claim
+      // about its health (#1119).
+      const text = result.content[0]?.text ?? '';
+      assert.doesNotMatch(text, /unavailable|could not reach Spotify/i, text);
+      assert.doesNotMatch(text, /invalid arguments/i, 'the caller passed nothing wrong');
     } finally {
       await mcp.close().catch(() => undefined);
       await server.close().catch(() => undefined);
