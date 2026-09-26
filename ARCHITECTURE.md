@@ -119,10 +119,11 @@ The table is generated from every TypeScript file recursively under `src/`, incl
 | `src/csvsafe.ts` | CSV cell rendering shared by every writer that emits a spreadsheet (#630). (0 registered tools) | 32 |
 | `src/gating.ts` | The app-registration-gated error contract (#791, #428, #429; audit A14-016/A8-036) -- the graceful 403 mapping for Spotify's app-registration-gated endpoint family (probed 2026-08-26, memory/edge-probe-2026-08-26.json). (0 registered tools) | 151 |
 | `src/history.ts` | Opt-in mutation history JSONL (#64, hardened in #628). (0 registered tools) | 375 |
-| `src/index.ts` | Runtime module for src/index.ts. (0 registered tools) | 275 |
+| `src/index.ts` | Runtime module for src/index.ts. (0 registered tools) | 270 |
 | `src/lib/statsfm-client.ts` | Minimal client for the public stats.fm API (https://api.stats.fm/api/v1). (0 registered tools) | 138 |
 | `src/markets.ts` | Runtime module for src/markets.ts. (0 registered tools) | 165 |
 | `src/paths.ts` | Local-path confinement for export/import tools (#622). (0 registered tools) | 346 |
+| `src/progress.ts` | Ambient progress-token context for MCP `tools/call` requests (#728). (0 registered tools) | 136 |
 | `src/prompts/index.ts` | Runtime module for src/prompts/index.ts. (0 registered tools) | 311 |
 | `src/receipts.ts` | Mutation receipts (#112 idea 11). (0 registered tools) | 773 |
 | `src/refs.ts` | Shared Spotify reference parser and resolver. (0 registered tools) | 229 |

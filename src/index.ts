@@ -23,6 +23,7 @@ import { moduleBlockedByScopes, scopesFor } from './scopefilter.js';
 import { createRequire } from 'node:module';
 import { installTruncationBoundary } from './shaping.js';
 import { installGatedPathContract } from './gating.js';
+import { installProgressContextBoundary, installProgressNotifications } from './progress.js';
 
 const { version } = createRequire(import.meta.url)('../package.json') as { version: string };
 
@@ -35,6 +36,11 @@ async function startMcpServer(): Promise<void> {
     name: 'spotify-mcp',
     version,
   });
+  // Progress-context boundary MUST install before the truncation boundary
+  // (#728): both wrap the SDK's tool/registerTool, and progress wraps
+  // truncation at call time so any long walks triggered by shaping also see
+  // the caller's progress token.
+  installProgressContextBoundary(server);
   installTruncationBoundary(server);
 
   // Toolset segmentation (#95): SPOTIFY_MCP_TOOLSETS=playlists,player,... trims
@@ -86,24 +92,13 @@ async function startMcpServer(): Promise<void> {
   }
 
   // Forward long-walk pagination progress (#65) as MCP progress
-  // notifications. The monotonic walkId doubles as the progressToken;
-  // failures are swallowed so notification hiccups never break a walk.
-  client.setProgressReporter((info) => {
-    try {
-      void server.server
-        .notification({
-          method: 'notifications/progress',
-          params: {
-            progressToken: info.walkId,
-            progress: info.fetched,
-            ...(info.total !== undefined ? { total: info.total } : {}),
-          },
-        })
-        .catch(() => undefined);
-    } catch {
-      // best-effort only
-    }
-  });
+  // notifications (#728). The reporter only fires when the caller supplied
+  // a progressToken in `request.params._meta`; otherwise we stay silent so
+  // line-oriented hosts see the JSON-RPC result as the last frame on the
+  // wire. The token echoed on each notification is the caller's, not a
+  // server-invented counter. Failures are swallowed so notification hiccups
+  // never break a walk.
+  installProgressNotifications(client, server);
 
   for (const module of REGISTRAR_MANIFEST) {
     registerManifestModule(server, client, module, {
