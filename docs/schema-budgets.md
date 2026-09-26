@@ -60,7 +60,7 @@ above either ceiling fails CI and server startup.
 | Module | Tools | Schema bytes | Baseline tools | Baseline bytes | Effective tool ceiling | Effective byte ceiling |
 |---|---:|---:|---:|---:|---:|---:|
 | search | 1 | 1,821 | 1 | 1,821 | 2 | 2,004 |
-| catalog | 31 | 27,012 | 31 | 27,012 | 32 | 29,714 |
+| catalog | 31 | 27,015 | 31 | 27,015 | 32 | 29,717 |
 | library | 16 | 14,957 | 16 | 14,957 | 17 | 16,453 |
 | playback | 16 | 12,287 | 16 | 12,287 | 17 | 13,516 |
 | following | 5 | 3,921 | 5 | 3,921 | 6 | 4,314 |
@@ -104,7 +104,7 @@ above either ceiling fails CI and server startup.
 | playlistdna | 1 | 1,310 | 1 | 1,310 | 2 | 1,442 |
 | export | 1 | 1,363 | 1 | 1,363 | 2 | 1,500 |
 | import | 1 | 1,211 | 1 | 1,211 | 2 | 1,333 |
-| smart | 1 | 2,182 | 1 | 2,182 | 2 | 2,401 |
+| smart | 1 | 2,364 | 1 | 2,364 | 2 | 2,601 |
 | exhaustmisc | 10 | 7,924 | 10 | 7,924 | 11 | 8,717 |
 | exhaust2catalog | 19 | 19,283 | 19 | 19,283 | 20 | 21,212 |
 | exhaust2enggating | 0 | 0 | 0 | 0 | 1 | 0 |
