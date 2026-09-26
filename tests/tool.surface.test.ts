@@ -214,6 +214,11 @@ const OUTPUT_FIELD_NAMES = new Set<string>([
   'resume_point',
   'retention_until',
   'saved_at',
+  // #731: search_within_playlist's description names the coverage its `kind`
+  // filter is bounded by, so an agent can tell a narrow result from a walk
+  // that stopped at the cap. Keys the call reports about its own result.
+  'scan_truncated',
+  'scanned_items',
   'shows_checked',
   'singles_capped',
   'supports_volume',

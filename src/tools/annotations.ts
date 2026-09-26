@@ -915,7 +915,7 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   manifestEntry('export', 'playlists', 'src/tools/export.ts', registerExportTools, [1, 1363], { scopeKey: 'playlists' }),
   manifestEntry('import', 'playlists', 'src/tools/import.ts', registerImportTools, [1, 1211], { scopeKey: 'playlists' }),
   manifestEntry('smart', 'playlists', 'src/tools/smart.ts', registerSmartTools, [1, 2364], { scopeKey: 'playlists' }),
-  manifestEntry('exhaustmisc', 'playlists', 'src/tools/exhaustmisc.ts', registerExhaustMiscTools, [10, 7924], { scopeKey: 'exhaustmisc' }),
+  manifestEntry('exhaustmisc', 'playlists', 'src/tools/exhaustmisc.ts', registerExhaustMiscTools, [10, 8528], { scopeKey: 'exhaustmisc' }),
   // [19, 19241] measured post-#1004 (the artist leg reads /artists/{id} now).
   // +226B for #781: `search_by_isrc` and `audiobooks_by_author` gained the
   // `offset` input their paging signal already pointed at. Not a new tool and

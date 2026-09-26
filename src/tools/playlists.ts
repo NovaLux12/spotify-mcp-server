@@ -260,7 +260,11 @@ function withSnapshot(text: string, snapshotId: string | undefined): string {
 // get_playlist_items, get_playlist_cover, update_playlist) keep it as a
 // documented back-compat alias. Supplying both is allowed only when they
 // agree; conflicting values are rejected before any API round-trip.
-function resolvePlaylistId(playlistId: string | undefined, legacyId: string | undefined): string {
+//
+// #731: exported so search_within_playlist resolves its playlist reference
+// through this one implementation instead of a third copy of the playlist_id /
+// id convention.
+export function resolvePlaylistId(playlistId: string | undefined, legacyId: string | undefined): string {
   if (playlistId !== undefined && legacyId !== undefined && playlistId !== legacyId) {
     throw new Error(
       `Conflicting values: playlist_id ("${playlistId}") and id ("${legacyId}") differ — pass only one.`,
