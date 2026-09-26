@@ -18,171 +18,29 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
-
-import { registerPrompts } from '../src/prompts/index.js';
+// The registry pass, the non-tool allow-list and the prompt-text extraction
+// all live in tests/live-registry.ts (#670). This file used to carry its own
+// copies, which is the same second-hand-maintained-list problem it exists to
+// catch: the two NON_TOOL sets had already drifted by one entry.
 import {
-  REGISTRAR_MANIFEST,
-  registerManifestModule,
-} from '../src/tools/annotations.js';
-import { SpotifyClient } from '../src/client.js';
-import { moduleBlockedByScopes, scopesFor } from '../src/scopefilter.js';
-import { finalInputSchema } from '../src/shaping.js';
+  ARG_PATTERN,
+  buildFullRegistryServer,
+  collectToolSchemas,
+  extractBody,
+  promptSurface,
+} from './live-registry.js';
 
 // ---------------------------------------------------------------- fixtures
 
-/** Every tool's real, registered tool name → set of accepted input property names. */
-async function collectToolSchemas(
-  server: McpServer,
-): Promise<Map<string, Set<string>>> {
-  const registry = (server as unknown as {
-    _registeredTools: Record<string, { inputSchema?: Record<string, unknown> }>;
-  })._registeredTools;
-  const out = new Map<string, Set<string>>();
-  for (const [name, entry] of Object.entries(registry)) {
-    const schema = entry.inputSchema ? finalInputSchema(entry.inputSchema) : null;
-    const props = schema?.properties;
-    if (props && typeof props === 'object' && !Array.isArray(props)) {
-      out.set(name, new Set(Object.keys(props as Record<string, unknown>)));
-    } else {
-      out.set(name, new Set());
-    }
-  }
-  return out;
-}
-
-function buildServerWithAllTools(): McpServer {
-  const server = new McpServer({ name: 'test', version: '0.0.0' });
-  const client = new SpotifyClient();
-  // Real install gets every scope; the gate only hides writers under a
-  // read-only grant, and this test is about prompts under the default
-  // surface — including the write tools prompts route through (e.g.
-  // batch_add_to_queue, add_to_queue).
-  const granted = scopesFor(
-    [
-      'user-read-private', 'user-library-read', 'user-library-modify',
-      'playlist-read-private', 'playlist-modify-public', 'playlist-modify-private',
-      'user-follow-read', 'user-follow-modify', 'user-top-read',
-      'user-modify-playback-state', 'streaming',
-    ].join(' '),
-  );
-  for (const module of REGISTRAR_MANIFEST) {
-    registerManifestModule(server, client, module, {
-      readOnly: false,
-      // Always-active matches how the surface-budget audit (#1124) and the
-      // scope-filter test (#1020) build a complete registry; toolsets trim
-      // would just hide tools prompts still reference, and the prompt text
-      // is supposed to be a guide for the default surface.
-      isModuleActive: () => true,
-      scopeBlocked: (key) => moduleBlockedByScopes(key, granted),
-    });
-  }
-  return server;
-}
-
+/** Rendered prompt body by prompt name, from the shared registry pass. */
 async function renderAllPrompts(): Promise<Map<string, string>> {
-  const server = buildServerWithAllTools();
-  registerPrompts(server);
-  const client = new Client({ name: 'tester', version: '0.0.0' });
-  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-  await Promise.all([server.connect(clientTransport), client.connect(serverTransport)]);
-
-  const { prompts } = await client.listPrompts();
-  const rendered = new Map<string, string>();
-  for (const prompt of prompts) {
-    // Per-prompt fillers for required arguments that have a string/regex
-    // shape (so the SDK accepts them); "probe" covers the rest because
-    // coerce-backed number/enum fields tolerate a string here.
-    const supplied: Record<string, string> = {};
-    for (const arg of (prompt.arguments ?? []).filter((a) => a.required)) {
-      if (arg.name === 'since') {
-        supplied[arg.name] = '2026-01-01';
-      } else {
-        supplied[arg.name] = 'probe';
-      }
-    }
-    let result;
-    try {
-      result = await client.getPrompt({ name: prompt.name, arguments: supplied });
-    } catch (err) {
-      throw new Error(
-        `prompt ${prompt.name} failed to render with required args: ${(err as Error).message}`,
-      );
-    }
-    rendered.set(
-      prompt.name,
-      result.messages
-        .map((m) => (m.content.type === 'text' ? m.content.text : ''))
-        .join('\n'),
-    );
-  }
-  await client.close();
-  return rendered;
-}
-
-// ---------------------------------------------------------------- extraction
-
-/** Snake_case tool names that are NOT tools but appear in prompt text. */
-const NON_TOOL_IDENTIFIERS = new Set([
-  'fetch_all',
-  'time_range',
-  'short_term', 'medium_term', 'long_term',
-  'album_type', 'release_date', 'playlist_name', 'include_singles',
-  'max_results', 'dry_run', 'total_tracks',
-  'per_show_limit', // prompt argument name (was max_per_show, now aligns with show_new_episodes)
-  'max_shows', 'days',
-  'include_groups', // get_artist_albums parameter name
-]);
-
-/** Snake_case identifier regex matching the tokens a tool name can produce. */
-const TOOL_NAME_PATTERN = /\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b/g;
-
-/** A tool call with its argument list inside parens, e.g. `show_new_episodes (days=7)`. */
-const CALL_PATTERN = /\b([a-z][a-z0-9]*(?:_[a-z0-9]+)+)\s*\(([^)]*)\)/g;
-
-/** An `arg=value` clause within an argument list. Captures name; value is non-greedy until `,` or end. */
-const ARG_PATTERN = /\b([a-z_][a-z0-9_]*)\s*=\s*([^,]+?)(?=,|$)/g;
-
-interface ExtractedCall {
-  readonly tool: string;
-  readonly args: readonly string[];
-}
-
-interface ExtractedBody {
-  readonly bareTools: readonly string[];
-  readonly calls: readonly ExtractedCall[];
-}
-
-function extractBody(body: string): ExtractedBody {
-  const calls: ExtractedCall[] = [];
-  const seenCalls = new Set<string>();
-  for (const match of body.matchAll(CALL_PATTERN)) {
-    const tool = match[1];
-    const argString = match[2];
-    const args: string[] = [];
-    for (const argMatch of argString.matchAll(ARG_PATTERN)) {
-      args.push(argMatch[1]);
-    }
-    const key = `${tool}|${args.join(',')}`;
-    if (!seenCalls.has(key)) {
-      seenCalls.add(key);
-      calls.push({ tool, args });
-    }
-  }
-  const bareTools = [...new Set([...body.matchAll(TOOL_NAME_PATTERN)]
-    .map((m) => m[0])
-    .filter((name) => !NON_TOOL_IDENTIFIERS.has(name)))];
-  return { bareTools, calls };
+  return (await promptSurface()).prompts;
 }
 
 // ---------------------------------------------------------------- tests
 
 test('every prompt names real tools that exist in the registry (#716)', async () => {
-  const server = buildServerWithAllTools();
-  registerPrompts(server);
-  const schemas = await collectToolSchemas(server);
+  const schemas = collectToolSchemas(buildFullRegistryServer());
   const rendered = await renderAllPrompts();
   assert.ok(rendered.size >= 14, `expected the full prompt registry, saw ${rendered.size}`);
 
@@ -201,9 +59,7 @@ test('every prompt names real tools that exist in the registry (#716)', async ()
 });
 
 test('every prompt call-form argument is declared by the tool schema (#716)', async () => {
-  const server = buildServerWithAllTools();
-  registerPrompts(server);
-  const schemas = await collectToolSchemas(server);
+  const schemas = collectToolSchemas(buildFullRegistryServer());
   const rendered = await renderAllPrompts();
 
   const badArgs: string[] = [];
