@@ -180,6 +180,15 @@ async function walkArtistAlbums(
   );
 }
 
+/**
+ * Request params carrying a caller-declared market, omitted entirely when the
+ * argument is absent so a declared-but-dropped `market` can never reach the
+ * wire as `market=` (#817).
+ */
+function marketParams(market?: string): Record<string, string> {
+  return market ? { market } : {};
+}
+
 /** Fan-in full album payloads (label/copyright/tracks) via chunked /albums?ids=. */
 async function fetchFullAlbums(
   client: SpotifyClient,
@@ -190,7 +199,7 @@ async function fetchFullAlbums(
   for (const group of chunk([...new Set(ids)], 20)) {
     const res = await client.get<{ albums: (AlbumPayload | null)[] }>(
       '/albums',
-      { ids: group.join(','), ...(market ? { market } : {}) },
+      { ids: group.join(','), ...marketParams(market) },
     );
     for (const al of res?.albums ?? []) if (al?.id) out.set(al.id, al);
   }
@@ -1247,12 +1256,12 @@ export function registerSwarm3DiscoveryTools(server: McpServer, client: SpotifyC
     async (args) => {
       const rf = args.response_format;
       const albumId = encodeURIComponent(args.album_id);
-      const album = await client.get<AlbumPayload>(`/albums/${albumId}`);
+      const album = await client.get<AlbumPayload>(`/albums/${albumId}`, marketParams(args.market));
       if (!album) throw new Error(`Album "${args.album_id}" not found`);
       let tracks = album.tracks?.items ?? [];
       if ((album.tracks?.total ?? tracks.length) > tracks.length) {
         const extra = await client.getAllPages<SpotifyTrackSimple>(
-          `/albums/${albumId}/tracks`, { limit: '50' }, { maxItems: getConfig().fetchAllCap },
+          `/albums/${albumId}/tracks`, { limit: '50', ...marketParams(args.market) }, { maxItems: getConfig().fetchAllCap },
         );
         tracks = extra;
       }
@@ -1308,12 +1317,12 @@ export function registerSwarm3DiscoveryTools(server: McpServer, client: SpotifyC
     async (args) => {
       const rf = args.response_format;
       const albumId = encodeURIComponent(args.album_id);
-      const album = await client.get<AlbumPayload>(`/albums/${albumId}`);
+      const album = await client.get<AlbumPayload>(`/albums/${albumId}`, marketParams(args.market));
       if (!album) throw new Error(`Album "${args.album_id}" not found`);
       let tracks = album.tracks?.items ?? [];
       if ((album.tracks?.total ?? tracks.length) > tracks.length) {
         const extra = await client.getAllPages<SpotifyTrackSimple>(
-          `/albums/${albumId}/tracks`, { limit: '50' }, { maxItems: getConfig().fetchAllCap },
+          `/albums/${albumId}/tracks`, { limit: '50', ...marketParams(args.market) }, { maxItems: getConfig().fetchAllCap },
         );
         tracks = extra;
       }
@@ -1378,6 +1387,9 @@ export function registerSwarm3DiscoveryTools(server: McpServer, client: SpotifyC
     async (args) => {
       const rf = args.response_format;
       const cap = args.max_per_group ?? 30;
+      // The walk ceiling, not the per-group selection size: `cap` bounds what
+      // we fan in over, the fetch-all cap is what bounds the walk itself (#816).
+      const walkCap = getConfig().fetchAllCap;
       const coreRels = await walkArtistAlbums(client, args.artist_id, 'album');
       const sideRels = await walkArtistAlbums(client, args.artist_id, 'single,compilation');
       const pickNewest = (rows: ReleaseRow[]): ReleaseRow[] =>
@@ -1404,7 +1416,7 @@ export function registerSwarm3DiscoveryTools(server: McpServer, client: SpotifyC
       const capN = resolveMaxResults(args.max_results, getConfig().maxItems);
       const trunc = truncateItems(bsides, capN);
       const lines = [
-        `B-sides for artist ${args.artist_id} (${coreSelected.length} core releases vs ${sideSelected.length} singles/compilations scanned, ${bsides.length} tracks not on any core release):`,
+        `B-sides for artist ${args.artist_id} (${coreSelected.length} core releases vs ${sideSelected.length} singles/compilations compared, ${bsides.length} tracks not on any core release):`,
         '',
         ...trunc.items.map((b) =>
           `- "${b.track.name}" | on "${b.release.name}" (${b.release.release_date}, ${b.release.album_group ?? b.release.album_type}) | ${fmtDur(b.track.duration_ms)} | ${b.track.uri}`),
@@ -1412,14 +1424,19 @@ export function registerSwarm3DiscoveryTools(server: McpServer, client: SpotifyC
       if (trunc.footer) lines.push(`(${trunc.footer})`);
       return emit(rf, lines.join('\n'), {
         artist_id: args.artist_id,
-        core_releases_scanned: coreSelected.length,
-        side_releases_scanned: sideSelected.length,
+        // Walk sizes, not selection sizes: "scanned" must mean what the walk
+        // actually read, or it under-reports a truncated discography (#816).
+        core_releases_scanned: coreRels.length,
+        side_releases_scanned: sideRels.length,
+        // ...and the per-group selection max_per_group produced, kept separate
+        // from the ceiling that bounded the walk.
+        groups_selected: { core: coreSelected.length, side: sideSelected.length },
         b_sides: trunc.items.map((b) => ({
           id: b.track.id, uri: b.track.uri, name: b.track.name, duration_ms: b.track.duration_ms,
           release: { id: b.release.id, name: b.release.name, release_date: b.release.release_date ?? null, album_group: b.release.album_group ?? null },
         })),
         pagination: paginationInfo({ total: bsides.length, returned: trunc.items.length }),
-        truncated_by_cap: coreRels.length >= cap || sideRels.length >= cap,
+        truncated_by_cap: coreRels.length >= walkCap || sideRels.length >= walkCap,
       });
     },
   );
@@ -1438,12 +1455,12 @@ export function registerSwarm3DiscoveryTools(server: McpServer, client: SpotifyC
     async (args) => {
       const rf = args.response_format;
       const albumId = encodeURIComponent(args.album_id);
-      const album = await client.get<AlbumPayload>(`/albums/${albumId}`);
+      const album = await client.get<AlbumPayload>(`/albums/${albumId}`, marketParams(args.market));
       if (!album) throw new Error(`Album "${args.album_id}" not found`);
       let tracks = album.tracks?.items ?? [];
       if ((album.tracks?.total ?? tracks.length) > tracks.length) {
         const extra = await client.getAllPages<SpotifyTrackSimple>(
-          `/albums/${albumId}/tracks`, { limit: '50' }, { maxItems: getConfig().fetchAllCap },
+          `/albums/${albumId}/tracks`, { limit: '50', ...marketParams(args.market) }, { maxItems: getConfig().fetchAllCap },
         );
         tracks = extra;
       }

@@ -22,6 +22,7 @@ import { TOOLSETS, resolveToolsets, assertToolsetsUsable, isModuleActive, resolv
 import { moduleBlockedByScopes, scopesFor } from './scopefilter.js';
 import { createRequire } from 'node:module';
 import { installTruncationBoundary } from './shaping.js';
+import { installGatedPathContract } from './gating.js';
 
 const { version } = createRequire(import.meta.url)('../package.json') as { version: string };
 
@@ -63,6 +64,13 @@ async function startMcpServer(): Promise<void> {
   }
 
   const client = new SpotifyClient();
+
+  // Cross-cutting error contract for Spotify's app-registration-gated
+  // endpoints (#791): installed here, next to the progress reporter, because
+  // it must hold in every host configuration. It used to be installed by the
+  // exhaust2enggating tool module, so trimming that toolset silently removed
+  // the graceful 403 mapping for every other module's tools too.
+  installGatedPathContract(client);
 
   // Scope-aware hiding (#111 item 6): granted scopes come from the persisted
   // token file; fail-open (empty set blocks nothing) for pre-scope files.

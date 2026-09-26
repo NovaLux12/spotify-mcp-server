@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { MARKET_CODE } from './catalog.js';
+import { recordSearch } from './searchhistory.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
 import { ResponseFormat, MaxResults, resolveMaxResults, truncateItems } from '../shaping.js';
@@ -205,6 +206,22 @@ export function registerSearchDeepTool(server: McpServer, client: SpotifyClient)
           type,
           await collectType(client, args.query, type, pages, args.market, startOffset),
         );
+      }
+
+      // #766: feed the sidecar the search_history / search_rerun /
+      // search_history_stats readers read. `limit` is the per-request limit
+      // each /search in the walk used — a rerun is a single request, so
+      // storing pages*10 would hand it a limit Spotify rejects.
+      const ranked = [...collected.values()].flatMap((col) => col.rows);
+      if (ranked.length > 0) {
+        await recordSearch({
+          query: args.query,
+          types,
+          items: ranked,
+          limit: PAGE_LIMIT,
+          market: args.market,
+          offset: startOffset,
+        });
       }
 
       if (args.response_format === 'json') {

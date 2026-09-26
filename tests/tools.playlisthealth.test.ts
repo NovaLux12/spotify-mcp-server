@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../src/client.js';
 import type { PlaylistItemObject } from '../src/types/spotify.js';
+import { SpotifyApiError } from '../src/client.js';
 import { registerPlaylistHealthTools } from '../src/tools/playlisthealth.js';
 interface RegisteredTool { name: string; validate: (args: Record<string, unknown>) => Record<string, unknown>; handler: (args: Record<string, unknown>) => Promise<{ content: Array<{ type: string; text: string }>; structuredContent?: Record<string, unknown> }>; }
 type Responder = (path: string, arg: unknown) => unknown;
@@ -75,11 +76,70 @@ describe('find_duplicate_playlists dry_run + quota', () => {
     assert.equal((out.structuredContent as Record<string, unknown>).quota_hit, true);
     assert.match(out.content[0].text, /quota hit/i);
   });
+  it('excludes an unreadable playlist from duplicate groups and reports its reason', async () => {
+    const h = makeHarness(() => []);
+    (h.client as unknown as Record<string, unknown>).getAllPages = async (path: string) => {
+      if (path === '/me/playlists') return [{ id: 'plForbidden', name: 'Private Mix' }, { id: 'plEmpty1', name: 'Empty One' }, { id: 'plEmpty2', name: 'Empty Two' }] as unknown[];
+      if (path.startsWith('/playlists/plForbidden')) throw new SpotifyApiError(403, 'Insufficient client scope');
+      if (path.startsWith('/playlists/')) return [] as unknown[];
+      return [];
+    };
+    registerPlaylistHealthTools(h.server as unknown as McpServer, h.client);
+    const out = await h.invoke('find_duplicate_playlists', { max_playlists: 3 });
+    const sc = out.structuredContent as {
+      groups: Array<{ type: string; playlists: Array<{ id: string }> }>;
+      failed_count: number;
+      unreadable: Array<{ id: string; error: string }>;
+      empty_playlists: Array<{ id: string }>;
+    };
+    // A failed fetch is not an empty playlist: it must not group with the two
+    // real empty ones, and it must not be silently dropped either.
+    assert.equal(sc.groups.length, 0);
+    assert.equal(sc.failed_count, 1);
+    assert.deepEqual(sc.unreadable.map((u) => u.id), ['plForbidden']);
+    assert.match(sc.unreadable[0].error, /Insufficient client scope/);
+    assert.deepEqual(sc.empty_playlists.map((p) => p.id), ['plEmpty1', 'plEmpty2']);
+    assert.match(out.content[0].text, /unreadable: "Private Mix" \(plForbidden\) — Insufficient client scope/);
+    assert.doesNotMatch(out.content[0].text, /plForbidden\) ↔/);
+  });
 });
 
 describe('snapshot + diff + list', () => {
   it('snapshot round-trip creates file and list finds it', async () => { const items = [mkTrack('a'), mkTrack('b')]; const h = makeHarness(() => items); registerPlaylistHealthTools(h.server as unknown as McpServer, h.client); const snap = await h.invoke('snapshot_playlist', { playlist_id: 'pl1', snapshot_id: 'snap1' }); const sc = snap.structuredContent as { snapshot_id: string }; assert.equal(sc.snapshot_id, 'snap1'); const list = await h.invoke('list_playlist_snapshots', { playlist_id: 'pl1' }); const lsc = list.structuredContent as { count: number }; assert.equal(lsc.count, 1); });
   it('diff detects added, removed, and reordered', async () => { const initialItems = [mkTrack('a'), mkTrack('b'), mkTrack('c')]; let currentItems: PlaylistItemObject[] = initialItems; const h = makeHarness(() => currentItems); registerPlaylistHealthTools(h.server as unknown as McpServer, h.client); await h.invoke('snapshot_playlist', { playlist_id: 'pl1', snapshot_id: 'snap1' }); currentItems = [mkTrack('c'), mkTrack('a'), mkTrack('d')]; const diff = await h.invoke('diff_since_snapshot', { playlist_id: 'pl1', snapshot_id: 'snap1' }); const sc = diff.structuredContent as { added: unknown[]; removed: unknown[]; reordered: unknown[] }; assert.equal(sc.added.length, 1); assert.equal(sc.removed.length, 1); assert.ok(sc.reordered.length > 0); });
+  it('reports a swapped duplicate occurrence instead of "no change" (#876 multiset)', async () => {
+    // Snapshot and live hold the same URI set {a, b}; only the counts differ.
+    let currentItems: PlaylistItemObject[] = [mkTrack('a'), mkTrack('a'), mkTrack('b')];
+    const h = makeHarness(() => currentItems);
+    registerPlaylistHealthTools(h.server as unknown as McpServer, h.client);
+    await h.invoke('snapshot_playlist', { playlist_id: 'pl1', snapshot_id: 'dup1' });
+    currentItems = [mkTrack('a'), mkTrack('b'), mkTrack('b')];
+    const diff = await h.invoke('diff_since_snapshot', { playlist_id: 'pl1', snapshot_id: 'dup1' });
+    const sc = diff.structuredContent as {
+      added: Array<{ uri: string }>; removed: Array<{ uri: string }>;
+      added_count: number; removed_count: number; same_multiset: boolean; has_changes: boolean;
+    };
+    assert.equal(sc.added_count, 1);
+    assert.equal(sc.removed_count, 1);
+    assert.deepEqual(sc.added.map((a) => a.uri), ['spotify:track:b']);
+    assert.deepEqual(sc.removed.map((r) => r.uri), ['spotify:track:a']);
+    assert.equal(sc.same_multiset, false);
+    assert.equal(sc.has_changes, true);
+    assert.match(diff.content[0].text, /added: spotify:track:b/);
+  });
+  it('reports an extra copy of an already-present track (#876 multiset)', async () => {
+    let currentItems: PlaylistItemObject[] = [mkTrack('a'), mkTrack('b')];
+    const h = makeHarness(() => currentItems);
+    registerPlaylistHealthTools(h.server as unknown as McpServer, h.client);
+    await h.invoke('snapshot_playlist', { playlist_id: 'pl1', snapshot_id: 'dup2' });
+    currentItems = [mkTrack('a'), mkTrack('b'), mkTrack('a')];
+    const diff = await h.invoke('diff_since_snapshot', { playlist_id: 'pl1', snapshot_id: 'dup2' });
+    const sc = diff.structuredContent as { added: Array<{ uri: string; position: number }>; added_count: number; removed_count: number; same_multiset: boolean };
+    assert.equal(sc.added_count, 1);
+    assert.equal(sc.removed_count, 0);
+    assert.deepEqual(sc.added, [{ uri: 'spotify:track:a', position: 2 }]);
+    assert.equal(sc.same_multiset, false);
+  });
 });
 
   it('redacts filesystem errors and caller-provided URL or path sentinels', async () => {

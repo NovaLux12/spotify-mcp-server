@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { SpotifyApiError, type SpotifyClient } from '../client.js';
+import { isRemovedEndpointFailure } from '../gating.js';
 import type {
   SpotifyTrack,
   SpotifyArtistFull,
@@ -27,6 +28,7 @@ import {
   parseSpotifyUri,
   type ResponseFormatValue,
 } from '../shaping.js';
+import { recordSearch } from './searchhistory.js';
 import { getConfig, resolveMarket } from '../config.js';
 import { spotifyId, spotifyIdArray, type SpotifyReferenceKind } from '../refs.js';
 
@@ -37,6 +39,37 @@ export const MARKET_CODE = z
   .string()
   .regex(/^[A-Za-z]{2}$/, 'market must be a 2-letter ISO 3166-1 alpha-2 country code, e.g. "US"')
   .transform((code) => code.toUpperCase());
+
+// Rows the show detail card previews. #787 requires the card to say how much
+// of the episode list that is.
+const EMBEDDED_EPISODE_PREVIEW = 10;
+// #1013: Spotify's February 2026 changelog removed GET /browse/categories/{id}
+// and GET /browse/categories/{id}/playlists outright and lists no replacement,
+// and no surviving endpoint exposes browse categories. A failure from this
+// family is a dead endpoint, never a missing category, so it must be reported
+// as such instead of as "Category <id> not found" or a category-only result
+// that silently drops the playlist page. Same contract as get_available_markets.
+// `noun` names what could not be read, so the no-payload case reports the same
+// fact as the wire-failure case: nothing was read, so nothing is returned.
+function browseCategoryUnavailable(path: string, noun: string, err?: unknown): Error {
+  // A gated 403 reaches the tool as the #428 graceful-contract Error, so that
+  // text is kept verbatim and the removal is appended to it.
+  const detail =
+    err === undefined
+      ? `the response carried no ${noun} payload, so nothing was read. `
+      : err instanceof SpotifyApiError
+        ? `Spotify answered ${err.status} — ${err.message} `
+        : err instanceof Error
+          ? `${err.message} `
+          : 'Spotify rejected the request. ';
+  return new Error(
+    `The browse-category lookup (${path}) could not be answered: ${detail} GET /browse/categories/{id} and ` +
+      'GET /browse/categories/{id}/playlists were removed by Spotify’s February 2026 Web API changes and ' +
+      'have no replacement endpoint, so the category and its playlists cannot be read; run with credentials ' +
+      'from a grandfathered (pre-Nov-2024) app if you need them.',
+    err === undefined ? undefined : { cause: err },
+  );
+}
 
 let profileCountry: Promise<string | undefined> | null = null;
 
@@ -54,6 +87,20 @@ function resolveProfileCountry(client: SpotifyClient): Promise<string | undefine
 export function resetProfileCountryCache(): void {
   profileCountry = null;
 }
+
+// show_episode_search (#790): /shows/{id}/episodes serves at most 50 rows per
+// page, and a fetch_all walk is bounded by FETCH_ALL_EPISODE_CAP episodes.
+const EPISODE_PAGE_MAX = 50;
+const FETCH_ALL_EPISODE_CAP = 500;
+
+/**
+ * Continuation controls `truncateItems` may name in this tool's footer.
+ * `max_results` trims the rendered rows, `offset` starts a later scan window,
+ * `limit` is the page size and `fetch_all` widens one page into a walk. The
+ * scan cap is not a caller knob, so it is never offered as a remedy.
+ */
+const PAGE_CAPABILITIES = { maxResults: true, offset: true, limit: true, fetchAll: true } as const;
+const SCAN_CAPABILITIES = { maxResults: true, offset: true } as const;
 
 // GET with `market` defaulting to the profile country. When the market was
 // defaulted (not caller-supplied) and Spotify rejects the lookup, rethrow
@@ -538,12 +585,23 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
         `URI: ${show.uri}`,
       ];
 
+      // #787: the embedded episode array is a fixed ten-row preview, not the
+      // show's episode list. Without a count the card reads as complete, so
+      // state how much of the show it stands for.
       if (show.episodes?.items.length) {
         lines.push('', 'Recent episodes:');
-        for (const ep of show.episodes.items.slice(0, 10)) {
+        const shown = show.episodes.items.slice(0, EMBEDDED_EPISODE_PREVIEW);
+        for (const ep of shown) {
           const played = ep.resume_point?.fully_played ? ' [played]' : '';
           lines.push(
             `  • "${ep.name}" (${formatDuration(ep.duration_ms)}, ${ep.release_date})${played} | URI: ${ep.uri}`,
+          );
+        }
+        const declared = typeof show.total_episodes === 'number' ? show.total_episodes : 0;
+        const episodeTotal = Math.max(declared, show.episodes.items.length);
+        if (episodeTotal > shown.length) {
+          lines.push(
+            `  (${shown.length} of ${episodeTotal} episodes shown — use list_show_episodes to page the rest)`,
           );
         }
       }
@@ -845,9 +903,9 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
   // ----- gap-fill: get_category (#256) -----
   server.tool(
     'get_category',
-    'Get a single Spotify browse category by ID (GET /browse/categories/{id}). Quota: 🟢 single.',
+    'Get a single Spotify browse category by ID. Removed Feb 2026, no replacement endpoint. Quota: 🟢 single.',
     {
-      category_id: z.string().min(1).describe('Category ID from get_categories'),
+      category_id: z.string().min(1).describe('Category ID'),
       country: MARKET_CODE.optional().describe('ISO 3166-1 alpha-2 country code, e.g. \'US\''),
       locale: z.string().optional().describe('Locale, e.g. en_US'),
       response_format: ResponseFormat,
@@ -856,11 +914,17 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
       const params: Record<string, string> = {};
       if (args.country) params.country = args.country;
       if (args.locale) params.locale = args.locale;
-      const data = await client.get<Record<string, unknown>>(
-        `/browse/categories/${encodeURIComponent(args.category_id)}`,
-        params,
-      );
-      if (!data) throw new Error(`Category "${args.category_id}" not found`);
+      const categoryPath = `/browse/categories/${encodeURIComponent(args.category_id)}`;
+      let data: Record<string, unknown> | null;
+      try {
+        data = await client.get<Record<string, unknown>>(categoryPath, params);
+      } catch (err) {
+        if (isRemovedEndpointFailure(err)) {
+          throw browseCategoryUnavailable(categoryPath, 'category', err);
+        }
+        throw err;
+      }
+      if (!data) throw browseCategoryUnavailable(categoryPath, 'category');
       if (args.response_format === 'json') return jsonResult(data as Record<string, unknown>);
       const icons = (data.icons as Array<{ url: string }> | undefined) ?? [];
       const lines = [
@@ -906,12 +970,25 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
         if (args.include_external) params.include_external = args.include_external as string;
         const raw = await client.get<Record<string, unknown>>('/search', params);
         if (!raw) return { content: [{ type: 'text', text: 'No results found.' }] };
+        const section = (raw as Record<string, unknown>)[meta.key] as { items?: unknown[]; total?: number } | undefined;
+        const items = (section?.items ?? []).filter(Boolean) as unknown[];
+        // #766: the factory registers seven tools from this one handler, so
+        // this is the only writer for all of them — one entry per user action,
+        // never seven. `kind` is a single type, hence the one-element list.
+        if (items.length > 0) {
+          await recordSearch({
+            query: args.query as string,
+            types: [kind],
+            items,
+            limit,
+            market: args.market as string | undefined,
+            offset: args.offset as number | undefined,
+          });
+        }
         if (args.response_format === 'json') {
           const r = raw as Record<string, unknown>;
           return { content: [{ type: 'text', text: JSON.stringify(r) }], structuredContent: r };
         }
-        const section = (raw as Record<string, unknown>)[meta.key] as { items?: unknown[]; total?: number } | undefined;
-        const items = (section?.items ?? []).filter(Boolean) as unknown[];
         const total = typeof section?.total === 'number' ? section!.total as number : items.length;
         if (items.length === 0) return { content: [{ type: 'text', text: 'No results found.' }] };
         const cap = resolveMaxResults(args.max_results as number | undefined);
@@ -971,7 +1048,13 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
     async (args) => {
       const uris = args.uris as string[];
       const groups = new Map<string, string[]>();
+      // Two different failures, kept apart (#779): `invalid` is a URI this
+      // tool could not read at all, `unsupported` is a well-formed URI whose
+      // type has no batch endpoint here. Reporting the second as invalid told
+      // callers their valid input was malformed, and that payload is consumed
+      // as the truth about what resolved.
       const invalid: string[] = [];
+      const unsupported: string[] = [];
       for (const uri of uris) {
         const parsed = parseSpotifyUri(uri);
         if (!parsed) { invalid.push(uri); continue; }
@@ -979,35 +1062,52 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
         // normalize plural key for fetchSeveral
         const kindMap: Record<string, string> = { track: 'tracks', album: 'albums', artist: 'artists', playlist: 'playlists', show: 'shows', episode: 'episodes', audiobook: 'audiobooks', chapter: 'chapters' };
         const kind = kindMap[type];
-        if (!kind) { invalid.push(uri); continue; }
-        // playlists use different endpoint not in fetchSeveral; skip with note
-        if (kind === 'playlists') { invalid.push(uri); continue; }
+        // Playlists (and any other well-formed type with no `/${kind}?ids=`
+        // sibling) are unsupported, not invalid — see the buckets above.
+        if (!kind) { unsupported.push(uri); continue; }
+        if (kind === 'playlists') { unsupported.push(uri); continue; }
         const arr = groups.get(kind) ?? [];
         arr.push(parsed.id);
         groups.set(kind, arr);
       }
-      if (groups.size === 0) throw new Error(`No resolvable URIs. Invalid: ${invalid.join(', ')}`);
-      const responseKeyMap: Record<string, string> = { tracks: 'tracks', albums: 'albums', artists: 'artists', shows: 'shows', episodes: 'episodes', audiobooks: 'audiobooks', chapters: 'chapters' };
-      const allItems: Array<{ type: string; item: unknown }> = [];
-      for (const [kind, ids] of groups) {
-        const key = responseKeyMap[kind] ?? kind;
-        const items = await fetchSeveral<Record<string, unknown>>(client, kind as SeveralKind, key, ids);
-        for (const it of items) allItems.push({ type: kind, item: it });
+      if (groups.size === 0) {
+        const why = [
+          invalid.length ? `Invalid: ${invalid.join(', ')}` : '',
+          unsupported.length ? `Unsupported here: ${unsupported.join(', ')}` : '',
+        ].filter(Boolean).join(' | ');
+        throw new Error(`No resolvable URIs. ${why}`);
       }
+      const responseKeyMap: Record<string, string> = { tracks: 'tracks', albums: 'albums', artists: 'artists', shows: 'shows', episodes: 'episodes', audiobooks: 'audiobooks', chapters: 'chapters' };
+      // One request per distinct type, but they do not have to queue up behind
+      // each other (#779). Promise.all hands back the per-type groups in the
+      // order they were partitioned above, so the rendered list is identical to
+      // the sequential walk no matter which type answers first.
+      const perKind = await Promise.all(
+        [...groups].map(async ([kind, ids]) => {
+          const key = responseKeyMap[kind] ?? kind;
+          const items = await fetchSeveral<Record<string, unknown>>(client, kind as SeveralKind, key, ids);
+          return items.map((item) => ({ type: kind, item }));
+        }),
+      );
+      const allItems: Array<{ type: string; item: unknown }> = perKind.flat();
       if (args.response_format === 'json') {
-        const raw: Record<string, unknown> = { items: allItems, invalid };
+        const raw: Record<string, unknown> = { items: allItems, invalid, unsupported };
         return { content: [{ type: 'text', text: JSON.stringify(raw) }], structuredContent: raw };
       }
       const cap = resolveMaxResults(args.max_results);
       const trunc = truncateItems(allItems, cap);
-      const lines = [`Batch lookup (${allItems.length} resolved${invalid.length ? `, ${invalid.length} invalid skipped` : ''}):`];
+      const counts = [`${allItems.length} resolved`];
+      if (invalid.length) counts.push(`${invalid.length} invalid skipped`);
+      if (unsupported.length) counts.push(`${unsupported.length} unsupported skipped`);
+      const lines = [`Batch lookup (${counts.join(', ')}):`];
       trunc.items.forEach(({ type, item }) => {
         const o = item as Record<string, unknown>;
         lines.push(`  \u2022 [${type}] "${(o.name as string) ?? (o.id as string)}" | URI: ${(o.uri as string) ?? ''}`);
       });
       if (trunc.footer) lines.push('', `(${trunc.footer})`);
-      if (invalid.length) lines.push('', `Invalid URIs skipped: ${invalid.join(', ')}`);
-      return { content: [{ type: 'text', text: lines.join('\n') }], structuredContent: { items: trunc.items, total: allItems.length, invalid } };
+      if (invalid.length) lines.push('', `Invalid URIs skipped (not readable as a Spotify URI): ${invalid.join(', ')}`);
+      if (unsupported.length) lines.push('', `Unsupported here (well-formed, but no batch endpoint for this type): ${unsupported.join(', ')}`);
+      return { content: [{ type: 'text', text: lines.join('\n') }], structuredContent: { items: trunc.items, total: allItems.length, invalid, unsupported } };
     },
   );
 
@@ -1118,9 +1218,9 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
   // ----- browse_category_deepdive (rank 59 / #317) -----
   server.tool(
     'browse_category_deepdive',
-    'Category → playlists → optional items peek in one call (GET /browse/categories/{id} + /playlists (+ /playlists/{id}/tracks peek)). Quota: 🟡 2–3 calls.',
+    'Category → playlists → optional items peek in one call. Removed Feb 2026, no replacement endpoint. Quota: 🟡 2–3 calls.',
     {
-      category_id: z.string().min(1).describe('Category ID from get_categories'),
+      category_id: z.string().min(1).describe('Category ID'),
       country: MARKET_CODE.optional().describe('ISO 3166-1 alpha-2 country code, e.g. \'US\''),
       locale: z.string().optional().describe('Locale, e.g. en_US'),
       limit: z.number().int().min(1).max(50).optional().describe('Playlists per page, 1–50. Default: 10'),
@@ -1131,25 +1231,58 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
       const catParams: Record<string, string> = {};
       if (args.country) catParams.country = args.country as string;
       if (args.locale) catParams.locale = args.locale as string;
-      const category = await client.get<Record<string, unknown>>(`/browse/categories/${encodeURIComponent(args.category_id as string)}`, catParams);
-      if (!category) throw new Error(`Category "${args.category_id}" not found`);
+      const categoryPath = `/browse/categories/${encodeURIComponent(args.category_id as string)}`;
+      let category: Record<string, unknown> | null;
+      try {
+        category = await client.get<Record<string, unknown>>(categoryPath, catParams);
+      } catch (err) {
+        if (isRemovedEndpointFailure(err)) {
+          throw browseCategoryUnavailable(categoryPath, 'category', err);
+        }
+        throw err;
+      }
+      if (!category) throw browseCategoryUnavailable(categoryPath, 'category');
       const plParams: Record<string, string> = {};
       if (args.country) plParams.country = args.country as string;
       if (args.limit !== undefined) plParams.limit = String(args.limit);
-      const plData = await client.get<{ playlists: SpotifyPaged<SpotifyAlbumItem & { owner?: { display_name?: string; id?: string } }> }>(`/browse/categories/${encodeURIComponent(args.category_id as string)}/playlists`, plParams);
-      const playlists = plData?.playlists;
-      let peek: unknown[] | null = null;
+      const playlistsPath = `${categoryPath}/playlists`;
+      let playlists: SpotifyPaged<SpotifyAlbumItem & { owner?: { display_name?: string; id?: string } }> | undefined;
+      try {
+        const plData = await client.get<{ playlists: typeof playlists }>(playlistsPath, plParams);
+        playlists = plData?.playlists;
+      } catch (err) {
+        if (isRemovedEndpointFailure(err)) {
+          throw browseCategoryUnavailable(playlistsPath, 'playlists', err);
+        }
+        throw err;
+      }
+      if (!playlists) throw browseCategoryUnavailable(playlistsPath, 'playlists');
+      let peek: Array<Record<string, unknown>> | null = null;
+      // A peek that could not be read is unknown, not empty: report the
+      // failure instead of collapsing it into "this playlist has no rows" (#773).
+      let peekError: string | null = null;
       if (args.peek_items && playlists?.items?.length) {
         const first = playlists.items[0] as { id?: string };
         if (first?.id) {
           try {
-            const itemsData = await client.get<{ items: unknown[] }>(`/playlists/${encodeURIComponent(first.id)}/tracks`, { limit: '2' });
-            peek = itemsData?.items ?? null;
-          } catch { peek = null; }
+            // /playlists/{id}/items returns { added_at, item } rows; the
+            // legacy /tracks path is gone. Read every row shape defensively.
+            const itemsData = await client.get<{ items?: unknown[] }>(
+              `/playlists/${encodeURIComponent(first.id)}/items`,
+              { limit: '2', additional_types: 'track' },
+            );
+            peek = (itemsData?.items ?? []).map((it) => {
+              const row = (it ?? {}) as Record<string, unknown>;
+              return (row.item ?? row.track ?? row) as Record<string, unknown>;
+            });
+          } catch (err) {
+            peek = null;
+            peekError = err instanceof Error ? err.message : String(err);
+          }
         }
       }
       if (args.response_format === 'json') {
-        const raw: Record<string, unknown> = { category, playlists, peek };
+        const raw: Record<string, unknown> = { category, playlists, peek, peek_error: peekError };
         return { content: [{ type: 'text', text: JSON.stringify(raw) }], structuredContent: raw };
       }
       const cap = resolveMaxResults(args.max_results as number | undefined);
@@ -1162,15 +1295,16 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
           lines.push(`  \u2022 "${o.name as string}" | URI: ${o.uri as string}`);
         });
         if (trunc.footer) lines.push(`  (${trunc.footer})`);
-        if (peek?.length) {
+        if (peekError) {
+          lines.push(`  (preview unavailable: ${peekError})`);
+        } else if (peek?.length) {
           lines.push('', 'Peek (first playlist, 2 tracks):');
-          (peek as Array<Record<string, unknown>>).slice(0, 2).forEach((it) => {
-            const track = (it.track ?? it) as Record<string, unknown>;
+          peek.slice(0, 2).forEach((track) => {
             lines.push(`  - "${(track.name as string) ?? 'unknown'}" | URI: ${(track.uri as string) ?? ''}`);
           });
         }
       }
-      return { content: [{ type: 'text', text: lines.join('\n') }], structuredContent: { category, playlists, peek } };
+      return { content: [{ type: 'text', text: lines.join('\n') }], structuredContent: { category, playlists, peek, peek_error: peekError } };
     },
   );
 
@@ -1184,7 +1318,7 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
       limit: z.number().int().min(1).max(50).optional().describe('Results per page for the underlying paging, 1–50. Default: 20'),
       offset: z.number().int().min(0).optional().describe('Offset for underlying paging. Default: 0'),
       market: MARKET_CODE.optional().describe('ISO 3166-1 alpha-2 country code, e.g. \'US\''),
-      fetch_all: z.boolean().optional().describe('When true, walk all pages (up to cap) to find matches'),
+      fetch_all: z.boolean().optional().describe('When true, walk from offset to the end (500-episode cap)'),
       ...sharedListFields,
     },
     async (args) => {
@@ -1195,12 +1329,15 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
       const market = args.market as string | undefined;
       const matches: SpotifyEpisodeSimple[] = [];
       let total = 0;
+      let scanned = 0;
+      let safetyCapHit = false;
       const walk = async (off: number, lim: number) => {
         const params: Record<string, string> = { limit: String(lim), offset: String(off) };
         if (market) params.market = market;
         const page = await client.get<SpotifyPaged<SpotifyEpisodeSimple>>(`/shows/${encodeURIComponent(args.show_id as string)}/episodes`, params);
         if (!page) return null;
         total = page.total;
+        scanned += page.items.length;
         for (const ep of page.items) {
           const hay = `${ep.name} ${ep.description ?? ''}`.toLowerCase();
           if (hay.includes(q)) matches.push(ep);
@@ -1208,28 +1345,70 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
         return page;
       };
       if (fetchAll) {
-        let off = 0;
-        const pageSize = 50;
-        while (true) {
-          const page = await walk(off, pageSize);
-          if (!page || page.items.length < pageSize || off + pageSize >= (page.total ?? 0)) break;
-          off += pageSize;
-          if (off > 500) break; // safety cap
+        // #790: the walk honours the caller's limit/offset and is bounded by
+        // FETCH_ALL_EPISODE_CAP, never by the display cap. The final request is
+        // shortened so the walk can never overshoot the cap, and hitting it with
+        // episodes left is reported rather than passed off as a full search.
+        const pageSize = Math.min(EPISODE_PAGE_MAX, limit);
+        let off = offset;
+        for (;;) {
+          // Reached only after a full page with episodes left, so the cap here
+          // means the walk was cut short, not that the show ended.
+          if (scanned >= FETCH_ALL_EPISODE_CAP) { safetyCapHit = true; break; }
+          const requestSize = Math.min(pageSize, FETCH_ALL_EPISODE_CAP - scanned);
+          const page = await walk(off, requestSize);
+          if (!page) break;
+          const unscanned = Math.max(0, (page.total ?? 0) - (off + page.items.length));
+          if (page.items.length < requestSize) break; // short page: end of show
+          if (unscanned <= 0) break; // whole show covered
+          if (requestSize < pageSize) { safetyCapHit = true; break; } // cap-bound page
+          off += requestSize;
         }
       } else {
         await walk(offset, limit);
       }
+      const scannedFrom = offset;
+      const scannedTo = offset + scanned;
+      const scan: Record<string, unknown> = {
+        scanned_episodes: scanned,
+        scanned_from: scannedFrom,
+        scanned_to: scannedTo,
+        safety_cap_hit: safetyCapHit,
+      };
       if (args.response_format === 'json') {
-        const raw: Record<string, unknown> = { show_id: args.show_id, query: args.query, total_episodes: total, matches };
+        const raw: Record<string, unknown> = { show_id: args.show_id, query: args.query, total_episodes: total, ...scan, matches };
         return { content: [{ type: 'text', text: JSON.stringify(raw) }], structuredContent: raw };
       }
-      if (matches.length === 0) return { content: [{ type: 'text', text: `No episodes matching "${args.query}" in show ${args.show_id}.` }] };
+      if (matches.length === 0) {
+        const lines = [`No episodes matching "${args.query}" in show ${args.show_id}.`];
+        lines.push(`(Scanned ${scanned} episode${scanned === 1 ? '' : 's'} of ${total} in the range ${scannedFrom}–${scannedTo}.)`);
+        if (safetyCapHit) lines.push(`(Stopped at the ${FETCH_ALL_EPISODE_CAP}-episode safety cap — episodes after index ${scannedTo} were not searched, so matches there are unknown.)`);
+        return { content: [{ type: 'text', text: lines.join('\n') }], structuredContent: { show_id: args.show_id, query: args.query, total_episodes: total, ...scan, matches: [] } };
+      }
       const cap = resolveMaxResults(args.max_results as number | undefined);
-      const trunc = truncateItems(matches, cap);
-      const lines = [`Episodes matching "${args.query}" in show ${args.show_id} (${matches.length} of ${total} total):`];
-      trunc.items.forEach((ep) => lines.push(`  \u2022 "${ep.name}" (${formatDuration(ep.duration_ms)}, ${ep.release_date}) | URI: ${ep.uri}`));
+      // fetch_all is already on, so its footer must not advise setting it; the
+      // scan cap is not a caller knob, so it is not offered either.
+      const trunc = truncateItems(matches, cap, fetchAll ? SCAN_CAPABILITIES : PAGE_CAPABILITIES);
+      const lines = [`Episodes matching "${args.query}" in show ${args.show_id} (${matches.length} match${matches.length === 1 ? '' : 'es'} of ${total} total, from ${scanned} scanned episode${scanned === 1 ? '' : 's'} ${scannedFrom}–${scannedTo}):`];
+      trunc.items.forEach((ep) => lines.push(`  • "${ep.name}" (${formatDuration(ep.duration_ms)}, ${ep.release_date}) | URI: ${ep.uri}`));
       if (trunc.footer) lines.push('', `(${trunc.footer})`);
-      return { content: [{ type: 'text', text: lines.join('\n') }], structuredContent: { show_id: args.show_id, query: args.query, total_episodes: total, matches: trunc.items, pagination: paginationInfo({ total: matches.length, offset: 0, limit: null, returned: trunc.items.length }) } };
+      if (safetyCapHit) lines.push(`(Walk stopped at the ${FETCH_ALL_EPISODE_CAP}-episode safety cap: episodes after index ${scannedTo} of ${total} were not searched, so this list is not every match.)`);
+      return {
+        content: [{ type: 'text', text: lines.join('\n') }],
+        structuredContent: {
+          show_id: args.show_id,
+          query: args.query,
+          total_episodes: total,
+          ...scan,
+          matches: trunc.items,
+          // Page mode scans one episode window, so paging over the episode
+          // range is truthful. In fetch_all mode the walk is already as wide as
+          // it will get and the rendered rows are a trimmed view of a
+          // client-side match set, not a page of the endpoint — a next_offset
+          // there would point at episodes, not matches, so it is omitted.
+          ...(fetchAll ? {} : { pagination: paginationInfo({ total, offset, limit, returned: scanned }) }),
+        },
+      };
     },
   );
 }

@@ -633,6 +633,121 @@ test('queue_replace_via_playlist guards empty queues and all-filtered outcomes',
   assert.match(text(out2), /filtered out/i);
 });
 
+// A live queue carries ads and unavailable rows with no URI. Pairing metadata
+// by position rather than by URI shifted every later track's artist onto the
+// URI-less row's, and that wrong artist decided which tracks survived
+// keep_artists (#844).
+test('queue_replace_via_playlist attributes a track to its own URI when a URI-less ad precedes it', async () => {
+  const queue = {
+    currently_playing: { name: 'Ad', type: 'ad' },
+    queue: [
+      { uri: 'spotify:track:byA', name: 'Track A', type: 'track', artists: [{ name: 'A' }] },
+      { uri: 'spotify:track:byB', name: 'Track B', type: 'track', artists: [{ name: 'B' }] },
+    ],
+  };
+  const h = makeHarness(registerExhaust2PlaybackTools, { getResponse: (p) => (p === '/me/player/queue' ? queue : undefined) });
+  await h.invoke('queue_replace_via_playlist', { keep_artists: ['a'], dry_run: false });
+  const add = h.calls.find((c) => c.method === 'POST' && c.path.includes('/playlists/pl1/items'));
+  assert.deepEqual(add!.body, { uris: ['spotify:track:byA'] });
+});
+
+// The same track can appear twice, the second time as a bare stub with no
+// artist metadata. Positional pairing let that stub overwrite the real
+// attribution, so keep_artists dropped a track that did match.
+test('queue_replace_via_playlist keeps a duplicated track attributed to its own URI when a stub row repeats it', async () => {
+  const queue = {
+    currently_playing: { uri: 'spotify:track:byA', name: 'Track A', type: 'track', artists: [{ name: 'A' }] },
+    queue: [
+      { uri: 'spotify:track:byA', name: 'Track A' },
+      { uri: 'spotify:track:byB', name: 'Track B', type: 'track', artists: [{ name: 'B' }] },
+    ],
+  };
+  const h = makeHarness(registerExhaust2PlaybackTools, { getResponse: (p) => (p === '/me/player/queue' ? queue : undefined) });
+  await h.invoke('queue_replace_via_playlist', { keep_artists: ['a'], dry_run: false });
+  const add = h.calls.find((c) => c.method === 'POST' && c.path.includes('/playlists/pl1/items'));
+  assert.ok(add, 'the matching track is queued rather than filtered away');
+  assert.deepEqual(add.body, { uris: ['spotify:track:byA'] });
+});
+
+// Two rows for one URI are the same track, so their attributions MERGE.
+// Ranking them instead let a name-only row (score 1) tie with, and beat, an
+// artists-only row (also score 1) — erasing the artists and dropping the one
+// track that genuinely matched keep_artists.
+test('queue_replace_via_playlist does not let a name-only row erase the artists of the same URI', async () => {
+  const queue = {
+    currently_playing: { uri: 'spotify:track:byA', artists: [{ name: 'A' }] },
+    queue: [
+      { uri: 'spotify:track:byA', name: 'Track A', type: 'track' },
+      { uri: 'spotify:track:byB', artists: [{ name: 'B' }] },
+    ],
+  };
+  const h = makeHarness(registerExhaust2PlaybackTools, { getResponse: (p) => (p === '/me/player/queue' ? queue : undefined) });
+  const out = await h.invoke('queue_replace_via_playlist', { keep_artists: ['a'], dry_run: false });
+  assert.notEqual(out.structuredContent?.error, 'all_filtered', 'the real artist-A match survives the merge');
+  const add = h.calls.find((c) => c.method === 'POST' && c.path.includes('/playlists/pl1/items'));
+  assert.ok(add, 'the matching track is queued rather than filtered away');
+  assert.deepEqual(add.body, { uris: ['spotify:track:byA'] });
+});
+
+// The two early bail-outs are exactly the paths a URI-less ad drives you to,
+// so the skipped-row disclosure has to survive them too.
+test('queue_replace_via_playlist reports skipped rows on the all_filtered path', async () => {
+  const queue = {
+    currently_playing: { name: 'Ad', type: 'ad' },
+    queue: [{ uri: 'spotify:track:byB', name: 'Track B', type: 'track', artists: [{ name: 'B' }] }],
+  };
+  const h = makeHarness(registerExhaust2PlaybackTools, { getResponse: (p) => (p === '/me/player/queue' ? queue : undefined) });
+  const out = await h.invoke('queue_replace_via_playlist', { keep_artists: ['a'], dry_run: false });
+  assert.equal(out.structuredContent?.error, 'all_filtered');
+  assert.equal(out.structuredContent?.uri_less_rows, 1);
+  assert.match(text(out), /had no URI/);
+  assert.equal(h.calls.filter((c) => c.method === 'POST').length, 0);
+});
+
+test('queue_replace_via_playlist reports skipped rows on the empty_queue path', async () => {
+  const queue = {
+    currently_playing: { name: 'Ad', type: 'ad' },
+    queue: [{ name: 'Ad 2', type: 'ad' }],
+  };
+  const h = makeHarness(registerExhaust2PlaybackTools, { getResponse: (p) => (p === '/me/player/queue' ? queue : undefined) });
+  const out = await h.invoke('queue_replace_via_playlist', { dry_run: true });
+  assert.equal(out.structuredContent?.error, 'empty_queue');
+  assert.equal(out.structuredContent?.uri_less_rows, 2);
+  assert.match(text(out), /had no URI/);
+  assert.equal(h.calls.filter((c) => c.method === 'POST').length, 0);
+});
+
+// A row with a URI but no name/artists/type cannot be attributed to anyone.
+// It is reported as unknown instead of inheriting a neighbour's data.
+test('queue_replace_via_playlist reports a metadata-less row as unknown rather than borrowing a neighbour artist', async () => {
+  const queue = {
+    currently_playing: { uri: 'spotify:track:unknown', name: null, type: null, artists: null },
+    queue: [{ uri: 'spotify:track:byA', name: 'Track A', type: 'track', artists: [{ name: 'A' }] }],
+  };
+  const h = makeHarness(registerExhaust2PlaybackTools, { getResponse: (p) => (p === '/me/player/queue' ? queue : undefined) });
+  const out = await h.invoke('queue_replace_via_playlist', { keep_artists: ['a'], dry_run: false });
+  assert.equal(out.structuredContent?.unknown_rows, 1);
+  assert.deepEqual(out.structuredContent?.unknown_uris, ['spotify:track:unknown']);
+  assert.match(text(out), /reported as unknown/);
+  const add = h.calls.find((c) => c.method === 'POST' && c.path.includes('/playlists/pl1/items'));
+  assert.deepEqual(add!.body, { uris: ['spotify:track:byA'] });
+});
+
+test('queue_replace_via_playlist reports URI-less rows in the dry run too', async () => {
+  const queue = {
+    currently_playing: { name: 'Ad', type: 'ad' },
+    queue: [
+      { uri: 'spotify:track:byA', name: 'Track A', type: 'track', artists: [{ name: 'A' }] },
+      { uri: 'spotify:track:byB', name: 'Track B', type: 'track', artists: [{ name: 'B' }] },
+    ],
+  };
+  const h = makeHarness(registerExhaust2PlaybackTools, { getResponse: (p) => (p === '/me/player/queue' ? queue : undefined) });
+  const out = await h.invoke('queue_replace_via_playlist', { keep_artists: ['a'], dry_run: true });
+  assert.equal(out.structuredContent?.uri_less_rows, 1);
+  assert.equal(out.structuredContent?.after_filters, 1);
+  assert.equal(h.calls.filter((c) => c.method === 'POST').length, 0);
+});
+
 // ---------------------------------------------------------------- recently-played intel
 
 const recentWindow = () => ({

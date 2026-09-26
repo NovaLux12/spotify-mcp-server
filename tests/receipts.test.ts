@@ -311,3 +311,217 @@ describe('playlist_items absence direction (#133-era receipts)', () => {
     assert.equal(receipt.after, 0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// #625 — occurrence rows recorded for undo
+// ---------------------------------------------------------------------------
+
+describe('issueReceipt occurrence recording (#625)', () => {
+  it('records the added row, not the pre-existing copy of a duplicated uri', async () => {
+    // Track X was already at row 0; the add appended a second copy at row 2.
+    const client = stubClient(() =>
+      pagedItems([track('spotify:track:x'), track('spotify:track:y'), track('spotify:track:x')]),
+    );
+    const receipt = await issueReceipt(client, {
+      kind: 'playlist_items',
+      id: 'pl1',
+      uris: ['spotify:track:x'],
+    });
+    assert.deepEqual(receipt.affected, [{ uri: 'spotify:track:x', positions: [2] }]);
+  });
+
+  it('records every row an add created when a uri was added more than once', async () => {
+    // One pre-existing copy at row 0, then the add appended two more.
+    const client = stubClient(() =>
+      pagedItems([track('spotify:track:x'), track('spotify:track:x'), track('spotify:track:x')]),
+    );
+    const receipt = await issueReceipt(client, {
+      kind: 'playlist_items',
+      id: 'pl1',
+      uris: ['spotify:track:x', 'spotify:track:x'],
+    });
+    assert.deepEqual(receipt.affected, [{ uri: 'spotify:track:x', positions: [1, 2] }],
+      'both appended rows are recorded, never the pre-existing one');
+  });
+
+  it('records nothing when the walk stopped short of the end of the playlist', async () => {
+    // Every page is full and `next` never ends: the walk runs out of pages
+    // before the appended row. The last visible copy of x predates the add.
+    const full = pagedItems(Array.from({ length: 100 }, (_, i) => track(`spotify:track:r${i}`)), 600, 'more');
+    const client = stubClient(() => full);
+    const receipt = await issueReceipt(client, {
+      kind: 'playlist_items',
+      id: 'pl1',
+      uris: ['spotify:track:r0'],
+    });
+    assert.equal(receipt.affected, undefined,
+      'a partial walk must not yield positions — undo would target a pre-existing row');
+  });
+
+  it('records nothing for a uri the walk never saw, so undo can refuse', async () => {
+    const client = stubClient(() => pagedItems([track('spotify:track:seen')]));
+    const receipt = await issueReceipt(client, {
+      kind: 'playlist_items',
+      id: 'pl1',
+      uris: ['spotify:track:seen', 'spotify:track:unseen'],
+    });
+    assert.deepEqual(receipt.affected, [{ uri: 'spotify:track:seen', positions: [0] }]);
+    assert.equal(
+      receipt.affected?.some((entry) => entry.uri === 'spotify:track:unseen'),
+      false,
+      'an unobserved uri must not get a guessed position',
+    );
+  });
+
+  it('records the removed positions of a targeted removal', async () => {
+    const client = stubClient(() => pagedItems([track('spotify:track:b')]));
+    const receipt = await issueReceipt(client, {
+      kind: 'playlist_items',
+      id: 'pl1',
+      uris: ['spotify:track:a'],
+      expectPresent: false,
+      targetedPositions: [
+        { uri: 'spotify:track:a', position: 3 },
+        { uri: 'spotify:track:a', position: 1 },
+      ],
+    });
+    assert.deepEqual(receipt.affected, [{ uri: 'spotify:track:a', positions: [1, 3] }]);
+  });
+
+  it('records no positions for a bare removal, whose rows reindexed', async () => {
+    const client = stubClient(() => pagedItems([]));
+    const receipt = await issueReceipt(client, {
+      kind: 'playlist_items',
+      id: 'pl1',
+      uris: ['spotify:track:a'],
+      expectPresent: false,
+    });
+    assert.equal(receipt.affected, undefined);
+  });
+
+  it('records the INSERTED row for a positional add, not the last occurrence', async () => {
+    // Main's reproduction: [A, X, B] + insert X at 0 -> [X, A, X, B]. The
+    // added row is index 0; index 2 is the X that predates the mutation.
+    const client = stubClient(() =>
+      pagedItems([track('spotify:track:x'), track('spotify:track:a'), track('spotify:track:x'), track('spotify:track:b')]),
+    );
+    const receipt = await issueReceipt(client, {
+      kind: 'playlist_items',
+      id: 'pl1',
+      uris: ['spotify:track:x'],
+      insertPosition: 0,
+    });
+    assert.deepEqual(receipt.affected, [{ uri: 'spotify:track:x', positions: [0] }]);
+  });
+
+  it('records a multi-uri positional add at consecutive indices', async () => {
+    const client = stubClient(() =>
+      pagedItems([track('spotify:track:x'), track('spotify:track:y'), track('spotify:track:a')]),
+    );
+    const receipt = await issueReceipt(client, {
+      kind: 'playlist_items',
+      id: 'pl1',
+      uris: ['spotify:track:x', 'spotify:track:y'],
+      insertPosition: 0,
+    });
+    assert.deepEqual(receipt.affected, [
+      { uri: 'spotify:track:x', positions: [0] },
+      { uri: 'spotify:track:y', positions: [1] },
+    ]);
+  });
+
+  it('records nothing when a claimed insert position does not match the list', async () => {
+    // A caller that supplies a position the walk cannot corroborate gets no
+    // positions at all, so undo refuses instead of deleting a wrong row.
+    const client = stubClient(() =>
+      pagedItems([track('spotify:track:a'), track('spotify:track:x')]),
+    );
+    const receipt = await issueReceipt(client, {
+      kind: 'playlist_items',
+      id: 'pl1',
+      uris: ['spotify:track:x'],
+      insertPosition: 0,
+    });
+    assert.equal(receipt.affected, undefined);
+  });
+
+  it('records exactly the rows a caller states it created, at scattered indices', async () => {
+    // An undo re-inserts runs at their own indices, which neither the append
+    // rule nor a single `insertPosition` can express. The caller's rows are
+    // taken as given once each one is corroborated by the observed list.
+    const client = stubClient(() =>
+      pagedItems([track('spotify:track:a'), track('spotify:track:b'), track('spotify:track:c')]),
+    );
+    const receipt = await issueReceipt(client, {
+      kind: 'playlist_items',
+      id: 'pl1',
+      uris: ['spotify:track:b', 'spotify:track:c'],
+      createdPositions: [
+        { uri: 'spotify:track:b', position: 1 },
+        { uri: 'spotify:track:c', position: 2 },
+      ],
+    });
+    assert.deepEqual(receipt.affected, [
+      { uri: 'spotify:track:b', positions: [1] },
+      { uri: 'spotify:track:c', positions: [2] },
+    ]);
+  });
+
+  it('records nothing for a stated row the walk cannot corroborate', async () => {
+    // A stated position is still checked against the list. Row 1 holds 'a',
+    // not the claimed 'z', so the claim is dropped wholesale and undo refuses
+    // rather than deleting a row the mutation cannot justify owning.
+    const client = stubClient(() =>
+      pagedItems([track('spotify:track:a'), track('spotify:track:a')]),
+    );
+    const receipt = await issueReceipt(client, {
+      kind: 'playlist_items',
+      id: 'pl1',
+      uris: ['spotify:track:z'],
+      createdPositions: [{ uri: 'spotify:track:z', position: 1 }],
+    });
+    assert.equal(receipt.affected, undefined);
+  });
+
+  it('records no rows when a caller states it created none, even though the uri is present', async () => {
+    // The delete-only rollback: every surviving copy PREDATES the mutation, so
+    // claiming one as created would let the next undo delete pre-existing
+    // state. Presence is still verified — only the row attribution is withheld.
+    const client = stubClient(() => pagedItems([track('spotify:track:a')]));
+    const receipt = await issueReceipt(client, {
+      kind: 'playlist_items',
+      id: 'pl1',
+      uris: ['spotify:track:a'],
+      createdPositions: [],
+    });
+    assert.equal(receipt.affected, undefined, 'the survivor is not claimed as created');
+    assert.equal(receipt.verified, true, 'presence is still confirmed');
+    assert.deepEqual(receipt.occurrences, { 'spotify:track:a': 1 });
+  });
+
+  it('records no occurrence counts when the walk stopped short of the end', async () => {
+    // A truncated walk undercounts. Undo reads these counts to decide whether
+    // a uri should still be present after the rollback, so an undercount here
+    // becomes a false "the uri is gone" expectation and a false mismatch.
+    const full = pagedItems(Array.from({ length: 100 }, (_, i) => track(`spotify:track:r${i}`)), 600, 'more');
+    const client = stubClient(() => full);
+    const receipt = await issueReceipt(client, {
+      kind: 'playlist_items',
+      id: 'pl1',
+      uris: ['spotify:track:r0'],
+    });
+    assert.equal(receipt.occurrences, undefined);
+  });
+
+  it('records occurrence counts for a fully visible list', async () => {
+    const client = stubClient(() =>
+      pagedItems([track('spotify:track:x'), track('spotify:track:y'), track('spotify:track:x')]),
+    );
+    const receipt = await issueReceipt(client, {
+      kind: 'playlist_items',
+      id: 'pl1',
+      uris: ['spotify:track:x', 'spotify:track:y'],
+    });
+    assert.deepEqual(receipt.occurrences, { 'spotify:track:x': 2, 'spotify:track:y': 1 });
+  });
+});

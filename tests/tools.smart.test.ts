@@ -66,19 +66,37 @@ function harness(opts: {
         return { items: top.slice(offset, offset + limit) } as T;
       }
       if (path === '/me/player/recently-played') {
+        // The endpoint caps a page at 50, so a longer history is only reachable
+        // by cursor descent — one page is all this tool reads.
+        const limit = Number(params?.limit ?? 50);
         return {
-          items: recent.map((t) => ({ track: t, played_at: '2026-08-26T10:00:00Z', context: null })),
+          items: recent
+            .slice(0, limit)
+            .map((t) => ({ track: t, played_at: '2026-08-26T10:00:00Z', context: null })),
+          cursors: { after: '2026-08-26T10:00:00.000Z', before: '2026-08-26T09:00:00.000Z' },
         } as T;
       }
       // receipt re-fetch for playlist_meta
       if (path.startsWith('/playlists/')) return { uri: 'spotify:playlist:pl1' } as T;
       return null;
     },
-    async getAllPages<T>(path: string): Promise<T[]> {
-      if (path === '/me/tracks') {
-        return saved.map((t) => ({ added_at: '2026-01-01T00:00:00Z', track: t }) as unknown as T);
-      }
-      return [];
+    // Mirrors SpotifyClient.getAllPagesWithTruncation over the canned library
+    // so the verdict the tool reports is the real one, not a canned constant.
+    async getAllPagesWithTruncation<T>(
+      path: string,
+      params?: Record<string, string>,
+      opts?: { maxItems?: number },
+    ): Promise<{ items: T[]; truncated: boolean }> {
+      if (path !== '/me/tracks') return { items: [], truncated: false };
+      const maxItems = opts?.maxItems ?? 500;
+      const pageLimit = Number(params?.limit ?? 50);
+      const all = saved
+        .slice(0, Math.min(saved.length, maxItems + pageLimit))
+        .map((t) => ({ added_at: '2026-01-01T00:00:00Z', track: t }));
+      return {
+        items: all.slice(0, maxItems) as T[],
+        truncated: all.length > maxItems || all.length < saved.length,
+      };
     },
     async post<T>(path: string, body: unknown): Promise<T | null> {
       posts.push({ path, body });
@@ -214,5 +232,102 @@ describe('create_smart_playlist creation', () => {
     const p = out.structuredContent as { selected: number };
     assert.equal(p.selected, 2);
     void out;
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Pool ceilings (#809): a bounded read is a floor, and says so
+// ---------------------------------------------------------------------------
+
+describe('create_smart_playlist pool ceilings', () => {
+  const pool = (out: { structuredContent?: Record<string, unknown> }) =>
+    out.structuredContent as {
+      pool_capped: boolean;
+      pool_cap: number;
+      candidates_scanned: number;
+      truncated_at_fetch_all_cap: boolean;
+    };
+
+  const many = (n: number, p: string) =>
+    Array.from({ length: n }, (_, i) => track(`${p}${i}`, `Song ${i}`, [`Artist${i}`]));
+
+  it('names the top_tracks ceiling when the pool fills both pages', async () => {
+    const h = harness({ topTracks: many(100, 't') });
+    const out = await h.invoke({ source: 'top_tracks', limit: 200, dry_run: true });
+    const p = pool(out);
+    assert.equal(p.pool_capped, true);
+    assert.equal(p.pool_cap, 100);
+    assert.equal(p.candidates_scanned, 100);
+    assert.match(textOf(out), /ceiling of 100/);
+  });
+
+  it('does not claim a ceiling when top_tracks ran out on its own', async () => {
+    const h = harness({ topTracks: many(12, 't') });
+    const out = await h.invoke({ source: 'top_tracks', dry_run: true });
+    const p = pool(out);
+    assert.equal(p.pool_capped, false);
+    assert.equal(p.pool_cap, 100);
+    assert.equal(p.candidates_scanned, 12);
+    assert.doesNotMatch(textOf(out), /ceiling of/);
+  });
+
+  it('names the recently_played page ceiling instead of implying a full scan', async () => {
+    // A 150-entry history; the endpoint's 50-row page is all one call can read.
+    const h = harness({ recentTracks: many(150, 'r') });
+    const out = await h.invoke({ source: 'recently_played', limit: 80, dry_run: true });
+    const p = pool(out);
+    assert.equal(p.candidates_scanned, 50);
+    assert.equal(p.pool_capped, true);
+    assert.equal(p.pool_cap, 50);
+    assert.match(textOf(out), /ceiling of 50/);
+  });
+
+  it('reports the same pool numbers on the commit path as on the dry run', async () => {
+    const h = harness({ topTracks: many(100, 't') });
+    const dry = await h.invoke({ source: 'top_tracks', limit: 200, dry_run: true });
+    const commit = await h.invoke({ source: 'top_tracks', limit: 200 });
+    const d = pool(dry);
+    const c = pool(commit);
+    assert.equal(c.candidates_scanned, d.candidates_scanned);
+    assert.equal(c.pool_capped, d.pool_capped);
+    assert.equal(c.pool_cap, d.pool_cap);
+    assert.match(textOf(commit), /ceiling of 100/);
+  });
+
+  it('a saved library that ends exactly at scan_cap is not called truncated', async () => {
+    const h = harness({ savedTracks: many(500, 's') });
+    const out = await h.invoke({ source: 'saved_tracks', scan_cap: 500, dry_run: true });
+    const p = pool(out);
+    assert.equal(p.candidates_scanned, 500);
+    assert.equal(p.pool_capped, false);
+    assert.equal(p.truncated_at_fetch_all_cap, false);
+    assert.doesNotMatch(textOf(out), /ceiling of/);
+  });
+
+  it('a saved library past scan_cap reports the truncation', async () => {
+    const h = harness({ savedTracks: many(900, 's') });
+    const out = await h.invoke({ source: 'saved_tracks', scan_cap: 500, dry_run: true });
+    const p = pool(out);
+    assert.equal(p.candidates_scanned, 500);
+    assert.equal(p.pool_capped, true);
+    assert.equal(p.pool_cap, 500);
+    assert.equal(p.truncated_at_fetch_all_cap, true);
+    assert.match(textOf(out), /ceiling of 500/);
+  });
+
+  it('forwards time_range to the top_tracks read', async () => {
+    const h = harness({ topTracks: many(3, 't') });
+    await h.invoke({ source: 'top_tracks', time_range: 'long_term', dry_run: true });
+    const call = h.gets.find((g) => g.startsWith('/me/top/tracks'));
+    assert.ok(call, 'top_tracks was read');
+    assert.match(call, /"time_range":"long_term"/);
+  });
+
+  it('sends the documented medium_term default when time_range is omitted', async () => {
+    const h = harness({ topTracks: many(3, 't') });
+    await h.invoke({ source: 'top_tracks', dry_run: true });
+    const call = h.gets.find((g) => g.startsWith('/me/top/tracks'));
+    assert.ok(call, 'top_tracks was read');
+    assert.match(call, /"time_range":"medium_term"/);
   });
 });

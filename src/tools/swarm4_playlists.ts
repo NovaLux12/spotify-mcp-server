@@ -48,6 +48,8 @@ import type {
   SpotifyTrack,
 } from '../types/spotify.js';
 import type { LibraryBackup } from './backup.js';
+import { diffTrackLists } from './swarm3_snapshots.js';
+import type { SnapTrackRow } from './swarm3_snapshots.js';
 
 type TextContent = { type: 'text'; text: string };
 type ToolResult = { content: TextContent[]; structuredContent?: Record<string, unknown> };
@@ -459,15 +461,40 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
         }
       };
       const sign = args.direction === 'desc' ? -1 : 1;
-      const sorted = [...rows].sort((a, b) => {
-        const ka = key(a);
-        const kb = key(b);
+      const keyed = rows.map((r) => ({ r, k: key(r) }));
+      // #861: a key every row shares (an album sort over an all-episode
+      // playlist, a name sort over one track repeated) cannot move anything,
+      // and the commit path is a full atomic replace. Refuse before the
+      // write rather than rewrite the playlist to its own order and report
+      // a sort that never happened.
+      const distinct = new Set(keyed.map(({ k }) => `${typeof k}:${k}`));
+      if (rows.length > 1 && distinct.size <= 1) {
+        return shape(
+          rf,
+          `Refused to sort "${p.name ?? p.id}" by ${args.sort_by}: no comparable values — all ${rows.length} item(s) share the same ${args.sort_by} value, so the sort would not change the order. Nothing was changed.`,
+          {
+            ok: false,
+            reason: 'no_comparable_values',
+            playlist: p.id,
+            playlist_name: p.name,
+            sort_by: args.sort_by,
+            direction: args.direction,
+            items: rows.length,
+            distinct_values: distinct.size,
+            changed: false,
+            dry_run: args.dry_run,
+          },
+        );
+      }
+      const sorted = keyed.sort((a, b) => {
+        const ka = a.k;
+        const kb = b.k;
         if (ka === null && kb === null) return 0;
         if (ka === null) return 1; // nulls last regardless of direction
         if (kb === null) return -1;
         if (typeof ka === 'number' && typeof kb === 'number') return sign * (ka - kb);
         return sign * collator.compare(String(ka), String(kb));
-      });
+      }).map(x => x.r);
       const uris = sorted.map((r) => r.uri);
       const orderBudget = budgetedArray(uris, max, 'items', args.include_full_order);
       const prose = [
@@ -707,20 +734,38 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
       const block = rows.slice(start - 1, start - 1 + count);
       const rest = [...rows];
       rest.splice(start - 1, count);
-      let idx: number;
-      if (t < start - 1) idx = t;
-      else if (t >= start - 1 + count) idx = t - count;
-      else idx = start - 1; // target inside the block itself → no-op
+      // Three-way: a target inside the block itself keeps the block where it is,
+      // which is the no-op the order check below catches. Collapsing this to a
+      // two-way `t < start - 1 ? t : t - count` would instead reorder the block
+      // for an inside-block target.
+      const idx = t < start - 1 ? t : t >= start - 1 + count ? t - count : start - 1;
       const moved = [...rest];
       moved.splice(Math.min(idx, moved.length), 0, ...block);
       const uris = moved.map((r) => r.uri);
+      // A rewrite that changes nothing must not touch the playlist at all: the
+      // replace would rebuild the exact URI sequence already stored, while still
+      // costing a write request and, per a6-rewrite-unavailable-guard, risking a
+      // silent drop of unavailable rows. Comparing the computed order with the
+      // current one — rather than testing only "target inside the block" — also
+      // catches a block that lands immediately past itself and resolves back to
+      // the same order. Mirrors playlist_swap_positions for identical positions.
+      if (uris.length === n && uris.every((uri, i) => uri === rows[i].uri)) {
+        return shape(rf, `Move is a no-op: the resulting order is unchanged (target position ${args.to_position} → slot ${t + 1}, block ${start}–${start + count - 1}); no write was issued.`, {
+          ok: true,
+          no_op: true,
+          playlist: p.id,
+          playlist_name: p.name,
+          start,
+          count,
+          to_position: args.to_position,
+          items: n,
+          dry_run: args.dry_run,
+        });
+      }
       const max = resolveMaxResults(args.max_results, getConfig().maxItems);
       const orderBudget = budgetedArray(uris, max, 'items', args.include_full_order);
-      const noOp = idx === start - 1 && t >= start - 1 && t < start - 1 + count;
       const prose = [
-        noOp
-          ? `Move is a no-op: target position ${args.to_position} is inside the block itself.`
-          : `Move items ${start}–${start + count - 1} to original position ${args.to_position}:`,
+        `Move items ${start}–${start + count - 1} to original position ${args.to_position}:`,
         `  block: ${block.map(rowLabel).join(' | ')}`,
         ...renderRows(moved, max),
       ];
@@ -731,7 +776,6 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
         start,
         count,
         to_position: args.to_position,
-        no_op: noOp,
         items: n,
         order: orderBudget.value,
         ...orderBudget.disclosure,
@@ -1439,18 +1483,19 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
       const snapB = await readSnapshot(args.backup_file_b);
       const rowA = findSnapshotPlaylist(snapA, args.backup_file_a, args.playlist_name);
       const rowB = findSnapshotPlaylist(snapB, args.backup_file_b, args.playlist_name);
-      const urisA = rowA.items.map((it) => it.uri);
-      const urisB = rowB.items.map((it) => it.uri);
-      const setA = new Set(urisA);
-      const setB = new Set(urisB);
-      const nameOf = (snap: LibraryBackup, uri: string): string =>
-        snap.playlists
-          .flatMap((p) => p.items)
-          .find((it) => it.uri === uri)?.name ?? uri;
-      const added = urisB.filter((u) => !setA.has(u));
-      const removed = urisA.filter((u) => !setB.has(u));
-      const keptA = urisA.filter((u) => setB.has(u));
-      const keptB = urisB.filter((u) => setA.has(u));
+      // Multiset semantics, not set membership: gaining or losing one copy of a
+      // duplicated URI is a real changelog entry, so counts are compared per URI.
+      const rowsA: SnapTrackRow[] = rowA.items.map((it) => ({ uri: it.uri, name: it.name, added_at: null }));
+      const rowsB: SnapTrackRow[] = rowB.items.map((it) => ({ uri: it.uri, name: it.name, added_at: null }));
+      const diff = diffTrackLists(rowsA, rowsB);
+      const added = diff.added.map((r) => r.uri);
+      const removed = diff.removed.map((r) => r.uri);
+      // Kept = the occurrences both sides share; the surplus copies are exactly
+      // the added/removed rows the diff already reported.
+      const removedRows = new Set(diff.removed);
+      const addedRows = new Set(diff.added);
+      const keptA = rowsA.filter((r) => !removedRows.has(r)).map((r) => r.uri);
+      const keptB = rowsB.filter((r) => !addedRows.has(r)).map((r) => r.uri);
       const reordered = keptA.join('|') !== keptB.join('|');
       const max = resolveMaxResults(args.max_results, getConfig().maxItems);
       const asRows = (uris: readonly string[], names: Map<string, string>): OpRow[] =>

@@ -56,6 +56,34 @@ const NO_ACTIVE_DEVICE_MESSAGE =
   'pass its device_id to target it directly.';
 
 /**
+ * The no-active-device message, naming the device_id the call actually asked
+ * for when one was supplied (#849).
+ *
+ * A stale `device_id` is the other way to land here, and it is invisible to
+ * the agent if the message does not say which id was rejected: it reads
+ * "start playback in the app" and re-sends the same dead id. The id is read
+ * from the request URL, so it is the value Spotify rejected — not a guess.
+ * Absent or unparseable ⇒ no id clause; unknown stays unknown.
+ */
+function noActiveDeviceMessage(url: string): string {
+  let deviceId: string | null = null;
+  try {
+    const raw = new URL(url).searchParams.get('device_id');
+    if (raw && raw.trim().length > 0) deviceId = raw;
+  } catch {
+    deviceId = null;
+  }
+  if (deviceId === null) return NO_ACTIVE_DEVICE_MESSAGE;
+  return (
+    `${NO_ACTIVE_DEVICE_MESSAGE} Spotify rejected device_id "${deviceId}": ` +
+    'that id is not an available device for this account (it may be stale, ' +
+    'from another account, or no longer reachable). Run device_health to list ' +
+    `the current device ids, then re-run with one of those (or omit device_id ` +
+    'to target the active device).'
+  );
+}
+
+/**
  * True when Spotify's own 404 body describes a player/device problem rather
  * than a missing resource. Deliberately narrow: a plain 404 ("Not found." for
  * a playlist) must keep the generic not-found mapping.
@@ -355,14 +383,26 @@ export class SpotifyClient {
       }
 
       if (grantError === 'invalid_grant') {
-        // Refresh token revoked/expired — only re-auth fixes this.
-        throw new SpotifyApiError(res.status, 'Token refresh failed — re-run "spotify-mcp auth"');
+        // Refresh token revoked/expired — only re-auth fixes this. Thrown as
+        // 401, not the token endpoint's own 400: the request this refresh was
+        // serving carried no bad arguments, and publicFailure maps 400 to
+        // "invalid arguments; pass values that match the tool schema" (#1007).
+        throw new SpotifyApiError(401, 'Token refresh failed — re-run "spotify-mcp auth"');
       }
 
       // Transient outage (5xx) with a still-valid access token: ride it out.
       if (res.status >= 500 && Date.now() < tokens.expires_at) return;
 
-      throw new SpotifyApiError(res.status, 'Spotify token service temporarily unavailable');
+      // Any other token-service failure. 503 rather than the endpoint's own
+      // status, for the same reason as above: the failing request is a call to
+      // accounts.spotify.com, not to the tool's endpoint, so its status says
+      // nothing about the caller's arguments (#1007). The upstream status is
+      // kept in the message so the cause is still visible in diagnostics.
+      throw new SpotifyApiError(
+        503,
+        `Spotify token service temporarily unavailable (token endpoint returned ${res.status})`,
+      );
+
     }
 
     const data = await res.json() as {
@@ -488,7 +528,19 @@ export class SpotifyClient {
 
     // Token expired mid-flight — refresh and retry once
     if (res.status === 401 && retryCount === 0) {
-      await this.doRefreshTokens();
+      try {
+        await this.doRefreshTokens();
+      } catch (err) {
+        // The refresh failure must not replace the 401 that describes what is
+        // actually wrong. A 400 from accounts.spotify.com used to be thrown
+        // in place of this 401 and classified as a validation error, telling
+        // a user with an expired token to fix the arguments of a call that
+        // took none (#1007). The refresh reason is kept in the message for
+        // diagnostics; the status stays 401 so the failure is reported as
+        // "could not authenticate; run spotify-mcp auth".
+        const reason = err instanceof Error ? err.message : String(err);
+        throw new SpotifyApiError(401, `Spotify rejected the access token and refreshing it failed: ${reason}`);
+      }
       return this.rawRequest(method, url, body, retryCount + 1, contentType);
     }
 
@@ -564,7 +616,7 @@ export class SpotifyClient {
         if (spotifyMsg && spotifyMsg.trim().length > 0) {
           message =
             res.status === 404 && isNoActiveDevice404(spotifyMsg)
-              ? NO_ACTIVE_DEVICE_MESSAGE
+              ? noActiveDeviceMessage(url)
               : reason
                 ? `${spotifyMsg} (reason: ${reason})`
                 : spotifyMsg;
@@ -584,7 +636,9 @@ export class SpotifyClient {
   async get<T>(path: string, params?: Record<string, string>, opts?: { priority?: 'normal' | 'low' }): Promise<T | null> {
     const url = this.buildUrl(path, params);
     // TTL cache for immutable catalog reads (#54): keyed on the API-relative
-    // URL; volatile paths (/me/player*, /me/top*, recently-played) bypass.
+    // URL, whose query params cacheKey sorts by name then value (#678), so an
+    // inline query and a params object in any order share one entry; volatile
+    // paths (/me/player*, /me/top*, recently-played) bypass.
     const relative = url.startsWith(BASE_URL) ? url.slice(BASE_URL.length) : url;
     const cacheable = this.cache !== null && !shouldBypassCache('GET', relative);
     const key = cacheable ? cacheKey('GET', relative) : '';
@@ -627,15 +681,41 @@ export class SpotifyClient {
    * continue from there instead of restarting at offset 0. Cursor-paginated
    * endpoints (e.g. followed artists, which use an `after` cursor instead of
    * offset/total) are NOT supported by this helper.
+   *
+   * The returned array is silently capped. A caller that must REPORT that
+   * (#864 — no "all clear" verdict off a partial scan) uses
+   * `getAllPagesWithTruncation`; this method keeps the bare-array signature
+   * the ~35 callers that do not report truncation depend on.
    */
   async getAllPages<T>(
     path: string,
     params?: Record<string, string>,
     opts?: { maxItems?: number; initialOffset?: number },
   ): Promise<T[]> {
+    return (await this.getAllPagesWithTruncation<T>(path, params, opts)).items;
+  }
+
+  /**
+   * `getAllPages` plus the truncation verdict for THIS walk (#864).
+   *
+   * The verdict is RETURNED, never stored on the client. The MCP SDK
+   * dispatches `tools/call` without awaiting — protocol.js fires
+   * `_onrequest` straight from the transport's onmessage — so two
+   * overlapping calls interleave their awaits on ONE shared client and a
+   * stored flag would answer with whichever walk finished last, not the walk
+   * the caller just made.
+   */
+  async getAllPagesWithTruncation<T>(
+    path: string,
+    params?: Record<string, string>,
+    opts?: { maxItems?: number; initialOffset?: number },
+  ): Promise<{ items: T[]; truncated: boolean }> {
     const maxItems = opts?.maxItems ?? this.fetchAllCap;
     const all: T[] = [];
     let offset = opts?.initialOffset ?? 0;
+    // #864: a bare array cannot distinguish "read everything" from "stopped at
+    // the cap", so the verdict travels with the result rather than on the
+    // client.
     // Monotonic per-walk id; index.ts forwards it as the MCP progressToken.
     const walkId = ++this.walkCounter;
     let pageNumber = 0;
@@ -661,13 +741,27 @@ export class SpotifyClient {
           // Progress is best-effort; a throwing reporter must never break a walk.
         }
       }
-      if (all.length >= maxItems) return all.slice(0, maxItems);
+      if (all.length >= maxItems) {
+        // The cap bit. It only TRUNCATED something if rows really are missing:
+        // either the slice dropped overflow the page had already delivered, or
+        // the server's `total` says the walk stopped short of the end. An
+        // endpoint that reports no total gives us nothing to prove
+        // completeness against, so that case stays conservatively truncated.
+        return {
+          items: all.slice(0, maxItems),
+          truncated:
+            all.length > maxItems
+            || typeof page.total !== 'number'
+            || all.length < page.total,
+        };
+      }
       const limit = typeof page.limit === 'number' && page.limit > 0 ? page.limit : page.items.length;
       offset += limit;
       if (page.items.length === 0 || page.items.length < limit) break;
       if (typeof page.total === 'number' && offset >= page.total) break;
     }
-    return all;
+    // Reached the end of the data on its own terms: nothing was cut off.
+    return { items: all, truncated: false };
   }
 
   // Parse a successful response body as JSON, or null for 204 / non-JSON

@@ -14,6 +14,26 @@ import {
   requiredConfirmationRefusal,
   REMOVE_ELICIT_THRESHOLD,
 } from './confirm.js';
+import { diffTrackLists } from './swarm3_snapshots.js';
+import type { SnapTrackRow } from './swarm3_snapshots.js';
+
+/** A snapshot row plus its live position, so a diff can report where. */
+type PositionedRow = SnapTrackRow & { position: number };
+
+/**
+ * Rows for the multiset diff core. Unavailable (null-track) rows carry no URI
+ * and are dropped, so a null never participates in counting.
+ */
+function toDiffRows(
+  entries: Array<{ uri: string | null; name: string | null; position: number }>,
+): PositionedRow[] {
+  const rows: PositionedRow[] = [];
+  for (const e of entries) {
+    if (e.uri === null) continue;
+    rows.push({ uri: e.uri, name: e.name ?? '', added_at: null, position: e.position });
+  }
+  return rows;
+}
 
 type TextContent = { type: 'text'; text: string };
 type ToolResult = { content: TextContent[]; structuredContent?: Record<string, unknown> };
@@ -230,21 +250,38 @@ export function registerPlaylistHealthTools(server: McpServer, client: SpotifyCl
       try { snapshot = JSON.parse(await readFile(filePath, 'utf8')) as SnapshotData; } catch { throw new Error('Snapshot not found for the requested playlist.'); }
       const encId = encodeURIComponent(args.playlist_id);
       const current = await client.getAllPages<PlaylistItemObject>(`/playlists/${encId}/items`, { limit: '100' }, { maxItems: getConfig().fetchAllCap });
-      const currentUris = current.map((row) => { const t = row.item as unknown as Record<string, unknown> | null | undefined; return t && typeof t.uri === 'string' ? (t.uri as string) : null; });
-      const snapUris = snapshot.items.map((it) => it.uri);
-      const snapSet = new Set(snapUris.filter((u): u is string => u !== null));
-      const currSet = new Set(currentUris.filter((u): u is string => u !== null));
-      const added: Array<{ uri: string; position: number }> = [];
-      currentUris.forEach((uri, idx) => { if (uri !== null && !snapSet.has(uri)) added.push({ uri, position: idx }); });
-      const removed: Array<{ uri: string; position: number }> = [];
-      snapUris.forEach((uri, idx) => { if (uri !== null && !currSet.has(uri)) removed.push({ uri, position: idx }); });
+      // Multiset semantics, not set membership: a playlist that gains or loses
+      // one copy of a duplicated URI IS changed, and `same_multiset` may only be
+      // true when the per-URI counts match exactly.
+      const snapRows = toDiffRows(snapshot.items.map((it) => ({ uri: it.uri, name: it.name, position: it.position })));
+      const currRows = toDiffRows(current.map((row, idx) => {
+        const t = row.item as unknown as Record<string, unknown> | null | undefined;
+        return {
+          uri: t && typeof t.uri === 'string' ? (t.uri as string) : null,
+          name: t && typeof t.name === 'string' ? (t.name as string) : null,
+          position: idx,
+        };
+      }));
+      const diff = diffTrackLists(snapRows, currRows);
+      // The diff hands back the same row objects, so positions are recovered
+      // from the input rows rather than re-derived from the arrays.
+      const snapPosition = new Map<SnapTrackRow, number>();
+      for (const r of snapRows) snapPosition.set(r, r.position);
+      const currPosition = new Map<SnapTrackRow, number>();
+      for (const r of currRows) currPosition.set(r, r.position);
+      const added = diff.added.map((r) => ({ uri: r.uri, position: currPosition.get(r) ?? -1 }));
+      const removed = diff.removed.map((r) => ({ uri: r.uri, position: snapPosition.get(r) ?? -1 }));
+      // Reordering is a first-occurrence question, so this stays set-based.
+      const snapSet = new Set(snapRows.map((r) => r.uri));
+      const currSet = new Set(currRows.map((r) => r.uri));
       const snapPos = new Map<string, number>();
-      snapUris.forEach((uri, idx) => { if (uri !== null && !snapPos.has(uri)) snapPos.set(uri, idx); });
+      snapRows.forEach((r) => { if (!snapPos.has(r.uri)) snapPos.set(r.uri, r.position); });
       const currPos = new Map<string, number>();
-      currentUris.forEach((uri, idx) => { if (uri !== null && !currPos.has(uri)) currPos.set(uri, idx); });
+      currRows.forEach((r) => { if (!currPos.has(r.uri)) currPos.set(r.uri, r.position); });
       const reordered: Array<{ uri: string; from: number; to: number }> = [];
       for (const uri of currSet) if (snapSet.has(uri)) { const from = snapPos.get(uri)!; const to = currPos.get(uri)!; if (from !== to) reordered.push({ uri, from, to }); }
-      const structured = { playlist_id: args.playlist_id, snapshot_id: args.snapshot_id, snapshot_total: snapshot.total, current_total: current.length, added, removed, reordered, added_count: added.length, removed_count: removed.length, reordered_count: reordered.length, has_changes: added.length > 0 || removed.length > 0 || reordered.length > 0, same_multiset: added.length === 0 && removed.length === 0 };
+      const sameMultiset = diff.added_count === 0 && diff.removed_count === 0;
+      const structured = { playlist_id: args.playlist_id, snapshot_id: args.snapshot_id, snapshot_total: snapshot.total, current_total: current.length, added, removed, reordered, added_count: added.length, removed_count: removed.length, reordered_count: reordered.length, unchanged_count: diff.unchanged_count, has_changes: added.length > 0 || removed.length > 0 || reordered.length > 0, same_multiset: sameMultiset };
       let text: string;
       if (!structured.has_changes) text = `No changes since snapshot ${args.snapshot_id} (playlist ${args.playlist_id}, ${current.length} items).`;
       else { const parts: string[] = []; if (added.length) parts.push(`added: ${added.map((a) => a.uri).join(', ')}`); if (removed.length) parts.push(`removed: ${removed.map((r) => r.uri).join(', ')}`); if (reordered.length) parts.push(`reordered: ${reordered.map((r) => `${r.uri} ${r.from}→${r.to}`).join(', ')}`); text = `Diff for playlist ${args.playlist_id} vs snapshot ${args.snapshot_id}: ${current.length} now vs ${snapshot.total} then.\n${parts.join('\n')}`; }
@@ -370,8 +407,12 @@ export function registerPlaylistHealthTools(server: McpServer, client: SpotifyCl
       const truncated = walked.length > cap2;
       const all = truncated ? walked.slice(0, cap2) : walked;
       const playlists = all.slice(0, args.max_playlists ?? 50);
-      // Fetch track sets with quota partial recovery
+      // Fetch track sets with quota partial recovery. A non-429 failure is NOT
+      // an empty playlist: recording it as one would group it with every other
+      // empty set under the key '' and invent a duplicate. Failures are kept
+      // aside and reported; they never enter the comparison pass.
       const sets: Array<{ id:string; name:string; uris:Set<string> }> = [];
+      const failed: Array<{ id:string; name:string; error:string }> = [];
       let quotaHit = false;
       let quotaRetryAfter: number | null = null;
       let quotaAtPlaylist: string | null = null;
@@ -380,30 +421,39 @@ export function registerPlaylistHealthTools(server: McpServer, client: SpotifyCl
         if (quotaHit) break;
         try {
           const items = await client.getAllPages<PlaylistItemObject>(`/playlists/${encodeURIComponent(pl.id)}/items`, { limit: '100' }, { maxItems: cap2 });
-          const uris = new Set<string>(); for(const it of items){ const u=(it as any).item?.uri; if(u) uris.add(u); }
+          const uris = new Set<string>();
+          for (const it of items) {
+            const u = (it.item as unknown as Record<string, unknown> | null | undefined)?.uri;
+            if (typeof u === 'string') uris.add(u);
+          }
           sets.push({ id: pl.id, name: pl.name, uris });
         } catch (e) {
           if (e instanceof SpotifyApiError && e.status === 429) { quotaHit = true; quotaRetryAfter = e.retryAfterSec ?? null; quotaAtPlaylist = pl.id; break; }
-          sets.push({ id: pl.id, name: pl.name, uris: new Set() });
+          failed.push({ id: pl.id, name: pl.name, error: e instanceof Error ? e.message : String(e) });
         }
       }
+      // Empty playlists are reported, never compared: two of them share the
+      // grouping key '' and would otherwise be called exact duplicates.
+      const empties = sets.filter((s) => s.uris.size === 0);
+      const comparable = sets.filter((s) => s.uris.size > 0);
       const groups: Array<{ type:string; playlists:Array<{id:string;name:string}>; overlap:number; shared:number; union:number }> = [];
-      const exactGroups = new Map<string, typeof sets>();
-      for(const s of sets){ const key=[...s.uris].sort().join('|'); const arr=exactGroups.get(key)??[]; arr.push(s); exactGroups.set(key, arr); }
+      const exactGroups = new Map<string, typeof comparable>();
+      for(const s of comparable){ const key=[...s.uris].sort().join('|'); const arr=exactGroups.get(key)??[]; arr.push(s); exactGroups.set(key, arr); }
       for(const [, arr] of exactGroups){ if(arr.length>1) groups.push({ type:'exact', playlists: arr.map(a=>({id:a.id,name:a.name})), overlap:1, shared: arr[0].uris.size, union: arr[0].uris.size }); }
       // near duplicates pairwise
-      for(let i=0;i<sets.length;i++) for(let j=i+1;j<sets.length;j++){
-        const a=sets[i], b=sets[j];
-        if(a.uris.size===0||b.uris.size===0) continue;
+      for(let i=0;i<comparable.length;i++) for(let j=i+1;j<comparable.length;j++){
+        const a=comparable[i], b=comparable[j];
         // skip if already exact group
         const keyA=[...a.uris].sort().join('|'), keyB=[...b.uris].sort().join('|'); if(keyA===keyB) continue;
         let inter=0; for(const u of a.uris) if(b.uris.has(u)) inter++;
         const union=a.uris.size+b.uris.size-inter; const jacc=union===0?0:inter/union;
         if(jacc>=threshold) groups.push({ type:'near', playlists: [{id:a.id,name:a.name},{id:b.id,name:b.name}], overlap: Number(jacc.toFixed(3)), shared: inter, union });
       }
-      const lines=[`Scanned ${sets.length} playlist(s)${truncated?` (truncated at ${cap2})`:''}: ${groups.length} duplicate group(s) (threshold ${threshold})${quotaHit ? ` — quota hit at ${quotaAtPlaylist} (Retry-After ${quotaRetryAfter ?? 'unknown'}s), partial results` : ''}`];
+      const lines=[`Scanned ${sets.length + failed.length} playlist(s)${truncated?` (truncated at ${cap2})`:''}: ${groups.length} duplicate group(s) (threshold ${threshold})${failed.length > 0 ? ` — ${failed.length} unreadable, excluded from comparison` : ''}${quotaHit ? ` — quota hit at ${quotaAtPlaylist} (Retry-After ${quotaRetryAfter ?? 'unknown'}s), partial results` : ''}`];
       for(const g of groups) lines.push(`  ${g.type} overlap=${g.overlap} shared=${g.shared}/${g.union}: ${g.playlists.map(p=>'"'+p.name+'" ('+p.id+')').join(' ↔ ')}`);
-      return textResult(lines.join('\n'), { ok:true, scanned: sets.length, requested: playlists.length, total_playlists: all.length, truncated, threshold, groups, ...(quotaHit ? { quota_hit: true, quota_at_playlist: quotaAtPlaylist, retry_after: quotaRetryAfter } : {}) });
+      for(const f of failed) lines.push(`  unreadable: "${f.name}" (${f.id}) — ${f.error}`);
+      if (empties.length > 0) lines.push(`  empty, not compared: ${empties.map(p=>'"'+p.name+'" ('+p.id+')').join(', ')}`);
+      return textResult(lines.join('\n'), { ok:true, scanned: sets.length + failed.length, compared: comparable.length, failed_count: failed.length, unreadable: failed, empty_playlists: empties.map((p) => ({ id: p.id, name: p.name })), requested: playlists.length, total_playlists: all.length, truncated, threshold, groups, ...(quotaHit ? { quota_hit: true, quota_at_playlist: quotaAtPlaylist, retry_after: quotaRetryAfter } : {}) });
     },
   );
 

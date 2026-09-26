@@ -262,7 +262,10 @@ describe('refresh resilience (#109)', () => {
     const client = new SpotifyClient();
     await assert.rejects(client.get('/me'), (err: unknown) => {
       assert.ok(err instanceof SpotifyApiError);
-      assert.equal(err.status, 400);
+      // 401, not the token endpoint's own 400: a 400 here was classified as a
+      // validation error, i.e. "pass values that match the tool schema" for a
+      // call that took no arguments (#1007).
+      assert.equal(err.status, 401);
       assert.match(err.message, /re-run "spotify-mcp auth"/);
       return true;
     });

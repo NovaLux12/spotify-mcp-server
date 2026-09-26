@@ -43,9 +43,15 @@ jobs:
         run: npm run check:docs-counts -- --census-file .surface-census.json
 
       - name: Check documented tool names
+        # A documentation-inventory failure must not silence the
+        # correctness gate, so these run unless cancelled.
+        if: ${{ !cancelled() }}
         run: npm run check:doc-tool-names -- --census-file .surface-census.json
 
       - name: Test with count and coverage gates
+        # A documentation-inventory failure must not silence the
+        # correctness gate, so these run unless cancelled.
+        if: ${{ !cancelled() }}
         shell: bash
         run: |
           set -euo pipefail
