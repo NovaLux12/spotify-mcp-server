@@ -14,8 +14,9 @@ import {
   describeDryRun,
 } from '../shaping.js';
 import type { ResponseFormatValue, PaginationInfo } from '../shaping.js';
-import { CHUNK_CAPS, capFor } from '../chunk.js';
+import { CHUNK_CAPS } from '../chunk.js';
 import { getConfig } from '../config.js';
+import { loadGenreTags, tagsForArtist } from './libraryinsights.js';
 
 // ---------------------------------------------------------------------------
 // Shared result shaping (#51/#52/#58 helpers composed locally per file)
@@ -422,12 +423,12 @@ export function registerFollowingTools(server: McpServer, client: SpotifyClient)
     },
   );
 
-  // following_analytics (#297)
+  // following_analytics (#297, #733)
   server.tool(
     'following_analytics',
-    'Analytics over followed artists: genre/popularity rollups via batch /artists?ids= enrichment. Quota: 🟢 GET /me/following + GET /artists batches.',
+    'Followed-artist rollups from the tag sidecar; popularity/followers unavailable (Spotify no longer returns those fields). Quota: 🟢 GET /me/following.',
     {
-      group_by: z.enum(['genre', 'popularity', 'followers']).default('genre').describe('Rollup dimension for the report'),
+      group_by: z.enum(['genre', 'popularity', 'followers']).default('genre').describe("Rollup dimension; popularity/followers report 'unavailable'"),
       top_n: z.number().int().min(1).max(50).optional().describe('Top N groups to show'),
       response_format: ResponseFormat,
       max_results: MaxResults,
@@ -438,36 +439,68 @@ export function registerFollowingTools(server: McpServer, client: SpotifyClient)
       // the two follow readers can never disagree about how far a walk goes.
       const all = (await walkFollowedArtists(client)).items;
       if (all.length === 0) return shapeResult(rf, 'No followed artists.', listStructuredContent([], paginationInfo({ total: 0, returned: 0 })));
-      // Enrich in batches of CHUNK_CAPS.artists via /artists?ids=
-      const enriched: SpotifyArtistFull[] = [];
-      const artistCap = capFor('artists');
-      for (let i = 0; i < all.length; i += artistCap) {
-        const ids = all.slice(i, i + artistCap).map(a => a.id).join(',');
-        const batch = await client.get<{ artists: SpotifyArtistFull[] }>('/artists', { ids });
-        if (batch?.artists) enriched.push(...batch.artists.filter(Boolean));
+
+      // Spotify no longer returns `genres`, `popularity`, or `followers` on
+      // followed artist objects, so `popularity`/`followers` groupings would
+      // be reporting coerced zeros — and the `genre` group has to source from
+      // the user-declared tag sidecar rather than `artist.genres` (#733).
+      if (args.group_by !== 'genre') {
+        const dimension = args.group_by === 'popularity' ? 'artist popularity' : 'artist follower counts';
+        const prose = `Following analytics (${all.length} artists, by ${args.group_by}): unavailable — Spotify no longer returns ${dimension}; group_by:'genre' is the only dimension this tool still derives.`;
+        const payload = listStructuredContent([], paginationInfo({ total: 0, returned: 0 }), {
+          total_artists: all.length,
+          group_by: args.group_by,
+          available: false,
+          reason: `Spotify no longer returns ${dimension}; declare tags with tag_management for a genre rollup.`,
+        });
+        return shapeResult(rf, prose, payload);
       }
-      const src = enriched.length ? enriched : all;
-      let groups: Array<{ key: string; count: number }> = [];
-      if (args.group_by === 'genre') {
-        const m = new Map<string, number>();
-        for (const a of src) for (const g of (a.genres ?? [])) m.set(g, (m.get(g) ?? 0) + 1);
-        groups = [...m.entries()].map(([key, count]) => ({ key, count })).sort((a, b) => b.count - a.count);
-      } else if (args.group_by === 'popularity') {
-        const buckets = new Map<string, number>();
-        for (const a of src as Array<SpotifyArtistFull & { popularity?: number }>) { const pop = (a as unknown as { popularity?: number }).popularity ?? 0; const bucket = pop >= 75 ? '75-100' : pop >= 50 ? '50-74' : pop >= 25 ? '25-49' : '0-24'; buckets.set(bucket, (buckets.get(bucket) ?? 0) + 1); }
-        groups = [...buckets.entries()].map(([key, count]) => ({ key, count })).sort((a,b)=>b.count-a.count);
-      } else {
-        const buckets = new Map<string, number>();
-        for (const a of src as Array<SpotifyArtistFull & { followers?: { total: number } }>) { const f = (a as unknown as { followers?: { total: number } }).followers?.total ?? 0; const bucket = f >= 1000000 ? '1M+' : f >= 100000 ? '100K-1M' : f >= 10000 ? '10K-100K' : '<10K'; buckets.set(bucket, (buckets.get(bucket) ?? 0) + 1); }
-        groups = [...buckets.entries()].map(([key, count]) => ({ key, count })).sort((a,b)=>b.count-a.count);
+
+      // Genre rollup: source from the user-declared sidecar keyed by artist
+      // name. A walk that returns no tagged rollups is "the dimension has no
+      // source", not "no followed artists" — same unreachable-disclosure rule
+      // as #733 names.
+      let tagStore: Record<string, string[]> = {};
+      try { tagStore = loadGenreTags().tags; } catch { tagStore = {}; }
+      const groups = new Map<string, number>();
+      let matchedArtists = 0;
+      for (const a of all) {
+        if (!a || typeof a.name !== 'string') continue;
+        const tags = tagsForArtist(tagStore, a.name);
+        if (tags.length === 0) continue;
+        matchedArtists++;
+        for (const g of tags) groups.set(g, (groups.get(g) ?? 0) + 1);
       }
+      const sortedGroups = [...groups.entries()]
+        .map(([key, count]) => ({ key, count }))
+        .sort((a, b) => b.count - a.count || a.key.localeCompare(b.key));
+
+      if (sortedGroups.length === 0) {
+        const prose = `Following analytics (${all.length} artists, by genre): no followed artist has a tag declared yet — Spotify no longer returns artist genres; declare tags with tag_management to populate this rollup.`;
+        const payload = listStructuredContent([], paginationInfo({ total: 0, returned: 0 }), {
+          total_artists: all.length,
+          tagged_artists: 0,
+          group_by: args.group_by,
+          source: 'user-declared tags',
+          available: false,
+          reason: 'Spotify no longer returns artist genres; declare tags with tag_management to populate this rollup.',
+        });
+        return shapeResult(rf, prose, payload);
+      }
+
       const topN = args.top_n ?? 10;
-      const view = truncateItems(groups, Math.min(topN, cap(args)));
-      const pagination = paginationInfo({ total: groups.length, returned: view.items.length });
-      const lines = [`Following analytics (${src.length} artists, by ${args.group_by}):`];
+      const view = truncateItems(sortedGroups, Math.min(topN, cap(args)));
+      const pagination = paginationInfo({ total: sortedGroups.length, returned: view.items.length });
+      const lines = [`Following analytics (user-declared tags; ${all.length} followed artist(s), ${matchedArtists} tagged, by genre):`];
       for (const g of view.items) lines.push(`  ${g.key}: ${g.count}`);
       if (view.footer) lines.push(`(${view.footer})`);
-      return shapeResult(rf, lines.join('\n'), listStructuredContent(view.items, pagination, { total_artists: src.length, group_by: args.group_by }));
+      return shapeResult(rf, lines.join('\n'), listStructuredContent(view.items, pagination, {
+        total_artists: all.length,
+        tagged_artists: matchedArtists,
+        group_by: args.group_by,
+        source: 'user-declared tags',
+        available: true,
+      }));
     },
   );
 }

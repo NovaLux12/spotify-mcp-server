@@ -320,7 +320,7 @@ function findArtistKey(tags: Record<string, string[]>, artist: string): string |
 }
 
 /** Tags declared for `artist` (case-insensitive), or []. */
-function tagsForArtist(tags: Record<string, string[]>, artist: string): string[] {
+export function tagsForArtist(tags: Record<string, string[]>, artist: string): string[] {
   const key = findArtistKey(tags, artist);
   return key ? tags[key] : [];
 }
