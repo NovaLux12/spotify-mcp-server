@@ -507,6 +507,24 @@ export function assertAggregateSurfaceBudget(measurement: AggregateSurfaceMeasur
   }
 }
 
+/**
+ * The larger surface a module can reach when `gatedBy` is set (#1128).
+ *
+ * `baseline` stays the DEFAULT surface, because the census deliberately strips
+ * `SPOTIFY_*` from the environment (surface-census.mjs) so every generated
+ * surface table reports what an ordinary install actually serves. But the
+ * schema budget is a *startup* gate, and a process that opted in registers more
+ * tools than the default baseline describes — so a module with a gated surface
+ * needs its ceiling sized for the larger of the two, or the opted-in server
+ * refuses to boot while the default path stays green in CI.
+ */
+export interface GatedSurface {
+  /** Env var whose presence switches the module to its larger surface. */
+  readonly gatedBy: string;
+  readonly toolCount: number;
+  readonly schemaBytes: number;
+}
+
 export interface RegistrarManifestEntry {
   readonly key: string;
   readonly registrationKey: string;
@@ -517,6 +535,8 @@ export interface RegistrarManifestEntry {
   readonly readOnlySafe?: boolean;
   readonly baseline: { readonly toolCount: number; readonly schemaBytes: number };
   readonly ceiling: { readonly toolCount: number; readonly schemaBytes: number };
+  /** Present only for a module whose tool surface depends on configuration. */
+  readonly gatedSurface?: GatedSurface;
 }
 
 export interface RegistrarManifestContext {
@@ -525,7 +545,13 @@ export interface RegistrarManifestContext {
   readonly scopeBlocked: (scopeKey: string) => boolean;
 }
 
-const manifestEntry = (
+/**
+ * Build one manifest row, deriving its ceiling.
+ *
+ * Exported so a test can drive the derivation with a real gated baseline rather
+ * than asserting against whatever module happens to carry one today (#1128).
+ */
+export const manifestEntry = (
   key: string,
   registrationKey: string,
   file: string,
@@ -542,11 +568,20 @@ const manifestEntry = (
   ...options,
   baseline: { toolCount: baseline[0], schemaBytes: baseline[1] },
   // Ten percent schema headroom and one additional tool force a deliberate
-  // baseline/ceiling update whenever a registrar grows.
-  ceiling: {
-    toolCount: baseline[0] + 1,
-    schemaBytes: Math.ceil(baseline[1] * 1.1),
-  },
+  // baseline/ceiling update whenever a registrar grows. A module with a gated
+  // surface is sized against the LARGER of the default and opted-in figures, so
+  // both surfaces clear the same ceiling (#1128) — sizing it on the default
+  // alone makes the opted-in server refuse to start, which is invisible until a
+  // user sets the flag.
+  ceiling: (() => {
+    const gated = options.gatedSurface;
+    const toolBase = gated ? Math.max(baseline[0], gated.toolCount) : baseline[0];
+    const byteBase = gated ? Math.max(baseline[1], gated.schemaBytes) : baseline[1];
+    return {
+      toolCount: toolBase + 1,
+      schemaBytes: Math.ceil(byteBase * 1.1),
+    };
+  })(),
 });
 
 export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
