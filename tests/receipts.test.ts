@@ -116,7 +116,10 @@ describe('issueReceipt playlist_items', () => {
       uris: ['spotify:track:x', 'spotify:track:y'],
     });
     assert.equal(client.calls.length, 2);
-    assert.equal(r.after, 102); // 100 + 2
+    // #729: `after` is the playlist's total from the API, not the count of
+    // matched rows inside the walk window. The walk here saw 100 + 2 = 102 of
+    // the target uris, but the playlist is actually 150 items long.
+    assert.equal(r.after, 150);
     assert.equal(r.verified, true);
   });
 
@@ -136,6 +139,49 @@ describe('issueReceipt playlist_items', () => {
     assert.equal(client.calls.length, 5);
     assert.equal(r.verified, false);
     assert.deepEqual(r.missing, ['spotify:track:not-there']);
+    // #729: even when the walk is window-capped, `after` reflects the
+    // playlist's actual total, not the matched-row count (which would be 0
+    // here since none of the fetched rows were the target uri).
+    assert.equal(r.after, 100000);
+    assert.equal(r.windowExceeded, true);
+  });
+
+  it('reports `after` equal to the actual playlist size on a large-playlist add (#729)', async () => {
+    // Reproduce the bug: a 600-track playlist gets 13 tracks appended. The
+    // walk cap is 5 pages × 100 rows = 500, so the 13 fresh rows sit past the
+    // window and a count of matched occurrences in the walk reads 0. Post-fix,
+    // `after` is the playlist total returned by /items (613).
+    const oldRows = Array.from({ length: 600 }, (_, i) => track(`spotify:track:old${i}`));
+    const added = Array.from({ length: 13 }, (_, i) => track(`spotify:track:new${i}`));
+    const client = stubClient(() => {
+      // Every page reports the playlist total (the 13 added rows are now in
+      // the playlist, but the walk is capped before reaching them) and a
+      // non-empty `next`, so the walk runs the full 5 pages and stops.
+      return {
+        items: oldRows.slice(0, 100).map((row) => ({ added_at: '2026-01-01T00:00:00Z', item: row })),
+        total: 613,
+        limit: 100,
+        offset: 0,
+        next: '/playlists/pl_big/items?offset=100',
+      };
+    });
+
+    const receipt = await issueReceipt(client, {
+      kind: 'playlist_items',
+      id: 'pl_big',
+      uris: added,
+      before: 600,
+    });
+
+    assert.equal(client.calls.length, 5, 'walk is capped at 5 pages');
+    assert.equal(receipt.windowExceeded, true);
+    // The fix: `after` is the actual playlist size, not the matched-row count.
+    assert.equal(receipt.after, 613);
+    assert.equal(receipt.before, 600);
+    // The added uris live past the 500-row cap, so verification reports the
+    // whole batch as unconfirmed — but the receipt's `after` is honest.
+    assert.equal(receipt.verified, false);
+    assert.deepEqual(receipt.missing, added);
   });
 
   it('reports partial verification with missing uris listed in input order', async () => {
@@ -252,7 +298,7 @@ describe('formatReceipt', () => {
       formatReceipt(receipt),
       [
         'Receipt rcpt_42: UNVERIFIED (playlist_items pl9)',
-        '  occurrences before/after: 1/1',
+        '  items before/after: 1/1',
         '  missing uris: spotify:track:gone',
       ].join('\n'),
     );
@@ -270,7 +316,7 @@ describe('formatReceipt', () => {
       formatReceipt(receipt),
       [
         'Receipt rcpt_43: VERIFIED (library)',
-        '  occurrences before/after: ?/2',
+        '  items before/after: ?/2',
         '  all uris confirmed',
       ].join('\n'),
     );

@@ -204,6 +204,43 @@ describe('batch_add_to_playlist', () => {
       assert.doesNotMatch(textOf(out), /TRUNCATED/);
     });
   });
+
+  // #729: the receipt's `after` is the playlist's actual item count after the
+  // add, not a count of matched rows inside the verification walk. On a
+  // playlist larger than PLAYLIST_ITEM_PAGES_CAP * 100, fresh appends sit
+  // past the cap and the pre-fix value reads 0 even though the add landed.
+  describe('large-playlist add receipt reports actual total (#729)', () => {
+    it('the receipt renders `after` equal to the post-add playlist size, not 0', async () => {
+      // 13 source tracks committed to a 600-track target. The verification
+      // walk caps at 5×100=500, so the 13 fresh rows are off-window — pre-fix
+      // the receipt printed `after: 0` even though the add succeeded.
+      const added = Array.from({ length: 13 }, (_, i) => track(`q${i}`));
+      const targetRows = (count: number) =>
+        Array.from({ length: count }, (_, i) => ({ item: { uri: track(`old${i}`) } }));
+      const h = harness((path, _a, method) => {
+        if (method === 'POST') return { snapshot_id: 'snap-729' } as unknown;
+        if (path === `/playlists/${TARGET}/items`) {
+          // Every verification page reports the full post-add total (613)
+          // and a non-empty `next`, so the walk runs all 5 cap pages.
+          return { items: targetRows(100), total: 613, limit: 100, offset: 0, next: '/playlists/' + TARGET + '/items?offset=100' } as unknown;
+        }
+        return { items: [], total: 0, limit: 100, offset: 0, next: null } as unknown;
+      });
+
+      const out = await h.invoke('batch_add_to_playlist', {
+        target_playlist_id: TARGET,
+        source_uris: added,
+      });
+      const p = out.structuredContent as Record<string, unknown>;
+      const receipt = p.receipt as Record<string, unknown>;
+
+      assert.equal(receipt.after, 613, 'receipt after should be the actual playlist total, not the walk-window count');
+      assert.equal(receipt.windowExceeded, true);
+      // Rendered prose mirrors the structured value, so the host sees the
+      // honest number rather than the misleading zero.
+      assert.match(textOf(out), /items before\/after: \?\/613/);
+    });
+  });
 });
 
 describe('copy_playlist', () => {

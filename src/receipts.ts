@@ -103,7 +103,15 @@ export interface Receipt {
   verified: boolean;
   /** Occurrence count supplied by the caller pre-mutation, when known. */
   before?: number;
-  /** Post-mutation count of matched rows / present uris. */
+  /**
+   * Playlist size after the mutation (#729): the `total` returned by
+   * `/playlists/{id}/items`, not the count of matched rows inside the walk
+   * window. On a playlist larger than `PLAYLIST_ITEM_PAGES_CAP *
+   * PLAYLIST_ITEMS_PAGE_SIZE`, freshly appended rows sit past the walk and an
+   * occurrence-based count reads 0 — `total` is the same regardless of how
+   * many pages we walked, so it stays correct in both the seen-whole and
+   * window-exceeded branches.
+   */
   after?: number;
   /** Uris not found by the verification refetch (empty when verified). */
   missing: string[];
@@ -478,6 +486,18 @@ export async function issueReceipt(
     if (totalReported !== undefined && totalReported > orderedUris.length && orderedUris.length >= PLAYLIST_ITEM_PAGES_CAP * PLAYLIST_ITEMS_PAGE_SIZE) {
       _windowExceeded = true;
     }
+    // #729: the receipt's `after` is the playlist's actual item count after the
+    // mutation, not a count of matched rows inside the walk window. When the
+    // walk window is smaller than the playlist, fresh appends sit past it and
+    // any occurrence-based count prints 0 — exactly the bug the receipt was
+    // supposed to expose. `totalReported` is the playlist total from the last
+    // fetched /items page; Spotify returns it regardless of how many pages we
+    // walked, so it is correct in both the seen-whole and window-exceeded
+    // branches. When the API response is malformed and `total` is missing,
+    // fall back to the matched-row sum so older receipts stay informative.
+    if (totalReported !== undefined) {
+      after = totalReported;
+    }
     // Per-uri counts let a later undo tell a copy that PREDATES the mutation
     // from one it created, which decides whether absence or presence is the
     // correct post-state after the rollback. Gated on the same condition as
@@ -570,7 +590,6 @@ export async function issueReceipt(
     if (expectPresent) {
       if (_windowExceeded) {
         missing = [...counts.entries()].filter(([, n]) => n === 0).map(([uri]) => uri);
-        after = [...counts.values()].reduce((a, b) => a + b, 0);
         if (missing.length === 0) {
           verified = true;
           _windowExceeded = false;
@@ -579,7 +598,6 @@ export async function issueReceipt(
         }
       } else {
         missing = [...counts.entries()].filter(([, n]) => n === 0).map(([uri]) => uri);
-        after = [...counts.values()].reduce((a, b) => a + b, 0);
         verified = missing.length === 0;
       }
     } else {
@@ -592,17 +610,14 @@ export async function issueReceipt(
             const expectedAfter = opts.before - (opts.expectedRemovedCount ?? opts.targetedPositions!.length);
             if (totalReported === expectedAfter) {
               verified = true;
-              after = [...counts.values()].reduce((a, b) => a + b, 0);
               missing = [];
             } else {
               verified = false;
-              after = [...counts.values()].reduce((a, b) => a + b, 0);
               missing = [];
               _windowExceeded = true;
             }
           } else {
             verified = false;
-            after = [...counts.values()].reduce((a, b) => a + b, 0);
             missing = [];
             _windowExceeded = true;
           }
@@ -621,11 +636,9 @@ export async function issueReceipt(
           }
           if (failures.length === 0) {
             verified = true;
-            after = [...counts.values()].reduce((a, b) => a + b, 0);
             missing = [];
           } else {
             verified = false;
-            after = [...counts.values()].reduce((a, b) => a + b, 0);
             missing = failures;
           }
         }
@@ -635,25 +648,20 @@ export async function issueReceipt(
             const expectedTotal = opts.before - opts.expectedRemovedCount;
             if (totalReported === expectedTotal) {
               verified = true;
-              after = [...counts.entries()].filter(([, n]) => n > 0).reduce((a, [, n]) => a + n, 0);
               missing = [];
               _windowExceeded = false;
             } else {
               verified = false;
-              after = [...counts.entries()].filter(([, n]) => n > 0).reduce((a, [, n]) => a + n, 0);
               missing = [];
             }
           } else {
-            const survivors = [...counts.entries()].filter(([, n]) => n > 0);
             // Don't report survivors as "still-present" when window is exceeded — it's misleading
             verified = false;
-            after = survivors.reduce((a, [, n]) => a + n, 0);
             missing = [];
           }
         } else {
           const survivors = [...counts.entries()].filter(([, n]) => n > 0);
           missing = survivors.map(([uri]) => uri);
-          after = survivors.reduce((a, [, n]) => a + n, 0);
           verified = missing.length === 0;
         }
       }
@@ -748,7 +756,7 @@ export function formatReceipt(
   const target = r.id ? `${r.kind} ${r.id}` : r.kind;
   const lines = [`Receipt ${r.receipt_id}: ${r.verified ? 'VERIFIED' : 'UNVERIFIED'} (${target})`];
   if (r.before !== undefined || r.after !== undefined) {
-    lines.push(`  occurrences before/after: ${r.before ?? '?'}/${r.after ?? '?'}`);
+    lines.push(`  items before/after: ${r.before ?? '?'}/${r.after ?? '?'}`);
   }
   if (r.windowExceeded) {
     lines.push(`  reason: ${r.reason ?? 'window exceeded'}`);
