@@ -41,6 +41,7 @@ import {
   resolveMaxResults,
   truncateItems,
   paginationInfo,
+  nextPageLine,
   listStructuredContent,
 } from '../shaping.js';
 import type { ResponseFormatValue, PaginationInfo } from '../shaping.js';
@@ -135,6 +136,19 @@ function searchRequestParams(
 }
 
 /**
+ * The page a typed `/search` read actually asked for (#781).
+ *
+ * `offset`/`limit` are the values that went on the wire, and `maxResults` is
+ * the render cap, which is a different thing from the page size and is kept
+ * separate so neither can be mistaken for the other.
+ */
+interface SearchPage {
+  offset: number;
+  limit: number;
+  maxResults?: number;
+}
+
+/**
  * Run a typed /search and return the section's non-null rows. Feb-2026
  * search responses can carry null rows per-slot (curated playlists), which
  * are filtered here.
@@ -145,16 +159,21 @@ async function runTypedSearch<T>(
   type: string,
   args: SearchArgs,
   q?: string,
-): Promise<{ items: T[]; total: number | null }> {
-  const data = await client.get<CatalogSearchResponse>(
-    '/search',
-    searchRequestParams(q ?? args.query, type, args),
-  );
+): Promise<{ items: T[]; total: number | null; page: SearchPage }> {
+  const params = searchRequestParams(q ?? args.query, type, args);
+  const data = await client.get<CatalogSearchResponse>('/search', params);
   const section = (
     data as unknown as Record<string, { items?: unknown[]; total?: number } | undefined> | null
   )?.[sectionKey];
   const items = (section?.items ?? []).filter((x) => x != null);
-  return { items: items as T[], total: typeof section?.total === 'number' ? section.total : null };
+  return {
+    items: items as T[],
+    total: typeof section?.total === 'number' ? section.total : null,
+    // #781: read the page back off the params object that went on the wire, so
+    // the reported page is the one that produced these rows rather than a
+    // re-derivation of the caller's arguments that could drift from them.
+    page: { offset: Number(params.offset ?? 0), limit: Number(params.limit) },
+  };
 }
 
 /** Shared prose/structured emission for the simple typed-search tools. */
@@ -164,21 +183,30 @@ function emitSearchResult(
   lines: string[],
   rows: unknown[],
   total: number | null,
+  page: SearchPage,
   extra: Record<string, unknown> = {},
-  maxResults?: number,
 ): ToolOut {
-  const cap = resolveMaxResults(maxResults, getConfig().maxItems);
+  const cap = resolveMaxResults(page.maxResults, getConfig().maxItems);
   const trunc = truncateItems(lines, cap);
   const shown = trunc.items.length;
   const out: string[] = [header, ''];
   out.push(...trunc.items);
   if (trunc.footer) out.push('', `(${trunc.footer})`);
+  // #781: report the page that was actually read. This used to be a hardcoded
+  // `offset: 0, limit: null`, which cannot yield a next_offset and so reported
+  // every one of these reads as a single exhausted page no matter what the
+  // caller asked for.
   const pagination: PaginationInfo = paginationInfo({
     total,
-    offset: 0,
-    limit: null,
+    offset: page.offset,
+    limit: page.limit,
     returned: shown,
   });
+  // #781: the same offset, in prose. Derived from the value the payload
+  // carries, so the two cannot disagree; null prints nothing, because an
+  // exhausted page must not tell the caller to keep paging.
+  const pageLine = nextPageLine(pagination.next_offset);
+  if (pageLine) out.push(pageLine);
   return emit(rf, out.join('\n'), {
     items: rows.slice(0, Math.max(cap, 0) === 0 ? rows.length : cap),
     total,
@@ -1018,6 +1046,11 @@ max_results: z.number().int().positive().max(2000).optional().describe('Max item
       + 'work. Quota: 🟢 one GET /search call. Decision guide: search_by_isrc for ISRC-only exact match; search/search_deep for general text, search_fresh for tag:new newness.',
     {
       isrc: z.string().min(12).max(15).describe('ISRC code, e.g. USUM71703861 (spaces/dashes tolerated)'),
+      // #781: an ISRC filter usually matches one track, but `isrc:` is a text
+      // search under the hood and an ambiguous code can match several. Without
+      // an offset the tool could report a real next_offset that the caller had
+      // no way to act on.
+      offset: Offset,
       market: MARKET_CODE.optional().describe("ISO 3166-1 alpha-2 market code, e.g. 'US'"),
       response_format: ResponseFormat,
     },
@@ -1028,8 +1061,8 @@ max_results: z.number().int().positive().max(2000).optional().describe('Max item
         throw new Error(`"${args.isrc}" is not a valid ISRC (expected CC-XXX-YYNNNNN shape, 12 alphanumeric chars)`);
       }
       const marketUsed = args.market ?? 'from_token';
-      const { items, total } = await runTypedSearch<TrackPayload>(
-        client, 'tracks', 'track', { query: isrc, market: args.market }, `isrc:${isrc}`,
+      const { items, total, page } = await runTypedSearch<TrackPayload>(
+        client, 'tracks', 'track', { query: isrc, offset: args.offset, market: args.market }, `isrc:${isrc}`,
       );
       const lines = items.map(
         (t) => `• "${t.name}" — ${(t.artists ?? []).map((a) => a.name).join(', ')} | ${t.album?.name ?? '?'} (${yearOf(t.album?.release_date) ?? '?'}) | ${t.uri}`,
@@ -1041,7 +1074,7 @@ max_results: z.number().int().positive().max(2000).optional().describe('Max item
           : `ISRC ${isrc} — no track found in market ${marketUsed}. The recording may not be distributed in this market's catalog.`,
         lines,
         items.map((t) => ({ id: t.id, uri: t.uri, name: t.name, artists: (t.artists ?? []).map((a) => a.name), album: t.album?.name ?? null, isrc: t.external_ids?.isrc ?? null })),
-        total, { isrc, market_used: marketUsed }, 50,
+        total, { ...page, maxResults: 50 }, { isrc, market_used: marketUsed },
       );
     },
   );
@@ -1478,6 +1511,9 @@ max_results: z.number().int().positive().max(2000).optional().describe('Max item
       author: z.string().min(1).describe('Author name'),
       sort: z.enum(['release', 'length']).optional().describe("Sort client-side by release date or chapter count. Default: 'release'"),
       limit: SearchLimit,
+      // #781: the author index is paged and can hold more titles than one
+      // /search call returns, so the offset has to be continuable.
+      offset: Offset,
       market: MARKET_CODE.optional().describe("ISO 3166-1 alpha-2 market code, e.g. 'US'"),
       response_format: ResponseFormat,
     },
@@ -1485,8 +1521,8 @@ max_results: z.number().int().positive().max(2000).optional().describe('Max item
       const rf = args.response_format;
       const author = args.author.replace(/"/g, '');
       const q = `author:"${author}"`;
-      const { items, total } = await runTypedSearch<AudiobookSearchItem>(
-        client, 'audiobooks', 'audiobook', { query: q, limit: args.limit, market: args.market }, q,
+      const { items, total, page } = await runTypedSearch<AudiobookSearchItem>(
+        client, 'audiobooks', 'audiobook', { query: q, limit: args.limit, offset: args.offset, market: args.market }, q,
       );
       const sorted = [...items].sort((a, b) => {
         if (args.sort === 'length') {
@@ -1506,8 +1542,8 @@ max_results: z.number().int().positive().max(2000).optional().describe('Max item
         lines,
         sorted.map((ab) => ({ id: ab.id, uri: ab.uri, name: ab.name, release_date: ab.release_date ?? null, total_chapters: ab.total_chapters ?? null, narrators: (ab.narrators ?? []).map((n) => n.name) })),
         total,
+        { ...page, maxResults: 50 },
         { sort: args.sort ?? 'release' },
-        50,
       );
     },
   );

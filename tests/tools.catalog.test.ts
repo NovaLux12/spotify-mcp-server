@@ -1754,6 +1754,79 @@ test('search_tracks handles no results', async () => {
   assert.match(out, /No results/);
 });
 
+// A line-oriented agent never reads structuredContent, so a next_offset that
+// lives only in the payload is invisible to it (#781). The typed search tools
+// printed a truncation footer and nothing else, which left the agent with no
+// way to learn which offset to continue from.
+
+/** `count` rows in a `key` section, so a page can be filled to `limit`. */
+function typedSearchPage(key: string, count: number, total: number) {
+  return {
+    [key]: {
+      items: Array.from({ length: count }, (_, i) => ({ id: `${key}${i}`, name: `${key} ${i}`, uri: `spotify:${key}:${i}`, artists: [{ name: 'A' }], album: { name: 'Alb' } })),
+      total,
+    },
+  };
+}
+
+test('search_tracks prints the next offset in prose when results remain (#781)', async () => {
+  const { registered, calls } = makeHarness(registerCatalogTools, { getResponse: (p) => (p === '/search' ? typedSearchPage('tracks', 10, 500) : undefined) });
+  const res = await invoke(findTool(registered, 'search_tracks'), { query: 'hello' });
+  assert.deepEqual(calls[0].params, { q: 'hello', type: 'track', limit: '5' }, 'default page is 5, the Feb-2026 /search default');
+  // default limit 5, but the fixture returned 10 — the line reports the rows
+  // actually rendered, which is the offset the caller would resume from.
+  assert.match(text(res), /^Next page: offset=10$/m);
+  assert.deepEqual(res.structuredContent!.pagination, { total: 500, offset: 0, limit: 5, returned: 10, next_offset: 10 });
+});
+
+test('search_tracks advances the printed offset from the caller offset (#781)', async () => {
+  const { registered, calls } = makeHarness(registerCatalogTools, { getResponse: (p) => (p === '/search' ? typedSearchPage('tracks', 10, 500) : undefined) });
+  const res = await invoke(findTool(registered, 'search_tracks'), { query: 'hello', offset: 20, limit: 10 });
+  assert.deepEqual(calls[0].params, { q: 'hello', type: 'track', limit: '10', offset: '20' });
+  assert.match(text(res), /^Next page: offset=30$/m);
+  assert.deepEqual(res.structuredContent!.pagination, { total: 500, offset: 20, limit: 10, returned: 10, next_offset: 30 });
+});
+
+test('search_tracks omits the paging line on the last page (#781)', async () => {
+  // 12 rows exist and the caller is on the final 2: nothing follows, so the
+  // line must be absent and next_offset null. The same call at offset 0 does
+  // print one, which is what makes this assertion non-vacuous.
+  const { registered } = makeHarness(registerCatalogTools, { getResponse: (p) => (p === '/search' ? typedSearchPage('tracks', 2, 12) : undefined) });
+  const res = await invoke(findTool(registered, 'search_tracks'), { query: 'hello', offset: 10, limit: 10 });
+  assert.doesNotMatch(text(res), /Next page:/, 'an exhausted page must not tell the agent to keep going');
+  assert.equal((res.structuredContent!.pagination as { next_offset: unknown }).next_offset, null);
+
+  const { registered: more } = makeHarness(registerCatalogTools, { getResponse: (p) => (p === '/search' ? typedSearchPage('tracks', 2, 12) : undefined) });
+  const first = await invoke(findTool(more, 'search_tracks'), { query: 'hello', limit: 10 });
+  assert.match(text(first), /^Next page: offset=2$/m, 'the same rows mid-walk do print a line');
+});
+
+test('search_tracks still pages when the section omits its total (#781)', async () => {
+  // No `total` key. The header keeps its display fallback, but the paging
+  // verdict must not be made on a fabricated "12 results" — that would read as
+  // a complete result set and silently swallow the signal (#6, #803).
+  const { registered } = makeHarness(registerCatalogTools, {
+    getResponse: (p) => (p === '/search'
+      ? { tracks: { items: Array.from({ length: 10 }, (_, i) => ({ id: `t${i}`, name: `T${i}`, uri: `spotify:track:t${i}`, artists: [{ name: 'A' }] })) } }
+      : undefined),
+  });
+  const res = await invoke(findTool(registered, 'search_tracks'), { query: 'hello', limit: 10 });
+  assert.equal((res.structuredContent!.pagination as { total: unknown }).total, null, 'a total that was never reported is not a number');
+  assert.match(text(res), /^Next page: offset=10$/m, 'a full page with no total may still have more');
+});
+
+test('search_tracks keeps the truncation footer consistent with the paging line (#781)', async () => {
+  // max_results cuts the render below the page size, so the footer and the
+  // paging line must both be present and must not contradict each other: the
+  // offset named is the first row the caller has not seen.
+  const { registered } = makeHarness(registerCatalogTools, { getResponse: (p) => (p === '/search' ? typedSearchPage('tracks', 10, 500) : undefined) });
+  const res = await invoke(findTool(registered, 'search_tracks'), { query: 'hello', max_results: 3 });
+  const out = text(res);
+  assert.match(out, /\(7 more — /, 'render truncation is still disclosed');
+  assert.match(out, /^Next page: offset=3$/m);
+  assert.deepEqual(res.structuredContent!.pagination, { total: 500, offset: 0, limit: 5, returned: 3, next_offset: 3 });
+});
+
 test('catalog_batch_lookup partitions mixed URIs', async () => {
   const { registered, calls } = makeHarness(registerCatalogTools, { getResponse: (p, params) => { if (p === '/tracks') return { tracks: params.ids.split(',').map((id) => ({ id, name: `Track ${id}`, uri: `spotify:track:${id}` })) }; if (p === '/artists') return { artists: params.ids.split(',').map((id) => ({ id, name: `Artist ${id}`, uri: `spotify:artist:${id}` })) }; return undefined; } });
   const out = text(await invoke(findTool(registered, 'catalog_batch_lookup'), { uris: ['spotify:track:t1', 'spotify:artist:a1'] }));
