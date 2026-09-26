@@ -222,6 +222,27 @@ async function releaseBackoffs(
   await waitFor(() => isSettled());
 }
 
+/**
+ * Assert a scheduled backoff waits out the remainder of a Retry-After window
+ * (#892).
+ *
+ * The wait is the REMAINDER of the window, not the window. The cooldown
+ * deadline is stamped when the 429 is read, and the re-queued attempt claims
+ * its start slot some microseconds later, so the honest value is
+ * `Retry-After` minus that gap — 999 or 1000 for a 1s header, a number that
+ * drifts with scheduler noise. Asserting an exact 1000 asserts a millisecond
+ * of scheduler luck; asserting only "at most Retry-After" would pass a client
+ * that ignored the header and slept 0ms. The band is what actually pins the
+ * behaviour: the wait is neither zero nor longer than Spotify asked for.
+ */
+function assertRetryAfterHonoured(delayMs: number, retryAfterSec: number): void {
+  const target = retryAfterSec * 1000;
+  assert.ok(
+    delayMs <= target && delayMs > target - 100,
+    `Retry-After=${retryAfterSec}s honoured: waited ${delayMs}ms, expected ~${target}ms`,
+  );
+}
+
 /** Seed a valid token fixture into the temp token file. */
 async function seedTokens(
   overrides: Partial<{ access_token: string; refresh_token: string; expires_at: number }> = {},
@@ -434,7 +455,7 @@ describe('SpotifyClient', () => {
       // its backoff sleep, then verify it honoured Retry-After=1s...
       await waitFor(() => timer.delays.length > 0 || settled);
       assert.equal(timer.delays.length, 1, 'exactly one backoff sleep scheduled');
-      assert.equal(timer.delays[0], 1000, 'Retry-After=1s honoured');
+      assertRetryAfterHonoured(timer.delays[0], 1);
       // ...then advance past it and drain until the retry resolves.
       t.mock.timers.tick(1000);
       await waitFor(() => settled);
@@ -471,7 +492,7 @@ describe('SpotifyClient', () => {
       // schedules its default backoff sleep...
       await waitFor(() => timer.delays.length > 0 || settled);
       assert.equal(timer.delays.length, 1, 'exactly one backoff sleep scheduled');
-      assert.equal(timer.delays[0], 1000, 'default backoff is 1s');
+      assertRetryAfterHonoured(timer.delays[0], 1);
       // ...then confirm a sub-second advance does NOT release the retry...
       t.mock.timers.tick(400);
       await nextTick();
@@ -1868,6 +1889,12 @@ describe('lane aging selection (#133)', () => {
       resolve: () => {},
       reject: () => {},
       enqueuedAt,
+      // Carried by LaneTask since #892 (the scheduler owns the retry budget and
+      // the lane a throttled attempt is re-queued onto). This selection is pure
+      // over `enqueuedAt`, so neither is read here — they are present only to
+      // satisfy the shape.
+      attempts: 0,
+      priority: 'normal' as const,
     });
     const now = 1_000_000;
     const n1 = mk('n1', now), n2 = mk('n2', now);
@@ -1892,6 +1919,12 @@ describe('lane aging selection (#133)', () => {
       resolve: () => {},
       reject: () => {},
       enqueuedAt,
+      // Carried by LaneTask since #892 (the scheduler owns the retry budget and
+      // the lane a throttled attempt is re-queued onto). This selection is pure
+      // over `enqueuedAt`, so neither is read here — they are present only to
+      // satisfy the shape.
+      attempts: 0,
+      priority: 'normal' as const,
     });
     const now = 1_000_000;
     const n1 = mk('n1', now);
