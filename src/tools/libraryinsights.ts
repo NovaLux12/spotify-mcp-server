@@ -82,6 +82,32 @@ export function genreTagsPath(env: NodeJS.ProcessEnv = process.env): string {
 
 
 /**
+ * Maximum number of `.corrupt.N` copies the sidecar quarantine keeps. Five
+ * failed reads of a stuck-corrupt file used to leave `.corrupt`, `.corrupt.1`,
+ * `.corrupt.2`, ... — full copies of the same bytes in a directory chosen for
+ * a small hand-curated file. With this cap, growth from repeated detections
+ * is bounded; identical bytes reuse an existing slot, distinct bytes fill
+ * the first free slot, and the message names the bound so the user knows it.
+ */
+const QUARANTINE_CHAIN_CAP = 3;
+
+/** Slot names the quarantine ever writes to, in oldest-first order. */
+function quarantineSlots(path: string): string[] {
+  const slots = [`${path}.corrupt`];
+  for (let n = 1; n < QUARANTINE_CHAIN_CAP; n += 1) slots.push(`${path}.corrupt.${n}`);
+  return slots;
+}
+
+/** Outcome of a quarantine attempt: where the bytes live now, or how to phrase the absence. */
+type QuarantineOutcome =
+  // Wrote a fresh copy into the named free slot.
+  | { kind: 'written'; backup: string }
+  // Found a slot whose bytes already match the source; reused it (no new copy).
+  | { kind: 'reused'; backup: string }
+  // Every slot is full of distinct bytes; we refuse to write a new one.
+  | { kind: 'cap_full'; last_backup: string };
+
+/**
  * Preserve the exact bytes of a sidecar we could not parse.
  *
  * The issue's acceptance criterion asks that a later write keep a `.corrupt`
@@ -89,43 +115,77 @@ export function genreTagsPath(env: NodeJS.ProcessEnv = process.env): string {
  * bytes are copied aside at DETECTION time and the read still throws: the
  * payload is preserved and no write is ever authorised to destroy it.
  *
- * The copy NEVER overwrites an existing one. This is exactly the workflow the
- * error message prescribes — the user is pointed at the copy to repair from —
- * so a second, different corrupt state must not clobber the first one's
- * evidence. Later copies take the first free `.corrupt.N` slot and are opened
- * O_EXCL, so even a lost race between the probe and the write cannot truncate
- * a copy that is already there.
+ * The copy NEVER overwrites an existing one with different bytes (#759). A
+ * later detection with bytes that match an existing copy REUSES that copy, so
+ * a read in a retry loop adds no file; a distinct corruption takes the first
+ * free slot; and once every slot holds distinct bytes the chain stays at the
+ * cap instead of growing again. The bound is named in the error text so the
+ * user can tell the cap from a missing copy.
  *
  * Best-effort: a read-only or full directory must not mask the corruption
  * report itself, and the original still names the file to repair either way.
  */
-function quarantineCorruptSidecar(path: string): string | undefined {
-  let backup = `${path}.corrupt`;
+function quarantineCorruptSidecar(path: string): QuarantineOutcome | undefined {
+  let original: Buffer;
   try {
-    for (let n = 1; existsSync(backup); n += 1) backup = `${path}.corrupt.${n}`;
-    writeFileSync(backup, readFileSync(path), { mode: 0o600, flag: 'wx' });
-    chmodSync(backup, 0o600);
-    return backup;
+    original = readFileSync(path);
   } catch {
     return undefined; // the original still names the file the user must repair
   }
+  const slots = quarantineSlots(path);
+  // First pass: any existing copy already holds these exact bytes?
+  for (const slot of slots) {
+    if (!existsSync(slot)) continue;
+    try {
+      if (readFileSync(slot).equals(original)) return { kind: 'reused', backup: slot };
+    } catch {
+      // unreadable; fall through and try the next slot
+    }
+  }
+  // Second pass: take the first free slot. The cap bounds this loop by
+  // limiting the slot list, so a chatty caller cannot grow it past N.
+  for (const slot of slots) {
+    if (existsSync(slot)) continue;
+    try {
+      writeFileSync(slot, original, { mode: 0o600, flag: 'wx' });
+      chmodSync(slot, 0o600);
+      return { kind: 'written', backup: slot };
+    } catch {
+      return undefined; // original still names the file the user must repair
+    }
+  }
+  // Every slot is full with distinct bytes. Cap reached.
+  return { kind: 'cap_full', last_backup: slots[slots.length - 1] };
 }
 
 /** Tail of a corruption report: where the preserved copy is, and that we stopped. */
-function quarantineNote(backup: string | undefined): string {
-  if (backup === undefined) {
+function quarantineNote(outcome: QuarantineOutcome | undefined): string {
+  if (outcome === undefined) {
     return 'It was left untouched — repair or move it aside, then retry; tagging stays blocked so '
       + 'your existing tags cannot be overwritten.';
   }
+  const newCopy = outcome.kind === 'written';
+  const backup = outcome.kind === 'written' || outcome.kind === 'reused'
+    ? outcome.backup
+    : outcome.last_backup;
   // Say so when this is not the first copy: the user is told to repair from a
-  // preserved file, and the failure they would hit next is an earlier crash
-  // state being overwritten by this one.
-  const earlier = backup.endsWith('.corrupt')
+  // copy, and the failure they would hit next is an earlier crash state being
+  // overwritten by this one. When the chain is full, name the latest slot so
+  // the reader at least knows the most recent preserved bytes.
+  const earlier = newCopy && outcome.backup.endsWith('.corrupt')
     ? ''
     : ` An earlier detection's copy is still at ${backup.replace(/\.corrupt\.\d+$/, '.corrupt')}, `
       + 'kept intact so the original post-crash state was not overwritten.';
-  return `Its exact bytes were preserved at ${backup} and it was left untouched — repair or move `
-    + `it aside, then retry; tagging stays blocked so your tags cannot be overwritten.${earlier}`;
+  // When the bytes matched an existing slot we reused it rather than writing a new file.
+  const reused = outcome.kind === 'reused'
+    ? ' (the existing copy already holds these bytes, so no new file was added)'
+    : '';
+  // The bound is the contract — without it, a stuck-corrupt file in a retry loop would grow without limit.
+  const bound = ` The quarantine chain is capped at ${QUARANTINE_CHAIN_CAP} copies; `
+    + 'identical corruptions reuse the existing copy, and additional distinct '
+    + 'corruptions are not added past the cap — repair the sidecar to clear the block.';
+  return `Its exact bytes were preserved at ${backup}${reused} and it was left untouched — repair `
+    + `or move it aside, then retry; tagging stays blocked so your tags cannot be overwritten.${earlier}${bound}`;
 }
 
 
