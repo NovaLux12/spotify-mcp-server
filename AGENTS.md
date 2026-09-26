@@ -341,6 +341,15 @@ Check the npm version, the tagged `server.json`, and the MCP Registry's
 `latest` response. CONTRIBUTING.md §Releasing has the exact commands and the
 rollback rules.
 
+`…/versions/latest` is that check. Do not substitute `/v0/servers?search=…`
+for it: search is a paginated index whose first page can omit the newest
+release, and its rows sort alphabetically rather than by recency (`1.10.0`
+precedes `1.2.1`), so one row read off a search is not the current version.
+`…/versions` is correct, and is the right query for auditing an older version
+or its deprecation status. Both endpoints are data, not the authoritative
+answer — reading one row off either and calling it "the published version" is
+the mistake, not a shortcut.
+
 ---
 
 ## 6. Lessons that cost us a bug

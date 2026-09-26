@@ -185,6 +185,37 @@ Expected results are the exact version (for example, `1.30.1`), `true` for
 the `server.json` check, and `true` for the Registry check. Also inspect the
 workflow URL printed by `gh run view "$RUN_ID"` if any verification fails.
 
+Two other Registry read paths are easy to mistake for this one. They are not
+equally wrong:
+
+| Query | What it reports | Trust it? |
+|---|---|---|
+| `…/versions/latest` | the current version, with `isLatest` | yes — this is the check above |
+| `…/versions` | every published version, newest first, each with `isLatest` and timestamps | yes — correct, and the way to audit an *older* version or its deprecation status |
+| `/v0/servers?search=…` | a **paginated** slice whose first page can omit the newest release | no — see below |
+
+`?search=` is the trap, and the shape matters. Its response carries
+`metadata.nextCursor` and a `metadata.count`, and the versions it returns can
+stop short of the newest published — a page of results is not the full history,
+so the highest version in a search result is not evidence of what is live.
+Worse, its ordering is alphabetical rather than semantic, so the first row is
+not the newest (`1.10.0` sorts ahead of `1.2.1`); reading one row off a search
+and believing it is how a stale-looking number gets quoted as fact.
+
+The failure this guards against is concluding a publish failed and
+re-publishing a version that is already out. npm versions are immutable and the
+publish workflow skips a version that is already present, so a re-publish is
+never the remedy — recover with `gh run rerun <run-id> --failed` instead, which
+re-runs the registry job without re-attempting the npm publish.
+
+If the two Registry answers disagree and you need a third read, do not reach for
+a bare `npm view`: it has served a stale `latest` and a 404 for a version that
+was already published. Cache-bust it —
+
+```
+curl -sS "https://registry.npmjs.org/@novalux12/spotify-mcp?cb=$(date +%s)" | jq '.["dist-tags"]'
+```
+
 ### Rollback and recovery
 
 - **Before the tag:** do not merge the release PR. Correct the Conventional
