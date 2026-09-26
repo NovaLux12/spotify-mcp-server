@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { describe, it } from 'node:test';
+import { fileURLToPath } from 'node:url';
 
 import {
   TOOLSETS,
@@ -10,17 +13,208 @@ import {
   isModuleActive,
   toolsetEnvHelp,
 } from '../src/toolsets.js';
-import { REGISTRAR_MANIFEST } from '../src/tools/annotations.js';
+import { REGISTRAR_MANIFEST, type RegistrarManifestEntry } from '../src/tools/annotations.js';
+
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
+const INDEX_TS = readFileSync(join(ROOT, 'src/index.ts'), 'utf8');
+
+/**
+ * Registration keys `src/index.ts` gates with a string literal (#669). The
+ * registrar-manifest loop hands `isModuleActive` a *variable*
+ * (`isModuleActive: (key) => isModuleActive(key, ...)`), so it is deliberately
+ * not matched here: REGISTRAR_MANIFEST is the source of truth for that half,
+ * and this scan is its complement for the hand-gated surfaces
+ * (resources/prompts) that never reach the manifest.
+ *
+ * Scanned, not transcribed. A second hand-kept list of key names is exactly
+ * the failure this replaces — it silently stops covering whatever the source
+ * grows next. Comments are stripped first so a key quoted in prose about the
+ * gate is not mistaken for the gate itself.
+ */
+function indexEntryPointKeys(source: string): string[] {
+  const code = source
+    .replace(/\/\*[\s\S]*?\*\//g, ' ')
+    .replace(/(^|[^:])\/\/.*$/gm, '$1');
+  return [...code.matchAll(/\bisModuleActive\(\s*'([a-z0-9_-]+)'/g)].map((match) => match[1]!);
+}
+
+/** Registration keys the manifest declares as registering unconditionally. */
+function ungatedManifestKeys(manifest: readonly RegistrarManifestEntry[]): string[] {
+  return [...new Set(manifest.filter((m) => m.alwaysActive === true).map((m) => m.registrationKey))].sort();
+}
+
+/**
+ * Every registration entry point that `SPOTIFY_MCP_TOOLSETS` is supposed to be
+ * able to turn off: each manifest module that is not `alwaysActive`, plus each
+ * hand-gated literal in index.ts.
+ */
+function gatedRegistrationKeys(
+  manifest: readonly RegistrarManifestEntry[] = REGISTRAR_MANIFEST,
+  indexSource: string = INDEX_TS,
+): string[] {
+  return [
+    ...new Set([
+      ...manifest.filter((m) => m.alwaysActive !== true).map((m) => m.registrationKey),
+      ...indexEntryPointKeys(indexSource),
+    ]),
+  ].sort();
+}
+
+/**
+ * Parity between the registration entry points and the TOOLSETS map, reported
+ * as messages that NAME the offending key. Empty when parity holds.
+ *
+ * Both directions matter. A gated entry point that no set owns is silently
+ * always-on — `isModuleActive` returns `true` for a key missing from
+ * `KEY_TO_SETS`, so a host trimming for a tool-count cap cannot turn it off
+ * and `toolset_report` never shows it. A TOOLSETS key that gates nothing is
+ * dead trim vocabulary that reports success while changing nothing
+ * (#468/#485).
+ */
+function toolsetParityProblems(
+  toolsets: Record<string, readonly string[]> = TOOLSETS,
+  manifest: readonly RegistrarManifestEntry[] = REGISTRAR_MANIFEST,
+  indexSource: string = INDEX_TS,
+): string[] {
+  const problems: string[] = [];
+  const owned = new Set(Object.values(toolsets).flat());
+  const gated = new Set(gatedRegistrationKeys(manifest, indexSource));
+  // An `alwaysActive` manifest module is exempt from the orphan rule because a
+  // toolset cannot gate it — the flag, not a kept name, is what says so.
+  const ungated = new Set(ungatedManifestKeys(manifest));
+
+  for (const [set, keys] of Object.entries(toolsets)) {
+    if (keys.length === 0) problems.push(`toolset '${set}' enables no registration key`);
+  }
+  for (const key of [...gated].sort()) {
+    if (!owned.has(key)) {
+      problems.push(
+        `registration entry point '${key}' is owned by no toolset, so SPOTIFY_MCP_TOOLSETS cannot turn it off`,
+      );
+    }
+  }
+  for (const key of [...owned].sort()) {
+    if (!gated.has(key) && !ungated.has(key)) {
+      problems.push(`toolset key '${key}' gates no registration entry point`);
+    }
+  }
+  return problems;
+}
+
+describe('toolset parity is derived, not hand-listed (#669)', () => {
+  it('reads entry-point keys out of the source instead of a kept list', () => {
+    // The derivation, proven on text that is not the shipped source: a key
+    // invented here is picked up, the manifest loop's variable argument is
+    // not, and a key the source never mentions does not appear.
+    assert.deepEqual(
+      indexEntryPointKeys("if (isModuleActive('brandnewmodule', sets, ov)) register();"),
+      ['brandnewmodule'],
+    );
+    assert.deepEqual(
+      indexEntryPointKeys("isModuleActive: (key) => isModuleActive(key, activeSets, overrides),"),
+      [],
+      'the manifest loop passes a variable; REGISTRAR_MANIFEST covers it',
+    );
+    assert.deepEqual(indexEntryPointKeys('// nothing gated here'), []);
+    assert.deepEqual(
+      indexEntryPointKeys("// see isModuleActive('proseonly') for the gate"),
+      [],
+      'a key named in a comment is not a gate',
+    );
+    assert.ok(
+      indexEntryPointKeys(INDEX_TS).length > 0,
+      'src/index.ts gates resources/prompts by literal; a zero result means the scan broke',
+    );
+  });
+
+  it('has no parity problem in the shipped source', () => {
+    assert.deepEqual(toolsetParityProblems(), []);
+  });
+
+  it('fails when a registration entry point has no toolset', () => {
+    // The acceptance case from #669: a new gate in index.ts with no TOOLSETS
+    // entry. `isModuleActive` defaults such a key to active, so nothing else
+    // in the suite notices — the module is always-on and invisible.
+    const withNewModule = `${INDEX_TS}\nif (isModuleActive('newmodule', activeSets, overrides)) register();\n`;
+    const problems = toolsetParityProblems(TOOLSETS, REGISTRAR_MANIFEST, withNewModule);
+    assert.ok(
+      problems.includes(
+        "registration entry point 'newmodule' is owned by no toolset, so SPOTIFY_MCP_TOOLSETS cannot turn it off",
+      ),
+      `expected newmodule to be reported, got: ${problems.join('; ') || '(none)'}`,
+    );
+  });
+
+  it('fails when a manifest module is added with an unowned registration key', () => {
+    const added: RegistrarManifestEntry = {
+      ...REGISTRAR_MANIFEST[0]!,
+      key: 'newmodule',
+      registrationKey: 'newmodule',
+    };
+    const problems = toolsetParityProblems(TOOLSETS, [...REGISTRAR_MANIFEST, added], INDEX_TS);
+    assert.ok(
+      problems.some((problem) => problem.includes("'newmodule'")),
+      `expected newmodule to be reported, got: ${problems.join('; ') || '(none)'}`,
+    );
+  });
+
+  it('fails when a toolset key gates nothing', () => {
+    // Scoped to the injected key: a genuine break in the shipped source is
+    // reported by the parity test above, not smuggled in here.
+    const problems = toolsetParityProblems({ ...TOOLSETS, legacy: ['swarm9legacy'] });
+    assert.ok(
+      problems.includes("toolset key 'swarm9legacy' gates no registration entry point"),
+      `expected swarm9legacy to be reported, got: ${problems.join('; ') || '(none)'}`,
+    );
+  });
+
+  it('fails when a toolset is empty', () => {
+    const problems = toolsetParityProblems({ ...TOOLSETS, hollow: [] });
+    assert.ok(
+      problems.includes("toolset 'hollow' enables no registration key"),
+      `expected hollow to be reported, got: ${problems.join('; ') || '(none)'}`,
+    );
+  });
+
+  it('derives the alwaysActive exemption from the manifest flag, not a name list', () => {
+    // `swarm3meta` is the one key TOOLSETS names that no gate can act on,
+    // because its manifest entry is alwaysActive. That exemption is the flag:
+    // dropping the module from the manifest makes the key a dead orphan the
+    // check must catch, and clearing the flag moves it into the gated set.
+    assert.ok(new Set(Object.values(TOOLSETS).flat()).has('swarm3meta'), 'premise: the key is in a toolset');
+    assert.ok(ungatedManifestKeys(REGISTRAR_MANIFEST).includes('swarm3meta'), 'premise: the flag is why');
+    assert.ok(
+      toolsetParityProblems(TOOLSETS, REGISTRAR_MANIFEST.filter((m) => m.key !== 'swarm3meta')).includes(
+        "toolset key 'swarm3meta' gates no registration entry point",
+      ),
+      'removing the manifest entry must orphan the key',
+    );
+    assert.ok(
+      gatedRegistrationKeys(
+        REGISTRAR_MANIFEST.map((m) => (m.key === 'swarm3meta' ? { ...m, alwaysActive: false } : m)),
+      ).includes('swarm3meta'),
+      'clearing alwaysActive must move the key into the gated set',
+    );
+  });
+
+  it('keeps the non-manifest index.ts surfaces explicitly gated', () => {
+    // resources/prompts never reach the manifest, so their only claim on a
+    // toolset is the literal gate in index.ts.
+    for (const key of indexEntryPointKeys(INDEX_TS)) {
+      assert.ok(
+        new Set(Object.values(TOOLSETS).flat()).has(key),
+        `index.ts gates '${key}' but no toolset owns it`,
+      );
+    }
+  });
+});
 
 describe('TOOLSETS coverage', () => {
-  it('covers every manifest registration key at least once', () => {
-    const covered = new Set(Object.values(TOOLSETS).flat());
+  it('defines every module exactly once with a positive baseline and ceiling', () => {
+    assert.equal(new Set(REGISTRAR_MANIFEST.map((module) => module.key)).size, REGISTRAR_MANIFEST.length);
     for (const module of REGISTRAR_MANIFEST) {
-      if (module.alwaysActive) continue;
-      assert.ok(covered.has(module.registrationKey), `registration key '${module.registrationKey}' for ${module.key} is not enabled by any toolset`);
-    }
-    for (const key of ['resources', 'prompts']) {
-      assert.ok(Object.hasOwn(TOOLSETS, key), `non-manifest toolset '${key}' must remain explicit`);
+      assert.ok(module.ceiling.toolCount >= module.baseline.toolCount, module.key);
+      assert.ok(module.ceiling.schemaBytes >= module.baseline.schemaBytes, module.key);
     }
   });
 
