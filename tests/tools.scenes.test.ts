@@ -6,7 +6,7 @@
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import { z } from 'zod';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, stat } from 'node:fs/promises';
+import { mkdtemp, rm, stat, writeFile, readFile, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -252,6 +252,30 @@ describe('sidecar round-trip + permissions', () => {
   it('honours SPOTIFY_MCP_SCENES_FILE override', () => {
     assert.equal(scenesFilePath({ SPOTIFY_MCP_SCENES_FILE: '/tmp/x/scenes.json' }), '/tmp/x/scenes.json');
     assert.match(scenesFilePath({}), /\.spotify-mcp[/\\]scenes\.json$/);
+  });
+
+  // #1051: a corrupt scenes sidecar must NOT silently read as an empty
+  // store, or the next mutating call would overwrite the user's hand-curated
+  // scenes with a default-shaped stub. The bytes survive at <path>.corrupt
+  // and the tool errors out so the caller can decide whether to repair or
+  // stop.
+  it('#1051 corrupt scenes sidecar: list_scenes throws and bytes are preserved', async () => {
+    // The path is `nested/scenes.json`; create the parent so writeFile lands.
+    await mkdir(join(sideDir, 'nested'), { recursive: true });
+    const corrupt = '{oops';
+    await writeFile(sideFile, corrupt, 'utf8');
+    const h = harness();
+    await assert.rejects(h.invoke('list_scenes', {}), /is not valid JSON/);
+    assert.equal(await readFile(`${sideFile}.corrupt`, 'utf8'), corrupt, 'preserved copy must be byte-identical');
+    assert.equal(await readFile(sideFile, 'utf8'), corrupt, 'original must remain on disk');
+  });
+
+  it('#1051 corrupt scenes sidecar: wrong-shape scene entry throws (not silently dropped)', async () => {
+    await mkdir(join(sideDir, 'nested'), { recursive: true });
+    const wrong = JSON.stringify({ focus: 'oops' });
+    await writeFile(sideFile, wrong, 'utf8');
+    const h = harness();
+    await assert.rejects(h.invoke('list_scenes', {}), /scene "focus" is not a JSON object/);
   });
 });
 
