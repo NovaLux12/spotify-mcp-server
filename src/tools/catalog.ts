@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { SpotifyApiError, type SpotifyClient } from '../client.js';
+import { isRemovedEndpointFailure } from '../gating.js';
 import type {
   SpotifyTrack,
   SpotifyArtistFull,
@@ -38,6 +39,34 @@ export const MARKET_CODE = z
   .string()
   .regex(/^[A-Za-z]{2}$/, 'market must be a 2-letter ISO 3166-1 alpha-2 country code, e.g. "US"')
   .transform((code) => code.toUpperCase());
+
+// #1013: Spotify's February 2026 changelog removed GET /browse/categories/{id}
+// and GET /browse/categories/{id}/playlists outright and lists no replacement,
+// and no surviving endpoint exposes browse categories. A failure from this
+// family is a dead endpoint, never a missing category, so it must be reported
+// as such instead of as "Category <id> not found" or a category-only result
+// that silently drops the playlist page. Same contract as get_available_markets.
+// `noun` names what could not be read, so the no-payload case reports the same
+// fact as the wire-failure case: nothing was read, so nothing is returned.
+function browseCategoryUnavailable(path: string, noun: string, err?: unknown): Error {
+  // A gated 403 reaches the tool as the #428 graceful-contract Error, so that
+  // text is kept verbatim and the removal is appended to it.
+  const detail =
+    err === undefined
+      ? `the response carried no ${noun} payload, so nothing was read. `
+      : err instanceof SpotifyApiError
+        ? `Spotify answered ${err.status} — ${err.message} `
+        : err instanceof Error
+          ? `${err.message} `
+          : 'Spotify rejected the request. ';
+  return new Error(
+    `The browse-category lookup (${path}) could not be answered: ${detail} GET /browse/categories/{id} and ` +
+      'GET /browse/categories/{id}/playlists were removed by Spotify’s February 2026 Web API changes and ' +
+      'have no replacement endpoint, so the category and its playlists cannot be read; run with credentials ' +
+      'from a grandfathered (pre-Nov-2024) app if you need them.',
+    err === undefined ? undefined : { cause: err },
+  );
+}
 
 let profileCountry: Promise<string | undefined> | null = null;
 
@@ -846,9 +875,9 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
   // ----- gap-fill: get_category (#256) -----
   server.tool(
     'get_category',
-    'Get a single Spotify browse category by ID (GET /browse/categories/{id}). Quota: 🟢 single.',
+    'Get a single Spotify browse category by ID. Removed Feb 2026, no replacement endpoint. Quota: 🟢 single.',
     {
-      category_id: z.string().min(1).describe('Category ID from get_categories'),
+      category_id: z.string().min(1).describe('Category ID'),
       country: MARKET_CODE.optional().describe('ISO 3166-1 alpha-2 country code, e.g. \'US\''),
       locale: z.string().optional().describe('Locale, e.g. en_US'),
       response_format: ResponseFormat,
@@ -857,11 +886,17 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
       const params: Record<string, string> = {};
       if (args.country) params.country = args.country;
       if (args.locale) params.locale = args.locale;
-      const data = await client.get<Record<string, unknown>>(
-        `/browse/categories/${encodeURIComponent(args.category_id)}`,
-        params,
-      );
-      if (!data) throw new Error(`Category "${args.category_id}" not found`);
+      const categoryPath = `/browse/categories/${encodeURIComponent(args.category_id)}`;
+      let data: Record<string, unknown> | null;
+      try {
+        data = await client.get<Record<string, unknown>>(categoryPath, params);
+      } catch (err) {
+        if (isRemovedEndpointFailure(err)) {
+          throw browseCategoryUnavailable(categoryPath, 'category', err);
+        }
+        throw err;
+      }
+      if (!data) throw browseCategoryUnavailable(categoryPath, 'category');
       if (args.response_format === 'json') return jsonResult(data as Record<string, unknown>);
       const icons = (data.icons as Array<{ url: string }> | undefined) ?? [];
       const lines = [
@@ -1132,9 +1167,9 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
   // ----- browse_category_deepdive (rank 59 / #317) -----
   server.tool(
     'browse_category_deepdive',
-    'Category → playlists → optional items peek in one call (GET /browse/categories/{id} + /playlists (+ /playlists/{id}/items peek)). Quota: 🟡 2–3 calls.',
+    'Category → playlists → optional items peek in one call. Removed Feb 2026, no replacement endpoint. Quota: 🟡 2–3 calls.',
     {
-      category_id: z.string().min(1).describe('Category ID from get_categories'),
+      category_id: z.string().min(1).describe('Category ID'),
       country: MARKET_CODE.optional().describe('ISO 3166-1 alpha-2 country code, e.g. \'US\''),
       locale: z.string().optional().describe('Locale, e.g. en_US'),
       limit: z.number().int().min(1).max(50).optional().describe('Playlists per page, 1–50. Default: 10'),
@@ -1145,13 +1180,32 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
       const catParams: Record<string, string> = {};
       if (args.country) catParams.country = args.country as string;
       if (args.locale) catParams.locale = args.locale as string;
-      const category = await client.get<Record<string, unknown>>(`/browse/categories/${encodeURIComponent(args.category_id as string)}`, catParams);
-      if (!category) throw new Error(`Category "${args.category_id}" not found`);
+      const categoryPath = `/browse/categories/${encodeURIComponent(args.category_id as string)}`;
+      let category: Record<string, unknown> | null;
+      try {
+        category = await client.get<Record<string, unknown>>(categoryPath, catParams);
+      } catch (err) {
+        if (isRemovedEndpointFailure(err)) {
+          throw browseCategoryUnavailable(categoryPath, 'category', err);
+        }
+        throw err;
+      }
+      if (!category) throw browseCategoryUnavailable(categoryPath, 'category');
       const plParams: Record<string, string> = {};
       if (args.country) plParams.country = args.country as string;
       if (args.limit !== undefined) plParams.limit = String(args.limit);
-      const plData = await client.get<{ playlists: SpotifyPaged<SpotifyAlbumItem & { owner?: { display_name?: string; id?: string } }> }>(`/browse/categories/${encodeURIComponent(args.category_id as string)}/playlists`, plParams);
-      const playlists = plData?.playlists;
+      const playlistsPath = `${categoryPath}/playlists`;
+      let playlists: SpotifyPaged<SpotifyAlbumItem & { owner?: { display_name?: string; id?: string } }> | undefined;
+      try {
+        const plData = await client.get<{ playlists: typeof playlists }>(playlistsPath, plParams);
+        playlists = plData?.playlists;
+      } catch (err) {
+        if (isRemovedEndpointFailure(err)) {
+          throw browseCategoryUnavailable(playlistsPath, 'playlists', err);
+        }
+        throw err;
+      }
+      if (!playlists) throw browseCategoryUnavailable(playlistsPath, 'playlists');
       let peek: Array<Record<string, unknown>> | null = null;
       // A peek that could not be read is unknown, not empty: report the
       // failure instead of collapsing it into "this playlist has no rows" (#773).

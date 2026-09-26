@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { registerBrowseTools } from '../src/tools/browse.js';
+import { SpotifyApiError } from '../src/client.js';
+import { installGatedPathContract } from '../src/gating.js';
 type ToolContent = { content: Array<{ type: string; text: string }>; structuredContent?: Record<string, unknown> };
 type SchemaField = { safeParse(a: unknown): { success: boolean; data?: unknown }; description?: string };
 type RegisteredTool = { name: string; description: string; schema: Record<string, SchemaField>; handler: (a: Record<string, unknown>) => Promise<ToolContent> };
@@ -126,4 +128,118 @@ test('browse tools accept matching canonical and deprecated market spellings', a
   await playlists.handler(parseArgs(playlists, { category_id: 'mood', market: 'GB', country: 'gb' }));
 
   assert.deepEqual(calls.map((call) => call.params), [{ market: 'GB' }, { market: 'GB' }]);
+});
+
+// #1013: Spotify's February 2026 changelog removed GET /browse/categories and
+// GET /browse/categories/{id} with no replacement. Before the fix the two
+// category tools turned that dead endpoint into a confident wrong answer: a
+// 403/404 read as "not found", and a response with no payload read as an empty
+// category list.
+function assertNamesRemovedEndpoint(err: unknown): boolean {
+  const message = (err as Error).message;
+  assert.match(message, /February 2026 Web API changes/);
+  assert.match(message, /no replacement endpoint/);
+  assert.doesNotMatch(message, /No categories found|No playlists found/);
+  return true;
+}
+
+test('#1013 get_categories names the removed endpoint on 403 instead of an empty list', async () => {
+  const { registered } = makeHarness((path) => {
+    if (path === '/browse/categories') throw new SpotifyApiError(403, 'Forbidden');
+    return null;
+  });
+  await assert.rejects(() => find(registered, 'get_categories').handler({}), assertNamesRemovedEndpoint);
+});
+
+test('#1013 get_categories names the removed endpoint on 404, not a missing object', async () => {
+  const { registered } = makeHarness((path) => {
+    if (path === '/browse/categories') throw new SpotifyApiError(404, 'Not found.');
+    return null;
+  });
+  await assert.rejects(
+    () => find(registered, 'get_categories').handler({}),
+    (err: Error) => {
+      assertNamesRemovedEndpoint(err);
+      assert.match(err.message, /Spotify answered 404 — Not found\./);
+      return true;
+    },
+  );
+});
+
+test('#1013 get_categories reports a payload-less response as unreadable, not as zero categories', async () => {
+  const { registered } = makeHarness(() => ({}));
+  await assert.rejects(
+    () => find(registered, 'get_categories').handler({}),
+    (err: Error) => {
+      assert.match(err.message, /no categories payload/);
+      assert.doesNotMatch(err.message, /No categories found/);
+      return true;
+    },
+  );
+});
+
+test('#1013 get_category_playlists names the removed endpoint on 403', async () => {
+  const { registered } = makeHarness((path) => {
+    if (path === '/browse/categories/mood/playlists') throw new SpotifyApiError(403, 'Forbidden');
+    return null;
+  });
+  await assert.rejects(
+    () => find(registered, 'get_category_playlists').handler({ category_id: 'mood' }),
+    assertNamesRemovedEndpoint,
+  );
+});
+
+test('#1013 get_category_playlists reports a payload-less response as unreadable, not as zero playlists', async () => {
+  const { registered } = makeHarness(() => ({}));
+  await assert.rejects(
+    () => find(registered, 'get_category_playlists').handler({ category_id: 'mood' }),
+    (err: Error) => {
+      assert.match(err.message, /no playlists payload/);
+      assert.doesNotMatch(err.message, /No playlists found/);
+      return true;
+    },
+  );
+});
+
+test('#1013 a non-removal failure from the categories family is passed through unchanged', async () => {
+  const { registered } = makeHarness((path) => {
+    if (path === '/browse/categories') throw new SpotifyApiError(429, 'API rate limit exceeded');
+    return null;
+  });
+  await assert.rejects(
+    () => find(registered, 'get_categories').handler({}),
+    (err: Error) => {
+      assert.doesNotMatch(err.message, /February 2026/);
+      assert.match(err.message, /API rate limit exceeded/);
+      return true;
+    },
+  );
+});
+
+test('#1013 get_categories names the removal when the gated contract re-raises the 403', async () => {
+  // The production shape: index.ts installs installGatedPathContract on every
+  // client, so the 403 arrives as a plain Error, not a SpotifyApiError. The
+  // tool must still recognise it as the removed endpoint rather than passing
+  // on a message that only says "gated".
+  const client = {
+    get: async () => {
+      throw new SpotifyApiError(403, 'Forbidden');
+    },
+  };
+  installGatedPathContract(client as never);
+  const registered: RegisteredTool[] = [];
+  const server = {
+    tool: (name: string, description: string, schema: RegisteredTool['schema'], handler: RegisteredTool['handler']) =>
+      registered.push({ name, description, schema, handler }),
+  };
+  registerBrowseTools(server as never, client as never);
+  await assert.rejects(
+    () => find(registered, 'get_categories').handler({}),
+    (err: Error) => {
+      assert.match(err.message, /February 2026 Web API changes/);
+      assert.match(err.message, /Spotify returned 403 for \/browse\/categories/);
+      assert.match(err.message, /app-registration-gated/);
+      return true;
+    },
+  );
 });
