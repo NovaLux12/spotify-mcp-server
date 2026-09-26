@@ -243,8 +243,8 @@ function isStreamOf(stream: J, filter: EntityFilter, entityId: string): boolean 
  *  window, so its read is a windowed slice and must never be described as the
  *  profile's newest page. */
 function streamScope(params: Record<string, string>): string {
-  const from = params.after ?? params.until;
-  const to = params.before ?? params.since;
+  const from = params.after;
+  const to = params.before;
   if (from || to) return `the ${from ? `after ${from}` : 'start of history'} → ${to ? `before ${to}` : 'now'} window`;
   return "this profile's newest streams";
 }
@@ -302,7 +302,7 @@ function formatSummary(sum: StreamSummary, read: StreamPage, filter: EntityFilte
   const span = sum.oldest && sum.newest ? ` | page span: ${sum.oldest} → ${sum.newest}` : '';
   const line = `${sum.label}: ${sum.count} streams, ${fmtPlayed(sum.totalMs)} total (avg ${fmtPlayed(sum.avgMs)})${span}`;
   if (read.capped) {
-    return `${line}\nPartial: ${sum.count} of the ${read.streams.length} streams in ${read.scope} are this ${filter}. That read was capped at ${read.pageSize}, so this is not a total for ${read.scope} — the read did not cover all of them.`;
+    return `${line}\nPartial: ${sum.count} of the ${read.streams.length} streams in ${read.scope} are this ${filter}. That read was capped at ${read.pageSize}, so this is not a lifetime total — the read did not cover all of them.`;
   }
   if (sum.count === 0) {
     return `${line}\nComplete: none of the ${read.streams.length} streams in ${read.scope} is this ${filter}.`;
