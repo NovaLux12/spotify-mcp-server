@@ -21,6 +21,11 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 const tokenDir = await mkdtemp(join(tmpdir(), 'spotify-mcp-quota-test-'));
 process.env.SPOTIFY_MCP_TOKEN_FILE = join(tokenDir, 'tokens.json');
 process.env.SPOTIFY_CLIENT_ID = 'test-client-id';
+// These tests invoke whats_new, which advances the freshness watermark on a
+// completed scan. Unset, it writes to the real ~/.spotify-mcp/freshness.json —
+// so `npm test` mutated the developer's own state, and two suites running at
+// once raced on that one file (#1130). Point it into this file's tmpdir.
+process.env.SPOTIFY_MCP_FRESHNESS_STATE = join(tokenDir, 'freshness.json');
 
 const { SpotifyClient } = await import('../src/client.js');
 const { registerLibraryHygieneTools } = await import('../src/tools/libraryhygiene.js');

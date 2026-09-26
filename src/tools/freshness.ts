@@ -33,9 +33,10 @@ import {
 import type { ResponseFormatValue, PaginationInfo } from '../shaping.js';
 import { getConfig } from '../config.js';
 import { readOnlyModeEnabled } from './annotations.js';
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { randomBytes } from 'node:crypto';
 
 // ---------------------------------------------------------------------------
 // Date + watermark helpers (pure local I/O; no network)
@@ -182,13 +183,27 @@ async function readWatermark(): Promise<string | null> {
 /**
  * Atomically advance the watermark to `date`. Temp-file + rename keeps the
  * update crash-safe; the temp file is created 0600 so the final file is too.
+ *
+ * The temp name MUST be unique per writer. A fixed `${target}.tmp` is a race
+ * between concurrent writers on a shared state path: both create it, the
+ * first rename moves it away, and the second fails ENOENT (#1130). That is
+ * not only a test-suite problem — two server processes, or a server and a
+ * CLI run, share `~/.spotify-mcp/freshness.json` by default. Follows the
+ * same idiom as the token sidecar in `auth.ts`.
  */
 async function writeWatermark(date: string): Promise<void> {
   const target = watermarkFilePath();
-  const tmp = `${target}.tmp`;
+  const tmp = `${target}.${process.pid}.${randomBytes(8).toString('hex')}.tmp`;
   await mkdir(dirname(target), { recursive: true });
-  await writeFile(tmp, `${JSON.stringify({ last_check: date }, null, 2)}\n`, { mode: 0o600 });
-  await rename(tmp, target);
+  try {
+    await writeFile(tmp, `${JSON.stringify({ last_check: date }, null, 2)}\n`, { mode: 0o600 });
+    await rename(tmp, target);
+  } catch (err) {
+    // A unique temp name means a failed write can leave a file nothing else
+    // will ever clean up. Do not leave litter in the state directory.
+    await rm(tmp, { force: true }).catch(() => {});
+    throw err;
+  }
 }
 
 // ---------------------------------------------------------------------------
