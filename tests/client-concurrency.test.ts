@@ -449,6 +449,68 @@ describe('request funnel — bounded concurrency and the shared start gate (#892
       assert.ok(lateErr.retryAfterSec! > 0, 'even a refused call carries the wait');
     });
 
+    it('answers a throttled burst in well under one window, holding no permit to do it', async (t) => {
+      virtualClock(t);
+      await seedTokens(EPOCH + 3_600_000);
+
+      // Deliberately serial. The breaker can only fail a caller fast if that
+      // caller has not already been admitted, and admission is what the bound
+      // decides: at concurrency 3 the second and third callers are legitimately
+      // in flight and parked at the gate when the streak completes, so they are
+      // past the check by the time the wall is proven. That is a race the bound
+      // allows, not a defect — but it does mean only the serial funnel shows
+      // what the burst costs the process as a whole, which is what this asserts.
+      const client = new SpotifyClient({ maxConcurrency: 1 });
+      await warmUp(t, client);
+
+      const WINDOW_SEC = 5;
+      let apiCount = 0;
+      responder = () => {
+        apiCount++;
+        return new Response('', { status: 429, headers: { 'Retry-After': String(WINDOW_SEC) } });
+      };
+
+      const work = Promise.allSettled([client.get('/a'), client.get('/b'), client.get('/c')]);
+      const startedAt = Date.now();
+      await pumpUntilSettled(t, work);
+      const elapsed = Date.now() - startedAt;
+      const results = await work;
+
+      assert.equal(
+        results.filter((r) => r.status === 'rejected').length,
+        3,
+        'a run of consecutive 429s is answered, not waited out',
+      );
+      for (const result of results) {
+        const err = (result as PromiseRejectedResult).reason as SpotifyApiError;
+        assert.ok(err instanceof SpotifyApiError);
+        assert.equal(err.status, 429);
+        assert.ok(err.retryAfterSec! > 0, 'even a refused call carries the wait');
+      }
+
+      // The load-bearing claim. Each caller arrives, is throttled, and hands
+      // its permit back; once the streak proves the wall the rest are refused
+      // before a request is issued. So the process pays windows to establish
+      // the streak and nothing after that. A caller that instead slept through
+      // its own Retry-After inside the request would spend the full attempt
+      // budget — three windows — for EVERY caller, while holding the permit
+      // for each one, and the three callers here would cost nine windows
+      // between them.
+      assert.ok(
+        apiCount <= 3,
+        `the wall must be proven once, not re-paid per caller per attempt: ${apiCount} fetches for 3 callers`,
+      );
+      assert.ok(
+        elapsed < 3 * WINDOW_SEC * 1000,
+        `a throttled burst must cost fewer windows than it has callers x attempts, took ${elapsed}ms`,
+      );
+      assert.equal(
+        client.getRateLimitStatus().inFlight,
+        0,
+        'a refused throttled caller gives its permit back rather than sleeping on it',
+      );
+    });
+
     it('resets the consecutive-429 streak when a request settles without a throttle', async (t) => {
       virtualClock(t);
       await seedTokens(EPOCH + 3_600_000);
