@@ -292,7 +292,12 @@ const OVERRIDES: Record<string, ToolAnnotations> = {
   statsfm_record_feedback: { destructiveHint: false },
   record_feedback: { destructiveHint: false },
   export_playlist: { destructiveHint: false },
-  backup_library: { destructiveHint: false },
+  // backup_library makes no Spotify write — every call is a GET, and the only
+  // writes are to the local backup directory. Its name starts with `backup`,
+  // which the MUTATING_PREFIXES regex counts as a write, so it belongs here
+  // (#1101) rather than in a blanket change to the prefix. Same shape as
+  // verify_receipt, spotify_doctor, and dedupe_spotify_uris above.
+  backup_library: { readOnlyHint: true, idempotentHint: true },
   play: { destructiveHint: false },
   pause: { destructiveHint: false },
   next_track: { destructiveHint: false },
@@ -307,6 +312,19 @@ const OVERRIDES: Record<string, ToolAnnotations> = {
   apply_snapshot_changes: { destructiveHint: true },
   merge_snapshot_changes: { destructiveHint: true },
 };
+
+/**
+ * Tools in OVERRIDES whose entry declares readOnlyHint: true. Together with
+ * NEVER_MUTATING_PLANS, this is the AUDITED set of names that may override a
+ * MUTATING_PREFIXES verdict — `tests/tool.surface.test.ts` reads it live so a
+ * future read-only override on a mutating verb cannot ship without showing up
+ * here (#1101).
+ */
+export const READ_ONLY_OVERRIDES: ReadonlySet<string> = new Set(
+  Object.entries(OVERRIDES)
+    .filter(([, annotations]) => annotations.readOnlyHint === true)
+    .map(([name]) => name),
+);
 
 /**
  * The single reader of SPOTIFY_MCP_READONLY. Every read-only decision — module

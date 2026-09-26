@@ -32,6 +32,7 @@ import {
   collectAggregateSurfaceMeasurement,
   collectModuleSchemaBudgets,
   NEVER_MUTATING_PLANS,
+  READ_ONLY_OVERRIDES,
   moduleToolNames,
   manifestEntry,
   serializedSchemaBytes,
@@ -235,7 +236,15 @@ describe('tool surface: annotations', () => {
       .filter((t) => /_(plan|preview)$/.test(t.name) && !NEVER_MUTATING_PLANS.has(t.name) && t.annotations?.readOnlyHint === true)
       .map((t) => t.name);
     assert.deepEqual(unlistedPlans, [], `unaudited plan/preview tools advertised read-only: [${unlistedPlans.join(', ')}]`);
-    const leaks = tools.filter((t) => MUTATING_PREFIXES.test(t.name) && !NEVER_MUTATING_PLANS.has(t.name) && t.annotations?.readOnlyHint === true).map((t) => t.name);
+    // The audited read-only overrides are the only names whose MUTATING_PREFIXES
+    // verdict the classifier is allowed to flip. NEVER_MUTATING_PLANS audits
+    // *_plan/*_preview handlers; READ_ONLY_OVERRIDES audits OVERRIDES entries
+    // that mark a verb-patterned name as a read (#1101).
+    const leaks = tools.filter((t) => MUTATING_PREFIXES.test(t.name)
+      && !NEVER_MUTATING_PLANS.has(t.name)
+      && !READ_ONLY_OVERRIDES.has(t.name)
+      && t.annotations?.readOnlyHint === true
+    ).map((t) => t.name);
     assert.deepEqual(leaks, [], `mutating tools advertised read-only: [${leaks.join(', ')}]`);
 
     // Presence floor: the assertion above cannot pass on an empty/degenerate surface.
