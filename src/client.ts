@@ -708,11 +708,17 @@ export class SpotifyClient {
         if (res.status === 304) {
           // A 304 with no stored validator cannot be answered: the request
           // carried no If-None-Match, so the payload this names was never
-          // held. Report it rather than inventing an empty result.
+          // held. Report it rather than inventing an empty result. The reason
+          // rides along so the host sees WHICH failure this is — an origin
+          // answering a conditional-cache contract violation — instead of a
+          // bare internal_error it could not act on (#601).
           if (!validator) {
             throw new SpotifyApiError(
               304,
-              `GET ${path} answered 304 Not Modified but no stored ETag backs it — re-read without a validator`,
+              `GET ${url} answered 304 Not Modified but no stored ETag backs it — ` +
+                'the request carried no If-None-Match, so there is no payload to serve',
+              undefined,
+              'NOT_MODIFIED_WITHOUT_VALIDATOR',
             );
           }
           servedFrom304 = true;
