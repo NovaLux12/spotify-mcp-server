@@ -25,6 +25,14 @@ Do not guess endpoint paths, query parameter names, or response field names.
 Look them up. Spotify will 400 on a wrong query parameter name and this server
 has shipped more than one such bug (see §6).
 
+**Do not reach for `as any` to read a payload.** It is the cast that turns off
+the compiler at exactly the place a field rename would otherwise be caught, and
+the value then arrives as `undefined` wearing a plausible type. `src/tools` is
+at zero and CI fails if one comes back (`node scripts/check-no-explicit-any.mjs`).
+The fix is to widen the shared shape in `src/types/spotify.ts` — which is owned
+by one file on purpose — or to narrow the read to a typed helper. `as unknown
+as` and `: any` are not covered by that gate.
+
 ### Authorization
 
 - Use **Authorization Code with PKCE** for all user-specific data. This is what
@@ -168,6 +176,7 @@ assuming the endpoint is live.** `AGENTS.md` previously listed this whole family
 | `npm run count:tools -- --write` | Refreshes the 13 generated documentation blocks listed below. Nothing else. |
 | `npm run count:tools -- --check` | Fails if any generated block is stale. CI runs this. |
 | `npm run check:doc-tool-names` | Fails if any doc names a tool or argument that the finalized registry does not have. CI runs this. |
+| `node scripts/check-no-explicit-any.mjs` | Fails if any `as any` appears under `src/tools`. CI runs this. Comments and string literals are blanked first, so prose about the cast does not trip it; `Record<string, any>` is a type argument, not a cast. |
 | `npm run dev` | Runs the server from source against `.env` if present. |
 | `npm run auth` | The PKCE walkthrough; stores tokens at `~/.spotify-mcp/tokens.json`. |
 
