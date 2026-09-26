@@ -134,6 +134,44 @@ export const TOOL_SURFACE_BUDGET = Object.freeze({
   // the 603,999 + 602 + 330 = 604,931B the arithmetic predicts, because #688
   // also rewrote a description whose neighbours shifted. Re-measure rather than
   // trusting either this line or the sum.
+  //
+  // Then -> 607_000 (2026-09-26) once, as a single explicitly sized raise for
+  // the whole in-flight wave rather than a per-PR one. The two raises above were
+  // each legitimate but both sized against a base that excluded the other, so
+  // they collided: 604,906B landed with 94B left, which is not headroom, it is
+  // a trap for the next agent who adds a real sentence. Several PRs were in
+  // flight at once, each measuring its own delta in isolation, so none could see
+  // the collision coming and the repo had no way to accept all of them. The
+  // lesson is that this budget is a SHARED resource and per-branch measurement
+  // cannot price it; only a single measurement of the merged tree can.
+  //
+  // WARRANT — every open branch at the time of writing, each delta measured
+  // per-module and confirmed against the aggregate:
+  //   #827  +602B — publishes the `dry_run` default on seven mutating tools.
+  //         The one that matters most: without it a host cannot tell a preview
+  //         from a commit, and `discover_weekly_diff` with `save_after` and no
+  //         `dry_run` replaced a playlist's entire contents with no preview and
+  //         no confirmation.
+  //   #713  +399B — makes `response_format` do what its schema already promised
+  //         on find_tool / inspect_tool / toolset_report.
+  //   #884  +647B — market / fields / additional_types on get_playlist, verified
+  //         against the OpenAPI schema. Also fixes a loop that ignored the
+  //         caller's `offset` and silently re-read the head of a playlist.
+  //   #781  +226B — declares the `offset` the paging signal depends on, so a
+  //         `next_offset` is actionable rather than advisory.
+  //   #901  +105B — states the fail-fast when artist top-tracks is gated.
+  //   #688  +330B — receipts are session-scoped and lost on restart. (Already
+  //         landed in main; listed because it is part of the same accounting.)
+  //   Total ~2,309B. 604,000 -> 607,000 is +3,000B against it: a 30% margin,
+  //   which is the discipline this file exists to enforce. The first raise in
+  //   this history was 19x its warrant; this is deliberately not that.
+  //
+  //   Sizing note for the next author: measure the aggregate BEFORE promising a
+  //   number in prose, and measure it on the MERGED tree. Two independent
+  //   measurements in this file's own history were each arithmetically right
+  //   and jointly wrong, because each was taken on a tree missing the other
+  //   branch. A per-branch estimate is not a substitute, however carefully it
+  //   is derived.
 
   // Read the numbers below before sizing another raise; AGENTS.md §3 requires
   // this record to be accurate about host-session payload impact, and my first
@@ -158,15 +196,20 @@ export const TOOL_SURFACE_BUDGET = Object.freeze({
   // description naming the archive replace it performs.
   //
   // HEADROOM: the enforced limit is `defaultMaxBytes + 1_000` (that 1KB covers
-  // final MCP annotation metadata added after registration), so 605,000B is the
-  // real ceiling. Merged measurement: 604,906B leaves 94B. That is far tighter
-  // than the ~900B and ~670B the individual branches reported, and it is
-  // effectively closed — one more disclosure sentence of real length breaches
-  // it. Both prior records understated this because each measured against a
-  // base that did not include the other. A breach should land in a
-  // conversation, not be pre-authorised: reclaim bytes from decorative prose
-  // in the same edit that needs them, exactly as the 603,000 batch did when it
-  // took 250B back out of four `swarm3b_discovery` descriptions.
+  // final MCP annotation metadata added after registration), so the real
+  // ceiling is now 608,000B. Measured on this tree before the raise:
+  // 604,906B. Adding the remaining in-flight warrants above (~1,679B) lands near
+  // 606,585B, leaving ~1,415B — roughly the ~900B posture the earlier raises
+  // kept, and unlike the 94B trap that forced this raise. Re-measure after the
+  // wave lands rather than trusting that arithmetic; every figure in this file
+  // that was computed rather than measured has been wrong at least once.
+  //
+  // A breach should still land in a conversation, not be pre-authorised. The
+  // right first move is to reclaim bytes from decorative prose in the same edit
+  // that needs them, exactly as the 603,000 batch did when it took 250B back
+  // out of four `swarm3b_discovery` descriptions — disclosure that prevents a
+  // wrong answer is worth its bytes, but prose that only restates the schema is
+  // not.
 
   //
   // CORRECTIONS to my first record of this raise, kept because the next author
@@ -175,7 +218,7 @@ export const TOOL_SURFACE_BUDGET = Object.freeze({
   // 11.5% of the payload is not that; and the first raise was 19x its warrant
   // (+10,000B against a +524B need), which is precisely the reflex this budget
   // exists to prevent.
-  defaultMaxBytes: 604_000,
+  defaultMaxBytes: 607_000,
   perToolMaxBytes: 6_000,
   coreMaxTools: 200,
   coreMaxBytes: 220_000,
