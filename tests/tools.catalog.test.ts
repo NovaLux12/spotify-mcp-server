@@ -320,7 +320,7 @@ test('get_artist_albums schema rejects limits above the canonical page cap', () 
   assert.equal(schema.limit.safeParse(10).success, true);
 });
 
-test('get_artist_albums fetch_all pages at 10 and omits an absent market', async () => {
+test('get_artist_albums fetch_all pages at 10, consults the default chain, and omits an absent market', async () => {
   resetCatalogMarketCache();
   const calls: Call[] = [];
   const client = {
@@ -344,7 +344,13 @@ test('get_artist_albums fetch_all pages at 10 and omits an absent market', async
   };
   registerCatalogTools(server as never, client as never);
   await invoke(findTool(registered, 'get_artist_albums'), { id: 'art1', fetch_all: true });
-  assert.deepEqual(calls, [{ method: 'GET', path: '/artists/art1/albums', params: { include_groups: 'album,single', limit: '10' } }]);
+  // #595: the walk now runs the same default resolution the paged branch
+  // does, so it reads the (memoised, and here empty) account country first;
+  // with nothing to resolve, no `market` reaches the wire.
+  assert.deepEqual(calls, [
+    { method: 'GET', path: '/me' },
+    { method: 'GET', path: '/artists/art1/albums', params: { include_groups: 'album,single', limit: '10' } },
+  ]);
 });
 
 // ------------------------------------------------------------------ get_album
@@ -806,6 +812,170 @@ test('get_several_* schemas reject empty lists and non-string ids', () => {
     assert.equal(schema.safeParse([REF_ID]).success, true, `${name} should accept a single id`);
     assert.equal(schema.safeParse([42]).success, false, `${name} should reject non-string ids`);
   }
+});
+
+// ------------------------------- #778: unresolved batch ids stay visible
+
+// A real 22-character id Spotify would answer with null for (stale, or
+// market-filtered). Distinct from REF_ID so a mis-attributed report is caught.
+const DEAD_ID = '0c6b2CqRjjQZ4NvS7xW1LmQ';
+
+test('#778 get_several_tracks names the id a batch could not resolve', async () => {
+  const { registered } = makeHarness(registerCatalogTools, {
+    getResponse: (path) =>
+      path === '/tracks' ? { tracks: [trackFixture({ id: REF_ID }), null] } : undefined,
+  });
+
+  const result = await invoke(findTool(registered, 'get_several_tracks'), {
+    ids: [REF_ID, DEAD_ID],
+  });
+
+  assert.match(text(result), /Tracks \(1\):/);
+  assert.match(text(result), /1 id unresolved: 0c6b2CqRjjQZ4NvS7xW1LmQ/);
+  assert.deepEqual(result.structuredContent.counts, {
+    requested: 2,
+    resolved: 1,
+    missing_ids: [DEAD_ID],
+  });
+});
+
+test('#778 a fully-resolved batch reports an empty missing_ids, not a silent one', async () => {
+  const { registered } = makeHarness(registerCatalogTools, {
+    getResponse: (path) =>
+      path === '/tracks'
+        ? { tracks: [trackFixture({ id: REF_ID }), trackFixture({ id: DEAD_ID })] }
+        : undefined,
+  });
+
+  const result = await invoke(findTool(registered, 'get_several_tracks'), {
+    ids: [REF_ID, DEAD_ID],
+  });
+
+  // The assertion that would pass vacuously if counts were omitted entirely.
+  assert.ok(result.structuredContent.counts, 'counts must be published');
+  assert.deepEqual(result.structuredContent.counts, {
+    requested: 2,
+    resolved: 2,
+    missing_ids: [],
+  });
+  assert.ok(!/unresolved/.test(text(result)), 'nothing was dropped, so nothing is disclosed');
+});
+
+test('#778 get_several_tracks carries the counts in the json payload too', async () => {
+  const { registered } = makeHarness(registerCatalogTools, {
+    getResponse: (path) =>
+      path === '/tracks' ? { tracks: [trackFixture({ id: REF_ID }), null] } : undefined,
+  });
+
+  const result = await invoke(findTool(registered, 'get_several_tracks'), {
+    ids: [REF_ID, DEAD_ID],
+    response_format: 'json',
+  });
+
+  assert.deepEqual(result.structuredContent.counts, {
+    requested: 2,
+    resolved: 1,
+    missing_ids: [DEAD_ID],
+  });
+  assert.deepEqual(JSON.parse(text(result)).counts.missing_ids, [DEAD_ID]);
+});
+
+test('#778 an unresolved id is attributed to the chunk that carried it', async () => {
+  const { registered } = makeHarness(registerCatalogTools, {
+    getResponse: (path, params) => {
+      if (path !== '/tracks') return undefined;
+      const chunkIds = params!.ids.split(',');
+      // Only the tail of the second (10-id) chunk is unresolvable; the first
+      // chunk's last id resolves, so a mis-attributed report is caught.
+      const lost = chunkIds.length === 10 ? chunkIds.length - 1 : -1;
+      return { tracks: chunkIds.map((id, i) => (i === lost ? null : severalTrack(id))) };
+    },
+  });
+
+  const result = await invoke(findTool(registered, 'get_several_tracks'), {
+    ids: severalIds(60),
+  });
+
+  // counts.resolved is what the endpoint resolved, not what the display cap let
+  // through: 59 resolved, 50 rendered.
+  assert.deepEqual(result.structuredContent.counts, {
+    requested: 60,
+    resolved: 59,
+    missing_ids: ['id59'],
+  });
+  assert.equal(result.structuredContent.items.length, 50);
+  assert.match(text(result), /1 id unresolved: id59/);
+});
+
+test('#778 a batch that resolves nothing names every id it lost', async () => {
+  const { registered } = makeHarness(registerCatalogTools, {
+    getResponse: (path) => (path === '/tracks' ? { tracks: [null, null] } : undefined),
+  });
+
+  const error = await invoke(findTool(registered, 'get_several_tracks'), {
+    ids: [REF_ID, DEAD_ID],
+  }).then(
+    () => null,
+    (err: Error) => err,
+  );
+
+  assert.ok(error, 'a fully unresolved batch must fail');
+  assert.match(error.message, /No matching tracks found/);
+  assert.match(error.message, /2 ids unresolved: 4uLU6hMCjMI75M1A2tKUQC, 0c6b2CqRjjQZ4NvS7xW1LmQ/);
+});
+
+test('#778 every get_several_* tool reports the ids it could not resolve', async () => {
+  const item = {
+    name: 'Item',
+    uri: 'spotify:track:x',
+    genres: [] as string[],
+    duration_ms: 60000,
+    release_date: '2026-01-01',
+    publisher: 'Pub',
+    authors: [{ name: 'Author' }],
+    total_chapters: 5,
+    chapter_number: 1,
+  };
+  const cases = [
+    { tool: 'get_several_tracks', path: '/tracks', key: 'tracks' },
+    { tool: 'get_several_albums', path: '/albums', key: 'albums' },
+    { tool: 'get_several_artists', path: '/artists', key: 'artists' },
+    { tool: 'get_several_episodes', path: '/episodes', key: 'episodes' },
+    { tool: 'get_several_shows', path: '/shows', key: 'shows' },
+    { tool: 'get_several_audiobooks', path: '/audiobooks', key: 'audiobooks' },
+    { tool: 'get_several_chapters', path: '/chapters', key: 'chapters' },
+  ];
+
+  for (const c of cases) {
+    const { registered } = makeHarness(registerCatalogTools, {
+      getResponse: (path) =>
+        path === c.path ? { [c.key]: [{ ...item, uri: `spotify:${c.key}:x` }, null] } : undefined,
+    });
+
+    const result = await invoke(findTool(registered, c.tool), { ids: ['a', 'b'] });
+
+    assert.deepEqual(
+      result.structuredContent.counts,
+      { requested: 2, resolved: 1, missing_ids: ['b'] },
+      `${c.tool} must account for the id it dropped`,
+    );
+    assert.match(text(result), /1 id unresolved: b/, `${c.tool} must name the dropped id`);
+  }
+});
+
+test('#778 catalog_batch_lookup names the URI the endpoint could not resolve', async () => {
+  const { registered } = makeHarness(registerCatalogTools, {
+    getResponse: (path) =>
+      path === '/tracks' ? { tracks: [{ id: 't1', name: 'Track 1', uri: 'spotify:track:t1' }, null] } : undefined,
+  });
+
+  const result = await invoke(findTool(registered, 'catalog_batch_lookup'), {
+    uris: ['spotify:track:t1', 'spotify:track:stale1'],
+  });
+
+  assert.match(text(result), /IDs the endpoint could not resolve: spotify:track:stale1/);
+  assert.deepEqual(result.structuredContent.unresolved, ['spotify:track:stale1']);
+  assert.deepEqual(result.structuredContent.invalid, []);
 });
 
 // --------------------------------------------- #47 parameter completeness

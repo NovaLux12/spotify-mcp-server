@@ -2,6 +2,24 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { registerPlaybackTools } from '../src/tools/playback.js';
 
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+// A search inside a tool records to the real ~/.spotify-mcp/search-history.json
+// unless the path is redirected. Unredirected, this file created the user's own
+// data file from test fixtures, and its existence then broke an unrelated
+// "missing file" test in tests/exhaust2_misc.test.ts. Redirect for the whole
+// module so no test in this file can reach the real store.
+const REAL_HISTORY = process.env.SPOTIFY_MCP_SEARCH_HISTORY_FILE;
+const scratchDir = mkdtempSync(join(tmpdir(), 'smcp-playback-test-'));
+process.env.SPOTIFY_MCP_SEARCH_HISTORY_FILE = join(scratchDir, 'search-history.json');
+process.on('exit', () => {
+  rmSync(scratchDir, { recursive: true, force: true });
+  if (REAL_HISTORY === undefined) delete process.env.SPOTIFY_MCP_SEARCH_HISTORY_FILE;
+  else process.env.SPOTIFY_MCP_SEARCH_HISTORY_FILE = REAL_HISTORY;
+});
+
 // ---------------------------------------------------------------- fixtures
 
 type ToolContent = {

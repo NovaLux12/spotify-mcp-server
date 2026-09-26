@@ -63,7 +63,7 @@ above either ceiling fails CI and server startup.
 | Module | Tools | Schema bytes | Baseline tools | Baseline bytes | Effective tool ceiling | Effective byte ceiling |
 |---|---:|---:|---:|---:|---:|---:|
 | search | 1 | 1,821 | 1 | 1,821 | 2 | 2,004 |
-| catalog | 31 | 26,957 | 31 | 26,957 | 32 | 29,653 |
+| catalog | 31 | 26,953 | 31 | 26,953 | 32 | 29,649 |
 | library | 16 | 14,957 | 16 | 14,957 | 17 | 16,453 |
 | playback | 16 | 12,287 | 16 | 12,287 | 17 | 13,516 |
 | following | 5 | 3,921 | 5 | 3,921 | 6 | 4,314 |
