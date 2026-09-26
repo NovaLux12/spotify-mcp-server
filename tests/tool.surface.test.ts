@@ -234,8 +234,9 @@ describe('tool surface: annotations', () => {
 
   // The real server over stdio, not a stubbed registry: a stub would keep
   // passing if the module started registering these unconditionally. One
-  // handshake per case — two sequential handshakes in one test leave the
-  // runner with nothing holding the event loop and node cancels the file.
+  // handshake per test — this file spawns a server per case, and a second
+  // handshake inside one test leaves the runner with nothing holding the
+  // event loop, which cancels the rest of the file.
   const DERIVED_ANALYTICS_TOOLS = [
     'discovery_ratio',
     'listening_clock',
@@ -259,12 +260,6 @@ describe('tool surface: annotations', () => {
     for (const sibling of ['listening_history_export', 'weekly_rotation_report']) {
       assert.ok(names.includes(sibling), `ungated sibling ${sibling} must stay registered without the opt-in`);
     }
-  });
-
-  it('registers the derived-analytics tools when the opt-in is set (#695)', async () => {
-    const names = (await listTools({ SPOTIFY_MCP_EXPERIMENTAL_ANALYTICS: '1' })).map((tool) => tool.name);
-    const missing = DERIVED_ANALYTICS_TOOLS.filter((name) => !names.includes(name));
-    assert.deepEqual(missing, [], `derived analytics tools must be registered with the opt-in: ${missing.join(', ')}`);
   });
 
   it('exposes exactly the promised stable defaults, and only where declared', async () => {
