@@ -503,8 +503,13 @@ describe('tool surface: budget', () => {
     // default path stays green in CI, so only a user who sets the flag finds
     // out their server no longer boots.
     //
-    // The numbers are the ones measured on the analytics gate: 17 tools /
-    // 13,339B with the opt-in off, 24 / 19,594B with it on.
+    // The figures are the ones #1128 measured on `integrate/b971`, the branch
+    // that carries the analytics opt-in: 17 tools / 13,339B with the opt-in
+    // off, 24 / 19,594B with it on. They are a fixture measured on that branch,
+    // not a measurement of main — the gate it introduces has not landed, so
+    // `swarm3analytics` still registers all 24 tools unconditionally and no
+    // manifest row declares a `gatedSurface` yet. What is pinned here is the
+    // derivation, which must be right before the first gated row exists.
     const registrar = (server: McpServer) => { server.tool('gated_probe', 'probe', {}, async () => ({ content: [] })); };
     const DEFAULT_SURFACE: readonly [number, number] = [17, 13_339];
     const OPTED_IN_SURFACE: readonly [number, number] = [24, 19_594];
@@ -516,18 +521,31 @@ describe('tool surface: budget', () => {
     assert.equal(ungated.ceiling.schemaBytes, Math.ceil(13_339 * 1.1));
 
     const gated = manifestEntry('probe', 'probe', 'src/tools/probe.ts', registrar, DEFAULT_SURFACE, {
-      gatedSurface: { gatedBy: 'SPOTIFY_MCP_EXPERIMENTAL_ANALYTICS', toolCount: 24, schemaBytes: 19_594 },
+      gatedSurface: {
+        gatedBy: 'SPOTIFY_MCP_EXPERIMENTAL_ANALYTICS',
+        toolCount: OPTED_IN_SURFACE[0],
+        schemaBytes: OPTED_IN_SURFACE[1],
+      },
     });
 
     // The ceiling is sized for the LARGER of the two surfaces — this is the
     // allowance whose absence made the opted-in server refuse to boot.
     assert.equal(gated.ceiling.toolCount, 25, 'one tool over the opted-in surface, not over the default');
-    assert.equal(gated.ceiling.schemaBytes, Math.ceil(19_594 * 1.1));
+    assert.equal(gated.ceiling.schemaBytes, Math.ceil(OPTED_IN_SURFACE[1] * 1.1));
 
     // The baseline is untouched: the census still measures the default surface,
     // so the generated surface tables keep reporting an ordinary install.
     assert.equal(gated.baseline.toolCount, 17);
     assert.equal(gated.baseline.schemaBytes, 13_339);
+
+    // A gated surface SMALLER than the baseline is a mis-declaration, not a
+    // licence to shrink the ceiling: the census measures the default, so
+    // shrinking below it would fail an ordinary install.
+    const shrinks = manifestEntry('probe', 'probe', 'src/tools/probe.ts', registrar, DEFAULT_SURFACE, {
+      gatedSurface: { gatedBy: 'SPOTIFY_MCP_EXPERIMENTAL_ANALYTICS', toolCount: 12, schemaBytes: 9_000 },
+    });
+    assert.equal(shrinks.ceiling.toolCount, 18, 'Math.max must not let a gated figure below the baseline win');
+    assert.equal(shrinks.ceiling.schemaBytes, Math.ceil(13_339 * 1.1));
 
     // Both surfaces must now clear the module gate. Without the allowance the
     // opted-in row is exactly the measurement the gate rejected.
