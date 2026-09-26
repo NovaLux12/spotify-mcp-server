@@ -11,6 +11,11 @@
  * Truncation is disclosed on both axes: the /me/shows listing cap (#673) and
  * the per-call show lookup budget. The cost preview is `cost_preview`, not
  * the mutation `dry_run` — this tool changes nothing (#794).
+ *
+ * #835: the data-collection logic is exported as `collectShowRadarEpisodes`
+ * so save_show_digest (playbackext) can run the radar without going through
+ * the tool registration. The tool handler delegates to it and only formats
+ * the MCP response — there is one code path for both callers.
  */
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -108,6 +113,240 @@ function isQuotaError(err: unknown): { quota: boolean; retryAfter: number | unde
   return { quota: false, retryAfter: undefined };
 }
 
+/** One row the radar emits, in display order (newest first after sorting). */
+export interface ShowRadarEpisode {
+  show_id: string;
+  show_name: string;
+  episode_id: string;
+  episode_name: string;
+  release_date: string;
+  duration_ms: number;
+  uri: string;
+  saved: boolean;
+}
+
+/** What `collectShowRadarEpisodes` returns — the input to either formatting or persistence. */
+export interface ShowRadarResult {
+  /** Episodes within the lookback window, newest first. Empty when nothing matched. */
+  episodes: ShowRadarEpisode[];
+  /** Cutoff ISO date (YYYY-MM-DD) used to filter episodes by release_date. */
+  cutoff: string;
+  days: number;
+  /** Number of /me/shows entries that came back (pre-budget). */
+  saved_shows_total: number;
+  /** True iff /me/shows stopped at the fetch-all cap (#673). */
+  shows_listing_truncated: boolean;
+  /** The cap /me/shows was read under. */
+  shows_list_cap: number;
+  /** How many shows were actually checked for new episodes. */
+  shows_scanned: number;
+  /** True iff the per-call budget capped the show scan below saved_shows_total. */
+  truncated_by_budget: boolean;
+  /** max_shows in force (per-call argument or env). */
+  max_shows: number;
+  /** Which knob supplied max_shows ('max_shows argument' | env var name | 'SPOTIFY_MCP_FRESHNESS_BUDGET'). */
+  budget_source: string;
+  /** min(max_shows, fetchAllCap). */
+  effective_cap: number;
+  per_show_limit: number;
+  /** True iff a 429 QUOTA_EXCEEDED halted the per-show loop. */
+  quota_hit: boolean;
+  /** Retry-After in seconds when quota_hit, else null. */
+  retry_after: number | null;
+  /** When quota_hit, the number of shows scanned before it. Otherwise shows_scanned. */
+  quota_scanned_shows: number;
+}
+
+/** Args the radar accepts from any caller (tool handler or save_show_digest). */
+export interface CollectShowRadarEpisodesArgs {
+  days: number;
+  per_show_limit: number;
+  max_shows?: number;
+}
+
+/**
+ * Run the show-new-episodes radar end to end and return the data the caller
+ * needs to format or persist it.
+ *
+ * #835: this is the one place the radar reads shows and episodes, so both the
+ * tool handler and save_show_digest get the same episodes, the same disclosures,
+ * and the same partial-on-quota behaviour. The tool's handler must still drive
+ * the cost_preview branch itself — that branch never makes API calls and the
+ * caller may legitimately want to short-circuit before doing anything here.
+ *
+ * The function does NOT consult `cost_preview` — callers wanting the preview
+ * must branch before invoking this.
+ */
+export async function collectShowRadarEpisodes(
+  client: SpotifyClient,
+  args: CollectShowRadarEpisodesArgs,
+): Promise<ShowRadarResult> {
+  const cutoff = cutoffDate(args.days);
+  const { budget, source: budgetSource } = resolveBudget(args.max_shows, getConfig().freshnessBudget);
+  const effectiveCap = Math.min(budget, getConfig().fetchAllCap);
+
+  let quotaHit = false;
+  let quotaRetryAfter: number | undefined;
+  let quotaScannedShows = 0;
+
+  let savedShows: SavedShowItem[] = [];
+  try {
+    savedShows = await client.getAllPages<SavedShowItem>('/me/shows', { limit: '50' }, {
+      maxItems: getConfig().fetchAllCap,
+    });
+  } catch (err) {
+    const q = isQuotaError(err);
+    if (q.quota) {
+      quotaHit = true;
+      quotaRetryAfter = q.retryAfter;
+      // Quota on the shows listing: no episodes to return, no shows scanned.
+      return {
+        episodes: [],
+        cutoff,
+        days: args.days,
+        saved_shows_total: 0,
+        shows_listing_truncated: false,
+        shows_list_cap: getConfig().fetchAllCap,
+        shows_scanned: 0,
+        truncated_by_budget: false,
+        max_shows: budget,
+        budget_source: budgetSource,
+        effective_cap: effectiveCap,
+        per_show_limit: args.per_show_limit,
+        quota_hit: true,
+        retry_after: quotaRetryAfter ?? null,
+        quota_scanned_shows: 0,
+      };
+    }
+    throw err;
+  }
+
+  // #673: the /me/shows walk stops at the fetch-all cap and reports nothing
+  // about it, so a capped listing used to read as the whole library — a
+  // partial scan reported as a complete one. getAllPages returns exactly
+  // maxItems when it truncates, so reaching the cap is the signal; the count
+  // alone cannot be trusted as the library size.
+  const showsListCap = getConfig().fetchAllCap;
+  const showsListingTruncated = savedShows.length >= showsListCap;
+
+  if (savedShows.length === 0) {
+    return {
+      episodes: [],
+      cutoff,
+      days: args.days,
+      saved_shows_total: 0,
+      shows_listing_truncated: showsListingTruncated,
+      shows_list_cap: showsListCap,
+      shows_scanned: 0,
+      truncated_by_budget: false,
+      max_shows: budget,
+      budget_source: budgetSource,
+      effective_cap: effectiveCap,
+      per_show_limit: args.per_show_limit,
+      quota_hit: false,
+      retry_after: null,
+      quota_scanned_shows: 0,
+    };
+  }
+  const truncatedByBudget = savedShows.length > effectiveCap;
+  const showsToScan = savedShows.slice(0, effectiveCap);
+
+  // Cross-ref: which episodes are already saved (/me/episodes)?
+  let savedEpisodes: SavedEpisodeItem[] = [];
+  try {
+    savedEpisodes = await client.getAllPages<SavedEpisodeItem>('/me/episodes', { limit: '50' }, {
+      maxItems: getConfig().fetchAllCap,
+    });
+  } catch (err) {
+    const q = isQuotaError(err);
+    if (q.quota) {
+      quotaHit = true;
+      quotaRetryAfter = q.retryAfter;
+      // Partial with no episode candidates; disclose the budget we never used.
+      return {
+        episodes: [],
+        cutoff,
+        days: args.days,
+        saved_shows_total: savedShows.length,
+        shows_listing_truncated: showsListingTruncated,
+        shows_list_cap: showsListCap,
+        shows_scanned: 0,
+        truncated_by_budget: truncatedByBudget,
+        max_shows: budget,
+        budget_source: budgetSource,
+        effective_cap: effectiveCap,
+        per_show_limit: args.per_show_limit,
+        quota_hit: true,
+        retry_after: quotaRetryAfter ?? null,
+        quota_scanned_shows: 0,
+      };
+    }
+    throw err;
+  }
+  const savedUris = new Set(
+    (savedEpisodes ?? []).map((e) => e.episode?.uri).filter((uri): uri is string => typeof uri === 'string'),
+  );
+
+  const candidates: ShowRadarEpisode[] = [];
+  let showsScanned = 0;
+  for (const entry of showsToScan) {
+    const show = entry?.show;
+    if (!show?.id) continue;
+    try {
+      const resp = await client.get<SpotifyPaged<SpotifyEpisodeSimple>>(
+        `/shows/${encodeURIComponent(show.id)}/episodes`,
+        { limit: String(args.per_show_limit) },
+      );
+      showsScanned++;
+      for (const ep of resp?.items ?? []) {
+        if (!ep?.release_date || ep.release_date < cutoff) continue;
+        candidates.push({
+          show_id: show.id,
+          show_name: show.name ?? show.id,
+          episode_id: ep.id,
+          episode_name: ep.name ?? ep.id,
+          release_date: ep.release_date,
+          duration_ms: ep.duration_ms ?? 0,
+          uri: ep.uri,
+          saved: ep.uri ? savedUris.has(ep.uri) : false,
+        });
+      }
+    } catch (err) {
+      const q = isQuotaError(err);
+      if (q.quota) {
+        quotaHit = true;
+        quotaRetryAfter = q.retryAfter;
+        quotaScannedShows = showsScanned;
+        break;
+      }
+      throw err;
+    }
+  }
+
+  // Newest first; tie-break by show/episode id for determinism.
+  candidates.sort(
+    (a, b) => b.release_date.localeCompare(a.release_date) || a.show_name.localeCompare(b.show_name) || a.episode_name.localeCompare(b.episode_name),
+  );
+
+  return {
+    episodes: candidates,
+    cutoff,
+    days: args.days,
+    saved_shows_total: savedShows.length,
+    shows_listing_truncated: showsListingTruncated,
+    shows_list_cap: showsListCap,
+    shows_scanned: quotaHit ? quotaScannedShows : showsScanned,
+    truncated_by_budget: truncatedByBudget,
+    max_shows: budget,
+    budget_source: budgetSource,
+    effective_cap: effectiveCap,
+    per_show_limit: args.per_show_limit,
+    quota_hit: quotaHit,
+    retry_after: quotaRetryAfter ?? null,
+    quota_scanned_shows: quotaHit ? quotaScannedShows : showsScanned,
+  };
+}
+
 export function registerShowRadarTools(server: McpServer, client: SpotifyClient): void {
   server.tool(
     'show_new_episodes',
@@ -181,192 +420,50 @@ export function registerShowRadarTools(server: McpServer, client: SpotifyClient)
         });
       }
 
-      let quotaHit = false;
-      let quotaRetryAfter: number | undefined;
-      let quotaScannedShows = 0;
-
-      let savedShows: SavedShowItem[] = [];
-      try {
-        savedShows = await client.getAllPages<SavedShowItem>('/me/shows', { limit: '50' }, {
-          maxItems: getConfig().fetchAllCap,
-        });
-      } catch (err) {
-        const q = isQuotaError(err);
-        if (q.quota) {
-          quotaHit = true;
-          quotaRetryAfter = q.retryAfter;
-          return textResult(
-            `Quota exceeded while listing saved shows (QUOTA_EXCEEDED). No episodes scanned.${quotaRetryAfter != null ? ` Retry-After: ${quotaRetryAfter}s.` : ''}`,
-            {
-              ok: true,
-              quota_hit: true,
-              retry_after: quotaRetryAfter ?? null,
-              shows_scanned: 0,
-              saved_shows_total: 0,
-              shows_listing_truncated: false,
-              shows_list_cap: getConfig().fetchAllCap,
-              truncated_by_budget: false,
-              quota_hit_at: 'listing shows',
-              days: args.days,
-              cutoff,
-              new_episodes: 0,
-              episodes: [],
-            },
-          );
-        }
-        throw err;
-      }
-
-      // #673: the /me/shows walk stops at the fetch-all cap and reports
-      // nothing about it, so a capped listing used to read as the whole
-      // library — a partial scan reported as a complete one. getAllPages
-      // returns exactly maxItems when it truncates, so reaching the cap is
-      // the signal; the count alone cannot be trusted as the library size.
-      const showsListCap = getConfig().fetchAllCap;
-      const showsListingTruncated = savedShows.length >= showsListCap;
-      const showsListingNote = showsListingTruncated
-        ? listingCapNote(savedShows.length, showsListCap)
-        : '';
-
-      if (savedShows.length === 0) {
-        return textResult('No saved shows in your library — nothing to scan.', {
-          ok: true,
-          days: args.days,
-          cutoff,
-          saved_shows: 0,
-          saved_shows_total: 0,
-          shows_listing_truncated: showsListingTruncated,
-          shows_list_cap: showsListCap,
-          shows_scanned: 0,
-          truncated_by_budget: false,
-          new_episodes: 0,
-          episodes: [],
-        });
-      }
-      const truncatedByBudget = savedShows.length > effectiveCap;
-      const showsToScan = savedShows.slice(0, effectiveCap);
-
-      // Cross-ref: which episodes are already saved (/me/episodes)?
-      let savedEpisodes: SavedEpisodeItem[] = [];
-      try {
-        savedEpisodes = await client.getAllPages<SavedEpisodeItem>('/me/episodes', { limit: '50' }, {
-          maxItems: getConfig().fetchAllCap,
-        });
-      } catch (err) {
-        const q = isQuotaError(err);
-        if (q.quota) {
-          quotaHit = true;
-          quotaRetryAfter = q.retryAfter;
-          // Return partial with no episode candidates
-          return textResult(
-            `Quota exceeded while listing saved episodes (QUOTA_EXCEEDED). Partial: ${showsToScan.length} shows would be scanned.${quotaRetryAfter != null ? ` Retry-After: ${quotaRetryAfter}s.` : ''}${showsListingNote}`,
-            {
-              ok: true,
-              quota_hit: true,
-              retry_after: quotaRetryAfter ?? null,
-              shows_scanned: 0,
-              saved_shows_total: savedShows.length,
-              shows_listing_truncated: showsListingTruncated,
-              shows_list_cap: showsListCap,
-              truncated_by_budget: truncatedByBudget,
-              max_shows: budget,
-              budget_source: budgetSource,
-              effective_cap: effectiveCap,
-              days: args.days,
-              cutoff,
-              new_episodes: 0,
-              episodes: [],
-            },
-          );
-        }
-        throw err;
-      }
-      const savedUris = new Set(
-        (savedEpisodes ?? []).map((e) => e.episode?.uri).filter((uri): uri is string => typeof uri === 'string'),
-      );
-
-      interface EpisodeRow {
-        show_id: string;
-        show_name: string;
-        episode_id: string;
-        episode_name: string;
-        release_date: string;
-        duration_ms: number;
-        uri: string;
-        saved: boolean;
-      }
-
-      const candidates: EpisodeRow[] = [];
-      let showsScanned = 0;
-      for (const entry of showsToScan) {
-        const show = entry?.show;
-        if (!show?.id) continue;
-        try {
-          const resp = await client.get<SpotifyPaged<SpotifyEpisodeSimple>>(
-            `/shows/${encodeURIComponent(show.id)}/episodes`,
-            { limit: String(args.per_show_limit) },
-          );
-          showsScanned++;
-          for (const ep of resp?.items ?? []) {
-            if (!ep?.release_date || ep.release_date < cutoff) continue;
-            candidates.push({
-              show_id: show.id,
-              show_name: show.name ?? show.id,
-              episode_id: ep.id,
-              episode_name: ep.name ?? ep.id,
-              release_date: ep.release_date,
-              duration_ms: ep.duration_ms ?? 0,
-              uri: ep.uri,
-              saved: ep.uri ? savedUris.has(ep.uri) : false,
-            });
-          }
-        } catch (err) {
-          const q = isQuotaError(err);
-          if (q.quota) {
-            quotaHit = true;
-            quotaRetryAfter = q.retryAfter;
-            quotaScannedShows = showsScanned;
-            break;
-          }
-          throw err;
-        }
-      }
-
-      // Newest first; tie-break by show/episode id for determinism.
-      candidates.sort(
-        (a, b) => b.release_date.localeCompare(a.release_date) || a.show_name.localeCompare(b.show_name) || a.episode_name.localeCompare(b.episode_name),
-      );
-
-      const extra: Record<string, unknown> = {
+      // #835: delegate to the shared collector. The tool's role is formatting
+      // the response, not re-implementing the radar.
+      const r = await collectShowRadarEpisodes(client, {
         days: args.days,
-        cutoff,
-        saved_shows: savedShows.length,
-        saved_shows_total: savedShows.length,
-        shows_listing_truncated: showsListingTruncated,
-        shows_list_cap: showsListCap,
-        shows_scanned: quotaHit ? quotaScannedShows : showsScanned,
-        truncated_by_budget: truncatedByBudget,
-        max_shows: budget,
-        budget_source: budgetSource,
-        effective_cap: effectiveCap,
         per_show_limit: args.per_show_limit,
-        new_episodes: candidates.length,
+        max_shows: args.max_shows,
+      });
+
+      const showsListingNote = r.shows_listing_truncated ? listingCapNote(r.saved_shows_total, r.shows_list_cap) : '';
+      const extra: Record<string, unknown> = {
+        days: r.days,
+        cutoff: r.cutoff,
+        saved_shows: r.saved_shows_total,
+        saved_shows_total: r.saved_shows_total,
+        shows_listing_truncated: r.shows_listing_truncated,
+        shows_list_cap: r.shows_list_cap,
+        shows_scanned: r.quota_hit ? r.quota_scanned_shows : r.shows_scanned,
+        truncated_by_budget: r.truncated_by_budget,
+        max_shows: r.max_shows,
+        budget_source: r.budget_source,
+        effective_cap: r.effective_cap,
+        per_show_limit: r.per_show_limit,
+        new_episodes: r.episodes.length,
       };
-      if (quotaHit) {
-        Object.assign(extra, { quota_hit: true, retry_after: quotaRetryAfter ?? null, shows_scanned: quotaScannedShows });
+      if (r.quota_hit) {
+        Object.assign(extra, { quota_hit: true, retry_after: r.retry_after, shows_scanned: r.quota_scanned_shows });
       }
 
-      if (candidates.length === 0) {
-        const base = `No new episodes found across ${quotaHit ? quotaScannedShows : showsScanned} saved show(s) in the last ${args.days} day(s) (since ${cutoff}).`;
-        const suffix = quotaHit
-          ? ` Quota exceeded mid-scan (QUOTA_EXCEEDED) after ${quotaScannedShows} shows.${quotaRetryAfter != null ? ` Retry-After: ${quotaRetryAfter}s.` : ''}`
-          : truncatedByBudget ? ` (scan capped at ${effectiveCap} shows; ${savedShows.length - effectiveCap} shows not scanned — raise max_shows to see more)` : '';
-        const budgetNote = truncatedByBudget ? ` Truncated by budget: ${effectiveCap} of ${savedShows.length} shows scanned.` : '';
+      if (r.episodes.length === 0) {
+        // Empty library is its own answer — "no shows" reads differently from
+        // "shows, but no new episodes in the window" and the latter should
+        // never be confused for the former (#173).
+        const base = r.saved_shows_total === 0
+          ? 'No saved shows in your library — nothing to scan.'
+          : `No new episodes found across ${r.quota_hit ? r.quota_scanned_shows : r.shows_scanned} saved show(s) in the last ${r.days} day(s) (since ${r.cutoff}).`;
+        const suffix = r.quota_hit
+          ? ` Quota exceeded mid-scan (QUOTA_EXCEEDED) after ${r.quota_scanned_shows} shows.${r.retry_after != null ? ` Retry-After: ${r.retry_after}s.` : ''}`
+          : r.truncated_by_budget ? ` (scan capped at ${r.effective_cap} shows; ${r.saved_shows_total - r.effective_cap} shows not scanned — raise max_shows to see more)` : '';
+        const budgetNote = r.truncated_by_budget ? ` Truncated by budget: ${r.effective_cap} of ${r.saved_shows_total} shows scanned.` : '';
         return textResult(base + suffix + budgetNote + showsListingNote, { ...extra, ok: true, episodes: [] });
       }
 
       const maxResults = resolveMaxResults(args.max_results, getConfig().maxItems);
-      const view = truncateItems(candidates, maxResults);
+      const view = truncateItems(r.episodes, maxResults);
 
       if (args.response_format === 'json') {
         return textResult(JSON.stringify({ ...extra, episodes: view.items }, null, 2), {
@@ -377,18 +474,18 @@ export function registerShowRadarTools(server: McpServer, client: SpotifyClient)
       }
 
       const lines = [
-        `Found ${candidates.length} new episode(s) across ${quotaHit ? quotaScannedShows : showsScanned} saved show(s) since ${cutoff}:`,
+        `Found ${r.episodes.length} new episode(s) across ${r.quota_hit ? r.quota_scanned_shows : r.shows_scanned} saved show(s) since ${r.cutoff}:`,
       ];
       for (const ep of view.items) {
         const flag = ep.saved ? ' [saved]' : '';
         lines.push(`• "${ep.episode_name}" — ${ep.show_name} (${ep.release_date}, ${Math.round(ep.duration_ms / 1000)}s)${flag} | ${ep.uri}`);
       }
       if (view.footer) lines.push(`(${view.footer})`);
-      if (showsListingTruncated) lines.push(`Saved-show listing capped: ${savedShows.length} show(s) listed, stopping at the fetch-all cap of ${showsListCap} (SPOTIFY_MCP_FETCH_ALL_CAP) — shows beyond the cap were never listed, so this scan is incomplete. Raise SPOTIFY_MCP_FETCH_ALL_CAP to cover the full library.`);
-      if (truncatedByBudget) lines.push(`Truncated by budget: scanned ${effectiveCap} of ${savedShows.length} saved shows (budget ${budget} from ${budgetSource}, effective cap ${effectiveCap}). Raise max_shows or the budget variable to scan more.`);
-      if (quotaHit) {
-        const retryMsg = quotaRetryAfter != null ? ` Retry-After: ${quotaRetryAfter}s.` : '';
-        lines.push(`Quota exceeded mid-scan (QUOTA_EXCEEDED) after ${quotaScannedShows} shows — partial results.${retryMsg}`);
+      if (r.shows_listing_truncated) lines.push(`Saved-show listing capped: ${r.saved_shows_total} show(s) listed, stopping at the fetch-all cap of ${r.shows_list_cap} (SPOTIFY_MCP_FETCH_ALL_CAP) — shows beyond the cap were never listed, so this scan is incomplete. Raise SPOTIFY_MCP_FETCH_ALL_CAP to cover the full library.`);
+      if (r.truncated_by_budget) lines.push(`Truncated by budget: scanned ${r.effective_cap} of ${r.saved_shows_total} saved shows (budget ${r.max_shows} from ${r.budget_source}, effective cap ${r.effective_cap}). Raise max_shows or the budget variable to scan more.`);
+      if (r.quota_hit) {
+        const retryMsg = r.retry_after != null ? ` Retry-After: ${r.retry_after}s.` : '';
+        lines.push(`Quota exceeded mid-scan (QUOTA_EXCEEDED) after ${r.quota_scanned_shows} shows — partial results.${retryMsg}`);
       }
       return textResult(lines.join('\n'), { ok: true, ...extra, episodes: view.items });
     },

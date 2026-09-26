@@ -17,6 +17,7 @@ import { z } from 'zod';
 import { MARKET_CODE } from './catalog.js';
 import { SPOTIFY_SEARCH_MAX_LIMIT } from './search.js';
 import { chunk } from '../chunk.js';
+import { fetchCoverJpeg, rankCoverCandidates } from '../cover-image.js';
 
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
@@ -270,36 +271,13 @@ export function pickRoundRobin(
 }
 
 // ---------------------------------------------------------------------------
-// cover candidates (pure, exported for tests)
+// cover candidates — pure helpers live in src/cover-image.ts and are imported
+// at the top of this file. `rankCoverCandidates` is re-exported below for
+// backwards compatibility with existing tests (#880).
 // ---------------------------------------------------------------------------
 
-interface CoverImage {
-  url: string;
-  width?: number | null;
-  height?: number | null;
-}
-
-/** Largest-first cover candidates (by width, unknown-width last, stable). */
-export function rankCoverCandidates(images: readonly CoverImage[]): CoverImage[] {
-  return [...images]
-    .map((img, i) => ({ img, i }))
-    .sort((a, b) => (b.img.width ?? -1) - (a.img.width ?? -1) || a.i - b.i)
-    .map(({ img }) => img);
-}
-
-/** Fetch a URL as a JPEG buffer within Spotify's 256 KB cover limit. */
-async function fetchCoverJpeg(url: string): Promise<{ buf: Buffer; bytes: number }> {
-  const resp = await fetch(url);
-  if (!resp.ok) throw new Error(`Failed to fetch cover image ${url}: ${resp.status}`);
-  const type = resp.headers.get('content-type') ?? '';
-  const buf = Buffer.from(await resp.arrayBuffer());
-  if (!type.includes('jpeg') && !type.includes('jpg')) {
-    throw new Error(`Cover candidate is ${type || 'unknown type'}, not JPEG — Spotify covers require JPEG`);
-  }
-  if (buf.length > 256 * 1024) throw new Error(`Cover image exceeds 256 KB (${buf.length} bytes)`);
-  if (buf.length === 0) throw new Error('Cover image is empty');
-  return { buf, bytes: buf.length };
-}
+type CoverImage = import('../types/spotify.js').SpotifyImage;
+export { rankCoverCandidates };
 
 // ---------------------------------------------------------------------------
 // registration

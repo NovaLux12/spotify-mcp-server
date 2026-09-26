@@ -590,7 +590,7 @@ describe('import_playlist metadata cannot masquerade as a URI (#631)', () => {
     ].join('\n');
     const parsed = parseM3u(sanitised);
     assert.deepEqual(parsed.uris, [realUri]);
-    assert.equal(parsed.uri_occurrences, 1);
+    assert.equal(parsed.duplicates, 0);
   });
 
   it('never POSTs a URI lifted out of CSV metadata', async () => {
@@ -666,6 +666,54 @@ describe('import_playlist idempotency (#632)', () => {
     assert.ok(p.duplicates_in_document_skipped >= 0, 'the reported duplicate count must never be negative');
     assert.equal(p.duplicates_in_document_skipped, 1);
     assert.equal(p.added, 2);
+  });
+
+  it('reports zero duplicates when no URI repeats, however URI-shaped the other fields are', async () => {
+    // The regression that survived the first #632 fix. `hijack` is a
+    // URI-shaped TITLE and `u1` is the row's real URI in a later column, so
+    // every row holds two URI-shaped fields while only one is extracted.
+    // Counting fields instead of extracted URIs reported 2 duplicates here for
+    // a document that repeats nothing — the same "field name is right, value
+    // lies" failure #632 was opened for, wearing a different hat.
+    const hijack = 'spotify:track:9999999999999999999999';
+    const csv = [
+      'track_no,title,artists,album,duration_ms,uri',
+      `1,${hijack},Duo,Album X,200000,${u1}`,
+      `2,${hijack},Trio,Album Y,180000,${u2}`,
+      `3,${hijack},Quartet,Album Z,160000,${u3}`,
+    ].join('\n');
+    const h = harness(playlistResponder());
+    const out = await h.invoke('import_playlist', { playlist_id: PLAYLIST_ID, content: csv });
+    const p = out.structuredContent as { duplicates_in_document_skipped: number; added: number };
+    assert.equal(p.duplicates_in_document_skipped, 0);
+    assert.equal(p.added, 3);
+  });
+
+  it('still counts a repeated title-shaped URI alongside a repeated real URI', async () => {
+    // Guards the fix above against over-correcting into "metadata is never a
+    // duplicate": once two rows resolve to the SAME real URI, that is a
+    // duplicate even though the row also carries URI-shaped metadata.
+    const hijack = 'spotify:track:9999999999999999999999';
+    const csv = [
+      'track_no,title,artists,duration_ms,uri',
+      `1,${hijack},Duo,200000,${u1}`,
+      `2,${hijack},Trio,180000,${u1}`,
+      `3,${hijack},Quartet,160000,${u2}`,
+    ].join('\n');
+    const h = harness(playlistResponder());
+    const out = await h.invoke('import_playlist', { playlist_id: PLAYLIST_ID, content: csv });
+    const p = out.structuredContent as { duplicates_in_document_skipped: number; added: number };
+    assert.equal(p.duplicates_in_document_skipped, 1);
+    assert.equal(p.added, 2);
+  });
+
+  it('counts an M3U line that repeats as one duplicate', async () => {
+    const doc = ['#EXTM3U', u1, u2, u1, u3, u1].join('\n');
+    const h = harness(playlistResponder());
+    const out = await h.invoke('import_playlist', { playlist_id: PLAYLIST_ID, content: doc });
+    const p = out.structuredContent as { duplicates_in_document_skipped: number; added: number };
+    assert.equal(p.duplicates_in_document_skipped, 2);
+    assert.equal(p.added, 3);
   });
 
   it('prompts before the first POST on a large import', async () => {

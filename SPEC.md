@@ -426,7 +426,7 @@ Quick reference for all endpoints used. All paths are relative to `https://api.s
 ## 5. Tools
 
 <!-- BEGIN:generated tool-surface -->
-The finalized default MCP registry exposes **592 tools** (all 592 attributed to the 66 files under `src/tools/`), organized by 44 registration keys and 13 named toolsets. Registration keys: `artistwatch`, `audiobooks`, `browse`, `catalog`, `doctor`, `episodemgmt`, `exhaust2catalog`, `exhaust2enggating`, `exhaust2extra`, `exhaust2misc`, `exhaust2playback`, `exhaust2playlists`, `following`, `library`, `libraryanalytics`, `personalization`, `playback`, `playbackext`, `playbackintel`, `playlistbatch`, `playlisthealth`, `playlistmisc`, `playlists`, `portability`, `prompts`, `queueops`, `resources`, `search`, `searchhistory`, `statsfm`, `swarm3analytics`, `swarm3bdiscovery`, `swarm3discovery`, `swarm3library`, `swarm3meta`, `swarm3playback`, `swarm3playlistops`, `swarm3refs`, `swarm3shows`, `swarm3snapshots`, `swarm4playlists`, `taste`, `tastecomposites`, `users`. `node scripts/surface-census.mjs` derives the authoritative inventory by starting the real `src/index.ts` stdio entry and calling `tools/list`, `resources/list`, `resources/templates/list`, and `prompts/list` after production gates and finalizers, without network access.
+The finalized default MCP registry exposes **592 tools** (all 592 attributed to the 66 files under `src/tools/`), organized by 45 registration keys and 13 named toolsets. Registration keys: `artistwatch`, `audiobooks`, `browse`, `catalog`, `doctor`, `episodemgmt`, `exhaust2catalog`, `exhaust2enggating`, `exhaust2extra`, `exhaust2misc`, `exhaust2playback`, `exhaust2playlists`, `following`, `library`, `libraryanalytics`, `personalization`, `playback`, `playbackext`, `playbackintel`, `playlistbatch`, `playlisthealth`, `playlistmisc`, `playlists`, `portability`, `prompts`, `queueops`, `receipts`, `resources`, `search`, `searchhistory`, `statsfm`, `swarm3analytics`, `swarm3bdiscovery`, `swarm3discovery`, `swarm3library`, `swarm3meta`, `swarm3playback`, `swarm3playlistops`, `swarm3refs`, `swarm3shows`, `swarm3snapshots`, `swarm4playlists`, `taste`, `tastecomposites`, `users`. `node scripts/surface-census.mjs` derives the authoritative inventory by starting the real `src/index.ts` stdio entry and calling `tools/list`, `resources/list`, `resources/templates/list`, and `prompts/list` after production gates and finalizers, without network access.
 <!-- END:generated tool-surface -->
 
 ### Shared tool contract
@@ -1175,6 +1175,23 @@ Three registration keys are default ON: `statsfm` (endpoint tools in `src/tools/
 #### Taste-intelligence tools (`statsfm_*` canonical names; `taste`/`tastecomposites` keys)
 
 Canonical tools are `statsfm_taste_profile`, `statsfm_artist_affinity`, `statsfm_exposure_check`, `statsfm_listening_eras`, `statsfm_listening_sessions`, `statsfm_forgotten_favorites`, `statsfm_taste_recommendations`, and `statsfm_record_feedback`. The corresponding `taste_profile`, `artist_affinity`, `exposure_check`, `listening_eras`, `listening_sessions`, `forgotten_favorites`, `taste_recommendations`, and `record_feedback` names are legacy aliases. `statsfm_record_feedback`/`record_feedback` store local-only in-memory verdicts (love/like/mixed/boring/dislike) and never touch the network.
+
+### 5.11 Mutation receipts (`verify_receipt`, `undo_mutation`, `undo_last_mutation`)
+
+A mutation that can be reverted issues a receipt; the three receipt tools below are the undo surface and none of them touch Spotify until a human approves the rollback. `verify_receipt` is the only read-only one, and since #688 it registers **unconditionally** — outside `SPOTIFY_MCP_TOOLSETS` trimming and the scope filter — so a session trimmed to a single toolset can still look up a receipt its own mutation issued. It reads an in-process `Map`, so it requires no Spotify scope.
+
+**`verify_receipt`** takes `receipt_id`, validated against `rcpt_<bootId>-<n>` (the bare `rcpt_<n>` form a pre-#587 `receipts.jsonl` can still hold is also accepted). A malformed id fails schema validation with a message naming the expected shape, rather than reading as "unknown receipt" — an id only ever comes from a mutation result, so a malformed one is a mistyped call, not a missing receipt.
+
+Both outcomes carry `structuredContent.found`, so a caller branches on one field instead of parsing prose:
+
+| Outcome | `isError` | `structuredContent` |
+|---|---|---|
+| Found | absent | `{ found: true, ...receipt }` — the receipt's own fields stay flattened (`verified`, `missing`, `expect_present`, `before`/`after`, `writes`, …) so hosts already reading them are unaffected |
+| Unknown or expired | `true` | `{ found: false, receipt_id, reason: 'unknown', receipts_kept: 100 }` |
+
+The miss is an error because it is a failed **lookup**. Reporting it as a plain result lets an agent that branches on `result.isError` — and a host that renders green on success — read it as "the write was checked and is fine", when in fact the store simply no longer holds the id.
+
+**Scope of the store.** The store keeps the 100 most recent mutations, in memory only unless `SPOTIFY_MCP_RECEIPTS` is set, and ids are boot-scoped so an id from an earlier process can never resolve to a *different* mutation — it resolves to nothing. A miss therefore says nothing about whether the mutation landed; only a found receipt does. See `docs/configuration.md` for the persistence flags and TTL.
 
 
 ## 6. Resources
