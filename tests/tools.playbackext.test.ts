@@ -1,6 +1,6 @@
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { chmod, mkdtemp, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { readdir, readFile as readFileRaw, writeFile as writeFileRaw } from 'node:fs/promises';
@@ -362,5 +362,18 @@ describe('playbackext', () => {
       assert.deepEqual(Object.keys(onDisk.states), ['morning']);
       assert.equal((await corruptCopies()).length, 1, 'the unparseable bytes are still recoverable');
     });
+  });
+
+  // #1084: a pre-existing playback-ext.json that was copied in with a
+  // world-readable mode must be tightened to 0600 when the server writes
+  // through `save_playback_state`.
+  it('tightens a world-readable pre-existing playback-ext.json to 0600 on write (#1084)', async () => {
+    const target = join(dir, 'playback-ext.json');
+    await writeFileRaw(target, JSON.stringify({ states: {}, devicePresets: {}, sessions: {}, smartRules: {} }));
+    await chmod(target, 0o644);
+    const { client } = makeClient();
+    const h = serverHarness(client);
+    await h.invoke('save_playback_state', { name: 'morning' });
+    assert.equal((await stat(target)).mode & 0o777, 0o600);
   });
 });

@@ -1,6 +1,6 @@
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { z } from 'zod';
@@ -343,5 +343,15 @@ describe('searchhistory', () => {
     const h = harness();
     const out = await h.invoke('search_rerun', { history_id: 'nope' });
     assert.match(out.content[0]!.text, /No history entry/i);
+  });
+
+  // #1084: a pre-existing search-history.json that was copied in with a
+  // world-readable mode must be tightened to 0600 on the next append.
+  it('tightens a world-readable pre-existing search-history.json to 0600 on append (#1084)', async () => {
+    const stale = [{ id: 'stale', query: 'q', timestamp: new Date().toISOString(), top_result_ids: [] }];
+    await writeFile(historyFile, JSON.stringify(stale), { mode: 0o644 });
+    await chmod(historyFile, 0o644);
+    await appendSearchHistory({ id: 'fresh', query: 'q', timestamp: new Date().toISOString(), top_result_ids: [] });
+    assert.equal((await stat(historyFile)).mode & 0o777, 0o600);
   });
 });

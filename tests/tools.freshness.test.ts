@@ -13,6 +13,7 @@ import { describe, it } from 'node:test';
 import { z } from 'zod';
 import assert from 'node:assert/strict';
 import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { chmod } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -386,6 +387,35 @@ describe('whats_new', () => {
         assert.equal(stored.last_check, today);
         assert.equal((await stat(statePath)).mode & 0o777, 0o600);
       });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  // #1084: a stale world-readable `.tmp` left over from an earlier run must
+  // not bleed into the renamed watermark file.
+  it('tightens a leftover world-readable .tmp + destination to 0600 on the final file (#1084)', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'freshness-test-'));
+    const statePath = join(dir, 'freshness.json');
+    const tmpPath = `${statePath}.tmp`;
+    try {
+      // Pre-existing destination AND tmp, both world-readable — the rename
+      // carries the tmp's inode across, so the tmp's mode is what matters.
+      await writeFile(statePath, JSON.stringify({ last_check: '2026-07-01' }, null, 2), {
+        mode: 0o644,
+      });
+      await writeFile(tmpPath, 'stale', { mode: 0o666 });
+      await chmod(statePath, 0o644);
+      await chmod(tmpPath, 0o666);
+      await withEnv({ SPOTIFY_MCP_FRESHNESS_STATE: statePath }, async () => {
+        const h = harness((path) => {
+          if (path === '/me/following') return followedPage(['a1'], null);
+          if (path === '/artists/a1/albums') return albumsOf('a1', [['alb', 'July Drop', '2026-07-15']]);
+          throw new Error(`unexpected path ${path}`);
+        });
+        await h.invoke('whats_new', { since: 'last-check', kinds: ['albums'] });
+      });
+      assert.equal((await stat(statePath)).mode & 0o777, 0o600);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

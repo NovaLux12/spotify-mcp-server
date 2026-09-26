@@ -33,7 +33,7 @@ import {
 import type { ResponseFormatValue, PaginationInfo } from '../shaping.js';
 import { getConfig } from '../config.js';
 import { readOnlyModeEnabled } from './annotations.js';
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 
@@ -181,13 +181,19 @@ async function readWatermark(): Promise<string | null> {
 
 /**
  * Atomically advance the watermark to `date`. Temp-file + rename keeps the
- * update crash-safe; the temp file is created 0600 so the final file is too.
+ * update crash-safe; the temp file is created 0600 (and re-asserted after the
+ * write, since a `mode` argument only applies at creation — #1084) so the
+ * final file is too.
  */
 async function writeWatermark(date: string): Promise<void> {
   const target = watermarkFilePath();
   const tmp = `${target}.tmp`;
   await mkdir(dirname(target), { recursive: true });
   await writeFile(tmp, `${JSON.stringify({ last_check: date }, null, 2)}\n`, { mode: 0o600 });
+  // #1084: writeFile with mode only sets the mode at creation; if `tmp` was a
+  // leftover from a previous run whose mode was loosened, the rename below
+  // would carry that loose mode into the final file.
+  await chmod(tmp, 0o600);
   await rename(tmp, target);
 }
 

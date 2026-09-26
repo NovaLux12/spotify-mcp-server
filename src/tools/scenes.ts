@@ -14,7 +14,7 @@
  */
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import type { SpotifyClient } from '../client.js';
@@ -59,6 +59,9 @@ async function saveScenes(store: SceneStore, env: NodeJS.ProcessEnv = process.en
   const file = scenesFilePath(env);
   await mkdir(dirname(file), { recursive: true, mode: 0o700 });
   await writeFile(file, `${JSON.stringify(store, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
+  // #1084: mode only applies at creation; re-assert so a pre-existing or
+  // copied-in store does not stay world-readable after this write.
+  await chmod(file, 0o600);
 }
 
 // ---------------------------------------------------------------------------

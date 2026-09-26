@@ -1,7 +1,7 @@
 import { describe, it, mock, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, chmodSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { registerExhaust2MiscTools } from '../src/tools/exhaust2_misc.js';
@@ -586,5 +586,16 @@ describe('exhaust2_misc — 27-tool misc slice', () => {
   // cleanup after all tests
   after(() => {
     try { rmSync(tmp, { recursive: true, force: true }); } catch { /* best-effort */ }
+  });
+
+  // #1084: a pre-existing exhaust2-misc.json that was copied in with a
+  // world-readable mode must be tightened to 0600 when saveMiscStore writes
+  // through it.
+  it('tightens a world-readable pre-existing exhaust2-misc.json to 0600 (#1084)', async () => {
+    const file = process.env.SPOTIFY_MCP_EXHAUST2_MISC_FILE!;
+    writeFileSync(file, JSON.stringify({ checkpoints: {}, bookmarks: {}, journal: [], reports: {} }));
+    chmodSync(file, 0o644);
+    await saveMiscStore({ checkpoints: { k: { value: 1, captured_at: '2026-01-01T00:00:00Z', context: 'c', source: 's' } }, bookmarks: {}, journal: [], reports: {} });
+    assert.equal(statSync(file).mode & 0o777, 0o600);
   });
 });

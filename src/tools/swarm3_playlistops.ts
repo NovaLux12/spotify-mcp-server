@@ -26,7 +26,7 @@
  */
 import { z } from 'zod';
 import { capFor } from '../chunk.js';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, writeFile } from 'node:fs/promises';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
 import { getConfig } from '../config.js';
@@ -168,6 +168,9 @@ async function backupItemsBeforeWrite(
     })),
   };
   await writeFile(file, `${JSON.stringify(payload, null, 2)}\n`, { mode: 0o600 });
+  // #1084: mode only applies at creation; re-assert so a pre-existing or
+  // copied-in snapshot does not stay world-readable after this write.
+  await chmod(file, 0o600);
   return file;
 }
 

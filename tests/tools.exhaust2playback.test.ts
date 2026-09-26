@@ -153,7 +153,7 @@ async function clearSidecar(): Promise<void> {
 }
 
 // sidecar isolation per test file run
-import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, rm, chmod, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 const tmpRoot = await mkdtemp(join(tmpdir(), 'exhaust2-pb-'));
@@ -872,6 +872,16 @@ test('volume_report snapshots live volumes vs sidecar presets', async () => {
   });
   const out = await h.invoke('volume_report', {});
   assert.match(text(out), /Kitchen \(Speaker, active\): 40% · preset "Kitchen speaker" = 35% \(live Δ\+5\)/);
+});
+
+// #1084: a pre-existing exhaust2-playback.json that was copied in with a
+// world-readable mode must be tightened to 0600 on the next saveExhaust2Store.
+test('tightens a world-readable pre-existing exhaust2-playback.json to 0600 (#1084)', async () => {
+  const file = exhaust2PlaybackFile();
+  await writeFile(file, JSON.stringify({ muteMemory: {}, episodeBookmarks: {}, checkpoints: {} }), { mode: 0o644 });
+  await chmod(file, 0o644);
+  await saveExhaust2Store({ muteMemory: {}, episodeBookmarks: {}, checkpoints: {} });
+  assert.equal((await stat(file)).mode & 0o777, 0o600);
 });
 
 // mini helpers — reuse playbackext sidecar file via the same env override

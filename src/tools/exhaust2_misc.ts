@@ -20,7 +20,7 @@ import { z } from 'zod';
 import { capFor } from '../chunk.js';
 import { ARTIST_ALBUM_PAGE_LIMIT, MARKET_CODE } from './catalog.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import type { SpotifyClient } from '../client.js';
@@ -204,6 +204,9 @@ export async function saveMiscStore(store: MiscStore, env: NodeJS.ProcessEnv = p
   const file = miscFilePath(env);
   await mkdir(dirname(file), { recursive: true, mode: 0o700 });
   await writeFile(file, `${JSON.stringify(store, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
+  // #1084: mode only applies at creation; re-assert so a pre-existing or
+  // copied-in store does not stay world-readable after this write.
+  await chmod(file, 0o600);
 }
 
 // ---------------------------------------------------------------------------
@@ -1777,12 +1780,18 @@ async function saveScenesSafe(store: SceneStore): Promise<void> {
   const file = scenesFilePath();
   await mkdir(dirname(file), { recursive: true, mode: 0o700 });
   await writeFile(file, `${JSON.stringify(store, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
+  // #1084: mode only applies at creation; re-assert so a pre-existing or
+  // copied-in store does not stay world-readable after this write.
+  await chmod(file, 0o600);
 }
 
 async function savePlaybackExtSafe(store: PlaybackExtStore): Promise<void> {
   const file = playbackExtFile();
   await mkdir(dirname(file), { recursive: true, mode: 0o700 });
   await writeFile(file, `${JSON.stringify(store, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
+  // #1084: mode only applies at creation; re-assert so a pre-existing or
+  // copied-in store does not stay world-readable after this write.
+  await chmod(file, 0o600);
 }
 
 /** Footer helper for discover_weekly_diff prose. */

@@ -11,7 +11,7 @@
 import { z } from 'zod';
 import { capFor } from '../chunk.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { copyFile, link, mkdir, readFile, unlink, writeFile } from 'node:fs/promises';
+import { chmod, copyFile, link, mkdir, readFile, unlink, writeFile } from 'node:fs/promises';
 import { constants as FS } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -179,6 +179,9 @@ async function savePlaybackExt(store: PlaybackExtStore, env: NodeJS.ProcessEnv =
   // would make the next load claim a corruption that has already been resolved.
   const { load_error: _loadError, preserved_as: _preservedAs, ...persisted } = store;
   await writeFile(file, `${JSON.stringify(persisted, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
+  // #1084: mode only applies at creation; re-assert so a pre-existing or
+  // copied-in store does not stay world-readable after this write.
+  await chmod(file, 0o600);
 }
 
 // sessions auto-detect helper exported for tests
