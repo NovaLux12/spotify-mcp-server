@@ -56,6 +56,11 @@ const parameterAllowlist = new Set([
   // name them. StructuredContent keys on that tool — the doc is describing
   // the tool's own output, not routing to another tool.
   'dir_bytes', 'oldest_created', 'oldest_retention_until',
+  // #725: the get_several_* tools publish a `degraded_reason` alongside
+  // `degraded: true` so callers can tell a per-item round-trip apart from a
+  // clean batch read. StructuredContent keys on every batch tool, not
+  // parameters or tools — the README is naming what the tool returns.
+  'degraded_reason',
 ]);
 /** Registration keys are module names, not tools; docs legitimately name them. */
 const registrationKeyNames = new Set(census.registrationKeyNames ?? []);

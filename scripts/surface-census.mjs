@@ -524,12 +524,21 @@ function checkGatedEndpointTruth() {
     ['/me/episodes/contains', true], ['/me/shows/contains', true],
     ['/me/audiobooks/contains', true], ['/me/following/contains', true],
     ['/playlists/playlist-id/followers/contains', true],
+    // #725: the multi-id batch endpoints. After the query string is stripped,
+    // the bare plural paths land in the gated class so a 403 lets
+    // `fetchSeveral` fall back to per-item GETs.
+    ['/tracks', true], ['/albums', true], ['/artists', true],
+    ['/episodes', true], ['/shows', true], ['/audiobooks', true], ['/chapters', true],
     ['/me/player/playback-state', false], ['/tracks/track-id', false],
+    ['/albums/album-id', false], ['/artists/artist-id', false],
   ];
   for (const [path, expected] of cases) {
     if (isGatedPath(path) !== expected) errors.push(`GATED_PATH_PATTERNS: ${path} classified as ${isGatedPath(path)}, expected ${expected}`);
   }
-  if (GATED_PATH_PATTERNS.length !== 7) errors.push(`GATED_PATH_PATTERNS: expected 7 exported patterns, found ${GATED_PATH_PATTERNS.length}`);
+  // #725: the batch-endpoint pattern is the eighth entry. The shared
+  // surface-census mjs is the only place this length is pinned; tests
+  // (#329 / #725) check the same constant via isGatedPath case rows.
+  if (GATED_PATH_PATTERNS.length !== 8) errors.push(`GATED_PATH_PATTERNS: expected 8 exported patterns, found ${GATED_PATH_PATTERNS.length}`);
   for (const endpoint of ['/artists/{id}/top-tracks', '/me/{type}/contains']) {
     if (!readme.includes(endpoint)) errors.push(`README.md: missing gated endpoint ${endpoint}`);
   }
