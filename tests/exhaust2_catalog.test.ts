@@ -134,11 +134,53 @@ async function withFetchAllCap<T>(cap: number, fn: () => Promise<T>): Promise<T>
 
 const EXPECTED_TOOLS = 19;
 
+/** Every exhaust2 tool that declares a `market` parameter, sorted. */
+const MARKET_TOOLS = [
+  'album_track_stats',
+  'albums_runtime_batch',
+  'artist_collab_network',
+  'audiobooks_by_author',
+  'episode_context_bundle',
+  'find_canonical_track',
+  'search_advanced',
+  'search_by_isrc',
+  'search_fresh',
+  'show_episode_timeline',
+  'show_runtime_stats',
+  'track_album_bundle',
+];
+
 describe('exhaust2_catalog — registry', () => {
   it('registers exactly 19 tools', () => {
     const names = allToolNames(makeClient());
     assert.equal(names.length, EXPECTED_TOOLS);
     assert.equal(new Set(names).size, EXPECTED_TOOLS);
+  });
+
+  // #775: these 12 tools each declared their own `z.string().optional()`
+  // market, so a lowercase code was forwarded verbatim and "usa" became an
+  // opaque Spotify 400 instead of a schema rejection.
+  it('validates and uppercases market on every tool that takes one', () => {
+    type Field = { safeParse(v: unknown): { success: boolean; data?: unknown } };
+    const shapes = new Map<string, Record<string, Field>>();
+    const server = {
+      tool(name: string, _desc: string, shape: Record<string, Field>) { shapes.set(name, shape); },
+    } as unknown as McpServer;
+    registerExhaust2CatalogTools(server, makeClient());
+
+    const withMarket = [...shapes.entries()].filter(([, shape]) => shape.market);
+    assert.deepEqual(
+      withMarket.map(([name]) => name).sort(),
+      MARKET_TOOLS,
+      'these are the exhaust2 tools that declare a market parameter',
+    );
+    for (const [name, shape] of withMarket) {
+      assert.equal(shape.market.safeParse('usa').success, false, `${name} must reject "usa"`);
+      assert.equal(shape.market.safeParse('english').success, false, `${name} must reject "english"`);
+      assert.equal(shape.market.safeParse('U').success, false, `${name} must reject a 1-letter code`);
+      assert.equal(shape.market.safeParse('us').data, 'US', `${name} must uppercase "us"`);
+      assert.equal(shape.market.safeParse('gb').data, 'GB', `${name} must uppercase "gb"`);
+    }
   });
 });
 

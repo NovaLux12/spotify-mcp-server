@@ -99,7 +99,7 @@ export function registerBrowseTools(server: McpServer, client: SpotifyClient): v
       limit: z.number().int().min(1).max(50).optional().describe('Results per page, 1\u201350. Default: 20'),
       offset: z.number().int().min(0).optional().describe('Offset. Default: 0'),
       market: MARKET_CODE.optional().describe(
-        'Canonical ISO 3166-1 alpha-2 market code, e.g. \'US\'; forwarded to Spotify as market.',
+        'Canonical ISO 3166-1 alpha-2 market code, e.g. \'US\'; sent as country.',
       ),
       country: MARKET_CODE.optional().describe(
         'Deprecated compatibility spelling for market. Prefer market; conflicting spellings are rejected.',
@@ -112,7 +112,7 @@ export function registerBrowseTools(server: McpServer, client: SpotifyClient): v
       if (args.limit !== undefined) params.limit = String(args.limit);
       if (args.offset !== undefined) params.offset = String(args.offset);
       const market = resolveBrowseMarket(args.market, args.country);
-      if (market) params.market = market;
+      if (market) params.country = market;
       if (args.locale) params.locale = args.locale;
       let data: { categories: SpotifyPaged<CategoryItem> } | null;
       try {
@@ -151,7 +151,7 @@ export function registerBrowseTools(server: McpServer, client: SpotifyClient): v
       limit: z.number().int().min(1).max(50).optional().describe('Results per page, 1\u201350. Default: 20'),
       offset: z.number().int().min(0).optional().describe('Offset. Default: 0'),
       market: MARKET_CODE.optional().describe(
-        'Canonical ISO 3166-1 alpha-2 market code, e.g. \'US\'; forwarded to Spotify as market.',
+        'Canonical ISO 3166-1 alpha-2 market code, e.g. \'US\'; sent as country.',
       ),
       country: MARKET_CODE.optional().describe(
         'Deprecated compatibility spelling for market. Prefer market; conflicting spellings are rejected.',
@@ -163,7 +163,7 @@ export function registerBrowseTools(server: McpServer, client: SpotifyClient): v
       if (args.limit !== undefined) params.limit = String(args.limit);
       if (args.offset !== undefined) params.offset = String(args.offset);
       const market = resolveBrowseMarket(args.market, args.country);
-      if (market) params.market = market;
+      if (market) params.country = market;
       const path = `/browse/categories/${encodeURIComponent(args.category_id)}/playlists`;
       let data: { playlists: PlaylistPage } | null;
       try {

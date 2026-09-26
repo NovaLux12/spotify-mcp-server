@@ -22,15 +22,11 @@ import {
 import type { ResponseFormatValue } from '../shaping.js';
 import { getConfig } from '../config.js';
 import { spotifyId, resolveSpotifyId } from '../refs.js';
+import { MARKET_CODE } from './catalog.js';
 
 // ---------------------------------------------------------------------------
 // Shared shapes + local plumbing (mirrors exhaust2 house helpers)
 // ---------------------------------------------------------------------------
-
-const Market = z
-  .string()
-  .optional()
-  .describe("ISO 3166-1 alpha-2 market code (e.g. 'US'); omit for 'from_token' behaviour");
 
 const SearchLimitFragment = z
   .number()
@@ -784,7 +780,7 @@ export function registerSwarm3DiscoveryTools(server: McpServer, client: SpotifyC
       artist_b: z.string().min(1).describe('Second artist: name, ID, URI or open.spotify.com URL'),
       max_releases: z.number().int().min(1).max(100).optional()
         .describe('Releases of artist A scanned. Default: 40'),
-      market: Market,
+      market: MARKET_CODE.optional().describe("ISO 3166-1 alpha-2 market code, e.g. 'US'"),
       response_format: ResponseFormat,
     },
     async (args) => {
@@ -1008,7 +1004,7 @@ export function registerSwarm3DiscoveryTools(server: McpServer, client: SpotifyC
       saved_album_cap: z.number().int().min(1).max(2000).optional().describe('Default: 1000'),
       saved_track_cap: z.number().int().min(1).max(2000).optional().describe('Default: 2000'),
       catalog_limit: SearchLimitFragment,
-      market: Market,
+      market: MARKET_CODE.optional().describe("ISO 3166-1 alpha-2 market code, e.g. 'US'"),
       response_format: ResponseFormat,
     },
     async (args) => {
@@ -1124,7 +1120,7 @@ export function registerSwarm3DiscoveryTools(server: McpServer, client: SpotifyC
     {
       name: z.string().min(1).describe('Artist name to disambiguate'),
       candidates_cap: z.number().int().min(1).max(10).optional().describe('Candidates profiled. Default: 5'),
-      market: Market,
+      market: MARKET_CODE.optional().describe("ISO 3166-1 alpha-2 market code, e.g. 'US'"),
       response_format: ResponseFormat,
     },
     async (args) => {
@@ -1250,7 +1246,7 @@ export function registerSwarm3DiscoveryTools(server: McpServer, client: SpotifyC
       + 'Quota: 1 GET /albums/{id} (+1 paged tracks walk above 50 tracks).',
     {
       album_id: spotifyId('album'),
-      market: Market,
+      market: MARKET_CODE.optional().describe("ISO 3166-1 alpha-2 market code, e.g. 'US'"),
       response_format: ResponseFormat,
     },
     async (args) => {
@@ -1311,7 +1307,7 @@ export function registerSwarm3DiscoveryTools(server: McpServer, client: SpotifyC
       album_id: spotifyId('album'),
       side_minutes: z.number().int().min(5).max(45).optional()
         .describe('Approximate minutes per vinyl side (break inserted after a track would overflow). Default: 20'),
-      market: Market,
+      market: MARKET_CODE.optional().describe("ISO 3166-1 alpha-2 market code, e.g. 'US'"),
       response_format: ResponseFormat,
     },
     async (args) => {
@@ -1449,7 +1445,7 @@ export function registerSwarm3DiscoveryTools(server: McpServer, client: SpotifyC
       + 'Quota: 1 GET /albums/{id} + 1 paginated discography walk.',
     {
       album_id: spotifyId('album'),
-      market: Market,
+      market: MARKET_CODE.optional().describe("ISO 3166-1 alpha-2 market code, e.g. 'US'"),
       response_format: ResponseFormat,
     },
     async (args) => {
@@ -1608,7 +1604,7 @@ export function registerSwarm3DiscoveryTools(server: McpServer, client: SpotifyC
       snippet: z.string().min(2).describe('Remembered phrase, lyric fragment or title fragment'),
       artist: z.string().min(1).optional().describe('Narrow to an artist name'),
       limit: SearchLimitFragment,
-      market: Market,
+      market: MARKET_CODE.optional().describe("ISO 3166-1 alpha-2 market code, e.g. 'US'"),
       response_format: ResponseFormat,
     },
     async (args) => {
@@ -1754,7 +1750,7 @@ export function registerSwarm3DiscoveryTools(server: McpServer, client: SpotifyC
         .describe('Freshness window in days. Default: 30'),
       top_artists: z.number().int().min(1).max(15).optional()
         .describe('Top artists in section A. Default: 5'),
-      market: Market,
+      market: MARKET_CODE.optional().describe("ISO 3166-1 alpha-2 market code, e.g. 'US'"),
       response_format: ResponseFormat,
     },
     async (args) => {

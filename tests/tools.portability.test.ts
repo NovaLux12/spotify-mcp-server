@@ -8,11 +8,18 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../src/client.js';
 import type { SpotifyPaged } from '../src/types/spotify.js';
 import { registerPortabilityTools } from '../src/tools/portability.js';
+import { initConfig } from '../src/config.js';
 import { parseCsvDocument, FORMULA_LEAD } from './csv-reader.js';
 
 interface RecordedCall { method:string; path:string; arg?: unknown; }
 type Responder = (path:string, arg?:unknown)=>unknown;
 interface RegisteredTool { name:string; validate:(a:Record<string,unknown>)=>Record<string,unknown>; handler:(a:Record<string,unknown>)=>Promise<{content:Array<{type:string;text:string}>;structuredContent?:Record<string,unknown>}>; }
+/** One offset-paged GET, recorded exactly as a real client call would be. */
+async function walkPage<T>(responder:Responder,calls:RecordedCall[],path:string,params:Record<string,string>|undefined,offset:number):Promise<SpotifyPaged<T>|null>{
+  const arg={...params, offset:String(offset)};
+  calls.push({method:'GET',path,arg});
+  return responder(path,arg) as SpotifyPaged<T>|null;
+}
 function makeStubClient(responder: Responder=()=>null){
   const calls: RecordedCall[]=[];
   const client={
@@ -26,6 +33,11 @@ function makeStubClient(responder: Responder=()=>null){
       const maxItems=opts?.maxItems??500; const all:T[]=[]; let offset=0;
       for(;;){ const page=await (this as unknown as {get:(p:string,pr?:Record<string,string>)=>Promise<SpotifyPaged<T>|null>}).get(path,{...params, offset:String(offset)}); if(!page||!Array.isArray(page.items)) break; all.push(...page.items); if(all.length>=maxItems) return all.slice(0,maxItems); const limit=typeof page.limit==='number'&&page.limit>0?page.limit:page.items.length; offset+=limit; if(page.items.length===0||page.items.length<limit) break; if(typeof page.total==='number'&&offset>=page.total) break;}
       return all;
+    },
+    async getAllPagesWithTruncation<T>(path:string,params?:Record<string,string>,opts?:{maxItems?:number}):Promise<{items:T[];truncated:boolean}>{
+      const maxItems=opts?.maxItems??500; const all:T[]=[]; let offset=0;
+      for(;;){ const page=await walkPage<T>(responder,calls,path,params,offset); if(!page||!Array.isArray(page.items)) break; all.push(...page.items); if(all.length>=maxItems) return { items: all.slice(0,maxItems), truncated: all.length>maxItems || typeof page.total!=='number' || all.length<page.total }; const limit=typeof page.limit==='number'&&page.limit>0?page.limit:page.items.length; offset+=limit; if(page.items.length===0||page.items.length<limit) break; if(typeof page.total==='number'&&offset>=page.total) break;}
+      return { items: all, truncated: false };
     },
   }; return client;
 }
@@ -44,6 +56,14 @@ const withPortabilityRoot=async<T>(dir:string,run:()=>Promise<T>)=>{
   process.env.SPOTIFY_MCP_PORTABILITY_DIR=dir;
   try{ return await run(); } finally { if(prev===undefined) delete process.env.SPOTIFY_MCP_PORTABILITY_DIR; else process.env.SPOTIFY_MCP_PORTABILITY_DIR=prev; }
 };
+
+// #753 fixtures: an archive is a row in /me/playlists that may or may not be
+// owned by the caller, so these build explicit owner ids rather than leaving
+// ownership to chance.
+const pl=(id:string,name:string,owner:string)=>({id,name,uri:`spotify:playlist:${id}`,description:null,owner:{id:owner,display_name:owner}});
+const plPage=(rows:unknown[],total:number)=>({items:rows,total,limit:50,offset:0});
+const tracks=(...u:string[])=>({items:u.map(x=>({item:{uri:x}})),total:u.length,limit:100,offset:0});
+const mutations=(h:{client:{calls:RecordedCall[]}})=>h.client.calls.filter(c=>c.method==='PUT'||c.method==='POST'||c.method==='DELETE');
 
 describe('save_discover_weekly',()=>{
   it('dry_run previews without mutating',async()=>{
@@ -70,6 +90,113 @@ describe('save_discover_weekly',()=>{
     const methods=h.client.calls.map(c=>c.method);
     assert.ok(methods.includes('POST') || methods.includes('PUT'));
     assert.match(textOf(out),/Archived/);
+  });
+  // ---------------------------------------------------------------------
+  // #753: the archive is the one playlist this tool PUT-REPLACES, and
+  // /me/playlists also returns playlists the user merely FOLLOWS.
+  // ---------------------------------------------------------------------
+
+  it('refuses to write into a same-name archive the user does not own (#753)',async()=>{
+    const h=harness((path)=>{
+      if(path==='/me') return {id:'me'};
+      if(path==='/me/playlists') return plPage([pl('dw','Discover Weekly','me'),pl('notmine','Discover Weekly Archive','other')],2);
+      if(path==='/playlists/dw/items') return tracks('spotify:track:t1','spotify:track:t2');
+      return null;
+    });
+    const out=await h.invoke('save_discover_weekly',{});
+    assert.equal(out.structuredContent?.ok,false);
+    assert.equal(out.structuredContent?.error,'archive_not_owned');
+    assert.deepEqual(out.structuredContent?.archive_owner,{id:'other',display_name:'other'});
+    assert.match(textOf(out),/Discover Weekly Archive/);
+    assert.match(textOf(out),/not by you/);
+    assert.match(textOf(out),/archive_name/);
+    // The hazard: pre-fix this PUT-replaced a playlist owned by someone else.
+    assert.equal(mutations(h).length,0);
+  });
+
+  it('picks the owned copy when a followed playlist shares the archive name (#753)',async()=>{
+    const h=harness((path)=>{
+      if(path==='/me') return {id:'me'};
+      if(path==='/me/playlists') return plPage([pl('dw','Discover Weekly','me'),pl('theirs','Discover Weekly Archive','other'),pl('mine','Discover Weekly Archive','me')],3);
+      if(path==='/playlists/dw/items') return tracks('spotify:track:t1','spotify:track:t2');
+      if(path==='/playlists/theirs/items') return tracks();
+      // The read and the replace are the same URL, so one fixture serves both.
+      if(path==='/playlists/mine/items') return {...tracks('spotify:track:stale'),snapshot_id:'snap'};
+      return null;
+    });
+    const out=await h.invoke('save_discover_weekly',{});
+    assert.equal(out.structuredContent?.ok,true);
+    assert.equal(out.structuredContent?.archive_id,'mine');
+    assert.equal(out.structuredContent?.same_name_playlists,2);
+    // The foreign row sorts first; nothing may be sent to it.
+    assert.equal(h.client.calls.filter(c=>c.path.includes('theirs')).length,0);
+    assert.ok(h.client.calls.some(c=>c.method==='PUT'&&c.path==='/playlists/mine/items'));
+  });
+
+  it('states how many items the write replaces, and names the archive it wrote to (#753)',async()=>{
+    const h=harness((path)=>{
+      if(path==='/me') return {id:'me'};
+      if(path==='/me/playlists') return plPage([pl('dw','Discover Weekly','me'),pl('arch1','Discover Weekly Archive','me')],2);
+      if(path==='/playlists/dw/items') return tracks('spotify:track:t1','spotify:track:t2');
+      if(path==='/playlists/arch1/items') return {...tracks('spotify:track:old1','spotify:track:old2','spotify:track:old3'),snapshot_id:'snap'};
+      return null;
+    });
+    const out=await h.invoke('save_discover_weekly',{});
+    assert.equal(out.structuredContent?.replaced,3);
+    assert.equal(out.structuredContent?.archive_id,'arch1');
+    assert.equal(out.structuredContent?.archive_uri,'spotify:playlist:arch1');
+    assert.equal(out.structuredContent?.archive_action,'replace');
+    assert.match(textOf(out),/Replaced 3 existing item\(s\)/);
+  });
+
+  it('does not PUT when the owned archive already matches (#753)',async()=>{
+    const h=harness((path)=>{
+      if(path==='/me') return {id:'me'};
+      if(path==='/me/playlists') return plPage([pl('dw','Discover Weekly','me'),pl('arch1','Discover Weekly Archive','me')],2);
+      if(path==='/playlists/dw/items') return tracks('spotify:track:t1','spotify:track:t2');
+      if(path==='/playlists/arch1/items') return tracks('spotify:track:t1','spotify:track:t2');
+      return null;
+    });
+    const out=await h.invoke('save_discover_weekly',{});
+    assert.equal(out.structuredContent?.idempotent,true);
+    assert.equal(out.structuredContent?.replaced,0);
+    assert.equal(mutations(h).length,0);
+  });
+
+  it('refuses to create a duplicate when the playlist-list walk was capped (#753)',async()=>{
+    const h=harness((path)=>{
+      if(path==='/me') return {id:'me'};
+      // total 5 with only 2 rows in hand: the walk dies at the cap, and the
+      // archive may be one of the three it never read.
+      if(path==='/me/playlists') return plPage([pl('dw','Discover Weekly','me'),pl('mix1','Mix 1','me')],5);
+      if(path==='/playlists/dw/items') return tracks('spotify:track:t1','spotify:track:t2');
+      return null;
+    });
+    initConfig({ ...process.env, SPOTIFY_MCP_FETCH_ALL_CAP: '2' });
+    try{
+      const out=await h.invoke('save_discover_weekly',{});
+      assert.equal(out.structuredContent?.ok,false);
+      assert.equal(out.structuredContent?.error,'archive_scan_incomplete');
+      assert.equal(out.structuredContent?.archives_scanned,2);
+      assert.equal(out.structuredContent?.archive_scan_truncated,true);
+      assert.match(textOf(out),/SPOTIFY_MCP_FETCH_ALL_CAP/);
+      // The duplicate this used to create silently.
+      assert.equal(h.client.calls.filter(c=>c.method==='POST'&&c.path==='/me/playlists').length,0);
+    } finally { initConfig(process.env); }
+  });
+});
+
+describe('save_release_radar',()=>{
+  it('refuses a same-name archive the user does not own (#753 — shared resolver)',async()=>{
+    const h=harness((path)=>{
+      if(path==='/me') return {id:'me'};
+      if(path==='/me/playlists') return plPage([pl('rr','Release Radar','me'),pl('theirs','Release Radar Archive','other')],2);
+      if(path==='/playlists/rr/items') return tracks('spotify:track:t1');
+      return null;
+    });
+    const out=await h.invoke('save_release_radar',{});
+    assert.equal(out.structuredContent?.error,'archive_not_owned');
+    assert.equal(mutations(h).length,0);
   });
 });
 describe('export_library_json',()=>{

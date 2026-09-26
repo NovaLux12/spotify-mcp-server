@@ -181,10 +181,147 @@ async function resolvePlaylistByName(
   return null;
 }
 
-async function findArchivePlaylist(client: SpotifyClient, archiveName: string): Promise<string | null> {
-  const playlists = await client.getAllPages<SpotifyPlaylistSimple>('/me/playlists', { limit: '50' });
-  const found = playlists.find((p) => p?.name?.toLowerCase() === archiveName.toLowerCase());
-  return found?.id ?? null;
+// ---------------------------------------------------------------------------
+// #753: the archive is the ONE playlist this tool writes into, so it is
+// resolved by owner AND name, over a walk whose completeness is known.
+// ---------------------------------------------------------------------------
+
+/** Owner as the walk reported it. `id: null` means the row named no owner. */
+type ArchiveOwner = { id: string | null; display_name: string | null };
+
+/**
+ * Why no archive could be resolved. Every one of these is a refusal: the
+ * handler returns before any POST/PUT/DELETE, so a followed playlist of the
+ * same name is never written into and a capped walk never creates a duplicate.
+ */
+type ArchiveRefusal =
+  | 'archive_not_owned'
+  | 'archive_owner_unknown'
+  | 'archive_scan_incomplete';
+
+type ArchiveTarget =
+  /** An owned playlist of that name exists; this is what gets PUT into. */
+  | {
+      status: 'resolved';
+      id: string;
+      uri: string;
+      owner: ArchiveOwner;
+      scanned: number;
+      truncated: boolean;
+      same_name: number;
+    }
+  /** No playlist of that name exists and the whole list was read: create one. */
+  | { status: 'create'; scanned: number }
+  | {
+      status: 'refused';
+      error: ArchiveRefusal;
+      /** Actionable sentence; reused verbatim as the tool's `hint`. */
+      message: string;
+      scanned: number;
+      truncated: boolean;
+      same_name: number;
+      cap: number;
+      owner: ArchiveOwner | null;
+    };
+
+/**
+ * Resolve the archive playlist `save_discover_weekly` / `save_release_radar`
+ * will write into.
+ *
+ * A name match alone is not a target. `/me/playlists` also returns playlists
+ * the user only FOLLOWS, and the first row that happened to match was then
+ * PUT-replaced (#753) — a 403 for a read-only collaborator, or a real
+ * overwrite of someone else's playlist for a collaborator with edit rights.
+ * Ownership is therefore required, and the walk's truncation verdict decides
+ * what a MISS means: a complete walk proves the archive does not exist, while
+ * a capped walk only proves it was not in the rows read, and creating there
+ * splits the archive across two playlists while reporting success.
+ */
+async function resolveArchivePlaylist(
+  client: SpotifyClient,
+  archiveName: string,
+): Promise<ArchiveTarget> {
+  const cap = getConfig().fetchAllCap;
+  // The bound is stated rather than inherited, because the verdict below is
+  // the only thing that tells "missing" apart from "unread".
+  const walk = await client.getAllPagesWithTruncation<SpotifyPlaylistSimple>(
+    '/me/playlists',
+    { limit: '50' },
+    { maxItems: cap },
+  );
+  const scanned = walk.items.length;
+  const truncated = walk.truncated;
+  const want = archiveName.toLowerCase();
+  const sameName = walk.items.filter((p) => p?.name?.toLowerCase() === want);
+  const ownerOf = (p: SpotifyPlaylistSimple): ArchiveOwner => ({
+    id: typeof p.owner?.id === 'string' && p.owner.id ? p.owner.id : null,
+    display_name: p.owner?.display_name ?? null,
+  });
+
+  if (sameName.length === 0) {
+    if (truncated) {
+      return {
+        status: 'refused',
+        error: 'archive_scan_incomplete',
+        scanned,
+        truncated,
+        same_name: 0,
+        cap,
+        owner: null,
+        message:
+          `Could not scan your full playlist list: the /me/playlists walk stopped at ${scanned} playlist(s) (cap ${cap}),`
+          + ` so an existing "${archiveName}" archive past that point cannot be ruled out —`
+          + ' refusing to create a second playlist with the same name.'
+          + ` Raise SPOTIFY_MCP_FETCH_ALL_CAP above ${cap} and retry, or pass a different archive_name.`,
+      };
+    }
+    return { status: 'create', scanned };
+  }
+
+  // `/me` is fetched only once a same-name row exists: it is the only thing
+  // that separates "mine" from "someone else's", and a clean miss needs no
+  // ownership verdict. A failed read is NOT read as "nobody owns it" — the
+  // row is then unclassifiable, so no playlist may be written into.
+  let myId: string | null = null;
+  try {
+    const me = await client.get<{ id?: string }>('/me');
+    if (typeof me?.id === 'string' && me.id) myId = me.id;
+  } catch {
+    myId = null;
+  }
+
+  const mine = myId === null ? [] : sameName.filter((p) => ownerOf(p).id === myId);
+  if (mine.length === 0) {
+    const other = ownerOf(sameName[0]);
+    const who = other.display_name ?? other.id ?? 'an owner the API did not name';
+    const unknown = myId === null;
+    return {
+      status: 'refused',
+      error: unknown ? 'archive_owner_unknown' : 'archive_not_owned',
+      scanned,
+      truncated,
+      same_name: sameName.length,
+      cap,
+      owner: other,
+      message: unknown
+        ? `Found "${archiveName}" in your playlists but could not read your own user id (GET /me),`
+          + ` so its ownership could not be verified — refusing to write into an unverified playlist.`
+          + ' Retry the call, or pass a different archive_name.'
+        : `Found "${archiveName}" owned by ${who}, not by you — refusing to write into it.`
+          + ' Pass a different archive_name, or point archive_name at the copy you own.',
+    };
+  }
+
+  const target = mine[0];
+  return {
+    status: 'resolved',
+    id: target.id,
+    uri: target.uri ?? `spotify:playlist:${target.id}`,
+    owner: ownerOf(target),
+    scanned,
+    truncated,
+    same_name: sameName.length,
+  };
 }
 
 async function savePersonalized(
@@ -222,28 +359,72 @@ async function savePersonalized(
     return shapeResult(rf, `"${args.sourceName}" is empty \u2014 nothing to archive.`, { ok: true, ...sourceIdentity, archived: 0, uris: [] });
   }
 
-  if (args.dry_run) {
-    const payload = { ok: true, dry_run: true, ...sourceIdentity, archive: args.archiveName, would_archive: uris.length, uris };
-    const preview = describeDryRun(`save ${args.sourceName}`, args.archiveName, [`Would archive ${uris.length} track(s) from "${args.sourceName}" into "${args.archiveName}"`, ...uris.slice(0, 5)]) + (uris.length > 5 ? `\n  …and ${uris.length - 5} more` : '');
-    const unverifiedNote = resolved.verified ? '' : `\n[unverified source — resolved via search as ${resolved.name} by ${resolved.owner?.id ?? 'unknown owner'}; verify before archiving]`;
-    return shapeResult(rf, preview + unverifiedNote, payload);
+  // #753: the archive is resolved BEFORE the dry_run branch, so a preview
+  // names the playlist that would really be written and refuses exactly when
+  // the real call would. Nothing below this point can reach a playlist the
+  // user does not own.
+  const target = await resolveArchivePlaylist(client, args.archiveName);
+  if (target.status === 'refused') {
+    const payload = {
+      ok: false as const,
+      error: target.error,
+      ...sourceIdentity,
+      archive: args.archiveName,
+      archives_scanned: target.scanned,
+      archive_scan_truncated: target.truncated,
+      same_name_playlists: target.same_name,
+      archive_owner: target.owner,
+      hint: target.message,
+    };
+    return shapeResult(rf, target.message, payload as unknown as Record<string, unknown>);
   }
 
-  let archiveId = await findArchivePlaylist(client, args.archiveName);
-  if (!archiveId) {
-    const created = await client.post<{ id: string; uri: string }>(
+  // What a write into the resolved archive would destroy. The old code read
+  // these rows and threw the count away, then PUT-replaced them in silence.
+  let existingUris: string[] = [];
+  if (target.status === 'resolved') {
+    const existing = await client.getAllPages<PlaylistItemObject>(`/playlists/${encodeURIComponent(target.id)}/items`, { limit: '100' });
+    existingUris = existing.map((r) => r?.item?.uri).filter((u): u is string => typeof u === 'string');
+  }
+  const scan = {
+    archives_scanned: target.scanned,
+    ...(target.status === 'create' ? {} : { archive_scan_truncated: target.truncated, same_name_playlists: target.same_name }),
+  };
+
+  if (args.dry_run) {
+    const planned = target.status === 'create'
+      ? { ...scan, archive_id: null, archive_uri: null, archive_action: 'create' as const, would_archive: uris.length, would_replace: 0, uris }
+      : { ...scan, archive_id: target.id, archive_uri: target.uri, archive_action: 'replace' as const, archive_owner: target.owner, would_archive: uris.length, would_replace: existingUris.length, uris };
+    const effect = target.status === 'create'
+      ? `Would create "${args.archiveName}"`
+      : `Would replace ${existingUris.length} existing item(s) in "${args.archiveName}" (ID: ${target.id})`;
+    const preview = describeDryRun(`save ${args.sourceName}`, args.archiveName, [`${effect} with ${uris.length} track(s) from "${args.sourceName}"`, ...uris.slice(0, 5)]) + (uris.length > 5 ? `\n  …and ${uris.length - 5} more` : '');
+    const unverifiedNote = resolved.verified ? '' : `\n[unverified source — resolved via search as ${resolved.name} by ${resolved.owner?.id ?? 'unknown owner'}; verify before archiving]`;
+    return shapeResult(rf, preview + unverifiedNote, { ok: true, dry_run: true, ...sourceIdentity, archive: args.archiveName, ...planned });
+  }
+
+  if (target.status === 'resolved') {
+    const same = existingUris.length === uris.length && existingUris.every((u, i) => u === uris[i]);
+    if (same) {
+      return shapeResult(rf, `Archive "${args.archiveName}" already up to date (${uris.length} items) — nothing to do.`, { ok: true, ...sourceIdentity, archive: args.archiveName, ...scan, archive_id: target.id, archive_uri: target.uri, archive_action: 'replace' as const, archive_owner: target.owner, archived: 0, replaced: 0, idempotent: true, uris });
+    }
+  }
+
+  let archiveId: string;
+  let archiveUri: string;
+  let created = false;
+  if (target.status === 'resolved') {
+    archiveId = target.id;
+    archiveUri = target.uri;
+  } else {
+    const made = await client.post<{ id: string; uri?: string }>(
       '/me/playlists',
       { name: args.archiveName, public: false, description: `Archive of ${args.sourceName} — auto-created` },
     );
-    if (!created?.id) throw new Error(`Could not create archive playlist "${args.archiveName}"`);
-    archiveId = created.id;
-  } else {
-    const existing = await client.getAllPages<PlaylistItemObject>(`/playlists/${encodeURIComponent(archiveId)}/items`, { limit: '100' });
-    const existingUris = existing.map((r) => r?.item?.uri).filter((u): u is string => typeof u === 'string');
-    const same = existingUris.length === uris.length && existingUris.every((u, i) => u === uris[i]);
-    if (same) {
-      return shapeResult(rf, `Archive "${args.archiveName}" already up to date (${uris.length} items) — nothing to do.`, { ok: true, ...sourceIdentity, archive_id: archiveId, archived: 0, idempotent: true, uris });
-    }
+    if (!made?.id) throw new Error(`Could not create archive playlist "${args.archiveName}"`);
+    archiveId = made.id;
+    archiveUri = made.uri ?? `spotify:playlist:${made.id}`;
+    created = true;
   }
 
   let snapshotId: string | undefined;
@@ -258,8 +439,24 @@ async function savePersonalized(
 
   const receipt = await issueReceipt(client, { kind: 'playlist_items', id: archiveId, uris });
   const unverifiedLine = resolved.verified ? '' : `\n[unverified source — resolved via search; owner: ${resolved.owner?.id ?? 'unknown'}]`;
-  const prose = `Archived ${uris.length} track(s) from "${args.sourceName}" → "${args.archiveName}" (ID: ${archiveId})\nSource: ${resolved.name} (${sourceIdentity.source_url}) owner ${resolved.owner?.id ?? 'unknown'} [${resolved.source}]${unverifiedLine}\n${batchSummary(uris.length, uris)}\n${formatReceipt(receipt)}` + (snapshotId ? `\nSnapshot ID: ${snapshotId}` : '');
-  return shapeResult(rf, prose, { ok: true, ...sourceIdentity, archive_id: archiveId, archived: uris.length, uris, snapshot_id: snapshotId, receipt: receipt as unknown as Record<string, unknown> });
+  // #753: the first PUT is a REPLACE, so the number of items it destroys is
+  // stated rather than implied, and the archive it wrote to is named by id
+  // and uri. `archive_owner` is only resolved on the matched-existing path;
+  // a playlist this call just created needs no ownership lookup to be its own.
+  const replaced = created ? 0 : existingUris.length;
+  const archiveOutcome = {
+    archive: args.archiveName,
+    ...scan,
+    archive_id: archiveId,
+    archive_uri: archiveUri,
+    archive_action: created ? 'create' as const : 'replace' as const,
+    archive_owner: target.status === 'resolved' ? target.owner : null,
+  };
+  const effect = created
+    ? `Created archive playlist "${args.archiveName}" (ID: ${archiveId})`
+    : `Replaced ${replaced} existing item(s) in "${args.archiveName}" (ID: ${archiveId})`;
+  const prose = `Archived ${uris.length} track(s) from "${args.sourceName}" → "${args.archiveName}" (ID: ${archiveId})\n${effect}\nSource: ${resolved.name} (${sourceIdentity.source_url}) owner ${resolved.owner?.id ?? 'unknown'} [${resolved.source}]${unverifiedLine}\n${batchSummary(uris.length, uris)}\n${formatReceipt(receipt)}` + (snapshotId ? `\nSnapshot ID: ${snapshotId}` : '');
+  return shapeResult(rf, prose, { ok: true, ...sourceIdentity, ...archiveOutcome, archived: uris.length, replaced, uris, snapshot_id: snapshotId, receipt: receipt as unknown as Record<string, unknown> });
 }
 
 // ---------------------------------------------------------------------------
