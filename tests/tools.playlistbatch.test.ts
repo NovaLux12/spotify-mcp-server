@@ -552,3 +552,193 @@ describe('batch_add_to_playlist distinguishes per-source failures (#867)', () =>
     assert.match(textOf(out), /\(playlist, empty\)/);
   });
 });
+
+// #865 — multi-chunk playlist writes must surface what already landed when a
+// later chunk rejects, so a retry can resume from the right offset instead of
+// duplicating committed URIs.
+describe('multi-chunk write partial state (#865)', () => {
+  // 150 unique source URIs → exactly 2 chunks at the 100-URI write cap;
+  // chunk 0 commits cleanly, chunk 1 fails.
+  const bigSource = Array.from({ length: 150 }, (_, i) => track(`t${i}`));
+  const firstChunkUris = bigSource.slice(0, 100);
+  const secondChunkUris = bigSource.slice(100, 150);
+
+  // Helper for paginated source reads: the stub's getAllPages re-reads at
+  // offsets 0 and 100, so the responder must slice based on the offset it
+  // is asked for — otherwise the same items repeat across pages.
+  function pagedSource(items: string[], params: unknown): { items: unknown[]; total: number; limit: number; offset: number; next: null } {
+    const p = (params ?? {}) as Record<string, string>;
+    const offset = Number(p.offset ?? 0);
+    const limit = Number(p.limit ?? 100);
+    const slice = items.slice(offset, offset + limit);
+    return {
+      items: slice.map((uri) => ({ added_at: 'x', item: { id: uri.split(':').pop()!, uri, type: 'track', name: uri, duration_ms: 100, artists: [{ name: 'a' }], album: { id: 'al', name: 'al', uri: 'spotify:album:al', images: [] } } })),
+      total: items.length,
+      limit,
+      offset,
+      next: null,
+    };
+  }
+
+  it('batch_add_to_playlist reports last_committed_chunk on chunk 2 failure', async () => {
+    let postCount = 0;
+    // 150 URIs crosses BATCH_ADD_ELICIT_THRESHOLD=100, so we configure the
+    // harness to accept the elicit gate before the write loop runs.
+    const h = harness((_path, _arg, method) => {
+      if (method !== 'POST') return { items: [], total: 0, limit: 100, offset: 0, next: null } as unknown;
+      postCount++;
+      if (postCount === 1) return { snapshot_id: 'snap-1' } as unknown;
+      throw new SpotifyApiError(503, 'Service Unavailable');
+    }, { action: 'accept', content: { confirm: true } });
+    const out = await h.invoke('batch_add_to_playlist', { target_playlist_id: TARGET, source_uris: bigSource });
+    const payload = out.structuredContent as Record<string, unknown>;
+    // The contract — every key the issue names.
+    assert.equal(payload.partial_write_failure, true);
+    assert.equal(payload.ok, false);
+    assert.equal(payload.attempted_chunks, 2);
+    assert.equal(payload.failed_chunk_index, 1);
+    assert.equal(payload.last_committed_chunk_index, 0);
+    assert.deepEqual(payload.last_committed_chunk_uris, firstChunkUris);
+    assert.equal(payload.committed_uris, 100);
+    assert.equal(payload.remaining_uris, 50);
+    assert.equal(payload.attempted_uris, 150);
+    assert.match(payload.error as string, /Service Unavailable/);
+    // Prose names the failed chunk and the committed prefix size.
+    assert.match(textOf(out), /Partial write to playlist/);
+    assert.match(textOf(out), /chunk 2 of 2 failed/);
+    assert.match(textOf(out), /100 URI\(s\)/);
+    // Exactly 2 POSTs were issued: chunk 0 succeeded, chunk 1 threw.
+    const posts = h.client.calls.filter((c) => c.method === 'POST' && c.path === `/playlists/${TARGET}/items`);
+    assert.equal(posts.length, 2, 'one POST per chunk; the failed one still gets issued');
+    assert.deepEqual((posts[0].arg as { uris: string[] }).uris, firstChunkUris);
+    assert.deepEqual((posts[1].arg as { uris: string[] }).uris, secondChunkUris);
+  });
+
+  it('batch_add_to_playlist reports nothing-committed when chunk 0 fails', async () => {
+    let postCount = 0;
+    const h = harness((_path, _arg, method) => {
+      if (method !== 'POST') return { items: [], total: 0, limit: 100, offset: 0, next: null } as unknown;
+      postCount++;
+      throw new SpotifyApiError(403, 'Forbidden');
+    }, { action: 'accept', content: { confirm: true } });
+    const out = await h.invoke('batch_add_to_playlist', { target_playlist_id: TARGET, source_uris: bigSource });
+    const payload = out.structuredContent as Record<string, unknown>;
+    assert.equal(payload.partial_write_failure, true);
+    assert.equal(payload.failed_chunk_index, 0);
+    assert.equal(payload.last_committed_chunk_index, -1);
+    assert.deepEqual(payload.last_committed_chunk_uris, []);
+    assert.equal(payload.committed_uris, 0);
+    assert.equal(payload.remaining_uris, 150);
+    assert.match(payload.error as string, /Forbidden/);
+    assert.match(textOf(out), /the first chunk failed/);
+  });
+
+  it('copy_playlist reports last_committed_chunk when a chunked add rejects', async () => {
+    // 150 source URIs → 2 chunks (100 / 50); chunk 1 throws.
+    const srcUris = Array.from({ length: 150 }, (_, i) => track(`c${i}`));
+    let postCount = 0;
+    const h = harness((path, _arg, method) => {
+      if (path === `/playlists/${COPY_SOURCE}`) return { id: COPY_SOURCE, name: 'Source', description: null } as unknown;
+      if (path === `/playlists/${COPY_SOURCE}/items` && method === 'GET') return pagedSource(srcUris, _arg) as unknown;
+      if (method !== 'POST') return { items: [], total: 0, limit: 100, offset: 0, next: null } as unknown;
+      postCount++;
+      // POST 1: /me/playlists creates the destination.
+      if (path === '/me/playlists') return { id: 'new1', uri: 'spotify:playlist:new1' } as unknown;
+      // POST 2: chunk 0 of the add succeeds.
+      if (postCount === 2) return { snapshot_id: 'snap' } as unknown;
+      // POST 3: chunk 1 throws.
+      throw new SpotifyApiError(500, 'Internal Server Error');
+    }, { action: 'accept', content: { confirm: true } });
+    const out = await h.invoke('copy_playlist', { source_playlist_id: COPY_SOURCE, new_name: 'Copy' });
+    const payload = out.structuredContent as Record<string, unknown>;
+    assert.equal(payload.partial_write_failure, true);
+    assert.equal(payload.attempted_chunks, 2);
+    assert.equal(payload.failed_chunk_index, 1);
+    assert.equal(payload.last_committed_chunk_index, 0);
+    assert.deepEqual(payload.last_committed_chunk_uris, srcUris.slice(0, 100));
+    assert.equal(payload.committed_uris, 100);
+    assert.equal(payload.attempted_uris, 150);
+    assert.equal(payload.remaining_uris, 50);
+    assert.match(textOf(out), /Partial copy to new playlist new1/);
+  });
+
+  it('move_items_between_playlists surfaces add-side partial state', async () => {
+    // 150 source URIs → 2 chunks; the second add POST rejects. The remove
+    // step must NOT run — add succeeded partially, remove would make a bad
+    // partial state worse.
+    let addCount = 0;
+    // 150 URIs crosses MOVE_ELICIT_THRESHOLD=50, so configure the harness
+    // to accept the elicit gate before the write loop runs.
+    const h = harness((path, _arg, method) => {
+      if (path === `/playlists/${MOVE_SOURCE}/items` && method === 'GET') return pagedSource(bigSource, _arg) as unknown;
+      if (path === `/playlists/${MOVE_TARGET}/items` && method === 'GET') return { items: [], total: 0, limit: 100, offset: 0, next: null } as unknown;
+      if (method === 'POST' && path === `/playlists/${MOVE_TARGET}/items`) {
+        addCount++;
+        if (addCount === 1) return { snapshot_id: 'snap' } as unknown;
+        throw new SpotifyApiError(429, 'Rate limited');
+      }
+      if (method === 'DELETE') return { snapshot_id: 'snap' } as unknown;
+      return { items: [], total: 0, limit: 100, offset: 0, next: null } as unknown;
+    }, { action: 'accept', content: { confirm: true } });
+    const out = await h.invoke('move_items_between_playlists', { source_playlist_id: MOVE_SOURCE, target_playlist_id: MOVE_TARGET, mode: 'move' });
+    const payload = out.structuredContent as Record<string, unknown>;
+    assert.equal(payload.partial_write_failure, true);
+    assert.equal(payload.step, 'add');
+    assert.equal(payload.attempted_chunks, 2);
+    assert.equal(payload.failed_chunk_index, 1);
+    assert.equal(payload.last_committed_chunk_index, 0);
+    assert.deepEqual(payload.last_committed_chunk_uris, firstChunkUris);
+    // The remove DELETE never fired.
+    const deletes = h.client.calls.filter((c) => c.method === 'DELETE' && c.path === `/playlists/${MOVE_SOURCE}/items`);
+    assert.equal(deletes.length, 0, 'remove step must be skipped when add fails');
+  });
+
+  it('move_items_between_playlists surfaces remove-side partial state when add succeeded', async () => {
+    let deleteCount = 0;
+    const h = harness((path, _arg, method) => {
+      if (path === `/playlists/${MOVE_SOURCE}/items` && method === 'GET') return pagedSource(bigSource, _arg) as unknown;
+      if (path === `/playlists/${MOVE_TARGET}/items` && method === 'GET') return { items: [], total: 0, limit: 100, offset: 0, next: null } as unknown;
+      if (method === 'POST' && path === `/playlists/${MOVE_TARGET}/items`) return { snapshot_id: 'snap' } as unknown;
+      // The harness's stub records calls as DELETE but does not pass the
+      // method to the responder, so fall back to inspecting the path AND the
+      // call counter when looking at DELETE-shaped writes (no POST hits this).
+      if (method === undefined && path === `/playlists/${MOVE_SOURCE}/items`) {
+        deleteCount++;
+        if (deleteCount === 1) return { snapshot_id: 'snap' } as unknown;
+        throw new SpotifyApiError(500, 'boom');
+      }
+      return { items: [], total: 0, limit: 100, offset: 0, next: null } as unknown;
+    }, { action: 'accept', content: { confirm: true } });
+    const out = await h.invoke('move_items_between_playlists', { source_playlist_id: MOVE_SOURCE, target_playlist_id: MOVE_TARGET, mode: 'move' });
+    const payload = out.structuredContent as Record<string, unknown>;
+    assert.equal(payload.partial_write_failure, true);
+    assert.equal(payload.step, 'remove');
+    assert.equal(payload.attempted_chunks, 2);
+    assert.equal(payload.failed_chunk_index, 1);
+    assert.equal(payload.last_committed_chunk_index, 0);
+    assert.deepEqual(payload.last_committed_chunk_uris, firstChunkUris);
+    assert.match(payload.error as string, /boom/);
+    assert.match(textOf(out), /now exist on BOTH playlists/);
+  });
+
+  it('batch_add_to_playlist: chunk 1 success + chunk 2 failure tracks only chunk 1', async () => {
+    // 150 URIs → 2 chunks (100/50); chunk 1 fails — confirms the tracker
+    // updates correctly across multiple successful chunks before failure.
+    const big = Array.from({ length: 150 }, (_, i) => track(`b${i}`));
+    let postCount = 0;
+    const h = harness((_path, _arg, method) => {
+      if (method !== 'POST') return { items: [], total: 0, limit: 100, offset: 0, next: null } as unknown;
+      postCount++;
+      if (postCount === 1) return { snapshot_id: 'snap-1' } as unknown;
+      throw new SpotifyApiError(500, 'oops');
+    }, { action: 'accept', content: { confirm: true } });
+    const out = await h.invoke('batch_add_to_playlist', { target_playlist_id: TARGET, source_uris: big });
+    const payload = out.structuredContent as Record<string, unknown>;
+    assert.equal(payload.attempted_chunks, 2);
+    assert.equal(payload.failed_chunk_index, 1);
+    assert.equal(payload.last_committed_chunk_index, 0);
+    assert.deepEqual(payload.last_committed_chunk_uris, big.slice(0, 100));
+    assert.equal(payload.committed_uris, 100);
+    assert.equal(payload.remaining_uris, 50);
+  });
+});

@@ -439,6 +439,7 @@ Beyond their endpoint-specific arguments, every tool shares this contract:
 - **`dry_run`** (destructive operations) — validate inputs and describe exactly what would change without calling the mutating endpoint. Conformance is enforced registry-wide by `tests/mutations.conformance.test.ts` (#920): the guard enumerates the live registry via `tools/list` and asserts every write-capable tool exposes `dry_run` and `response_format` unless allowlisted with a one-line reason (local sidecars only); known gaps pending sibling slices are pinned in `KNOWN_MISSING_*` lists.
 - **`dry_run` default on mutating tools (v2, #827)** — a mutating tool declares the shared `DryRunDefault` fragment (`src/shaping.ts`), which is `dry_run` with `.default(true)`, and branches on `isDryRun(args)`. An omitted `dry_run` is therefore a **preview**; the write is an explicit `dry_run: false`. The bare `DryRun` fragment still declares no default and is only for read-only tools, so a `DryRun`-declared flag on a write path silently committed before this rule. This is a breaking change for callers that relied on the implicit commit: they must now pass `dry_run: false`. Migrating a module to the rule means replacing the inline `z.boolean().optional().default(true)` it declared locally with `DryRunDefault` — the behaviour is identical, so only the shared contract is new. The `exhaust2misc` slice is migrated in #827: `quick_save_now`, `discover_weekly_diff`, `dead_library_finder`, `week_in_review_playlist`, `chapter_bookmarks`, `playlist_from_tags` and `device_sync_state` all preview when the flag is omitted. `discover_weekly_diff` additionally always states the mode it ran in, so a `save_after` call that returns a diff reports `dry_run: false` after a committed archive replace and `dry_run: true` after a preview — the archive replace is a `PUT /playlists/{id}/items` and discards the playlist's previous item list. The remaining families are being unified under #836.
 - **Batch summaries** — mutations echo a "{n} items affected: uri0, uri1, …" line (first three URIs), and playlist mutations include Spotify's returned `snapshot_id` for optimistic-locking follow-ups.
+- **Partial-write state on chunked playlist writes** (#865) — a playlist write that spans more than one request can fail partway through, leaving a playlist that matches neither the plan nor its prior contents. Rather than surfacing a bare error, these tools return a normal result carrying `partial_write_failure: true` and, in both prose and `structuredContent`: `attempted_chunks`, `failed_chunk_index` (0-based), `last_committed_chunk_index` (`-1` when nothing landed), `last_committed_chunk_uris` (the URIs of the last chunk that committed), `error` (Spotify's own message when present), plus the tool-specific `attempted_uris` / `committed_uris` / `remaining_uris` counts. Because the committed chunks are always a prefix of the input list, a retry resumes at `remaining_uris` rather than re-adding what already landed. No further chunk is issued after the failure. Applies to `add_to_playlist`, `replace_playlist_items`, `batch_add_to_playlist`, `copy_playlist`, `move_items_between_playlists` (which distinguishes the add step from the remove step via `step`, and skips the remove entirely when the add is partial), `merge_playlists`, `playlist_template_apply` (which also reports the `playlist_id` of the playlist it already created, so an orphaned empty playlist can be found), and the destructive-replace family `playlist_sort` / `playlist_shuffle` / `playlist_reverse` / `playlist_union` / `playlist_subtract` / `playlist_trim`.
 
 
 ### 5.1 Playback
@@ -1192,6 +1193,32 @@ Both outcomes carry `structuredContent.found`, so a caller branches on one field
 The miss is an error because it is a failed **lookup**. Reporting it as a plain result lets an agent that branches on `result.isError` — and a host that renders green on success — read it as "the write was checked and is fine", when in fact the store simply no longer holds the id.
 
 **Scope of the store.** The store keeps the 100 most recent mutations, in memory only unless `SPOTIFY_MCP_RECEIPTS` is set, and ids are boot-scoped so an id from an earlier process can never resolve to a *different* mutation — it resolves to nothing. A miss therefore says nothing about whether the mutation landed; only a found receipt does. See `docs/configuration.md` for the persistence flags and TTL.
+### 5.12 Discovery and registry introspection
+
+Three pure-introspection tools register outside toolset trimming (`alwaysActive`, catalog scope key) so they survive a minimal toolset — the escape hatch for a 592-tool surface. They call no Spotify endpoint. `response_format` on these three differs from the shared contract above, because "json = raw API object" is the wrong promise for a tool that never calls the API:
+
+| `response_format` | `find_tool` / `inspect_tool` / `toolset_report` emit |
+|---|---|
+| `concise` (default) | the prose bullet list / the tool's description and pretty-printed schema / the active toolsets, per-module schema budget and batch caps |
+| `detailed` | the same prose — these payloads are already complete in prose, so the switch is a parse contract, not a detail level |
+| `json` | `JSON.stringify(payload, null, 2)` of exactly the `structuredContent` that rides alongside it |
+
+All three emit through one helper, `shapeDiscoveryResult` in `src/shaping.ts`, so the modes cannot drift per tool. `find_tool` and `inspect_tool` advertised `response_format` without reading it before #713; `toolset_report` did not declare it at all.
+
+#### `find_tool`
+**Inputs:** `query` (string, required, ≥2 chars — case-insensitive substring matched against tool names and descriptions), `response_format` (see the table above), `limit` (number, optional, 1–100, default 25 — bounds the match list in every mode).
+
+**Returns:** `structuredContent` carries `query`, `total_registered`, `matched`, and `tools` (an array of `{name, description}`); `response_format=json` returns that object as parseable JSON text. A registry the SDK will not expose is reported as `error: 'registry_unavailable'`, never as an empty surface.
+
+#### `inspect_tool`
+**Inputs:** `tool_name` (string, required — exact registered name), `response_format` (see the table above).
+
+**Returns:** `structuredContent` carries `found`, and on a hit `name`, `description`, and `input_schema` (the tool's JSON Schema). `response_format=json` returns the input schema as parseable JSON text, so an agent can build a valid follow-up call without reading prose. A miss returns `found: false` plus close matches in the prose.
+
+#### `toolset_report`
+**Inputs:** `response_format` (see the table above).
+
+**Returns:** `structuredContent` carries `registered_tools`, `active_toolsets`, `active_modules`, `read_only`, `toolsets`, `module_schema_budgets` (the per-module measurements from `src/tools/annotations.ts`), `registration_exclusions`, and `batch_caps` (the resolved `CHUNK_CAPS` table).
 
 
 ## 6. Resources

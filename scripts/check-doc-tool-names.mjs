@@ -61,12 +61,25 @@ const parameterAllowlist = new Set([
   // clean batch read. StructuredContent keys on every batch tool, not
   // parameters or tools — the README is naming what the tool returns.
   'degraded_reason',
+  // #865: the chunked-playlist-write partial-state contract. SPEC.md §5
+  // names the fields so a caller can resume a failed multi-chunk write;
+  // every one is a structuredContent key on the tool that reports it, not a
+  // parameter and not a tool.
+  'partial_write_failure', 'attempted_chunks', 'failed_chunk_index',
+  'last_committed_chunk_index', 'last_committed_chunk_uris',
+  'attempted_uris', 'committed_uris', 'remaining_uris',
   // #688: verify_receipt's structuredContent is the stored Receipt object
   // flattened alongside `found`, and `expect_present` is the field that tells a
   // re-render which direction the mutation went — a caller must be able to
   // branch on it rather than parse prose. A key the tool returns about its own
   // result, not a parameter.
   'expect_present',
+  // #713: SPEC.md §5.11 documents the discovery trio's response_format, which
+  // means naming the payload each mode serializes. These are the remaining
+  // structuredContent keys of find_tool/inspect_tool/toolset_report, joining
+  // registered_tools/active_modules/active_toolsets above.
+  'total_registered', 'input_schema', 'read_only', 'module_schema_budgets',
+  'registration_exclusions', 'batch_caps',
 ]);
 /** Registration keys are module names, not tools; docs legitimately name them. */
 const registrationKeyNames = new Set(census.registrationKeyNames ?? []);
