@@ -176,9 +176,9 @@ function buildReport(args: {
   include_recent: boolean;
   // #695: derived listening analytics are gated behind an explicit opt-in.
   derived: boolean;
-  // #589 renamed SpotifyTrackWithReleaseDate to AnalyticsTrack on main.
-  trTracks: AnalyticsTrack[];
-  stTracks: AnalyticsTrack[]; 7a554e3 (feat(#695): gate derived listening analytics behind an explicit opt-in)
+  // The branch called this AnalyticsTrack; main exports SpotifyTrackWithReleaseDate.
+  trTracks: SpotifyTrackWithReleaseDate[];
+  stTracks: SpotifyTrackWithReleaseDate[];
   recent: RecentlyPlayedItem[] | null;
   recentPages: number;
   artistCounts: { tr: number; st: number };
