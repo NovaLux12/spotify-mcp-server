@@ -23,6 +23,16 @@
  *
  * The contract is fail-open by design: apps whose registrations still have
  * access keep working end to end -- only the broken path changes shape.
+ *
+ * The wrapper annotates and rethrows the original SpotifyApiError (#765);
+ * it does NOT replace the error type. Tool-level fallbacks branch on
+ * `err instanceof SpotifyApiError && err.status === 403`, and replacing the
+ * type with a plain Error destroyed that check, so every tool with its own
+ * designed 403 degradation on a gated path hard-failed under the previous
+ * wrapper. The annotation (`err.gatedSurface = true`, `err.gatedPath`) lets a
+ * sharper diagnosis match the gated class without matching on the message,
+ * while `instanceof SpotifyApiError`, `err.status`, and `err.cause` stay
+ * meaningful for every caller.
  */
 import { SpotifyApiError } from './client.js';
 import type { SpotifyClient } from './client.js';
@@ -61,6 +71,13 @@ export function isGatedPath(path: string): boolean {
  * help, and the grandfathered-credentials path. Spotify's own message (when
  * present and not the bare "Forbidden") is embedded verbatim so callers
  * still see the most accurate wire diagnostic.
+ *
+ * Exported for documentation and test fixtures. The wrapper itself no longer
+ * raises an Error carrying this text (#765): it annotates the original
+ * SpotifyApiError so callers that need the graceful prose can build it from
+ * the annotated instance. Tool-level handlers render their own disclosures
+ * (e.g. category_resolver emits `gated: true`, artist_collab_network emits
+ * `top_tracks_available: false`).
  */
 export function graceful403Message(path: string, err: SpotifyApiError): string {
   const spotifyMsg = err.message?.trim();
@@ -75,6 +92,37 @@ export function graceful403Message(path: string, err: SpotifyApiError): string {
   );
 }
 
+/** Annotations the gated-path wrapper attaches to the original SpotifyApiError (#765). */
+interface GatedPathAnnotation {
+  /** Always `true` on a gated-path 403; absent on every other error. */
+  gatedSurface: true;
+  /** The exact request path that gated, for callers that want to branch on it. */
+  gatedPath: string;
+}
+
+/** Read the gated-path annotation off an error, returning undefined when absent. */
+function gatedPathAnnotation(err: unknown): GatedPathAnnotation | undefined {
+  if (!(err instanceof SpotifyApiError)) return undefined;
+  const tagged = err as unknown as Partial<GatedPathAnnotation>;
+  if (tagged.gatedSurface === true && typeof tagged.gatedPath === 'string') {
+    return { gatedSurface: true, gatedPath: tagged.gatedPath };
+  }
+  return undefined;
+}
+
+/**
+ * True when `err` is a SpotifyApiError that the gated-path wrapper annotated
+ * as a 403 on a #329 registration-gated path (#765). This is the shared
+ * detection helper for tool handlers that want to convert a gated 403 into a
+ * graceful disclosure (category_resolver, artist_collab_network, market_validate).
+ * Replaces per-tool copies that checked `err instanceof SpotifyApiError &&
+ * err.status === 403`, which used to match the gated class only by accident
+ * (the prior wrapper raised a plain Error, so those checks silently failed).
+ */
+export function isGatedError(err: unknown): err is SpotifyApiError {
+  return gatedPathAnnotation(err) !== undefined;
+}
+
 type GetFn = (
   path: string,
   params?: Record<string, string>,
@@ -82,29 +130,23 @@ type GetFn = (
 ) => Promise<unknown>;
 
 /** Install marker so a double installation never stacks wrappers. */
-const INSTALL_FLAG = '__graceful403Installed__';
-
-/**
- * Marker key set on the graceful-403 error `installGatedPathContract` throws.
- */
-const GATED_PATH_CONTRACT = Symbol.for('spotify-mcp.gatedPathContract');
-
-/** True when `err` is the graceful-403 error `installGatedPathContract` raises. */
-function isGatedPathContractError(err: unknown): boolean {
-  return err instanceof Error && (err as unknown as Record<symbol, unknown>)[GATED_PATH_CONTRACT] === true;
-}
+const INSTALL_FLAG = '__gatedPathContractInstalled__';
 
 /**
  * True when `err` is the shape a removed Spotify endpoint answers with: a 403
- * (raw, or re-raised by the graceful contract above), a 404, or a 410. Used by
- * tools that know one gated family is gone outright and has no replacement, so
- * they can name the removal instead of passing on a status that reads as a
- * missing object, an empty page or a scope problem (#1013).
+ * (raw, or annotated as gated by the contract above), a 404, or a 410. Used
+ * by tools that know one gated family is gone outright and has no replacement
+ * (the #1013 /browse/categories family, browse_category_deepdive) so they can
+ * name the removal instead of passing on a status that reads as a missing
+ * object, an empty page, or a scope problem.
+ *
+ * After #765 the gated 403 is still a SpotifyApiError \u2014 only annotated \u2014
+ * so the status check covers both raw and gated cases without needing a
+ * separate `isGatedPathContractError` predicate.
  */
 export function isRemovedEndpointFailure(err: unknown): boolean {
   return (
-    isGatedPathContractError(err) ||
-    (err instanceof SpotifyApiError && (err.status === 403 || err.status === 404 || err.status === 410))
+    err instanceof SpotifyApiError && (err.status === 403 || err.status === 404 || err.status === 410)
   );
 }
 
@@ -115,13 +157,13 @@ export function isRemovedEndpointFailure(err: unknown): boolean {
  * mapping is present in every host configuration -- no toolset trim, disable
  * override, or scope gate can take it away.
  *
- * Wraps `client.get` so 403s on gated-class paths short-circuit into the
- * graceful contract instead of the raw blanket "Forbidden". Everything else
- * -- other statuses, other paths, successful responses -- passes through
+ * Wraps `client.get` so 403s on gated-class paths are annotated and rethrown
+ * (#765) instead of being replaced with a plain Error. Everything else --
+ * other statuses, other paths, successful responses -- passes through
  * untouched. Because the wrapper is installed as an own property, internal
  * callers resolve it too (`getAllPages` walks pages via `this.get`), so
- * pagination over gated endpoints gets the same contract. Idempotent: a second
- * install on the same client is a no-op.
+ * pagination over gated endpoints gets the same contract. Idempotent: a
+ * second install on the same client is a no-op.
  */
 export function installGatedPathContract(client: SpotifyClient): void {
   const marker = client as unknown as Record<string, unknown>;
@@ -132,13 +174,15 @@ export function installGatedPathContract(client: SpotifyClient): void {
       return await original(path, params, opts);
     } catch (err) {
       if (err instanceof SpotifyApiError && err.status === 403 && isGatedPath(path)) {
-        const gated = new Error(graceful403Message(path, err), { cause: err });
-        // Tag it so a caller with a sharper diagnosis for this gated family
-        // (#1013: the removed browse categories) can recognise the shape
-        // without matching on the message text -- the gated 403 never reaches
-        // a tool as a SpotifyApiError.
-        (gated as unknown as Record<symbol, boolean>)[GATED_PATH_CONTRACT] = true;
-        throw gated;
+        // #765: annotate and rethrow the original SpotifyApiError so callers
+        // can keep branching on `err instanceof SpotifyApiError && err.status ===
+        // 403`. Replacing the error type destroyed that check (category_resolver,
+        // artist_collab_network, market_validate all rely on it), so the wrapper
+        // now tags the instance and lets the tool handler decide what graceful
+        // shape to produce from the same SpotifyApiError.
+        (err as unknown as GatedPathAnnotation).gatedSurface = true;
+        (err as unknown as { gatedPath: string }).gatedPath = path;
+        throw err;
       }
       throw err;
     }

@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { SpotifyApiError, type SpotifyClient } from '../client.js';
-import { isRemovedEndpointFailure } from '../gating.js';
+import { isGatedError, isRemovedEndpointFailure } from '../gating.js';
 import type {
   SpotifyTrack,
   SpotifyArtistFull,
@@ -1259,7 +1259,7 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
         validSet = new Set(codes);
         marketsRaw = data;
       } catch (err) {
-        if (err instanceof SpotifyApiError && err.status === 403) {
+        if (isGatedError(err)) {
           const note = `GET /markets returned 403 (removed for newer app registrations Feb 2026). Falling back to account market only.`;
           let accountMarket: string | undefined;
           if (args.include_account_market) {

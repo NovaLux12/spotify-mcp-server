@@ -18,6 +18,7 @@ import { chunk } from '../chunk.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
 import { SpotifyApiError } from '../client.js';
+import { isGatedError } from '../gating.js';
 import type {
   SpotifyAlbumItem,
   SpotifyAlbumRow as AlbumPayload,
@@ -190,6 +191,11 @@ function emitSearchResult(
  * Graceful-403 contract for the #329 registration-gated surface: Spotify 403
  * on /browse/categories or /artists/{id}/top-tracks becomes a short-circuit
  * disclosure naming the gate, never a raw Forbidden error.
+ *
+ * `isGatedError` lives in `src/gating.ts` (#765) -- the shared helper detects
+ * the gated-path annotation the contract installs on the original
+ * SpotifyApiError, so both this slice and `market_validate` (catalog.ts)
+ * branch on the same predicate and the wrapper's rethrow stays transparent.
  */
 function gatedEndpointMessage(endpoint: string): string {
   return (
@@ -198,10 +204,6 @@ function gatedEndpointMessage(endpoint: string): string {
     'on fresh app registrations). Enable it in the Spotify developer dashboard for this app, ' +
     'or use a registration where it is already enabled. Nothing was retrieved.'
   );
-}
-
-function isGatedError(err: unknown): err is SpotifyApiError {
-  return err instanceof SpotifyApiError && err.status === 403;
 }
 
 /**
