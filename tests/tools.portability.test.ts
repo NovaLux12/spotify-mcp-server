@@ -350,7 +350,7 @@ describe('export_all_playlists CSV formula neutralisation (#630)',()=>{
       });
       await withPortabilityRoot(dir,()=>h.invoke('export_all_playlists',{format:'csv',include_items:false}));
       const rows=parseCsvDocument(await readFile(join(dir,'playlists.csv'),'utf8'));
-      assert.deepEqual(rows[0],['playlist_id','playlist_name','item_uri','item_name']);
+      assert.deepEqual(rows[0],['playlist_id','playlist_name','item_uri','item_name','items_status']);
       for(const row of rows) for(const cell of row) assert.doesNotMatch(cell,FORMULA_LEAD,`cell would execute when opened: ${JSON.stringify(cell)}`);
       for(const [index,payload] of payloads.entries()) assert.equal(rows[index+1][1],`'${payload}`);
     } finally { await rm(dir,{recursive:true,force:true}); }
@@ -1012,6 +1012,160 @@ describe('export_all_playlists (scope, cap and unreadable item lists)',()=>{
       const doc=JSON.parse(await readFile(join(dir,'playlists.json'),'utf8'));
       assert.equal(doc.playlists[0].items_unreadable,'403 Forbidden');
       assert.equal(doc.playlists[0].items.length,0);
+      // #751: the row carries the refusal under the name the restore side
+      // reads, so restore_library_snapshot refuses this playlist instead of
+      // recreating it empty.
+      assert.equal(doc.playlists[0].unreadable,true);
+      assert.equal(doc.playlists[0].items_error,'403 Forbidden');
+      assert.equal(doc.playlists[0].items_truncated,false,'a failed walk is unread, not truncated');
+    } finally { await rm(dir,{recursive:true,force:true}); }
+  });
+});
+
+// #751: export_all_playlists disclosed neither its caps nor its failures, so a
+// DR file looked complete and was not. Every case below drives the handler and
+// reads what actually landed on disk.
+describe('export_all_playlists (#751) discloses what it could not read',()=>{
+  const emptyPage={items:[],total:0,limit:100,offset:0};
+  const onePlaylist=(total:number)=>[{id:'p0',name:'List 0',uri:'spotify:playlist:p0',owner:{id:'me'},items:{total}}];
+  const listPage=(items:unknown[],total:number)=>({items,total,limit:50,offset:0});
+
+  it('scope=owned refuses to export when /me throws — no file, scope_applied:false',async()=>{
+    const dir=await scratch();
+    try{
+      const h=harness((path)=>{
+        if(path==='/me') throw new Error('401 Spotify rejected the access token');
+        if(path==='/me/playlists') return listPage(onePlaylist(0),1);
+        return emptyPage;
+      });
+      const out=await withPortabilityRoot(dir,()=>h.invoke('export_all_playlists',{scope:'owned'}));
+      const payload=out.structuredContent!;
+      assert.equal(payload.ok,false);
+      assert.equal(payload.scope_applied,false);
+      assert.equal(payload.scope,'owned');
+      assert.match(textOf(out),/Refused to export with scope=owned/);
+      assert.match(textOf(out),/401 Spotify rejected the access token/);
+      assert.equal(h.client.calls.filter((c)=>c.path==='/me/playlists').length,0,'a refused owned export must not walk playlists it cannot filter');
+      assert.deepEqual(await readdir(dir),[],'nothing may be written when the owned filter could not be applied');
+    } finally { await rm(dir,{recursive:true,force:true}); }
+  });
+
+  it('scope=owned refuses when /me answers without a user id, rather than exporting every playlist',async()=>{
+    const dir=await scratch();
+    try{
+      // A 204, or a body that never carried `id`, resolves to no id. That is
+      // not the same as "you own them all".
+      const h=harness((path)=>{
+        if(path==='/me') return null;
+        if(path==='/me/playlists') return listPage([...onePlaylist(0),{id:'p1',name:'Someone else\'s',uri:'spotify:playlist:p1',owner:{id:'other'},items:{total:0}}],2);
+        return emptyPage;
+      });
+      const out=await withPortabilityRoot(dir,()=>h.invoke('export_all_playlists',{scope:'owned'}));
+      const payload=out.structuredContent!;
+      assert.equal(payload.ok,false);
+      assert.equal(payload.scope_applied,false);
+      assert.match(textOf(out),/returned no user id/);
+      assert.deepEqual(await readdir(dir),[]);
+    } finally { await rm(dir,{recursive:true,force:true}); }
+  });
+
+  it('scope=all never reads /me and reports scope_applied',async()=>{
+    const dir=await scratch();
+    try{
+      const h=harness((path)=>path==='/me/playlists'?listPage(onePlaylist(0),1):emptyPage);
+      const out=await withPortabilityRoot(dir,()=>h.invoke('export_all_playlists',{scope:'all'}));
+      assert.equal(out.structuredContent!.scope_applied,true);
+      assert.equal(h.client.calls.filter((c)=>c.path==='/me').length,0,'an all-playlists export needs no profile read');
+      const doc=JSON.parse(await readFile(join(dir,'playlists.json'),'utf8'));
+      assert.equal(doc.scope_applied,true);
+      assert.equal(doc.scope,'all');
+    } finally { await rm(dir,{recursive:true,force:true}); }
+  });
+
+  it('a playlist whose item walk hits the cap carries items_truncated and items_cap',async()=>{
+    const dir=await scratch();
+    try{
+      await withFetchAllCap(2,async()=>{
+        const h=harness((path)=>{
+          if(path==='/me/playlists') return listPage(onePlaylist(5),1);
+          // One page of 3 with total 5: the cap of 2 cuts it short.
+          if(path==='/playlists/p0/items') return {items:[0,1,2].map((i)=>({item:{uri:`spotify:track:t${i}`,name:`T${i}`}})),total:5,limit:3,offset:0};
+          return emptyPage;
+        });
+        const out=await withPortabilityRoot(dir,()=>h.invoke('export_all_playlists',{}));
+        const doc=JSON.parse(await readFile(join(dir,'playlists.json'),'utf8'));
+        const row=doc.playlists[0];
+        assert.equal(row.items_truncated,true);
+        assert.equal(row.items_cap,2);
+        assert.equal(row.items.length,2);
+        assert.equal(row.unreadable,undefined,'a capped walk is readable, just partial');
+        assert.deepEqual(doc.capped_playlists,['p0']);
+        assert.equal(doc.cap,2);
+        assert.equal(doc.truncated,true);
+        assert.equal(out.structuredContent!.truncated,true);
+        assert.match(textOf(out),/items_truncated/);
+      });
+    } finally { await rm(dir,{recursive:true,force:true}); }
+  });
+
+  it('a playlist walked exactly to the cap is not reported as truncated',async()=>{
+    const dir=await scratch();
+    try{
+      await withFetchAllCap(2,async()=>{
+        const h=harness((path)=>{
+          if(path==='/me/playlists') return listPage(onePlaylist(2),1);
+          if(path==='/playlists/p0/items') return {items:[0,1].map((i)=>({item:{uri:`spotify:track:t${i}`}})),total:2,limit:2,offset:0};
+          return emptyPage;
+        });
+        await withPortabilityRoot(dir,()=>h.invoke('export_all_playlists',{}));
+        const doc=JSON.parse(await readFile(join(dir,'playlists.json'),'utf8'));
+        assert.equal(doc.playlists[0].items_truncated,false,'rows.length === cap is not evidence of a short read');
+        assert.equal(doc.playlists[0].items.length,2);
+        assert.equal(doc.truncated,false);
+      });
+    } finally { await rm(dir,{recursive:true,force:true}); }
+  });
+
+  it('a playlist whose item count Spotify never reported is total:null, not 0',async()=>{
+    const dir=await scratch();
+    try{
+      const h=harness((path)=>path==='/me/playlists'
+        ?listPage([{id:'p0',name:'List 0',uri:'spotify:playlist:p0',owner:{id:'me'}}],1)
+        :emptyPage);
+      await withPortabilityRoot(dir,()=>h.invoke('export_all_playlists',{}));
+      const doc=JSON.parse(await readFile(join(dir,'playlists.json'),'utf8'));
+      assert.equal(doc.playlists[0].total,null,'an unreported count is unknown, not zero');
+    } finally { await rm(dir,{recursive:true,force:true}); }
+  });
+
+  it('include_items=false says so on the file rather than writing empty-looking rows',async()=>{
+    const dir=await scratch();
+    try{
+      const h=harness((path)=>path==='/me/playlists'?listPage(onePlaylist(2),1):emptyPage);
+      const out=await withPortabilityRoot(dir,()=>h.invoke('export_all_playlists',{include_items:false}));
+      const doc=JSON.parse(await readFile(join(dir,'playlists.json'),'utf8'));
+      assert.equal(doc.items_included,false);
+      assert.equal(doc.playlists[0].items_cap,null,'no walk ran, so no cap was in force');
+      assert.match(textOf(out),/include_items=false/);
+    } finally { await rm(dir,{recursive:true,force:true}); }
+  });
+
+  it('the CSV carries the same per-row verdict the JSON does',async()=>{
+    const dir=await scratch();
+    try{
+      await withFetchAllCap(2,async()=>{
+        const h=harness((path)=>{
+          if(path==='/me/playlists') return listPage([...onePlaylist(5),{id:'p1',name:'Locked',uri:'spotify:playlist:p1',owner:{id:'me'},items:{total:9}}],2);
+          if(path==='/playlists/p0/items') return {items:[0,1,2].map((i)=>({item:{uri:`spotify:track:t${i}`}})),total:5,limit:3,offset:0};
+          if(path==='/playlists/p1/items') throw new Error('403 Forbidden');
+          return emptyPage;
+        });
+        await withPortabilityRoot(dir,()=>h.invoke('export_all_playlists',{format:'csv'}));
+        const rows=parseCsvDocument(await readFile(join(dir,'playlists.csv'),'utf8'));
+        assert.deepEqual(rows[0],['playlist_id','playlist_name','item_uri','item_name','items_status']);
+        const statuses=rows.slice(1).map((r:string[])=>[r[0],r[4]]);
+        assert.deepEqual(statuses,[['p0','truncated'],['p0','truncated'],['p1','unreadable']]);
+      });
     } finally { await rm(dir,{recursive:true,force:true}); }
   });
 });
