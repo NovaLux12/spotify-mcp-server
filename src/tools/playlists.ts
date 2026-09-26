@@ -1855,7 +1855,7 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
   // an order-preserving boolean array. A read that fails, or that comes back
   // without a verdict for an id, is reported as unreadable with its reason —
   // never as "not followed".
-  server.tool('check_playlist_following', 'Check if you follow 1–50 playlists (playlists, or the deprecated playlist_ids). Follow state: GET /me/library/contains?uris=spotify:playlist:<id>,… (40/req, 1–2 GETs). Unreadable state reports unknown, never not-followed.', { ...playlistListInputFields(['playlist_ids'], { min: 1, max: 50 }), ...sharedListFields }, async (args) => {
+  server.tool('check_playlist_following', 'Check if you follow 1–50 playlists (the canonical playlists field or the deprecated playlist_ids alias). Follow state: GET /me/library/contains?uris=spotify:playlist:<id>,… (40/req, 1–2 GETs). Unreadable state reports unknown, never not-followed.', { ...playlistListInputFields(['playlist_ids'], { min: 1, max: 50 }), ...sharedListFields }, async (args) => {
     const input = resolvePlaylistInput(args, { kind: 'list', aliases: ['playlist_ids'] });
     // `following` is a tri-state on purpose: null means "we could not read
     // this", which is not the same answer as false (#862).
