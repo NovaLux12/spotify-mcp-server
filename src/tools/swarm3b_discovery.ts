@@ -45,7 +45,7 @@ import {
 import type { ResponseFormatValue } from '../shaping.js';
 import { resolveSpotifyId, spotifyId } from '../refs.js';
 import { getConfig } from '../config.js';
-import { MARKET_CODE } from './catalog.js';
+import { ARTIST_ALBUM_PAGE_LIMIT, MARKET_CODE } from './catalog.js';
 
 // ---------------------------------------------------------------------------
 // Shared shapes + plumbing
@@ -189,7 +189,9 @@ async function artistAlbums(
 ): Promise<SpotifyAlbumItem[]> {
   return client.getAllPages<SpotifyAlbumItem>(`/artists/${encodeURIComponent(artistId)}/albums`, {
     include_groups: includeGroups,
-    limit: '50',
+    // Pinned to the endpoint's documented maximum; a larger `limit` is rejected
+    // outright. The walk cap belongs in `maxItems`, not here (#1209).
+    limit: String(ARTIST_ALBUM_PAGE_LIMIT),
   }, { maxItems });
 }
 
@@ -210,7 +212,7 @@ async function artistAlbumsWalk(
 ): Promise<{ items: SpotifyAlbumItem[]; truncated: boolean }> {
   return client.getAllPagesWithTruncation<SpotifyAlbumItem>(`/artists/${encodeURIComponent(artistId)}/albums`, {
     include_groups: includeGroups,
-    limit: '50',
+    limit: String(ARTIST_ALBUM_PAGE_LIMIT),
   }, { maxItems });
 }
 

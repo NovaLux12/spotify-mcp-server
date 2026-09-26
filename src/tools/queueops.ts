@@ -11,6 +11,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { SpotifyApiError } from '../client.js';
 import type { SpotifyClient } from '../client.js';
 import { PlaybackDryRun, describeDryRun, parseSpotifyUri, ResponseFormat } from '../shaping.js';
+import { ARTIST_ALBUM_PAGE_LIMIT } from './catalog.js';
 import type { SpotifyPaged, SpotifyTrack } from '../types/spotify.js';
 
 type TextContent = { type: 'text'; text: string };
@@ -129,7 +130,7 @@ async function resolveUris(client: SpotifyClient, sourceUri: string, limit: numb
     uris = (top?.tracks ?? []).map((t) => t.uri).filter(Boolean).slice(0, limit);
     total = uris.length;
     if (uris.length === 0) {
-      const albums = await client.get<SpotifyPaged<{ id: string }>>(`/artists/${id}/albums`, { limit: '20' });
+      const albums = await client.get<SpotifyPaged<{ id: string }>>(`/artists/${id}/albums`, { limit: String(ARTIST_ALBUM_PAGE_LIMIT) });
       for (const al of (albums?.items ?? []).slice(0, 5)) {
         const tr = await client.get<SpotifyPaged<SpotifyTrack>>(`/albums/${al.id}/tracks`, { limit: '20' });
         for (const t of tr?.items ?? []) { if (t?.uri) uris.push(t.uri); if (uris.length >= limit) break; }
