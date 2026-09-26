@@ -45,6 +45,9 @@ import type { ResponseFormatValue } from '../shaping.js';
 import { resolveSpotifyId, spotifyId } from '../refs.js';
 import { getConfig } from '../config.js';
 import { MARKET_CODE } from './catalog.js';
+// #592: genre_dive_search / scene_sampler_search feed the search-history
+// sidecar. resolveArtistRef below deliberately does not — it is an id lookup.
+import { searchAndRecord } from './searchhistory.js';
 
 // ---------------------------------------------------------------------------
 // Shared shapes + plumbing
@@ -1256,7 +1259,9 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
     },
     async (args) => {
       const rf = args.response_format;
-      const data = await client.get<SearchResponse>('/search', searchParams(`genre:"${args.genre.replace(/"/g, '')}"`, 'artist', args.limit ?? 10, args.market));
+      // #592: recorded from the raw response, so a rerun offers the artist URIs
+      // the tool returned rather than the trimmed {id,name} rows below.
+      const data = await searchAndRecord((p) => client.get<SearchResponse>('/search', p), searchParams(`genre:"${args.genre.replace(/"/g, '')}"`, 'artist', args.limit ?? 10, args.market));
       const rows = (data?.artists?.items ?? []).map((a) => ({
         id: a.id, name: a.name, genres: a.genres ?? [],
       }));
@@ -1286,7 +1291,7 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
     },
     async (args) => {
       const rf = args.response_format;
-      const data = await client.get<SearchResponse>('/search', searchParams(`genre:"${args.scene.replace(/"/g, '')}"`, 'artist', 10, args.market));
+      const data = await searchAndRecord((p) => client.get<SearchResponse>('/search', p), searchParams(`genre:"${args.scene.replace(/"/g, '')}"`, 'artist', 10, args.market));
       const artists = (data?.artists?.items ?? []).slice(0, Math.min(10, Math.max(1, args.max_artists ?? 8)));
       const rows: Array<{ artist: string; artist_id: string; release: string; release_id: string; release_date: string; year: number | null; album_type: string }> = [];
       for (const a of artists) {

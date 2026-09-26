@@ -40,6 +40,9 @@ import {
 } from '../shaping.js';
 import type { ResponseFormatValue, PaginationInfo } from '../shaping.js';
 import { getConfig } from '../config.js';
+// #592: every typed /search on this path (search_by_isrc, find_canonical_track,
+// search_market_diff, audiobooks_by_author) feeds the search-history sidecar.
+import { searchAndRecord } from './searchhistory.js';
 
 // ---------------------------------------------------------------------------
 // Shared shapes + plumbing
@@ -170,8 +173,8 @@ async function runTypedSearch<T>(
   args: SearchArgs,
   q?: string,
 ): Promise<{ items: T[]; total: number | null }> {
-  const data = await client.get<CatalogSearchResponse>(
-    '/search',
+  const data = await searchAndRecord(
+    (p) => client.get<CatalogSearchResponse>('/search', p),
     searchRequestParams(q ?? args.query, type, args),
   );
   const section = (
@@ -319,8 +322,8 @@ export function registerExhaust2CatalogTools(server: McpServer, client: SpotifyC
       if (f.upc) parts.push(`upc:${f.upc.replace(/[^0-9]/g, '')}`);
       const q = parts.join(' ');
       const types = (args.types ?? ['track']).join(',');
-      const data = await client.get<CatalogSearchResponse>(
-        '/search',
+      const data = await searchAndRecord(
+        (p) => client.get<CatalogSearchResponse>('/search', p),
         searchRequestParams(q, types, { query: q, limit: args.limit, market: args.market }),
       );
       const sections: string[] = [`Advanced search — query: ${q}`, ''];
@@ -487,8 +490,10 @@ export function registerExhaust2CatalogTools(server: McpServer, client: SpotifyC
       const rf = args.response_format;
       const types = args.types ?? ['album', 'track'];
       const q = `${args.query} tag:new`;
-      const data = await client.get<CatalogSearchResponse>(
-        '/search',
+      // #592: the composed `… tag:new` query is what a rerun must reproduce,
+      // so the sidecar stores this and not the bare base query.
+      const data = await searchAndRecord(
+        (p) => client.get<CatalogSearchResponse>('/search', p),
         searchRequestParams(q, types.join(','), { query: q, limit: args.limit, market: args.market }),
       );
       const lines: string[] = [`Fresh releases (tag:new) for "${args.query}":`, ''];

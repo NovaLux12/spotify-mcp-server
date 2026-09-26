@@ -23,6 +23,9 @@ import type { ResponseFormatValue } from '../shaping.js';
 import { getConfig } from '../config.js';
 import { spotifyId, resolveSpotifyId } from '../refs.js';
 import { MARKET_CODE } from './catalog.js';
+// #592: runSearch feeds the search-history sidecar; `record: false` marks the
+// two callers whose /search is plumbing (an id resolution, a top-genre probe).
+import { searchAndRecord } from './searchhistory.js';
 
 // ---------------------------------------------------------------------------
 // Shared shapes + local plumbing (mirrors exhaust2 house helpers)
@@ -145,7 +148,13 @@ interface SavedTrackWide {
   track: SpotifyTrack & { album: SpotifyAlbumSimple & { release_date?: string; album_type?: string } };
 }
 
-/** Run one typed /search call and return the section's non-null rows. */
+/**
+ * Run one typed /search call and return the section's non-null rows.
+ *
+ * `record` is false for a call that resolves a name to an id or probes a
+ * derived filter: those are steps inside another tool, not searches the user
+ * ran, and the sidecar is a record of the latter (#592).
+ */
 async function runSearch<T>(
   client: SpotifyClient,
   sectionKey: 'tracks' | 'artists' | 'albums',
@@ -153,10 +162,15 @@ async function runSearch<T>(
   q: string,
   limit: number,
   market?: string,
+  record = true,
 ): Promise<{ items: T[]; total: number | null }> {
   const params: Record<string, string> = { q, type, limit: String(Math.min(10, Math.max(1, limit))) };
   if (market) params.market = market;
-  const data = await client.get<SearchResponse>('/search', params);
+  const data = await searchAndRecord(
+    (p) => client.get<SearchResponse>('/search', p),
+    params,
+    { record },
+  );
   const section = data?.[sectionKey];
   const items = (section?.items ?? []).filter((x) => x != null);
   return { items: items as T[], total: typeof section?.total === 'number' ? section.total : null };
@@ -792,7 +806,8 @@ export function registerSwarm3DiscoveryTools(server: McpServer, client: SpotifyC
       if (direct) {
         bId = resolveSpotifyId(bName, 'artist');
       } else {
-        const { items } = await runSearch<SpotifyArtistFull>(client, 'artists', 'artist', `artist:"${bName.replace(/"/g, '')}"`, 1, args.market);
+        // #592: `artist_b` is resolved to an id here, not searched for.
+        const { items } = await runSearch<SpotifyArtistFull>(client, 'artists', 'artist', `artist:"${bName.replace(/"/g, '')}"`, 1, args.market, false);
         if (items.length === 0) throw new Error(`Artist "${bName}" not found in search`);
         bId = items[0].id;
         bName = items[0].name;
@@ -1801,7 +1816,9 @@ export function registerSwarm3DiscoveryTools(server: McpServer, client: SpotifyC
       }
       sections.push('');
       const q = topGenre ? `genre:"${topGenre}" tag:new` : 'tag:new';
-      const fresh = await runSearch<SpotifyAlbumItem>(client, 'albums', 'album', q, 5, args.market);
+      // #592: seeded from /me/top-artists, so this probes the digest's own
+      // taste rather than recording a search the user ran.
+      const fresh = await runSearch<SpotifyAlbumItem>(client, 'albums', 'album', q, 5, args.market, false);
       sections.push(`B. tag:new catalog matches${topGenre ? ` for genre "${topGenre}"` : ''}:`);
       sections.push(fresh.items.length
         ? fresh.items.map((al) => `  - "${al.name}" — ${(al.artists ?? []).map((x) => x.name).join(', ')} (${al.release_date ?? '?'})`).join('\n')

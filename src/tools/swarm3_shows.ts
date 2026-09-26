@@ -19,6 +19,8 @@
  */
 import { z } from 'zod';
 import { MARKET_CODE } from './catalog.js';
+// #592: find_show_by_publisher is a user-typed catalog search; record it.
+import { searchAndRecord } from './searchhistory.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
 import { getConfig } from '../config.js';
@@ -1286,8 +1288,8 @@ export function registerSwarm3ShowsTools(server: McpServer, client: SpotifyClien
       const params: Record<string, string> = { q: args.query, type: 'show', limit: String(pageLimit) };
       if (offset > 0) params.offset = String(offset);
       if (args.market) params.market = args.market;
-      const res = await client.get<{ shows?: { items?: (SpotifyShowSimple | null)[]; total?: number } }>(
-        '/search',
+      const res = await searchAndRecord(
+        (p) => client.get<{ shows?: { items?: (SpotifyShowSimple | null)[]; total?: number } }>('/search', p),
         params,
       );
       const all = (res?.shows?.items ?? []).filter((s): s is SpotifyShowSimple => !!s?.id);

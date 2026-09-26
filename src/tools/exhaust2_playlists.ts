@@ -41,6 +41,8 @@ import {
   withPlaylistInputNote,
 } from '../shaping.js';
 import { expandAlbumToTracks } from './playlistbatch.js';
+// #592: playlist_add_by_search's catalog search feeds the search-history sidecar.
+import { searchAndRecord } from './searchhistory.js';
 import type { ResponseFormatValue } from '../shaping.js';
 import type {
   PlaylistItemObject,
@@ -559,8 +561,13 @@ async function searchOne(
   type: 'track' | 'episode',
 ): Promise<SearchLike> {
   // Feb 2026: /search limit max is 10 (400 above), default 5.
+  // #592: the one caller is playlist_add_by_search, a user-typed search, so
+  // the sidecar records it and a rerun re-picks the same hits.
   return (
-    (await client.get<SearchLike>('/search', { q: query, type, limit: '10' })) ?? {}
+    (await searchAndRecord(
+      (p) => client.get<SearchLike>('/search', p),
+      { q: query, type, limit: '10' },
+    )) ?? {}
   );
 }
 

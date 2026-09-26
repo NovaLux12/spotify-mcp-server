@@ -16,6 +16,8 @@
 import { z } from 'zod';
 import { MARKET_CODE } from './catalog.js';
 import { SPOTIFY_SEARCH_MAX_LIMIT } from './search.js';
+// #592: playlist_fill_from_search's track searches feed the search-history sidecar.
+import { searchAndRecord } from './searchhistory.js';
 
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
@@ -86,15 +88,21 @@ async function fetchTrackSearchPage(
   offset: number,
   market: string | undefined,
 ): Promise<TrackSearchPage> {
-  const body = await client.get<{
-    tracks?: { items?: Array<{ uri?: string } | null>; total?: number };
-  }>('/search', {
-    q: query,
-    type: 'track',
-    limit: String(SPOTIFY_SEARCH_MAX_LIMIT),
-    ...(offset > 0 ? { offset: String(offset) } : {}),
-    ...(market ? { market } : {}),
-  });
+  // #592: one sidecar entry per query, not per page. A run pages up to 25
+  // queries round-robin until the playlist is full, so recording every window
+  // would bury the user's actual searches under continuations of them; the
+  // first window is the search, the rest are that same search continued.
+  const body = await searchAndRecord(
+    (p) => client.get<{ tracks?: { items?: Array<{ uri?: string } | null>; total?: number } }>('/search', p),
+    {
+      q: query,
+      type: 'track',
+      limit: String(SPOTIFY_SEARCH_MAX_LIMIT),
+      ...(offset > 0 ? { offset: String(offset) } : {}),
+      ...(market ? { market } : {}),
+    },
+    { record: offset === 0 },
+  );
   const items = body?.tracks?.items ?? [];
   const nextOffset = offset + items.length;
   const total = body?.tracks?.total;

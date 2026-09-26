@@ -22,6 +22,8 @@ import {
   describeDryRun,
   validateUris,
 } from '../shaping.js';
+// #592: play_from_search's catalog search feeds the search-history sidecar.
+import { searchAndRecord } from './searchhistory.js';
 
 function formatDuration(ms: number): string {
   const minutes = Math.floor(ms / 60000);
@@ -332,7 +334,9 @@ export function registerPlaybackTools(server: McpServer, client: SpotifyClient):
       };
       if (args.market) params.market = args.market;
 
-      const results = await client.get<SearchResponse>('/search', params);
+      // #592: a free-text search the user typed — record it so `search_history`
+      // and `search_rerun` see the query even though the tool's job is to play.
+      const results = await searchAndRecord((p) => client.get<SearchResponse>('/search', p), params);
 
       // Spotify can return literal `null` rows inside items[] (issue #28).
       // Skip them, then prefer a candidate that is actually playable in the

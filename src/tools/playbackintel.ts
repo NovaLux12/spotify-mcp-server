@@ -13,6 +13,20 @@ import type { SpotifyClient } from '../client.js';
 import type { PlaybackState, SpotifyQueue, GetDevicesResponse, SpotifyDevice, SpotifyTrack, SpotifyEpisode } from '../types/spotify.js';
 import { ResponseFormat, DryRun, MaxResults, resolveMaxResults, truncateItems, parseSpotifyUri, describeDryRun, validateUris } from '../shaping.js';
 import { loadPlaybackExt, detectSessions } from './playbackext.js';
+// #592: play_on's query mode is a user-typed catalog search; record it.
+import { searchAndRecord } from './searchhistory.js';
+
+/**
+ * The /search shape play_on's query mode reads: one section, one hit, its uri.
+ * `uri` is required because the rows below read it unguarded — tracks, albums
+ * and playlists in a search response always carry one, and typing it optional
+ * would only be honest about a case the tool already cannot handle.
+ */
+interface HitSearchResponse {
+  tracks?: { items?: Array<{ uri: string }> };
+  albums?: { items?: Array<{ uri: string }> };
+  playlists?: { items?: Array<{ uri: string }> };
+}
 
 type ToolResult = { content: Array<{ type: 'text'; text: string }>; structuredContent?: Record<string, unknown> };
 function textResult(text: string, structured?: Record<string, unknown>): ToolResult {
@@ -78,7 +92,9 @@ export function registerPlaybackIntelTools(server: McpServer, client: SpotifyCli
       let label = '';
       if (hasQuery) {
         const q = args.query as string; const st = (args.search_type as string) ?? 'track';
-        const res: any = await client.get('/search', { q, type: st, limit: '1' });
+        // #592: the query the user typed is a search, even though this tool's
+        // job is to play the first hit.
+        const res = await searchAndRecord((p) => client.get<HitSearchResponse>('/search', p), { q, type: st, limit: '1' });
         const items = res?.tracks?.items ?? res?.albums?.items ?? res?.playlists?.items ?? [];
         if (!items.length) return textResult(`No results for "${q}" (${st}).`, { ok:false });
         const hit = items[0]; playBody = { context_uri: hit.uri ?? undefined, uris: hit.uri ? undefined : [hit.uri] };

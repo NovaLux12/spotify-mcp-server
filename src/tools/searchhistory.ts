@@ -7,6 +7,13 @@
  * (SPOTIFY_MCP_SEARCH_HISTORY=0) and never throws, so a sidecar that cannot be
  * written cannot fail a search.
  *
+ * Recording, every other path (#592): `searchAndRecord()` wraps a caller's own
+ * `/search` fetch and records the response, so the paths `search` does not
+ * cover (search_advanced, search_fresh, search_by_isrc, genre_dive_search,
+ * find_show_by_publisher, playlist_add_by_search, play_from_search, play_on,
+ * …) feed the same sidecar. Paths whose `/search` is a name→id resolution or
+ * an internal probe pass `record: false`.
+ *
  * Replay (#793): `search_rerun` clamps the stored limit into the live range
  * before it reaches the wire, so a sidecar written under the older, higher
  * cap still replays — and reports the limit actually sent.
@@ -115,6 +122,70 @@ export async function recordSearch(input: RecordSearchInput, env: NodeJS.Process
   } catch {
     // Best-effort by design: history is an aid, never a dependency.
   }
+}
+
+export interface SearchCallOptions {
+  /**
+   * `false` for a `/search` that is plumbing rather than a user search — a
+   * name→id resolution, an internal probe — so the sidecar keeps holding what
+   * the user actually asked for. Unset records.
+   */
+  record?: boolean;
+  /** Defaults to `process.env`, exactly as `recordSearch` does. */
+  env?: NodeJS.ProcessEnv;
+}
+
+/**
+ * Result rows of every requested type, in the order `search` itself ranks
+ * them (`${type}s.items`, one section per comma-separated `type`). Reads the
+ * *response*, not the request, so the ids a rerun offers are the ids the
+ * caller was shown.
+ */
+function sectionsOf(res: unknown, types: readonly string[]): unknown[] {
+  const body = (res ?? {}) as Record<string, { items?: unknown } | undefined>;
+  const out: unknown[] = [];
+  for (const type of types) {
+    const items = body[`${type}s`]?.items;
+    if (Array.isArray(items)) out.push(...items);
+  }
+  return out;
+}
+
+/**
+ * Run one `GET /search` and record it. This is the entry point every search
+ * path uses so `search_history` / `search_rerun` / `search_history_stats` stop
+ * being permanently empty (#592).
+ *
+ * `get` is the caller's own fetch (a plain `client.get`, or a gated wrapper) so
+ * no site's request path changes. Everything recorded is read off the exact
+ * params that went on the wire, so a rerun reproduces the call rather than the
+ * intent behind it — `search_fresh` stores `bob dylan tag:new`, not `bob dylan`.
+ *
+ * Returns the response untouched, and never throws: a search that succeeded is
+ * still a search the caller must get, recorded or not.
+ */
+export async function searchAndRecord<T>(
+  get: (params: Record<string, string>) => Promise<T>,
+  params: Record<string, string>,
+  options: SearchCallOptions = {},
+): Promise<T> {
+  const res = await get(params);
+  if (options.record === false) return res;
+  const types = (params.type ?? '').split(',').map((t) => t.trim()).filter(Boolean);
+  const items = sectionsOf(res, types);
+  if (items.length > 0) {
+    const limit = Number(params.limit);
+    const offset = params.offset === undefined ? Number.NaN : Number(params.offset);
+    await recordSearch({
+      query: params.q ?? '',
+      types,
+      items,
+      ...(Number.isFinite(limit) ? { limit } : {}),
+      ...(params.market ? { market: params.market } : {}),
+      ...(Number.isFinite(offset) ? { offset } : {}),
+    }, options.env);
+  }
+  return res;
 }
 
 export function searchHistoryFile(env: NodeJS.ProcessEnv = process.env): string {
