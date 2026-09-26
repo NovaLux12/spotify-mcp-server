@@ -422,6 +422,29 @@ describe('exhaust2_misc — 27-tool misc slice', () => {
     assert.equal((res.structuredContent as { matches: number }).matches, 1);
   });
 
+  // #1053 — playlist_from_tags is the fourth consumer of loadGenreTags. The
+  // #759 contract is "throw on corruption, never coerce to empty", and the
+  // existing three consumers (library_genre_report, filter_by_genre,
+  // tag_management) honour it by letting the read's throw propagate. Pin the
+  // same behaviour here so a future refactor cannot silently swallow it and
+  // turn the sidecar into a one-entry stub on the next write.
+  it('playlist_from_tags honours the #759 contract: corrupt sidecar throws and the file is preserved', async () => {
+    const corrupt = '{not json';
+    writeFileSync(process.env.SPOTIFY_MCP_GENRE_TAGS_FILE!, corrupt, 'utf8');
+    const getAllPages = mock.fn(async () => []);
+    const h = getHandler('playlist_from_tags', makeClient({ getAllPages }));
+    await assert.rejects(
+      h({ tags: ['pop'], mode: 'create', dry_run: true, response_format: 'concise' }),
+      /is not valid JSON/,
+    );
+    // The hand-curated bytes are still on disk, byte for byte — the contract
+    // never authorises a write to clobber them.
+    assert.equal(readFileSync(process.env.SPOTIFY_MCP_GENRE_TAGS_FILE!, 'utf8'), corrupt);
+    // And the corruption surfaces BEFORE the /me/tracks walk, so a corrupt
+    // store never triggers a full library scan that ends up matching nothing.
+    assert.equal(getAllPages.mock.callCount(), 0);
+  });
+
   // #418
   it('listening_journal_append writes timestamped notes to the sidecar', async () => {
     const h = getHandler('listening_journal_append', makeClient());
@@ -582,6 +605,8 @@ describe('exhaust2_misc — 27-tool misc slice', () => {
     const ext = JSON.parse(readFileSync(process.env.SPOTIFY_MCP_PLAYBACKEXT_FILE!, 'utf8'));
     assert.equal(Object.keys(ext.devicePresets).length, 0);
   });
+
+  // cleanup after all tests
 
   // cleanup after all tests
   after(() => {
