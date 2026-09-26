@@ -95,12 +95,12 @@ function appendPaginationFooters(
 /** `/me/following` accepts at most 50 rows per page. */
 const FOLLOWED_PAGE_LIMIT = CHUNK_CAPS.followed;
 
-interface FollowedArtistsWalk {
+export interface FollowedArtistsWalk {
   /** Every artist collected, already sliced to the fetch-all cap. */
   items: SpotifyArtistFull[];
-  /** Server-reported total when Spotify sends one, else the walked count. */
-  total: number;
-  /** The walk stopped at fetchAllCap, so the caller is not seeing everything. */
+  /** The count Spotify itself reported, or null when it sent none (#718). */
+  reportedTotal: number | null;
+  /** The fetch-all cap is what ended the walk, so rows past it were never asked for. */
   truncatedByCap: boolean;
   /** Resume cursor for the page the walk stopped on; null when it ran out. */
   nextCursor: string | null;
@@ -114,13 +114,22 @@ interface FollowedArtistsWalk {
  * ran inline, lifted here so the two follow readers cannot drift apart. Every
  * page is `limit=50`, and the walk stops at `getConfig().fetchAllCap`
  * (SPOTIFY_MCP_FETCH_ALL_CAP) rather than paging without bound.
+ *
+ * The verdict is the loop's own exit reason, never the collected count (#718).
+ * `items.length >= cap` fires on a follow list that happens to END at exactly
+ * the cap — nothing was dropped, and "truncated ... for the rest" would
+ * invent a rest that does not exist. `stoppedByCap` records which branch
+ * actually ended the walk; `reportedTotal` is the server's own number, or
+ * null when it sent none, so a caller can never read the walked count off as
+ * the size of the follow list.
  */
-async function walkFollowedArtists(client: SpotifyClient): Promise<FollowedArtistsWalk> {
+export async function walkFollowedArtists(client: SpotifyClient): Promise<FollowedArtistsWalk> {
   const cap = getConfig().fetchAllCap;
   const items: SpotifyArtistFull[] = [];
   let after: string | undefined;
-  let total = 0;
+  let reportedTotal: number | null = null;
   let nextCursor: string | null = null;
+  let stoppedByCap = false;
   for (;;) {
     const params: Record<string, string> = {
       type: 'artist',
@@ -130,22 +139,24 @@ async function walkFollowedArtists(client: SpotifyClient): Promise<FollowedArtis
     const res = await client.get<FollowedArtistsResponse>('/me/following', params);
     const followed = res?.artists;
     const page = Array.isArray(followed?.items) ? followed!.items! : [];
-    total = typeof followed?.total === 'number' ? followed.total : total + page.length;
+    if (typeof followed?.total === 'number') reportedTotal = followed.total;
     items.push(...page);
     nextCursor = followed?.cursors?.after ?? null;
     // A full page with a cursor is the only case where another request can
     // return anything; a short page or a missing cursor ends the walk.
     if (!nextCursor || page.length < FOLLOWED_PAGE_LIMIT) break;
-    if (items.length >= cap) break;
+    if (items.length >= cap) {
+      stoppedByCap = true;
+      break;
+    }
     after = nextCursor;
   }
-  const truncatedByCap = items.length >= cap;
   return {
-    items: truncatedByCap ? items.slice(0, cap) : items,
-    total,
-    truncatedByCap,
+    items: stoppedByCap ? items.slice(0, cap) : items,
+    reportedTotal,
+    truncatedByCap: stoppedByCap,
     // A completed walk has nothing left to resume; only a capped walk does.
-    nextCursor: truncatedByCap ? nextCursor : null,
+    nextCursor: stoppedByCap ? nextCursor : null,
   };
 }
 
@@ -226,7 +237,10 @@ export function registerFollowingTools(server: McpServer, client: SpotifyClient)
       // payload reports when the fetch-all cap cut the walk short.
       if (args.fetch_all) {
         const walk = await walkFollowedArtists(client);
-        const pagination = paginationInfo({ total: walk.total, returned: walk.items.length });
+        // #718: the payload's total is the count Spotify reported. It is null
+        // when Spotify sent none — never the walked count, which is the number
+        // of rows this call returned, not the size of the follow list.
+        const pagination = paginationInfo({ total: walk.reportedTotal, returned: walk.items.length });
         const extra = {
           fetch_all: true,
           next_cursor: walk.nextCursor,
@@ -240,13 +254,20 @@ export function registerFollowingTools(server: McpServer, client: SpotifyClient)
           );
         }
         const fetched = walk.items.length;
-        const header = walk.truncatedByCap
-          ? `Followed artists (${fetched} fetched of ${walk.total}, showing ${fetched}):`
-          : `Followed artists (${fetched} fetched, showing ${fetched}):`;
+        // "of N" only when Spotify reported N. The walked count is the number
+        // of rows this call returned, and passing it off as the size of the
+        // follow list is the claim #718 removed.
+        const header =
+          walk.truncatedByCap && walk.reportedTotal !== null
+            ? `Followed artists (${fetched} fetched of ${walk.reportedTotal}, showing ${fetched}):`
+            : `Followed artists (${fetched} fetched, showing ${fetched}):`;
         const lines = [header];
         for (const artist of walk.items) lines.push(renderArtistLine(artist));
         if (walk.truncatedByCap) {
-          const remaining = walk.total > fetched ? walk.total - fetched : null;
+          const remaining =
+            walk.reportedTotal !== null && walk.reportedTotal > fetched
+              ? walk.reportedTotal - fetched
+              : null;
           lines.push(
             remaining === null
               ? `(fetch-all cap REACHED — more follows may remain; pass after=${walk.nextCursor} to continue)`

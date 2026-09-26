@@ -780,16 +780,23 @@ export class SpotifyClient {
    *
    * The verdict is RETURNED, never stored on the client. The MCP SDK
    * dispatches `tools/call` without awaiting — protocol.js fires
-   * `_onrequest` straight from the transport's onmessage — so two
+   * `_onrequest` straight from the transport onmessage — so two
    * overlapping calls interleave their awaits on ONE shared client and a
    * stored flag would answer with whichever walk finished last, not the walk
    * the caller just made.
+   *
+   * `truncated` says rows are missing; `truncatedByCap` says the cap is WHY
+   * (#718). They differ: a walk that ends on a short page while the server's
+   * own `total` still counts more rows is short of the data without the cap
+   * ever binding it, and a caller that reports "truncated at the cap" there
+   * blames a ceiling that did not apply. `reportedTotal` is the server's own
+   * count, or null when it sent none — never the walked count.
    */
   async getAllPagesWithTruncation<T>(
     path: string,
     params?: Record<string, string>,
     opts?: { maxItems?: number; initialOffset?: number },
-  ): Promise<{ items: T[]; truncated: boolean }> {
+  ): Promise<{ items: T[]; truncated: boolean; truncatedByCap: boolean; reportedTotal: number | null }> {
     const maxItems = opts?.maxItems ?? this.fetchAllCap;
     const all: T[] = [];
     let offset = opts?.initialOffset ?? 0;
@@ -801,12 +808,16 @@ export class SpotifyClient {
     let pageNumber = 0;
     // Loop bound is the server-reported total when present; otherwise walk
     // until a short page signals the end. maxItems caps iterations too.
+    // The last total the server reported, so the end-of-data return below can
+    // be reconciled against it (#718).
+    let lastTotal: number | null = null;
     for (;;) {
       const pageParams = { ...params, offset: String(offset) };
       // #133: walk pages enqueue at LOW priority so interactive reads
       // always drain first.
       const page = await this.get<SpotifyPaged<T>>(path, pageParams, { priority: 'low' });
       if (!page || !Array.isArray(page.items)) break;
+      if (typeof page.total === 'number') lastTotal = page.total;
       all.push(...page.items);
       const reporter = this.progressReporter;
       if (reporter !== null) {
@@ -833,6 +844,10 @@ export class SpotifyClient {
             all.length > maxItems
             || typeof page.total !== 'number'
             || all.length < page.total,
+          // The cap is what ended this walk, so it is what the verdict is
+          // attributed to even when rows also remain beyond the total.
+          truncatedByCap: true,
+          reportedTotal: lastTotal,
         };
       }
       const limit = typeof page.limit === 'number' && page.limit > 0 ? page.limit : page.items.length;
@@ -840,8 +855,20 @@ export class SpotifyClient {
       if (page.items.length === 0 || page.items.length < limit) break;
       if (typeof page.total === 'number' && offset >= page.total) break;
     }
-    // Reached the end of the data on its own terms: nothing was cut off.
-    return { items: all, truncated: false };
+    // The loop ended on a short page, not on the cap. That is the normal
+    // end-of-data signal, but the server's own `total` outranks it (#718): if
+    // it says more rows exist than the walk collected, a short page did NOT
+    // mean the end, and "complete" would assert a completeness nobody checked.
+    // A total nobody reported stays unknown, so it cannot manufacture a
+    // truncation — and it must not silence one either.
+    return {
+      items: all,
+      truncated: lastTotal !== null && all.length < lastTotal,
+      // The cap never bound this walk — it ended on the data's own terms, so
+      // any truncation here is the server's total saying rows remain.
+      truncatedByCap: false,
+      reportedTotal: lastTotal,
+    };
   }
 
   // Parse a successful response body as JSON, or null for 204 / non-JSON
