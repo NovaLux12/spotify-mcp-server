@@ -82,7 +82,7 @@ above either ceiling fails CI and server startup.
 | tastecomposites | 10 | 7,994 | 10 | 7,994 | 11 | 8,794 |
 | tasteplaylist | 1 | 1,723 | 1 | 1,723 | 2 | 1,896 |
 | doctor | 1 | 750 | 1 | 750 | 2 | 826 |
-| swarm3meta | 3 | 1,624 | 3 | 1,624 | 4 | 1,787 |
+| swarm3meta | 3 | 2,023 | 3 | 2,023 | 4 | 2,226 |
 | libraryanalytics | 4 | 3,351 | 4 | 3,351 | 5 | 3,687 |
 | portability | 11 | 10,058 | 11 | 10,058 | 12 | 11,064 |
 | libraryinsights | 3 | 2,751 | 3 | 2,751 | 4 | 3,027 |

@@ -70,6 +70,55 @@ export const sharedListFields = {
 } as const;
 
 // ---------------------------------------------------------------------------
+// Discovery-tool response shaping (#713)
+// ---------------------------------------------------------------------------
+
+/** The MCP result shape every tool returns, so callers can spread it. */
+export interface ShapedResult {
+  [key: string]: unknown;
+  content: Array<{ type: 'text'; text: string }>;
+  structuredContent: Record<string, unknown>;
+}
+
+/**
+ * `response_format` handling for the pure-introspection discovery tools
+ * (`find_tool`, `inspect_tool`, `toolset_report`).
+ *
+ * #713: `find_tool` and `inspect_tool` advertised `response_format` and never
+ * read it, and `toolset_report` did not declare it at all, so an agent asking
+ * for machine-readable discovery output got the same bullet list three ways and
+ * had to regex it. All three now emit through this one helper so the modes
+ * cannot drift apart again.
+ *
+ * `json` serializes the payload that also rides as `structuredContent`; both
+ * prose modes return the handler's own text, because these payloads are
+ * already complete in prose and the switch is a parse contract, not a detail
+ * level. The mode is read defensively: handlers are also invoked directly in
+ * tests, where zod's `.default('concise')` has not run.
+ */
+export function shapeDiscoveryResult(
+  format: ResponseFormatValue | undefined,
+  prose: string,
+  payload: Record<string, unknown>,
+): ShapedResult {
+  return {
+    content: [{ type: 'text', text: format === 'json' ? JSON.stringify(payload, null, 2) : prose }],
+    structuredContent: payload,
+  };
+}
+
+/**
+ * The three discovery tools' `response_format` description. The shared
+ * `ResponseFormat` fragment stays as-is for the other ~590 tools; these three
+ * spell out what each mode actually emits because "json = raw API object" is
+ * the wrong promise for a tool that never calls the API.
+ */
+export const DiscoveryResponseFormat = ResponseFormat.describe(
+  "'concise' (default) = prose bullet list; 'detailed' = the same prose; " +
+    "'json' = the result payload as parseable JSON text, identical to structuredContent",
+);
+
+// ---------------------------------------------------------------------------
 // Canonical playlist set-operation inputs (#912)
 // ---------------------------------------------------------------------------
 

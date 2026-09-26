@@ -145,6 +145,16 @@ export const TOOL_SURFACE_BUDGET = Object.freeze({
   // close to done, not slack to absorb a wave. A breach should land in a
   // conversation, not be pre-authorised.
   //
+  // WARRANT #713: +399B, the whole cost of honouring `response_format` in the
+  // discovery trio. `toolset_report` gained a declared `response_format` and
+  // all three discovery tools now describe their own modes instead of promising
+  // a "raw API object" they never produce. Measured, not estimated: the
+  // `swarm3meta` per-module figure moves 1,624 -> 2,023 (+399B, tool count
+  // unchanged at 3) and the aggregate moves by the same +399B. Fits under the
+  // existing 605,000B ceiling with ~270B to spare, so this raise needs no
+  // budget change of its own — recorded because a later author measuring the
+  // delta against `swarm3meta` should find the arithmetic already done.
+  //
   // CORRECTIONS to my first record of this raise, kept because the next author
   // should not repeat them: the headroom figure ignored the +1_000 derivation;
   // the justification described a {description, inputSchema}-only budget when
@@ -628,7 +638,10 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   manifestEntry('tastecomposites', 'tastecomposites', 'src/tools/taste_composites.ts', registerTasteCompositeTools, [10, 7994], { readOnlySafe: true }),
   manifestEntry('tasteplaylist', 'tastecomposites', 'src/tools/taste_playlist.ts', registerTastePlaylistTools, [1, 1723], { scopeKey: 'playlists' }),
   manifestEntry('doctor', 'doctor', 'src/tools/doctortool.ts', registerDoctorTool, [1, 750], { alwaysActive: true, readOnlySafe: true }),
-  manifestEntry('swarm3meta', 'swarm3meta', 'src/tools/swarm3_meta.ts', registerSwarm3MetaTools, [3, 1624], { alwaysActive: true, scopeKey: 'catalog', readOnlySafe: true }),
+  // 1624 -> 2023 (#713): toolset_report gained a declared `response_format`, and
+  // all three discovery tools now carry the mode-specific description instead of
+  // the shared "json = raw API object" wording. +399B once, on a 3-tool module.
+  manifestEntry('swarm3meta', 'swarm3meta', 'src/tools/swarm3_meta.ts', registerSwarm3MetaTools, [3, 2023], { alwaysActive: true, scopeKey: 'catalog', readOnlySafe: true }),
   manifestEntry('libraryanalytics', 'libraryanalytics', 'src/tools/libraryanalytics.ts', registerLibraryAnalyticsTools, [4, 3351], { readOnlySafe: true, scopeKey: 'library' }),
   manifestEntry('portability', 'portability', 'src/tools/portability.ts', registerPortabilityTools, [11, 10058], { scopeKey: 'library' }),
   manifestEntry('libraryinsights', 'library', 'src/tools/libraryinsights.ts', registerLibraryInsightsTools, [3, 2751], { scopeKey: 'library' }),

@@ -74,6 +74,12 @@ const parameterAllowlist = new Set([
   // branch on it rather than parse prose. A key the tool returns about its own
   // result, not a parameter.
   'expect_present',
+  // #713: SPEC.md §5.11 documents the discovery trio's response_format, which
+  // means naming the payload each mode serializes. These are the remaining
+  // structuredContent keys of find_tool/inspect_tool/toolset_report, joining
+  // registered_tools/active_modules/active_toolsets above.
+  'total_registered', 'input_schema', 'read_only', 'module_schema_budgets',
+  'registration_exclusions', 'batch_caps',
 ]);
 /** Registration keys are module names, not tools; docs legitimately name them. */
 const registrationKeyNames = new Set(census.registrationKeyNames ?? []);
