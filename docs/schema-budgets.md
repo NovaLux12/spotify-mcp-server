@@ -95,7 +95,7 @@ above either ceiling fails CI and server startup.
 | backupdelete | 1 | 959 | 1 | 959 | 2 | 1,055 |
 | restore | 1 | 1,888 | 1 | 1,888 | 2 | 2,077 |
 | undo | 2 | 1,663 | 2 | 1,663 | 3 | 1,830 |
-| receipts | 1 | 315 | 1 | 315 | 2 | 347 |
+| receipts | 1 | 626 | 1 | 626 | 2 | 689 |
 | episodemgmt | 1 | 1,053 | 1 | 1,053 | 2 | 1,159 |
 | freshness | 1 | 2,043 | 1 | 2,043 | 2 | 2,248 |
 | searchdive | 1 | 1,561 | 1 | 1,561 | 2 | 1,718 |
