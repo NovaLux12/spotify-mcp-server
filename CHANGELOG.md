@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.1.2](https://github.com/NovaLux12/spotify-mcp-server/compare/v2.1.1...v2.1.2) (2026-09-26)
+
+
+### Bug Fixes
+
+* **#583:** source every batch-loop bound from the shared CHUNK_CAPS table ([#1117](https://github.com/NovaLux12/spotify-mcp-server/issues/1117)) ([691b623](https://github.com/NovaLux12/spotify-mcp-server/commit/691b623af221b81c4a07c453505a98c548096dc8)), closes [#583](https://github.com/NovaLux12/spotify-mcp-server/issues/583)
+* **#741:** a capped shows or episodes walk is truncated too ([#1034](https://github.com/NovaLux12/spotify-mcp-server/issues/1034)) ([e0663a7](https://github.com/NovaLux12/spotify-mcp-server/commit/e0663a78f77b5d927f80d4b5520718194730c7e4))
+* **audiobookcopilot:** disclose the fetch-all cap in list_all_chapters ([#980](https://github.com/NovaLux12/spotify-mcp-server/issues/980)) ([738b229](https://github.com/NovaLux12/spotify-mcp-server/commit/738b22914f8c99dd09fb1879abfaa8cfc2dd2061)), closes [#786](https://github.com/NovaLux12/spotify-mcp-server/issues/786)
+* **backup:** name the store envelope's actual key in list_backups ([#1125](https://github.com/NovaLux12/spotify-mcp-server/issues/1125)) ([f8a2a10](https://github.com/NovaLux12/spotify-mcp-server/commit/f8a2a1089269f1afb560b672b794bb01970b84f4))
+
+
+### Documentation
+
+* **#697:** document SPOTIFY_MCP_BACKUP_RETENTION_DAYS ([#1043](https://github.com/NovaLux12/spotify-mcp-server/issues/1043)) ([8764ab6](https://github.com/NovaLux12/spotify-mcp-server/commit/8764ab687ad4b76ffc812135fc3d804fc96956a6)), closes [#697](https://github.com/NovaLux12/spotify-mcp-server/issues/697)
+
 ## [2.1.1](https://github.com/NovaLux12/spotify-mcp-server/compare/v2.1.0...v2.1.1) (2026-09-25)
 
 
