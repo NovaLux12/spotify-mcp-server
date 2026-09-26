@@ -13,8 +13,6 @@ import {
   listStructuredContent,
 } from '../shaping.js';
 
-type PlaylistPage = SpotifyPaged<SpotifyPlaylistSimple> & { message?: string | null };
-
 interface CategoryItem {
   id: string;
   name: string;
@@ -165,9 +163,9 @@ export function registerBrowseTools(server: McpServer, client: SpotifyClient): v
       const market = resolveBrowseMarket(args.market, args.country);
       if (market) params.country = market;
       const path = `/browse/categories/${encodeURIComponent(args.category_id)}/playlists`;
-      let data: { playlists: PlaylistPage } | null;
+      let data: { playlists: SpotifyPaged<SpotifyPlaylistSimple> } | null;
       try {
-        data = await client.get<{ playlists: PlaylistPage }>(path, params);
+        data = await client.get<{ playlists: SpotifyPaged<SpotifyPlaylistSimple> }>(path, params);
       } catch (err) {
         if (isRemovedEndpointFailure(err)) {
           throw browseCategoriesUnavailable(path, 'playlists', err);

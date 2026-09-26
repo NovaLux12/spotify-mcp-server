@@ -11,6 +11,7 @@ import { MARKET_CODE } from './catalog.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
 import type { PlaybackState, SpotifyQueue, GetDevicesResponse, SpotifyDevice, SpotifyTrack, SpotifyEpisode } from '../types/spotify.js';
+import { playlistItemTotal } from '../types/spotify.js';
 import { ResponseFormat, DryRun, MaxResults, resolveMaxResults, truncateItems, parseSpotifyUri, describeDryRun, validateUris } from '../shaping.js';
 import { loadPlaybackExt, detectSessions } from './playbackext.js';
 
@@ -448,7 +449,7 @@ export function registerPlaybackIntelTools(server: McpServer, client: SpotifyCli
       const parsed = parseSpotifyUri(ctx);
       let resolved: Record<string,unknown> = { uri: ctx, type: parsed?.type ?? 'unknown', id: parsed?.id ?? null };
       try {
-        if (parsed?.type === 'playlist') { const pl:any = await client.get(`/playlists/${parsed.id}`, { fields: 'name,owner(display_name,id),items(total),public,collaborative,uri' }); resolved = { ...resolved, name: pl?.name, owner: pl?.owner, tracks_total: pl?.items?.total ?? pl?.tracks?.total, public: pl?.public }; }
+        if (parsed?.type === 'playlist') { const pl:any = await client.get(`/playlists/${parsed.id}`, { fields: 'name,owner(display_name,id),items(total),public,collaborative,uri' }); resolved = { ...resolved, name: pl?.name, owner: pl?.owner, tracks_total: playlistItemTotal(pl), public: pl?.public }; }
         else if (parsed?.type === 'album') { const al:any = await client.get(`/albums/${parsed.id}`); resolved = { ...resolved, name: al?.name, artists: al?.artists?.map((a:any)=>a.name), total_tracks: al?.total_tracks, release_date: al?.release_date }; }
         else if (parsed?.type === 'artist') { const ar:any = await client.get(`/artists/${parsed.id}`); resolved = { ...resolved, name: ar?.name, genres: ar?.genres, followers: ar?.followers?.total }; }
         else if (parsed?.type === 'show') { const sh:any = await client.get(`/shows/${parsed.id}`); resolved = { ...resolved, name: sh?.name, publisher: sh?.publisher, total_episodes: sh?.total_episodes }; }

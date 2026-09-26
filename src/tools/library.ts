@@ -6,6 +6,7 @@ import type {
   SpotifyPaged,
   SavedTrackItem,
   SavedAlbumItem,
+  SavedAudiobookItem,
   SavedShowItem,
   SavedEpisodeItem,
 } from '../types/spotify.js';
@@ -1123,7 +1124,9 @@ export function registerLibraryTools(server: McpServer, client: SpotifyClient): 
     async (args) => {
       const rf = args.response_format;
       const capN = args.scan_cap ?? getConfig().fetchAllCap;
-      type SavedAudiobookItem = { added_at: string; audiobook: { name: string; authors: Array<{ name: string }>; uri: string } };
+      // The `/me/audiobooks` row, read through the shared shape: the local
+      // `SavedAudiobookItem` that stood here shadowed the src/types/spotify.ts
+      // export with a three-field audiobook the payload never shrank to.
       const all = await client.getAllPages<SavedAudiobookItem>('/me/audiobooks', { limit: '50' }, { maxItems: capN });
       let filtered = all;
       if (args.query) { const q = args.query.toLowerCase(); filtered = filtered.filter(i => i.audiobook.name.toLowerCase().includes(q) || i.audiobook.authors.some(a => a.name.toLowerCase().includes(q))); }

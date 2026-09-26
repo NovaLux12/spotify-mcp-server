@@ -3,11 +3,13 @@ import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
 import type {
-  SavedAlbumItem,
-  SavedTrackItem,
+  SavedAlbumRow,
+  SavedTrackRow,
   SearchResponse,
   SpotifyAlbumItem,
+  SpotifyAlbumRow as AlbumPayload,
   SpotifyAlbumSimple,
+  SpotifyArtistAlbumRow as ReleaseRow,
   SpotifyArtistFull,
   SpotifyArtistSimple,
   SpotifyTrack,
@@ -105,19 +107,6 @@ function chunk<T>(items: readonly T[], size: number): T[][] {
   return out;
 }
 
-/** Full album payload: simplified listing widened with label/copyright/tracks. */
-interface AlbumPayload extends SpotifyAlbumItem {
-  label?: string;
-  copyrights?: Array<{ text: string; type: string }>;
-  genres?: string[];
-  tracks?: { items: SpotifyTrackSimple[]; total: number };
-}
-
-/** /artists/{id}/albums row widened with the album_group discriminator. */
-interface ReleaseRow extends SpotifyAlbumItem {
-  album_group?: string;
-}
-
 /** Track search row: album carries release metadata beyond the shared type. */
 interface TrackSearchRow {
   id: string;
@@ -131,18 +120,6 @@ interface TrackSearchRow {
     release_date?: string;
     album_type?: string;
   };
-}
-
-/** Widened saved-album row (real payloads carry label on the album). */
-interface SavedAlbumWide {
-  added_at: string;
-  album: SpotifyAlbumItem & { label?: string };
-}
-
-/** Widened saved-track row (real payloads carry album release metadata). */
-interface SavedTrackWide {
-  added_at: string;
-  track: SpotifyTrack & { album: SpotifyAlbumSimple & { release_date?: string; album_type?: string } };
 }
 
 /** Run one typed /search call and return the section's non-null rows. */
@@ -226,14 +203,14 @@ async function loadFollowedArtists(client: SpotifyClient, max: number): Promise<
 }
 
 /** Walk the user's saved albums (capped). */
-async function walkSavedAlbums(client: SpotifyClient, cap: number): Promise<SavedAlbumWide[]> {
-  const rows = await client.getAllPages<SavedAlbumWide>('/me/albums', { limit: '50' }, { maxItems: cap });
+async function walkSavedAlbums(client: SpotifyClient, cap: number): Promise<SavedAlbumRow[]> {
+  const rows = await client.getAllPages<SavedAlbumRow>('/me/albums', { limit: '50' }, { maxItems: cap });
   return rows.filter((r) => r?.album != null);
 }
 
 /** Walk the user's saved tracks (capped). */
-async function walkSavedTracks(client: SpotifyClient, cap: number): Promise<SavedTrackWide[]> {
-  const rows = await client.getAllPages<SavedTrackWide>('/me/tracks', { limit: '50' }, { maxItems: cap });
+async function walkSavedTracks(client: SpotifyClient, cap: number): Promise<SavedTrackRow[]> {
+  const rows = await client.getAllPages<SavedTrackRow>('/me/tracks', { limit: '50' }, { maxItems: cap });
   return rows.filter((r) => r?.track != null);
 }
 
@@ -1061,7 +1038,7 @@ export function registerSwarm3DiscoveryTools(server: McpServer, client: SpotifyC
       const saved = await walkSavedAlbums(client, cap);
       if (saved.length === 0) throw new Error('Your saved-album library is empty');
       const perDecade = args.per_decade ?? 3;
-      const decades = new Map<number, SavedAlbumWide[]>();
+      const decades = new Map<number, SavedAlbumRow[]>();
       for (const row of saved) {
         const y = yearOf(row.album.release_date);
         if (y === null) continue;
@@ -1074,11 +1051,11 @@ export function registerSwarm3DiscoveryTools(server: McpServer, client: SpotifyC
       const plan: Array<Record<string, unknown>> = [];
       const lines: string[] = [`Decade sampler plan across ${saved.length} saved albums:`, ''];
       for (const d of sortedDecades) {
-        const bucket = decades.get(d) as SavedAlbumWide[];
+        const bucket = decades.get(d) as SavedAlbumRow[];
         const byDate = [...bucket].sort((a, b) =>
           (a.album.release_date ?? '').localeCompare(b.album.release_date ?? '')
           || (a.added_at ?? '').localeCompare(b.added_at ?? ''));
-        const picks: SavedAlbumWide[] = [];
+        const picks: SavedAlbumRow[] = [];
         if (byDate.length <= perDecade) picks.push(...byDate);
         else {
           for (let i = 0; i < perDecade; i++) {

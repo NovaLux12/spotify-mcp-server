@@ -32,6 +32,7 @@ import type {
   SpotifyEpisode,
   SpotifyQueue,
   SpotifyTrack,
+  SpotifyVolumeTarget,
 } from '../types/spotify.js';
 
 type TextContent = { type: 'text'; text: string };
@@ -168,8 +169,6 @@ function resolveDevice(devices: readonly SpotifyDevice[], hint: string): Spotify
   return devices.find((d) => d.name.toLowerCase().includes(lower)) ?? null;
 }
 
-type VolumeTarget = SpotifyDevice & { id: string };
-
 /**
  * Devices eligible for a volume write: volume-capable AND carrying a real id.
  * `PUT /me/player/volume?device_id=` with an empty value addresses the wrong
@@ -179,12 +178,12 @@ type VolumeTarget = SpotifyDevice & { id: string };
 function selectVolumeTargets(
   all: readonly SpotifyDevice[],
   deviceIds: readonly string[] | undefined,
-): { selected: VolumeTarget[]; skippedNoId: number } {
+): { selected: SpotifyVolumeTarget[]; skippedNoId: number } {
   const pool = deviceIds?.length
     ? deviceIds.map((h) => resolveDevice(all, h)).filter((d): d is SpotifyDevice => d !== null)
     : [...all];
   const capable = pool.filter((d) => d.supports_volume);
-  const hasId = (d: SpotifyDevice): d is VolumeTarget => d.id !== null;
+  const hasId = (d: SpotifyDevice): d is SpotifyVolumeTarget => d.id !== null;
   const selected = capable.filter(hasId);
   return { selected, skippedNoId: capable.length - selected.length };
 }
@@ -201,7 +200,7 @@ function skippedNoIdNote(count: number): string {
  * device id it resolved, so an agent copying the plan reproduces the call the
  * tool would make. The tool's own input stays `volume`.
  */
-function volumePlanLine(d: VolumeTarget, volume: number): string {
+function volumePlanLine(d: SpotifyVolumeTarget, volume: number): string {
   return `PUT /me/player/volume?volume_percent=${volume} on "${d.name}" (device ${d.id})`;
 }
 

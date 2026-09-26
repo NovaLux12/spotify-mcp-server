@@ -2,10 +2,10 @@ import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
 import type {
-  SpotifyTrack,
   SpotifyPaged,
   RecentlyPlayedResponse,
   RecentlyPlayedItem,
+  SpotifyTrackWithReleaseDate,
 } from '../types/spotify.js';
 import { ResponseFormat, MaxResults, resolveMaxResults } from '../shaping.js';
 import type { ResponseFormatValue } from '../shaping.js';
@@ -20,15 +20,9 @@ import type { ResponseFormatValue } from '../shaping.js';
 //
 // Platform facts baked in (live-verified): artist objects carry NO
 // genres/followers/popularity on /me/top/artists — never referenced here.
-// Track objects carry album.release_date (not modelled on SpotifyAlbumSimple,
-// widened locally like search.ts / personalization.ts do).
+// Track objects carry album.release_date, which SpotifyAlbumSimple does not
+// model — read through the shared `SpotifyTrackWithReleaseDate` row.
 // ---------------------------------------------------------------------------
-
-/** /me/top/tracks rows include album.release_date even though the shared
- * SpotifyAlbumSimple models only the browse/search subset. */
-type AnalyticsTrack = SpotifyTrack & {
-  album: { release_date?: string } & Record<string, unknown>;
-};
 
 // Index signature keeps the handler's return assignable to the MCP SDK's
 // CallToolResult (which requires {[k:string]: unknown}).
@@ -86,7 +80,7 @@ export function hourBucketOf(playedAt: string): string {
   return `${pad(start)}-${pad(start + 3)}`;
 }
 
-function trackRow(t: AnalyticsTrack): { id: string; name: string; artists: string } {
+function trackRow(t: SpotifyTrackWithReleaseDate): { id: string; name: string; artists: string } {
   return {
     id: t.id,
     name: t.name,
@@ -143,8 +137,8 @@ async function walkRecentlyPlayed(
 function buildReport(args: {
   time_range: 'short_term' | 'medium_term' | 'long_term';
   include_recent: boolean;
-  trTracks: AnalyticsTrack[];
-  stTracks: AnalyticsTrack[];
+  trTracks: SpotifyTrackWithReleaseDate[];
+  stTracks: SpotifyTrackWithReleaseDate[];
   recent: RecentlyPlayedItem[] | null;
   recentPages: number;
   artistCounts: { tr: number; st: number };
@@ -441,11 +435,11 @@ export function registerAnalyticsTools(server: McpServer, client: SpotifyClient)
       // 4 fixed top-* calls. Null responses degrade to empty lists so a
       // sparse account still yields a zeroed report rather than a crash.
       const [trTracksRes, stTracksRes, trArtistsRes, stArtistsRes] = await Promise.all([
-        client.get<SpotifyPaged<AnalyticsTrack>>('/me/top/tracks', {
+        client.get<SpotifyPaged<SpotifyTrackWithReleaseDate>>('/me/top/tracks', {
           ...topParams,
           time_range,
         }),
-        client.get<SpotifyPaged<AnalyticsTrack>>('/me/top/tracks', {
+        client.get<SpotifyPaged<SpotifyTrackWithReleaseDate>>('/me/top/tracks', {
           ...topParams,
           time_range: 'short_term',
         }),

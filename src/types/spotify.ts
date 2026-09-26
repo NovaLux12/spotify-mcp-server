@@ -127,13 +127,11 @@ export interface SpotifyAlbumItem {
   images: SpotifyImage[];
 }
 
-// Paginated artist albums response
-export interface SpotifyArtistAlbumsResponse {
-  items: SpotifyAlbumItem[];
-  total: number;
-  limit: number;
-  offset: number;
-}
+// Paginated artist albums response. Feb 2026: /artists/{id}/albums returns the
+// same paged object as every other offset/limit listing, so this is an alias of
+// the one canonical paged wrapper rather than a second copy of its five fields.
+// A second copy is how the `next` field went missing from this one.
+export type SpotifyArtistAlbumsResponse = SpotifyPaged<SpotifyAlbumItem>;
 
 // Simplified track in album tracks listing
 export interface SpotifyTrackSimple {
@@ -293,6 +291,17 @@ export interface SpotifyPaged<T> {
   next: string | null;
 }
 
+/**
+ * The count-only page Spotify uses where there is no offset paging to describe:
+ * every `/search` section, and the show/album episode listings. It is a strict
+ * subset of `SpotifyPaged<T>`, so a payload that does carry `limit`/`offset`/
+ * `next` is still readable through the wider wrapper.
+ */
+export interface SpotifyItemsPage<T> {
+  items: T[];
+  total: number;
+}
+
 // Recently played item
 export interface RecentlyPlayedItem {
   track: SpotifyTrack;
@@ -320,12 +329,12 @@ export interface SpotifyPlaylistSimple {
 
 // Search response (GET /search)
 export interface SearchResponse {
-  tracks?: { items: SpotifyTrack[]; total: number };
-  artists?: { items: SpotifyArtistFull[]; total: number };
-  albums?: { items: SpotifyAlbumItem[]; total: number };
-  playlists?: { items: (SpotifyPlaylistSimple | null)[]; total: number };
-  shows?: { items: SpotifyShowSimple[]; total: number };
-  episodes?: { items: SpotifyEpisodeSimple[]; total: number };
+  tracks?: SpotifyItemsPage<SpotifyTrack>;
+  artists?: SpotifyItemsPage<SpotifyArtistFull>;
+  albums?: SpotifyItemsPage<SpotifyAlbumItem>;
+  playlists?: SpotifyItemsPage<SpotifyPlaylistSimple | null>;
+  shows?: SpotifyItemsPage<SpotifyShowSimple>;
+  episodes?: SpotifyItemsPage<SpotifyEpisodeSimple>;
 }
 
 // Saved library items
@@ -349,6 +358,22 @@ export interface SavedEpisodeItem {
   episode: SpotifyEpisodeFull;
 }
 
+// `/me/albums` and `/me/tracks` return the library listing rows, not the full
+// album/track objects: the album is the listing row (label, no embedded track
+// page) and the track carries its album's release metadata.
+
+/** `/me/albums` row. */
+export interface SavedAlbumRow {
+  added_at: string;
+  album: SpotifyAlbumRow;
+}
+
+/** `/me/tracks` row. */
+export interface SavedTrackRow {
+  added_at: string;
+  track: SpotifyTrackRow;
+}
+
 // User profile (GET /me)
 export interface UserProfile {
   id: string;
@@ -368,13 +393,10 @@ export interface PlaylistItemObject {
   item?: SpotifyTrack | SpotifyEpisode | null;
 }
 
-export interface PlaylistItemsResponse {
-  items: PlaylistItemObject[];
-  total: number;
-  limit: number;
-  offset: number;
-  next: string | null;
-}
+// Playlist items page (GET /playlists/{id}/items) — structurally identical to
+// SpotifyPaged<PlaylistItemObject>, so it is an alias and not a third copy of
+// the paged wrapper's five fields.
+export type PlaylistItemsResponse = SpotifyPaged<PlaylistItemObject>;
 
 // Followed artists (cursor-based pagination, GET /me/following?type=artist)
 export interface FollowedArtistsResponse {
@@ -384,4 +406,153 @@ export interface FollowedArtistsResponse {
     next: string | null;
     total: number;
   };
+}
+
+// ---------------------------------------------------------------------------
+// Response widenings (#589)
+//
+// Each shape below is a row or envelope the Web API really returns but that the
+// simplified types above cannot express. They are declared HERE, once, so that a
+// payload change is a one-file edit plus its consumers: a module that needs a
+// widened row imports the name instead of re-deriving the widening locally.
+// `tests/types.ownership.test.ts` fails the build if one is redeclared.
+// ---------------------------------------------------------------------------
+
+/**
+ * Album row as listings and `/albums/{id}` return it: the simplified item
+ * widened with label, copyrights, genres and the embedded track page. All four
+ * are optional because the same row shape covers `/albums?ids=` (a requested
+ * subset of fields) and the full album object.
+ */
+export interface SpotifyAlbumRow extends SpotifyAlbumItem {
+  label?: string;
+  copyrights?: Array<{ text?: string; type?: string }>;
+  genres?: string[];
+  tracks?: { items: SpotifyTrackSimple[]; total: number };
+}
+
+/** `/artists/{id}/albums` row: the album row plus the release-group discriminator. */
+export interface SpotifyArtistAlbumRow extends SpotifyAlbumRow {
+  album_group?: string;
+}
+
+/**
+ * Track row from `/tracks?ids=`, `/search` and album track listings: the
+ * playback-shaped track with the album widened to its release metadata and the
+ * external-id/playability fields a full track object carries.
+ */
+export interface SpotifyTrackRow extends Omit<SpotifyTrack, 'album'> {
+  album: SpotifyAlbumSimple & {
+    release_date?: string;
+    release_date_precision?: string;
+    album_type?: string;
+    total_tracks?: number;
+  };
+  external_ids?: { isrc?: string; upc?: string };
+  is_playable?: boolean;
+  album_type?: string;
+}
+
+/**
+ * Track whose album carries a release date — the shape `/me/top/tracks` and
+ * `/me/player/recently-played` rows really have, where the album is wider than
+ * `SpotifyAlbumSimple` claims. `Record<string, unknown>` keeps the unmodelled
+ * album fields readable instead of forcing a cast at every call site.
+ */
+export type SpotifyTrackWithReleaseDate = SpotifyTrack & {
+  album: { release_date?: string; name?: string } & Record<string, unknown>;
+};
+
+/** Audiobook row from `/search` and `/audiobooks?ids=`: narrators may be absent. */
+export interface SpotifyAudiobookRow extends Omit<SpotifyAudiobookSimple, 'narrators'> {
+  release_date?: string;
+  narrators?: Array<{ name: string }>;
+}
+
+/** Chapter row from `/audiobooks/{id}/chapters`, which carries the resume point. */
+export type SpotifyChapterRow = SpotifyChapterSimple & Pick<SpotifyChapterFull, 'resume_point'>;
+
+/**
+ * Episode row from `/episodes/{id}`, defensive about the two fields a payload
+ * can leave out: `release_date` is null for an unscheduled episode and `show`
+ * is null for a deleted one. `SpotifyEpisodeFull` declares neither as nullable,
+ * so a reader that must survive both needs this row rather than a private copy
+ * of the episode object under a different name.
+ */
+export interface SpotifyEpisodeRow {
+  id: string;
+  name: string;
+  uri: string;
+  duration_ms: number;
+  release_date: string | null;
+  description: string;
+  show: { id: string; name: string; uri?: string } | null;
+}
+
+/**
+ * `GET /playlists/{id}` row, which exposes the public/collaborative flags a
+ * listing row does not — the pair a toward-visible change is detected from
+ * before an `update_playlist` PUT (#157).
+ */
+export interface SpotifyPlaylistVisibilityRow extends SpotifyPlaylistWithImages {
+  public?: boolean | null;
+  collaborative?: boolean;
+}
+
+/** `/me/top/artists` row: the full artist plus the follower and popularity counts. */
+export interface SpotifyArtistRow extends SpotifyArtistFull {
+  followers?: { total: number };
+  popularity?: number;
+}
+
+/**
+ * `/me/playlists` listing row (#762). Spotify documents `owner` on a playlist
+ * object, but a deleted user or a private wrapper playlist returns
+ * `owner: null`, which the simplified type does not admit — so the listing row
+ * is its own shared shape rather than a local widening.
+ */
+export interface SpotifyPlaylistRow extends Omit<SpotifyPlaylistSimple, 'owner'> {
+  owner: SpotifyPlaylistSimple['owner'] | null;
+}
+
+/** Playlist row that also carries images (listing endpoints do; search rows may not). */
+export interface SpotifyPlaylistWithImages extends SpotifyPlaylistSimple {
+  images?: SpotifyImage[] | null;
+}
+
+/** `/search` envelope including the audiobook section, which `SearchResponse` omits. */
+export interface SpotifySearchResults extends SearchResponse {
+  audiobooks?: { items: SpotifyAudiobookSimple[]; total: number };
+}
+
+/** Device eligible for a volume write: `id` is narrowed from nullable to present. */
+export interface SpotifyVolumeTarget extends SpotifyDevice {
+  id: string;
+}
+
+/**
+ * The count-bearing page of a playlist object, in both spellings. Spotify
+ * deprecated `PlaylistObject.tracks` in Feb 2026 in favour of `items` (which is
+ * a PagingPlaylistTrackObject, and PagingObject requires `total`), so a
+ * grandfathered payload can still carry only the upstream-deprecated page.
+ */
+export interface SpotifyPlaylistPage {
+  items?: { total?: number } | null;
+  /** Upstream-deprecated since Feb 2026; read only as a fallback. */
+  tracks?: { total?: number } | null;
+}
+
+/**
+ * How many rows a playlist object reports, preferring the canonical `items` page
+ * and falling back to the legacy `tracks` page. Returns `undefined` when the
+ * payload carries neither — a length Spotify did not state is not zero, and
+ * callers must say "unknown" rather than print a number they did not read.
+ */
+export function playlistItemTotal(
+  playlist: SpotifyPlaylistPage | null | undefined,
+): number | undefined {
+  const canonical = playlist?.items?.total;
+  if (typeof canonical === 'number') return canonical;
+  const legacy = playlist?.tracks?.total;
+  return typeof legacy === 'number' ? legacy : undefined;
 }

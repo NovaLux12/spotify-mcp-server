@@ -34,7 +34,7 @@ import type {
   SpotifyPaged,
   RecentlyPlayedItem,
   RecentlyPlayedResponse,
-  SpotifyTrack,
+  SpotifyTrackWithReleaseDate,
 } from '../types/spotify.js';
 
 type TextContent = { type: 'text'; text: string };
@@ -58,18 +58,6 @@ function shape(rf: ResponseFormatValue, prose: string, payload: Record<string, u
 
 const empty = (rf: ResponseFormatValue, why: string): ToolOut =>
   shape(rf, why, { ok: true, empty: true, reason: why });
-
-/** /me/top/tracks rows include album.release_date even though the shared
- * SpotifyAlbumSimple models only the browse/search subset (same widening as
- * analytics.ts). */
-type AnalyticsTrack = SpotifyTrack & {
-  album: { release_date?: string } & Record<string, unknown>;
-};
-
-/** Recently-played track rows widened for the same reason. */
-type RecentTrack = SpotifyTrack & {
-  album: { release_date?: string; name?: string } & Record<string, unknown>;
-};
 
 const TIME_RANGES = ['short_term', 'medium_term', 'long_term'] as const;
 type TimeRangeValue = (typeof TIME_RANGES)[number];
@@ -226,15 +214,15 @@ async function fetchTopTracks(
   client: SpotifyClient,
   timeRange: string,
   limit: number,
-): Promise<AnalyticsTrack[]> {
-  const res = await client.get<SpotifyPaged<AnalyticsTrack>>('/me/top/tracks', {
+): Promise<SpotifyTrackWithReleaseDate[]> {
+  const res = await client.get<SpotifyPaged<SpotifyTrackWithReleaseDate>>('/me/top/tracks', {
     time_range: timeRange,
     limit: String(limit),
   });
   return (res?.items ?? []).filter((t) => t?.id != null);
 }
 
-function topTrackRow(t: AnalyticsTrack): { id: string; name: string; artists: string } {
+function topTrackRow(t: SpotifyTrackWithReleaseDate): { id: string; name: string; artists: string } {
   return { id: t.id, name: t.name, artists: trackArtists(t) };
 }
 
@@ -261,7 +249,7 @@ function playCounts(items: RecentlyPlayedItem[]): {
   const byTrack = new Map<string, { name: string; artists: string; plays: number; last: string }>();
   const byArtist = new Map<string, { name: string; plays: number; tracks: Set<string>; first: string; last: string }>();
   for (const r of items) {
-    const t = r.track as unknown as RecentTrack;
+    const t = r.track as unknown as SpotifyTrackWithReleaseDate;
     const tr = byTrack.get(t.id) ?? { name: t.name, artists: trackArtists(t), plays: 0, last: r.played_at };
     tr.plays += 1;
     if (r.played_at > tr.last) tr.last = r.played_at;
@@ -485,7 +473,7 @@ export function registerSwarm3AnalyticsTools(server: McpServer, client: SpotifyC
         fetchTopTracks(client, 'long_term', limit),
       ]);
       const agg = new Map<string, { name: string; artists: string; points: number; short: number | null; medium: number | null; long: number | null }>();
-      const add = (list: AnalyticsTrack[], weight: number, key: 'short' | 'medium' | 'long') => {
+      const add = (list: SpotifyTrackWithReleaseDate[], weight: number, key: 'short' | 'medium' | 'long') => {
         list.forEach((t, i) => {
           const cur = agg.get(t.id) ?? { name: t.name, artists: trackArtists(t), points: 0, short: null, medium: null, long: null };
           cur.points += (limit - i) * weight;
@@ -1269,7 +1257,7 @@ export function registerSwarm3AnalyticsTools(server: McpServer, client: SpotifyC
       ]);
       if (walk.items.length === 0 && top.length === 0) return empty(rf, 'No listening data available.');
       const recentEras: Record<string, number> = {};
-      for (const r of walk.items) bump(recentEras, swarm3DecadeOf((r.track as unknown as RecentTrack).album?.release_date));
+      for (const r of walk.items) bump(recentEras, swarm3DecadeOf((r.track as unknown as SpotifyTrackWithReleaseDate).album?.release_date));
       const topEras: Record<string, number> = {};
       for (const t of top) bump(topEras, swarm3DecadeOf(t.album?.release_date));
       const decades = [...new Set([...Object.keys(recentEras), ...Object.keys(topEras)])].sort();
@@ -1374,7 +1362,7 @@ export function registerSwarm3AnalyticsTools(server: McpServer, client: SpotifyC
       const remainder = chron.slice(offset);
       const tr = truncateItems(remainder, maxResults);
       const rows = tr.items.map((r) => {
-        const t = r.track as unknown as RecentTrack;
+        const t = r.track as unknown as SpotifyTrackWithReleaseDate;
         return {
           played_at: r.played_at,
           track_id: r.track.id,

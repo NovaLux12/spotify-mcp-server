@@ -6,7 +6,10 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
-import type { SpotifyChapterSimple } from '../types/spotify.js';
+import type {
+  PlaybackState,
+  SpotifyChapterRow,
+} from '../types/spotify.js';
 import {
   ResponseFormat,
   DryRun,
@@ -15,20 +18,6 @@ import {
   paginationInfo,
 } from '../shaping.js';
 
-/**
- * The chapters listing endpoint returns `resume_point` on each item even
- * though the shared simple-chapter type omits it (verified live).
- */
-type ChapterListing = SpotifyChapterSimple & {
-  resume_point?: { fully_played: boolean; resume_position_ms: number };
-};
-
-/** GET /me/player payload subset this module reads. */
-interface PlaybackState {
-  item: { uri: string } | null;
-  progress_ms: number | null;
-  is_playing: boolean;
-}
 
 const CHAPTERS_PAGE_LIMIT = 50; // endpoint cap, verified live
 
@@ -42,7 +31,7 @@ function formatDuration(ms: number): string {
   return `${seconds}s`;
 }
 
-function describeResumePoint(chapter: ChapterListing): string {
+function describeResumePoint(chapter: SpotifyChapterRow): string {
   const rp = chapter.resume_point;
   if (!rp) return 'no resume point';
   if (rp.fully_played) return 'fully played';
@@ -50,7 +39,7 @@ function describeResumePoint(chapter: ChapterListing): string {
 }
 
 /** Structured row per chapter (1-based position). */
-function chapterRow(chapter: ChapterListing, index1: number): Record<string, unknown> {
+function chapterRow(chapter: SpotifyChapterRow, index1: number): Record<string, unknown> {
   return {
     chapter: index1,
     name: chapter.name,
@@ -73,8 +62,8 @@ function chapterRow(chapter: ChapterListing, index1: number): Record<string, unk
 async function fetchAllChapters(
   client: SpotifyClient,
   audiobookId: string,
-): Promise<ChapterListing[]> {
-  const chapters = await client.getAllPages<ChapterListing>(
+): Promise<SpotifyChapterRow[]> {
+  const chapters = await client.getAllPages<SpotifyChapterRow>(
     `/audiobooks/${encodeURIComponent(audiobookId)}/chapters`,
     { limit: String(CHAPTERS_PAGE_LIMIT) },
   );
