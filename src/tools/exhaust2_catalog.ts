@@ -56,11 +56,6 @@ const SearchLimit = z
 
 const Offset = z.number().int().min(0).optional().describe('Pagination offset. Default: 0');
 
-const Market = z
-  .string()
-  .optional()
-  .describe("ISO 3166-1 alpha-2 market code (e.g. 'US'); omit for 'from_token' behaviour");
-
 type ToolOut = {
   content: Array<{ type: 'text'; text: string }>;
   structuredContent?: Record<string, unknown>;
@@ -302,7 +297,7 @@ export function registerExhaust2CatalogTools(server: McpServer, client: SpotifyC
         .optional()
         .describe("Content types to search (up to 3). Default: ['track']"),
       limit: SearchLimit,
-      market: Market,
+      market: MARKET_CODE.optional().describe("ISO 3166-1 alpha-2 market code, e.g. 'US'"),
       response_format: ResponseFormat,
       max_results: z.number().int().positive().max(2000).optional().describe('Max items to return (default: SPOTIFY_MCP_MAX_ITEMS env or 50)'),
     },
@@ -374,7 +369,7 @@ export function registerExhaust2CatalogTools(server: McpServer, client: SpotifyC
       + '(the "what am I listening to" card). Quota: 🟡 2 API calls (GET /tracks/{id} + GET /albums/{id}/tracks).',
     {
       track_id: z.string().min(1).describe('Spotify track ID'),
-      market: Market,
+      market: MARKET_CODE.optional().describe("ISO 3166-1 alpha-2 market code, e.g. 'US'"),
       response_format: ResponseFormat,
     },
     async (args) => {
@@ -484,7 +479,7 @@ export function registerExhaust2CatalogTools(server: McpServer, client: SpotifyC
         .optional()
         .describe("Types to search. Default: ['album','track'] (tag:new is only meaningful for releases)"),
       limit: SearchLimit,
-      market: Market,
+      market: MARKET_CODE.optional().describe("ISO 3166-1 alpha-2 market code, e.g. 'US'"),
       response_format: ResponseFormat,
       max_results: z.number().int().positive().max(2000).optional().describe('Max items to return (default: SPOTIFY_MCP_MAX_ITEMS env or 50)'),
     },
@@ -612,7 +607,7 @@ max_results: z.number().int().positive().max(2000).optional().describe('Max item
       + 'flagged as partial above that). Quota: 🟢 one GET /albums?ids= call.',
     {
       album_ids: z.array(z.string().min(1)).min(1).max(20).describe('Up to 20 Spotify album IDs'),
-      market: Market,
+      market: MARKET_CODE.optional().describe("ISO 3166-1 alpha-2 market code, e.g. 'US'"),
       response_format: ResponseFormat,
     },
     async (args) => {
@@ -654,7 +649,7 @@ max_results: z.number().int().positive().max(2000).optional().describe('Max item
       + 'built from a paged /albums/{id}/tracks walk. Quota: 🟡 one paginated walk (usually a single call).',
     {
       album_id: z.string().min(1).describe('Spotify album ID'),
-      market: Market,
+      market: MARKET_CODE.optional().describe("ISO 3166-1 alpha-2 market code, e.g. 'US'"),
       response_format: ResponseFormat,
     },
     async (args) => {
@@ -794,7 +789,7 @@ max_results: z.number().int().positive().max(2000).optional().describe('Max item
       + 'Quota: 🟡 one paginated walk (typically several API calls).',
     {
       show_id: z.string().min(1).describe('Spotify show ID'),
-      market: Market,
+      market: MARKET_CODE.optional().describe("ISO 3166-1 alpha-2 market code, e.g. 'US'"),
       max_episodes: z
         .number()
         .int()
@@ -854,7 +849,7 @@ max_results: z.number().int().positive().max(2000).optional().describe('Max item
       + 'Quota: 🟡 one paginated /shows/{id}/episodes walk (typically several API calls).',
     {
       show_id: z.string().min(1).describe('Spotify show ID'),
-      market: Market,
+      market: MARKET_CODE.optional().describe("ISO 3166-1 alpha-2 market code, e.g. 'US'"),
       gap_threshold_days: z
         .number()
         .min(1)
@@ -981,7 +976,7 @@ max_results: z.number().int().positive().max(2000).optional().describe('Max item
       + 'work. Quota: 🟢 one GET /search call. Decision guide: search_by_isrc for ISRC-only exact match; search/search_deep for general text, search_fresh for tag:new newness.',
     {
       isrc: z.string().min(12).max(15).describe('ISRC code, e.g. USUM71703861 (spaces/dashes tolerated)'),
-      market: Market,
+      market: MARKET_CODE.optional().describe("ISO 3166-1 alpha-2 market code, e.g. 'US'"),
       response_format: ResponseFormat,
     },
     async (args) => {
@@ -1018,7 +1013,7 @@ max_results: z.number().int().positive().max(2000).optional().describe('Max item
     {
       title: z.string().min(1).describe('Track title'),
       artist: z.string().min(1).describe('Primary artist name'),
-      market: Market,
+      market: MARKET_CODE.optional().describe("ISO 3166-1 alpha-2 market code, e.g. 'US'"),
       response_format: ResponseFormat,
     },
     async (args) => {
@@ -1156,7 +1151,7 @@ max_results: z.number().int().positive().max(2000).optional().describe('Max item
       + 'computed from recent albums only, with an explicit disclosure. Quota: 🟡 1 + paginated API calls.',
     {
       artist_id: z.string().min(1).describe('Spotify artist ID'),
-      market: Market,
+      market: MARKET_CODE.optional().describe("ISO 3166-1 alpha-2 market code, e.g. 'US'"),
       max_albums: z
         .number()
         .int()
@@ -1384,7 +1379,7 @@ max_results: z.number().int().positive().max(2000).optional().describe('Max item
       + 'Quota: 🟡 2 API calls (GET /episodes/{id} + GET /shows/{id}/episodes).',
     {
       episode_id: z.string().min(1).describe('Spotify episode ID'),
-      market: Market,
+      market: MARKET_CODE.optional().describe("ISO 3166-1 alpha-2 market code, e.g. 'US'"),
       response_format: ResponseFormat,
     },
     async (args) => {
@@ -1439,7 +1434,7 @@ max_results: z.number().int().positive().max(2000).optional().describe('Max item
       author: z.string().min(1).describe('Author name'),
       sort: z.enum(['release', 'length']).optional().describe("Sort client-side by release date or chapter count. Default: 'release'"),
       limit: SearchLimit,
-      market: Market,
+      market: MARKET_CODE.optional().describe("ISO 3166-1 alpha-2 market code, e.g. 'US'"),
       response_format: ResponseFormat,
     },
     async (args) => {

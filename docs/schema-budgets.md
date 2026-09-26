@@ -94,7 +94,7 @@ above either ceiling fails CI and server startup.
 | freshness | 1 | 2,043 | 1 | 2,043 | 2 | 2,248 |
 | searchdive | 1 | 1,561 | 1 | 1,561 | 2 | 1,718 |
 | searchhistory | 2 | 1,096 | 2 | 1,096 | 3 | 1,206 |
-| browse | 3 | 2,664 | 3 | 2,664 | 4 | 2,931 |
+| browse | 3 | 2,634 | 3 | 2,634 | 4 | 2,898 |
 | artistwatch | 6 | 5,944 | 6 | 5,944 | 7 | 6,539 |
 | queueops | 3 | 3,449 | 3 | 3,449 | 4 | 3,794 |
 | playbackext | 13 | 7,857 | 13 | 7,857 | 14 | 8,643 |
@@ -106,14 +106,14 @@ above either ceiling fails CI and server startup.
 | import | 1 | 1,211 | 1 | 1,211 | 2 | 1,333 |
 | smart | 1 | 2,364 | 1 | 2,364 | 2 | 2,601 |
 | exhaustmisc | 10 | 7,924 | 10 | 7,924 | 11 | 8,717 |
-| exhaust2catalog | 19 | 19,272 | 19 | 19,272 | 20 | 21,200 |
+| exhaust2catalog | 19 | 19,176 | 19 | 19,176 | 20 | 21,094 |
 | exhaust2enggating | 0 | 0 | 0 | 0 | 1 | 0 |
 | exhaust2playback | 23 | 17,306 | 23 | 17,306 | 24 | 19,037 |
 | exhaust2playlists | 18 | 23,511 | 18 | 23,511 | 19 | 25,863 |
 | exhaust2misc | 27 | 23,234 | 27 | 23,234 | 28 | 25,558 |
 | exhaust2extra | 3 | 3,695 | 3 | 3,695 | 4 | 4,065 |
-| swarm3discovery | 24 | 21,951 | 24 | 21,951 | 25 | 24,147 |
-| swarm3bdiscovery | 24 | 20,055 | 24 | 20,055 | 25 | 22,061 |
+| swarm3discovery | 24 | 21,887 | 24 | 21,887 | 25 | 24,076 |
+| swarm3bdiscovery | 24 | 20,039 | 24 | 20,039 | 25 | 22,043 |
 | swarm3shows | 24 | 21,075 | 24 | 21,075 | 25 | 23,183 |
 | swarm3refs | 6 | 4,331 | 6 | 4,331 | 7 | 4,765 |
 | swarm3analytics | 24 | 18,880 | 24 | 18,880 | 25 | 20,768 |
