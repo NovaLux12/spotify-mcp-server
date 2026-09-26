@@ -9,6 +9,8 @@
  * Read-only modules have no entry here and are never blocked.
  */
 
+import type { KnownScope } from './config.js';
+
 /**
  * Registration key → required write scopes. A requirement list is
  * "either-of": the module is available when AT LEAST ONE listed scope was
@@ -23,7 +25,7 @@
  * alternative would trade a raw 403 for an invisible-but-authorised tool,
  * which is the worse of the two.
  */
-export const WRITE_SCOPE_REQUIREMENTS: Record<string, string[]> = {
+export const WRITE_SCOPE_REQUIREMENTS: Record<string, KnownScope[]> = {
   playback: ['user-modify-playback-state'],
   playlists: ['playlist-modify-public', 'playlist-modify-private'],
   library: ['user-library-modify'],

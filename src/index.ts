@@ -2,7 +2,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { runAuthFlow, loadTokens } from './auth.js';
 import { SpotifyClient, SpotifyApiError } from './client.js';
-import { initConfig } from './config.js';
+import { initConfig, renderEnvHelp } from './config.js';
 import {
   applyToolAnnotations,
   assertAggregateSurfaceBudget,
@@ -166,6 +166,11 @@ async function runDoctor(): Promise<void> {
   console.log(`  max items         ${cfg.maxItems}`);
   console.log(`  fetch-all cap     ${cfg.fetchAllCap}`);
   console.log(`  mutation history  ${cfg.historyEnabled ? 'enabled' : 'disabled'}`);
+  // Read from the GATE (readOnlyModeEnabled), not from cfg.readonly: this row
+  // is a disclosure, so it must state what module registration actually acted
+  // on. The two are pinned equal in tests/config-readonly.test.ts, but the
+  // report must not depend on that pin holding at runtime.
+  console.log(`  readonly          ${readOnlyModeEnabled() ? 'yes' : 'no'}`);
   if (cfg.market) console.log(`  market            ${cfg.market}`);
   if (cfg.scopes) console.log(`  scopes            ${cfg.scopes.join(', ')}`);
 
@@ -241,20 +246,22 @@ async function runDoctor(): Promise<void> {
 const HELP = `spotify-mcp — MCP server for the Spotify Web API
 
 Usage:
-  spotify-mcp            Start the MCP server over stdio (this is the default)
-  spotify-mcp auth       Run the OAuth PKCE flow and save tokens
-  spotify-mcp doctor     Check config, token state, and live API access (#62)
-  spotify-mcp --help     Show this message
-  spotify-mcp --version  Print the version
+  spotify-mcp                          Start the MCP server over stdio (this is the default)
+  spotify-mcp auth [--profile <name>]  Run the OAuth PKCE flow and save tokens
+                        [--scopes <list>]
+  spotify-mcp doctor                   Check config, token state, and live API access (#62)
+  spotify-mcp --help                   Show this message
+  spotify-mcp --version                Print the version
+
+  auth --profile <name> is the CLI form of SPOTIFY_MCP_PROFILE and selects
+  ~/.spotify-mcp/tokens.<name>.json. auth --scopes <list> overrides
+  SPOTIFY_SCOPES for that run; both reject an empty value rather than
+  silently falling back to the default token file and the full 17-scope grant.
 
 Environment:
-  SPOTIFY_CLIENT_ID          Required (from developer.spotify.com dashboard)
-  SPOTIFY_REDIRECT_URI       OAuth redirect URI (default http://127.0.0.1:8888/callback)
-  SPOTIFY_HEADLESS           Set to 1 for browserless paste-flow auth
-  SPOTIFY_MCP_TOKEN_FILE     Token file override (default ~/.spotify-mcp/tokens.json)
-  SPOTIFY_MCP_MAX_ITEMS      Default per-call truncation cap (default 50)
-  SPOTIFY_MCP_FETCH_ALL_CAP  Cap for fetch_all pagination walks (default 500)
-  SPOTIFY_MCP_HISTORY        Set to 1 to log mutations to history JSONL
+${renderEnvHelp()}
+
+Full reference: docs/configuration.md
 `;
 
 const command = process.argv[2];
