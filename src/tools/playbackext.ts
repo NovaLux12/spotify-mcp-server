@@ -1,10 +1,17 @@
 /**
  * playbackext (#197, #206, #198, #180, #181): local sidecar persistence for
  * playback states, device naming/volume presets, listening sessions, smart rules, show digest.
+ *
+ * #839 — a sidecar that cannot be read is never silently reset. ENOENT is the
+ * only condition that yields an empty store; every other read failure and every
+ * unparseable file is preserved under `<file>.corrupt-<ts>` and reported as
+ * `load_error` on the store, so the mutating tools owe the caller a warning
+ * rather than a quiet wipe of their snapshots, presets and rules.
  */
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { copyFile, link, mkdir, readFile, unlink, writeFile } from 'node:fs/promises';
+import { constants as FS } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import type { SpotifyClient } from '../client.js';
@@ -46,26 +53,131 @@ export interface PlaybackExtStore {
   sessions: Record<string, ListeningSession>;
   smartRules: Record<string, unknown>;
   showDigest?: { playlist_id?: string; last_saved?: string };
+  /**
+   * #839: set when the file existed but could not be turned into a store. The
+   * bytes were moved aside first, so a later write loses nothing — but the
+   * caller must be told, because the store it holds is empty for a reason.
+   */
+  load_error?: string;
+  /** Where the original bytes were preserved; null when even that failed. */
+  preserved_as?: string | null;
+}
+
+/** A fresh, empty store. Every call gets its own maps; callers mutate them. */
+function emptyPlaybackExtStore(): PlaybackExtStore {
+  return { states: {}, devicePresets: {}, sessions: {}, smartRules: {} };
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Move an unusable sidecar to `<file>.corrupt-<ts>` so its bytes survive the
+ * store reset that follows (#839). `link` is used rather than `rename` because
+ * rename() overwrites an existing target on POSIX: a copy made moments earlier
+ * by a second corruption would be clobbered. Returns the path the bytes now
+ * live at, or null when they could not be moved (in which case the caller must
+ * say the file is still in place rather than imply it is gone).
+ */
+async function preserveUnreadableSidecar(file: string): Promise<string | null> {
+  for (let n = 0; n < 50; n++) {
+    const target = `${file}.corrupt-${Date.now()}${n === 0 ? '' : `-${n + 1}`}`;
+    try {
+      await link(file, target);
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === 'EEXIST') continue; // an earlier copy owns this name
+      if (code === 'ENOENT') return null; // the file went away under us
+      if (code === 'EPERM' || code === 'ENOSYS' || code === 'EMLINK' || code === 'EXDEV') {
+        // No hardlinks here (or a cross-device move): copy without clobbering.
+        try {
+          await copyFile(file, target, FS.COPYFILE_EXCL);
+        } catch (copyErr) {
+          const copyCode = (copyErr as NodeJS.ErrnoException).code;
+          if (copyCode === 'EEXIST') continue;
+          return null;
+        }
+      } else {
+        return null;
+      }
+    }
+    // The copy exists; drop the original so the next save starts clean. A
+    // failed unlink is survivable — the copy already holds every byte.
+    await unlink(file).catch(() => undefined);
+    return target;
+  }
+  return null;
+}
+
+/** Build the empty store plus the #839 disclosure for a file we cannot use. */
+async function unreadableStore(file: string, reason: string): Promise<PlaybackExtStore> {
+  const preservedAs = await preserveUnreadableSidecar(file);
+  return {
+    ...emptyPlaybackExtStore(),
+    load_error: preservedAs
+      ? `${file} was unreadable (${reason}) and has been preserved as ${preservedAs}; it was not loaded.`
+      : `${file} was unreadable (${reason}) and could not be moved aside, so it is still in place; it was not loaded.`,
+    preserved_as: preservedAs,
+  };
 }
 
 export async function loadPlaybackExt(env: NodeJS.ProcessEnv = process.env): Promise<PlaybackExtStore> {
+  const file = playbackExtFile(env);
+  let raw: string;
   try {
-    const raw = await readFile(playbackExtFile(env), 'utf8');
-    const p = JSON.parse(raw) as PlaybackExtStore;
-    if (!p || typeof p !== 'object') throw new Error('bad');
-    return {
-      states: p.states ?? {},
-      devicePresets: p.devicePresets ?? {},
-      sessions: p.sessions ?? {},
-      smartRules: p.smartRules ?? {},
-      showDigest: p.showDigest,
-    };
-  } catch { return { states: {}, devicePresets: {}, sessions: {}, smartRules: {} }; }
+    raw = await readFile(file, 'utf8');
+  } catch (err) {
+    // A file that was never written is genuinely empty. A file we could not
+    // read is not: the bytes may all still be there, so it is never coerced.
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return emptyPlaybackExtStore();
+    return unreadableStore(file, (err as NodeJS.ErrnoException).code ?? 'read failed');
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    return unreadableStore(file, err instanceof Error ? err.message : 'invalid JSON');
+  }
+  if (!isPlainObject(parsed)) return unreadableStore(file, 'top level is not a JSON object');
+  // A collection field of the wrong type would make `store.states[x] = y`
+  // throw on a write, so the file is unusable as a whole rather than partly.
+  for (const key of ['states', 'devicePresets', 'sessions', 'smartRules'] as const) {
+    if (parsed[key] !== undefined && !isPlainObject(parsed[key])) {
+      return unreadableStore(file, `"${key}" is not a JSON object`);
+    }
+  }
+  return {
+    states: (parsed.states ?? {}) as Record<string, PlaybackSnapshot>,
+    devicePresets: (parsed.devicePresets ?? {}) as Record<string, DevicePreset>,
+    sessions: (parsed.sessions ?? {}) as Record<string, ListeningSession>,
+    smartRules: (parsed.smartRules ?? {}) as Record<string, unknown>,
+    showDigest: isPlainObject(parsed.showDigest) ? (parsed.showDigest as { playlist_id?: string; last_saved?: string }) : undefined,
+  };
 }
+
+/**
+ * #839: the one way these tools answer. When the store was reset because its
+ * file was unreadable, the warning is carried in both the prose and
+ * structuredContent — never in one alone, so neither a human nor a host
+ * reading the JSON can miss it.
+ */
+function respond(fmt: string | undefined, store: PlaybackExtStore, echo: Record<string, unknown>, text: string): ToolResult {
+  if (!store.load_error) return emit(fmt, echo, text);
+  const disclosed = { ...echo, load_error: store.load_error, preserved_as: store.preserved_as ?? null };
+  if (fmt === 'json') {
+    return { content: [{ type: 'text', text: JSON.stringify(disclosed, null, 2) }], structuredContent: disclosed };
+  }
+  return { content: [{ type: 'text', text: `WARNING: ${store.load_error}\n${text}` }], structuredContent: disclosed };
+}
+
 async function savePlaybackExt(store: PlaybackExtStore, env: NodeJS.ProcessEnv = process.env): Promise<void> {
   const file = playbackExtFile(env);
   await mkdir(dirname(file), { recursive: true, mode: 0o700 });
-  await writeFile(file, `${JSON.stringify(store, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
+  // `load_error` is a report about this call, not store content: persisting it
+  // would make the next load claim a corruption that has already been resolved.
+  const { load_error: _loadError, preserved_as: _preservedAs, ...persisted } = store;
+  await writeFile(file, `${JSON.stringify(persisted, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
 }
 
 // sessions auto-detect helper exported for tests
@@ -202,7 +314,7 @@ export function registerPlaybackExtTools(server: McpServer, client: SpotifyClien
       const snap: PlaybackSnapshot = { name, saved_at: new Date().toISOString(), playback: state };
       store.states[name] = snap;
       await savePlaybackExt(store);
-      return emit(args.response_format as string, { ok: true, name, snapshot: snap, path: playbackExtFile() }, `Saved playback state "${name}" → ${playbackExtFile()}${state?.item ? ` (${state.item.name})` : ' (no active item)'}`);
+      return respond(args.response_format as string, store, { ok: true, name, snapshot: snap, path: playbackExtFile() }, `Saved playback state "${name}" → ${playbackExtFile()}${state?.item ? ` (${state.item.name})` : ' (no active item)'}`);
     });
 
   server.tool('restore_playback_state',
@@ -212,9 +324,9 @@ export function registerPlaybackExtTools(server: McpServer, client: SpotifyClien
       const fmt = args.response_format as string;
       const store = await loadPlaybackExt();
       const snap = store.states[args.name as string];
-      if (!snap) return emit(fmt, { ok: false, error: 'not_found', available: Object.keys(store.states) }, `No playback state named "${args.name}".`);
+      if (!snap) return respond(fmt, store, { ok: false, error: 'not_found', available: Object.keys(store.states) }, `No playback state named "${args.name}".`);
       const playback = snap.playback;
-      if (!playback?.item) return textResult(`Snapshot "${args.name}" has no playable item to restore.`, { ok: false, name: args.name });
+      if (!playback?.item) return respond(fmt, store, { ok: false, error: 'no_playable_item', name: args.name }, `Snapshot "${args.name}" has no playable item to restore.`);
       const deviceId = args.device_id as string | undefined;
       const itemUri = playback.item.uri;
       // #833: the snapshot's context is the queue the item was playing inside.
@@ -237,7 +349,7 @@ export function registerPlaybackExtTools(server: McpServer, client: SpotifyClien
         `GET /me/player${qs} — verify the restored item`,
       ];
       if (args.dry_run) {
-        return emit(fmt, { ok: true, dry_run: true, name: args.name, plan, item: itemUri, context_uri: contextUri, position_ms: positionMs },
+        return respond(fmt, store, { ok: true, dry_run: true, name: args.name, plan, item: itemUri, context_uri: contextUri, position_ms: positionMs },
           `[dry run] Would restore "${args.name}" → ${contextUri ? `context ${contextUri} at ${itemUri}` : itemUri} @ ${positionMs}ms shuffle=${playback.shuffle_state} repeat=${playback.repeat_state}\n${plan.map((s) => `  ${s}`).join('\n')}`);
       }
       let usedSingleTrackFallback = false;
@@ -259,7 +371,7 @@ export function registerPlaybackExtTools(server: McpServer, client: SpotifyClien
         }
       } catch (e: unknown) {
         const message = e instanceof Error ? e.message : String(e);
-        return textResult(`Restore failed: ${message}`, { ok: false, error: message, name: args.name });
+        return respond(fmt, store, { ok: false, error: message, name: args.name }, `Restore failed: ${message}`);
       }
       // Read the player back: a write that returns 2xx is not proof the device
       // actually landed on the saved item.
@@ -281,7 +393,7 @@ export function registerPlaybackExtTools(server: McpServer, client: SpotifyClien
         observed_item: observedItem,
         observed_context: observedContext,
       };
-      return emit(fmt, echo, verified
+      return respond(fmt, store, echo, verified
         ? `Restored "${args.name}" → ${contextUri && !itemMatch ? `${contextUri} @ ${itemUri}` : itemUri}${usedSingleTrackFallback ? ' (context offset rejected — played as a single track)' : ''}`
         : `Restore issued for "${args.name}" but the device reports ${observedItem ? `"${observedItem}"` : 'nothing playing'} — not the saved ${itemUri}.`);
     });
@@ -292,14 +404,14 @@ export function registerPlaybackExtTools(server: McpServer, client: SpotifyClien
     async (args) => {
       const store = await loadPlaybackExt();
       const names = Object.keys(store.states).sort();
-      if (names.length === 0) return { content: [{ type: 'text', text: 'No saved playback states. Use save_playback_state.' }] };
+      if (names.length === 0) return respond(args.response_format as string, store, { ok: true, count: 0, states: {} }, 'No saved playback states. Use save_playback_state.');
       const lines = names.map((n) => {
         const s = store.states[n]!;
         return `- ${n}: ${s.playback?.item ? `${s.playback.item.name} @ ${s.playback.progress_ms ?? 0}ms` : 'no item'} (${s.saved_at})`;
       });
       const echo = { ok: true, count: names.length, states: store.states };
-      if (args.response_format === 'json') return { content: [{ type: 'text', text: JSON.stringify(echo, null, 2) }], structuredContent: echo };
-      return { content: [{ type: 'text', text: `${names.length} saved state(s):\n${lines.join('\n')}` }], structuredContent: echo };
+      if (args.response_format === 'json') return respond('json', store, echo, '');
+      return respond(args.response_format as string, store, echo, `${names.length} saved state(s):\n${lines.join('\n')}`);
     });
 
   // device naming + presets
@@ -312,7 +424,7 @@ export function registerPlaybackExtTools(server: McpServer, client: SpotifyClien
       entry.label = args.new_name as string;
       store.devicePresets[args.device_id as string] = entry;
       await savePlaybackExt(store);
-      return emit(args.response_format as string, { ok: true, device_id: args.device_id, label: args.new_name, path: playbackExtFile() }, `Renamed device ${args.device_id} → "${args.new_name}" (local sidecar).`);
+      return respond(args.response_format as string, store, { ok: true, device_id: args.device_id, label: args.new_name, path: playbackExtFile() }, `Renamed device ${args.device_id} → "${args.new_name}" (local sidecar).`);
     });
 
   server.tool('set_device_volume_preset',
@@ -324,7 +436,7 @@ export function registerPlaybackExtTools(server: McpServer, client: SpotifyClien
       entry.volume = args.volume_percent as number;
       store.devicePresets[args.device_id as string] = entry;
       await savePlaybackExt(store);
-      return emit(args.response_format as string, { ok: true, device_id: args.device_id, volume: args.volume_percent }, `Set volume preset for ${args.device_id} → ${args.volume_percent}%.`);
+      return respond(args.response_format as string, store, { ok: true, device_id: args.device_id, volume: args.volume_percent }, `Set volume preset for ${args.device_id} → ${args.volume_percent}%.`);
     });
 
   server.tool('apply_device_presets',
@@ -333,16 +445,16 @@ export function registerPlaybackExtTools(server: McpServer, client: SpotifyClien
     async (args) => {
       const store = await loadPlaybackExt();
       const presets = Object.entries(store.devicePresets).filter(([, v]) => typeof v.volume === 'number');
-      if (presets.length === 0) return textResult('No volume presets stored. Use set_device_volume_preset first.', { ok: true, applied: 0 });
+      if (presets.length === 0) return respond(args.response_format as string, store, { ok: true, applied: 0 }, 'No volume presets stored. Use set_device_volume_preset first.');
       if (args.dry_run) {
         const lines = presets.map(([id, p]) => `  - ${id}: volume ${p.volume}`);
-        return { content: [{ type: 'text', text: `[dry run] Would apply ${presets.length} preset(s):\n${lines.join('\n')}` }] };
+        return respond(args.response_format as string, store, { ok: true, dry_run: true, applied: 0, presets: presets.length }, `[dry run] Would apply ${presets.length} preset(s):\n${lines.join('\n')}`);
       }
       let applied = 0; const failed: string[] = [];
       for (const [id, p] of presets) {
         try { await client.put(`/me/player/volume?${new URLSearchParams({ volume_percent: String(p.volume!), device_id: id })}`); applied++; } catch (e) { failed.push(id); }
       }
-      return emit(args.response_format as string, { ok: failed.length === 0, applied, failed }, `Applied ${applied}/${presets.length} volume presets${failed.length ? ` — failed: ${failed.join(', ')}` : ''}.`);
+      return respond(args.response_format as string, store, { ok: failed.length === 0, applied, failed }, `Applied ${applied}/${presets.length} volume presets${failed.length ? ` — failed: ${failed.join(', ')}` : ''}.`);
     });
 
   server.tool('list_device_presets',
@@ -351,14 +463,14 @@ export function registerPlaybackExtTools(server: McpServer, client: SpotifyClien
     async (args) => {
       const store = await loadPlaybackExt();
       const ids = Object.keys(store.devicePresets).sort();
-      if (ids.length === 0) return { content: [{ type: 'text', text: 'No device presets. Use rename_device / set_device_volume_preset.' }] };
+      if (ids.length === 0) return respond(args.response_format as string, store, { ok: true, count: 0, presets: {} }, 'No device presets. Use rename_device / set_device_volume_preset.');
       const lines = ids.map((id) => {
         const p = store.devicePresets[id]!;
         return `- ${id}: ${p.label ? `label="${p.label}"` : 'no label'}${p.volume !== undefined ? ` vol=${p.volume}` : ''}`;
       });
       const echo = { ok: true, count: ids.length, presets: store.devicePresets };
-      if (args.response_format === 'json') return { content: [{ type: 'text', text: JSON.stringify(echo, null, 2) }], structuredContent: echo };
-      return { content: [{ type: 'text', text: `${ids.length} device preset(s):\n${lines.join('\n')}` }], structuredContent: echo };
+      if (args.response_format === 'json') return respond('json', store, echo, '');
+      return respond(args.response_format as string, store, echo, `${ids.length} device preset(s):\n${lines.join('\n')}`);
     });
 
   // listening sessions
@@ -373,7 +485,7 @@ export function registerPlaybackExtTools(server: McpServer, client: SpotifyClien
         if (args.tags) store.sessions[id].tags = args.tags as string[];
         if (args.note !== undefined) store.sessions[id].note = args.note as string;
         await savePlaybackExt(store);
-        return emit(args.response_format as string, { ok: true, session: store.sessions[id] }, `Updated session "${id}" → tags: ${(store.sessions[id].tags ?? []).join(', ')}`);
+        return respond(args.response_format as string, store, { ok: true, session: store.sessions[id] }, `Updated session "${id}" → tags: ${(store.sessions[id].tags ?? []).join(', ')}`);
       }
       // Create new session from recently-played (auto-detect)
       const recent = await client.get<{ items: Array<{ played_at: string; track: { uri: string } }> }>('/me/player/recently-played', { limit: '50' });
@@ -385,7 +497,7 @@ export function registerPlaybackExtTools(server: McpServer, client: SpotifyClien
       const sess: ListeningSession = { id, tags: (args.tags as string[]) ?? [], created_at: new Date().toISOString(), tracks, note: args.note as string | undefined };
       store.sessions[id] = sess;
       await savePlaybackExt(store);
-      return emit(args.response_format as string, { ok: true, session: sess }, `Tagged session "${id}" with ${sess.tags.length} tag(s), ${tracks.length} tracks.`);
+      return respond(args.response_format as string, store, { ok: true, session: sess }, `Tagged session "${id}" with ${sess.tags.length} tag(s), ${tracks.length} tracks.`);
     });
 
   server.tool('replay_session',
@@ -399,21 +511,21 @@ export function registerPlaybackExtTools(server: McpServer, client: SpotifyClien
     async (args) => {
       const store = await loadPlaybackExt();
       const sess = store.sessions[args.session_id as string];
-      if (!sess) return textResult(`No session "${args.session_id}". Use tag_listening_session / list_sessions.`, { ok: false, available: Object.keys(store.sessions) });
-      if (sess.tracks.length === 0) return textResult(`Session "${args.session_id}" has no tracks to replay.`, { ok: false });
-      if (args.dry_run) return { content: [{ type: 'text', text: `[dry run] Would replay "${args.session_id}" via ${args.mode}: ${sess.tracks.length} tracks` }] };
+      if (!sess) return respond(args.response_format as string, store, { ok: false, error: 'not_found', available: Object.keys(store.sessions) }, `No session "${args.session_id}". Use tag_listening_session / list_sessions.`);
+      if (sess.tracks.length === 0) return respond(args.response_format as string, store, { ok: false, error: 'empty_session', session_id: args.session_id }, `Session "${args.session_id}" has no tracks to replay.`);
+      if (args.dry_run) return respond(args.response_format as string, store, { ok: true, dry_run: true, session_id: args.session_id, mode: args.mode, total: sess.tracks.length }, `[dry run] Would replay "${args.session_id}" via ${args.mode}: ${sess.tracks.length} tracks`);
       if (args.mode === 'queue') {
         const { queued, failed } = await addToQueueBatch(client, sess.tracks);
-        return emit(args.response_format as string, { ok: true, session_id: args.session_id, mode: 'queue', queued, failed, total: sess.tracks.length }, `Replayed session "${args.session_id}" → queued ${queued}/${sess.tracks.length} tracks${failed.length ? ` (${failed.length} failed)` : ''}.`);
+        return respond(args.response_format as string, store, { ok: true, session_id: args.session_id, mode: 'queue', queued, failed, total: sess.tracks.length }, `Replayed session "${args.session_id}" → queued ${queued}/${sess.tracks.length} tracks${failed.length ? ` (${failed.length} failed)` : ''}.`);
       } else {
         const pl = await client.post<{ id: string; uri: string }>('/me/playlists', { name: `Replay: ${sess.id}`, description: `Replay of session ${sess.id} — ${sess.tags.join(', ')}` });
         const id = (pl as any)?.id;
-        if (!id) return textResult('Failed to create replay playlist.', { ok: false });
+        if (!id) return respond(args.response_format as string, store, { ok: false, error: 'create_failed', session_id: args.session_id }, 'Failed to create replay playlist.');
         // add tracks batched 100
         for (let i = 0; i < sess.tracks.length; i += 100) {
           await client.post(`/playlists/${id}/items`, { uris: sess.tracks.slice(i, i + 100) });
         }
-        return emit(args.response_format as string, { ok: true, session_id: args.session_id, mode: 'playlist', playlist_id: id, tracks: sess.tracks.length }, `Replayed session "${args.session_id}" → playlist ${id} (${sess.tracks.length} tracks).`);
+        return respond(args.response_format as string, store, { ok: true, session_id: args.session_id, mode: 'playlist', playlist_id: id, tracks: sess.tracks.length }, `Replayed session "${args.session_id}" → playlist ${id} (${sess.tracks.length} tracks).`);
       }
     });
 
@@ -428,12 +540,12 @@ export function registerPlaybackExtTools(server: McpServer, client: SpotifyClien
         // best-effort auto-detect preview
         const recent = await client.get<{ items: Array<{ played_at: string; track: { uri: string; name: string } }> }>('/me/player/recently-played', { limit: '50' });
         const detected = recent?.items ? detectSessions(recent.items as any).length : 0;
-        return textResult(`No tagged sessions${args.tag ? ` for tag "${args.tag}"` : ''}. Detected ${detected} session(s) in recently-played. Use tag_listening_session to label one.`, { ok: true, count: 0, detected_sessions: detected });
+        return respond(args.response_format as string, store, { ok: true, count: 0, detected_sessions: detected }, `No tagged sessions${args.tag ? ` for tag "${args.tag}"` : ''}. Detected ${detected} session(s) in recently-played. Use tag_listening_session to label one.`);
       }
       const lines = sessions.map((s) => `- ${s.id}: [${s.tags.join(', ')}] ${s.tracks.length} tracks (${s.created_at})${s.note ? ` — ${s.note}` : ''}`);
       const echo = { ok: true, count: sessions.length, sessions };
-      if (args.response_format === 'json') return { content: [{ type: 'text', text: JSON.stringify(echo, null, 2) }], structuredContent: echo };
-      return { content: [{ type: 'text', text: `${sessions.length} session(s):\n${lines.join('\n')}` }], structuredContent: echo };
+      if (args.response_format === 'json') return respond('json', store, echo, '');
+      return respond(args.response_format as string, store, echo, `${sessions.length} session(s):\n${lines.join('\n')}`);
     });
 
   // #180 smart rule persistence
@@ -448,7 +560,7 @@ export function registerPlaybackExtTools(server: McpServer, client: SpotifyClien
       const store = await loadPlaybackExt();
       store.smartRules[args.name as string] = args.rule;
       await savePlaybackExt(store);
-      return emit(args.response_format as string, { ok: true, name: args.name, rule: args.rule }, `Saved smart rule "${args.name}".`);
+      return respond(args.response_format as string, store, { ok: true, name: args.name, rule: args.rule }, `Saved smart rule "${args.name}".`);
     });
 
   server.tool('refresh_smart_playlist',
@@ -464,14 +576,14 @@ export function registerPlaybackExtTools(server: McpServer, client: SpotifyClien
       const name = args.name as string;
       const store = await loadPlaybackExt();
       const stored = store.smartRules[name] as Record<string, unknown> | undefined;
-      if (!stored) return textResult(`No smart rule named "${name}".`, { ok: false, available: Object.keys(store.smartRules) });
+      if (!stored) return respond(fmt, store, { ok: false, error: 'not_found', available: Object.keys(store.smartRules) }, `No smart rule named "${name}".`);
 
       // Same resolution for plan and commit: one code path builds both.
       const rule = normalizeSmartRule(stored, getConfig().fetchAllCap);
       const resolved = await resolveRuleCandidates(client, rule);
       const { uris, candidates_scanned, truncated_at_scan_cap } = resolved;
       if (uris.length === 0) {
-        return emit(fmt, { ok: false, error: 'no_candidates', name, rule, candidates_scanned, playlist_id: rule.playlist_id ?? null },
+        return respond(fmt, store, { ok: false, error: 'no_candidates', name, rule, candidates_scanned, playlist_id: rule.playlist_id ?? null },
           `Rule "${name}" matched 0 candidate tracks — nothing was created or changed. Loosen artist_filter or widen source/time_range.`);
       }
 
@@ -479,7 +591,7 @@ export function registerPlaybackExtTools(server: McpServer, client: SpotifyClien
       const steps = planRefresh(targetId, uris);
       const planLines = steps.map((s) => `  ${s.method} ${s.path}${s.uris ? ` — ${s.uris} uri(s)` : ''}`);
       if (args.dry_run) {
-        return emit(fmt, {
+        return respond(fmt, store, {
           ok: true, dry_run: true, name, rule, playlist_id: targetId,
           would_create: targetId === null, selected: uris.length,
           candidates_scanned, truncated_at_scan_cap, plan: steps, uris,
@@ -493,7 +605,7 @@ export function registerPlaybackExtTools(server: McpServer, client: SpotifyClien
           public: rule.public,
           ...(rule.description ? { description: rule.description } : {}),
         });
-        if (!created?.id) return textResult(`Rule "${name}" resolved ${uris.length} track(s) but Spotify did not return a playlist id — nothing was created.`, { ok: false, error: 'create_failed', name, rule });
+        if (!created?.id) return respond(fmt, store, { ok: false, error: 'create_failed', name, rule }, `Rule "${name}" resolved ${uris.length} track(s) but Spotify did not return a playlist id — nothing was created.`);
         playlistId = created.id;
       }
       const itemsPath = `/playlists/${encodeURIComponent(playlistId)}/items`;
@@ -506,7 +618,7 @@ export function registerPlaybackExtTools(server: McpServer, client: SpotifyClien
       const refreshedAt = new Date().toISOString();
       store.smartRules[name] = { ...stored, playlist_id: playlistId, last_refreshed: refreshedAt, last_refreshed_tracks: uris.length };
       await savePlaybackExt(store);
-      return emit(fmt, {
+      return respond(fmt, store, {
         ok: true, name, playlist_id: playlistId, created: targetId === null,
         tracks: uris.length, batches_sent: steps.length - (targetId === null ? 1 : 0),
         candidates_scanned, truncated_at_scan_cap, source: rule.source,
@@ -533,6 +645,6 @@ export function registerPlaybackExtTools(server: McpServer, client: SpotifyClien
       const id = (pl as any)?.id ?? 'unknown';
       store.showDigest = { playlist_id: id, last_saved: new Date().toISOString() };
       await savePlaybackExt(store);
-      return emit(args.response_format as string, { ok: true, playlist_id: id, name }, `Saved show digest → playlist "${name}" (${id}).`);
+      return respond(args.response_format as string, store, { ok: true, playlist_id: id, name }, `Saved show digest → playlist "${name}" (${id}).`);
     });
 }

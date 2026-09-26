@@ -350,6 +350,7 @@ export interface ListeningEra {
   months: number;
   signatureArtist: string;
   avgStreamsPerMonth: number;
+  /** Why this era *started* — the boundary immediately before `startMonth`. */
   boundaryReason: string;
 }
 
@@ -357,10 +358,16 @@ export interface ListeningEra {
  * Change-point detection over monthly summaries. A new era starts when the
  * monthly top artist changes OR volume shifts by more than 60% vs the
  * previous month. Deterministic and documented — not a statistical model.
+ *
+ * Every era is labelled with the boundary that *opened* it: era 0 reads
+ * `history start`, each later era reads `prev: <reason>` where the reason
+ * compares the month before `startMonth` with `startMonth`.
  */
 export function detectEras(months: MonthlySummary[]): ListeningEra[] {
   const eras: ListeningEra[] = [];
   let start = 0;
+  // Why the era beginning at `start` began. Era 0 opens the history itself.
+  let openReason = 'history start';
   const reasonFor = (prev: MonthlySummary, cur: MonthlySummary): string | null => {
     if (cur.topArtist !== prev.topArtist) {
       return `top artist ${prev.topArtist} → ${cur.topArtist}`;
@@ -401,18 +408,14 @@ export function detectEras(months: MonthlySummary[]): ListeningEra[] {
   for (let i = 1; i < months.length; i++) {
     const reason = reasonFor(months[i - 1], months[i]);
     if (reason !== null) {
-      closeEra(start, i - 1, start === 0 ? 'history start' : `prev: ${reason}`);
-      void reason;
+      closeEra(start, i - 1, openReason);
       start = i;
+      openReason = `prev: ${reason}`;
     }
   }
   if (months.length > 0) {
-    const lastReason =
-      start === 0 ? 'history start' : `prev: ${reasonFor(months[start - 1], months[start]) ?? 'change'}`;
-    closeEra(start, months.length - 1, start === 0 ? 'history start' : lastReason);
+    closeEra(start, months.length - 1, openReason);
   }
-  // First era always opens the history; fix its reason label.
-  if (eras.length > 0) eras[0].boundaryReason = 'history start';
   return eras;
 }
 

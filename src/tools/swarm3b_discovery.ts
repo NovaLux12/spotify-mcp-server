@@ -207,6 +207,27 @@ async function artistAlbums(
   }, { maxItems });
 }
 
+/**
+ * Same walk as `artistAlbums`, plus the truncation verdict for THIS walk.
+ *
+ * A bare array cannot tell "read every release" from "stopped at the bound",
+ * and a walk that is silently short turns an exclusion set into a lie (#821):
+ * a caller that must REPORT the bound has to know it. The verdict travels
+ * with the result — never onto the shared client, which two overlapping
+ * `tools/call`s would interleave.
+ */
+async function artistAlbumsWalk(
+  client: SpotifyClient,
+  artistId: string,
+  includeGroups: string,
+  maxItems: number,
+): Promise<{ items: SpotifyAlbumItem[]; truncated: boolean }> {
+  return client.getAllPagesWithTruncation<SpotifyAlbumItem>(`/artists/${encodeURIComponent(artistId)}/albums`, {
+    include_groups: includeGroups,
+    limit: '50',
+  }, { maxItems });
+}
+
 /** Fetch full album objects in /albums?ids= batches of 20 (adds label/copyrights). */
 async function fetchAlbumBatches(
   client: SpotifyClient,
@@ -615,7 +636,7 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
   // ------------------------------------------------------------------ 10
   server.tool(
     'artist_decade_span',
-    'Histogram of an artist\'s releases per decade with the dominant decade called out — instantly see which era carries the catalog. Quota: 🟡 one paginated /artists/{id}/albums walk.',
+    'Histogram of an artist\'s releases per decade with the dominant decade called out. Quota: 🟡 one paginated /artists/{id}/albums walk.',
     {
       artist_id: spotifyId('artist').describe('Spotify artist ID, URI, or URL'),
       include_groups: IncludeGroups,
@@ -668,10 +689,19 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
       const tracks = await albumTracksFull(client, args.album_id);
       const artistIds = album.artists.map((a) => a.id);
       const discography: SpotifyAlbumItem[] = [];
+      // #821: one policy for the family — the walk follows the configured
+      // fetch-all cap instead of a literal 50, and the verdict is reported.
+      let discographyCapped = false;
       for (const aid of artistIds.slice(0, 2)) {
-        discography.push(...await artistAlbums(client, aid, 'album,single,compilation', 50));
+        const walk = await artistAlbumsWalk(client, aid, 'album,single,compilation', fetchAllCap());
+        discography.push(...walk.items);
+        if (walk.truncated) discographyCapped = true;
       }
-      const otherIds = [...new Set(discography.map((a) => a.id))].filter((id) => id !== album.id).slice(0, 50);
+      const others = [...new Set(discography.map((a) => a.id))].filter((id) => id !== album.id);
+      // Batches of 20 cost a request each, so the comparison set stays
+      // bounded — and the excess is disclosed rather than implied complete.
+      const otherIds = others.slice(0, 50);
+      const comparisonCapped = others.length > otherIds.length || discographyCapped;
       const otherMetas = await fetchAlbumBatches(client, otherIds);
       const otherTrackNames = new Set<string>();
       for (const m of otherMetas) for (const t of m.tracks?.items ?? []) otherTrackNames.add(normalizeName(t.name));
@@ -689,7 +719,9 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
       const trunc = truncateItems(rows, cap);
       const prose = [
         `${album.name} (${album.release_date}) — ${album.total_tracks} tracks, runtime ${fmtDur(totalMs)}, longest "${longest?.name ?? '—'}" (${fmtDur(longest?.duration_ms ?? 0)}):`,
-        '',
+        comparisonCapped
+          ? `Duplicates counted against ${otherMetas.length} other release(s) of ${otherIds.length}/${others.length} scanned — comparison bounded, counts are a lower bound.`
+          : `Duplicates counted against all ${otherMetas.length} other release(s) in the scanned discography.`,
         ...trunc.items.map((r) =>
           `${String(r.track_number).padStart(2, ' ')}. ${r.name} (${r.duration})${r.also_on_other_albums ? ` · also on ${r.also_on_other_albums} other release(s)` : ''}`),
         trunc.footer ? `\n(${trunc.footer})` : '',
@@ -698,6 +730,8 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
         total: trunc.total, returned: trunc.returned,
       }), {
         album: { id: album.id, name: album.name, release_date: album.release_date, label: album.label ?? null, total_tracks: album.total_tracks },
+        releases_compared: otherMetas.length,
+        comparison_capped: comparisonCapped,
         runtime_ms: totalMs,
         longest_track: longest ? { name: longest.name, duration_ms: longest.duration_ms } : null,
       });
@@ -754,10 +788,11 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
   // ------------------------------------------------------------------ 13
   server.tool(
     'deep_cuts_finder',
-    'Surface deep cuts: album tracks past position 2 that are neither the title track nor released as singles — the forgotten album material, per album. Quota: 🔴 paginated walk + batched /albums lookups.',
+    'Deep cuts per album: tracks past position 2 that are neither the title track nor among the SCANNED singles. Bounded by max_singles (default 500); payload: singles_capped. Quota: 🔴 paginated walk + batched /albums lookups.',
     {
       artist_id: spotifyId('artist').describe('Spotify artist ID, URI, or URL'),
       max_albums: z.number().int().positive().max(100).optional().describe('Studio albums to scan. Default: 20'),
+      max_singles: z.number().int().positive().max(1000).optional().describe('Singles to scan for the exclusion set, newest first. Default: the fetch-all cap, clamped to it.'),
       cuts_per_album: z.number().int().min(1).max(10).optional().describe('Deep-cut picks per album. Default: 3'),
       response_format: ResponseFormat,
       max_results: z.number().int().positive().max(2000).optional().describe('Max items to return (default: SPOTIFY_MCP_MAX_ITEMS env or 50)'),
@@ -765,7 +800,14 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
     async (args) => {
       const rf = args.response_format;
       const albums = await artistAlbums(client, args.artist_id, 'album', Math.min(100, args.max_albums ?? 20));
-      const singles = await artistAlbums(client, args.artist_id, 'single', 200);
+      // #821: the exclusion set is a walk like any other — bound by config,
+      // caller-overridable, and its truncation verdict is REPORTED. A frozen
+      // literal silently exported the artist's own singles as "deep cuts"
+      // while the prose claimed the opposite.
+      const singlesBound = Math.min(fetchAllCap(), args.max_singles ?? fetchAllCap());
+      const singlesWalk = await artistAlbumsWalk(client, args.artist_id, 'single', singlesBound);
+      const singles = singlesWalk.items;
+      const singlesCapped = singlesWalk.truncated;
       const singleMetas = await fetchAlbumBatches(client, singles.map((s) => s.id));
       const singleTrackNames = new Set<string>();
       for (const m of singleMetas) for (const t of m.tracks?.items ?? []) singleTrackNames.add(normalizeName(t.name));
@@ -783,14 +825,23 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
       const cap = resolveMaxResults(args.max_results, 150);
       const trunc = truncateItems(rows, cap);
       const prose = [
-        `Deep cuts (${rows.length} picks across ${metas.length} albums, singles excluded):`,
+        `Deep cuts (${rows.length} picks across ${metas.length} albums):`,
+        singlesCapped
+          ? `Single exclusion checked against the ${singles.length} most recent single(s), bounded at ${singlesBound} — the walk hit its bound, so singles outside it are NOT excluded and this list may contain them.`
+          : `Single exclusion checked against all ${singles.length} single(s) returned by the walk.`,
         '',
         ...trunc.items.map((r) => `${r.year ?? '????'} · ${r.album} — #${r.track_number} "${r.name}" (${r.duration})`),
         trunc.footer ? `\n(${trunc.footer})` : '',
       ].join('\n');
       const payload = listStructuredContent(trunc.items, paginationInfo({
         total: trunc.total, returned: trunc.returned,
-      }), { artist_id: args.artist_id, albums_scanned: metas.length });
+      }), {
+        artist_id: args.artist_id,
+        albums_scanned: metas.length,
+        singles_scanned: singles.length,
+        singles_bound: singlesBound,
+        singles_capped: singlesCapped,
+      });
       return emit(rf, prose, payload);
     },
   );
@@ -798,7 +849,7 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
   // ------------------------------------------------------------------ 14
   server.tool(
     'b_sides_detector',
-    'Detect B-sides: tracks that appear on an artist\'s singles but never on any album — the non-LP catalogue. Also covers: b_sides_finder (same discography scan) — See also: b_sides_finder. Quota: 🔴 paginated walks + batched /albums lookups.',
+    'Detect B-sides: tracks that appear on an artist\'s singles but never on any album — the non-LP catalogue. Quota: 🔴 paginated walks + batched /albums lookups.',
     {
       artist_id: spotifyId('artist').describe('Spotify artist ID, URI, or URL'),
       max_singles: z.number().int().positive().max(200).optional().describe('Singles to scan. Default: 50'),
@@ -1105,7 +1156,7 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
   // ------------------------------------------------------------------ 20
   server.tool(
     'artist_live_albums_finder',
-    'List an artist\'s live releases (titles matching live/unplugged/live-at patterns) chronologically — the concert-record shelf. Quota: 🟡 one paginated /artists/{id}/albums walk.',
+    'List an artist\'s live releases (titles matching live/unplugged/live-at patterns) chronologically. Quota: 🟡 one paginated /artists/{id}/albums walk.',
     {
       artist_id: spotifyId('artist').describe('Spotify artist ID, URI, or URL'),
       response_format: ResponseFormat,
@@ -1170,7 +1221,7 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
   // ------------------------------------------------------------------ 22
   server.tool(
     'artist_singles_timeline',
-    'Chronological singles timeline for an artist (date · title · track count) — the 45-rpm history in one table. Quota: 🟡 one paginated /artists/{id}/albums walk (singles group).',
+    'Chronological singles timeline for an artist (date · title · track count). Quota: 🟡 one paginated /artists/{id}/albums walk (singles group).',
     {
       artist_id: spotifyId('artist').describe('Spotify artist ID, URI, or URL'),
       response_format: ResponseFormat,

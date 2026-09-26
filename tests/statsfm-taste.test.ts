@@ -15,7 +15,29 @@ import {
   normalizeTopList,
   idOf,
   type TasteStream,
+  type MonthlySummary,
 } from '../src/tools/statsfm_taste.js';
+
+/**
+ * Label an era *should* carry: the boundary immediately before its startMonth.
+ * Independent of detectEras so the two conventions cannot drift in lockstep.
+ */
+function expectedOpeningReason(months: MonthlySummary[], startMonth: string): string {
+  const idx = months.findIndex((m) => m.month === startMonth);
+  assert.ok(idx > 0, `era ${startMonth} must be preceded by a boundary`);
+  const prev = months[idx - 1];
+  const cur = months[idx];
+  if (cur.topArtist !== prev.topArtist) {
+    return `prev: top artist ${prev.topArtist} → ${cur.topArtist}`;
+  }
+  if (prev.streams > 0) {
+    const shift = Math.abs(cur.streams - prev.streams) / prev.streams;
+    if (shift > 0.6) {
+      return `prev: volume shift ${prev.streams} → ${cur.streams} streams/mo`;
+    }
+  }
+  throw new Error(`${startMonth} is not an era boundary`);
+}
 
 // ---------------------------------------------------------------- fixtures
 
@@ -257,6 +279,81 @@ test('detectEras splits on top-artist turnover and volume shifts', () => {
   assert.equal(eras[1].signatureArtist, 'B');
   assert.equal(eras[0].boundaryReason, 'history start');
 });
+
+test('detectEras labels each era with the boundary that started it', () => {
+  const eras = detectEras([
+    { month: '2026-01', streams: 100, topArtist: 'A', uniqueArtists: 5 },
+    { month: '2026-02', streams: 110, topArtist: 'A', uniqueArtists: 6 },
+    { month: '2026-03', streams: 105, topArtist: 'B', uniqueArtists: 4 },
+    { month: '2026-04', streams: 20, topArtist: 'B', uniqueArtists: 2 },
+  ]);
+  assert.deepEqual(
+    eras.map((e) => e.startMonth),
+    ['2026-01', '2026-03', '2026-04'],
+  );
+  assert.equal(eras[0].boundaryReason, 'history start');
+  assert.equal(eras[1].boundaryReason, 'prev: top artist A → B');
+  assert.equal(eras[2].boundaryReason, 'prev: volume shift 105 → 20 streams/mo');
+});
+
+const ERA_HISTORIES: MonthlySummary[][] = [
+  [
+    { month: '2026-01', streams: 100, topArtist: 'A', uniqueArtists: 5 },
+    { month: '2026-02', streams: 110, topArtist: 'A', uniqueArtists: 6 },
+    { month: '2026-03', streams: 105, topArtist: 'B', uniqueArtists: 4 },
+    { month: '2026-04', streams: 20, topArtist: 'B', uniqueArtists: 2 },
+  ],
+  // Three boundaries: the middle eras have both an opening and a closing one.
+  [
+    { month: '2026-01', streams: 80, topArtist: 'A', uniqueArtists: 5 },
+    { month: '2026-02', streams: 200, topArtist: 'A', uniqueArtists: 9 },
+    { month: '2026-03', streams: 190, topArtist: 'C', uniqueArtists: 7 },
+    { month: '2026-04', streams: 12, topArtist: 'C', uniqueArtists: 3 },
+  ],
+];
+
+for (const [n, months] of ERA_HISTORIES.entries()) {
+  test(`every era's boundaryReason matches the boundary before its startMonth (history ${n})`, () => {
+    const eras = detectEras(months);
+    assert.ok(eras.length > 0);
+    eras.forEach((era, i) => {
+      const want = i === 0 ? 'history start' : expectedOpeningReason(months, era.startMonth);
+      assert.equal(era.boundaryReason, want, `era ${i} (${era.startMonth})`);
+    });
+  });
+}
+
+test('listening_eras renders the boundary that started each era', async () => {
+  // 2026-01..2026-04 with A/A/B/B and a volume collapse in 2026-04.
+  const rows: unknown[] = [];
+  for (const [month, artist, n] of [
+    ['2026-01', 'A', 100],
+    ['2026-02', 'A', 110],
+    ['2026-03', 'B', 105],
+    ['2026-04', 'B', 20],
+  ] as const) {
+    for (let k = 0; k < n; k++) {
+      const hour = String(k % 24).padStart(2, '0');
+      rows.push(streamRow(`tk-${month}-${k}`, `Song ${k}`, artist, `${month}-01T${hour}:00:00Z`));
+    }
+  }
+  __setStatsfmFetchImpl(async (url: string) => {
+    if (url.includes('/streams')) return { items: rows };
+    if (url.includes('/top/artists')) return topArtists();
+    if (url.includes('/top/genres')) return topGenres();
+    if (url.includes('/top/tracks')) return topTracks();
+    throw new Error(`unexpected stats.fm path: ${url}`);
+  });
+  const { registered } = makeHarness();
+  const out = text(await invoke(findTool(registered, 'statsfm_listening_eras'), {
+    statsfm_user: 'demo',
+  }));
+  const lines = out.split('\n').filter((l) => /^\s+\d+\. /.test(l));
+  assert.equal(lines.length, 3, out);
+  assert.match(lines[0], /2026-01.*\[history start\]$/);
+  assert.match(lines[1], /2026-03.*\[prev: top artist A → B\]$/);
+  assert.match(lines[2], /2026-04.*\[prev: volume shift 105 → 20 streams\/mo\]$/);
+ });
 
 test('listening_eras renders era lines', async () => {
   const { registered } = makeHarness();

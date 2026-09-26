@@ -105,7 +105,7 @@ server ships no tools for them and you should not add any:
 | `GET /recommendations`, `GET /recommendations/available-genre-seeds` | Blocked for post-Nov-2024 apps |
 | `GET /artists/{id}/related-artists` | Blocked for post-Nov-2024 apps |
 | `GET /audio-features/{id}`, `GET /audio-analysis/{id}` | Blocked for post-Nov-2024 apps |
-| `GET /browse/categories` | Live — wrapped by get_categories / get_category_playlists |
+| ~~`GET /browse/categories`~~ | **REMOVED Feb 2026** — `get_categories` / `get_category_playlists` are broken shipped tools (#638) |
 | `GET /browse/new-releases`, `GET /browse/featured-playlists` | Blocked/removed — do not use |
 | Lyrics endpoints | Not available via the Web API — do not use |
 
@@ -122,12 +122,28 @@ answer. Any tool still calling one of these is broken, not merely degraded.
 | `GET /artists/{id}/top-tracks` | per-album reads via `GET /artists/{id}/albums` | #594 |
 | Batch `GET /albums\|artists\|episodes\|shows\|audiobooks\|chapters?ids=` | per-id `GET /{type}/{id}` | #638 |
 | `PUT/DELETE /me/{tracks,albums,shows,episodes,audiobooks}` and `GET /me/{type}s/contains` | `PUT/DELETE /me/library`, `GET /me/library/contains` | #37 (shipped) |
-| `PUT/DELETE /me/following?type=artist`, `GET /me/following/contains` | `PUT/DELETE /me/library` | #594 |
+| `GET /me/following/contains` | `GET /me/library/contains` with `spotify:artist:` URIs | #594 |
+| `PUT/DELETE /me/following?type=artist` | **no replacement — unrecoverable, see below** | #594 |
 | `PUT/DELETE /playlists/{id}/followers` | `PUT/DELETE /me/library` with a `spotify:playlist:` URI | #594 |
 | `GET /playlists/{id}/followers/contains` | `GET /me/library/contains` | #594 |
 | `POST/GET/PUT/DELETE /playlists/{id}/tracks` | the `/items` equivalents | #638 |
 | `POST /users/{user_id}/playlists`, `GET /users/{id}/playlists`, `GET /users/{id}` | `/me/*` equivalents | #638 |
 | `GET /markets`, `GET /browse/categories`, `GET /browse/new-releases` | none | #638 |
+
+**Following an artist is no longer expressible, and there is no migration.**
+`PUT`/`DELETE /me/library` accept track, album, episode, show, audiobook, user
+and playlist URIs — **not** `spotify:artist:`. `GET /me/library/contains` *does*
+accept artist URIs, so the read half migrated cleanly and the write half has no
+target. A `PUT /me/library?uris=spotify:artist:<id>` would look migrated and
+follow nothing. The repo already encoded this: `LIBRARY_SAVE_TYPES`
+(`library.ts:228`) omits `artist` while `LIBRARY_CHECK_TYPES` (`:237`) includes
+it. `follow_artists` and `unfollow_artists` are being **removed** rather than
+left permanently failing. Verified against the endpoint reference pages, not
+the changelog summary.
+
+`/me/library` authorises three alternative scopes — `user-library-modify`,
+`user-follow-modify`, **or** `playlist-modify-public`. Check which one a
+caller actually holds before concluding a migration will 403.
 
 `GET /me/following` (the cursor-paged followed-artists **list**) is still available —
 only its `PUT`/`DELETE`/`/contains` siblings were removed. That asymmetry is easy to
@@ -295,12 +311,35 @@ the changelog.**
   footer in the commit body — e.g. `feat(registry)!: v2 contract spine`. That
   is what produces a major.
 
-Merging the release PR with CI green creates the `vX.Y.Z` tag. A tag created
-with `GITHUB_TOKEN` does not start a push-triggered workflow, so publish does
-not fire automatically: dispatch it yourself —
-`gh workflow run publish.yml --ref vX.Y.Z` — then verify the npm version, the
-tagged `server.json`, and the MCP Registry's `latest` response. CONTRIBUTING.md
-§Releasing has the exact commands and the rollback rules.
+Merging the release PR with CI green creates the `vX.Y.Z` tag, and **that tag
+push does start `publish.yml`** — the `publish-npm` job runs on its own. Do not
+dispatch it manually. A manual `gh workflow run publish.yml --ref vX.Y.Z` races
+the tag-push run, and npm versions are immutable, so the second attempt fails
+on a version that already exists. This instruction previously said the
+opposite; following it caused a double publish on 2026-09-25.
+
+`publish-mcp-registry` runs after `publish-npm` and validates that npm actually
+serves the new version. **npm propagation is not instantaneous**, so that job
+routinely 400s with *"version 'X.Y.Z' was not found"* moments after a
+successful publish. That is a propagation race, not a broken artifact. Recover
+with a failed-jobs-only re-run, which does not re-attempt the immutable npm
+publish:
+
+```
+gh run rerun <run-id> -R NovaLux12/spotify-mcp-server --failed
+```
+
+Then verify. Do not trust a local `npm view` for this — it served a stale
+`latest` and a 404 for a version that was already published. Query the registry
+directly, cache-busted:
+
+```
+curl -sS "https://registry.npmjs.org/<pkg>?cb=$(date +%s)" | jq '.["dist-tags"]'
+```
+
+Check the npm version, the tagged `server.json`, and the MCP Registry's
+`latest` response. CONTRIBUTING.md §Releasing has the exact commands and the
+rollback rules.
 
 ---
 

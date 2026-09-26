@@ -10,6 +10,7 @@ import assert from 'node:assert/strict';
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../src/client.js';
+import { initConfig } from '../src/config.js';
 import { registerSwarm3LibraryTools } from '../src/tools/swarm3_library.js';
 import { registerSwarm3PlaybackTools } from '../src/tools/swarm3_playback.js';
 import { registerPlaylistBatchTools } from '../src/tools/playlistbatch.js';
@@ -414,5 +415,189 @@ describe('swarm3 release radars account for per-artist probe failures', () => {
     assert.equal(payload.quiet.length, 2);
     assert.equal(payload.artists_probed + payload.artists_failed, artists.length);
     assert.equal(payload.probe_failures[0]?.name, 'Artist 1');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// swarm3_discovery — #816 (b_sides_finder cap basis) and #817 (market on the wire)
+// ---------------------------------------------------------------------------
+
+const ALBUM_UNDER_TEST = 'album12345678901234567';
+const ALBUM_PATH = `/albums/${ALBUM_UNDER_TEST}`;
+const ALBUM_TRACKS_PATH = `${ALBUM_PATH}/tracks`;
+
+/**
+ * Album market stub. The payload the stub hands back is chosen from the
+ * `market` param the client actually put on the wire, so a tool that drops
+ * the declared market shows up as the wrong *content*, not just a missing
+ * call-log key.
+ */
+function marketAlbumResponder(): (path: string, body: unknown) => unknown {
+  const gbTracks = (n: number) =>
+    Array.from({ length: n }, (_, i) => ({
+      id: `track-gb-${i}`,
+      uri: `spotify:track:track-gb-${i}`,
+      name: `Cherry Lane ${i + 1}`,
+      track_number: i + 1,
+      duration_ms: 200_000 + i * 1_000,
+    }));
+  return (path, body) => {
+    const params = (body ?? {}) as Record<string, string>;
+    const gb = params.market === 'GB';
+    if (path === ALBUM_PATH) {
+      return {
+        id: ALBUM_UNDER_TEST,
+        uri: `spotify:album:${ALBUM_UNDER_TEST}`,
+        name: gb ? 'Record (GB edition)' : 'Record (token-market edition)',
+        release_date: '2011-04-11',
+        album_type: 'album',
+        artists: [],
+        label: 'Label',
+        // total far above items.length so the paged tracks walk always runs.
+        tracks: { total: 60, items: gbTracks(gb ? 2 : 1) },
+      };
+    }
+    if (path === ALBUM_TRACKS_PATH) {
+      const n = gb ? 2 : 1;
+      return { items: gbTracks(n), limit: n, total: n, offset: Number(params.offset ?? 0) };
+    }
+    throw new Error(`unexpected path ${path}`);
+  };
+}
+
+/** album_focus_report nests the count under `stats`; the two plans keep it flat. */
+function trackCount(payload: Record<string, unknown> | undefined): number | undefined {
+  const stats = payload?.stats as { track_count?: number } | undefined;
+  return (payload?.track_count as number | undefined) ?? stats?.track_count;
+}
+
+for (const tool of ['album_representative_plan', 'front_to_back_plan', 'album_focus_report'] as const) {
+  it(`${tool} puts the declared market on the wire (#817)`, async () => {
+    const h = makeHarness(registerSwarm3DiscoveryTools, marketAlbumResponder());
+    const out = await h.invoke(tool, { album_id: ALBUM_UNDER_TEST, market: 'GB' });
+
+    const albumCall = h.client.calls.find((c) => c.path === ALBUM_PATH);
+    assert.ok(albumCall, `${tool} must request the album payload`);
+    assert.equal((albumCall.arg as Record<string, string>).market, 'GB');
+    const tracksCall = h.client.calls.find((c) => c.path === ALBUM_TRACKS_PATH);
+    assert.ok(tracksCall, `${tool} must page the remaining album tracks`);
+    assert.equal((tracksCall.arg as Record<string, string>).market, 'GB');
+
+    // The GB tracklist, not the token-market one — proof the request carried it.
+    assert.equal(trackCount(out.structuredContent), 2);
+    assert.match(h.text(out), /Cherry Lane 1/);
+  });
+
+  it(`${tool} omits market entirely when the argument is absent (#817)`, async () => {
+    const h = makeHarness(registerSwarm3DiscoveryTools, marketAlbumResponder());
+    const out = await h.invoke(tool, { album_id: ALBUM_UNDER_TEST });
+
+    for (const call of h.client.calls) {
+      const params = (call.arg ?? {}) as Record<string, string>;
+      assert.equal('market' in params, false, `${call.path} must not carry a market key`);
+    }
+    assert.equal(trackCount(out.structuredContent), 1);
+  });
+}
+
+/** 40 album-group releases and 25 single/compilation releases for one artist. */
+function discography(albums: number, sides: number): (path: string, body: unknown) => unknown {
+  const core = Array.from({ length: albums }, (_, i) => ({
+    id: `core${i}`, name: `Core ${i}`, release_date: `20${String(10 + (i % 15)).padStart(2, '0')}-01-01`,
+    album_type: 'album', album_group: 'album', total_tracks: 1,
+  }));
+  const side = Array.from({ length: sides }, (_, i) => ({
+    id: `side${i}`, name: `Side ${i}`, release_date: `20${String(10 + (i % 15)).padStart(2, '0')}-02-01`,
+    album_type: 'single', album_group: 'single', total_tracks: 1,
+  }));
+  return (path, body) => {
+    const params = (body ?? {}) as Record<string, string>;
+    if (path === `/artists/${STRICT_ARTIST_ID}/albums`) {
+      const items = params.include_groups === 'album' ? core : side;
+      return { items, limit: 50, total: items.length };
+    }
+    if (path === '/albums') {
+      const ids = (params.ids ?? '').split(',').filter(Boolean);
+      return {
+        albums: ids.map((id) => ({
+          id,
+          name: `Release ${id}`,
+          // Core releases carry "Alpha"; only the sides carry a non-core title.
+          tracks: {
+            total: 1,
+            items: [{
+              id: `tr-${id}`, uri: `spotify:track:tr-${id}`,
+              name: id.startsWith('core') ? 'Alpha' : 'Beta',
+              track_number: 1, duration_ms: 180_000,
+            }],
+          },
+        })),
+      };
+    }
+    throw new Error(`unexpected path ${path}`);
+  };
+}
+
+describe('b_sides_finder reports the walk ceiling, not the selection size (#816)', () => {
+  it('calls a complete 40-album / 25-side walk uncapped at the default max_per_group', async () => {
+    initConfig({ ...process.env, SPOTIFY_MCP_FETCH_ALL_CAP: '500' });
+    try {
+      const h = makeHarness(registerSwarm3DiscoveryTools, discography(40, 25));
+      const out = await h.invoke('b_sides_finder', { artist_id: STRICT_ARTIST_ID });
+      const p = out.structuredContent as {
+        truncated_by_cap: boolean;
+        groups_selected: { core: number; side: number };
+        core_releases_scanned: number;
+        side_releases_scanned: number;
+        b_sides: unknown[];
+      };
+      assert.equal(p.truncated_by_cap, false, 'a complete walk must not claim truncation');
+      assert.deepEqual(p.groups_selected, { core: 30, side: 25 });
+      // "scanned" is the walk, not the selection: 40 albums were read, 30 fanned in.
+      assert.equal(p.core_releases_scanned, 40);
+      assert.equal(p.side_releases_scanned, 25);
+      assert.equal(p.b_sides.length, 25);
+    } finally {
+      initConfig();
+    }
+  });
+
+  it('flips truncated_by_cap when the walk itself hits the fetch-all ceiling', async () => {
+    initConfig({ ...process.env, SPOTIFY_MCP_FETCH_ALL_CAP: '20' });
+    try {
+      const h = makeHarness(registerSwarm3DiscoveryTools, discography(40, 25));
+      const out = await h.invoke('b_sides_finder', { artist_id: STRICT_ARTIST_ID });
+      const p = out.structuredContent as {
+        truncated_by_cap: boolean;
+        core_releases_scanned: number;
+        side_releases_scanned: number;
+      };
+      assert.equal(p.truncated_by_cap, true, 'a walk stopped at the ceiling must say so');
+      assert.equal(p.core_releases_scanned, 20, 'walk-size field must show the ceiling');
+      assert.equal(p.side_releases_scanned, 20);
+    } finally {
+      initConfig();
+    }
+  });
+
+  it('is independent of max_per_group', async () => {
+    initConfig({ ...process.env, SPOTIFY_MCP_FETCH_ALL_CAP: '500' });
+    try {
+      const narrow = makeHarness(registerSwarm3DiscoveryTools, discography(40, 25));
+      const wide = makeHarness(registerSwarm3DiscoveryTools, discography(40, 25));
+      const a = (await narrow.invoke('b_sides_finder', { artist_id: STRICT_ARTIST_ID, max_per_group: 5 }))
+        .structuredContent as { truncated_by_cap: boolean; groups_selected: { core: number }; core_releases_scanned: number };
+      const b = (await wide.invoke('b_sides_finder', { artist_id: STRICT_ARTIST_ID, max_per_group: 60 }))
+        .structuredContent as { truncated_by_cap: boolean; groups_selected: { core: number }; core_releases_scanned: number };
+      assert.equal(a.truncated_by_cap, false);
+      assert.equal(b.truncated_by_cap, false);
+      assert.equal(a.groups_selected.core, 5, 'selection honours max_per_group');
+      assert.equal(b.groups_selected.core, 40, 'selection honours max_per_group');
+      // The walk is the same either way; only the selection moves.
+      assert.equal(a.core_releases_scanned, 40);
+      assert.equal(b.core_releases_scanned, 40);
+    } finally {
+      initConfig();
+    }
   });
 });

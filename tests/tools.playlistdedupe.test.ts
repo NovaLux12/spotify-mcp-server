@@ -93,6 +93,13 @@ function harness(
     async getAllPages<T>(): Promise<T[]> {
       return structuredClone(state) as T[];
     },
+    // #976 moved the truncation verdict onto the walk's own result, so a stub
+    // that only implements getAllPages leaves remove_duplicate_playlist_items
+    // calling a method that does not exist here. Not truncated: this fixture
+    // hands back the whole playlist.
+    async getAllPagesWithTruncation<T>(): Promise<{ items: T[]; truncated: boolean }> {
+      return { items: structuredClone(state) as T[], truncated: false };
+    },
     async delete<T>(_path: string, body: unknown): Promise<T | null> {
       const tracks = (body as { tracks: Array<{ uri: string; positions: number[] }> }).tracks;
       for (const t of [...tracks].sort((a, b) => b.positions[0] - a.positions[0])) {

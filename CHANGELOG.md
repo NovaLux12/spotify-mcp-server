@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.1.1](https://github.com/NovaLux12/spotify-mcp-server/compare/v2.1.0...v2.1.1) (2026-09-25)
+
+
+### Bug Fixes
+
+* **ci:** do not let a documentation gate silence the test suite ([#999](https://github.com/NovaLux12/spotify-mcp-server/issues/999)) ([de21b61](https://github.com/NovaLux12/spotify-mcp-server/commit/de21b61df1cd14c8753c08a8dc15e8266e08436c))
+* **gauntlet,docs:** correct the endpoint table, publish rule, and expected-fail set ([#1012](https://github.com/NovaLux12/spotify-mcp-server/issues/1012)) ([75b8b0d](https://github.com/NovaLux12/spotify-mcp-server/commit/75b8b0d52a899ccb1535641cf6ec47ccbd8bfdcc))
+* **gauntlet:** mark browse/categories tools expected-fail too ([#1016](https://github.com/NovaLux12/spotify-mcp-server/issues/1016)) ([77d723f](https://github.com/NovaLux12/spotify-mcp-server/commit/77d723f74641208d23b78e06f2e06b387d73e379))
+
+
+### Documentation
+
+* **agents:** correct two release facts that were actively wrong ([#1010](https://github.com/NovaLux12/spotify-mcp-server/issues/1010)) ([0e6324d](https://github.com/NovaLux12/spotify-mcp-server/commit/0e6324d4d9ded810b3798b7bca263decb8a201fb))
+* **agents:** resolve a self-contradiction the previous commit introduced ([#1014](https://github.com/NovaLux12/spotify-mcp-server/issues/1014)) ([b8c5138](https://github.com/NovaLux12/spotify-mcp-server/commit/b8c5138df89635ad679972a9411ebc1f6c58c271))
+
 ## [2.1.0](https://github.com/NovaLux12/spotify-mcp-server/compare/v2.0.0...v2.1.0) (2026-09-25)
 
 

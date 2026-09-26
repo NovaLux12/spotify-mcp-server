@@ -19,6 +19,7 @@ import { backupDir } from './backup.js';
 import {
   MaxResults,
   ResponseFormat,
+  completenessFooter,
   describeDryRun,
   resolveMaxResults,
   truncateItems,
@@ -907,30 +908,62 @@ export function registerSwarm3PlaybackTools(server: McpServer, client: SpotifyCl
       }
       let positionInContext: number | null = null;
       let contextTotal: number | null = null;
+      // What the walk established, recorded rather than implied (#845). `walked`
+      // alone cannot tell a complete enumeration from a walk that stopped at
+      // the cap or died on a page, and the "could not be determined" sentence
+      // below must name only what was proved: an `artist` context issues no
+      // request at all, and an album is read in one un-paged request, so
+      // neither can claim the context was enumerated.
+      //   walkComplete     — the walk reached the end of the context
+      //   walkStoppedAtCap — the walk ended because the cap was reached
+      //   walkFailed       — a request threw, so rows are missing
+      let walked = 0;
+      let walkComplete = false;
+      let walkStoppedAtCap = false;
+      let walkFailed = false;
       const cap = getConfig().fetchAllCap;
       try {
         if (ctx.type === 'playlist' && ctx.uri) {
           const pid = ctx.uri.split(':').pop() ?? '';
+          // Never ask for (or read) more rows than the cap still allows, so
+          // `walked` can never exceed `cap`.
+          const limitFor = (at: number): string => String(Math.max(1, Math.min(100, cap - at)));
+          // One slot per row, kept 1:1 with the page: an unavailable / local
+          // row has no playable uri but still occupies a playlist position.
+          // Dropping those slots here would make the walk advance by fewer
+          // rows than the API returned, so it re-reads rows it already saw
+          // (#845) and reports a shifted position.
+          const toUris = (rows: PlaylistItemRow[] | undefined): string[] =>
+            (rows ?? []).map((r) => r?.item?.uri ?? r?.track?.uri ?? '');
           const page = await client.get<{ items?: PlaylistItemRow[] }>(
             `/playlists/${encodeURIComponent(pid)}/items`,
-            { limit: String(Math.min(100, cap)) },
+            { limit: limitFor(0) },
           );
-          let items = (page?.items ?? []).map((r) => r?.item?.uri ?? r?.track?.uri ?? '').filter(Boolean);
+          let uris = toUris(page?.items);
           let offset = 0;
-          // Walk pages (offset-based) until the track is found or the cap is hit.
-          while (positionInContext === null && items.length > 0 && offset < cap) {
-            const idx = items.indexOf(state.item.uri);
+          // Walk pages (offset-based) until the track is found or the cap is
+          // hit. `offset` counts raw rows, so it is the API's own row cursor.
+          while (positionInContext === null && uris.length > 0 && offset < cap) {
+            walked = offset + uris.length;
+            const idx = uris.indexOf(state.item.uri);
             if (idx >= 0) {
               positionInContext = offset + idx + 1;
               break;
             }
-            offset += items.length;
+            offset += uris.length;
+            if (offset >= cap) break;
             const next = await client.get<{ items?: PlaylistItemRow[] }>(
               `/playlists/${encodeURIComponent(pid)}/items`,
-              { limit: String(Math.min(100, cap)), offset: String(offset) },
+              { limit: limitFor(offset), offset: String(offset) },
             );
-            items = (next?.items ?? []).map((r) => r?.item?.uri ?? r?.track?.uri ?? '').filter(Boolean);
-            if (items.length === 0) break;
+            uris = toUris(next?.items);
+          }
+          // No match: a page came back empty (the walk reached the end of the
+          // context) or the cap ended it. Only the second leaves rows the walk
+          // never asked for.
+          if (positionInContext === null) {
+            if (offset >= cap) walkStoppedAtCap = true;
+            else walkComplete = true;
           }
         } else if (ctx.type === 'album' && ctx.uri) {
           const aid = ctx.uri.split(':').pop() ?? '';
@@ -938,17 +971,74 @@ export function registerSwarm3PlaybackTools(server: McpServer, client: SpotifyCl
             `/albums/${encodeURIComponent(aid)}/tracks`,
             { limit: '50' },
           );
-          const uris = (album?.tracks?.items ?? []).map((t) => t.uri ?? '').filter(Boolean);
+          const albumTracks = album?.tracks?.items ?? [];
+          // One slot per row, kept 1:1 with the page as the playlist walk does:
+          // an unavailable / local track has no playable uri but still holds a
+          // track position, so dropping the slot shifts every later index low
+          // and leaves `position_in_context` on a different basis than the
+          // `walked` row count reported beside it (#845).
+          const uris = albumTracks.map((t) => t.uri ?? '');
           contextTotal = album?.total_tracks ?? null;
+          // One un-paged request: `walked` is what this call actually read.
+          walked = albumTracks.length;
           const idx = uris.indexOf(state.item.uri);
           positionInContext = idx >= 0 ? idx + 1 : null;
+          // Only an album that fits in that one request was enumerated; a total
+          // larger than what was read means the tail was never fetched.
+          walkComplete = positionInContext === null
+            && contextTotal !== null
+            && walked >= contextTotal;
         }
       } catch {
-        // Non-fatal: report position as unknown.
+        // Non-fatal: report the position as unknown — but a request that threw
+        // left the context partly or wholly unread, which is not the same thing
+        // as an enumeration that ran to the end and found no match.
+        if (positionInContext === null) walkFailed = true;
       }
+      // One sentence per outcome, each claiming only what the walk proved.
+      // completenessFooter carries the shared complete-vs-truncated wording
+      // for the playlist walk, where `cap` really is the bound; its TRUNCATED
+      // clause ("older rows were not analyzed") is a head-of-list scan
+      // phrasing, and this walk moves forward, so the shortfalls name the rows
+      // that went unread instead of borrowing it.
+      const noPositionReason = ((): string => {
+        if (ctx.type === 'album') {
+          if (walkFailed) return `the album request failed, so no album tracks were read`;
+          // The album walk is entered on `ctx.type` alone but needs `ctx.uri` to
+          // issue its one request, so an album context carrying no uri reads
+          // nothing at all. That has to be answered before the sentences that
+          // count rows, or it reports a full enumeration of zero rows.
+          if (!ctx.uri) return `the playback state carried no ${ctx.type} uri, so nothing was read`;
+          // "Fully enumerated" is a claim about the album's LENGTH, so it is
+          // stated only where `walkComplete` holds: a reported total that the
+          // one un-paged request covered. A response that omitted `total_tracks`
+          // cannot be shown to have been read to its end, and claiming it
+          // asserts a completeness `walk_complete: false` denies.
+          if (walkComplete) return `read all ${walked} album tracks without a match; the album was fully enumerated`;
+          if (contextTotal !== null && walked < contextTotal) {
+            return `read the first ${walked} of ${contextTotal} album tracks; the context was not enumerated`;
+          }
+          return `read ${walked} album tracks without a match; the album's total track count was not reported, so the context was not enumerated`;
+        }
+        // `cap` is the fetch-all ceiling this tool imposes, not a row total it
+        // read: no playlist total is ever fetched, so "N of cap rows" would
+        // claim a length nothing measured. The cap sentence below names it as
+        // the same bound.
+        if (walkFailed) {
+          return `a playlist page request failed after ${walked} rows (cap ${cap}); the rows past that point were never read`;
+        }
+        if (walkStoppedAtCap) {
+          return `walked ${walked} of ${cap} playlist rows and stopped at the fetch-all cap; whether the playlist has more rows is unknown`;
+        }
+        if (walkComplete) {
+          return `${completenessFooter({ fetched: walked, cap, truncated: false, subject: 'playlist rows' })}; the current track is not among them`;
+        }
+        if (!ctx.uri) return `the playback state carried no ${ctx.type} uri, so nothing was read`;
+        return `the ${ctx.type} context is not enumerable`;
+      })();
       const positionText = positionInContext !== null
         ? `Track ${positionInContext}${contextTotal ? ` of ${contextTotal}` : ''} in the context`
-        : 'Position within the context could not be determined (non-enumerable or capped walk).';
+        : `Position within the context could not be determined (${noPositionReason}).`;
       const prose = [
         `Context inspect:`,
         `  Type: ${ctx.type} · URI: ${ctx.uri}`,
@@ -960,6 +1050,17 @@ export function registerSwarm3PlaybackTools(server: McpServer, client: SpotifyCl
         context_enumerated: positionInContext !== null,
         position_in_context: positionInContext,
         context_total: contextTotal,
+        walked,
+        cap,
+        // `walk_stopped_at_cap` says the walk ENDED at the cap, not that rows
+        // are missing: a playlist of exactly `cap` rows stops there too, with
+        // nothing known to be unread. `walk_complete` is the flag that claims
+        // the context was enumerated to its end, and it is deliberately false
+        // when the track is found early — the walk stops on the match, so the
+        // position is definite while the enumeration is not.
+        walk_complete: walkComplete,
+        walk_stopped_at_cap: walkStoppedAtCap,
+        walk_failed: walkFailed,
       });
     },
   );
