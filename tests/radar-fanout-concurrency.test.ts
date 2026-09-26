@@ -35,7 +35,7 @@ import { mapLimit } from '../src/concurrency.js';
 import { registerShowRadarTools, resetProfileCountryCache } from '../src/tools/showradar.js';
 import { registerArtistWatchTools } from '../src/tools/artistwatch.js';
 import { registerSearchDeepTool } from '../src/tools/searchdive.js';
-import { DEFAULT_FANOUT_CONCURRENCY, initConfig } from '../src/config.js';
+import { DEFAULT_MAX_CONCURRENCY, MAX_CONCURRENCY_CEILING, initConfig } from '../src/config.js';
 
 // ---------------------------------------------------------------------------
 // Clock-free concurrency
@@ -295,11 +295,12 @@ describe('show_new_episodes fan-out (#783)', () => {
       episodes: Array<{ show_name: string; episode_id: string }>;
     };
 
-    // The bound: the cap is 4 and the scan is longer than the cap, so a
+    // The bound: neither knob is set, so the width is the funnel's own
+    // resolved default (#892) — the scan is longer than that, so a
     // run-everything-at-once implementation would peak at 6 and fail here.
-    assert.equal(p.fanout_concurrency, DEFAULT_FANOUT_CONCURRENCY);
+    assert.equal(p.fanout_concurrency, DEFAULT_MAX_CONCURRENCY);
     assert.equal(p.fanout_concurrency_source, 'default');
-    assert.equal(h.gauge.peak, DEFAULT_FANOUT_CONCURRENCY);
+    assert.equal(h.gauge.peak, DEFAULT_MAX_CONCURRENCY);
 
     // The overlap: a serial loop peaks at exactly 1.
     assert.ok(h.gauge.peak > 1, `expected overlap, peak was ${h.gauge.peak}`);
@@ -367,9 +368,48 @@ describe('show_new_episodes fan-out (#783)', () => {
     }, { funnel: 8 });
   });
 
+  it('an UNSET funnel knob resolves to the funnel default, not a second default (#892)', async () => {
+    // The funnel does not treat an unset knob as absent — it resolves it to
+    // DEFAULT_MAX_CONCURRENCY. A resolver that fell through to its OWN default
+    // (4) whenever the variable was unset reported a fan-out of 4 while the
+    // funnel permitted 3, in the fully unconfigured default case. The reported
+    // number has to be the one that can actually occur.
+    await withFanout(undefined, async () => {
+      const h = showRadarHarness({ shows: 6 });
+      const out = await h.invoke();
+      const p = out.structuredContent as { fanout_concurrency: number; fanout_concurrency_source: string };
+      assert.equal(p.fanout_concurrency, DEFAULT_MAX_CONCURRENCY);
+      // Nothing was set, so nothing may be reported as the source.
+      assert.equal(p.fanout_concurrency_source, 'default');
+      assert.equal(h.gauge.peak, DEFAULT_MAX_CONCURRENCY);
+    });
+  });
+
+  it('an over-ceiling funnel width is clamped before it is reported (#892)', async () => {
+    // SPOTIFY_MCP_MAX_CONCURRENCY=5000 is clamped to MAX_CONCURRENCY_CEILING
+    // for the funnel. Read raw, the resolver reported 5000 — a width 156x
+    // larger than any request could reach, under a field named
+    // fanout_concurrency. The clamp has to apply to the reported number too.
+    await withFanout(undefined, async () => {
+      const h = showRadarHarness({ shows: 6 });
+      const out = await h.invoke();
+      const p = out.structuredContent as { fanout_concurrency: number; fanout_concurrency_source: string };
+      assert.equal(p.fanout_concurrency, MAX_CONCURRENCY_CEILING);
+      assert.equal(p.fanout_concurrency_source, 'SPOTIFY_MCP_MAX_CONCURRENCY');
+      // The scan cannot peak above the shows it has, so the observable
+      // consequence is that all 6 went out together rather than throttled to
+      // some smaller number — the unreachability of 5000 is the assertion.
+      assert.equal(h.gauge.peak, 6);
+      assert.equal(p.shows_scanned, 6);
+    }, { funnel: 5000 });
+  });
+
   it('a 429 on the second show stops scheduling and keeps the rows already read', async () => {
-    // 6 shows at width 4: s0..s3 are issued together, s1 hits the wall, and
-    // s4/s5 must never be requested at all.
+    // 6 shows at an EXPLICIT width of 4 (pinned rather than inherited from the
+    // funnel default, which is 3 — the scheduling arithmetic below is stated
+    // in terms of 4): s0..s3 are issued together, s1 hits the wall, and s4/s5
+    // must never be requested at all.
+    await withFanout(4, async () => {
     const h = showRadarHarness({ shows: 6, quotaOn: 's1' });
     const out = await h.invoke();
     const p = out.structuredContent as {
@@ -405,6 +445,7 @@ describe('show_new_episodes fan-out (#783)', () => {
     // a complete scan.
     assert.match(out.content[0].text, /Quota exceeded mid-scan/);
     assert.match(out.content[0].text, /2 of the 6 shows in scope were never sent/);
+    });
   });
 });
 
@@ -473,9 +514,9 @@ describe('check_artist_releases fan-out (#783)', () => {
         items: Array<{ artist_id: string; album: { name: string } }>;
       };
 
-      assert.equal(h.gauge.peak, DEFAULT_FANOUT_CONCURRENCY);
+      assert.equal(h.gauge.peak, DEFAULT_MAX_CONCURRENCY);
       assert.ok(h.gauge.peak > 1, `expected overlap, peak was ${h.gauge.peak}`);
-      assert.equal(p.fanout_concurrency, DEFAULT_FANOUT_CONCURRENCY);
+      assert.equal(p.fanout_concurrency, DEFAULT_MAX_CONCURRENCY);
       assert.equal(p.artists_scanned, 6);
       assert.equal(p.artists_read, 6);
       assert.equal(p.total, 6);
@@ -486,6 +527,10 @@ describe('check_artist_releases fan-out (#783)', () => {
 
   it('a burst 429 stops scheduling and reports what was never attempted', async () => {
     await withTmpDir(async () => {
+    // Explicit width 4: the expectations below (4 issued, 3 read, 4 never
+    // attempted) are arithmetic in terms of 4, so it is pinned here rather
+    // than inherited from the funnel's default of 3 (#892).
+    await withFanout(4, async () => {
       const h = artistHarness({ artists: 8, rateLimitOn: 'art1' });
       await h.call('watch_artists', { artist_ids: h.ids });
       const out = await h.call('check_artist_releases', {});
@@ -516,6 +561,7 @@ describe('check_artist_releases fan-out (#783)', () => {
       assert.equal(p.effective_cap, 25);
       assert.equal(p.watchlist_size, 8);
       assert.deepEqual(p.items.map((i) => i.artist_id), ['art0', 'art2', 'art3']);
+    });
     });
   });
 
@@ -579,7 +625,7 @@ describe('check_artist_releases fan-out (#783)', () => {
         total: number;
         items: Array<{ artist_id: string }>;
       };
-      assert.equal(h.gauge.peak, DEFAULT_FANOUT_CONCURRENCY);
+      assert.equal(h.gauge.peak, DEFAULT_MAX_CONCURRENCY);
       assert.equal(p.artists_scanned, 6);
       assert.equal(p.artists_read, 6);
       assert.equal(p.total, 6);
@@ -650,9 +696,9 @@ describe('search_deep fan-out (#783)', () => {
     const out = await h.invoke({ pages: 2, response_format: 'json' });
     const p = out.structuredContent as Record<string, unknown>;
 
-    assert.equal(h.gauge.peak, DEFAULT_FANOUT_CONCURRENCY);
+    assert.equal(h.gauge.peak, DEFAULT_MAX_CONCURRENCY);
     assert.ok(h.gauge.peak > 1, `expected overlap, peak was ${h.gauge.peak}`);
-    assert.equal(p.fanout_concurrency, DEFAULT_FANOUT_CONCURRENCY);
+    assert.equal(p.fanout_concurrency, DEFAULT_MAX_CONCURRENCY);
     // Section order is the caller's `types` order, whatever the settle order:
     // the disclosure keys lead, then the sections in request order.
     assert.deepEqual(Object.keys(p), [

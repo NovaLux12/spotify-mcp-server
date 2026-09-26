@@ -34,6 +34,7 @@ export interface SpotifyMcpConfig {
   /** Per-call budget for freshness artist/show lookups (#242). */
   freshnessBudget: number;
   /**
+  /**
    * How many requests a tool-side fan-out may have in flight at once (#783).
    * Bounded parallelism, not a rate limit: the request count is unchanged.
    * Yields to SPOTIFY_MCP_MAX_CONCURRENCY, the request funnel's own width
@@ -42,6 +43,16 @@ export interface SpotifyMcpConfig {
   fanoutConcurrency: number;
   /** Which knob supplied fanoutConcurrency, for the disclosure the tools emit. */
   fanoutConcurrencySource: string;
+  /**
+   * How many Spotify API requests the request funnel keeps in flight at once
+   * (#892). This is THE process-wide width: every request passes through the
+   * funnel, including those a tool-side fan-out issues. The funnel still paces
+   * starts a minimum 100 ms apart and still stops every start during a
+   * `Retry-After` cooldown; this is the ceiling on how many of those paced
+   * requests may be open simultaneously. `1` restores the strictly serial
+   * funnel of v1.
+   */
+  maxConcurrency: number;
   /** OAuth scopes override (SPOTIFY_SCOPES). Null = use DEFAULT_SCOPES. */
   scopes: string[] | null;
   /** Default market fallback (SPOTIFY_MCP_MARKET). Null = not set / invalid. */
@@ -53,15 +64,32 @@ export const DEFAULT_FETCH_ALL_CAP = 500;
 export const DEFAULT_FRESHNESS_BUDGET = 25;
 
 /**
- * Default fan-out width for the freshness-radar walks (#783).
+/**
+ * Default fan-out width for the freshness-radar walks (#783), used only when
+ * neither knob is set.
  *
- * 4 rather than something higher on purpose: the request count per scan is
- * unchanged either way, and a wide burst on a shared rate-limited client buys
- * no wall clock that a narrow one does not, while making a burst 429 likelier.
- * A caller that genuinely wants fewer outstanding reads sets the variable to 1
- * and gets the old strictly-serial walk.
+ * Note that `resolveFanoutConcurrency` prefers SPOTIFY_MCP_MAX_CONCURRENCY,
+ * which always resolves — to 3 when unset. This constant is therefore reached
+ * only when that preference is bypassed, and a scan that resolves through it
+ * while the funnel allows 3 would report a width of 4 that cannot occur; see
+ * the precedence note on `resolveFanoutConcurrency`.
  */
 export const DEFAULT_FANOUT_CONCURRENCY = 4;
+
+/**
+ * Default ceiling on in-flight Spotify requests (#892). Three keeps the 100 ms
+ * pacing gap meaningful — a 250 ms Spotify request still overlaps its
+ * successors — while staying far below anything Spotify or a host would
+ * object to.
+ */
+export const DEFAULT_MAX_CONCURRENCY = 3;
+
+/**
+ * Hard ceiling for SPOTIFY_MCP_MAX_CONCURRENCY. Unbounded concurrency is the
+ * exact failure mode this knob exists to bound, so the ceiling is enforced
+ * here rather than trusted from the environment.
+ */
+export const MAX_CONCURRENCY_CEILING = 32;
 
 /** Default per-request HTTP timeout when SPOTIFY_REQUEST_TIMEOUT_MS is unset. */
 export const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
@@ -240,6 +268,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): SpotifyMcpConf
     freshnessBudget: positiveInt(env.SPOTIFY_MCP_FRESHNESS_BUDGET, DEFAULT_FRESHNESS_BUDGET),
     fanoutConcurrency: fanout.limit,
     fanoutConcurrencySource: fanout.source,
+    maxConcurrency: Math.min(
+      positiveInt(env.SPOTIFY_MCP_MAX_CONCURRENCY, DEFAULT_MAX_CONCURRENCY),
+      MAX_CONCURRENCY_CEILING,
+    ),
     scopes,
     market: parseMarket(env.SPOTIFY_MCP_MARKET),
   };
@@ -278,19 +310,53 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): SpotifyMcpConf
  * scan below the funnel width (to keep a bulk scan from taking every permit
  * an interactive read could use). Set it and `source` says so, so the payload
  * never reports the funnel's number for a width the operator actually chose.
+ *
+ * ## The funnel's value is RESOLVED here, not read raw (#892)
+ *
+ * Reading `SPOTIFY_MCP_MAX_CONCURRENCY` straight off the env — the shape this
+ * had while #892 was still open — hands back a number the funnel never uses.
+ * Two cases follow, and both are the "correctly named payload field can still
+ * lie about its value" failure the precedence above exists to prevent:
+ *
+ *  - **Unset.** The funnel does not treat an unset knob as absent, it resolves
+ *    it to `DEFAULT_MAX_CONCURRENCY` (3). Falling through to
+ *    `DEFAULT_FANOUT_CONCURRENCY` (4) therefore reported a fan-out of 4 while
+ *    the funnel permitted 3 — in the DEFAULT case, with nothing configured.
+ *  - **Over the ceiling.** `SPOTIFY_MCP_MAX_CONCURRENCY=5000` is clamped to
+ *    `MAX_CONCURRENCY_CEILING` (32) for the funnel; read raw it yielded 5000,
+ *    so the payload named a width 156x larger than any request could reach.
+ *
+ * So the funnel's number is resolved through the same `positiveInt` + clamp
+ * the funnel itself uses, and only an EXPLICIT operator choice of
+ * `SPOTIFY_MCP_FANOUT_CONCURRENCY` may report itself as the source. The two
+ * knobs now agree by construction in every case, which is what the precedence
+ * section above was claiming all along.
  */
 export function resolveFanoutConcurrency(
   env: NodeJS.ProcessEnv = process.env,
 ): { limit: number; source: string } {
-  const funnel = Number.parseInt(env.SPOTIFY_MCP_MAX_CONCURRENCY ?? '', 10);
-  if (Number.isFinite(funnel) && funnel > 0) {
-    return { limit: funnel, source: 'SPOTIFY_MCP_MAX_CONCURRENCY' };
+  // Only an explicitly-set knob names itself as the source. An unset funnel
+  // knob is not "the operator chose the funnel", and reporting the funnel's
+  // name for a width nobody set is the same small lie as a wrong number.
+  if (env.SPOTIFY_MCP_MAX_CONCURRENCY !== undefined && env.SPOTIFY_MCP_MAX_CONCURRENCY !== '') {
+    return {
+      limit: Math.min(
+        positiveInt(env.SPOTIFY_MCP_MAX_CONCURRENCY, DEFAULT_MAX_CONCURRENCY),
+        MAX_CONCURRENCY_CEILING,
+      ),
+      source: 'SPOTIFY_MCP_MAX_CONCURRENCY',
+    };
   }
   const parsed = Number.parseInt(env.SPOTIFY_MCP_FANOUT_CONCURRENCY ?? '', 10);
   if (Number.isFinite(parsed) && parsed > 0) {
-    return { limit: parsed, source: 'SPOTIFY_MCP_FANOUT_CONCURRENCY' };
+    return {
+      limit: Math.min(parsed, MAX_CONCURRENCY_CEILING),
+      source: 'SPOTIFY_MCP_FANOUT_CONCURRENCY',
+    };
   }
-  return { limit: DEFAULT_FANOUT_CONCURRENCY, source: 'default' };
+  // Neither set: take the funnel's own resolved default rather than a second
+  // default, so an unconfigured server has exactly ONE concurrency number.
+  return { limit: DEFAULT_MAX_CONCURRENCY, source: 'default' };
 }
 
 let current: SpotifyMcpConfig | null = null;

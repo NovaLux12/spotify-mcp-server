@@ -51,6 +51,40 @@ function sleep(ms: number): Promise<void> {
 }
 
 /**
+ * Minimum gap between request STARTS, enforced process-wide by the funnel's
+ * shared start gate (#892). Unchanged from the serial queue: pacing is a
+ * property of the process, not of a call, so concurrent requests RESERVE slots
+ * on one counter instead of each reading a timestamp another task is about to
+ * overwrite.
+ */
+const REQUEST_START_GAP_MS = 100;
+
+/**
+ * Internal control-flow signal: a 429 worth retrying, raised by `rawRequest`
+ * and caught by the scheduler, which re-queues the attempt instead of letting
+ * the task sleep in place (#892).
+ *
+ * The retry used to be `await sleep(retryAfter * 1000)` inside the task body.
+ * That put a process-wide cooldown inside a single request: the sleeping task
+ * held the funnel while every other call — cheap reads, token refresh, other
+ * composites — queued behind it, and N throttled calls paid N waits for one
+ * window. Re-queueing makes the wait the shared gate's job instead, so a burst
+ * pays one window for the whole process.
+ *
+ * It is deliberately NOT a `SpotifyApiError` and carries no continuation. The
+ * scheduler re-runs the whole task with one more attempt, so the body that
+ * parses the response is still the body that runs: a continuation holding just
+ * the inner `rawRequest` would re-issue the HTTP call and drop its result on
+ * the floor, handing a `Response` back where the caller expects parsed JSON.
+ */
+class ThrottleRetry extends Error {
+  constructor(readonly retryAfterSec: number) {
+    super(`rate limited; retry after ${retryAfterSec}s`);
+    this.name = 'ThrottleRetry';
+  }
+}
+
+/**
  * Longest single wait the client will hold the serialized request queue for,
  * whoever asked for it: a 429 `Retry-After` (#108) or a 5xx backoff (#675).
  * Past this the caller gets the error with the wait attached rather than a
@@ -224,6 +258,11 @@ function genericMessageFor(status: number): string {
 interface SpotifyClientOptions {
   /** Fetch-all cap override (#55); defaults to config fetchAllCap. */
   fetchAllCap?: number;
+  /**
+   * In-flight request ceiling override (#892); defaults to
+   * SPOTIFY_MCP_MAX_CONCURRENCY. `1` is the strictly serial funnel.
+   */
+  maxConcurrency?: number;
   /** TTL cache tuning (#54); omit for defaults. */
   cache?: { ttlMs?: number; maxEntries?: number };
   /**
@@ -260,10 +299,24 @@ interface PageProgress {
  * the promotion boundary without timers.
  */
 interface LaneTask {
-  run: () => Promise<unknown>;
+  /**
+   * The queued work. It receives the attempt count so the retry budget is
+   * owned by the scheduler rather than buried in a recursion inside the
+   * request body — that is what lets a throttled attempt re-enter the queue
+   * as a whole task instead of as a bare response.
+   */
+  run: (attempts: number) => Promise<unknown>;
   resolve: (v: unknown) => void;
   reject: (e: unknown) => void;
   enqueuedAt: number;
+  /** Attempts already spent; 0 on a first submission. */
+  attempts: number;
+  /**
+   * The lane this task was enqueued on (#892). A throttled attempt is
+   * re-queued onto the same lane, so a retry cannot quietly promote a bulk
+   * walk page ahead of the interactive reads that were queued before it.
+   */
+  priority: 'normal' | 'low';
 }
 
 export function selectNextLaneTask(
@@ -302,6 +355,18 @@ interface RateLimitStatus {
   cacheBytes?: number;
   cacheMaxBytes?: number;
   cacheSkippedOversize?: number;
+  /** Requests currently open in the funnel (#892). */
+  inFlight: number;
+  /** The funnel's concurrency ceiling for this process (#892). */
+  maxConcurrency: number;
+  /** High-water mark of `inFlight` (#892) — the concurrency actually reached. */
+  peakInFlight: number;
+  /**
+   * Consecutive 429s observed; reset by any request that was not throttled
+   * (#892). At or above the trip count the funnel fails new work fast rather
+   * than queueing it into the same wall.
+   */
+  throttleStreak: number;
 }
 
 /**
@@ -321,8 +386,22 @@ export class SpotifyClient {
   private loadPromise: Promise<TokenData> | null = null;
 
   // Rate limiting
-  private _lastRequestTime = 0;
+  /**
+   * Earliest time the next request may START (#892). Every launch reserves a
+   * slot here BEFORE it waits, so N concurrent requests are paced against one
+   * shared reservation counter instead of each reading a timestamp another
+   * task is about to overwrite. `_lastRequestTime` could only describe a
+   * strictly serial funnel: with more than one request in flight, "when did we
+   * last start" stops being a number any wait can be derived from.
+   */
+  private _nextStartAt = 0;
   private _rateLimitUntil = 0;
+  /**
+   * Consecutive 429s, and when the last one landed (#892). Reset by any
+   * request that was not throttled, and aged out past the streak window.
+   */
+  private _throttleStreak = 0;
+  private _lastThrottleSeenAt = 0;
   // Last throttling event this client observed (#56).
   private _lastThrottle: { retryAfterSec: number; waitedMs: number; at: number } | null = null;
   // Request/quota usage tracking (#904): cumulative count plus per-request
@@ -343,6 +422,14 @@ export class SpotifyClient {
   // the payload an ETag identifies so a 304 can be answered without a body.
   readonly validators: ValidatorStore<unknown> | null;
   private readonly fetchAllCap: number;
+  /**
+   * Ceiling on requests in flight at once (#892). Read once at construction,
+   * like fetchAllCap, so one client has one stable bound.
+   */
+  private readonly _maxConcurrency: number;
+  /** Requests currently open in the funnel; also its permit count (#892). */
+  private _inFlight = 0;
+  private _peakInFlight = 0;
   private readonly random: () => number;
 
   // Long-walk progress reporting (#65); index.ts installs a notifier that
@@ -352,6 +439,7 @@ export class SpotifyClient {
 
   constructor(opts: SpotifyClientOptions = {}) {
     this.fetchAllCap = opts.fetchAllCap ?? getConfig().fetchAllCap;
+    this._maxConcurrency = opts.maxConcurrency ?? getConfig().maxConcurrency;
     this.random = opts.random ?? Math.random;
     this.cache = opts.disableCache ? null : new LruTtlCache<unknown>(opts.cache);
     this.validators = opts.disableCache
@@ -391,6 +479,10 @@ export class SpotifyClient {
       requestsLastMinute: this.requestsSince(60_000),
       requestsLastHour: this.requestsSince(3_600_000),
       ...this.cacheStats(),
+      inFlight: this._inFlight,
+      maxConcurrency: this._maxConcurrency,
+      peakInFlight: this._peakInFlight,
+      throttleStreak: this._throttleStreak,
     };
   }
 
@@ -631,6 +723,8 @@ export class SpotifyClient {
     low: Array<LaneTask>;
   } = { normal: [], low: [] };
   private _draining = false;
+  /** Schedulers parked on a permit or on work (#892). */
+  private _changeWaiters: Array<() => void> = [];
 
   /**
    * Waiter aging (#133): a low-priority task waiting longer than
@@ -645,46 +739,257 @@ export class SpotifyClient {
    */
   private static readonly REQUEST_WINDOW_RETAIN_MS = 3_600_000;
 
-  private enqueue<T>(fn: () => Promise<T>, priority: 'normal' | 'low' = 'normal'): Promise<T> {
+  /**
+   * Consecutive 429s that trip the fail-fast breaker (#892), and the window
+   * they must land inside to count as consecutive. A request that was NOT
+   * throttled resets the streak outright.
+   */
+  private static readonly THROTTLE_STREAK_TRIP = 3;
+  private static readonly THROTTLE_STREAK_WINDOW_MS = 30_000;
+
+  private enqueue<T>(
+    fn: (attempts: number) => Promise<T>,
+    priority: 'normal' | 'low' = 'normal',
+  ): Promise<T> {
     return new Promise<T>((resolve, reject) => {
       this._lanes[priority].push({
-        run: fn as () => Promise<unknown>,
+        run: fn as (attempts: number) => Promise<unknown>,
         resolve: resolve as (v: unknown) => void,
         reject,
         enqueuedAt: Date.now(),
+        attempts: 0,
+        priority,
       });
+      // Wake a drain parked mid-cohort: a task arriving while a permit is free
+      // must start on the next tick, not when the request already running
+      // happens to finish.
+      this._notify();
       this._drain();
     });
   }
 
+  /**
+   * Park until the funnel's state changes — a permit comes back, or work is
+   * enqueued. The returned `cancel` drops a waiter the caller decided not to
+   * await, so a scheduler that re-checks its state cannot accumulate waiters
+   * nobody will ever consume.
+   */
+  private _waitForChange(): { promise: Promise<void>; cancel: () => void } {
+    let settle!: () => void;
+    const promise = new Promise<void>((resolve) => {
+      settle = resolve;
+    });
+    const waiter = (): void => settle();
+    this._changeWaiters.push(waiter);
+    return {
+      promise,
+      cancel: () => {
+        const at = this._changeWaiters.indexOf(waiter);
+        if (at >= 0) this._changeWaiters.splice(at, 1);
+      },
+    };
+  }
+
+  /** Release every parked scheduler, then forget it — one change, one wake. */
+  private _notify(): void {
+    if (this._changeWaiters.length === 0) return;
+    const waiters = this._changeWaiters;
+    this._changeWaiters = [];
+    for (const waiter of waiters) waiter();
+  }
+
+  /**
+   * The ONE shared gate for every request in the process (#892): the pacing gap
+   * and the `Retry-After` cooldown resolve to a single per-launch reservation,
+   * so N queued calls wait out ONE window instead of one window each.
+   *
+   * The slot is reserved BEFORE the wait, which is what makes this a gate
+   * rather than a read: N workers released by the same event-loop turn cannot
+   * all read "now" and all start. After the wait, a start that landed late
+   * (event-loop lag, a coarse timer) pushes the counter forward from the
+   * moment it actually started, so the next launch still sees a full gap
+   * behind it.
+   *
+   * That correction is MONOTONE. Writing it unguarded would move the counter
+   * backwards: three launches reserving slots T, T+100 and T+200 leave
+   * `_nextStartAt` at T+300, and the first of them to wake at T+100 would
+   * then set it to T+200 — handing a fourth launch the slot the third one
+   * already holds, and letting two requests start inside one gap.
+   */
+  private async _awaitStartSlot(): Promise<void> {
+    const now = Date.now();
+    const slot = Math.max(this._nextStartAt, this._rateLimitUntil);
+    this._nextStartAt = slot + REQUEST_START_GAP_MS;
+    const waitMs = slot - now;
+    if (waitMs > 0) await sleep(waitMs);
+    const earliestNextStart = Date.now() + REQUEST_START_GAP_MS;
+    if (earliestNextStart > this._nextStartAt) this._nextStartAt = earliestNextStart;
+  }
+
+  /** Record one observed 429 against the consecutive-throttle breaker. */
+  private noteThrottled(now: number): void {
+    this._throttleStreak =
+      now - this._lastThrottleSeenAt > SpotifyClient.THROTTLE_STREAK_WINDOW_MS
+        ? 1
+        : this._throttleStreak + 1;
+    this._lastThrottleSeenAt = now;
+  }
+
+  /**
+   * A settled request that was NOT throttled breaks the streak (#892): two
+   * 429s either side of a 404 are not a run of throttling, and treating them
+   * as one would keep the breaker latched on a client that is answering
+   * normally again.
+   */
+  private noteNotThrottled(err: unknown): void {
+    if (err instanceof SpotifyApiError && err.status === 429) return;
+    this._throttleStreak = 0;
+  }
+
+  /**
+   * The error a newly launched task fails fast with while the breaker is
+   * latched, or null when it is not (#892). A run of consecutive 429s means
+   * the quota wall has not moved: queueing more work into it turns a bounded
+   * wait into an unbounded one, and the caller is better served an actionable
+   * 429 naming the wait than a request that never issues.
+   */
+  private _throttleBreaker(): SpotifyApiError | null {
+    if (this._throttleStreak < SpotifyClient.THROTTLE_STREAK_TRIP) return null;
+    const remaining = this._rateLimitUntil - Date.now();
+    // The window is what latches the breaker; once it passes the streak is
+    // history, not a standing refusal to send.
+    if (remaining <= 0) return null;
+    const retryAfterSec = Math.max(1, Math.ceil(remaining / 1000));
+    return new SpotifyApiError(
+      429,
+      `Rate limited — ${this._throttleStreak} consecutive 429s and the Retry-After window has not `
+        + `passed; this request was not sent. Retry after ${retryAfterSec}s.`,
+      retryAfterSec,
+    );
+  }
+
+  /** Tasks waiting for a permit, across both lanes. */
+  private _queued(): number {
+    return this._lanes.normal.length + this._lanes.low.length;
+  }
+
+  /**
+   * Bounded-concurrency drain (#892).
+   *
+   * The loop used to `await` each task before selecting the next, so at most
+   * one HTTP request was ever in flight process-wide and a 50-lookup composite
+   * held the funnel for the length of all fifty. It now keeps up to
+   * `maxConcurrency` permits busy and hands a permit back the moment a task
+   * settles.
+   *
+   * Permits: `_executeTask` takes one on entry and returns it in a `finally`,
+   * so success, an HTTP error, a thrown exception, a gate rejection and a
+   * throttle re-queue all release, and the release notifies the loop. A leak
+   * would show up as a pool that silently shrinks — the refill stops early,
+   * concurrency falls to 1, and the queue serialises again with nothing
+   * reporting an error.
+   */
   private _drain(): void {
     if (this._draining) return;
     this._draining = true;
     void (async () => {
       try {
         for (;;) {
-          const next = selectNextLaneTask(
-            this._lanes.normal,
-            this._lanes.low,
-            Date.now(),
-            SpotifyClient.LOW_AGING_MS,
-          );
-          if (!next) break;
-          const now = Date.now();
-          const rateLimitWait = Math.max(0, this._rateLimitUntil - now);
-          const gapWait = Math.max(0, this._lastRequestTime + 100 - now);
-          const waitMs = Math.max(rateLimitWait, gapWait);
-          if (waitMs > 0) await sleep(waitMs);
-          this._lastRequestTime = Date.now();
-          this.recordRequest();
-          await next.run().then(next.resolve, next.reject);
+          while (this._inFlight < this._maxConcurrency) {
+            const next = selectNextLaneTask(
+              this._lanes.normal,
+              this._lanes.low,
+              Date.now(),
+              SpotifyClient.LOW_AGING_MS,
+            );
+            if (!next) break;
+            void this._executeTask(next);
+          }
+          if (this._inFlight === 0 && this._queued() === 0) break;
+          const change = this._waitForChange();
+          // Re-read AFTER registering: a task may have been enqueued between
+          // the selection pass above and this registration, and its
+          // notification found no waiter to wake. Only re-loop when there is
+          // genuinely something to launch — a free permit AND queued work.
+          // Testing the permit alone would spin here for the whole time a
+          // partial cohort is in flight against an empty queue.
+          if (this._inFlight < this._maxConcurrency && this._queued() > 0) {
+            change.cancel();
+            continue;
+          }
+          await change.promise;
         }
       } finally {
         this._draining = false;
         // Tasks enqueued during the final awaits restart the drain.
-        if (this._lanes.normal.length > 0 || this._lanes.low.length > 0) this._drain();
+        if (this._queued() > 0) this._drain();
       }
     })();
+  }
+
+  /**
+   * Run one queued task under a permit, and always give the permit back.
+   *
+   * The body is one `try` so there is exactly one release site: nothing below
+   * — the breaker, the gate, the task itself, the re-queue — can return while
+   * holding a permit. Every failure path settles the caller's promise here;
+   * none may escape as a rejection of this function, which would reject the
+   * drain's race and stop the funnel for good.
+   */
+  private async _executeTask(task: LaneTask): Promise<void> {
+    this._inFlight++;
+    if (this._inFlight > this._peakInFlight) this._peakInFlight = this._inFlight;
+    try {
+      // Fail fast while the consecutive-429 breaker is latched. A rejection,
+      // not a wait: nothing is sent, and the caller gets the wait it would
+      // otherwise have paid as retryAfterSec.
+      const breaker = this._throttleBreaker();
+      if (breaker) {
+        task.reject(breaker);
+        return;
+      }
+      await this._awaitStartSlot();
+      this.recordRequest();
+      let result: unknown;
+      try {
+        result = await task.run(task.attempts);
+      } catch (err) {
+        if (err instanceof ThrottleRetry) {
+          // Back on the queue with one attempt spent. The wait belongs to the
+          // shared gate: every throttled caller parks on the same cooldown and
+          // is released by the same window, rather than each sleeping where it
+          // stands and blocking everything behind it.
+          this._lanes[task.priority].push({
+            run: task.run,
+            resolve: task.resolve,
+            reject: task.reject,
+            // Re-queued, not still-waiting: the aging clock restarts so a
+            // throttled walk page cannot jump the queue by accruing age.
+            enqueuedAt: Date.now(),
+            attempts: task.attempts + 1,
+            priority: task.priority,
+          });
+          this._notify();
+          return;
+        }
+        this.noteNotThrottled(err);
+        task.reject(err);
+        return;
+      }
+      this.noteNotThrottled(null);
+      task.resolve(result);
+    } catch (err) {
+      // The gate itself failed (a throwing sleep, say). The task still has to
+      // settle and the permit still has to come back.
+      this.noteNotThrottled(err);
+      task.reject(err);
+    } finally {
+      this._inFlight--;
+      // Hand the permit on immediately, and wake a scheduler parked waiting
+      // for one. The release and the wake are adjacent and synchronous, so a
+      // drain that re-reads `_inFlight` can never see the stale count.
+      this._notify();
+    }
   }
 
   private buildUrl(path: string, params?: Record<string, string>): string {
@@ -785,7 +1090,11 @@ export class SpotifyClient {
       // long before the window Spotify asked for. Garbage still lands on that
       // floor, which keeps it from poisoning _rateLimitUntil with NaN (#20).
       const retryAfter = parseRetryAfter(res.headers.get('Retry-After'));
-      this._rateLimitUntil = Date.now() + retryAfter * 1000;
+      const throttledAt = Date.now();
+      this._rateLimitUntil = throttledAt + retryAfter * 1000;
+      // Every 429 counts, including the ones that end in a throw below — the
+      // streak is what tells a burst apart from an isolated throttle.
+      this.noteThrottled(throttledAt);
 
       // Read the body for error.reason (July-2026: 'QUOTA_EXCEEDED' when the
       // per-developer-account quota is exhausted — retrying sooner than
@@ -812,10 +1121,11 @@ export class SpotifyClient {
         );
       }
 
-      // On a retried attempt (e.g. immediately after a 401-refresh) we have
-      // already consumed our one retry budget, so a 429 here is definitive:
-      // throw with retryAfterSec attached rather than sleep+recurse, which
-      // would loop forever against a stubborn 429 (#671).
+      // On a retried attempt (e.g. immediately after a 401-refresh, or on the
+      // single re-queued attempt a throttle earns) we have already consumed
+      // our retry budget, so a 429 here is definitive: throw with
+      // retryAfterSec attached rather than re-queueing again, which would loop
+      // forever against a stubborn 429 (#671).
       if (retryCount > 0) {
         throw new SpotifyApiError(
           429,
@@ -826,9 +1136,10 @@ export class SpotifyClient {
       }
 
       if (retryAfter > RETRY_SLEEP_CAP_SEC) {
-        // Too long to sleep inside the queue: fail fast with the wait time;
-        // _rateLimitUntil already makes subsequent enqueued requests reject
-        // until the window passes.
+        // Too long to wait on: fail fast with the wait time. _rateLimitUntil
+        // already parks every later launch at the gate until the window
+        // passes, and the streak breaker turns a repeat into an immediate
+        // answer rather than another wait.
         throw new SpotifyApiError(
           429,
           `Rate limited — Retry-After ${retryAfter}s exceeds the in-queue wait cap (${RETRY_SLEEP_CAP_SEC}s); retry later.`,
@@ -837,9 +1148,15 @@ export class SpotifyClient {
         );
       }
 
-      this._lastThrottle = { retryAfterSec: retryAfter, waitedMs: retryAfter * 1000, at: Date.now() };
-      await sleep(retryAfter * 1000);
-      return this.rawRequest(method, url, body, retryCount + 1, contentType, conditional);
+      this._lastThrottle = { retryAfterSec: retryAfter, waitedMs: retryAfter * 1000, at: throttledAt };
+      // Hand the attempt back to the scheduler instead of sleeping here
+      // (#892). The cooldown set above IS the gate; the re-queued attempt
+      // reserves a slot behind every other queued task, so the process waits
+      // out this one window rather than this task stalling the funnel while
+      // every other caller pays its own copy of the same wait. The scheduler
+      // re-runs the same body with `attempts + 1`, so the single retry this
+      // budget allows is still the single retry the task gets.
+      throw new ThrottleRetry(retryAfter);
     }
 
     // Gateway/upstream failures (#675). Spotify answered, which means it
@@ -937,12 +1254,18 @@ export class SpotifyClient {
     let servedFrom304 = false;
     let responseEtag: string | null = null;
     const result = await this.enqueue(
-      async () => {
+      async (attempts) => {
+        // The re-queued attempt re-enters the queue, so a body that only reads
+        // these out-of-band flags could report the PREVIOUS attempt's 304.
+        // Reset at the top of every run: the flags describe the attempt that
+        // produced the result this run is about to return.
+        servedFrom304 = false;
+        responseEtag = null;
         const res = await this.rawRequest(
           'GET',
           url,
           undefined,
-          0,
+          attempts,
           undefined,
           validator ? { ifNoneMatch: validator.etag } : undefined,
         );
@@ -1193,8 +1516,8 @@ export class SpotifyClient {
    * to invalidate and nothing to record.
    */
   private async mutate<T>(method: string, path: string, url: string, body?: unknown): Promise<T | null> {
-    return this.enqueue(async () => {
-      const res = await this.rawRequest(method, url, body);
+    return this.enqueue(async (attempts) => {
+      const res = await this.rawRequest(method, url, body, attempts);
       let parsed: T | null = null;
       try {
         parsed = await this.jsonOrNull<T>(res);
@@ -1223,13 +1546,13 @@ export class SpotifyClient {
    */
   async putRaw(path: string, body: string, contentType = 'image/jpeg'): Promise<void> {
     const url = this.buildUrl(path);
-    await this.enqueue(async () => {
+    await this.enqueue((attempts) => {
       // No response body to read: the request carried image bytes and the
       // answer is a bodiless 202. Bookkeeping sits directly after the request
       // for the same reason it does in mutate() (#674).
-      await this.rawRequest('PUT', url, body, 0, contentType);
-      this.afterMutation('PUT', path, null);
+      return this.rawRequest('PUT', url, body, attempts, contentType);
     });
+    this.afterMutation('PUT', path, null);
   }
 
   async delete<T>(path: string, body?: unknown): Promise<T | null> {
