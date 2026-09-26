@@ -498,6 +498,12 @@ test('every prompt only references tool names that are actually registered', asy
       'short_term', 'medium_term', 'long_term',
       'album_type', 'release_date', 'playlist_name', 'include_singles',
       'max_results', 'dry_run', 'total_tracks',
+      // show_new_episodes parameter names (#716): prompts now invoke them by
+      // their real schema names so the agent does not invent parameters.
+      'days', 'per_show_limit', 'max_shows',
+      // get_artist_albums parameter name (#716): music_briefing's
+      // release-fetch section spells it out so the agent does not invent it.
+      'include_groups',
     ];
     const referenced = [...body.matchAll(/\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b/g)]
       .map((m) => m[0])
