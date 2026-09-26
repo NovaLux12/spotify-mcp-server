@@ -128,6 +128,14 @@ describe('fetchCoverJpeg (#880)', () => {
         reject(reason ?? new DOMException('Aborted', 'AbortError'));
       });
     })) as typeof fetch;
+    // A real stalled fetch holds an open socket, which keeps the event loop
+    // alive until the abort timer fires. This stub holds no handle, so on
+    // Node 22 the unref'd `AbortSignal.timeout` timer lets the loop drain
+    // first and node:test cancels the suite with "Promise resolution is still
+    // pending but the event loop has already resolved". The keepAlive handle
+    // below stands in for that socket, so the test measures the same thing on
+    // every supported Node version.
+    const keepAlive = setInterval(() => {}, 10);
     try {
       const start = Date.now();
       await assert.rejects(
@@ -139,6 +147,7 @@ describe('fetchCoverJpeg (#880)', () => {
       // but the test must finish in seconds, not minutes.
       assert.ok(elapsed < 5_000, `fetch should abort in ms, not hang (took ${elapsed}ms)`);
     } finally {
+      clearInterval(keepAlive);
       if (prevTimeout === undefined) delete process.env.SPOTIFY_REQUEST_TIMEOUT_MS;
       else process.env.SPOTIFY_REQUEST_TIMEOUT_MS = prevTimeout;
       initConfig(process.env);
