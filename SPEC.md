@@ -721,7 +721,7 @@ List the country codes of every market where Spotify is available — useful for
 ---
 
 #### The `get_several_*` batch family
-Seven batch lookup tools fetch full details for several IDs in a single call per chunk, dropping IDs Spotify could not resolve:
+Seven batch lookup tools fetch full details for several IDs in a single call per chunk. Every requested ID is accounted for: IDs Spotify could not resolve are named in prose and listed under `counts.missing_ids` instead of vanishing, and a request that resolves none fails with the unresolved IDs in the error.
 
 | Tool | Endpoint | Max IDs per request |
 |---|---|---|
@@ -735,7 +735,7 @@ Seven batch lookup tools fetch full details for several IDs in a single call per
 
 **Inputs:** `ids` (string[], required — longer lists are fetched in chunks of the per-request maximum and merged), plus shared response fields. The audiobook variants are market-gated like the single lookups.
 
-**Returns:** full objects per resolved ID; `response_format=json` hands back `{ items: [...] }`.
+**Returns:** full objects per resolved ID plus a `counts` block (`requested`, `resolved`, and `counts.missing_ids`); `response_format=json` hands back the items together with the same `counts` block.
 
 ---
 
