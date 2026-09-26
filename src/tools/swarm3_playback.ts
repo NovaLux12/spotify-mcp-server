@@ -451,8 +451,24 @@ export function registerSwarm3PlaybackTools(server: McpServer, client: SpotifyCl
       const device = bookmark.device_id ? devices.find((d) => d.id === bookmark.device_id) ?? null : null;
       const targetId = device?.id ?? bookmark.device_id;
       const transferBody = { device_ids: [targetId], play: args.play ?? true };
+      const playQs = targetId ? `?device_id=${encodeURIComponent(targetId)}` : '';
+      // #833: replay the bookmarked item (with its surrounding context when one
+      // was captured) so the saved session actually starts playing instead of
+      // a silent transfer+seek. Same body shape restore_playback_state uses.
+      const contextPlayBody: Record<string, unknown> = {
+        context_uri: bookmark.context_uri,
+        offset: { uri: bookmark.track_uri },
+        position_ms: bookmark.position_ms,
+      };
+      const singlePlayBody: Record<string, unknown> = {
+        uris: [bookmark.track_uri],
+        position_ms: bookmark.position_ms,
+      };
       const steps = [
         `PUT /me/player ${JSON.stringify(transferBody)} → resume "${bookmark.track_name}" on "${device?.name ?? bookmark.device_name ?? targetId ?? 'unknown'}"`,
+        bookmark.context_uri
+          ? `PUT /me/player/play${playQs} { context_uri: ${bookmark.context_uri}, offset: { uri: ${bookmark.track_uri} }, position_ms: ${bookmark.position_ms} }`
+          : `PUT /me/player/play${playQs} { uris: [${bookmark.track_uri}], position_ms: ${bookmark.position_ms} }`,
         `PUT /me/player/seek?position_ms=${bookmark.position_ms}${targetId ? `&device_id=${encodeURIComponent(targetId)}` : ''}`,
       ];
       if (isDry(args)) {
@@ -463,6 +479,22 @@ export function registerSwarm3PlaybackTools(server: McpServer, client: SpotifyCl
         return textResult('Bookmark has no device id and no matching device is available — cannot resume.', { resumed: false });
       }
       await client.put('/me/player', transferBody);
+      // The transfer+seek alone never starts the bookmarked item; PUT
+      // /me/player/play is what actually loads and plays the saved track (in
+      // its album/playlist context when one was captured). Await it so the
+      // success report is not issued before the play call settles.
+      try {
+        await client.put(`/me/player/play${playQs}`, bookmark.context_uri ? contextPlayBody : singlePlayBody);
+      } catch {
+        // The context+offset form can be rejected if the track left the
+        // captured context; fall back to an ad-hoc single-track play so the
+        // resume still lands somewhere audible.
+        if (bookmark.context_uri) {
+          await client.put(`/me/player/play${playQs}`, singlePlayBody);
+        } else {
+          throw new Error('play_failed');
+        }
+      }
       try {
         await client.put(`/me/player/seek?position_ms=${bookmark.position_ms}&device_id=${encodeURIComponent(targetId)}`);
       } catch {
