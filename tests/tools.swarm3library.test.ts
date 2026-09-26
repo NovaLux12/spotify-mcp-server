@@ -30,6 +30,7 @@ import assert from 'node:assert/strict';
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { SpotifyApiError, type SpotifyClient } from '../src/client.js';
+import { installGatedPathContract } from '../src/gating.js';
 import { registerSwarm3LibraryTools } from '../src/tools/swarm3_library.js';
 
 // ---------------------------------------------------------------------------
@@ -99,7 +100,11 @@ function harness(library: Library) {
     async get<T>(path: string, params?: Record<string, string>): Promise<T | null> {
       calls.push({ path, params });
       if (!(path in library)) throw new Error(`unstubbed GET ${path}`);
-      return library[path] as T | null;
+      const entry = library[path];
+      // A stub may be a thunk so it can fail per path (a 403 gate, a 429, a
+      // 500). Returning the thunk would hand the caller a function where it
+      // expects a payload, and the read would silently look like an empty page.
+      return (typeof entry === 'function' ? (entry as () => unknown)() : entry) as T | null;
     },
     async getAllPages<T>(
       path: string,
@@ -113,6 +118,12 @@ function harness(library: Library) {
       return (opts?.maxItems === undefined ? rows : rows.slice(0, opts.maxItems)) as T[];
     },
   };
+
+  // The real server installs the #329 registration-gated contract from the
+  // client-construction path in src/index.ts, so a stubbed `get` has to carry
+  // it too: without it a 403 on /artists/{id}/top-tracks arrives un-annotated
+  // and the tool's `isGatedError` branch is never reachable in a test (#901).
+  installGatedPathContract(client as unknown as SpotifyClient);
 
   const registered: RegisteredTool[] = [];
   const fakeServer = {
@@ -136,7 +147,10 @@ function harness(library: Library) {
     };
   };
 
-  return { calls, walks, invoke };
+  /** #901: the fan-out size, counted per request rather than inferred. */
+  const topTracksRequests = () => calls.filter((c) => c.path.endsWith('/top-tracks')).length;
+
+  return { calls, walks, invoke, topTracksRequests };
 }
 
 // ---------------------------------------------------------------------------
@@ -265,6 +279,25 @@ const FIXTURE: Library = {
 };
 
 const SCAN = { scan_cap: 200 };
+
+/**
+ * A library with `n` saved artists, one saved track each, so `artist_completeness_score`
+ * has `n` candidates to fan out over. The shared FIXTURE has three artists, which
+ * would make a "stop after one request" test pass even with a loop that never
+ * stops; #901 needs a fan-out big enough for the difference to be visible.
+ */
+function wideLibrary(n: number): Library {
+  const tracks: SavedTrack[] = Array.from({ length: n }, (_, i) =>
+    track(
+      `wt-${i}`,
+      `Wide ${i}`,
+      [[`ar-${i}`, `Artist ${i}`]],
+      { id: `al-wide-${i}`, name: `Wide ${i}`, release_date: '2020-01-01' },
+      '2026-01-05T00:00:00Z',
+    ),
+  );
+  return { '/me/tracks': tracks };
+}
 
 // ---------------------------------------------------------------------------
 // 1-3. Album groupings
@@ -570,6 +603,149 @@ describe('swarm3_library: completeness, era runtime and duration ranking (#761)'
     const avg = payload.average_completeness as number;
     assert.ok(Math.abs(avg - (0.5 + 2 / 3 + 1) / 3) < 1e-12, `average_completeness was ${avg}`);
     assert.match(text, /avg 72% across 3 artist\(s\)/);
+  });
+
+  // -------------------------------------------------------------------------
+  // #901: one probe, then fail fast. A gated/removed /artists/{id}/top-tracks
+  // answers the same way for every artist, so the fan-out must collapse to a
+  // single request instead of reporting the empty result as "avg 0%".
+  // -------------------------------------------------------------------------
+
+  it('#901: a gated top-tracks endpoint stops the walk on ONE request, not 25', async () => {
+    // 30 saved artists so `top_n: 25` genuinely has 25 to walk: with the old
+    // swallow-and-continue loop this test would record 25 requests and an
+    // "avg 0%" summary, which is the exact failure #901 reports.
+    const WIDE = wideLibrary(30);
+    const h = harness({
+      ...WIDE,
+      // Every artist answers the registration gate. Recording which of them was
+      // asked is the assertion; the prose alone would not catch a full walk.
+      ...Object.fromEntries(
+        Array.from({ length: 30 }, (_, i) => [
+          `/artists/ar-${i}/top-tracks`,
+          () => { throw new SpotifyApiError(403, 'Forbidden'); },
+        ]),
+      ),
+    });
+
+    const { payload, text } = await h.invoke('artist_completeness_score', { scan_cap: 200, top_n: 25 });
+
+    assert.equal(h.topTracksRequests(), 1, 'exactly one probe: the gate settles the other 24');
+    assert.equal(payload.gated, true);
+    assert.equal(payload.gate_status, 403);
+    assert.equal(payload.artists_scored, 0);
+    assert.equal(payload.top_tracks_requests, 1);
+    assert.equal(payload.artists_requested, 25);
+    assert.equal(payload.artists_not_requested, 24, 'the 24 unwalked artists are disclosed, not silent');
+    assert.equal(
+      payload.average_completeness,
+      null,
+      'null, not 0 — an unreadable endpoint is not a completeness of 0%',
+    );
+    assert.equal(payload.quota_hit, false);
+    assert.doesNotMatch(text, /avg 0%/, 'the misleading summary is gone');
+    assert.doesNotMatch(text, /avg \d+%/, 'no average is reported at all when the walk was gated');
+    assert.match(text, /app-registration-gated/);
+    assert.match(text, /Spotify returned 403 for \/artists\/\{id\}\/top-tracks/);
+    assert.match(text, /not an OAuth scope problem/, 'Spotify’s own gating explanation is surfaced');
+    assert.match(text, /1 of 25 artist\(s\)/);
+    assert.match(text, /NOT a completeness of 0%/);
+  });
+
+  it('#901: a 404 (the Feb-2026 [REMOVED] answer) also stops on one request', async () => {
+    const h = harness({
+      ...wideLibrary(30),
+      ...Object.fromEntries(
+        Array.from({ length: 30 }, (_, i) => [
+          `/artists/ar-${i}/top-tracks`,
+          () => { throw new SpotifyApiError(404, 'Not found'); },
+        ]),
+      ),
+    });
+
+    const { payload, text } = await h.invoke('artist_completeness_score', { scan_cap: 200, top_n: 25 });
+
+    assert.equal(h.topTracksRequests(), 1);
+    assert.equal(payload.gated, true);
+    assert.equal(payload.gate_status, 404);
+    assert.equal(payload.artists_not_requested, 24);
+    assert.match(text, /February 2026 Web API changelog lists this endpoint as \[REMOVED\]/);
+    assert.match(text, /deprecated: true/, 'the schema/changelog disagreement is stated, not smoothed over');
+  });
+
+  it('#901: a healthy endpoint still scores every requested artist and reports the cost', async () => {
+    const WIDE = wideLibrary(4);
+    const h = harness({
+      ...WIDE,
+      ...Object.fromEntries(
+        Array.from({ length: 4 }, (_, i) => [
+          `/artists/ar-${i}/top-tracks`,
+          { tracks: [{ id: `wt-${i}-a`, name: 'A' }, { id: `wt-${i}-b`, name: 'B' }] },
+        ]),
+      ),
+    });
+
+    const { payload, text } = await h.invoke('artist_completeness_score', { scan_cap: 200, top_n: 4 });
+
+    assert.equal(h.topTracksRequests(), 4, 'no gate, so no early exit');
+    assert.equal(payload.gated, undefined, 'a working endpoint is not described as gated');
+    assert.equal(payload.artists_scored, 4);
+    assert.equal(payload.artists_skipped, 0);
+    assert.equal(payload.top_tracks_requests, 4);
+    assert.equal(payload.artists_not_requested, 0);
+    assert.equal(payload.average_completeness, 0, 'no saved top tracks in the fixture means 0% each');
+    assert.match(text, /avg 0% across 4 artist\(s\)/, 'the average is still reported when nothing gated');
+  });
+
+  it('#901: a 429 mid-walk still stops early and reports partial results', async () => {
+    const h = harness({
+      ...wideLibrary(5),
+      ...Object.fromEntries(
+        Array.from({ length: 5 }, (_, i) => [
+          `/artists/ar-${i}/top-tracks`,
+          () => {
+            if (i >= 2) throw new SpotifyApiError(429, 'rate limit');
+            return { tracks: [{ id: `wt-${i}`, name: 'Only' }] };
+          },
+        ]),
+      ),
+    });
+
+    const { payload, text } = await h.invoke('artist_completeness_score', { scan_cap: 200, top_n: 5 });
+
+    assert.equal(h.topTracksRequests(), 3, 'stops at the first 429, not after all five');
+    assert.equal(payload.quota_hit, true);
+    assert.equal(payload.gated, undefined, 'a 429 is not a gate');
+    assert.equal(payload.artists_scored, 2);
+    assert.equal(payload.partial, true);
+    assert.equal(payload.average_completeness, 1, 'a partial walk still states the average over what it did read');
+    assert.match(text, /Quota hit after 2\/5 artist\(s\) — partial results\./);
+  });
+
+  it('#901: an unreadable single artist is skipped, not averaged in as 0%', async () => {
+    const h = harness({
+      ...wideLibrary(3),
+      '/artists/ar-0/top-tracks': { tracks: [{ id: 'wt-0', name: 'Only' }] },
+      '/artists/ar-1/top-tracks': () => { throw new SpotifyApiError(500, 'Server error'); },
+      '/artists/ar-2/top-tracks': { tracks: [{ id: 'wt-2-a', name: 'A' }, { id: 'wt-2-b', name: 'B' }] },
+    });
+
+    const { payload, text } = await h.invoke('artist_completeness_score', { scan_cap: 200, top_n: 3 });
+
+    assert.equal(h.topTracksRequests(), 3, 'a 500 is per-artist, so the walk continues');
+    assert.equal(payload.gated, undefined, 'a 500 is not the registration gate');
+    assert.equal(payload.artists_scored, 2);
+    assert.equal(payload.artists_skipped, 1);
+    assert.deepEqual(payload.skipped_by_status, { '500': 1 });
+    assert.deepEqual(
+      (payload.skipped_artists as unknown as Array<{ artist_id: string; status: number }>).map((r) => r.artist_id),
+      ['ar-1'],
+    );
+    // ar-0 scores 1/1, ar-2 scores 0/2, so 0.5. Counting the unreadable ar-1
+    // as a 0% would report 1/3 instead -- the average has to come from the
+    // artists that were actually read.
+    assert.equal(payload.average_completeness, 0.5);
+    assert.match(text, /1 artist\(s\) could not be scored \(1 × HTTP 500\) — excluded from the average/);
   });
 
   it('saved_runtime_by_era buckets runtime by the album decade, undated albums aside', async () => {

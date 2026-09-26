@@ -123,7 +123,7 @@ above either ceiling fails CI and server startup.
 | swarm3shows | 24 | 21,075 | 24 | 21,075 | 25 | 23,183 |
 | swarm3refs | 6 | 4,331 | 6 | 4,331 | 7 | 4,765 |
 | swarm3analytics | 24 | 18,880 | 24 | 18,880 | 25 | 20,768 |
-| swarm3library | 24 | 17,987 | 24 | 17,987 | 25 | 19,786 |
+| swarm3library | 24 | 18,092 | 24 | 18,092 | 25 | 19,902 |
 | swarm3playback | 24 | 14,247 | 24 | 14,247 | 25 | 15,672 |
 | swarm3playlistops | 24 | 31,777 | 24 | 31,777 | 25 | 34,955 |
 | swarm3snapshots | 24 | 23,744 | 24 | 23,744 | 25 | 26,119 |
