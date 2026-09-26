@@ -116,6 +116,8 @@ export const TOOL_SURFACE_BUDGET = Object.freeze({
   // sidecar-corruption `load_error`/`preserved_as` pair. Measured cost of
   // that batch over 602,000: +1,015B, of which the decorative-clause trim on
   // four `swarm3b_discovery` descriptions gave back 250B inside the same edit.
+  // Then -> 604_000 (2026-09-26) for #827, which moved the seven mutating
+  // tools in `exhaust2_misc.ts` onto the shared `DryRunDefault` fragment.
   // Read the numbers below before sizing another raise; AGENTS.md §3 requires
   // this record to be accurate about host-session payload impact, and my first
   // attempt at that record was wrong in three ways (see "CORRECTIONS").
@@ -130,15 +132,23 @@ export const TOOL_SURFACE_BUDGET = Object.freeze({
   //
   // WARRANT: +524B for `include_track_features`, then +914B across #979 (the
   // four falsified-value fixes, whose whole point is honest disclosure) and
-  // #791 (the graceful-403 contract). Total +1,438B of real disclosure across
-  // three changes; every byte of it buys a sentence that stops a tool
-  // asserting something false about its own result.
+  // #791 (the graceful-403 contract), then +602B for #827. Total +2,040B of
+  // real disclosure across four changes; every byte of it buys a sentence
+  // that stops a tool asserting something false about its own result — or,
+  // here, publishing the `dry_run` default so a host can tell a preview from
+  // a commit without probing the handler. #827's +602B is the `dry_run`
+  // fragment swap across seven tools plus the `discover_weekly_diff`
+  // description naming the archive replace it performs.
   //
   // HEADROOM: the enforced limit is `defaultMaxBytes + 1_000` (that 1KB covers
-  // final MCP annotation metadata added after registration), so 604,000B is the
-  // real ceiling. Measured 603,100B leaves ~900B — deliberately the same tight
-  // posture as the ~915B this replaced, not slack to absorb a wave. A breach
-  // should land in a conversation, not be pre-authorised.
+  // final MCP annotation metadata added after registration), so 605,000B is the
+  // real ceiling. Measured 604,601B leaves 399B — the same deliberately tight
+  // posture as the ~900B this replaced, not slack to absorb a wave. A breach
+  // should land in a conversation, not be pre-authorised. (The 604,601B is the
+  // figure the startup gate reported for the over-ceiling run; the pre-#827
+  // aggregate is 603,999B, one byte inside the old 604,000B ceiling, which is
+  // the same +602B cost measured independently against the per-module
+  // `serializedSchemaBytes` delta: 23,264B -> 23,866B.)
   //
   // CORRECTIONS to my first record of this raise, kept because the next author
   // should not repeat them: the headroom figure ignored the +1_000 derivation;
@@ -146,7 +156,7 @@ export const TOOL_SURFACE_BUDGET = Object.freeze({
   // 11.5% of the payload is not that; and the first raise was 19x its warrant
   // (+10,000B against a +524B need), which is precisely the reflex this budget
   // exists to prevent.
-  defaultMaxBytes: 603_000,
+  defaultMaxBytes: 604_000,
   perToolMaxBytes: 6_000,
   coreMaxTools: 200,
   coreMaxBytes: 220_000,
@@ -670,7 +680,7 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   manifestEntry('exhaust2enggating', 'exhaust2enggating', 'src/tools/exhaust2_enggating.ts', registerExhaust2EnggatingTools, [0, 0], { readOnlySafe: true, scopeKey: 'catalog' }),
   manifestEntry('exhaust2playback', 'exhaust2playback', 'src/tools/exhaust2_playback.ts', registerExhaust2PlaybackTools, [23, 17306], { scopeKey: 'playback' }),
   manifestEntry('exhaust2playlists', 'exhaust2playlists', 'src/tools/exhaust2_playlists.ts', registerExhaust2PlaylistsTools, [18, 23507], { scopeKey: 'playlists' }),
-  manifestEntry('exhaust2misc', 'exhaust2misc', 'src/tools/exhaust2_misc.ts', registerExhaust2MiscTools, [27, 23264], { scopeKey: 'library' }),
+  manifestEntry('exhaust2misc', 'exhaust2misc', 'src/tools/exhaust2_misc.ts', registerExhaust2MiscTools, [27, 23866], { scopeKey: 'library' }),
   manifestEntry('exhaust2extra', 'exhaust2extra', 'src/tools/exhaust2_extra.ts', registerExhaust2ExtraTools, [3, 3695], { scopeKey: 'playlists' }),
   manifestEntry('swarm3discovery', 'swarm3discovery', 'src/tools/swarm3_discovery.ts', registerSwarm3DiscoveryTools, [24, 21887], { readOnlySafe: true, scopeKey: 'catalog' }),
   manifestEntry('swarm3bdiscovery', 'swarm3bdiscovery', 'src/tools/swarm3b_discovery.ts', registerSwarm3bDiscoveryTools, [24, 20039], { readOnlySafe: true, scopeKey: 'catalog' }),

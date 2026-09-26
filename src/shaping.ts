@@ -56,6 +56,37 @@ export const DryRun = z
   );
 
 /**
+ * `dry_run` for a MUTATING tool: same flag, but it defaults to TRUE, so an
+ * omitted field is a preview and the write is an explicit opt-in (#827).
+ *
+ * `DryRun` alone declares no default, so a handler that branches on
+ * `args.dry_run` treats an omitted flag as `false` — and commits. On a
+ * replace-shaped write (e.g. `PUT /playlists/{id}/items`, which discards the
+ * playlist's entire previous item list) that is a silent destructive default
+ * with no preview and no receipt. That is why every mutating tool in this
+ * server is supposed to default the flag; the fragment that does so lives
+ * here, once, rather than in each tool module (which is how the modules
+ * drifted apart in the first place).
+ *
+ * Add `.default(true)` to the *schema* so the published `tools/list` entry
+ * states the behaviour, AND branch on `isDryRun(args)` in the handler — a
+ * handler that only trusts the parsed default still writes when it is called
+ * with a raw args object, which is what the unit tests and any direct caller
+ * do.
+ */
+export const DryRunDefault = DryRun.default(true).describe(
+  'Preview only: perform the read side and return a PLAN without changing anything. '
+    + 'Default true — pass dry_run=false to commit.',
+);
+
+/**
+ * Effective dry-run flag. The `DryRunDefault` fragment already defaults true,
+ * so a parsed call always carries the value; this keeps the default at the
+ * decision point too, so an omitted or hand-built args object previews.
+ */
+export const isDryRun = (args: { dry_run?: boolean }): boolean => args.dry_run ?? true;
+
+/**
  * Per-request cap for a `/me/library` write (#624). Spotify rejects a PUT or
  * DELETE carrying more than 40 uris. `restore.ts` and `undo.ts` import this
  * rather than each hardcoding the number, which is how the two drifted apart.
