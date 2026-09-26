@@ -471,6 +471,25 @@ Quick reference for all endpoints used. All paths are relative to `https://api.s
 > - `queue_playlist` (#1225) — falls back to the artist's most recent albums,
 >   which sit in the module already, and discloses it: `resolved_via: "albums"`
 >   plus a `note` naming the failed read.
+>
+> **`?ids=` batch-route status (#1224).** The February 2026 changelog marks the
+> multi-id collection reads (`/tracks`, `/albums`, `/artists`, `/episodes`,
+> `/shows`, `/audiobooks`, `/chapters`, each with `?ids=`) `[REMOVED]`; the live
+> OpenAPI schema still publishes them, flagged `deprecated: true`. As with
+> top-tracks, the observable behaviour is registration-dependent — a registration
+> without the grant answers 403 — and unlike top-tracks there is a named
+> replacement: the per-id read (`GET /albums/{id}`), which is not gated. Every
+> server-side caller of a batch route has been migrated to it: `fetchCatalogPerId`
+> in `src/tools/catalog.ts` de-dupes the id list, fans out at a fixed width
+> (`PER_ID_FANOUT_WIDTH`, 5), settles every id independently, and returns
+> `{ byId, unresolved, throttled, requests }`. An id whose read fails is **named**
+> in `unresolved` with its status and reason and is absent from `byId` — never
+> silently dropped, and never recorded as a found-nothing, which is the #803
+> failure. `requested == resolved + unresolved.length` therefore continues to
+> hold, in the same request order as before. The `get_several_*` family
+> (§5.3) keeps the batch route deliberately: it is a user-facing lookup whose
+> whole contract is "one call per chunk", and it already degrades through the
+> shared 403 wrapper in `src/gating.ts` rather than hard-failing.
 | `get_show` | GET | `/shows/{id}` |
 | `list_show_episodes` | GET | `/shows/{id}/episodes` |
 | `show_new_episodes` | GET | `/me/shows` then `/shows/{id}/episodes` per show — the per-show reads are market-gated and default `market` (§10) |
@@ -928,6 +947,49 @@ chunk constants pending their own migration.
 **Inputs:** `ids` (string[], required — longer lists are fetched in chunks of the per-request maximum and merged), plus shared response fields. The audiobook variants are market-gated like the single lookups.
 
 **Returns:** full objects per resolved ID plus a `counts` block (`requested`, `resolved`, and `counts.missing_ids`); `response_format=json` hands back the items together with the same `counts` block.
+
+**Why these seven keep the batch route (#1224).** Every *other* caller of a
+`?ids=` route was migrated to the per-id read when the February 2026 changelog
+removed it (see the note in §4.0.4). This family is the deliberate exception: it
+is the user-facing surface for "look these up in one call", it keeps the shared
+`CHUNK_CAPS` contract above, and its requests go through the graceful-403
+wrapper in `src/gating.ts`, so a registration without the grant degrades to a
+disclosed partial rather than throwing. Un-migrating it is #638's call, not this
+section's.
+
+#### Per-id fan-in reporting (#1224)
+
+Six tools read a list of catalog ids and now do it one `GET /{type}/{id}` at a
+time (see the `?ids=` note in §4.0.4): `track_enrichment_batch` (its track,
+album and artist legs), `albums_runtime_batch`, `library_hygiene`, and the seven
+`swarm3discovery` / seven `swarm3bdiscovery` tools that fan in full album
+payloads. One contract covers all of them:
+
+- **Requests are disclosed, not summarised.** Each fan-in publishes the number
+  of requests it actually issued (`album_requests`, `artist_requests`,
+  `album_lookups.requests`), which replaces the old "one batch call" figure. The
+  honest cost went up; a cost that cannot be measured is worse than a cost that
+  is merely higher.
+- **A failed read is named, never absorbed.** Every unresolved id appears with
+  its reason and HTTP status (`track_unresolved`, `album_unresolved`,
+  `artist_unresolved`, `album_lookups.unresolved`), in the order it was
+  requested. An album that could not be read is *not* an album with no label, no
+  tracks and no deep cuts — `label_explorer` excludes it from the census rather
+  than filing it under `(unknown label)`, and `artist_latest_release_report`
+  prints `label UNREAD` rather than `label unknown`.
+- **#1093 accounting is unchanged.** `counts.requested == counts.resolved +
+  counts.missing_ids.length` still holds; a per-id `unresolved` entry plays the
+  part the null slot played in the batch response. `albums_runtime_batch` keeps
+  `counts` to exactly those three keys and publishes the reasons beside it as
+  `album_unresolved`, so the #1093 contract is byte-identical.
+- **Rate limiting still degrades, it does not abort.** The fan-out records the
+  first 429 (`{ message, retry_after_sec }`) rather than throwing, so
+  `library_hygiene`'s #763 partial-with-`Retry-After` path survives: the run
+  finishes, reports the albums it did read, and names the throttled ones.
+  `library_hygiene` also drops the obsolete `batch_requests` / `batch_size` keys
+  from `album_lookups` in favour of `requests`, `request_mode: 'per_id'`,
+  `fanout_width` and `unresolved`; its `dry_run` reports `request_mode`,
+  `fanout_width` and `estimated_album_requests`.
 
 ---
 

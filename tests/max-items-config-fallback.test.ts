@@ -65,9 +65,22 @@ const PAGE = 10;
 function stubClient() {
   return {
     get: async (path: string, params?: Record<string, string>) => {
+      // #1224: `track_enrichment_batch` reads per id now — the `?ids=` batch
+      // routes are removed — so the per-id legs are served here and the bare
+      // `/tracks` / `/albums` / `/artists` branches are gone. A stub that kept
+      // them would let a regression back onto the batch route pass unnoticed.
+      const oneTrack = /^\/tracks\/(.+)$/.exec(path);
+      if (oneTrack) return tracks(40).find((t) => t.id === decodeURIComponent(oneTrack[1])) ?? null;
+      const oneAlbum = /^\/albums\/(.+)$/.exec(path);
+      if (oneAlbum) {
+        const album = albums(40).find((a) => a.id === decodeURIComponent(oneAlbum[1]));
+        return album ? { ...album, label: 'Label' } : null;
+      }
+      // `[^/]+`, not `.+`: `/artists/a1/albums` is a listing, not an artist,
+      // and a greedy match would swallow the walk this stub also serves.
+      const oneArtist = /^\/artists\/([^/]+)$/.exec(path);
+      if (oneArtist) return { ...ARTIST, genres: ['pop'] };
       if (path.endsWith('/tracks')) return { tracks: tracks(40) };
-      if (path === '/albums') return { albums: [{ id: 'al1', name: 'Album 1', release_date: '2020-01-01', album_type: 'album', label: 'Label' }] };
-      if (path === '/artists') return { artists: [{ id: 'a1', name: 'Artist', genres: ['pop'] }] };
       if (path.endsWith('/albums')) {
         const offset = Number(params?.offset ?? 0);
         return { items: albums(PAGE), total: 40, limit: PAGE, offset };

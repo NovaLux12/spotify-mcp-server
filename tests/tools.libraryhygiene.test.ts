@@ -164,15 +164,17 @@ const albumFull = (
 
 /**
  * Responder serving a /me/tracks library of exactly `tracks` in pages of 50,
- * plus the batched GET /albums?ids= fan-in. Single GET /albums/{id} is
- * deliberately NOT served: a regression to per-album lookups must fail loudly.
+ * plus the per-id `GET /albums/{id}` fan-in. The removed `GET /albums?ids=`
+ * route is deliberately NOT served, and `batchAlbumCalls` asserts it is never
+ * asked for: a regression to the batch route must fail loudly rather than be
+ * quietly absorbed by a fixture.
  */
 function libraryResponder(
   tracks: SavedTrackItem[],
   albums: Record<string, SpotifyAlbumFull>,
-  opts: { throttleBatch?: number; retryAfterSec?: number } = {},
+  opts: { throttleIds?: readonly string[]; retryAfterSec?: number } = {},
 ) {
-  let batchIndex = 0;
+  const throttled = new Set(opts.throttleIds ?? []);
   return (path: string, params?: Record<string, string>) => {
     if (path === '/me/tracks') {
       const limit = 50;
@@ -184,34 +186,38 @@ function libraryResponder(
         offset,
       };
     }
-    if (path === '/albums') {
-      const mine = batchIndex++;
-      if (opts.throttleBatch !== undefined && mine === opts.throttleBatch) {
+    const single = /^\/albums\/(.+)$/.exec(path);
+    if (single) {
+      const id = decodeURIComponent(single[1]);
+      if (throttled.has(id)) {
         throw new SpotifyApiError(
           429,
           'Rate limited — Retry-After exceeded the in-queue wait cap; retry later.',
           opts.retryAfterSec ?? 9,
         );
       }
-      // Spotify returns a null slot for any id it could not resolve.
-      const ids = (params?.ids ?? '').split(',').filter(Boolean);
-      return { albums: ids.map((id) => albums[decodeURIComponent(id)] ?? null) };
+      if (!albums[id]) throw new SpotifyApiError(404, 'Not found');
+      return albums[id];
     }
     return null;
   };
 }
 
-/** GET /albums?ids= fan-in calls (the batched form, not `/albums/{id}`). */
-const albumCalls = (calls: Array<{ path: string }>) => calls.filter((c) => c.path === '/albums');
+/**
+ * #1224: the per-id album reads, in call order. `batchAlbumCalls` is the
+ * assertion that matters most — the removed `?ids=` route must never be asked
+ * for, and it is deliberately not served by `libraryResponder` so a
+ * regression surfaces as a 404 rather than a passing test.
+ */
+const perIdAlbumCalls = (calls: Array<{ path: string }>) =>
+  calls.filter((c) => /^\/albums\/[^/]+$/.test(c.path));
 
-/** Ids requested per batch call, in call order. */
-function albumBatchIds(calls: Array<{ path: string; arg?: Record<string, string> }>): string[][] {
-  return albumCalls(calls).map((c) => (c.arg?.ids ?? '').split(','));
-}
+const albumIdsRequested = (calls: Array<{ path: string }>) =>
+  perIdAlbumCalls(calls).map((c) => decodeURIComponent(c.path.replace('/albums/', '')));
 
-/** Any legacy single-album lookup — must always be empty after #763. */
-const singleAlbumCalls = (calls: Array<{ path: string }>) =>
-  calls.filter((c) => c.path.startsWith('/albums/'));
+/** Calls to the removed batch route — must always be empty after #1224. */
+const batchAlbumCalls = (calls: Array<{ path: string }>) =>
+  calls.filter((c) => c.path === '/albums');
 
 // ---------------------------------------------------------------------------
 // Grouping + lookup caching
@@ -236,10 +242,11 @@ describe('library_hygiene grouping and album lookups', () => {
     const out = await h.invoke('library_hygiene', {});
     const payload = out.structuredContent!;
 
-    // One batched fan-in covering every DISTINCT album id, despite alb1 holding
-    // three liked tracks. Busiest-first ordering puts alb1 first.
-    assert.deepEqual(albumBatchIds(h.client.calls), [['alb1', 'alb2', 'alb3']]);
-    assert.deepEqual(singleAlbumCalls(h.client.calls), []);
+    // One per-id read for every DISTINCT album id, despite alb1 holding three
+    // liked tracks. Busiest-first ordering puts alb1 first.
+    assert.deepEqual(albumIdsRequested(h.client.calls), ['alb1', 'alb2', 'alb3']);
+    // #1224: the removed batch route is never requested.
+    assert.deepEqual(batchAlbumCalls(h.client.calls), []);
 
     const groups = payload.groups as Array<Record<string, unknown>>;
     assert.equal(groups.length, 3);
@@ -253,10 +260,10 @@ describe('library_hygiene grouping and album lookups', () => {
     assert.deepEqual(payload.counts, { near_complete: 0, orphaned_singles: 0 });
   });
 
-  it('sends an album id in exactly one batch position, so repeated ids cannot be double-looked-up', async () => {
+  it('reads an album id exactly once, so repeated ids cannot be double-looked-up', async () => {
     // Two liked entries with the same album id arrive via different tracks; the
-    // group key collapses them, so the album id appears in the fan-in once even
-    // if a future refactor iterates tracks directly.
+    // group key collapses them, so the album id is read once even if a future
+    // refactor iterates tracks directly.
     const tracks = [
       likedTrack({ id: 't1', artistId: 'a1', albumId: 'alb1' }),
       likedTrack({ id: 't2', artistId: 'a1', albumId: 'alb1' }),
@@ -264,7 +271,7 @@ describe('library_hygiene grouping and album lookups', () => {
     const albums = { alb1: albumFull('alb1', { total_tracks: 4, trackIds: ['t1', 't2'] }) };
     const h = harness(libraryResponder(tracks, albums));
     await h.invoke('library_hygiene', {});
-    assert.deepEqual(albumBatchIds(h.client.calls), [['alb1']]);
+    assert.deepEqual(albumIdsRequested(h.client.calls), ['alb1']);
   });
 });
 
@@ -314,9 +321,12 @@ describe('library_hygiene coverage boundaries', () => {
 // ---------------------------------------------------------------------------
 
 describe('library_hygiene caps and truncation notes', () => {
-  it('fans a 210-album library in over ceil(200/20) = 10 batch requests (#763)', async () => {
-    // The regression this guards: the pre-#763 loop issued one serial
-    // GET /albums/{id} per group, i.e. 200 round trips for this fixture.
+  it('fans a 210-album library as 200 per-id reads at a bounded width (#763, #1224)', async () => {
+    // #763 collapsed 200 serial GET /albums/{id} round trips into 10 batch
+    // calls. #1224 had to undo that — the `?ids=` route is removed — so the
+    // request count is honestly back to one per album. What must NOT come back
+    // with it is the serial loop: the fan-out is width-bounded, and the count
+    // published in the payload is the real one.
     const tracks = Array.from({ length: 210 }, (_, i) =>
       likedTrack({ id: `t${i}`, artistId: 'a1', albumId: `alb${i}` }),
     );
@@ -324,22 +334,38 @@ describe('library_hygiene caps and truncation notes', () => {
     for (let i = 0; i < 210; i++) {
       albums[`alb${i}`] = albumFull(`alb${i}`, { total_tracks: 2, trackIds: [`t${i}`] });
     }
-    const h = harness(libraryResponder(tracks, albums));
+    let inFlight = 0;
+    let peakInFlight = 0;
+    const base = libraryResponder(tracks, albums);
+    const h = harness(async (path: string, params?: Record<string, string>) => {
+      inFlight++;
+      peakInFlight = Math.max(peakInFlight, inFlight);
+      // Yield so overlapping reads are observable rather than collapsed into a
+      // synchronous responder that could never show a width above 1.
+      await Promise.resolve();
+      inFlight--;
+      return base(path, params);
+    });
     await h.invoke('library_hygiene', {});
 
-    const batches = albumBatchIds(h.client.calls);
-    assert.equal(batches.length, 10);
-    // 20 ids per call, except the cap-straddling tail: 200 albums => 10x20.
-    for (const ids of batches) assert.equal(ids.length, 20);
+    const ids = albumIdsRequested(h.client.calls);
+    assert.equal(ids.length, 200);
     // 200 distinct album ids requested exactly once, in one budgeted sweep.
-    assert.equal(new Set(batches.flat()).size, 200);
-    assert.deepEqual(singleAlbumCalls(h.client.calls), []);
+    assert.equal(new Set(ids).size, 200);
+    assert.deepEqual(batchAlbumCalls(h.client.calls), []);
 
     const lookups = (await h.invoke('library_hygiene', {})).structuredContent!
       .album_lookups as Record<string, unknown>;
     assert.equal(lookups.made, 200);
-    assert.equal(lookups.batch_requests, 10);
-    assert.equal(lookups.batch_size, 20);
+    assert.equal(lookups.requests, 200);
+    assert.equal(lookups.request_mode, 'per_id');
+    assert.deepEqual(lookups.unresolved, []);
+    // Bounded, not serial: the old pre-#763 loop was 200 round trips one at a
+    // time, and this fix must not reinstate it under a new justification.
+    assert.ok(
+      peakInFlight > 1,
+      `the per-id reads ran one at a time (peak ${peakInFlight}) — that is the pre-#763 serial loop`,
+    );
   });
 
   it('stops album lookups at the 200 cap and notes the truncation', async () => {
@@ -354,8 +380,8 @@ describe('library_hygiene caps and truncation notes', () => {
     const out = await h.invoke('library_hygiene', {});
     const payload = out.structuredContent!;
 
-    assert.equal(albumCalls(h.client.calls).length, 10);
-    assert.equal(albumBatchIds(h.client.calls).flat().length, 200);
+    assert.equal(perIdAlbumCalls(h.client.calls).length, 200);
+    assert.equal(albumIdsRequested(h.client.calls).length, 200);
     const lookups = payload.album_lookups as Record<string, unknown>;
     assert.equal(lookups.made, 200);
     assert.equal(lookups.cap, 200);
@@ -484,7 +510,8 @@ describe('library_hygiene edges and shapes', () => {
     const out = await h.invoke('library_hygiene', {});
     const payload = out.structuredContent!;
     assert.deepEqual(payload.counts, { near_complete: 0, orphaned_singles: 0 });
-    assert.equal(albumCalls(h.client.calls).length, 0);
+    assert.equal(perIdAlbumCalls(h.client.calls).length, 0);
+    assert.equal(batchAlbumCalls(h.client.calls).length, 0);
     assert.match(textOf(out), /No liked tracks found/);
   });
 
@@ -596,13 +623,14 @@ describe('library_hygiene dry_run cost preview (#763)', () => {
     assert.equal(payload.dry_run, true);
     assert.equal(payload.requests_made, 0);
     assert.equal(payload.album_lookup_cap, 200);
-    assert.equal(payload.batch_size, 20);
-    // ceil(200 / 20) album batches, plus the /me/tracks walk (500 / 50).
-    assert.equal(payload.estimated_album_batch_requests, 10);
+    assert.equal(payload.request_mode, 'per_id');
+    // #1224: one request per album, so the budgeted upper bound is the cap
+    // itself, plus the /me/tracks walk (500 / 50).
+    assert.equal(payload.estimated_album_requests, 200);
     assert.equal(payload.track_walk_requests, 10);
-    assert.equal(payload.estimated_requests, 20);
+    assert.equal(payload.estimated_requests, 210);
     assert.match(textOf(out), /\[dry run\] library_hygiene would walk \/me\/tracks/);
-    assert.match(textOf(out), /10 batched GET \/albums\?ids= calls/);
+    assert.match(textOf(out), /per-id GET \/albums\/\{id\} requests/);
   });
 
   it('previews without walking even when a full library is served', async () => {
@@ -620,13 +648,16 @@ describe('library_hygiene dry_run cost preview (#763)', () => {
 
     // The whole point of the preview: a 210-album library costs 0 calls, not 21.
     assert.deepEqual(h.client.calls, []);
-    assert.equal(out.structuredContent!.estimated_requests, 20);
+    assert.equal(out.structuredContent!.estimated_requests, 210);
     assert.match(textOf(out), /0 made/);
   });
 });
 
-describe('library_hygiene rate-limited batch partials (#763)', () => {
-  it('keeps the batches that resolved and reports the 429 Retry-After instead of aborting', async () => {
+describe('library_hygiene rate-limited partials (#763)', () => {
+  // #1224 moved the album read from `GET /albums?ids=` to per-id GETs, and the
+  // #763 point-4 degradation is the one behaviour that must survive the move:
+  // a 429 has to become a partial with Retry-After messaging, not a throw.
+  it('keeps the reads that resolved and reports the 429 Retry-After instead of aborting', async () => {
     const tracks = Array.from({ length: 60 }, (_, i) =>
       likedTrack({ id: `t${i}`, artistId: 'a1', albumId: `alb${i}` }),
     );
@@ -636,34 +667,46 @@ describe('library_hygiene rate-limited batch partials (#763)', () => {
         return [id, albumFull(id, { total_tracks: 2, trackIds: [t.track.id] })];
       }),
     );
-    // Middle batch throttled: batches 0 and 2 still land.
-    const h = harness(libraryResponder(tracks, albums, { throttleBatch: 1, retryAfterSec: 11 }));
+    // A middle slice of the ids throttles; the reads on either side still land.
+    const throttled = tracks.slice(20, 40).map((t) => t.track.album.id);
+    const h = harness(libraryResponder(tracks, albums, { throttleIds: throttled, retryAfterSec: 11 }));
     const out = await h.invoke('library_hygiene', {});
     const payload = out.structuredContent!;
 
     assert.equal(payload.album_lookups.rate_limited, true);
     assert.equal(payload.album_lookups.retry_after_sec, 11);
     assert.match(payload.album_lookups.rate_limit_message, /Rate limited/);
-    assert.match(textOf(out), /PARTIAL: album batches were rate limited/);
+    assert.match(textOf(out), /PARTIAL: album lookups were rate limited/);
     assert.match(textOf(out), /wait ~11s/);
 
-    // 40 of 60 albums resolved; the 20 in the throttled batch stay unresolved
-    // rather than the whole run being lost.
+    // 40 of 60 albums resolved; the 20 throttled reads stay unresolved rather
+    // than the whole run being lost.
     const resolved = (payload.groups as Array<{ total_tracks: number | null }>)
       .filter((g) => g.total_tracks !== null);
     assert.equal(resolved.length, 40);
     assert.equal((payload.groups as Array<{ total_tracks: number | null }>)
       .filter((g) => g.total_tracks === null).length, 20);
+    // #1224: the throttled ids are named with their reason, so a caller can
+    // tell a rate-limited read from an album with no track total.
+    const unresolved = payload.album_lookups.unresolved as Array<{ id: string; status: number | null }>;
+    assert.deepEqual(unresolved.map((u) => u.id).sort(), [...throttled].sort());
+    assert.ok(unresolved.every((u) => u.status === 429));
+    assert.match(textOf(out), /20 album reads failed/);
   });
 });
 
-describe('library_hygiene source guards (#763)', () => {
-  it('never issues a per-album GET /albums/{id} lookup', () => {
+describe('library_hygiene source guards (#763, #1224)', () => {
+  it('never calls the removed GET /albums?ids= route', () => {
     const src = readFileSync(
       new URL('../src/tools/libraryhygiene.ts', import.meta.url),
       'utf8',
     );
-    // A single-album fan-in would reintroduce the 200-round-trip regression.
-    assert.doesNotMatch(src, /`\/albums\/\$\{/);
+    // #1224 inverts #763's original source guard on purpose. The batch route
+    // is removed by Spotify's Feb 2026 changelog, so the per-album read is now
+    // the supported one and the batch call is the regression to guard against.
+    // The `fetchAlbumsPerId` fan-out it replaced is width-bounded, which is
+    // what keeps this from being the pre-#763 serial loop.
+    assert.doesNotMatch(src, /get<[^>]*>\(\s*'\/albums'/);
+    assert.match(src, /fetchAlbumsPerId/);
   });
 });

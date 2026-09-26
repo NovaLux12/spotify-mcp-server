@@ -13,8 +13,13 @@
  * Forbidden errors.
  */
 import { z } from 'zod';
-import { ARTIST_ALBUM_PAGE_LIMIT, MARKET_CODE, fetchArtistsPerId } from './catalog.js';
-import { chunk } from '../chunk.js';
+import {
+  ARTIST_ALBUM_PAGE_LIMIT,
+  MARKET_CODE,
+  fetchArtistsPerId,
+  fetchAlbumsPerId,
+  fetchTracksPerId,
+} from './catalog.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
 import { SpotifyApiError } from '../client.js';
@@ -527,8 +532,8 @@ export function registerExhaust2CatalogTools(server: McpServer, client: SpotifyC
   server.tool(
     'track_enrichment_batch',
     'Up to 50 track IDs → enriched rows: album release date, label and artist genres joined back onto each track. '
-      + 'Quota: 1 GET /tracks?ids= + 1 GET /albums?ids= per 20 albums + 1 GET /artists/{id} per distinct '
-      + 'artist (Feb 2026 removed the batch artist lookup; counts carry the real request total).',
+      + 'Quota: 1 GET /tracks/{id} + 1 GET /albums/{id} + 1 GET /artists/{id} per distinct id on each leg '
+      + '(Feb 2026 removed the ?ids= batch lookups; counts carry the real request totals).',
     {
       track_ids: z.array(z.string().min(1)).min(1).max(50).describe('Up to 50 Spotify track IDs'),
       fields: z
@@ -542,37 +547,32 @@ max_results: z.number().int().positive().max(2000).optional().describe('Max item
       const rf = args.response_format;
       const fields = args.fields ?? ['release_date', 'label', 'genres', 'duration'];
       const ids = [...new Set(args.track_ids)];
-      const tracksRes = await client.get<{ tracks: (TrackPayload | null)[] }>(
-        '/tracks',
-        { ids: ids.join(',') },
-      );
-      // #1093: null slots are ids the endpoint could not resolve. Account for
-      // them by index so the caller can tell a smaller lookup from a fully-
-      // resolved one. The de-duped `ids` array is what was sent to Spotify, so
-      // requested == resolved + missing_ids.length always holds.
-      const trackSlots = tracksRes?.tracks ?? [];
+      // #1224: `GET /tracks?ids=` is one of the batch routes the February 2026
+      // changelog removed, so the track leg reads per id. #1093's accounting
+      // survives the change of shape: every requested id either resolved into
+      // `byId` or is named in `missing_ids`, so
+      // requested == resolved + missing_ids.length still holds, and the ids
+      // stay in the order they were asked for.
+      const trackRead = await fetchTracksPerId<TrackPayload>(client, ids);
       const tracks: TrackPayload[] = [];
-      const missingTrackIds: string[] = [];
-      for (let i = 0; i < Math.max(ids.length, trackSlots.length); i += 1) {
-        const slot = trackSlots[i];
-        if (slot != null) {
-          tracks.push(slot);
-          continue;
-        }
-        const id = ids[i];
-        if (id !== undefined) missingTrackIds.push(id);
+      for (const id of ids) {
+        const track = trackRead.byId.get(id);
+        if (track != null) tracks.push(track);
       }
-      if (tracks.length === 0) throw new Error('No playable tracks found for the given IDs');
+      const missingTrackIds = trackRead.unresolved.map((u) => u.id);
+      if (tracks.length === 0) {
+        // Every id failed its read. Saying "no playable tracks" would blame
+        // Spotify for ids this tool never got an answer for (#803).
+        throw new Error(
+          `No playable tracks found for the given IDs: none of the ${ids.length} requested `
+            + `id${ids.length === 1 ? '' : 's'} could be read${trackRead.unresolved.length > 0 ? ` (${trackRead.unresolved[0].reason})` : ''}`,
+        );
+      }
 
       const albumIds = [...new Set(tracks.map((t) => t.album?.id).filter((x): x is string => !!x))];
-      const albumGroups = chunk(albumIds, 'albums');
-      const albumResponses = await Promise.all(
-        albumGroups.map((group) => client.get<{ albums: (AlbumPayload | null)[] }>('/albums', { ids: group.join(',') })),
-      );
-      const albums = new Map<string, AlbumPayload>();
-      for (const res of albumResponses) {
-        for (const al of res?.albums ?? []) if (al?.id) albums.set(al.id, al);
-      }
+      // #1224: same removal, same fix, on the album leg.
+      const albumRead = await fetchAlbumsPerId<AlbumPayload>(client, albumIds);
+      const albums = albumRead.byId;
       const artistIds = tracks.flatMap((t) => (t.artists ?? []).map((a) => a.id)).filter((x): x is string => !!x);
       // #1004: `GET /artists?ids=` is one of the endpoints Spotify's February
       // 2026 changelog removed outright, so genres are read per id. The count
@@ -616,6 +616,11 @@ max_results: z.number().int().positive().max(2000).optional().describe('Max item
           requested: ids.length,
           resolved: tracks.length,
           missing_ids: [...missingTrackIds],
+          // #1224: `missing_ids` keeps its #1093 meaning — an id this tool has
+          // no track for — and now also carries the reason it could not be
+          // read, so a caller never has to guess whether Spotify dropped the
+          // id or the request failed.
+          track_unresolved: trackRead.unresolved,
           albums_fetched: albums.size,
           artists_fetched: genresByArtist.size,
           // #1004: the artist leg is a per-id fan-out, so its real request
@@ -625,6 +630,13 @@ max_results: z.number().int().positive().max(2000).optional().describe('Max item
           artist_requests: artistRead.requests,
           artist_ids_unresolved: artistRead.unresolved.map((u) => u.id),
           artist_unresolved: artistRead.unresolved,
+          // #1224: the album leg is a per-id fan-out too, so it publishes the
+          // same three fields. A row whose album could not be read reports
+          // `label: null`, which the caller must be able to tell apart from an
+          // album Spotify genuinely has no label for.
+          album_requests: albumRead.requests,
+          album_ids_unresolved: albumRead.unresolved.map((u) => u.id),
+          album_unresolved: albumRead.unresolved,
         },
         pagination: paginationInfo({ total: tracks.length, returned: trunc.items.length }),
       });
@@ -636,7 +648,8 @@ max_results: z.number().int().positive().max(2000).optional().describe('Max item
     'albums_runtime_batch',
     '[local-compute] Runtime per album — total and mean track length — for up to 20 albums in one pass '
       + '(album objects embed the first 50 tracks, so totals are exact for albums up to 50 tracks and '
-      + 'flagged as partial above that). Quota: one GET /albums?ids= call.',
+      + 'flagged as partial above that). Quota: one GET /albums/{id} per id (Feb 2026 removed the '
+      + '`?ids=` batch lookup; the fan-out is width-bounded).',
     {
       album_ids: z.array(z.string().min(1)).min(1).max(20).describe('Up to 20 Spotify album IDs'),
       market: MARKET_CODE.optional().describe("ISO 3166-1 alpha-2 market code, e.g. 'US'"),
@@ -645,27 +658,28 @@ max_results: z.number().int().positive().max(2000).optional().describe('Max item
     async (args) => {
       const rf = args.response_format;
       const ids = [...new Set(args.album_ids)];
-      const res = await client.get<{ albums: (AlbumPayload | null)[] }>(
-        '/albums',
-        { ids: ids.join(','), ...(args.market ? { market: args.market } : {}) },
-      );
-      // #1093: null slots are ids the endpoint could not resolve. Account for
-      // them by index so the caller can tell a smaller lookup from a fully-
-      // resolved one. The de-duped `ids` array is what was sent to Spotify, so
-      // requested == resolved + missing_ids.length always holds.
-      const albumSlots = res?.albums ?? [];
+      // #1224: `GET /albums?ids=` is a removed batch route, so the read is
+      // per id. #1093's accounting is unchanged by the shape: each requested id
+      // either resolved or is named in `missing_ids` in request order, so
+      // requested == resolved + missing_ids.length still holds. The null-slot
+      // index walk is gone because there is no positional response left to walk
+      // — a failed id is now an entry in `unresolved` instead of a null in an
+      // array, which is the same fact with a reason attached.
+      const read = await fetchAlbumsPerId<AlbumPayload>(client, ids, {
+        params: args.market ? { market: args.market } : {},
+      });
       const albums: AlbumPayload[] = [];
-      const missingAlbumIds: string[] = [];
-      for (let i = 0; i < Math.max(ids.length, albumSlots.length); i += 1) {
-        const slot = albumSlots[i];
-        if (slot != null) {
-          albums.push(slot);
-          continue;
-        }
-        const id = ids[i];
-        if (id !== undefined) missingAlbumIds.push(id);
+      for (const id of ids) {
+        const album = read.byId.get(id);
+        if (album != null) albums.push(album);
       }
-      if (albums.length === 0) throw new Error('No albums found for the given IDs');
+      const missingAlbumIds = read.unresolved.map((u) => u.id);
+      if (albums.length === 0) {
+        throw new Error(
+          `No albums found for the given IDs: none of the ${ids.length} requested `
+            + `id${ids.length === 1 ? '' : 's'} could be read${read.unresolved.length > 0 ? ` (${read.unresolved[0].reason})` : ''}`,
+        );
+      }
       const rows = albums.map((al) => {
         const tracks = al.tracks?.items ?? [];
         const total = tracks.reduce((n, s) => n + (s.duration_ms ?? 0), 0);
@@ -706,6 +720,10 @@ max_results: z.number().int().positive().max(2000).optional().describe('Max item
           resolved: albums.length,
           missing_ids: [...missingAlbumIds],
         },
+        // #1224: the reasons behind `missing_ids`. Kept beside `counts` rather
+        // than inside it so the #1093 accounting triple keeps exactly the three
+        // keys callers already destructure.
+        album_unresolved: read.unresolved,
       });
     },
   );

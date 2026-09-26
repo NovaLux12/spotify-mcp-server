@@ -104,15 +104,17 @@ function harness(options: Options = {}) {
 
   const client = {
     async get(path: string, params: Record<string, string> = {}) {
-      if (path === '/albums') {
-        const ids = new Set((params.ids ?? '').split(','));
-        return {
-          albums: [
-            ...albums.filter((a) => ids.has(a.id)).map((a) => meta(a, albumTracks(a.name, extras[a.id] ?? []))),
-            ...singles.filter((s) => ids.has(s.id)).map((s) =>
-              meta(s, { tracks: { items: (singleTracks[s.id] ?? []).map((n, i) => track(n, i + 1, 180_000)) } })),
-          ],
-        };
+      // #1224: the album fan-in is per id now — the `?ids=` batch route is
+      // removed — so the fixture serves one album per request and never sees
+      // the bare `/albums` path at all.
+      const one = /^\/albums\/(.+)$/.exec(path);
+      if (one) {
+        const id = decodeURIComponent(one[1]);
+        const album = albums.find((a) => a.id === id);
+        if (album) return meta(album, albumTracks(album.name, extras[album.id] ?? []));
+        const single = singles.find((s) => s.id === id);
+        if (single) return meta(single, { tracks: { items: (singleTracks[single.id] ?? []).map((n, i) => track(n, i + 1, 180_000)) } });
+        return null;
       }
       throw new Error(`unexpected GET ${path}`);
     },
@@ -249,14 +251,15 @@ describe('album_track_explorer discloses its comparison bound', () => {
     const walkBounds: number[] = [];
     const client = {
       async get(path: string, params: Record<string, string> = {}) {
-        if (path === '/albums') {
-          const ids = new Set((params.ids ?? '').split(','));
-          return {
-            albums: discography.filter((d) => ids.has(d.id)).map((d) => ({ ...d, tracks: { items: [track(`Rec ${d.id.slice(1)}`, 1, 1000)] } })),
-          };
-        }
         if (path === `/albums/${ALBUM_ID}`) {
           return { id: ALBUM_ID, name: 'Record One', release_date: '2020-01-01', total_tracks: 2, artists: [{ id: ARTIST_ID }], label: 'Test', tracks: { items: [] } };
+        }
+        // #1224: the comparison set is read per id, not via `?ids=`.
+        const one = /^\/albums\/(.+)$/.exec(path);
+        if (one) {
+          const d = discography.find((x) => x.id === decodeURIComponent(one[1]));
+          if (d) return { ...d, tracks: { items: [track(`Rec ${d.id.slice(1)}`, 1, 1000)] } };
+          return null;
         }
         throw new Error(`unexpected GET ${path}`);
       },

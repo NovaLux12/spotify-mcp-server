@@ -22,7 +22,6 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
-import { chunk } from '../chunk.js';
 import type {
   FollowedArtistsResponse,
   SavedAlbumItem,
@@ -45,7 +44,7 @@ import {
 import type { ResponseFormatValue } from '../shaping.js';
 import { resolveSpotifyId, spotifyId } from '../refs.js';
 import { getConfig } from '../config.js';
-import { ARTIST_ALBUM_PAGE_LIMIT, MARKET_CODE } from './catalog.js';
+import { ARTIST_ALBUM_PAGE_LIMIT, MARKET_CODE, fetchAlbumsPerId, unresolvedIdsNote, type PerIdUnresolved } from './catalog.js';
 
 // ---------------------------------------------------------------------------
 // Shared shapes + plumbing
@@ -216,17 +215,34 @@ async function artistAlbumsWalk(
   }, { maxItems });
 }
 
-/** Fetch full album objects in /albums?ids= batches of 20 (adds label/copyrights). */
+/**
+ * Fetch full album objects (label/copyrights/tracks) via per-id
+ * `GET /albums/{id}` requests.
+ *
+ * #1224: this was `GET /albums?ids=` in batches of 20, a route the February
+ * 2026 changelog removed. All eight callers here hard-failed on a
+ * registration without the grant, which is the opposite of what a discovery
+ * tool should do when one album in a walk cannot be read. The per-id route is
+ * the documented replacement; `items` stays in the order the ids were
+ * requested (de-duped), so every caller's row order is unchanged.
+ *
+ * An album that could not be read is absent from `items` and named in
+ * `unresolved`. Callers must not read the absence as "this album has no
+ * label / no tracks / no deep cuts" — that is the #803 failure, a failed
+ * lookup recorded as a found-nothing — so each discloses the ids it could
+ * not read.
+ */
 async function fetchAlbumBatches(
   client: SpotifyClient,
   ids: readonly string[],
-): Promise<AlbumWithMeta[]> {
-  const out: AlbumWithMeta[] = [];
-  for (const batch of chunk(ids, 'albums')) {
-    const res = await client.get<{ albums: AlbumWithMeta[] | null }>('/albums', { ids: batch.join(',') });
-    if (res?.albums) out.push(...res.albums);
-  }
-  return out;
+): Promise<{ items: AlbumWithMeta[]; unresolved: PerIdUnresolved[] }> {
+  const read = await fetchAlbumsPerId<AlbumWithMeta>(client, ids);
+  return { items: [...read.byId.values()], unresolved: read.unresolved };
+}
+
+/** #1224: the shared one-line disclosure for album reads that failed. */
+function unreadableNote(unresolved: readonly PerIdUnresolved[]): string {
+  return unresolved.length === 0 ? '' : unresolvedIdsNote(unresolved.map((u) => u.id));
 }
 
 /** Full track listing for one album via /albums/{id}/tracks (walks all pages). */
@@ -547,7 +563,7 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
   // ------------------------------------------------------------------ 8
   server.tool(
     'label_discography_explorer',
-    'Group an artist\'s albums and singles by record label (via batched /albums?ids= payloads) and rank labels by release count with year ranges. Quota: paginated walk + batched /albums lookups.',
+    'Group an artist\'s albums and singles by record label (via per-id /albums/{id} payloads) and rank labels by release count with year ranges. Quota: paginated walk + 1 GET /albums/{id} per release.',
     {
       artist_id: spotifyId('artist').describe('Spotify artist ID, URI, or URL'),
       include_groups: IncludeGroups,
@@ -557,7 +573,7 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
     async (args) => {
       const rf = args.response_format;
       const albums = await artistAlbums(client, args.artist_id, args.include_groups ?? 'album,single', fetchAllCap());
-      const metas = await fetchAlbumBatches(client, albums.map((a) => a.id));
+      const { items: metas, unresolved: labelUnresolved } = await fetchAlbumBatches(client, albums.map((a) => a.id));
       const byLabel = new Map<string, Array<{ name: string; year: number | null; id: string }>>();
       for (const m of metas) {
         const label = labelOf(m);
@@ -575,15 +591,16 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
         .sort((a, b) => b.count - a.count);
       const cap = resolveMaxResults(args.max_results);
       const trunc = truncateItems(rows, cap);
+      const labelNote = unreadableNote(labelUnresolved);
       const prose = [
-        `Labels across ${metas.length} releases:`,
+        `Labels across ${metas.length} releases${labelNote ? ` (${labelNote} — excluded, not counted as "(unknown label)")` : ''}:`,
         '',
         ...trunc.items.map((r) => `${r.label}: ${r.count} release(s), ${r.first_year === 9999 ? '????' : r.first_year}–${r.latest_year || '????'} · e.g. ${r.samples.join(', ')}`),
         trunc.footer ? `\n(${trunc.footer})` : '',
       ].join('\n');
       const payload = listStructuredContent(trunc.items, paginationInfo({
         total: trunc.total, returned: trunc.returned,
-      }), { artist_id: args.artist_id, releases_grouped: metas.length });
+      }), { artist_id: args.artist_id, releases_grouped: metas.length, album_unresolved: labelUnresolved });
       return emit(rf, prose, payload);
     },
   );
@@ -690,7 +707,7 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
       // bounded — and the excess is disclosed rather than implied complete.
       const otherIds = others.slice(0, 50);
       const comparisonCapped = others.length > otherIds.length || discographyCapped;
-      const otherMetas = await fetchAlbumBatches(client, otherIds);
+      const { items: otherMetas, unresolved: otherUnresolved } = await fetchAlbumBatches(client, otherIds);
       const otherTrackNames = new Set<string>();
       for (const m of otherMetas) for (const t of m.tracks?.items ?? []) otherTrackNames.add(normalizeName(t.name));
       const rows = tracks.map((t) => {
@@ -705,11 +722,15 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
       const longest = rows.reduce((best, t) => (t.duration_ms > best.duration_ms ? t : best), rows[0]);
       const cap = resolveMaxResults(args.max_results);
       const trunc = truncateItems(rows, cap);
+      // #1224: a comparison release that could not be read makes every
+      // `also_on_other_albums` count a lower bound, not a fact. Say so.
+      const otherNote = unreadableNote(otherUnresolved);
       const prose = [
         `${album.name} (${album.release_date}) — ${album.total_tracks} tracks, runtime ${fmtDur(totalMs)}, longest "${longest?.name ?? '—'}" (${fmtDur(longest?.duration_ms ?? 0)}):`,
         comparisonCapped
           ? `Duplicates counted against ${otherMetas.length} other release(s) of ${otherIds.length}/${others.length} scanned — comparison bounded, counts are a lower bound.`
           : `Duplicates counted against all ${otherMetas.length} other release(s) in the scanned discography.`,
+        ...(otherNote ? [`(${otherNote} — those releases were unread, so the counts above are a lower bound.)`] : []),
         ...trunc.items.map((r) =>
           `${String(r.track_number).padStart(2, ' ')}. ${r.name} (${r.duration})${r.also_on_other_albums ? ` · also on ${r.also_on_other_albums} other release(s)` : ''}`),
         trunc.footer ? `\n(${trunc.footer})` : '',
@@ -719,6 +740,7 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
       }), {
         album: { id: album.id, name: album.name, release_date: album.release_date, label: album.label ?? null, total_tracks: album.total_tracks },
         releases_compared: otherMetas.length,
+        comparison_album_unresolved: otherUnresolved,
         comparison_capped: comparisonCapped,
         runtime_ms: totalMs,
         longest_track: longest ? { name: longest.name, duration_ms: longest.duration_ms } : null,
@@ -730,7 +752,7 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
   // ------------------------------------------------------------------ 12
   server.tool(
     'album_openers_report',
-    'List track 1 (the side-A opener) of every studio album by an artist, chronologically — the "how each record begins" view. Quota: paginated walk + batched /albums lookups.',
+    'List track 1 (the side-A opener) of every studio album by an artist, chronologically — the "how each record begins" view. Quota: paginated walk + 1 GET /albums/{id} per album.',
     {
       artist_id: spotifyId('artist').describe('Spotify artist ID, URI, or URL'),
       max_albums: z.number().int().positive().max(100).optional().describe('Albums to scan (album group only). Default: 30'),
@@ -741,7 +763,7 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
       const rf = args.response_format;
       const albums = await artistAlbums(client, args.artist_id, 'album', Math.min(100, args.max_albums ?? 30));
       const sorted = [...albums].sort((a, b) => (a.release_date ?? '').localeCompare(b.release_date ?? ''));
-      const metas = await fetchAlbumBatches(client, sorted.map((a) => a.id));
+      const { items: metas, unresolved: openerUnresolved } = await fetchAlbumBatches(client, sorted.map((a) => a.id));
       const rows = metas.map((m) => {
         const opener = m.tracks?.items?.find((t) => t.track_number === 1) ?? m.tracks?.items?.[0] ?? null;
         return {
@@ -754,11 +776,13 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
       const cap = resolveMaxResults(args.max_results, 100);
       const trunc = truncateItems(rows, cap);
       const budget = `showing ${trunc.returned} of ${trunc.total}${trunc.remaining ? ` (${trunc.remaining} withheld)` : ''}`;
+      const openerNote = unreadableNote(openerUnresolved);
       const prose = [
         `Album openers (${budget}):`,
         '',
         ...trunc.items.map((r) =>
           `${r.year ?? '????'} · ${r.album} — opens with "${r.opener?.name ?? '???'}" (${r.opener?.duration ?? '?:??'})${r.track_list_truncated ? ' · track list partial' : ''}`),
+        ...(openerNote ? [`(${openerNote} — those albums were unread and are not listed above.)`] : []),
         trunc.footer ? `\n(${trunc.footer})` : '',
       ].join('\n');
       const payload = listStructuredContent(trunc.items, paginationInfo({
@@ -768,6 +792,7 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
         total: trunc.total,
         returned: trunc.returned,
         withheld: trunc.remaining,
+        album_unresolved: openerUnresolved,
       });
       return emit(rf, prose, payload);
     },
@@ -776,7 +801,7 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
   // ------------------------------------------------------------------ 13
   server.tool(
     'deep_cuts_finder',
-    'Deep cuts per album: tracks past position 2 that are neither the title track nor among the SCANNED singles. Bounded by max_singles (default 500); payload: singles_capped. Quota: paginated walk + batched /albums lookups.',
+    'Deep cuts per album: tracks past position 2 that are neither the title track nor among the SCANNED singles. Bounded by max_singles (default 500); payload: singles_capped. Quota: paginated walk + 1 GET /albums/{id} per album.',
     {
       artist_id: spotifyId('artist').describe('Spotify artist ID, URI, or URL'),
       max_albums: z.number().int().positive().max(100).optional().describe('Studio albums to scan. Default: 20'),
@@ -796,10 +821,10 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
       const singlesWalk = await artistAlbumsWalk(client, args.artist_id, 'single', singlesBound);
       const singles = singlesWalk.items;
       const singlesCapped = singlesWalk.truncated;
-      const singleMetas = await fetchAlbumBatches(client, singles.map((s) => s.id));
+      const { items: singleMetas, unresolved: singleUnresolved } = await fetchAlbumBatches(client, singles.map((s) => s.id));
       const singleTrackNames = new Set<string>();
       for (const m of singleMetas) for (const t of m.tracks?.items ?? []) singleTrackNames.add(normalizeName(t.name));
-      const metas = await fetchAlbumBatches(client, albums.map((a) => a.id));
+      const { items: metas, unresolved: albumUnresolved } = await fetchAlbumBatches(client, albums.map((a) => a.id));
       const perAlbum = Math.min(10, Math.max(1, args.cuts_per_album ?? 3));
       const rows: Array<{ album: string; year: number | null; track_number: number; name: string; duration_ms: number; duration: string; id: string }> = [];
       for (const m of metas) {
@@ -812,6 +837,8 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
       }
       const cap = resolveMaxResults(args.max_results);
       const trunc = truncateItems(rows, cap);
+      const cutUnresolved = [...albumUnresolved, ...singleUnresolved];
+      const cutNote = unreadableNote(cutUnresolved);
       const prose = [
         `Deep cuts (${rows.length} picks across ${metas.length} albums):`,
         singlesCapped
@@ -819,6 +846,10 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
           : `Single exclusion checked against all ${singles.length} single(s) returned by the walk.`,
         '',
         ...trunc.items.map((r) => `${r.year ?? '????'} · ${r.album} — #${r.track_number} "${r.name}" (${r.duration})`),
+        // #1224: an unread album contributes no cuts, and an unread single is
+        // not excluded. Both make the list incomplete in a way the count alone
+        // cannot express.
+        ...(cutNote ? [`(${cutNote} — unread releases contribute no cuts and are not excluded.)`] : []),
         trunc.footer ? `\n(${trunc.footer})` : '',
       ].join('\n');
       const payload = listStructuredContent(trunc.items, paginationInfo({
@@ -829,6 +860,7 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
         singles_scanned: singles.length,
         singles_bound: singlesBound,
         singles_capped: singlesCapped,
+        album_unresolved: cutUnresolved,
       });
       return emit(rf, prose, payload);
     },
@@ -837,7 +869,7 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
   // ------------------------------------------------------------------ 14
   server.tool(
     'b_sides_detector',
-    'Detect B-sides: tracks that appear on an artist\'s singles but never on any album — the non-LP catalogue. Quota: paginated walks + batched /albums lookups.',
+    'Detect B-sides: tracks that appear on an artist\'s singles but never on any album — the non-LP catalogue. Quota: paginated walks + 1 GET /albums/{id} per release.',
     {
       artist_id: spotifyId('artist').describe('Spotify artist ID, URI, or URL'),
       max_singles: z.number().int().positive().max(200).optional().describe('Singles to scan. Default: 50'),
@@ -848,7 +880,7 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
       const rf = args.response_format;
       const singles = await artistAlbums(client, args.artist_id, 'single', Math.min(200, args.max_singles ?? 50));
       const albums = await artistAlbums(client, args.artist_id, 'album', 100);
-      const [singleMetas, albumMetas] = await Promise.all([
+      const [{ items: singleMetas, unresolved: singleUnresolved }, { items: albumMetas, unresolved: albumUnresolved }] = await Promise.all([
         fetchAlbumBatches(client, singles.map((s) => s.id)),
         fetchAlbumBatches(client, albums.map((a) => a.id)),
       ]);
@@ -867,15 +899,21 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
       rows.sort((a, b) => (a.year ?? 9999) - (b.year ?? 9999) || a.name.localeCompare(b.name));
       const cap = resolveMaxResults(args.max_results);
       const trunc = truncateItems(rows, cap);
+      // #1224: an unread album is not an album that holds none of these
+      // tracks, and an unread single is not a single with no b-sides. The
+      // "first" claim in particular depends on every earlier release reading.
+      const bsideUnresolved = [...singleUnresolved, ...albumUnresolved];
+      const bsideNote = unreadableNote(bsideUnresolved);
       const prose = [
         `B-sides (${rows.length} non-album tracks across ${singles.length} singles):`,
         '',
         ...trunc.items.map((r) => `${r.year ?? '????'} · ${r.name} (from single "${r.single}")`),
+        ...(bsideNote ? [`(${bsideNote} — unread releases were not checked; this list may be incomplete.)`] : []),
         trunc.footer ? `\n(${trunc.footer})` : '',
       ].join('\n');
       const payload = listStructuredContent(trunc.items, paginationInfo({
         total: trunc.total, returned: trunc.returned,
-      }), { artist_id: args.artist_id, singles_scanned: singles.length });
+      }), { artist_id: args.artist_id, singles_scanned: singles.length, album_unresolved: bsideUnresolved });
       return emit(rf, prose, payload);
     },
   );
@@ -883,7 +921,7 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
   // ------------------------------------------------------------------ 15
   server.tool(
     'track_release_origin',
-    'Find where a track first appeared: walks an artist\'s releases chronologically and reports the earliest album/single/compilation containing the track, plus later re-appearances. Quota: paginated walk + batched /albums lookups.',
+    'Find where a track first appeared: walks an artist\'s releases chronologically and reports the earliest album/single/compilation containing the track, plus later re-appearances. Quota: paginated walk + 1 GET /albums/{id} per album.',
     {
       artist_id: spotifyId('artist').describe('Spotify artist ID, URI, or URL'),
       track_name: z.string().min(1).describe('Track title to locate (case-insensitive)'),
@@ -894,7 +932,7 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
       const rf = args.response_format;
       const albums = await artistAlbums(client, args.artist_id, 'album,single,compilation,appears_on', Math.min(200, args.max_releases ?? 60));
       const needle = normalizeName(args.track_name);
-      const metas = await fetchAlbumBatches(client, albums.map((a) => a.id));
+      const { items: metas, unresolved: originUnresolved } = await fetchAlbumBatches(client, albums.map((a) => a.id));
       const withTs = [...metas].sort((a, b) => (a.release_date ?? '').localeCompare(b.release_date ?? ''));
       const appearances: Array<{ release: string; release_date: string; album_type: string; position: number | null; id: string }> = [];
       for (const m of withTs) {
@@ -902,15 +940,24 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
         if (hit) appearances.push({ release: m.name, release_date: m.release_date, album_type: m.album_type, position: hit.track_number, id: m.id });
       }
       if (appearances.length === 0) {
-        throw new Error(`"${args.track_name}" not found in the scanned releases (check spelling — scan covers ${withTs.length} releases).`);
+        // #1224: "not found" is only true of the releases that were read. Name
+        // the unread ones rather than reporting a clean miss.
+        throw new Error(
+          `"${args.track_name}" not found in the scanned releases (check spelling — scan covers ${withTs.length} releases`
+          + `${originUnresolved.length > 0 ? `; ${originUnresolved.length} release(s) could not be read and were not searched` : ''}).`,
+        );
       }
       const origin = appearances[0];
+      const originNote = unreadableNote(originUnresolved);
       const prose = [
         `First appearance of "${args.track_name}": ${origin.release} (${origin.release_date}, ${origin.album_type}), track #${origin.position ?? '?'}.`,
         appearances.length > 1 ? `Later appearances (${appearances.length - 1}):` : null,
         ...appearances.slice(1, 11).map((a) => `    ${a.release_date} · ${a.album_type} · ${a.release}`),
+        // An unread earlier release could hold the true first appearance, so
+        // "first" is only as good as the read set.
+        ...(originNote ? [`(${originNote} — those releases were unread; an earlier appearance cannot be ruled out.)`] : []),
       ].filter((l): l is string => l !== null).join('\n');
-      const payload = { artist_id: args.artist_id, track_name: args.track_name, origin, later_appearances: appearances.slice(1, 11), total_appearances: appearances.length };
+      const payload = { artist_id: args.artist_id, track_name: args.track_name, origin, later_appearances: appearances.slice(1, 11), total_appearances: appearances.length, album_unresolved: originUnresolved };
       return emit(rf, prose, payload);
     },
   );
@@ -965,7 +1012,7 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
   // ------------------------------------------------------------------ 17
   server.tool(
     'album_duration_report',
-    'Runtime profile for an artist\'s studio albums: total length, track count and longest track per album, ranked by runtime — find the epics and the EPs. Quota: paginated walk + batched /albums lookups.',
+    'Runtime profile for an artist\'s studio albums: total length, track count and longest track per album, ranked by runtime — find the epics and the EPs. Quota: paginated walk + 1 GET /albums/{id} per album.',
     {
       artist_id: spotifyId('artist').describe('Spotify artist ID, URI, or URL'),
       max_albums: z.number().int().positive().max(100).optional().describe('Albums to scan. Default: 30'),
@@ -975,7 +1022,7 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
     async (args) => {
       const rf = args.response_format;
       const albums = await artistAlbums(client, args.artist_id, 'album', Math.min(100, args.max_albums ?? 30));
-      const metas = await fetchAlbumBatches(client, albums.map((a) => a.id));
+      const { items: metas, unresolved: runtimeUnresolved } = await fetchAlbumBatches(client, albums.map((a) => a.id));
       const rows = metas.map((m) => {
         const items = m.tracks?.items ?? [];
         const totalMs = items.reduce((s, t) => s + t.duration_ms, 0);
@@ -990,16 +1037,20 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
       }).sort((a, b) => b.runtime_ms - a.runtime_ms);
       const cap = resolveMaxResults(args.max_results);
       const trunc = truncateItems(rows, cap);
+      const runtimeNote = unreadableNote(runtimeUnresolved);
       const prose = [
         `Album runtimes (${rows.length} albums, longest first):`,
         '',
         ...trunc.items.map((r) =>
           `${r.runtime} · ${r.album} (${r.year ?? '????'}, ${r.counted_tracks}/${r.total_tracks} tracks counted${r.track_list_partial ? ', PARTIAL' : ''})`),
+        // #1224: an unread album is absent from this ranking, not a zero-length
+        // one, and the header count is the readable count.
+        ...(runtimeNote ? [`(${runtimeNote} — those albums were unread and are not ranked here.)`] : []),
         trunc.footer ? `\n(${trunc.footer})` : '',
       ].join('\n');
       const payload = listStructuredContent(trunc.items, paginationInfo({
         total: trunc.total, returned: trunc.returned,
-      }), { artist_id: args.artist_id });
+      }), { artist_id: args.artist_id, album_unresolved: runtimeUnresolved });
       return emit(rf, prose, payload);
     },
   );

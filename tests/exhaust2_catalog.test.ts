@@ -6,6 +6,7 @@ import { registerExhaust2CatalogTools } from '../src/tools/exhaust2_catalog.js';
 import { registerArtistWatchTools } from '../src/tools/artistwatch.js';
 import { SpotifyApiError, SpotifyClient } from '../src/client.js';
 import { installGatedPathContract } from '../src/gating.js';
+import { PER_ID_FANOUT_WIDTH } from '../src/tools/catalog.js';
 import { initConfig } from '../src/config.js';
 
 type Handler = (args: Record<string, unknown>) => Promise<{
@@ -82,6 +83,20 @@ function trackPayload(overrides: Record<string, unknown> = {}) {
     artists: [artist],
     album: { id: 'alb1', name: 'Album', uri: 'spotify:album:alb1', images: [], release_date: '2021-03-05', album_type: 'album', total_tracks: 3 },
     external_ids: { isrc: 'USXXX0000001' },
+    ...overrides,
+  };
+}
+
+/**
+ * #1224: the album payload a single `GET /albums/{id}` read returns. The
+ * `?ids=` batch route is gone, so every fixture below serves this per id
+ * rather than a `{ albums: [...] }` array.
+ */
+function albumPayload(overrides: Record<string, unknown> = {}) {
+  return {
+    id: 'alb1', name: 'Album', uri: 'spotify:album:alb1', album_type: 'album',
+    release_date: '2021-03-05', total_tracks: 3, artists: [artist], images: [],
+    label: 'Big Records', tracks: { items: [], total: 3 },
     ...overrides,
   };
 }
@@ -248,8 +263,8 @@ assert.equal((res.structuredContent as { album_tracks: unknown[] }).album_tracks
   it('track_enrichment_batch fans in albums and artists', async () => {
     const client = makeClient({
       get: mock.fn(async (path: string) => {
-        if (path === '/tracks') return { tracks: [trackPayload()] };
-        if (path === '/albums') return { albums: [{ id: 'alb1', name: 'Album', uri: 'u', album_type: 'album', release_date: '2021-03-05', total_tracks: 3, artists: [artist], images: [], label: 'Big Records', tracks: { items: [], total: 3 } }] };
+        if (path === '/tracks/t1') return trackPayload();
+        if (path === '/albums/alb1') return albumPayload();
         if (path === '/artists/a1') return { ...artist, genres: ['indie rock'] };
         return null;
       }),
@@ -266,32 +281,35 @@ assert.equal((res.structuredContent as { album_tracks: unknown[] }).album_tracks
   // no genres" answer. Every artist read in this module has to go out as
   // `GET /artists/{id}` or not at all — this asserts the call log, so a
   // reintroduced batch call fails here rather than in production.
-  it('never requests the removed batch artist route (#1004)', async () => {
+  // #1224 widened it to the album and track routes, which had no per-id
+  // fallback at all and hard-failed rather than degrading.
+  it('never requests the removed batch artist/album/track routes (#1004, #1224)', async () => {
     const paths: string[] = [];
     const client = makeClient({
       get: mock.fn(async (path: string) => {
         paths.push(path);
-        if (path === '/tracks') return { tracks: [trackPayload()] };
-        if (path === '/albums') return { albums: [] };
-        // The removed route answers with a perfectly good batch payload here,
-        // on purpose. A fixture that 404s it would make the tools fail for a
+        if (path === '/tracks/t1') return trackPayload();
+        if (path === '/albums/alb1') return albumPayload();
+        // The removed routes answer with a perfectly good batch payload here,
+        // on purpose. A fixture that 404s them would make the tools fail for a
         // second, unrelated reason and bury the real signal; this way the
-        // ONLY thing that can fail the test is a tool actually asking for it.
+        // ONLY thing that can fail the test is a tool actually asking for one.
         if (path === '/artists' || path.startsWith('/artists?')) {
           return { artists: [{ ...artist, genres: ['indie rock'] }] };
         }
+        if (path === '/tracks') return { tracks: [trackPayload()] };
+        if (path === '/albums') return { albums: [albumPayload()] };
         if (path === '/artists/a1') return { ...artist, genres: ['indie rock'] };
         return null;
       }),
     });
     await handlerFor('track_enrichment_batch', client)({ track_ids: ['t1'], response_format: 'json' });
     await handlerFor('artist_genres_compact', client)({ artist_ids: ['a1'], response_format: 'json' });
-    assert.deepEqual(
-      paths.filter((p) => p === '/artists' || p.startsWith('/artists?')),
-      [],
-      `a removed-endpoint request went out: ${paths.join(', ')}`,
-    );
+    const batchReads = paths.filter((p) => ['/artists', '/tracks', '/albums'].includes(p.split('?')[0]));
+    assert.deepEqual(batchReads, [], `a removed-endpoint request went out: ${paths.join(', ')}`);
     assert.ok(paths.includes('/artists/a1'), 'the per-id read is what replaced it');
+    assert.ok(paths.includes('/tracks/t1'), 'the track leg reads per id');
+    assert.ok(paths.includes('/albums/alb1'), 'the album leg reads per id');
   });
 
   // #1004: the per-id leg costs one request per distinct artist, so the tool
@@ -300,14 +318,10 @@ assert.equal((res.structuredContent as { album_tracks: unknown[] }).album_tracks
   it('track_enrichment_batch publishes the per-id request count (#1004)', async () => {
     const client = makeClient({
       get: mock.fn(async (path: string) => {
-        if (path === '/tracks') {
-          return { tracks: [
-            trackPayload({ id: 't1', artists: [{ id: 'a1', name: 'A', uri: 'u' }] }),
-            trackPayload({ id: 't2', artists: [{ id: 'a1', name: 'A', uri: 'u' }, { id: 'a2', name: 'B', uri: 'u' }] }),
-            trackPayload({ id: 't3', artists: [{ id: 'a3', name: 'C', uri: 'u' }] }),
-          ] };
-        }
-        if (path === '/albums') return { albums: [] };
+        if (path === '/tracks/t1') return trackPayload({ id: 't1', artists: [{ id: 'a1', name: 'A', uri: 'u' }] });
+        if (path === '/tracks/t2') return trackPayload({ id: 't2', artists: [{ id: 'a1', name: 'A', uri: 'u' }, { id: 'a2', name: 'B', uri: 'u' }] });
+        if (path === '/tracks/t3') return trackPayload({ id: 't3', artists: [{ id: 'a3', name: 'C', uri: 'u' }] });
+        if (path === '/albums/alb1') return albumPayload();
         if (path === '/artists/a1') return { id: 'a1', name: 'A', uri: 'u', genres: ['pop'] };
         if (path === '/artists/a2') return { id: 'a2', name: 'B', uri: 'u', genres: ['jazz'] };
         if (path === '/artists/a3') return { id: 'a3', name: 'C', uri: 'u', genres: ['soul'] };
@@ -320,6 +334,10 @@ assert.equal((res.structuredContent as { album_tracks: unknown[] }).album_tracks
     assert.equal(counts.artist_requests, 3);
     assert.equal(counts.artists_fetched, 3);
     assert.deepEqual(counts.artist_ids_unresolved, []);
+    // #1224: the album leg is a fan-out too, so it publishes its own count
+    // rather than borrowing the batch endpoint's old "one call".
+    assert.equal(counts.album_requests, 1);
+    assert.deepEqual(counts.album_ids_unresolved, []);
   });
 
   // #1004: an artist whose per-id read failed must be named, with its reason.
@@ -328,8 +346,7 @@ assert.equal((res.structuredContent as { album_tracks: unknown[] }).album_tracks
   it('track_enrichment_batch names the artists it could not read (#1004)', async () => {
     const client = makeClient({
       get: mock.fn(async (path: string) => {
-        if (path === '/tracks') return { tracks: [trackPayload({ id: 't1', artists: [{ id: 'a1', name: 'A', uri: 'u' }, { id: 'dead', name: 'Dead', uri: 'u' }] })] };
-        if (path === '/albums') return { albums: [] };
+        if (path === '/tracks/t1') return trackPayload({ id: 't1', artists: [{ id: 'a1', name: 'A', uri: 'u' }, { id: 'dead', name: 'Dead', uri: 'u' }] });
         if (path === '/artists/a1') return { id: 'a1', name: 'A', uri: 'u', genres: ['pop'] };
         if (path === '/artists/dead') throw new SpotifyApiError(404, 'Not found');
         return null;
@@ -352,8 +369,9 @@ assert.equal((res.structuredContent as { album_tracks: unknown[] }).album_tracks
     const DEAD = '0000000000000000000001';
     const client = makeClient({
       get: mock.fn(async (path: string) => {
-        if (path === '/tracks') return { tracks: [trackPayload(), null] };
-        if (path === '/albums') return { albums: [] };
+        if (path === '/tracks/t1') return trackPayload();
+        if (path === `/tracks/${DEAD}`) throw new SpotifyApiError(404, 'Not found');
+        if (path === '/albums/alb1') return albumPayload();
         if (path === '/artists/a1') return { ...artist, genres: ['indie rock'] };
         return null;
       }),
@@ -372,18 +390,26 @@ assert.equal((res.structuredContent as { album_tracks: unknown[] }).album_tracks
       (counts.requested as number),
       (counts.resolved as number) + (counts.missing_ids as string[]).length,
     );
+    // #1224: the ids are still named WITH the reason they could not be read,
+    // which a positional null slot could not carry.
+    const trackUnresolved = counts.track_unresolved as Array<{ id: string; reason: string; status: number }>;
+    assert.deepEqual(trackUnresolved.map((u) => u.id), [DEAD]);
+    assert.match(trackUnresolved[0].reason, /Not found/);
   });
 });
 
 describe('statistics + local-compute tools', () => {
   it('albums_runtime_batch computes totals and means, flags partial', async () => {
     const client = makeClient({
-      get: mock.fn(async () => ({
-        albums: [{ id: 'alb1', name: 'Album', uri: 'u', album_type: 'album', release_date: '2021', total_tracks: 3, artists: [artist], images: [], tracks: { items: [
-          { id: 't1', name: 'a', uri: 'u', duration_ms: 60_000, explicit: false, track_number: 1, artists: [artist] },
-          { id: 't2', name: 'b', uri: 'u', duration_ms: 120_000, explicit: false, track_number: 2, artists: [artist] },
-        ], total: 2 } }],
-      })),
+      get: mock.fn(async (path: string) => {
+        if (path !== '/albums/alb1') return null;
+        return albumPayload({
+          id: 'alb1', uri: 'u', release_date: '2021', total_tracks: 3, tracks: { items: [
+            { id: 't1', name: 'a', uri: 'u', duration_ms: 60_000, explicit: false, track_number: 1, artists: [artist] },
+            { id: 't2', name: 'b', uri: 'u', duration_ms: 120_000, explicit: false, track_number: 2, artists: [artist] },
+          ], total: 2 },
+        });
+      }),
     });
     const res = await handlerFor('albums_runtime_batch', client)({ album_ids: ['alb1'], response_format: 'concise' });
     assert.ok(res.content[0].text.includes('total 3:00'));
@@ -396,17 +422,20 @@ describe('statistics + local-compute tools', () => {
   // the unresolved ids and structuredContent must account for them — a
   // resolved count alone leaves the caller unable to tell "Spotify dropped it"
   // from "the caller never asked for it". Mirrors the #778 several-* pattern.
+  // #1224 changed the read to per id, so the "unresolvable" id is now a failed
+  // request rather than a null slot; the accounting is asserted unchanged.
   it('albums_runtime_batch names unresolved ids in prose and counts (#1093)', async () => {
     const DEAD = '0000000000000000000000';
     const client = makeClient({
-      get: mock.fn(async () => ({
-        albums: [
-          { id: 'alb1', name: 'Album', uri: 'u', album_type: 'album', release_date: '2021', total_tracks: 1, artists: [artist], images: [], tracks: { items: [
+      get: mock.fn(async (path: string) => {
+        if (path === '/albums/alb1') {
+          return albumPayload({ id: 'alb1', uri: 'u', release_date: '2021', total_tracks: 1, tracks: { items: [
             { id: 't1', name: 'a', uri: 'u', duration_ms: 60_000, explicit: false, track_number: 1, artists: [artist] },
-          ], total: 1 } },
-          null,
-        ],
-      })),
+          ], total: 1 } });
+        }
+        if (path === `/albums/${DEAD}`) throw new SpotifyApiError(404, 'Not found');
+        return null;
+      }),
     });
     const res = await handlerFor('albums_runtime_batch', client)({
       album_ids: ['alb1', DEAD],
@@ -425,15 +454,21 @@ describe('statistics + local-compute tools', () => {
       resolved: 1,
       missing_ids: [DEAD],
     });
+    // ...and the reason travels with the id, so the caller never has to guess
+    // whether Spotify dropped it or the request failed.
+    const unresolved = (res.structuredContent as { album_unresolved: Array<{ id: string; reason: string }> }).album_unresolved;
+    assert.deepEqual(unresolved.map((u) => u.id), [DEAD]);
+    assert.match(unresolved[0].reason, /Not found/);
   });
 
   it('albums_runtime_batch with no unresolved ids reports an empty missing_ids (#1093)', async () => {
     const client = makeClient({
-      get: mock.fn(async () => ({
-        albums: [{ id: 'alb1', name: 'Album', uri: 'u', album_type: 'album', release_date: '2021', total_tracks: 1, artists: [artist], images: [], tracks: { items: [
+      get: mock.fn(async (path: string) => {
+        if (path !== '/albums/alb1') return null;
+        return albumPayload({ id: 'alb1', uri: 'u', release_date: '2021', total_tracks: 1, tracks: { items: [
           { id: 't1', name: 'a', uri: 'u', duration_ms: 60_000, explicit: false, track_number: 1, artists: [artist] },
-        ], total: 1 } }],
-      })),
+        ], total: 1 } });
+      }),
     });
     const res = await handlerFor('albums_runtime_batch', client)({ album_ids: ['alb1'], response_format: 'concise' });
     const text = res.content[0].text;
@@ -1237,48 +1272,64 @@ assert.equal((res.structuredContent as { gaps_flagged: unknown[] }).gaps_flagged
     assert.deepEqual(counts.missing_ids, ['a2']);
   });
 
-  it('track_enrichment_batch fetches album chunks concurrently and reads artists per id, preserving order', async () => {
-    let albumCalls = 0;
+  it('track_enrichment_batch fans out per id, bounded, and preserves order', async () => {
     const artistPaths: string[] = [];
-    let releaseFirstAlbum!: () => void;
-    const firstAlbum = new Promise<void>((resolve) => { releaseFirstAlbum = resolve; });
+    let inFlight = 0;
+    let peakInFlight = 0;
     const client = makeClient({
-      get: mock.fn(async (path: string, params?: Record<string, string>) => {
-        if (path === '/tracks') {
-          const ids = params!.ids.split(',');
-          return { tracks: ids.map((id, i) => trackPayload({ id, uri: `spotify:track:${id}`, name: `Track ${id}`, album: { id: `album${i}`, name: `Album ${i}`, uri: `spotify:album:album${i}`, images: [], release_date: '2021-01-01', album_type: 'album', total_tracks: 1 }, artists: [{ id: `artist${i}`, name: `Artist ${i}`, uri: `spotify:artist:artist${i}` }] })) };
+      get: mock.fn(async (path: string, _params?: Record<string, string>) => {
+        // Every read is per id, so concurrency is observable: an unbounded
+        // `Promise.all` over 21 ids would show 21 in flight at once, which is
+        // how a removed-endpoint fix turns into a self-inflicted 429.
+        inFlight++;
+        peakInFlight = Math.max(peakInFlight, inFlight);
+        try {
+          await Promise.resolve();
+          const track = /^\/tracks\/(.+)$/.exec(path);
+          if (track) {
+            const i = Number(track[1].slice(1));
+            return trackPayload({ id: track[1], uri: `spotify:track:${track[1]}`, name: `Track ${i}`, album: { id: `album${i}`, name: `Album ${i}`, uri: `spotify:album:album${i}`, images: [], release_date: '2021-01-01', album_type: 'album', total_tracks: 1 }, artists: [{ id: `artist${i}`, name: `Artist ${i}`, uri: `spotify:artist:artist${i}` }] });
+          }
+          const album = /^\/albums\/(.+)$/.exec(path);
+          if (album) {
+            return { id: album[1], name: `Album ${album[1]}`, uri: `spotify:album:${album[1]}`, release_date: '2021-01-01', label: `Label ${album[1]}`, artists: [], tracks: { items: [], total: 0 } };
+          }
+          // #1004: one per-id read per artist, and no batch route at all.
+          const single = /^\/artists\/(.+)$/.exec(path);
+          if (single) {
+            artistPaths.push(path);
+            const id = decodeURIComponent(single[1]);
+            return { id, name: `Artist ${id}`, uri: `spotify:artist:${id}`, genres: [id] };
+          }
+          return null;
+        } finally {
+          inFlight--;
         }
-        if (path === '/albums') {
-          albumCalls++;
-          if (albumCalls === 1) await firstAlbum;
-          if (albumCalls === 2) releaseFirstAlbum();
-          return { albums: params!.ids.split(',').map((id) => ({ id, name: `Album ${id}`, uri: `spotify:album:${id}`, release_date: '2021-01-01', label: `Label ${id}`, artists: [], tracks: { items: [], total: 0 } })) };
-        }
-        // #1004: one per-id read per artist, and no batch route at all.
-        const single = /^\/artists\/(.+)$/.exec(path);
-        if (single) {
-          artistPaths.push(path);
-          const id = decodeURIComponent(single[1]);
-          return { id, name: `Artist ${id}`, uri: `spotify:artist:${id}`, genres: [id] };
-        }
-        return null;
       }),
     });
     const trackIds = Array.from({ length: 21 }, (_, i) => `t${i}`);
     const res = await handlerFor('track_enrichment_batch', client)({ track_ids: trackIds, response_format: 'json' });
     const rows = (res.structuredContent as { tracks: Array<{ id: string; label: string | null; artist_genres: Record<string, string[]> }> }).tracks;
     assert.deepEqual(rows.map((row) => row.id), trackIds);
-    assert.equal(albumCalls, 2);
-    // 21 tracks -> 21 distinct artists -> 21 per-id reads, all of them, not
-    // just the first window. A count equal to the id count is the assertion a
-    // batch version could not make: it proves nothing was quietly cut.
-    assert.equal(artistPaths.length, 21);
+    // 21 tracks -> 21 distinct albums -> 21 per-id album reads, not "2 chunks".
+    assert.equal(
+      artistPaths.length,
+      21,
+      'all 21 per-id artist reads must go out, not just the first window',
+    );
     assert.deepEqual(
       artistPaths.slice().sort(),
       Array.from({ length: 21 }, (_, i) => `/artists/artist${i}`).sort(),
     );
     // Every row still carries its genres, joined back by id.
     assert.deepEqual(rows[7].artist_genres['Artist 7'], ['artist7']);
+    // The fan-out is width-bounded. Without a bound this is 21, and the fix
+    // would trade a 403 for a 429.
+    assert.ok(
+      peakInFlight <= PER_ID_FANOUT_WIDTH,
+      `fan-out ran ${peakInFlight} requests wide, above the ${PER_ID_FANOUT_WIDTH} cap`,
+    );
+    assert.ok(peakInFlight > 1, `fan-out ran serially (peak ${peakInFlight}); it should batch up to the width`);
   });
 });
 

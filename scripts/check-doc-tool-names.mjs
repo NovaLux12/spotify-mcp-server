@@ -173,6 +173,17 @@ const parameterAllowlist = new Set([
   // shared canonical request cost. structuredContent keys on those tools, not
   // tools and not parameters.
   'artist_probes', 'artist_probe_cache_hits', 'artist_probe_requests',
+  // #1224: the per-id fan-in replaced a removed `?ids=` batch read with one
+  // `GET /{type}/{id}` per id, so these tools report the request count they
+  // really issued and the ids whose read failed, with a reason. Every name
+  // below is a structuredContent key a tool returns about its own result —
+  // none is a tool, and none is a parameter a caller sends. `batch_requests`
+  // and `batch_size` are the two `library_hygiene.album_lookups` keys the
+  // migration REMOVED; SPEC.md names them so a reader of the old contract can
+  // see what replaced them.
+  'album_requests', 'artist_requests', 'track_unresolved', 'album_unresolved',
+  'artist_unresolved', 'album_lookups', 'request_mode', 'fanout_width',
+  'estimated_album_requests', 'batch_requests', 'batch_size',
 ]);
 /** Registration keys are module names, not tools; docs legitimately name them. */
 const registrationKeyNames = new Set(census.registrationKeyNames ?? []);
