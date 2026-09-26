@@ -922,9 +922,21 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
         { limit: '50' },
         { maxItems: getConfig().fetchAllCap },
       );
+      // Real ownership check (#868): `/me/playlists` lists BOTH owned and
+      // followed playlists, and followed rows still carry an `owner.id`.
+      // Comparing against the current user's id from `/me` is the only way
+      // to tell them apart.
+      let currentUserId: string | null = null;
+      if (args.apply_to !== 'all') {
+        const me = await client.get<{ id?: string }>('/me');
+        currentUserId = me?.id ?? null;
+        if (!currentUserId) {
+          throw new Error('Could not resolve current user id for ownership check');
+        }
+      }
       const owned = (pl: SpotifyPlaylistSimple): boolean => {
         if (args.apply_to === 'all') return true;
-        return pl.owner?.id != null; // /me/playlists lists own first; owner id presence = owned
+        return pl.owner?.id != null && pl.owner.id === currentUserId;
       };
       const seen = new Map<string, number>();
       const renames: Array<{ id: string; from: string; to: string }> = [];
@@ -945,7 +957,12 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
           seen.set(pl.name, n);
           to = n === 1 ? pl.name : `${pl.name} ${n}`;
         }
-        if (to && to !== pl.name) renames.push({ id: pl.id, from: pl.name, to });
+        // Skip no-ops AND already-landed renames (#868 resume): if a previous
+        // run already renamed this playlist, `pl.name` is now the prior `to`
+        // and the same deterministic computation lands on the same target,
+        // so a re-run would otherwise issue a redundant PUT.
+        if (!to || to === pl.name) continue;
+        renames.push({ id: pl.id, from: pl.name, to });
       }
       if (isDry(args)) {
         return dryOut('bulk normalize names', `${renames.length} playlist(s)`, [
@@ -953,11 +970,27 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
         ]);
       }
       let renamed = 0;
+      const failures: Array<{ id: string; from: string; to: string; status?: number; message: string }> = [];
       for (const r of renames) {
-        await client.put(`/playlists/${encodeURIComponent(r.id)}`, { name: r.to });
-        renamed++;
+        try {
+          await client.put(`/playlists/${encodeURIComponent(r.id)}`, { name: r.to });
+          renamed++;
+        } catch (err) {
+          // A 403 (or any other error) on one playlist should NOT abort the
+          // whole run (#868): collect the failure and move on so the user
+          // gets a partial-rename report instead of "renamed 3 of 12, then
+          // crashed, no idea what landed".
+          const status = (err as { status?: number } | null)?.status;
+          const message = err instanceof Error ? err.message : String(err);
+          failures.push({ id: r.id, from: r.from, to: r.to, status, message });
+        }
       }
-      return shape(rf, `Renamed ${renamed} playlist(s).`, { ok: true, renamed, renames });
+      const failed = failures.length;
+      const prose =
+        failed === 0
+          ? `Renamed ${renamed} playlist(s).`
+          : `Renamed ${renamed} playlist(s), ${failed} failed (see structuredContent.failures).`;
+      return shape(rf, prose, { ok: failed === 0, renamed, failed, renames, failures });
     },
   );
 
