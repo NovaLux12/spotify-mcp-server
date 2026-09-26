@@ -383,7 +383,7 @@ Quick reference for all endpoints used. All paths are relative to `https://api.s
 | `get_several_shows` | GET | `/shows?ids=…` — up to 50 per request |
 | `get_episode` | GET | `/episodes/{id}` |
 | `get_several_episodes` | GET | `/episodes?ids=…` — up to 50 per request |
-| `get_audiobook` | GET | `/audiobooks/{id}` — market defaults to profile country |
+| `get_audiobook` | GET | `/audiobooks/{id}` — `market` defaults to the argument, then `SPOTIFY_MCP_MARKET`, then the account country when `GET /me` still carries one |
 | `get_audiobook_chapters` | GET | `/audiobooks/{id}/chapters` |
 | `get_chapter` | GET | `/chapters/{id}` |
 | `get_several_audiobooks` | GET | `/audiobooks?ids=…` |
@@ -705,7 +705,7 @@ List one podcast show's episodes newest-first from `GET /shows/{id}/episodes`.
 #### `get_artist_top_tracks`
 Get an artist's ten most-played tracks for a market.
 
-**Inputs:** `id` (string, required), `market` (string, optional — defaults to the account's country from `GET /me`)
+**Inputs:** `id` (string, required), `market` (string, optional — defaults to `SPOTIFY_MCP_MARKET`; §4.0.4 has the full precedence)
 
 A 403 here usually means the endpoint isn't enabled for this app registration or a required scope is missing; the error says so explicitly.
 
@@ -1088,7 +1088,7 @@ Sends `DELETE /me/following?type=artist&ids=…`.
 
 ### 5.8 Audiobooks
 
-> Audiobook content is market-gated: it is only available in US, UK, Canada, Ireland, New Zealand, and Australia. When `market` is omitted on a lookup (`get_audiobook`, `get_audiobook_chapters`, `get_chapter`, `get_artist_top_tracks`), the tool defaults to the account's country from `GET /me`; if Spotify still rejects the lookup, the error carries a hint to retry with an explicit market code.
+> Audiobook content is market-gated: it is only available in US, UK, Canada, Ireland, New Zealand, and Australia. When `market` is omitted on a lookup (`get_audiobook`, `get_audiobook_chapters`, `get_chapter`, `get_artist_top_tracks`), the market comes from the `market` argument, then `SPOTIFY_MCP_MARKET`, then the account country when `GET /me` still carries one — Spotify removed `country` from `GET /me` in its February 2026 changes, so on a current registration nothing supplies a default, the request is sent unscoped, and the result reports `market_source: "none"`; if Spotify still rejects the lookup, the error carries a hint to retry with an explicit market code.
 
 #### `get_audiobook`
 Get full details for an audiobook.
@@ -1235,6 +1235,7 @@ Known limitations to document and handle:
 | **Redirect URI** | Must use `http://127.0.0.1` for local development — not `http://localhost` |
 | **Market sensitivity** | Some tracks/albums are region-restricted; `market` param controls availability filtering |
 | **Fetch-all cap** | `fetch_all` pagination (`client.getAllPages`) walks offset pages up to `SPOTIFY_MCP_FETCH_ALL_CAP` items per call (default 500). Cursor-paginated endpoints (followed artists) are not supported by this helper. |
+| **Default market** | A market-gated lookup with no `market` argument resolves in this order: the argument, `SPOTIFY_MCP_MARKET`, then the account country when `GET /me` still carries one. The last source is gone — `country` was removed from `GET /me` in Feb 2026 — so on a current registration nothing supplies a default, the request goes out without `market`, and the result reports `market_source: "none"` rather than leaving the fact unstated. `market` codes are validated against a bundled ISO 3166-1 alpha-2 list, so validation needs no `GET /markets` round-trip. |
 
 ---
 

@@ -19,15 +19,24 @@ import {
   listStructuredContent,
   type ResponseFormatValue,
 } from '../shaping.js';
-import { getConfig, resolveMarket } from '../config.js';
+import { getConfig } from '../config.js';
+import {
+  MARKET_CODE,
+  resolveRequestMarket,
+  resetProfileCountryCache,
+  withMarketSource,
+  type MarketResolution,
+} from '../markets.js';
+
+// Test hook, re-exported so the audiobooks suite keeps its import path.
+export { resetProfileCountryCache };
 
 const MARKET_NOTE =
   ' Audiobooks are only available in the US, UK, Canada, Ireland, New Zealand and Australia markets.';
 
-const MARKET_PARAM = z
-  .string()
-  .regex(/^[A-Za-z]{2}$/, 'market must be a 2-letter ISO 3166-1 alpha-2 country code, e.g. "US"')
-  .transform((code) => code.toUpperCase())
+// #595: the same bundled ISO 3166-1 check the catalog tools use, so an
+// unassigned code is rejected without a GET /markets round-trip.
+const MARKET_PARAM = MARKET_CODE
   .optional()
   .describe(
     `ISO 3166-1 alpha-2 country code. If given, only content available in that market is returned.${MARKET_NOTE}`,
@@ -38,51 +47,24 @@ const MARKET_PARAM = z
 // chapters; #787 requires the card to say how much of the book that is.
 const EMBEDDED_CHAPTER_PREVIEW = 10;
 
-let profileCountry: Promise<string | undefined> | null = null;
 
-// The audiobooks API is market-gated (#29): when the caller supplies no
-// market, default to the account's country from /me.
-function resolveProfileCountry(client: SpotifyClient): Promise<string | undefined> {
-  profileCountry ??= client
-    .get<UserProfile>('/me')
-    .then((user) => user?.country)
-    .catch(() => undefined);
-  return profileCountry;
-}
-
-/** Test hook: forget the memoized profile-country lookup. */
-export function resetProfileCountryCache(): void {
-  profileCountry = null;
-}
-
-// The market an audiobook lookup runs under: the caller's code, then the
-// configured market, then the account country from /me (#29).
-async function resolveLookupMarket(
-  client: SpotifyClient,
-  marketArg: string | undefined,
-): Promise<string | undefined> {
-  if (marketArg) return marketArg.toUpperCase();
-  const configured = getConfig().market;
-  if (configured) return configured;
-  return resolveProfileCountry(client);
-}
-
-// GET with `market` defaulting to the profile country. When the market was
-// defaulted (not caller-supplied) and Spotify rejects the lookup, rethrow
-// with a hint while preserving the original error as `cause`.
+// GET with `market` resolved by the shared #595 chain, reporting where that
+// market came from. When the market was defaulted (not caller-supplied) and
+// Spotify rejects the lookup, rethrow with a hint while preserving the
+// original error as `cause`.
 async function getWithMarketFallback<T>(
   client: SpotifyClient,
   path: string,
   marketArg: string | undefined,
   extraParams: Record<string, string> = {},
-): Promise<T | null> {
-  const market = await resolveLookupMarket(client, marketArg);
+): Promise<{ data: T | null; market: MarketResolution }> {
+  const market = await resolveRequestMarket(client, marketArg);
   const params: Record<string, string> = { ...extraParams };
-  if (market) params.market = market;
+  if (market.market) params.market = market.market;
   try {
-    return await client.get<T>(path, params);
+    return { data: await client.get<T>(path, params), market };
   } catch (err) {
-    throw withMarketHint(err, market, marketArg);
+    throw withMarketHint(err, market.market, marketArg);
   }
 }
 
@@ -104,23 +86,22 @@ function withMarketHint(err: unknown, market: string | undefined, marketArg: str
   return err;
 }
 
-// The fetch_all counterpart of getWithMarketFallback: the same market, the
-// same hint, but a paging walk instead of one GET (#787).
 async function walkWithMarketFallback<T>(
   client: SpotifyClient,
   path: string,
   marketArg: string | undefined,
   opts: { maxItems?: number },
-): Promise<{ items: T[]; truncated: boolean }> {
-  const market = await resolveLookupMarket(client, marketArg);
+): Promise<{ items: T[]; truncated: boolean; market: MarketResolution }> {
+  const market = await resolveRequestMarket(client, marketArg);
   try {
-    return await client.getAllPagesWithTruncation<T>(
+    const walk = await client.getAllPagesWithTruncation<T>(
       path,
-      market ? { market } : undefined,
+      market.market ? { market: market.market } : undefined,
       opts,
     );
+    return { ...walk, market };
   } catch (err) {
-    throw withMarketHint(err, market, marketArg);
+    throw withMarketHint(err, market.market, marketArg);
   }
 }
 function formatDuration(ms: number): string {
@@ -216,7 +197,7 @@ export function registerAudiobookTools(server: McpServer, client: SpotifyClient)
       response_format: ResponseFormat,
     },
     async (args) => {
-      const audiobook = await getWithMarketFallback<SpotifyAudiobookFull>(
+      const { data: audiobook, market } = await getWithMarketFallback<SpotifyAudiobookFull>(
         client,
         `/audiobooks/${encodeURIComponent(args.id)}`,
         args.market,
@@ -253,7 +234,7 @@ export function registerAudiobookTools(server: McpServer, client: SpotifyClient)
         }
       }
 
-      return renderSingle(args.response_format, audiobook as unknown as Record<string, unknown>, lines);
+      return withMarketSource(renderSingle(args.response_format, audiobook as unknown as Record<string, unknown>, lines), market);
     },
   );
 
@@ -286,8 +267,9 @@ export function registerAudiobookTools(server: McpServer, client: SpotifyClient)
       // #787: a single page of at most 50 could not read a long book at all.
       // fetch_all walks the pages, and the walk's own verdict (#864) — not the
       // row count — is what says whether it really reached the end.
-      let walk: { items: SpotifyChapterSimple[]; truncated: boolean } | null = null;
+      let walk: { items: SpotifyChapterSimple[]; truncated: boolean; market: MarketResolution } | null = null;
       let result: SpotifyPaged<SpotifyChapterSimple> | null;
+      let market: MarketResolution;
       if (args.fetch_all) {
         walk = await walkWithMarketFallback<SpotifyChapterSimple>(
           client,
@@ -295,6 +277,7 @@ export function registerAudiobookTools(server: McpServer, client: SpotifyClient)
           args.market,
           { maxItems: walkCap },
         );
+        market = walk.market;
         result = {
           items: walk.items,
           total: walk.items.length,
@@ -303,7 +286,7 @@ export function registerAudiobookTools(server: McpServer, client: SpotifyClient)
           next: null,
         };
       } else {
-        result = await getWithMarketFallback<SpotifyPaged<SpotifyChapterSimple>>(
+        ({ data: result, market } = await getWithMarketFallback<SpotifyPaged<SpotifyChapterSimple>>(
           client,
           chaptersPath,
           args.market,
@@ -311,48 +294,54 @@ export function registerAudiobookTools(server: McpServer, client: SpotifyClient)
             limit: String(args.limit ?? 20),
             offset: String(args.offset ?? 0),
           },
-        );
+        ));
       }
       if (!result) throw new Error(`Audiobook "${args.id}" not found`);
 
       if (args.response_format === 'json') {
         // A capped walk must not read as a complete payload in json mode
         // either, so the payload carries the same verdict the prose carries.
-        return jsonResult(
-          walk
-            ? {
-                ...(result as unknown as Record<string, unknown>),
-                fetch_all: true,
-                fetch_all_cap: walkCap,
-                truncated_by_cap: walk.truncated,
-              }
-            : (result as unknown as Record<string, unknown>),
+        return withMarketSource(
+          jsonResult(
+            walk
+              ? {
+                  ...(result as unknown as Record<string, unknown>),
+                  fetch_all: true,
+                  fetch_all_cap: walkCap,
+                  truncated_by_cap: walk.truncated,
+                }
+              : (result as unknown as Record<string, unknown>),
+          ),
+          market,
         );
       }
-      return renderList(args.response_format, result.items, {
-        header: walk
-          ? `Chapters for audiobook (walked ${result.items.length} — ${
-              walk.truncated
-                ? `fetch-all cap ${walkCap} REACHED, chapters past it were not read`
-                : 'every chapter read, cap not reached'
-            }):`
-          : `Chapters for audiobook (${result.total} total):`,
-        line: (chapter) => {
-          const playable = chapter.is_playable ? '' : ' [not playable]';
-          return `  ${chapter.chapter_number}. "${chapter.name}" (${formatDuration(chapter.duration_ms)}, ${chapter.release_date})${playable} | URI: ${chapter.uri}`;
-        },
-        total: result.total,
-        offset: walk ? 0 : args.offset,
-        limit: walk ? result.items.length : args.limit ?? 20,
-        // fetch_all is a documented bypass of max_results: the walk is already
-        // bounded by the fetch-all cap, and re-slicing it here would drop
-        // exactly what the caller asked for (see src/shaping.ts).
-        maxResults: walk ? walkCap : args.max_results,
-        continuable: !walk,
-        extra: walk
-          ? { fetch_all: true, fetch_all_cap: walkCap, truncated_by_cap: walk.truncated }
-          : undefined,
-      });
+      return withMarketSource(
+        renderList(args.response_format, result.items, {
+          header: walk
+            ? `Chapters for audiobook (walked ${result.items.length} — ${
+                walk.truncated
+                  ? `fetch-all cap ${walkCap} REACHED, chapters past it were not read`
+                  : 'every chapter read, cap not reached'
+              }):`
+            : `Chapters for audiobook (${result.total} total):`,
+          line: (chapter) => {
+            const playable = chapter.is_playable ? '' : ' [not playable]';
+            return `  ${chapter.chapter_number}. "${chapter.name}" (${formatDuration(chapter.duration_ms)}, ${chapter.release_date})${playable} | URI: ${chapter.uri}`;
+          },
+          total: result.total,
+          offset: walk ? 0 : args.offset,
+          limit: walk ? result.items.length : args.limit ?? 20,
+          // fetch_all is a documented bypass of max_results: the walk is already
+          // bounded by the fetch-all cap, and re-slicing it here would drop
+          // exactly what the caller asked for (see src/shaping.ts).
+          maxResults: walk ? walkCap : args.max_results,
+          continuable: !walk,
+          extra: walk
+            ? { fetch_all: true, fetch_all_cap: walkCap, truncated_by_cap: walk.truncated }
+            : undefined,
+        }),
+        market,
+      );
     },
   );
 
@@ -366,7 +355,7 @@ export function registerAudiobookTools(server: McpServer, client: SpotifyClient)
       response_format: ResponseFormat,
     },
     async (args) => {
-      const chapter = await getWithMarketFallback<SpotifyChapterFull>(
+      const { data: chapter, market } = await getWithMarketFallback<SpotifyChapterFull>(
         client,
         `/chapters/${encodeURIComponent(args.id)}`,
         args.market,
@@ -389,7 +378,7 @@ export function registerAudiobookTools(server: McpServer, client: SpotifyClient)
 
       lines.push(`URI: ${chapter.uri}`);
 
-      return renderSingle(args.response_format, chapter as unknown as Record<string, unknown>, lines);
+      return withMarketSource(renderSingle(args.response_format, chapter as unknown as Record<string, unknown>, lines), market);
     },
   );
 

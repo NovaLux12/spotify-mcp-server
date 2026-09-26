@@ -22,6 +22,15 @@ import {
   describeDryRun,
   validateUris,
 } from '../shaping.js';
+import { getConfig } from '../config.js';
+import { MARKET_CODE } from '../markets.js';
+
+// #595: these parameters used to advertise a default that resolved from the
+// account country, and Spotify's February 2026 changes removed `country`
+// from GET /me — so nothing on the account side can supply one. The
+// surviving default is SPOTIFY_MCP_MARKET, applied here.
+const requestMarket = (marketArg: string | undefined): string | undefined =>
+  marketArg ?? getConfig().market ?? undefined;
 
 function formatDuration(ms: number): string {
   const minutes = Math.floor(ms / 60000);
@@ -70,13 +79,10 @@ function formatItem(item: RenderableItem): string {
   return `"${name}" (${item.type ?? 'unknown type'})${duration}`;
 }
 
-const marketSchema = z
-  .string()
-  .regex(/^[A-Za-z]{2}$/, 'market must be a 2-letter ISO 3166-1 alpha-2 country code, e.g. "US"')
-  .transform((code) => code.toUpperCase())
+const marketSchema = MARKET_CODE
   .optional()
   .describe(
-    'ISO 3166-1 alpha-2 country code — localises item names; lowercase input is uppercased; defaults to the account market',
+    'ISO 3166-1 alpha-2 country code — localises item names; lowercase input is uppercased; defaults to SPOTIFY_MCP_MARKET',
   );
 
 const additionalTypesSchema = z
@@ -201,7 +207,8 @@ export function registerPlaybackTools(server: McpServer, client: SpotifyClient):
     async (args) => {
       const types = args.additional_types ?? ['track', 'episode'];
       const params: Record<string, string> = { additional_types: types.join(',') };
-      if (args.market !== undefined) params.market = args.market;
+      const market = requestMarket(args.market);
+      if (market !== undefined) params.market = market;
 
       const state = await client.get<PlaybackState>('/me/player', params);
 
@@ -273,7 +280,8 @@ export function registerPlaybackTools(server: McpServer, client: SpotifyClient):
     async (args) => {
       const types = args.additional_types ?? ['track', 'episode'];
       const params: Record<string, string> = { additional_types: types.join(',') };
-      if (args.market !== undefined) params.market = args.market;
+      const market = requestMarket(args.market);
+      if (market !== undefined) params.market = market;
 
       const cp = await client.get<CurrentlyPlayingResponse>(
         '/me/player/currently-playing',
@@ -315,12 +323,9 @@ export function registerPlaybackTools(server: McpServer, client: SpotifyClient):
         .default('track')
         .describe("What to search for: 'track' (song) or 'episode' (podcast episode)"),
       device_id: z.string().optional().describe('Target device ID; uses active device if omitted'),
-      market: z
-        .string()
-        .regex(/^[A-Za-z]{2}$/, 'market must be a 2-letter ISO 3166-1 alpha-2 country code, e.g. "US"')
-        .transform((code) => code.toUpperCase())
+      market: MARKET_CODE
         .optional()
-        .describe('ISO 3166-1 alpha-2 country code — affects availability/relinking of results; defaults to the account market'),
+        .describe('ISO 3166-1 alpha-2 country code — affects availability/relinking of results; defaults to SPOTIFY_MCP_MARKET'),
       response_format: ResponseFormat,
       dry_run: DryRun,
     },
@@ -330,7 +335,8 @@ export function registerPlaybackTools(server: McpServer, client: SpotifyClient):
         type: args.search_type,
         limit: '10',
       };
-      if (args.market) params.market = args.market;
+      const market = requestMarket(args.market);
+      if (market) params.market = market;
 
       const results = await client.get<SearchResponse>('/search', params);
 

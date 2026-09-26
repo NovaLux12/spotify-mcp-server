@@ -320,7 +320,7 @@ test('get_artist_albums schema rejects limits above the canonical page cap', () 
   assert.equal(schema.limit.safeParse(10).success, true);
 });
 
-test('get_artist_albums fetch_all pages at 10 and omits an absent market', async () => {
+test('get_artist_albums fetch_all pages at 10, consults the default chain, and omits an absent market', async () => {
   resetCatalogMarketCache();
   const calls: Call[] = [];
   const client = {
@@ -344,7 +344,13 @@ test('get_artist_albums fetch_all pages at 10 and omits an absent market', async
   };
   registerCatalogTools(server as never, client as never);
   await invoke(findTool(registered, 'get_artist_albums'), { id: 'art1', fetch_all: true });
-  assert.deepEqual(calls, [{ method: 'GET', path: '/artists/art1/albums', params: { include_groups: 'album,single', limit: '10' } }]);
+  // #595: the walk now runs the same default resolution the paged branch
+  // does, so it reads the (memoised, and here empty) account country first;
+  // with nothing to resolve, no `market` reaches the wire.
+  assert.deepEqual(calls, [
+    { method: 'GET', path: '/me' },
+    { method: 'GET', path: '/artists/art1/albums', params: { include_groups: 'album,single', limit: '10' } },
+  ]);
 });
 
 // ------------------------------------------------------------------ get_album
