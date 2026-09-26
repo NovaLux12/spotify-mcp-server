@@ -13,9 +13,212 @@ import {
   paginationInfo,
   listStructuredContent,
 } from '../shaping.js';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { chmod, mkdir, open, readFile, rename, unlink, writeFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
+import { dirname, join } from 'node:path';
 import { classifySpotifyReference } from '../refs.js';
+
+/**
+ * Store plumbing (#764).
+ *
+ * This sidecar is the only store in the server whose persistence was silently
+ * best-effort: every write error was swallowed, a corrupt file read as an empty
+ * store, and the path resolved against the host's cwd. A watchlist could
+ * therefore vanish with a confident `1 added`, or be invisible purely because
+ * the server was launched from a different directory. Persistence here is
+ * honest in both directions: a write that fails is reported as a failure, and
+ * an unreadable file is reported as unreadable instead of being reset.
+ */
+
+/** The file, named for the caller so a failure is never anonymous. */
+export function artistWatchlistPath(env: NodeJS.ProcessEnv = process.env): string {
+  // Aligned with every other sidecar (~/.spotify-mcp), with
+  // SPOTIFY_MCP_DATA_DIR kept as the documented directory override.
+  const dir = env.SPOTIFY_MCP_DATA_DIR?.trim();
+  return join(dir ? dir : join(homedir(), '.spotify-mcp'), 'artist-watchlist.json');
+}
+
+/**
+ * Pre-v2 location, resolved against the process cwd. Read as a fallback so a
+ * watchlist built before the path was aligned is picked up rather than
+ * reported as an empty list (#764).
+ */
+const LEGACY_WATCHLIST_PATH = join('./data', 'artist-watchlist.json');
+
+/**
+ * Copy the bytes of a sidecar we could not use to `<path>.corrupt[N]`, 0600.
+ *
+ * Never overwrites an existing copy: the corruption report points the user at
+ * that copy to repair from, so a later, different corrupt state must not
+ * clobber the first one's evidence. `flag: 'wx'` makes the O_EXCL guarantee
+ * the probe loop relies on. Best-effort — a read-only directory must not mask
+ * the corruption report itself, and the original still names the file to fix.
+ */
+async function quarantineCorruptSidecar(path: string): Promise<string | undefined> {
+  for (let n = 1; n <= 50; n += 1) {
+    const backup = n === 1 ? `${path}.corrupt` : `${path}.corrupt.${n}`;
+    try {
+      await writeFile(backup, await readFile(path), { mode: 0o600, flag: 'wx' });
+      await chmod(backup, 0o600);
+      return backup;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'EEXIST') continue;
+      return undefined;
+    }
+  }
+  return undefined;
+}
+
+/** Tail of a corruption report: where the preserved copy is, and that we stopped. */
+function quarantineNote(backup: string | undefined): string {
+  if (backup === undefined) {
+    return 'It was left untouched — repair or move it aside, then retry; watchlists stay blocked so '
+      + 'your existing artists cannot be overwritten.';
+  }
+  const earlier = backup.endsWith('.corrupt')
+    ? ''
+    : ` An earlier detection's copy is still at ${backup.replace(/\.corrupt\.\d+$/, '.corrupt')}, `
+      + 'kept intact so the original post-crash state was not overwritten.';
+  return `Its exact bytes were preserved at ${backup} and it was left untouched — repair or move it `
+    + `aside, then retry; watchlists stay blocked so your existing artists cannot be overwritten.${earlier}`;
+}
+
+/**
+ * Parse one sidecar file. Only an ABSENT file is the bootstrap case; a file that
+ * exists but cannot be read, parsed, or recognised is corruption and is
+ * reported with its path. Coercing either to "no watchlist" would let the next
+ * `watch_artists` write replace a user's lists with a one-artist stub and
+ * report success — the same class of coercion #759 and #839 exist to end.
+ */
+async function readStoreFile(path: string): Promise<WatchlistStore> {
+  let raw: string;
+  try {
+    raw = await readFile(path, 'utf8');
+  } catch (err) {
+    // ENOENT propagates so the caller can decide between the legacy path and an
+    // empty store; every other read failure is corruption.
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') throw err;
+    throw new Error(
+      `Watchlist sidecar ${path} could not be read (${(err as Error).message}). `
+      + quarantineNote(await quarantineCorruptSidecar(path)),
+      { cause: err },
+    );
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    // Includes the zero-length file a crash mid-write leaves behind.
+    throw new Error(
+      `Watchlist sidecar ${path} is not valid JSON (${(err as Error).message}). `
+      + quarantineNote(await quarantineCorruptSidecar(path)),
+      { cause: err },
+    );
+  }
+
+  // Unchecked cast held in a named const: JSON.parse yielded `unknown` and the
+  // `watchlists` member is validated immediately below.
+  const candidate = parsed as { watchlists?: unknown };
+  const lists = parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)
+    ? candidate.watchlists
+    : undefined;
+  if (lists === null || typeof lists !== 'object' || Array.isArray(lists)) {
+    throw new Error(
+      `Watchlist sidecar ${path} is not a watchlist store: expected `
+      + '{"watchlists":{"<name>":{"artists":["<artist_id>"],"lastChecked":null,"seen":{}}}}. '
+      + quarantineNote(await quarantineCorruptSidecar(path)),
+    );
+  }
+  return { watchlists: lists as Record<string, WatchlistEntry> };
+}
+
+/** The loaded store, where it came from, and the file every write must target. */
+type LoadedStore = { store: WatchlistStore; path: string; migratedFrom: string | undefined };
+
+/**
+ * Read the watchlist, falling back to the legacy cwd-relative file only when the
+ * current one is genuinely absent. `path` is always the CURRENT location, so a
+ * migrated store is rewritten there by the caller's next save.
+ */
+async function loadStore(): Promise<LoadedStore> {
+  const path = artistWatchlistPath();
+  try {
+    return { store: await readStoreFile(path), path, migratedFrom: undefined };
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+  }
+  if (path !== LEGACY_WATCHLIST_PATH) {
+    try {
+      return { store: await readStoreFile(LEGACY_WATCHLIST_PATH), path, migratedFrom: LEGACY_WATCHLIST_PATH };
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+    }
+  }
+  return { store: { watchlists: {} }, path, migratedFrom: undefined };
+}
+
+/** A load that failed, kept as data so the tool can report it in its own words. */
+type StoreRead = { ok: true } & LoadedStore | { ok: false; error: string };
+
+/**
+ * Load the store for a tool call.
+ *
+ * A corruption report is the whole answer when the sidecar cannot be read, so
+ * it is returned rather than thrown: the process-wide tool boundary turns a
+ * thrown error into a generic "invalid arguments" envelope, which would name
+ * the wrong cause and drop the path the user has to repair.
+ */
+async function readStoreForTool(): Promise<StoreRead> {
+  try {
+    return { ok: true, ...(await loadStore()) };
+  } catch (err) {
+    return { ok: false, error: (err as Error).message };
+  }
+}
+
+/** The failure result every watchlist tool returns for an unreadable store. */
+function storeUnreadable(error: string) {
+  return {
+    content: [{ type: 'text' as const, text: `Watchlist could not be read: ${error}` }],
+    structuredContent: { ok: false, persisted: false, reason: 'store_unreadable', error },
+    isError: true,
+  };
+}
+
+/**
+ * Persist the sidecar atomically: temp file in the SAME directory, fsync, then
+ * rename over the target. The rename is the only mutation of the real path, so a
+ * crash before it leaves the previous store intact rather than a truncated one.
+ * Temp file and target are owner-only (0600) and re-asserted after creation,
+ * because a creation-time mode is masked by umask. Failures THROW — the caller
+ * owes the agent a persistence failure rather than a success line (#764).
+ */
+async function saveStore(store: WatchlistStore, path: string): Promise<void> {
+  const tmp = `${path}.tmp`;
+  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+  try {
+    const handle = await open(tmp, 'w', 0o600);
+    try {
+      await handle.writeFile(`${JSON.stringify(store, null, 2)}\n`, 'utf8');
+      await handle.sync(); // on disk before the rename can publish them
+    } finally {
+      await handle.close();
+    }
+    await chmod(tmp, 0o600);
+    await rename(tmp, path);
+  } catch (err) {
+    // Never strand a partial temp file for the next write to trip over.
+    try { await unlink(tmp); } catch { /* nothing left to clean up */ }
+    throw err;
+  }
+}
+
+/** Prose for a write that did not land, naming the file and the reason. */
+function persistFailureNote(path: string, error: unknown): string {
+  return `NOT saved: writing ${path} failed (${(error as Error).message}). `
+    + 'Nothing was persisted — fix the path or its permissions and re-run.';
+}
 
 type AlbumItem = {
   id: string;
@@ -37,34 +240,6 @@ type WatchlistEntry = {
 type WatchlistStore = {
   watchlists: Record<string, WatchlistEntry>;
 };
-
-function dataFilePath(): string {
-  const cfg = getConfig() as unknown as Record<string, unknown>;
-  const dir = (typeof cfg.dataDir === 'string' && cfg.dataDir) ? cfg.dataDir as string : (process.env.SPOTIFY_MCP_DATA_DIR || './data');
-  return join(dir, 'artist-watchlist.json');
-}
-
-async function loadStore(): Promise<WatchlistStore> {
-  const fp = dataFilePath();
-  try {
-    const raw = await readFile(fp, 'utf8');
-    const parsed = JSON.parse(raw) as WatchlistStore;
-    if (!parsed.watchlists || typeof parsed.watchlists !== 'object') return { watchlists: {} };
-    return parsed;
-  } catch {
-    return { watchlists: {} };
-  }
-}
-
-async function saveStore(store: WatchlistStore): Promise<void> {
-  const fp = dataFilePath();
-  try {
-    await mkdir(join(fp, '..'), { recursive: true });
-  } catch {}
-  try {
-    await writeFile(fp, JSON.stringify(store, null, 2), 'utf8');
-  } catch {}
-}
 
 function ensureList(store: WatchlistStore, name: string): WatchlistEntry {
   if (!store.watchlists[name]) {
@@ -300,7 +475,7 @@ export function registerArtistWatchTools(server: McpServer, client: SpotifyClien
 
   server.tool(
     'watch_artists',
-    'Add artists to a local watchlist sidecar for new-release polling',
+    'Add artists to a watchlist sidecar for new-release polling. File ~/.spotify-mcp/artist-watchlist.json (SPOTIFY_MCP_DATA_DIR overrides); a failed write is reported, not swallowed.',
     {
       artist_ids: z.array(z.string().min(1)).min(1).describe('Spotify artist IDs to watch'),
       name: z.string().optional().describe('Watchlist name. Default: "default"'),
@@ -308,24 +483,46 @@ export function registerArtistWatchTools(server: McpServer, client: SpotifyClien
     },
     async (args) => {
       const listName = args.name ?? 'default';
-      const store = await loadStore();
+      const read = await readStoreForTool();
+      if (!read.ok) return storeUnreadable(read.error);
+      const { store, path, migratedFrom } = read;
       const entry = ensureList(store, listName);
       const before = entry.artists.length;
       for (const id of args.artist_ids as string[]) {
         if (!entry.artists.includes(id)) entry.artists.push(id);
       }
-      await saveStore(store);
       const added = entry.artists.length - before;
-      let msg = `Watchlist "${listName}": ${added} added, ${entry.artists.length} total.`;
+      // A watchlist that was never written is a lie the agent will act on, so a
+      // failed save is the whole answer: no `N added` line survives it (#764).
+      try {
+        await saveStore(store, path);
+      } catch (err) {
+        return {
+          content: [{ type: 'text', text: `Watchlist "${listName}": ${added} would be added, ${entry.artists.length} in total, but ${persistFailureNote(path, err)}` }],
+          structuredContent: {
+            ok: false,
+            persisted: false,
+            name: listName,
+            added,
+            total: entry.artists.length,
+            artists: [...entry.artists],
+            path,
+            error: (err as Error).message,
+          },
+          isError: true,
+        };
+      }
+      let msg = `Watchlist "${listName}": ${added} added, ${entry.artists.length} total (saved to ${path}).`;
+      if (migratedFrom) msg += ` Migrated from the legacy location ${migratedFrom}.`;
       if (entry.artists.length > 50) {
         msg += ` Warning: watchlist has ${entry.artists.length} artists — check_artist_releases will cap at max_artists (default 25) and each check costs 1 request per artist. Consider using a smaller watchlist or raising max_artists explicitly.`;
       }
+      const base: Record<string, unknown> = { name: listName, added, total: entry.artists.length, artists: [...entry.artists], persisted: true, path, ...(migratedFrom ? { migrated_from: migratedFrom } : {}) };
+      if (entry.artists.length > 50) base.warning = `watchlist exceeds 50 artists (${entry.artists.length}); polling will be capped`;
       if (args.response_format === 'json') {
-        const raw: Record<string, unknown> = { name: listName, added, total: entry.artists.length, artists: [...entry.artists] };
-        if (entry.artists.length > 50) (raw as Record<string, unknown>).warning = `watchlist exceeds 50 artists (${entry.artists.length}); polling will be capped`;
-        return { content: [{ type: 'text', text: JSON.stringify(raw, null, 2) }], structuredContent: raw };
+        return { content: [{ type: 'text', text: JSON.stringify(base, null, 2) }], structuredContent: base };
       }
-      return { content: [{ type: 'text', text: msg }], structuredContent: { name: listName, added, total: entry.artists.length, artists: [...entry.artists], ...(entry.artists.length > 50 ? { warning: `watchlist exceeds 50 artists (${entry.artists.length})` } : {}) } };
+      return { content: [{ type: 'text', text: msg }], structuredContent: base };
     },
   );
 
@@ -333,21 +530,23 @@ export function registerArtistWatchTools(server: McpServer, client: SpotifyClien
     'check_artist_releases',
     'Check watched artists for new releases since last check (or within lookback_days). '
       + 'WARNING: N artists in watchlist = N API requests. Use max_artists to budget and dry_run to preview cost. '
-      + 'Artists whose lookup fails are listed in `failures` with the reason and excluded from the results — they are never reported as having 0 new releases, and artists_scanned counts the artists actually examined.',
+      + 'Unreadable artists are listed in `failures` with the reason and excluded from the results; artists_scanned counts artists examined, not those with new releases.',
     {
       watchlist_name: z.string().optional().describe('Watchlist name. Default: "default"'),
       lookback_days: z.number().int().min(1).max(365).optional().describe('Only consider releases from the last N days'),
       limit: z.number().int().min(1).max(ARTIST_ALBUM_PAGE_LIMIT).optional().describe(`Albums per artist to fetch, 1–${ARTIST_ALBUM_PAGE_LIMIT}. Default: ${ARTIST_ALBUM_PAGE_LIMIT}`),
       max_artists: z.number().int().min(1).max(200).optional().describe(
-        'Per-call budget for artist lookups. Default: 25 (or SPOTIFY_MCP_FRESHNESS_BUDGET). '
-          + 'Truncates to max_artists and reports watchlist_size / artists_scanned / truncated.',
+        'Per-call artist lookup budget. Default: 25 (or SPOTIFY_MCP_FRESHNESS_BUDGET). '
+          + 'Reports watchlist_size / artists_scanned / truncated.',
       ),
       dry_run: DryRun,
       ...sharedListFields,
     },
     async (args) => {
       const listName = args.watchlist_name ?? 'default';
-      const store = await loadStore();
+      const read = await readStoreForTool();
+      if (!read.ok) return storeUnreadable(read.error);
+      const { store, path, migratedFrom } = read;
       const entry = store.watchlists[listName];
       if (!entry || entry.artists.length === 0) {
         return { content: [{ type: 'text', text: `Watchlist "${listName}" is empty \u2014 add artists with watch_artists first.` }] };
@@ -377,6 +576,8 @@ export function registerArtistWatchTools(server: McpServer, client: SpotifyClien
             truncated,
             cost_estimate: costEstimate,
             artists: artistsToCheck,
+            path,
+            ...(migratedFrom ? { migrated_from: migratedFrom } : {}),
           },
         };
       }
@@ -434,10 +635,22 @@ export function registerArtistWatchTools(server: McpServer, client: SpotifyClien
         if (!entry.seen[artist_id]) entry.seen[artist_id] = [];
         for (const al of newReleases) if (!entry.seen[artist_id].includes(al.id)) entry.seen[artist_id].push(al.id);
       }
+      // A scan whose `seen` bookkeeping never reached disk reports the same
+      // releases next time; say so rather than let a clean result imply the
+      // watchlist advanced (#764).
+      let persistError: string | undefined;
       if (perArtist.length > 0) {
         entry.lastChecked = new Date().toISOString();
-        await saveStore(store);
+        try {
+          await saveStore(store, path);
+        } catch (err) {
+          persistError = (err as Error).message;
+        }
       }
+      const persistNote = persistError === undefined ? '' : ` ${persistFailureNote(path, persistError)}`;
+      const persistExtra = persistError === undefined
+        ? { persisted: true, path, ...(migratedFrom ? { migrated_from: migratedFrom } : {}) }
+        : { persisted: false, path, error: persistError };
       const allNew = perArtist.flatMap((p) => p.newReleases.map((al) => ({ artist_id: p.artist_id, album: al })));
       const baseExtra = {
         watchlist: listName,
@@ -453,6 +666,7 @@ export function registerArtistWatchTools(server: McpServer, client: SpotifyClien
         ...(quotaHit ? { quota_hit: true, retry_after: quotaRetryAfter ?? null, quota_scanned: quotaScanned } : {}),
         ...(rateLimited ? { rate_limited: true, retry_after: rateRetryAfter ?? null, rate_limit_scanned: quotaScanned } : {}),
         ...(authFailed ? { auth_error: true, auth_error_scanned: quotaScanned } : {}),
+        ...persistExtra,
       };
       if (args.response_format === 'json') {
         const raw: Record<string, unknown> = { ...baseExtra, new_releases: allNew, total: allNew.length };
@@ -468,6 +682,7 @@ export function registerArtistWatchTools(server: McpServer, client: SpotifyClien
         if (rateLimited) msg += ` Rate limited (429) after ${quotaScanned} artists.${rateRetryAfter != null ? ` Retry-After: ${rateRetryAfter}s.` : ''} Partial results.`;
         if (authFailed) msg += ' Spotify rejected the access token (401) after a refresh — re-run `spotify-mcp auth`. Partial results.';
         if (failures.length > 0) msg += ` ${failureNote(failures)}`;
+        if (persistNote) msg += persistNote;
         return { content: [{ type: 'text', text: msg }], structuredContent: { ...baseExtra, total: 0, items: [] } };
       }
       const cap = resolveMaxResults(args.max_results);
@@ -486,6 +701,7 @@ export function registerArtistWatchTools(server: McpServer, client: SpotifyClien
       }
       if (authFailed) lines.push('Spotify rejected the access token (401) after a refresh — re-run `spotify-mcp auth`. Partial results.');
       if (failures.length > 0) lines.push(failureNote(failures));
+      if (persistNote) lines.push(persistNote.trim());
       return {
         content: [{ type: 'text', text: lines.join('\n') }],
         structuredContent: { ...baseExtra, total: allNew.length, items: trunc.items, pagination: paginationInfo({ total: allNew.length, returned: trunc.items.length }) },
@@ -497,18 +713,20 @@ export function registerArtistWatchTools(server: McpServer, client: SpotifyClien
     'artist_release_digest',
     'Show a digest of new releases since the last check for a watchlist. '
       + 'WARNING: N artists = N requests. Use max_artists to budget and dry_run to preview. '
-      + 'Artists whose lookup fails are listed in `failures` with the reason; artists_scanned is the number of artists actually examined, not the number that had new releases.',
+      + 'Unreadable artists are listed in `failures` with the reason; artists_scanned counts artists examined, not those with new releases.',
     {
       watchlist_name: z.string().optional().describe('Watchlist name. Default: "default"'),
       max_artists: z.number().int().min(1).max(200).optional().describe(
-        'Per-call budget for artist lookups. Default: 25 (or SPOTIFY_MCP_FRESHNESS_BUDGET).',
+        'Per-call artist lookup budget. Default: 25 (or SPOTIFY_MCP_FRESHNESS_BUDGET).',
       ),
       dry_run: DryRun,
       ...sharedListFields,
     },
     async (args) => {
       const listName = args.watchlist_name ?? 'default';
-      const store = await loadStore();
+      const read = await readStoreForTool();
+      if (!read.ok) return storeUnreadable(read.error);
+      const { store, path, migratedFrom } = read;
       const entry = store.watchlists[listName];
       if (!entry || entry.artists.length === 0) {
         return { content: [{ type: 'text', text: `Watchlist "${listName}" is empty.` }] };
@@ -538,6 +756,8 @@ export function registerArtistWatchTools(server: McpServer, client: SpotifyClien
             truncated,
             cost_estimate: costEstimate,
             artists: artistsToCheck,
+            path,
+            ...(migratedFrom ? { migrated_from: migratedFrom } : {}),
           },
         };
       }
@@ -601,6 +821,8 @@ export function registerArtistWatchTools(server: McpServer, client: SpotifyClien
         max_artists: budget,
         effective_cap: effectiveCap,
         lastChecked: entry.lastChecked,
+        watchlist_path: path,
+        ...(migratedFrom ? { migrated_from: migratedFrom } : {}),
         ...(quotaHit ? { quota_hit: true, retry_after: quotaRetryAfter ?? null, quota_scanned: quotaScanned } : {}),
         ...(rateLimited ? { rate_limited: true, retry_after: rateRetryAfter ?? null, rate_limit_scanned: quotaScanned } : {}),
         ...(authFailed ? { auth_error: true, auth_error_scanned: quotaScanned } : {}),

@@ -1,7 +1,7 @@
 {
   "name": "@novalux12/spotify-mcp",
   "version": "2.1.1",
-  "description": "The definitive Spotify MCP server - full non-deprecated Web API coverage, paginated everything, podcast-first, tested end to end",
+  "description": "Spotify Web API MCP: playback, library, playlists, search, podcasts. Not affiliated with Spotify.",
   "type": "module",
   "bin": {
     "spotify-mcp": "dist/index.js"

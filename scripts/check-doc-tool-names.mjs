@@ -44,6 +44,9 @@ const parameterAllowlist = new Set([
   // reports. Both are structuredContent keys on that tool, not parameters and
   // not tools — the description is naming its own output, which is the point.
   'pool_capped', 'pool_cap',
+  // #757: restore_library_snapshot documents the snapshot schema version it
+  // refuses on. A key inside the file it reads, not a tool or parameter.
+  'schema_version',
 ]);
 /** Registration keys are module names, not tools; docs legitimately name them. */
 const registrationKeyNames = new Set(census.registrationKeyNames ?? []);

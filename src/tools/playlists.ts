@@ -46,6 +46,12 @@ import type {
 
 type TextContent = { type: 'text'; text: string };
 type ToolResult = { content: TextContent[]; structuredContent?: Record<string, unknown> };
+/**
+ * `GET /me/library/contains` takes "Maximum: 40 URIs" per request
+ * (Spotify reference: Check User's Saved Items). Requests over the cap are
+ * rejected, so a chunk that reads as a count would be a silent false.
+ */
+const LIBRARY_CONTAINS_CHUNK = 40;
 
 /** Build a tool result; attaches structuredContent when provided (#52). */
 function textResult(text: string, structured?: Record<string, unknown>): ToolResult {
@@ -1834,23 +1840,56 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
     return snap;
   }
 
-  // check_playlist_following (#284) — fan-out capped 5
-  server.tool('check_playlist_following', 'Check if you follow 1–50 playlists (the canonical playlists field or the deprecated playlist_ids alias). Quota: 🟢 1–50 GETs.', { ...playlistListInputFields(['playlist_ids'], { min: 1, max: 50 }), ...sharedListFields }, async (args) => {
+  // check_playlist_following (#284, fixed #862) — follow state via the
+  // library-membership check, batched at the documented URI cap.
+  //
+  // #862: the old code read GET /playlists/{id}/followers/contains and coerced
+  // every outcome — a rejected request included — into a confident
+  // `following: false`. There is no follow-specific read left to migrate to:
+  // the Feb 2026 changelog marks BOTH follow-contains routes REMOVED
+  // (/playlists/{id}/followers/contains and /me/following/contains, replaced
+  // by GET /me/library/contains), and GET /me/following pins its type to
+  // artist|user, so `type=playlist` was never a legal value there. Following
+  // a playlist IS library membership for that playlist, and
+  // GET /me/library/contains accepts `spotify:playlist:<id>` and answers with
+  // an order-preserving boolean array. A read that fails, or that comes back
+  // without a verdict for an id, is reported as unreadable with its reason —
+  // never as "not followed".
+  server.tool('check_playlist_following', 'Check if you follow 1–50 playlists (the canonical playlists field or the deprecated playlist_ids alias). Follow state: GET /me/library/contains?uris=spotify:playlist:<id>,… (40/req, 1–2 GETs). Unreadable state reports unknown, never not-followed.', { ...playlistListInputFields(['playlist_ids'], { min: 1, max: 50 }), ...sharedListFields }, async (args) => {
     const input = resolvePlaylistInput(args, { kind: 'list', aliases: ['playlist_ids'] });
-    const results: Array<{ playlist_id: string; following: boolean }> = [];
+    // `following` is a tri-state on purpose: null means "we could not read
+    // this", which is not the same answer as false (#862).
+    const results: Array<{ playlist_id: string; following: boolean | null; error?: string }> = [];
     const ids = input.values;
-    for (let i = 0; i < ids.length; i += 5) {
-      const batch = ids.slice(i, i + 5);
-      const settled = await Promise.all(batch.map(async (pid) => { try { const r = await client.get<boolean[]>(`/playlists/${encodeURIComponent(pid)}/followers/contains`); return { playlist_id: pid, following: r?.[0] ?? false }; } catch { return { playlist_id: pid, following: false }; } }));
-      results.push(...settled);
+    for (let i = 0; i < ids.length; i += LIBRARY_CONTAINS_CHUNK) {
+      const batch = ids.slice(i, i + LIBRARY_CONTAINS_CHUNK);
+      let verdicts: boolean[] | null = null;
+      let failure: string | undefined;
+      try {
+        const r = await client.get<boolean[]>('/me/library/contains', { uris: batch.map((p) => `spotify:playlist:${p}`).join(',') });
+        if (Array.isArray(r)) verdicts = r;
+        else failure = 'Spotify returned no usable follow verdicts for this request';
+      } catch (err) {
+        failure = err instanceof Error ? err.message : String(err);
+      }
+      // Verdicts map back in INPUT order. A short/missing verdict is a failed
+      // read, not a negative answer — coercing it to false is the #862 bug.
+      results.push(...batch.map((pid, idx) => {
+        if (failure !== undefined) return { playlist_id: pid, following: null, error: failure };
+        const v = verdicts![idx];
+        if (typeof v !== 'boolean') return { playlist_id: pid, following: null, error: `Spotify returned no follow verdict for this id (position ${idx} of ${batch.length})` };
+        return { playlist_id: pid, following: v };
+      }));
     }
     const t = truncateItems(results, resolveMaxResults(args.max_results));
     const pag = paginationInfo({ total: results.length, returned: t.items.length });
-    const payload = withPlaylistInputMetadata({ ...listStructuredContent(t.items, pag), playlists: input.values, results: t.items }, input);
+    const unreadable = results.filter(r => r.following === null).length;
+    const payload = withPlaylistInputMetadata({ ...listStructuredContent(t.items, pag), playlists: input.values, results: t.items, unreadable_count: unreadable, total_is_partial: unreadable > 0 }, input);
     if (args.response_format === 'json') return textResult(jsonText(payload), payload);
-    const lines = [`Playlist following (${results.length} checked, showing ${t.items.length}):`];
-    for (const r of t.items) lines.push(`  ${r.following ? '✓' : '✗'} ${r.playlist_id}`);
+    const lines = [`Playlist following (${results.length} checked, showing ${t.items.length}${unreadable ? `, ${unreadable} unreadable` : ''}):`];
+    for (const r of t.items) lines.push(r.error ? `  ? ${r.playlist_id} — unreadable (${r.error})` : `  ${r.following ? '✓' : '✗'} ${r.playlist_id}`);
     if (t.footer) lines.push(`(${t.footer})`);
+    if (unreadable) lines.push(`(${unreadable} of ${results.length} follow check(s) could not be read — their state is unknown, NOT "not followed".)`);
     return textResult(withPlaylistInputNote(lines.join('\n'), input), payload);
   });
 
