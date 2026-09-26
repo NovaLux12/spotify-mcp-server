@@ -57,7 +57,11 @@ function collectRangeTools(): RegisteredTool[] {
     },
   };
   const asServer = server as unknown as Parameters<typeof registerStatsfmTools>[0];
-  registerStatsfmTools(asServer);
+  // Pass the stub explicitly, as the two registrars below already do. Omitting
+  // it takes the `= new StatsfmClient()` default, which builds a client wired to
+  // the real api.stats.fm — unused by this schema-only scan, but exactly the
+  // live-client-in-a-test that #666's guard exists to keep out.
+  registerStatsfmTools(asServer, {} as Parameters<typeof registerStatsfmTools>[1]);
   registerStatsfmTasteTools(asServer, {} as Parameters<typeof registerStatsfmTasteTools>[1]);
   registerTasteCompositeTools(asServer, {} as Parameters<typeof registerTasteCompositeTools>[1]);
   return registered.filter((tool) => tool.schema.range);
