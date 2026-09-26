@@ -543,9 +543,14 @@ interface CreatedPlaylist {
 }
 
 /**
- * One write that did not land (#624). Every field is a count, never a message:
- * the API's error text is not safe to echo back to a model, and the counts are
- * what a caller needs to decide whether to retry.
+ * One write that did not land (#624, #734). Every count field is a count of
+ * what was ACTUALLY attempted — a count that folded in work still queued
+ * would be a guess, and a guess about what landed is worse than no number.
+ *
+ * `last_committed_chunk` is what made the failure recoverable: knowing which
+ * chunk just landed lets the caller re-run the restore and skip forward from
+ * there, instead of duplicating the work that already went through. Empty
+ * when the failing request was the first of its category.
  */
 interface RestoreFailure {
   category: RestoreCategory;
@@ -558,10 +563,12 @@ interface RestoreFailure {
   items_planned: number;
   items_pending: number;
   /**
-   * Every field is a count of what was ACTUALLY attempted. A count that folded
-   * in work still queued would be a guess, and a guess about what landed is
-   * worse than no number at all.
+   * URIs / IDs of the most recent chunk that landed before the failure (the
+   * "last committed chunk", #734). An empty array means the failing request
+   * was the first attempt in its stage. For `playlist_create` this is always
+   * empty because the stage does not chunk.
    */
+  last_committed_chunk: string[];
 }
 
 interface RestoreOutcome {
@@ -572,23 +579,35 @@ interface RestoreOutcome {
   playlistsNotCreated: number;
 }
 
-/** One chunked list write, accounted so a mid-run failure is reportable. */
+/**
+ * One chunked list write, accounted so a mid-run failure is reportable (#734).
+ * `lastCommitted` names the URIs of the most recent chunk that landed, so the
+ * failure record can carry the chunk a caller should resume from.
+ */
 async function writeChunked(
   parts: string[][],
   write: (uris: string[]) => Promise<unknown>,
-): Promise<{ completed: number; attempted: number; itemsWritten: number; failed: boolean }> {
+): Promise<{
+  completed: number;
+  attempted: number;
+  itemsWritten: number;
+  failed: boolean;
+  lastCommitted: string[];
+}> {
   let completed = 0;
   let itemsWritten = 0;
+  let lastCommitted: string[] = [];
   for (const part of parts) {
     try {
       await write(part);
     } catch {
-      return { completed, attempted: completed + 1, itemsWritten, failed: true };
+      return { completed, attempted: completed + 1, itemsWritten, failed: true, lastCommitted };
     }
     completed += 1;
     itemsWritten += part.length;
+    lastCommitted = part;
   }
-  return { completed, attempted: completed, itemsWritten, failed: false };
+  return { completed, attempted: completed, itemsWritten, failed: false, lastCommitted };
 }
 
 /**
@@ -628,6 +647,7 @@ async function executeRestore(
           items_written: r.itemsWritten,
           items_planned: catPlan.plannedUris.length,
           items_pending: catPlan.plannedUris.length - r.itemsWritten,
+          last_committed_chunk: r.lastCommitted,
         });
       }
     } else if (category === 'followed_artists') {
@@ -647,6 +667,7 @@ async function executeRestore(
           items_written: r.itemsWritten,
           items_planned: catPlan.plannedArtistIds.length,
           items_pending: catPlan.plannedArtistIds.length - r.itemsWritten,
+          last_committed_chunk: r.lastCommitted,
         });
       }
     } else if (category === 'playlists') {
@@ -678,6 +699,9 @@ async function executeRestore(
             items_written: addedTotal,
             items_planned: addedTotal + creation.itemUris.length,
             items_pending: creation.itemUris.length,
+            // `playlist_create` does not chunk, so there is no "last committed
+            // chunk" to report — the create itself is the single request.
+            last_committed_chunk: [],
           });
           continue;
         }
@@ -699,6 +723,7 @@ async function executeRestore(
             items_written: r.itemsWritten,
             items_planned: creation.itemUris.length,
             items_pending: creation.itemUris.length - r.itemsWritten,
+            last_committed_chunk: r.lastCommitted,
           });
         }
       }

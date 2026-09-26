@@ -16,6 +16,7 @@ import { z } from 'zod';
 import { registerRestoreTools } from '../src/tools/restore.js';
 import type { LibrarySnapshot } from '../src/tools/restore.js';
 import type { SpotifyClient } from '../src/client.js';
+import { CHUNK_CAPS } from '../src/chunk.js';
 
 // ---------------------------------------------------------------------------
 // Stub plumbing (mirrors tests/tools.saveddedupe.test.ts)
@@ -354,7 +355,7 @@ describe('restore_library_snapshot strictly additive', () => {
     }
   });
 
-  it('chunk-checks at 50, writes at 40, and saves only absent URIs', async () => {
+  it('chunk-checks at 50, writes at 40, and saves only absent URIs (#734)', async () => {
     const state = emptyState();
     const present = new Set(['spotify:track:present0', 'spotify:track:present75']);
     state.savedUris = [...present];
@@ -381,22 +382,42 @@ describe('restore_library_snapshot strictly additive', () => {
         (c) => c.method === 'GET' && c.path === '/me/library/contains',
       );
       assert.equal(checks.length, 3, '120 uris checked in 3 ≤50 chunks');
+      const checkSizes = checks.map(
+        (c) => ((c.params?.uris ?? '').split(',').filter(Boolean)).length,
+      );
+      assert.deepEqual(
+        checkSizes,
+        [50, 50, 20],
+        'contains chunks: [50, 50, 20] at CHUNK_CAPS.library_reads (50) — read-only path keeps its larger cap',
+      );
       for (const c of checks) {
         assert.ok(
-          ((c.params?.uris ?? '').split(',').filter(Boolean)).length <= 50,
-          'contains chunk ≤50',
+          ((c.params?.uris ?? '').split(',').filter(Boolean)).length <= CHUNK_CAPS.library_reads,
+          'contains chunk ≤ CHUNK_CAPS.library_reads',
         );
       }
       const puts = h.client.calls.filter(
         (c) => c.method === 'PUT' && c.path.startsWith('/me/library?'),
       );
-      assert.equal(puts.length, 3, '118 absent uris saved in ≤40 chunks (40/40/38)');
-      for (const p of puts) {
+      assert.equal(puts.length, 3, '118 absent uris saved in 3 chunks (40/40/38)');
+      const putSizes = puts.map((p) => {
         const urisInRequest = new URLSearchParams(p.path.split('?')[1] ?? '').get('uris');
         assert.ok(urisInRequest !== null, 'library write must carry a uris query param');
+        return urisInRequest.split(',').filter(Boolean).length;
+      });
+      // 118 absent URIs chunked at the documented 40-uri write cap: 40 + 40 + 38.
+      // Not 50 + 50 + 18, which is what the over-cap /me/library write path
+      // used to produce and what #734 was filed against.
+      assert.deepEqual(
+        putSizes,
+        [40, 40, 38],
+        'write chunks: [40, 40, 38] at CHUNK_CAPS.library_writes (40) — no over-cap write batch',
+      );
+      for (const p of puts) {
+        const urisInRequest = new URLSearchParams(p.path.split('?')[1] ?? '').get('uris') ?? '';
         assert.ok(
-          urisInRequest.split(',').filter(Boolean).length <= 40,
-          'library write chunk ≤40',
+          urisInRequest.split(',').filter(Boolean).length <= CHUNK_CAPS.library_writes,
+          'every write chunk ≤ CHUNK_CAPS.library_writes — cross-check the constant',
         );
         // The request must be the request the plan printed: values percent-encoded.
         assert.equal(p.path.includes('spotify:track:'), false, 'URI values must be percent-encoded');
@@ -727,6 +748,13 @@ describe('restore_library_snapshot write safety (#624)', () => {
       assert.equal(failure.items_written, 40);
       assert.equal(failure.items_planned, 80);
       assert.equal(failure.items_pending, 40);
+      // Per-chunk progress (#734): the failure record names the URIs of the
+      // chunk that landed just before the failure, so a re-run can resume from
+      // there rather than duplicate the 40 URIs that already went through.
+      // In this scenario the failing PUT was #2 of 2 (each chunk = 40), so
+      // exactly one chunk's worth — the first batch's 40 URIs — was committed.
+      assert.equal(failure.last_committed_chunk.length, 40);
+      assert.deepEqual(failure.last_committed_chunk, liked.slice(0, 40));
       // The failing category stopped, the later category still landed.
       assert.equal(payload.categories.saved_albums.executed, 1);
       assert.match(textOf(out), /Restore PARTIAL/);
