@@ -12,7 +12,8 @@
 import { describe, it } from 'node:test';
 import { z } from 'zod';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -680,6 +681,95 @@ describe('whats_new', () => {
         const stored = JSON.parse(await readFile(statePath, 'utf8')) as { last_check: string };
         assert.equal(stored.last_check, '2026-07-01');
       });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Concurrent watermark writes (#1130)
+// ---------------------------------------------------------------------------
+
+describe('watermark write concurrency', () => {
+  it('survives concurrent writers sharing one state path', async () => {
+    // The flake this pins: writeWatermark went through a FIXED `${target}.tmp`.
+    // Two writers on a shared state path both create that file, the first
+    // rename moves it away, and the second fails with
+    //   ENOENT: rename '<state>.tmp' -> '<state>'
+    // The state path defaults to ~/.spotify-mcp/freshness.json, so this is not
+    // confined to tests: two server processes, or a server and a CLI run, race
+    // on the user's real watermark the same way.
+    //
+    // A green run of this test proves only that the race did not happen on
+    // this attempt, so it fires enough concurrent writers to make interleaving
+    // the likely case rather than the lucky one.
+    const dir = await mkdtemp(join(tmpdir(), 'freshness-race-'));
+    const statePath = join(dir, 'freshness.json');
+    try {
+      await withEnv({ SPOTIFY_MCP_FRESHNESS_STATE: statePath }, async () => {
+        const h = harness((path) => {
+          if (path === '/me/following') return followedPage(['a1'], null);
+          if (path === '/artists/a1/albums') return albumsOf('a1', [['alb', 'Drop', '2026-08-15']]);
+          throw new Error(`unexpected path ${path}`);
+        });
+
+        // Every one of these reaches writeWatermark. Before the fix at least
+        // one rejected with ENOENT; assert.rejects would not be right here,
+        // because the point is that NONE of them may fail.
+        const results = await Promise.allSettled(
+          Array.from({ length: 16 }, () =>
+            h.invoke('whats_new', { since: '2026-08-01', kinds: ['albums'] }),
+          ),
+        );
+
+        const failures = results.filter((r) => r.status === 'rejected');
+        assert.deepEqual(
+          failures.map((f) => String((f as PromiseRejectedResult).reason?.message ?? f)),
+          [],
+          'every concurrent watermark write must succeed',
+        );
+
+        // …and the file a writer left behind must be complete, not a torn
+        // temp: the last rename wins, and it renames a fully written file.
+        const stored = JSON.parse(await readFile(statePath, 'utf8')) as { last_check: string };
+        const today = new Date().toISOString().slice(0, 10);
+        assert.equal(stored.last_check, today);
+
+        // A unique temp name means a crash cannot leave litter behind for
+        // nothing to clean up.
+        const leftovers = (await readdir(dir)).filter((f) => f.endsWith('.tmp'));
+        assert.deepEqual(leftovers, [], 'no temp files may survive a successful write');
+      });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('reclaims a temp stranded under the pre-fix fixed name', async () => {
+    // The unique temp name fixes the race, but it also means a crash under
+    // the OLD `${target}.tmp` name leaves a file the catch block will never
+    // see, because this call did not create it. Every write now clears that
+    // name on the way past, the way auth.ts does.
+    //
+    // Fails without the fix: the stranded file is still there afterwards.
+    const dir = await mkdtemp(join(tmpdir(), 'freshness-legacy-'));
+    const statePath = join(dir, 'freshness.json');
+    const legacy = `${statePath}.tmp`;
+    try {
+      await writeFile(legacy, 'half-written garbage', 'utf8');
+      await withEnv({ SPOTIFY_MCP_FRESHNESS_STATE: statePath }, async () => {
+        const h = harness((path) => {
+          if (path === '/me/following') return followedPage(['a1'], null);
+          if (path === '/artists/a1/albums') return albumsOf('a1', [['alb', 'Drop', '2026-08-15']]);
+          throw new Error(`unexpected path ${path}`);
+        });
+        await h.invoke('whats_new', { since: '2026-08-01', kinds: ['albums'] });
+      });
+
+      assert.equal(existsSync(legacy), false, 'the stranded pre-fix temp must be reclaimed');
+      const stored = JSON.parse(await readFile(statePath, 'utf8')) as { last_check: string };
+      assert.equal(stored.last_check, new Date().toISOString().slice(0, 10), 'the watermark still advanced');
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

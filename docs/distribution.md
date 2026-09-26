@@ -127,6 +127,10 @@ curl --fail --silent --show-error \
        and ._meta["io.modelcontextprotocol.registry/official"].isLatest == true'
 ```
 
+A 404 from that `npm view` right after a publish is npm propagation, not a
+missing artifact — do not re-publish on it. CONTRIBUTING.md §3 has the
+cache-busted read and the recovery command.
+
 The npm command must print the exact version without the leading `v`; both
 `server.json` checks and the Registry `isLatest` check must return `true`.
 The publish workflow skips an npm version that is already present, so a
@@ -135,6 +139,14 @@ retag or overwrite an already published version. Deprecate an unsafe npm
 version with `npm deprecate`, mark the corresponding Registry version
 deprecated through the Registry status path, and ship a new patch release with
 the fix.
+
+Verify against `…/versions/latest`. `…/versions` is equally correct and is the
+right query when auditing an older version or its deprecation status, but
+`/v0/servers?search=…` is a paginated, lagging index and is not a substitute
+for either — it can omit the newest release, and its rows sort alphabetically
+rather than by recency, so a single row read off it is not the current
+version. That distinction, and what to do when the two disagree, is set out in
+CONTRIBUTING.md §3.
 
 ## Claim checklist
 

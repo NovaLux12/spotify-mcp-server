@@ -63,6 +63,7 @@ const READ_TOOLS_OF_WRITE_MODULES = [
   'get_queue',
   'get_devices',
   'list_backups',
+  'backup_library',
   'verify_receipt',
 ];
 
