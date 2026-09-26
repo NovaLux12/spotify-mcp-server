@@ -628,20 +628,18 @@ describe('swarm3_library: years, collaboration and featuring (#761)', () => {
     const h = harness(FIXTURE);
     const { payload, text } = await h.invoke('featuring_density_report', SCAN);
 
-    // tr-ember-song carries "featuring" in the TITLE; tr-aurora-x is a
-    // multi-artist-free duplicate, so a credit-based count would differ.
+    // Two titles carry the marker — "Beacon (feat. Iris)" and "Ember Song
+    // featuring Ash". Counting credited artists instead would give 2 here by
+    // accident, so tr-aurora-x (one artist, marker-free title) is what makes
+    // feat_tracks 2 and not 4.
     assert.equal(payload.feat_tracks, 2);
     assert.equal(payload.total_saved_tracks, 6);
     assert.ok(Math.abs((payload.feat_ratio as number) - 2 / 6) < 1e-12);
     assert.deepEqual(
-      [...names(payload)].sort(),
+      (payload.items as unknown as Array<{ name: string }>).map((i) => i.name).sort(),
       ['Beacon (feat. Iris)', 'Ember Song featuring Ash'],
     );
     assert.match(text, /Featuring density: 2\/6 saved track\(s\) \(33\.3%\) have "feat\." in the title\./);
-
-    function names(p: Record<string, never>): string[] {
-      return (p.items as unknown as Array<{ name: string }>).map((i) => i.name);
-    }
   });
 });
 
