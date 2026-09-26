@@ -1021,12 +1021,12 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
 
 
 
-  // [19, 19241] measured post-#1004 (the artist leg reads /artists/{id} now).
-  // +226B for #781: `search_by_isrc` and `audiobooks_by_author` gained the
-  // `offset` input their paging signal already pointed at. Not a new tool and
-  // not a wider payload — a control that makes an already-emitted next_offset
-  // actionable, and the truncation boundary keeps it only because the schema
-  // declares it.
+  // [19, 19467] measured post-#1004 (the artist leg reads /artists/{id} now),
+  // of which +226B is #781: `search_by_isrc` and `audiobooks_by_author` gained
+  // the `offset` input their paging signal already pointed at. Not a new tool
+  // and not a wider payload — a control that makes an already-emitted
+  // next_offset actionable, and the truncation boundary keeps it only because
+  // the schema declares it.
   manifestEntry('exhaust2catalog', 'exhaust2catalog', lazyModule('./exhaust2_catalog.js', 'registerExhaust2CatalogTools'), [19, 19467], { readOnlySafe: true, scopeKey: 'catalog' }),
   manifestEntry('exhaust2enggating', 'exhaust2enggating', lazyModule('./exhaust2_enggating.js', 'registerExhaust2EnggatingTools'), [0, 0], { readOnlySafe: true, scopeKey: 'catalog' }),
   manifestEntry('exhaust2playback', 'exhaust2playback', lazyModule('./exhaust2_playback.js', 'registerExhaust2PlaybackTools'), [23, 17683], { scopeKey: 'playback' }),
