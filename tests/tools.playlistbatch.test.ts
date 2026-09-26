@@ -2,8 +2,10 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import type { SpotifyClient } from '../src/client.js';
+import { SpotifyApiError, type SpotifyClient } from '../src/client.js';
 import { expandAlbumToTracks, registerPlaylistBatchTools } from '../src/tools/playlistbatch.js';
+import { installGatedPathContract } from '../src/gating.js';
+import { initConfig } from '../src/config.js';
 import type { SpotifyPaged } from '../src/types/spotify.js';
 interface RecordedCall { method: string; path: string; arg?: unknown; }
 type Responder = (path: string, arg: unknown, method?: string) => unknown;
@@ -317,5 +319,236 @@ describe('move_items_between_playlists', () => {
     });
     const out = await h.invoke('move_items_between_playlists', { source_playlist_id: MOVE_SOURCE, target_playlist_id: MOVE_TARGET, mode: 'copy', filter: 'alice' });
     const posts = h.client.calls.filter((c) => c.method === 'POST'); assert.equal(posts.length, 1); assert.deepEqual((posts[0].arg as { uris: string[] }).uris, [track('1')]);
+  });
+});
+
+// #867: per-source resolution failures were collapsed into a single
+// `skipped++` counter and the artist top-tracks market was hardcoded to 'US',
+// so a region-locked album, a gated artist endpoint, and a genuinely empty
+// source all looked the same on the wire. The fix replaces `skipped++` with
+// a `failed[]` list (typed by source and reason) and switches the artist
+// market to `resolveRequestMarket`'s caller resolution.
+describe('batch_add_to_playlist distinguishes per-source failures (#867)', () => {
+  // The `batch_add_to_playlist` tool surfaces market on its result; install
+  // the gated-path wrapper so the harness recognises a 403 on artist
+  // top-tracks as gated (production installs it from src/index.ts).
+  function gatedHarness(responder: Responder): ReturnType<typeof harness> {
+    const h = harness(responder);
+    installGatedPathContract(h.client as unknown as SpotifyClient);
+    return h;
+  }
+
+  it('reports a region-locked album as `unplayable`, distinct from a generic empty source', async () => {
+    // `expandAlbumToTracks` filters to playable rows and returns [] when every
+    // track is blocked; the follow-up probe checks whether rows were present
+    // but unplayable, so an album that exists but is unavailable in the
+    // caller's market surfaces as `unplayable` rather than `empty` (#867).
+    const albumId = 'a'.repeat(22);
+    const h = gatedHarness((path, _a, method) => {
+      if (method === 'POST') return { snapshot_id: 's' } as unknown;
+      if (path === `/playlists/${TARGET}/items`) return { items: [], total: 0, limit: 100, offset: 0, next: null } as unknown;
+      if (path === `/albums/${albumId}/tracks`) {
+        // First call: the full probe (limit=50) — every row is unplayable.
+        const arg = (_a as { limit?: string } | undefined)?.limit;
+        if (arg === '50') {
+          return { items: [{ uri: null, is_playable: false, restrictions: { reason: 'market' } }, { uri: null, is_playable: false }], total: 2, limit: 50, offset: 0, next: null } as unknown;
+        }
+        // Second call: the unplayable probe (limit=1) — at least one row exists.
+        return { items: [{ uri: null, is_playable: false, restrictions: { reason: 'market' } }], total: 1, limit: 1, offset: 0, next: null } as unknown;
+      }
+      return { items: [], total: 0, limit: 100, offset: 0, next: null } as unknown;
+    });
+    const out = await h.invoke('batch_add_to_playlist', {
+      target_playlist_id: TARGET,
+      source_uris: [`spotify:album:${albumId}`],
+    });
+    const p = out.structuredContent as Record<string, unknown>;
+    const failed = p.failed as Array<{ source: string; type: string; reason: string }>;
+    assert.equal(failed.length, 1);
+    assert.equal(failed[0].type, 'album');
+    assert.equal(failed[0].reason, 'unplayable');
+    assert.deepEqual(p.failed_per_source, { album: 1, artist: 0, playlist: 0 });
+    assert.match(textOf(out), /region-locked/);
+  });
+
+  it('reports a genuinely empty album as `empty`, distinct from region-locked', async () => {
+    const albumId = 'a'.repeat(22);
+    const h = gatedHarness((path, _a, method) => {
+      if (method === 'POST') return { snapshot_id: 's' } as unknown;
+      if (path === `/playlists/${TARGET}/items`) return { items: [], total: 0, limit: 100, offset: 0, next: null } as unknown;
+      if (path === `/albums/${albumId}/tracks`) {
+        const arg = (_a as { limit?: string } | undefined)?.limit;
+        if (arg === '50') {
+          return { items: [], total: 0, limit: 50, offset: 0, next: null } as unknown;
+        }
+        return { items: [], total: 0, limit: 1, offset: 0, next: null } as unknown;
+      }
+      return { items: [], total: 0, limit: 100, offset: 0, next: null } as unknown;
+    });
+    const out = await h.invoke('batch_add_to_playlist', {
+      target_playlist_id: TARGET,
+      source_uris: [`spotify:album:${albumId}`],
+    });
+    const p = out.structuredContent as Record<string, unknown>;
+    const failed = p.failed as Array<{ source: string; type: string; reason: string }>;
+    assert.equal(failed.length, 1);
+    assert.equal(failed[0].type, 'album');
+    assert.equal(failed[0].reason, 'empty');
+    assert.match(textOf(out), /empty/);
+    assert.doesNotMatch(textOf(out), /region-locked/);
+  });
+
+  it('reports a 403 on artist top-tracks as `gated` when the gated-path contract annotates it', async () => {
+    // The contract installs on the client during `src/index.ts` setup; the
+    // test harness installs it explicitly via `gatedHarness`. Without the
+    // annotation the same 403 would read as `forbidden` (#867).
+    const artistId = 'a'.repeat(22);
+    const h = gatedHarness((path, _a, method) => {
+      if (method === 'POST') return { snapshot_id: 's' } as unknown;
+      if (path === `/playlists/${TARGET}/items`) return { items: [], total: 0, limit: 100, offset: 0, next: null } as unknown;
+      if (path === `/artists/${artistId}/top-tracks`) {
+        throw new SpotifyApiError(403, 'Forbidden');
+      }
+      return { items: [], total: 0, limit: 100, offset: 0, next: null } as unknown;
+    });
+    const out = await h.invoke('batch_add_to_playlist', {
+      target_playlist_id: TARGET,
+      source_uris: [`spotify:artist:${artistId}`],
+    });
+    const p = out.structuredContent as Record<string, unknown>;
+    const failed = p.failed as Array<{ source: string; type: string; reason: string }>;
+    assert.equal(failed.length, 1);
+    assert.equal(failed[0].type, 'artist');
+    assert.equal(failed[0].reason, 'gated');
+    assert.deepEqual(p.failed_per_source, { album: 0, artist: 1, playlist: 0 });
+    assert.match(textOf(out), /not available for this app registration/);
+  });
+
+  it('reports an empty artist top-tracks as `empty`, not as a failure of the call', async () => {
+    const artistId = 'a'.repeat(22);
+    const h = gatedHarness((path, _a, method) => {
+      if (method === 'POST') return { snapshot_id: 's' } as unknown;
+      if (path === `/playlists/${TARGET}/items`) return { items: [], total: 0, limit: 100, offset: 0, next: null } as unknown;
+      if (path === `/artists/${artistId}/top-tracks`) {
+        return { tracks: [] } as unknown;
+      }
+      return { items: [], total: 0, limit: 100, offset: 0, next: null } as unknown;
+    });
+    const out = await h.invoke('batch_add_to_playlist', {
+      target_playlist_id: TARGET,
+      source_uris: [`spotify:artist:${artistId}`],
+    });
+    const p = out.structuredContent as Record<string, unknown>;
+    const failed = p.failed as Array<{ source: string; type: string; reason: string }>;
+    assert.equal(failed.length, 1);
+    assert.equal(failed[0].type, 'artist');
+    assert.equal(failed[0].reason, 'empty');
+  });
+
+  it('sends artist top-tracks with the caller market from SPOTIFY_MCP_MARKET, not the hardcoded US', async () => {
+    // Pre-fix this was hardcoded `market: 'US'`; the fix delegates to
+    // `resolveRequestMarket`, which prefers SPOTIFY_MCP_MARKET over the
+    // account country. The harness resolves the market once per call, so a
+    // configured SE must be the value the request carries (#867).
+    initConfig({ ...process.env, SPOTIFY_MCP_MARKET: 'SE' });
+    try {
+      const artistId = 'a'.repeat(22);
+      const h = gatedHarness((path, _a, method) => {
+        if (method === 'POST') return { snapshot_id: 's' } as unknown;
+        if (path === `/playlists/${TARGET}/items`) return { items: [], total: 0, limit: 100, offset: 0, next: null } as unknown;
+        if (path === `/artists/${artistId}/top-tracks`) {
+          return { tracks: [{ uri: track('t1') }] } as unknown;
+        }
+        return { items: [], total: 0, limit: 100, offset: 0, next: null } as unknown;
+      });
+      const out = await h.invoke('batch_add_to_playlist', {
+        target_playlist_id: TARGET,
+        source_uris: [`spotify:artist:${artistId}`],
+      });
+      const top = h.client.calls.find((c) => c.method === 'GET' && c.path === `/artists/${artistId}/top-tracks`);
+      assert.equal((top?.arg as { market?: string } | undefined)?.market, 'SE');
+      // The structured payload also carries the market source so a host
+      // reading `structuredContent.market` can tell "from config" from
+      // "from the argument" from "no market applied at all" (#867).
+      const p = out.structuredContent as Record<string, unknown>;
+      assert.equal(p.market, 'SE');
+      assert.equal(p.market_source, 'config');
+      assert.equal((p.resolved_per_source as Record<string, number>).artist, 1);
+    } finally {
+      initConfig(process.env);
+    }
+  });
+
+  it('falls back to `from_token` when neither SPOTIFY_MCP_MARKET nor an account country is set', async () => {
+    initConfig({ ...process.env, SPOTIFY_MCP_MARKET: '' });
+    try {
+      const artistId = 'a'.repeat(22);
+      const h = gatedHarness((path, _a, method) => {
+        if (method === 'POST') return { snapshot_id: 's' } as unknown;
+        if (path === `/playlists/${TARGET}/items`) return { items: [], total: 0, limit: 100, offset: 0, next: null } as unknown;
+        if (path === `/me`) return {} as unknown; // no country on the profile
+        if (path === `/artists/${artistId}/top-tracks`) {
+          return { tracks: [{ uri: track('t1') }] } as unknown;
+        }
+        return { items: [], total: 0, limit: 100, offset: 0, next: null } as unknown;
+      });
+      const out = await h.invoke('batch_add_to_playlist', {
+        target_playlist_id: TARGET,
+        source_uris: [`spotify:artist:${artistId}`],
+      });
+      const top = h.client.calls.find((c) => c.method === 'GET' && c.path === `/artists/${artistId}/top-tracks`);
+      assert.equal((top?.arg as { market?: string } | undefined)?.market, 'from_token');
+      const p = out.structuredContent as Record<string, unknown>;
+      assert.equal(p.market, null);
+      assert.equal(p.market_source, 'none');
+    } finally {
+      initConfig(process.env);
+    }
+  });
+
+  it('surfaces per-source counts in structuredContent when the batch is empty', async () => {
+    // Three differently-failing sources in one batch — every failure type
+    // must show up distinctly in both prose and `structuredContent` (#867).
+    const albumId = 'a'.repeat(22);
+    const artistId = 'b'.repeat(22);
+    const playlistId = 'c'.repeat(22);
+    const h = gatedHarness((path, _a, method) => {
+      if (method === 'POST') return { snapshot_id: 's' } as unknown;
+      if (path === `/playlists/${TARGET}/items`) return { items: [], total: 0, limit: 100, offset: 0, next: null } as unknown;
+      if (path === `/albums/${albumId}/tracks`) {
+        const arg = (_a as { limit?: string } | undefined)?.limit;
+        if (arg === '50') {
+          return { items: [{ uri: null, is_playable: false, restrictions: { reason: 'market' } }], total: 1, limit: 50, offset: 0, next: null } as unknown;
+        }
+        return { items: [{ uri: null, is_playable: false }], total: 1, limit: 1, offset: 0, next: null } as unknown;
+      }
+      if (path === `/artists/${artistId}/top-tracks`) {
+        throw new SpotifyApiError(403, 'Forbidden');
+      }
+      if (path === `/playlists/${playlistId}/items`) {
+        return { items: [], total: 0, limit: 100, offset: 0, next: null } as unknown;
+      }
+      return { items: [], total: 0, limit: 100, offset: 0, next: null } as unknown;
+    });
+    const out = await h.invoke('batch_add_to_playlist', {
+      target_playlist_id: TARGET,
+      source_uris: [
+        `spotify:album:${albumId}`,
+        `spotify:artist:${artistId}`,
+        `spotify:playlist:${playlistId}`,
+      ],
+    });
+    const p = out.structuredContent as Record<string, unknown>;
+    const failed = p.failed as Array<{ source: string; type: string; reason: string }>;
+    assert.equal(failed.length, 3);
+    const byType = Object.fromEntries(failed.map((f) => [f.type, f.reason]));
+    assert.equal(byType.album, 'unplayable');
+    assert.equal(byType.artist, 'gated');
+    assert.equal(byType.playlist, 'empty');
+    assert.deepEqual(p.failed_per_source, { album: 1, artist: 1, playlist: 1 });
+    assert.deepEqual(p.resolved_per_source, { track: 0, episode: 0, album: 0, artist: 0, playlist: 0 });
+    assert.match(textOf(out), /region-locked/);
+    assert.match(textOf(out), /not available for this app registration/);
+    assert.match(textOf(out), /\(playlist, empty\)/);
   });
 });
