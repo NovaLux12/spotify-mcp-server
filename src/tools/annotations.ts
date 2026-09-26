@@ -984,7 +984,17 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   manifestEntry('exhaust2playback', 'exhaust2playback', 'src/tools/exhaust2_playback.ts', registerExhaust2PlaybackTools, [23, 17683], { scopeKey: 'playback' }),
   manifestEntry('exhaust2playlists', 'exhaust2playlists', 'src/tools/exhaust2_playlists.ts', registerExhaust2PlaylistsTools, [18, 23507], { scopeKey: 'playlists' }),
   manifestEntry('exhaust2misc', 'exhaust2misc', 'src/tools/exhaust2_misc.ts', registerExhaust2MiscTools, [27, 23866], { scopeKey: 'library' }),
-  manifestEntry('exhaust2extra', 'exhaust2extra', 'src/tools/exhaust2_extra.ts', registerExhaust2ExtraTools, [3, 3695], { scopeKey: 'playlists' }),
+  // #898: 3,695 -> 4,039 bytes (+344B, +9.3%) for the SAME three tools and the
+  // same input schemas — every byte is the two descriptions, which now state
+  // what the playlist walk costs per ref and that a capped walk reports
+  // `truncated` with `total` and `returned`. Tool count is unchanged, re-measured
+  // at 3 tools / 4,039B on the merged tree. Aggregate re-measured through the
+  // real registry over stdio at 610,728B against the 621,000B enforced ceiling
+  // (the SWEEP-2026-09 grant) — 10,272B of headroom, so this is absorbed without
+  // a raise of AGGREGATE_SURFACE_LIMITS. The old quota line said "N GETs" for a
+  // walk that issues up to N x (1 + fetchAllCap/100) requests, so the agents
+  // paying for that are the ones this sentence is for.
+  manifestEntry('exhaust2extra', 'exhaust2extra', 'src/tools/exhaust2_extra.ts', registerExhaust2ExtraTools, [3, 4039], { scopeKey: 'playlists' }),
   manifestEntry('swarm3discovery', 'swarm3discovery', 'src/tools/swarm3_discovery.ts', registerSwarm3DiscoveryTools, [24, 21887], { readOnlySafe: true, scopeKey: 'catalog' }),
   manifestEntry('swarm3bdiscovery', 'swarm3bdiscovery', 'src/tools/swarm3b_discovery.ts', registerSwarm3bDiscoveryTools, [24, 20039], { readOnlySafe: true, scopeKey: 'catalog' }),
   manifestEntry('swarm3shows', 'swarm3shows', 'src/tools/swarm3_shows.ts', registerSwarm3ShowsTools, [24, 21075], { scopeKey: 'catalog' }),
