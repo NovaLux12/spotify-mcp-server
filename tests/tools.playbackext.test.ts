@@ -14,21 +14,56 @@ function makeClient(overrides: Partial<Record<string, any>> = {}) {
   const putCalls: Array<{ path: string; body: unknown }> = [];
   const postCalls: Array<{ path: string; body: unknown }> = [];
   let wrote = false;
+  // Mirror the real paged walks so the verdict the tool reports is the one
+  // the walk actually produced — not a canned constant (#1092).
+  const saved = overrides.saved ?? [];
   const client = {
-    async get(path: string) {
+    async get(path: string, params?: Record<string, string>) {
       if (path === '/me/player') {
         // After a write the device may be reporting something else entirely —
         // that is what the restore verification read is for.
         if (wrote && overrides.playbackAfterWrite) return overrides.playbackAfterWrite;
         return overrides.playback ?? { is_playing: true, progress_ms: 1000, shuffle_state: false, repeat_state: 'off', item: { uri: 'spotify:track:t1', name: 'T1', type: 'track' }, device: { volume_percent: 42 } };
       }
-      if (path === '/me/player/recently-played') return { items: overrides.recent ?? [] };
-      if (path === '/me/top/tracks') return { items: overrides.topTracks ?? [], total: 0, limit: 50, offset: 0 };
+      if (path === '/me/player/recently-played') {
+        // The endpoint caps a page at 50; one call is all this tool reads.
+        const limit = Number(params?.limit ?? 50);
+        const recent = overrides.recent ?? [];
+        return {
+          items: recent
+            .slice(0, limit)
+            .map((t: unknown) => ({
+              track: t,
+              played_at: '2026-08-26T10:00:00Z',
+              context: null,
+            })),
+          cursors: { after: '2026-08-26T10:00:00.000Z', before: '2026-08-26T09:00:00.000Z' },
+        };
+      }
+      if (path === '/me/top/tracks') {
+        const offset = Number(params?.offset ?? 0);
+        const limit = Number(params?.limit ?? 50);
+        const top = overrides.topTracks ?? [];
+        return { items: top.slice(offset, offset + limit), total: top.length, limit, offset };
+      }
       return null;
     },
     async put(path: string, body?: unknown) { puts.push(path); putCalls.push({ path, body }); wrote = true; if (overrides.failPut?.(path)) throw new Error('write rejected'); return null; },
     async post(path: string, body?: unknown) { posts.push(path); postCalls.push({ path, body }); wrote = true; return { id: 'pl1', uri: 'spotify:playlist:pl1' }; },
-    async getAllPages() { return overrides.saved ?? []; },
+    async getAllPages() { return saved; },
+    async getAllPagesWithTruncation<T>(path: string, _params?: Record<string, string>, opts?: { maxItems?: number }) {
+      if (path !== '/me/tracks') return { items: [] as T[], truncated: false, truncatedByCap: false, reportedTotal: null };
+      const maxItems = opts?.maxItems ?? 500;
+      // /me/tracks items are { added_at, track }; the loader unwraps entry.track.
+      // Library fits in one page below the cap; goes over otherwise.
+      const wrapped = saved.slice(0, maxItems + 1).map((t) => ({ added_at: '2026-01-01T00:00:00Z', track: t }));
+      return {
+        items: wrapped.slice(0, maxItems) as T[],
+        truncated: saved.length > maxItems,
+        truncatedByCap: saved.length > maxItems,
+        reportedTotal: saved.length,
+      };
+    },
   };
   return { client: client as unknown as SpotifyClient, puts, posts, putCalls, postCalls };
 }
@@ -166,37 +201,162 @@ describe('playbackext', () => {
     assert.match(digest.content[0].text, /dry run/i);
   });
   // #834: refresh_smart_playlist answered `ok: true` without a single API call,
-  // so a saved rule never rebuilt anything. Every non-dry-run refresh must
-  // write to /playlists, and the second refresh must replace the playlist the
-  // first one created rather than creating another.
-  it('refresh_smart_playlist rebuilds the playlist and reuses the id', async () => {
-    const topTracks = Array.from({ length: 150 }, (_, i) => ({ uri: `spotify:track:s${i}`, name: `S${i}`, artists: [{ name: `A${i}` }] }));
-    const { client, putCalls, postCalls } = makeClient({ topTracks });
-    const h = serverHarness(client);
-    await h.invoke('save_smart_playlist_rule', { name: 'rock-top', rule: { source: 'top_tracks', limit: 150 } });
+// so a saved rule never rebuilt anything. Every non-dry-run refresh must
+// write to /playlists, and the second refresh must replace the playlist the
+// first one created rather than creating another.
+//
+// #1092: top_tracks source caps at 100 (#809). The pool is read under that
+// ceiling and a refresh that asks for more than 100 still only PUTs 100 — a
+// floor, not a complete scan. The library still needs `limit > pool_cap` to
+// exercise the path that picks everything in the pool without truncation
+// being the reason the playlist is shorter.
+it('refresh_smart_playlist rebuilds the playlist and reuses the id', async () => {
+  const topTracks = Array.from({ length: 150 }, (_, i) => ({ uri: `spotify:track:s${i}`, name: `S${i}`, artists: [{ name: `A${i}` }] }));
+  const { client, putCalls, postCalls } = makeClient({ topTracks });
+  const h = serverHarness(client);
+  await h.invoke('save_smart_playlist_rule', { name: 'rock-top', rule: { source: 'top_tracks', limit: 200 } });
 
-    const planned = await h.invoke('refresh_smart_playlist', { name: 'rock-top', dry_run: true });
-    assert.match(planned.content[0].text, /dry run/i);
-    assert.equal(putCalls.length + postCalls.length, 0, 'a dry run must not write');
+  const planned = await h.invoke('refresh_smart_playlist', { name: 'rock-top', dry_run: true });
+  assert.match(planned.content[0].text, /dry run/i);
+  assert.equal(putCalls.length + postCalls.length, 0, 'a dry run must not write');
 
-    const first = await h.invoke('refresh_smart_playlist', { name: 'rock-top' });
-    const firstEcho = first.structuredContent as Record<string, unknown>;
-    assert.equal(firstEcho.ok, true);
-    assert.equal(firstEcho.playlist_id, 'pl1');
-    assert.deepEqual(postCalls[0], { path: '/me/playlists', body: { name: 'rock-top', public: false } });
-    // 150 uris: PUT replaces the first 100, the remaining 50 are appended.
-    assert.deepEqual(putCalls.map((c) => c.path), ['/playlists/pl1/items']);
-    assert.deepEqual(postCalls.slice(1).map((c) => c.path), ['/playlists/pl1/items']);
-    assert.equal((putCalls[0].body as { uris: string[] }).uris.length, 100);
-    assert.equal((postCalls[1].body as { uris: string[] }).uris.length, 50);
+  const first = await h.invoke('refresh_smart_playlist', { name: 'rock-top' });
+  const firstEcho = first.structuredContent as Record<string, unknown>;
+  assert.equal(firstEcho.ok, true);
+  assert.equal(firstEcho.playlist_id, 'pl1');
+  assert.deepEqual(postCalls[0], { path: '/me/playlists', body: { name: 'rock-top', public: false } });
+  // top_tracks pool caps at 100; the playlist hits that ceiling and PUTs the
+  // whole pool in one call. There is nothing left to append.
+  assert.deepEqual(putCalls.map((c) => c.path), ['/playlists/pl1/items']);
+  assert.deepEqual(postCalls.slice(1), [], 'no follow-up POSTs when the pool fits in one write cap');
+  assert.equal((putCalls[0].body as { uris: string[] }).uris.length, 100);
 
-    const before = postCalls.length;
-    const second = await h.invoke('refresh_smart_playlist', { name: 'rock-top' });
-    const secondEcho = second.structuredContent as Record<string, unknown>;
+  const before = postCalls.length;
+  const second = await h.invoke('refresh_smart_playlist', { name: 'rock-top' });
+  const secondEcho = second.structuredContent as Record<string, unknown>;
     assert.equal(secondEcho.playlist_id, 'pl1');
     assert.equal(secondEcho.created, false);
     assert.equal(postCalls.filter((c) => c.path === '/me/playlists').length, 1, 'the second refresh must not create a second playlist');
     assert.equal(putCalls.length, 2, `expected one replace per refresh, got ${JSON.stringify(putCalls.map((c) => c.path))} (posts before: ${before})`);
+  });
+
+  // #1092: refresh_smart_playlist used to duplicate the smart-playlist pool
+  // loader and disclose none of its ceilings. The fix collapses the two onto
+  // a single loadCandidates, so every source reports the same pool_capped /
+  // pool_cap fields create_smart_playlist does — on the dry run and on commit.
+  describe('refresh_smart_playlist pool ceilings (#1092)', () => {
+    const pool = (out: { structuredContent?: Record<string, unknown> }) =>
+      out.structuredContent as {
+        pool_capped: boolean;
+        pool_cap: number;
+        candidates_scanned: number;
+        truncated_at_scan_cap: boolean;
+        uris: string[];
+      };
+    const many = (n: number, p: string) =>
+      Array.from({ length: n }, (_, i) => ({ uri: `spotify:track:${p}${i}`, name: `S${i}`, artists: [{ name: `A${i}` }] }));
+
+    it('names the top_tracks ceiling (100) when both pages come back full', async () => {
+      const { client } = makeClient({ topTracks: many(150, 't') });
+      const h = serverHarness(client);
+      await h.invoke('save_smart_playlist_rule', { name: 'r1', rule: { source: 'top_tracks', limit: 200 } });
+      const out = await h.invoke('refresh_smart_playlist', { name: 'r1', dry_run: true });
+      const p = pool(out);
+      assert.equal(p.pool_capped, true);
+      assert.equal(p.pool_cap, 100);
+      assert.equal(p.candidates_scanned, 100);
+      assert.match(out.content[0].text, /ceiling of 100/);
+    });
+
+    it('reports the recently_played page ceiling (50) instead of implying a full scan', async () => {
+      const { client } = makeClient({ recent: many(150, 'r') });
+      const h = serverHarness(client);
+      await h.invoke('save_smart_playlist_rule', { name: 'r2', rule: { source: 'recently_played', limit: 80 } });
+      const out = await h.invoke('refresh_smart_playlist', { name: 'r2', dry_run: true });
+      const p = pool(out);
+      assert.equal(p.pool_capped, true);
+      assert.equal(p.pool_cap, 50);
+      assert.equal(p.candidates_scanned, 50);
+      assert.match(out.content[0].text, /ceiling of 50/);
+    });
+
+    it('does not claim a ceiling when top_tracks ran out on its own', async () => {
+      const { client } = makeClient({ topTracks: many(12, 't') });
+      const h = serverHarness(client);
+      await h.invoke('save_smart_playlist_rule', { name: 'r3', rule: { source: 'top_tracks' } });
+      const out = await h.invoke('refresh_smart_playlist', { name: 'r3', dry_run: true });
+      const p = pool(out);
+      assert.equal(p.pool_capped, false);
+      assert.equal(p.pool_cap, 100);
+      assert.equal(p.candidates_scanned, 12);
+      assert.doesNotMatch(out.content[0].text, /ceiling of/);
+    });
+
+    it('a saved library that ends exactly at scan_cap is not called truncated', async () => {
+      const saved = many(500, 's');
+      const { client } = makeClient({ saved });
+      const h = serverHarness(client);
+      await h.invoke('save_smart_playlist_rule', { name: 'r4', rule: { source: 'saved_tracks', scan_cap: 500, limit: 500 } });
+      const out = await h.invoke('refresh_smart_playlist', { name: 'r4', dry_run: true });
+      const p = pool(out);
+      assert.equal(p.pool_capped, false);
+      assert.equal(p.pool_cap, 500);
+      assert.equal(p.truncated_at_scan_cap, false);
+      assert.doesNotMatch(out.content[0].text, /ceiling of/);
+    });
+
+    it('a saved library past scan_cap reports the truncation', async () => {
+      const saved = many(900, 's');
+      const { client } = makeClient({ saved });
+      const h = serverHarness(client);
+      await h.invoke('save_smart_playlist_rule', { name: 'r5', rule: { source: 'saved_tracks', scan_cap: 500, limit: 500 } });
+      const out = await h.invoke('refresh_smart_playlist', { name: 'r5', dry_run: true });
+      const p = pool(out);
+      assert.equal(p.pool_capped, true);
+      assert.equal(p.pool_cap, 500);
+      assert.equal(p.truncated_at_scan_cap, true);
+      assert.match(out.content[0].text, /ceiling of 500/);
+    });
+
+    it('reports the same pool numbers on the commit path as on the dry run', async () => {
+      const { client } = makeClient({ topTracks: many(150, 't') });
+      const h = serverHarness(client);
+      await h.invoke('save_smart_playlist_rule', { name: 'r6', rule: { source: 'top_tracks', limit: 200 } });
+      const dry = await h.invoke('refresh_smart_playlist', { name: 'r6', dry_run: true });
+      const commit = await h.invoke('refresh_smart_playlist', { name: 'r6' });
+      const d = pool(dry);
+      const c = pool(commit);
+      assert.equal(c.candidates_scanned, d.candidates_scanned);
+      assert.equal(c.pool_capped, d.pool_capped);
+      assert.equal(c.pool_cap, d.pool_cap);
+      assert.equal(c.truncated_at_scan_cap, d.truncated_at_scan_cap);
+      assert.match(commit.content[0].text, /ceiling of 100/);
+    });
+
+    it('the saved_tracks truncation comes from getAllPagesWithTruncation, not a row-count lie', async () => {
+      // A library that ends exactly at scan_cap must not be reported truncated
+      // — re-deriving the verdict from row count (#864) was the bug the smart
+      // side fixed; this asserts the collapsed loader does not regress it.
+      const saved = many(500, 's');
+      const { client } = makeClient({ saved });
+      const h = serverHarness(client);
+      await h.invoke('save_smart_playlist_rule', { name: 'r7', rule: { source: 'saved_tracks', scan_cap: 500, limit: 500 } });
+      const dry = await h.invoke('refresh_smart_playlist', { name: 'r7', dry_run: true });
+      assert.equal(pool(dry).truncated_at_scan_cap, false);
+      assert.equal(pool(dry).pool_capped, false);
+    });
+
+    it('the empty-pools path still discloses the ceiling it was taken under', async () => {
+      const { client } = makeClient({ topTracks: [] });
+      const h = serverHarness(client);
+      await h.invoke('save_smart_playlist_rule', { name: 'r8', rule: { source: 'top_tracks' } });
+      const out = await h.invoke('refresh_smart_playlist', { name: 'r8', dry_run: true });
+      const echo = out.structuredContent as Record<string, unknown>;
+      assert.equal(echo.error, 'no_candidates');
+      assert.equal(echo.pool_cap, 100);
+      assert.equal(echo.pool_capped, false);
+      assert.equal(echo.candidates_scanned, 0);
+    });
   });
 
   // #833: restore_playback_state replaced an album/playlist session with a

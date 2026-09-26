@@ -67,7 +67,7 @@ export function uniqueByArtist(tracks: readonly SpotifyTrack[]): SpotifyTrack[] 
 }
 
 /** Dedupe by URI keeping first occurrence (recently-played repeats). */
-function dedupeUris(tracks: readonly SpotifyTrack[]): SpotifyTrack[] {
+export function dedupeUris(tracks: readonly SpotifyTrack[]): SpotifyTrack[] {
   const seen = new Set<string>();
   return tracks.filter((t) => {
     if (!t.uri || seen.has(t.uri)) return false;
@@ -87,15 +87,19 @@ const RECENT_POOL_CAP = 50;
  * `capped` is the honest verdict: the last read came back FULL, so the pool
  * may hold more than we read and `candidates` is a floor, not a count. A
  * source that simply ran out reports capped: false.
+ *
+ * Exported so playbackext.ts can collapse its resolveRuleCandidates onto the
+ * same loader (#1092). Two copies of one loader disagreed about a user-visible
+ * parameter; collapsing is what stops them drifting again.
  */
-interface CandidatePool {
+export interface CandidatePool {
   candidates: SpotifyTrack[];
   /** Ceiling that applies to this source, reported whether or not it bit. */
   cap: number;
   capped: boolean;
 }
 
-async function loadCandidates(
+export async function loadCandidates(
   client: SpotifyClient,
   source: string,
   opts: { scanCap: number; timeRange?: 'short_term' | 'medium_term' | 'long_term' },
