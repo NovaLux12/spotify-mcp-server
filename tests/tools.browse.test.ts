@@ -77,25 +77,31 @@ test('browse tools validate canonical market and deprecated country aliases', ()
   }
 });
 
-test('browse tools forward canonical and deprecated market spellings as market', async () => {
-  const { registered, calls } = makeHarness((path) => {
-    if (path === '/browse/categories') return { categories: { items: [], total: 0, limit: 20, offset: 0 } };
-    return { playlists: { items: [], total: 0, limit: 20, offset: 0 } };
-  });
+// #775: GET /browse/categories and /browse/categories/{id}/playlists take
+// `country`. The handler used to send `market`, which Spotify ignores, so
+// every "GB" browse call silently returned the default country's rows.
+test('get_categories sends the resolved market as the country wire parameter', async () => {
+  const { registered, calls } = makeHarness(() => ({ categories: { items: [], total: 0, limit: 20, offset: 0 } }));
   const categories = find(registered, 'get_categories');
-  const playlists = find(registered, 'get_category_playlists');
 
   await categories.handler(parseArgs(categories, { market: 'gb' }));
-  await categories.handler(parseArgs(categories, { country: 'ca' }));
-  await playlists.handler(parseArgs(playlists, { category_id: 'mood', market: 'de' }));
-  await playlists.handler(parseArgs(playlists, { category_id: 'mood', country: 'fr' }));
+  assert.deepEqual(calls.at(-1)?.path, '/browse/categories');
+  assert.deepEqual(calls.at(-1)?.params, { country: 'GB' });
+});
 
-  assert.deepEqual(calls.map((call) => call.params), [
-    { market: 'GB' },
-    { market: 'CA' },
-    { market: 'DE' },
-    { market: 'FR' },
+test('get_category_playlists sends country for the market spelling and the country spelling alike', async () => {
+  const { registered, calls } = makeHarness(() => ({ playlists: { items: [], total: 0, limit: 20, offset: 0 } }));
+  const playlists = find(registered, 'get_category_playlists');
+
+  await playlists.handler(parseArgs(playlists, { category_id: 'mood', market: 'gb' }));
+  await playlists.handler(parseArgs(playlists, { category_id: 'mood', country: 'gb' }));
+
+  assert.deepEqual(calls.map((call) => call.path), [
+    '/browse/categories/mood/playlists',
+    '/browse/categories/mood/playlists',
   ]);
+  assert.deepEqual(calls.map((call) => call.params), [{ country: 'GB' }, { country: 'GB' }]);
+  assert.equal(calls[0].params?.country, calls[1].params?.country, 'both spellings must reach Spotify identically');
 });
 
 test('browse tools reject conflicting market spellings before calling Spotify', async () => {
@@ -125,5 +131,5 @@ test('browse tools accept matching canonical and deprecated market spellings', a
   await categories.handler(parseArgs(categories, { market: 'gb', country: 'GB' }));
   await playlists.handler(parseArgs(playlists, { category_id: 'mood', market: 'GB', country: 'gb' }));
 
-  assert.deepEqual(calls.map((call) => call.params), [{ market: 'GB' }, { market: 'GB' }]);
+  assert.deepEqual(calls.map((call) => call.params), [{ country: 'GB' }, { country: 'GB' }]);
 });
