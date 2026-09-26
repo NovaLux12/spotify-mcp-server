@@ -226,7 +226,7 @@ Some Web API endpoints are denied **at the app-registration level**: on current 
 
 | Response | Endpoints |
 |---|---|
-| `403 Forbidden` | `/browse/new-releases`, `/browse/categories` (and `/browse/categories/{id}/playlists`), `/markets`, `/artists/{id}/top-tracks`, `/users/{id}` (and `/users/{id}/playlists`), every documented `/me/{type}/contains` check (tracks, albums, shows, episodes, audiobooks, following), `/playlists/{id}/followers/contains` |
+| `403 Forbidden` | `/browse/new-releases`, `/browse/categories` (and `/browse/categories/{id}/playlists`), `/markets`, `/artists/{id}/top-tracks`, `/users/{id}` (and `/users/{id}/playlists`), every documented `/me/{type}/contains` check (tracks, albums, shows, episodes, audiobooks, following), `/playlists/{id}/followers/contains`, the multi-id batch endpoints (`/tracks`, `/albums`, `/artists`, `/episodes`, `/shows`, `/audiobooks`, `/chapters` with `?ids=…`) |
 | `404 Not Found` | `/recommendations`, `/recommendations/available-genre-seeds` |
 | `410 Gone` | `/me/apps`, `/me/chapters` |
 
@@ -235,6 +235,7 @@ Notes:
 - Tools wrapping a gated endpoint are **not hidden** — they still work on legacy app registrations where Spotify granted the endpoint. On a newer registration you'll get the server's plain-English 403 explanation instead of a crash.
 - The undocumented `/me/library/contains` check is *not* gated (it returned 200 on the same probe) and powers the duplicate-cleanup tooling.
 - Legacy lookups the server already explains gracefully (audio-features, audio-analysis, related-artists, featured-playlists) also probe as 403; their tools say so in the error message.
+- **Batch fallback ([#725](https://github.com/NovaLux12/spotify-mcp-server/issues/725)).** The `get_several_tracks` / `_albums` / `_artists` / `_episodes` / `_shows` / `_audiobooks` / `_chapters` family falls back to per-id `GET /<kind>/{id}` calls through the client's existing queue/backoff when the batch endpoint answers 403. The response carries `degraded: true` and a `[degraded: batch endpoint returned 403; … fetched individually]` footer in prose plus `degraded_reason` in structuredContent so callers can tell a per-item round-trip from a clean batch read. Per-id endpoints are not in the gated class, so the fallback always succeeds on the surviving surface.
 
 <details><summary>Troubleshooting</summary>
 

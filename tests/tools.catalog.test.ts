@@ -815,6 +815,257 @@ test('get_several_* schemas reject empty lists and non-string ids', () => {
   }
 });
 
+// ------------------------------- #725: batch fallback on gated 403
+
+// #725: every `get_several_*` tool falls back to per-item GETs when the
+// batch endpoint returns a gated 403. The harness must install the
+// gating contract so the 403 carries the `gatedSurface` annotation the
+// fallback predicate (`isGatedError`) keys on. Per-id paths here use the
+// same `{id}` suffix the production client issues, and the per-item stubs
+// return the same shape the batch would have returned so callers cannot
+// tell a clean batch read from the per-item round-trip beyond the
+// `degraded` fields.
+
+const GATED_403 = new SpotifyApiError(403, 'Forbidden');
+
+test('#725 get_several_tracks falls back to per-item on gated 403 and marks degraded', async () => {
+  const perItem = (id: string) => trackFixture({ id, uri: `spotify:track:${id}` });
+  const harness = makeHarness(registerCatalogTools, {
+    getError: (path) => (path === '/tracks' ? GATED_403 : undefined),
+    getResponse: (path) => {
+      const m = /^\/tracks\/([^/]+)$/.exec(path);
+      return m ? perItem(m[1]) : undefined;
+    },
+  });
+  installGatedPathContract(harness.client);
+
+  const result = await invoke(findTool(harness.registered, 'get_several_tracks'), { ids: ['trk1', 'trk2'] });
+
+  // #725: one batch call (the gated 403) followed by two per-id reads.
+  assert.equal(harness.calls.length, 3);
+  assert.equal(harness.calls[0].path, '/tracks');
+  assert.deepEqual(
+    harness.calls.slice(1).map((c) => c.path).sort(),
+    ['/tracks/trk1', '/tracks/trk2'],
+  );
+  // Prose: a `[degraded: ...]` footer names the per-item round-trip.
+  assert.match(text(result), /\[degraded: batch endpoint returned 403; .* fetched individually\]/);
+  // structuredContent: `degraded: true` + `degraded_reason` are both present.
+  const sc = result.structuredContent as { degraded?: boolean; degraded_reason?: string; counts?: { resolved: number; missing_ids: string[] } };
+  assert.equal(sc.degraded, true);
+  assert.match(sc.degraded_reason ?? '', /batch endpoint returned 403; .* fetched individually/);
+  // Per-item success means the resolved count is the full request and the
+  // missing-ids list is empty -- the fallback delivered what the batch
+  // would have, plus a degraded tag.
+  assert.deepEqual(sc.counts, { requested: 2, resolved: 2, missing_ids: [] });
+});
+
+test('#725 every get_several_* kind falls back on gated 403 with degraded metadata', async () => {
+  const cases = [
+    { tool: 'get_several_albums', batch: '/albums', singular: 'album',
+      fixture: (id: string) => ({
+        id,
+        name: `Album ${id}`,
+        uri: `spotify:album:${id}`,
+        album_type: 'album',
+        release_date: '2026-01-01',
+        total_tracks: 3,
+        artists: [artist],
+      }) },
+    { tool: 'get_several_artists', batch: '/artists', singular: 'artist',
+      fixture: (id: string) => ({
+        id,
+        name: `Artist ${id}`,
+        uri: `spotify:artist:${id}`,
+        genres: [],
+        followers: { total: 0 },
+        images: [],
+      }) },
+    { tool: 'get_several_episodes', batch: '/episodes', singular: 'episode',
+      fixture: (id: string) => ({
+        id,
+        name: `Episode ${id}`,
+        uri: `spotify:episode:${id}`,
+        duration_ms: 1800000,
+        release_date: '2026-01-01',
+        explicit: false,
+        description: '',
+        show: showSimpleFixture(),
+      }) },
+    { tool: 'get_several_shows', batch: '/shows', singular: 'show',
+      fixture: (id: string) => ({
+        id,
+        name: `Show ${id}`,
+        uri: `spotify:show:${id}`,
+        description: '',
+        publisher: 'Acme',
+        total_episodes: 10,
+        languages: ['en'],
+        media_type: 'audio',
+      }) },
+    { tool: 'get_several_audiobooks', batch: '/audiobooks', singular: 'audiobook',
+      fixture: (id: string) => ({
+        id,
+        name: `Audiobook ${id}`,
+        uri: `spotify:audiobook:${id}`,
+        authors: [{ name: 'Author' }],
+        total_chapters: 5,
+      }) },
+    { tool: 'get_several_chapters', batch: '/chapters', singular: 'chapter',
+      fixture: (id: string) => ({
+        id,
+        name: `Chapter ${id}`,
+        uri: '',
+        chapter_number: 1,
+        duration_ms: 600000,
+        available_markets: ['US'],
+      }) },
+  ];
+
+  for (const c of cases) {
+    const harness = makeHarness(registerCatalogTools, {
+      getError: (path) => (path === c.batch ? GATED_403 : undefined),
+      getResponse: (path) => {
+        const m = new RegExp(`^${c.batch}/([^/]+)$`).exec(path);
+        return m ? c.fixture(m[1]) : undefined;
+      },
+    });
+    installGatedPathContract(harness.client);
+
+    const result = await invoke(findTool(harness.registered, c.tool), { ids: ['id1', 'id2'] });
+
+    // One batch attempt (the gated 403) + two per-id reads, in any order.
+    assert.equal(harness.calls[0].path, c.batch);
+    const perItemPaths = harness.calls.slice(1).map((call) => call.path).sort();
+    assert.deepEqual(perItemPaths, [`${c.batch}/id1`, `${c.batch}/id2`]);
+    // Both prose and structuredContent flag the degraded round-trip.
+    assert.match(text(result), /\[degraded: /, `${c.tool} must render a degraded footer`);
+    const sc = result.structuredContent as { degraded?: boolean; degraded_reason?: string };
+    assert.equal(sc.degraded, true, `${c.tool} must publish degraded:true`);
+    assert.match(sc.degraded_reason ?? '', /batch endpoint returned 403/, `${c.tool} must publish degraded_reason`);
+  }
+});
+
+test('#725 a per-item 404 during fallback is recorded in missing_ids, not raised', async () => {
+  // #725: a single per-item failure must not crash the whole 50-id lookup.
+  // Per-item errors collapse into `missing_ids` so the caller sees the same
+  // accounting it would have seen from a successful batch with a null slot.
+  const harness = makeHarness(registerCatalogTools, {
+    getError: (path) => {
+      if (path === '/tracks') return GATED_403;
+      if (path === '/tracks/dead') return new SpotifyApiError(404, 'Not Found');
+      return undefined;
+    },
+    getResponse: (path) => {
+      const m = /^\/tracks\/([^/]+)$/.exec(path);
+      return m ? trackFixture({ id: m[1], uri: `spotify:track:${m[1]}` }) : undefined;
+    },
+  });
+  installGatedPathContract(harness.client);
+
+  const result = await invoke(findTool(harness.registered, 'get_several_tracks'), { ids: ['live', 'dead'] });
+
+  const sc = result.structuredContent as { degraded?: boolean; counts?: { resolved: number; missing_ids: string[] } };
+  assert.equal(sc.degraded, true);
+  assert.deepEqual(sc.counts, { requested: 2, resolved: 1, missing_ids: ['dead'] });
+  assert.match(text(result), /1 id unresolved: dead/);
+});
+
+test('#725 the json response_format still publishes degraded:true', async () => {
+  // #725: the json branch must not drop the degraded marker -- a caller
+  // asking for the structured payload should still see the fallback flag
+  // or the prose/structuredContent contract is inconsistent.
+  const harness = makeHarness(registerCatalogTools, {
+    getError: (path) => (path === '/tracks' ? GATED_403 : undefined),
+    getResponse: (path) => {
+      const m = /^\/tracks\/([^/]+)$/.exec(path);
+      return m ? trackFixture({ id: m[1], uri: `spotify:track:${m[1]}` }) : undefined;
+    },
+  });
+  installGatedPathContract(harness.client);
+
+  const result = await invoke(findTool(harness.registered, 'get_several_tracks'), { ids: ['trk1'], response_format: 'json' });
+
+  const sc = result.structuredContent as { degraded?: boolean; degraded_reason?: string; counts?: { resolved: number; missing_ids: string[] } };
+  assert.equal(sc.degraded, true);
+  assert.match(sc.degraded_reason ?? '', /batch endpoint returned 403/);
+  assert.deepEqual(sc.counts, { requested: 1, resolved: 1, missing_ids: [] });
+  // The text body is JSON; parsing it must surface the same fields as
+  // structuredContent (jsonResult pipes the structured payload through).
+  const parsed = JSON.parse(text(result));
+  assert.equal(parsed.degraded, true);
+  assert.match(parsed.degraded_reason, /batch endpoint returned 403/);
+});
+
+test('#725 a non-gated 403 on the batch endpoint propagates the SpotifyApiError (#765 contract)', async () => {
+  // #725: only GATED 403s trigger the fallback. A raw 403 (the test harness
+  // does not run the gated contract on a non-gated path) must surface the
+  // original SpotifyApiError so callers with their own designed 403
+  // degradation on a non-gated path keep matching on `err.status === 403`.
+  // The batch endpoint paths ARE gated (the contract adds them via #725),
+  // so to exercise the non-gated path we hit a different family and assert
+  // it falls through unchanged.
+  const harness = makeHarness(registerCatalogTools, {
+    getError: (path) => (path === '/tracks' ? new SpotifyApiError(403, 'Forbidden') : undefined),
+  });
+  // Intentionally NOT installing the contract here -- the bare 403 must
+  // NOT trigger the fallback because isGatedError requires the annotation.
+
+  await assert.rejects(
+    invoke(findTool(harness.registered, 'get_several_tracks'), { ids: ['trk1'] }),
+    (err: unknown) => {
+      assert.ok(err instanceof SpotifyApiError, 'raw 403 must remain a SpotifyApiError');
+      assert.equal((err as SpotifyApiError).status, 403);
+      return true;
+    },
+  );
+});
+
+test('#725 batch truncation (#53) still applies after the per-item fallback', async () => {
+  // #725: the fallback delivers N per-item rows; the shared #53 truncation
+  // applies on top. With 60 ids and no max_results, only the first 50 are
+  // rendered, but `counts.requested` still names all 60.
+  const ids = severalIds(60);
+  const harness = makeHarness(registerCatalogTools, {
+    getError: (path) => (path === '/tracks' ? GATED_403 : undefined),
+    getResponse: (path) => {
+      const m = /^\/tracks\/([^/]+)$/.exec(path);
+      return m ? trackFixture({ id: m[1], uri: `spotify:track:${m[1]}` }) : undefined;
+    },
+  });
+  installGatedPathContract(harness.client);
+
+  const result = await invoke(findTool(harness.registered, 'get_several_tracks'), { ids });
+
+  const sc = result.structuredContent as { degraded?: boolean; counts?: { requested: number; resolved: number; missing_ids: string[] }; items?: unknown[] };
+  assert.equal(sc.degraded, true);
+  assert.equal(sc.counts?.requested, 60);
+  assert.equal(sc.counts?.resolved, 60);
+  assert.deepEqual(sc.counts?.missing_ids, []);
+  // #53 truncation footer is preserved alongside the degraded footer.
+  assert.match(text(result), /\(10 more — pass offset or fetch_all\)/);
+  assert.match(text(result), /\[degraded: /);
+  assert.equal(sc.items?.length, 50);
+});
+
+test('#725 a clean batch read does NOT publish degraded:true', async () => {
+  // #725: the fallback must be silent on a clean run. A test that flips
+  // the marker on the happy path would silently advertise a soft answer
+  // as a degraded one (#765 anti-pattern: a fallback contract must be
+  // off when the batch read succeeded).
+  const { registered } = makeHarness(registerCatalogTools, {
+    getResponse: (path, params) =>
+      path === '/tracks' ? { tracks: params!.ids.split(',').map(severalTrack) } : undefined,
+  });
+
+  const result = await invoke(findTool(registered, 'get_several_tracks'), { ids: ['trk1', 'trk2'] });
+
+  const sc = result.structuredContent as { degraded?: boolean; degraded_reason?: string };
+  assert.equal(sc.degraded, undefined);
+  assert.equal(sc.degraded_reason, undefined);
+  assert.doesNotMatch(text(result), /\[degraded: /);
+});
+
 // ------------------------------- #778: unresolved batch ids stay visible
 
 // A real 22-character id Spotify would answer with null for (stale, or
@@ -1417,19 +1668,33 @@ test('get_audiobook_chapters json mode returns the raw chapter page (#51)', asyn
 });
 
 test('get_several_tracks explains the Feb 2026 removal on 403 instead of a raw error (issue #85)', async () => {
-  const { registered } = makeHarness(registerCatalogTools, {
-    getError: (path) => (path.startsWith('/tracks?') || path === '/tracks' ? new SpotifyApiError(403, 'Forbidden') : undefined),
+  // #725: a 403 on the batch endpoint is now the trigger for a per-item
+  // fallback (not an error), so the harness has to install the gating
+  // contract to make the 403 match `isGatedError`. The pre-#725 contract
+  // was: throw a plain Error explaining the removal; the post-#725 contract
+  // is: fall back through /tracks/{id} and emit `degraded: true`. The two
+  // branches are mutually exclusive at the test boundary, so this case is
+  // the canary for the new path.
+  const harness = makeHarness(registerCatalogTools, {
+    getError: (path) => (path === '/tracks' ? new SpotifyApiError(403, 'Forbidden') : undefined),
+    getResponse: (path) =>
+      path === '/tracks/trk1' || path === '/tracks/trk2'
+        ? trackFixture({ id: path.split('/').pop()! })
+        : undefined,
   });
+  installGatedPathContract(harness.client);
 
-  await assert.rejects(
-    invoke(findTool(registered, 'get_several_tracks'), { ids: ['trk1', 'trk2'] }),
-    (err: Error) => {
-      assert.match(err.message, /403/);
-      assert.match(err.message, /February 2026/);
-      assert.match(err.message, /grandfathered/);
-      return true;
-    },
+  const result = await invoke(findTool(harness.registered, 'get_several_tracks'), { ids: ['trk1', 'trk2'] });
+  assert.equal(harness.calls.length, 3, 'one batch call + two per-item calls');
+  assert.equal(harness.calls[0].path, '/tracks');
+  assert.equal(harness.calls[1].path, '/tracks/trk1');
+  assert.equal(harness.calls[2].path, '/tracks/trk2');
+  assert.equal((result.structuredContent as { degraded?: boolean }).degraded, true);
+  assert.match(
+    (result.structuredContent as { degraded_reason?: string }).degraded_reason ?? '',
+    /batch endpoint returned 403; .* fetched individually/,
   );
+  assert.match(text(result), /\[degraded: /);
 });
 
 // ---------------------------- exhaust catalog gap-fill: 15 new tools

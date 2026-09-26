@@ -60,7 +60,7 @@ function text(r: ToolContent): string {
   return r.content.map((c) => c.text).join('\n');
 }
 
-test('isGatedPath classifies the #329 gated families', () => {
+test('isGatedPath classifies the #329 and #725 gated families', () => {
   const gated = [
     '/browse/categories',
     '/browse/categories?country=GB',
@@ -78,6 +78,17 @@ test('isGatedPath classifies the #329 gated families', () => {
     '/me/audiobooks/contains',
     '/me/following/contains',
     '/playlists/pl1/followers/contains',
+    // #725: the multi-id batch endpoints. After the query string is
+    // stripped, the bare plural paths land in the gated class so a 403
+    // annotation lets `fetchSeveral` fall back to per-item GETs.
+    '/tracks',
+    '/tracks?ids=a,b',
+    '/albums',
+    '/artists',
+    '/episodes',
+    '/shows',
+    '/audiobooks',
+    '/chapters',
   ];
   for (const p of gated) assert.ok(isGatedPath(p), `expected gated: ${p}`);
 
@@ -87,8 +98,10 @@ test('isGatedPath classifies the #329 gated families', () => {
     '/playlists/pl1/tracks',
     '/playlists/pl1/followers',
     '/artists/art1/albums',
+    '/artists/art1',
+    '/tracks/trk1',
+    '/albums/alb1',
     '/browse/featured-playlists',
-    '/tracks?ids=a,b',
     '/recommendations/available-genre-seeds',
     '/me',
   ];

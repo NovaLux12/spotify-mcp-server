@@ -159,7 +159,16 @@ async function fetchSeveral<T>(
   kind: SeveralKind,
   responseKey: string,
   ids: string[],
-): Promise<{ items: T[]; missing: string[] }> {
+): Promise<{
+  items: T[];
+  missing: string[];
+  /**
+   * Set on a chunk that fell back to per-item GETs after a gated 403 on the
+   * batch endpoint (#725). The reason text is the same one the seven
+   * `get_several_*` tools append to their prose and structuredContent.
+   */
+  degraded?: { reason: string };
+}> {
   // #583: the bound comes from the shared table, not a local copy (#778's
   // per-id accounting is preserved by reporting what the batch could not resolve).
   const chunks = chunk(ids, kind);
@@ -174,11 +183,42 @@ async function fetchSeveral<T>(
           ids: chunk.map((id) => encodeURIComponent(id)).join(','),
         });
       } catch (err) {
-        if (err instanceof SpotifyApiError && err.status === 403) {
-          throw new Error(
-            `Spotify returned 403 for the /${kind} batch lookup: ${err.message}. The "Get Several" batch endpoints were removed by Spotify's February 2026 Web API changes and are unavailable for newer app registrations; use the single-item get tools instead, or run with credentials from a grandfathered (pre-Nov-2024) app.`,
-            { cause: err },
+        // #725: Spotify's February 2026 Web API changes removed the multi-id
+        // batch endpoints for newer app registrations (#638). The graceful
+        // 403 wrapper annotates the gated 403 via isGatedError; on a match,
+        // fall back to per-item GETs through the client's queue/backoff
+        // rather than telling the caller "use the single-item tools
+        // instead" — the response IS the single-item tools. A non-gated 403
+        // (or any other SpotifyApiError) still surfaces the original shape
+        // so callers with their own designed 403 degradation on this path
+        // keep matching on `err.status === 403` unchanged.
+        if (err instanceof SpotifyApiError && err.status === 403 && isGatedError(err)) {
+          const perItem = await Promise.all(
+            chunk.map(async (id): Promise<{ id: string; item: T | null }> => {
+              try {
+                const item = await client.get<T>(`/${kind}/${encodeURIComponent(id)}`);
+                return { id, item };
+              } catch {
+                // Per-item failure (404 / 410 / transient) is recorded as
+                // unresolved so the caller sees the same id accounting it
+                // would have seen from a successful batch with a null slot
+                // (#778). Re-raising would crash a 50-id lookup over a
+                // single dead id.
+                return { id, item: null };
+              }
+            }),
           );
+          const items: T[] = [];
+          const missing: string[] = [];
+          for (const { id, item } of perItem) {
+            if (item != null) items.push(item);
+            else missing.push(id);
+          }
+          return {
+            items,
+            missing,
+            degraded: { reason: `batch endpoint returned 403; ${chunk.length} ${kind} fetched individually` },
+          };
         }
         throw err;
       }
@@ -201,9 +241,14 @@ async function fetchSeveral<T>(
       return { items, missing };
     }),
   );
+  // #725: any chunk that fell back to per-item lookups marks the whole
+  // response degraded. Per-item failures stay inside their chunk so the
+  // request-order merge still works.
+  const firstDegraded = __chunkResults.find((c) => c.degraded !== undefined)?.degraded;
   return {
     items: __chunkResults.flatMap((chunk) => chunk.items),
     missing: __chunkResults.flatMap((chunk) => chunk.missing),
+    ...(firstDegraded !== undefined ? { degraded: firstDegraded } : {}),
   };
 }
 
@@ -237,6 +282,17 @@ function severalIdsSchema(kind: SeveralKind) {
       ? `Spotify ${referenceKind} IDs, spotify:${referenceKind}: URIs, or open.spotify.com/${referenceKind} URLs (1–${max} per request; longer lists are fetched in chunks of ${max} and merged)`
       : `Spotify ${kind} IDs (1–${max} per request; longer lists are fetched in chunks of ${max} and merged)`,
   );
+}
+
+/**
+ * #725: the structuredContent fields a degraded batch lookup publishes when
+ * it falls back to per-item GETs. Spreading the empty object keeps the json
+ * path's shape identical when no fallback happened — the key only appears
+ * when `degraded` is set, so a non-degraded response doesn't advertise it.
+ */
+function severalDegradedExtra(degraded: { reason: string } | undefined): Record<string, unknown> {
+  if (!degraded) return {};
+  return { degraded: true, degraded_reason: degraded.reason };
 }
 
 function joinArtists(items: { artists?: { name: string }[] }): string {
@@ -330,6 +386,13 @@ function renderList<T>(
      * lookup that never accounted for the request at all.
      */
     unresolved?: readonly string[];
+    /**
+     * #725: present when the lookup fell back from a gated batch endpoint
+     * to per-item GETs. Renders as a `[degraded: ...]` prose footer and
+     * `degraded: true` + `degraded_reason` in structuredContent so callers
+     * can distinguish the per-item round-trip from a clean batch read.
+     */
+    degraded?: { reason: string };
   },
 ): ShapedToolResult {
   const cap = resolveMaxResults(opts.maxResults);
@@ -343,6 +406,11 @@ function renderList<T>(
     extra.counts = severalCounts(pageItems.length, missingIds);
     const note = unresolvedIdsNote(missingIds);
     if (note) lines.push('', note);
+  }
+  if (opts.degraded) {
+    extra.degraded = true;
+    extra.degraded_reason = opts.degraded.reason;
+    lines.push('', `[degraded: ${opts.degraded.reason}]`);
   }
   const continuable = opts.continuable !== false;
   const pagination = paginationInfo({
@@ -816,11 +884,15 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
     'Get full details for several tracks by ID in a single call (up to 50 per request)',
     { ids: severalIdsSchema('tracks'), ...sharedListFields },
     async (args) => {
-      const { items: tracks, missing } = await fetchSeveral<SpotifyTrack>(client, 'tracks', 'tracks', args.ids);
+      const { items: tracks, missing, degraded } = await fetchSeveral<SpotifyTrack>(client, 'tracks', 'tracks', args.ids);
       if (!tracks.length) throw new Error(noMatchingSeveral('tracks', missing));
 
       if (args.response_format === 'json') {
-        return jsonResult({ items: tracks, counts: severalCounts(tracks.length, missing) });
+        return jsonResult({
+          items: tracks,
+          counts: severalCounts(tracks.length, missing),
+          ...severalDegradedExtra(degraded),
+        });
       }
       return renderList(args.response_format, tracks, {
         header: `Tracks (${tracks.length}):`,
@@ -829,6 +901,7 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
         continuable: false,
         maxResults: args.max_results,
         unresolved: missing,
+        degraded,
       });
     },
   );
@@ -839,11 +912,15 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
     'Get full details for several albums by ID in a single call (up to 20 per request)',
     { ids: severalIdsSchema('albums'), ...sharedListFields },
     async (args) => {
-      const { items: albums, missing } = await fetchSeveral<SpotifyAlbumItem>(client, 'albums', 'albums', args.ids);
+      const { items: albums, missing, degraded } = await fetchSeveral<SpotifyAlbumItem>(client, 'albums', 'albums', args.ids);
       if (!albums.length) throw new Error(noMatchingSeveral('albums', missing));
 
       if (args.response_format === 'json') {
-        return jsonResult({ items: albums, counts: severalCounts(albums.length, missing) });
+        return jsonResult({
+          items: albums,
+          counts: severalCounts(albums.length, missing),
+          ...severalDegradedExtra(degraded),
+        });
       }
       return renderList(args.response_format, albums, {
         header: `Albums (${albums.length}):`,
@@ -852,6 +929,7 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
         continuable: false,
         maxResults: args.max_results,
         unresolved: missing,
+        degraded,
       });
     },
   );
@@ -862,11 +940,15 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
     'Get full details for several artists by ID in a single call (up to 50 per request)',
     { ids: severalIdsSchema('artists'), ...sharedListFields },
     async (args) => {
-      const { items: artists, missing } = await fetchSeveral<SpotifyArtistFull>(client, 'artists', 'artists', args.ids);
+      const { items: artists, missing, degraded } = await fetchSeveral<SpotifyArtistFull>(client, 'artists', 'artists', args.ids);
       if (!artists.length) throw new Error(noMatchingSeveral('artists', missing));
 
       if (args.response_format === 'json') {
-        return jsonResult({ items: artists, counts: severalCounts(artists.length, missing) });
+        return jsonResult({
+          items: artists,
+          counts: severalCounts(artists.length, missing),
+          ...severalDegradedExtra(degraded),
+        });
       }
       return renderList(args.response_format, artists, {
         header: `Artists (${artists.length}):`,
@@ -879,6 +961,7 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
         continuable: false,
         maxResults: args.max_results,
         unresolved: missing,
+        degraded,
       });
     },
   );
@@ -889,11 +972,15 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
     'Get full details for several podcast episodes by ID in a single call (up to 50 per request)',
     { ids: severalIdsSchema('episodes'), ...sharedListFields },
     async (args) => {
-      const { items: episodes, missing } = await fetchSeveral<SpotifyEpisodeFull>(client, 'episodes', 'episodes', args.ids);
+      const { items: episodes, missing, degraded } = await fetchSeveral<SpotifyEpisodeFull>(client, 'episodes', 'episodes', args.ids);
       if (!episodes.length) throw new Error(noMatchingSeveral('episodes', missing));
 
       if (args.response_format === 'json') {
-        return jsonResult({ items: episodes, counts: severalCounts(episodes.length, missing) });
+        return jsonResult({
+          items: episodes,
+          counts: severalCounts(episodes.length, missing),
+          ...severalDegradedExtra(degraded),
+        });
       }
       return renderList(args.response_format, episodes, {
         header: `Episodes (${episodes.length}):`,
@@ -902,6 +989,7 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
         continuable: false,
         maxResults: args.max_results,
         unresolved: missing,
+        degraded,
       });
     },
   );
@@ -912,11 +1000,15 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
     'Get full details for several podcast shows by ID in a single call (up to 50 per request)',
     { ids: severalIdsSchema('shows'), ...sharedListFields },
     async (args) => {
-      const { items: shows, missing } = await fetchSeveral<SpotifyShowFull>(client, 'shows', 'shows', args.ids);
+      const { items: shows, missing, degraded } = await fetchSeveral<SpotifyShowFull>(client, 'shows', 'shows', args.ids);
       if (!shows.length) throw new Error(noMatchingSeveral('shows', missing));
 
       if (args.response_format === 'json') {
-        return jsonResult({ items: shows, counts: severalCounts(shows.length, missing) });
+        return jsonResult({
+          items: shows,
+          counts: severalCounts(shows.length, missing),
+          ...severalDegradedExtra(degraded),
+        });
       }
       return renderList(args.response_format, shows, {
         header: `Shows (${shows.length}):`,
@@ -925,6 +1017,7 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
         continuable: false,
         maxResults: args.max_results,
         unresolved: missing,
+        degraded,
       });
     },
   );
@@ -935,11 +1028,15 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
     'Get full details for several audiobooks by ID in a single call (up to 50 per request). Audiobooks are only available in the US, UK, Canada, Ireland, New Zealand and Australia markets.',
     { ids: severalIdsSchema('audiobooks'), ...sharedListFields },
     async (args) => {
-      const { items: books, missing } = await fetchSeveral<SpotifyAudiobookSimple>(client, 'audiobooks', 'audiobooks', args.ids);
+      const { items: books, missing, degraded } = await fetchSeveral<SpotifyAudiobookSimple>(client, 'audiobooks', 'audiobooks', args.ids);
       if (!books.length) throw new Error(noMatchingSeveral('audiobooks', missing));
 
       if (args.response_format === 'json') {
-        return jsonResult({ items: books, counts: severalCounts(books.length, missing) });
+        return jsonResult({
+          items: books,
+          counts: severalCounts(books.length, missing),
+          ...severalDegradedExtra(degraded),
+        });
       }
       return renderList(args.response_format, books, {
         header: `Audiobooks (${books.length}):`,
@@ -950,6 +1047,7 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
         continuable: false,
         maxResults: args.max_results,
         unresolved: missing,
+        degraded,
       });
     },
   );
@@ -960,11 +1058,15 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
     'Get full details for several audiobook chapters by ID in a single call (up to 50 per request)',
     { ids: severalIdsSchema('chapters'), ...sharedListFields },
     async (args) => {
-      const { items: chapters, missing } = await fetchSeveral<SpotifyChapterSimple>(client, 'chapters', 'chapters', args.ids);
+      const { items: chapters, missing, degraded } = await fetchSeveral<SpotifyChapterSimple>(client, 'chapters', 'chapters', args.ids);
       if (!chapters.length) throw new Error(noMatchingSeveral('chapters', missing));
 
       if (args.response_format === 'json') {
-        return jsonResult({ items: chapters, counts: severalCounts(chapters.length, missing) });
+        return jsonResult({
+          items: chapters,
+          counts: severalCounts(chapters.length, missing),
+          ...severalDegradedExtra(degraded),
+        });
       }
       return renderList(args.response_format, chapters, {
         header: `Chapters (${chapters.length}):`,
@@ -973,6 +1075,7 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
         continuable: false,
         maxResults: args.max_results,
         unresolved: missing,
+        degraded,
       });
     },
   );

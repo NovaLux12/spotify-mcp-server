@@ -46,6 +46,11 @@ import type { SpotifyClient } from './client.js';
  *   /users/{id}*                  -- profile + playlists (Feb 2026 removal)
  *   documented /me/<type>/contains -- albums/tracks/episodes/shows/audiobooks/following
  *   /playlists/{id}/followers/contains
+ *   #725 (Feb 2026 removal):
+ *     /tracks|albums|artists|episodes|shows|audiobooks|chapters
+ *       -- the multi-id `?ids=` batch endpoints; per-id GETs are the
+ *          single-id replacements and are NOT gated (#638). The fallback
+ *          lives in `fetchSeveral` and emits `degraded: true` on its result.
  *
  * Exported so the #330 gauntlet SKIP set and future callers classify against
  * the same single source of truth.
@@ -58,6 +63,10 @@ export const GATED_PATH_PATTERNS: readonly RegExp[] = [
   /^\/users\/[^/]+(?:\/.+)?$/,
   /^\/me\/(?:albums|tracks|episodes|shows|audiobooks|following)\/contains$/,
   /^\/playlists\/[^/]+\/followers\/contains$/,
+  // #725: the multi-id batch endpoints. The bare plural path is the only
+  // form the wrapper sees -- per-id GETs go through `/(tracks|...)/{id}` and
+  // are not gated, so the `$` anchor is load-bearing (see isGatedPath tests).
+  /^\/(?:tracks|albums|artists|episodes|shows|audiobooks|chapters)$/,
 ];
 
 /** Whether an API-relative request path belongs to the #329 gated class. */
