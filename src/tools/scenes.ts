@@ -19,7 +19,7 @@ import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import type { SpotifyClient } from '../client.js';
 import type { PlaybackState, SpotifyDevice, GetDevicesResponse } from '../types/spotify.js';
-import { ResponseFormat, DryRun, describeDryRun } from '../shaping.js';
+import { ResponseFormat, PlaybackDryRun, describeDryRun } from '../shaping.js';
 import { loadSidecar } from '../sidecar.js';
 
 // ---------------------------------------------------------------------------
@@ -539,7 +539,7 @@ export function registerScenesTools(server: McpServer, client: SpotifyClient): v
     'Apply a saved scene: resolve its device hint, transfer playback, then set volume/shuffle/repeat and start the saved context (in that order; missing targets are skipped)',
     {
       name: z.string().min(1).describe('Scene name to apply'),
-      dry_run: DryRun,
+      dry_run: PlaybackDryRun,
       response_format: ResponseFormat,
     },
     async (args) => {
@@ -655,7 +655,7 @@ export function registerScenesTools(server: McpServer, client: SpotifyClient): v
         .describe('Volume floor the ramp never goes below (default 10)'),
       device_id: z.string().optional().describe('Target device id; defaults to the active device'),
       response_format: ResponseFormat,
-      dry_run: DryRun,
+      dry_run: PlaybackDryRun,
     },
     async (args) => {
       const state = await client.get<PlaybackState>('/me/player');

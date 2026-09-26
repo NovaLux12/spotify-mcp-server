@@ -105,7 +105,9 @@ describe('volume plan device selection (#853)', () => {
 
   it('apply_volume_plan skips the id-less device and names a real id in the preview', async () => {
     const h = makeHarness(MIXED);
-    const out = await h.invoke('apply_volume_plan', { volume: 42 });
+    // #836: an omitted dry_run COMMITS. The preview is opt-in now, so this test
+    // asks for one explicitly rather than relying on an implicit default.
+    const out = await h.invoke('apply_volume_plan', { volume: 42, dry_run: true });
     const sc = h.structured(out);
 
     assert.equal(h.calls.filter((c) => c.method === 'PUT').length, 0, 'dry_run must not PUT');
@@ -146,7 +148,7 @@ describe('volume plan device selection (#853)', () => {
   it('plan text names exactly the parameters the real PUT sends', async () => {
     const h = makeHarness(MIXED);
     for (const tool of ['apply_volume_plan', 'plan_volume_level_across_devices']) {
-      const out = await h.invoke(tool, { volume: 42 });
+      const out = await h.invoke(tool, { volume: 42, ...(tool === 'apply_volume_plan' ? { dry_run: true } : {}) });
       const steps = (h.structured(out).steps as string[]) ?? [];
       assert.ok(steps.length > 0, `${tool} must produce plan steps`);
       for (const step of steps) {
@@ -173,7 +175,7 @@ describe('volume plan device selection (#853)', () => {
 
   it('reports the skip when every volume-capable device lacks an id', async () => {
     const h = makeHarness([device({ id: null, name: 'Remote A' }), device({ id: null, name: 'Remote B' })]);
-    const out = await h.invoke('apply_volume_plan', { volume: 10 });
+    const out = await h.invoke('apply_volume_plan', { volume: 10, dry_run: true });
     const sc = h.structured(out);
     assert.deepEqual(sc.steps, []);
     assert.equal(sc.skipped_no_id, 2);

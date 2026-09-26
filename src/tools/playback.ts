@@ -13,7 +13,7 @@ import type {
 import {
   ResponseFormat,
   MaxResults,
-  DryRun,
+  PlaybackDryRun,
   resolveMaxResults,
   truncateItems,
   paginationInfo,
@@ -337,7 +337,7 @@ export function registerPlaybackTools(server: McpServer, client: SpotifyClient):
         .optional()
         .describe('ISO 3166-1 alpha-2 country code — affects availability/relinking of results; defaults to SPOTIFY_MCP_MARKET'),
       response_format: ResponseFormat,
-      dry_run: DryRun,
+      dry_run: PlaybackDryRun,
     },
     async (args) => {
       const params: Record<string, string> = {
@@ -414,7 +414,7 @@ export function registerPlaybackTools(server: McpServer, client: SpotifyClient):
       position_ms: z.number().int().min(0).optional().describe('Seek position to start at (ms)'),
       device_id: z.string().optional().describe('Target device ID; uses active device if omitted'),
       response_format: ResponseFormat,
-      dry_run: DryRun,
+      dry_run: PlaybackDryRun,
     },
     async (args) => {
       // Issue #23: mutual exclusion must hold even for an empty uris array,
@@ -497,7 +497,7 @@ export function registerPlaybackTools(server: McpServer, client: SpotifyClient):
     {
       device_id: z.string().optional().describe('Target device ID'),
       response_format: ResponseFormat,
-      dry_run: DryRun,
+      dry_run: PlaybackDryRun,
     },
     async (args) => {
       if (args.dry_run) {
@@ -524,7 +524,7 @@ export function registerPlaybackTools(server: McpServer, client: SpotifyClient):
     {
       device_id: z.string().optional().describe('Target device ID'),
       response_format: ResponseFormat,
-      dry_run: DryRun,
+      dry_run: PlaybackDryRun,
     },
     async (args) => {
       // dry_run (#57): skipping advances past the current queue item — show
@@ -556,7 +556,7 @@ export function registerPlaybackTools(server: McpServer, client: SpotifyClient):
     {
       device_id: z.string().optional().describe('Target device ID'),
       response_format: ResponseFormat,
-      dry_run: DryRun,
+      dry_run: PlaybackDryRun,
     },
     async (args) => {
       if (args.dry_run) {
@@ -587,7 +587,7 @@ export function registerPlaybackTools(server: McpServer, client: SpotifyClient):
       position_ms: z.number().int().min(0).describe('Position in milliseconds'),
       device_id: z.string().optional().describe('Target device ID'),
       response_format: ResponseFormat,
-      dry_run: DryRun,
+      dry_run: PlaybackDryRun,
     },
     async (args) => {
       if (args.dry_run) {
@@ -614,7 +614,7 @@ export function registerPlaybackTools(server: McpServer, client: SpotifyClient):
       volume_percent: z.number().int().min(0).max(100).describe('Volume level 0–100'),
       device_id: z.string().optional().describe('Target device ID'),
       response_format: ResponseFormat,
-      dry_run: DryRun,
+      dry_run: PlaybackDryRun,
     },
     async (args) => {
       if (args.dry_run) {
@@ -641,7 +641,7 @@ export function registerPlaybackTools(server: McpServer, client: SpotifyClient):
       state: z.boolean().describe('true = shuffle on, false = shuffle off'),
       device_id: z.string().optional().describe('Target device ID'),
       response_format: ResponseFormat,
-      dry_run: DryRun,
+      dry_run: PlaybackDryRun,
     },
     async (args) => {
       if (args.dry_run) {
@@ -668,7 +668,7 @@ export function registerPlaybackTools(server: McpServer, client: SpotifyClient):
       state: z.enum(['off', 'context', 'track']).describe('Repeat mode'),
       device_id: z.string().optional().describe('Target device ID'),
       response_format: ResponseFormat,
-      dry_run: DryRun,
+      dry_run: PlaybackDryRun,
     },
     async (args) => {
       if (args.dry_run) {
@@ -762,7 +762,7 @@ export function registerPlaybackTools(server: McpServer, client: SpotifyClient):
       uri: z.string().describe('Spotify track or episode URI (e.g. spotify:track:...)'),
       device_id: z.string().optional().describe('Target device ID'),
       response_format: ResponseFormat,
-      dry_run: DryRun,
+      dry_run: PlaybackDryRun,
     },
     async (args) => {
       // dry_run (#57): validate the URI and preview the append — no POST.
@@ -856,7 +856,7 @@ export function registerPlaybackTools(server: McpServer, client: SpotifyClient):
       device_id: z.string().describe('Target device ID to transfer playback to'),
       play: z.boolean().optional().describe('Force play immediately (default: maintain current state)'),
       response_format: ResponseFormat,
-      dry_run: DryRun,
+      dry_run: PlaybackDryRun,
     },
     async (args) => {
       // dry_run (#57): moving playback interrupts whatever is streaming on the
@@ -904,7 +904,7 @@ export function registerPlaybackTools(server: McpServer, client: SpotifyClient):
         .optional()
         .describe('Resume playback on the target even if the session is currently paused (default: preserve the current play state)'),
       response_format: ResponseFormat,
-      dry_run: DryRun,
+      dry_run: PlaybackDryRun,
     },
     async (args) => {
       const state = await client.get<{

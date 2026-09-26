@@ -10,7 +10,7 @@ import { receiptRecords, receiptsLines, writeVerdict } from './playlistreceipts.
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { SpotifyApiError } from '../client.js';
 import type { SpotifyClient } from '../client.js';
-import { DryRun, describeDryRun, parseSpotifyUri, ResponseFormat } from '../shaping.js';
+import { PlaybackDryRun, describeDryRun, parseSpotifyUri, ResponseFormat } from '../shaping.js';
 import type { SpotifyPaged, SpotifyTrack } from '../types/spotify.js';
 
 type TextContent = { type: 'text'; text: string };
@@ -155,7 +155,7 @@ export function registerQueueOpsTools(server: McpServer, client: SpotifyClient):
       source_uri: z.string().describe('Source Spotify URI (playlist/album/artist/track/episode)'),
       mode: z.enum(['append', 'replace']).default('append').describe('append: add to end; replace: not supported — returns ok:false with guidance'),
       limit: z.number().int().min(1).max(200).optional().describe('Max tracks to queue (cap 200). Default 100.'),
-      dry_run: DryRun,
+      dry_run: PlaybackDryRun,
       response_format: ResponseFormat,
       device_id: z.string().optional().describe('Target device id for queue adds'),
     },
@@ -194,7 +194,7 @@ export function registerQueueOpsTools(server: McpServer, client: SpotifyClient):
       description: z.string().optional().describe('Playlist description (when creating a new playlist)'),
       include_current: z.boolean().default(true).describe('Include the currently-playing track/episode as the first item (default true)'),
       include_episodes: z.boolean().default(true).describe('Include episodes in the saved playlist (default true — set false for tracks only)'),
-      dry_run: DryRun,
+      dry_run: PlaybackDryRun,
       response_format: ResponseFormat,
     },
     async (args) => {
@@ -305,7 +305,7 @@ export function registerQueueOpsTools(server: McpServer, client: SpotifyClient):
     {
       uris: z.array(z.string()).min(1).max(200).describe('Spotify track/episode URIs to queue (1–200)'),
       device_id: z.string().optional().describe('Target device id'),
-      dry_run: DryRun,
+      dry_run: PlaybackDryRun,
       response_format: ResponseFormat,
     },
     async (args) => {

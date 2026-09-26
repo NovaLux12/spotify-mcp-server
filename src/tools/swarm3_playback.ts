@@ -21,6 +21,7 @@ import { getConfig } from '../config.js';
 import { backupDir } from './backup.js';
 import {
   MaxResults,
+  PlaybackDryRun,
   ResponseFormat,
   completenessFooter,
   describeDryRun,
@@ -60,17 +61,19 @@ function shape(rf: ResponseFormatValue, prose: string, payload: Record<string, u
   };
 }
 
-/** `dry_run` fragment defaulting to TRUE (repo convention: previews are the default). */
-const DryRunDefault = z
-  .boolean()
-  .optional()
-  .default(true)
-  .describe(
-    'Preview only: perform the read side and return a PLAN without changing anything. '
-      + 'Default true — pass false to commit.',
-  );
-
-const isDry = (args: { dry_run?: boolean }): boolean => args.dry_run ?? true;
+/**
+ * `dry_run` for the playback mutations (#836). This module used to declare its
+ * own `DryRunDefault` defaulting to TRUE while the rest of the playback set
+ * committed when the field was omitted; the two contracts shipped under one
+ * parameter name. `PlaybackDryRun` is the single playback contract now — an
+ * omitted `dry_run` commits, and `.default(false)` is what makes the published
+ * schema say so instead of leaving it to this fallback.
+ *
+ * `args.dry_run` is typed `boolean | undefined` by the SDK's shape projection,
+ * so the `=== true` test is what makes the handler agree with the schema's
+ * `default: false`. A `?? true` here would re-open the divergence this removed.
+ */
+const isDry = (args: { dry_run?: boolean }): boolean => args.dry_run === true;
 
 function formatMs(ms: number): string {
   const total = Math.max(0, Math.floor(ms / 1000));
@@ -435,11 +438,11 @@ export function registerSwarm3PlaybackTools(server: McpServer, client: SpotifyCl
   // -------------------------------------------------------------------------
   server.tool(
     'resume_playback_position',
-    'Resume a captured playback bookmark: transfer playback to the bookmarked device and seek to the bookmarked position. Preview by default — pass dry_run=false to execute.',
+    'Resume a captured playback bookmark: transfer playback to the bookmarked device and seek to the bookmarked position. Commits by default — pass dry_run=true to preview.',
     {
       bookmark_id: z.string().min(1).describe('Bookmark id as returned by capture_playback_position / list_playback_bookmarks'),
       play: z.boolean().optional().default(true).describe('Start playback after transferring. Default true'),
-      dry_run: DryRunDefault,
+      dry_run: PlaybackDryRun,
       response_format: ResponseFormat,
     },
     async (args: { bookmark_id: string; play?: boolean; dry_run?: boolean; response_format?: ResponseFormatValue }) => {
@@ -549,10 +552,10 @@ export function registerSwarm3PlaybackTools(server: McpServer, client: SpotifyCl
   // -------------------------------------------------------------------------
   server.tool(
     'delete_playback_bookmark',
-    'Delete one captured playback bookmark file from the local backup dir. Preview by default — pass dry_run=false to delete.',
+    'Delete one captured playback bookmark file from the local backup dir. Commits by default — pass dry_run=true to preview.',
     {
       bookmark_id: z.string().min(1).describe('Bookmark id to delete'),
-      dry_run: DryRunDefault,
+      dry_run: PlaybackDryRun,
       response_format: ResponseFormat,
     },
     async (args: { bookmark_id: string; dry_run?: boolean; response_format?: ResponseFormatValue }) => {
@@ -657,11 +660,11 @@ export function registerSwarm3PlaybackTools(server: McpServer, client: SpotifyCl
   // -------------------------------------------------------------------------
   server.tool(
     'apply_volume_plan',
-    'Set one target volume level across all (or selected) Spotify devices via per-device PUT /me/player/volume. Preview by default — pass dry_run=false to apply.',
+    'Set one target volume level across all (or selected) Spotify devices via per-device PUT /me/player/volume. Commits by default — pass dry_run=true to preview.',
     {
       volume: z.number().int().min(0).max(100).describe('Target volume percent for every selected device (0–100)'),
       device_ids: z.array(z.string().min(1)).optional().describe('Restrict to these device ids/names; default all volume-capable devices'),
-      dry_run: DryRunDefault,
+      dry_run: PlaybackDryRun,
       response_format: ResponseFormat,
     },
     async (args: { volume: number; device_ids?: string[]; dry_run?: boolean; response_format?: ResponseFormatValue }) => {
@@ -773,11 +776,11 @@ export function registerSwarm3PlaybackTools(server: McpServer, client: SpotifyCl
   // -------------------------------------------------------------------------
   server.tool(
     'split_queue_plan',
-    'Plan splitting the upcoming queue into runtime-bounded playlist chunks (default 30 minutes each). Preview by default — pass dry_run=false to actually create the playlists and fill them.',
+    'Plan splitting the upcoming queue into runtime-bounded playlist chunks (default 30 minutes each). Commits by default — pass dry_run=true to preview instead of creating the playlists.',
     {
       chunk_minutes: z.number().int().min(5).max(240).optional().default(30).describe('Target runtime per chunk in minutes. Default 30'),
       playlist_name_prefix: z.string().min(1).max(60).optional().default('Queue chunk').describe('Name prefix for created playlists. Default "Queue chunk"'),
-      dry_run: DryRunDefault,
+      dry_run: PlaybackDryRun,
       response_format: ResponseFormat,
     },
     async (args: { chunk_minutes?: number; playlist_name_prefix?: string; dry_run?: boolean; response_format?: ResponseFormatValue }) => {
@@ -1336,11 +1339,11 @@ export function registerSwarm3PlaybackTools(server: McpServer, client: SpotifyCl
   // -------------------------------------------------------------------------
   server.tool(
     'transfer_playback_with_state',
-    'Transfer playback to another device while restoring the full state: same track, position, shuffle and repeat. Preview by default — pass dry_run=false to execute the transfer.',
+    'Transfer playback to another device while restoring the full state: same track, position, shuffle and repeat. Commits by default — pass dry_run=true to preview.',
     {
       target_device: z.string().min(1).describe('Target device id or name substring'),
       play: z.boolean().optional().default(true).describe('Start playback after transferring. Default true'),
-      dry_run: DryRunDefault,
+      dry_run: PlaybackDryRun,
       response_format: ResponseFormat,
     },
     async (args: { target_device: string; play?: boolean; dry_run?: boolean; response_format?: ResponseFormatValue }) => {

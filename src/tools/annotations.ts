@@ -285,6 +285,41 @@ export const TOOL_SURFACE_BUDGET = Object.freeze({
   // know this cannot tell a deliberate repeat from a lost one. This supersedes
   // the 604,434B / 605,000B state the branch recorded against a pre-wave
   // ceiling; the gate below is the authority on whether it still fits.
+  // WARRANT #836: the playback family published no `dry_run` default at all, so
+  // a host reading `tools/list` could not tell an omitted flag from an explicit
+  // `false`. #827 established preview-by-default for the mutating tools it
+  // touched; an agent that learned that rule could therefore carry it across
+  // the family boundary and believe an omitted `dry_run` previews when it in
+  // fact commits. #836 rolls the playback mutations onto `PlaybackDryRun` (see
+  // `shaping.ts`), which publishes `"default": false` and names the commit
+  // semantics in the field description. The cost is ~16B of JSON key per tool
+  // (~736B across the family) plus the rewritten descriptions.
+  //
+  // Those bytes ARE the fix, and that is the reason this warrant reads
+  // differently from the ones above: this is the first entry whose warrant is a
+  // schema field a host actually reads rather than prose describing a
+  // behaviour the schema already carried.
+  //
+  // COST RECORD, NOT A RAISE. #836 needs no ceiling of its own: the aggregate
+  // it lands on sits inside the 620,000B carried by WARRANT SWEEP-2026-09
+  // above, which is a grant sized for the queue rather than for any single
+  // warrant. An earlier cut of this branch raised 607,000 -> 609,000 on its own
+  // +1,097B warrant; that raise was withdrawn once the sweep grant landed,
+  // because a second raise for bytes a grant already covers is exactly the
+  // reflex the CORRECTIONS note below is about. The measured deltas are kept
+  // here because they are the per-family record, and they are what a future
+  // reclaim-first pass should target.
+  //
+  // Measured per module via `surface-census --check`, never summed from
+  // per-tool estimates, and re-measured after each merge rather than carried
+  // over from a pre-rebase branch: exhaust2playback 17,306 -> 17,683B (+377),
+  // playback 12,287 -> 12,635B (+348), playbackintel 11,663 -> 11,837B (+174),
+  // playbackext 8,033 -> 8,178B (+145), queueops 3,449 -> 3,536B (+87), scenes
+  // 4,456 -> 4,514B (+58), and swarm3playback 14,247 -> 14,155B (-92).
+  // swarm3playback SHRINKS because it drops a private default-true fragment for
+  // the shared one; the six that grow are paying for a `default` key they
+  // previously did not publish at all. Those baselines are hand-maintained in
+  // the manifest below.
   //
   // CORRECTIONS to my first record of this raise, kept because the next author
   // should not repeat them: the headroom figure ignored the +1_000 derivation;
@@ -816,7 +851,7 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   manifestEntry('search', 'search', 'src/tools/search.ts', registerSearchTools, [1, 1821], { readOnlySafe: true }),
   manifestEntry('catalog', 'catalog', 'src/tools/catalog.ts', registerCatalogTools, [31, 26953], { readOnlySafe: true }),
   manifestEntry('library', 'library', 'src/tools/library.ts', registerLibraryTools, [16, 14957]),
-  manifestEntry('playback', 'playback', 'src/tools/playback.ts', registerPlaybackTools, [16, 12287]),
+  manifestEntry('playback', 'playback', 'src/tools/playback.ts', registerPlaybackTools, [16, 12635]),
   manifestEntry('following', 'following', 'src/tools/following.ts', registerFollowingTools, [5, 3953]),
   manifestEntry('users', 'users', 'src/tools/users.ts', registerUsersTools, [2, 1613]),
   manifestEntry('audiobooks', 'audiobooks', 'src/tools/audiobooks.ts', registerAudiobookTools, [4, 3715]),
@@ -927,10 +962,11 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   manifestEntry('searchhistory', 'searchhistory', 'src/tools/searchhistory.ts', registerSearchHistoryTools, [2, 1096], { readOnlySafe: true, scopeKey: 'search' }),
   manifestEntry('browse', 'browse', 'src/tools/browse.ts', registerBrowseTools, [3, 2634], { readOnlySafe: true, scopeKey: 'catalog' }),
   manifestEntry('artistwatch', 'artistwatch', 'src/tools/artistwatch.ts', registerArtistWatchTools, [6, 6284], { scopeKey: 'catalog' }),
-  manifestEntry('queueops', 'queueops', 'src/tools/queueops.ts', registerQueueOpsTools, [3, 3449], { scopeKey: 'playback' }),
-  manifestEntry('playbackext', 'playbackext', 'src/tools/playbackext.ts', registerPlaybackExtTools, [13, 8033], { scopeKey: 'playback' }),
-  manifestEntry('playbackintel', 'playbackintel', 'src/tools/playbackintel.ts', registerPlaybackIntelTools, [15, 11663], { scopeKey: 'playback' }),
-  manifestEntry('scenes', 'playback', 'src/tools/scenes.ts', registerScenesTools, [7, 4456], { scopeKey: 'playback' }),
+  manifestEntry('queueops', 'queueops', 'src/tools/queueops.ts', registerQueueOpsTools, [3, 3536], { scopeKey: 'playback' }),
+  manifestEntry('playbackext', 'playbackext', 'src/tools/playbackext.ts', registerPlaybackExtTools, [13, 8178], { scopeKey: 'playback' }),
+  manifestEntry('playbackintel', 'playbackintel', 'src/tools/playbackintel.ts', registerPlaybackIntelTools, [15, 11837], { scopeKey: 'playback' }),
+  manifestEntry('scenes', 'playback', 'src/tools/scenes.ts', registerScenesTools, [7, 4514], { scopeKey: 'playback' }),
+
   manifestEntry('playlisthealth', 'playlisthealth', 'src/tools/playlisthealth.ts', registerPlaylistHealthTools, [8, 5285], { scopeKey: 'playlists' }),
   manifestEntry('playlistdna', 'playlists', 'src/tools/playlistdna.ts', registerPlaylistDnaTools, [1, 1310], { readOnlySafe: true, scopeKey: 'playlists' }),
   manifestEntry('export', 'playlists', 'src/tools/export.ts', registerExportTools, [1, 1363], { scopeKey: 'playlists' }),
@@ -945,7 +981,7 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   // declares it.
   manifestEntry('exhaust2catalog', 'exhaust2catalog', 'src/tools/exhaust2_catalog.ts', registerExhaust2CatalogTools, [19, 19467], { readOnlySafe: true, scopeKey: 'catalog' }),
   manifestEntry('exhaust2enggating', 'exhaust2enggating', 'src/tools/exhaust2_enggating.ts', registerExhaust2EnggatingTools, [0, 0], { readOnlySafe: true, scopeKey: 'catalog' }),
-  manifestEntry('exhaust2playback', 'exhaust2playback', 'src/tools/exhaust2_playback.ts', registerExhaust2PlaybackTools, [23, 17306], { scopeKey: 'playback' }),
+  manifestEntry('exhaust2playback', 'exhaust2playback', 'src/tools/exhaust2_playback.ts', registerExhaust2PlaybackTools, [23, 17683], { scopeKey: 'playback' }),
   manifestEntry('exhaust2playlists', 'exhaust2playlists', 'src/tools/exhaust2_playlists.ts', registerExhaust2PlaylistsTools, [18, 23507], { scopeKey: 'playlists' }),
   manifestEntry('exhaust2misc', 'exhaust2misc', 'src/tools/exhaust2_misc.ts', registerExhaust2MiscTools, [27, 23866], { scopeKey: 'library' }),
   manifestEntry('exhaust2extra', 'exhaust2extra', 'src/tools/exhaust2_extra.ts', registerExhaust2ExtraTools, [3, 3695], { scopeKey: 'playlists' }),
@@ -956,7 +992,7 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   // [24, 18951] measured post-#1004 (top_genre_census reads /artists/{id} now).
   manifestEntry('swarm3analytics', 'swarm3analytics', 'src/tools/swarm3_analytics.ts', registerSwarm3AnalyticsTools, [24, 18951], { readOnlySafe: true, scopeKey: 'personalization' }),
   manifestEntry('swarm3library', 'swarm3library', 'src/tools/swarm3_library.ts', registerSwarm3LibraryTools, [24, 18092], { readOnlySafe: true, scopeKey: 'library' }),
-  manifestEntry('swarm3playback', 'swarm3playback', 'src/tools/swarm3_playback.ts', registerSwarm3PlaybackTools, [24, 14247], { scopeKey: 'playback' }),
+  manifestEntry('swarm3playback', 'swarm3playback', 'src/tools/swarm3_playback.ts', registerSwarm3PlaybackTools, [24, 14155], { scopeKey: 'playback' }),
   manifestEntry('swarm3playlistops', 'swarm3playlistops', 'src/tools/swarm3_playlistops.ts', registerSwarm3PlaylistopsTools, [24, 31777], { scopeKey: 'playlists' }),
   manifestEntry('swarm3snapshots', 'swarm3snapshots', 'src/tools/swarm3_snapshots.ts', registerSwarm3SnapshotsTools, [24, 23744], { scopeKey: 'playlists' }),
   manifestEntry('swarm4playlists', 'swarm4playlists', 'src/tools/swarm4_playlists.ts', registerSwarm4PlaylistsTools, [18, 22590], { scopeKey: 'playlists' }),
