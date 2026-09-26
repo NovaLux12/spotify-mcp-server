@@ -114,8 +114,9 @@ The table is generated from every TypeScript file recursively under `src/`, incl
 | `src/auth.ts` | Runtime module for src/auth.ts. (0 registered tools) | 631 |
 | `src/cache.ts` | Tiny LRU + TTL cache used by SpotifyClient for immutable catalog reads (#54). (0 registered tools) | 204 |
 | `src/chunk.ts` | The batch-size policy for the whole server, in one place (#512, #583). (0 registered tools) | 45 |
-| `src/client.ts` | Runtime module for src/client.ts. (0 registered tools) | 1027 |
+| `src/client.ts` | Runtime module for src/client.ts. (0 registered tools) | 1032 |
 | `src/config.ts` | Central configuration loader for the SPOTIFY_MCP_* environment family. (0 registered tools) | 227 |
+| `src/cover-image.ts` | Shared cover-image helpers for the three playlist cover tools (#880). (0 registered tools) | 96 |
 | `src/csvsafe.ts` | CSV cell rendering shared by every writer that emits a spreadsheet (#630). (0 registered tools) | 32 |
 | `src/gating.ts` | The app-registration-gated error contract (#791, #428, #429; audit A14-016/A8-036) -- the graceful 403 mapping for Spotify's app-registration-gated endpoint family (probed 2026-08-26, memory/edge-probe-2026-08-26.json). (0 registered tools) | 204 |
 | `src/history.ts` | Opt-in mutation history JSONL (#64, hardened in #628). (0 registered tools) | 375 |
@@ -147,7 +148,7 @@ The table is generated from every TypeScript file recursively under `src/`, incl
 | `src/tools/episodemgmt.ts` | episodemgmt (#204, #187, #230): archive_played_episodes. mark_episode_played was removed in #230 — PUT /me/episodes/{id} with resume_point is not a real Spotify endpoint (real endpoint is PUT /me/episodes? (1 registered tool) | 273 |
 | `src/tools/exhaust2_catalog.ts` | exhaust2 catalog slice — feature swarm v1.24.0 (issues #332–#357). (19 registered tools) | 1558 |
 | `src/tools/exhaust2_enggating.ts` | exhaust2 enggating slice -- now a registration placeholder only (#791). (0 registered tools) | 43 |
-| `src/tools/exhaust2_extra.ts` | exhaust2 extra slice — the final three playlists-surface tools (#398-#400). (3 registered tools) | 558 |
+| `src/tools/exhaust2_extra.ts` | exhaust2 extra slice — the final three playlists-surface tools (#398-#400). (3 registered tools) | 536 |
 | `src/tools/exhaust2_misc.ts` | exhaust2 misc slice — feature swarm v1.24.0. (27 registered tools) | 1845 |
 | `src/tools/exhaust2_playback.ts` | exhaust2 playback slice — feature swarm v1.24.0 (issues #358-#379). (23 registered tools) | 1362 |
 | `src/tools/exhaust2_playlists.ts` | exhaust2 playlists slice — feature swarm v1.24.0 (issues #380–#400). (18 registered tools) | 1786 |
@@ -170,7 +171,7 @@ The table is generated from every TypeScript file recursively under `src/`, incl
 | `src/tools/playlisthealth.ts` | Runtime module for src/tools/playlisthealth.ts. (8 registered tools) | 481 |
 | `src/tools/playlistmisc.ts` | Playlist misc (#208): mood-vibe template playlists composed from the user's existing library/top data. pin/unpin (follow/unfollow) moved to playlistfollow.ts: they call /me/library, which authorises a different either-of scope set than the playlist-modify pair this file's tools need (#1005), so they need their own manifest row to be gated honestly. (1 registered tool) | 152 |
 | `src/tools/playlistops.ts` | Playlist power tools (#96): merge_playlists, diff_playlists, overlap_playlists. (3 registered tools) | 483 |
-| `src/tools/playlists.ts` | Runtime module for src/tools/playlists.ts. (26 registered tools) | 2326 |
+| `src/tools/playlists.ts` | Runtime module for src/tools/playlists.ts. (26 registered tools) | 2325 |
 | `src/tools/podcastsession.ts` | Podcast session composer (#112 idea 3): greedy-packs the user's saved podcast episodes into a listening session of a fixed length in minutes, then (optionally) starts it on a device. (2 registered tools) | 406 |
 | `src/tools/portability.ts` | Portability (#188 + #192 + #238 + #240 + #223 + #220): save_discover_weekly / save_release_radar (archive personalized playlists) + export_library_json / export_followed_artists + export_profile_state/import_profile_state + export_listening_history (11 registered tools) | 1965 |
 | `src/tools/queueops.ts` | queueops (#194, #202, #224, #231): queue_playlist + save_queue_as_playlist. queue_reorder / queue_remove / queue_clear were removed in #231 — those endpoints do not exist (only GET and POST /me/player/queue are real). (3 registered tools) | 320 |
