@@ -229,8 +229,6 @@ describe('MCP stdio smoke (real src/index.ts)', () => {
       `removed tools must stay removed, found again: [${forbidden.join(', ')}]`,
     );
     assert.ok(tools.length >= REQUIRED_TOOLS.length, `total tool count: ${tools.length} should cover at least the ${REQUIRED_TOOLS.length} required tools`);
-    // Visible in assertion output even on success paths via failure messages above.
-    console.log(`tools/list total tool count: ${tools.length}`);
   });
 
   it('exposes all prompt templates', async () => {
