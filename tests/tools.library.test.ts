@@ -876,7 +876,8 @@ describe('partial per-type writes keep the committed subset visible and invertib
 
     assert.match(text, /^Saved 2 of 3 item\(s\) \(2 of 3 groups landed\) — not saved: /);
     assert.match(text, /audiobook \(1\): Insufficient client scope\./);
-    assert.match(text, /Receipt rcpt_\d+: VERIFIED \(library\)/);
+    // Boot-scoped receipt id (#587): `rcpt_<bootId>-<n>`.
+    assert.match(text, /Receipt rcpt_[a-z0-9]+-\d+: VERIFIED \(library\)/);
   });
 
   it('remove_saved_items issues a removed-direction receipt that undo inverts as exactly the committed subset', async () => {

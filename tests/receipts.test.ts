@@ -9,16 +9,31 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
 import {
+  __resetReceiptStoreForTests,
   formatReceipt,
+  getAllReceipts,
   issueReceipt,
+  isReceiptsPersistent,
+  receiptMissMessage,
+  receiptRetentionLabel,
+  receiptsFilePath,
   verifyReceipt,
+  MAX_RECEIPTS,
   type Receipt,
   type ReceiptClient,
 } from '../src/receipts.js';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { SpotifyClient } from '../src/client.js';
 import { REGISTRAR_MANIFEST, registerManifestModule } from '../src/tools/annotations.js';
+
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
 // ---------------------------------------------------------------------------
 // Stub plumbing
@@ -78,7 +93,9 @@ describe('issueReceipt playlist_items', () => {
     assert.equal(r.after, 2);
     assert.equal(r.before, 0);
     assert.equal(r.id, 'pl1');
-    assert.match(r.receipt_id, /^rcpt_\d+$/);
+    // Boot-scoped since #587: the boot segment keeps ids from two processes
+    // apart, so a stale id can never name a later mutation.
+    assert.match(r.receipt_id, /^rcpt_[a-z0-9]+-\d+$/);
     // One page fetch at limit=100/offset=0.
     assert.deepEqual(client.calls, [
       { method: 'GET', path: '/playlists/pl1/items', arg: { limit: '100', offset: '0' } },
@@ -601,5 +618,262 @@ describe('verify_receipt label direction (#586)', () => {
     const { text } = await callVerifyReceipt(receipt.receipt_id);
     assert.match(text, /all uris confirmed absent/);
     assert.doesNotMatch(text, /all uris confirmed\n/);
+  });
+});
+
+// #587 — receipts that survive a restart
+//
+// "Restart" is exercised two ways, because the two prove different things:
+// a real second PROCESS (two `node --import tsx` children, so the in-memory
+// store genuinely starts empty), and a store reset in-process for the
+// retention rules that are about the trail's content.
+// ---------------------------------------------------------------------------
+
+/** Run a receipt operation in a genuinely separate process. */
+function runReceiptChild(
+  mode: 'issue' | 'issue-then-read',
+  env: Record<string, string>,
+): { fresh: Receipt; stale: Receipt | null } {
+  const script = `
+    const { issueReceipt, verifyReceipt } = await import(
+      new URL('src/receipts.ts', 'file://' + process.cwd() + '/').href
+    );
+    const client = {
+      get: async (path) =>
+        path === '/me/library/contains'
+          ? (process.env.CHILD_URIS ?? '').split(',').map(() => true)
+          : null,
+    };
+    const fresh = await issueReceipt(client, {
+      kind: 'library',
+      uris: (process.env.CHILD_URIS ?? '').split(','),
+    });
+    const stale = process.env.CHILD_ID
+      ? (verifyReceipt(process.env.CHILD_ID) ?? null)
+      : null;
+    process.stdout.write(JSON.stringify({ fresh, stale }));
+  `;
+  const out = execFileSync(
+    process.execPath,
+    ['--import', 'tsx', '--input-type=module', '-e', script],
+    { cwd: ROOT, encoding: 'utf8', env: { ...process.env, ...env, CHILD_MODE: mode } },
+  );
+  return JSON.parse(out) as { fresh: Receipt; stale: Receipt | null };
+}
+
+async function withTempDataDir<T>(
+  vars: Record<string, string>,
+  run: (dir: string) => T | Promise<T>,
+): Promise<T> {
+  const dir = mkdtempSync(join(tmpdir(), 'receipts-587-'));
+  const saved = new Map<string, string | undefined>();
+  for (const [key, value] of Object.entries({ ...vars, SPOTIFY_MCP_RECEIPTS_DIR: dir })) {
+    saved.set(key, process.env[key]);
+    process.env[key] = value;
+  }
+  try {
+    return await run(dir);
+  } finally {
+    for (const [key, value] of saved) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+const PERSIST_ON = { SPOTIFY_MCP_RECEIPTS: '1' };
+const PERSIST_OFF = { SPOTIFY_MCP_RECEIPTS: '' };
+
+describe('receipts across a restart (#587)', () => {
+  it('a receipt issued before a restart still resolves after it, with the same id and content', async () => {
+    await withTempDataDir(PERSIST_ON, () => {
+      const first = runReceiptChild('issue', { CHILD_URIS: 'spotify:track:keep1,spotify:track:keep2' });
+      // A second process: nothing in memory, everything it knows comes off disk.
+      const after = runReceiptChild('issue-then-read', {
+        CHILD_URIS: 'spotify:track:later',
+        CHILD_ID: first.fresh.receipt_id,
+      });
+      assert.ok(after.stale, 'the pre-restart receipt must still be resolvable');
+      assert.equal(after.stale.receipt_id, first.fresh.receipt_id);
+      assert.deepEqual(after.stale.uris, ['spotify:track:keep1', 'spotify:track:keep2']);
+      assert.deepEqual(after.stale, JSON.parse(JSON.stringify(first.fresh)) as Receipt);
+    });
+  });
+
+  it('an id from an earlier process never resolves to a different mutation', async () => {
+    await withTempDataDir(PERSIST_OFF, () => {
+      // Counters restart at 1 in a new process, so a bare `rcpt_1` from the
+      // previous session would silently resolve to whatever this session's
+      // first mutation was.
+      const before = JSON.parse(
+        execFileSync(
+          process.execPath,
+          [
+            '--import',
+            'tsx',
+            '--input-type=module',
+            '-e',
+            `const { issueReceipt } = await import(new URL('src/receipts.ts', 'file://' + process.cwd() + '/').href);
+             const client = { get: async () => [true] };
+             const r = await issueReceipt(client, { kind: 'library', uris: ['spotify:track:OLD'] });
+             process.stdout.write(JSON.stringify(r));`,
+          ],
+          { cwd: ROOT, encoding: 'utf8', env: { ...process.env, ...PERSIST_OFF } },
+        ),
+      ) as Receipt;
+      assert.equal(before.uris[0], 'spotify:track:OLD');
+
+      const after = runReceiptChild('issue-then-read', {
+        CHILD_URIS: 'spotify:track:NEW',
+        CHILD_ID: before.receipt_id,
+      });
+      assert.notEqual(after.fresh.receipt_id, before.receipt_id, 'ids must be boot-scoped');
+      assert.equal(after.stale, null, 'a stale id must resolve to nothing, never to a later receipt');
+      assert.notDeepEqual(after.fresh.uris, before.uris);
+    });
+  });
+
+  it('the miss message names the session scope and the retention rule when persistence is off', () => {
+    withTempDataDir(PERSIST_OFF, () => {
+      __resetReceiptStoreForTests();
+      const message = receiptMissMessage('rcpt_gone-1');
+      assert.match(message, /Unknown or expired receipt "rcpt_gone-1"/);
+      assert.match(message, /session-scoped/);
+      assert.match(message, /not persisted to disk/);
+      assert.match(message, new RegExp(`${MAX_RECEIPTS} most recent mutations`));
+      assert.match(message, /24h/);
+    });
+  });
+
+  it('the miss message names the on-disk trail when persistence is on', async () => {
+    await withTempDataDir(PERSIST_ON, (dir) => {
+      __resetReceiptStoreForTests();
+      const message = receiptMissMessage('rcpt_gone-1');
+      assert.ok(message.includes(join(dir, 'receipts.jsonl')), message);
+      assert.match(message, new RegExp(`${MAX_RECEIPTS} most recent mutations`));
+    });
+  });
+
+  it('reports a TTL of hours in the retention label, and no time limit when disabled', () => {
+    assert.equal(receiptRetentionLabel({}), 'for up to 24h');
+    assert.equal(receiptRetentionLabel({ SPOTIFY_MCP_RECEIPTS_TTL_HOURS: '2' }), 'for up to 2h');
+    assert.equal(receiptRetentionLabel({ SPOTIFY_MCP_RECEIPTS_TTL_HOURS: '0' }), 'with no time limit');
+  });
+
+  it('is opt-in: nothing is written and nothing is loaded when persistence is off', async () => {
+    await withTempDataDir(PERSIST_OFF, async (dir) => {
+      assert.equal(isReceiptsPersistent(), false);
+      __resetReceiptStoreForTests();
+      const client = stubClient((_p, arg) => (arg?.uris ?? '').split(',').map(() => true));
+      const receipt = await issueReceipt(client, { kind: 'library', uris: ['spotify:track:ephemeral'] });
+      assert.ok(verifyReceipt(receipt.receipt_id));
+      assert.throws(() => readFileSync(join(dir, 'receipts.jsonl')));
+    });
+  });
+});
+
+describe('receipt retention on disk (#587)', () => {
+  it('reloads the newest MAX_RECEIPTS after a restart and drops what the cap evicted', async () => {
+    await withTempDataDir(PERSIST_ON, async (dir) => {
+      __resetReceiptStoreForTests();
+      const client = stubClient((_p, arg) => (arg?.uris ?? '').split(',').map(() => true));
+      const issued: Receipt[] = [];
+      for (let i = 0; i < MAX_RECEIPTS + 1; i++) {
+        issued.push(await issueReceipt(client, { kind: 'library', uris: [`spotify:track:f${i}`] }));
+      }
+      const trailLines = readFileSync(join(dir, 'receipts.jsonl'), 'utf8').trim().split('\n');
+      assert.equal(trailLines.length, MAX_RECEIPTS + 1, 'every issue is appended before a compaction');
+
+      __resetReceiptStoreForTests(); // restart
+      const reloaded = getAllReceipts();
+      assert.equal(reloaded.length, MAX_RECEIPTS);
+      assert.equal(verifyReceipt(issued[0].receipt_id), undefined, 'the FIFO-oldest receipt is gone');
+      assert.deepEqual(verifyReceipt(issued[1].receipt_id)?.uris, issued[1].uris);
+      assert.deepEqual(verifyReceipt(issued[MAX_RECEIPTS].receipt_id)?.uris, [
+        `spotify:track:f${MAX_RECEIPTS}`,
+      ]);
+    });
+  });
+
+  it('keeps the undo anchor — the rows a mutation created — across a restart', async () => {
+    await withTempDataDir(PERSIST_ON, async () => {
+      __resetReceiptStoreForTests();
+      const client = stubClient((_p) =>
+        pagedItems([track('spotify:track:a'), track('spotify:track:b'), track('spotify:track:a')]),
+      );
+      const receipt = await issueReceipt(client, {
+        kind: 'playlist_items',
+        id: 'pl1',
+        uris: ['spotify:track:a'],
+      });
+      assert.deepEqual(receipt.affected, [{ uri: 'spotify:track:a', positions: [2] }]);
+
+      __resetReceiptStoreForTests(); // restart
+      const reloaded = verifyReceipt(receipt.receipt_id);
+      assert.deepEqual(reloaded?.affected, [{ uri: 'spotify:track:a', positions: [2] }]);
+      assert.deepEqual(reloaded?.occurrences, { 'spotify:track:a': 2 });
+      assert.deepEqual(reloaded, JSON.parse(JSON.stringify(receipt)) as Receipt);
+    });
+  });
+
+  it('compacts the trail instead of growing it without bound', async () => {
+    await withTempDataDir(PERSIST_ON, async (dir) => {
+      __resetReceiptStoreForTests();
+      const client = stubClient((_p, arg) => (arg?.uris ?? '').split(',').map(() => true));
+      for (let i = 0; i < MAX_RECEIPTS * 5; i++) {
+        await issueReceipt(client, { kind: 'library', uris: [`spotify:track:c${i}`] });
+      }
+      const lines = readFileSync(join(dir, 'receipts.jsonl'), 'utf8').trim().split('\n');
+      assert.ok(lines.length <= MAX_RECEIPTS * 2, `trail grew to ${lines.length} lines`);
+      assert.equal(getAllReceipts().length, MAX_RECEIPTS);
+    });
+  });
+
+  it('expires a receipt past the TTL, and reports it as expired rather than unknown', async () => {
+    await withTempDataDir(PERSIST_ON, async (dir) => {
+      __resetReceiptStoreForTests();
+      const client = stubClient((_p, arg) => (arg?.uris ?? '').split(',').map(() => true));
+      const receipt = await issueReceipt(client, { kind: 'library', uris: ['spotify:track:stale'] });
+
+      // Age the receipt on disk by a day past the 24h default, as a day-old
+      // trail would be after the host was off overnight.
+      const file = join(dir, 'receipts.jsonl');
+      const aged = readFileSync(file, 'utf8')
+        .trim()
+        .split('\n')
+        .map((line) => {
+          const parsed = JSON.parse(line) as Receipt;
+          return JSON.stringify({ ...parsed, issued_at: Date.now() - 25 * 3_600_000 });
+        });
+      writeFileSync(file, aged.join('\n') + '\n', { encoding: 'utf8', mode: 0o600 });
+
+      __resetReceiptStoreForTests(); // restart
+      assert.equal(verifyReceipt(receipt.receipt_id), undefined);
+      assert.equal(getAllReceipts().length, 0);
+      assert.match(receiptMissMessage(receipt.receipt_id), /Unknown or expired/);
+    });
+  });
+
+  it('keeps a receipt whose TTL is disabled and one with no recorded time', async () => {
+    await withTempDataDir({ ...PERSIST_ON, SPOTIFY_MCP_RECEIPTS_TTL_HOURS: '0' }, async (dir) => {
+      __resetReceiptStoreForTests();
+      const client = stubClient((_p, arg) => (arg?.uris ?? '').split(',').map(() => true));
+      const receipt = await issueReceipt(client, { kind: 'library', uris: ['spotify:track:forever'] });
+      const file = join(dir, 'receipts.jsonl');
+      writeFileSync(
+        file,
+        [
+          JSON.stringify({ ...JSON.parse(readFileSync(file, 'utf8')), receipt_id: 'rcpt_legacy-1', issued_at: Date.now() - 90 * 86_400_000 }),
+          JSON.stringify({ receipt_id: 'rcpt_untimed-1', kind: 'library', verified: true, missing: [], uris: ['spotify:track:untimed'] }),
+        ].join('\n') + '\n',
+        { encoding: 'utf8', mode: 0o600 },
+      );
+
+      __resetReceiptStoreForTests(); // restart
+      assert.ok(verifyReceipt('rcpt_legacy-1'), 'TTL 0 means no expiry');
+      assert.ok(verifyReceipt('rcpt_untimed-1'), 'an unknown age is not an expired one');
+      assert.equal(verifyReceipt(receipt.receipt_id), undefined, 'the overwritten id is simply gone');
+    });
   });
 });

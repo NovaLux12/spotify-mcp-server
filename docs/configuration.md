@@ -18,6 +18,9 @@ The variables below are read at the documented call sites; set them in your MCP 
 | `SPOTIFY_MCP_FETCH_ALL_CAP` | `500` | Hard cap for `fetch_all=true` pagination walks. |
 | `SPOTIFY_MCP_HISTORY` | unset | `1`, `true`, `yes`, or `on` logs one JSONL line per agent-driven mutation. |
 | `SPOTIFY_MCP_HISTORY_DIR` | `~/.spotify-mcp/history` | Directory containing `mutations.jsonl`. |
+| `SPOTIFY_MCP_RECEIPTS` | unset | `1`, `true`, `yes`, or `on` persists mutation receipts to `receipts.jsonl` so `verify_receipt` and `undo_mutation` survive a restart. Unset keeps them in process memory only, and every miss says so. |
+| `SPOTIFY_MCP_RECEIPTS_DIR` | `~/.spotify-mcp` | Directory containing `receipts.jsonl`; falls back to `SPOTIFY_MCP_HISTORY_DIR` when unset. |
+| `SPOTIFY_MCP_RECEIPTS_TTL_HOURS` | `24` | How long a persisted receipt stays resolvable; `0` disables expiry. The newest 100 receipts are kept either way, FIFO. |
 | `SPOTIFY_MCP_TOOLSETS` | unset (all) | Comma-separated toolsets to register. `all`, empty, or unset registers everything. |
 | `SPOTIFY_MCP_ENABLE_TOOLS` | unset | Comma-separated registration-key overrides forced on. |
 | `SPOTIFY_MCP_DISABLE_TOOLS` | unset | Comma-separated registration-key overrides forced off; disable wins over enable. |
@@ -76,8 +79,9 @@ Set `SPOTIFY_MCP_HISTORY=1` to append one JSONL record per agent-driven mutation
 
 Each record's `who` field names the tool that issued the mutation (e.g. `add_to_playlist`), falling back to `agent` only when the call did not come through a tool. `history_search` matches on it, and the `spotify_doctor` row `history` reports the resolved ledger path plus how many appends have been lost. A lost append never fails the mutation it describes, but it warns once per process on stderr and turns that doctor row red, because a trail with gaps otherwise reads as complete when it is not.
 
-Mutation receipts are a different thing from that ledger and have no environment variable: they are held in memory for the 100 most recent mutations, so `verify_receipt` can only answer within the session that produced them, and they are gone when the process exits. Undo durability across restarts comes from `SPOTIFY_MCP_HISTORY` above. (PRIVACY.md states the same limit.)
+### Mutation receipts
 
+Set `SPOTIFY_MCP_RECEIPTS=1` to persist each mutation receipt to `receipts.jsonl` and reload the newest 100 on startup, so `verify_receipt` and `undo_mutation` still work after a host restart, a crash, or a session longer than 100 mutations. `SPOTIFY_MCP_RECEIPTS_DIR` sets the directory (it falls back to `SPOTIFY_MCP_HISTORY_DIR`, then `~/.spotify-mcp`); `SPOTIFY_MCP_RECEIPTS_TTL_HOURS` sets the retention window (default 24 hours, `0` for no expiry). Receipt ids are scoped to the process that issued them (`rcpt_<bootId>-<n>`), so an id from an earlier session resolves to nothing rather than to a different mutation. With persistence off the store is process-local, and a miss reports that scope and the retention rule instead of implying account history.
 ### Toolsets and registration keys
 
 `SPOTIFY_MCP_TOOLSETS` accepts a comma-separated subset of these toolsets, or `all`/empty/unset for the full surface:
