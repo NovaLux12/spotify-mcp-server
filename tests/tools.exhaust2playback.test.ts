@@ -153,7 +153,7 @@ async function clearSidecar(): Promise<void> {
 }
 
 // sidecar isolation per test file run
-import { mkdtemp, mkdir, writeFile, rm, chmod, stat } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, rm, chmod, stat, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 const tmpRoot = await mkdtemp(join(tmpdir(), 'exhaust2-pb-'));

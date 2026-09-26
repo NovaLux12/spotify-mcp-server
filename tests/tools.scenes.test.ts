@@ -6,9 +6,9 @@
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import { z } from 'zod';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, stat, writeFile, readFile, mkdir } from 'node:fs/promises';
+import { mkdtemp, rm, stat, writeFile, readFile, mkdir, chmod } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../src/client.js';
 import {
