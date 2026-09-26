@@ -313,6 +313,35 @@ describe('tool surface: annotations', () => {
     }
   });
 
+  it('keeps the derived-analytics tools off the default surface (#695)', async () => {
+    // Spelled out, not imported: the opt-in env var's name and this list are
+    // the public contract of #695, and a rename that silently updated both the
+    // registrar and this test would keep the two agreeing while the gate
+    // stopped matching the documentation.
+    const GATED = [
+      'discovery_ratio',
+      'listening_clock',
+      'listening_clock_heatmap',
+      'artist_listening_clock',
+      'mood_bucket_report',
+      'weekday_listening_report',
+      'binge_detector_report',
+    ];
+    // The real server over stdio, not a stubbed registry: a stub would keep
+    // passing if the module started registering these unconditionally.
+    const off = (await listTools({ SPOTIFY_MCP_EXPERIMENTAL_ANALYTICS: '' })).map((tool) => tool.name);
+    const reachable = GATED.filter((name) => off.includes(name));
+    assert.deepEqual(reachable, [], `derived analytics tools must be unregistered without the opt-in: ${reachable.join(', ')}`);
+    // And the ungated siblings of the same module must survive, or the gate
+    // would be indistinguishable from deleting the module.
+    for (const sibling of ['listening_history_export', 'weekly_rotation_report']) {
+      assert.ok(off.includes(sibling), `ungated sibling ${sibling} must stay registered without the opt-in`);
+    }
+    const on = (await listTools({ SPOTIFY_MCP_EXPERIMENTAL_ANALYTICS: '1' })).map((tool) => tool.name);
+    const missing = GATED.filter((name) => !on.includes(name));
+    assert.deepEqual(missing, [], `derived analytics tools must be registered with the opt-in: ${missing.join(', ')}`);
+  });
+
   it('exposes exactly the promised stable defaults, and only where declared', async () => {
     const tools = await listTools({});
     const byName = new Map(tools.map((tool) => [tool.name, tool]));

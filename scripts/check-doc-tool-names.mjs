@@ -64,7 +64,20 @@ const registrationKeyNames = new Set(census.registrationKeyNames ?? []);
  * it replaces; every other retired name still fails the gate, so this cannot
  * become a graveyard.
  */
-const retiredToolNames = new Set(['get_show_episodes']);
+const retiredToolNames = new Set([
+  'get_show_episodes',
+  // #695: off by default behind SPOTIFY_MCP_EXPERIMENTAL_ANALYTICS, so absent
+  // from the default registry that this check resolves names against. Their
+  // absence is pinned end-to-end in tests/tool.surface.test.ts; the compliance
+  // note has to be able to name them like any other tool.
+  'discovery_ratio',
+  'listening_clock',
+  'listening_clock_heatmap',
+  'artist_listening_clock',
+  'mood_bucket_report',
+  'weekday_listening_report',
+  'binge_detector_report',
+]);
 const documentedMetadata = new Set([
   'toolset_trimmed', 'scope_filtered', 'read_only_hidden',
   'deprecated_inputs', 'deprecation_note', 'auth', 'forbidden', 'not_found',
