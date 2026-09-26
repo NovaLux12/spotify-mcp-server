@@ -471,6 +471,12 @@ function gatedEndpointTable() {
       : family.id === 'browse-new-releases'
         ? '*(none — no shipped tool reads this path)*'
         : '*(none — migrated to `GET /me/library/contains`)*';
+    // `fallback` answers "what does the tool do". `reason` is deliberately NOT
+    // a column: every family here is a Feb 2026 changelog removal, so a column
+    // of eight identical cells would assert a distinction the data does not
+    // make. `checkGatedEndpointTruth` still validates the field, and a family
+    // that is only observed-gated (not removed) will show up here the moment
+    // one exists -- the summary line below the table is derived from this.
     const behaviour = family.tools.length === 0
       ? 'Replaced; no call site'
       : family.fallback === 'replaced'
@@ -478,11 +484,18 @@ function gatedEndpointTable() {
         : '403 explained';
     return `| \`${family.id}\` — ${family.label} | ${tools} | ${behaviour} |`;
   });
+  const removed = GATED_FAMILIES.filter((f) => f.reason === 'removal').length;
+  const observed = GATED_FAMILIES.length - removed;
+  // A blank line first: without it the sentence is absorbed into the table's
+  // last row by every Markdown renderer.
+  const summary = observed === 0
+    ? `\n\nAll ${removed} families above are operations Spotify's February 2026 changelog marks \`[REMOVED]\`.`
+    : `\n\n${removed} of ${GATED_FAMILIES.length} families above are operations Spotify's February 2026 changelog marks \`[REMOVED]\`; the other ${observed} answer 403 without being listed as removed.`;
   return [
     '| Endpoint family | Shipped tools that call it | On a current registration |',
     '|---|---|---|',
     ...rows,
-  ].join('\n');
+  ].join('\n') + summary;
 }
 
 /**

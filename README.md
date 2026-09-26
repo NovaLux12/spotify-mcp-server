@@ -243,6 +243,8 @@ So a 403 here is a property of the registration, not of the tool. No tool is hid
 | `me-type-contains` — the documented `/me/{type}/contains` checks (tracks, albums, shows, episodes, audiobooks, following) | `check_episode_saved`, `remove_saved_episode`, `check_following_artists`, `restore_library_snapshot` | 403 explained |
 | `playlist-followers-contains` — `/playlists/{id}/followers/contains` | *(none — migrated to `GET /me/library/contains`)* | Replaced; no call site |
 | `batch-several` — the multi-id `?ids=` batch endpoints (`/tracks`, `/albums`, `/artists`, `/episodes`, `/shows`, `/audiobooks`, `/chapters`) | `get_several_tracks`, `get_several_albums`, `get_several_artists` | Replaced with per-id reads |
+
+All 8 families above are operations Spotify's February 2026 changelog marks `[REMOVED]`.
 <!-- END:generated gated-endpoints -->
 
 Confirm the list yourself against the source of truth:
