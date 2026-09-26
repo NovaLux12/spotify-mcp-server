@@ -13,6 +13,7 @@ import {
   resolveMaxResults,
   truncateItems,
   paginationInfo,
+  nextPageLine,
 } from '../shaping.js';
 
 /** Spotify's February 2026 /search cap: requests above 10 return Invalid limit. */
@@ -246,7 +247,8 @@ export function registerSearchTools(server: McpServer, client: SpotifyClient): v
         ),
       );
       if (limit + offset < maxTotal) {
-        lines.push(`Next page: offset=${offset + limit}`);
+        const pageLine = nextPageLine(offset + limit);
+        if (pageLine) lines.push(pageLine);
       }
 
       // Only the header line means every section was absent or empty —

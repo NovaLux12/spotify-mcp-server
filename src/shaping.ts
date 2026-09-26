@@ -901,6 +901,21 @@ export function paginationInfo(opts: {
 }
 
 /**
+ * The one-line paging signal a paged read prints, shared by every tool that
+ * enumerates via `offset` (#781).
+ *
+ * A line-oriented agent never reads `structuredContent`, so a `next_offset`
+ * that lives only there is invisible to it. Callers derive the line from the
+ * same value they put in the payload, so prose and structured content cannot
+ * disagree about which page comes next. A null offset yields no line at all:
+ * "keep going to offset=N" on an exhausted result set is a false instruction,
+ * and printing one would tell the agent to page forever.
+ */
+export function nextPageLine(nextOffset: number | null): string | null {
+  return nextOffset === null ? null : `Next page: offset=${nextOffset}`;
+}
+
+/**
  * Machine-readable payload emitted as MCP structuredContent alongside the
  * human text (#52). `extra` carries endpoint-specific top-level fields.
  */

@@ -294,8 +294,10 @@ describe('production truncation boundary', () => {
   it('stays silent when total describes a wider population than the tool can return', () => {
     const server = new McpServer({ name: 'truncation-page-scoped-total', version: '0.0.0' });
     const boundary = installTruncationBoundary(server);
-    // search_by_isrc exposes no offset and no max_results: an index-wide
+    // A tool that exposes neither an offset nor a max_results: an index-wide
     // `total` here is not something the caller can act on by paging.
+    // search_by_isrc used to be exactly this shape and gained `offset` in
+    // #781, which is why its next_offset is now worth emitting.
     server.tool('exact_isrc_search', 'Exact match', { market: z.string().optional() }, async () => ({ content: [] }));
     const shaped = boundary.shape('exact_isrc_search', {}, {
       content: [{ type: 'text', text: 'ISRC match (1841 total, showing 1):\n  • spotify:track:x' }],

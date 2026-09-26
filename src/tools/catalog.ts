@@ -24,6 +24,7 @@ import {
   resolveMaxResults,
   truncateItems,
   paginationInfo,
+  nextPageLine,
   listStructuredContent,
   parseSpotifyUri,
   type ResponseFormatValue,
@@ -1299,7 +1300,26 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
           lines.push(`  \u2022 "${name}"${extra} | URI: ${uri}`);
         });
         if (trunc.footer) lines.push('', `(${trunc.footer})`);
-        const pagination = paginationInfo({ total, offset, limit, returned: trunc.items.length });
+        // The paging verdict is made on the total Spotify actually reported.
+        // `total` above falls back to `items.length` for display when the
+        // section omits it, and that fallback would read as "this is the whole
+        // result set" — silencing the paging signal on a page that is full.
+        // A missing total is a missing total (#6: a value that could not be
+        // read is not a value); `paginationInfo` then falls back to the
+        // page-full heuristic instead of a fabricated end.
+        const pagination = paginationInfo({
+          total: typeof section?.total === 'number' ? section.total : null,
+          offset,
+          limit,
+          returned: trunc.items.length,
+        });
+        // #781: the offset to continue from is only useful in prose. A
+        // line-oriented agent never reads `structuredContent`, so the same
+        // `next_offset` the payload carries is printed here; null prints
+        // nothing, because an exhausted page must not tell the agent to keep
+        // going.
+        const pageLine = nextPageLine(pagination.next_offset);
+        if (pageLine) lines.push(pageLine);
         return { content: [{ type: 'text', text: lines.join('\n') }], structuredContent: { query: args.query, type: kind, items: trunc.items, total, pagination } };
       },
     );

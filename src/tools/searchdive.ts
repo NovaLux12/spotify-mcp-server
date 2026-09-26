@@ -3,7 +3,7 @@ import { MARKET_CODE } from './catalog.js';
 import { recordSearch } from './searchhistory.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
-import { ResponseFormat, MaxResults, resolveMaxResults, truncateItems } from '../shaping.js';
+import { ResponseFormat, MaxResults, resolveMaxResults, truncateItems, nextPageLine } from '../shaping.js';
 
 // Feb 2026: Spotify capped /search at limit=10 (400 above it), so agents can't
 // fetch more than 10 rows per type in one call. `search_deep` walks the offset
@@ -272,7 +272,8 @@ export function registerSearchDeepTool(server: McpServer, client: SpotifyClient)
       lines.push(`${grandTotal} unique result${grandTotal === 1 ? '' : 's'} across ${types.length} type${types.length === 1 ? '' : 's'}.`);
       // The smallest still-open window across the requested types: a type that
       // ran out early simply contributes nothing at that offset.
-      if (nextOffset !== null) lines.push(`Next page: offset=${nextOffset}`);
+      const pageLine = nextPageLine(nextOffset);
+      if (pageLine) lines.push(pageLine);
       return {
         content: [{ type: 'text', text: lines.join('\n').trim() }],
         structuredContent: { query: args.query, types, pages, offset: startOffset, sections },

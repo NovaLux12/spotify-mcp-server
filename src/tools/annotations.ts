@@ -875,7 +875,12 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   manifestEntry('smart', 'playlists', 'src/tools/smart.ts', registerSmartTools, [1, 2364], { scopeKey: 'playlists' }),
   manifestEntry('exhaustmisc', 'playlists', 'src/tools/exhaustmisc.ts', registerExhaustMiscTools, [10, 7924], { scopeKey: 'exhaustmisc' }),
   // [19, 19241] measured post-#1004 (the artist leg reads /artists/{id} now).
-  manifestEntry('exhaust2catalog', 'exhaust2catalog', 'src/tools/exhaust2_catalog.ts', registerExhaust2CatalogTools, [19, 19241], { readOnlySafe: true, scopeKey: 'catalog' }),
+  // +226B for #781: `search_by_isrc` and `audiobooks_by_author` gained the
+  // `offset` input their paging signal already pointed at. Not a new tool and
+  // not a wider payload — a control that makes an already-emitted next_offset
+  // actionable, and the truncation boundary keeps it only because the schema
+  // declares it.
+  manifestEntry('exhaust2catalog', 'exhaust2catalog', 'src/tools/exhaust2_catalog.ts', registerExhaust2CatalogTools, [19, 19467], { readOnlySafe: true, scopeKey: 'catalog' }),
   manifestEntry('exhaust2enggating', 'exhaust2enggating', 'src/tools/exhaust2_enggating.ts', registerExhaust2EnggatingTools, [0, 0], { readOnlySafe: true, scopeKey: 'catalog' }),
   manifestEntry('exhaust2playback', 'exhaust2playback', 'src/tools/exhaust2_playback.ts', registerExhaust2PlaybackTools, [23, 17306], { scopeKey: 'playback' }),
   manifestEntry('exhaust2playlists', 'exhaust2playlists', 'src/tools/exhaust2_playlists.ts', registerExhaust2PlaylistsTools, [18, 23507], { scopeKey: 'playlists' }),

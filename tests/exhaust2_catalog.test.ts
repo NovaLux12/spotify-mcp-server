@@ -650,6 +650,117 @@ assert.equal((res.structuredContent as { gaps_flagged: unknown[] }).gaps_flagged
     assert.ok(res.content[0].text.includes('no track found in market from_token'));
   });
 
+  // #781: `emitSearchResult` hardcoded `offset: 0, limit: null`, so no matter
+  // what page the tool actually read, `pagination.next_offset` came back null
+  // and the prose carried no way to continue. Both search-backed tools below
+  // now report the page they asked for, in prose and in the payload.
+
+  it('search_by_isrc reports a real next_offset when the ISRC matches more than one track (#781)', async () => {
+    const seen: Array<Record<string, string | undefined>> = [];
+    const client = makeClient({
+      get: mock.fn(async (_p: string, params?: Record<string, string>) => {
+        seen.push(params ?? {});
+        return {
+          tracks: {
+            items: [
+              trackPayload({ id: 't1', uri: 'spotify:track:t1', name: 'First' }),
+              trackPayload({ id: 't2', uri: 'spotify:track:t2', name: 'Second' }),
+            ],
+            total: 7,
+          },
+        };
+      }),
+    });
+    const res = await handlerFor('search_by_isrc', client)({ isrc: 'USUM71703861', response_format: 'concise' });
+    assert.equal(seen[0].offset, undefined, 'the first page asks for no offset');
+    assert.deepEqual(res.structuredContent!.pagination, { total: 7, offset: 0, limit: 5, returned: 2, next_offset: 2 });
+    assert.match(res.content[0].text, /^Next page: offset=2$/m);
+  });
+
+  it('search_by_isrc omits the paging signal on the last page (#781)', async () => {
+    const client = makeClient({
+      get: mock.fn(async () => ({ tracks: { items: [trackPayload()], total: 1 } })),
+    });
+    const res = await handlerFor('search_by_isrc', client)({ isrc: 'USUM71703861', response_format: 'concise' });
+    assert.doesNotMatch(res.content[0].text, /Next page:/);
+    assert.deepEqual(res.structuredContent!.pagination, { total: 1, offset: 0, limit: 5, returned: 1, next_offset: null });
+  });
+
+  it('search_by_isrc forwards the caller offset and reports the page it read (#781)', async () => {
+    const seen: Array<Record<string, string | undefined>> = [];
+    const client = makeClient({
+      get: mock.fn(async (_p: string, params?: Record<string, string>) => {
+        seen.push(params ?? {});
+        return { tracks: { items: [trackPayload()], total: 40 } };
+      }),
+    });
+    const res = await handlerFor('search_by_isrc', client)({ isrc: 'USUM71703861', offset: 10, response_format: 'concise' });
+    assert.equal(seen[0].offset, '10', 'the offset has to reach the request or the page is not reachable');
+    assert.deepEqual(res.structuredContent!.pagination, { total: 40, offset: 10, limit: 5, returned: 1, next_offset: 11 });
+    assert.match(res.content[0].text, /^Next page: offset=11$/m);
+  });
+
+  it('search_by_isrc declares the offset its paging signal points at (#781)', async () => {
+    // Without a declared `offset` the truncation boundary treats the emitted
+    // next_offset as advice the caller cannot act on and strips it, so the
+    // schema has to carry the control the signal names.
+    const shape = shapeFor('search_by_isrc', makeClient());
+    assert.ok('offset' in shape.shape, 'the schema must accept the offset the paging line names');
+    assert.equal(shape.safeParse({ isrc: 'USUM71703861', offset: 5 }).success, true);
+    assert.equal(shape.safeParse({ isrc: 'USUM71703861', offset: -1 }).success, false, 'a negative offset is not a page');
+  });
+
+  it('audiobooks_by_author reports a real next_offset when the author has more titles (#781)', async () => {
+    const seen: Array<Record<string, string | undefined>> = [];
+    const client = makeClient({
+      get: mock.fn(async (_p: string, params?: Record<string, string>) => {
+        seen.push(params ?? {});
+        return {
+          audiobooks: {
+            items: [
+              { id: 'ab1', name: 'One', uri: 'u', authors: [{ name: 'A' }], narrators: [], total_chapters: 1, release_date: '2020', description: '', explicit: false, media_type: 'audio', languages: ['en'] },
+              { id: 'ab2', name: 'Two', uri: 'u', authors: [{ name: 'A' }], narrators: [], total_chapters: 2, release_date: '2021', description: '', explicit: false, media_type: 'audio', languages: ['en'] },
+            ],
+            total: 12,
+          },
+        };
+      }),
+    });
+    const res = await handlerFor('audiobooks_by_author', client)({ author: 'A', limit: 5, offset: 5, response_format: 'concise' });
+    assert.equal(seen[0].offset, '5');
+    assert.equal(seen[0].limit, '5', 'the reported page is the one the request asked for');
+    assert.deepEqual(res.structuredContent!.pagination, { total: 12, offset: 5, limit: 5, returned: 2, next_offset: 7 });
+    assert.match(res.content[0].text, /^Next page: offset=7$/m);
+  });
+
+  it('audiobooks_by_author omits the paging signal on the last page (#781)', async () => {
+    const client = makeClient({
+      get: mock.fn(async () => ({
+        audiobooks: {
+          items: [
+            { id: 'ab1', name: 'Only', uri: 'u', authors: [{ name: 'A' }], narrators: [], total_chapters: 1, release_date: '2020', description: '', explicit: false, media_type: 'audio', languages: ['en'] },
+          ],
+          total: 3,
+        },
+      })),
+    });
+    // The same rows one page earlier do print a line, so the absence below is
+    // the end of the walk rather than the tool never emitting one.
+    const mid = await handlerFor('audiobooks_by_author', client)({ author: 'A', limit: 5, response_format: 'concise' });
+    assert.match(mid.content[0].text, /^Next page: offset=1$/m);
+    assert.deepEqual(mid.structuredContent!.pagination, { total: 3, offset: 0, limit: 5, returned: 1, next_offset: 1 });
+
+    const last = await handlerFor('audiobooks_by_author', client)({ author: 'A', limit: 5, offset: 2, response_format: 'concise' });
+    assert.doesNotMatch(last.content[0].text, /Next page:/);
+    assert.deepEqual(last.structuredContent!.pagination, { total: 3, offset: 2, limit: 5, returned: 1, next_offset: null });
+  });
+
+  it('audiobooks_by_author declares the offset its paging signal points at (#781)', async () => {
+    const shape = shapeFor('audiobooks_by_author', makeClient());
+    assert.ok('offset' in shape.shape);
+    assert.equal(shape.safeParse({ author: 'A', offset: 5 }).success, true);
+  });
+
   it('find_canonical_track sends the market on both the precise and fallback searches', async () => {
     const seen: Array<Record<string, string | undefined>> = [];
     let calls = 0;

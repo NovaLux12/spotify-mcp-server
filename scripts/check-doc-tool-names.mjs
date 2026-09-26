@@ -93,6 +93,11 @@ const parameterAllowlist = new Set([
   // without parsing the prose. A StructuredContent key on that tool, not a
   // parameter — SPEC.md is describing the tool's own output.
   'window_sizes',
+  // #781: every offset-paged read publishes the offset to continue from as
+  // `pagination.next_offset` in structuredContent, which is the field SPEC.md's
+  // shared paging-signal contract names. A key a tool returns about its own
+  // page — not a parameter the caller sends, and not a tool.
+  'next_offset',
 ]);
 /** Registration keys are module names, not tools; docs legitimately name them. */
 const registrationKeyNames = new Set(census.registrationKeyNames ?? []);
