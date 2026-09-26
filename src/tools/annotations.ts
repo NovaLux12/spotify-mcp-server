@@ -703,7 +703,14 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   manifestEntry('users', 'users', 'src/tools/users.ts', registerUsersTools, [2, 1613]),
   manifestEntry('audiobooks', 'audiobooks', 'src/tools/audiobooks.ts', registerAudiobookTools, [4, 3715]),
   manifestEntry('audiobookcopilot', 'audiobooks', 'src/tools/audiobookcopilot.ts', registerAudiobookCopilotTools, [3, 1985]),
-  manifestEntry('playlists', 'playlists', 'src/tools/playlists.ts', registerPlaylistTools, [26, 26119]),
+  // #888: +210B across the two playlist tool descriptions. The warrant is
+  // disclosure, not decoration: `playlist_subtract` and `playlist_union` can
+  // both empty a playlist, and neither said so. `playlist_subtract` also
+  // advertised a quota line ("DELETE or PUT") that named a DELETE the tool
+  // never issues — it only ever PUTs — so correcting it paid for part of the
+  // sentence that states what a full subtraction actually does. 26 tools is
+  // unchanged; the byte baseline is the measured value, not a round number.
+  manifestEntry('playlists', 'playlists', 'src/tools/playlists.ts', registerPlaylistTools, [26, 26329]),
   manifestEntry('playlistops', 'playlists', 'src/tools/playlistops.ts', registerPlaylistOpsTools, [3, 5489]),
   manifestEntry('playlistbatch', 'playlistbatch', 'src/tools/playlistbatch.ts', registerPlaylistBatchTools, [3, 4784], { scopeKey: 'playlists' }),
   manifestEntry('playlistfollow', 'playlistmisc', 'src/tools/playlistfollow.ts', registerPlaylistFollowTools, [2, 1449], { scopeKey: 'playlistfollow' }),
