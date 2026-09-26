@@ -22,7 +22,11 @@
  * them from there) but registers no tools and installs nothing.
  *
  * The contract is fail-open by design: apps whose registrations still have
- * access keep working end to end -- only the broken path changes shape.
+ * access keep working end to end -- only the broken path changes shape, and it
+ * changes SHAPE only. A gated 403 is annotated in place and rethrown as the
+ * same `SpotifyApiError` (#765), so the tool-level degradations written for
+ * these endpoints (`category_resolver`, `artist_collab_network`,
+ * `market_validate`, the catalog 403 messages) still recognise it.
  */
 import { SpotifyApiError } from './client.js';
 import type { SpotifyClient } from './client.js';
@@ -63,7 +67,11 @@ export function isGatedPath(path: string): boolean {
  * still see the most accurate wire diagnostic.
  */
 export function graceful403Message(path: string, err: SpotifyApiError): string {
-  const spotifyMsg = err.message?.trim();
+  return graceful403Text(path, err.message);
+}
+
+function graceful403Text(path: string, wireMessage: string): string {
+  const spotifyMsg = wireMessage?.trim();
   const detail = spotifyMsg && spotifyMsg.toLowerCase() !== 'forbidden' ? ` -- ${spotifyMsg}` : '';
   return (
     `Spotify returned 403 for ${path}${detail}. ` +
@@ -83,6 +91,58 @@ type GetFn = (
 
 /** Install marker so a double installation never stacks wrappers. */
 const INSTALL_FLAG = '__graceful403Installed__';
+
+/** A `SpotifyApiError` the contract has classified as registration-gated. */
+export interface GatedSpotifyApiError extends SpotifyApiError {
+  /** The API-relative path that answered 403. */
+  readonly gatedPath: string;
+  /** Spotify's own message, kept because `message` now carries the contract. */
+  readonly spotifyMessage: string;
+}
+
+/**
+ * THE 403 predicate every gated-path tool branches on. One definition, so a
+ * tool that degrades a gated 403 and the contract that classifies it can
+ * never disagree about what a gated 403 looks like (#765).
+ */
+export function isGatedError(err: unknown): err is SpotifyApiError {
+  return err instanceof SpotifyApiError && err.status === 403;
+}
+
+/**
+ * Classify a gated 403 ON THE INSTANCE and return it, so `instanceof`,
+ * `status`, `reason` and `retryAfterSec` all survive the hop through this
+ * contract (#765). Wrapping it in a plain `Error` -- the earlier shape --
+ * left every tool-level 403 degradation unreachable: `category_resolver`,
+ * `artist_collab_network`, `market_validate` and the two tailored catalog
+ * messages all test `err instanceof SpotifyApiError && err.status === 403`,
+ * so on a gated path they hard-failed instead of degrading.
+ *
+ * `message` becomes the graceful contract, because a gated 403 with no
+ * tool-level handler (browse's `get_categories`, say) has nothing else to
+ * report; Spotify's original text is preserved on `spotifyMessage` for
+ * handlers that quote the wire message themselves.
+ */
+function annotateGated403(err: SpotifyApiError, path: string): GatedSpotifyApiError {
+  // The wire text is read through `spotifyMessageOf`, never through
+  // `err.message`, so a second hop cannot quote the contract inside itself.
+  const wireMessage = spotifyMessageOf(err);
+  return Object.assign(err, {
+    spotifyMessage: wireMessage,
+    gatedPath: path,
+    message: graceful403Text(path, wireMessage),
+  });
+}
+
+/**
+ * Spotify's own message for a 403, whether or not the gating contract has
+ * replaced `message` with the graceful contract text. Handlers that add their
+ * own advice must quote this, not `err.message`, or they would embed a whole
+ * second explanation inside their first sentence.
+ */
+export function spotifyMessageOf(err: SpotifyApiError): string {
+  return 'spotifyMessage' in err && typeof err.spotifyMessage === 'string' ? err.spotifyMessage : err.message;
+}
 
 /**
  * The single named installation point for the graceful-403 gating contract
@@ -107,7 +167,7 @@ export function installGatedPathContract(client: SpotifyClient): void {
       return await original(path, params, opts);
     } catch (err) {
       if (err instanceof SpotifyApiError && err.status === 403 && isGatedPath(path)) {
-        throw new Error(graceful403Message(path, err), { cause: err });
+        throw annotateGated403(err, path);
       }
       throw err;
     }

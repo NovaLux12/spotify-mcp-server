@@ -1,9 +1,11 @@
 import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
 import { SpotifyApiError } from '../src/client.js';
-import { GATED_PATH_PATTERNS, graceful403Message, installGatedPathContract, isGatedPath } from '../src/gating.js';
+import { GATED_PATH_PATTERNS, graceful403Message, installGatedPathContract, isGatedPath, spotifyMessageOf } from '../src/gating.js';
 import { registerExhaust2EnggatingTools } from '../src/tools/exhaust2_enggating.js';
 import { registerBrowseTools } from '../src/tools/browse.js';
+import { registerExhaust2CatalogTools } from '../src/tools/exhaust2_catalog.js';
+import { registerCatalogTools } from '../src/tools/catalog.js';
 import { spawn } from 'node:child_process';
 import type { ChildProcessWithoutNullStreams } from 'node:child_process';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
@@ -119,18 +121,43 @@ test('403 on a gated path short-circuits into the graceful contract (#428)', asy
   );
 });
 
-test('graceful error preserves the original SpotifyApiError as cause (#429)', async () => {
-  const client = makeFakeClient(() => new SpotifyApiError(403, 'Forbidden'));
+test('a gated 403 is annotated in place, not replaced by a plain Error (#429/#765)', async () => {
+  // The wire error the client produced, captured so the test can prove the
+  // SAME instance comes back out rather than a copy or a wrapper.
+  const wire = new SpotifyApiError(403, 'Forbidden by app settings', 7, 'PREMIUM_REQUIRED');
+  const client = makeFakeClient(() => wire);
   installGatedPathContract(client);
 
-  await assert.rejects(
-    client.get('/markets'),
-    (err: Error & { cause?: unknown }) => {
-      assert.ok(err.cause instanceof SpotifyApiError);
-      assert.equal((err.cause as SpotifyApiError).status, 403);
-      return true;
-    },
-  );
+  await assert.rejects(client.get('/markets'), (err: unknown) => {
+    assert.equal(err, wire, 'the contract must rethrow the error it was handed, not a substitute');
+    assert.ok(err instanceof SpotifyApiError, 'a tool branching on the 403 must still recognise it');
+    assert.equal(err.status, 403);
+    // The fields a rate-limit or quota handler reads survive the hop.
+    assert.equal(err.retryAfterSec, 7);
+    assert.equal(err.reason, 'PREMIUM_REQUIRED');
+    return true;
+  });
+  // `message` carries the contract so a caller with no handler of its own
+  // still gets the explanation; Spotify's own text is kept alongside it.
+  assert.match(wire.message, /app-registration-gated/);
+  assert.match(wire.message, /Forbidden by app settings/);
+  assert.equal(spotifyMessageOf(wire), 'Forbidden by app settings');
+});
+
+test('a retried read does not nest the contract inside itself (#765)', async () => {
+  // A retry hands the SAME error instance back through the wrapper. The
+  // contract text must be rebuilt from the wire message, never from the
+  // previous contract text, or the second attempt explains the first.
+  const wire = new SpotifyApiError(403, 'Forbidden by app settings');
+  const client = makeFakeClient(() => wire);
+  installGatedPathContract(client);
+
+  await assert.rejects(client.get('/markets'), () => true);
+  const first = wire.message;
+  await assert.rejects(client.get('/markets'), () => true);
+  assert.equal(wire.message, first, 'a second classification must be byte-identical to the first');
+  assert.equal(spotifyMessageOf(wire), 'Forbidden by app settings');
+  assert.doesNotMatch(wire.message, /-- Spotify returned 403/);
 });
 
 test('403 on a non-gated path passes through untouched', async () => {
@@ -252,6 +279,99 @@ test('graceful403Message embeds Spotify\u2019s own message when present', () => 
 
 test('every canonical family regex is anchored at the start', () => {
   for (const re of GATED_PATH_PATTERNS) assert.ok(re.source.startsWith('^'), `unanchored: ${re.source}`);
+});
+
+// -------------------------- #765 contract + tool-level degradation composed
+
+/**
+ * The two halves of the graceful-403 story used to be tested in isolation:
+ * `src/gating.ts` proved the wrapper rewrites a gated 403, and the tool
+ * modules proved their handlers degrade a `SpotifyApiError` 403. Nothing
+ * drove both at once -- which is why replacing the error with a plain `Error`
+ * (#765) shipped green: every tool with a designed 403 degradation on a
+ * gated path hard-failed in the real composition.
+ */
+
+const COLLAB_ALBUM = {
+  id: 'alb1', name: 'Collab LP', uri: 'spotify:album:alb1', album_type: 'album',
+  release_date: '2022', total_tracks: 1, images: [],
+  artists: [
+    { id: 'a1', name: 'Artist', uri: 'spotify:artist:a1' },
+    { id: 'g1', name: 'Guest', uri: 'spotify:artist:g1' },
+  ],
+};
+
+/**
+ * One wired client: the contract is installed exactly as the production path
+ * installs it, and `gated` names the paths that answer 403 the way Spotify
+ * answers them on a registration that was never granted the gated surface.
+ */
+function composedClient(gated: readonly string[]): FakeClient {
+  const client = makeFakeClient((path) => {
+    if (gated.some((g) => path === g)) return new SpotifyApiError(403, 'Forbidden');
+    if (path === '/me') return { id: 'me1', country: 'GB', product: 'premium' };
+    if (path.startsWith('/artists/') && path.endsWith('/albums')) return { items: [COLLAB_ALBUM] };
+    if (path.startsWith('/artists/')) return { id: 'a1', name: 'Artist', uri: 'spotify:artist:a1', genres: [] };
+    return null;
+  });
+  installGatedPathContract(client as never);
+  return client;
+}
+
+test('category_resolver still returns its gated disclosure with the contract installed (#765)', async () => {
+  const registered: RegisteredTool[] = [];
+  registerExhaust2CatalogTools(makeServer(registered) as never, composedClient(['/browse/categories']) as never);
+
+  // concise keeps `structuredContent` AND the prose the caller actually reads.
+  const res = await find(registered, 'category_resolver').handler({ text: 'chill electronic', response_format: 'concise' });
+  const structured = res.structuredContent as { gated?: unknown; endpoint?: unknown };
+  assert.equal(structured.gated, true);
+  assert.equal(structured.endpoint, '/browse/categories');
+  assert.match(text(res), /app-registration gated/);
+});
+
+test('artist_collab_network still falls back to albums with the contract installed (#765)', async () => {
+  const registered: RegisteredTool[] = [];
+  registerExhaust2CatalogTools(makeServer(registered) as never, composedClient(['/artists/a1/top-tracks']) as never);
+
+  const res = await find(registered, 'artist_collab_network').handler({ artist_id: 'a1', response_format: 'concise' });
+  const structured = res.structuredContent as {
+    top_tracks_available?: unknown;
+    collaborators?: Array<{ name: string }>;
+  };
+  assert.equal(structured.top_tracks_available, false);
+  assert.equal(structured.collaborators?.[0]?.name, 'Guest');
+  assert.match(text(res), /top-tracks GATED/);
+});
+
+test('market_validate still returns its note + account market with the contract installed (#765)', async () => {
+  const registered: RegisteredTool[] = [];
+  registerCatalogTools(makeServer(registered) as never, composedClient(['/markets']) as never);
+
+  const res = await find(registered, 'market_validate').handler({
+    markets: ['GB'], include_account_market: true, response_format: 'json',
+  });
+  const structured = res.structuredContent as { note?: unknown; account_market?: unknown; verdict?: unknown };
+  assert.match(String(structured.note), /\/markets returned 403/);
+  assert.equal(structured.account_market, 'GB');
+  assert.match(String(structured.verdict), /unknown/);
+});
+
+test('a 403 on a non-gated path still reaches the caller as the original SpotifyApiError (#765)', async () => {
+  const registered: RegisteredTool[] = [];
+  // /artists/{id} is outside GATED_PATH_PATTERNS: the contract must leave it
+  // alone, and the tool must not mistake it for a designed degradation.
+  registerExhaust2CatalogTools(makeServer(registered) as never, composedClient(['/artists/a1']) as never);
+
+  await assert.rejects(
+    find(registered, 'artist_collab_network').handler({ artist_id: 'a1', response_format: 'concise' }),
+    (err: unknown) => {
+      assert.ok(err instanceof SpotifyApiError, `expected a SpotifyApiError, got ${String(err)}`);
+      assert.equal((err as SpotifyApiError).status, 403);
+      assert.equal((err as SpotifyApiError).message, 'Forbidden');
+      return true;
+    },
+  );
 });
 
 // ------------------------------------------- #791 production-path composition
@@ -421,8 +541,9 @@ async function probeServer(env: Record<string, string>, calls: ToolCall[]): Prom
 /**
  * Two canaries on two different gated families: /browse/categories and the
  * /markets lookup the issue names. Both handlers branch on the error being a
- * SpotifyApiError, so both are observably gate-dependent while the contract
- * is installed only under one configuration.
+ * SpotifyApiError and both are therefore observably gate-dependent: with the
+ * contract installed they degrade into a disclosure, without it they fail --
+ * so whatever the contract decides, it must decide it in every configuration.
  */
 const GATED_CALLS: ToolCall[] = [
   { tool: 'category_resolver', args: { text: 'chill electronic' } },
@@ -457,14 +578,17 @@ test('the graceful-403 contract is installed regardless of the exhaust2enggating
     `a gated 403 changed shape under SPOTIFY_MCP_TOOLSETS=playlists\nbaseline: ${JSON.stringify(baseline.results)}\ntrimmed: ${JSON.stringify(trimmed.results)}`,
   );
 
-  // The 403 really was mapped, and the envelope still reports the status the
-  // contract was handed: the tool error boundary normalizes the prose
-  // (src/tools/annotations.ts owns that), so the status is the wire-level
-  // evidence that the gated path was classified rather than passed through.
-  for (const { tool } of GATED_CALLS) {
-    const error = (baseline.results[tool]?.structuredContent as { error?: { status?: unknown } } | undefined)?.error;
-    assert.equal(error?.status, 403, `expected a 403-classified error envelope for ${tool}, got ${JSON.stringify(baseline.results[tool])}`);
-  }
+  // The 403 really was mapped: the contract hands each canary back a
+  // SpotifyApiError 403, and each handler turns that into its OWN designed
+  // degradation rather than a failure. Until #765 the contract replaced the
+  // error type, so both canaries could only ever produce the error envelope
+  // this loop used to assert -- the graceful path was unreachable in the
+  // real composition, which is exactly the defect.
+  const categoryPayload = baseline.results.category_resolver?.structuredContent as { gated?: unknown; endpoint?: unknown } | undefined;
+  assert.deepEqual(categoryPayload, { gated: true, endpoint: '/browse/categories' });
+  const marketPayload = baseline.results.market_validate?.structuredContent as { note?: unknown; verdict?: unknown } | undefined;
+  assert.match(String(marketPayload?.note), /\/markets returned 403/);
+  assert.match(String(marketPayload?.verdict), /unknown/);
 });
 
 

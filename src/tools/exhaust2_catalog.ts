@@ -17,6 +17,7 @@ import { ARTIST_ALBUM_PAGE_LIMIT, MARKET_CODE } from './catalog.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
 import { SpotifyApiError } from '../client.js';
+import { isGatedError } from '../gating.js';
 import type {
   SearchResponse,
   SpotifyAlbumItem,
@@ -228,10 +229,6 @@ export function gatedEndpointMessage(endpoint: string): string {
     'on fresh app registrations). Enable it in the Spotify developer dashboard for this app, ' +
     'or use a registration where it is already enabled. Nothing was retrieved.'
   );
-}
-
-function isGatedError(err: unknown): err is SpotifyApiError {
-  return err instanceof SpotifyApiError && err.status === 403;
 }
 
 /**

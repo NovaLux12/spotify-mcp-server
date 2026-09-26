@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { SpotifyApiError, type SpotifyClient } from '../client.js';
+import { isGatedError, spotifyMessageOf } from '../gating.js';
 import type {
   SpotifyTrack,
   SpotifyArtistFull,
@@ -147,9 +148,9 @@ async function fetchSeveral<T>(
           ids: chunk.map((id) => encodeURIComponent(id)).join(','),
         });
       } catch (err) {
-        if (err instanceof SpotifyApiError && err.status === 403) {
+        if (isGatedError(err)) {
           throw new Error(
-            `Spotify returned 403 for the /${kind} batch lookup: ${err.message}. The "Get Several" batch endpoints were removed by Spotify's February 2026 Web API changes and are unavailable for newer app registrations; use the single-item get tools instead, or run with credentials from a grandfathered (pre-Nov-2024) app.`,
+            `Spotify returned 403 for the /${kind} batch lookup: ${spotifyMessageOf(err)}. The "Get Several" batch endpoints were removed by Spotify's February 2026 Web API changes and are unavailable for newer app registrations; use the single-item get tools instead, or run with credentials from a grandfathered (pre-Nov-2024) app.`,
             { cause: err },
           );
         }
@@ -631,9 +632,9 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
           args.market,
         );
       } catch (err) {
-        if (err instanceof SpotifyApiError && err.status === 403) {
+        if (isGatedError(err)) {
           throw new Error(
-            `Spotify returned 403 for the top-tracks lookup: ${err.message}. This endpoint may not be available for this app registration, or the required scope is missing.`,
+            `Spotify returned 403 for the top-tracks lookup: ${spotifyMessageOf(err)}. This endpoint may not be available for this app registration, or the required scope is missing.`,
             { cause: err },
           );
         }
@@ -671,9 +672,9 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
           markets?: Array<{ name?: string; codes?: string[] } | string>;
         }>('/markets');
       } catch (err) {
-        if (err instanceof SpotifyApiError && err.status === 403) {
+        if (isGatedError(err)) {
           throw new Error(
-            `Spotify returned 403 for the markets lookup: ${err.message}. GET /markets was removed by Spotify's February 2026 Web API changes; validate market inputs with your account country from get_me, or run with credentials from a grandfathered (pre-Nov-2024) app.`,
+            `Spotify returned 403 for the markets lookup: ${spotifyMessageOf(err)}. GET /markets was removed by Spotify's February 2026 Web API changes; validate market inputs with your account country from get_me, or run with credentials from a grandfathered (pre-Nov-2024) app.`,
             { cause: err },
           );
         }
@@ -1087,7 +1088,7 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
         validSet = new Set(codes);
         marketsRaw = data;
       } catch (err) {
-        if (err instanceof SpotifyApiError && err.status === 403) {
+        if (isGatedError(err)) {
           const note = `GET /markets returned 403 (removed for newer app registrations Feb 2026). Falling back to account market only.`;
           let accountMarket: string | undefined;
           if (args.include_account_market) {
