@@ -136,6 +136,14 @@ version with `npm deprecate`, mark the corresponding Registry version
 deprecated through the Registry status path, and ship a new patch release with
 the fix.
 
+Verify against `…/versions/latest` only. The other two Registry read paths
+disagree with it and with each other, and neither indicates a failed publish:
+`/v0/servers?search=…` returns a stale index version many releases behind, and
+`…/versions` returns an empty array for a server that is in fact published. A
+stale search result reads like the project stopped shipping and invites
+re-publishing a version that already exists; if npm resolves the version, the
+release shipped and what you are seeing is registry-side indexing.
+
 ## Claim checklist
 
 - [ ] Smithery: https://smithery.ai — repo already carries `smithery.yaml`

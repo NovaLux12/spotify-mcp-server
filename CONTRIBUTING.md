@@ -185,6 +185,22 @@ Expected results are the exact version (for example, `1.30.1`), `true` for
 the `server.json` check, and `true` for the Registry check. Also inspect the
 workflow URL printed by `gh run view "$RUN_ID"` if any verification fails.
 
+Only `…/versions/latest` is authoritative, and the other two endpoints look
+like verification while reporting the opposite of the truth:
+
+| Query | What it actually reports |
+|---|---|
+| `…/versions/latest` | the published version — **authoritative** |
+| `/v0/servers?search=…` | a stale index version, many releases behind |
+| `…/versions` | an empty array, even for a server that is published |
+
+A stale `?search=` result is the expensive one: it looks like the project
+stopped shipping, and it invites re-publishing a version that is already out.
+Before concluding a publish failed, check npm — if
+`@novalux12/spotify-mcp@$VERSION` resolves, the release shipped and what you
+are looking at is registry-side indexing. Do not re-publish on the strength of
+a search or list result.
+
 ### Rollback and recovery
 
 - **Before the tag:** do not merge the release PR. Correct the Conventional
