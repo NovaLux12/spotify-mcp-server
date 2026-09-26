@@ -1376,6 +1376,67 @@ test('browse_category_deepdive fetches category + playlists', async () => {
   assert.equal(calls.length, 2);
 });
 
+// #1013: GET /browse/categories/{id} and its /playlists child were removed by
+// Spotify's February 2026 Web API changes. Pre-fix the deep dive reported a dead
+// endpoint as a missing category, or answered with the category alone and
+// silently dropped the playlist page — a partial answer read as a complete one.
+test('#1013 browse_category_deepdive names the removed category endpoint on 403', async () => {
+  const { registered } = makeHarness(registerCatalogTools, {
+    getError: (p) => (p === '/browse/categories/mood' ? new SpotifyApiError(403, 'Forbidden') : undefined),
+  });
+  await assert.rejects(
+    () => invoke(findTool(registered, 'browse_category_deepdive'), { category_id: 'mood' }),
+    (err: Error) => {
+      assert.match(err.message, /February 2026 Web API changes/);
+      assert.match(err.message, /no replacement endpoint/);
+      assert.doesNotMatch(err.message, /not found/i);
+      return true;
+    },
+  );
+});
+
+test('#1013 browse_category_deepdive fails instead of silently dropping a dead playlist page', async () => {
+  const { registered } = makeHarness(registerCatalogTools, {
+    getResponse: (p) => (p === '/browse/categories/mood' ? { id: 'mood', name: 'Mood', href: 'h', icons: [] } : undefined),
+    getError: (p) => (p === '/browse/categories/mood/playlists' ? new SpotifyApiError(403, 'Forbidden') : undefined),
+  });
+  await assert.rejects(
+    () => invoke(findTool(registered, 'browse_category_deepdive'), { category_id: 'mood' }),
+    (err: Error) => {
+      assert.match(err.message, /\/browse\/categories\/mood\/playlists/);
+      assert.match(err.message, /February 2026 Web API changes/);
+      return true;
+    },
+  );
+});
+
+test('#1013 browse_category_deepdive reports a payload-less category read as unreadable', async () => {
+  const { registered } = makeHarness(registerCatalogTools, { getResponse: () => undefined });
+  await assert.rejects(
+    () => invoke(findTool(registered, 'browse_category_deepdive'), { category_id: 'mood' }),
+    (err: Error) => {
+      assert.match(err.message, /no category payload/);
+      assert.doesNotMatch(err.message, /Category "mood" not found/);
+      return true;
+    },
+  );
+});
+
+test('#1013 get_category names the removed single-category endpoint instead of a missing category', async () => {
+  const { registered } = makeHarness(registerCatalogTools, {
+    getError: (p) => (p === '/browse/categories/mood' ? new SpotifyApiError(404, 'Not found.') : undefined),
+  });
+  await assert.rejects(
+    () => invoke(findTool(registered, 'get_category'), { category_id: 'mood' }),
+    (err: Error) => {
+      assert.match(err.message, /February 2026 Web API changes/);
+      assert.match(err.message, /no replacement endpoint/);
+      assert.doesNotMatch(err.message, /Category "mood" not found/);
+      return true;
+    },
+  );
+});
+
 // The peek reads /playlists/{id}/items, whose rows are { added_at, item }.
 // #773: the legacy /tracks path returned plain track rows, so the peek
 // rendered a table of `unknown` for every row.

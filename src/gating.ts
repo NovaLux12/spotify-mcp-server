@@ -85,6 +85,31 @@ type GetFn = (
 const INSTALL_FLAG = '__graceful403Installed__';
 
 /**
+ * Marker key set on the graceful-403 error `installGatedPathContract` throws.
+ */
+export const GATED_PATH_CONTRACT = Symbol.for('spotify-mcp.gatedPathContract');
+
+/** True when `err` is the graceful-403 error `installGatedPathContract` raises. */
+export function isGatedPathContractError(err: unknown): boolean {
+  return err instanceof Error && (err as unknown as Record<symbol, unknown>)[GATED_PATH_CONTRACT] === true;
+}
+
+/**
+ * True when `err` is the shape a removed Spotify endpoint answers with: a 403
+ * (raw, or re-raised by the graceful contract above), a 404, or a 410. Used by
+ * tools that know one gated family is gone outright and has no replacement, so
+ * they can name the removal instead of passing on a status that reads as a
+ * missing object, an empty page or a scope problem (#1013).
+ */
+export function isRemovedEndpointFailure(err: unknown): boolean {
+  return (
+    isGatedPathContractError(err) ||
+    (err instanceof SpotifyApiError && (err.status === 403 || err.status === 404 || err.status === 410))
+  );
+}
+
+
+/**
  * The single named installation point for the graceful-403 gating contract
  * (#791). Called from the client construction path in `src/index.ts`, so the
  * mapping is present in every host configuration -- no toolset trim, disable
@@ -107,7 +132,13 @@ export function installGatedPathContract(client: SpotifyClient): void {
       return await original(path, params, opts);
     } catch (err) {
       if (err instanceof SpotifyApiError && err.status === 403 && isGatedPath(path)) {
-        throw new Error(graceful403Message(path, err), { cause: err });
+        const gated = new Error(graceful403Message(path, err), { cause: err });
+        // Tag it so a caller with a sharper diagnosis for this gated family
+        // (#1013: the removed browse categories) can recognise the shape
+        // without matching on the message text -- the gated 403 never reaches
+        // a tool as a SpotifyApiError.
+        (gated as unknown as Record<symbol, boolean>)[GATED_PATH_CONTRACT] = true;
+        throw gated;
       }
       throw err;
     }
