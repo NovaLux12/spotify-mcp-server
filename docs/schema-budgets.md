@@ -76,7 +76,7 @@ above either ceiling fails CI and server startup.
 | playlistfollow | 2 | 1,449 | 2 | 1,449 | 3 | 1,594 |
 | playlistmisc | 1 | 1,089 | 1 | 1,089 | 2 | 1,198 |
 | personalization | 3 | 2,532 | 3 | 2,532 | 4 | 2,786 |
-| analytics | 4 | 2,753 | 4 | 2,753 | 5 | 3,029 |
+| analytics | 4 | 2,817 | 4 | 2,817 | 5 | 3,099 |
 | statsfm | 30 | 22,721 | 30 | 22,721 | 31 | 24,994 |
 | taste | 16 | 13,959 | 16 | 13,959 | 17 | 15,355 |
 | tastecomposites | 10 | 7,994 | 10 | 7,994 | 11 | 8,794 |

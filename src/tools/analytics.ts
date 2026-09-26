@@ -384,7 +384,7 @@ export function registerAnalyticsTools(server: McpServer, client: SpotifyClient)
   // taste_shift_report — compare short vs long windows
   server.tool(
     'taste_shift_report',
-    'Compare short_term vs long_term top artists+tracks: rising/falling + Jaccard similarity. Quota: 4× GET /me/top/*.',
+    'Compare short_term vs long_term top artists+tracks: rising/falling + Jaccard similarity, null when both windows of a domain are empty (not enough data). Quota: 4× GET /me/top/*.',
     {
       limit: z.coerce.number().int().positive().max(50).optional().default(20).describe('Limit per window'),
       response_format: ResponseFormat,
@@ -398,17 +398,48 @@ export function registerAnalyticsTools(server: McpServer, client: SpotifyClient)
         client.get<SpotifyPaged<{ id: string; name: string }>>('/me/top/artists', { time_range: 'short_term', limit }),
         client.get<SpotifyPaged<{ id: string; name: string }>>('/me/top/artists', { time_range: 'long_term', limit }),
       ]);
-      const jaccard = (a: Set<string>, b: Set<string>) => { const inter = [...a].filter((x) => b.has(x)).length; const uni = new Set([...a, ...b]).size; return uni === 0 ? 1 : Math.round((inter / uni) * 1000) / 1000; };
+      // Jaccard divides the intersection by the union, so it needs a non-empty
+      // union to be a measurement at all. Two empty windows have none, and
+      // 0/0 is not "perfectly stable taste" — it is an absent comparison, so
+      // it reports as null rather than as the maximum similarity (#807). One
+      // empty side is a real answer rather than a missing one: nothing in the
+      // populated set is in the empty one, so the same arithmetic returns 0.
+      const jaccard = (a: Set<string>, b: Set<string>): number | null => {
+        if (a.size === 0 && b.size === 0) return null;
+        const inter = [...a].filter((x) => b.has(x)).length;
+        const uni = new Set([...a, ...b]).size;
+        return Math.round((inter / uni) * 1000) / 1000;
+      };
       const stT = new Set((stTracks?.items ?? []).map((t) => t.id));
       const ltT = new Set((ltTracks?.items ?? []).map((t) => t.id));
       const stA = new Set((stArtists?.items ?? []).map((a) => a.id));
       const ltA = new Set((ltArtists?.items ?? []).map((a) => a.id));
+      const tracksJaccard = jaccard(stT, ltT);
+      const artistsJaccard = jaccard(stA, ltA);
+      // The window sizes, because "your taste did not change" and "there was
+      // nothing to compare" have to be tellable apart without reading prose.
+      // The top-level pair totals both top lists; each domain repeats its own
+      // pair, since a null is only explicable against the side that was empty.
+      const windowSizes = { short_term: stT.size + stA.size, long_term: ltT.size + ltA.size };
       const payload = {
         ok: true,
-        tracks: { jaccard: jaccard(stT, ltT), rising: [...stT].filter((x) => !ltT.has(x)).slice(0, 10), falling: [...ltT].filter((x) => !stT.has(x)).slice(0, 10) },
-        artists: { jaccard: jaccard(stA, ltA), rising: [...stA].filter((x) => !ltA.has(x)).slice(0, 10), falling: [...ltA].filter((x) => !stA.has(x)).slice(0, 10) },
+        window_sizes: windowSizes,
+        tracks: { window_sizes: { short_term: stT.size, long_term: ltT.size }, jaccard: tracksJaccard, rising: [...stT].filter((x) => !ltT.has(x)).slice(0, 10), falling: [...ltT].filter((x) => !stT.has(x)).slice(0, 10) },
+        artists: { window_sizes: { short_term: stA.size, long_term: ltA.size }, jaccard: artistsJaccard, rising: [...stA].filter((x) => !ltA.has(x)).slice(0, 10), falling: [...ltA].filter((x) => !stA.has(x)).slice(0, 10) },
       };
-      return shapeResultGeneric(rf, `Taste shift: tracks Jaccard ${payload.tracks.jaccard}, artists Jaccard ${payload.artists.jaccard}. Rising tracks: ${payload.tracks.rising.slice(0, 3).join(', ') || '—'}.`, payload);
+      const jaccardText = (v: number | null) => (v === null ? 'not measurable (both windows empty)' : String(v));
+      // Name the sides that came back empty, so a one-sided 0 is not read as
+      // "nothing in common" when it is really "one side had nothing to offer".
+      const emptySides = [
+        ...(stT.size === 0 ? ['tracks short_term'] : []),
+        ...(ltT.size === 0 ? ['tracks long_term'] : []),
+        ...(stA.size === 0 ? ['artists short_term'] : []),
+        ...(ltA.size === 0 ? ['artists long_term'] : []),
+      ];
+      const verdict = emptySides.length > 0
+        ? `Taste shift: insufficient history to compare — no items in ${emptySides.join(', ')} (tracks Jaccard ${jaccardText(tracksJaccard)}, artists Jaccard ${jaccardText(artistsJaccard)}; window sizes short_term ${windowSizes.short_term}, long_term ${windowSizes.long_term}).`
+        : `Taste shift: tracks Jaccard ${tracksJaccard}, artists Jaccard ${artistsJaccard}.`;
+      return shapeResultGeneric(rf, `${verdict} Rising tracks: ${payload.tracks.rising.slice(0, 3).join(', ') || '—'}.`, payload);
     },
   );
 
