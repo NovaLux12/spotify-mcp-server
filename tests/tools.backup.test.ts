@@ -260,6 +260,7 @@ describe('backup_library', () => {
       'saved_audiobooks',
       'saved_episodes',
       'saved_shows',
+      'schema_version',
     ]);
     assert.deepEqual(snap.liked_tracks[0], {
       uri: 'spotify:track:id0',
@@ -673,6 +674,9 @@ describe('backup_library dry_run + quota', () => {
     assert.equal(j._meta.snapshot_state, 'partial');
     assert.equal(j._meta.complete, false);
     assert.equal(j._meta.partial_reason, 'quota_exceeded');
+    // #757: the file states which contract it was written under, so a
+    // future format change is refused rather than half-read.
+    assert.equal(j.schema_version, 1);
 
     const list = await h.invoke('list_backups', { response_format: 'json' });
     const listed = (JSON.parse(textOf(list)) as { backups: Array<Record<string, unknown>> }).backups;
@@ -913,6 +917,8 @@ describe('snapshot completeness disclosure (#735)', () => {
     const wholeSnap = JSON.parse(await readFile((whole.structuredContent as { file: string }).file, 'utf8')) as Record<string, unknown>;
     assert.equal('_partial' in wholeSnap, false);
     assert.equal((wholeSnap._meta as { complete: boolean }).complete, true);
+    // #757: versioned on the happy path too, not just the quota file.
+    assert.equal(wholeSnap.schema_version, 1);
     assert.doesNotMatch(textOf(whole), /WARNING/);
   });
 });

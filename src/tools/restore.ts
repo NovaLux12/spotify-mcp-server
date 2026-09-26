@@ -31,6 +31,7 @@ import {
 import type { ResponseFormatValue } from '../shaping.js';
 import { getConfig } from '../config.js';
 import { confirmViaElicitation } from './confirm.js';
+import { LIBRARY_BACKUP_SCHEMA_VERSION } from './backup.js';
 
 // ---------------------------------------------------------------------------
 // Snapshot shape (#159 BackupBuilder contract)
@@ -65,6 +66,12 @@ interface SnapshotCollectionStatus {
 }
 
 export interface LibrarySnapshot {
+  /** On-disk contract version; absent on pre-#757 files. */
+  schema_version?: number;
+  /** Set by backup_library on a quota-hit file: nothing was captured. */
+  quota_hit?: boolean;
+  /** Set by backup_library on any non-complete file. */
+  _partial?: boolean;
   _meta?: {
     created?: string;
     notes?: string;
@@ -138,6 +145,36 @@ function chunk<T>(items: readonly T[], size: number): T[][] {
 }
 
 /**
+ * Why a snapshot records no library content worth restoring, or null.
+ *
+ * A quota-hit backup still writes a structurally valid file: every
+ * category empty, `quota_hit`/`_partial` set, `_meta.complete` false. It
+ * parses fine and every row passes validation, so without this check a
+ * restore reports a clean "nothing to add" for a library the backup
+ * never managed to read. A snapshot that is *not* declared complete and
+ * carries no rows is that file, whatever the marker is spelled like, so
+ * both the explicit marker and the emptiness it produces are refused.
+ * Cap-truncated snapshots do record rows and stay previewable — the
+ * plan's restorable_complete check refuses them before any write.
+ */
+function unrestorableSnapshotReason(
+  obj: Record<string, unknown>,
+  recognized: readonly string[],
+): string | null {
+  if (obj.quota_hit === true) return 'quota hit recorded in the file';
+  const meta = obj._meta as
+    | { complete?: unknown; snapshot_state?: unknown }
+    | undefined;
+  const declaredComplete = meta?.complete === true || meta?.snapshot_state === 'complete';
+  if (declaredComplete) return null;
+  const recorded = recognized.reduce(
+    (n, key) => n + (Array.isArray(obj[key]) ? (obj[key] as unknown[]).length : 0),
+    0,
+  );
+  return recorded === 0 ? 'no library content was recorded and the file is not marked complete' : null;
+}
+
+/**
  * Read + validate a snapshot file. Every problem surfaces as one clear error
  * naming the path and what exactly is wrong — never a raw parse trace.
  */
@@ -164,6 +201,16 @@ export async function loadSnapshot(path: string): Promise<LibrarySnapshot> {
   }
 
   const obj = parsed as Record<string, unknown>;
+
+  // An unknown contract version means the keys below cannot be read on a
+  // guess (#757). Files written before the field existed carry none and
+  // stay loadable.
+  const version = obj.schema_version;
+  if (version !== undefined && version !== LIBRARY_BACKUP_SCHEMA_VERSION) {
+    throw new Error(
+      `Unsupported snapshot at ${path}: schema_version ${JSON.stringify(version)} is not the supported version ${LIBRARY_BACKUP_SCHEMA_VERSION} - restore aborted; take a fresh backup`,
+    );
+  }
   const recognized: readonly string[] = [...SNAPSHOT_ROW_KEYS, 'playlists'];
   if (!recognized.some((k) => k in obj)) {
     throw new Error(
@@ -204,6 +251,16 @@ export async function loadSnapshot(path: string): Promise<LibrarySnapshot> {
         );
       }
     });
+  }
+
+  // Structure is sound and the file still holds nothing: judge the
+  // content only once the shape is known good, so a malformed file is
+  // never reported as an empty-but-valid one.
+  const contentless = unrestorableSnapshotReason(obj, recognized);
+  if (contentless !== null) {
+    throw new Error(
+      `Partial snapshot at ${path}: ${contentless} - restore aborted; take a fresh backup`,
+    );
   }
 
   return parsed as LibrarySnapshot;
@@ -699,6 +756,11 @@ function buildPayload(
     status,
     snapshot_state: plan.snapshotState,
     restorable_complete: plan.restorableComplete,
+    // Three-valued on purpose: a legacy file carrying no _meta says
+    // nothing about its own completeness, and null is that answer.
+    partial: plan.snapshotState === 'partial' || plan.restorableComplete === false
+      ? true
+      : plan.snapshotState === 'complete' ? false : null,
     selected_fetched: plan.selectedFetched,
     selected_cap: plan.selectedCap,
     shortfalls: plan.shortfalls,
@@ -813,7 +875,7 @@ function buildProse(
 export function registerRestoreTools(server: McpServer, client: SpotifyClient): void {
   server.tool(
     'restore_library_snapshot',
-    "STRICTLY ADDITIVE restore of a library snapshot written by backup_library (see list_backups). Adds only what is missing: saves absent tracks/albums/shows/episodes/audiobooks, follows unfollowed artists, and creates NEW playlists named 'Restored · <name> (<snapshot date>)' — existing playlists are never touched and nothing is deleted, renamed, or overwritten. Partial/truncated snapshots preview but are refused before confirmation or writes unless all data is complete. dry_run defaults to TRUE (read-only preview); setting dry_run=false requires explicit confirmation before any write, fails closed when elicitation is unavailable or errors, and allows writes when SPOTIFY_MCP_CONFIRM=never.",
+    "STRICTLY ADDITIVE restore of a library snapshot written by backup_library (see list_backups). Adds only what is missing: saves absent tracks/albums/shows/episodes/audiobooks, follows unfollowed artists, and creates NEW playlists named 'Restored · <name> (<snapshot date>)' — existing playlists are never touched and nothing is deleted, renamed, or overwritten. Truncated snapshots are previewable but refused before confirmation or writes; quota-hit, contentless or wrong-schema_version snapshots are refused outright. dry_run defaults to TRUE (read-only preview); setting dry_run=false requires explicit confirmation before any write, fails closed when elicitation is unavailable or errors, and allows writes when SPOTIFY_MCP_CONFIRM=never.",
     {
       backup_path: z
         .string()

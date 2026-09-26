@@ -162,10 +162,19 @@ export interface BackupMeta {
 }
 
 /**
+ * On-disk contract version of a snapshot file (#757). A file declaring
+ * any other version is refused by restore_library_snapshot instead of
+ * being parsed on a guess: this field is what lets a future format
+ * change be rejected rather than half-understood.
+ */
+export const LIBRARY_BACKUP_SCHEMA_VERSION = 1;
+
+/**
  * Top-level keys of a backup-*.json file. Order matters only cosmetically;
  * consumers MUST treat unknown keys as forward-compatible additions.
  */
 export interface LibraryBackup {
+  schema_version: typeof LIBRARY_BACKUP_SCHEMA_VERSION;
   _meta: BackupMeta;
   liked_tracks: BackupSavedRow[];
   saved_albums: BackupSavedRow[];
@@ -444,7 +453,7 @@ async function collectPlaylistItems(
   return { rows: out, complete, truncated, reportedTotal };
 }
 
-type SnapshotBody = Omit<LibraryBackup, '_meta'>;
+type SnapshotBody = Omit<LibraryBackup, '_meta' | 'schema_version'>;
 interface DetailedSnapshot {
   body: SnapshotBody;
   collections: BackupMeta['collections'];
@@ -1088,6 +1097,7 @@ export function registerBackupTools(server: McpServer, client: SpotifyClient): v
           };
           const created = new Date().toISOString();
           const snapshot: LibraryBackup = {
+            schema_version: LIBRARY_BACKUP_SCHEMA_VERSION,
             _meta: buildMeta(created, partialDetailed, args.notes, 'quota_exceeded'),
             ...partialBody,
           };
@@ -1126,6 +1136,7 @@ export function registerBackupTools(server: McpServer, client: SpotifyClient): v
 
       const created = new Date().toISOString();
       const snapshot: LibraryBackup = {
+        schema_version: LIBRARY_BACKUP_SCHEMA_VERSION,
         _meta: buildMeta(created, detailed, args.notes),
         ...detailed.body,
       };
