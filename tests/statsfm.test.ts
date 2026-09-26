@@ -583,7 +583,14 @@ test('all six per-entity stats tools disclose a truncated page (#810)', async ()
     assert.equal(sc.capped, true, `${name} must flag a full page as truncated`);
     assert.equal(sc.count, matchingIn(history, sc.page_size as number), `${name} counts only this ${filter}'s plays on the page`);
     assert.equal(proseCount(txt), sc.count, `${name} prose must agree with its payload`);
-    assert.match(txt, new RegExp(`are this ${filter};`), `${name} must say which page it counted`);
+    // Deliberately NOT asserting which page was read. The six tools do not share
+    // a read shape: the plain ones take the profile's newest page, the
+    // *_date_stats ones pass an after/before window. A qualifier naming "the
+    // profile's newest page" is false for the second group, so this asserts the
+    // claim that holds for both, and pins the false one out.
+    assert.match(txt, new RegExp(`are this ${filter}\\.`), `${name} must say how many of the read are this ${filter}`);
+    assert.match(txt, /this read returned/, `${name} must not claim which page was read`);
+    assert.doesNotMatch(txt, /newest page/, `${name} must not describe a windowed read as the newest page`);
     assert.match(txt, /not a lifetime total/, `${name} prose must not read as a lifetime total`);
     if (name.endsWith('_date_stats')) {
       const params = h.calls[0].params ?? {};

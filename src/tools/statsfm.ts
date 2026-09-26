@@ -239,7 +239,9 @@ function isStreamOf(stream: J, filter: EntityFilter, entityId: string): boolean 
   return artistIds.some((id) => String(id) === entityId);
 }
 
-/** Fetch one page of the profile's newest streams and narrow it to `entity`. */
+/** Fetch one page of streams for a query and narrow it to `entity`. The query may be
+ *  the profile's newest streams or a `*_date_stats` window, so nothing here may
+ *  describe the page as "the profile's newest page". */
 async function readStreamPage(
   client: StatsfmClient,
   userId: string,
@@ -289,7 +291,7 @@ function formatSummary(sum: StreamSummary, read: StreamPage, filter: EntityFilte
   const span = sum.oldest && sum.newest ? ` | page span: ${sum.oldest} → ${sum.newest}` : '';
   const line = `${sum.label}: ${sum.count} streams, ${fmtPlayed(sum.totalMs)} total (avg ${fmtPlayed(sum.avgMs)})${span}`;
   if (read.capped) {
-    return `${line}\nPartial: ${sum.count} of the ${read.pageSize} streams this profile's newest page returned are this ${filter}; older history may hold more, so this is not a lifetime total.`;
+    return `${line}\nPartial: ${sum.count} of the ${read.streams.length} streams this read returned are this ${filter}. The read was capped at ${read.pageSize}, so this is not a lifetime total — more may exist outside what this query returned.`;
   }
   if (sum.count === 0) {
     return `${line}\nComplete: the ${read.streams.length} streams stats.fm returned for this profile include none for this ${filter}.`;
