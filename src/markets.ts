@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { SpotifyClient } from './client.js';
+import { SpotifyApiError, type SpotifyClient } from './client.js';
 import { getConfig } from './config.js';
 import type { UserProfile } from './types/spotify.js';
 
@@ -46,6 +46,62 @@ export async function resolveRequestMarket(
   const account = await resolveProfileCountry(client);
   if (account) return { market: account.toUpperCase(), source: 'account' };
   return { source: 'none' };
+}
+
+/**
+ * A market-gated rejection is a lookup problem, not an argument problem. Only
+ * a market this server defaulted (not one the caller supplied) is worth a
+ * hint; the original error rides along as `cause`.
+ *
+ * `subject` names the gated endpoint family in the hint, because a caller who
+ * sees "market-gated" with nothing to attach it to cannot tell which lookup
+ * refused.
+ */
+export function withMarketHint(
+  err: unknown,
+  market: string | undefined,
+  marketArg: string | undefined,
+  subject = 'This endpoint',
+): unknown {
+  if (
+    !marketArg &&
+    market &&
+    err instanceof SpotifyApiError &&
+    (err.status === 404 || err.status === 400)
+  ) {
+    return new Error(
+      `Spotify returned ${err.status} for this lookup using market ${market}. ${subject} is market-gated — retry with an explicit market code if this looks wrong.`,
+      { cause: err },
+    );
+  }
+  return err;
+}
+
+/**
+ * GET with `market` resolved by the shared chain above, reporting where that
+ * market came from.
+ *
+ * #782: this lived as a private copy in catalog.ts and again in audiobooks.ts.
+ * Two copies meant the show/episode walks had no shared way in, and a
+ * market-gated call site that did not reach for one of the two private
+ * helpers simply sent no market — the omission was invisible precisely
+ * because the helper was not where a new call site would look for it.
+ */
+export async function getWithMarketFallback<T>(
+  client: SpotifyClient,
+  path: string,
+  marketArg: string | undefined,
+  extraParams: Record<string, string> = {},
+  subject = 'This endpoint',
+): Promise<{ data: T | null; market: MarketResolution }> {
+  const market = await resolveRequestMarket(client, marketArg);
+  const params: Record<string, string> = { ...extraParams };
+  if (market.market) params.market = market.market;
+  try {
+    return { data: await client.get<T>(path, params), market };
+  } catch (err) {
+    throw withMarketHint(err, market.market, marketArg, subject);
+  }
 }
 
 /**

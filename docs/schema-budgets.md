@@ -87,9 +87,9 @@ above either ceiling fails CI and server startup.
 | portability | 11 | 10,058 | 11 | 10,058 | 12 | 11,064 |
 | libraryinsights | 3 | 2,751 | 3 | 2,751 | 4 | 3,027 |
 | libraryhygiene | 1 | 734 | 1 | 734 | 2 | 808 |
-| showradar | 1 | 1,675 | 1 | 1,675 | 2 | 1,843 |
+| showradar | 1 | 1,967 | 1 | 1,967 | 2 | 2,164 |
 | saveddedupe | 1 | 1,562 | 1 | 1,562 | 2 | 1,719 |
-| podcastsession | 2 | 2,759 | 2 | 2,759 | 3 | 3,035 |
+| podcastsession | 2 | 3,427 | 2 | 3,427 | 3 | 3,770 |
 | backupfirst | 1 | 513 | 1 | 513 | 2 | 565 |
 | backup | 2 | 1,632 | 2 | 1,632 | 3 | 1,796 |
 | backupdelete | 1 | 959 | 1 | 959 | 2 | 1,055 |

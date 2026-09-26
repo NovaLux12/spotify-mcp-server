@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { SpotifyApiError, type SpotifyClient } from '../client.js';
+import type { SpotifyClient } from '../client.js';
 import type {
   SpotifyAudiobookFull,
   SpotifyChapterFull,
@@ -22,8 +22,10 @@ import {
 import { getConfig } from '../config.js';
 import {
   MARKET_CODE,
+  getWithMarketFallback,
   resolveRequestMarket,
   resetProfileCountryCache,
+  withMarketHint,
   withMarketSource,
   type MarketResolution,
 } from '../markets.js';
@@ -48,43 +50,11 @@ const MARKET_PARAM = MARKET_CODE
 const EMBEDDED_CHAPTER_PREVIEW = 10;
 
 
-// GET with `market` resolved by the shared #595 chain, reporting where that
-// market came from. When the market was defaulted (not caller-supplied) and
-// Spotify rejects the lookup, rethrow with a hint while preserving the
-// original error as `cause`.
-async function getWithMarketFallback<T>(
-  client: SpotifyClient,
-  path: string,
-  marketArg: string | undefined,
-  extraParams: Record<string, string> = {},
-): Promise<{ data: T | null; market: MarketResolution }> {
-  const market = await resolveRequestMarket(client, marketArg);
-  const params: Record<string, string> = { ...extraParams };
-  if (market.market) params.market = market.market;
-  try {
-    return { data: await client.get<T>(path, params), market };
-  } catch (err) {
-    throw withMarketHint(err, market.market, marketArg);
-  }
-}
-
-// A market-gated rejection is a lookup problem, not an argument problem. Only
-// a market this server defaulted (not one the caller supplied) is worth a
-// hint; the original error rides along as `cause`.
-function withMarketHint(err: unknown, market: string | undefined, marketArg: string | undefined): unknown {
-  if (
-    !marketArg &&
-    market &&
-    err instanceof SpotifyApiError &&
-    (err.status === 404 || err.status === 400)
-  ) {
-    return new Error(
-      `Spotify returned ${err.status} for this lookup using market ${market}. Audiobooks are market-gated — retry with an explicit market code if this looks wrong.`,
-      { cause: err },
-    );
-  }
-  return err;
-}
+// The market-gated GET and its rejection hint both live in src/markets.ts
+// (#782) — they used to be private to this file and separately to catalog.ts.
+// The audiobook walk keeps its own function because the paged client is a
+// different call, but it shares the hint.
+const AUDIOBOOK_GATED = 'Audiobooks';
 
 async function walkWithMarketFallback<T>(
   client: SpotifyClient,
@@ -101,7 +71,7 @@ async function walkWithMarketFallback<T>(
     );
     return { ...walk, market };
   } catch (err) {
-    throw withMarketHint(err, market.market, marketArg);
+    throw withMarketHint(err, market.market, marketArg, AUDIOBOOK_GATED);
   }
 }
 function formatDuration(ms: number): string {
@@ -201,6 +171,8 @@ export function registerAudiobookTools(server: McpServer, client: SpotifyClient)
         client,
         `/audiobooks/${encodeURIComponent(args.id)}`,
         args.market,
+        {},
+        AUDIOBOOK_GATED,
       );
       if (!audiobook) throw new Error(`Audiobook "${args.id}" not found`);
 
@@ -294,6 +266,7 @@ export function registerAudiobookTools(server: McpServer, client: SpotifyClient)
             limit: String(args.limit ?? 20),
             offset: String(args.offset ?? 0),
           },
+          AUDIOBOOK_GATED,
         ));
       }
       if (!result) throw new Error(`Audiobook "${args.id}" not found`);
@@ -359,6 +332,8 @@ export function registerAudiobookTools(server: McpServer, client: SpotifyClient)
         client,
         `/chapters/${encodeURIComponent(args.id)}`,
         args.market,
+        {},
+        AUDIOBOOK_GATED,
       );
       if (!chapter) throw new Error(`Chapter "${args.id}" not found`);
 

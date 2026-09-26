@@ -381,6 +381,7 @@ Quick reference for all endpoints used. All paths are relative to `https://api.s
 | `get_several_albums` | GET | `/albums?ids=…` — up to 20 per request |
 | `get_show` | GET | `/shows/{id}` |
 | `list_show_episodes` | GET | `/shows/{id}/episodes` |
+| `show_new_episodes` | GET | `/me/shows` then `/shows/{id}/episodes` per show — the per-show reads are market-gated and default `market` (§10) |
 | `get_several_shows` | GET | `/shows?ids=…` — up to 50 per request |
 | `get_episode` | GET | `/episodes/{id}` |
 | `get_several_episodes` | GET | `/episodes?ids=…` — up to 50 per request |
@@ -1296,7 +1297,7 @@ Known limitations to document and handle:
 | **Redirect URI** | Must use `http://127.0.0.1` for local development — not `http://localhost` |
 | **Market sensitivity** | Some tracks/albums are region-restricted; `market` param controls availability filtering |
 | **Fetch-all cap** | `fetch_all` pagination (`client.getAllPages`) walks offset pages up to `SPOTIFY_MCP_FETCH_ALL_CAP` items per call (default 500). Cursor-paginated endpoints (followed artists) are not supported by this helper. |
-| **Default market** | A market-gated lookup with no `market` argument resolves in this order: the argument, `SPOTIFY_MCP_MARKET`, then the account country when `GET /me` still carries one. The last source is gone — `country` was removed from `GET /me` in Feb 2026 — so on a current registration nothing supplies a default, the request goes out without `market`, and the result reports `market_source: "none"` rather than leaving the fact unstated. `market` codes are validated against a bundled ISO 3166-1 alpha-2 list, so validation needs no `GET /markets` round-trip. |
+| **Default market** | A market-gated lookup with no `market` argument resolves in this order: the argument, `SPOTIFY_MCP_MARKET`, then the account country when `GET /me` still carries one. The last source is gone — `country` was removed from `GET /me` in Feb 2026 — so on a current registration nothing supplies a default, the request goes out without `market`, and the result reports `market_source: "none"` rather than leaving the fact unstated. `market` codes are validated against a bundled ISO 3166-1 alpha-2 list, so validation needs no `GET /markets` round-trip. The show/episode walks — `show_new_episodes`, `plan_podcast_session` and `start_podcast_session` with `kind: "shows"` or `saved_only: false` — resolve the same way and report the pair a resolved market always reports, `market: "GB" | null, market_source: "none" | "argument" | "config" | "account"`. A saved-episodes-only session reads no market-gated endpoint, so it reports neither field rather than claiming a scoping no request carried. |
 
 ---
 

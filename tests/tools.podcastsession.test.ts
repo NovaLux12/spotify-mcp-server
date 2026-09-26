@@ -6,14 +6,14 @@
  * Run: node --import tsx --test tests/tools.podcastsession.test.ts
  */
 
-import { describe, it } from 'node:test';
+import { afterEach, beforeEach, describe, it } from 'node:test';
 import { z } from 'zod';
 import assert from 'node:assert/strict';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../src/client.js';
 import type { SpotifyPaged } from '../src/types/spotify.js';
 import { initConfig } from '../src/config.js';
-import { registerPodcastSessionTools } from '../src/tools/podcastsession.js';
+import { registerPodcastSessionTools, resetProfileCountryCache } from '../src/tools/podcastsession.js';
 
 // ---------------------------------------------------------------------------
 // Stub plumbing (mirrors tests/tools.playlists-following.test.ts)
@@ -479,5 +479,144 @@ describe('start_podcast_session', () => {
     const res = await h.byName.get('start_podcast_session')!.handler({ minutes: 30 });
     assert.equal(h.client.calls.filter((c) => c.method !== 'GET').length, 0);
     assert.equal(res.structuredContent!.ok, false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #782 — the saved-show walk reads /shows/{id}/episodes, which is market-gated
+// and used to send no market at all.
+// ---------------------------------------------------------------------------
+
+/** One saved show with one recent episode; `meCountry` is what /me reports. */
+function showPlanHarness(meCountry?: string) {
+  return harness((path) => {
+    if (path === '/me') return { id: 'usr1', country: meCountry };
+    if (path === '/me/shows') {
+      return {
+        items: [{ added_at: '', show: { id: 's1', name: 'Show One', uri: 'spotify:show:s1' } }],
+        limit: 50,
+        total: 1,
+        offset: 0,
+      };
+    }
+    if (path === '/shows/s1/episodes') {
+      return {
+        items: [
+          {
+            id: 'e1',
+            uri: 'spotify:episode:e1',
+            name: 'Show Ep',
+            duration_ms: 20 * MIN,
+            release_date: '',
+            explicit: false,
+            description: '',
+          },
+        ],
+        limit: 25,
+        total: 1,
+        offset: 0,
+      };
+    }
+    return { items: [], total: 0 };
+  });
+}
+
+/** The parameters the show-episode read actually went out with. */
+function showEpisodeRead(client: { calls: RecordedCall[] }): Record<string, string> {
+  const read = client.calls.find((c) => c.path === '/shows/s1/episodes');
+  assert.ok(read, 'the saved-show episode read happened');
+  return (read.arg ?? {}) as Record<string, string>;
+}
+
+describe('saved-show market default (#782)', () => {
+  beforeEach(() => {
+    // Memoised process-wide: one test's /me answer would otherwise become
+    // every later test's default market.
+    resetProfileCountryCache();
+  });
+
+  afterEach(() => {
+    delete process.env.SPOTIFY_MCP_MARKET;
+    initConfig(process.env);
+    resetProfileCountryCache();
+  });
+
+  it('defaults the show-episode request to the account country', async () => {
+    const h = showPlanHarness('GB');
+
+    const res = await h.byName.get('plan_podcast_session')!.handler({ minutes: 40, kind: 'shows' });
+
+    // Asserted on what the fake client received, not on a value recomputed
+    // from the handler.
+    assert.equal(showEpisodeRead(h.client).market, 'GB');
+    assert.equal(res.structuredContent!.market, 'GB');
+    assert.equal(res.structuredContent!.market_source, 'account');
+  });
+
+  it('an explicit market argument wins, and does not fall through to the account', async () => {
+    const h = showPlanHarness('GB');
+
+    const res = await h.byName
+      .get('plan_podcast_session')!
+      .handler({ minutes: 40, kind: 'shows', market: 'DE' });
+
+    // Not vacuous: the account country is a different code, and a lookup that
+    // merely echoed the argument would also have to be the thing that skipped /me.
+    assert.equal(showEpisodeRead(h.client).market, 'DE');
+    assert.equal(h.client.calls.filter((c) => c.path === '/me').length, 0);
+    assert.equal(res.structuredContent!.market, 'DE');
+    assert.equal(res.structuredContent!.market_source, 'argument');
+  });
+
+  it('prefers SPOTIFY_MCP_MARKET over the account country', async () => {
+    process.env.SPOTIFY_MCP_MARKET = 'JP';
+    initConfig(process.env);
+    const h = showPlanHarness('GB');
+
+    const res = await h.byName.get('plan_podcast_session')!.handler({ minutes: 40, kind: 'shows' });
+
+    assert.equal(showEpisodeRead(h.client).market, 'JP');
+    assert.equal(h.client.calls.filter((c) => c.path === '/me').length, 0);
+    assert.equal(res.structuredContent!.market_source, 'config');
+  });
+
+  it('with nothing to default from, sends no market and says the plan is unscoped', async () => {
+    const h = showPlanHarness();
+
+    const res = await h.byName.get('plan_podcast_session')!.handler({ minutes: 40, kind: 'shows' });
+
+    // The parameter is genuinely absent, not defaulted to a placeholder.
+    assert.equal('market' in showEpisodeRead(h.client), false);
+    assert.equal(res.structuredContent!.market, null);
+    assert.equal(res.structuredContent!.market_source, 'none');
+  });
+
+  it('reports no market for a saved-episodes-only plan, which reads no gated endpoint', async () => {
+    const h = showPlanHarness('GB');
+
+    const res = await h.byName.get('plan_podcast_session')!.handler({ minutes: 40 });
+
+    assert.equal(h.client.calls.filter((c) => c.path === '/shows/s1/episodes').length, 0);
+    // Echoing GB here would claim a scoping no request carried.
+    assert.equal('market' in res.structuredContent!, false);
+  });
+
+  it('start_podcast_session applies the same default on the show walk', async () => {
+    const h = showPlanHarness('GB');
+
+    const res = await h.byName
+      .get('start_podcast_session')!
+      .handler({ minutes: 40, kind: 'shows', dry_run: true });
+
+    assert.equal(showEpisodeRead(h.client).market, 'GB');
+    assert.equal(res.structuredContent!.market_source, 'account');
+  });
+
+  it('rejects an unassigned market code locally, before any request', async () => {
+    const h = showPlanHarness('GB');
+    const tool = h.byName.get('plan_podcast_session')!;
+
+    assert.throws(() => tool.validate({ minutes: 40, kind: 'shows', market: 'XX' }), /ISO 3166-1/);
+    assert.deepEqual(h.client.calls, []);
   });
 });

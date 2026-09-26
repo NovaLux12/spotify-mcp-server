@@ -162,9 +162,19 @@ export const TOOL_SURFACE_BUDGET = Object.freeze({
   //   #901  +105B — states the fail-fast when artist top-tracks is gated.
   //   #688  +330B — receipts are session-scoped and lost on restart. (Already
   //         landed in main; listed because it is part of the same accounting.)
-  //   Total ~2,309B. 604,000 -> 607,000 is +3,000B against it: a 30% margin,
-  //   which is the discipline this file exists to enforce. The first raise in
-  //   this history was 19x its warrant; this is deliberately not that.
+  //   #782  +960B — `market` on `show_new_episodes`, `plan_podcast_session` and
+  //         `start_podcast_session`, all three reads being market-gated. Without
+  //         the parameter an account outside Spotify's default market silently
+  //         loses episode rows, and a shorter list reads as "no more episodes".
+  //         Measured on the merged tree this branch rebased onto, not against
+  //         the older base its own PR quoted: the aggregate is 579,136B across
+  //         592 tools, so the whole cost is absorbed by the 607,000B already
+  //         granted above and this PR needs no raise of its own. The per-module
+  //         baselines move to the measured 1967B and 3427B.
+  //   Total ~3,269B. 604,000 -> 607,000 is +3,000B against the warrants known
+  //   when it was granted: a 30% margin, which is the discipline this file
+  //   exists to enforce. The first raise in this history was 19x its warrant;
+  //   this is deliberately not that.
   //
   //   Sizing note for the next author: measure the aggregate BEFORE promising a
   //   number in prose, and measure it on the MERGED tree. Two independent
@@ -713,9 +723,9 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   manifestEntry('portability', 'portability', 'src/tools/portability.ts', registerPortabilityTools, [11, 10058], { scopeKey: 'library' }),
   manifestEntry('libraryinsights', 'library', 'src/tools/libraryinsights.ts', registerLibraryInsightsTools, [3, 2751], { scopeKey: 'library' }),
   manifestEntry('libraryhygiene', 'library', 'src/tools/libraryhygiene.ts', registerLibraryHygieneTools, [1, 734], { scopeKey: 'library' }),
-  manifestEntry('showradar', 'library', 'src/tools/showradar.ts', registerShowRadarTools, [1, 1675], { readOnlySafe: true, scopeKey: 'library' }),
+  manifestEntry('showradar', 'library', 'src/tools/showradar.ts', registerShowRadarTools, [1, 1967], { readOnlySafe: true, scopeKey: 'library' }),
   manifestEntry('saveddedupe', 'library', 'src/tools/saveddedupe.ts', registerSavedDedupeTools, [1, 1562], { scopeKey: 'library' }),
-  manifestEntry('podcastsession', 'library', 'src/tools/podcastsession.ts', registerPodcastSessionTools, [2, 2759], { scopeKey: 'library' }),
+  manifestEntry('podcastsession', 'library', 'src/tools/podcastsession.ts', registerPodcastSessionTools, [2, 3427], { scopeKey: 'library' }),
   manifestEntry('backupfirst', 'library', 'src/tools/backupfirst.ts', registerBackupFirstTools, [1, 513], { readOnlySafe: true, scopeKey: 'library' }),
   manifestEntry('backup', 'library', 'src/tools/backup.ts', registerBackupTools, [2, 1632], { readOnlySafe: true, scopeKey: 'library' }),
   manifestEntry('backupdelete', 'library', 'src/tools/backup_delete.ts', registerBackupDeleteTools, [1, 959], { readOnlySafe: false, scopeKey: 'library' }),

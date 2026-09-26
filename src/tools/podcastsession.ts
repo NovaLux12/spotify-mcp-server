@@ -17,6 +17,14 @@ import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
 import { getConfig } from '../config.js';
+import {
+  MARKET_CODE,
+  resolveRequestMarket,
+  resetProfileCountryCache,
+  withMarketHint,
+  withMarketSource,
+  type MarketResolution,
+} from '../markets.js';
 import { addToQueueBatch, dominantQueueFailureReason, formatQueueFailures } from './queueops.js';
 import {
   DryRun,
@@ -34,6 +42,39 @@ import type {
 } from '../types/spotify.js';
 
 type TextContent = { type: 'text'; text: string };
+
+/** A plan result. Named so the content discriminant stays a literal type when
+ *  a result is routed through withAppliedMarket rather than returned directly. */
+type PlanResult = { content: TextContent[]; structuredContent?: Record<string, unknown> };
+
+// Re-exported so this module's tests import the market cache hook the same way
+// the catalog and audiobooks suites do (#782).
+export { resetProfileCountryCache };
+
+/** The show/episode lookups this module makes are market-gated, so a hint that
+ *  names the family is more use than the generic wording (#782). */
+const SHOW_EPISODES_GATED = 'Show episode lookups';
+
+const MARKET_HINT =
+  'ISO 3166-1 alpha-2 country code for the saved-show episode lookups, e.g. "US". '
+  + 'Defaults to SPOTIFY_MCP_MARKET, then to the account country — these '
+  + 'lookups are market-gated, so a wrong default silently drops episode rows. '
+  + 'Ignored for a saved-episodes-only plan.';
+
+/**
+ * Report the market on a plan result, when one was applied.
+ *
+ * #782: the saved-show walk is the only market-gated read in this module, so a
+ * saved-episodes-only plan reports nothing. Echoing a market there would claim
+ * a scoping that no request carried.
+ */
+function withAppliedMarket(
+  result: PlanResult,
+  market: MarketResolution | undefined,
+): PlanResult {
+  if (!market) return result;
+  return withMarketSource(result, market);
+}
 
 /** One candidate episode with its remaining-playable time resolved. */
 interface PlannedEpisode {
@@ -121,12 +162,19 @@ function toPlanned(
  * Gather candidate episodes. `kind` picks a single source; otherwise saved
  * episodes are used, extended by saved-show episodes when saved_only=false.
  * The returned candidate set never exceeds fetchAllCap episodes.
+ *
+ * #782: the saved-show leg reads `/shows/{id}/episodes`, which is market-gated,
+ * and it used to send no market — so a session planned from saved shows could
+ * silently come up short for any account outside Spotify's default market. The
+ * resolution is reported so the caller can echo which market was applied, and
+ * is undefined when the saved-show leg did not run.
  */
 async function gatherCandidates(
   client: SpotifyClient,
   kind?: 'episodes' | 'shows',
   savedOnly = true,
-): Promise<{ candidates: PlannedEpisode[]; truncated: boolean }> {
+  marketArg?: string,
+): Promise<{ candidates: PlannedEpisode[]; truncated: boolean; market: MarketResolution | undefined }> {
   const cap = getConfig().fetchAllCap;
   const wantSavedEpisodes = kind !== 'shows';
   const wantShowEpisodes = kind === 'shows' || !savedOnly;
@@ -150,7 +198,11 @@ async function gatherCandidates(
     }
   }
 
+  let market: MarketResolution | undefined;
+
   if (wantShowEpisodes && out.length < cap) {
+    // Resolved once for the whole walk, and only on the leg that needs it.
+    market = await resolveRequestMarket(client, marketArg);
     const scannedShows = await client.getAllPages<SavedShowItem>('/me/shows', { limit: '50' }, {
       maxItems: cap + 1,
     });
@@ -163,10 +215,17 @@ async function gatherCandidates(
       }
       // Bounded probe per show: newest page only — a session composer wants
       // recent episodes, not every archive back-catalogue.
-      const res = await client.get<SpotifyPaged<SpotifyEpisodeSimple>>(
-        `/shows/${encodeURIComponent(entry.show.id)}/episodes`,
-        { limit: '25' },
-      );
+      let res: SpotifyPaged<SpotifyEpisodeSimple> | null = null;
+      try {
+        res = await client.get<SpotifyPaged<SpotifyEpisodeSimple>>(
+          `/shows/${encodeURIComponent(entry.show.id)}/episodes`,
+          market.market
+            ? { limit: '25', market: market.market }
+            : { limit: '25' },
+        );
+      } catch (err) {
+        throw withMarketHint(err, market.market, marketArg, SHOW_EPISODES_GATED);
+      }
       const items = res?.items ?? [];
       for (const [episodeIndex, ep] of items.entries()) {
         if (out.length >= cap) {
@@ -190,7 +249,7 @@ async function gatherCandidates(
     }
   }
 
-  return { candidates: out, truncated };
+  return { candidates: out, truncated, market };
 }
 
 /** Greedy in-order pack: take each playable episode that fits, stop at the first overrun. */
@@ -286,25 +345,37 @@ export function registerPodcastSessionTools(server: McpServer, client: SpotifyCl
         .boolean()
         .optional()
         .describe('When no kind is set, include recent episodes of saved shows too. Default: true (saved episodes only)'),
+      market: MARKET_CODE.optional().describe(MARKET_HINT),
       response_format: ResponseFormat,
       max_results: MaxResults,
     },
     async (args) => {
       const fmt = args.response_format;
-      const { candidates, truncated } = await gatherCandidates(client, args.kind, args.saved_only ?? true);
+      const { candidates, truncated, market } = await gatherCandidates(
+        client,
+        args.kind,
+        args.saved_only ?? true,
+        args.market,
+      );
       const plan = packSession(candidates, args.minutes, truncated);
       if (fmt === 'json') {
-        return {
-          content: [{ type: 'text', text: JSON.stringify(plan, null, 2) }],
-          structuredContent: { ...plan },
-        };
+        return withAppliedMarket(
+          {
+            content: [{ type: 'text', text: JSON.stringify(plan, null, 2) }],
+            structuredContent: { ...plan },
+          },
+          market,
+        );
       }
       const view = plan.episodes.slice(0, resolveMaxResults(args.max_results));
       const shown: SessionPlan = { ...plan, episodes: view };
-      return {
-        content: [{ type: 'text', text: renderPlan(shown, fmt === 'detailed') }],
-        structuredContent: { ...plan },
-      };
+      return withAppliedMarket(
+        {
+          content: [{ type: 'text', text: renderPlan(shown, fmt === 'detailed') }],
+          structuredContent: { ...plan },
+        },
+        market,
+      );
     },
   );
 
@@ -320,18 +391,27 @@ export function registerPodcastSessionTools(server: McpServer, client: SpotifyCl
         .optional()
         .describe('When no kind is set, include recent episodes of saved shows too. Default: true (saved episodes only)'),
       device_id: z.string().optional().describe('Target device ID; omit for the active device'),
+      market: MARKET_CODE.optional().describe(MARKET_HINT),
       dry_run: DryRun,
       response_format: ResponseFormat,
       max_results: MaxResults,
     },
     async (args) => {
-      const { candidates, truncated } = await gatherCandidates(client, args.kind, args.saved_only ?? true);
+      const { candidates, truncated, market } = await gatherCandidates(
+        client,
+        args.kind,
+        args.saved_only ?? true,
+        args.market,
+      );
       const plan = packSession(candidates, args.minutes, truncated);
       if (plan.episodes.length === 0) {
-        return {
-          content: [{ type: 'text', text: renderPlan(plan, false) }],
-          structuredContent: { ...plan, ok: false },
-        };
+        return withAppliedMarket(
+          {
+            content: [{ type: 'text', text: renderPlan(plan, false) }],
+            structuredContent: { ...plan, ok: false },
+          },
+          market,
+        );
       }
 
       const [first] = plan.episodes;
@@ -348,18 +428,21 @@ export function registerPodcastSessionTools(server: McpServer, client: SpotifyCl
       // dry_run (#57): reads above resolved the concrete plan; stop before any
       // mutating call so queue/playback state stays untouched.
       if (args.dry_run) {
-        return {
-          content: [{
-            type: 'text',
-            text: describeDryRun(`start a ${plan.minutes}-minute podcast session`, target, changes),
-          }],
-          structuredContent: {
-            ok: true,
-            dry_run: true,
-            device_id: args.device_id ?? null,
-            ...plan,
+        return withAppliedMarket(
+          {
+            content: [{
+              type: 'text',
+              text: describeDryRun(`start a ${plan.minutes}-minute podcast session`, target, changes),
+            }],
+            structuredContent: {
+              ok: true,
+              dry_run: true,
+              device_id: args.device_id ?? null,
+              ...plan,
+            },
           },
-        };
+          market,
+        );
       }
 
       if (first.resume_position_ms > 0) {
@@ -389,18 +472,21 @@ export function registerPodcastSessionTools(server: McpServer, client: SpotifyCl
         planFooter(plan),
         'Note: only the first episode honored its resume position; queued episodes play from the start.',
       ].join('\n');
-      return {
-        content: [{ type: 'text', text: summary }],
-        structuredContent: {
-          ok: failed.length === 0,
-          device_id: args.device_id ?? null,
-          queued,
-          failed,
-          dominant_cause: dominantQueueFailureReason(failed) ?? null,
-          queue_total: queueUris.length,
-          ...plan,
+      return withAppliedMarket(
+        {
+          content: [{ type: 'text', text: summary }],
+          structuredContent: {
+            ok: failed.length === 0,
+            device_id: args.device_id ?? null,
+            queued,
+            failed,
+            dominant_cause: dominantQueueFailureReason(failed) ?? null,
+            queue_total: queueUris.length,
+            ...plan,
+          },
         },
-      };
+        market,
+      );
     },
   );
 }

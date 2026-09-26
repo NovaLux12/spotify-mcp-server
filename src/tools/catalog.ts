@@ -33,6 +33,7 @@ import { recordSearch } from './searchhistory.js';
 import { spotifyId, spotifyIdArray, type SpotifyReferenceKind } from '../refs.js';
 import {
   MARKET_CODE,
+  getWithMarketFallback,
   resolveRequestMarket,
   resetProfileCountryCache,
   withMarketSource,
@@ -90,36 +91,11 @@ const FETCH_ALL_EPISODE_CAP = 500;
 const PAGE_CAPABILITIES = { maxResults: true, offset: true, limit: true, fetchAll: true } as const;
 const SCAN_CAPABILITIES = { maxResults: true, offset: true } as const;
 
-// GET with `market` resolved by resolveRequestMarket, reporting where that
-// market came from. When the market was defaulted (not caller-supplied)
-// and Spotify rejects the lookup, rethrow with a hint while preserving the
-// original error as `cause`.
-async function getWithMarketFallback<T>(
-  client: SpotifyClient,
-  path: string,
-  marketArg: string | undefined,
-  extraParams: Record<string, string> = {},
-): Promise<{ data: T | null; market: MarketResolution }> {
-  const market = await resolveRequestMarket(client, marketArg);
-  const params: Record<string, string> = { ...extraParams };
-  if (market.market) params.market = market.market;
-  try {
-    return { data: await client.get<T>(path, params), market };
-  } catch (err) {
-    if (
-      !marketArg &&
-      market.market &&
-      err instanceof SpotifyApiError &&
-      (err.status === 404 || err.status === 400)
-    ) {
-      throw new Error(
-        `Spotify returned ${err.status} for this lookup using market ${market.market}. This endpoint is market-gated — retry with an explicit market code if this looks wrong.`,
-        { cause: err },
-      );
-    }
-    throw err;
-  }
-}
+// The market-gated GET (getWithMarketFallback) and its rejection hint now live
+// in src/markets.ts (#782). They used to be private to this file and copied
+// into audiobooks.ts; two copies left the show/episode walks with no shared
+// way in, and a market-gated call site that reached for neither simply sent no
+// market.
 function formatDuration(ms: number): string {
   const minutes = Math.floor(ms / 60000);
   const seconds = Math.floor((ms % 60000) / 1000);
