@@ -44,6 +44,7 @@ import {
 import type { ResponseFormatValue } from '../shaping.js';
 import { resolveSpotifyId, spotifyId } from '../refs.js';
 import { getConfig } from '../config.js';
+import { MARKET_CODE } from './catalog.js';
 
 // ---------------------------------------------------------------------------
 // Shared shapes + plumbing
@@ -56,11 +57,6 @@ const SearchLimit = z
   .max(10)
   .optional()
   .describe('Results per page, 1–10 (Feb-2026 /search cap). Default: 10');
-
-const Market = z
-  .string()
-  .optional()
-  .describe("ISO 3166-1 alpha-2 market code (e.g. 'US'); omit for 'from_token' behaviour");
 
 const SearchLimitFragment = z
   .number()
@@ -1254,7 +1250,7 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
     'Search artists by genre keyword (e.g. "britpop", "afrobeat") and list the matching profiles with their genre tags — the entry point for a genre dive. Quota: 🟢 one GET /search call.',
     {
       genre: z.string().min(1).describe('Genre keyword to search for'),
-      market: Market,
+      market: MARKET_CODE.optional().describe("ISO 3166-1 alpha-2 market code, e.g. 'US'"),
       limit: SearchLimit,
       response_format: ResponseFormat,
     },
@@ -1285,7 +1281,7 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
     {
       scene: z.string().min(1).describe('Scene/genre keyword (e.g. "shoegaze")'),
       max_artists: z.number().int().min(1).max(10).optional().describe('Artists to sample (search cap 10). Default: 8'),
-      market: Market,
+      market: MARKET_CODE.optional().describe("ISO 3166-1 alpha-2 market code, e.g. 'US'"),
       response_format: ResponseFormat,
     },
     async (args) => {

@@ -601,3 +601,25 @@ describe('b_sides_finder reports the walk ceiling, not the selection size (#816)
     }
   });
 });
+
+// #775: the swarm3 discovery slices carried their own `z.string().optional()`
+// market, the same unvalidated shape exhaust2 had, so a lowercase code went
+// out verbatim and "usa" became an opaque Spotify 400.
+describe('swarm3 discovery market parameters use the validated shared code (#775)', () => {
+  for (const [register, expected] of [
+    [registerSwarm3DiscoveryTools, 8],
+    [registerSwarm3bDiscoveryTools, 2],
+  ] as const) {
+    it(`rejects "usa" and uppercases "us" on all ${expected} market-bearing tools`, () => {
+      const h = makeHarness(register, () => null);
+      const withMarket = h.registered.filter((t) => (t.schema as Record<string, { safeParse(v: unknown): { success: boolean; data?: unknown } }>).market);
+      assert.equal(withMarket.length, expected);
+      for (const tool of withMarket) {
+        const market = (tool.schema as Record<string, { safeParse(v: unknown): { success: boolean; data?: unknown } }>).market;
+        assert.equal(market.safeParse('usa').success, false, `${tool.name} must reject "usa"`);
+        assert.equal(market.safeParse('english').success, false, `${tool.name} must reject "english"`);
+        assert.equal(market.safeParse('us').data, 'US', `${tool.name} must uppercase "us"`);
+      }
+    });
+  }
+});
