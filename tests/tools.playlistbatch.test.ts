@@ -322,6 +322,133 @@ describe('move_items_between_playlists', () => {
   });
 });
 
+// #866: `move_items_between_playlists` mode=move de-duplicated the transfer
+// list but then deleted by BARE URI, and a bare URI removes EVERY occurrence of
+// that track from the source. Moving out of a playlist with intentional repeats
+// silently discarded the extra copies while the receipt counted one.
+//
+// These tests drive a stateful stub: it actually applies the DELETE body to an
+// in-memory playlist, so the assertions are about the playlist that comes out
+// the other side rather than about the shape of a request.
+describe('move_items_between_playlists — repeated occurrences (#866)', () => {
+  const rowFor = (uri: string) => ({ added_at: 'x', item: { id: uri.split(':').pop()!, uri, type: 'track', name: uri, duration_ms: 100, artists: [{ name: 'alice' }], album: { id: 'al', name: 'al', uri: 'spotify:album:al', images: [] } } });
+
+  /**
+   * A stub whose playlists are real arrays, so a DELETE with
+   * `{ uri, positions: [p] }` takes one occurrence and a DELETE with a bare
+   * `{ uri }` takes all of them — the two behaviours the tool has to choose
+   * between correctly.
+   */
+  function statefulHarness(playlists: Record<string, string[]>, elicitResult?: unknown) {
+    return harness((path, arg, method) => {
+      const match = /^\/playlists\/([^/]+)\/items$/.exec(path);
+      if (!match) return { items: [], total: 0, limit: 100, offset: 0, next: null } as unknown;
+      const id = decodeURIComponent(match[1]);
+      const rows = playlists[id] ?? [];
+      if (method === 'GET') {
+        const offset = Number((arg as { offset?: string } | undefined)?.offset ?? 0);
+        return { items: rows.slice(offset, offset + 100).map(rowFor), total: rows.length, limit: 100, offset, next: null } as unknown;
+      }
+      if (method === 'POST') {
+        for (const uri of (arg as { uris: string[] }).uris) rows.push(uri);
+        return { snapshot_id: 'sAdd' } as unknown;
+      }
+      // The stub's delete() does not forward a method, so anything that is not
+      // a GET or a POST to /items is the removal leg.
+      const entries = (arg as { tracks: Array<{ uri: string; positions?: number[] }> }).tracks;
+      for (const entry of entries) {
+        if (entry.positions) {
+          // Highest index first, exactly as the platform re-indexes.
+          for (const p of [...entry.positions].sort((a, b) => b - a)) rows.splice(p, 1);
+        } else {
+          for (let i = rows.length - 1; i >= 0; i--) if (rows[i] === entry.uri) rows.splice(i, 1);
+        }
+      }
+      return { snapshot_id: 'sDel' } as unknown;
+    }, elicitResult);
+  }
+
+  it('removes only the transferred occurrence, leaving the other copy in the source', async () => {
+    const X = track('X'); const Y = track('Y');
+    const playlists: Record<string, string[]> = { [MOVE_SOURCE]: [X, X, Y], [MOVE_TARGET]: [] };
+    const h = statefulHarness(playlists);
+    const out = await h.invoke('move_items_between_playlists', { source_playlist_id: MOVE_SOURCE, target_playlist_id: MOVE_TARGET, mode: 'move', dedupe: true });
+    assert.deepEqual(playlists[MOVE_SOURCE], [X], 'the second copy of X must survive the move');
+    assert.deepEqual(playlists[MOVE_TARGET], [X, Y]);
+    const deletes = h.client.calls.filter((c) => c.method === 'DELETE');
+    assert.ok(deletes.length > 0, 'move mode must delete from the source');
+    const entries = deletes.flatMap((c) => (c.arg as { tracks: Array<{ uri: string; positions?: number[] }> }).tracks);
+    assert.equal(entries.length, 2);
+    for (const e of entries) {
+      assert.ok(Array.isArray(e.positions) && e.positions.length === 1, `every removal must target one position, got ${JSON.stringify(e)}`);
+    }
+    // Descending across the whole plan: X is at 0, Y at 2.
+    assert.deepEqual(entries.map((e) => e.positions![0]), [2, 0]);
+    assert.equal(out.structuredContent?.transferred, 2);
+    assert.equal(out.structuredContent?.removed_occurrences, 2);
+    assert.match(textOf(out), /Removed 2 occurrence\(s\)/);
+  });
+
+  it('dedupe=false moves every occurrence of a repeated track', async () => {
+    const X = track('X'); const Y = track('Y');
+    const playlists: Record<string, string[]> = { [MOVE_SOURCE]: [X, X, Y], [MOVE_TARGET]: [] };
+    const h = statefulHarness(playlists);
+    const out = await h.invoke('move_items_between_playlists', { source_playlist_id: MOVE_SOURCE, target_playlist_id: MOVE_TARGET, mode: 'move', dedupe: false });
+    assert.deepEqual(playlists[MOVE_SOURCE], []);
+    assert.deepEqual(playlists[MOVE_TARGET], [X, X, Y]);
+    assert.equal(out.structuredContent?.transferred, 3);
+    assert.equal(out.structuredContent?.removed_occurrences, 3);
+  });
+
+  it('addresses the removal by the pre-filter source position, not the filtered index', async () => {
+    // [A, B, B] with filter "B" transfers one B. Its source position is 1; its
+    // index in the FILTERED array is 0. A bare-URI delete strips both Bs
+    // (source -> []); a filtered-index delete strips A instead (source -> [B, B]).
+    // Only the source position gives the one right answer: [A, B].
+    const A = track('A'); const B = track('B');
+    const playlists: Record<string, string[]> = { [MOVE_SOURCE]: [A, B, B], [MOVE_TARGET]: [] };
+    const h = statefulHarness(playlists);
+    const out = await h.invoke('move_items_between_playlists', { source_playlist_id: MOVE_SOURCE, target_playlist_id: MOVE_TARGET, mode: 'move', dedupe: true, filter: 'B' });
+    assert.deepEqual(playlists[MOVE_SOURCE], [A, B], 'A is outside the filter and the second B was never transferred — neither may be removed');
+    assert.deepEqual(playlists[MOVE_TARGET], [B]);
+    const entries = h.client.calls.filter((c) => c.method === 'DELETE').flatMap((c) => (c.arg as { tracks: Array<{ uri: string; positions?: number[] }> }).tracks);
+    assert.deepEqual(entries.map((e) => e.positions), [[1]]);
+    assert.equal(out.structuredContent?.transferred, 1);
+    assert.equal(out.structuredContent?.removed_occurrences, 1);
+  });
+
+  it('dry run states how many occurrences move mode would remove', async () => {
+    const X = track('X'); const Y = track('Y');
+    const playlists: Record<string, string[]> = { [MOVE_SOURCE]: [X, X, Y], [MOVE_TARGET]: [] };
+    const h = statefulHarness(playlists);
+    const out = await h.invoke('move_items_between_playlists', { source_playlist_id: MOVE_SOURCE, target_playlist_id: MOVE_TARGET, mode: 'move', dry_run: true });
+    assert.equal(out.structuredContent?.would_remove_occurrences, 2);
+    assert.match(textOf(out), /Would remove 2 occurrence\(s\)/);
+    assert.equal(h.client.calls.filter((c) => c.method === 'DELETE' || c.method === 'POST').length, 0);
+  });
+
+  it('keeps removals descending across the chunk boundary so later positions stay valid', async () => {
+    // 150 rows forces two DELETE requests. Every removal re-indexes the rows
+    // above it, so if the second request carried a HIGHER position than the
+    // first it would address a row that has already shifted — and the stateful
+    // stub, which splices real rows, would end up with the wrong playlist.
+    const rows = Array.from({ length: 150 }, (_, i) => track(`c${i}`));
+    const playlists: Record<string, string[]> = { [MOVE_SOURCE]: [...rows], [MOVE_TARGET]: [] };
+    const h = statefulHarness(playlists, { action: 'accept', content: { confirm: true } });
+    await h.invoke('move_items_between_playlists', { source_playlist_id: MOVE_SOURCE, target_playlist_id: MOVE_TARGET, mode: 'move', dedupe: false });
+    const deletes = h.client.calls.filter((c) => c.method === 'DELETE');
+    assert.equal(deletes.length, 2, '150 removals must split at the 100-per-request cap');
+    const perRequest = deletes.map((d) => (d.arg as { tracks: Array<{ positions: number[] }> }).tracks.map((t) => t.positions[0]));
+    assert.equal(perRequest[0].length, 100);
+    assert.equal(perRequest[1].length, 50);
+    assert.deepEqual(perRequest[0], [...perRequest[0]].sort((a, b) => b - a), 'each request must carry descending positions');
+    assert.deepEqual(perRequest[1], [...perRequest[1]].sort((a, b) => b - a));
+    assert.ok(Math.max(...perRequest[1]) < Math.min(...perRequest[0]), 'the second request must only carry positions below the first request\'s lowest');
+    assert.deepEqual(playlists[MOVE_SOURCE], [], 'every transferred occurrence must leave the source');
+    assert.equal(playlists[MOVE_TARGET].length, 150);
+  });
+});
+
 // #867: per-source resolution failures were collapsed into a single
 // `skipped++` counter and the artist top-tracks market was hardcoded to 'US',
 // so a region-locked album, a gated artist endpoint, and a genuinely empty
@@ -562,6 +689,13 @@ describe('multi-chunk write partial state (#865)', () => {
   const bigSource = Array.from({ length: 150 }, (_, i) => track(`t${i}`));
   const firstChunkUris = bigSource.slice(0, 100);
   const secondChunkUris = bigSource.slice(100, 150);
+  // #866 plans the mode=move removal in DESCENDING playlist-position order, so
+  // the remove chunk that commits is the HIGHEST 100 positions (t149…t50), not
+  // the first 100 rows. Same 100 occurrences come out either way; the traversal
+  // is reversed, and that ordering is precisely the property #866 must
+  // guarantee. Only the ordering-bearing assertion below changes — every other
+  // #865 partial-state assertion is untouched.
+  const descendingFirstChunkUris = bigSource.slice().reverse().slice(0, firstChunkUris.length);
 
   // Helper for paginated source reads: the stub's getAllPages re-reads at
   // offsets 0 and 100, so the responder must slice based on the offset it
@@ -716,7 +850,7 @@ describe('multi-chunk write partial state (#865)', () => {
     assert.equal(payload.attempted_chunks, 2);
     assert.equal(payload.failed_chunk_index, 1);
     assert.equal(payload.last_committed_chunk_index, 0);
-    assert.deepEqual(payload.last_committed_chunk_uris, firstChunkUris);
+    assert.deepEqual(payload.last_committed_chunk_uris, descendingFirstChunkUris);
     assert.match(payload.error as string, /boom/);
     assert.match(textOf(out), /now exist on BOTH playlists/);
   });

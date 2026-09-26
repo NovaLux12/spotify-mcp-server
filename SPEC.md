@@ -1147,6 +1147,37 @@ Replace a playlist's cover image with a base64-encoded JPEG (max 256 KB decoded)
 
 ---
 
+#### `move_items_between_playlists`
+Bulk rehome items between playlists. `mode: copy` leaves the source intact; `mode: move` copies to the
+target and then removes **exactly the occurrences it transferred** from the source.
+
+A move addresses the source by playlist position (`{ uri, positions: [p] }`), never by bare URI, and
+issues the removals in descending position order. Both matter: a bare URI removes **every** occurrence
+of that track, so moving out of a playlist with intentional repeats would silently discard the extra
+copies while the receipt counted one; and descending order is what keeps positions valid across a
+request, because a removal only re-indexes the rows above it. Rows outside the filter and copies that
+were never transferred stay in the source.
+
+**Inputs:**
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `source_playlist_id` | string | yes | Source playlist ID, `spotify:playlist:` URI, or URL |
+| `target_playlist_id` | string | yes | Target playlist ID, `spotify:playlist:` URI, or URL |
+| `mode` | `'copy' \| 'move'` | no | `copy` = leave source intact; `move` = remove from source after copy (default: `copy`) |
+| `dedupe` | boolean | no | Skip tracks already in target, and de-duplicate repeats within the source. Default: `true` |
+| `filter` | string | no | Only transfer tracks whose name or artist name contains this string (case-insensitive) |
+| `dry_run` | boolean | no | Preview only |
+| `limit` | integer | no | Source page size, 1–100 (default: 100) |
+| `scan_cap` | integer | no | Maximum source rows to scan; bounded by `SPOTIFY_MCP_FETCH_ALL_CAP` |
+
+**Returns:** `transferred` (items copied to the target), removed_occurrences (source occurrences
+actually removed — equal to `transferred` in `move` mode, `0` in `copy` mode), skipped_duplicates,
+add_batches / remove_batches, `snapshot_id`, and remove_snapshot. A `move` whose removal count
+disagrees with `transferred` throws rather than reporting success. Elicitation fires at 50+ items.
+`dry_run` returns would_transfer and would_remove_occurrences and issues no writes.
+
+---
+
 ### 5.7 Following
 
 #### `get_followed_artists`
