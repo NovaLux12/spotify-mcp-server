@@ -26,6 +26,8 @@ import { getConfig } from '../config.js';
 import { ARTIST_ALBUM_PAGE_LIMIT } from './catalog.js';
 import { chunk } from '../chunk.js';
 import { spotifyId, resolveSpotifyId } from '../refs.js';
+import { probeArtistReleases } from '../artistreleases.js';
+import type { ArtistReleaseProbe } from '../artistreleases.js';
 import { MARKET_CODE } from './catalog.js';
 
 // ---------------------------------------------------------------------------
@@ -238,19 +240,54 @@ function latestDated(rows: ReleaseRow[]): ReleaseRow | null {
 interface ArtistProbeResult {
   latest: ReleaseRow | null;
   error: string | null;
+  /** True when the shared canonical probe was answered from the read cache. */
+  fromCache: boolean;
 }
 
-/** Probe one artist's latest release without turning a failed request into a quiet artist. */
+/**
+ * Probe one artist's latest release without turning a failed request into a
+ * quiet artist (#900). Routed through the one canonical probe so the four
+ * discovery radars and `whats_new` share a single request per artist.
+ */
 async function probeArtistLatestRelease(client: SpotifyClient, artistId: string): Promise<ArtistProbeResult> {
   try {
-    const probe = await client.get<{ items?: ReleaseRow[] }>(
-      `/artists/${encodeURIComponent(artistId)}/albums`,
-      { include_groups: 'album,single', limit: '5' },
-    );
-    return { latest: latestDated(probe?.items ?? []), error: null };
+    // The whole canonical page, not a 5-row slice: latestDated picks by date
+    // and must not inherit an ordering the schema never promised.
+    const probe = await probeArtistReleases(client, artistId);
+    return { latest: latestDated(probe.items), error: null, fromCache: probe.fromCache };
   } catch (error) {
-    return { latest: null, error: error instanceof Error ? error.message : String(error) };
+    return { latest: null, error: error instanceof Error ? error.message : String(error), fromCache: false };
   }
+}
+
+/** Probe-cost counters shared by the radars' payloads (#900). */
+interface ProbeCost {
+  /** Artists probed, whether the probe succeeded, failed, or hit the cache. */
+  probes: number;
+  /** Probes the read cache answered — the ones that cost no request. */
+  cacheHits: number;
+  /** Probes that reached the API. */
+  requests: number;
+}
+
+const newProbeCost = (): ProbeCost => ({ probes: 0, cacheHits: 0, requests: 0 });
+
+/**
+ * One prose line naming what the probe fan-out cost (#900). Probes and
+ * requests are different numbers once the read cache is warm, and saying only
+ * "N artists" would leave a caller unable to tell a cheap read from an
+ * expensive one.
+ */
+function probeCostLine(cost: ProbeCost): string {
+  return `Probed ${cost.probes} artist${cost.probes === 1 ? '' : 's'}: ${cost.requests} API request${cost.requests === 1 ? '' : 's'}`
+    + `${cost.cacheHits > 0 ? `, ${cost.cacheHits} served from the read cache` : ''} (#900).`;
+}
+
+/** Fold one probe into the counters. A failed probe still cost a probe. */
+function recordProbe(cost: ProbeCost, result: { fromCache: boolean } | null): void {
+  cost.probes += 1;
+  if (result?.fromCache) cost.cacheHits += 1;
+  else cost.requests += 1;
 }
 
 /** ASCII histogram bar scaled to the max bucket. */
@@ -1100,7 +1137,8 @@ export function registerSwarm3DiscoveryTools(server: McpServer, client: SpotifyC
     'artist_name_disambiguator',
     'Resolves an ambiguous artist name: runs a typed artist search and profiles each candidate (genres, active '
       + 'year span and a sample release from a small discography probe) so you can pick the right ID. '
-      + 'Quota: 1 /search + 1 small albums call per candidate.',
+      + 'Quota: 1 /search + 1 shared canonical artist-release probe per candidate (#900) — a probe another '
+      + 'tool already made in the same cache window costs no request.',
     {
       name: z.string().min(1).describe('Artist name to disambiguate'),
       candidates_cap: z.number().int().min(1).max(10).optional().describe('Candidates profiled. Default: 5'),
@@ -1115,23 +1153,28 @@ export function registerSwarm3DiscoveryTools(server: McpServer, client: SpotifyC
       );
       if (items.length === 0) throw new Error(`No artist candidates found for "${args.name}"`);
       const rows: Array<Record<string, unknown>> = [];
+      const probeCost = newProbeCost();
       const lines = [`Artist candidates for "${args.name}" (${total ?? items.length} total matches):`, ''];
       for (const a of items) {
         let span = 'unknown';
         let sample: { name: string; release_date: string | null } | null = null;
+        let probe: ArtistReleaseProbe | null = null;
         try {
-          const probe = await client.get<{ items: ReleaseRow[] }>(
-            `/artists/${encodeURIComponent(a.id)}/albums`,
-            { include_groups: 'album,single', limit: '5' },
-          );
-          const rels = (probe?.items ?? []).filter((r) => tsOf(r.release_date) !== null);
-          if (rels.length > 0) {
-            const dates = rels.map((r) => r.release_date as string).sort();
-            span = `${dates[0].slice(0, 4)}-${dates[dates.length - 1].slice(0, 4)} (recent 5)`;
-            sample = { name: rels[rels.length - 1].name, release_date: rels[rels.length - 1].release_date ?? null };
-          }
+          // Sliced in memory, not with limit=5 on the wire: a smaller limit is
+          // a different cache key, and this candidate may already have been
+          // probed by whats_new in the same cache window (#900).
+          probe = await probeArtistReleases(client, a.id, { rows: 5 });
         } catch {
           span = 'probe failed';
+        }
+        recordProbe(probeCost, probe);
+        const rels = (probe?.items ?? []).filter((r) => tsOf(r.release_date) !== null);
+        if (rels.length > 0) {
+          const dates = rels.map((r) => r.release_date as string).sort();
+          // The count is the number of dated rows actually examined, not a
+          // fixed 5 — an artist with three dated releases reads as three.
+          span = `${dates[0].slice(0, 4)}-${dates[dates.length - 1].slice(0, 4)} (recent ${rels.length})`;
+          sample = { name: rels[rels.length - 1].name, release_date: rels[rels.length - 1].release_date ?? null };
         }
         lines.push(`- ${a.name} | ${a.id} | genres: ${a.genres?.length ? a.genres.slice(0, 4).join(', ') : 'untagged'} | releases: ${span}${sample ? ` | e.g. "${sample.name}"` : ''}`);
         rows.push({
@@ -1139,10 +1182,14 @@ export function registerSwarm3DiscoveryTools(server: McpServer, client: SpotifyC
           recent_span: span, sample_release: sample,
         });
       }
+      lines.push(probeCostLine(probeCost));
       return emit(rf, lines.join('\n'), {
         query: args.name,
         candidates: rows,
         total_matches: total,
+        artist_probes: probeCost.probes,
+        artist_probe_cache_hits: probeCost.cacheHits,
+        artist_probe_requests: probeCost.requests,
       });
     },
   );
@@ -1151,7 +1198,9 @@ export function registerSwarm3DiscoveryTools(server: McpServer, client: SpotifyC
   server.tool(
     'artistwatch_new_additions',
     'Watches your FOLLOWED artists for new material: walks /me/following, probes each artist\'s latest release and '
-      + 'flags those released within the last N days. Quota: 1 cursor walk + 1 small albums call per followed artist.',
+      + 'flags those released within the last N days. Quota: 1 cursor walk + 1 canonical artist-release probe per '
+      + 'followed artist (#900) — a probe whats_new or another radar already made in the same cache window costs no '
+      + 'request, and the payload reports artist_probe_cache_hits.',
     {
       days: z.number().int().min(1).max(365).optional()
         .describe('Freshness window in days. Default: 30'),
@@ -1168,9 +1217,11 @@ export function registerSwarm3DiscoveryTools(server: McpServer, client: SpotifyC
       const additions: Array<Record<string, unknown>> = [];
       const quiet: Array<{ id: string; name: string; latest: string | null }> = [];
       const probeFailures: Array<{ id: string; name: string; error: string }> = [];
+      const probeCost = newProbeCost();
       let artistsProbed = 0;
       for (const a of followed) {
         const probe = await probeArtistLatestRelease(client, a.id);
+        recordProbe(probeCost, probe);
         if (probe.error !== null) {
           probeFailures.push({ id: a.id, name: a.name, error: probe.error });
           continue;
@@ -1205,6 +1256,7 @@ export function registerSwarm3DiscoveryTools(server: McpServer, client: SpotifyC
           : '(nothing new in the window)',
         '',
         `${quiet.length} followed artist${quiet.length === 1 ? '' : 's'} had no release in the window.`,
+        probeCostLine(probeCost),
         ...(probeFailures.length
           ? [`these artists could not be checked: ${probeFailures.map((f) => `${f.name} (${f.id}) — ${f.error}`).join('; ')}.`]
           : []),
@@ -1213,6 +1265,9 @@ export function registerSwarm3DiscoveryTools(server: McpServer, client: SpotifyC
         window_days: windowDays,
         followed_scanned: followed.length,
         artists_probed: artistsProbed,
+        artist_probes: probeCost.probes,
+        artist_probe_cache_hits: probeCost.cacheHits,
+        artist_probe_requests: probeCost.requests,
         artists_failed: probeFailures.length,
         probe_failures: probeFailures,
         additions,
@@ -1646,8 +1701,8 @@ export function registerSwarm3DiscoveryTools(server: McpServer, client: SpotifyC
   server.tool(
     'new_music_from_top_artists',
     'Fresh-music digest from YOUR listening: probes the latest release of each of your top artists (from '
-      + '/me/top/artists) and flags those released within the last N days. Quota: 1 /me/top/artists + 1 small '
-      + 'albums call per top artist.',
+      + '/me/top/artists) and flags those released within the last N days. Quota: 1 /me/top/artists + 1 canonical '
+      + 'artist-release probe per top artist (#900), free when the read cache already holds that probe.',
     {
       window: z.enum(['short_term', 'medium_term', 'long_term']).optional()
         .describe("Top-artist window. Default: 'medium_term'"),
@@ -1670,9 +1725,11 @@ export function registerSwarm3DiscoveryTools(server: McpServer, client: SpotifyC
       const fresh: Array<Record<string, unknown>> = [];
       const quiet: Array<{ id: string; name: string; latest_name: string | null; latest_date: string | null }> = [];
       const probeFailures: Array<{ id: string; name: string; error: string }> = [];
+      const probeCost = newProbeCost();
       let artistsProbed = 0;
       for (const a of artists) {
         const probe = await probeArtistLatestRelease(client, a.id);
+        recordProbe(probeCost, probe);
         if (probe.error !== null) {
           probeFailures.push({ id: a.id, name: a.name, error: probe.error });
           continue;
@@ -1707,6 +1764,7 @@ export function registerSwarm3DiscoveryTools(server: McpServer, client: SpotifyC
           : '(no fresh releases in the window)',
         '',
         `${quiet.length} top artist${quiet.length === 1 ? '' : 's'} quiet in the window.`,
+        probeCostLine(probeCost),
         ...(probeFailures.length
           ? [`these artists could not be checked: ${probeFailures.map((f) => `${f.name} (${f.id}) — ${f.error}`).join('; ')}.`]
           : []),
@@ -1715,6 +1773,9 @@ export function registerSwarm3DiscoveryTools(server: McpServer, client: SpotifyC
         window: args.window ?? 'medium_term',
         window_days: windowDays,
         artists_probed: artistsProbed,
+        artist_probes: probeCost.probes,
+        artist_probe_cache_hits: probeCost.cacheHits,
+        artist_probe_requests: probeCost.requests,
         artists_failed: probeFailures.length,
         probe_failures: probeFailures,
         fresh,
@@ -1728,7 +1789,8 @@ export function registerSwarm3DiscoveryTools(server: McpServer, client: SpotifyC
     'discovery_digest',
     'One combined discovery digest from your own data: latest releases from your top artists with freshness flags, '
       + 'a tag:new catalog search seeded with your most common top-artist genre, and a followed-artist count. '
-      + 'Quota: ~2 + N small API calls (top artists, per-artist probes, 1 search, 1 followed walk).',
+      + 'Quota: ~2 + N requests (top artists, per-artist probes, 1 search, 1 followed walk); the per-artist probes '
+      + 'are the shared canonical request (#900) and cost nothing when the read cache already holds one.',
     {
       days: z.number().int().min(1).max(365).optional()
         .describe('Freshness window in days. Default: 30'),
@@ -1754,9 +1816,11 @@ export function registerSwarm3DiscoveryTools(server: McpServer, client: SpotifyC
       const payload: Record<string, unknown> = { window_days: windowDays, top_genre: topGenre };
       const latest: Array<Record<string, unknown>> = [];
       const probeFailures: Array<{ id: string; name: string; error: string }> = [];
+      const probeCost = newProbeCost();
       let artistsProbed = 0;
       for (const a of artists) {
         const probe = await probeArtistLatestRelease(client, a.id);
+        recordProbe(probeCost, probe);
         if (probe.error !== null) {
           probeFailures.push({ id: a.id, name: a.name, error: probe.error });
           continue;
@@ -1783,6 +1847,7 @@ export function registerSwarm3DiscoveryTools(server: McpServer, client: SpotifyC
       if (probeFailures.length) {
         sections.push(`these artists could not be checked: ${probeFailures.map((f) => `${f.name} (${f.id}) — ${f.error}`).join('; ')}.`);
       }
+      sections.push(probeCostLine(probeCost));
       sections.push('');
       const q = topGenre ? `genre:"${topGenre}" tag:new` : 'tag:new';
       const fresh = await runSearch<SpotifyAlbumItem>(client, 'albums', 'album', q, 5, args.market);
@@ -1802,6 +1867,9 @@ export function registerSwarm3DiscoveryTools(server: McpServer, client: SpotifyC
       payload.tag_new_albums = fresh.items;
       payload.followed_artists_count = followed;
       payload.artists_probed = artistsProbed;
+      payload.artist_probes = probeCost.probes;
+      payload.artist_probe_cache_hits = probeCost.cacheHits;
+      payload.artist_probe_requests = probeCost.requests;
       payload.artists_failed = probeFailures.length;
       payload.probe_failures = probeFailures;
       return emit(rf, sections.join('\n'), payload);

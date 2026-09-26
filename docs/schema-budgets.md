@@ -49,6 +49,26 @@ and the audit proves each live tool belongs to exactly one module. The aggregate
 ceilings constrain module weight; they do not constitute a complete historical
 tool-name inventory.
 
+### Baseline raises
+
+Baselines are hand-maintained in `src/tools/annotations.ts` and must be moved
+to the measured value whenever a module's real `tools/list` weight changes —
+`--write` refreshes the table below but never the manifest. A module left at a
+stale baseline silently loses its 10% headroom for the next contributor.
+
+- **#900** — `freshness` 2,043 → 2,235 and `swarm3discovery` 21,887 → 22,339
+  schema bytes, both description text only. The tools' inputs, outputs and
+  counts are unchanged (1 and 24). Five descriptions quoted a per-artist cost
+  — "N followed artists = N+1 API requests", "1 small albums call per followed
+  artist", "N small API calls" — that became conditionally false once those
+  lookups became the one shared canonical release probe: a repeat scan inside
+  the read-cache window spends a probe and no request. They now say that.
+  Measured by driving `dist/index.js` over stdio and byte-counting the live
+  `tools/list` payload: the registry is **592 tools** before and after, and the
+  aggregate moved **610,728 → 611,372 bytes (+644)** against the 621,000-byte
+  enforced ceiling, leaving 9,628 bytes of headroom. No aggregate raise, and no
+  ceiling moved to make a breach disappear.
+
 ## Checked-in baseline and ceilings
 
 The generated table below is produced from the shared manifest and the same
@@ -141,7 +161,7 @@ if you lower the limit to force one.
 | undo | 2 | 1,663 | 2 | 1,663 | 3 | 1,830 |
 | receipts | 1 | 626 | 1 | 626 | 2 | 689 |
 | episodemgmt | 1 | 1,053 | 1 | 1,053 | 2 | 1,159 |
-| freshness | 1 | 2,043 | 1 | 2,043 | 2 | 2,248 |
+| freshness | 1 | 2,235 | 1 | 2,235 | 2 | 2,459 |
 | searchdive | 1 | 1,683 | 1 | 1,683 | 2 | 1,852 |
 | searchhistory | 2 | 1,096 | 2 | 1,096 | 3 | 1,206 |
 | browse | 3 | 2,634 | 3 | 2,634 | 4 | 2,898 |
@@ -161,9 +181,15 @@ if you lower the limit to force one.
 | exhaust2playback | 23 | 17,473 | 23 | 17,473 | 24 | 19,221 |
 | exhaust2playlists | 18 | 23,326 | 18 | 23,326 | 19 | 25,659 |
 | exhaust2misc | 27 | 23,866 | 27 | 23,866 | 28 | 26,253 |
+<<<<<<< HEAD
 | exhaust2extra | 3 | 4,024 | 3 | 4,024 | 4 | 4,427 |
 | swarm3discovery | 24 | 21,825 | 24 | 21,825 | 25 | 24,008 |
 | swarm3bdiscovery | 24 | 19,919 | 24 | 19,919 | 25 | 21,911 |
+=======
+| exhaust2extra | 3 | 4,039 | 3 | 4,039 | 4 | 4,443 |
+| swarm3discovery | 24 | 22,339 | 24 | 22,339 | 25 | 24,573 |
+| swarm3bdiscovery | 24 | 20,039 | 24 | 20,039 | 25 | 22,043 |
+>>>>>>> b393a2d (perf(#900): route artist release probes through one cacheable canonical helper)
 | swarm3shows | 24 | 21,075 | 24 | 21,075 | 25 | 23,183 |
 | swarm3refs | 6 | 4,331 | 6 | 4,331 | 7 | 4,765 |
 | swarm3analytics | 24 | 18,951 | 24 | 18,951 | 25 | 20,847 |

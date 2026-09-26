@@ -18,7 +18,6 @@ import { SpotifyApiError, quotaPreflight, quotaSnapshot, quotaWindowRemaining, q
 import type {
   FollowedArtistsResponse,
   SavedShowItem,
-  SpotifyAlbumItem,
   SpotifyEpisodeSimple,
 } from '../types/spotify.js';
 import {
@@ -32,6 +31,11 @@ import {
 } from '../shaping.js';
 import type { ResponseFormatValue, PaginationInfo } from '../shaping.js';
 import { getConfig } from '../config.js';
+import {
+  probeArtistReleases,
+  ARTIST_RELEASE_PROBE_LIMIT,
+  ARTIST_RELEASE_PROBE_GROUPS,
+} from '../artistreleases.js';
 import { readOnlyModeEnabled } from './annotations.js';
 import { chmod, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
@@ -278,8 +282,9 @@ export function registerFreshnessTools(server: McpServer, client: SpotifyClient)
     'whats_new',
     "Personal new-releases radar: derive what's new from followed artists (new albums/singles) "
       + 'and saved shows (new podcast episodes), replacing the removed browse/new-releases surface. '
-      + 'WARNING: N followed artists = N+1 API requests (1 follow page + N album lookups); '
-      + 'a large library can exhaust small dev-account quotas in one call. Use max_artists to budget '
+      + 'WARNING: N followed artists = N+1 requests on a cold read cache (1 follow page + N album lookups); '
+      + 'repeat scans inside the cache window re-probe the same canonical request for free (#900). '
+      + 'A large library can still exhaust small dev-account quotas in one call. Use max_artists to budget '
       + 'and dry_run to preview the cost before running. Decision guide: whats_new for personal follows radar; search_fresh for query-scoped tag:new, search/search_deep for general catalog, search_by_isrc for ISRC-exact.',
     {
       since: SinceArg
@@ -309,7 +314,8 @@ export function registerFreshnessTools(server: McpServer, client: SpotifyClient)
         .describe(
           'Per-call budget for artist album lookups (and show episode lookups). Default: 25 '
             + '(or SPOTIFY_MCP_FRESHNESS_BUDGET). Walk caps at this budget and reports truncation. '
-            + 'Independent of SPOTIFY_MCP_FETCH_ALL_CAP. WARNING: each lookup is an API request.',
+            + 'Independent of SPOTIFY_MCP_FETCH_ALL_CAP. WARNING: each lookup costs a request unless the '
+            + 'read cache already holds that artist\'s canonical release probe (#900).',
         ),
       response_format: ResponseFormat,
       max_results: MaxResults,
@@ -352,7 +358,7 @@ export function registerFreshnessTools(server: McpServer, client: SpotifyClient)
         if (wantAlbums) {
           plan.push('walk GET /me/following?type=artist (cursor-paged)');
           plan.push(
-            `GET /artists/{id}/albums?limit=10 (Feb-2026 cap) for up to ${freshnessBudget} followed artists (budget max_artists=${freshnessBudget}, fetchAllCap=${getConfig().fetchAllCap})`,
+            `GET /artists/{id}/albums?include_groups=${ARTIST_RELEASE_PROBE_GROUPS}&limit=${ARTIST_RELEASE_PROBE_LIMIT} (shared canonical probe, Feb-2026 cap) for up to ${freshnessBudget} followed artists (budget max_artists=${freshnessBudget}, fetchAllCap=${getConfig().fetchAllCap})`,
           );
         }
         if (wantPodcasts) {
@@ -411,6 +417,9 @@ export function registerFreshnessTools(server: McpServer, client: SpotifyClient)
       // ---- Albums path: followed artists → newest album page per artist -----
       const albums: NewReleaseHit[] = [];
       let artistLookups = 0;
+      let artistProbes = 0;
+      let artistProbeCacheHits = 0;
+      let artistProbeRequests = 0;
       let artistsSeen = 0;
       let followTruncatedByCap = false;
       let quotaHit = false;
@@ -446,13 +455,20 @@ export function registerFreshnessTools(server: McpServer, client: SpotifyClient)
               break walk;
             }
             try {
-              const res = await client.get<{ items?: SpotifyAlbumItem[] }>(
-                `/artists/${encodeURIComponent(artist.id)}/albums`,
-                { limit: '10' },
-              );
+              // The one canonical artist-release probe (#900). This used to
+              // send its own { limit: '10' } with no include_groups, which is
+              // a different cache key from every discovery radar's probe — so
+              // the same artist cost two requests per scan window. The
+              // canonical request also drops appears_on/compilation, whose rows
+              // were filling a 10-slot page and pushing genuinely new releases
+              // off the end of it.
+              const res = await probeArtistReleases(client, artist.id);
               artistLookups++;
+              artistProbes++;
+              if (res.fromCache) artistProbeCacheHits++;
+              else artistProbeRequests++;
               artistsSeen++;
-              for (const album of res?.items ?? []) {
+              for (const album of res.items) {
                 const dateKey = normalizeReleaseDate(album.release_date ?? '');
                 // Shape AND calendar: an impossible upstream day ("2026-02-30")
                 // is dropped, never rolled into a neighbouring month.
@@ -615,10 +631,17 @@ export function registerFreshnessTools(server: McpServer, client: SpotifyClient)
 
       const scanSummary: string[] = [];
       if (wantAlbums) {
+        // Probes and requests are different numbers once the read cache is
+        // warm: artistwatch_new_additions and the discovery radars probe the
+        // same artists through the same canonical request, so a second tool in
+        // the same window spends a probe and no request (#900).
+        const hitNote = artistProbeCacheHits > 0
+          ? `, ${artistProbeRequests} request${artistProbeRequests === 1 ? '' : 's'} (${artistProbeCacheHits} served from the read cache)`
+          : '';
         scanSummary.push(
           `${artistsSeen} followed artist${artistsSeen === 1 ? '' : 's'} scanned `
             + `(${artistLookups} album lookup${artistLookups === 1 ? '' : 's'}, cap ${artistCap}`
-            + `${followTruncatedByCap ? ', reached' : ', not reached'})`,
+            + `${followTruncatedByCap ? ', reached' : ', not reached'}${hitNote})`,
         );
       }
       if (wantPodcasts) {
@@ -661,6 +684,9 @@ export function registerFreshnessTools(server: McpServer, client: SpotifyClient)
         lookups: {
           artists_seen: artistsSeen,
           artist_album_calls: artistLookups,
+          artist_probes: artistProbes,
+          artist_probe_cache_hits: artistProbeCacheHits,
+          artist_probe_requests: artistProbeRequests,
           shows_seen: showsSeen,
           show_episode_calls: showLookups,
           cap: artistCap,
