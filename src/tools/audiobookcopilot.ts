@@ -119,7 +119,7 @@ export function registerAudiobookCopilotTools(server: McpServer, client: Spotify
   // list_all_chapters -------------------------------------------------------
   server.tool(
     'list_all_chapters',
-    'List every chapter of an audiobook in one table (index, name, duration, resume point). Walks all pages of the chapters endpoint, unlike the ~18-chapter app limit, but stops at the configured fetch-all cap: when the cap is reached the result is a PREFIX of the book and reports truncated_by_cap=true with the first N chapters only.',
+    'List every chapter of an audiobook in one table (index, name, duration, resume point). Walks all pages of the chapters endpoint, unlike the ~18-chapter app limit, but stops at the fetch-all cap: a capped result is a PREFIX of the book, flagged truncated_by_cap=true.',
     {
       audiobook_id: z.string().describe('Spotify audiobook ID'),
       response_format: ResponseFormat,
@@ -254,7 +254,7 @@ export function registerAudiobookCopilotTools(server: McpServer, client: Spotify
   // where_was_i -------------------------------------------------------------
   server.tool(
     'where_was_i',
-    'Orient yourself in an audiobook: matches current playback against the chapter list fetched (capped by the fetch-all cap, disclosed below) and reports which chapter you are on, how far into it, and how much listening time remains.',
+    'Orient yourself in an audiobook: matches current playback against the fetched chapter list (fetch-all cap may bound it) and reports which chapter you are on, how far into it, and how much listening time remains.',
     {
       audiobook_id: z.string().describe('Spotify audiobook ID'),
       response_format: ResponseFormat,
