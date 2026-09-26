@@ -8,6 +8,8 @@ Conventions: JSON tool args are shown inline; replace `PLAYLIST_ID` and IDs with
 
 Build a playlist that sounds like you, from stats.fm evidence instead of vibes.
 
+> Risk: creates a new playlist and bulk-adds tracks to it; preview first via `dry_run: true` on both `create_playlist` and `add_to_playlist`.
+
 ```text
 1. Call statsfm_streams_stats with `user_id: "<your-statsfm-user-id>"`; if the imported history is thin, say so and stop.
 2. Call statsfm_taste_profile with `statsfm_user: "<your-statsfm-user-id>"`, `range: "lifetime"`, and `response_format: "json"`.
@@ -22,6 +24,8 @@ Why it works: lifetime gives identity, the current month gives momentum, and the
 
 ## 2. Morning briefing
 
+> Risk: queues a track to your active device; preview first via `dry_run: true` on `add_to_queue`.
+
 ```text
 1. Call whats_new with `since: "last-check"` and `dry_run: true` to preview the lookup budget.
 2. Call statsfm_recent_streams with `user_id: "<your-statsfm-user-id>"` and `limit: 10` for overnight context.
@@ -31,14 +35,18 @@ Why it works: lifetime gives identity, the current month gives momentum, and the
 
 ## 3. Duplicate cleanup sweep
 
+> Risk: bulk-deletes duplicate occurrences from a playlist; preview first via `dry_run: true` on `remove_duplicate_playlist_items`.
+
 ```text
-1. Call find_duplicates_in_playlist with `playlist_id` set to `PLAYLIST_ID` and report the groups; this finder is read-only and does not accept `dry_run`.
+1. Call find_duplicates_in_playlist with `playlist_id: "PLAYLIST_ID"` and report the groups; this finder is read-only and does not accept `dry_run`.
 2. Ask the human which occurrences to remove—never bulk-delete unasked.
-3. On confirmation, preview remove_from_playlist with `playlist_id: "PLAYLIST_ID"`, a `uris` array of `{ "uri": "...", "positions": [2, 5] }` entries from the confirmed groups, and `dry_run: true`; commit the same arguments without `dry_run` only after the human confirms the preview.
-4. Call verify_receipt with the returned `receipt_id` and report what landed.
+3. Preview remove_duplicate_playlist_items with `playlist_id: "PLAYLIST_ID"` and `dry_run: true`; commit the same arguments without `dry_run` only after the human confirms the preview. The tool keeps the first occurrence of each track and removes later repeats; bulk removals of 10+ items ask for confirmation via elicitation.
+4. The tool's post-mutation re-scan verifies the cleanup actually landed — there is no separate receipt to look up.
 ```
 
 ## 4. Library hygiene pass
+
+> Risk: bulk-saves missing album tracks to your library and tags outliers; preview first via `dry_run: true` on `save_items` and `tag_management`.
 
 ```text
 1. Call library_hygiene and library_genre_report. When a specific saved genre tag needs checking, call filter_by_genre with a `genre` string and `kind: "tracks"` or `kind: "albums"`.
@@ -49,6 +57,8 @@ Why it works: lifetime gives identity, the current month gives momentum, and the
 
 ## 5. Podcast catch-up session
 
+> Risk: starts a podcast session on the chosen device; preview first via `dry_run: true` on `start_podcast_session`.
+
 ```text
 1. Call whats_new with `kinds: ["podcasts"]`, `since: "last-check"`, and `dry_run: true`, or use the registered podcast_catchup prompt with its required `since: "YYYY-MM-DD"`.
 2. Call plan_podcast_session with `minutes: 45`.
@@ -57,6 +67,8 @@ Why it works: lifetime gives identity, the current month gives momentum, and the
 ```
 
 ## 6. Playlist merge without tears
+
+> Risk: merges sources into a destination playlist, replacing the destination's contents if it already exists; preview first via `dry_run: true` on `merge_playlists`.
 
 ```text
 1. Call diff_playlists with `playlist_a` set to `SOURCE_A`, `playlist_b` set to `SOURCE_B`, and `response_format: "json"`.
@@ -71,6 +83,8 @@ Why it works: lifetime gives identity, the current month gives momentum, and the
 
 Spotify retired recommendations; this is the honest replacement.
 
+> Risk: bulk-adds candidate tracks to a playlist; preview first via `dry_run: true` on `add_to_playlist`.
+
 ```text
 1. Call grow_playlist with `playlist_id: "PLAYLIST_ID"`; it finds tracks co-occurring in your OTHER playlists.
 2. Cross-check each candidate with statsfm_top_tracks using `user_id: "<your-statsfm-user-id>"` and `range: "lifetime"`; demote anything already overplayed.
@@ -82,6 +96,8 @@ Spotify retired recommendations; this is the honest replacement.
 
 There is no cross-user taste-comparison tool. Use the registered social and per-user tools to compare public profiles without inventing a compatibility score.
 
+> Risk: read-only — no Spotify or sidecar writes.
+
 ```text
 1. Call statsfm_friends for each explicit public `user_id`, then call statsfm_top_artists with `user_id` set to each of the two public stats.fm IDs.
 2. Call statsfm_top_genres with each of those two explicit `user_id` values if the overlap needs explaining.
@@ -90,6 +106,8 @@ There is no cross-user taste-comparison tool. Use the registered social and per-
 ```
 
 ## 9. When-listening audit
+
+> Risk: `save_scene` writes to the local sidecar at `~/.spotify-mcp/scenes.json`. The tool does NOT accept `dry_run`, so explicit human approval is the only gate — do not call it without a "yes" on the latest suggestion.
 
 ```text
 1. Call taste_listening_clock with `statsfm_user: "<your-statsfm-user-id>"` and `response_format: "json"`.
@@ -102,6 +120,8 @@ There is no cross-user taste-comparison tool. Use the registered social and per-
 
 Safe to run on someone else's account or a shared screen — zero writes.
 
+> Risk: read-only — set `SPOTIFY_MCP_READONLY=1` so write-capable tools are hidden from the registry, and every step below is read-only by construction.
+
 ```text
 1. Set SPOTIFY_MCP_READONLY=1 (or use a host config with it set) before starting.
 2. Call get_me; resolve the guest's explicit public stats.fm identity with statsfm_resolve_user and `user_id: "<guest-statsfm-user-id>"`; then call statsfm_taste_profile with `statsfm_user: "<guest-statsfm-user-id>"`.
@@ -113,6 +133,8 @@ Safe to run on someone else's account or a shared screen — zero writes.
 
 Live playback state changes constantly but usually not at all between two polls seconds apart. Reads carry the `ETag` Spotify returns, and the next read of the same key sends `If-None-Match`: an unchanged resource comes back **304** with no body, and the server answers with the payload it already holds. The watch loop is the client doing this for you — all you write is the interval and the branch.
 
+> Risk: read-only — pure ETag poll, no writes.
+
 ```text
 1. Every 5 seconds, call get_now_playing with `response_format: "json"`.
 2. Read `unchanged` from structuredContent. Absent means Spotify sent a fresh
@@ -123,6 +145,16 @@ Live playback state changes constantly but usually not at all between two polls 
 ```
 
 The same applies to `get_currently_playing` (lightweight poll). A 304 never surfaces as an empty result — the payload shape is identical either way, so `unchanged` is the only field to branch on. Catalog reads (`get_album`, `get_artist`, …) are additionally cached for 5 minutes, and a 304 after that window refreshes the cache entry instead of re-downloading it. One caveat for watch loops: any mutation you make (pause, skip, volume) drops the stored validators, so the next poll is a full read — which is the correct answer right after a change you caused.
+
+## Undo tools
+
+Every receipt-bearing mutation can be reverted. The receipt ID returned by the tool is the handle for the rollback, and a verify step confirms the receipt itself. The undo surface is three tools; none of them touch Spotify until the human approves the rollback.
+
+- `verify_receipt` — looks up a receipt by ID and reports its recorded URIs and verification state. Read-only.
+- `undo_mutation` — inverts a specific mutation by receipt ID. Add/save receipts roll back as a removal, removal receipts as a re-add. Playlist add undos target only the rows the add created — never every copy of the URI. Defaults to `dry_run: true`; execute needs elicitation confirmation and is refused when the host cannot prompt (`SPOTIFY_MCP_CONFIRM=never` bypasses).
+- `undo_last_mutation` — same inversion semantics as `undo_mutation`, target = the most recent reversible receipt.
+
+Prefer `undo_last_mutation` after a single speculative write; reach for `undo_mutation` (with the receipt ID the previous step returned) when the rollback you want is not the latest mutation.
 
 ## See also
 
