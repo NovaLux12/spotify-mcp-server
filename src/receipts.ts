@@ -165,6 +165,17 @@ export interface Receipt {
   /** Human reason when not verified or window exceeded. */
   reason?: string;
   /**
+   * Why verification failed, when the failure is NOT a set of uris (#879).
+   *
+   * A row-count or row-order check fails on the playlist's SHAPE, not on a uri
+   * the walk failed to find, and putting that in `missing` would make a field
+   * documented as "uris not found" carry a sentence. Kept separate so the two
+   * kinds of failure stay distinguishable to a reader and to `undo_mutation`,
+   * which treats `missing` as data. Undefined when the check passed or did not
+   * apply.
+   */
+  unmet?: string;
+  /**
    * Epoch ms the receipt was issued (#587). The retention clock and
    * `receipt_lookup`'s `since` filter both read it, and it is persisted with
    * the receipt so one loaded after a restart keeps its original age.
@@ -208,6 +219,38 @@ export interface IssueReceiptOpts {
   createdPositions?: Array<{ uri: string; position: number }>;
   /** Expected number of rows removed (for window-exceeded detection). */
   expectedRemovedCount?: number;
+  /**
+   * Row count the playlist must hold once this write lands (#879).
+   *
+   * Set only by a REPLACE. Presence is the whole contract for an append — a
+   * no-op leaves rows the new uris were never in — but not for a replace: a
+   * PUT that no-ops leaves the playlist on its OLD rows, and those may well
+   * contain the same uris, so a presence-only receipt certifies a dropped
+   * replace as verified. The count is what distinguishes the two.
+   *
+   * A mismatch fails the receipt and is reported in `unmet` as
+   * `row count N ≠ expected M`. It is kept out of `missing`, which is
+   * documented as the uris the walk did not find and is consumed as data by
+   * `undo_mutation`. When the response carries no `total` the check is SKIPPED
+   * rather than guessed at, and the uri walk stands alone.
+   */
+  expectedTotalAfter?: number;
+  /**
+   * The exact ordered uris this write placed at the START of the playlist
+   * (#879).
+   *
+   * Row count catches a dropped replace, but not a dropped REORDER: reversing
+   * a list preserves both the multiset and the count, so a PUT that no-ops
+   * leaves a playlist that passes every count-and-presence check while holding
+   * the original order. The prefix comparison catches that.
+   *
+   * Only the caller knows the post-state, and only for a write that starts at
+   * position 0 — the first chunk of a replace. A later chunk appends past rows
+   * this receipt cannot name, so it passes nothing and the check is skipped.
+   * Skipped too when the walk saw fewer rows than the caller wrote; the
+   * comparison never pads a short walk into a pass.
+   */
+  expectedOrder?: string[];
   /**
    * Per-type writes the mutation landed (#1095). Forwarded onto the receipt
    * so `undo_mutation` can invert through the same per-type endpoints the
@@ -470,6 +513,7 @@ export async function issueReceipt(
   let verified: boolean;
   let _windowExceeded = false;
   let _reason: string | undefined;
+  let unmet: string | undefined;
   let occurrences: Record<string, number> | undefined;
 
   if (opts.kind === 'playlist_items') {
@@ -620,6 +664,30 @@ export async function issueReceipt(
       } else {
         missing = [...counts.entries()].filter(([, n]) => n === 0).map(([uri]) => uri);
         verified = missing.length === 0;
+        // A replace also has a row-count contract (#879). `expectedTotalAfter`
+        // is set by the caller that knows the intended post-state; without it
+        // this is a plain append and presence is the whole story.
+        if (verified && opts.expectedTotalAfter !== undefined) {
+          if (totalReported !== undefined && totalReported !== opts.expectedTotalAfter) {
+            verified = false;
+            unmet = `row count ${totalReported} ≠ expected ${opts.expectedTotalAfter}`;
+          }
+        }
+      }
+      if (verified && opts.expectedOrder !== undefined) {
+        const want = opts.expectedOrder;
+        if (want.length > orderedUris.length) {
+          // The walk saw fewer rows than the caller wrote. Say so rather than
+          // comparing a partial list, which would read as a match.
+          verified = false;
+          unmet = `walk saw ${orderedUris.length} row(s), expected at least ${want.length}`;
+        } else {
+          const at = want.findIndex((uri, i) => orderedUris[i] !== uri);
+          if (at !== -1) {
+            verified = false;
+            unmet = `row ${at} is ${orderedUris[at] ?? '(none)'}, expected ${want[at]}`;
+          }
+        }
       }
     } else {
       if (isTargeted) {
@@ -731,6 +799,7 @@ export async function issueReceipt(
     ...(opts.before !== undefined ? { before: opts.before } : {}),
     ...(after !== undefined ? { after } : {}),
     missing,
+    ...(unmet !== undefined ? { unmet } : {}),
     uris: [...opts.uris],
     direction: (opts.expectPresent ?? true) ? 'added' : 'removed',
     // Persisted so a later re-render (verify_receipt) labels the same
@@ -778,6 +847,9 @@ export function formatReceipt(
   const lines = [`Receipt ${r.receipt_id}: ${r.verified ? 'VERIFIED' : 'UNVERIFIED'} (${target})`];
   if (r.before !== undefined || r.after !== undefined) {
     lines.push(`  items before/after: ${r.before ?? '?'}/${r.after ?? '?'}`);
+  }
+  if (r.unmet !== undefined) {
+    lines.push(`  unmet: ${r.unmet}`);
   }
   if (r.windowExceeded) {
     lines.push(`  reason: ${r.reason ?? 'window exceeded'}`);

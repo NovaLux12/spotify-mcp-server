@@ -5,6 +5,8 @@
  */
 import { z } from 'zod';
 import { capFor } from '../chunk.js';
+import { issueReceipt, type Receipt } from '../receipts.js';
+import { receiptRecords, receiptsLines, writeVerdict } from './playlistreceipts.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { SpotifyApiError } from '../client.js';
 import type { SpotifyClient } from '../client.js';
@@ -267,26 +269,32 @@ export function registerQueueOpsTools(server: McpServer, client: SpotifyClient):
       let added = 0;
       let lastSnapshot: string | undefined = snapshotId;
       const writeCap = capFor('playlist_writes');
+      const receipts: Receipt[] = [];
       for (let i = 0; i < collected.length; i += writeCap) {
         const batch = collected.slice(i, i + writeCap);
         const res = await client.post<{ snapshot_id?: string }>(`/playlists/${playlistId}/items`, { uris: batch });
         added += batch.length;
         if (res?.snapshot_id) lastSnapshot = res.snapshot_id;
+        // Each batch is verified against a re-read of the playlist (#879).
+        receipts.push(await issueReceipt(client, { kind: 'playlist_items', id: playlistId, uris: batch }));
       }
 
       const isNew = !targetId;
-      const text = isNew
+      const receiptLines = receiptsLines(receipts);
+      const prose = isNew
         ? `Saved ${added} items from queue to new playlist "${name}" (${playlistId})${playlistUrl ? ` — ${playlistUrl}` : ''}.`
         : `Appended ${added} items from queue to playlist ${playlistId}.`;
+      const text = receiptLines ? `${prose}\n${receiptLines}` : prose;
 
       return mutationResult(args.response_format as string | undefined, {
-        ok: true,
+        ...writeVerdict(receipts, added),
         playlist_id: playlistId,
         playlist_url: playlistUrl,
         snapshot_id: lastSnapshot,
         count: added,
         uris: collected,
         is_new: isNew,
+        receipts: receiptRecords(receipts),
       }, text);
     },
   );

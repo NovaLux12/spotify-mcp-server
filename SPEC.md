@@ -901,6 +901,31 @@ List the current user's playlists.
 
 > **Feb 2026 note**: Playlist item endpoints use `/items` (not `/tracks`). The paths below reflect this — `GET/POST/DELETE /playlists/{id}/items`.
 
+#### Playlist write receipts (#879)
+
+Every tool that commits playlist items issues a mutation receipt per written chunk and reports the outcome of its own verification. A write the API accepted and then silently dropped is reported as a failure rather than a completed change, which is why these tools re-read `/playlists/{id}/items` after writing instead of trusting the `2xx`.
+
+**`structuredContent` additions** (prose gains one `formatReceipt` block per receipt, in issue order):
+
+| Field | Meaning |
+|---|---|
+| `ok` | `false` as soon as one receipt fails verification. Never a hard-coded `true` on a committed write. |
+| `expected` | Rows the write asked the API to land — uris confirmed present for an add, rows written for a replace, uris removed for a removal. |
+| `actual` | Rows the re-read confirmed. Derived from the receipts' own `missing` / `after` values, never from the request the tool sent, so a short read surfaces as a low count. |
+| `receipts` | The receipt records (below), in issue order. |
+
+**What each receipt checks**, by write shape — a receipt that cannot fail for its write shape is worse than no receipt, so the checks differ:
+
+- **Add / append** — every written uri is present. A no-op leaves rows the uris were never in, so presence alone catches it.
+- **Remove** — every removed uri is absent, with the row count checked against the pre-mutation `before` total. A bare-uri delete uses the absence check; a positions-targeted delete states its `targetedPositions` so a playlist holding a duplicate of the same uri is not reported as still holding it.
+- **Replace** (`PUT /playlists/{id}/items`) — presence, PLUS the post-write row count, PLUS the row order the first chunk wrote from position 0. The count and order are what catch a dropped replace: a no-op `PUT` leaves the old rows in place, and a reorder such as a reverse preserves both the multiset and the count, so a presence- or count-only check would certify a dropped reverse as verified.
+
+A response carrying no `total` leaves the row-count check unset rather than guessed at, and the walk is never padded into a pass. When a check that is not about uris fails, the reason is reported in the receipt's `unmet` (e.g. `row count 5 ≠ expected 2`), kept out of `missing`, which is documented as uris the walk did not find and is consumed as data by `undo_mutation`.
+
+**Tools carrying the contract:** `apply_snapshot_changes`, `balance_playlist_pairs`, `collab_mix_from_followed`, `dedupe_playlist_apply`, `extract_playlist_range`, `filter_playlist_by_artist`, `filter_playlist_by_duration`, `filter_playlist_by_era`, `interleave_playlists_plan`, `library_to_playlist`, `merge_playlists_plan`, `move_tracks_between_playlists`, `playlist_add_by_search`, `playlist_clone_live`, `playlist_difference_plan`, `playlist_expression_algebra`, `playlist_exclude_artists`, `playlist_fill_from_search`, `playlist_intersect`, `playlist_keep_only`, `playlist_move_to_top`, `playlist_slice`, `playlist_strip_episodes`, `playlist_trim_to_duration`, `queue_replace_via_playlist`, `remove_playlist_range`, `replay_session`, `restore_library_snapshot`, `restore_playlist_from_snapshot`, `reverse_playlist_plan`, `rotate_playlist_plan`, `save_queue_as_playlist`, `saved_tracks_roulette`, `sort_playlist_apply`, `split_playlist`, `split_playlist_by_count`, `split_playlist_by_duration`, `split_queue_plan`.
+
+`dry_run` results are unchanged: no request is sent, nothing is verified, and these fields describe the write as it would land rather than as it landed.
+
 #### Playlist set/diff input contract (#912)
 
 All playlist set-operation, diff, overlap, intersection, union, subtraction, merge, following, and pair-analysis tools compose the same typed fragments from `src/shaping.ts`. Playlist references accept a raw ID, `spotify:playlist:` URI, or Spotify playlist URL and are normalized to the ID used in `/playlists/{id}` paths.

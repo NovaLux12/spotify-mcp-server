@@ -18,6 +18,8 @@ import { MARKET_CODE } from './catalog.js';
 import { SPOTIFY_SEARCH_MAX_LIMIT } from './search.js';
 import { chunk } from '../chunk.js';
 import { fetchCoverJpeg, rankCoverCandidates } from '../cover-image.js';
+import { issueReceipt, type Receipt } from '../receipts.js';
+import { receiptRecords, receiptsLines, writeVerdict } from './playlistreceipts.js';
 
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
@@ -61,14 +63,24 @@ async function fetchPlaylistUris(client: SpotifyClient, ref: string): Promise<st
   return rows.map((r) => r.item?.uri ?? '').filter((u) => u.startsWith('spotify:'));
 }
 
-/** Chunked adds to an existing playlist, CHUNK_CAPS.playlist_writes uris per POST. */
-async function addUrisChunked(client: SpotifyClient, playlistId: string, uris: readonly string[]): Promise<number> {
+/**
+ * Chunked adds to an existing playlist, CHUNK_CAPS.playlist_writes uris per POST.
+ * Each chunk is verified with its own receipt (#879) so a write the API accepts
+ * and then drops cannot be reported as a completed change.
+ */
+async function addUrisChunked(
+  client: SpotifyClient,
+  playlistId: string,
+  uris: readonly string[],
+): Promise<{ requests: number; receipts: Receipt[] }> {
   let requests = 0;
+  const receipts: Receipt[] = [];
   for (const part of chunk(uris, 'playlist_writes')) {
     await client.post(`/playlists/${encodeURIComponent(playlistId)}/items`, { uris: part });
     requests++;
+    receipts.push(await issueReceipt(client, { kind: 'playlist_items', id: playlistId, uris: [...part] }));
   }
-  return requests;
+  return { requests, receipts };
 }
 
 // ---------------------------------------------------------------------------
@@ -370,11 +382,13 @@ export function registerExhaust2ExtraTools(server: McpServer, client: SpotifyCli
         );
       }
       if (picks.length === 0) throw new Error('No unseen tracks matched any query — nothing to add.');
-      const requests = await addUrisChunked(client, id, picks.map((p) => p.uri));
+      const add = await addUrisChunked(client, id, picks.map((p) => p.uri));
+      const receiptLines = receiptsLines(add.receipts);
+      const prose = `Added ${picks.length} track(s) to "${meta.name ?? id}" (${add.requests} add request(s)); playlist now ${existing.size + picks.length} item(s).`;
       return shape(
         rf,
-        `Added ${picks.length} track(s) to "${meta.name ?? id}" (${requests} add request(s)); playlist now ${existing.size + picks.length} item(s).`,
-        { ...payload, dry_run: false, requests, now_total: existing.size + picks.length },
+        receiptLines ? `${prose}\n${receiptLines}` : prose,
+        { ...payload, ...writeVerdict(add.receipts, picks.length), dry_run: false, requests: add.requests, now_total: existing.size + picks.length, receipts: receiptRecords(add.receipts) },
       );
     },
   );
@@ -424,11 +438,13 @@ export function registerExhaust2ExtraTools(server: McpServer, client: SpotifyCli
       });
       const createdId = created?.id;
       if (!createdId) throw new Error('Playlist creation returned no id');
-      const requests = await addUrisChunked(client, createdId, result);
+      const add = await addUrisChunked(client, createdId, result);
+      const receiptLines = receiptsLines(add.receipts);
+      const prose = `Created "${args.target_name}" (${createdId}) with ${result.length} item(s) from the expression (${add.requests} add request(s)).`;
       return shape(
         rf,
-        `Created "${args.target_name}" (${createdId}) with ${result.length} item(s) from the expression (${requests} add request(s)).`,
-        { ok: true, dry_run: false, playlist: createdId, name: args.target_name, result_count: result.length, refs, sizes, requests },
+        receiptLines ? `${prose}\n${receiptLines}` : prose,
+        { ...writeVerdict(add.receipts, result.length), dry_run: false, playlist: createdId, name: args.target_name, result_count: result.length, refs, sizes, requests: add.requests, receipts: receiptRecords(add.receipts) },
       );
     },
   );

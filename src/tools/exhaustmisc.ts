@@ -30,6 +30,8 @@ import {
   type ResponseFormatValue,
 } from '../shaping.js';
 import { CHUNK_CAPS, capFor } from '../chunk.js';
+import { issueReceipt, type Receipt } from '../receipts.js';
+import { receiptRecords, receiptsLines, writeVerdict } from './playlistreceipts.js';
 import type { PlaylistItemObject } from '../types/spotify.js';
 
 // ---------------------------------------------------------------------------
@@ -497,6 +499,7 @@ export function registerExhaustMiscTools(server: McpServer, client: SpotifyClien
       const me = await client.get<{ id?: string }>('/me');
       if (!me?.id) throw new Error('Could not read the current user profile');
       const created: Array<{ id: string; name: string }> = [];
+      const receipts: Receipt[] = [];
       for (let i = 0; i < chunks.length; i++) {
         const name = `${namePrefix} (Part ${i + 1}/${args.parts})`;
         // #820: the legacy `/users/{id}/playlists` + `/playlists/{id}/tracks`
@@ -510,13 +513,17 @@ export function registerExhaustMiscTools(server: McpServer, client: SpotifyClien
         if (pl && chunks[i].length > 0) {
           const writeCap = capFor('playlist_writes');
           for (let j = 0; j < chunks[i].length; j += writeCap) {
-            await client.post(`/playlists/${encodeURIComponent(pl.id)}/items`, { uris: chunks[i].slice(j, j + writeCap) });
+            const batch = chunks[i].slice(j, j + writeCap);
+            await client.post(`/playlists/${encodeURIComponent(pl.id)}/items`, { uris: batch });
+            // Each part's write is verified on its own playlist (#879).
+            receipts.push(await issueReceipt(client, { kind: 'playlist_items', id: pl.id, uris: batch }));
           }
         }
         if (pl) created.push({ id: pl.id, name });
       }
-      const text = `Split playlist ${args.playlist_id} (${uris.length} tracks) into ${created.length} parts: ${created.map((c) => c.name).join(', ')}`;
-      return textResult(text, { ...structured, created });
+      const receiptLines = receiptsLines(receipts);
+      const prose = `Split playlist ${args.playlist_id} (${uris.length} tracks) into ${created.length} parts: ${created.map((c) => c.name).join(', ')}`;
+      return textResult(receiptLines ? `${prose}\n${receiptLines}` : prose, { ...structured, ...writeVerdict(receipts, uris.length), created, receipts: receiptRecords(receipts) });
     },
   );
 

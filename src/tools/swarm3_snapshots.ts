@@ -15,6 +15,8 @@ import { z } from 'zod';
 import { mkdir, readdir, readFile, stat, unlink, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { chunk } from '../chunk.js';
+import { issueReceipt, type Receipt } from '../receipts.js';
+import { receiptRecords, receiptsLines, writeVerdict } from './playlistreceipts.js';
 import { join } from 'node:path';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
@@ -401,23 +403,34 @@ async function applyPlaylistOps(
   playlistId: string,
   addUris: readonly string[],
   removeUris: readonly string[],
-): Promise<{ added: number; removed: number; requests: number }> {
+): Promise<{ added: number; removed: number; requests: number; receipts: Receipt[] }> {
   let added = 0;
   let removed = 0;
   let requests = 0;
+  const receipts: Receipt[] = [];
   for (const part of chunk(removeUris, 'playlist_writes')) {
     await client.delete(`/playlists/${encodeURIComponent(playlistId)}/items`, {
       tracks: part.map((uri) => ({ uri })),
     });
     removed += part.length;
     requests += 1;
+    // Bare-uri deletes drop every copy, so absence is the honest check (#879).
+    receipts.push(
+      await issueReceipt(client, {
+        kind: 'playlist_items',
+        id: playlistId,
+        uris: [...part],
+        expectPresent: false,
+      }),
+    );
   }
   for (const part of chunk(addUris, 'playlist_writes')) {
     await client.post(`/playlists/${encodeURIComponent(playlistId)}/items`, { uris: [...part] });
     added += part.length;
     requests += 1;
+    receipts.push(await issueReceipt(client, { kind: 'playlist_items', id: playlistId, uris: [...part] }));
   }
-  return { added, removed, requests };
+  return { added, removed, requests, receipts };
 }
 
 interface RestoreOps {
@@ -1090,18 +1103,23 @@ export function registerSwarm3SnapshotsTools(server: McpServer, client: SpotifyC
       }
       const res = await applyPlaylistOps(client, targetId, ops.add_uris, ops.remove_uris);
       const after = await fetchLivePlaylist(client, targetId);
+      // A restore is one contract with two ends: every added uri must be
+      // present and every removed one absent (#879).
       const payload: Record<string, unknown> = {
-        ok: true,
+        ...writeVerdict(res.receipts, res.added + res.removed),
         snapshot_id: snap._meta.snapshot_id,
         playlist_id: targetId,
         added: res.added,
         removed: res.removed,
         requests: res.requests,
         live_track_count_after: after.tracks.length,
+        receipts: receiptRecords(res.receipts),
       };
+      const receiptLines = receiptsLines(res.receipts);
+      const prose = `Restore complete: +${res.added} / -${res.removed} on playlist ${targetId} ("${live.name}"); now ${after.tracks.length} rows.`;
       return shape(
         args.response_format,
-        `Restore complete: +${res.added} / -${res.removed} on playlist ${targetId} ("${live.name}"); now ${after.tracks.length} rows.`,
+        receiptLines ? `${prose}\n${receiptLines}` : prose,
         payload,
       );
     },
@@ -1357,7 +1375,7 @@ export function registerSwarm3SnapshotsTools(server: McpServer, client: SpotifyC
       const res = await applyPlaylistOps(client, targetId, addUris, removeUris);
       const after = await fetchLivePlaylist(client, targetId);
       const payload: Record<string, unknown> = {
-        ok: true,
+        ...writeVerdict(res.receipts, res.added + res.removed),
         from: from._meta.snapshot_id,
         to: to._meta.snapshot_id,
         playlist_id: targetId,
@@ -1366,10 +1384,13 @@ export function registerSwarm3SnapshotsTools(server: McpServer, client: SpotifyC
         removed: res.removed,
         requests: res.requests,
         live_track_count_after: after.tracks.length,
+        receipts: receiptRecords(res.receipts),
       };
+      const receiptLines = receiptsLines(res.receipts);
+      const prose = `Applied snapshot changes (${mode}): +${res.added} / -${res.removed} on "${live.name}"; now ${after.tracks.length} rows.`;
       return shape(
         args.response_format,
-        `Applied snapshot changes (${mode}): +${res.added} / -${res.removed} on "${live.name}"; now ${after.tracks.length} rows.`,
+        receiptLines ? `${prose}\n${receiptLines}` : prose,
         payload,
       );
     },

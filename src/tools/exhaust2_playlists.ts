@@ -24,6 +24,8 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
 import { getConfig } from '../config.js';
 import { backupDir } from './backup.js';
+import { issueReceipt, type Receipt } from '../receipts.js';
+import { receiptRecords, receiptsLines, replaceVerdict, writeVerdict, type WriteVerdict } from './playlistreceipts.js';
 import {
   DryRun,
   PlaylistId,
@@ -174,27 +176,57 @@ async function loadPlaylistFull(client: SpotifyClient, ref: string): Promise<Loa
 /**
  * Atomic overwrite: PUT replaces the whole playlist (≤100 URIs per call), so
  * the first chunk does the replacement and any remainder is appended via POST
- * — mirroring replace_playlist_items on main.
+ * — mirroring replace_playlist_items on main. Each chunk is verified with its
+ * own `playlist_items` receipt (#879) so multi-chunk writes can be checked
+ * chunk-by-chunk via `verify_receipt`.
  */
 async function atomicReplace(
   client: SpotifyClient,
   targetId: string,
   uris: readonly string[],
-): Promise<{ requests: number; snapshot_id?: string }> {
+): Promise<{ requests: number; snapshot_id?: string; receipts: Receipt[]; verdict: WriteVerdict }> {
   const path = `/playlists/${encodeURIComponent(targetId)}/items`;
   let snapshotId: string | undefined;
   let requests = 0;
   const writeCap = capFor('playlist_writes');
+  const receipts: Receipt[] = [];
+  // A receipt checks that the uris it wrote are PRESENT, which is the whole
+  // contract for an append but not for a REPLACE: a PUT that no-ops leaves the
+  // playlist on its old rows, and those may well contain the same uris, so
+  // presence alone would certify a dropped replace as verified. After chunk k
+  // the playlist must hold exactly the rows written so far, so each receipt is
+  // issued with that count as its row-count contract (#879). A response with
+  // no `total` leaves it unset and the receipt skips the check rather than
+  // guessing a count it could not read.
+  let expectedTotal = 0;
   for (let start = 0; start < uris.length; start += writeCap) {
     const chunk = uris.slice(start, start + writeCap);
     const res =
       start === 0
-        ? await client.put<{ snapshot_id?: string }>(path, { uris: chunk })
-        : await client.post<{ snapshot_id?: string }>(path, { uris: chunk });
+        ? await client.put<{ snapshot_id?: string }>(path, { uris: [...chunk] })
+        : await client.post<{ snapshot_id?: string }>(path, { uris: [...chunk] });
     if (res?.snapshot_id) snapshotId = res.snapshot_id;
     requests++;
+    expectedTotal += chunk.length;
+    receipts.push(
+      await issueReceipt(client, {
+        kind: 'playlist_items',
+        id: targetId,
+        uris: [...chunk],
+        expectedTotalAfter: expectedTotal,
+        // The first chunk is a replace from position 0, so its post-state is
+        // exactly what we just wrote. Later chunks append past rows this
+        // receipt cannot name, so they state no order to compare.
+        ...(start === 0 ? { expectedOrder: [...chunk] } : {}),
+      }),
+    );
   }
-  return { requests, snapshot_id: snapshotId };
+  return {
+    requests,
+    snapshot_id: snapshotId,
+    receipts,
+    verdict: replaceVerdict(receipts, uris.length),
+  };
 }
 
 /** Create a playlist under /me/playlists. */
@@ -211,24 +243,31 @@ async function createPlaylist(
   return created.id;
 }
 
-/** Append URIs in ≤100-URI chunks; returns request accounting. */
+/** Append URIs in ≤100-URI chunks; each chunk is verified with its own
+ *  `playlist_items` receipt (#879) so a multi-chunk write stays
+ *  chunk-by-chunk verifiable via `verify_receipt`. */
 async function addUrisChunked(
   client: SpotifyClient,
   targetId: string,
   uris: readonly string[],
-): Promise<{ requests: number; snapshot_id?: string }> {
+): Promise<{ requests: number; snapshot_id?: string; receipts: Receipt[] }> {
   const path = `/playlists/${encodeURIComponent(targetId)}/items`;
   let snapshotId: string | undefined;
   let requests = 0;
   const writeCap = capFor('playlist_writes');
+  const receipts: Receipt[] = [];
   for (let start = 0; start < uris.length; start += writeCap) {
+    const chunk = uris.slice(start, start + writeCap);
     const res = await client.post<{ snapshot_id?: string }>(path, {
-      uris: uris.slice(start, start + writeCap),
+      uris: [...chunk],
     });
     if (res?.snapshot_id) snapshotId = res.snapshot_id;
     requests++;
+    receipts.push(
+      await issueReceipt(client, { kind: 'playlist_items', id: targetId, uris: [...chunk] }),
+    );
   }
-  return { requests, snapshot_id: snapshotId };
+  return { requests, snapshot_id: snapshotId, receipts };
 }
 
 /** Fisher–Yates over a copy (sampling helper). */
@@ -619,14 +658,23 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
       }
       const targetId = normalizePlaylistRef(args.target_playlist_id);
       const res = await atomicReplace(client, targetId, intersected);
+      const receiptLines = receiptsLines(res.receipts);
+      const proseBase = withPlaylistInputNote(
+        `Wrote ${intersected.length} common track(s) to playlist ${targetId} in ${res.requests} request(s).\n`
+          + batchSummary(intersected.length, intersected),
+        input,
+      );
+      const verdict = res.verdict;
       return shape(
         rf,
-        withPlaylistInputNote(
-          `Wrote ${intersected.length} common track(s) to playlist ${targetId} in ${res.requests} request(s).\n`
-            + batchSummary(intersected.length, intersected),
-          input,
-        ),
-        withPlaylistInputMetadata({ ...payload, target: targetId, requests: res.requests }, input),
+        receiptLines ? `${proseBase}\n${receiptLines}` : proseBase,
+        withPlaylistInputMetadata({
+          ...payload,
+          ...verdict,
+          target: targetId,
+          requests: res.requests,
+          receipts: receiptRecords(res.receipts),
+        }, input),
       );
     },
   );
@@ -676,10 +724,18 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
         });
       }
       const res = await addUrisChunked(client, normalizePlaylistRef(args.playlist_id), uris);
+      const receiptLines = receiptsLines(res.receipts);
+      const proseBase = `Added ${uris.length} ${args.type}(s) to "${meta?.name ?? args.playlist_id}" (top hits for "${args.query}").`;
       return shape(
         rf,
-        `Added ${uris.length} ${args.type}(s) to "${meta?.name ?? args.playlist_id}" (top hits for "${args.query}").`,
-        { ok: true, added: uris.length, uris, requests: res.requests },
+        receiptLines ? `${proseBase}\n${receiptLines}` : proseBase,
+        {
+          ...writeVerdict(res.receipts, uris.length),
+          added: uris.length,
+          uris,
+          requests: res.requests,
+          receipts: receiptRecords(res.receipts),
+        },
       );
     },
   );
@@ -756,12 +812,20 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
         .join('\n');
       if (isDry(args)) return shape(args.response_format, `[dry run] ${prose}`, { ...payload, dry_run: true });
       const res = await atomicReplace(client, p.id, keptUris);
-      return shape(args.response_format, `${prose}\nSnapshot ID: ${res.snapshot_id ?? 'n/a'}`, {
-        ...payload,
-        dry_run: false,
-        requests: res.requests,
-        snapshot_id: res.snapshot_id ?? null,
-      });
+      const receiptLines = receiptsLines(res.receipts);
+      const proseBase = `${prose}\nSnapshot ID: ${res.snapshot_id ?? 'n/a'}`;
+      return shape(
+        args.response_format,
+        receiptLines ? `${proseBase}\n${receiptLines}` : proseBase,
+        {
+          ...payload,
+          ...res.verdict,
+          dry_run: false,
+          requests: res.requests,
+          snapshot_id: res.snapshot_id ?? null,
+          receipts: receiptRecords(res.receipts),
+        },
+      );
     },
   );
 
@@ -820,8 +884,10 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
       }
       const created = await createPlaylist(client, name, args.public ?? false);
       const add = await addUrisChunked(client, created, dealt);
-      return shape(rf, `Dealt ${dealt.length} random ${shelf} into new playlist ${created}.`, {
-        ok: true,
+      const receiptLines = receiptsLines(add.receipts);
+      const proseBase = `Dealt ${dealt.length} random ${shelf} into new playlist ${created}.`;
+      return shape(rf, receiptLines ? `${proseBase}\n${receiptLines}` : proseBase, {
+        ...writeVerdict(add.receipts, dealt.length),
         playlist: created,
         name,
         deck_size: pool.length,
@@ -829,6 +895,7 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
         requests: add.requests,
         albums_expanded: albumsExpanded,
         album_track_cap: albumCap,
+        receipts: receiptRecords(add.receipts),
       });
     },
   );
@@ -884,13 +951,16 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
       }
       const created = await createPlaylist(client, args.name, args.public ?? false);
       const add = await addUrisChunked(client, created, uris);
-      return shape(rf, `Created "${args.name}" (${created}) with ${uris.length} sliced item(s).`, {
-        ok: true,
+      const receiptLines = receiptsLines(add.receipts);
+      const proseBase = `Created "${args.name}" (${created}) with ${uris.length} sliced item(s).`;
+      return shape(rf, receiptLines ? `${proseBase}\n${receiptLines}` : proseBase, {
+        ...writeVerdict(add.receipts, uris.length),
         source: p.id,
         playlist: created,
         mode: args.mode,
         copied: uris.length,
         requests: add.requests,
+        receipts: receiptRecords(add.receipts),
       });
     },
   );
@@ -1049,12 +1119,15 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
         ]);
       }
       const res = await atomicReplace(client, p.id, kept.map((r) => r.uri));
-      return shape(rf, `Kept ${kept.length}, dropped ${dropped.length} from ${p.id}.`, {
-        ok: true,
+      const receiptLines = receiptsLines(res.receipts);
+      const proseBase = `Kept ${kept.length}, dropped ${dropped.length} from ${p.id}.`;
+      return shape(rf, receiptLines ? `${proseBase}\n${receiptLines}` : proseBase, {
+        ...res.verdict,
         playlist: p.id,
         kept: kept.length,
         dropped: dropped.length,
         requests: res.requests,
+        receipts: receiptRecords(res.receipts),
       });
     },
   );
@@ -1086,12 +1159,15 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
         ], { stripped: removed.length, remaining: kept.length });
       }
       const res = await atomicReplace(client, p.id, kept.map((r) => r.uri));
-      return shape(rf, `Stripped ${removed.length} ${strip}; ${kept.length} item(s) remain in ${p.id}.`, {
-        ok: true,
+      const receiptLines = receiptsLines(res.receipts);
+      const proseBase = `Stripped ${removed.length} ${strip}; ${kept.length} item(s) remain in ${p.id}.`;
+      return shape(rf, receiptLines ? `${proseBase}\n${receiptLines}` : proseBase, {
+        ...res.verdict,
         playlist: p.id,
         stripped: removed.length,
         remaining: kept.length,
         requests: res.requests,
+        receipts: receiptRecords(res.receipts),
       });
     },
   );
@@ -1140,11 +1216,14 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
         ]);
       }
       const res = await atomicReplace(client, p.id, ordered.map((r) => r.uri));
-      return shape(rf, `Moved ${matched.length} matched item(s) to the top of ${p.id}.`, {
-        ok: true,
+      const receiptLines = receiptsLines(res.receipts);
+      const proseBase = `Moved ${matched.length} matched item(s) to the top of ${p.id}.`;
+      return shape(rf, receiptLines ? `${proseBase}\n${receiptLines}` : proseBase, {
+        ...res.verdict,
         playlist: p.id,
         moved: matched.length,
         requests: res.requests,
+        receipts: receiptRecords(res.receipts),
       });
     },
   );
@@ -1202,16 +1281,32 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
       }
       let requests = 0;
       const writeCap = capFor('playlist_writes');
+      const receipts: Receipt[] = [];
       for (let start = 0; start < positions.length; start += writeCap) {
+        const chunk = positions.slice(start, start + writeCap);
         await client.delete(`/playlists/${encodeURIComponent(p.id)}/items`, {
-          tracks: positions.slice(start, start + writeCap).map((i) => ({ uri: p.items[i].item?.uri })),
+          tracks: chunk.map((i) => ({ uri: p.items[i].item?.uri })),
         });
         requests++;
+        // A bare-uri DELETE drops EVERY copy of that uri, so absence is the
+        // honest check here — a per-position receipt would be wrong (#879).
+        receipts.push(
+          await issueReceipt(client, {
+            kind: 'playlist_items',
+            id: p.id,
+            uris: chunk.map((i) => p.items[i].item?.uri ?? ''),
+            expectPresent: false,
+          }),
+        );
       }
-      return shape(rf, `Removed ${positions.length} occurrence(s) from ${p.id}.`, {
+      const receiptLines = receiptsLines(receipts);
+      const proseBase = `Removed ${positions.length} occurrence(s) from ${p.id}.`;
+      return shape(rf, receiptLines ? `${proseBase}\n${receiptLines}` : proseBase, {
         ...payload,
+        ...writeVerdict(receipts, positions.length),
         dry_run: false,
         requests,
+        receipts: receiptRecords(receipts),
       });
     },
   );
@@ -1667,11 +1762,22 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
         return shape(args.response_format, lines.filter(Boolean).join('\n'), plan);
       }
       const created = await createPlaylist(client, name, args.public ?? false, 'Liked Songs export via library_to_playlist');
-      await addUrisChunked(client, created, uris);
+      const add = await addUrisChunked(client, created, uris);
+      const receiptLines = receiptsLines(add.receipts);
+      // `plan` is also the dry-run payload — build a fresh commit object rather
+      // than mutating it, so the verdict lands only on the committed branch.
+      const committed: Record<string, unknown> = {
+        ...plan,
+        ...writeVerdict(add.receipts, uris.length),
+        dry_run: false,
+        playlist: created,
+        receipts: receiptRecords(add.receipts),
+      };
       const text =
         `Exported ${uris.length} playable saved ${from} items (${order}) to new playlist "${name}" (${created}).`
-        + `\n${batchSummary(uris.length, uris)}`;
-      return rf === 'json' ? shape(args.response_format, '', { ...plan, dry_run: false, playlist: created }) : textResult(text, plan);
+        + `\n${batchSummary(uris.length, uris)}`
+        + (receiptLines ? `\n${receiptLines}` : '');
+      return rf === 'json' ? shape(args.response_format, '', committed) : textResult(text, committed);
     },
   );
 
@@ -1774,12 +1880,15 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
       }
       const created = await createPlaylist(client, name, false);
       const add = await addUrisChunked(client, created, mix);
-      return shape(rf, `Created "${name}" (${created}) with ${mix.length} tracks from ${pickedArtists.length} followed artist(s).`, {
-        ok: true,
+      const receiptLines = receiptsLines(add.receipts);
+      const proseBase = `Created "${name}" (${created}) with ${mix.length} tracks from ${pickedArtists.length} followed artist(s).`;
+      return shape(rf, receiptLines ? `${proseBase}\n${receiptLines}` : proseBase, {
+        ...writeVerdict(add.receipts, mix.length),
         playlist: created,
         artists: pickedArtists.map((a) => a.name),
         tracks: mix.length,
         requests: add.requests,
+        receipts: receiptRecords(add.receipts),
       });
     },
   );
