@@ -43,6 +43,11 @@ const parameterAllowlist = new Set([
   // StructuredContent field names, not parameters: the documented count split.
   'removed_total', 'kept_total', 'source_truncated', 'target_truncated',
   'would_confirm', 'base_read_whole', 'base_unrepresentable',
+  // #860: playlist_union / playlist_subtract now report whether the commit
+  // will be refused outright, and the union side of the unrepresentable-row
+  // count joins its base counterpart above. Both are structuredContent keys
+  // about a call's own result, not parameters and not tools.
+  'would_refuse', 'target_unrepresentable',
   'removed_uris', 'scan_cap', 'base_playlist', 'target_playlist',
   // #809: create_smart_playlist documents the candidate-pool ceiling it now
   // reports. Both are structuredContent keys on that tool, not parameters and

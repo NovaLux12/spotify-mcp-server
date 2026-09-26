@@ -976,6 +976,20 @@ All playlist set-operation, diff, overlap, intersection, union, subtraction, mer
 
 **Migration note (v2.0 → v2.1):** legacy names remain callable through v2.0 and are removed in v2.1. Supplying both canonical and legacy values is accepted only when they normalize to the same values in the same order; missing, incomplete, differently ordered, or conflicting inputs fail before any Spotify request and name both conflicting fields. Legacy results include `deprecated_inputs` plus `deprecation_note` in structuredContent and the same one-line note in prose/JSON text. Canonical-only calls omit both fields.
 
+#### Full-sequence rewrite contract (#860)
+
+`playlist_sort`, `playlist_shuffle`, `playlist_reverse`, `playlist_trim`, `playlist_union` (existing `target_playlist_id` only) and `playlist_subtract` (the `base_playlist_id` only) commit through one atomic `PUT /playlists/{id}/items` built from a URI-filtered list. Spotify returns a removed, relabelled or region-unavailable row with `item: null`, so that row carries no URI and a URI-based replace cannot restore it: the first PUT deletes it from the live playlist, and the counts reported afterwards come from the already-filtered list, so nothing in the response reveals the loss.
+
+Each of these tools therefore **refuses before the first PUT** when the playlist being overwritten holds an unavailable row, naming the count, the 1-based position(s) (up to ten, with `…` beyond that) and `remove_unavailable_playlist_items` as the remedy. The refusal is a thrown error, not a soft `ok: false` result, and it fires ahead of the elicitation gate — a prompt can name a loss and still be approved, which is not consent worth acting on for an irreversible row deletion. Nothing is written, and the caller's existing confirmation gate is unchanged for playlists with no unavailable rows.
+
+Two consequences callers can observe:
+
+- `dry_run: true` still renders its plan, and appends the refusal beneath it. A preview that promised a write the apply path throws on would be the same false claim in a new place.
+- `playlist_union` and `playlist_subtract` dry-run payloads gain `would_refuse`; where the plan would otherwise prompt, `would_confirm` is now `false` in that state. `target_unrepresentable` / `base_unrepresentable` are unchanged and still report the count on the preview.
+- A union that creates a new playlist (`target_name`) is not gated: no live rows are being destroyed.
+
+**Migration note (breaking, v2.0):** a call that previously committed over a playlist with unavailable rows now fails. The tool names the count and the positions; run `remove_unavailable_playlist_items` (or `playlist_health_check` to find them) and retry.
+
 #### `get_playlist`
 Get a playlist's metadata and its items. Makes two calls: `GET /playlists/{id}` for metadata, then `GET /playlists/{id}/items` for the track/episode list.
 
