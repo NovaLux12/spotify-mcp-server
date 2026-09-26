@@ -9,9 +9,10 @@
  *     regression that made this issue, since a literal there is exactly how
  *     two call sites for one endpoint drifted apart.
  */
-import { describe, it } from 'node:test';
+import { after, before, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, readdirSync } from 'node:fs';
+import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -22,13 +23,29 @@ import { registerDoctorTool } from '../src/tools/doctortool.js';
 import { registerExhaustMiscTools } from '../src/tools/exhaustmisc.js';
 import { modifyLibrary } from '../src/tools/exhaust2_misc.js';
 import { registerSwarm3MetaTools } from '../src/tools/swarm3_meta.js';
-import { initConfig } from '../src/config.js';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const SPEC = readFileSync(join(ROOT, 'SPEC.md'), 'utf8');
 const TOOLS_DIR = join(ROOT, 'src', 'tools');
 
-initConfig({ SPOTIFY_MCP_SEARCH_HISTORY_FILE: '/tmp/smcp-chunk-caps-test-history.json' });
+// The sidecar path is read from process.env (src/tools/searchhistory.ts), not
+// from the config snapshot, so `initConfig({ SPOTIFY_MCP_SEARCH_HISTORY_FILE })`
+// is a no-op that only looks like isolation. Redirect the variable the code
+// actually reads, at a per-run path, and restore it afterwards. Nothing here
+// records a search today — the cap assertions drive playlist_to_library and
+// get_several_* — so this is a guard against a future handler reaching the
+// sidecar, not a fix for a live failure.
+const priorHistoryFile = process.env.SPOTIFY_MCP_SEARCH_HISTORY_FILE;
+let historyDir: string;
+before(() => {
+  historyDir = mkdtempSync(join(tmpdir(), 'smcp-chunk-caps-history-'));
+  process.env.SPOTIFY_MCP_SEARCH_HISTORY_FILE = join(historyDir, 'search-history.json');
+});
+after(() => {
+  if (priorHistoryFile === undefined) delete process.env.SPOTIFY_MCP_SEARCH_HISTORY_FILE;
+  else process.env.SPOTIFY_MCP_SEARCH_HISTORY_FILE = priorHistoryFile;
+  rmSync(historyDir, { recursive: true, force: true });
+});
 
 /**
  * Every `for (...; ...; x += <literal>)` header and every `slice(x, x + <n>)`

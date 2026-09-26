@@ -1,5 +1,9 @@
-import { describe, it, mock } from 'node:test';
+import { after, before, describe, it, mock } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { registerExhaustMiscTools } from '../src/tools/exhaustmisc.js';
 import { initConfig } from '../src/config.js';
@@ -26,9 +30,6 @@ function makeClient(overrides: Record<string, unknown> = {}) {
 
 /** Capture one registered tool's handler by name, in the shape the tests use. */
 type Handler = (args: unknown) => Promise<{ content: Array<{ text: string }>; structuredContent?: Record<string, unknown> }>;
-
-/** Keeps search_history_stats off the developer's real history sidecar. */
-const ISOLATED_SEARCH_HISTORY = '/tmp/smcp-exhaustmisc-test-search-history.json';
 
 function serverCapturing(name: string): { server: McpServer; handler: () => Handler } {
   let captured: unknown = null;
@@ -210,7 +211,6 @@ describe('exhaustmisc — mop-up 10 tools', () => {
     assert.deepEqual(payload.items.map((row) => row.item.uri), ['spotify:track:t1', 'spotify:episode:e1']);
     // A capped scan that read nothing readable must not read as "2 matches, done".
     assert.ok(res.content[0].text.includes('TRUNCATED'), `capped walk must be disclosed in prose: ${res.content[0].text}`);
-    initConfig({ SPOTIFY_MCP_SEARCH_HISTORY_FILE: ISOLATED_SEARCH_HISTORY });
   });
 
   it('search_within_playlist accepts the shared playlist_id / id resolver', async () => {
@@ -230,25 +230,88 @@ describe('exhaustmisc — mop-up 10 tools', () => {
     assert.equal(walk.mock.callCount(), 1, 'the conflicting call must not have walked the API');
   });
 
-  // Isolate from the developer's real ~/.spotify-mcp/search-history.json. This
-  // test passes only because nothing used to write there; now that the search
-  // tools record history, a non-empty home sidecar makes it fail on any machine.
-  // Every `initConfig()` reset in this file re-applies it, because a bare reset
-  // would hand search_history_stats the developer's real sidecar again.
-  initConfig({ SPOTIFY_MCP_SEARCH_HISTORY_FILE: ISOLATED_SEARCH_HISTORY });
+  // Isolate from the developer's real ~/.spotify-mcp/search-history.json.
+  //
+  // The sidecar path is read from process.env (src/tools/searchhistory.ts),
+  // NOT from the config snapshot — `initConfig({ SPOTIFY_MCP_SEARCH_HISTORY_FILE })
+  // looks like it redirects the read but is a no-op, because loadConfig models
+  // only the scalar knobs and has no field for this path. That is what let this
+  // block ship, and the `initConfig(...)` call that used to sit here was the
+  // same no-op pointed at a fixed /tmp name. So set the variable the code
+  // actually reads, at a per-run mkdtemp path (a fixed /tmp name collides
+  // across concurrent runs and across worktrees), and put it back afterwards.
+  //
+  // Because this is a process.env redirect rather than a config field, an
+  // `initConfig()` reset elsewhere in this file cannot undo it — which is the
+  // property the old comment was reaching for and did not have.
+  let historyDir: string;
+  let historyFile: string;
+  const priorHistoryFile = process.env.SPOTIFY_MCP_SEARCH_HISTORY_FILE;
+  before(async () => {
+    historyDir = await mkdtemp(join(tmpdir(), 'smcp-exhaustmisc-history-'));
+    historyFile = join(historyDir, 'search-history.json');
+    process.env.SPOTIFY_MCP_SEARCH_HISTORY_FILE = historyFile;
+  });
+  after(async () => {
+    if (priorHistoryFile === undefined) delete process.env.SPOTIFY_MCP_SEARCH_HISTORY_FILE;
+    else process.env.SPOTIFY_MCP_SEARCH_HISTORY_FILE = priorHistoryFile;
+    await rm(historyDir, { recursive: true, force: true });
+  });
 
-  it('search_history_stats handles missing file gracefully', async () => {
+  async function searchHistoryStats() {
     let captured: unknown = null;
     const server = {
       tool(_name: string, _desc: string, _shape: unknown, handler: (args: unknown) => Promise<unknown>) {
         if (_name === 'search_history_stats') captured = handler;
       },
     } as unknown as McpServer;
-    const client = makeClient();
-    registerExhaustMiscTools(server, client);
-    const handler = captured as (args: unknown) => Promise<{ content: Array<{ text: string }> }>;
-    const res = await handler({ response_format: 'concise' });
-    assert.ok(res.content[0].text.includes('0 searches') || res.content[0].text.includes('no search history'));
+    registerExhaustMiscTools(server, makeClient());
+    const handler = captured as (args: unknown) => Promise<{ content: Array<{ text: string }>; structuredContent?: Record<string, unknown> }>;
+    return handler({ response_format: 'concise' });
+  }
+
+  // The positive control. Without it the missing-file test below cannot
+  // distinguish "reads the path I redirected" from "reads a path that happens
+  // to be empty" — it passes either way, which is the same class of defect as
+  // the bug this isolation was supposed to prevent.
+  //
+  // It asserts the *marker* entry rather than a count. A count alone is not
+  // discriminating: a developer's real sidecar can hold exactly as many entries
+  // as this fixture, and then a broken redirect still passes. The marker is
+  // per-run and names a query no real sidecar will contain, so only the
+  // redirected file can satisfy it.
+  it('search_history_stats reads the sidecar the suite redirected it to', async () => {
+    const marker = `w1207-marker-${randomUUID()}`;
+    // Timestamps are generated, not literal: `loadSearchHistory` drops entries
+    // older than 90 days, so a fixed date would expire in the spring of 2027
+    // and turn this into a failure that has nothing to do with the redirect.
+    const now = Date.now();
+    const daysAgo = (n: number) => new Date(now - n * 86_400_000).toISOString();
+    await writeFile(historyFile, JSON.stringify([
+      { id: 'sh_a', query: marker, types: ['track'], timestamp: daysAgo(1), top_result_ids: ['spotify:track:1'] },
+      { id: 'sh_b', query: 'beatles abbey', types: ['track'], timestamp: daysAgo(2), top_result_ids: ['spotify:track:2'] },
+    ]));
+    const res = await searchHistoryStats();
+    const payload = res.structuredContent as { total: number; top_queries: Array<{ query: string }> };
+    assert.equal(payload.total, 2, 'the tool must read the redirected sidecar, not the real ~/.spotify-mcp one');
+    assert.ok(payload.top_queries.some((q) => q.query === marker),
+      `the per-run marker ${marker} must be among the top queries — a sidecar without it is not the one this suite wrote`);
+    await rm(historyFile, { force: true });
+  });
+
+  it('search_history_stats handles missing file gracefully', async () => {
+    await rm(historyFile, { force: true });
+    const res = await searchHistoryStats();
+    // Asserted on `total`, and the prose match is anchored to a word boundary.
+    // The original assertion was a bare `includes('0 searches')`, which a
+    // NON-empty sidecar satisfies on its own: the real prose reads
+    // "Search history stats: 10 searches.", and "10 searches" CONTAINS the
+    // substring "0 searches". So the assertion this replaced was passing for
+    // the wrong reason on exactly the machine it was written to protect.
+    const payload = res.structuredContent as { total: number; top_queries: unknown[] };
+    assert.equal(payload.total, 0, 'a missing sidecar must read as zero entries, not as an error');
+    assert.deepEqual(payload.top_queries, []);
+    assert.match(res.content[0].text, /(?:^|\D)0 searches|no search history/);
   });
 
   it('audiobook_progress counts only scanned chapters and discloses coverage', async () => {
