@@ -113,7 +113,6 @@ export const TOOL_SURFACE_BUDGET = Object.freeze({
   // #979 and #791 together added ~904B more legitimate disclosure, then
   // -> 603_000 (2026-09-27) for the batch landing #821/#773/#839 — the
   // discovery-walk cap disclosure, the `peek_error` field, and the
-<<<<<<< HEAD
   // sidecar-corruption `load_error`/`preserved_as` pair. Measured cost of
   // that batch over 602,000: +1,015B, of which the decorative-clause trim on
   // four `swarm3b_discovery` descriptions gave back 250B inside the same edit.
@@ -130,8 +129,11 @@ export const TOOL_SURFACE_BUDGET = Object.freeze({
   //        the fix: an agent that does not know the store is process-local will
   //        treat a receipt it can no longer look up as evidence about the
   //        mutation, which is the exact failure #688 reports.
-  // Each was measured against a 603,999B base, so merging them costs 603,999
-  // + 602 + 330 = 604,931B, not 604,601B or 604,330B.
+  // Each was measured against a 603,999B base, so neither number survives the
+  // merge on its own. Measured after merging both: 604,906B — slightly under
+  // the 603,999 + 602 + 330 = 604,931B the arithmetic predicts, because #688
+  // also rewrote a description whose neighbours shifted. Re-measure rather than
+  // trusting either this line or the sum.
 
   // Read the numbers below before sizing another raise; AGENTS.md §3 requires
   // this record to be accurate about host-session payload impact, and my first
@@ -157,8 +159,7 @@ export const TOOL_SURFACE_BUDGET = Object.freeze({
   //
   // HEADROOM: the enforced limit is `defaultMaxBytes + 1_000` (that 1KB covers
   // final MCP annotation metadata added after registration), so 605,000B is the
-<<<<<<< HEAD
-  // real ceiling. Merged measurement: 604,931B leaves 69B. That is far tighter
+  // real ceiling. Merged measurement: 604,906B leaves 94B. That is far tighter
   // than the ~900B and ~670B the individual branches reported, and it is
   // effectively closed — one more disclosure sentence of real length breaches
   // it. Both prior records understated this because each measured against a
