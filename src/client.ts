@@ -589,11 +589,22 @@ export class SpotifyClient {
 
     }
 
-    const data = await res.json() as {
-      access_token: string;
-      expires_in: number;
-      refresh_token?: string;
-    };
+    // A 2xx from the token endpoint whose body will not parse. Handled exactly
+    // like the network-failure branch above — nothing was refreshed, so ride
+    // the outage out on a still-valid access token, and fail as a 503 when
+    // there is none left to authenticate with. Left unguarded this raised a
+    // raw SyntaxError, the one error a client method could throw that is not a
+    // SpotifyApiError (#674).
+    let data: { access_token: string; expires_in: number; refresh_token?: string };
+    try {
+      data = (await res.json()) as typeof data;
+    } catch {
+      if (Date.now() < tokens.expires_at) return;
+      throw new SpotifyApiError(
+        503,
+        'Spotify token service returned an unreadable response — no valid access token to continue with',
+      );
+    }
 
     // Guard against a malformed expires_in (#109): NaN/undefined would poison
     // expires_at forever, so treat it as already expired — the next request
@@ -1116,36 +1127,93 @@ export class SpotifyClient {
     };
   }
 
-  // Parse a successful response body as JSON, or null for 204 / non-JSON
-  // payloads. Non-JSON bodies are drained so the connection can be reused.
+  /**
+   * Parse a successful mutation body as JSON, or null when there is nothing to
+   * parse (204) or nothing parseable to read. Non-JSON bodies are drained so
+   * the connection can be reused.
+   *
+   * Never throws. A 2xx on a write means Spotify applied it, so an unreadable
+   * body is a lost RESPONSE, not a failed MUTATION — and reporting it as a
+   * failure invites the caller to retry a write that already landed (queue
+   * duplicates, double playlist adds, duplicate library saves, #674). The
+   * pre-fix guard covered only a non-JSON content-type, so a 200 that declared
+   * JSON and then delivered an empty or torn body escaped as a raw
+   * SyntaxError from a client method.
+   *
+   * The read path (`get`) still fails loudly on an unparseable body, and the
+   * asymmetry is deliberate: there, null is a real answer meaning "204, nothing
+   * here", so an unreadable body must not be laundered into one.
+   */
   private async jsonOrNull<T>(res: Response): Promise<T | null> {
     if (res.status === 204) return null;
     const contentType = res.headers.get('content-type') ?? '';
     if (!contentType.includes('application/json')) {
-      await res.text(); // endpoint returns a non-JSON payload (e.g. queue ID as text/plain)
+      // endpoint returns a non-JSON payload (e.g. queue ID as text/plain).
+      // Drain it so the connection can be reused; a body we already decided
+      // not to read failing to drain changes nothing about the write.
+      await res.text().catch(() => undefined);
       return null;
     }
-    return (await res.json()) as T;
+    let text: string;
+    try {
+      text = await res.text();
+    } catch {
+      // The body stream died part-way. The write reached Spotify either way.
+      return null;
+    }
+    // A 200 with a JSON content-type and no body is how several Spotify
+    // mutations answer; there is nothing to parse and nothing to report.
+    if (text.trim().length === 0) return null;
+    try {
+      return JSON.parse(text) as T;
+    } catch {
+      // Declared JSON, delivered something else — truncated mid-flight, or an
+      // HTML page from an intermediary. Nothing in the body distinguishes
+      // "the response was cut off" from "the response was never really this
+      // write's", and guessing wrong in the direction of failure is the one
+      // that double-applies a completed mutation. So the payload is reported
+      // as absent and the write is left standing.
+      return null;
+    }
+  }
+
+  /**
+   * Send one mutating request and do the post-write bookkeeping (#54/#64/#674).
+   *
+   * The bookkeeping runs inside the queue task, immediately after Spotify
+   * accepted the write and BEFORE its body is read. That ordering is the
+   * point: a write that landed is a fact about the server whether or not the
+   * response can be parsed, so cache invalidation and the history line must
+   * not sit downstream of the parse. They used to, and an unreadable body
+   * therefore both reported a completed mutation as failed AND left a stale
+   * read cache plus an audit trail with a hole where the mutation was.
+   *
+   * A rejected write (`rawRequest` throwing — 401, 404, 429 after retries) is
+   * deliberately NOT counted as one: nothing was mutated, so there is nothing
+   * to invalidate and nothing to record.
+   */
+  private async mutate<T>(method: string, path: string, url: string, body?: unknown): Promise<T | null> {
+    return this.enqueue(async () => {
+      const res = await this.rawRequest(method, url, body);
+      let parsed: T | null = null;
+      try {
+        parsed = await this.jsonOrNull<T>(res);
+        return parsed;
+      } finally {
+        // `parsed` is null when the body was unreadable; the invalidation and
+        // the history line still run, and the snapshot_id rides along whenever
+        // the body did parse.
+        this.afterMutation(method, path, parsed);
+      }
+    });
   }
 
   async post<T>(path: string, body?: unknown): Promise<T | null> {
-    const url = this.buildUrl(path);
-    const result = await this.enqueue(async () => {
-      const res = await this.rawRequest('POST', url, body);
-      return this.jsonOrNull<T>(res);
-    });
-    this.afterMutation('POST', path, result);
-    return result;
+    return this.mutate<T>('POST', path, this.buildUrl(path), body);
   }
 
   async put<T>(path: string, body?: unknown): Promise<T | null> {
-    const url = this.buildUrl(path);
-    const result = await this.enqueue(async () => {
-      const res = await this.rawRequest('PUT', url, body);
-      return this.jsonOrNull<T>(res);
-    });
-    this.afterMutation('PUT', path, result);
-    return result;
+    return this.mutate<T>('PUT', path, this.buildUrl(path), body);
   }
 
   /**
@@ -1155,18 +1223,17 @@ export class SpotifyClient {
    */
   async putRaw(path: string, body: string, contentType = 'image/jpeg'): Promise<void> {
     const url = this.buildUrl(path);
-    await this.enqueue(() => this.rawRequest('PUT', url, body, 0, contentType));
-    this.afterMutation('PUT', path, null);
+    await this.enqueue(async () => {
+      // No response body to read: the request carried image bytes and the
+      // answer is a bodiless 202. Bookkeeping sits directly after the request
+      // for the same reason it does in mutate() (#674).
+      await this.rawRequest('PUT', url, body, 0, contentType);
+      this.afterMutation('PUT', path, null);
+    });
   }
 
   async delete<T>(path: string, body?: unknown): Promise<T | null> {
-    const url = this.buildUrl(path);
-    const result = await this.enqueue(async () => {
-      const res = await this.rawRequest('DELETE', url, body);
-      return this.jsonOrNull<T>(res);
-    });
-    this.afterMutation('DELETE', path, result);
-    return result;
+    return this.mutate<T>('DELETE', path, this.buildUrl(path), body);
   }
 }
 
