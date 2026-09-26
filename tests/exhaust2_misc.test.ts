@@ -3,11 +3,16 @@ import assert from 'node:assert/strict';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, chmodSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { z } from 'zod';
 import { registerExhaust2MiscTools } from '../src/tools/exhaust2_misc.js';
 import { saveMiscStore } from '../src/tools/exhaust2_misc.js';
 import { ARTIST_ALBUM_PAGE_LIMIT } from '../src/tools/catalog.js';
+import { finalInputSchema } from '../src/shaping.js';
 import { issueReceipt } from '../src/receipts.js';
+
+const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
 // Point every sidecar this slice touches at a throwaway temp dir.
 const tmp = mkdtempSync(join(tmpdir(), 'exhaust2misc-'));
@@ -53,6 +58,27 @@ function registrationNames(): string[] {
   const server = { tool(name: string) { names.push(name); } } as unknown as McpServer;
   registerExhaust2MiscTools(server, makeClient());
   return names;
+}
+
+/** Declared zod shape for every tool in the slice, keyed by tool name. */
+function registrationShapes(): Map<string, Record<string, unknown>> {
+  const shapes = new Map<string, Record<string, unknown>>();
+  const server = {
+    tool(name: string, _desc: string, shape: Record<string, unknown>) { shapes.set(name, shape); },
+  } as unknown as McpServer;
+  registerExhaust2MiscTools(server, makeClient());
+  return shapes;
+}
+
+/**
+ * The `dry_run` default a host actually reads off `tools/list` — the projected
+ * JSON schema, not the zod internals, so this asserts the published contract.
+ */
+function publishedDryRunDefault(shape: Record<string, unknown> | undefined): unknown {
+  const json = finalInputSchema(z.object(shape as Record<string, z.ZodType>)) as {
+    properties?: Record<string, { default?: unknown }>;
+  };
+  return json.properties?.dry_run?.default;
 }
 
 const PLAYED_NOW = (uri: string, name = 'Song') => ({
@@ -239,6 +265,59 @@ describe('exhaust2_misc — 27-tool misc slice', () => {
     assert.ok(res.content[0].text.includes('New since archive: 1'));
     assert.ok(res.content[0].text.includes('Overlap with archive: 1'));
     assert.ok(res.content[0].text.includes('[liked]'));
+  });
+
+  // #827 — the archive sync is a PUT /playlists/{id}/items, which replaces the
+  // playlist's whole item list. An omitted dry_run must preview, not commit.
+  const WEEKLY_CLIENT = () => makeClient({
+    getAllPages: mock.fn(async (path: string) => {
+      if (path === '/me/playlists') return [{ id: 'dw', name: 'Discover Weekly' }, { id: 'arch', name: 'Discover Weekly Archive' }];
+      if (path.startsWith('/playlists/dw/items')) return [{ item: { uri: 'spotify:track:1', name: 'N1', artists: [{ name: 'A' }] } }, { item: { uri: 'spotify:track:2', name: 'N2', artists: [{ name: 'B' }] } }];
+      if (path.startsWith('/playlists/arch/items')) return [{ item: { uri: 'spotify:track:2', name: 'N2', artists: [{ name: 'B' }] } }];
+      if (path.startsWith('/me/tracks')) return [{ track: { uri: 'spotify:track:1' } }];
+      return [];
+    }),
+  });
+
+  it('discover_weekly_diff previews the archive replace when dry_run is omitted', async () => {
+    const client = WEEKLY_CLIENT();
+    const h = getHandler('discover_weekly_diff', client);
+    const res = await h({ archive_name: 'Discover Weekly Archive', liked_cap: 500, save_after: true, response_format: 'concise' });
+    assert.ok(res.content[0].text.includes('[dry run]'), res.content[0].text);
+    assert.ok(res.content[0].text.includes('Discover Weekly Archive'), 'plan must name the playlist that would be replaced');
+    assert.equal(res.structuredContent!.dry_run, true);
+    assert.equal(client.put.mock.callCount(), 0, 'an omitted dry_run must not PUT /playlists/{id}/items');
+    assert.equal(client.post.mock.callCount(), 0, 'an omitted dry_run must not POST /playlists/{id}/items');
+  });
+
+  it('discover_weekly_diff commits the archive replace only on dry_run: false', async () => {
+    const client = WEEKLY_CLIENT();
+    const h = getHandler('discover_weekly_diff', client);
+    const res = await h({ archive_name: 'Discover Weekly Archive', liked_cap: 500, save_after: true, dry_run: false, response_format: 'concise' });
+    assert.equal(res.structuredContent!.dry_run, false, 'a committed run must report dry_run: false');
+    assert.equal(client.put.mock.callCount(), 1);
+    assert.equal(client.put.mock.calls[0].arguments[0], '/playlists/arch/items');
+    assert.deepEqual(client.put.mock.calls[0].arguments[1], { uris: ['spotify:track:1', 'spotify:track:2'] });
+    assert.equal(client.post.mock.callCount(), 0, '2 tracks fit in one write, so no chunk follow-up');
+  });
+
+  it('every dry_run guard in the slice sits behind the shared default (#827)', () => {
+    // Published contract: any tool in this slice that exposes dry_run says it
+    // defaults to true, so a host building a catalogue can tell preview from
+    // commit without probing the handler.
+    const shapes = registrationShapes();
+    const flagged = [...shapes].filter(([, shape]) => 'dry_run' in shape).map(([name]) => name);
+    assert.ok(flagged.length >= 7, `expected the mutating tools to expose dry_run, got ${flagged.join(', ')}`);
+    for (const name of flagged) {
+      assert.equal(publishedDryRunDefault(shapes.get(name)), true, `${name} must publish dry_run default true`);
+    }
+
+    // And the source: no guard may read the raw optional flag, and no tool may
+    // reach for the defaultless `DryRun` fragment. Both are how an omitted flag
+    // turned into a commit.
+    const src = readFileSync(join(REPO_ROOT, 'src/tools/exhaust2_misc.ts'), 'utf8');
+    assert.equal(src.includes('args.dry_run'), false, 'a dry_run guard must go through isDryRun(args), not args.dry_run');
+    assert.equal(/\bdry_run:\s*DryRun\s*,/.test(src), false, 'a mutating tool must not declare the defaultless DryRun fragment');
   });
 
   // #408
