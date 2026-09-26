@@ -840,6 +840,43 @@ function truncationPayload(plan: SidecarPlan) {
   };
 }
 
+/**
+ * #751: one `playlists.json` row. The three disclosure fields are the same
+ * names `BackupPlaylistRow` (backup.ts) writes and `SnapshotPlaylist`
+ * (restore.ts) already reads, so one rule is honoured on both sides of a
+ * DR round trip rather than two that can drift.
+ */
+interface ExportedPlaylistRow {
+  id: string;
+  name: string;
+  uri: string;
+  /** Spotify's own `items.total`, or null when it reported none. */
+  item_count: number | null;
+  /** The item walk stopped at the cap — `items` is a prefix, not the playlist. */
+  items_truncated: boolean;
+  /** The item walk failed: `items` is empty because nothing could be read. */
+  unreadable: boolean;
+  /** Why the walk failed. Absent on every readable playlist. */
+  items_error?: string;
+  items: Array<{ uri: string; name: string }>;
+}
+
+/** #751: name the playlists whose export is short, by playlist and not by count. */
+function playlistFooter(
+  cap: number,
+  listTruncated: boolean,
+  capped: readonly ExportedPlaylistRow[],
+  unreadable: ReadonlyArray<{ name: string; error: string }>,
+): string {
+  const name = (rows: ReadonlyArray<{ name: string }>): string =>
+    rows.slice(0, 5).map((r) => `"${r.name}"`).join(', ') + (rows.length > 5 ? ` +${rows.length - 5} more` : '');
+  const parts: string[] = [];
+  if (listTruncated) parts.push(`the playlist list itself stopped at ${cap} — some playlists were never read; raise SPOTIFY_MCP_FETCH_ALL_CAP`);
+  if (capped.length > 0) parts.push(`${capped.length} playlist(s) cut off at ${cap} items: ${name(capped)} — their items are a prefix; raise SPOTIFY_MCP_FETCH_ALL_CAP`);
+  if (unreadable.length > 0) parts.push(`${unreadable.length} playlist(s) could not be read and were exported with NO items: ${name(unreadable)} (${unreadable.slice(0, 3).map((r) => r.error).join('; ')})`);
+  return parts.length === 0 ? '' : ` [${parts.join('. ')}]`;
+}
+
 export function registerPortabilityTools(server: McpServer, client: SpotifyClient): void {
   server.tool(
     'save_discover_weekly',
@@ -1516,7 +1553,7 @@ export function registerPortabilityTools(server: McpServer, client: SpotifyClien
   // export_all_playlists — collection export (issue sweep #2)
   server.tool(
     'export_all_playlists',
-    'Export every owned (or all) playlist with metadata + items to a sidecar file. Quota: GET /me/playlists + N×GET /playlists/{id}/items; capped by fetchAllCap.',
+    'Export every owned (or all) playlist with metadata + items to a sidecar file. Capped or unreadable rows carry items_truncated/items_error. Quota: 1 + N GETs.',
     {
       output_dir: z.string().optional().describe('Local directory to write into, confined to the output root (default ~/.spotify-mcp/portability, set SPOTIFY_MCP_PORTABILITY_DIR to move it)'),
       format: z.enum(['json', 'csv']).optional().default('json').describe('Output format'),
@@ -1533,20 +1570,67 @@ export function registerPortabilityTools(server: McpServer, client: SpotifyClien
         kind: 'directory',
       });
       const cap = getConfig().fetchAllCap;
-      const me = await client.get<{ id?: string }>('/me');
-      const myId = me?.id as string | undefined;
-      let playlists = await client.getAllPages<SpotifyPlaylistSimple>('/me/playlists', { limit: '50' }, { maxItems: cap });
-      if (args.scope === 'owned' && myId) playlists = playlists.filter((p) => p?.owner?.id === myId);
+
+      // #751: `scope=owned` is a filter on knowing who the caller is. A /me
+      // that does not resolve is not a licence to export every followed
+      // playlist — that is exactly the set the caller asked to exclude. The
+      // lookup only happens for a filter that needs it.
+      let myId: string | undefined;
+      if (args.scope === 'owned') {
+        let why: string;
+        try {
+          const me = await client.get<{ id?: string }>('/me');
+          myId = typeof me?.id === 'string' && me.id.length > 0 ? me.id : undefined;
+          why = myId ? '' : '/me resolved without a user id';
+        } catch (e) {
+          why = e instanceof Error ? e.message : String(e);
+        }
+        if (!myId) {
+          return shapeResult(
+            rf,
+            `scope=owned needs the caller's own user id and /me did not resolve (${why}) — nothing was exported, because falling back to "all" here would write the playlists you excluded. Re-run with scope=all if that widening is what you want.`,
+            { ok: false, error: why, scope: args.scope, scope_applied: false, dir, total: 0, cap },
+          );
+        }
+      }
+
+      // The walk's own truncation verdict, not `rows.length === cap` (#864).
+      const list = await client.getAllPagesWithTruncation<SpotifyPlaylistSimple>('/me/playlists', { limit: '50' }, { maxItems: cap });
+      const playlists = myId ? list.items.filter((p) => p?.owner?.id === myId) : list.items;
       const exportedAt = new Date().toISOString();
-      let playlistRows: Array<{ id: string; name: string; uri: string; total: number; items: Array<{ uri: string; name: string }> }> = playlists.map((p) => ({ id: p.id, name: p.name, uri: p.uri, total: p.items?.total ?? 0, items: [] }));
+      // `item_count` is Spotify's reported total, never the count we happened
+      // to walk: restore.ts:378 reads it to refuse a short playlist.
+      const playlistRows: ExportedPlaylistRow[] = playlists.map((p) => ({
+        id: p.id,
+        name: p.name,
+        uri: p.uri,
+        item_count: typeof p.items?.total === 'number' ? p.items.total : null,
+        items_truncated: false,
+        unreadable: false,
+        items: [],
+      }));
+      const unreadable: Array<{ id: string; name: string; error: string }> = [];
       if (args.include_items !== false) {
         for (const row of playlistRows) {
           try {
-            const items = await client.getAllPages<PlaylistItemObject>(`/playlists/${encodeURIComponent(row.id)}/items`, { limit: '100' }, { maxItems: cap });
-            row.items = items.map((r) => ({ uri: (r?.item as { uri?: string })?.uri ?? '', name: (r?.item as { name?: string })?.name ?? '' })).filter((x) => x.uri);
-          } catch { row.items = []; }
+            const walk = await client.getAllPagesWithTruncation<PlaylistItemObject>(`/playlists/${encodeURIComponent(row.id)}/items`, { limit: '100' }, { maxItems: cap });
+            row.items = walk.items.map((r) => ({ uri: (r?.item as { uri?: string })?.uri ?? '', name: (r?.item as { name?: string })?.name ?? '' })).filter((x) => x.uri);
+            row.items_truncated = walk.truncated;
+          } catch (e) {
+            // #751: an empty item list here reads as "the playlist is empty"
+            // and restores as one. The row says why it is empty.
+            const message = e instanceof Error ? e.message : String(e);
+            row.items = [];
+            row.unreadable = true;
+            row.items_error = message;
+            unreadable.push({ id: row.id, name: row.name, error: message });
+          }
         }
       }
+      const cappedRows = playlistRows.filter((r) => r.items_truncated);
+      const capReached = list.truncated || cappedRows.length > 0;
+      const footer = playlistFooter(cap, list.truncated, cappedRows, unreadable);
+
       if (args.format === 'csv') {
         const headers = ['playlist_id', 'playlist_name', 'item_uri', 'item_name'];
         const rows: string[][] = [];
@@ -1557,13 +1641,27 @@ export function registerPortabilityTools(server: McpServer, client: SpotifyClien
         const lines = csvTable(headers, rows);
         const fp = join(dir, 'playlists.csv');
         await writeOutputFile(fp, lines);
-        return shapeResult(rf, `Exported ${playlistRows.length} playlist(s) (${rows.length} rows) to ${fp}.`, { ok: true, dir, file: fp, format: 'csv', total: playlistRows.length, rows: rows.length });
+        const disclosure = { ok: true, dir, file: fp, format: 'csv', total: playlistRows.length, rows: rows.length, cap, cap_reached: capReached, truncated: capReached, items_included: args.include_items !== false, capped_playlists: cappedRows.map((r) => ({ id: r.id, name: r.name, item_count: r.item_count, exported: r.items.length })), unreadable, scope: args.scope, scope_applied: true };
+        return shapeResult(rf, `Exported ${playlistRows.length} playlist(s) (${rows.length} rows) to ${fp}.${footer}`, disclosure);
       }
-      const doc = { exported_at: exportedAt, total: playlistRows.length, scope: args.scope, playlists: playlistRows };
+      const doc = {
+        exported_at: exportedAt,
+        total: playlistRows.length,
+        scope: args.scope,
+        scope_applied: true,
+        items_included: args.include_items !== false,
+        cap,
+        cap_reached: capReached,
+        truncated: capReached,
+        playlists_truncated: list.truncated,
+        unreadable,
+        playlists: playlistRows,
+      };
       const fp = join(dir, 'playlists.json');
       const body = `${JSON.stringify(doc, null, 2)}\n`;
       await writeOutputFile(fp, body);
-      return shapeResult(rf, `Exported ${playlistRows.length} playlist(s) to ${fp} (${Buffer.byteLength(body)} bytes).`, { ok: true, dir, file: fp, format: 'json', bytes: Buffer.byteLength(body), total: playlistRows.length, scope: args.scope });
+      const disclosure = { ok: true, dir, file: fp, format: 'json', bytes: Buffer.byteLength(body), total: playlistRows.length, scope: args.scope, scope_applied: true, cap, cap_reached: capReached, truncated: capReached, items_included: args.include_items !== false, capped_playlists: cappedRows.map((r) => ({ id: r.id, name: r.name, item_count: r.item_count, exported: r.items.length })), unreadable };
+      return shapeResult(rf, `Exported ${playlistRows.length} playlist(s) to ${fp} (${Buffer.byteLength(body)} bytes).${footer}`, disclosure);
     },
   );
 
