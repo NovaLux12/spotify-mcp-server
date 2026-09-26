@@ -780,3 +780,148 @@ describe('restore_library_snapshot write safety (#624)', () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+
+/**
+ * The file backup_library writes when the quota is hit mid-walk: valid
+ * JSON, every category present and empty, `quota_hit`/`_partial` set.
+ */
+function quotaHitSnapshot(extra: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    schema_version: 1,
+    _partial: true,
+    quota_hit: true,
+    retry_after: 60,
+    _meta: {
+      created: CREATED,
+      spotify_data: true,
+      retention_until: null,
+      snapshot_state: 'partial',
+      complete: false,
+      partial_reason: 'quota_exceeded',
+      partial_reasons: ['quota_exceeded'],
+      cap: 500,
+      collections: {
+        liked_tracks: { fetched: 0, cap: 500, complete: false, truncated: false },
+      },
+    },
+    liked_tracks: [],
+    saved_albums: [],
+    saved_shows: [],
+    saved_episodes: [],
+    saved_audiobooks: [],
+    followed_artists: [],
+    playlists: [],
+    ...extra,
+  };
+}
+
+describe('restore_library_snapshot contentless snapshots (#757)', () => {
+  it('refuses a quota-hit snapshot instead of reporting a clean nothing-to-add', async () => {
+    const path = await snapshotFile(quotaHitSnapshot());
+    try {
+      const h = harness(emptyState());
+      await assert.rejects(
+        h.invoke('restore_library_snapshot', { backup_path: path }),
+        (err: Error) => {
+          assert.match(err.message, /Partial snapshot at .+snapshot\.json/);
+          assert.match(err.message, /quota hit/);
+          assert.match(err.message, /take a fresh backup/);
+          return true;
+        },
+      );
+      assert.equal(writesOf(h.client).length, 0);
+      // The plan is never even built, so no library state is read either.
+      assert.equal(h.client.calls.length, 0);
+    } finally {
+      await rm(join(path, '..'), { recursive: true, force: true });
+    }
+  });
+
+  it('refuses the same empty file even when the quota marker was lost', async () => {
+    const bare = quotaHitSnapshot();
+    delete bare.quota_hit;
+    delete bare._partial;
+    const path = await snapshotFile(bare);
+    try {
+      const h = harness(emptyState());
+      await assert.rejects(
+        h.invoke('restore_library_snapshot', { backup_path: path }),
+        /Partial snapshot at .+: no library content was recorded/,
+      );
+      assert.equal(h.client.calls.length, 0);
+    } finally {
+      await rm(join(path, '..'), { recursive: true, force: true });
+    }
+  });
+
+  it('still previews a legitimately empty library that declares itself complete', async () => {
+    const path = await snapshotFile(
+      quotaHitSnapshot({
+        _partial: undefined,
+        quota_hit: undefined,
+        retry_after: undefined,
+        _meta: { created: CREATED, snapshot_state: 'complete', complete: true },
+      }),
+    );
+    try {
+      const h = harness(emptyState());
+      const out = await h.invoke('restore_library_snapshot', { backup_path: path });
+      const payload = out.structuredContent as Record<string, any>;
+      assert.equal(payload.snapshot_state, 'complete');
+      assert.equal(payload.partial, false);
+      assert.equal(payload.status, 'planned');
+    } finally {
+      await rm(join(path, '..'), { recursive: true, force: true });
+    }
+  });
+
+  it('refuses an unsupported schema_version, naming the supported one', async () => {
+    const path = await snapshotFile({ ...baseSnapshot(), schema_version: 2 });
+    try {
+      const h = harness(emptyState());
+      await assert.rejects(
+        h.invoke('restore_library_snapshot', { backup_path: path }),
+        /schema_version 2 is not the supported version 1/,
+      );
+      assert.equal(h.client.calls.length, 0);
+    } finally {
+      await rm(join(path, '..'), { recursive: true, force: true });
+    }
+  });
+
+  it('marks a cap-truncated preview partial in the payload, not just in the prose', async () => {
+    const snap = baseSnapshot();
+    snap._meta = {
+      ...snap._meta,
+      snapshot_state: 'partial',
+      complete: false,
+      partial_reason: 'collection_cap_reached:liked_tracks',
+      partial_reasons: ['collection_cap_reached:liked_tracks'],
+    };
+    const path = await snapshotFile(snap);
+    try {
+      const h = harness(emptyState());
+      const out = await h.invoke('restore_library_snapshot', { backup_path: path });
+      const payload = out.structuredContent as Record<string, any>;
+      assert.equal(payload.partial, true);
+      assert.equal(payload.restorable_complete, false);
+    } finally {
+      await rm(join(path, '..'), { recursive: true, force: true });
+    }
+  });
+
+  it('reports unknown completeness as null rather than guessing', async () => {
+    const path = await snapshotFile(baseSnapshot());
+    try {
+      const h = harness(emptyState());
+      const out = await h.invoke('restore_library_snapshot', { backup_path: path });
+      const payload = out.structuredContent as Record<string, any>;
+      assert.equal(payload.snapshot_state, 'unknown');
+      assert.equal(payload.partial, null);
+    } finally {
+      await rm(join(path, '..'), { recursive: true, force: true });
+    }
+  });
+});
