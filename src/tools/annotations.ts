@@ -718,7 +718,19 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   // never issues — it only ever PUTs — so correcting it paid for part of the
   // sentence that states what a full subtraction actually does. 26 tools is
   // unchanged; the byte baseline is the measured value, not a round number.
-  manifestEntry('playlists', 'playlists', 'src/tools/playlists.ts', registerPlaylistTools, [26, 26329]),
+  //
+  // #884: +647B on top of that, 26,329 -> 26,976. `get_playlist` gained the
+  // market / fields / additional_types trio `get_playlist_items` already had —
+  // 479B of parameters, declared once and forwarded to both calls the tool
+  // makes, plus 168B naming them in the description so an agent can find
+  // them. The same edit fixes a paging loop that passed `collected.length` as
+  // the next offset, so a caller supplying both `offset` and `fetch_all`
+  // re-read the head of the playlist. This figure was measured on the merged
+  // tree carrying both #888 and #884, not derived by adding the two warrants:
+  // 26,119 + 210 + 647 happens to land on the measurement, but the addition is
+  // a coincidence of two independent edits and is not how the number was
+  // obtained.
+  manifestEntry('playlists', 'playlists', 'src/tools/playlists.ts', registerPlaylistTools, [26, 26976]),
   manifestEntry('playlistops', 'playlists', 'src/tools/playlistops.ts', registerPlaylistOpsTools, [3, 5489]),
   manifestEntry('playlistbatch', 'playlistbatch', 'src/tools/playlistbatch.ts', registerPlaylistBatchTools, [3, 4784], { scopeKey: 'playlists' }),
   manifestEntry('playlistfollow', 'playlistmisc', 'src/tools/playlistfollow.ts', registerPlaylistFollowTools, [2, 1449], { scopeKey: 'playlistfollow' }),

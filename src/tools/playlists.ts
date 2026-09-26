@@ -137,6 +137,50 @@ const PlaylistSetWalkFields = {
   max_results: MaxResults,
 };
 
+/**
+ * The read filters Spotify accepts on BOTH `GET /playlists/{playlist_id}` and
+ * `GET /playlists/{playlist_id}/items}` (#884). Declared ONCE because
+ * `get_playlist` and `get_playlist_items` read the same endpoint pair: two
+ * copies of a query-parameter list drift, and a wrong or missing one is a
+ * runtime 400 from Spotify, not a schema error. Verified against the official
+ * OpenAPI schema (`QueryMarket`, `fields`, `QueryAdditionalTypes`) — all three
+ * are optional query parameters on both paths, spelled exactly as here.
+ *
+ * `additional_types` takes `track` and `episode`, the only types the schema
+ * documents, and is sent comma-separated (`track,episode`) on the wire.
+ */
+const PlaylistReadFilterFields = {
+  market: z
+    .string()
+    .regex(/^[A-Za-z]{2}$/, 'market must be a 2-letter ISO 3166-1 alpha-2 country code, e.g. "US"')
+    .transform((code) => code.toUpperCase())
+    .optional()
+    .describe("ISO 3166-1 alpha-2 country code, e.g. 'GB'; relinks tracks to that market and flags unavailable ones"),
+  fields: z
+    .string()
+    .optional()
+    .describe("Comma-separated list of response fields to keep, e.g. 'total,items(track(name,uri))'"),
+  additional_types: z
+    .array(z.enum(['track', 'episode']))
+    .optional()
+    .describe("Item types to include beyond the default 'track', e.g. ['track', 'episode']"),
+};
+
+/** Renders the read filters into the wire spelling Spotify expects. */
+function playlistReadFilterParams(args: {
+  market?: string;
+  fields?: string;
+  additional_types?: ('track' | 'episode')[];
+}): Record<string, string> {
+  const params: Record<string, string> = {};
+  if (args.market !== undefined) params.market = args.market;
+  if (args.fields !== undefined) params.fields = args.fields;
+  if (args.additional_types !== undefined) {
+    params.additional_types = args.additional_types.join(',');
+  }
+  return params;
+}
+
 // #157: visibility flips are gated by DIRECTION, not size — any change that
 // makes a playlist more visible (private→public, or enabling collaboration)
 // elicits; toward-private flips never do. The threshold counts how many
@@ -314,7 +358,7 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
   // get_playlist
   server.tool(
     'get_playlist',
-    "Get a playlist's metadata (including cover image) and items",
+    "Get a playlist's metadata (including cover image) and items. Use market to relink tracks and flag unavailable ones, and fields/additional_types to trim the payload — both are forwarded to the metadata read and the item pages.",
     {
       ...sharedListFields,
       // #110: canonical `playlist_id`; `id` retained as a documented alias.
@@ -333,6 +377,10 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
         .min(0)
         .optional()
         .describe('Pagination offset for items. Default: 0'),
+      // #884: the same read filters `get_playlist_items` exposes, forwarded to
+      // BOTH calls this tool makes — Spotify documents market/fields/
+      // additional_types on `GET /playlists/{id}` as well as on the items path.
+      ...PlaylistReadFilterFields,
       fetch_all: z
         .boolean()
         .optional()
@@ -345,26 +393,40 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
       const itemLimit = String(args.limit ?? 50);
       const itemParams: Record<string, string> = { limit: itemLimit };
       if (args.offset !== undefined) itemParams.offset = String(args.offset);
+      Object.assign(itemParams, playlistReadFilterParams(args));
+      // The metadata GET takes the same three filters, so a caller narrowing
+      // the payload narrows both halves of this tool's answer (#884).
+      const metadataParams = playlistReadFilterParams(args);
 
       const [metadata, firstPage] = await Promise.all([
-        client.get<SpotifyPlaylistWithImages>(`/playlists/${id}`),
+        client.get<SpotifyPlaylistWithImages>(`/playlists/${id}`, metadataParams),
         client.get<PlaylistItemsResponse>(`/playlists/${id}/items`, itemParams),
       ]);
       if (!metadata) throw new Error('Playlist not found');
 
       let items = firstPage;
       if (args.fetch_all && firstPage) {
-          const collected = [...firstPage.items];
-          while (collected.length < Math.min(firstPage.total, FETCH_ALL_CAP())) {
-            const page = await client.get<PlaylistItemsResponse>(`/playlists/${id}/items`, {
-              limit: itemLimit,
-              offset: String(collected.length),
-            });
-            if (!page || page.items.length === 0) break;
-            collected.push(...page.items);
-          }
-          if (collected.length > FETCH_ALL_CAP()) collected.length = FETCH_ALL_CAP();
-          items = { ...firstPage, items: collected };
+        const collected = [...firstPage.items];
+        // #884: the walk goes through the client's paged helper instead of a
+        // hand-rolled offset loop, so every page enqueues at LOW priority and
+        // reports progress like the rest of the fetch_all family. The first
+        // page already arrived at the caller's offset, so the walk resumes
+        // from the real number of rows collected — not from `offset` itself,
+        // which is what the old loop's `collected.length` was silently
+        // assuming when a caller passed both.
+        if (collected.length < Math.min(firstPage.total, FETCH_ALL_CAP())) {
+          const rest = await client.getAllPages<PlaylistItemObject>(
+            `/playlists/${id}/items`,
+            itemParams,
+            {
+              maxItems: FETCH_ALL_CAP() - collected.length,
+              initialOffset: (args.offset ?? 0) + collected.length,
+            },
+          );
+          collected.push(...rest);
+        }
+        if (collected.length > FETCH_ALL_CAP()) collected.length = FETCH_ALL_CAP();
+        items = { ...firstPage, items: collected };
       }
 
       // Cover image: prefer the one embedded in the playlist object, else ask
@@ -375,7 +437,10 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
         coverUrl = images?.[0]?.url ?? null;
       }
 
-      const owner = metadata.owner.display_name ?? metadata.owner.id;
+      // #884: `fields` is forwarded to this metadata GET too, so a caller who
+      // narrows the payload may legitimately drop `owner`. Read it defensively
+      // rather than throwing on a shape the tool itself asked Spotify to send.
+      const owner = metadata.owner?.display_name ?? metadata.owner?.id ?? 'unknown owner';
 
       // #51: json mode hands the raw API objects straight to the caller.
       if (args.response_format === 'json') {
@@ -401,6 +466,12 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
             if (args.response_format === 'detailed' && item.added_at) {
               lines.push(`     Added: ${item.added_at}`);
             }
+          } else {
+            // #884: an unavailable item is a ROW the server returned, so it
+            // gets a line. Skipping it silently made the enumerated list run
+            // short of the "showing N" count beside it, and disagreed with
+            // get_playlist_items, which marks the same fixture identically.
+            lines.push(`  ${trackNum}. [unavailable in this market]`);
           }
           trackNum++;
         }
@@ -430,20 +501,8 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
         .optional()
         .describe('Items per page, 1–100. Default: 100'),
       offset: z.number().int().min(0).optional().describe('Pagination offset. Default: 0'),
-      market: z
-        .string()
-        .regex(/^[A-Za-z]{2}$/, 'market must be a 2-letter ISO 3166-1 alpha-2 country code, e.g. "US"')
-        .transform((code) => code.toUpperCase())
-        .optional()
-        .describe("ISO 3166-1 alpha-2 country code, e.g. 'GB'; relinks tracks to that market and flags unavailable ones"),
-      fields: z
-        .string()
-        .optional()
-        .describe("Comma-separated list of response fields to keep, e.g. 'total,items(track(name,uri))'"),
-      additional_types: z
-        .array(z.enum(['track', 'episode']))
-        .optional()
-        .describe("Item types to include beyond the default 'track', e.g. ['track', 'episode']"),
+      // Shared with get_playlist — the same three parameters, declared once (#884).
+      ...PlaylistReadFilterFields,
       fetch_all: z
         .boolean()
         .optional()
@@ -457,11 +516,7 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
       );
       const params: Record<string, string> = { limit: String(args.limit ?? 100) };
       if (args.offset !== undefined) params.offset = String(args.offset);
-      if (args.market !== undefined) params.market = args.market;
-      if (args.fields !== undefined) params.fields = args.fields;
-      if (args.additional_types !== undefined) {
-        params.additional_types = args.additional_types.join(',');
-      }
+      Object.assign(params, playlistReadFilterParams(args));
 
       const page = await client.get<PlaylistItemsResponse>(`/playlists/${id}/items`, params);
       if (!page) throw new Error(`Could not retrieve items for playlist ${args.playlist_id}`);
