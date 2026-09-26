@@ -34,7 +34,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { SpotifyClient } from '../src/client.js';
-import { REGISTRAR_MANIFEST, registerManifestModule } from '../src/tools/annotations.js';
+import { REGISTRAR_MANIFEST, loadManifestRegistrars, registerManifestModule } from '../src/tools/annotations.js';
 import { moduleBlockedByScopes, scopesFor, WRITE_SCOPE_REQUIREMENTS } from '../src/scopefilter.js';
 import { isModuleActive, resolveToolsets } from '../src/toolsets.js';
 
@@ -613,7 +613,9 @@ describe('verify_receipt label direction (#586)', () => {
     const context = { readOnly: false, isModuleActive: () => true, scopeBlocked: () => false };
     const module = REGISTRAR_MANIFEST.find((m) => m.key === 'receipts');
     assert.ok(module, 'the receipts module must be in the registrar manifest');
-    registerManifestModule(server, new SpotifyClient(), module!, context);
+    for (const loaded of await loadManifestRegistrars([module!], context)) {
+      registerManifestModule(server, new SpotifyClient(), loaded, context);
+    }
     const registry = (server as unknown as {
       _registeredTools: Record<string, { handler: (args: Record<string, unknown>) => Promise<{ content: Array<{ text: string }>; structuredContent?: Record<string, unknown> }> }>;
     })._registeredTools;
@@ -687,15 +689,14 @@ describe('verify_receipt label direction (#586)', () => {
 
 describe('verify_receipt miss and registration gating (#688)', () => {
   /** The shipped registration, reached the way a host reaches it. */
-  function receiptsServer(): McpServer {
+  async function receiptsServer(): Promise<McpServer> {
     const server = new McpServer({ name: 'verify-receipt-688', version: '0.0.0' });
     const module = REGISTRAR_MANIFEST.find((m) => m.key === 'receipts');
     assert.ok(module, 'the receipts module must be in the registrar manifest');
-    registerManifestModule(server, new SpotifyClient(), module!, {
-      readOnly: false,
-      isModuleActive: () => true,
-      scopeBlocked: () => false,
-    });
+    const context = { readOnly: false, isModuleActive: () => true, scopeBlocked: () => false };
+    for (const loaded of await loadManifestRegistrars([module!], context)) {
+      registerManifestModule(server, new SpotifyClient(), loaded, context);
+    }
     return server;
   }
 
@@ -713,8 +714,12 @@ describe('verify_receipt miss and registration gating (#688)', () => {
    */
   async function callVerifyReceipt(
     receiptId: unknown,
-    server: McpServer = receiptsServer(),
+    // Resolved inside rather than as a default parameter: esbuild rejects
+    // `await` in a parameter default, and the server is now built through the
+    // lazy loader (#906) so building it is genuinely asynchronous.
+    provided?: McpServer,
   ): Promise<VerifyResult> {
+    const server = provided ?? await receiptsServer();
     const client = new Client({ name: 'verify-receipt-688-client', version: '0.0.0' });
     const [clientTx, serverTx] = InMemoryTransport.createLinkedPair();
     await Promise.all([server.connect(serverTx), client.connect(clientTx)]);
@@ -792,7 +797,7 @@ describe('verify_receipt miss and registration gating (#688)', () => {
     }
   });
 
-  it('registers with no library scopes and under a single-toolset trim', () => {
+  it('registers with no library scopes and under a single-toolset trim', async () => {
     // Both profiles the issue named. `scopeBlocked` mirrors
     // `moduleBlockedByScopes`, and the toolset check goes through the real
     // `isModuleActive` so the trim is the production one, not a stub.
@@ -801,12 +806,13 @@ describe('verify_receipt miss and registration gating (#688)', () => {
     assert.ok(libraryScopeRequired, 'the library gate is what this test is about');
 
     const noLibraryScopes = new McpServer({ name: 'no-library-scopes', version: '0.0.0' });
-    for (const module of REGISTRAR_MANIFEST) {
-      registerManifestModule(noLibraryScopes, new SpotifyClient(), module, {
-        readOnly: false,
-        isModuleActive: () => true,
-        scopeBlocked: (key) => moduleBlockedByScopes(key, granted),
-      });
+    const noScopeContext = {
+      readOnly: false,
+      isModuleActive: () => true,
+      scopeBlocked: (key: string) => moduleBlockedByScopes(key, granted),
+    };
+    for (const module of await loadManifestRegistrars(REGISTRAR_MANIFEST, noScopeContext)) {
+      registerManifestModule(noLibraryScopes, new SpotifyClient(), module, noScopeContext);
     }
     const noScopeNames = new Set(
       Object.keys((noLibraryScopes as unknown as { _registeredTools: Record<string, unknown> })._registeredTools),
@@ -819,12 +825,13 @@ describe('verify_receipt miss and registration gating (#688)', () => {
 
     const playbackOnly = resolveToolsets('playback');
     const trimmed = new McpServer({ name: 'playback-only', version: '0.0.0' });
-    for (const module of REGISTRAR_MANIFEST) {
-      registerManifestModule(trimmed, new SpotifyClient(), module, {
-        readOnly: false,
-        isModuleActive: (key) => isModuleActive(key, playbackOnly.sets),
-        scopeBlocked: () => false,
-      });
+    const trimmedContext = {
+      readOnly: false,
+      isModuleActive: (key: string) => isModuleActive(key, playbackOnly.sets),
+      scopeBlocked: () => false,
+    };
+    for (const module of await loadManifestRegistrars(REGISTRAR_MANIFEST, trimmedContext)) {
+      registerManifestModule(trimmed, new SpotifyClient(), module, trimmedContext);
     }
     const trimmedNames = new Set(
       Object.keys((trimmed as unknown as { _registeredTools: Record<string, unknown> })._registeredTools),

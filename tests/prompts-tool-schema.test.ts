@@ -40,7 +40,7 @@ async function renderAllPrompts(): Promise<Map<string, string>> {
 // ---------------------------------------------------------------- tests
 
 test('every prompt names real tools that exist in the registry (#716)', async () => {
-  const schemas = collectToolSchemas(buildFullRegistryServer());
+  const schemas = collectToolSchemas(await buildFullRegistryServer());
   const rendered = await renderAllPrompts();
   assert.ok(rendered.size >= 14, `expected the full prompt registry, saw ${rendered.size}`);
 
@@ -59,7 +59,7 @@ test('every prompt names real tools that exist in the registry (#716)', async ()
 });
 
 test('every prompt call-form argument is declared by the tool schema (#716)', async () => {
-  const schemas = collectToolSchemas(buildFullRegistryServer());
+  const schemas = collectToolSchemas(await buildFullRegistryServer());
   const rendered = await renderAllPrompts();
 
   const badArgs: string[] = [];

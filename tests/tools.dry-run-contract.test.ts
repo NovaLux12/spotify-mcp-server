@@ -24,7 +24,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import type { SpotifyClient } from '../src/client.js';
-import { REGISTRAR_MANIFEST } from '../src/tools/annotations.js';
+import { REGISTRAR_MANIFEST, loadManifestRegistrars } from '../src/tools/annotations.js';
 
 /**
  * The playback mutation modules. `scopeKey: 'playback'` is the manifest's own
@@ -74,7 +74,16 @@ async function playbackDryRunTools(): Promise<PlaybackDryRunTool[]> {
     observed.add(args[0] as string);
     return origRegisterTool(...args);
   };
-  for (const { key, registrar } of REGISTRAR_MANIFEST) {
+  // The manifest holds thunks, not imported registrars (#906), so this pass
+  // loads them first — the same two steps `startMcpServer` runs. Registering
+  // straight off the raw manifest would call `undefined`.
+  const loaded = await loadManifestRegistrars(REGISTRAR_MANIFEST, {
+    readOnly: false,
+    isModuleActive: () => true,
+    scopeBlocked: () => false,
+  });
+  for (const { key, registrar } of loaded) {
+    assert.ok(registrar, `${key} has no loaded registrar`);
     const before = new Set(observed);
     registrar(server, stub);
     for (const name of observed) if (!before.has(name)) moduleByTool.set(name, key);

@@ -11,13 +11,9 @@ import {
   collectModuleSchemaBudgets,
   installToolErrorBoundary,
   assertToolNamingPolicy,
-  registerManifestModule,
-  REGISTRAR_MANIFEST,
+  registerManifestModules,
   readOnlyModeEnabled,
 } from './tools/annotations.js';
-import { registerTemplateResources } from './resources/templates.js';
-import { registerResources } from './resources/index.js';
-import { registerPrompts } from './prompts/index.js';
 import { TOOLSETS, resolveToolsets, assertToolsetsUsable, isModuleActive, resolveToolOverrides, toolsetEnvHelp } from './toolsets.js';
 import { moduleBlockedByScopes, scopesFor } from './scopefilter.js';
 import { createRequire } from 'node:module';
@@ -100,19 +96,34 @@ async function startMcpServer(): Promise<void> {
   // never break a walk.
   installProgressNotifications(client, server);
 
-  for (const module of REGISTRAR_MANIFEST) {
-    registerManifestModule(server, client, module, {
-      readOnly,
-      isModuleActive: (key) => isModuleActive(key, activeSets, overrides),
-      scopeBlocked: (key) => moduleBlockedByScopes(key, grantedScopes),
-    });
-  }
+  // Tool modules load behind the toolset gate (#906). `registerManifestModules`
+  // imports only the modules that are about to register — a module whose key is
+  // trimmed is never evaluated — and then registers them in manifest order, so
+  // `tools/list` order is unchanged. The gates below are deliberately NOT lazy:
+  // they run here, after every module that will serve tools has registered, and
+  // they measure the same live registry they measured before.
+  await registerManifestModules(server, client, {
+    readOnly,
+    isModuleActive: (key) => isModuleActive(key, activeSets, overrides),
+    scopeBlocked: (key) => moduleBlockedByScopes(key, grantedScopes),
+  });
 
   // Resources/prompts are separate MCP surfaces and do not contribute to the
   // tool schema budget, but retain their existing toolsets and scope gates.
-  if (isModuleActive('resources', activeSets, overrides) && !moduleBlockedByScopes('resources', grantedScopes)) registerTemplateResources(server, client);
-  if (isModuleActive('resources', activeSets, overrides) && !moduleBlockedByScopes('resources', grantedScopes)) registerResources(server, client);
-  if (isModuleActive('prompts', activeSets, overrides) && !moduleBlockedByScopes('prompts', grantedScopes)) registerPrompts(server);
+  // Imported dynamically for the same reason as the tool modules: a static
+  // import of ./resources/index.js would drag `walkFollowedArtists` — and so
+  // the whole of src/tools/following.ts — into every process, including one
+  // that trimmed the `following` toolset.
+  if (isModuleActive('resources', activeSets, overrides) && !moduleBlockedByScopes('resources', grantedScopes)) {
+    const { registerTemplateResources } = await import('./resources/templates.js');
+    const { registerResources } = await import('./resources/index.js');
+    registerTemplateResources(server, client);
+    registerResources(server, client);
+  }
+  if (isModuleActive('prompts', activeSets, overrides) && !moduleBlockedByScopes('prompts', grantedScopes)) {
+    const { registerPrompts } = await import('./prompts/index.js');
+    registerPrompts(server);
+  }
   assertToolNamingPolicy(Object.keys((server as unknown as { _registeredTools?: Record<string, unknown> })._registeredTools ?? {}));
 
   assertModuleSchemaBudgets(collectModuleSchemaBudgets(server));

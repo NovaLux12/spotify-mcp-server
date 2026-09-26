@@ -26,7 +26,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 
-import { REGISTRAR_MANIFEST, registerManifestModule } from '../src/tools/annotations.js';
+import { REGISTRAR_MANIFEST, loadManifestRegistrars, registerManifestModule } from '../src/tools/annotations.js';
 import { SpotifyClient } from '../src/client.js';
 import { moduleBlockedByScopes, scopesFor } from '../src/scopefilter.js';
 import { finalInputSchema } from '../src/shaping.js';
@@ -61,21 +61,24 @@ export interface RegistryPassOptions {
 }
 
 /** Register the whole manifest the way a full-scope server does. */
-export function buildFullRegistryServer(options: RegistryPassOptions = {}): McpServer {
+export async function buildFullRegistryServer(options: RegistryPassOptions = {}): Promise<McpServer> {
   const server = new McpServer({ name: 'test', version: '0.0.0' });
   const client = new SpotifyClient();
   const granted = scopesFor(FULL_SCOPE_GRANT);
   const skipped = new Set(options.skipModules ?? []);
-  for (const module of REGISTRAR_MANIFEST) {
+  const context = {
+    readOnly: false,
+    // Always-active matches how the surface-budget audit (#1124) and the
+    // scope-filter test (#1020) build a complete registry; a trimmed toolset
+    // would hide tools prompts still reference.
+    isModuleActive: () => true,
+    scopeBlocked: (key: string) => moduleBlockedByScopes(key, granted),
+  };
+  // The manifest holds thunks, not imported registrars (#906), so this pass has
+  // to load them before registering — the same two steps `startMcpServer` runs.
+  for (const module of await loadManifestRegistrars(REGISTRAR_MANIFEST, context)) {
     if (skipped.has(module.key)) continue;
-    registerManifestModule(server, client, module, {
-      readOnly: false,
-      // Always-active matches how the surface-budget audit (#1124) and the
-      // scope-filter test (#1020) build a complete registry; a trimmed toolset
-      // would hide tools prompts still reference.
-      isModuleActive: () => true,
-      scopeBlocked: (key) => moduleBlockedByScopes(key, granted),
-    });
+    registerManifestModule(server, client, module, context);
   }
   options.extra?.(server);
   return server;
@@ -183,7 +186,7 @@ export interface PromptSurface {
  * removed, without editing the source under test.
  */
 export async function promptSurface(options: RegistryPassOptions = {}): Promise<PromptSurface> {
-  const server = buildFullRegistryServer(options);
+  const server = await buildFullRegistryServer(options);
   registerPrompts(server);
 
   const client = new Client({ name: 'tester', version: '0.0.0' });
