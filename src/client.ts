@@ -581,7 +581,13 @@ export class SpotifyClient {
     }
 
     // Rate limited — differentiate a quota wall from a burst limit (#108).
-    if (res.status === 429 && retryCount === 0) {
+    // The 429 branch runs on every attempt, not only the first: the 401-refresh
+    // retry path commonly lands us at retryCount=1, and a 429 there must still
+    // parse Retry-After, attach retryAfterSec to the thrown error, and update
+    // the cooldown window — otherwise it falls through to the generic non-ok
+    // throw at the bottom of the function and silently drops the rate-limit
+    // signal (#671).
+    if (res.status === 429) {
       // Parse defensively: a garbage header must not yield NaN, which would
       // permanently poison _rateLimitUntil and disable backoff.
       const raw = Number.parseInt(res.headers.get('Retry-After') ?? '', 10);
@@ -609,6 +615,19 @@ export class SpotifyClient {
         throw new SpotifyApiError(
           429,
           `Spotify developer-account quota exceeded — no further requests until the quota window resets${retryAfter ? ` (Retry-After: ${retryAfter}s)` : ''}${spotifyMsg ? ` — ${spotifyMsg}` : ''}`,
+          retryAfter,
+          reason,
+        );
+      }
+
+      // On a retried attempt (e.g. immediately after a 401-refresh) we have
+      // already consumed our one retry budget, so a 429 here is definitive:
+      // throw with retryAfterSec attached rather than sleep+recurse, which
+      // would loop forever against a stubborn 429 (#671).
+      if (retryCount > 0) {
+        throw new SpotifyApiError(
+          429,
+          `Rate limited — Retry-After ${retryAfter}s${spotifyMsg ? ` — ${spotifyMsg}` : ''}`,
           retryAfter,
           reason,
         );
