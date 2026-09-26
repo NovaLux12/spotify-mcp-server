@@ -52,6 +52,7 @@ import { registerSmartTools } from './smart.js';
 import { registerShowRadarTools } from './showradar.js';
 import { registerSavedDedupeTools } from './saveddedupe.js';
 import { registerBackupTools } from './backup.js';
+import { registerBackupDeleteTools } from './backup_delete.js';
 import { registerRestoreTools } from './restore.js';
 import { registerUndoTools } from './undo.js';
 import { registerBackupFirstTools } from './backupfirst.js';
@@ -62,6 +63,7 @@ import { registerLibraryAnalyticsTools } from './libraryanalytics.js';
 import { registerPlaylistHealthTools } from './playlisthealth.js';
 import { registerPlaylistBatchTools } from './playlistbatch.js';
 import { registerPlaylistMiscTools } from './playlistmisc.js';
+import { registerPlaylistFollowTools } from './playlistfollow.js';
 import { registerPortabilityTools } from './portability.js';
 import { registerQueueOpsTools } from './queueops.js';
 import { registerPlaybackExtTools } from './playbackext.js';
@@ -86,6 +88,7 @@ import { registerSwarm3ShowsTools } from './swarm3_shows.js';
 import { registerSwarm3AnalyticsTools } from './swarm3_analytics.js';
 import { registerStatsfmTasteTools } from './statsfm_taste.js';
 import { registerTasteCompositeTools } from './taste_composites.js';
+import { registerTastePlaylistTools } from './taste_playlist.js';
 import { registerSwarm3RefsTools } from './swarm3_refs.js';
 import { registerSwarm3SnapshotsTools } from './swarm3_snapshots.js';
 import { registerSwarm3MetaTools } from './swarm3_meta.js';
@@ -553,12 +556,14 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   manifestEntry('playlists', 'playlists', 'src/tools/playlists.ts', registerPlaylistTools, [26, 25998]),
   manifestEntry('playlistops', 'playlists', 'src/tools/playlistops.ts', registerPlaylistOpsTools, [3, 5489]),
   manifestEntry('playlistbatch', 'playlistbatch', 'src/tools/playlistbatch.ts', registerPlaylistBatchTools, [3, 4784], { scopeKey: 'playlists' }),
-  manifestEntry('playlistmisc', 'playlistmisc', 'src/tools/playlistmisc.ts', registerPlaylistMiscTools, [3, 2538], { scopeKey: 'playlists' }),
+  manifestEntry('playlistfollow', 'playlistmisc', 'src/tools/playlistfollow.ts', registerPlaylistFollowTools, [2, 1449], { scopeKey: 'playlistfollow' }),
+  manifestEntry('playlistmisc', 'playlistmisc', 'src/tools/playlistmisc.ts', registerPlaylistMiscTools, [1, 1089], { scopeKey: 'playlists' }),
   manifestEntry('personalization', 'personalization', 'src/tools/personalization.ts', registerPersonalizationTools, [3, 2532], { readOnlySafe: true }),
   manifestEntry('analytics', 'personalization', 'src/tools/analytics.ts', registerAnalyticsTools, [4, 2753], { readOnlySafe: true }),
   manifestEntry('statsfm', 'statsfm', 'src/tools/statsfm.ts', (server) => registerStatsfmTools(server), [30, 22721], { readOnlySafe: true }),
   manifestEntry('taste', 'taste', 'src/tools/statsfm_taste.ts', registerStatsfmTasteTools, [16, 13959], { readOnlySafe: true }),
-  manifestEntry('tastecomposites', 'tastecomposites', 'src/tools/taste_composites.ts', registerTasteCompositeTools, [11, 9717], { readOnlySafe: true }),
+  manifestEntry('tastecomposites', 'tastecomposites', 'src/tools/taste_composites.ts', registerTasteCompositeTools, [10, 7994], { readOnlySafe: true }),
+  manifestEntry('tasteplaylist', 'tastecomposites', 'src/tools/taste_playlist.ts', registerTastePlaylistTools, [1, 1723], { scopeKey: 'playlists' }),
   manifestEntry('doctor', 'doctor', 'src/tools/doctortool.ts', registerDoctorTool, [1, 750], { alwaysActive: true, readOnlySafe: true }),
   manifestEntry('swarm3meta', 'swarm3meta', 'src/tools/swarm3_meta.ts', registerSwarm3MetaTools, [3, 1624], { alwaysActive: true, scopeKey: 'catalog', readOnlySafe: true }),
   manifestEntry('libraryanalytics', 'libraryanalytics', 'src/tools/libraryanalytics.ts', registerLibraryAnalyticsTools, [4, 3350], { readOnlySafe: true, scopeKey: 'library' }),
@@ -569,7 +574,8 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   manifestEntry('saveddedupe', 'library', 'src/tools/saveddedupe.ts', registerSavedDedupeTools, [1, 1562], { scopeKey: 'library' }),
   manifestEntry('podcastsession', 'library', 'src/tools/podcastsession.ts', registerPodcastSessionTools, [2, 2759], { scopeKey: 'library' }),
   manifestEntry('backupfirst', 'library', 'src/tools/backupfirst.ts', registerBackupFirstTools, [1, 513], { readOnlySafe: true, scopeKey: 'library' }),
-  manifestEntry('backup', 'library', 'src/tools/backup.ts', registerBackupTools, [3, 2584], { readOnlySafe: false, scopeKey: 'library' }),
+  manifestEntry('backup', 'library', 'src/tools/backup.ts', registerBackupTools, [2, 1625], { readOnlySafe: true, scopeKey: 'library' }),
+  manifestEntry('backupdelete', 'library', 'src/tools/backup_delete.ts', registerBackupDeleteTools, [1, 959], { readOnlySafe: false, scopeKey: 'library' }),
   manifestEntry('restore', 'library', 'src/tools/restore.ts', registerRestoreTools, [1, 1851], { scopeKey: 'library' }),
   manifestEntry('undo', 'library', 'src/tools/undo.ts', registerUndoTools, [2, 1518], { scopeKey: 'library' }),
   manifestEntry('receipts', 'library', 'src/tools/annotations.ts', (server) => {

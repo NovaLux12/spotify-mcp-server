@@ -3,11 +3,11 @@
 Current default production surface: **592 tools**, including the shipped taste composites documented below. Earlier release totals in this page's history are not current registry truth; regenerate this block with `npm run count:tools -- --write`.
 <!-- END:generated surface-census -->
 
-The shipped `taste_composites.ts` module contributes eleven tools in the `taste` toolset: ten read-only, plus `taste_to_playlist`, which previews by default and writes only when a caller passes `dry_run: false`. Earlier release totals are historical context, not current registry truth.
+The `taste` toolset contributes eleven tools across two registrar rows: ten read-only composites in `taste_composites.ts`, plus `taste_to_playlist` in `taste_playlist.ts`, which previews by default and writes only when a caller passes `dry_run: false`. They are separate rows because `readOnlySafe` is a per-ROW flag — one row holding both would either expose the writer to `SPOTIFY_MCP_READONLY` sessions or hide the ten readers with it (#1009). Earlier release totals are historical context, not current registry truth.
 
 ## Data-source and write guarantees
 
-Every composite in `src/tools/taste_composites.ts`:
+Every composite in `src/tools/taste_composites.ts` and `src/tools/taste_playlist.ts`:
 
 - Reads the stats.fm public API v1 (`https://api.stats.fm/api/v1`, no
   auth) — top artists / tracks / genres / streams endpoints.
@@ -62,9 +62,15 @@ missing[] had no Spotify id at all: search them by name.
 ## Registration
 
 - `registerTasteCompositeTools(server, client)` in
-  `src/tools/taste_composites.ts` (11 `server.tool` calls, all `taste_*`).
-- Wired through the `REGISTRAR_MANIFEST` in `src/tools/annotations.ts` under
-  registration key `tastecomposites` (no Spotify scopes, no readOnly gate — same as `taste`).
+  `src/tools/taste_composites.ts` (10 `server.tool` calls) and
+  `registerTastePlaylistTools(server, client)` in `src/tools/taste_playlist.ts`
+  (1 call) — all eleven names are `taste_*`.
+- Wired through the `REGISTRAR_MANIFEST` in `src/tools/annotations.ts` as two
+  rows that share registration key `tastecomposites` (so `src/toolsets.ts` and
+  the toolset list are unchanged): `tastecomposites` is `readOnlySafe: true`,
+  and `tasteplaylist` is `readOnlySafe: false` with `scopeKey: 'playlists'` —
+  creating a playlist needs a playlist-modify scope, so the writer is withheld
+  from a grant that carries none (#1009).
 - `src/toolsets.ts`: `taste: ['taste', 'tastecomposites']`. Per-set tool counts
   are not hand-maintained — the generated census header above is the source of
   truth, and the registrar budgets in `src/tools/annotations.ts` carry the

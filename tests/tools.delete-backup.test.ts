@@ -12,6 +12,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../src/client.js';
+import { registerBackupDeleteTools } from '../src/tools/backup_delete.js';
 import { registerBackupTools } from '../src/tools/backup.js';
 
 interface RegisteredTool {
@@ -50,12 +51,17 @@ function harness(opts: { answer?: Answer; capable?: boolean } = {}) {
       registered.push({ name, validate: (args) => z.object(schema).parse(args), handler });
     },
   } as unknown as McpServer;
-  registerBackupTools(fakeServer, {
+  const noSpotify = {
     calls: [],
     async get<T>(): Promise<T | null> {
       throw new Error('delete_backup must not call Spotify');
     },
-  } as unknown as SpotifyClient);
+  } as unknown as SpotifyClient;
+  // Two manifest rows (#1017): the delete and the two reads it must leave
+  // consistent. Registering only one row would make the cross-tool
+  // assertion below vacuous.
+  registerBackupDeleteTools(fakeServer, noSpotify);
+  registerBackupTools(fakeServer, noSpotify);
   return {
     prompts,
     invoke: async (name: string, args: Record<string, unknown>) => {
@@ -111,7 +117,7 @@ describe('delete_backup (#697)', () => {
         registered.push(name);
       },
     } as unknown as McpServer;
-    registerBackupTools(fakeServer, {} as unknown as SpotifyClient);
+    registerBackupDeleteTools(fakeServer, {} as unknown as SpotifyClient);
     assert.ok(registered.includes('delete_backup'), 'delete_backup must be registered');
 
     // The schema itself carries the safe default (a client that only reads
