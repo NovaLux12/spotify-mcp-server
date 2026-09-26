@@ -13,6 +13,8 @@
  */
 import { z } from 'zod';
 import { capFor } from '../chunk.js';
+import { issueReceipt, type Receipt } from '../receipts.js';
+import { receiptRecords, receiptsLines, writeVerdict } from './playlistreceipts.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { chmod, copyFile, link, mkdir, readFile, unlink, writeFile } from 'node:fs/promises';
 import { constants as FS } from 'node:fs';
@@ -489,10 +491,16 @@ export function registerPlaybackExtTools(server: McpServer, client: SpotifyClien
         if (!id) return respond(args.response_format as string, store, { ok: false, error: 'create_failed', session_id: args.session_id }, 'Failed to create replay playlist.');
         // add tracks in CHUNK_CAPS.playlist_writes batches
         const writeCap = capFor('playlist_writes');
+        const receipts: Receipt[] = [];
         for (let i = 0; i < sess.tracks.length; i += writeCap) {
-          await client.post(`/playlists/${id}/items`, { uris: sess.tracks.slice(i, i + writeCap) });
+          const batch = sess.tracks.slice(i, i + writeCap);
+          await client.post(`/playlists/${id}/items`, { uris: batch });
+          // Verify the batch landed rather than trusting the 2xx (#879).
+          receipts.push(await issueReceipt(client, { kind: 'playlist_items', id, uris: batch }));
         }
-        return respond(args.response_format as string, store, { ok: true, session_id: args.session_id, mode: 'playlist', playlist_id: id, tracks: sess.tracks.length }, `Replayed session "${args.session_id}" → playlist ${id} (${sess.tracks.length} tracks).`);
+        const receiptLines = receiptsLines(receipts);
+        const prose = `Replayed session "${args.session_id}" → playlist ${id} (${sess.tracks.length} tracks).`;
+        return respond(args.response_format as string, store, { ...writeVerdict(receipts, sess.tracks.length), session_id: args.session_id, mode: 'playlist', playlist_id: id, tracks: sess.tracks.length, receipts: receiptRecords(receipts) }, receiptLines ? `${prose}\n${receiptLines}` : prose);
       }
     });
 

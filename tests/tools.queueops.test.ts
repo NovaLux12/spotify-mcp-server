@@ -15,6 +15,11 @@ function harness(overrides: Partial<{
   postErrorFor?: (path: string, index: number) => Error | undefined;
 }> = {}) {
   const registered: any[] = []; const posts: string[] = []; const postBodies: any[] = [];
+  // Rows a write actually landed, keyed by playlist id. The playlist writers
+  // now re-read /playlists/{id}/items to verify themselves (#879), so a stub
+  // that answered nothing there would make a committed write look dropped.
+  const rows = new Map<string, any[]>();
+  const itemsPath = /^\/playlists\/([^/]+)\/items$/;
   const fakeServer = { tool(name: string, _d: string, schema: any, handler: any) { registered.push({ name, schema, handler }); } } as unknown as McpServer;
   const client = {
     async get(path: string) {
@@ -23,6 +28,11 @@ function harness(overrides: Partial<{
       if (path === '/me') return { id: 'user123' } as any;
       if (path.startsWith('/albums/')) return { items: overrides.albumTracks ?? [track('t1'), track('t2')], total: 2 } as any;
       if (path.includes('/top-tracks')) return { tracks: overrides.topTracks ?? [track('tt1')] } as any;
+      const items = itemsPath?.exec(path);
+      if (items) {
+        const list = rows.get(decodeURIComponent(items[1])) ?? [];
+        return { items: list, total: list.length, next: null } as any;
+      }
       return null;
     },
     async getAllPages(path: string) {
@@ -36,9 +46,17 @@ function harness(overrides: Partial<{
         : undefined;
       if (queueError) throw queueError;
       if (path.includes('/users/') && path.includes('/playlists')) {
-        return (overrides.createPlaylistResponse ?? { id: 'newPlId', external_urls: { spotify: 'https://open.spotify.com/playlist/newPlId' }, snapshot_id: 'snap1' }) as any;
+        const created = overrides.createPlaylistResponse ?? { id: 'newPlId', external_urls: { spotify: 'https://open.spotify.com/playlist/newPlId' }, snapshot_id: 'snap1' };
+        if (!rows.has(created.id)) rows.set(created.id, []);
+        return created as any;
       }
-      if (path.includes('/playlists/') && path.includes('/items')) return { snapshot_id: 'snap2' } as any;
+      const write = itemsPath.exec(path);
+      if (write) {
+        const list = rows.get(decodeURIComponent(write[1])) ?? [];
+        for (const uri of ((body as any)?.uris ?? []) as string[]) list.push({ item: { uri } });
+        rows.set(decodeURIComponent(write[1]), list);
+        return { snapshot_id: 'snap2' } as any;
+      }
       if (path.includes('/playlists/') && path.includes('/tracks')) {
         // Legacy /tracks path is retired (#840). Any tool that still POSTs
         // here is broken; surface the regression as a 404 so the assertion

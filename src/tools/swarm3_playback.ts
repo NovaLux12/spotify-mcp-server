@@ -12,6 +12,8 @@
  */
 import { z } from 'zod';
 import { capFor, chunk } from '../chunk.js';
+import { issueReceipt, type Receipt } from '../receipts.js';
+import { receiptRecords, receiptsLines, writeVerdict } from './playlistreceipts.js';
 import { mkdir, readdir, readFile, unlink, writeFile } from 'node:fs/promises';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
@@ -826,6 +828,8 @@ export function registerSwarm3PlaybackTools(server: McpServer, client: SpotifyCl
       const me = await client.get<{ id?: string }>('/me');
       if (!me?.id) return textResult('Could not resolve the current user id to create playlists.', { created: false });
       const created: Array<{ name: string; id?: string; tracks: number }> = [];
+      const allReceipts: Receipt[] = [];
+      const expectedItems = chunkPlans.reduce((sum, c) => sum + c.track_count, 0);
       for (const c of chunkPlans) {
         const pl = await client.post<{ id?: string }>('/me/playlists', {
           name: c.playlist_name,
@@ -839,12 +843,19 @@ export function registerSwarm3PlaybackTools(server: McpServer, client: SpotifyCl
         const writeCap = capFor('playlist_writes');
         const first = c.uris.slice(0, writeCap);
         await client.put(`/playlists/${encodeURIComponent(pl.id)}/items`, { uris: first });
+        const receipts: Receipt[] = [
+          await issueReceipt(client, { kind: 'playlist_items', id: pl.id, uris: first }),
+        ];
         for (const part of chunkedUris(c.uris.slice(writeCap))) {
           await client.post(`/playlists/${encodeURIComponent(pl.id)}/items`, { uris: part });
+          receipts.push(await issueReceipt(client, { kind: 'playlist_items', id: pl.id, uris: part }));
         }
+        allReceipts.push(...receipts);
         created.push({ name: c.playlist_name, id: pl.id, tracks: c.track_count });
       }
-      return shape(rf, `Created ${created.length} playlist(s) from the queue.`, { created: true, chunks: created });
+      const receiptLines = receiptsLines(allReceipts);
+      const prose = `Created ${created.length} playlist(s) from the queue.`;
+      return shape(rf, receiptLines ? `${prose}\n${receiptLines}` : prose, { ...writeVerdict(allReceipts, expectedItems), created: true, chunks: created, receipts: receiptRecords(allReceipts) });
     },
   );
 

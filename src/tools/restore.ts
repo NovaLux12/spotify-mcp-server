@@ -31,6 +31,8 @@ import {
 import type { ResponseFormatValue } from '../shaping.js';
 import { getConfig } from '../config.js';
 import { confirmViaElicitation } from './confirm.js';
+import { issueReceipt, type Receipt } from '../receipts.js';
+import { receiptRecords, receiptsLines, writeVerdict } from './playlistreceipts.js';
 import { LIBRARY_BACKUP_SCHEMA_VERSION } from './backup.js';
 
 // ---------------------------------------------------------------------------
@@ -577,6 +579,11 @@ interface RestoreOutcome {
   failures: RestoreFailure[];
   /** Planned playlist creations absent from `createdPlaylists`. */
   playlistsNotCreated: number;
+  /**
+   * One receipt per created playlist, re-reading the new playlist to confirm
+   * its items landed (#879). A 2xx on the add POST is not evidence.
+   */
+  playlistReceipts: Receipt[];
 }
 
 /**
@@ -623,6 +630,7 @@ async function executeRestore(
 ): Promise<RestoreOutcome> {
   const executed: ExecutedByCategory = {};
   const createdPlaylists: CreatedPlaylist[] = [];
+  const playlistReceipts: Receipt[] = [];
   const failures: RestoreFailure[] = [];
 
   for (const category of categories) {
@@ -709,6 +717,17 @@ async function executeRestore(
           await client.post(`/playlists/${created!.id}/items`, { uris });
         });
         addedTotal += r.itemsWritten;
+        // The new playlist starts empty, so one re-read over every planned uri
+        // says exactly which of them the adds actually landed (#879).
+        if (creation.itemUris.length > 0) {
+          playlistReceipts.push(
+            await issueReceipt(client, {
+              kind: 'playlist_items',
+              id: created.id,
+              uris: creation.itemUris,
+            }),
+          );
+        }
         createdPlaylists.push({
           snapshotName: creation.snapshotName,
           restoredAs: creation.restoredName,
@@ -735,6 +754,7 @@ async function executeRestore(
     executed,
     createdPlaylists,
     failures,
+    playlistReceipts,
     // Truthful by construction: planned creations that are not in the outcome.
     playlistsNotCreated: plan.playlistCreations.length - createdPlaylists.length,
   };
@@ -805,6 +825,17 @@ function buildPayload(
       })),
       skipped_existing: plan.skippedPlaylists,
       ...(outcome ? { not_created: outcome.playlistsNotCreated } : {}),
+      ...(outcome
+        ? {
+            // The receipts verify the PLANNED playlist items; the executed
+            // counter is what the request layer believes it wrote.
+            ...writeVerdict(
+              outcome.playlistReceipts,
+              plan.playlistCreations.reduce((s, c) => s + c.itemUris.length, 0),
+            ),
+            receipts: receiptRecords(outcome.playlistReceipts),
+          }
+        : {}),
     },
   };
 }

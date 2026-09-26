@@ -18,6 +18,8 @@
  */
 import { z } from 'zod';
 import { capFor } from '../chunk.js';
+import { issueReceipt, type Receipt } from '../receipts.js';
+import { receiptRecords, receiptsLines, writeVerdict } from './playlistreceipts.js';
 import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -990,12 +992,19 @@ export function registerExhaust2PlaybackTools(server: McpServer, client: Spotify
       const plId = pl?.id;
       if (!plId) return textResult('Failed to create the snapshot playlist.', { ok: false, error: 'playlist_create_failed', ...queueDisclosure });
       const writeCap = capFor('playlist_writes');
+      const receipts: Receipt[] = [];
       for (let i = 0; i < items.length; i += writeCap) {
-        await client.post(`/playlists/${encodeURIComponent(plId)}/items`, { uris: items.slice(i, i + writeCap) });
+        const batch = items.slice(i, i + writeCap);
+        await client.post(`/playlists/${encodeURIComponent(plId)}/items`, { uris: batch });
+        // The context switch below replays whatever is actually in the
+        // playlist, so an unverified write is reported, not assumed (#879).
+        receipts.push(await issueReceipt(client, { kind: 'playlist_items', id: plId, uris: batch }));
       }
       const playQs = args.device_id ? `?device_id=${encodeURIComponent(args.device_id)}` : '';
       await client.put(`/me/player/play${playQs}`, { context_uri: pl.uri ?? `spotify:playlist:${plId}` });
-      return emit(fmt, { ok: true, snapshot: snapshot.length, kept: items.length, playlist_id: plId, playlist_name: name, ...queueDisclosure, disclosure: 'live queue replaced via context switch (no queue-clear endpoint exists)' }, `Queued ${items.length} item(s) (snapshot ${snapshot.length}, after filters) into playlist "${name}" and started it as the context — the live queue is effectively replaced.${unknownNote}`);
+      const receiptLines = receiptsLines(receipts);
+      const prose = `Queued ${items.length} item(s) (snapshot ${snapshot.length}, after filters) into playlist "${name}" and started it as the context — the live queue is effectively replaced.${unknownNote}`;
+      return emit(fmt, { ...writeVerdict(receipts, items.length), snapshot: snapshot.length, kept: items.length, playlist_id: plId, playlist_name: name, ...queueDisclosure, receipts: receiptRecords(receipts), disclosure: 'live queue replaced via context switch (no queue-clear endpoint exists)' }, receiptLines ? `${prose}\n${receiptLines}` : prose);
     },
   );
 
