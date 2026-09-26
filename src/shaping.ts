@@ -3,11 +3,15 @@
  * fragments, truncation math, pagination info, structuredContent emission,
  * mutation batch summaries and dry-run descriptions.
  *
- * Pure module: no imports from client or tool modules.
+ * Imports no client or tool module. It does import history.js for one thing:
+ * `installTruncationBoundary` wraps every tool handler, which makes it the
+ * only place that knows the running tool's name, and the mutation ledger
+ * needs that name for each record's `who` (#591).
  */
 import { z } from 'zod';
 import { classifySpotifyReference } from './refs.js';
 import { DEFAULT_MAX_ITEMS, getConfig } from './config.js';
+import { runInToolContext } from './history.js';
 import { normalizeObjectSchema } from '@modelcontextprotocol/sdk/server/zod-compat.js';
 import { toJsonSchemaCompat } from '@modelcontextprotocol/sdk/server/zod-json-schema-compat.js';
 
@@ -602,7 +606,10 @@ export function installTruncationBoundary(server: object): TruncationBoundary {
     args[callbackIndex] = async (...callArgs: unknown[]) => shape(
       name,
       callArgs[0],
-      await callback(...callArgs),
+      // This wrapper is the one place that knows which tool is running, so it
+      // is also where the mutation ledger's `who` actor comes from (#591).
+      // Without it every record falls back to the 'agent' default.
+      await runInToolContext(name, async () => callback(...callArgs) as Promise<unknown>),
     );
   };
 
