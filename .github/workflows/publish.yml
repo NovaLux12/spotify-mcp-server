@@ -92,7 +92,10 @@ jobs:
 
   publish-mcp-registry:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # 15, not 10: the retry budget below is up to 10 attempts 30s apart, so a
+    # 10-minute job limit could time out mid-retry and report a timeout where
+    # the real answer was "npm had not propagated yet".
+    timeout-minutes: 15
     needs: publish-npm
     permissions:
       contents: read
@@ -117,4 +120,34 @@ jobs:
         run: ./mcp-publisher login github-oidc
 
       - name: Publish server to MCP Registry
-        run: ./mcp-publisher publish
+        shell: bash
+        # `needs: publish-npm` orders the two jobs; it does not make the release
+        # visible. mcp-publisher resolves the npm artifact server-side, so a
+        # version published seconds earlier comes back as a 400
+        # "was not found (status: 404)" — a propagation window, not a broken
+        # release. Retrying inside the job is the fix; a genuine auth or
+        # validation failure still fails the job, just later and with the last
+        # error preserved (#1126).
+        run: |
+          set -euo pipefail
+          max_attempts=10
+          last_error=""
+          for attempt in $(seq 1 "$max_attempts"); do
+            if output="$(./mcp-publisher publish 2>&1)"; then
+              echo "$output"
+              echo "registry publish succeeded on attempt $attempt/$max_attempts"
+              exit 0
+            fi
+            last_error="$output"
+            if [ "$attempt" -lt "$max_attempts" ]; then
+              echo "attempt $attempt/$max_attempts failed — npm propagation may be lagging, retrying in 30s" >&2
+              printf '%s\n' "$output" | tail -n 20 >&2
+              sleep 30
+            fi
+          done
+          echo "::error::registry publish failed after $max_attempts attempts. Last error:" >&2
+          printf '%s\n' "$last_error" >&2
+          echo "If @novalux12/spotify-mcp is on npm, this is most likely propagation lag rather than a" >&2
+          echo "bad release. Cheapest recovery is to re-run this job only:" >&2
+          echo "  gh run rerun ${{ github.run_id }} --failed" >&2
+          exit 1
