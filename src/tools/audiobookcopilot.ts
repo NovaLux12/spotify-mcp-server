@@ -254,7 +254,7 @@ export function registerAudiobookCopilotTools(server: McpServer, client: Spotify
   // where_was_i -------------------------------------------------------------
   server.tool(
     'where_was_i',
-    'Orient yourself in an audiobook: matches current playback against the fetched chapter list (fetch-all cap may bound it) and reports which chapter you are on, how far into it, and how much listening time remains.',
+    'Orient yourself in an audiobook: matches current playback against the fetched chapter list (fetch-all cap may bound it) and reports which chapter you are on, how far into it, and how much listening time is left in that fetched prefix.',
     {
       audiobook_id: z.string().describe('Spotify audiobook ID'),
       response_format: ResponseFormat,

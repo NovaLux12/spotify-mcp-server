@@ -306,7 +306,9 @@ describe('list_all_chapters', () => {
     // `total` means "how long is this book". A 500-long prefix cannot answer
     // that, so the field is withdrawn rather than filled with the prefix
     // length — the count is still there under the name that says what it is.
-    assert.equal(raw.total, undefined);
+    // This case JSON-parses the rendered text, so `in` is a real absence
+    // proof: the key cannot survive a round-trip as an explicit undefined.
+    assert.equal('total' in raw, false);
     assert.equal(raw.chapters_fetched, cap);
   });
 
@@ -592,7 +594,7 @@ describe('where_was_i', () => {
       assert.equal(structured.chapters_fetched, cap);
       assert.equal(structured.fetch_all_cap, cap);
       // The falsified claim: a 500-long prefix is not the book's length.
-      assert.equal(structured.total_chapters, undefined);
+      assert.equal('total_chapters' in structured, false);
 
       const text = textOf(out);
       assert.match(text, /not among the first 500 chapters fetched/);
@@ -655,16 +657,18 @@ describe('where_was_i', () => {
         listening_time_remaining_in_fetched_prefix_ms?: number;
       };
       assert.equal(structured.status, 'nothing_playing');
-      assert.equal(structured.total_chapters, undefined);
+      assert.equal('total_chapters' in structured, false);
       assert.equal(structured.chapters_fetched, cap);
       assert.equal(structured.fetch_all_cap, cap);
       assert.equal(structured.truncated_by_cap, true);
       // Scoped to the fetched prefix, and exactly the 500 hours walked. The
       // whole-book name must be ABSENT, not just accompanied by a flag: a
       // payload carrying `listening_time_remaining_ms: 500h` beside
-      // `truncated_by_cap` is the falsified-field pattern #786 is about.
+      // `truncated_by_cap` is the falsified-field pattern #786 is about. `in`
+      // rather than `=== undefined`, so a key present-but-undefined cannot
+      // pass as a withdrawal.
       assert.equal(structured.listening_time_remaining_in_fetched_prefix_ms, cap * HOUR_MS);
-      assert.equal(structured.listening_time_remaining_ms, undefined);
+      assert.equal('listening_time_remaining_ms' in structured, false);
     });
 
     it('keeps the whole-book wording for a short book — the cap prose is not unconditional', async () => {
@@ -735,11 +739,14 @@ describe('where_was_i', () => {
       // names are absent outright.
       assert.equal(structured.chapters_remaining_in_fetched_prefix, 200);
       assert.equal(structured.listening_time_remaining_in_fetched_prefix_ms, (1 - 0.5) * HOUR_MS + 200 * HOUR_MS);
-      assert.equal(structured.chapters_remaining, undefined);
-      assert.equal(structured.listening_time_remaining_ms, undefined);
+      // `in`, not `=== undefined`: this handler is invoked directly, so a key
+      // present with an explicit undefined would satisfy the weaker check and
+      // the withdrawal would be decoration.
+      assert.equal('chapters_remaining' in structured, false);
+      assert.equal('listening_time_remaining_ms' in structured, false);
+      assert.equal('total_chapters' in structured, false);
       assert.equal(structured.chapters_fetched, cap);
       assert.equal(structured.truncated_by_cap, true);
-      assert.equal(structured.total_chapters, undefined);
     });
   });
 });

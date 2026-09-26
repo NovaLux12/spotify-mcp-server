@@ -166,6 +166,9 @@ const OUTPUT_FIELD_NAMES = new Set<string>([
   'search_failed',
   'sidecar_truncated',
   'truncated_collections',
+  // #786: list_all_chapters names the flag it reports when a walk saturates
+  // the fetch-all cap. It is an output field, not a tool to route to.
+  'truncated_by_cap',
   // Cursors and caps a call reports back so the next call can continue.
   // #809: create_smart_playlist names the candidate-pool ceiling it reports.
   'pool_capped', 'pool_cap',
