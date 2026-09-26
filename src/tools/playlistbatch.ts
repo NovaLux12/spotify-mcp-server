@@ -4,12 +4,14 @@
 import { z } from 'zod';
 import { capFor } from '../chunk.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import type { SpotifyClient } from '../client.js';
+import { SpotifyApiError, type SpotifyClient } from '../client.js';
 import { getConfig } from '../config.js';
 import { issueReceipt, formatReceipt } from '../receipts.js';
 import { confirmViaElicitation, describeConfirmation, requiredConfirmationRefusal } from './confirm.js';
 import { DryRun, PlaylistId, batchSummary, normalizePlaylistReference, parseSpotifyUri, resolveMaxResults, sharedListFields, truncateItems } from '../shaping.js';
 import { walkTruncationNotice } from './playlists.js';
+import { resolveRequestMarket, withMarketSource } from '../markets.js';
+import { isGatedError } from '../gating.js';
 import type { PlaylistItemObject, SpotifyTrack, SpotifyEpisode } from '../types/spotify.js';
 type TextContent = { type: 'text'; text: string };
 type ToolResult = { content: TextContent[]; structuredContent?: Record<string, unknown> };
@@ -76,34 +78,207 @@ export async function expandAlbumToTracks(
   return tracks;
 }
 
+/** A batch source that could not be turned into playable track URIs (#867). */
+export interface SourceFailure {
+  /** The original URI the caller passed in. */
+  source: string;
+  /** The URI's parsed source type. */
+  type: 'album' | 'artist' | 'playlist';
+  /**
+   * Why no playable tracks came out of this source:
+   *   - `empty`        — the API returned 200 but no rows (or zero usable rows)
+   *   - `unplayable`   — the album came back with tracks but every one was
+   *                      blocked (`is_playable: false` / null URI), which is the
+   *                      shape Spotify returns for region-locked albums
+   *   - `gated`        — 403 on an app-registration-gated path (e.g. artist
+   *                      top-tracks on newer app registrations)
+   *   - `forbidden`    — 403 not in the gated family
+   *   - `not_found`    — 404 / 410 (entity gone or never visible to caller)
+   *   - `error`        — anything else (5xx, network, malformed body, ...)
+   */
+  reason: 'empty' | 'unplayable' | 'gated' | 'forbidden' | 'not_found' | 'error';
+}
+
+/** Per-source-type counts of tracks contributed to the resolved list (#867). */
+export interface ResolvedPerSource {
+  track: number;
+  episode: number;
+  album: number;
+  artist: number;
+  playlist: number;
+}
+
+export interface ResolvedSources {
+  /** Every playable track URI produced by the sources, in input order. */
+  resolved: string[];
+  /** Every source that did not contribute playable tracks (#867). */
+  failed: SourceFailure[];
+  /** URIs that could not be parsed as a known Spotify URI shape. */
+  invalid: string[];
+  /** Resolved track-URI counts grouped by the source type that produced them. */
+  resolvedPerSource: ResolvedPerSource;
+}
+
+/**
+ * Classify a Spotify error into the small set of reasons we surface to callers
+ * (#867). Anything that is not a recognisable Spotify API error collapses to
+ * `error` so the disclosure does not pretend the platform named a code it did not.
+ */
+function classifySourceError(err: unknown): SourceFailure['reason'] {
+  if (!(err instanceof SpotifyApiError)) return 'error';
+  if (err.status === 404 || err.status === 410) return 'not_found';
+  if (err.status === 403) return isGatedError(err) ? 'gated' : 'forbidden';
+  return 'error';
+}
+
+/** Human-facing label for a SourceFailure reason (#867). */
+function describeFailureReason(reason: SourceFailure['reason']): string {
+  switch (reason) {
+    case 'empty':
+      return 'empty';
+    case 'unplayable':
+      return 'region-locked (no playable tracks in this market)';
+    case 'gated':
+      return 'endpoint not available for this app registration';
+    case 'forbidden':
+      return 'forbidden by Spotify';
+    case 'not_found':
+      return 'not found';
+    case 'error':
+      return 'Spotify returned an error';
+  }
+}
+
 async function resolveSourceUris(
   client: SpotifyClient,
   uris: string[],
-  options: { limit?: number; scan_cap?: number } = {},
+  options: { limit?: number; scan_cap?: number; market?: string } = {},
   onTruncated?: (truncated: boolean) => void,
-): Promise<{ resolved: string[]; skipped: number; invalid: string[] }> {
-  const resolved: string[] = []; let skipped = 0; const invalid: string[] = [];
+): Promise<ResolvedSources> {
+  const resolved: string[] = [];
+  const failed: SourceFailure[] = [];
+  const invalid: string[] = [];
+  const resolvedPerSource: ResolvedPerSource = { track: 0, episode: 0, album: 0, artist: 0, playlist: 0 };
+
+  // Resolve market once for the whole batch. The artist top-tracks endpoint
+  // requires a market; pre-fix we hardcoded 'US', so artist picks were always
+  // the US chart regardless of the caller's account (#867). Prefer the caller's
+  // `market` argument, then SPOTIFY_MCP_MARKET, then the account country, and
+  // fall back to `from_token` so the request still carries a region code.
+  const marketResolution = await resolveRequestMarket(client, options.market);
+  const marketParam = marketResolution.market ?? 'from_token';
+
   for (const raw of uris) {
     const parsed = parseSpotifyUri(raw);
-    if (!parsed) { invalid.push(raw); skipped++; continue; }
-    if (parsed.type === 'track' || parsed.type === 'episode') { resolved.push(`spotify:${parsed.type}:${parsed.id}`); }
-    else if (parsed.type === 'album') {
-      try { const tracks = await expandAlbumToTracks(client, { id: parsed.id }, options.scan_cap ?? FETCH_ALL_CAP()); if (tracks.length > 0) resolved.push(...tracks); else skipped++; } catch { skipped++; }
-    } else if (parsed.type === 'artist') {
-      try { const top = await client.get<{ tracks?: Array<{ uri: string }> }>(`/artists/${encodeURIComponent(parsed.id)}/top-tracks`, { market: 'US' }); const ts = top?.tracks ?? []; if (ts.length > 0) { for (const t of ts) if (t?.uri) resolved.push(t.uri); } else skipped++; } catch { skipped++; }
-    } else if (parsed.type === 'playlist') {
-      try { const { items, truncated } = await fetchPlaylistItems(client, parsed.id, options); onTruncated?.(truncated); let added = 0; for (const entry of items) if (entry.item?.uri) { resolved.push(entry.item.uri); added++; } if (added === 0) skipped++; } catch { skipped++; }
-    } else { invalid.push(raw); skipped++; }
+    if (!parsed) { invalid.push(raw); continue; }
+    if (parsed.type === 'track') { resolved.push(`spotify:track:${parsed.id}`); resolvedPerSource.track++; continue; }
+    if (parsed.type === 'episode') { resolved.push(`spotify:episode:${parsed.id}`); resolvedPerSource.episode++; continue; }
+    if (parsed.type === 'album') {
+      try {
+        const tracks = await expandAlbumToTracks(client, { id: parsed.id }, options.scan_cap ?? FETCH_ALL_CAP());
+        if (tracks.length > 0) { resolved.push(...tracks); resolvedPerSource.album += tracks.length; continue; }
+        // expandAlbumToTracks already filtered to playable URIs, so an empty
+        // result is either genuinely empty or every track came back with
+        // `is_playable: false` / null URI (region-locked). Probe one row so
+        // the disclosure can name the difference (#867).
+        let unplayable = false;
+        try {
+          const probe = await client.get<{ items?: AlbumTrackRef[] }>(
+            `/albums/${encodeURIComponent(parsed.id)}/tracks`,
+            { limit: '1' },
+          );
+          const items = probe?.items ?? [];
+          unplayable = items.length > 0 && items.every((t) => t?.is_playable === false || !t?.uri);
+        } catch { /* fall through to 'empty' */ }
+        failed.push({ source: raw, type: 'album', reason: unplayable ? 'unplayable' : 'empty' });
+      } catch (err) {
+        failed.push({ source: raw, type: 'album', reason: classifySourceError(err) });
+      }
+      continue;
+    }
+    if (parsed.type === 'artist') {
+      try {
+        const top = await client.get<{ tracks?: Array<{ uri: string }> }>(
+          `/artists/${encodeURIComponent(parsed.id)}/top-tracks`,
+          { market: marketParam },
+        );
+        const ts = top?.tracks ?? [];
+        if (ts.length > 0) {
+          let added = 0;
+          for (const t of ts) if (t?.uri) { resolved.push(t.uri); added++; }
+          resolvedPerSource.artist += added;
+        } else {
+          failed.push({ source: raw, type: 'artist', reason: 'empty' });
+        }
+      } catch (err) {
+        failed.push({ source: raw, type: 'artist', reason: classifySourceError(err) });
+      }
+      continue;
+    }
+    if (parsed.type === 'playlist') {
+      try {
+        const { items, truncated } = await fetchPlaylistItems(client, parsed.id, options);
+        onTruncated?.(truncated);
+        let added = 0;
+        for (const entry of items) if (entry.item?.uri) { resolved.push(entry.item.uri); added++; }
+        if (added > 0) {
+          resolvedPerSource.playlist += added;
+        } else {
+          failed.push({ source: raw, type: 'playlist', reason: 'empty' });
+        }
+      } catch (err) {
+        failed.push({ source: raw, type: 'playlist', reason: classifySourceError(err) });
+      }
+      continue;
+    }
+    invalid.push(raw);
   }
-  return { resolved, skipped, invalid };
+  return { resolved, failed, invalid, resolvedPerSource };
 }
 function dedupeUris(uris: string[]): { unique: string[]; duplicates: number } { const seen = new Set<string>(); const unique: string[] = []; let duplicates = 0; for (const u of uris) { if (seen.has(u)) { duplicates++; continue; } seen.add(u); unique.push(u); } return { unique, duplicates }; }
+/**
+ * Group `failed` entries by their source-type so a structured payload can carry
+ * one number per type instead of the full list (#867). Order is fixed so a
+ * reader comparing two runs is not bitten by object-key iteration order.
+ */
+function countFailuresByType(failed: SourceFailure[]): { album: number; artist: number; playlist: number } {
+  const out = { album: 0, artist: 0, playlist: 0 };
+  for (const f of failed) out[f.type]++;
+  return out;
+}
+/**
+ * Prose block listing each failed source with its reason, used when a batch
+ * resolves to zero tracks or when a partial batch wants to call out what was
+ * dropped (#867). Kept short — the structured payload carries the full list.
+ */
+function formatFailedSources(failed: SourceFailure[]): string {
+  if (failed.length === 0) return '';
+  return failed.map((f) => `  - ${f.source} (${f.type}, ${describeFailureReason(f.reason)})`).join('\n');
+}
 export function registerPlaylistBatchTools(server: McpServer, client: SpotifyClient): void {
   server.registerTool('batch_add_to_playlist', { description: 'Add tracks from multiple source URIs (tracks, albums, artists, playlists) to a target playlist in one call. Dedupes within the batch and optionally against the existing playlist. Batches writes in groups of 100. Dry-run previews without writing. Elicitation for 100+ tracks.', inputSchema: z.object({ target_playlist_id: PlaylistId.describe('Target playlist ID, spotify:playlist: URI, or URL'), source_uris: z.array(z.string()).min(1).describe('Source URIs: spotify:track:, spotify:album:, spotify:artist:, spotify:playlist:'), dedupe: z.boolean().optional().default(true).describe('Deduplicate (within batch and against target). Default: true'), dry_run: DryRun, ...BATCH_WALK_FIELDS, ...sharedListFields }) }, async (args) => {
     const targetId = args.target_playlist_id; const dedupe = args.dedupe ?? true;
     let sourceTruncated = false; let targetTruncated = false;
-    const { resolved, skipped, invalid } = await resolveSourceUris(client, args.source_uris, args, (truncated) => { sourceTruncated ||= truncated; });
-    if (resolved.length === 0) { if (invalid.length > 0) throw new Error(`No valid track URIs resolved from sources. Invalid: ${invalid.join(', ')}`); return textResult(`No tracks resolved from ${args.source_uris.length} source(s); nothing to add.${skipped > 0 ? ` (${skipped} source(s) empty or unsupported)` : ''}`, { ok: true, added: 0, duplicates_skipped: 0, skipped_empty: skipped }); }
+    // Resolve the market for the whole batch once, then re-use it both for
+    // the artist top-tracks calls inside resolveSourceUris and for the
+    // market/market_source disclosure on the final result (#867).
+    const marketResolution = await resolveRequestMarket(client, undefined);
+    const { resolved, failed, invalid, resolvedPerSource } = await resolveSourceUris(client, args.source_uris, args, (truncated) => { sourceTruncated ||= truncated; });
+    const failedPerSource = countFailuresByType(failed);
+    if (resolved.length === 0) {
+      if (invalid.length > 0) throw new Error(`No valid track URIs resolved from sources. Invalid: ${invalid.join(', ')}`);
+      const failedBlock = formatFailedSources(failed);
+      const text = `No tracks resolved from ${args.source_uris.length} source(s); nothing to add.${failed.length > 0 ? `\n${failedBlock}` : ''}`;
+      return withMarketSource(textResult(text, {
+        ok: true,
+        added: 0,
+        duplicates_skipped: 0,
+        skipped_empty: failed.length,
+        failed,
+        failed_per_source: failedPerSource,
+        resolved_per_source: resolvedPerSource,
+      }), marketResolution);
+    }
     let deduped: string[]; let duplicates = 0; if (dedupe) { const r = dedupeUris(resolved); deduped = r.unique; duplicates = r.duplicates; } else deduped = resolved;
     let skippedExisting = 0; let toAdd = deduped; if (dedupe) { const { items: existing, truncated } = await fetchPlaylistItems(client, targetId, args); targetTruncated ||= truncated; const present = new Set<string>(); for (const item of existing) if (item.item?.uri) present.add(item.item.uri); const filtered: string[] = []; for (const u of deduped) { if (present.has(u)) skippedExisting++; else filtered.push(u); } toAdd = filtered; }
     // #864: the target walk is a cap+1 probe, so `targetTruncated` is exact —
@@ -115,14 +290,37 @@ export function registerPlaylistBatchTools(server: McpServer, client: SpotifyCli
       : sourceTruncated
         ? `source walk(s) stopped at cap ${scanCap} — resolved tracks are a lower bound; raise SPOTIFY_MCP_FETCH_ALL_CAP to expand the rest`
         : null;
-    if (args.dry_run) { const view = truncateItems(toAdd, resolveMaxResults(args.max_results)); const changes = toAdd.length > 0 ? [`Would add ${toAdd.length} track(s) to playlist ${targetId}:`, ...view.items.map((u) => `  - ${u}`), ...(view.footer ? [`(${view.footer})`] : [])] : [`No new tracks to add to playlist ${targetId}${duplicates + skippedExisting > 0 ? ` (${duplicates + skippedExisting} duplicate(s) skipped)` : ''}.`]; return textResult(`[dry run] batch_add_to_playlist — nothing was changed.\n${changes.join('\n')}` + (skipped > 0 ? `\n(${skipped} source(s) empty or invalid)` : '') + (notice ? `\n${notice}` : ''), { ok: true, dry_run: true, changes: view.items, total: toAdd.length, returned: view.items.length, duplicates_skipped: duplicates, existing_skipped: skippedExisting, skipped_empty: skipped, source_truncated: sourceTruncated, target_truncated: targetTruncated, scan_cap: scanCap }); }
-    if (toAdd.length === 0) return textResult(`All ${resolved.length} resolved track(s) already present or duplicates — nothing added.` + (notice ? `\n${notice}` : ''), { ok: true, added: 0, duplicates_skipped: duplicates + skippedExisting, source_truncated: sourceTruncated, target_truncated: targetTruncated, scan_cap: scanCap });
+    if (args.dry_run) {
+      const view = truncateItems(toAdd, resolveMaxResults(args.max_results));
+      const changes = toAdd.length > 0 ? [`Would add ${toAdd.length} track(s) to playlist ${targetId}:`, ...view.items.map((u) => `  - ${u}`), ...(view.footer ? [`(${view.footer})`] : [])] : [`No new tracks to add to playlist ${targetId}${duplicates + skippedExisting > 0 ? ` (${duplicates + skippedExisting} duplicate(s) skipped)` : ''}.`];
+      const failedBlock = formatFailedSources(failed);
+      const text = `[dry run] batch_add_to_playlist — nothing was changed.\n${changes.join('\n')}` + (failed.length > 0 ? `\nSource(s) that resolved nothing:\n${failedBlock}` : '') + (notice ? `\n${notice}` : '');
+      return withMarketSource(textResult(text, {
+        ok: true,
+        dry_run: true,
+        changes: view.items,
+        total: toAdd.length,
+        returned: view.items.length,
+        duplicates_skipped: duplicates,
+        existing_skipped: skippedExisting,
+        skipped_empty: failed.length,
+        failed,
+        failed_per_source: failedPerSource,
+        resolved_per_source: resolvedPerSource,
+        source_truncated: sourceTruncated,
+        target_truncated: targetTruncated,
+        scan_cap: scanCap,
+      }), marketResolution);
+    }
+    if (toAdd.length === 0) return withMarketSource(textResult(`All ${resolved.length} resolved track(s) already present or duplicates — nothing added.` + (failed.length > 0 ? `\nSource(s) that resolved nothing:\n${formatFailedSources(failed)}` : '') + (notice ? `\n${notice}` : ''), { ok: true, added: 0, duplicates_skipped: duplicates + skippedExisting, skipped_empty: failed.length, failed, failed_per_source: failedPerSource, resolved_per_source: resolvedPerSource, source_truncated: sourceTruncated, target_truncated: targetTruncated, scan_cap: scanCap }), marketResolution);
     if (toAdd.length >= BATCH_ADD_ELICIT_THRESHOLD) { const verdict = await confirmViaElicitation(server, { message: describeConfirmation('add tracks to playlist', targetId, [`Add ${toAdd.length} track(s) from ${args.source_uris.length} source(s):`, ...toAdd.slice(0, 10), ...(toAdd.length > 10 ? [`(…and ${toAdd.length - 10} more)`] : [])]) }); const refusal = requiredConfirmationRefusal(verdict); if (refusal) return textResult(refusal.message, refusal.payload); }
     const path = `/playlists/${encodeURIComponent(targetId)}/items`; let snapshotId: string | undefined; let batches = 0; const writeCap = capFor('playlist_writes'); for (let i = 0; i < toAdd.length; i += writeCap) { const chunk = toAdd.slice(i, i + writeCap); const res = await client.post<{ snapshot_id?: string }>(path, { uris: chunk }); batches++; if (res?.snapshot_id) snapshotId = res.snapshot_id; }
     const receipt = await issueReceipt(client, { kind: 'playlist_items', id: targetId, uris: toAdd });
-    const lines = [`Added ${toAdd.length} track(s) to playlist ${targetId} across ${batches} batch(es)` + (duplicates + skippedExisting > 0 ? `; skipped ${duplicates + skippedExisting} duplicate(s)` : '') + '.', batchSummary(toAdd.length, toAdd)]; if (notice) lines.unshift(notice);
-    if (args.response_format === 'json') return textResult(jsonText({ ok: true, target_playlist: targetId, added: toAdd.length, batches, snapshot_id: snapshotId, duplicates_skipped: duplicates + skippedExisting, source_truncated: sourceTruncated, target_truncated: targetTruncated, scan_cap: scanCap, scan_notice: notice }));
-    const view = truncateItems(toAdd, resolveMaxResults(args.max_results)); if (view.items.length > 0) { lines.push(''); lines.push(...view.items.map((u) => `  • ${u}`)); if (view.footer) lines.push(`(${view.footer})`); } lines.push(formatReceipt(receipt)); const text = snapshotId ? `${lines.join('\n')}\nSnapshot ID: ${snapshotId}` : lines.join('\n'); return textResult(text, { ok: true, target_playlist: targetId, added: toAdd.length, skipped_duplicates: duplicates + skippedExisting, source_truncated: sourceTruncated, target_truncated: targetTruncated, scan_cap: scanCap, snapshot_id: snapshotId, receipt: receipt as unknown as Record<string, unknown> });
+    const lines = [`Added ${toAdd.length} track(s) to playlist ${targetId} across ${batches} batch(es)` + (duplicates + skippedExisting > 0 ? `; skipped ${duplicates + skippedExisting} duplicate(s)` : '') + '.', batchSummary(toAdd.length, toAdd)];
+    if (failed.length > 0) lines.push(`Source(s) that resolved nothing:\n${formatFailedSources(failed)}`);
+    if (notice) lines.unshift(notice);
+    if (args.response_format === 'json') return withMarketSource(textResult(jsonText({ ok: true, target_playlist: targetId, added: toAdd.length, batches, snapshot_id: snapshotId, duplicates_skipped: duplicates + skippedExisting, skipped_empty: failed.length, failed, failed_per_source: failedPerSource, resolved_per_source: resolvedPerSource, source_truncated: sourceTruncated, target_truncated: targetTruncated, scan_cap: scanCap, scan_notice: notice })), marketResolution);
+    const view = truncateItems(toAdd, resolveMaxResults(args.max_results)); if (view.items.length > 0) { lines.push(''); lines.push(...view.items.map((u) => `  • ${u}`)); if (view.footer) lines.push(`(${view.footer})`); } lines.push(formatReceipt(receipt)); const text = snapshotId ? `${lines.join('\n')}\nSnapshot ID: ${snapshotId}` : lines.join('\n'); return withMarketSource(textResult(text, { ok: true, target_playlist: targetId, added: toAdd.length, skipped_duplicates: duplicates + skippedExisting, skipped_empty: failed.length, failed, failed_per_source: failedPerSource, resolved_per_source: resolvedPerSource, source_truncated: sourceTruncated, target_truncated: targetTruncated, scan_cap: scanCap, snapshot_id: snapshotId, receipt: receipt as unknown as Record<string, unknown> }), marketResolution);
   });
   server.registerTool('copy_playlist', { description: 'Duplicate an existing playlist into a new playlist, preserving track order. Creates the new playlist then adds tracks in batches of 100. Dry-run reports what would be created.', inputSchema: z.object({ source_playlist_id: PlaylistId.describe('Source playlist ID, spotify:playlist: URI, or URL'), new_name: z.string().min(1).describe('Name for the new playlist'), description: z.string().optional().describe('Description for the new playlist (defaults to source description)'), public: z.boolean().optional().describe('Public flag for the new playlist. Default: false'), collaborative: z.boolean().optional().describe('Collaborative flag. Default: false'), dry_run: DryRun, ...BATCH_WALK_FIELDS, ...sharedListFields }).superRefine((args, ctx) => { if (args.public === true && args.collaborative === true) ctx.addIssue({ code: 'custom', path: ['collaborative'], message: 'A playlist cannot be both public and collaborative. Set public to false when collaborative is true.' }); }) }, async (args) => {
     const sourceId = args.source_playlist_id;
