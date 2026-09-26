@@ -1251,7 +1251,7 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
           : client.post<{ snapshot_id?: string }>(`/playlists/${id}/items`, body);
       });
       if (!write.ok) {
-        const committedCount = write.last_committed_chunk_uris.length;
+        const committedCount = write.committed_uris;
         const lastUri = write.last_committed_chunk_uris[write.last_committed_chunk_uris.length - 1];
         // The PUT chunk 0 is the only "true" replace — anything later is an
         // append onto the replaced playlist, so a partial failure still
@@ -1261,7 +1261,7 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
         const prose = write.failed_chunk_index === 0
           ? `replace_playlist_items aborted before any URI landed on playlist ${args.playlist_id}: ${write.error}. Nothing was changed.`
           : `Partial replace on playlist ${args.playlist_id}: chunk 0 was a successful atomic replace, chunks 1–${write.failed_chunk_index} appended (${committedCount} URI(s) total), chunk ${write.failed_chunk_index + 1} of ${write.attempted_chunks} failed.${committedUpTo} Retry the remaining ${args.uris.length - committedCount} URI(s); the playlist currently holds the committed prefix. (${write.error})`;
-        return textResult(prose, { ...write, playlist_id: args.playlist_id, attempted_uris: args.uris.length, committed_uris: committedCount, remaining_uris: args.uris.length - committedCount });
+        return textResult(prose, { ...write, playlist_id: args.playlist_id, attempted_uris: args.uris.length, remaining_uris: args.uris.length - committedCount });
       }
       const snapshotId = write.snapshot_id;
       const requestCount = write.chunks;
@@ -1988,8 +1988,7 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
         : client.post<{ snapshot_id?: string }>(`/playlists/${enc}/items`, body);
     });
     if (!write.ok) {
-      const committedCount = write.last_committed_chunk_uris.length;
-      return { ...write, playlist_id: playlistId, attempted_uris: uris.length, committed_uris: committedCount, remaining_uris: uris.length - committedCount };
+      return { ...write, playlist_id: playlistId, attempted_uris: uris.length, remaining_uris: uris.length - write.committed_uris };
     }
     return { ok: true, snapshot_id: write.snapshot_id, receipt_read: Boolean(write.snapshot_id) };
   }

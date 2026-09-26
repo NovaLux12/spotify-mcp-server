@@ -202,12 +202,12 @@ export function registerPlaylistOpsTools(server: McpServer, client: SpotifyClien
         client.post<{ snapshot_id?: string }>(itemsPath, { uris: chunk }),
       );
       if (!write.ok) {
-        const committedCount = write.last_committed_chunk_uris.length;
-        const lastUri = write.last_committed_chunk_uris[committedCount - 1];
+        const committedCount = write.committed_uris;
+        const lastUri = write.last_committed_chunk_uris[write.last_committed_chunk_uris.length - 1];
         const prose = write.failed_chunk_index === 0
           ? `merge_playlists aborted before any track landed on playlist ${targetId}: ${write.error}. Nothing was merged.`
           : `Partial merge into playlist ${targetId}: chunks 1–${write.failed_chunk_index} committed (${committedCount} track(s)), batch ${write.failed_chunk_index + 1} of ${write.attempted_chunks} failed.${lastUri ? ` Last URI committed: ${lastUri}.` : ''} Retry the remaining ${mergedUris.length - committedCount} track(s); the committed prefix is already on the playlist. (${write.error})`;
-        const payload = withPlaylistInputMetadata({ ...write, target_playlist: targetId, attempted_uris: mergedUris.length, committed_uris: committedCount, remaining_uris: mergedUris.length - committedCount, playlists: sourceRefs, duplicates_skipped: duplicates, unavailable_items_skipped: unavailable, truncated, scan_cap: sourceCap, created_new_playlist: creatingNew }, input);
+        const payload = withPlaylistInputMetadata({ ...write, target_playlist: targetId, attempted_uris: mergedUris.length, remaining_uris: mergedUris.length - committedCount, playlists: sourceRefs, duplicates_skipped: duplicates, unavailable_items_skipped: unavailable, truncated, scan_cap: sourceCap, created_new_playlist: creatingNew }, input);
         return textResult(args.response_format === 'json' ? jsonText(payload) : withPlaylistInputNote(prose, input), payload);
       }
       const snapshotId = write.snapshot_id;

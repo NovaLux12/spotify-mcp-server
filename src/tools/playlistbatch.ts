@@ -332,7 +332,7 @@ export function registerPlaylistBatchTools(server: McpServer, client: SpotifyCli
     // either swallowed the error or threw without the chunk index.
     const addResult = await runChunkedPlaylistWrite(toAdd, writeCap, (chunk) => client.post<{ snapshot_id?: string }>(path, { uris: chunk }));
     if (!addResult.ok) {
-      const committedCount = addResult.last_committed_chunk_uris.length;
+      const committedCount = addResult.committed_uris;
       const lastUri = addResult.last_committed_chunk_uris[addResult.last_committed_chunk_uris.length - 1];
       const committedUpTo = lastUri ? ` Last URI committed: ${lastUri}.` : '';
       const prose = `Partial write to playlist ${targetId}: ${addResult.failed_chunk_index === 0 ? 'the first chunk failed' : `chunks 1–${addResult.failed_chunk_index} committed (${committedCount} URI(s))`}, chunk ${addResult.failed_chunk_index + 1} of ${addResult.attempted_chunks} failed.${committedUpTo} Retry the remaining ${toAdd.length - committedCount} URI(s); the committed prefix is already on the playlist. (${addResult.error})`;
@@ -360,7 +360,7 @@ export function registerPlaylistBatchTools(server: McpServer, client: SpotifyCli
     const writeCap = capFor('playlist_writes');
     const addResult = await runChunkedPlaylistWrite(uris, writeCap, (chunk) => client.post<{ snapshot_id?: string }>(`/playlists/${encodeURIComponent(newId)}/items`, { uris: chunk }));
     if (!addResult.ok) {
-      const committedCount = addResult.last_committed_chunk_uris.length;
+      const committedCount = addResult.committed_uris;
       const lastUri = addResult.last_committed_chunk_uris[addResult.last_committed_chunk_uris.length - 1];
       const committedUpTo = lastUri ? ` Last URI committed: ${lastUri}.` : '';
       const prose = `Partial copy to new playlist ${newId}: ${addResult.failed_chunk_index === 0 ? 'the first chunk failed' : `chunks 1–${addResult.failed_chunk_index} committed (${committedCount} URI(s))`}, chunk ${addResult.failed_chunk_index + 1} of ${addResult.attempted_chunks} failed.${committedUpTo} Retry the remaining ${uris.length - committedCount} URI(s); the committed prefix is already on the new playlist. (${addResult.error})`;
@@ -412,7 +412,7 @@ export function registerPlaylistBatchTools(server: McpServer, client: SpotifyCli
     const writeCap = capFor('playlist_writes');
     const addResult = await runChunkedPlaylistWrite(toTransfer, writeCap, (chunk) => client.post<{ snapshot_id?: string }>(`/playlists/${encodeURIComponent(targetId)}/items`, { uris: chunk }));
     if (!addResult.ok) {
-      const committedCount = addResult.last_committed_chunk_uris.length;
+      const committedCount = addResult.committed_uris;
       const lastUri = addResult.last_committed_chunk_uris[addResult.last_committed_chunk_uris.length - 1];
       const committedUpTo = lastUri ? ` Last URI committed to target: ${lastUri}.` : '';
       const prose = `Partial ${args.mode} from ${sourceId} → ${targetId}: ${addResult.failed_chunk_index === 0 ? 'the first add chunk failed' : `${addResult.failed_chunk_index} add chunk(s) committed to target (${committedCount} URI(s))`}, add chunk ${addResult.failed_chunk_index + 1} of ${addResult.attempted_chunks} failed.${committedUpTo} Retry the remaining ${toTransfer.length - committedCount} URI(s); the committed target prefix is already there. (${addResult.error})`;
@@ -438,7 +438,7 @@ export function registerPlaylistBatchTools(server: McpServer, client: SpotifyCli
         return client.delete<{ snapshot_id?: string }>(`/playlists/${encodeURIComponent(sourceId)}/items`, { tracks: chunkRows.map((r) => ({ uri: r.uri, positions: [r.position] })) });
       });
       if (!removeResult.ok) {
-        const committedCount = removeResult.last_committed_chunk_uris.length;
+        const committedCount = removeResult.committed_uris;
         const lastUri = removeResult.last_committed_chunk_uris[removeResult.last_committed_chunk_uris.length - 1];
         const committedUpTo = lastUri ? ` Last occurrence removed from source: ${lastUri}.` : '';
         const prose = `Partial ${args.mode} from ${sourceId} → ${targetId}: target add succeeded for all ${toTransfer.length} URI(s), but ${removeResult.failed_chunk_index === 0 ? 'the first remove chunk failed' : `remove chunks 1–${removeResult.failed_chunk_index} completed (${committedCount} occurrence(s))`}, remove chunk ${removeResult.failed_chunk_index + 1} of ${removeResult.attempted_chunks} failed.${committedUpTo} ${committedCount} occurrence(s) now exist on BOTH playlists; retry the remaining ${removals.length - committedCount} removal(s) against ${sourceId}. (${removeResult.error})`;
