@@ -331,3 +331,40 @@ describe('create_smart_playlist pool ceilings', () => {
     assert.match(call, /"time_range":"medium_term"/);
   });
 });
+
+// ---------------------------------------------------------------------------
+// #1092: refresh_smart_playlist collapsed onto loadCandidates. The candidate
+// pools and ceiling disclosures must agree across both tools — same data,
+// same loader, same numbers — so a caller that switches between them cannot
+// see honest ceilings on one side and silence on the other. The per-tool
+// ceilings are exercised end-to-end in tools.playbackext.test.ts; here we
+// drive loadCandidates directly so a regression in the loader's ceiling
+// surfaces as a single failing test, not as a tool-by-tool symptom.
+// ---------------------------------------------------------------------------
+
+describe('loadCandidates is the single source of pool caps (#1092)', () => {
+  // A minimal fake: returns short pages so loadCandidates never reads a
+  // second one. We're asserting the cap the loader carries, not the data.
+  const fakeClient = {
+    async get() { return { items: [] }; },
+    async getAllPagesWithTruncation() { return { items: [], truncated: false, truncatedByCap: false, reportedTotal: 0 }; },
+  };
+
+  it('top_tracks carries the 100-row ceiling', async () => {
+    const { loadCandidates } = await import('../src/tools/smart.js');
+    const pool = await loadCandidates(fakeClient as never, 'top_tracks', { scanCap: 500 });
+    assert.equal(pool.cap, 100, 'top_tracks source ceiling is 100 (two pages of 50)');
+  });
+
+  it('recently_played carries the 50-row ceiling', async () => {
+    const { loadCandidates } = await import('../src/tools/smart.js');
+    const pool = await loadCandidates(fakeClient as never, 'recently_played', { scanCap: 500 });
+    assert.equal(pool.cap, 50, 'recently_played source ceiling is 50 (one page)');
+  });
+
+  it('saved_tracks carries the caller\'s scan_cap', async () => {
+    const { loadCandidates } = await import('../src/tools/smart.js');
+    const pool = await loadCandidates(fakeClient as never, 'saved_tracks', { scanCap: 250 });
+    assert.equal(pool.cap, 250, 'saved_tracks source ceiling is the caller-supplied scanCap');
+  });
+});

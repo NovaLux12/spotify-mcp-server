@@ -200,6 +200,13 @@ function quarantineNote(outcome: QuarantineOutcome | undefined): string {
  * turned unreadable data into a plausible value. Throwing also leaves the file
  * untouched, so nothing is lost while the user repairs it.
  *
+ * All four registered consumers — library_genre_report, filter_by_genre,
+ * tag_management, and playlist_from_tags (src/tools/exhaust2_misc.ts) — let
+ * that throw propagate, so the caller sees the parse error and the file on
+ * disk is preserved. A consumer that swallowed it would silently erase the
+ * store on its next write, exactly the failure this contract exists to end
+ * (#1053).
+ *
  * That refusal is per-ARTIST as well as per-file. A value that is not an array
  * of genre strings, or one that would lose the artist to filtering, is corrupt
  * in exactly the same way a broken top level is, and is reported the same way.

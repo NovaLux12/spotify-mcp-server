@@ -103,7 +103,7 @@ above either ceiling fails CI and server startup.
 | browse | 3 | 2,634 | 3 | 2,634 | 4 | 2,898 |
 | artistwatch | 6 | 5,934 | 6 | 5,934 | 7 | 6,528 |
 | queueops | 3 | 3,449 | 3 | 3,449 | 4 | 3,794 |
-| playbackext | 13 | 7,857 | 13 | 7,857 | 14 | 8,643 |
+| playbackext | 13 | 8,039 | 13 | 8,039 | 14 | 8,843 |
 | playbackintel | 15 | 11,663 | 15 | 11,663 | 16 | 12,830 |
 | scenes | 7 | 4,456 | 7 | 4,456 | 8 | 4,902 |
 | playlisthealth | 8 | 5,285 | 8 | 5,285 | 9 | 5,814 |
