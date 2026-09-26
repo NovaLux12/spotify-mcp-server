@@ -694,7 +694,7 @@ describe('where_was_i', () => {
       // The prefix-scoped rename is conditional: an exhausted walk knows the
       // book's length and keeps the whole-book name.
       assert.equal(structured.listening_time_remaining_ms, BOOK_TOTAL * HOUR_MS);
-      assert.equal(structured.listening_time_remaining_in_fetched_prefix_ms, undefined);
+      assert.equal('listening_time_remaining_in_fetched_prefix_ms' in structured, false);
     });
 
     it('scopes remaining chapters and time to the prefix on a capped mid-book match', async () => {
