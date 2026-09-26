@@ -61,6 +61,13 @@ const parameterAllowlist = new Set([
   // clean batch read. StructuredContent keys on every batch tool, not
   // parameters or tools — the README is naming what the tool returns.
   'degraded_reason',
+  // #865: the chunked-playlist-write partial-state contract. SPEC.md §5
+  // names the fields so a caller can resume a failed multi-chunk write;
+  // every one is a structuredContent key on the tool that reports it, not a
+  // parameter and not a tool.
+  'partial_write_failure', 'attempted_chunks', 'failed_chunk_index',
+  'last_committed_chunk_index', 'last_committed_chunk_uris',
+  'attempted_uris', 'committed_uris', 'remaining_uris',
 ]);
 /** Registration keys are module names, not tools; docs legitimately name them. */
 const registrationKeyNames = new Set(census.registrationKeyNames ?? []);

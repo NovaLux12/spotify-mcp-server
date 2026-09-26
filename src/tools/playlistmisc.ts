@@ -6,7 +6,7 @@
  * (#1005), so they need their own manifest row to be gated honestly.
  */
 import { z } from 'zod';
-import { capFor } from '../chunk.js';
+import { capFor, runChunkedPlaylistWrite } from '../chunk.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
 import {
@@ -132,8 +132,28 @@ export function registerPlaylistMiscTools(server: McpServer, client: SpotifyClie
       const itemsPath = `/playlists/${encodeURIComponent(created.id)}/items`;
       const uris = candidates.map((t) => t.uri);
       const writeCap = capFor('playlist_writes');
-      for (let i = 0; i < uris.length; i += writeCap) {
-        await client.post(itemsPath, { uris: uris.slice(i, i + writeCap) });
+      // #865: the playlist is already created by this point, so a batch that
+      // rejects leaves an empty-then-partial playlist the caller has no
+      // pointer to. Report the committed prefix (and the new playlist's id)
+      // so a retry can resume rather than re-add what landed.
+      const write = await runChunkedPlaylistWrite(uris, writeCap, (chunk) =>
+        client.post<{ snapshot_id?: string }>(itemsPath, { uris: chunk }),
+      );
+      if (!write.ok) {
+        const committedCount = write.last_committed_chunk_uris.length;
+        const lastUri = write.last_committed_chunk_uris[committedCount - 1];
+        const prose = write.failed_chunk_index === 0
+          ? `Created "${playlistName}" (${created.id}) but no track landed: ${write.error}. The playlist exists and is empty; retry the add of ${uris.length} track(s).`
+          : `Partial apply of template "${args.template}" into new playlist ${created.id}: chunks 1–${write.failed_chunk_index} committed (${committedCount} track(s)), chunk ${write.failed_chunk_index + 1} of ${write.attempted_chunks} failed.${lastUri ? ` Last URI committed: ${lastUri}.` : ''} Retry the remaining ${uris.length - committedCount} track(s); the committed prefix is already there. (${write.error})`;
+        return shapeResult(rf, prose, {
+          ...write,
+          template: args.template,
+          playlist_id: created.id,
+          playlist_uri: created.uri,
+          attempted_uris: uris.length,
+          committed_uris: committedCount,
+          remaining_uris: uris.length - committedCount,
+        });
       }
 
       const receipt = await issueReceipt(client, { kind: 'playlist_meta', id: created.id, uris: [] });
