@@ -54,6 +54,7 @@ import {
 } from '../history.js';
 import type { HistoryRecord } from '../history.js';
 import { backupDir, readBackupStore } from './backup.js';
+import { artistWatchlistPath } from './artistwatch.js';
 
 type ToolOut = {
   content: Array<{ type: 'text'; text: string }>;
@@ -462,12 +463,6 @@ async function savePersonalized(
 // ---------------------------------------------------------------------------
 // #223 helpers: profile state stores
 // ---------------------------------------------------------------------------
-
-function watchlistFilePath(env: NodeJS.ProcessEnv = process.env): string {
-  const cfg = env.SPOTIFY_MCP_DATA_DIR;
-  if (cfg) return join(cfg, 'artist-watchlist.json');
-  return join('./data', 'artist-watchlist.json');
-}
 
 const PROFILE_STATE_SCHEMA_VERSION = 1;
 
@@ -1066,7 +1061,7 @@ export function registerPortabilityTools(server: McpServer, client: SpotifyClien
 
   server.tool(
     'export_profile_state',
-    'Export local sidecar stores (scenes, genre-tags, playback-ext, search-history, mutations, artist-watchlist) to a single schema-versioned JSON archive. Note: artist-watchlist defaults to ./data/artist-watchlist.json (cwd-relative, not ~/.spotify-mcp/) — a quirk flagged for future alignment.',
+    'Export local sidecar stores (scenes, genre-tags, playback-ext, search-history, mutations, artist-watchlist) to a single schema-versioned JSON archive. artist-watchlist is ~/.spotify-mcp/artist-watchlist.json; SPOTIFY_MCP_DATA_DIR overrides that directory.',
     {
       output_dir: z.string().optional().describe('Directory to write the archive into, confined to the output root (default ~/.spotify-mcp/exports, set SPOTIFY_MCP_EXPORT_DIR to move it)'),
       include_history: z.boolean().optional().default(false).describe('Include mutation history JSONL (can be large)'),
@@ -1150,8 +1145,8 @@ export function registerPortabilityTools(server: McpServer, client: SpotifyClien
         counts.search_history = empty(searchHistory);
       }
 
-      // artist-watchlist (cwd-relative default quirk!)
-      const watchlist = await read('artist_watchlist', watchlistFilePath());
+      // artist-watchlist (same path the artist-watch tools write, #764)
+      const watchlist = await tryReadJson(artistWatchlistPath());
       if (watchlist && typeof watchlist === 'object') {
         stores.artist_watchlist = watchlist;
         const wl = watchlist as { watchlists?: Record<string, unknown> };
@@ -1175,8 +1170,7 @@ export function registerPortabilityTools(server: McpServer, client: SpotifyClien
         schema_version: PROFILE_STATE_SCHEMA_VERSION,
         exported_at: new Date().toISOString(),
         include_history: !!args.include_history,
-        watchlist_path_note: 'artist-watchlist defaults to ./data/artist-watchlist.json (cwd-relative) unless SPOTIFY_MCP_DATA_DIR is set — this is a known quirk',
-        unreadable,
+        watchlist_path: artistWatchlistPath(),
         counts,
         stores,
       };
@@ -1409,7 +1403,7 @@ export function registerPortabilityTools(server: McpServer, client: SpotifyClien
             await planStore('search_history', searchHistoryFile(), value, 'array');
             break;
           case 'artist_watchlist':
-            await planStore('artist_watchlist', watchlistFilePath(), value, 'record');
+            await mergeOrOverwrite('artist_watchlist', artistWatchlistPath(), value, true);
             break;
           case 'mutations_history':
             await planLedger(value);

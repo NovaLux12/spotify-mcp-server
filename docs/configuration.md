@@ -27,7 +27,7 @@ The variables below are read at the documented call sites; set them in your MCP 
 | `SPOTIFY_MCP_FRESHNESS_BUDGET` | `25` | Per-call budget for `whats_new` artist and show lookups. |
 | `SPOTIFY_MCP_SCENES_FILE` | `~/.spotify-mcp/scenes.json` | Playback scene sidecar. |
 | `SPOTIFY_MCP_GENRE_TAGS_FILE` | `~/.spotify-mcp/genre-tags.json` | Artist-to-genre-tags sidecar. |
-| `SPOTIFY_MCP_DATA_DIR` | `./data` for watchlists; `~/.spotify-mcp/playlist-snapshots` for playlist-health snapshots | Data directory read by the artist-watchlist, portability-watchlist, and playlist-health call sites. Set it explicitly to avoid cwd-relative watchlist files. |
+| `SPOTIFY_MCP_DATA_DIR` | `~/.spotify-mcp` for watchlists; `~/.spotify-mcp/playlist-snapshots` for playlist-health snapshots | Data directory read by the artist-watchlist, portability-watchlist, and playlist-health call sites. The watchlist default no longer depends on the process working directory. |
 | `SPOTIFY_MCP_BACKUP_DIR` | `~/.spotify-mcp/backups` | Directory for `backup_library` snapshots. |
 | `SPOTIFY_MCP_PORTABILITY_DIR` | `~/.spotify-mcp/portability` | Output root for the five `export_*` family tools. |
 | `SPOTIFY_MCP_EXPORT_DIR` | `~/.spotify-mcp/exports` | Output root for `export_playlist` and `export_profile_state`. |
@@ -99,7 +99,7 @@ For confirmation-gated destructive operations, a missing MCP elicitation capabil
 
 `SPOTIFY_MCP_SCENES_FILE` stores named device/volume/shuffle/repeat/context presets. `SPOTIFY_MCP_GENRE_TAGS_FILE` stores user-declared artist genre tags. `SPOTIFY_MCP_SEARCH_HISTORY_FILE`, `SPOTIFY_MCP_PLAYBACKEXT_FILE`, `SPOTIFY_MCP_EXHAUST2_PLAYBACK_FILE`, and `SPOTIFY_MCP_EXHAUST2_MISC_FILE` override their respective local sidecars.
 
-`SPOTIFY_MCP_DATA_DIR` is read directly by the artist-watchlist, portability-watchlist, and playlist-health paths; there is no shared configuration object behind the variable. Without it, the watchlist call sites use `./data/artist-watchlist.json`, while playlist-health uses `~/.spotify-mcp/playlist-snapshots`. `SPOTIFY_MCP_SNAPSHOT_DIR` separately controls the swarm3 playlist-snapshot sidecar. Set the data and snapshot variables explicitly when the process working directory is not durable. `SPOTIFY_MCP_BACKUP_DIR` and `SPOTIFY_MCP_PORTABILITY_DIR` control backup and export destinations.
+`SPOTIFY_MCP_DATA_DIR` is read directly by the artist-watchlist, portability-watchlist, and playlist-health paths; there is no shared configuration object behind the variable. Without it, the watchlist call sites use `~/.spotify-mcp/artist-watchlist.json` and playlist-health uses `~/.spotify-mcp/playlist-snapshots`; a pre-v2 `./data/artist-watchlist.json` is read once and migrated to the new location on the next write. `SPOTIFY_MCP_SNAPSHOT_DIR` separately controls the swarm3 playlist-snapshot sidecar. `SPOTIFY_MCP_BACKUP_DIR` and `SPOTIFY_MCP_PORTABILITY_DIR` control backup and export destinations.
 
 ## Registration-gated endpoints
 

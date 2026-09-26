@@ -1,10 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, rm } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { registerArtistWatchTools } from '../src/tools/artistwatch.js';
-type ToolContent = { content: Array<{ type: string; text: string }>; structuredContent?: Record<string, unknown> };
+type ToolContent = { content: Array<{ type: string; text: string }>; structuredContent?: Record<string, unknown>; isError?: boolean };
 type RegisteredTool = { name: string; description: string; schema: Record<string, { safeParse(a: unknown): { success: boolean } }>; handler: (a: Record<string, unknown>) => Promise<ToolContent> };
 function album(id:string, name:string, type='album', date='2026-08-01'){ return { id, name, uri:`spotify:album:${id}`, album_type:type, release_date:date, total_tracks:10, artists:[{id:'art1',name:'Artist'}] }; }
 function makeHarness(getResponse?: (path:string, params?:Record<string,string>)=>unknown, putImpl?: (path:string, body?:unknown)=>Promise<void>){
@@ -429,5 +430,158 @@ test('artist_release_digest stops on a burst 429 and keeps prior rows', async ()
     assert.deepEqual(sc.items.map(i=>i.album.name), ['Digest Before Limit']);
     assert.equal(callN, 2);
     assert.match(text(r), /Rate limited \(429\)/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #764: the sidecar is not a best-effort store. A write that does not land is
+// reported as a failure, a file that cannot be parsed is reported as corrupt
+// rather than reset, and the path does not follow the process cwd.
+// ---------------------------------------------------------------------------
+
+type Scoped = { restore: () => Promise<void> };
+
+/** Point the store at a HOME the test owns, with no DATA_DIR override. */
+async function withHome(home: string): Promise<Scoped> {
+  const prevHome = process.env.HOME;
+  const prevDir = process.env.SPOTIFY_MCP_DATA_DIR;
+  const prevCwd = process.cwd();
+  process.env.HOME = home;
+  delete process.env.SPOTIFY_MCP_DATA_DIR;
+  return {
+    restore: async () => {
+      process.chdir(prevCwd);
+      if (prevHome === undefined) delete process.env.HOME; else process.env.HOME = prevHome;
+      if (prevDir === undefined) delete process.env.SPOTIFY_MCP_DATA_DIR; else process.env.SPOTIFY_MCP_DATA_DIR = prevDir;
+      await rm(home, { recursive: true, force: true });
+    },
+  };
+}
+
+test('a watchlist that cannot be written is reported, never answered with an added count (#764)', async () => {
+  await withTmpDir(async (dir) => {
+    // A directory sitting where the atomic write's temp name belongs: the store
+    // reads as absent, and publishing one fails for every user, root included.
+    await mkdir(join(dir, 'artist-watchlist.json.tmp'), { recursive: true });
+    const { registered } = makeHarness(() => ({ items: [album('a1', 'Album One')] }));
+    const r = await find(registered, 'watch_artists').handler({ artist_ids: ['a1'] });
+    assert.equal(r.isError, true);
+    assert.doesNotMatch(text(r), /\b1 added\b/, 'a write that did not land is not an addition');
+    assert.match(text(r), /NOT saved/);
+    const sc = r.structuredContent as unknown as { ok: boolean; persisted: boolean; path: string; error: string; total: number };
+    assert.equal(sc.ok, false);
+    assert.equal(sc.persisted, false);
+    assert.equal(sc.path, join(dir, 'artist-watchlist.json'));
+    assert.equal(sc.total, 1);
+    assert.ok(sc.error.length > 0, 'the failure names its cause');
+    assert.equal(existsSync(join(dir, 'artist-watchlist.json')), false, 'nothing was created on disk');
+  });
+});
+
+test('a corrupt sidecar is reported with its path and preserved, not reset to empty (#764)', async () => {
+  await withTmpDir(async (dir) => {
+    const file = join(dir, 'artist-watchlist.json');
+    const bytes = '{"watchlists":{"default":{"artists":["a1"]';
+    await writeFile(file, bytes);
+    const { registered } = makeHarness();
+    const r = await find(registered, 'watch_artists').handler({ artist_ids: ['a2'] });
+    // Reported, not thrown: the process-wide tool boundary replaces a thrown
+    // error with a generic "invalid arguments" envelope that names no file.
+    assert.equal(r.isError, true);
+    assert.match(text(r), /not valid JSON/);
+    assert.match(text(r), new RegExp(file.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    const sc = r.structuredContent as unknown as { ok: boolean; persisted: boolean; reason: string; error: string };
+    assert.equal(sc.ok, false);
+    assert.equal(sc.persisted, false);
+    assert.equal(sc.reason, 'store_unreadable');
+    assert.ok(sc.error.length > 0);
+    assert.equal(await readFile(file, 'utf8'), bytes, 'the unreadable file is left exactly as it was');
+    assert.equal(await readFile(`${file}.corrupt`, 'utf8'), bytes, 'its bytes are preserved for repair');
+  });
+});
+
+test('a sidecar that is not a watchlist store is corruption, not an empty list (#764)', async () => {
+  await withTmpDir(async (dir) => {
+    const file = join(dir, 'artist-watchlist.json');
+    await writeFile(file, '{"watchlists":[]}', 'utf8');
+    const { registered } = makeHarness();
+    const r = await find(registered, 'check_artist_releases').handler({});
+    assert.equal(r.isError, true);
+    assert.match(text(r), /not a watchlist store/);
+    assert.equal(await readFile(file, 'utf8'), '{"watchlists":[]}', 'it was not overwritten with an empty store');
+  });
+});
+
+test('the watchlist is the same file from any working directory (#764)', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'aw-home-'));
+  const scope = await withHome(home);
+  const dirA = await mkdtemp(join(tmpdir(), 'aw-cwd-a-'));
+  const dirB = await mkdtemp(join(tmpdir(), 'aw-cwd-b-'));
+  try {
+    process.chdir(dirA);
+    const first = makeHarness(() => ({ items: [album('a1', 'Album One')] }));
+    await find(first.registered, 'watch_artists').handler({ artist_ids: ['a1'] });
+
+    process.chdir(dirB);
+    const second = makeHarness(() => ({ items: [album('a1', 'Album One')] }));
+    const r = await find(second.registered, 'check_artist_releases').handler({});
+    const sc = r.structuredContent as unknown as { artists_scanned: number; watchlist_size: number; path: string };
+    assert.equal(sc.watchlist_size, 1);
+    assert.equal(sc.artists_scanned, 1, 'the artist added from the other directory is found here');
+    assert.equal(sc.path, join(home, '.spotify-mcp', 'artist-watchlist.json'));
+    assert.equal(existsSync(join(dirA, 'data')), false, 'no cwd-relative sidecar was created');
+    assert.equal(existsSync(join(dirB, 'data')), false, 'no cwd-relative sidecar was created');
+  } finally {
+    await scope.restore();
+    await rm(dirA, { recursive: true, force: true });
+    await rm(dirB, { recursive: true, force: true });
+  }
+});
+
+test('a pre-v2 ./data/artist-watchlist.json is read once and migrated to the aligned path (#764)', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'aw-home-'));
+  const scope = await withHome(home);
+  const legacyCwd = await mkdtemp(join(tmpdir(), 'aw-legacy-'));
+  try {
+    await mkdir(join(legacyCwd, 'data'), { recursive: true });
+    await writeFile(
+      join(legacyCwd, 'data', 'artist-watchlist.json'),
+      JSON.stringify({ watchlists: { default: { artists: ['legacy1'], createdAt: 'x', lastChecked: null, seen: {} } } }),
+      'utf8',
+    );
+    process.chdir(legacyCwd);
+    const { registered } = makeHarness(() => ({ items: [album('a1', 'Album One')] }));
+    const r = await find(registered, 'watch_artists').handler({ artist_ids: ['a2'] });
+    const sc = r.structuredContent as unknown as { artists: string[]; migrated_from: string | undefined; path: string };
+    assert.equal(sc.migrated_from, join('data', 'artist-watchlist.json'));
+    assert.deepEqual([...sc.artists].sort(), ['a2', 'legacy1'], 'the pre-v2 watchlist was not discarded');
+    const moved = JSON.parse(await readFile(sc.path, 'utf8')) as { watchlists: Record<string, { artists: string[] }> };
+    assert.deepEqual([...moved.watchlists.default.artists].sort(), ['a2', 'legacy1']);
+    assert.match(text(r), /Migrated from/);
+  } finally {
+    await scope.restore();
+    await rm(legacyCwd, { recursive: true, force: true });
+  }
+});
+
+test('a check whose seen-bookkeeping cannot be saved says the watchlist did not advance (#764)', async () => {
+  await withTmpDir(async (dir) => {
+    await writeFile(
+      join(dir, 'artist-watchlist.json'),
+      JSON.stringify({ watchlists: { default: { artists: ['a1'], createdAt: 'x', lastChecked: null, seen: {} } } }),
+      'utf8',
+    );
+    // A directory where the atomic write's temp name belongs: the store reads
+    // fine, but publishing a new one fails for every user, root included.
+    await mkdir(join(dir, 'artist-watchlist.json.tmp'), { recursive: true });
+    const { registered } = makeHarness(() => ({ items: [album('a1', 'Album One')] }));
+    const r = await find(registered, 'check_artist_releases').handler({});
+    const sc = r.structuredContent as unknown as { persisted: boolean; total: number; path: string };
+    assert.equal(sc.total, 1, 'the scan still reports the release it read');
+    assert.equal(sc.persisted, false, 'the watchlist did not advance and must not read as if it did');
+    assert.equal(sc.path, join(dir, 'artist-watchlist.json'));
+    assert.match(text(r), /NOT saved/);
+    const onDisk = JSON.parse(await readFile(join(dir, 'artist-watchlist.json'), 'utf8')) as { watchlists: Record<string, { seen: Record<string, string[]> }> };
+    assert.deepEqual(onDisk.watchlists.default.seen, {}, 'seen was not advanced on disk');
   });
 });

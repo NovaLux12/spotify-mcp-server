@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { z } from 'zod';
-import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -755,6 +755,7 @@ describe('import_from_sidecar (#1008 surfaces the exporter truncation flags)',()
   });
 });
 
+<<<<<<< HEAD
 // ---------------------------------------------------------------------------
 // #760: behaviour cover for the portability tools that shipped untested.
 //
@@ -1212,5 +1213,42 @@ describe('library_snapshot_diff (counts come from the URIs actually in the files
       assert.equal((payload.added_sample as string[]).length,10);
       assert.match(textOf(out),/\+14 added/);
     } finally { await rm(dir,{recursive:true,force:true}); }
+=======
+describe('export_profile_state',()=>{
+  it('reads the artist watchlist from the file the artist-watch tools actually write (#764)',async()=>{
+    const home=await mkdtemp(join(tmpdir(),'pp-home-'));
+    const port=await mkdtemp(join(tmpdir(),'pp-port-'));
+    const cwd=await mkdtemp(join(tmpdir(),'pp-cwd-'));
+    const prevHome=process.env.HOME; const prevDir=process.env.SPOTIFY_MCP_DATA_DIR; const prevCwd=process.cwd();
+    const prevExport=process.env.SPOTIFY_MCP_EXPORT_DIR;
+    process.chdir(cwd);
+    process.env.HOME=home;
+    process.env.SPOTIFY_MCP_EXPORT_DIR=port;
+    delete process.env.SPOTIFY_MCP_DATA_DIR;
+    try{
+      await mkdir(join(home,'.spotify-mcp'),{recursive:true});
+      const watchlist=join(home,'.spotify-mcp','artist-watchlist.json');
+      await writeFile(watchlist,JSON.stringify({watchlists:{default:{artists:['a1'],createdAt:'x',lastChecked:null,seen:{}}}}),'utf8');
+      const h=harness();
+      await h.invoke('export_profile_state',{});
+      const written=await readdir(port);
+      const exported=written.find((n)=>n.startsWith('profile-state-'));
+      assert.ok(exported,`profile-state archive written: ${written.join(', ')}`);
+      const doc=JSON.parse(await readFile(join(port,exported!),'utf8'));
+      // The export used to compute its own cwd-relative ./data path, so a
+      // watchlist the tools had filled exported as absent.
+      assert.equal(doc.counts.artist_watchlist,1);
+      assert.equal(doc.watchlist_path,watchlist);
+      assert.deepEqual(doc.stores.artist_watchlist.watchlists.default.artists,['a1']);
+    } finally {
+      process.chdir(prevCwd);
+      if(prevHome===undefined) delete process.env.HOME; else process.env.HOME=prevHome;
+      if(prevDir===undefined) delete process.env.SPOTIFY_MCP_DATA_DIR; else process.env.SPOTIFY_MCP_DATA_DIR=prevDir;
+      if(prevExport===undefined) delete process.env.SPOTIFY_MCP_EXPORT_DIR; else process.env.SPOTIFY_MCP_EXPORT_DIR=prevExport;
+      await rm(home,{recursive:true,force:true});
+      await rm(port,{recursive:true,force:true});
+      await rm(cwd,{recursive:true,force:true});
+    }
+>>>>>>> 951692e1cc2e454cdc690f0c01f0ade5017ce359
   });
 });
