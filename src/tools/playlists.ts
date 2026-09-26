@@ -1854,8 +1854,29 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
   // chunk context. Now we return a partial-write failure and let each
   // caller render it in its own prose/structuredContent shape; the helper
   // surfaces every field the multi-chunk contract requires.
+  //
+  // #888 — what a full-content replace actually PROVED, not just what it sent.
+  //
+  // Replacing a playlist's contents with an empty `uris` array is the
+  // documented way to CLEAR one, so the empty-array write stays: the OpenAPI
+  // description for `reorder-or-replace-playlists-items` states "This
+  // operation can be used for replacing or clearing items in a playlist", and
+  // the request body's `uris` carries no `minItems`, so `{uris: []}` is a
+  // schema-valid clear. Emulating it with a descending sweep of position-based
+  // DELETEs would cost N requests instead of 1, leave a half-emptied playlist
+  // if one failed, and contradict the endpoint's own documented semantics.
+  //
+  // What the schema does NOT guarantee is a RECEIPT. The 200 body is
+  // `{snapshot_id: string}` with no `required` list, and `jsonOrNull`
+  // (src/client.ts) returns null for a 204 or any non-JSON content-type — so
+  // a clear can come back with nothing readable in it. A missing receipt is
+  // not the same answer as "Spotify returned no snapshot", and on the empty
+  // path the two are separated by every track in the playlist. So the ok:true
+  // arm carries `receipt_read` and the empty callers report its own state
+  // instead of coercing a null receipt under a flat ok:true — the same rule
+  // #864 applied to a truncated re-scan.
   async function replaceWithUris(playlistId: string, uris: string[]): Promise<
-    | { ok: true; snapshot_id: string | undefined }
+    | { ok: true; snapshot_id: string | undefined; receipt_read: boolean }
     | ({ ok: false; partial_write_failure: true; playlist_id: string; attempted_uris: number; committed_uris: number; remaining_uris: number; attempted_chunks: number; failed_chunk_index: number; last_committed_chunk_index: number; last_committed_chunk_uris: string[]; error: string })
   > {
     const enc = encodeURIComponent(playlistId);
@@ -1865,7 +1886,7 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
     if (uris.length === 0) {
       try {
         const res = await client.put<{ snapshot_id?: string }>(`/playlists/${enc}/items`, { uris: [] });
-        return { ok: true, snapshot_id: res?.snapshot_id };
+        return { ok: true, snapshot_id: res?.snapshot_id, receipt_read: Boolean(res?.snapshot_id) };
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         return { ok: false, partial_write_failure: true, playlist_id: playlistId, attempted_uris: 0, committed_uris: 0, remaining_uris: 0, attempted_chunks: 1, failed_chunk_index: 0, last_committed_chunk_index: -1, last_committed_chunk_uris: [], error: message };
@@ -1881,7 +1902,7 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
       const committedCount = write.last_committed_chunk_uris.length;
       return { ...write, playlist_id: playlistId, attempted_uris: uris.length, committed_uris: committedCount, remaining_uris: uris.length - committedCount };
     }
-    return { ok: true, snapshot_id: write.snapshot_id };
+    return { ok: true, snapshot_id: write.snapshot_id, receipt_read: Boolean(write.snapshot_id) };
   }
 
   // check_playlist_following (#284, fixed #862) — follow state via the
@@ -2104,7 +2125,7 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
   });
 
   // playlist_union (#290)
-  server.tool('playlist_union', 'Union of 2–10 playlists into target (deduped, first-seen order). Quota: 🟢 N GETs + PUT/POST; replacing an existing target also reads its current items and its playlist metadata to measure the destructive impact.', { ...PlaylistListFields, ...legacyPlaylistListFields(['source_playlist_ids']), ...TargetPlaylistFields, ...PlaylistSetWalkFields, response_format: ResponseFormat, dedupe: z.boolean().default(true).describe('Drop duplicate URIs across the merged sources. Default true'), dry_run: DryRun }, async (args) => {
+  server.tool('playlist_union', 'Union of 2–10 playlists into target (deduped, first-seen order). An empty union empties the target the same way subtract does. Quota: 🟢 N GETs + PUT/POST; replacing an existing target also reads its current items and its playlist metadata to measure the destructive impact.', { ...PlaylistListFields, ...legacyPlaylistListFields(['source_playlist_ids']), ...TargetPlaylistFields, ...PlaylistSetWalkFields, response_format: ResponseFormat, dedupe: z.boolean().default(true).describe('Drop duplicate URIs across the merged sources. Default true'), dry_run: DryRun }, async (args) => {
     const input = resolvePlaylistInput(args, { kind: 'list', aliases: ['source_playlist_ids'] });
     if ((args.target_playlist_id === undefined) === (args.target_name === undefined)) {
       throw new Error('Invalid arguments: provide exactly one of target_playlist_id (replace an existing playlist) or target_name (create a new playlist).');
@@ -2228,8 +2249,13 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
       return textResult(args.response_format === 'json' ? jsonText(write) : withPlaylistInputNote(prose, input), withPlaylistInputMetadata(write, input));
     }
     const snap = write.snapshot_id;
+    // #888: an empty union clears the target. An unread receipt there is a
+    // playlist wiped with nothing to show for it, so it is reported as its own
+    // state rather than a clean ok:true over a null receipt.
+    const emptied = union.length === 0;
+    const unconfirmed = emptied && !write.receipt_read;
     const payload = withPlaylistInputMetadata({
-      ok: true,
+      ok: !unconfirmed,
       target_playlist: targetId,
       target_playlist_id: targetId,
       target_name: args.target_name ?? null,
@@ -2243,12 +2269,19 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
       scan_cap: effectiveScanCap(args),
       source_truncated: sourceTruncated,
       snapshot_id: snap ?? null,
+      emptied,
+      ...(unconfirmed ? { reason: 'clear_unconfirmed', snapshot_read: false } : {}),
     }, input);
-    return textResult(args.response_format === 'json' ? jsonText(payload) : withPlaylistInputNote(withSnapshot(`Union ${union.length} item(s) → ${targetId}`, snap), input), payload);
+    const unionText = emptied
+      ? unconfirmed
+        ? `Emptied ${targetId}: the clear was sent but Spotify returned no snapshot_id, so the result is unconfirmed — re-read the playlist before treating it as cleared.`
+        : `Emptied ${targetId}`
+      : `Union ${union.length} item(s) → ${targetId}`;
+    return textResult(args.response_format === 'json' ? jsonText(payload) : withPlaylistInputNote(unconfirmed ? unionText : withSnapshot(unionText, snap), input), payload);
   });
 
   // playlist_subtract (#291)
-  server.tool('playlist_subtract', 'Remove tracks of B..N from A. Quota: 🟢 N GETs + DELETE or PUT.', { base_playlist_id: PlaylistId.optional().describe('Base playlist ID, URI, or URL. Optional only for the deprecated positional form, where playlists[0] is the base.'), ...playlistListInputFields(['subtract_playlist_ids'], { min: 1, max: 10 }), ...PlaylistSetWalkFields, response_format: ResponseFormat, dry_run: DryRun }, async (args) => {
+  server.tool('playlist_subtract', 'Remove tracks of B..N from A. Subtracting every track empties A via one PUT with an empty uris array (Spotify\'s documented clear); a reply with no snapshot_id reports unconfirmed, not ok. Quota: 🟢 N GETs + PUT.', { base_playlist_id: PlaylistId.optional().describe('Base playlist ID, URI, or URL. Optional only for the deprecated positional form, where playlists[0] is the base.'), ...playlistListInputFields(['subtract_playlist_ids'], { min: 1, max: 10 }), ...PlaylistSetWalkFields, response_format: ResponseFormat, dry_run: DryRun }, async (args) => {
     const input = resolvePlaylistInput(args, { kind: 'list', aliases: ['subtract_playlist_ids'] });
     // Pre-2.0 contract: `playlists: [A, B, C]` meant "A minus B and C", i.e. the
     // base was positional. The canonical contract names it explicitly. Both are
@@ -2360,8 +2393,15 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
       return textResult(args.response_format === 'json' ? jsonText(write) : withPlaylistInputNote(prose, input, positionalNote), withPlaylistInputMetadata(write, input, positionalNote));
     }
     const snap = write.snapshot_id;
+    // #888: subtracting every track empties the base. The empty-uris PUT is
+    // the documented clear (see replaceWithUris), so it is still sent — but a
+    // clear with no readable receipt is a wiped playlist we cannot show a
+    // receipt for, and it is reported as unconfirmed rather than as a clean
+    // ok:true over a null snapshot.
+    const emptied = remaining.length === 0;
+    const unconfirmed = emptied && !write.receipt_read;
     const payload = withPlaylistInputMetadata({
-      ok: true,
+      ok: !unconfirmed,
       base_playlist: basePlaylistId,
       playlist_a: basePlaylistId,
       playlists: subtractValues,
@@ -2375,8 +2415,15 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
       limit: args.limit ?? null,
       scan_cap: effectiveScanCap(args),
       snapshot_id: snap ?? null,
+      emptied,
+      ...(unconfirmed ? { reason: 'clear_unconfirmed', snapshot_read: false } : {}),
     }, input, positionalNote);
-    return textResult(args.response_format === 'json' ? jsonText(payload) : withPlaylistInputNote(withSnapshot(`Subtract: removed ${removed}, kept ${remaining.length}`, snap), input, positionalNote), payload);
+    const subtractText = emptied
+      ? unconfirmed
+        ? `Playlist emptied: removed ${removed}, but Spotify returned no snapshot_id, so the clear is unconfirmed — re-read the playlist before treating it as empty.`
+        : `Playlist emptied: removed ${removed}`
+      : `Subtract: removed ${removed}, kept ${remaining.length}`;
+    return textResult(args.response_format === 'json' ? jsonText(payload) : withPlaylistInputNote(unconfirmed ? subtractText : withSnapshot(subtractText, snap), input, positionalNote), payload);
   });
 
   // playlist_symmetric_difference (#292)
