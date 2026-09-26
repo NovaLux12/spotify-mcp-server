@@ -17,6 +17,7 @@ function makeClient(overrides: Partial<Record<string, any>> = {}) {
   // Mirror the real paged walks so the verdict the tool reports is the one
   // the walk actually produced — not a canned constant (#1092).
   const saved = overrides.saved ?? [];
+  let playlistSeq = 0;
   const client = {
     async get(path: string, params?: Record<string, string>) {
       if (path === '/me/player') {
@@ -46,11 +47,48 @@ function makeClient(overrides: Partial<Record<string, any>> = {}) {
         const top = overrides.topTracks ?? [];
         return { items: top.slice(offset, offset + limit), total: top.length, limit, offset };
       }
+      // #835: the show radar reads /shows/{id}/episodes; each call answers
+      // one saved show's latest episodes. The fake returns whatever the test
+      // supplies, falling back to an empty list so a stale show returns
+      // nothing rather than blowing up.
+      const showsMatch = /^\/shows\/([^/]+)\/episodes$/.exec(path);
+      if (showsMatch) {
+        const showId = decodeURIComponent(showsMatch[1]);
+        const map = overrides.episodesByShow ?? {};
+        const items = map[showId] ?? [];
+        const limit = Number(params?.limit ?? 20);
+        return { items: items.slice(0, limit), total: items.length };
+      }
       return null;
     },
     async put(path: string, body?: unknown) { puts.push(path); putCalls.push({ path, body }); wrote = true; if (overrides.failPut?.(path)) throw new Error('write rejected'); return null; },
-    async post(path: string, body?: unknown) { posts.push(path); postCalls.push({ path, body }); wrote = true; return { id: 'pl1', uri: 'spotify:playlist:pl1' }; },
-    async getAllPages() { return saved; },
+    async post(path: string, body?: unknown) {
+      posts.push(path); postCalls.push({ path, body }); wrote = true;
+      // Each create returns a fresh id so the regression test (#835) can
+      // distinguish "reused the digest playlist" from "made another one".
+      if (path === '/me/playlists') {
+        playlistSeq += 1;
+        return { id: `pl${playlistSeq}`, uri: `spotify:playlist:pl${playlistSeq}` };
+      }
+      return { id: 'pl1', uri: 'spotify:playlist:pl1' };
+    },
+    async getAllPages(path: string, _params?: Record<string, string>, opts?: { maxItems?: number }) {
+      // #835: feed the show radar its /me/shows and /me/episodes walks.
+      // /me/shows rows are { added_at, show } — the radar reads entry.show,
+      // not a bare show object — so wrap the test's shows here, where the
+      // harness is responsible for the row shape.
+      if (path === '/me/shows') {
+        const shows = overrides.savedShows ?? [];
+        const maxItems = opts?.maxItems ?? 500;
+        return shows.slice(0, maxItems).map((s) => ({ added_at: '2026-01-01T00:00:00Z', show: s }));
+      }
+      if (path === '/me/episodes') {
+        const eps = overrides.savedEpisodes ?? [];
+        const maxItems = opts?.maxItems ?? 500;
+        return eps.slice(0, maxItems).map((uri) => ({ added_at: '2026-01-02T00:00:00Z', episode: { uri } }));
+      }
+      return saved;
+    },
     async getAllPagesWithTruncation<T>(path: string, _params?: Record<string, string>, opts?: { maxItems?: number }) {
       if (path !== '/me/tracks') return { items: [] as T[], truncated: false, truncatedByCap: false, reportedTotal: null };
       const maxItems = opts?.maxItems ?? 500;
@@ -199,6 +237,103 @@ describe('playbackext', () => {
     await h.invoke('save_smart_playlist_rule', { name: 'rock-top', rule: { source: 'top_tracks' } });
     const digest = await h.invoke('save_show_digest', { dry_run: true });
     assert.match(digest.content[0].text, /dry run/i);
+  });
+  // #835: save_show_digest used to ignore the radar and POST /me/playlists
+  // every call, leaving a new empty "Show Digest" playlist in the user's
+  // account on each invocation. The fix runs the radar and reuses the
+  // playlist id stored in the sidecar — two calls produce one playlist, with
+  // the second call appending the new radar's episodes to the first call's
+  // playlist.
+  describe('save_show_digest (#835)', () => {
+    const today = new Date().toISOString().slice(0, 10);
+    const show = (id: string, name = id) => ({ id, name, uri: `spotify:show:${id}`, description: '', publisher: 'P', explicit: false, total_episodes: 10, languages: ['en'], media_type: 'audio' });
+    const ep = (id: string, release_date: string, name = id) => ({
+      id, name, uri: `spotify:episode:${id}`,
+      duration_ms: 1800_000, release_date, explicit: false, description: '',
+      show: show('s1'),
+    });
+
+    it('writes the radar episodes and reuses the playlist on the second call', async () => {
+      const sharedEpisodes = [ep('e1', today, 'Fresh One'), ep('e2', today, 'Fresh Two')];
+      const savedShows = [show('sA', 'Show A'), show('sB', 'Show B')];
+      // The radar pulls one per-show-limit page per saved show on each call;
+      // both calls return the same episodes because the test exercises the
+      // playlist reuse path (the second call must not create a second
+      // playlist), not the radar delta.
+      const { client, postCalls } = makeClient({
+        savedShows,
+        episodesByShow: {
+          sA: [sharedEpisodes[0]],
+          sB: [sharedEpisodes[1]],
+        },
+      });
+      const h = serverHarness(client);
+
+      const first = await h.invoke('save_show_digest', { playlist_name: 'Show Digest' });
+      const firstEcho = first.structuredContent as Record<string, unknown>;
+      assert.equal(firstEcho.ok, true);
+      assert.equal(firstEcho.created, true, 'the first call must create the playlist');
+      assert.equal(firstEcho.playlist_id, 'pl1');
+      assert.equal(firstEcho.episodes_added, 2);
+      // /me/playlists once, then one items POST for the episodes.
+      assert.equal(postCalls.filter((c) => c.path === '/me/playlists').length, 1);
+      assert.deepEqual(postCalls.filter((c) => c.path === '/playlists/pl1/items').map((c) => (c.body as { uris: string[] }).uris), [[sharedEpisodes[0].uri, sharedEpisodes[1].uri]]);
+
+      const second = await h.invoke('save_show_digest', { playlist_name: 'Show Digest' });
+      const secondEcho = second.structuredContent as Record<string, unknown>;
+      assert.equal(secondEcho.ok, true);
+      assert.equal(secondEcho.created, false, 'the second call must reuse the stored playlist id');
+      assert.equal(secondEcho.playlist_id, 'pl1', 'the second call must not make a second playlist');
+      assert.equal(secondEcho.episodes_added, 2);
+      // #835 acceptance: the bug was a fresh /me/playlists on every call.
+      // Two calls must produce exactly one /me/playlists, total — anything
+      // else is the regression returning.
+      assert.equal(postCalls.filter((c) => c.path === '/me/playlists').length, 1, `expected one /me/playlists across two calls; got ${JSON.stringify(postCalls.filter((c) => c.path === '/me/playlists'))}`);
+      // The second call's items POST goes to the same playlist as the first
+      // call — and only that playlist, so an append that targeted a fresh id
+      // would still leave the original digest empty.
+      const itemsCalls = postCalls.filter((c) => c.path === '/playlists/pl1/items');
+      assert.equal(itemsCalls.length, 2, `expected one items POST per call; got ${itemsCalls.length}`);
+      // Second call appended to the same playlist, never a fresh id.
+      assert.equal(itemsCalls[1].path, '/playlists/pl1/items');
+    });
+
+    it('dry run makes no API writes and reports the radar it would persist', async () => {
+      const today2 = new Date().toISOString().slice(0, 10);
+      const savedShows = [show('sZ', 'Show Z')];
+      const { client, postCalls } = makeClient({
+        savedShows,
+        episodesByShow: { sZ: [ep('e9', today2, 'Preview episode')] },
+      });
+      const h = serverHarness(client);
+      const out = await h.invoke('save_show_digest', { dry_run: true });
+      const echo = out.structuredContent as Record<string, unknown>;
+      assert.equal(echo.dry_run, true);
+      assert.equal(echo.would_create, true);
+      assert.equal(echo.new_episodes, 1);
+      assert.deepEqual(echo.episodes, ['spotify:episode:e9']);
+      assert.match(out.content[0].text, /Would save show digest/);
+      assert.equal(postCalls.length, 0, 'a dry run must never reach the API');
+    });
+
+    it('an empty radar still reuses the playlist on the next call instead of recreating', async () => {
+      const { client, postCalls } = makeClient({ savedShows: [] });
+      const h = serverHarness(client);
+      // First call sees no saved shows, so it creates the playlist but adds
+      // nothing — and stores the id.
+      const first = await h.invoke('save_show_digest', { playlist_name: 'Show Digest' });
+      const firstEcho = first.structuredContent as Record<string, unknown>;
+      assert.equal(firstEcho.created, true);
+      assert.equal(firstEcho.episodes_added, 0);
+      assert.equal(firstEcho.playlist_id, 'pl1');
+
+      // Second call still has no radar; must not create a second playlist.
+      const second = await h.invoke('save_show_digest', { playlist_name: 'Show Digest' });
+      const secondEcho = second.structuredContent as Record<string, unknown>;
+      assert.equal(secondEcho.created, false);
+      assert.equal(secondEcho.playlist_id, 'pl1');
+      assert.equal(postCalls.filter((c) => c.path === '/me/playlists').length, 1);
+    });
   });
   // #834: refresh_smart_playlist answered `ok: true` without a single API call,
 // so a saved rule never rebuilt anything. Every non-dry-run refresh must

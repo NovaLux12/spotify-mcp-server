@@ -19,6 +19,7 @@ import {
   __resetReceiptStoreForTests,
   formatReceipt,
   getAllReceipts,
+  isPlausibleReceiptId,
   issueReceipt,
   isReceiptsPersistent,
   receiptMissMessage,
@@ -30,8 +31,12 @@ import {
   type ReceiptClient,
 } from '../src/receipts.js';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { SpotifyClient } from '../src/client.js';
 import { REGISTRAR_MANIFEST, registerManifestModule } from '../src/tools/annotations.js';
+import { moduleBlockedByScopes, scopesFor, WRITE_SCOPE_REQUIREMENTS } from '../src/scopefilter.js';
+import { isModuleActive, resolveToolsets } from '../src/toolsets.js';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -664,6 +669,171 @@ describe('verify_receipt label direction (#586)', () => {
     const { text } = await callVerifyReceipt(receipt.receipt_id);
     assert.match(text, /all uris confirmed absent/);
     assert.doesNotMatch(text, /all uris confirmed\n/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #688 — a miss is a failed LOOKUP, and the tool that reads the store is not
+// gated behind the writes that fill it.
+//
+// Both halves are the same bug seen from two sides. The unknown branch used to
+// return a plain result: no `isError`, no `structuredContent`, so an agent
+// branching on `result.isError` and a host rendering green on success both read
+// "the write was verified" off a receipt that was never found. And the
+// registration sat under the `library` scope gate, so a token without library
+// scopes — or a `SPOTIFY_MCP_TOOLSETS=playback` session — was told to verify a
+// mutation and then found no tool to verify it with.
+// ---------------------------------------------------------------------------
+
+describe('verify_receipt miss and registration gating (#688)', () => {
+  /** The shipped registration, reached the way a host reaches it. */
+  function receiptsServer(): McpServer {
+    const server = new McpServer({ name: 'verify-receipt-688', version: '0.0.0' });
+    const module = REGISTRAR_MANIFEST.find((m) => m.key === 'receipts');
+    assert.ok(module, 'the receipts module must be in the registrar manifest');
+    registerManifestModule(server, new SpotifyClient(), module!, {
+      readOnly: false,
+      isModuleActive: () => true,
+      scopeBlocked: () => false,
+    });
+    return server;
+  }
+
+  interface VerifyResult {
+    text: string;
+    isError: boolean;
+    structuredContent: Record<string, unknown>;
+  }
+
+  /**
+   * Call through a real Client so schema validation, `isError` and
+   * `structuredContent` are crossed at the protocol boundary rather than
+   * invoked on the handler directly — the handler is the shape before the SDK
+   * has decided what the caller is owed.
+   */
+  async function callVerifyReceipt(
+    receiptId: unknown,
+    server: McpServer = receiptsServer(),
+  ): Promise<VerifyResult> {
+    const client = new Client({ name: 'verify-receipt-688-client', version: '0.0.0' });
+    const [clientTx, serverTx] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(serverTx), client.connect(clientTx)]);
+    try {
+      const out = await client.callTool({ name: 'verify_receipt', arguments: { receipt_id: receiptId } });
+      const result = out as {
+        content: Array<{ text: string }>;
+        isError?: boolean;
+        structuredContent?: Record<string, unknown>;
+      };
+      return {
+        text: result.content[0]?.text ?? '',
+        isError: result.isError === true,
+        structuredContent: result.structuredContent ?? {},
+      };
+    } finally {
+      await client.close().catch(() => undefined);
+      await server.close().catch(() => undefined);
+    }
+  }
+
+  it('reports an unknown receipt as isError, not as a successful call', async () => {
+    const miss = await callVerifyReceipt('rcpt_99999999-1');
+    assert.equal(miss.isError, true,
+      'a receipt that was never found is a failed lookup — a caller branching on isError must not read it as a verified write');
+    assert.equal(miss.structuredContent.found, false);
+    assert.equal(miss.structuredContent.receipt_id, 'rcpt_99999999-1');
+    assert.equal(miss.structuredContent.reason, 'unknown');
+    assert.equal(miss.structuredContent.receipts_kept, MAX_RECEIPTS);
+    assert.match(miss.text, /Unknown or expired receipt/);
+  });
+
+  it('reports a found receipt as a success, sharing the found flag with the miss', async () => {
+    const client = stubClient((_p, arg) => (arg?.uris ?? '').split(',').map(() => true));
+    const receipt = await issueReceipt(client, { kind: 'library', uris: ['spotify:track:a'] });
+    assert.equal(receipt.verified, true, 'precondition: the receipt under test is a verified one');
+
+    const found = await callVerifyReceipt(receipt.receipt_id);
+    assert.equal(found.isError, false, 'a receipt the store holds is not an error');
+    assert.equal(found.structuredContent.found, true);
+    // The receipt's own fields stay FLAT alongside `found`: hosts already read
+    // `verified` / `missing` / `expect_present` off this payload, and nesting
+    // them under a `receipt` key would silently break every one of them.
+    assert.equal(found.structuredContent.receipt_id, receipt.receipt_id);
+    assert.equal(found.structuredContent.verified, true);
+    assert.deepEqual(found.structuredContent.uris, ['spotify:track:a']);
+  });
+
+  it('rejects a malformed id at validation, naming the expected shape', async () => {
+    // A receipt id only ever comes from a mutation result, so a malformed one
+    // is a mistyped call. Reporting it as an unknown receipt reads as a fact
+    // about the receipt; rejecting it reads as a fact about the call. The SDK
+    // surfaces a schema failure as an isError result rather than a thrown
+    // error, so assert on what the caller actually receives — and on the
+    // ABSENCE of structuredContent, which is what keeps a rejected call from
+    // being mistaken for a found receipt.
+    for (const bad of ['recpt_1', 'receipt-4', '4', 'rcpt_', '']) {
+      const rejected = await callVerifyReceipt(bad);
+      assert.equal(rejected.isError, true, `id ${JSON.stringify(bad)} must not be a successful call`);
+      assert.match(rejected.text, /rcpt_<bootId>-<n>/,
+        `id ${JSON.stringify(bad)} must be rejected with the expected shape in the message, got: ${rejected.text}`);      assert.equal(rejected.structuredContent.found, undefined,
+        'a rejected call has no receipt verdict at all — `found` belongs only to the two real outcomes');
+    }
+  });
+
+  it('accepts both the boot-scoped id and the pre-#587 bare counter', () => {
+    // #587 moved ids to `rcpt_<bootId>-<n>`; a `receipts.jsonl` written before
+    // it can still hold `rcpt_<n>`, and rejecting those would make a
+    // persisted receipt unverifiable.
+    for (const id of ['rcpt_m1abc-7', 'rcpt_12', 'rcpt_legacy-1']) {
+      assert.equal(isPlausibleReceiptId(id), true, id);
+    }
+    for (const id of ['recpt_1', 'receipt-4', '4', 'rcpt_', '', 'rcpt_abc-']) {
+      assert.equal(isPlausibleReceiptId(id), false, id);
+    }
+  });
+
+  it('registers with no library scopes and under a single-toolset trim', () => {
+    // Both profiles the issue named. `scopeBlocked` mirrors
+    // `moduleBlockedByScopes`, and the toolset check goes through the real
+    // `isModuleActive` so the trim is the production one, not a stub.
+    const granted = scopesFor('user-read-private user-read-email');
+    const libraryScopeRequired = WRITE_SCOPE_REQUIREMENTS.library;
+    assert.ok(libraryScopeRequired, 'the library gate is what this test is about');
+
+    const noLibraryScopes = new McpServer({ name: 'no-library-scopes', version: '0.0.0' });
+    for (const module of REGISTRAR_MANIFEST) {
+      registerManifestModule(noLibraryScopes, new SpotifyClient(), module, {
+        readOnly: false,
+        isModuleActive: () => true,
+        scopeBlocked: (key) => moduleBlockedByScopes(key, granted),
+      });
+    }
+    const noScopeNames = new Set(
+      Object.keys((noLibraryScopes as unknown as { _registeredTools: Record<string, unknown> })._registeredTools),
+    );
+    assert.equal(moduleBlockedByScopes('library', granted), true,
+      'precondition: this grant really does block the library module');
+    for (const name of ['verify_receipt', 'spotify_doctor']) {
+      assert.ok(noScopeNames.has(name), `${name} must be reachable without library scopes`);
+    }
+
+    const playbackOnly = resolveToolsets('playback');
+    const trimmed = new McpServer({ name: 'playback-only', version: '0.0.0' });
+    for (const module of REGISTRAR_MANIFEST) {
+      registerManifestModule(trimmed, new SpotifyClient(), module, {
+        readOnly: false,
+        isModuleActive: (key) => isModuleActive(key, playbackOnly.sets),
+        scopeBlocked: () => false,
+      });
+    }
+    const trimmedNames = new Set(
+      Object.keys((trimmed as unknown as { _registeredTools: Record<string, unknown> })._registeredTools),
+    );
+    assert.equal(isModuleActive('library', playbackOnly.sets), false,
+      'precondition: the playback trim really does drop the library module');
+    for (const name of ['verify_receipt', 'spotify_doctor']) {
+      assert.ok(trimmedNames.has(name), `${name} must survive SPOTIFY_MCP_TOOLSETS=playback`);
+    }
   });
 });
 

@@ -93,7 +93,7 @@ import { registerSwarm3RefsTools } from './swarm3_refs.js';
 import { registerSwarm3SnapshotsTools } from './swarm3_snapshots.js';
 import { registerSwarm3MetaTools } from './swarm3_meta.js';
 import { registerStatsfmTools } from './statsfm.js';
-import { formatReceipt, receiptMissMessage, verifyReceipt } from '../receipts.js';
+import { formatReceipt, MAX_RECEIPTS, RECEIPT_ID_PATTERN, RECEIPT_ID_SHAPE, receiptMissMessage, verifyReceipt } from '../receipts.js';
 import { z } from 'zod';
 import { CallToolRequestSchema, ListToolsRequestSchema, type ServerResult } from '@modelcontextprotocol/sdk/types.js';
 import { getObjectShape, normalizeObjectSchema, safeParseAsync } from '@modelcontextprotocol/sdk/server/zod-compat.js';
@@ -113,9 +113,13 @@ export const TOOL_SURFACE_BUDGET = Object.freeze({
   // #979 and #791 together added ~904B more legitimate disclosure, then
   // -> 603_000 (2026-09-27) for the batch landing #821/#773/#839 — the
   // discovery-walk cap disclosure, the `peek_error` field, and the
-  // sidecar-corruption `load_error`/`preserved_as` pair. Measured cost of
-  // that batch over 602,000: +1,015B, of which the decorative-clause trim on
-  // four `swarm3b_discovery` descriptions gave back 250B inside the same edit.
+  // sidecar-corruption `load_error`/`preserved_as` pair, then -> 604_000
+  // (2026-09-26) for #688's `verify_receipt` description and `receipt_id`
+  // pattern. Measured cost of that last one: +330B, of which ~210B is the
+  // sentence telling the agent that receipts are session-scoped and lost on
+  // restart. That sentence is the fix: an agent that does not know the store
+  // is process-local will treat a receipt it can no longer look up as
+  // evidence about the mutation, which is the exact failure #688 reports.
   // Read the numbers below before sizing another raise; AGENTS.md §3 requires
   // this record to be accurate about host-session payload impact, and my first
   // attempt at that record was wrong in three ways (see "CORRECTIONS").
@@ -135,21 +139,21 @@ export const TOOL_SURFACE_BUDGET = Object.freeze({
   // asserting something false about its own result.
   //
   // HEADROOM: the enforced limit is `defaultMaxBytes + 1_000` (that 1KB covers
-  // final MCP annotation metadata added after registration), so 604,000B was
-  // the real ceiling. CORRECTED 2026-09-26 (#713): the "measured 603,100B
-  // leaves ~900B" line above was wrong — measured through
-  // collectAggregateSurfaceMeasurement, the pre-#713 surface is 603,999B, i.e.
-  // ONE byte of headroom, not ~900B. A previous author recorded a figure they
-  // had not re-measured. Measured, not estimated:
-  //   603,999B before #713 -> 604,398B after (+399B) -> ceiling 605,000B,
-  //   leaving ~600B. The +399B is exactly the `swarm3meta` per-module delta
-  //   (1,624 -> 2,023): `toolset_report` gained a declared `response_format`
-  //   and all three discovery tools now describe their own modes instead of
-  //   promising a "raw API object" they never produce (#713).
-  //   +1,000B for a +399B need is the same 2.5x over-grant the CORRECTIONS
-  //   paragraph below warns about, kept only to stay inside the ~600B posture
-  //   this budget has deliberately held. A breach should still land in a
-  //   conversation, not be pre-authorised.
+  // final MCP annotation metadata added after registration), so 605,000B is the
+  // real ceiling. Measured 604,330B leaves ~670B — tighter than the ~900B the
+  // previous raise left, which is a deliberate signal that this budget is
+  // close to done, not slack to absorb a wave. A breach should land in a
+  // conversation, not be pre-authorised.
+  //
+  // WARRANT #713: +399B, the whole cost of honouring `response_format` in the
+  // discovery trio. `toolset_report` gained a declared `response_format` and
+  // all three discovery tools now describe their own modes instead of promising
+  // a "raw API object" they never produce. Measured, not estimated: the
+  // `swarm3meta` per-module figure moves 1,624 -> 2,023 (+399B, tool count
+  // unchanged at 3) and the aggregate moves by the same +399B. Fits under the
+  // existing 605,000B ceiling with ~270B to spare, so this raise needs no
+  // budget change of its own — recorded because a later author measuring the
+  // delta against `swarm3meta` should find the arithmetic already done.
   //
   // CORRECTIONS to my first record of this raise, kept because the next author
   // should not repeat them: the headroom figure ignored the +1_000 derivation;
@@ -650,20 +654,54 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   manifestEntry('backupdelete', 'library', 'src/tools/backup_delete.ts', registerBackupDeleteTools, [1, 959], { readOnlySafe: false, scopeKey: 'library' }),
   manifestEntry('restore', 'library', 'src/tools/restore.ts', registerRestoreTools, [1, 1888], { scopeKey: 'library' }),
   manifestEntry('undo', 'library', 'src/tools/undo.ts', registerUndoTools, [2, 1663], { scopeKey: 'library' }),
-  manifestEntry('receipts', 'library', 'src/tools/annotations.ts', (server) => {
+  manifestEntry('receipts', 'receipts', 'src/tools/annotations.ts', (server) => {
     server.tool(
       'verify_receipt',
-      'Verify that a previous mutation actually landed on Spotify by looking up its receipt',
-      { receipt_id: z.string().min(1).describe('Receipt ID from a receipt-bearing mutation result') },
+      // Session scope is the single most common way this tool misleads: the
+      // store is process-local and FIFO-capped, so an id from a previous
+      // session is simply gone — which says nothing about whether the
+      // mutation landed. State it here, where the agent reads it, rather than
+      // only in the miss message it will see too late.
+      `Verify that a previous mutation actually landed on Spotify by looking up its receipt. `
+        + `Receipts are session-scoped: the ${MAX_RECEIPTS} most recent mutations, in this process only, `
+        + `and lost on restart unless SPOTIFY_MCP_RECEIPTS is set. `
+        + `An unknown or expired id returns isError with found:false — a fact about the lookup, not about the mutation.`,
+      {
+        receipt_id: z
+          .string()
+          .regex(RECEIPT_ID_PATTERN, `Receipt ID must look like ${RECEIPT_ID_SHAPE} — copy it verbatim from a receipt-bearing mutation result.`)
+          .describe(`Receipt ID copied verbatim from a receipt-bearing mutation result (${RECEIPT_ID_SHAPE})`),
+      },
       async (args) => {
         const receipt = verifyReceipt(args.receipt_id);
         if (!receipt) {
-          return { content: [{ type: 'text', text: receiptMissMessage(args.receipt_id) }] };
+          // A miss is a failed lookup, not a successful one. Without isError
+          // an agent that branches on `result.isError` (and a host that
+          // renders green on success) reads this as "the receipt was checked
+          // and the write is fine" (#688).
+          return {
+            content: [{ type: 'text', text: receiptMissMessage(args.receipt_id) }],
+            isError: true,
+            structuredContent: {
+              found: false,
+              receipt_id: args.receipt_id,
+              reason: 'unknown',
+              receipts_kept: MAX_RECEIPTS,
+            },
+          };
         }
-        return { content: [{ type: 'text', text: formatReceipt(receipt) }], structuredContent: { ...receipt } };
+        // `found` is the one field both branches share, so a caller can branch
+        // on it instead of parsing prose. The receipt's own fields stay
+        // flattened on top: hosts already read `verified` / `missing` /
+        // `expect_present` here, and nesting them under `receipt` would
+        // silently break every one of them.
+        return {
+          content: [{ type: 'text', text: formatReceipt(receipt) }],
+          structuredContent: { found: true, ...receipt },
+        };
       },
     );
-  }, [1, 315], { readOnlySafe: true, scopeKey: 'library' }),
+  }, [1, 626], { alwaysActive: true, readOnlySafe: true }),
   manifestEntry('episodemgmt', 'episodemgmt', 'src/tools/episodemgmt.ts', registerEpisodeMgmtTools, [1, 1053], { scopeKey: 'library' }),
   manifestEntry('freshness', 'following', 'src/tools/freshness.ts', registerFreshnessTools, [1, 2043], { readOnlySafe: true, scopeKey: 'following' }),
   manifestEntry('searchdive', 'search', 'src/tools/searchdive.ts', registerSearchDeepTool, [1, 1561], { readOnlySafe: true, scopeKey: 'search' }),
@@ -671,7 +709,7 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   manifestEntry('browse', 'browse', 'src/tools/browse.ts', registerBrowseTools, [3, 2634], { readOnlySafe: true, scopeKey: 'catalog' }),
   manifestEntry('artistwatch', 'artistwatch', 'src/tools/artistwatch.ts', registerArtistWatchTools, [6, 5934], { scopeKey: 'catalog' }),
   manifestEntry('queueops', 'queueops', 'src/tools/queueops.ts', registerQueueOpsTools, [3, 3449], { scopeKey: 'playback' }),
-  manifestEntry('playbackext', 'playbackext', 'src/tools/playbackext.ts', registerPlaybackExtTools, [13, 8039], { scopeKey: 'playback' }),
+  manifestEntry('playbackext', 'playbackext', 'src/tools/playbackext.ts', registerPlaybackExtTools, [13, 8033], { scopeKey: 'playback' }),
   manifestEntry('playbackintel', 'playbackintel', 'src/tools/playbackintel.ts', registerPlaybackIntelTools, [15, 11663], { scopeKey: 'playback' }),
   manifestEntry('scenes', 'playback', 'src/tools/scenes.ts', registerScenesTools, [7, 4456], { scopeKey: 'playback' }),
   manifestEntry('playlisthealth', 'playlisthealth', 'src/tools/playlisthealth.ts', registerPlaylistHealthTools, [8, 5285], { scopeKey: 'playlists' }),

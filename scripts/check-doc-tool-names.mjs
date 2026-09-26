@@ -61,6 +61,12 @@ const parameterAllowlist = new Set([
   // clean batch read. StructuredContent keys on every batch tool, not
   // parameters or tools — the README is naming what the tool returns.
   'degraded_reason',
+  // #688: verify_receipt's structuredContent is the stored Receipt object
+  // flattened alongside `found`, and `expect_present` is the field that tells a
+  // re-render which direction the mutation went — a caller must be able to
+  // branch on it rather than parse prose. A key the tool returns about its own
+  // result, not a parameter.
+  'expect_present',
   // #713: SPEC.md §5.11 documents the discovery trio's response_format, which
   // means naming the payload each mode serializes. These are the remaining
   // structuredContent keys of find_tool/inspect_tool/toolset_report, joining
