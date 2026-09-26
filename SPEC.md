@@ -318,7 +318,8 @@ All Spotify API calls go through a single `SpotifyClient` instance. Its responsi
 - **Base URL**: `https://api.spotify.com/v1`
 - **Token injection**: attach `Authorization: Bearer <access_token>` to every request
 - **Pre-request token check**: if `Date.now() >= expires_at - 60_000` (1 minute buffer), refresh before sending
-- **Rate limit queue**: maintain an internal queue; enforce minimum 100ms between dispatched requests; on 429 drain the queue for `Retry-After` seconds
+- **Rate limit queue**: maintain an internal queue; enforce minimum 100ms between dispatched requests; on 429 drain the queue for `Retry-After` seconds (parsed from either the delta-seconds or the HTTP-date form)
+- **Bounded retry**: 502/503/504 responses and idempotent-verb transport failures retry inside a shared 3-dispatch budget, waiting `Retry-After` when the response carries one and otherwise a jittered exponential backoff (250 ms·2ⁿ + 0–250 ms). A wait beyond the 10 s in-queue cap fails fast rather than holding the queue
 - **Response parsing**: throw a typed `SpotifyApiError` on non-2xx with `status` and `message` from the Spotify error body
 - **Token memory management**: The `SpotifyClient` holds the token state in memory (not read from disk on every request). On initialization it reads `~/.spotify-mcp/tokens.json`. On successful refresh it updates its in-memory state AND writes back to disk. This ensures the long-running MCP server process doesn't repeatedly hit disk.
 - **Request timeouts**: every outbound HTTP call (API requests and token refresh) carries an `AbortSignal.timeout` — 30 s by default, overridable via `SPOTIFY_REQUEST_TIMEOUT_MS`. Expiry raises a 408-style `SpotifyApiError` so a hung connection can never stall the serialised queue.
@@ -1253,8 +1254,10 @@ The finalized default registry exposes **14 prompts**: `artist_deep_dive`, `crat
 | 401 Unauthorized | Token expired | Auto-refresh and retry once; if still 401, return error with setup instructions |
 | 403 Forbidden | OAuth scope missing, deprecated endpoint, regional restriction, or a Premium-only control failure | Surface Spotify's own error message when present; otherwise a hint naming the likely cause categories (never a blanket "requires Premium" claim) |
 | 404 Not Found | Entity doesn't exist | Return descriptive message |
-| 429 Too Many Requests | Rate limit | Respect `Retry-After` header, retry once after delay |
-| 503 Service Unavailable | Spotify down | Return error with retry suggestion |
+| 429 Too Many Requests | Rate limit | Respect `Retry-After` header (delta-seconds **or** HTTP-date), retry once after delay |
+| 500 Internal Server Error | Spotify's own logic failed | Not retried — return Spotify's error message |
+| 502 / 503 / 504 Gateway, Service Unavailable, Gateway Timeout | Spotify or its edge is temporarily down | Retry within a shared attempt budget of 3 dispatches, waiting `Retry-After` when present and otherwise 250 ms·2ⁿ + 0–250 ms jitter; a wait above the 10 s in-queue cap fails fast with the wait named in the error |
+| 503 (transport) | DNS failure, connection reset, socket hang-up | Retried only for an idempotent verb (`GET`/`HEAD`/`PUT`/`DELETE`/`OPTIONS`) — never for a `POST`, which may already have been applied. Exhausted, it is a `SpotifyApiError` naming the method, URL and cause, not a raw `TypeError` |
 | 408 (client timeout) | Outbound call exceeded `SPOTIFY_REQUEST_TIMEOUT_MS` (default 30 s) | `SpotifyApiError` naming the timed-out method and URL |
 
 ### No active device
@@ -1266,7 +1269,8 @@ When playback commands fail because no device is active (204 with no `device_id`
 
 - All API calls go through a central `SpotifyClient` class with a request queue
 - Requests are serialized with a minimum 100 ms gap to avoid bursts
-- On 429: pause the queue for `Retry-After` seconds and retry once; the throttle event (retry delay, wait time) is recorded on the client
+- On 429: pause the queue for `Retry-After` seconds and retry once; the throttle event (retry delay, wait time) is recorded on the client. `Retry-After` is read in both RFC 9110 forms — delta-seconds and HTTP-date — so a server asking for minutes is honoured rather than retried after the 1 s fallback
+- One shared attempt budget (`MAX_ATTEMPTS = 3`) covers the 401-refresh, the 429 backoff, the 5xx backoff and transport-error retries, so no combination of them can loop. 5xx backoff is jittered, and a transport failure is retried only for an idempotent verb so a mutation is never silently re-sent
 - Throttle visibility: the most recent event is exposed via the `spotify://me/rate-limit` resource, and a "rate-limited by Spotify, waited Ns" notice is appended to the throttled call's result
 - Batch operations issue one API call per affected content type (e.g., `save_items` partitions its URIs across `/me/tracks`, `/me/albums`, …) instead of one call per item
 
