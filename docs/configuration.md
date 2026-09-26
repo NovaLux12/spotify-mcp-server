@@ -9,8 +9,8 @@ The variables below are read at the documented call sites; set them in your MCP 
 | `SPOTIFY_CLIENT_ID` | none (required) | OAuth Client ID of your Spotify app; used for login and token refresh. |
 | `SPOTIFY_REDIRECT_URI` | `http://127.0.0.1:8888/callback` | OAuth redirect URI; must match your Spotify app settings exactly. |
 | `SPOTIFY_MCP_TOKEN_FILE` | `~/.spotify-mcp/tokens.json` | Persistent token cache (written with mode 600). Explicit path wins over profile and default. |
-| `SPOTIFY_MCP_PROFILE` | unset | Profile name for `~/.spotify-mcp/tokens.<profile>.json`; `auth --profile <name>` is the CLI equivalent. |
-| `SPOTIFY_SCOPES` | unset (17 default scopes) | Space- or comma-separated OAuth scopes to request; unknown scopes fail startup. |
+| `SPOTIFY_MCP_PROFILE` | unset | Profile name for `~/.spotify-mcp/tokens.<profile>.json`; `auth --profile <name>` is the CLI equivalent. The CLI flag rejects an empty or missing name instead of falling back to the default token file. |
+| `SPOTIFY_SCOPES` | unset (17 default scopes) | Space- or comma-separated OAuth scopes to request; unknown scopes fail startup, and so does a value that is set but names no scope. |
 | `SPOTIFY_MCP_MARKET` | unset (no market applied) | Default ISO 3166-1 alpha-2 market for market-gated lookups. Precedence: the tool's `market` argument, then this variable, then the account country when `GET /me` still carries one. Spotify removed `country` from `GET /me` in its February 2026 changes, so on a current registration nothing supplies a default and the result reports `market_source: "none"`. |
 | `SPOTIFY_HEADLESS` | unset | `1`, `true`, `yes`, or `on` enables browserless paste-flow authentication. |
 | `SPOTIFY_REQUEST_TIMEOUT_MS` | `30000` | Per-request timeout for Spotify API calls and token refresh. |
@@ -56,7 +56,7 @@ The variables below are read at the documented call sites; set them in your MCP 
 
 `SPOTIFY_REDIRECT_URI` must match a redirect URI configured in the app character for character. The callback listener derives its loopback bind address, port, and route from this value. Use `http://127.0.0.1` for local development, not `http://localhost`.
 
-`SPOTIFY_MCP_TOKEN_FILE` and `SPOTIFY_MCP_PROFILE` select the persistent token file. Explicit `SPOTIFY_MCP_TOKEN_FILE` wins; otherwise a profile uses `~/.spotify-mcp/tokens.<profile>.json`; the unprofiled default is `~/.spotify-mcp/tokens.json`. Token files are created with mode 600.
+`SPOTIFY_MCP_TOKEN_FILE` and `SPOTIFY_MCP_PROFILE` select the persistent token file. Explicit `SPOTIFY_MCP_TOKEN_FILE` wins; otherwise a profile uses `~/.spotify-mcp/tokens.<profile>.json`; the unprofiled default is `~/.spotify-mcp/tokens.json`. Token files are created with mode 600. The `auth` command's `--profile` flag must name a profile: `--profile=`, `--profile "$UNSET_VAR"`, and a dangling trailing `--profile` are errors, because the silent alternative was to write into the shared default file while the operator believed a named profile existed.
 
 ### Local files: reads and writes are confined
 
@@ -68,7 +68,7 @@ Containment is decided on the *real* path — every component is resolved before
 
 `SPOTIFY_HEADLESS=1` affects only the `auth` command. The auth URL is printed for a browserless host; complete it anywhere and paste the redirect URL back.
 
-`SPOTIFY_SCOPES` accepts spaces or commas and rejects unknown scope names. When unset, the default scopes in `src/config.ts` are requested. `SPOTIFY_MCP_MARKET` accepts a two-letter ISO 3166-1 alpha-2 code; invalid values are ignored with a warning, and an explicit tool `market` argument takes precedence.
+`SPOTIFY_SCOPES` accepts spaces or commas and rejects unknown scope names. When unset, the default scopes in `src/config.ts` are requested. A variable that is *set but names no scope* (`SPOTIFY_SCOPES=`, `SPOTIFY_SCOPES=" "`) also fails: it used to be read as "unset" and silently widened the request to all 17 default scopes, five of which are mutation scopes. Unset the variable instead of emptying it. The `auth` command's `--scopes` flag follows the same rule. `SPOTIFY_MCP_MARKET` accepts a two-letter ISO 3166-1 alpha-2 code; invalid values are ignored with a warning, and an explicit tool `market` argument takes precedence.
 
 ### Runtime limits and requests
 
