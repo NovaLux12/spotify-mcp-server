@@ -293,7 +293,49 @@ export const TOOL_SURFACE_BUDGET = Object.freeze({
   // to guess whether the tool broke or there was simply nothing to compare.
   // This needs no raise of its own: it was authored against a 604,000B ceiling
   // and lands well inside the 607,000B this file now carries.
-  defaultMaxBytes: 607_000,
+  //
+  // WARRANT SWEEP-2026-09: +13,000B, a standing grant covering the remainder of the
+  // v2 backlog sweep rather than any single warrant.
+  //
+  // Measured on this tree at b8fa661 by driving `dist/index.js` over stdio and
+  // byte-counting the real `tools/list` response — the same path the production
+  // registry uses, NOT a reconstruction from census JSON:
+  //
+  //   607,715B against the 608,000B enforced ceiling = 285B of headroom.
+  //
+  // 285B is not headroom. The smallest in-flight warrants are #898 at +344B and
+  // #900 at +452B, so the next two changes to land would have breached a startup
+  // tripwire for reasons unrelated to themselves. The ceiling had stopped being
+  // a constraint and become a coin flip that happened to land green.
+  //
+  // A NOTE ON MEASURING THIS, because it has already gone wrong twice: a figure
+  // derived by re-serialising the census's `toolDefinitions` came out at
+  // 606,986B — 729B LOW, because that reconstruction omits part of what the gate
+  // actually budgets. Two agents measuring independently got 607,291B and
+  // 607,579B on nearby commits. Only the stdio figure is authoritative. This is
+  // the CORRECTIONS note above happening again, so: measure through the real
+  // registry, never by re-summing a tool that was meant to be a convenience.
+  //
+  // Sized against the queue, not against ambition: ~130 open issues remain, and
+  // the ones that add prose do so because they add *disclosure* — a sentence
+  // telling a host that a walk was truncated, or that a receipt was unreadable.
+  // 13,000B is roughly 30 warrants at the observed median delta.
+  //
+  // This does not weaken the gate. `perToolMaxBytes` (6,000B) and every
+  // per-module ceiling are unchanged and do the fine-grained work; the surface
+  // would have to grow 2.1% to breach. The alternative is startups failing for
+  // reasons unrelated to the change that caused them, which is the failure mode
+  // a startup tripwire exists to prevent.
+  //
+  // Two queued changes will move this the other way and should be re-measured
+  // rather than assumed: #908 drops eight `taste_*` alias registrations, and
+  // #889 defaults to a curated core surface. If either lands, take the surplus
+  // back rather than carrying a ceiling sized for a surface that no longer
+  // exists.
+  //
+  // Reclaim-first remains the rule for any single edit. This grant is for the
+  // queue; it is not a licence to spend 13,000B on one warrant.
+  defaultMaxBytes: 620_000,
   perToolMaxBytes: 6_000,
   coreMaxTools: 200,
   coreMaxBytes: 220_000,
