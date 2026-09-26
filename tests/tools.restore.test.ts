@@ -394,7 +394,16 @@ describe('restore_library_snapshot strictly additive', () => {
       const puts = h.client.calls.filter(
         (c) => c.method === 'PUT' && c.path.startsWith('/me/library?'),
       );
-      assert.equal(puts.length, 3, '118 absent uris saved in ≤40 chunks (40/40/38)');
+      // 118 absent URIs at the documented 40-URI cap is 40/40/38. Assert the
+      // split itself: a count of 3 alone is also what the over-cap 50 chunking
+      // (50/50/18) produces, so the old assertion could not fail.
+      assert.deepEqual(
+        puts.map((p) =>
+          (new URLSearchParams(p.path.split('?')[1] ?? '').get('uris') ?? '').split(',').filter(Boolean).length,
+        ),
+        [40, 40, 38],
+        '118 absent uris saved as 40/40/38 at the documented cap',
+      );
       for (const p of puts) {
         const urisInRequest = new URLSearchParams(p.path.split('?')[1] ?? '').get('uris');
         assert.ok(urisInRequest !== null, 'library write must carry a uris query param');

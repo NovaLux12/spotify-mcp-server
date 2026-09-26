@@ -450,6 +450,44 @@ describe('check_following_artists wire migration (#594)', () => {
     const followed = sc.items.filter((i) => i.follows);
     assert.deepEqual(followed.map((i) => i.id), ['a40'], 'flags must not shift across the chunk boundary');
   });
+
+  it('fails rather than reporting false for a short /me/library/contains reply (#594)', async () => {
+    // Three URIs sent, one boolean back. The old `flags[i] ?? false` spread
+    // reported `follows: false` for b and c — two artists nobody read — and
+    // across the 40-chunk boundary it attributed a40's answer to a39. A short
+    // reply is a failed read, not a row of negatives.
+    const h = makeHarness(() => [true]);
+    await assert.rejects(
+      () => h.invoke('check_following_artists', { ids: ['a', 'b', 'c'] }),
+      /expected 3 flag\(s\) for 3 URI\(s\), got 1/,
+    );
+  });
+
+  it('fails on a short chunk rather than misattributing across the boundary (#594)', async () => {
+    // 45 ids: chunk one is 40. If chunk one came back one short, spreading it
+    // would slide every later flag left and report a39 as the followed artist.
+    const ids = Array.from({ length: 45 }, (_, i) => `a${i}`);
+    let call = 0;
+    const h = makeHarness((_path, arg) => {
+      assert.ok(arg !== null && typeof arg === 'object' && 'uris' in arg);
+      const uris = String(arg.uris).split(',');
+      call += 1;
+      // Chunk one is deliberately one flag short of the 40 URIs it was sent.
+      return call === 1 ? uris.slice(0, uris.length - 1).map(() => false) : uris.map(() => true);
+    });
+    await assert.rejects(
+      () => h.invoke('check_following_artists', { ids }),
+      /expected 40 flag\(s\) for 40 URI\(s\), got 39/,
+    );
+  });
+
+  it('fails when the reply is not an array at all', async () => {
+    const h = makeHarness(() => null);
+    await assert.rejects(
+      () => h.invoke('check_following_artists', { ids: ['a', 'b'] }),
+      /got no array/,
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -533,7 +571,9 @@ describe('follow family normalises artist references (#745)', () => {
   // family that actually issues a request. The point is unchanged: a URI, a
   // bare id and a URL are one id on the wire.
   it('sends canonical spotify:artist: URIs when the caller passes mixed forms', async () => {
-    const h = makeHarness(() => [true, true]);
+    // One flag per URI: the endpoint's reply is positional, and a short
+    // array is now a hard failure rather than a row of invented `false`s.
+    const h = makeHarness(() => [true, true, true]);
     const out = await h.invoke('check_following_artists', {
       ids: [
         `spotify:artist:${idA}`,
@@ -589,7 +629,7 @@ describe('following_analytics batch-endpoint removal (#594)', () => {
     },
   });
 
-  it('enriches with per-id GET /artists/{id}, never the removed batch endpoint', async () => {
+  it('rolls up the walk itself — no per-artist fan-out, no removed batch endpoint', async () => {
     const h = makeHarness((path) => {
       if (path === '/me/following') {
         return onePage([
@@ -602,19 +642,41 @@ describe('following_analytics batch-endpoint removal (#594)', () => {
 
     const out = await h.invoke('following_analytics', { group_by: 'genre' });
 
-    const artistCalls = h.calls.filter((c) => c.path.startsWith('/artists/'));
-    // The exact replacement shape: one request per artist, id in the path.
+    // The walk already carries `genres` on every item, so a per-artist
+    // GET /artists/{id} would buy nothing and cost N requests (N reaches
+    // fetchAllCap = 500). The rollup must read what the walk returned.
     assert.deepEqual(
-      artistCalls.map((c) => c.path),
-      ['/artists/a1', '/artists/b2'],
+      h.calls.map((c) => c.path),
+      ['/me/following'],
+      'following_analytics must issue only the walk — no per-artist enrichment',
     );
-    assert.ok(artistCalls.every((c) => c.method === 'GET'));
     // The removed batch endpoint must appear nowhere, in any form.
     assert.ok(
       !h.calls.some((c) => c.path === '/artists' || String(c.path).includes('ids=')),
       'no call may target the removed batch /artists?ids= endpoint',
     );
     assert.match(textOf(out), /rock: 2/);
+  });
+
+  it('reports total_artists as the artists it measured, not an enriched subset (#594)', async () => {
+    // The old per-id fan-out silently dropped artists whose /artists/{id}
+    // read failed, so total_artists and every bucket counted a subset with
+    // no disclosure. The denominator must be the walked count.
+    const h = makeHarness((path) => {
+      if (path === '/me/following') {
+        return onePage([
+          { id: 'a1', name: 'A1', genres: ['rock'] },
+          { id: 'b2', name: 'B2', genres: ['rock'] },
+          { id: 'c3', name: 'C3', genres: ['jazz'] },
+        ]);
+      }
+      return null;
+    });
+
+    const out = await h.invoke('following_analytics', { group_by: 'genre' });
+    const payload = out.structuredContent as Record<string, unknown>;
+    assert.equal(payload.total_artists, 3, 'all three walked artists are counted');
+    assert.match(textOf(out), /\(3 artists, by genre\)/);
   });
 
   it('refuses popularity and followers rollups — those Artist fields no longer exist', async () => {
@@ -664,13 +726,18 @@ const REMOVED_ENDPOINTS: Array<{ label: string; match: (c: RecordedCall) => bool
 
 describe('no removed follow/artist-batch endpoint is reachable (#594)', () => {
   it('drives every registered tool and records zero removed-endpoint calls', async () => {
-    const h = makeHarness((path) => {
+    const h = makeHarness((path, arg) => {
       if (path === '/me/following') {
         return {
           artists: { items: [{ id: 'a1', name: 'A1', uri: 'spotify:artist:a1', genres: ['rock'] }], total: 1, cursors: null },
         };
       }
-      if (path.startsWith('/artists/')) return { id: 'a1', name: 'A1', uri: 'spotify:artist:a1', genres: ['rock'] };
+      if (path === '/me/library/contains') {
+        // One flag per URI: the reply is positional, and the tool now refuses
+        // a short one rather than inventing `false` for the missing rows.
+        const uris = arg !== null && typeof arg === 'object' && 'uris' in arg ? String(arg.uris).split(',') : [];
+        return uris.map(() => true);
+      }
       return [];
     });
 
@@ -723,8 +790,15 @@ describe('no removed follow/artist-batch endpoint is reachable (#594)', () => {
     const callSite = /client\.(get|put|post|delete|putRaw)(?:<[^>]*>)?\(\s*(['"`])((?:[^\\]|\\.)*?)\2/g;
     const paths = [...source.matchAll(callSite)].map((m) => m[3] as string);
 
-    // Sanity: the extraction must find the calls, or this guard is vacuous.
-    assert.ok(paths.length >= 4, `expected to extract the module's client calls, found ${paths.length}`);
+    // The module's call sites are exactly the two surviving reads: the
+    // followed-artist walk and the migrated library check. Asserting the exact
+    // set (not a floor) is what keeps this guard from being satisfied by a
+    // weakened extractor or a silently dropped call.
+    assert.deepEqual(
+      [...new Set(paths)].sort(),
+      ['/me/following', '/me/library/contains'],
+      `the module must call only these two endpoints, found ${[...new Set(paths)].sort().join(', ')}`,
+    );
 
     for (const path of paths) {
       assert.ok(
@@ -742,10 +816,16 @@ describe('no removed follow/artist-batch endpoint is reachable (#594)', () => {
       paths.includes('/me/following'),
       'GET /me/following is still available and must stay',
     );
-    // …and so must the migrated per-id replacement for the removed batch call.
+    // …and so must the migrated read that replaced the removed contains call.
     assert.ok(
-      paths.some((p) => p.startsWith('/artists/')),
-      'following_analytics must enrich via per-id GET /artists/{id}',
+      paths.includes('/me/library/contains'),
+      'check_following_artists must read follow state via GET /me/library/contains',
+    );
+    // The per-id /artists/{id} fan-out is gone: the walk carries `genres`, so
+    // enrichment bought nothing and cost one request per followed artist.
+    assert.ok(
+      !paths.some((p) => p.startsWith('/artists/')),
+      'following_analytics must not re-introduce a per-artist GET /artists/{id} fan-out',
     );
   });
 });

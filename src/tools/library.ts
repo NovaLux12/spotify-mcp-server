@@ -917,7 +917,7 @@ export function registerLibraryTools(server: McpServer, client: SpotifyClient): 
   // check_in_library (#37)
   server.tool(
     'check_in_library',
-    "Preferred. Accepts the widest URI mix (track, album, episode, show, audiobook, artist, user, playlist) in one request. Check whether items are saved in or followed by the user — this tests LIBRARY-SAVED/FOLLOWED state, distinct from check_following_artists which only tests artist FOLLOW state. Returns a boolean per URI via Spotify's unified endpoint. Max 40. To follow/unfollow artists use follow_artists/unfollow_artists.",
+    "Preferred. Accepts the widest URI mix (track, album, episode, show, audiobook, artist, user, playlist) in one request. Check whether items are saved in or followed by the user. Same endpoint as check_following_artists, and the only way to read follow state: no endpoint can follow an artist (#594). Returns a boolean per URI. Max 40.",
     {
       uris: z
         .array(z.string())
@@ -935,9 +935,17 @@ export function registerLibraryTools(server: McpServer, client: SpotifyClient): 
         '/me/library/contains',
         libraryUrisParam(uris),
       );
-      if (!contains) throw new Error('Could not check library state');
+      // A short reply does not line up with the URIs sent; `?? false` would
+      // report a confident "not saved" for a URI nobody answered for. Fail
+      // closed instead of inventing a negative.
+      if (!Array.isArray(contains) || contains.length !== uris.length) {
+        throw new Error(
+          `Could not check library state (/me/library/contains): expected ${uris.length} ` +
+            `flag(s) for ${uris.length} URI(s), got ${Array.isArray(contains) ? contains.length : 'no array'}`,
+        );
+      }
 
-      const checks = uris.map((uri, i) => ({ uri, saved: contains[i] ?? false }));
+      const checks = uris.map((uri, i) => ({ uri, saved: contains[i] === true }));
       const t = truncateItems(checks, cap(args));
       const pagination = paginationInfo({ total: checks.length, returned: t.items.length });
 

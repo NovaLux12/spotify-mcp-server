@@ -14,7 +14,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import type { SpotifyClient } from '../src/client.js';
+import { SpotifyApiError, type SpotifyClient } from '../src/client.js';
 import type { SpotifyPaged } from '../src/types/spotify.js';
 import { registerPlaylistTools, walkTruncationNotice } from '../src/tools/playlists.js';
 import { registerFollowingTools } from '../src/tools/following.js';
@@ -2237,5 +2237,104 @@ describe('canonical playlist set-operation contracts', () => {
       wireCalls(h.client.calls).filter((call) => call.method !== 'GET').length,
       0,
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #594 AC#2 — check_playlist_following migrated to /me/library/contains and
+// must never report `following: false` for a read it could not perform. A stub
+// client answers whatever path it is handed, so these assert the wire path
+// and URI form, not just the returned rows.
+// ---------------------------------------------------------------------------
+
+describe('check_playlist_following wire migration (#594)', () => {
+  // Spotify ids are 22 base62 characters; the reference parser rejects
+  // anything shorter, so the fixtures must be real-shaped.
+  const pA = 'p'.repeat(22);
+  const pB = 'q'.repeat(22);
+
+  /** One flag per URI, so the positional reply lines up with what was sent. */
+  const positional = (follow: boolean) => (_path: string, arg: unknown) => {
+    const uris = arg !== null && typeof arg === 'object' && 'uris' in arg ? String(arg.uris).split(',') : [];
+    return uris.map(() => follow);
+  };
+
+  it('sends spotify:playlist: URIs to /me/library/contains, never /followers/contains', async () => {
+    const h = harness(positional(true));
+    await h.invoke('check_playlist_following', { playlists: [pA, pB] });
+
+    assert.equal(h.client.calls.length, 1, 'two playlists are one batched GET, not two');
+    assert.equal(h.client.calls[0].path, '/me/library/contains');
+    assert.deepEqual(h.client.calls[0].arg, { uris: `spotify:playlist:${pA},spotify:playlist:${pB}` });
+    // The removed endpoint must not be reachable in any form.
+    assert.ok(!JSON.stringify(h.client.calls).includes('followers/contains'));
+  });
+
+  it('chunks at the documented 40-URI cap: 50 playlists become 40 + 10', async () => {
+    const ids = Array.from({ length: 50 }, (_, i) => `${String.fromCharCode(97 + (i % 26))}${'z'.repeat(21)}`);
+    const h = harness(positional(false));
+    const out = await h.invoke('check_playlist_following', { playlists: ids });
+
+    assert.equal(h.client.calls.length, 2, '50 playlists must split into 40 + 10');
+    for (const call of h.client.calls) {
+      assert.equal(call.path, '/me/library/contains');
+      const uris = String((call.arg as { uris: string }).uris).split(',');
+      assert.ok(uris.length <= 40, `chunk of ${uris.length} exceeds the documented 40 cap`);
+    }
+    const rows = (out.structuredContent as { results: Array<{ playlist_id: string; following: boolean }> }).results;
+    assert.equal(rows.length, 50, 'every requested playlist gets a row');
+    assert.ok(rows.every((r) => r.following === false), 'a read negative is still reported as false');
+  });
+
+  it('reports a 403 as unknown/registration_gated, never false (#594 AC#2)', async () => {
+    const h = harness(() => {
+      throw new SpotifyApiError(403, 'Forbidden', undefined, 'REGISTRATION_GATED');
+    });
+    const out = await h.invoke('check_playlist_following', { playlists: [pA, pB] });
+
+    const payload = out.structuredContent as {
+      results: Array<{ playlist_id: string; following: boolean | null; reason?: string }>;
+      unknown?: number;
+    };
+    for (const row of payload.results) {
+      assert.equal(row.following, null, 'a gated read must never report following: false');
+      assert.equal(row.reason, 'registration_gated');
+    }
+    assert.equal(payload.unknown, 2);
+    const text = textOf(out);
+    assert.match(text, /unknown/);
+    assert.doesNotMatch(text, /✗/, 'no playlist may be marked as not-followed');
+  });
+
+  it('reports a plain 403 as unknown/forbidden, distinct from gating', async () => {
+    const h = harness(() => {
+      throw new SpotifyApiError(403, 'Forbidden');
+    });
+    const out = await h.invoke('check_playlist_following', { playlists: [pA] });
+    const payload = out.structuredContent as { results: Array<{ following: boolean | null; reason?: string }> };
+    assert.equal(payload.results[0].following, null);
+    assert.equal(payload.results[0].reason, 'forbidden');
+  });
+
+  it('classifies an unrelated transport failure as read_failed', async () => {
+    const h = harness(() => {
+      throw new Error('socket hang up');
+    });
+    const out = await h.invoke('check_playlist_following', { playlists: [pA] });
+    const payload = out.structuredContent as { results: Array<{ following: boolean | null; reason?: string }> };
+    assert.equal(payload.results[0].following, null);
+    assert.equal(payload.results[0].reason, 'read_failed');
+  });
+
+  it('reports a short contains reply as unknown rather than sliding flags', async () => {
+    // Two URIs, one boolean. Spreading it would report pa=true, pb=false —
+    // a confident answer for a playlist nobody asked about.
+    const h = harness(() => [true]);
+    const out = await h.invoke('check_playlist_following', { playlists: [pA, pB] });
+    const payload = out.structuredContent as { results: Array<{ following: boolean | null; reason?: string }> };
+    for (const row of payload.results) {
+      assert.equal(row.following, null, 'a short reply is unread, not a row of negatives');
+      assert.equal(row.reason, 'read_failed');
+    }
   });
 });

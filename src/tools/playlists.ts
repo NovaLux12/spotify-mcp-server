@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { issueReceipt, formatReceipt } from '../receipts.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import type { SpotifyClient } from '../client.js';
+import { SpotifyApiError, type SpotifyClient } from '../client.js';
 import { getConfig } from '../config.js';
 import {
   confirmViaElicitation,
@@ -11,6 +11,7 @@ import {
   REPLACE_ELICIT_THRESHOLD,
 } from './confirm.js';
 import {
+  CHUNK_CAPS,
   DryRun,
   PlaylistId,
   PlaylistListFields,
@@ -43,6 +44,7 @@ import type {
   SpotifyTrack,
   SpotifyEpisode,
 } from '../types/spotify.js';
+import { isGatedPathContractError } from '../gating.js';
 
 type TextContent = { type: 'text'; text: string };
 type ToolResult = { content: TextContent[]; structuredContent?: Record<string, unknown> };
@@ -60,6 +62,45 @@ function trackIdentityKey(track: SpotifyTrack | SpotifyEpisode): string {
       ? track.artists.map((a) => a.name.toLowerCase()).sort().join(',')
       : '';
   return `${track.name.toLowerCase()}|${artists}`;
+}
+
+
+/**
+ * Why a follow-state read came back unreadable (#594 AC#2).
+ *
+ * `registration_gated` is the token the acceptance criterion names: a 403
+ * this app registration cannot answer, whether Spotify labels it that way or
+ * the repo's own graceful-403 contract catches it. `forbidden` is a plain
+ * 403. Anything else is `read_failed` — the request did not complete. None of
+ * the three may be reported as `following: false`.
+ */
+type FollowReadReason = 'registration_gated' | 'forbidden' | 'read_failed';
+
+/**
+ * Classify a failed follow-state read, walking the `cause` chain because the
+ * graceful-403 contract wraps the transport error rather than replacing it.
+ * The raw message is kept as `detail` for the prose and never becomes the
+ * reason: a caller branching on `reason` needs the token, not a sentence.
+ */
+function classifyFollowReadFailure(err: unknown): { reason: FollowReadReason; detail: string } {
+  const seen = new Set<unknown>();
+  let current: unknown = err;
+  let gated = false;
+  let forbidden = false;
+  while (current !== null && current !== undefined && !seen.has(current)) {
+    seen.add(current);
+    if (isGatedPathContractError(current)) gated = true;
+    if (current instanceof SpotifyApiError) {
+      if (current.status === 403) forbidden = true;
+      // Spotify's own gating signal, the same one annotations.ts reads.
+      if (current.reason && /registration[-_ ]?gated/i.test(current.reason)) gated = true;
+    }
+    current = current instanceof Error ? current.cause : undefined;
+  }
+  return {
+    reason: gated ? 'registration_gated' : forbidden ? 'forbidden' : 'read_failed',
+    detail: err instanceof Error ? err.message : String(err),
+  };
 }
 
 const jsonText = (data: unknown): string => JSON.stringify(data, null, 2);
@@ -1834,22 +1875,47 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
     return snap;
   }
 
-  // check_playlist_following (#284) — fan-out capped 5
-  server.tool('check_playlist_following', 'Check if you follow 1–50 playlists (the canonical playlists field or the deprecated playlist_ids alias). Quota: 🟢 1–50 GETs.', { ...playlistListInputFields(['playlist_ids'], { min: 1, max: 50 }), ...sharedListFields }, async (args) => {
+  // check_playlist_following (#284) — #594: one GET /me/library/contains per ≤40 playlists
+  server.tool('check_playlist_following', 'Check if you follow 1–50 playlists (the canonical playlists field or the deprecated playlist_ids alias). A 403 reports unknown, never false. Quota: 🟢 1–2 GETs.', { ...playlistListInputFields(['playlist_ids'], { min: 1, max: 50 }), ...sharedListFields }, async (args) => {
     const input = resolvePlaylistInput(args, { kind: 'list', aliases: ['playlist_ids'] });
-    const results: Array<{ playlist_id: string; following: boolean }> = [];
+    // #594: GET /playlists/{id}/followers/contains was removed in Feb 2026.
+    // GET /me/library/contains is the documented replacement and it does
+    // accept spotify:playlist: URIs, so this is a true migration — and it
+    // collapses up to 50 per-playlist GETs into ceil(50/40) = 2.
     const ids = input.values;
-    for (let i = 0; i < ids.length; i += 5) {
-      const batch = ids.slice(i, i + 5);
-      const settled = await Promise.all(batch.map(async (pid) => { try { const r = await client.get<boolean[]>(`/playlists/${encodeURIComponent(pid)}/followers/contains`); return { playlist_id: pid, following: r?.[0] ?? false }; } catch { return { playlist_id: pid, following: false }; } }));
-      results.push(...settled);
+    const results: Array<{ playlist_id: string; following: boolean | null; reason?: FollowReadReason; detail?: string }> = [];
+    for (let i = 0; i < ids.length; i += CHUNK_CAPS.library_writes) {
+      const batch = ids.slice(i, i + CHUNK_CAPS.library_writes);
+      const uris = batch.map((id) => `spotify:playlist:${id}`);
+      let flags: boolean[];
+      try {
+        const res = await client.get<boolean[]>('/me/library/contains', { uris: uris.join(',') });
+        if (!Array.isArray(res) || res.length !== uris.length) {
+          throw new Error(`short /me/library/contains reply: ${Array.isArray(res) ? res.length : 'no array'} flag(s) for ${uris.length} URI(s)`);
+        }
+        flags = res;
+      } catch (err) {
+        // The old catch answered `following: false` for every playlist, which
+        // is the exact defect #594 names: a 403 (a registration-gated read)
+        // became a confident "you do not follow this". Unread is not false —
+        // so an unread batch is reported as null with a classified reason.
+        const { reason, detail } = classifyFollowReadFailure(err);
+        results.push(...batch.map((playlist_id) => ({ playlist_id, following: null, reason, detail })));
+        continue;
+      }
+      batch.forEach((playlist_id, idx) => results.push({ playlist_id, following: flags[idx] === true }));
     }
     const t = truncateItems(results, resolveMaxResults(args.max_results));
     const pag = paginationInfo({ total: results.length, returned: t.items.length });
-    const payload = withPlaylistInputMetadata({ ...listStructuredContent(t.items, pag), playlists: input.values, results: t.items }, input);
+    const unknown = results.filter((r) => r.following === null).length;
+    const payload = withPlaylistInputMetadata({ ...listStructuredContent(t.items, pag), playlists: input.values, results: t.items, unknown }, input);
     if (args.response_format === 'json') return textResult(jsonText(payload), payload);
     const lines = [`Playlist following (${results.length} checked, showing ${t.items.length}):`];
-    for (const r of t.items) lines.push(`  ${r.following ? '✓' : '✗'} ${r.playlist_id}`);
+    for (const r of t.items) {
+      const mark = r.following === null ? '?' : r.following ? '✓' : '✗';
+      lines.push(`  ${mark} ${r.playlist_id}${r.following === null ? ` (unknown — ${r.reason})` : ''}`);
+    }
+    if (unknown > 0) lines.push(`(${unknown} unknown: the follow check could not be read — never reported as false)`);
     if (t.footer) lines.push(`(${t.footer})`);
     return textResult(withPlaylistInputNote(lines.join('\n'), input), payload);
   });

@@ -334,7 +334,16 @@ async function containsLibraryUris(
   const flags: boolean[] = [];
   for (const part of chunk(uris, LIBRARY_CONTAINS_CHUNK)) {
     const res = await client.get<boolean[]>('/me/library/contains', { uris: part.join(',') });
-    if (!res) throw new Error('Could not check current library state (/me/library/contains)');
+    // A short reply does not line up with the URIs sent, and the callers index
+    // these flags positionally: a missing one would report the next URI's
+    // answer, or invent a "not saved" nobody measured. Fail closed.
+    if (!Array.isArray(res) || res.length !== part.length) {
+      throw new Error(
+        `Could not check current library state (/me/library/contains): expected ` +
+          `${part.length} flag(s) for ${part.length} URI(s), got ` +
+          `${Array.isArray(res) ? res.length : 'no array'}`,
+      );
+    }
     flags.push(...res);
   }
   return flags;

@@ -312,7 +312,7 @@ export function registerFollowingTools(server: McpServer, client: SpotifyClient)
   // check_following_artists
   server.tool(
     'check_following_artists',
-    'Check if the user follows specific artists (GET /me/library/contains; spotify:artist: is supported there, and GET /me/following/contains was removed in Feb 2026). Accepts IDs or spotify:artist: URIs. Rows carry {id, uri, follows}; returns a boolean per ID. Max 50.',
+    'Check if the user follows specific artists (GET /me/library/contains; spotify:artist: is supported there, and GET /me/following/contains was removed in Feb 2026). Accepts IDs or spotify:artist: URIs. Rows carry {id, uri, follows}. Max 50.',
     {
       ids: ArtistIds.describe('Artist IDs, spotify:artist: URIs, or artist URLs; CSV accepted'),
       response_format: ResponseFormat,
@@ -330,17 +330,29 @@ export function registerFollowingTools(server: McpServer, client: SpotifyClient)
         const res = await client.get<boolean[]>('/me/library/contains', {
           uris: uris.join(','),
         });
-        if (!res) throw new Error('Could not check following status (/me/library/contains)');
+        // A short or non-boolean reply does not line up with the URIs that
+        // were sent. Spreading it would slide every later flag one position
+        // left, so an artist nobody asked about would inherit another's
+        // answer — a wrong `true`/`false`, not a missing value. Fail closed
+        // instead, the way portability.ts's contains helper does.
+        if (!Array.isArray(res) || res.length !== uris.length) {
+          throw new Error(
+            `Could not check following status (/me/library/contains): expected ` +
+              `${uris.length} flag(s) for ${uris.length} URI(s), got ` +
+              `${Array.isArray(res) ? res.length : 'no array'}`,
+          );
+        }
         flags.push(...res);
       }
 
       // #110 finding 11: rows carry a full URI alongside the id so agents
       // can chain into other tools without reconstructing URIs. `follows` is
       // the boolean the library check returned for that artist URI.
+      // Safe to index unguarded: the loop above proved flags.length === ids.length.
       const checks = ids.map((id, i) => ({
         id,
         uri: `spotify:artist:${id}`,
-        follows: flags[i] ?? false,
+        follows: flags[i] === true,
       }));
       const t = truncateItems(checks, cap(args));
       const pagination = paginationInfo({ total: checks.length, returned: t.items.length });
@@ -358,7 +370,7 @@ export function registerFollowingTools(server: McpServer, client: SpotifyClient)
   // follow_artists
   server.tool(
     'follow_artists',
-    'UNAVAILABLE (#594): no endpoint can follow an artist — PUT /me/following was removed in Feb 2026 and PUT /me/library rejects spotify:artist: URIs. Fails loudly rather than issuing a call that follows nothing. Read follow state with check_following_artists.',
+    'UNAVAILABLE (#594): no endpoint can follow an artist — PUT /me/following was removed in Feb 2026 and PUT /me/library rejects spotify:artist: URIs. Fails loudly rather than following nothing. Read state with check_following_artists.',
     {
       ids: ArtistIds.describe('Artist IDs, spotify:artist: URIs, or artist URLs; CSV accepted'),
       dry_run: z
@@ -380,7 +392,7 @@ export function registerFollowingTools(server: McpServer, client: SpotifyClient)
   // unfollow_artists
   server.tool(
     'unfollow_artists',
-    'UNAVAILABLE (#594): no endpoint can unfollow an artist — DELETE /me/following was removed in Feb 2026 and DELETE /me/library rejects spotify:artist: URIs. Fails loudly rather than issuing a call that unfollows nothing. Read follow state with check_following_artists.',
+    'UNAVAILABLE (#594): no endpoint can unfollow an artist — DELETE /me/following was removed in Feb 2026 and DELETE /me/library rejects spotify:artist: URIs. Fails loudly rather than unfollowing nothing. Read state with check_following_artists.',
     {
       ids: ArtistIds.describe('Artist IDs, spotify:artist: URIs, or artist URLs; CSV accepted'),
       dry_run: z
@@ -398,7 +410,7 @@ export function registerFollowingTools(server: McpServer, client: SpotifyClient)
   // following_analytics (#297)
   server.tool(
     'following_analytics',
-    'Analytics over followed artists: genre rollup. Quota: 🟢 GET /me/following + one GET /artists/{id} per followed artist (disclosed fan-out; batch /artists?ids= removed). group_by="genre" only — Spotify removed the popularity and followers Artist fields.',
+    'Analytics over followed artists: genre rollup from the followed-artist walk. group_by="genre" only — Spotify removed the popularity and followers Artist fields.',
     {
       group_by: z.enum(['genre', 'popularity', 'followers']).default('genre').describe('Rollup dimension for the report'),
       top_n: z.number().int().min(1).max(50).optional().describe('Top N groups to show'),
@@ -415,8 +427,8 @@ export function registerFollowingTools(server: McpServer, client: SpotifyClient)
       if (args.group_by !== 'genre') {
         throw new Error(
           `following_analytics cannot group by "${args.group_by}": Spotify removed the ` +
-            `${args.group_by} field from Artist objects in February 2026, so the value is not ` +
-            'returned by GET /artists/{id} and the rollup cannot be computed. Use group_by="genre".',
+            `${args.group_by} field from Artist objects in February 2026, so the value is ` +
+            'not returned by GET /me/following and the rollup cannot be computed. Use group_by="genre".',
         );
       }
       // The same cursor walk get_followed_artists(fetch_all) uses (#744), so
@@ -424,29 +436,29 @@ export function registerFollowingTools(server: McpServer, client: SpotifyClient)
       const all = (await walkFollowedArtists(client)).items;
       if (all.length === 0) return shapeResult(rf, 'No followed artists.', listStructuredContent([], paginationInfo({ total: 0, returned: 0 })));
       // #594: the batch `GET /artists?ids=` endpoint was removed in February
-      // 2026; `GET /artists/{id}` is the documented replacement, so this is a
-      // per-artist fan-out rather than a chunked batch. The cost is disclosed
-      // in the tool description rather than hidden.
-      const enriched: SpotifyArtistFull[] = [];
-      for (const a of all) {
-        const res = await client.get<SpotifyArtistFull>(`/artists/${encodeURIComponent(a.id)}`);
-        if (res) enriched.push(res);
-      }
-      const src = enriched.length ? enriched : all;
+      // 2026, and the per-id replacement was a no-op here: `genre` is the only
+      // reachable dimension and the followed-artist walk already returns
+      // `genres` on every item (documented response sample: `"genres":
+      // ["Prog rock", "Grunge"]`). The old per-artist fan-out cost one request
+      // per followed artist — up to fetchAllCap (500) sequential calls against
+      // an endpoint that returns fields this rollup no longer reads. Rolling up
+      // the walk's own items is both cheaper and exact: `total_artists` is now
+      // the number of artists actually measured.
+      //
       // `genre` is the only reachable dimension: the guard above refuses
       // popularity/followers, whose backing Artist fields no longer exist.
       const m = new Map<string, number>();
-      for (const a of src) for (const g of (a.genres ?? [])) m.set(g, (m.get(g) ?? 0) + 1);
+      for (const a of all) for (const g of a.genres ?? []) m.set(g, (m.get(g) ?? 0) + 1);
       const groups: Array<{ key: string; count: number }> = [...m.entries()]
         .map(([key, count]) => ({ key, count }))
         .sort((a, b) => b.count - a.count);
       const topN = args.top_n ?? 10;
       const view = truncateItems(groups, Math.min(topN, cap(args)));
       const pagination = paginationInfo({ total: groups.length, returned: view.items.length });
-      const lines = [`Following analytics (${src.length} artists, by ${args.group_by}):`];
+      const lines = [`Following analytics (${all.length} artists, by ${args.group_by}):`];
       for (const g of view.items) lines.push(`  ${g.key}: ${g.count}`);
       if (view.footer) lines.push(`(${view.footer})`);
-      return shapeResult(rf, lines.join('\n'), listStructuredContent(view.items, pagination, { total_artists: src.length, group_by: args.group_by }));
+      return shapeResult(rf, lines.join('\n'), listStructuredContent(view.items, pagination, { total_artists: all.length, group_by: args.group_by }));
     },
   );
 }

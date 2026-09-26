@@ -34,8 +34,15 @@ import type { SpotifyClient } from './client.js';
  *   /markets                      -- app-gated
  *   /artists/{id}/top-tracks      -- app-gated
  *   /users/{id}*                  -- profile + playlists (Feb 2026 removal)
- *   documented /me/<type>/contains -- albums/tracks/episodes/shows/audiobooks/following
- *   /playlists/{id}/followers/contains
+ *   /me/<type>/contains           -- albums/tracks/episodes/shows/audiobooks
+ *   /me/following/contains        -- REMOVED by Spotify Feb 2026 (#594)
+ *   /playlists/{id}/followers/contains -- likewise REMOVED Feb 2026 (#594)
+ *
+ * The last two families no longer exist as callable endpoints: every call
+ * site migrated to the ungated `/me/library/contains` (#594), which is
+ * deliberately absent from this set. The patterns are retained so a
+ * grandfathered registration that still answers a removed path gets the
+ * graceful 403 contract instead of a raw error.
  *
  * Exported so the #330 gauntlet SKIP set and future callers classify against
  * the same single source of truth.

@@ -416,9 +416,9 @@ Quick reference for all endpoints used. All paths are relative to `https://api.s
 | `get_playlist_cover` | GET | `/playlists/{id}/images` |
 | `upload_playlist_cover` | PUT | `/playlists/{id}/images` — raw base64 JPEG body; requires optional `ugc-image-upload` scope |
 | `get_followed_artists` | GET | `/me/following?type=artist` — cursor-based pagination: `after` is the artist ID of the last returned item, not a numeric offset |
-| `follow_artists` | PUT | `/me/following?type=artist&ids=…` |
-| `unfollow_artists` | DELETE | `/me/following?type=artist&ids=…` |
-| `check_following_artists` | GET | `/me/following/contains?type=artist&ids=…` — bare artist IDs |
+| `follow_artists` | — | unavailable: `PUT /me/following` was removed Feb 2026 and `PUT /me/library` does not accept `spotify:artist:` URIs. Fails loudly; issues no request |
+| `unfollow_artists` | — | unavailable: `DELETE /me/following` was removed Feb 2026 and `DELETE /me/library` does not accept `spotify:artist:` URIs. Fails loudly; issues no request |
+| `check_following_artists` | GET | `/me/library/contains?uris=spotify:artist:…` — accepts IDs or `spotify:artist:` URIs, chunked at the documented 40-URI cap |
 
 ---
 
@@ -898,7 +898,7 @@ All playlist set-operation, diff, overlap, intersection, union, subtraction, mer
 | Ordered overlap analysis | `overlap_playlists` | `playlists` | None; canonical-only input |
 | Base-minus-set operation | `playlist_subtract`, `playlist_difference_plan` | `base_playlist_id` plus `playlists` for the sources to subtract | `subtract_playlist_ids`, and the positional form `playlists: [base, ...sources]` |
 | A/B comparison | `diff_playlists`, `playlist_diff`, `playlist_pair_check`, `compare_playlist_covers`, `playlist_symmetric_difference` | `playlist_a`, then `playlist_b` | one per tool, not a bundle: `diff_playlists` takes `a`/`b`, `compare_playlist_covers` and `playlist_symmetric_difference` take `playlist_id_a`/`playlist_id_b`, `playlist_diff` and `playlist_pair_check` take `playlist_a_id`/`playlist_b_id` |
-| Following fan-out | `check_playlist_following` | `playlists` | `playlist_ids` (retains its historical 1–50 bound) |
+| Following batch check | `check_playlist_following` | `playlists` | `playlist_ids` (retains its historical 1–50 bound) |
 
 **Returned versus total counts.** Where a set operation returns arrays, `removed`/`kept` (and `uris`/`removed_uris` beside them) count only the rows actually returned, bounded by `max_results`; `removed_total`/`kept_total` carry the true impact the confirmation prompt quoted. A capped response therefore never reports a count its own arrays contradict.
 
@@ -1058,31 +1058,34 @@ Get all artists the user follows.
 #### `check_following_artists`
 Check if the user follows specific artists.
 
-**Inputs:** `ids` (string[], required, max 50 — bare artist IDs)
+**Inputs:** `ids` (string[], required, max 50 — bare artist IDs, `spotify:artist:` URIs, or artist URLs)
 
-**Returns:** array of booleans matching input order. Uses `GET /me/following/contains?type=artist&ids=…`.
+**Returns:** one row per input, in input order, carrying `{id, uri, follows}`. Uses `GET /me/library/contains?uris=spotify:artist:…` (chunked at the documented 40-URI cap). A reply whose flag count does not match the URIs sent fails the call rather than reporting a `false` nobody measured.
 
 ---
 
 #### `follow_artists`
-Follow one or more artists. Requires the `user-follow-modify` scope.
-
-**Inputs:** `ids` (string[], required, 1–50 artist IDs)
-
-Sends `PUT /me/following?type=artist&ids=…` and echoes a batch summary of the followed artists.
+**Unavailable.** Following an artist is not expressible through the Web API as of Feb 2026: `PUT /me/following` was removed, and its documented replacement `PUT /me/library` accepts only track, album, episode, show, audiobook, user and playlist URIs — there is no `spotify:artist:`. The tool validates its input and then throws, naming the blocker. It issues no request, and `dry_run` is refused too. Read follow state with `check_following_artists` instead.
 
 ---
 
 #### `unfollow_artists`
-Unfollow one or more artists. Requires the `user-follow-modify` scope.
+**Unavailable**, for the same reason as `follow_artists`: `DELETE /me/following` was removed and `DELETE /me/library` does not accept `spotify:artist:` URIs.
 
 **Inputs:**
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `ids` | string[] | yes | Artist IDs to unfollow (1–50) |
-| `dry_run` | boolean | no | Preview which artists would be unfollowed without calling the API |
+| `dry_run` | boolean | no | Unavailable — this tool always fails |
 
-Sends `DELETE /me/following?type=artist&ids=…`.
+---
+
+#### `following_analytics`
+Genre rollup over the followed-artist walk. `group_by` accepts `genre` only; `popularity` and `followers` are refused up front because Spotify removed those Artist fields in Feb 2026, and the old `?? 0` fallback reported a named rollup full of zeroes.
+
+**Inputs:** `group_by` (default `genre`), `top_n`, `response_format`, `max_results`
+
+**Returns:** the genre buckets plus `total_artists` — the number of followed artists the rollup actually measured.
 
 ---
 

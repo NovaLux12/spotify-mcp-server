@@ -225,14 +225,14 @@ Some Web API endpoints are denied **at the app-registration level**: on current 
 
 | Response | Endpoints |
 |---|---|
-| `403 Forbidden` | `/browse/new-releases`, `/browse/categories` (and `/browse/categories/{id}/playlists`), `/markets`, `/artists/{id}/top-tracks`, `/users/{id}` (and `/users/{id}/playlists`), every documented `/me/{type}/contains` check (tracks, albums, shows, episodes, audiobooks, following), `/playlists/{id}/followers/contains` |
+| `403 Forbidden` | `/browse/new-releases`, `/browse/categories` (and `/browse/categories/{id}/playlists`), `/markets`, `/artists/{id}/top-tracks`, `/users/{id}` (and `/users/{id}/playlists`), the `/me/{type}/contains` checks for tracks, albums, shows, episodes and audiobooks |
 | `404 Not Found` | `/recommendations`, `/recommendations/available-genre-seeds` |
 | `410 Gone` | `/me/apps`, `/me/chapters` |
 
 Notes:
 
 - Tools wrapping a gated endpoint are **not hidden** — they still work on legacy app registrations where Spotify granted the endpoint. On a newer registration you'll get the server's plain-English 403 explanation instead of a crash.
-- The undocumented `/me/library/contains` check is *not* gated (it returned 200 on the same probe) and powers the duplicate-cleanup tooling.
+- `/me/library/contains` is *not* gated (it returned 200 on the same probe) and powers the library, follow and duplicate-cleanup tooling. It replaced `/me/following/contains` and `/playlists/{id}/followers/contains`, both removed in February 2026; those paths are no longer called.
 - Legacy lookups the server already explains gracefully (audio-features, audio-analysis, related-artists, featured-playlists) also probe as 403; their tools say so in the error message.
 
 <details><summary>Troubleshooting</summary>
