@@ -39,6 +39,10 @@ export const MARKET_CODE = z
   .regex(/^[A-Za-z]{2}$/, 'market must be a 2-letter ISO 3166-1 alpha-2 country code, e.g. "US"')
   .transform((code) => code.toUpperCase());
 
+// Rows the show detail card previews. #787 requires the card to say how much
+// of the episode list that is.
+const EMBEDDED_EPISODE_PREVIEW = 10;
+
 let profileCountry: Promise<string | undefined> | null = null;
 
 // Show/episode lookups are market-gated (#29): when the caller supplies no
@@ -539,12 +543,23 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
         `URI: ${show.uri}`,
       ];
 
+      // #787: the embedded episode array is a fixed ten-row preview, not the
+      // show's episode list. Without a count the card reads as complete, so
+      // state how much of the show it stands for.
       if (show.episodes?.items.length) {
         lines.push('', 'Recent episodes:');
-        for (const ep of show.episodes.items.slice(0, 10)) {
+        const shown = show.episodes.items.slice(0, EMBEDDED_EPISODE_PREVIEW);
+        for (const ep of shown) {
           const played = ep.resume_point?.fully_played ? ' [played]' : '';
           lines.push(
             `  • "${ep.name}" (${formatDuration(ep.duration_ms)}, ${ep.release_date})${played} | URI: ${ep.uri}`,
+          );
+        }
+        const declared = typeof show.total_episodes === 'number' ? show.total_episodes : 0;
+        const episodeTotal = Math.max(declared, show.episodes.items.length);
+        if (episodeTotal > shown.length) {
+          lines.push(
+            `  (${shown.length} of ${episodeTotal} episodes shown — use list_show_episodes to page the rest)`,
           );
         }
       }
