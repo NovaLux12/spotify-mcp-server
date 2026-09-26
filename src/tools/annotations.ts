@@ -107,7 +107,12 @@ export const TOOL_SURFACE_BUDGET = Object.freeze({
   defaultMaxTools: 620,
   // Raised 600_000 -> 601_000 (2026-09-26) for the `include_track_features`
   // disclosure on `artist_collab_network`, then -> 602_000 (2026-09-27) when
-  // #979 and #791 together added ~904B more legitimate disclosure.
+  // #979 and #791 together added ~904B more legitimate disclosure, then
+  // -> 603_000 (2026-09-27) for the batch landing #821/#773/#839 — the
+  // discovery-walk cap disclosure, the `peek_error` field, and the
+  // sidecar-corruption `load_error`/`preserved_as` pair. Measured cost of
+  // that batch over 602,000: +1,015B, of which the decorative-clause trim on
+  // four `swarm3b_discovery` descriptions gave back 250B inside the same edit.
   // Read the numbers below before sizing another raise; AGENTS.md §3 requires
   // this record to be accurate about host-session payload impact, and my first
   // attempt at that record was wrong in three ways (see "CORRECTIONS").
@@ -127,10 +132,10 @@ export const TOOL_SURFACE_BUDGET = Object.freeze({
   // asserting something false about its own result.
   //
   // HEADROOM: the enforced limit is `defaultMaxBytes + 1_000` (that 1KB covers
-  // final MCP annotation metadata added after registration), so 603,000B is the
-  // real ceiling. Measured 602,085B leaves ~915B. Still tight on purpose: the
-  // next real breach should land in a conversation, not be pre-authorised by
-  // slack I invented.
+  // final MCP annotation metadata added after registration), so 604,000B is the
+  // real ceiling. Measured 603,100B leaves ~900B — deliberately the same tight
+  // posture as the ~915B this replaced, not slack to absorb a wave. A breach
+  // should land in a conversation, not be pre-authorised.
   //
   // CORRECTIONS to my first record of this raise, kept because the next author
   // should not repeat them: the headroom figure ignored the +1_000 derivation;
@@ -138,7 +143,7 @@ export const TOOL_SURFACE_BUDGET = Object.freeze({
   // 11.5% of the payload is not that; and the first raise was 19x its warrant
   // (+10,000B against a +524B need), which is precisely the reflex this budget
   // exists to prevent.
-  defaultMaxBytes: 602_000,
+  defaultMaxBytes: 603_000,
   perToolMaxBytes: 6_000,
   coreMaxTools: 200,
   coreMaxBytes: 220_000,
@@ -571,7 +576,7 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   manifestEntry('backupfirst', 'library', 'src/tools/backupfirst.ts', registerBackupFirstTools, [1, 513], { readOnlySafe: true, scopeKey: 'library' }),
   manifestEntry('backup', 'library', 'src/tools/backup.ts', registerBackupTools, [3, 2584], { readOnlySafe: false, scopeKey: 'library' }),
   manifestEntry('restore', 'library', 'src/tools/restore.ts', registerRestoreTools, [1, 1851], { scopeKey: 'library' }),
-  manifestEntry('undo', 'library', 'src/tools/undo.ts', registerUndoTools, [2, 1518], { scopeKey: 'library' }),
+  manifestEntry('undo', 'library', 'src/tools/undo.ts', registerUndoTools, [2, 1663], { scopeKey: 'library' }),
   manifestEntry('receipts', 'library', 'src/tools/annotations.ts', (server) => {
     server.tool(
       'verify_receipt',
