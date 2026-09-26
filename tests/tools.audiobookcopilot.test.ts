@@ -438,7 +438,7 @@ describe('jump_to_chapter', () => {
     });
 
     const text = textOf(out);
-    assert.match(text, /^\[dry run\] start playback on spotify:chapter:ch7 — nothing was changed\./);
+    assert.match(text, /^\[dry run\] start playback on <<untrusted: spotify:chapter:ch7 >> — nothing was changed\./);
     assert.match(text, /Play chapter 7: "Chapter 7"/);
     assert.match(text, /context_uri=spotify:audiobook:book1, offset\.uri=spotify:chapter:ch7/);
     assert.ok(!h.client.calls.some((c) => c.method === 'PUT'));
