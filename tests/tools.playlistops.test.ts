@@ -94,6 +94,52 @@ function makeStubClient(responder: Responder = () => null) {
       }
       return all;
     },
+    // #899: the read-cost counter must come from the CLIENT, not the tool, or
+    // the test would be asserting its own arithmetic. This mirrors
+    // SpotifyClient.getAllPagesWithTruncation, including counting the request
+    // that returns no page array.
+    async getAllPagesWithTruncation<T>(
+      path: string,
+      params?: Record<string, string>,
+      opts?: { maxItems?: number; initialOffset?: number },
+    ): Promise<{ items: T[]; truncated: boolean; truncatedByCap: boolean; reportedTotal: number | null; pages: number }> {
+      const maxItems = opts?.maxItems ?? 500;
+      const all: T[] = [];
+      let offset = opts?.initialOffset ?? 0;
+      let lastTotal: number | null = null;
+      let pages = 0;
+      for (;;) {
+        const page = await this.get<SpotifyPaged<T>>(path, { ...params, offset: String(offset) });
+        pages++;
+        if (!page || !Array.isArray(page.items)) break;
+        if (typeof page.total === 'number') lastTotal = page.total;
+        all.push(...page.items);
+        if (all.length >= maxItems) {
+          return {
+            items: all.slice(0, maxItems),
+            truncated:
+              all.length > maxItems
+              || typeof page.total !== 'number'
+              || all.length < page.total,
+            truncatedByCap: true,
+            reportedTotal: lastTotal,
+            pages,
+          };
+        }
+        const limit =
+          typeof page.limit === 'number' && page.limit > 0 ? page.limit : page.items.length;
+        offset += limit;
+        if (page.items.length === 0 || page.items.length < limit) break;
+        if (typeof page.total === 'number' && offset >= page.total) break;
+      }
+      return {
+        items: all,
+        truncated: lastTotal !== null && all.length < lastTotal,
+        truncatedByCap: false,
+        reportedTotal: lastTotal,
+        pages,
+      };
+    },
   };
   return client;
 }
@@ -659,5 +705,142 @@ describe('overlap_playlists', () => {
       wireCalls(h.client.calls).filter((c) => c.method !== 'GET').length,
       0,
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #899 — bounded array arguments and the read cost they imply
+// ---------------------------------------------------------------------------
+
+describe('#899 bounded array arguments', () => {
+  // Ten distinct valid 22-char playlist ids, so an over-limit list is rejected
+  // for its LENGTH and never for a malformed reference.
+  const ten = Array.from({ length: 10 }, (_, i) => String(i).repeat(22));
+  const eleven = [...ten, 'z'.repeat(22)];
+
+  it('rejects an 11-source merge naming the 10-source limit and why it exists', async () => {
+    const h = harness(playlistResponder({}));
+    // The bound is a read-cost ceiling; a message that only said "max 10"
+    // would leave the reader unable to tell a Spotify limit from a typo.
+    await assert.rejects(
+      () => h.invoke('merge_playlists', { sources: eleven, target_playlist_id: TARGET }),
+      (err: Error) => {
+        assert.match(err.message, /max 10 per call/);
+        assert.match(err.message, /merge_playlists pages every source before it writes/);
+        return true;
+      },
+    );
+  });
+
+  it('rejects an 11-playlist overlap naming the 10-playlist limit', async () => {
+    const h = harness(playlistResponder({}));
+    await assert.rejects(
+      () => h.invoke('overlap_playlists', { playlists: eleven }),
+      (err: Error) => {
+        assert.match(err.message, /max 10 per call/);
+        // The reason the ceiling exists, asserted on the real shared-helper
+        // text rather than a copy of it, so renaming the constant cannot
+        // quietly turn this into a vacuous pass.
+        assert.match(err.message, /read-cost ceiling/);
+        assert.match(err.message, /one paged walk per playlist/);
+        return true;
+      },
+    );
+  });
+
+  it('accepts a comma-separated source string and behaves identically to the array form', async () => {
+    const playlists = { [SRC_A]: [item('t1'), item('t2')], [SRC_B]: [item('t3')] };
+    const h = harness(playlistResponder(playlists));
+
+    const asArray = await h.invoke('merge_playlists', {
+      sources: [SRC_A, SRC_B],
+      target_playlist_id: TARGET,
+      dry_run: true,
+    });
+    const asCsv = await h.invoke('merge_playlists', {
+      // A host that can only send a scalar must reach the SAME bound, not
+      // bypass it — so this is the string that has to normalise first.
+      sources: `${SRC_A}, ${SRC_B}`,
+      target_playlist_id: TARGET,
+      dry_run: true,
+    });
+
+    assert.equal(textOf(asCsv), textOf(asArray));
+    assert.equal(
+      asCsv.structuredContent?.playlists?.length,
+      asArray.structuredContent?.playlists?.length,
+    );
+  });
+
+  it('bounds a CSV source string by the same 10-item limit as the array form', async () => {
+    const h = harness(playlistResponder({}));
+    await assert.rejects(
+      () => h.invoke('merge_playlists', { sources: eleven.join(','), target_playlist_id: TARGET }),
+      /max 10 per call/,
+    );
+  });
+
+  it('reports requests_read for a 10-source merge, counted from the pages walked', async () => {
+    // Ten sources, each holding 250 items at a 100-item page size = 3 pages
+    // per source. The reported total must be the requests actually spent, so
+    // this asserts against the wire, not against an expected constant typed
+    // next to the arithmetic.
+    const many = Object.fromEntries(
+      ten.map((id) => [id, Array.from({ length: 250 }, (_, i) => item(`${id}-${i}`))]),
+    );
+    const h = harness(playlistResponder(many));
+    const out = await h.invoke('merge_playlists', {
+      sources: ten,
+      target_playlist_id: TARGET,
+      dry_run: true,
+    });
+
+    const reported = out.structuredContent?.requests_read;
+    assert.equal(typeof reported, 'number', 'requests_read must be present in structuredContent');
+
+    const getCalls = wireCalls(h.client.calls).filter((c) => c.method === 'GET').length;
+    assert.equal(
+      reported,
+      getCalls,
+      'requests_read must equal the GETs the merge actually issued, not a derived guess',
+    );
+    assert.ok(reported > ten.length, 'a 10-source walk costs more requests than sources');
+
+    // The prose has to say it too: a cost buried in structuredContent alone
+    // does not reach a reader who only sees the text.
+    assert.match(textOf(out), /Read cost: \d+ paged read request\(s\) across 10 source playlist\(s\)/);
+  });
+
+  it('reports requests_read on a real (non-dry-run) merge', async () => {
+    const playlists = { [SRC_A]: [item('t1')], [SRC_B]: [item('t2')] };
+    const h = harness(playlistResponder(playlists, (path) =>
+      path === '/me/playlists' ? { id: TARGET_2 } : { snapshot_id: 'snap1' },
+    ));
+    const out = await h.invoke('merge_playlists', {
+      sources: [SRC_A, SRC_B],
+      new_name: 'merged',
+    });
+    assert.equal(typeof out.structuredContent?.requests_read, 'number');
+    assert.match(textOf(out), /Read cost: \d+ paged read request\(s\)/);
+  });
+
+  it('reports requests_read for overlap_playlists, whose reads ARE the cost', async () => {
+    const playlists = {
+      [OVERLAP_1]: [item('s1'), item('s2')],
+      [OVERLAP_2]: [item('s2'), item('s3')],
+    };
+    const h = harness(playlistResponder(playlists));
+    const out = await h.invoke('overlap_playlists', { playlists: [OVERLAP_1, OVERLAP_2] });
+    const getCalls = wireCalls(h.client.calls).filter((c) => c.method === 'GET').length;
+    assert.equal(out.structuredContent?.requests_read, getCalls);
+    assert.match(textOf(out), /Read cost: \d+ paged read request\(s\) across 2 playlist\(s\)/);
+  });
+
+  it('reports requests_read for diff_playlists as the sum of both walks', async () => {
+    const playlists = { [PAIR_A]: [item('d1')], [PAIR_B]: [item('d2')] };
+    const h = harness(playlistResponder(playlists));
+    const out = await h.invoke('diff_playlists', { playlist_a: PAIR_A, playlist_b: PAIR_B });
+    const getCalls = wireCalls(h.client.calls).filter((c) => c.method === 'GET').length;
+    assert.equal(out.structuredContent?.requests_read, getCalls);
   });
 });

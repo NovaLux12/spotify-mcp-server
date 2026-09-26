@@ -1705,12 +1705,27 @@ export class SpotifyClient {
    * ever binding it, and a caller that reports "truncated at the cap" there
    * blames a ceiling that did not apply. `reportedTotal` is the server's own
    * count, or null when it sent none — never the walked count.
+   *
+   * `pages` is how many paged read requests this walk issued (#899) — one per
+   * page, counted at the point the request fires rather than derived from the
+   * row total, because a walk that ends on a short page or hits the cap reads
+   * fewer rows than pages it spent. A composite read that walks N sources has
+   * a real, quota-bearing cost, and a tool that reports the rows without the
+   * request count leaves the caller unable to tell a 2-request answer from a
+   * 250-request one.
+   *
+   * It counts LOGICAL page reads, not bytes on the wire: a 401-refresh or 429
+   * backoff retry inside `get` re-sends one page and still counts once, and a
+   * TTL-cached page issues no HTTP at all but is counted as a page because the
+   * walk did ask for it. The figure is "how many page reads this walk
+   * performed", which is the number a caller can act on; a raw socket count is
+   * not reproducible from a tool response.
    */
   async getAllPagesWithTruncation<T>(
     path: string,
     params?: Record<string, string>,
     opts?: { maxItems?: number; initialOffset?: number },
-  ): Promise<{ items: T[]; truncated: boolean; truncatedByCap: boolean; reportedTotal: number | null }> {
+  ): Promise<{ items: T[]; truncated: boolean; truncatedByCap: boolean; reportedTotal: number | null; pages: number }> {
     const maxItems = opts?.maxItems ?? this.fetchAllCap;
     const all: T[] = [];
     let offset = opts?.initialOffset ?? 0;
@@ -1720,6 +1735,11 @@ export class SpotifyClient {
     // Monotonic per-walk id; index.ts forwards it as the MCP progressToken.
     const walkId = ++this.walkCounter;
     let pageNumber = 0;
+    // #899: HTTP GETs this walk issued. Independent of `pageNumber`, which only
+    // advances when a progress reporter is installed and so counts NOTHING on
+    // an ordinary install. Incremented before the `break` below, because a
+    // request that returned no page array was still spent against the quota.
+    let requests = 0;
     // Loop bound is the server-reported total when present; otherwise walk
     // until a short page signals the end. maxItems caps iterations too.
     // The last total the server reported, so the end-of-data return below can
@@ -1730,6 +1750,7 @@ export class SpotifyClient {
       // #133: walk pages enqueue at LOW priority so interactive reads
       // always drain first.
       const page = await this.get<SpotifyPaged<T>>(path, pageParams, { priority: 'low' });
+      requests++;
       if (!page || !Array.isArray(page.items)) break;
       if (typeof page.total === 'number') lastTotal = page.total;
       all.push(...page.items);
@@ -1762,6 +1783,7 @@ export class SpotifyClient {
           // attributed to even when rows also remain beyond the total.
           truncatedByCap: true,
           reportedTotal: lastTotal,
+          pages: requests,
         };
       }
       const limit = typeof page.limit === 'number' && page.limit > 0 ? page.limit : page.items.length;
@@ -1782,6 +1804,7 @@ export class SpotifyClient {
       // any truncation here is the server's total saying rows remain.
       truncatedByCap: false,
       reportedTotal: lastTotal,
+      pages: requests,
     };
   }
 

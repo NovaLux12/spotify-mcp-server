@@ -1,5 +1,6 @@
-import test from 'node:test';
+import test, { describe } from 'node:test';
 import assert from 'node:assert/strict';
+import { z } from 'zod';
 import {
   evalSetExpression,
   parseSetExpression,
@@ -21,7 +22,13 @@ interface FakeClient {
     path: string,
     params?: Record<string, unknown>,
     opts?: { maxItems?: number },
-  ) => Promise<{ items: unknown[]; truncated: boolean; truncatedByCap: boolean; reportedTotal: number | null }>;
+  ) => Promise<{
+    items: unknown[];
+    truncated: boolean;
+    truncatedByCap: boolean;
+    reportedTotal: number | null;
+    pages: number;
+  }>;
   calls: Call[];
 }
 
@@ -75,9 +82,16 @@ function makeFakeClient(routes: Record<string, unknown>): FakeClient {
       const total = rows.length;
       const all: unknown[] = [];
       let offset = 0;
+      // #899: the tools report a read cost, and this fixture has to count the
+      // pages the way the real client does — incremented after each GET and
+      // before the loop can break, so a walk that ends on a short page still
+      // spends (and reports) that request. Hardcoding it here would make the
+      // read-cost assertions measure the fixture rather than the tool.
+      let pages = 0;
       for (;;) {
         const slice = rows.slice(offset, offset + pageSize);
         calls.push({ method: 'GET', path, params: { ...params, offset: String(offset) } });
+        pages++;
         all.push(...slice);
         if (all.length >= maxItems) {
           return {
@@ -85,6 +99,7 @@ function makeFakeClient(routes: Record<string, unknown>): FakeClient {
             truncated: all.length > maxItems || all.length < total,
             truncatedByCap: true,
             reportedTotal: total,
+            pages,
           };
         }
         if (slice.length < pageSize) break;
@@ -95,6 +110,7 @@ function makeFakeClient(routes: Record<string, unknown>): FakeClient {
         truncated: all.length < total,
         truncatedByCap: false,
         reportedTotal: total,
+        pages,
       };
     },
   };
@@ -455,4 +471,103 @@ test('registers the exhaust2 extra slice (3 tools)', () => {
   for (const expected of ['playlist_fill_from_search', 'playlist_expression_algebra', 'playlist_cover_from_track']) {
     assert.ok(names.includes(expected), `missing ${expected}`);
   }
+});
+
+// ---------------------------------------------------------------------------
+// #899 — bounded query arrays and the read cost they imply
+// ---------------------------------------------------------------------------
+
+describe('#899 playlist_fill_from_search bounds', () => {
+  const fillHarness = () => {
+    const client = makeFakeClient({
+      '/playlists/mix1': { id: 'mix1', name: 'Mix' },
+      '/playlists/mix1/items': [],
+      '/search': { tracks: { items: [{ uri: 'spotify:track:9' }] } },
+    });
+    const registered: RegisteredTool[] = [];
+    registerExhaust2ExtraTools(makeServer(registered), client);
+    return { client, t: find(registered, 'playlist_fill_from_search') };
+  };
+
+  // The harness records the raw shape, so the bound is asserted against the
+  // real zod schema rather than a hand-copied copy of it.
+  const schemaFor = (t: RegisteredTool) => z.object(t.schema as z.ZodRawShape);
+
+  test('rejects more than 25 queries and names the per-query read cost', () => {
+    const { t } = fillHarness();
+    const tooMany = Array.from({ length: 26 }, (_, i) => `q${i}`);
+    // A bare "too big" would leave the reader unable to tell a Spotify limit
+    // from a typo; the bound exists because each query is its own search walk.
+    assert.throws(() => schemaFor(t).parse({ playlist_id: 'mix1', queries: tooMany }), (err: Error) => {
+      assert.match(err.message, /max 25 per call/);
+      assert.match(err.message, /separate paged search per query/);
+      return true;
+    });
+  });
+
+  test('accepts exactly 25 queries', () => {
+    const { t } = fillHarness();
+    const queries = Array.from({ length: 25 }, (_, i) => `q${i}`);
+    const parsed = schemaFor(t).parse({ playlist_id: 'mix1', queries });
+    assert.deepEqual((parsed as { queries: string[] }).queries, queries);
+  });
+
+  test('accepts a comma-separated query string bounded by the same 25-item limit', () => {
+    const { t } = fillHarness();
+    const csv = Array.from({ length: 25 }, (_, i) => `q${i}`).join(',');
+    const parsed = schemaFor(t).parse({ playlist_id: 'mix1', queries: csv }) as { queries: string[] };
+    // The CSV form normalises BEFORE the bound, so it must not be a way
+    // around it.
+    assert.equal(parsed.queries.length, 25);
+    assert.throws(
+      () => schemaFor(t).parse({ playlist_id: 'mix1', queries: `${csv},q26` }),
+      /max 25 per call/,
+    );
+  });
+
+  test('reports requests_read as a TOTAL, matching every GET the call issued', async () => {
+    const { client, t } = fillHarness();
+    const r = await t.handler({ playlist_id: 'mix1', queries: ['alpha', 'beta', 'gamma'] });
+    const payload = r.structuredContent as Record<string, unknown>;
+    const searchCalls = client.calls.filter((c) => c.path === '/search').length;
+
+    // The search-only figure stays available and still matches the wire, so a
+    // reader can separate "searches" from "playlist setup".
+    const perQuery = (payload.candidates_per_query as Array<{ pages_searched: number }>)
+      .reduce((total, q) => total + q.pages_searched, 0);
+    assert.equal(payload.search_requests_read, perQuery);
+    assert.equal(payload.search_requests_read, searchCalls);
+
+    // `requests_read` is the whole read phase, so it must equal EVERY GET the
+    // stub saw — including the two `/playlists/mix1` metadata reads and the
+    // items walk. A field named `requests_read` that quietly excluded the
+    // playlist setup would be a smaller number wearing a total's name, and
+    // this assertion is what catches that.
+    const allGets = client.calls.filter((c) => c.method === 'GET').length;
+    assert.equal(payload.requests_read, allGets, 'requests_read must be the total read cost');
+    assert.ok(
+      (payload.requests_read as number) > payload.search_requests_read as number,
+      'the playlist setup reads must be inside the total, not omitted from it',
+    );
+
+    // The prose carries it too, or it does not reach a text-only reader.
+    assert.match(
+      r.content[0]!.text,
+      /Read cost: \d+ paged read request\(s\) across 3 queries\./,
+    );
+  });
+
+  test('reports requests_read for expression_algebra, which walks every distinct ref', async () => {
+    const client = makeFakeClient(routesForSets());
+    const registered: RegisteredTool[] = [];
+    registerExhaust2ExtraTools(makeServer(registered), client);
+    const t = find(registered, 'playlist_expression_algebra');
+    const r = await t.handler({ expression: 'aaa ∪ bbb', target_name: 'Union Result', dry_run: true });
+    // The description said "N GETs" with N counting REFS; the walk costs a
+    // metadata read plus an items read each, so the reported figure has to
+    // come from the walk rather than from the ref count.
+    const allGets = client.calls.filter((c) => c.method === 'GET').length;
+    assert.equal((r.structuredContent as Record<string, unknown>).requests_read, allGets);
+    assert.equal(allGets, 4, '2 refs x (1 metadata + 1 items read)');
+  });
 });

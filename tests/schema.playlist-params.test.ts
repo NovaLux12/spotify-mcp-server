@@ -182,6 +182,23 @@ function makeClient(calls: string[]): SpotifyClient {
       calls.push(path);
       return [];
     },
+    // #899: playlistops counts its read cost off the truncation walk. This
+    // delegates to getAllPages so the path-recording and stubbed rows stay in
+    // ONE place — a second copy of the fixture logic would drift from it.
+    async getAllPagesWithTruncation<T>(
+      path: string,
+      params?: Record<string, string>,
+      opts?: { maxItems?: number; initialOffset?: number },
+    ): Promise<{
+      items: T[];
+      truncated: boolean;
+      truncatedByCap: boolean;
+      reportedTotal: number | null;
+      pages: number;
+    }> {
+      const items = await this.getAllPages<T>(path, params, opts);
+      return { items, truncated: false, truncatedByCap: false, reportedTotal: null, pages: 1 };
+    },
     async post<T>(): Promise<T | null> {
       return { id: 'created', snapshot_id: 'snapshot' } as T;
     },
@@ -308,6 +325,22 @@ async function makeUnionGateHarness(options: UnionGateOptions): Promise<UnionGat
         items.push({ added_at: '2024-01-01T00:00:00Z', item: { id: 'spotify:track:racer', uri: 'spotify:track:racer', name: 'Added mid-flight' } as SpotifyTrack });
       }
       return items as T[];
+    },
+    // #899: see the note on the other stub — delegates so the fixture rows and
+    // the recorded call stay defined once.
+    async getAllPagesWithTruncation<T>(
+      path: string,
+      params?: Record<string, string>,
+      opts?: { maxItems?: number; initialOffset?: number },
+    ): Promise<{
+      items: T[];
+      truncated: boolean;
+      truncatedByCap: boolean;
+      reportedTotal: number | null;
+      pages: number;
+    }> {
+      const items = await this.getAllPages<T>(path, params, opts);
+      return { items, truncated: false, truncatedByCap: false, reportedTotal: null, pages: 1 };
     },
     async post<T>(path: string): Promise<T | null> {
       calls.push(`POST ${path}`);

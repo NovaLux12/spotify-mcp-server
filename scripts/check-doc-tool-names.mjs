@@ -129,6 +129,11 @@ const parameterAllowlist = new Set([
   // parameters.
   'truncated_refs', 'ref_scans', 'existing_truncated', 'existing_scanned',
   'existing_total', 'existing_truncated_by_cap', 'now_total',
+  // #899: the bounded playlist lists report what their bound actually bought.
+  // SPEC.md names both keys so a caller can see the read cost of a call
+  // instead of inferring it from the row count. structuredContent keys on the
+  // tools that report them, not tools and not parameters.
+  'requests_read', 'search_requests_read',
 ]);
 /** Registration keys are module names, not tools; docs legitimately name them. */
 const registrationKeyNames = new Set(census.registrationKeyNames ?? []);

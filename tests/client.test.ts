@@ -1642,6 +1642,62 @@ describe('SpotifyClient', () => {
       assert.equal(walk.reportedTotal, 1_204, 'and the total the server reported is not lost');
     });
 
+    // #899: a composite read costs requests, not just rows. `pages` is what
+    // lets a tool report that cost, so it is counted where the request fires
+    // rather than derived from the row total — a walk that ends on a short
+    // page, or one whose last GET returns nothing, spends a request the row
+    // count cannot see.
+
+    it('counts the requests a capped walk actually issued', async () => {
+      await seedTokens();
+      responder = (url) => {
+        const offset = Number(new URL(url).searchParams.get('offset') ?? 0);
+        const items = Array.from({ length: 100 }, (_, i) => ({ id: offset + i }));
+        return jsonResponse({ items, total: 1_204, limit: 100, offset });
+      };
+
+      const client = new SpotifyClient();
+      const before = apiCalls().length;
+      const walk = await client.getAllPagesWithTruncation<{ id: number }>(
+        '/me/tracks',
+        {},
+        { maxItems: 500 },
+      );
+      const spent = apiCalls().length - before;
+
+      // 5 full 100-row pages reach the 500 cap, then the cap ends the walk.
+      assert.equal(walk.pages, spent, 'pages must equal the GETs the walk issued');
+      assert.equal(walk.pages, 5);
+      assert.ok(walk.pages < walk.items.length / 100 + 2, 'sanity: pages tracks requests, not rows');
+    });
+
+    it('counts the final request of a walk that ends on a short page', async () => {
+      await seedTokens();
+      responder = (url) => {
+        const offset = Number(new URL(url).searchParams.get('offset') ?? 0);
+        if (offset > 0) return jsonResponse({ items: [], total: 150, limit: 100, offset });
+        return jsonResponse({
+          items: Array.from({ length: 100 }, (_, i) => ({ id: i })),
+          total: 150,
+          limit: 100,
+          offset,
+        });
+      };
+
+      const client = new SpotifyClient();
+      const before = apiCalls().length;
+      const walk = await client.getAllPagesWithTruncation<{ id: number }>(
+        '/me/tracks',
+        {},
+        { maxItems: 500 },
+      );
+      const spent = apiCalls().length - before;
+
+      // A short page that yields nothing is still a request spent.
+      assert.equal(walk.pages, spent);
+      assert.ok(spent >= 2, 'the walk really did issue more than one request');
+    });
+
     it('reports an unknown total as null, never the walked count', async () => {
       await seedTokens();
       responder = (url) => {

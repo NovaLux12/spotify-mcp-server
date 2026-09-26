@@ -29,6 +29,7 @@ import { receiptRecords, receiptsLines, replaceVerdict, writeVerdict, type Write
 import {
   DryRun,
   PlaylistId,
+  PAGED_WALK_LIST_REASON,
   PlaylistListFields,
   ResponseFormat,
   MaxResults,
@@ -615,7 +616,7 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
       + 'intersection read-only. Quota: 🟢 N GETs + 1 PUT when committing. Also covers: playlist_intersection (same op, unified) — See also: playlist_intersection.',
     {
       ...PlaylistListFields,
-      ...legacyPlaylistListFields(['source_playlist_ids']),
+      ...legacyPlaylistListFields(['source_playlist_ids'], { limitReason: PAGED_WALK_LIST_REASON }),
       ...SetOpParams,
       ...sharedListFields,
     },
@@ -1521,7 +1522,7 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
       + 'same set. Quota: 🟢 N GETs.',
     {
       ...PlaylistListFields,
-      ...legacyPlaylistListFields(['playlist_ids']),
+      ...legacyPlaylistListFields(['playlist_ids'], { limitReason: PAGED_WALK_LIST_REASON }),
       min_overlap: z.number().min(0).max(1).optional().describe('Jaccard threshold to report a pair. Default 0.5'),
       response_format: ResponseFormat,
       max_results: MaxResults,

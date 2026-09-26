@@ -89,6 +89,13 @@ interface PlaylistUriScan {
   truncatedByCap: boolean;
   /** The ceiling that applied: getConfig().fetchAllCap. */
   cap: number;
+  /**
+   * Paged read requests this scan cost (#899): the item pages plus the
+   * playlist metadata GET. A caller reporting the read cost of "load this
+   * playlist" and then quoting only the item pages would be quoting a number
+   * smaller than the work it just did.
+   */
+  requests: number;
 }
 
 /** The shared "this walk stopped early" sentence (#864), or null when it did not. */
@@ -166,6 +173,8 @@ async function fetchPlaylistUris(client: SpotifyClient, ref: string): Promise<Pl
     truncated: walk.truncated,
     truncatedByCap: walk.truncatedByCap,
     cap,
+    // +1 for the metadata GET above.
+    requests: walk.pages + 1,
   };
 }
 
@@ -408,7 +417,18 @@ export function registerExhaust2ExtraTools(server: McpServer, client: SpotifyCli
     'Grow a playlist to N items from search queries you supply: round-robin one pick per query per pass, first unseen track match wins, pages each query in Spotify-compliant 10-result requests, then performs chunked adds. Complements listening-data grow_playlist. Quota: 🟡 one or more 10-result search pages per query + chunked adds, after a capped pre-read of the current items; a capped pre-read reports existing_truncated and an unknown resulting length.',
     {
       playlist_id: z.string().describe('Playlist to grow (ID or spotify:playlist: URI)'),
-      queries: z.array(z.string().min(1)).min(1).max(25).describe('Search queries, cycled round-robin (1–25)'),
+      // #899: the bound is a READ-COST ceiling — one `/search` page walk per
+      // query — so the rejection names that rather than a bare item count. A
+      // CSV string normalises through the same bound, so it cannot carry a
+      // longer list than the array form allows.
+      queries: z.preprocess(
+        (value) =>
+          typeof value === 'string' ? value.split(',').map((part) => part.trim()).filter(Boolean) : value,
+        z
+          .array(z.string().min(1))
+          .min(1, { error: 'At least 1 search query required' })
+          .max(25, { error: 'playlist_fill_from_search runs a separate paged search per query: max 25 per call' }),
+      ).describe('Search queries, cycled round-robin (1–25)'),
       target_count: z.number().int().min(1).max(500).optional()
         .describe('Grow the playlist until it reaches this many NEW items. Default 20'),
       market: MARKET_CODE.optional().describe('ISO 3166-1 alpha-2 market for search, e.g. \'US\''),
@@ -423,6 +443,13 @@ export function registerExhaust2ExtraTools(server: McpServer, client: SpotifyCli
       // this used to make first is redundant — one request per call saved.
       const scan = await fetchPlaylistUris(client, args.playlist_id);
       const existing = new Set(scan.uris);
+      // #899: every read this call spends, so `requests_read` is a TOTAL and
+      // not a phase-scoped fragment. Two things read before the first search:
+      // the scan's own `/playlists/{id}` metadata read and that call's
+      // item-page walk — both already inside `scan.requests`. Reporting only
+      // the search pages under a field called `requests_read` would be a
+      // smaller number wearing a total's name.
+      const setupRequests = scan.requests;
       const perQuery: string[][] = args.queries.map(() => []);
       const nextOffsets = args.queries.map(() => 0);
       const pagesFetched = args.queries.map(() => 0);
@@ -473,6 +500,9 @@ export function registerExhaust2ExtraTools(server: McpServer, client: SpotifyCli
       const planLines = [
         `Playlist "${scan.name ?? id}" — ${totalPhrase}; ${readPhrase}; ${existing.size} already present + ${picks.length} search pick(s):`,
         ...args.queries.map((q, i) => `  [${i}] "${q}" → ${byQuery.get(i) ?? 0} pick(s) (of ${perQuery[i]?.length ?? 0} candidate(s) across ${pagesFetched[i] ?? 0} page(s))`),
+        // #899: the read cost reaches the prose too — a cost that only exists
+        // in structuredContent does not reach a reader who only sees the text.
+        `(Read cost: ${setupRequests + pagesFetched.reduce((total, n) => total + n, 0)} paged read request(s) across ${args.queries.length} quer${args.queries.length === 1 ? 'y' : 'ies'}.)`,
       ];
       const notice = scanNotice(scan);
       const payload: Record<string, unknown> = {
@@ -487,6 +517,11 @@ export function registerExhaust2ExtraTools(server: McpServer, client: SpotifyCli
         scan_cap: scan.cap,
         target,
         added: picks.length,
+        // #899: the read cost the `queries` array implies, counted as a TOTAL
+        // of every paged read this call issued.
+        requests_read: setupRequests
+          + pagesFetched.reduce((total, n) => total + n, 0),
+        search_requests_read: pagesFetched.reduce((total, n) => total + n, 0),
         per_query: Object.fromEntries(args.queries.map((q, i) => [q, byQuery.get(i) ?? 0])),
         picks,
         candidates_per_query: args.queries.map((query, query_index) => ({
@@ -546,6 +581,10 @@ export function registerExhaust2ExtraTools(server: McpServer, client: SpotifyCli
       const scans = await scanExpressionRefs(client, refs);
       const sets = new Map<string, string[]>(scans.map((s) => [s.ref, s.uris]));
       const sizes: Record<string, number> = Object.fromEntries(scans.map((s) => [s.ref, s.returned]));
+      // #899: this walks every distinct ref in the expression, so the read
+      // cost is a real per-ref figure and worth reporting rather than
+      // describing as "N GETs" where N counted refs, not requests.
+      const readRequests = scans.reduce((sum, s) => sum + s.requests, 0);
       const result = evalSetExpression(ast, (ref) => sets.get(ref) ?? []);
       if (result.length === 0) throw new Error('Expression evaluates to an empty set — nothing to write.');
       // #898: the whole expression is computed from whatever each ref's walk
@@ -578,7 +617,7 @@ export function registerExhaust2ExtraTools(server: McpServer, client: SpotifyCli
         return shape(
           rf,
           `${describeDryRun('expression algebra', args.target_name, planLines)}\n${result.slice(0, 10).map((u) => `  · ${u}`).join('\n')}${result.length > 10 ? `\n  … ${result.length - 10} more` : ''}`,
-          { ok: true, dry_run: true, expression: args.expression, refs, sizes, result_count: result.length, result_preview: result.slice(0, 25), ...truncationFields },
+          { ok: true, dry_run: true, expression: args.expression, refs, sizes, result_count: result.length, result_preview: result.slice(0, 25), requests_read: readRequests, ...truncationFields },
         );
       }
       const created = await client.post<{ id?: string }>('/me/playlists', {
@@ -596,7 +635,7 @@ export function registerExhaust2ExtraTools(server: McpServer, client: SpotifyCli
       return shape(
         rf,
         receiptLines ? `${prose}\n${receiptLines}` : prose,
-        { ...writeVerdict(add.receipts, result.length), dry_run: false, playlist: createdId, name: args.target_name, result_count: result.length, refs, sizes, requests: add.requests, receipts: receiptRecords(add.receipts), ...truncationFields },
+        { ...writeVerdict(add.receipts, result.length), dry_run: false, playlist: createdId, name: args.target_name, result_count: result.length, refs, sizes, requests: add.requests, requests_read: readRequests, receipts: receiptRecords(add.receipts), ...truncationFields },
       );
     },
   );

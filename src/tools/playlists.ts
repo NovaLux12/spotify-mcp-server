@@ -20,6 +20,7 @@ import {
 import {
   DryRun,
   PlaylistId,
+  PAGED_WALK_LIST_REASON,
   PlaylistListFields,
   PlaylistPairFields,
   TargetPlaylistFields,
@@ -2008,7 +2009,7 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
   // an order-preserving boolean array. A read that fails, or that comes back
   // without a verdict for an id, is reported as unreadable with its reason —
   // never as "not followed".
-  server.tool('check_playlist_following', 'Check if you follow 1–50 playlists (the canonical playlists field or the deprecated playlist_ids alias). Follow state: GET /me/library/contains?uris=spotify:playlist:<id>,… (40/req, 1–2 GETs). Unreadable state reports unknown, never not-followed.', { ...playlistListInputFields(['playlist_ids'], { min: 1, max: 50 }), ...sharedListFields }, async (args) => {
+  server.tool('check_playlist_following', 'Check if you follow 1–50 playlists (the canonical playlists field or the deprecated playlist_ids alias). Follow state: GET /me/library/contains?uris=spotify:playlist:<id>,… (40/req, 1–2 GETs). Unreadable state reports unknown, never not-followed.', { ...playlistListInputFields(['playlist_ids'], { min: 1, max: 50, limitReason: 'follow state is read with batched GET /me/library/contains requests, not one paged walk per playlist' }), ...sharedListFields }, async (args) => {
     const input = resolvePlaylistInput(args, { kind: 'list', aliases: ['playlist_ids'] });
     // `following` is a tri-state on purpose: null means "we could not read
     // this", which is not the same answer as false (#862).
@@ -2222,7 +2223,7 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
   });
 
   // playlist_union (#290)
-  server.tool('playlist_union', 'Union of 2–10 playlists into target (deduped, first-seen order). An empty union empties the target the same way subtract does. Quota: 🟢 N GETs + PUT/POST; replacing an existing target also reads its current items and its playlist metadata to measure the destructive impact.', { ...PlaylistListFields, ...legacyPlaylistListFields(['source_playlist_ids']), ...TargetPlaylistFields, ...PlaylistSetWalkFields, response_format: ResponseFormat, dedupe: z.boolean().default(true).describe('Drop duplicate URIs across the merged sources. Default true'), dry_run: DryRun }, async (args) => {
+  server.tool('playlist_union', 'Union of 2–10 playlists into target (deduped, first-seen order). An empty union empties the target the same way subtract does. Quota: 🟢 N GETs + PUT/POST; replacing an existing target also reads its current items and its playlist metadata to measure the destructive impact.', { ...PlaylistListFields, ...legacyPlaylistListFields(['source_playlist_ids'], { limitReason: PAGED_WALK_LIST_REASON }), ...TargetPlaylistFields, ...PlaylistSetWalkFields, response_format: ResponseFormat, dedupe: z.boolean().default(true).describe('Drop duplicate URIs across the merged sources. Default true'), dry_run: DryRun }, async (args) => {
     const input = resolvePlaylistInput(args, { kind: 'list', aliases: ['source_playlist_ids'] });
     if ((args.target_playlist_id === undefined) === (args.target_name === undefined)) {
       throw new Error('Invalid arguments: provide exactly one of target_playlist_id (replace an existing playlist) or target_name (create a new playlist).');
@@ -2390,7 +2391,7 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
   });
 
   // playlist_subtract (#291)
-  server.tool('playlist_subtract', 'Remove tracks of B..N from A. Subtracting every track empties A via one PUT with an empty uris array (Spotify\'s documented clear); a reply with no snapshot_id reports unconfirmed, not ok. Quota: 🟢 N GETs + PUT.', { base_playlist_id: PlaylistId.optional().describe('Base playlist ID, URI, or URL. Optional only for the deprecated positional form, where playlists[0] is the base.'), ...playlistListInputFields(['subtract_playlist_ids'], { min: 1, max: 10 }), ...PlaylistSetWalkFields, response_format: ResponseFormat, dry_run: DryRun }, async (args) => {
+  server.tool('playlist_subtract', 'Remove tracks of B..N from A. Subtracting every track empties A via one PUT with an empty uris array (Spotify\'s documented clear); a reply with no snapshot_id reports unconfirmed, not ok. Quota: 🟢 N GETs + PUT.', { base_playlist_id: PlaylistId.optional().describe('Base playlist ID, URI, or URL. Optional only for the deprecated positional form, where playlists[0] is the base.'), ...playlistListInputFields(['subtract_playlist_ids'], { min: 1, max: 10, limitReason: PAGED_WALK_LIST_REASON }), ...PlaylistSetWalkFields, response_format: ResponseFormat, dry_run: DryRun }, async (args) => {
     const input = resolvePlaylistInput(args, { kind: 'list', aliases: ['subtract_playlist_ids'] });
     // Pre-2.0 contract: `playlists: [A, B, C]` meant "A minus B and C", i.e. the
     // base was positional. The canonical contract names it explicitly. Both are
