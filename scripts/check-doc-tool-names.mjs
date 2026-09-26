@@ -34,6 +34,12 @@ const parameterAllowlist = new Set([
   'code_verifier', 'expires_at', 'expires_in', 'invalid_grant', 'rate_limit',
   'redirect_uri', 'refresh_token', 'registered_tools', 'requests_made',
   'requests_planned', 'token_refresh', 'web_search',
+  // #677: the token-endpoint failure classes. RFC 6749 §5.2 error codes the
+  // refresh response carries (`invalid_client`, `server_error`) and one
+  // category name of this server's own classifier (`network_unreachable`).
+  // None is a tool or a parameter; both docs are naming what the token endpoint
+  // returns so an operator can tell the failures apart.
+  'invalid_client', 'server_error', 'network_unreachable',
   // Enum values and explicitly-removed field names, not parameters.
   'appears_on', 'available_markets',
   // `time_range` enum members of the /me/top/* personalization tools. #807's

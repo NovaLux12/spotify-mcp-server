@@ -40,7 +40,7 @@ import { CallToolRequestSchema, ListToolsRequestSchema, type ServerResult } from
 import { getObjectShape, normalizeObjectSchema, safeParseAsync } from '@modelcontextprotocol/sdk/server/zod-compat.js';
 import { toJsonSchemaCompat } from '@modelcontextprotocol/sdk/server/zod-json-schema-compat.js';
 import { finalInputSchema } from '../shaping.js';
-import { SpotifyApiError } from '../client.js';
+import { SpotifyApiError, isTokenFailureReason } from '../client.js';
 
 /**
  * v2 registry policy (#909/#918). Prefix allowances are a frozen baseline, not
@@ -1461,11 +1461,121 @@ function defaultReason(kind: ErrorKind): string {
   }
 }
 
+/**
+ * Operator-facing text for a classified token-endpoint failure (#677).
+ *
+ * The status alone cannot carry this: several genuinely different refresh
+ * failures share one status, and a 503 read as "the service is unavailable"
+ * told an operator with a refused client id to retry a configuration fault
+ * that no retry can fix. Keyed by the reason the classifier minted, so this
+ * only fires for a failure that was actually classified — a token reason is
+ * never minted anywhere else.
+ *
+ * Returns undefined for a reason with no override, and specifically for
+ * `TOKEN_INVALID_GRANT`, which the default 401 mapping already describes
+ * correctly ("run spotify-mcp auth"). The switch is exhaustive with no
+ * fallthrough: a new reason must be given its own text here rather than
+ * inheriting the last branch's, which is how a dead grant briefly came back
+ * described as an unreachable network.
+ */
+function tokenFailureFields(tool: string, error: SpotifyApiError): ErrorFields | undefined {
+  const reason = error.reason;
+  if (!isTokenFailureReason(reason)) return undefined;
+  const base = { reason, status: error.status };
+
+  switch (reason) {
+    case 'TOKEN_INVALID_CLIENT':
+      return {
+        ...base,
+        kind: 'auth',
+        text: `${tool} could not authenticate: Spotify refused the configured client id at the token endpoint. `
+          + 'Set SPOTIFY_CLIENT_ID to the Client ID of your app in the Spotify Developer Dashboard, then re-run '
+          + '"spotify-mcp auth" (PKCE uses no client secret).',
+        fix: 'Set SPOTIFY_CLIENT_ID to the app id from the Spotify Developer Dashboard, then re-run "spotify-mcp auth".',
+      };
+    case 'TOKEN_REQUEST_REJECTED':
+      return {
+        ...base,
+        kind: 'auth',
+        text: `${tool} could not refresh the Spotify access token: the token endpoint refused the refresh with an `
+          + 'error this server has no fix for, so no cause is asserted here. The exact code is in the server log.',
+        fix: 'Read the exact error code in the server log before changing anything; re-run "spotify-mcp auth" if the stored grant is suspect.',
+      };
+    case 'TOKEN_UNCLASSIFIED':
+      return {
+        ...base,
+        kind: 'auth',
+        text: `${tool} could not refresh the Spotify access token, and the token endpoint's response carried no `
+          + 'machine-readable error, so the cause is unknown. The HTTP status, whether the body parsed, and the token '
+          + 'file path are in the server log.',
+        fix: 'Inspect the server log for the token endpoint status and token file path, then verify SPOTIFY_CLIENT_ID and re-run "spotify-mcp auth".',
+      };
+    case 'TOKEN_RATE_LIMITED': {
+      const wait = error.retryAfterSec;
+      return {
+        ...base,
+        kind: 'rate_limited',
+        text: typeof wait === 'number'
+          ? `${tool}'s access token could not be refreshed because the Spotify token endpoint is rate limiting; retry after ${wait} seconds.`
+          : `${tool}'s access token could not be refreshed because the Spotify token endpoint is rate limiting; retry later.`,
+        fix: typeof wait === 'number'
+          ? `Wait ${wait} seconds before retrying; refreshing sooner extends the limit.`
+          : 'Wait before retrying; refreshing sooner extends the limit.',
+        ...(typeof wait === 'number' ? { retryAfterSec: wait } : {}),
+      };
+    }
+    case 'TOKEN_SERVER_ERROR':
+      return {
+        ...base,
+        kind: 'unavailable',
+        text: `${tool}'s access token could not be refreshed because Spotify's token endpoint returned a server error. `
+          + 'This is a fault at Spotify, not a local configuration problem; retry shortly.',
+        fix: 'Retry shortly.',
+      };
+    case 'TOKEN_UNREADABLE_RESPONSE':
+      return {
+        ...base,
+        kind: 'unavailable',
+        text: `${tool}'s access token could not be refreshed because the Spotify token endpoint answered with a body `
+          + 'that could not be read as JSON. No access token was obtained; retry, and if it persists the stored token '
+          + 'file is suspect.',
+        fix: 'Retry once; if it persists, re-run "spotify-mcp auth" to rewrite the token file.',
+      };
+    case 'TOKEN_NETWORK_UNREACHABLE':
+      // 408 is our own abort; 503 is a transport failure. They are both "no
+      // response arrived" and both are connectivity problems, but only one of
+      // them is a timeout, and the fix differs.
+      return error.status === 408
+        ? {
+            ...base,
+            kind: 'unavailable',
+            text: `${tool}'s access token could not be refreshed: the request to Spotify's token endpoint timed out with `
+              + 'no response received. Retry shortly, or raise SPOTIFY_REQUEST_TIMEOUT_MS on a slow link.',
+            fix: 'Retry shortly, or raise SPOTIFY_REQUEST_TIMEOUT_MS.',
+          }
+        : {
+            ...base,
+            kind: 'unavailable',
+            text: `${tool}'s access token could not be refreshed because the request to Spotify's token endpoint never got a `
+              + 'response (network, DNS or TLS failure). This is a local connectivity problem, not a Spotify outage; '
+              + 'check the connection and retry.',
+            fix: 'Check local network/DNS connectivity, then retry.',
+          };
+    case 'TOKEN_INVALID_GRANT':
+    default:
+      // No override: the default 401 mapping already says "run spotify-mcp
+      // auth", which is exactly right for a revoked grant.
+      return undefined;
+  }
+}
+
 function publicFailure(tool: string, error: unknown): ErrorFields {
   const typedError = findTypedApiError(error);
   if (typedError instanceof StatsfmApiError) return statsfmFailure(tool, typedError);
   if (typedError instanceof SpotifyApiError) {
     const spotifyError = typedError;
+    const tokenFailure = tokenFailureFields(tool, spotifyError);
+    if (tokenFailure) return tokenFailure;
     const status = spotifyError.status;
     let kind: ErrorKind;
     let text: string;

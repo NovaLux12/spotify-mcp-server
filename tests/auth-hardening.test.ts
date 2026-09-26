@@ -272,7 +272,14 @@ describe('refresh resilience (#109)', () => {
     assert.equal(apiCalls().length, 0, 'no API call after a fatal grant rejection');
   });
 
-  it('throws "temporarily unavailable" for unclassified failures with an unexpired token', async () => {
+  it('surfaces a refused client id as a config fault, not an outage (#677)', async () => {
+    // This test used to assert that a `400 {"error":"invalid_client"}` refresh
+    // was reported as "Spotify token service temporarily unavailable" — the
+    // exact defect #677 was filed against. A refused client id is a local
+    // configuration fault that no retry can fix, and reporting it as a
+    // transient outage sent the agent into a retry loop instead of telling the
+    // operator which setting to change. Note the token is still unexpired: a
+    // misconfiguration is not transient, so it is surfaced anyway.
     await seedTokens({ expires_at: Date.now() + 30_000 });
     calls = [];
     responder = () => jsonResponse({ error: 'invalid_client' }, 400);
@@ -281,12 +288,17 @@ describe('refresh resilience (#109)', () => {
     const client = new SpotifyClient();
     await assert.rejects(client.get('/me'), (err: unknown) => {
       assert.ok(err instanceof SpotifyApiError);
-      assert.match(err.message, /Spotify token service temporarily unavailable/);
+      assert.equal(err.reason, 'TOKEN_INVALID_CLIENT');
+      assert.match(err.message, /SPOTIFY_CLIENT_ID/);
+      assert.doesNotMatch(err.message, /temporarily unavailable/i);
       return true;
     });
   });
 
-  it('throws "temporarily unavailable" when the network dies and the old token is expired', async () => {
+  it('reports a dead network as a network failure, not a Spotify outage (#677)', async () => {
+    // Also previously asserted as "temporarily unavailable". No HTTP response
+    // arrived, so there is no evidence Spotify is the problem, and the outage
+    // wording is not available to this failure.
     await seedTokens({ expires_at: Date.now() - 1000 });
     calls = [];
     responder = () => {
@@ -297,7 +309,9 @@ describe('refresh resilience (#109)', () => {
     const client = new SpotifyClient();
     await assert.rejects(client.get('/me'), (err: unknown) => {
       assert.ok(err instanceof SpotifyApiError);
-      assert.match(err.message, /Spotify token service temporarily unavailable/);
+      assert.equal(err.reason, 'TOKEN_NETWORK_UNREACHABLE');
+      assert.match(err.message, /no HTTP response was received/);
+      assert.doesNotMatch(err.message, /temporarily unavailable/i);
       return true;
     });
     assert.equal(apiCalls().length, 0);
