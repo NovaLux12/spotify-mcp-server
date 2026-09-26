@@ -373,12 +373,26 @@ Quick reference for all endpoints used. All paths are relative to `https://api.s
 | `get_track` | GET | `/tracks/{id}` |
 | `get_several_tracks` | GET | `/tracks?ids=…` — up to 50 per request; longer lists chunked and merged |
 | `get_artist` | GET | `/artists/{id}` |
-| `get_artist_top_tracks` | GET | `/artists/{id}/top-tracks` — market-gated; 403 if not enabled for the app registration |
+| `get_artist_top_tracks` | GET | `/artists/{id}/top-tracks` — **removed/deprecated**; see the note below |
 | `get_artist_albums` | GET | `/artists/{id}/albums` |
 | `get_several_artists` | GET | `/artists?ids=…` — up to 50 per request |
 | `get_album` | GET | `/albums/{id}` |
 | `get_album_tracks` | GET | `/albums/{id}/tracks` |
 | `get_several_albums` | GET | `/albums?ids=…` — up to 20 per request |
+
+> **`/artists/{id}/top-tracks` status (#901).** The two platform sources disagree, so
+> neither is used as a single claim of fact. The current OpenAPI schema
+> (<https://developer.spotify.com/reference/web-api/open-api-schema.yaml>) still
+> publishes the path, flagged `deprecated: true`; Spotify's February 2026 Web API
+> changelog lists the same path as `[REMOVED]` with **no replacement named**. What
+> is observable is therefore registration-dependent rather than artist-dependent:
+> a registration without the grant answers 403 or 404/410, and the answer is
+> identical for every artist in a fan-out. Tools that call it
+> (`artist_collab_network`, `artist_completeness_score`) probe once and fail fast
+> on the first gated or removed answer via the shared contract in `src/gating.ts`
+> (`isGatedError` / `graceful403Message`), which annotates and rethrows the original
+> `SpotifyApiError`; they never substitute a fabricated `0%` or `0` tracks for a
+> read that did not happen.
 | `get_show` | GET | `/shows/{id}` |
 | `list_show_episodes` | GET | `/shows/{id}/episodes` |
 | `show_new_episodes` | GET | `/me/shows` then `/shows/{id}/episodes` per show — the per-show reads are market-gated and default `market` (§10) |

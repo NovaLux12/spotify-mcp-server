@@ -32,6 +32,7 @@ import {
 } from '../shaping.js';
 import type { ResponseFormatValue } from '../shaping.js';
 import { getConfig } from '../config.js';
+import { isGatedError, graceful403Message } from '../gating.js';
 import type {
   SavedTrackItem,
   SavedAlbumItem,
@@ -190,6 +191,29 @@ async function loadSavedAlbums(client: SpotifyClient, scanCap: number): Promise<
     { maxItems: scanCap },
   );
   return items.filter((i) => i?.album).map(toAlbumRow);
+}
+
+/** The registration-gated path `artist_completeness_score` probes per artist (#901). */
+const TOP_TRACKS_ENDPOINT = '/artists/{id}/top-tracks';
+
+/**
+ * Why Spotify's 404/410 answer to /artists/{id}/top-tracks is not a missing
+ * artist, and why the walk stops on the first one.
+ *
+ * The two platform sources disagree, and the disagreement is the point: the
+ * current OpenAPI schema still publishes the path (flagged `deprecated: true`),
+ * while Spotify's February 2026 Web API changelog lists the same path as
+ * [REMOVED] with no replacement named. So "the artist does not exist" is not a
+ * reading the status can carry — whether the call answers at all is a property
+ * of the app registration, identical for every artist in the fan-out.
+ */
+function removedTopTracksReason(status: number): string {
+  return (
+    `Spotify answered ${status} for ${TOP_TRACKS_ENDPOINT}. Spotify’s February 2026 Web API changelog lists this endpoint as ` +
+    '[REMOVED] (no replacement named), while the current OpenAPI schema still publishes it flagged `deprecated: true` — ' +
+    'so whether it answers at all depends on the app registration, not on the artist. Nothing was retrieved, and the walk ' +
+    'stopped here rather than repeating the same call for every remaining artist.'
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -928,7 +952,7 @@ export function registerSwarm3LibraryTools(server: McpServer, client: SpotifyCli
   // 13. artist_completeness_score
   server.tool(
     'artist_completeness_score',
-    'For your top N saved-track artists, fetch each artist\u2019s top tracks and score how many of them you have saved (0–100%). Read-only, capped at 25 artists.',
+    'For your top N saved-track artists, fetch each artist\u2019s top tracks and score how many of them you have saved (0–100%). Stops at the first gated/removed /artists/{id}/top-tracks answer instead of retrying it once per artist. Read-only, capped at 25 artists.',
     {
       response_format: ResponseFormat,
       max_results: MaxResults,
@@ -959,8 +983,21 @@ export function registerSwarm3LibraryTools(server: McpServer, client: SpotifyCli
       interface Score { artist_id: string; artist: string; saved_tracks: number; top_tracks_total: number; saved_top_tracks: number; completeness: number; missing_top: string[] }
       const scores: Score[] = [];
       let quotaHit = false;
+      // #901: probe once, then fail fast. Before this, the only failure branch
+      // was `429 -> quotaHit`, so a 403 fell through silently: the loop walked
+      // all N artists, every one answered the same way, and the empty score
+      // list was then reported as "avg 0%" — up to 25 requests and a fabricated
+      // completeness (#803 class: an unreadable thing is not a zero). The gate
+      // belongs to the app registration, not to one artist, so the first answer
+      // settles the rest and the walk ends there.
+      let gate: { status: number; reason: string } | null = null;
+      // A single unreadable artist is not a whole-tool failure, but it is not a
+      // 0% score either: recorded, excluded from the average, and disclosed.
+      const skipped: Array<{ artist_id: string; status: number | null; reason: string }> = [];
+      let topTracksRequests = 0;
       for (const [artistId, savedCount] of top) {
-        if (quotaHit) break;
+        if (quotaHit || gate) break;
+        topTracksRequests += 1;
         try {
           const res = await client.get<{ tracks?: Array<{ id?: string; name?: string } | null> }>(
             `/artists/${encodeURIComponent(artistId)}/top-tracks`,
@@ -979,25 +1016,84 @@ export function registerSwarm3LibraryTools(server: McpServer, client: SpotifyCli
             missing_top: missing,
           });
         } catch (e) {
-          if (e instanceof SpotifyApiError && e.status === 429) quotaHit = true;
+          if (e instanceof SpotifyApiError && e.status === 429) { quotaHit = true; break; }
+          // `isGatedError` matches the #329 annotation that src/gating.ts puts on
+          // the ORIGINAL SpotifyApiError (#765 rethrows rather than replaces, so
+          // `instanceof` and `.status` still hold and only the annotation is
+          // new). A bare, un-annotated 403 on this path is the same class — the
+          // contract is simply not installed — so both collapse into one
+          // fail-fast rather than one of them being mistaken for a per-artist
+          // read failure.
+          if (isGatedError(e) || (e instanceof SpotifyApiError && e.status === 403)) {
+            const err = e as SpotifyApiError;
+            gate = { status: 403, reason: graceful403Message(TOP_TRACKS_ENDPOINT, err) };
+            break;
+          }
+          // The Feb-2026 [REMOVED] answer is a 404/410 rather than a 403, and
+          // it too is a property of the registration, so it stops the walk on
+          // the first artist instead of once per artist.
+          if (e instanceof SpotifyApiError && (e.status === 404 || e.status === 410)) {
+            gate = { status: e.status, reason: removedTopTracksReason(e.status) };
+            break;
+          }
+          const status = e instanceof SpotifyApiError ? e.status : null;
+          skipped.push({
+            artist_id: artistId,
+            status,
+            reason: e instanceof Error ? e.message : String(e),
+          });
         }
       }
       scores.sort((a, b) => a.completeness - b.completeness || b.saved_tracks - a.saved_tracks);
       const t = truncateItems(scores, maxResults);
       const avg = scores.length === 0 ? 0 : scores.reduce((a, s) => a + s.completeness, 0) / scores.length;
-      const lines = [
-        `Artist completeness (saved tracks vs artist top-tracks): avg ${(avg * 100).toFixed(0)}% across ${scores.length} artist(s).`,
-        ...t.items.map((s) => `  • ${s.artist}: ${s.saved_top_tracks}/${s.top_tracks_total} top tracks saved (${(s.completeness * 100).toFixed(0)}%) — missing: ${s.missing_top.slice(0, 3).join('; ') || '—'}`),
-        ...(t.footer ? [`(${t.footer})`] : []),
-        ...(quotaHit ? [`Quota hit after ${scores.length}/${top.length} artist(s) — partial results.`] : []),
-      ];
+      const skipByStatus: Record<string, number> = {};
+      for (const s of skipped) {
+        const key = s.status === null ? 'network' : String(s.status);
+        skipByStatus[key] = (skipByStatus[key] ?? 0) + 1;
+      }
+      const dominantSkip = Object.entries(skipByStatus).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0];
+      const notRequested = top.length - topTracksRequests;
+      const rowLine = (s: Score): string =>
+        `  • ${s.artist}: ${s.saved_top_tracks}/${s.top_tracks_total} top tracks saved (${(s.completeness * 100).toFixed(0)}%)`;
+      const lines = gate
+        ? [
+            `Artist completeness not computed: ${gate.reason}`,
+            `Stopped after ${topTracksRequests} of ${top.length} artist(s) — ${topTracksRequests} top-tracks request(s) made, ${notRequested} not made.`,
+            ...(scores.length > 0
+              ? [
+                  `Scored before the gate — a subset of the ${top.length} top artist(s), so the average is withheld rather than reported over a sample: `,
+                  ...t.items.map(rowLine),
+                ]
+              : [`0 artist(s) scored. The endpoint could not be read — this is NOT a completeness of 0%.`]),
+          ]
+        : [
+            `Artist completeness (saved tracks vs artist top-tracks): avg ${(avg * 100).toFixed(0)}% across ${scores.length} artist(s).`,
+            ...t.items.map((s) => `${rowLine(s)} — missing: ${s.missing_top.slice(0, 3).join('; ') || '—'}`),
+            ...(t.footer ? [`(${t.footer})`] : []),
+            ...(quotaHit ? [`Quota hit after ${scores.length}/${top.length} artist(s) — partial results.`] : []),
+            ...(skipped.length > 0
+              ? [`${skipped.length} artist(s) could not be scored (${dominantSkip![1]} × HTTP ${dominantSkip![0]}) — excluded from the average, not counted as 0%.`]
+              : []),
+          ];
       const payload: Record<string, unknown> = {
         ...quotaDelta(client, pre.snapshot),
         ...shrink,
         ...listStructuredContent(t.items, paginationInfo({ total: t.total, returned: t.returned })),
-        average_completeness: avg,
+        // #901: the fan-out cost is disclosed so a caller can see the walk was
+        // cut short, rather than reading an empty list as "nothing to score".
+        artists_requested: top.length,
+        top_tracks_requests: topTracksRequests,
+        artists_not_requested: notRequested,
+        // null + gate_reason says "not computed"; 0 would say "none of your
+        // artists are complete" (#803).
+        average_completeness: gate ? null : avg,
         artists_scored: scores.length,
+        artists_skipped: skipped.length,
+        ...(skipped.length > 0 ? { skipped_by_status: skipByStatus, skipped_artists: skipped } : {}),
         quota_hit: quotaHit,
+        ...(gate ? { gated: true, gate_status: gate.status, gate_reason: gate.reason, partial: true } : {}),
+        ...(quotaHit && !gate ? { partial: true } : {}),
         truncated: t.truncated,
       };
       return shapeResult(rf, lines.join('\n'), payload);
