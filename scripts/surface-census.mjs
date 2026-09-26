@@ -460,7 +460,7 @@ function skillSurface(census) {
  * caller would see, none of which any shipped tool can produce, and it
  * described the `/me/{type}/contains` family as fully wrapped after #862 had
  * migrated the playlist-follow check onto `GET /me/library/contains`. Deriving
- * the table means a family added to `GATING` shows up here on the next
+ * the table means a family added to `GATED_FAMILIES` shows up here on the next
  * `--write`, and `checkGatedEndpointTruth` fails `--check` when a family's
  * hand-maintained `tools` list stops matching the real call sites.
  */
