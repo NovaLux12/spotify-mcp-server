@@ -167,6 +167,8 @@ const OUTPUT_FIELD_NAMES = new Set<string>([
   'sidecar_truncated',
   'truncated_collections',
   // Cursors and caps a call reports back so the next call can continue.
+  // #809: create_smart_playlist names the candidate-pool ceiling it reports.
+  'pool_capped', 'pool_cap',
   'fetch_all_cap',
   'from_token',
   'next_offset',
