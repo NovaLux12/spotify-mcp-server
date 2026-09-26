@@ -29,7 +29,6 @@ import { homedir } from 'node:os';
 import { exportRootDir, resolveOutputPath, writeOutputFile } from '../paths.js';
 import { csvTable } from '../csvsafe.js';
 import type {
-  SpotifyPaged,
   PlaylistItemObject,
   SavedTrackItem,
   SavedAlbumItem,
@@ -40,7 +39,7 @@ import type {
   RecentlyPlayedResponse,
   RecentlyPlayedItem,
 } from '../types/spotify.js';
-import { scenesFilePath, loadScenes } from './scenes.js';
+import { scenesFilePath } from './scenes.js';
 import { genreTagsPath } from './libraryinsights.js';
 import { playbackExtFile } from './playbackext.js';
 import { searchHistoryFile } from './searchhistory.js';
@@ -888,7 +887,6 @@ export function registerPortabilityTools(server: McpServer, client: SpotifyClien
       let before: string | undefined = args.before;
       // after cursor is not natively supported for pagination but we filter
       const afterMs = args.after ? new Date(args.after).getTime() : undefined;
-      const beforeMsInitial = args.before ? new Date(args.before).getTime() : undefined;
 
       while (items.length < cap) {
         const params: Record<string, string> = { limit: '50' };

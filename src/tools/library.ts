@@ -174,6 +174,21 @@ function parseDateBound(param: string, value: string | undefined): number | unde
   return ms;
 }
 
+/**
+ * Album name of a saved track, read through the shared shape (#758).
+ *
+ * `SavedTrackItem['track']` IS a `SpotifyTrack`, and `SpotifyTrack` models
+ * `album`; the three type-erasing album reads this replaces switched that
+ * typed field off, so a rename of `album` on either side could not fail the
+ * build at the one boundary where the payload shape is read. The `?? ''`
+ * stays: `/me/tracks` rows for relinked and local entries do not always carry
+ * an album, and a row without one reads as "no album" rather than throwing
+ * mid-filter.
+ */
+function albumNameOf(track: SavedTrackItem['track'] | undefined): string {
+  return track?.album?.name ?? '';
+}
+
 const SAVED_URI_TYPES = ['track', 'album', 'show', 'episode', 'audiobook'] as const;
 type SavedUriType = (typeof SAVED_URI_TYPES)[number];
 
@@ -975,11 +990,11 @@ export function registerLibraryTools(server: McpServer, client: SpotifyClient): 
       const q = args.query?.toLowerCase();
       if (q) filtered = filtered.filter(s => {
         const tr = s.track; if (!tr) return false;
-        const hay = [tr.name ?? '', ...(tr.artists ?? []).map(a=>a.name), (tr as any).album?.name ?? ''].join(' ').toLowerCase();
+        const hay = [tr.name ?? '', ...(tr.artists ?? []).map(a=>a.name), albumNameOf(tr)].join(' ').toLowerCase();
         return hay.includes(q);
       });
       if (args.artist) { const a = args.artist.toLowerCase(); filtered = filtered.filter(s => (s.track.artists ?? []).some(ar => ar.name.toLowerCase().includes(a))); }
-      if (args.album) { const a = args.album.toLowerCase(); filtered = filtered.filter(s => ((s.track as any).album?.name ?? '').toLowerCase().includes(a)); }
+      if (args.album) { const a = args.album.toLowerCase(); filtered = filtered.filter(s => albumNameOf(s.track).toLowerCase().includes(a)); }
       if (addedAfter !== undefined) filtered = filtered.filter(s => Date.parse(s.added_at) > addedAfter);
       if (addedBefore !== undefined) filtered = filtered.filter(s => Date.parse(s.added_at) < addedBefore);
       const sort = args.sort_by ?? 'added_desc';
@@ -995,7 +1010,7 @@ export function registerLibraryTools(server: McpServer, client: SpotifyClient): 
       const sliced = filtered.slice(0, Math.min(limit, cap(args)));
       const lines = [`Saved tracks search: ${totalMatches} match(es) across ${all.length} walked${truncated ? ` (walk truncated at ${walkCap})` : ''}, showing ${sliced.length}:`];
       for (const s of sliced) {
-        const tr = s.track; const artists = (tr.artists??[]).map(a=>a.name).join(', '); const album = (tr as any).album?.name ?? '';
+        const tr = s.track; const artists = (tr.artists??[]).map(a=>a.name).join(', '); const album = albumNameOf(tr);
         lines.push(`  • "${tr.name}" by ${artists} — ${album} (added ${s.added_at}) | URI: ${tr.uri}`);
       }
       if (truncated) lines.push(`(walk hit cap ${walkCap} — pass max_items to scan more)`);
