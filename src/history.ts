@@ -27,7 +27,13 @@
  *    2 x maxBytes on disk. Readers go through readHistory(), which tails
  *    backwards through the files in fixed-size chunks and keeps at most
  *    DEFAULT_HISTORY_READ_LIMIT records in memory regardless of file size.
+ *
+ * `who` records the tool that issued the mutation when the call came through
+ * the tool-invocation boundary, and `agent` otherwise (#591). A lost append
+ * is counted and reported by spotify_doctor rather than swallowed, so an
+ * incomplete trail never reads as a complete one.
  */
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { createHash } from 'node:crypto';
 import { open, appendFile, chmod, mkdir, rename, stat } from 'node:fs/promises';
 import type { FileHandle } from 'node:fs/promises';
@@ -35,6 +41,107 @@ import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 import { truthyEnv } from './config.js';
+
+// ---------------------------------------------------------------------------
+// Actor labelling (#591)
+//
+// Every mutation reaches the ledger through the client's write methods, which
+// do not know — and cannot cheaply be told — which tool issued them. The one
+// place that does know is the tool-invocation boundary, so the tool name is
+// carried ambiently (AsyncLocalStorage) and read back at the record site.
+// ---------------------------------------------------------------------------
+
+const toolContext = new AsyncLocalStorage<string>();
+
+/** Guard rail: tool names are far shorter; the cap keeps the field bounded. */
+const MAX_WHO_LENGTH = 64;
+
+/**
+ * `who` is echoed unescaped into Markdown tables by the history export tools,
+ * so only the character class real tool names use survives.
+ */
+const WHO_UNSAFE = /[^A-Za-z0-9_.-]+/g;
+
+/** The tool whose handler is running on this async context, if any. */
+export function currentToolName(): string | undefined {
+  return toolContext.getStore();
+}
+
+/**
+ * Run `fn` with `name` as the ambient actor for every mutation issued inside
+ * it, across awaits. Installed at the single tool-invocation boundary
+ * (installTruncationBoundary in src/shaping.ts), so no mutation call site has
+ * to name itself and concurrent tool calls keep their own actor.
+ */
+export function runInToolContext<T>(name: string, fn: () => Promise<T>): Promise<T> {
+  return toolContext.run(name, fn);
+}
+
+/** Normalised `who` label; undefined when there is no usable actor. */
+function normalizeActor(who: string | undefined): string | undefined {
+  if (who === undefined) return undefined;
+  const cleaned = who.replace(WHO_UNSAFE, '_').slice(0, MAX_WHO_LENGTH);
+  return cleaned.length > 0 ? cleaned : undefined;
+}
+
+// ---------------------------------------------------------------------------
+// Write-failure accounting (#591)
+//
+// The trail is best-effort by design (a history problem must never fail the
+// mutation it describes), but "best-effort" used to mean "invisible": an
+// unwritable directory produced a ledger that reads as complete. Failures are
+// therefore counted, reported once per process, and read back by
+// spotify_doctor as a `fail` row.
+// ---------------------------------------------------------------------------
+
+let writeFailures = 0;
+let lastWriteFailure: string | undefined;
+let warnedWriteFailure = false;
+
+export interface HistoryWriteStatus {
+  /** Whether the trail is being recorded at all. */
+  enabled: boolean;
+  /** The resolved JSONL path the writer targets. */
+  path: string;
+  /** Appends that did not reach disk since process start. */
+  failures: number;
+  /** `errno` + path of the most recent failure, when there was one. */
+  last_failure?: string;
+}
+
+/** What spotify_doctor reports: where the ledger lives and how lossy it got. */
+export function historyWriteStatus(env: NodeJS.ProcessEnv = process.env): HistoryWriteStatus {
+  return {
+    enabled: isHistoryEnabled(env),
+    path: historyFilePath(env),
+    failures: writeFailures,
+    ...(lastWriteFailure !== undefined ? { last_failure: lastWriteFailure } : {}),
+  };
+}
+
+/**
+ * Count a lost append and warn exactly once per process. The warning is the
+ * only signal a host that never calls spotify_doctor will ever see, so it
+ * names the errno and the path it could not write.
+ */
+function noteWriteFailure(err: unknown, file: string): void {
+  writeFailures++;
+  const code = (err as NodeJS.ErrnoException | null | undefined)?.code;
+  lastWriteFailure = `${typeof code === 'string' ? code : 'unknown error'} on ${file}`;
+  if (warnedWriteFailure) return;
+  warnedWriteFailure = true;
+  console.error(
+    `[spotify-mcp] history write failed (${lastWriteFailure}) — audit trail incomplete; ` +
+      'undo anchors may be missing. Run spotify_doctor to see the failure counter.',
+  );
+}
+
+/** Test seam: clear the process-scoped counter and the warn-once latch. */
+export function __resetHistoryWriteState(): void {
+  writeFailures = 0;
+  lastWriteFailure = undefined;
+  warnedWriteFailure = false;
+}
 
 export interface MutationRecord {
   /** HTTP method of the mutating call (POST/PUT/DELETE). */
@@ -148,24 +255,19 @@ async function rotate(file: string): Promise<void> {
   await chmod(archive, HISTORY_FILE_MODE);
 }
 
-/**
- * Append one mutation record. No-op unless history is enabled; never throws
- * to the caller's face is NOT a goal here — callers (client) catch and drop.
- */
-export async function appendHistory(record: MutationRecord): Promise<void> {
-  if (!isHistoryEnabled()) return;
+/** Serialize + persist one record. Throws; the wrapper below owns the policy. */
+async function writeHistoryRecord(file: string, record: MutationRecord): Promise<void> {
   // Whitelist serialization: only these fields ever reach disk, so a
   // stray token/body reference in the record object cannot be persisted.
   const line =
     JSON.stringify({
       ts: new Date().toISOString(),
-      who: record.who ?? 'agent',
+      who: normalizeActor(record.who) ?? 'agent',
       method: record.method.toUpperCase(),
       path: redactPath(record.path),
       target: targetFingerprint(record.path),
       ...(record.snapshot_id !== undefined ? { snapshot_id: record.snapshot_id } : {}),
     }) + '\n';
-  const file = historyFilePath();
   const dir = dirname(file);
   await mkdir(dir, { recursive: true, mode: HISTORY_DIR_MODE });
   // Directory mode is also creation-only — tighten a pre-existing one.
@@ -178,6 +280,23 @@ export async function appendHistory(record: MutationRecord): Promise<void> {
   // Creation-time mode alone leaves pre-existing or copied files readable by
   // others; re-assert owner-only on every write.
   await chmod(file, HISTORY_FILE_MODE);
+}
+
+/**
+ * Append one mutation record. No-op unless history is enabled.
+ *
+ * Never rejects: a history problem must not fail the mutation it describes.
+ * It is also never silent — a lost append is counted, warns once per process,
+ * and turns the spotify_doctor `history` row red (#591).
+ */
+export async function appendHistory(record: MutationRecord): Promise<void> {
+  if (!isHistoryEnabled()) return;
+  const file = historyFilePath();
+  try {
+    await writeHistoryRecord(file, record);
+  } catch (err) {
+    noteWriteFailure(err, file);
+  }
 }
 
 /**

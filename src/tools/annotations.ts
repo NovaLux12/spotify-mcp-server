@@ -93,7 +93,7 @@ import { registerSwarm3RefsTools } from './swarm3_refs.js';
 import { registerSwarm3SnapshotsTools } from './swarm3_snapshots.js';
 import { registerSwarm3MetaTools } from './swarm3_meta.js';
 import { registerStatsfmTools } from './statsfm.js';
-import { formatReceipt, verifyReceipt } from '../receipts.js';
+import { formatReceipt, receiptMissMessage, verifyReceipt } from '../receipts.js';
 import { z } from 'zod';
 import { CallToolRequestSchema, ListToolsRequestSchema, type ServerResult } from '@modelcontextprotocol/sdk/types.js';
 import { getObjectShape, normalizeObjectSchema, safeParseAsync } from '@modelcontextprotocol/sdk/server/zod-compat.js';
@@ -591,7 +591,7 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
       async (args) => {
         const receipt = verifyReceipt(args.receipt_id);
         if (!receipt) {
-          return { content: [{ type: 'text', text: `Unknown receipt "${args.receipt_id}" — receipts are kept for the most recent 100 mutations.` }] };
+          return { content: [{ type: 'text', text: receiptMissMessage(args.receipt_id) }] };
         }
         return { content: [{ type: 'text', text: formatReceipt(receipt) }], structuredContent: { ...receipt } };
       },
@@ -617,7 +617,7 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   manifestEntry('exhaust2enggating', 'exhaust2enggating', 'src/tools/exhaust2_enggating.ts', registerExhaust2EnggatingTools, [0, 0], { readOnlySafe: true, scopeKey: 'catalog' }),
   manifestEntry('exhaust2playback', 'exhaust2playback', 'src/tools/exhaust2_playback.ts', registerExhaust2PlaybackTools, [23, 17306], { scopeKey: 'playback' }),
   manifestEntry('exhaust2playlists', 'exhaust2playlists', 'src/tools/exhaust2_playlists.ts', registerExhaust2PlaylistsTools, [18, 23507], { scopeKey: 'playlists' }),
-  manifestEntry('exhaust2misc', 'exhaust2misc', 'src/tools/exhaust2_misc.ts', registerExhaust2MiscTools, [27, 23234], { scopeKey: 'library' }),
+  manifestEntry('exhaust2misc', 'exhaust2misc', 'src/tools/exhaust2_misc.ts', registerExhaust2MiscTools, [27, 23264], { scopeKey: 'library' }),
   manifestEntry('exhaust2extra', 'exhaust2extra', 'src/tools/exhaust2_extra.ts', registerExhaust2ExtraTools, [3, 3695], { scopeKey: 'playlists' }),
   manifestEntry('swarm3discovery', 'swarm3discovery', 'src/tools/swarm3_discovery.ts', registerSwarm3DiscoveryTools, [24, 21887], { readOnlySafe: true, scopeKey: 'catalog' }),
   manifestEntry('swarm3bdiscovery', 'swarm3bdiscovery', 'src/tools/swarm3b_discovery.ts', registerSwarm3bDiscoveryTools, [24, 20039], { readOnlySafe: true, scopeKey: 'catalog' }),
@@ -789,6 +789,10 @@ type ErrorKind =
   | 'auth'
   | 'forbidden'
   | 'not_found'
+  // 304 with no stored ETag backing it: the origin honoured a conditional
+  // request we cannot answer. Its own kind, because folding it into
+  // `unavailable` would report Spotify as down when it answered correctly.
+  | 'not_modified'
   | 'rate_limited'
   | 'unavailable'
   | 'conflict'
@@ -954,6 +958,7 @@ function defaultReason(kind: ErrorKind): string {
     case 'unavailable': return 'spotify_unavailable';
     case 'conflict': return 'playlist_changed_since_read';
     case 'validation': return 'validation_failed';
+    case 'not_modified': return 'not_modified_without_validator';
     case 'unknown_tool': return 'tool_not_registered';
     case 'unknown_param': return 'parameter_not_accepted';
     case 'internal': return 'internal_error';
@@ -994,6 +999,14 @@ function publicFailure(tool: string, error: unknown): ErrorFields {
         ? `${tool} timed out while waiting for Spotify; retry shortly.`
         : `${tool} could not reach Spotify because the service is unavailable; retry shortly.`;
       fix = 'Retry shortly.';
+    } else if (status === 304) {
+      // A 304 backed by a stored validator is a successful cache hit and never
+      // reaches here; only the unbacked one throws (#601). It is a missing
+      // validator, not an outage and not a bad argument, so it gets its own
+      // kind and a fix that names the real next step.
+      kind = 'not_modified';
+      text = `${tool} was answered 304 Not Modified with no stored ETag to match it; the read cannot be served from cache.`;
+      fix = 'Re-read without a validator (do not send If-None-Match).';
     } else if (status === 400 || status === 422) {
       kind = 'validation';
       text = `${tool} received invalid arguments; pass values that match the tool schema.`;

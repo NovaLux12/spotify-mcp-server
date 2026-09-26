@@ -29,10 +29,41 @@
  * 3. **Expose `verify_receipt` as a follow-up tool** wrapping
  *    `verifyReceipt(id)`: takes a receipt id, returns the stored receipt (or
  *    "unknown receipt" prose) so a later turn can re-inspect verification
- *    without refetching. Receipts live in an in-module Map capped at 100 with
- *    FIFO eviction; ids are session-scoped (`rcpt_<n>`).
+ *    without refetching. The live store is an in-module Map capped at
+ *    MAX_RECEIPTS with FIFO eviction, and ids are boot-scoped
+ *    (`rcpt_<bootId>-<n>`) so a stale id from an earlier session can never
+ *    resolve to a DIFFERENT mutation (#587).
+ *
+ * ## Surviving a restart (#587)
+ *
+ * With `SPOTIFY_MCP_RECEIPTS` truthy, each issued receipt is appended to
+ * `<dir>/receipts.jsonl` and the newest MAX_RECEIPTS are loaded back on first
+ * use, so `verify_receipt` and `undo_mutation` survive a host restart, a
+ * crash, or a session longer than the in-memory cap. The directory follows
+ * the history store's family: `SPOTIFY_MCP_RECEIPTS_DIR`, else
+ * `SPOTIFY_MCP_HISTORY_DIR`, else `~/.spotify-mcp`. With persistence off the
+ * store is process-local and every miss message SAYS so — receipts are never
+ * presented as account history. Retention is stated, never implied: the
+ * newest MAX_RECEIPTS mutations, each kept for at most
+ * `SPOTIFY_MCP_RECEIPTS_TTL_HOURS` (default 24, 0 disables expiry).
  */
 
+import { randomBytes } from 'node:crypto';
+import {
+  appendFileSync,
+  chmodSync,
+  closeSync,
+  mkdirSync,
+  openSync,
+  readSync,
+  renameSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
+import { homedir } from 'node:os';
+import { dirname, join } from 'node:path';
+
+import { truthyEnv } from './config.js';
 import type { PlaylistItemsResponse } from './types/spotify.js';
 
 /** Minimal client surface needed here — satisfied by SpotifyClient and test stubs. */
@@ -103,6 +134,12 @@ export interface Receipt {
   windowExceeded?: boolean;
   /** Human reason when not verified or window exceeded. */
   reason?: string;
+  /**
+   * Epoch ms the receipt was issued (#587). The retention clock and
+   * `receipt_lookup`'s `since` filter both read it, and it is persisted with
+   * the receipt so one loaded after a restart keeps its original age.
+   */
+  issued_at?: number;
 }
 
 export interface IssueReceiptOpts {
@@ -143,17 +180,215 @@ export interface IssueReceiptOpts {
   expectedRemovedCount?: number;
 }
 
-// In-module receipt store, capped at 100 with FIFO eviction.
-const MAX_RECEIPTS = 100;
+// Live receipt store: an in-module Map capped at MAX_RECEIPTS with FIFO
+// eviction, mirrored to disk when persistence is on (#587).
+/** Receipts kept live — the undo/verify window, in memory and on disk. */
+export const MAX_RECEIPTS = 100;
+/** Default receipt lifetime; SPOTIFY_MCP_RECEIPTS_TTL_HOURS overrides (0 = never). */
+export const DEFAULT_RECEIPT_TTL_HOURS = 24;
+/** Owner-only modes, re-asserted on every write, like the history ledger's. */
+const RECEIPT_FILE_MODE = 0o600;
+const RECEIPT_DIR_MODE = 0o700;
+const RECEIPT_FILE = 'receipts.jsonl';
+/**
+ * The trail is compacted once it holds this many lines, so a long session
+ * costs one rewrite per MAX_RECEIPT_LINES appends instead of one per
+ * mutation. Eviction is FIFO by issue order, exactly like the in-memory cap.
+ */
+const MAX_RECEIPT_LINES = MAX_RECEIPTS * 4;
+/** Hard ceiling on what a load will read from disk, whatever the file's size. */
+const MAX_RECEIPT_FILE_BYTES = 4 * 1024 * 1024;
+
 const store = new Map<string, Receipt>();
+/**
+ * Ids must be unique across PROCESSES, not just within one: a host that
+ * respawns the server hands the agent ids from the previous session, and a
+ * bare `rcpt_1` counter would resolve those to a DIFFERENT, later mutation
+ * (#587). The boot id (process start time + random suffix) makes that
+ * collision impossible in both directions.
+ */
+const bootId = `${Date.now().toString(36)}${randomBytes(3).toString('hex')}`;
 let nextSeq = 1;
+let loaded = false;
+/** Lines this process has appended, so compaction stays amortized O(1). */
+let onDiskLines = 0;
+
+/** True when receipts are persisted to disk (SPOTIFY_MCP_RECEIPTS). */
+export function isReceiptsPersistent(env: NodeJS.ProcessEnv = process.env): boolean {
+  return truthyEnv(env.SPOTIFY_MCP_RECEIPTS);
+}
+
+/** Receipt JSONL path; SPOTIFY_MCP_RECEIPTS_DIR / SPOTIFY_MCP_HISTORY_DIR override the dir. */
+export function receiptsFilePath(env: NodeJS.ProcessEnv = process.env): string {
+  const dir =
+    env.SPOTIFY_MCP_RECEIPTS_DIR ??
+    env.SPOTIFY_MCP_HISTORY_DIR ??
+    join(homedir(), '.spotify-mcp');
+  return join(dir, RECEIPT_FILE);
+}
+
+/** Receipt lifetime in ms; Infinity when SPOTIFY_MCP_RECEIPTS_TTL_HOURS is 0. */
+export function receiptTtlMs(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = Number.parseInt(env.SPOTIFY_MCP_RECEIPTS_TTL_HOURS ?? '', 10);
+  if (!Number.isFinite(raw)) return DEFAULT_RECEIPT_TTL_HOURS * 3_600_000;
+  if (raw <= 0) return Infinity;
+  return raw * 3_600_000;
+}
+
+/** Human retention statement shared by every "unknown receipt" message. */
+export function receiptRetentionLabel(env: NodeJS.ProcessEnv = process.env): string {
+  const ttl = receiptTtlMs(env);
+  if (!Number.isFinite(ttl)) return 'with no time limit';
+  const hours = ttl / 3_600_000;
+  const window = hours >= 1
+    ? `${Number.isInteger(hours) ? hours : hours.toFixed(1)}h`
+    : `${Math.round(ttl / 60_000)}m`;
+  return `for up to ${window}`;
+}
+
+/**
+ * The one miss message every receipt-facing tool must use. It names the real
+ * scope: an id from an earlier session is not account history — it is either
+ * gone (cap or TTL) or was never persisted at all (#587).
+ */
+export function receiptMissMessage(
+  receiptId: string,
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  const scope = isReceiptsPersistent(env)
+    ? `persisted in ${receiptsFilePath(env)}`
+    : 'session-scoped — receipts are not persisted to disk, so an id from an earlier session is gone';
+  return `Unknown or expired receipt "${receiptId}" — receipts are ${scope}; only the ${MAX_RECEIPTS} most recent mutations are kept, ${receiptRetentionLabel(env)}.`;
+}
+
+/** Tail of a text file, bounded by maxBytes, skipping a partial leading line. */
+function readTailText(file: string, maxBytes: number): string | null {
+  const { size } = statSync(file);
+  const start = size > maxBytes ? size - maxBytes : 0;
+  const fd = openSync(file, 'r');
+  try {
+    const buf = Buffer.allocUnsafe(size - start);
+    readSync(fd, buf, 0, buf.length, start);
+    const text = buf.toString('utf8');
+    if (start === 0) return text;
+    const nl = text.indexOf('\n');
+    return nl === -1 ? '' : text.slice(nl + 1);
+  } finally {
+    closeSync(fd);
+  }
+}
+
+const RECEIPT_KINDS: ReadonlySet<string> = new Set<ReceiptKind>([
+  'playlist_items',
+  'library',
+  'playlist_meta',
+]);
+
+/** Parse one persisted line, or null when it is not a receipt this build can use. */
+function parseReceiptLine(line: string): Receipt | null {
+  if (!line.trim()) return null;
+  try {
+    const value: unknown = JSON.parse(line);
+    if (typeof value !== 'object' || value === null) return null;
+    const fields = value as Record<string, unknown>;
+    if (typeof fields.receipt_id !== 'string') return null;
+    if (!RECEIPT_KINDS.has(fields.kind as string)) return null;
+    if (!Array.isArray(fields.uris) || !Array.isArray(fields.missing)) return null;
+    return value as Receipt;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Drop receipts past the TTL. A receipt with no timestamp is NOT expired —
+ * an unknown age is not a verdict, so a legacy or hand-written line stays
+ * resolvable rather than being silently discarded.
+ */
+function pruneExpired(now: number, ttl: number): void {
+  if (!Number.isFinite(ttl)) return;
+  for (const [id, r] of store) {
+    if (typeof r.issued_at === 'number' && now - r.issued_at > ttl) store.delete(id);
+  }
+}
+
+/** Rehydrate the store from the trail: newest MAX_RECEIPTS, in issue order. */
+function loadFromDisk(env: NodeJS.ProcessEnv): void {
+  const text = readTailText(receiptsFilePath(env), MAX_RECEIPT_FILE_BYTES);
+  if (text === null) return;
+  const parsed = text
+    .split('\n')
+    .map(parseReceiptLine)
+    .filter((r): r is Receipt => r !== null);
+  for (const r of parsed.slice(-MAX_RECEIPTS)) store.set(r.receipt_id, r);
+  onDiskLines = parsed.length;
+  pruneExpired(Date.now(), receiptTtlMs(env));
+}
+
+/** First use in a process hydrates the store; every later call is a no-op. */
+function ensureLoaded(env: NodeJS.ProcessEnv = process.env): void {
+  if (loaded) return;
+  loaded = true;
+  if (!isReceiptsPersistent(env)) return;
+  try {
+    loadFromDisk(env);
+  } catch {
+    // An unreadable or corrupt trail must not break verify/undo: the store
+    // starts empty and the next append rebuilds it.
+  }
+}
+
+/** Rewrite the trail with only the live receipts, in FIFO eviction order. */
+function compactTrail(file: string): void {
+  const retained = [...store.values()].slice(-MAX_RECEIPTS);
+  const body = retained.map((r) => JSON.stringify(r)).join('\n');
+  const tmp = `${file}.${process.pid}.tmp`;
+  writeFileSync(tmp, body.length > 0 ? body + '\n' : '', { encoding: 'utf8', mode: RECEIPT_FILE_MODE });
+  renameSync(tmp, file);
+  onDiskLines = retained.length;
+}
+
+/** Append one receipt. Never throws: a full or read-only disk must not fail a mutation. */
+function persist(receipt: Receipt, env: NodeJS.ProcessEnv): void {
+  if (!isReceiptsPersistent(env)) return;
+  const file = receiptsFilePath(env);
+  try {
+    const dir = dirname(file);
+    mkdirSync(dir, { recursive: true, mode: RECEIPT_DIR_MODE });
+    chmodSync(dir, RECEIPT_DIR_MODE);
+    appendFileSync(file, JSON.stringify(receipt) + '\n', { encoding: 'utf8', mode: RECEIPT_FILE_MODE });
+    // A creation-time mode alone leaves a pre-existing or copied file
+    // readable by others; re-assert owner-only on every write, as the
+    // history ledger does.
+    chmodSync(file, RECEIPT_FILE_MODE);
+    onDiskLines += 1;
+    if (onDiskLines > MAX_RECEIPT_LINES) compactTrail(file);
+  } catch {
+    /* best-effort: the in-memory receipt still answers this session's lookups */
+  }
+}
+
+/**
+ * Test-only: drop every in-memory trace of receipts so the next access
+ * re-reads the trail — the state a freshly spawned process is in.
+ */
+export function __resetReceiptStoreForTests(): void {
+  store.clear();
+  nextSeq = 1;
+  loaded = false;
+  onDiskLines = 0;
+}
 
 /** Stored receipt lookup for the orchestrator-wired `verify_receipt` tool. */
 export function verifyReceipt(receiptId: string): Receipt | undefined {
+  ensureLoaded();
+  pruneExpired(Date.now(), receiptTtlMs());
   return store.get(receiptId);
 }
 /** All receipts in insertion order (for undo). */
 export function getAllReceipts(): Receipt[] {
+  ensureLoaded();
+  pruneExpired(Date.now(), receiptTtlMs());
   return [...store.values()];
 }
 
@@ -428,7 +663,9 @@ export async function issueReceipt(
   }
 
   const receipt: Receipt = {
-    receipt_id: `rcpt_${nextSeq++}`,
+    // Boot-scoped: `rcpt_<bootId>-<n>` cannot be minted by a later process,
+    // so a stale id resolves to nothing rather than to another mutation.
+    receipt_id: `rcpt_${bootId}-${nextSeq++}`,
     kind: opts.kind,
     ...(opts.id !== undefined ? { id: opts.id } : {}),
     verified: _windowExceeded ? false : verified!,
@@ -443,13 +680,16 @@ export async function issueReceipt(
     ...(affected !== undefined && affected.length > 0 ? { affected } : {}),
     ...(occurrences !== undefined ? { occurrences } : {}),
     ...(_windowExceeded ? { windowExceeded: true as const, reason: _reason } : {}),
+    issued_at: Date.now(),
   };
+  ensureLoaded();
   store.set(receipt.receipt_id, receipt);
   if (store.size > MAX_RECEIPTS) {
     // Map preserves insertion order: first key is the oldest receipt.
     const oldest = store.keys().next().value;
     if (oldest !== undefined) store.delete(oldest);
   }
+  persist(receipt, process.env);
   return receipt;
 }
 

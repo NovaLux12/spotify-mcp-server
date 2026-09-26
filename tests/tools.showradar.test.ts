@@ -39,6 +39,16 @@ interface RegisteredTool {
   handler: (a: Record<string, unknown>) => Promise<{ content: Array<{ type: string; text: string }>; structuredContent?: Record<string, unknown> }>;
 }
 
+/** Budget fields the radar reports; the payload is Record<string, unknown> at the boundary. */
+interface BudgetPayload {
+  max_shows: number;
+  effective_cap: number;
+  budget_source: string;
+  truncated_by_budget: boolean;
+  shows_scanned: number;
+  saved_shows_total: number;
+}
+
 function harness(opts: {
   shows?: ReturnType<typeof show>[];
   episodesByShow?: Record<string, ReturnType<typeof ep>[]>;
@@ -300,6 +310,75 @@ describe('show_new_episodes budget/quota', () => {
     assert.equal(p.new_episodes, 1);
   });
 });
+
+// #590: the max_shows description advertises SPOTIFY_MCP_SHOWRADAR_BUDGET, so
+// exporting it has to change the effective budget. Before the read path existed
+// this was a silent no-op: 5 shows scanned, nothing truncated.
+describe('show_new_episodes SPOTIFY_MCP_SHOWRADAR_BUDGET (#590)', () => {
+  const fiveShows = () => ({
+    shows: [show('s1'), show('s2'), show('s3'), show('s4'), show('s5')],
+    episodesByShow: {
+      s1: [ep('e1', today)], s2: [ep('e2', today)], s3: [ep('e3', today)],
+      s4: [ep('e4', today)], s5: [ep('e5', today)],
+    },
+  });
+
+  it('caps the scan when max_shows is absent', async () => {
+    const h = harness(fiveShows());
+    await withEnv({ SPOTIFY_MCP_SHOWRADAR_BUDGET: '2' }, async () => {
+      const out = await h.invoke({ days: 7, per_show_limit: 5 });
+      const p = out.structuredContent as BudgetPayload;
+      assert.equal(p.max_shows, 2);
+      assert.equal(p.effective_cap, 2);
+      assert.equal(p.budget_source, 'SPOTIFY_MCP_SHOWRADAR_BUDGET');
+      assert.equal(p.truncated_by_budget, true);
+      assert.equal(p.shows_scanned, 2);
+      assert.equal(p.saved_shows_total, 5);
+      // The truncation note must not send the operator to the other variable.
+      assert.match(textOf(out), /budget 2 from SPOTIFY_MCP_SHOWRADAR_BUDGET/);
+      assert.doesNotMatch(textOf(out), /from SPOTIFY_MCP_FRESHNESS_BUDGET/);
+    });
+  });
+
+  it('yields to a max_shows argument for one call', async () => {
+    const h = harness(fiveShows());
+    await withEnv({ SPOTIFY_MCP_SHOWRADAR_BUDGET: '4' }, async () => {
+      const p = (await h.invoke({ days: 7, per_show_limit: 5, max_shows: 1 })).structuredContent as BudgetPayload;
+      assert.equal(p.max_shows, 1);
+      assert.equal(p.budget_source, 'max_shows argument');
+      assert.equal(p.shows_scanned, 1);
+    });
+  });
+
+  it('falls back to the shared freshness budget on a non-positive value', async () => {
+    const shows = [show('s1'), show('s2'), show('s3')];
+    const h = harness({
+      shows,
+      episodesByShow: { s1: [ep('e1', today)], s2: [ep('e2', today)], s3: [ep('e3', today)] },
+    });
+    for (const raw of ['0', '-4', 'abc', '']) {
+      await withEnv({ SPOTIFY_MCP_SHOWRADAR_BUDGET: raw }, async () => {
+        const p = (await h.invoke({ days: 7, per_show_limit: 5 })).structuredContent as BudgetPayload;
+        assert.equal(p.max_shows, 25, `raw=${JSON.stringify(raw)}`);
+        assert.equal(p.budget_source, 'SPOTIFY_MCP_FRESHNESS_BUDGET', `raw=${JSON.stringify(raw)}`);
+        assert.equal(p.shows_scanned, 3);
+        assert.equal(p.truncated_by_budget, false);
+      });
+    }
+  });
+
+  it('names the variable in force in the cost preview', async () => {
+    const h = harness({ shows: [show('s1')] });
+    await withEnv({ SPOTIFY_MCP_SHOWRADAR_BUDGET: '3' }, async () => {
+      const out = await h.invoke({ cost_preview: true });
+      const p = out.structuredContent as BudgetPayload;
+      assert.equal(p.max_shows, 3);
+      assert.equal(p.budget_source, 'SPOTIFY_MCP_SHOWRADAR_BUDGET');
+      assert.match(textOf(out), /Budget: max_shows=3 \(SPOTIFY_MCP_SHOWRADAR_BUDGET\)/);
+    });
+  });
+});
+
 
 // #673: the /me/shows walk stops at the fetch-all cap and reports nothing
 // about it, so a capped listing read as the whole library — a partial scan
