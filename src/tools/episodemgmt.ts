@@ -6,6 +6,7 @@
  * ok:true, which was phantom success. Removed per #85 precedent.
  */
 import { z } from 'zod';
+import { capFor } from '../chunk.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
 import { confirmViaElicitation, describeConfirmation, requiredConfirmationRefusal } from './confirm.js';
@@ -257,8 +258,9 @@ export function registerEpisodeMgmtTools(server: McpServer, client: SpotifyClien
         if (refusal) return textResult(refusal.message, { ...refusal.payload, ...deprecation });
       }
       let removed = 0;
-      for (let i = 0; i < ids.length; i += 50) {
-        const batch = ids.slice(i, i + 50);
+      const episodeCap = capFor('episodes');
+      for (let i = 0; i < ids.length; i += episodeCap) {
+        const batch = ids.slice(i, i + episodeCap);
         await client.delete(`/me/episodes?ids=${batch.join(',')}`);
         removed += batch.length;
       }

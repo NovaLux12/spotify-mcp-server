@@ -6,6 +6,7 @@
  * mutates, and its dry_run previews page the sources but never POSTs.
  */
 import { z } from 'zod';
+import { capFor } from '../chunk.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
 import { getConfig } from '../config.js';
@@ -194,9 +195,10 @@ export function registerPlaylistOpsTools(server: McpServer, client: SpotifyClien
       const itemsPath = `/playlists/${encodeURIComponent(targetId)}/items`;
       let snapshotId: string | undefined;
       let requestCount = 0;
-      for (let start = 0; start < merged.length; start += 100) {
+      const writeCap = capFor('playlist_writes');
+      for (let start = 0; start < merged.length; start += writeCap) {
         const res = await client.post<{ snapshot_id?: string }>(itemsPath, {
-          uris: merged.slice(start, start + 100).map((t) => t.uri),
+          uris: merged.slice(start, start + writeCap).map((t) => t.uri),
         });
         requestCount++;
         if (res?.snapshot_id) snapshotId = res.snapshot_id;

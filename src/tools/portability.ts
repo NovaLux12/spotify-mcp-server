@@ -11,8 +11,8 @@ import {
   DryRun,
   describeDryRun,
   batchSummary,
-  CHUNK_CAPS,
 } from '../shaping.js';
+import { CHUNK_CAPS, capFor } from '../chunk.js';
 import type { ResponseFormatValue } from '../shaping.js';
 import { issueReceipt, formatReceipt } from '../receipts.js';
 import { confirmViaElicitation, describeConfirmation, requiredConfirmationRefusal } from './confirm.js';
@@ -429,8 +429,9 @@ async function savePersonalized(
   }
 
   let snapshotId: string | undefined;
-  for (let start = 0; start < uris.length; start += 100) {
-    const chunk = uris.slice(start, start + 100);
+  const writeCap = capFor('playlist_writes');
+  for (let start = 0; start < uris.length; start += writeCap) {
+    const chunk = uris.slice(start, start + writeCap);
     const res =
       start === 0
         ? await client.put<{ snapshot_id?: string }>(`/playlists/${encodeURIComponent(archiveId)}/items`, { uris: chunk })

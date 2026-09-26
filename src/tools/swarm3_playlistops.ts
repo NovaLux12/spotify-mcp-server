@@ -25,6 +25,7 @@
  * (clone the LIVE playlist, not a local backup) — different mechanics, no clash.
  */
 import { z } from 'zod';
+import { capFor } from '../chunk.js';
 import { mkdir, writeFile } from 'node:fs/promises';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
@@ -183,8 +184,9 @@ async function atomicReplace(
   const path = `/playlists/${encodeURIComponent(targetId)}/items`;
   let snapshotId: string | undefined;
   let requests = 0;
-  for (let start = 0; start < uris.length; start += 100) {
-    const chunk = uris.slice(start, start + 100);
+  const writeCap = capFor('playlist_writes');
+  for (let start = 0; start < uris.length; start += writeCap) {
+    const chunk = uris.slice(start, start + writeCap);
     const res =
       start === 0
         ? await client.put<{ snapshot_id?: string }>(path, { uris: chunk })
@@ -218,9 +220,10 @@ async function addUrisChunked(
   const path = `/playlists/${encodeURIComponent(targetId)}/items`;
   let snapshotId: string | undefined;
   let requests = 0;
-  for (let start = 0; start < uris.length; start += 100) {
+  const writeCap = capFor('playlist_writes');
+  for (let start = 0; start < uris.length; start += writeCap) {
     const res = await client.post<{ snapshot_id?: string }>(path, {
-      uris: uris.slice(start, start + 100),
+      uris: uris.slice(start, start + writeCap),
     });
     if (res?.snapshot_id) snapshotId = res.snapshot_id;
     requests++;
@@ -963,8 +966,9 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
       // (#A6-003). Sorting descending keeps every later request's indices valid.
       const doomedDesc = [...doomed].sort((a, b) => b.position - a.position);
       let requests = 0;
-      for (let start = 0; start < doomedDesc.length; start += 100) {
-        const chunk = doomedDesc.slice(start, start + 100);
+      const writeCap = capFor('playlist_writes');
+      for (let start = 0; start < doomedDesc.length; start += writeCap) {
+        const chunk = doomedDesc.slice(start, start + writeCap);
         await client.delete(`/playlists/${encodeURIComponent(p.id)}/items`, {
           tracks: chunk.map((r) => ({ uri: r.uri, positions: [r.position] })),
         });
@@ -1583,8 +1587,9 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
       // independent, but the source delete must not shift rows still queued for deletion.
       const movingDesc = [...moving].sort((a, b) => b.position - a.position);
       let requests = 0;
-      for (let start = 0; start < movingDesc.length; start += 100) {
-        const chunk = movingDesc.slice(start, start + 100);
+      const writeCap = capFor('playlist_writes');
+      for (let start = 0; start < movingDesc.length; start += writeCap) {
+        const chunk = movingDesc.slice(start, start + writeCap);
         await client.delete(`/playlists/${encodeURIComponent(src.id)}/items`, {
           tracks: chunk.map((r) => ({ uri: r.uri, positions: [r.position] })),
         });
@@ -1693,8 +1698,9 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
         const origItems = loadedById.get(srcId);
         if (origItems) backupFiles.push(await backupItemsBeforeWrite(srcId, buckets.find((b) => b.id === srcId)?.name ?? null, origItems));
         const descending = [...rows].sort((a, b) => b.position - a.position);
-        for (let start = 0; start < descending.length; start += 100) {
-          const chunk = descending.slice(start, start + 100);
+        const writeCap = capFor('playlist_writes');
+        for (let start = 0; start < descending.length; start += writeCap) {
+          const chunk = descending.slice(start, start + writeCap);
           await client.delete(`/playlists/${encodeURIComponent(srcId)}/items`, {
             tracks: chunk.map((r) => ({ uri: r.uri, positions: [r.position] })),
           });

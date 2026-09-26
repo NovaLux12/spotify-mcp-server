@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { ARTIST_ALBUM_PAGE_LIMIT, MARKET_CODE } from './catalog.js';
+import { capFor } from '../chunk.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
 import { SpotifyApiError } from '../client.js';
@@ -461,8 +462,9 @@ export function registerArtistWatchTools(server: McpServer, client: SpotifyClien
         }
         return { content: [{ type: 'text', text: msg }], structuredContent: { artist_id: args.artist_id, total: albums.length, saved: 0 } };
       }
-      for (let i = 0; i < toSave.length; i += 20) {
-        const chunk = toSave.slice(i, i + 20).map((a) => a.id);
+      const albumCap = capFor('albums');
+      for (let i = 0; i < toSave.length; i += albumCap) {
+        const chunk = toSave.slice(i, i + albumCap).map((a) => a.id);
         await (client as unknown as { put(path: string, body?: unknown): Promise<void> }).put('/me/albums', { ids: chunk });
       }
       const msg = `Saved ${toSave.length} new release(s) for "${args.artist_id}": ${toSave.map((a) => `"${a.name}"`).join(', ')}`;

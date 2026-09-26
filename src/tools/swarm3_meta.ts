@@ -20,6 +20,7 @@ import {
   resolveToolOverrides,
 } from '../toolsets.js';
 import { ResponseFormat } from '../shaping.js';
+import { CHUNK_CAPS } from '../chunk.js';
 import { type ModuleSchemaBudget, readOnlyModeEnabled } from './annotations.js';
 
 interface RegisteredToolInfo {
@@ -161,7 +162,8 @@ export function registerSwarm3MetaTools(server: McpServer): void {
       const head = all.length === 0
         ? REGISTRY_UNAVAILABLE
         : `Registered tools (live): ${all.length}`;
-      const text = `${head}\nActive toolsets: ${activeSets.join(', ') || '(none)'}\nread-only: ${readOnly ? 'yes' : 'no'}\n\nToolsets (SPOTIFY_MCP_TOOLSETS):\n${setLines}\n\nPer-module schema budget (description + inputSchema):\n${budgetLines}\nRegistration exclusions: ${registrationExclusions.join(', ') || '(none)'}`;
+      const capLines = Object.entries(CHUNK_CAPS).map(([kind, cap]) => `• ${kind}: ${cap} per request`).join('\n');
+      const text = `${head}\nActive toolsets: ${activeSets.join(', ') || '(none)'}\nread-only: ${readOnly ? 'yes' : 'no'}\n\nToolsets (SPOTIFY_MCP_TOOLSETS):\n${setLines}\n\nPer-module schema budget (description + inputSchema):\n${budgetLines}\nRegistration exclusions: ${registrationExclusions.join(', ') || '(none)'}\n\nBatch caps (per request):\n${capLines}`;
       return {
         content: [{ type: 'text', text }],
         structuredContent: {
@@ -172,6 +174,7 @@ export function registerSwarm3MetaTools(server: McpServer): void {
           toolsets: TOOLSETS,
           module_schema_budgets: moduleBudgets,
           registration_exclusions: registrationExclusions,
+          batch_caps: CHUNK_CAPS,
         },
       };
     },

@@ -17,7 +17,6 @@ import type { SpotifyClient } from '../client.js';
 import { quotaPreflight, quotaSnapshot, quotaWindowRemaining, quotaDelta, SpotifyApiError } from '../client.js';
 import type { SavedTrackItem, SpotifyAlbumFull } from '../types/spotify.js';
 import {
-  CHUNK_CAPS,
   ResponseFormat,
   MaxResults,
   resolveMaxResults,
@@ -25,6 +24,7 @@ import {
   truncateItems,
 } from '../shaping.js';
 import type { ResponseFormatValue } from '../shaping.js';
+import { CHUNK_CAPS } from '../chunk.js';
 import { getConfig } from '../config.js';
 
 /** Hard cap on distinct GET /albums/{id} lookups per analysis run (#112 idea 5). */
