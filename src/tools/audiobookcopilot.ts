@@ -5,10 +5,11 @@
  * jumps, and "where was I?" resume orientation.
  *
  * All three tools walk chapters through `fetchAllChapters`, so all three are
- * bounded by the same cap and all three disclose it. `where_was_i` speaks only
- * about the chapters it fetched: a capped walk omits `total_chapters`, reports
- * `truncated_by_cap`/`chapters_fetched`/`fetch_all_cap`, labels its remaining
- * counts as prefix-scoped, and refuses to call an unmatched current chapter
+ * bounded by the same cap and all three disclose it. Under a cap no tool
+ * publishes a whole-book field name for a prefix figure: `total_chapters` and
+ * `list_all_chapters`'s `total` are withheld in favour of `chapters_fetched`,
+ * `where_was_i`'s remaining counts and time become
+ * `*_in_fetched_prefix*`, and an unmatched current chapter is never called
  * "not started" when the cap could be hiding it (#786).
  */
 import { z } from 'zod';
@@ -129,7 +130,12 @@ export function registerAudiobookCopilotTools(server: McpServer, client: Spotify
       if (args.response_format === 'json') {
         const raw = {
           audiobook_id: args.audiobook_id,
-          total: chapters.length,
+          // A capped prefix cannot answer "how long is this book", so the
+          // whole-book name is withheld rather than filled with a prefix
+          // count (#786) — the same rule where_was_i applies to
+          // `total_chapters`. `chapters_fetched` sits beside `truncated_by_cap`
+          // so a consumer can still recover what the number would have been.
+          ...(truncatedByCap ? { chapters_fetched: chapters.length } : { total: chapters.length }),
           fetch_all_cap: cap,
           truncated_by_cap: truncatedByCap,
           items: chapters.map((c, i) => ({ ...chapterRow(c, i + 1), ...c })),
@@ -290,7 +296,11 @@ export function registerAudiobookCopilotTools(server: McpServer, client: Spotify
             ok: true,
             status: 'nothing_playing',
             next_chapter: 1,
-            listening_time_remaining_ms: fetchedMs,
+            // With nothing playing the whole fetched span is "remaining", but
+            // under a cap that is the prefix's time, not the book's (#786).
+            ...(truncatedByCap
+              ? { listening_time_remaining_in_fetched_prefix_ms: fetchedMs }
+              : { listening_time_remaining_ms: fetchedMs }),
             ...walkScope,
           },
         };
@@ -378,8 +388,16 @@ export function registerAudiobookCopilotTools(server: McpServer, client: Spotify
             position_ms: progressMs,
             remaining_ms: remainingInChapter,
           },
-          chapters_remaining: remaining,
-          listening_time_remaining_ms: remainingTotalMs,
+          // Same rule in the field names: a capped walk has not seen the book's
+          // tail, so the whole-book names are not published for prefix figures
+          // — `chapters_remaining`/`listening_time_remaining_ms` mean "of the
+          // book" everywhere else in this surface (#786).
+          ...(truncatedByCap
+            ? {
+                chapters_remaining_in_fetched_prefix: remaining,
+                listening_time_remaining_in_fetched_prefix_ms: remainingTotalMs,
+              }
+            : { chapters_remaining: remaining, listening_time_remaining_ms: remainingTotalMs }),
           ...walkScope,
         },
       };
