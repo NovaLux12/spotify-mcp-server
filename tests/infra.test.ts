@@ -147,7 +147,7 @@ describe('cache: LruTtlCache', () => {
 
   it('honours per-entry TTL overrides over the default TTL', async () => {
     const cache = new LruTtlCache<string>({ ttlMs: 60_000 });
-    cache.set('short', 'x', 5);
+    cache.set('short', 'x', { ttlMs: 5 });
     cache.set('long', 'y');
     await sleep(25);
     assert.equal(cache.get('short'), undefined);
