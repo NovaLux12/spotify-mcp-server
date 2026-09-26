@@ -80,6 +80,10 @@ const parameterAllowlist = new Set([
   // registered_tools/active_modules/active_toolsets above.
   'total_registered', 'input_schema', 'read_only', 'module_schema_budgets',
   'registration_exclusions', 'batch_caps',
+  // #903: balance_playlist_pairs caps its planned-move array at max_results
+  // and discloses what the cap withheld, so SPEC.md can name those keys.
+  // structuredContent keys on that tool, not tools and not parameters.
+  'moves_total', 'moves_returned', 'moves_withheld', 'moves_truncated',
 ]);
 /** Registration keys are module names, not tools; docs legitimately name them. */
 const registrationKeyNames = new Set(census.registrationKeyNames ?? []);

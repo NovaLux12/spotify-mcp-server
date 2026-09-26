@@ -1675,23 +1675,57 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
         }
       }
       const moveView = truncateItems(moves, resolveMaxResults(args.max_results, getConfig().maxItems));
+      // #903: the plan runs to thousands of moves and the prose already caps
+      // its rows, so structuredContent gets the same cap instead of shipping
+      // every move object. `response_format: 'json'` stays the full-record
+      // opt-in, and the withheld count is disclosed either way (same contract
+      // as the other capped playlist payloads in this repo).
+      const movesPayload = rf === 'json' ? moves : moveView.items;
+      const moveDisclosure = rf === 'json'
+        ? { moves_total: moves.length, moves_returned: moves.length, moves_withheld: 0, moves_truncated: false }
+        : {
+          moves_total: moveView.total,
+          moves_returned: moveView.returned,
+          moves_withheld: moveView.remaining,
+          moves_truncated: moveView.truncated,
+        };
       if (isDry(args)) {
         return shape(rf, withPlaylistInputNote(describeDryRun('balance', `${buckets.length} playlists by ${metric}`, [
           `Total ${metric}: ${metric === 'count' ? String(total) : msToClock(total)}; target per playlist: ${metric === 'count' ? String(target) : msToClock(target)}.`,
           `${moves.length} move(s) planned:`,
           ...moveView.items.map((m, i) => `  ${i + 1}. "${m.name}" ${m.from_name} → ${m.to_name}`),
           moveView.footer ? `(${moveView.footer})` : '',
-        ]), input), withPlaylistInputMetadata({ ok: true, dry_run: true, balance_by: metric, total, target, moves }, input));
+        ]), input), withPlaylistInputMetadata({ ok: true, dry_run: true, balance_by: metric, total, target, moves: movesPayload, ...moveDisclosure }, input));
       }
       // BACKUP-FIRST per donating playlist, then delete positions DESCENDING so each
       // chunk's positions stay valid, then append to receivers.
       const backupFiles: string[] = [];
       let requests = 0;
+      // Bucket and row lookups are indexed once (#903) instead of rescanning
+      // `buckets` and `buckets[].rows` for every planned move. Both maps are
+      // built first-wins because a caller may repeat a playlist id, and
+      // first-wins is exactly what the old `.find` returned.
+      const bucketById = new Map<string, (typeof buckets)[number]>();
+      const rowsByPlaylistUri = new Map<string, Map<string, OpRow>>();
+      for (const b of buckets) {
+        if (bucketById.has(b.id)) continue;
+        bucketById.set(b.id, b);
+        const byUri = new Map<string, OpRow>();
+        for (const r of b.rows) if (!byUri.has(r.uri)) byUri.set(r.uri, r);
+        rowsByPlaylistUri.set(b.id, byUri);
+      }
       const outboundBySrc = new Map<string, OpRow[]>();
+      // Receiver lists are grouped as the moves are planned, so each keeps
+      // plan order; the old per-receiver `moves.filter(...)` scanned all moves
+      // once per receiver.
+      const inboundByDst = new Map<string, string[]>();
       for (const m of moves) {
-        const donorBucket = buckets.find((b) => b.id === m.from_playlist);
-        if (!donorBucket) continue;
-        const row = donorBucket.rows.find((r) => r.uri === m.uri);
+        const inbound = inboundByDst.get(m.to_playlist) ?? [];
+        if (inbound.length === 0) inboundByDst.set(m.to_playlist, inbound);
+        inbound.push(m.uri);
+        // rowsByPlaylistUri is populated for the same first-wins bucket set as
+        // bucketById, so a missing bucket and a missing row take one path.
+        const row = rowsByPlaylistUri.get(m.from_playlist)?.get(m.uri);
         if (!row) continue;
         const list = outboundBySrc.get(m.from_playlist) ?? [];
         if (list.length === 0) outboundBySrc.set(m.from_playlist, list);
@@ -1699,7 +1733,7 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
       }
       for (const [srcId, rows] of outboundBySrc) {
         const origItems = loadedById.get(srcId);
-        if (origItems) backupFiles.push(await backupItemsBeforeWrite(srcId, buckets.find((b) => b.id === srcId)?.name ?? null, origItems));
+        if (origItems) backupFiles.push(await backupItemsBeforeWrite(srcId, bucketById.get(srcId)?.name ?? null, origItems));
         const descending = [...rows].sort((a, b) => b.position - a.position);
         const writeCap = capFor('playlist_writes');
         for (let start = 0; start < descending.length; start += writeCap) {
@@ -1711,8 +1745,8 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
         }
       }
       for (const recv of receivers) {
-        const inbound = moves.filter((m) => m.to_playlist === recv.id).map((m) => m.uri);
-        if (inbound.length > 0) {
+        const inbound = inboundByDst.get(recv.id);
+        if (inbound && inbound.length > 0) {
           const add = await addUrisChunked(client, recv.id, inbound);
           requests += add.requests;
         }
@@ -1723,7 +1757,8 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
         balance_by: metric,
         total,
         target,
-        moves,
+        moves: movesPayload,
+        ...moveDisclosure,
         requests,
         backup_files: backupFiles,
       }, input));

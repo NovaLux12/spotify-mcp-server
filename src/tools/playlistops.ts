@@ -411,14 +411,25 @@ export function registerPlaylistOpsTools(server: McpServer, client: SpotifyClien
       }
       const sourceCap = Math.min(args.scan_cap ?? FETCH_ALL_CAP(), FETCH_ALL_CAP());
       const truncated = walkTruncated;
-      const presence = itemLists.map((items) => {
+      // One pass records presence and, at the same time, the display name each
+      // track is FIRST seen under (#903). First-seen-wins is exactly what the
+      // old per-entry scan did — it walked itemLists in order and took the
+      // first `find` hit — so the resolved name is unchanged, without the
+      // O(shared x playlists x items) rescan.
+      const presence: Set<string>[] = [];
+      const firstNameById = new Map<string, string>();
+      for (const items of itemLists) {
         const ids = new Set<string>();
         for (const item of items) {
-          const id = item.item?.id;
-          if (id) ids.add(id);
+          const track = item.item;
+          if (!track) continue;
+          const id = track.id;
+          if (!id) continue;
+          ids.add(id);
+          if (!firstNameById.has(id)) firstNameById.set(id, track.name);
         }
-        return ids;
-      });
+        presence.push(ids);
+      }
 
       interface Shared {
         id: string;
@@ -432,22 +443,13 @@ export function registerPlaylistOpsTools(server: McpServer, client: SpotifyClien
         for (const id of ids) {
           const entry = counts.get(id);
           if (entry) entry.count++;
-          else counts.set(id, { id, name: '', count: 1, firstSeen: firstSeen++ });
+          else counts.set(id, { id, name: firstNameById.get(id) ?? '', count: 1, firstSeen: firstSeen++ });
         }
       }
 
       const shared = [...counts.values()]
         .filter((e) => e.count >= threshold)
         .sort((a, b) => b.count - a.count || a.firstSeen - b.firstSeen);
-      for (const entry of shared) {
-        for (const items of itemLists) {
-          const hit = items.find((i) => i.item?.id === entry.id);
-          if (hit?.item) {
-            entry.name = hit.item.name;
-            break;
-          }
-        }
-      }
 
       const cap = resolveMaxResults(args.max_results);
       const view = truncateItems(
