@@ -8,6 +8,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../src/client.js';
 import type { SpotifyPaged } from '../src/types/spotify.js';
 import { registerPortabilityTools } from '../src/tools/portability.js';
+import { initConfig } from '../src/config.js';
 import { parseCsvDocument, FORMULA_LEAD } from './csv-reader.js';
 
 interface RecordedCall { method:string; path:string; arg?: unknown; }
@@ -23,9 +24,23 @@ function makeStubClient(responder: Responder=()=>null){
     async putRaw(p:string,b:string):Promise<void>{ calls.push({method:'PUT_RAW',path:p,arg:b}); await responder(p,b); },
     async delete<T>(p:string,b?:unknown):Promise<T|null>{ calls.push({method:'DELETE',path:p,arg:b}); return responder(p,b) as T|null; },
     async getAllPages<T>(path:string,params?:Record<string,string>,opts?:{maxItems?:number}):Promise<T[]>{
+      return (await (this as unknown as {getAllPagesWithTruncation:(p:string,pr?:Record<string,string>,o?:{maxItems?:number})=>Promise<{items:T[];truncated:boolean}>}).getAllPagesWithTruncation<T>(path,params,opts)).items;
+    },
+    // Mirrors SpotifyClient.getAllPagesWithTruncation (#864) so a walk that
+    // stopped AT the cap is not indistinguishable from one the cap cut short.
+    async getAllPagesWithTruncation<T>(path:string,params?:Record<string,string>,opts?:{maxItems?:number}):Promise<{items:T[];truncated:boolean}>{
       const maxItems=opts?.maxItems??500; const all:T[]=[]; let offset=0;
-      for(;;){ const page=await (this as unknown as {get:(p:string,pr?:Record<string,string>)=>Promise<SpotifyPaged<T>|null>}).get(path,{...params, offset:String(offset)}); if(!page||!Array.isArray(page.items)) break; all.push(...page.items); if(all.length>=maxItems) return all.slice(0,maxItems); const limit=typeof page.limit==='number'&&page.limit>0?page.limit:page.items.length; offset+=limit; if(page.items.length===0||page.items.length<limit) break; if(typeof page.total==='number'&&offset>=page.total) break;}
-      return all;
+      for(;;){
+        const page=await (this as unknown as {get:(p:string,pr?:Record<string,string>)=>Promise<SpotifyPaged<T>|null>}).get(path,{...params, offset:String(offset)});
+        if(!page||!Array.isArray(page.items)) break;
+        all.push(...page.items);
+        if(all.length>=maxItems) return { items: all.slice(0,maxItems), truncated: all.length>maxItems || typeof page.total!=='number' || all.length<page.total };
+        const limit=typeof page.limit==='number'&&page.limit>0?page.limit:page.items.length;
+        offset+=limit;
+        if(page.items.length===0||page.items.length<limit) break;
+        if(typeof page.total==='number'&&offset>=page.total) break;
+      }
+      return { items: all, truncated:false };
     },
   }; return client;
 }
@@ -611,5 +626,465 @@ describe('import_from_sidecar (#1008 surfaces the exporter truncation flags)',()
       assert.equal(out.structuredContent!.sidecar_truncated,true);
       assert.match(textOf(out),/TRUNCATED/);
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #760: behaviour cover for the portability tools that shipped untested.
+//
+// Every case here asserts an observable payload or prose value, and the cap
+// cases assert the walk's OWN truncation verdict: a collection that happens to
+// be exactly the cap long is complete, and only rows the walk actually left
+// behind make an export truncated.
+// ---------------------------------------------------------------------------
+
+/** Cap the fetch-all walks small enough to keep the fixtures readable, then
+ *  restore the process-wide config snapshot. */
+const withFetchAllCap=async<T>(cap:number,run:()=>Promise<T>)=>{
+  const prev=process.env.SPOTIFY_MCP_FETCH_ALL_CAP;
+  process.env.SPOTIFY_MCP_FETCH_ALL_CAP=String(cap);
+  initConfig();
+  try{ return await run(); } finally {
+    if(prev===undefined) delete process.env.SPOTIFY_MCP_FETCH_ALL_CAP; else process.env.SPOTIFY_MCP_FETCH_ALL_CAP=prev;
+    initConfig();
+  }
+};
+
+/** Point every profile-state store at scratch paths for the duration of `run`. */
+const PROFILE_ENV=['SPOTIFY_MCP_EXPORT_DIR','SPOTIFY_MCP_SCENES_FILE','SPOTIFY_MCP_GENRE_TAGS_FILE','SPOTIFY_MCP_PLAYBACKEXT_FILE','SPOTIFY_MCP_SEARCH_HISTORY_FILE','SPOTIFY_MCP_DATA_DIR'] as const;
+const withProfileStores=async<T>(paths:Record<string,string>,run:()=>Promise<T>)=>{
+  const prev:Record<string,string|undefined>={};
+  for(const k of PROFILE_ENV){ prev[k]=process.env[k]; if(paths[k]!==undefined) process.env[k]=paths[k]; }
+  try{ return await run(); } finally { for(const k of PROFILE_ENV){ if(prev[k]===undefined) delete process.env[k]; else process.env[k]=prev[k]; } }
+};
+
+const scratch=async()=>mkdtemp(join(tmpdir(),'i760-'));
+
+const savedTracks=(n:number,start=1)=>Array.from({length:n},(_,i)=>({track:{uri:`spotify:track:t${start+i}`,name:`Track ${start+i}`,artists:[]},added_at:'2026-01-01T00:00:00.000Z'}));
+
+describe('export_library_json (the walk reports its own truncation)',()=>{
+  it('a library that is exactly the cap long is a complete library',async()=>{
+    const dir=await scratch();
+    try{
+      await withFetchAllCap(3,async()=>{
+        const h=harness((path)=>path==='/me/tracks'
+          ? {items:savedTracks(3),total:3,limit:3,offset:0}
+          : {items:[],total:0,limit:50,offset:0});
+        const out=await withPortabilityRoot(dir,()=>h.invoke('export_library_json',{}));
+        const doc=JSON.parse(await readFile(join(dir,'library.json'),'utf8'));
+        assert.equal(doc.counts.tracks,3);
+        assert.deepEqual(doc.cap_reached,{tracks:false,albums:false,shows:false,episodes:false,audiobooks:false},'a 3-track library under a cap of 3 is not a capped one');
+        assert.equal(doc.truncated,false);
+        assert.doesNotMatch(textOf(out),/truncated/);
+      });
+    } finally { await rm(dir,{recursive:true,force:true}); }
+  });
+
+  it('a library longer than the cap is truncated, names the cap and keeps only the rows it walked',async()=>{
+    const dir=await scratch();
+    try{
+      await withFetchAllCap(3,async()=>{
+        const h=harness((path)=>path==='/me/tracks'
+          ? {items:savedTracks(5),total:5,limit:5,offset:0}
+          : {items:[],total:0,limit:50,offset:0});
+        const out=await withPortabilityRoot(dir,()=>h.invoke('export_library_json',{}));
+        const doc=JSON.parse(await readFile(join(dir,'library.json'),'utf8'));
+        assert.equal(doc.cap_reached.tracks,true);
+        assert.equal(doc.truncated,true);
+        assert.equal(doc.cap,3);
+        assert.equal(doc.tracks.length,3,'only the walked rows may be written');
+        assert.match(textOf(out),/truncated/);
+        assert.match(textOf(out),/capped types: tracks/);
+      });
+    } finally { await rm(dir,{recursive:true,force:true}); }
+  });
+
+  it('an unreadable /me/audiobooks is reported unread, never as zero saved',async()=>{
+    const dir=await scratch();
+    try{
+      await withFetchAllCap(3,async()=>{
+        const h=harness((path)=>{
+          if(path==='/me/audiobooks') throw new Error('403 Forbidden: audiobook scope missing');
+          return {items:[],total:0,limit:50,offset:0};
+        });
+        const out=await withPortabilityRoot(dir,()=>h.invoke('export_library_json',{}));
+        const payload=out.structuredContent!;
+        assert.equal(payload.ok,false);
+        assert.equal((payload.unreadable as Record<string,string>).audiobooks,'403 Forbidden: audiobook scope missing');
+        assert.match(textOf(out),/UNREAD/);
+        assert.match(textOf(out),/403 Forbidden/);
+      });
+    } finally { await rm(dir,{recursive:true,force:true}); }
+  });
+});
+
+describe('export_followed_artists (cap verdict comes from the walk)',()=>{
+  it('exactly the cap followed artists is a complete list, not a truncated one',async()=>{
+    const dir=await scratch();
+    try{
+      await withFetchAllCap(3,async()=>{
+        // The server says there is no next page: three artists is all of them.
+        const h=harness(()=>({artists:{items:Array.from({length:3},(_,i)=>({uri:`spotify:artist:a${i}`,name:`Artist ${i}`,genres:[]})),cursors:{after:null},next:null}}) as any);
+        const out=await withPortabilityRoot(dir,()=>h.invoke('export_followed_artists',{}));
+        const doc=JSON.parse(await readFile(join(dir,'followed_artists.json'),'utf8'));
+        assert.equal(doc.total,3);
+        assert.equal(doc.cap_reached,false,'the walk ended on its own terms, so nothing was cut');
+        assert.equal(doc.truncated,false);
+        assert.doesNotMatch(textOf(out),/truncated/);
+      });
+    } finally { await rm(dir,{recursive:true,force:true}); }
+  });
+
+  it('a following list that still has a next cursor at the cap is truncated and says so',async()=>{
+    const dir=await scratch();
+    try{
+      await withFetchAllCap(3,async()=>{
+        const h=harness(()=>({artists:{items:Array.from({length:3},(_,i)=>({uri:`spotify:artist:a${i}`,name:`Artist ${i}`,genres:[]})),cursors:{after:'cursor-2'},next:'/me/following?after=cursor-2'}}) as any);
+        const out=await withPortabilityRoot(dir,()=>h.invoke('export_followed_artists',{}));
+        const doc=JSON.parse(await readFile(join(dir,'followed_artists.json'),'utf8'));
+        assert.equal(doc.artists.length,3);
+        assert.equal(doc.cap_reached,true);
+        assert.equal(doc.truncated,true);
+        assert.equal(doc.cap,3);
+        assert.match(textOf(out),/truncated/);
+      });
+    } finally { await rm(dir,{recursive:true,force:true}); }
+  });
+});
+
+describe('export_listening_history (cap verdict and cursor boundaries)',()=>{
+  const played=(i:number,at:string)=>({played_at:at,track:{name:`Play ${i}`,uri:`spotify:track:p${i}`,artists:[{name:'A'}],album:{name:'Alb'}},context:null});
+
+  it('a history that runs out exactly at max_items is complete',async()=>{
+    const dir=await scratch();
+    try{
+      // Two items on a short page: the server had nothing more to give.
+      const h=harness(()=>({items:[played(1,'2026-01-03T00:00:00.000Z'),played(2,'2026-01-02T00:00:00.000Z')],cursors:{before:'1767225600000'}}) as any);
+      const out=await withPortabilityRoot(dir,()=>h.invoke('export_listening_history',{max_items:2}));
+      const doc=JSON.parse(await readFile(join(dir,'listening_history.json'),'utf8'));
+      assert.equal(doc.total,2);
+      assert.equal(doc.cap_reached,false,'a short page is the end of the history, not a cap hit');
+      assert.equal(doc.truncated,false);
+      assert.doesNotMatch(textOf(out),/truncated/);
+    } finally { await rm(dir,{recursive:true,force:true}); }
+  });
+
+  it('a full page that hits max_items is truncated, and only the capped rows are written',async()=>{
+    const dir=await scratch();
+    try{
+      const full=Array.from({length:50},(_,i)=>played(i,`2026-01-0${(i%9)+1}T00:00:00.000Z`));
+      const h=harness(()=>({items:full,cursors:{before:'1767225600000'}}) as any);
+      const out=await withPortabilityRoot(dir,()=>h.invoke('export_listening_history',{max_items:2}));
+      const doc=JSON.parse(await readFile(join(dir,'listening_history.json'),'utf8'));
+      assert.equal(doc.items.length,2);
+      assert.equal(doc.cap_reached,true);
+      assert.equal(doc.truncated,true);
+      assert.equal(doc.cap,2);
+      assert.match(textOf(out),/truncated/);
+    } finally { await rm(dir,{recursive:true,force:true}); }
+  });
+
+  it('sends a before cursor to Spotify in milliseconds',async()=>{
+    const dir=await scratch();
+    try{
+      const h=harness(()=>({items:[],cursors:{before:null}}) as any);
+      await withPortabilityRoot(dir,()=>h.invoke('export_listening_history',{before:'2026-01-05T00:00:00.000Z'}));
+      const call=h.client.calls.find((c)=>c.path==='/me/player/recently-played')!;
+      assert.equal((call.arg as Record<string,string>).before,String(Date.parse('2026-01-05T00:00:00.000Z')));
+    } finally { await rm(dir,{recursive:true,force:true}); }
+  });
+
+  it('drops plays at or before the after cursor instead of writing them',async()=>{
+    const dir=await scratch();
+    try{
+      const h=harness(()=>({items:[
+        played(1,'2026-01-01T00:00:00.000Z'),
+        played(2,'2026-01-03T00:00:00.000Z'),
+        played(3,'2026-01-02T00:00:00.000Z'),
+      ],cursors:{before:'1767225600000'}}) as any);
+      await withPortabilityRoot(dir,()=>h.invoke('export_listening_history',{after:'2026-01-02T00:00:00.000Z'}));
+      const doc=JSON.parse(await readFile(join(dir,'listening_history.json'),'utf8'));
+      assert.equal(doc.total,1,`only the play strictly after the cursor may be exported: ${JSON.stringify(doc.items.map((x:{track:string})=>x.track))}`);
+      assert.equal(doc.items[0].track,'Play 2');
+    } finally { await rm(dir,{recursive:true,force:true}); }
+  });
+});
+
+describe('export_all_playlists (scope, cap and unreadable item lists)',()=>{
+  const pls=(n:number,owner='me')=>Array.from({length:n},(_,i)=>({id:`p${i}`,name:`List ${i}`,uri:`spotify:playlist:p${i}`,owner:{id:owner},items:{total:2}}));
+  const emptyPage={items:[],total:0,limit:100,offset:0};
+
+  it('scope=owned exports only the playlists you own',async()=>{
+    const dir=await scratch();
+    try{
+      const h=harness((path)=>{
+        if(path==='/me') return {id:'me'};
+        if(path==='/me/playlists') return {items:[...pls(1,'me'),...pls(1,'someone-else').map((p)=>({...p,id:'other',uri:'spotify:playlist:other'}))],total:2,limit:50,offset:0};
+        return emptyPage;
+      });
+      const out=await withPortabilityRoot(dir,()=>h.invoke('export_all_playlists',{scope:'owned'}));
+      const doc=JSON.parse(await readFile(join(dir,'playlists.json'),'utf8'));
+      assert.equal(doc.total,1);
+      assert.deepEqual(doc.playlists.map((p:{id:string})=>p.id),['p0']);
+      assert.equal(doc.scope,'owned');
+      assert.equal(out.structuredContent!.total,1);
+    } finally { await rm(dir,{recursive:true,force:true}); }
+  });
+
+  it('include_items=false reads no playlist items and still records the metadata',async()=>{
+    const dir=await scratch();
+    try{
+      const h=harness((path)=>{
+        if(path==='/me') return {id:'me'};
+        if(path==='/me/playlists') return {items:pls(2),total:2,limit:50,offset:0};
+        return emptyPage;
+      });
+      await withPortabilityRoot(dir,()=>h.invoke('export_all_playlists',{include_items:false}));
+      assert.equal(h.client.calls.filter((c)=>c.path.startsWith('/playlists/')&&c.path.endsWith('/items')).length,0,'include_items=false must not walk any playlist');
+      const doc=JSON.parse(await readFile(join(dir,'playlists.json'),'utf8'));
+      assert.equal(doc.total,2);
+      assert.equal(doc.playlists[0].items.length,0);
+    } finally { await rm(dir,{recursive:true,force:true}); }
+  });
+
+  it('a /me/playlists walk that hits the cap is reported truncated with the cap named',async()=>{
+    const dir=await scratch();
+    try{
+      await withFetchAllCap(2,async()=>{
+        const h=harness((path)=>{
+          if(path==='/me') return {id:'me'};
+          if(path==='/me/playlists') return {items:pls(3),total:3,limit:3,offset:0};
+          return emptyPage;
+        });
+        const out=await withPortabilityRoot(dir,()=>h.invoke('export_all_playlists',{}));
+        const doc=JSON.parse(await readFile(join(dir,'playlists.json'),'utf8'));
+        assert.equal(doc.cap,2);
+        assert.equal(doc.cap_reached,true);
+        assert.equal(doc.truncated,true);
+        assert.equal(doc.playlists.length,2,'only the walked playlists may be written');
+        assert.match(textOf(out),/hit the cap of 2/);
+        assert.match(textOf(out),/raise SPOTIFY_MCP_FETCH_ALL_CAP/);
+      });
+    } finally { await rm(dir,{recursive:true,force:true}); }
+  });
+
+  it('a playlist whose item list cannot be read is named unread, not exported as empty',async()=>{
+    const dir=await scratch();
+    try{
+      const h=harness((path)=>{
+        if(path==='/me') return {id:'me'};
+        if(path==='/me/playlists') return {items:pls(1),total:1,limit:50,offset:0};
+        if(path==='/playlists/p0/items') throw new Error('403 Forbidden');
+        return emptyPage;
+      });
+      const out=await withPortabilityRoot(dir,()=>h.invoke('export_all_playlists',{}));
+      const payload=out.structuredContent!;
+      assert.equal(payload.ok,false);
+      assert.equal((payload.unreadable as Record<string,string>).p0,'403 Forbidden');
+      assert.match(textOf(out),/UNREADABLE/);
+      assert.match(textOf(out),/p0/);
+      const doc=JSON.parse(await readFile(join(dir,'playlists.json'),'utf8'));
+      assert.equal(doc.playlists[0].items_unreadable,'403 Forbidden');
+      assert.equal(doc.playlists[0].items.length,0);
+    } finally { await rm(dir,{recursive:true,force:true}); }
+  });
+});
+
+describe('export_profile_state (real counts, and unread is not zero)',()=>{
+  it('counts the stores it can read and writes the archive 0600',async()=>{
+    const dir=await scratch();
+    try{
+      const env={
+        SPOTIFY_MCP_EXPORT_DIR:dir,
+        SPOTIFY_MCP_SCENES_FILE:join(dir,'scenes.json'),
+        SPOTIFY_MCP_GENRE_TAGS_FILE:join(dir,'genre-tags.json'),
+        SPOTIFY_MCP_PLAYBACKEXT_FILE:join(dir,'playback-ext.json'),
+        SPOTIFY_MCP_SEARCH_HISTORY_FILE:join(dir,'search-history.json'),
+        SPOTIFY_MCP_DATA_DIR:dir,
+      };
+      await withProfileStores(env,async()=>{
+        await writeFile(env.SPOTIFY_MCP_SCENES_FILE,JSON.stringify({morning:{tracks:['a']},evening:{tracks:['b']}}));
+        await writeFile(env.SPOTIFY_MCP_GENRE_TAGS_FILE,JSON.stringify({version:1,tags:{rock:1,jazz:2}}));
+        await writeFile(env.SPOTIFY_MCP_PLAYBACKEXT_FILE,JSON.stringify({states:{s1:{}},sessions:{}}));
+        await writeFile(env.SPOTIFY_MCP_SEARCH_HISTORY_FILE,JSON.stringify({entries:[{id:'a'},{id:'b'},{id:'c'}]}));
+        await writeFile(join(dir,'artist-watchlist.json'),JSON.stringify({watchlists:{w1:{}}}));
+        const out=await harness().invoke('export_profile_state',{});
+        const payload=out.structuredContent!;
+        assert.equal(payload.ok,true);
+        assert.deepEqual(payload.counts,{scenes:2,genre_tags:2,playback_ext_states:1,playback_ext_sessions:0,search_history:3,artist_watchlist:1});
+        assert.equal((await stat(payload.path as string)).mode & 0o777,0o600);
+        const doc=JSON.parse(await readFile(payload.path as string,'utf8'));
+        assert.equal(doc.schema_version,1);
+        assert.equal(doc.stores.scenes.morning.tracks[0],'a');
+        assert.equal(doc.stores.search_history.length,3);
+        assert.equal(doc.stores.artist_watchlist.watchlists.w1!=null,true);
+      });
+    } finally { await rm(dir,{recursive:true,force:true}); }
+  });
+
+  it('reports a corrupt store as unread instead of a count of zero',async()=>{
+    const dir=await scratch();
+    try{
+      const env={
+        SPOTIFY_MCP_EXPORT_DIR:dir,
+        SPOTIFY_MCP_SCENES_FILE:join(dir,'scenes.json'),
+        SPOTIFY_MCP_DATA_DIR:dir,
+      };
+      await withProfileStores(env,async()=>{
+        await writeFile(env.SPOTIFY_MCP_SCENES_FILE,'{ this is not json');
+        const out=await harness().invoke('export_profile_state',{});
+        const payload=out.structuredContent!;
+        assert.equal(payload.ok,false);
+        assert.equal((payload.counts as Record<string,unknown>).scenes,null,'an unread store has no count — zero would be a number the export never measured');
+        const unreadable=(payload.unreadable as Record<string,string>);
+        assert.match(unreadable.scenes,/scenes\.json/);
+        assert.match(unreadable.scenes,/invalid JSON/);
+        assert.match(textOf(out),/UNREAD/);
+        assert.match(textOf(out),/scenes:null/);
+      });
+    } finally { await rm(dir,{recursive:true,force:true}); }
+  });
+
+  it('tells a store that was never written apart from one that could not be read',async()=>{
+    const dir=await scratch();
+    try{
+      // scenes.json is corrupt; genre-tags.json was never written at all. The
+      // export must say which is which — reporting both as 0 asserts the same
+      // thing about two different worlds.
+      const env={
+        SPOTIFY_MCP_EXPORT_DIR:dir,
+        SPOTIFY_MCP_SCENES_FILE:join(dir,'scenes.json'),
+        SPOTIFY_MCP_GENRE_TAGS_FILE:join(dir,'genre-tags.json'),
+        SPOTIFY_MCP_DATA_DIR:dir,
+      };
+      await withProfileStores(env,async()=>{
+        await writeFile(env.SPOTIFY_MCP_SCENES_FILE,'{ truncated json');
+        const out=await harness().invoke('export_profile_state',{});
+        const payload=out.structuredContent!;
+        const counts=payload.counts as Record<string,unknown>;
+        assert.equal(counts.genre_tags,0,'a store that is not there really has no entries');
+        assert.equal(counts.scenes,null,'a store that could not be read has no measurable count');
+        const unreadable=payload.unreadable as Record<string,string>;
+        assert.match(unreadable.scenes,/invalid JSON/);
+        assert.equal('genre_tags' in unreadable,false,'an absent store is not an unread one');
+      });
+    } finally { await rm(dir,{recursive:true,force:true}); }
+  });
+});
+
+describe('import_profile_state (merge, overwrite and refusal)',()=>{
+  const archive=async(dir:string,stores:unknown,schema_version=1)=>{
+    const p=join(dir,'archive.json');
+    await writeFile(p,JSON.stringify({schema_version,stores}));
+    return p;
+  };
+
+  it('merge keeps the existing scenes and adds the archive ones',async()=>{
+    const dir=await scratch();
+    try{
+      const env={SPOTIFY_MCP_SCENES_FILE:join(dir,'scenes.json'),SPOTIFY_MCP_DATA_DIR:dir};
+      await withProfileStores(env,async()=>{
+        await writeFile(env.SPOTIFY_MCP_SCENES_FILE,JSON.stringify({alpha:{tracks:['x']},beta:{tracks:['y']}}));
+        const p=await archive(dir,{scenes:{beta:{tracks:['changed']},gamma:{tracks:['z']}}});
+        const out=await harness().invoke('import_profile_state',{input_path:p,mode:'merge'});
+        assert.equal(out.structuredContent!.results.scenes,'merged');
+        const merged=JSON.parse(await readFile(env.SPOTIFY_MCP_SCENES_FILE,'utf8'));
+        assert.deepEqual(Object.keys(merged).sort(),['alpha','beta','gamma'],'merge must not drop a store the archive did not mention');
+        assert.equal(merged.beta.tracks[0],'changed');
+        assert.equal((await stat(env.SPOTIFY_MCP_SCENES_FILE)).mode & 0o777,0o600);
+      });
+    } finally { await rm(dir,{recursive:true,force:true}); }
+  });
+
+  it('overwrite replaces the store outright',async()=>{
+    const dir=await scratch();
+    try{
+      const env={SPOTIFY_MCP_SCENES_FILE:join(dir,'scenes.json'),SPOTIFY_MCP_DATA_DIR:dir};
+      await withProfileStores(env,async()=>{
+        await writeFile(env.SPOTIFY_MCP_SCENES_FILE,JSON.stringify({alpha:{tracks:['x']}}));
+        const p=await archive(dir,{scenes:{gamma:{tracks:['z']}}});
+        const out=await harness().invoke('import_profile_state',{input_path:p,mode:'overwrite'});
+        assert.equal(out.structuredContent!.results.scenes,'overwritten');
+        const merged=JSON.parse(await readFile(env.SPOTIFY_MCP_SCENES_FILE,'utf8'));
+        assert.deepEqual(Object.keys(merged),['gamma']);
+      });
+    } finally { await rm(dir,{recursive:true,force:true}); }
+  });
+
+  it('says nothing to import when the archive carries no known store',async()=>{
+    const dir=await scratch();
+    try{
+      const env={SPOTIFY_MCP_DATA_DIR:dir};
+      await withProfileStores(env,async()=>{
+        const p=await archive(dir,{not_a_store:{a:1},scenes:null});
+        const out=await harness().invoke('import_profile_state',{input_path:p});
+        assert.deepEqual(out.structuredContent!.results,{});
+        assert.match(textOf(out),/nothing to import/);
+      });
+    } finally { await rm(dir,{recursive:true,force:true}); }
+  });
+
+  it('refuses an archive written by a newer schema version',async()=>{
+    const dir=await scratch();
+    try{
+      const env={SPOTIFY_MCP_DATA_DIR:dir};
+      await withProfileStores(env,async()=>{
+        const p=await archive(dir,{scenes:{}},99);
+        await assert.rejects(
+          ()=>harness().invoke('import_profile_state',{input_path:p}),
+          (e:Error)=>/schema version 99 is newer than this server's 1/.test(e.message),
+        );
+      });
+    } finally { await rm(dir,{recursive:true,force:true}); }
+  });
+});
+
+describe('library_snapshot_diff (counts come from the URIs actually in the files)',()=>{
+  const lib=(...albums:string[])=>({tracks:[{uri:'spotify:track:keepme00000000000000'}],albums:albums.map((a)=>({uri:a}))});
+
+  it('counts an added and a removed album between two library.json snapshots',async()=>{
+    const dir=await scratch();
+    try{
+      const before=join(dir,'before.json');
+      const after=join(dir,'after.json');
+      await writeFile(before,JSON.stringify(lib('spotify:album:aaaaaaaaaaaaaaaaaaaaaa')));
+      await writeFile(after,JSON.stringify(lib('spotify:album:bbbbbbbbbbbbbbbbbbbbbb')));
+      const out=await harness().invoke('library_snapshot_diff',{before_path:before,after_path:after});
+      const payload=out.structuredContent!;
+      assert.equal(payload.added_count,1);
+      assert.equal(payload.removed_count,1);
+      assert.deepEqual(payload.added_sample,['spotify:album:bbbbbbbbbbbbbbbbbbbbbb']);
+      assert.deepEqual(payload.removed_sample,['spotify:album:aaaaaaaaaaaaaaaaaaaaaa']);
+      assert.match(textOf(out),/\+1 added, -1 removed/);
+    } finally { await rm(dir,{recursive:true,force:true}); }
+  });
+
+  it('counts the tracks nested inside playlists.json rows, not just the playlists',async()=>{
+    const dir=await scratch();
+    try{
+      const before=join(dir,'before.json');
+      const after=join(dir,'after.json');
+      await writeFile(before,JSON.stringify({playlists:[{id:'p0',uri:'spotify:playlist:p0000000000000000000',items:[{uri:'spotify:track:inside000000000000000'}]}]}));
+      await writeFile(after,JSON.stringify({playlists:[{id:'p0',uri:'spotify:playlist:p0000000000000000000',items:[{uri:'spotify:track:inside000000000000000'},{uri:'spotify:track:brandnew00000000000000'}]}]}));
+      const out=await harness().invoke('library_snapshot_diff',{before_path:before,after_path:after});
+      assert.equal(out.structuredContent!.added_count,1);
+      assert.deepEqual(out.structuredContent!.added_sample,['spotify:track:brandnew00000000000000']);
+    } finally { await rm(dir,{recursive:true,force:true}); }
+  });
+
+  it('reports the real counts while the payload sample stays capped at 10',async()=>{
+    const dir=await scratch();
+    try{
+      const before=join(dir,'before.json');
+      const after=join(dir,'after.json');
+      const uris=(n:number)=>Array.from({length:n},(_,i)=>({uri:`spotify:album:${String(i).padStart(22,'0')}`}));
+      await writeFile(before,JSON.stringify({albums:[]}));
+      await writeFile(after,JSON.stringify({albums:uris(14)}));
+      const out=await harness().invoke('library_snapshot_diff',{before_path:before,after_path:after});
+      const payload=out.structuredContent!;
+      assert.equal(payload.added_count,14);
+      assert.equal((payload.added_sample as string[]).length,10);
+      assert.match(textOf(out),/\+14 added/);
+    } finally { await rm(dir,{recursive:true,force:true}); }
   });
 });
