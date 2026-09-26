@@ -22,6 +22,9 @@ import assert from 'node:assert/strict';
 import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 
 const tokenDir = await mkdtemp(path.join(tmpdir(), 'spotify-mcp-conditional-test-'));
 process.env.SPOTIFY_MCP_TOKEN_FILE = path.join(tokenDir, 'tokens.json');
@@ -30,6 +33,9 @@ process.env.SPOTIFY_CLIENT_ID = 'test-client-id';
 const { SpotifyClient, SpotifyApiError } = await import('../src/client.ts');
 const { TOKEN_FILE } = await import('../src/auth.ts');
 const { registerPlaybackTools } = await import('../src/tools/playback.ts');
+// annotations.ts reaches client.ts reaches auth.ts, so it must be imported
+// dynamically too — TOKEN_FILE binds at load time, above.
+const { installToolErrorBoundary } = await import('../src/tools/annotations.ts');
 
 // Real short waits, matching the TTL tests in tests/infra.test.ts: the clock
 // the cache reads is Date.now(), and a mocked clock would not move the
@@ -225,6 +231,47 @@ describe('conditional reads (#601)', () => {
       assert.match(err.message, /no stored ETag backs it/);
       return true;
     });
+  });
+
+  it('classifies the unbacked 304 as its own machine-readable failure, not a caller error', async () => {
+    await seedTokens();
+    // A body-less 304 to an unconditional GET: nothing local names it.
+    responder = () => new Response(null, { status: 304 });
+    const client = new SpotifyClient();
+    const raised = await client.get('/albums/alb1').then(
+      () => null,
+      (err: unknown) => err,
+    );
+    assert.ok(raised instanceof SpotifyApiError, 'the read must fail, not return an empty result');
+
+    // Through the real error boundary: the host is told WHICH failure this is.
+    // A bare internal_error — or, worse, a "received invalid arguments" line
+    // about arguments that were fine — would be unactionable: #1007's shape.
+    const server = new McpServer({ name: 'conditional-classification', version: '0.0.0' });
+    server.tool('read_album', 'rethrows the client error', {}, async () => { throw raised; });
+    installToolErrorBoundary(server);
+    const mcp = new Client({ name: 'conditional-classification-client', version: '0.0.0' });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(serverTransport), mcp.connect(clientTransport)]);
+    try {
+      const result = await mcp.callTool({ name: 'read_album', arguments: {} }) as {
+        isError?: boolean;
+        structuredContent?: { error?: { kind: string; reason: string; status?: number } };
+      };
+      assert.equal(result.isError, true);
+      const error = result.structuredContent?.error;
+      assert.ok(error, 'structuredContent.error is required');
+      assert.equal(error.status, 304, 'the true status survives, not a relabelled one');
+      assert.equal(
+        error.reason,
+        'NOT_MODIFIED_WITHOUT_VALIDATOR',
+        'a host can branch on this reason; internal_error could not be acted on',
+      );
+      assert.notEqual(error.kind, 'validation', 'the caller passed nothing wrong');
+    } finally {
+      await mcp.close().catch(() => undefined);
+      await server.close().catch(() => undefined);
+    }
   });
 
   it('get_now_playing marks a revalidated poll as unchanged and returns the same payload', async () => {
