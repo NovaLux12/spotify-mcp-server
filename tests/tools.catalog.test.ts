@@ -1455,6 +1455,75 @@ test('show_episode_search reports no matches', async () => {
   assert.match(out, /No episodes matching/);
 });
 
+// A show whose even-numbered episode titles match "Match": the fixture pages
+// like the real endpoint so a walk can be counted.
+function pagedShow(total: number) {
+  return (_path: string, params?: Record<string, string>) => {
+    const off = Number(params?.offset ?? 0);
+    const lim = Number(params?.limit ?? 20);
+    const end = Math.min(total, off + lim);
+    const items = [];
+    for (let i = off; i < end; i += 1) {
+      items.push(episodeSimpleFixture({
+        id: `ep${i}`,
+        name: i % 2 === 0 ? `Match ${i}` : `Filler ${i}`,
+        description: 'episode body',
+      }));
+    }
+    return { items, total, offset: off, limit: lim, next_offset: end < total ? end : null };
+  };
+}
+
+test('show_episode_search fetch_all reports the 500-episode safety cap instead of a full-show claim (#790)', async () => {
+  const { registered, calls } = makeHarness(registerCatalogTools, { getResponse: pagedShow(1200) });
+  const result = await invoke(findTool(registered, 'show_episode_search'), { show_id: 'shw1', query: 'Match', fetch_all: true });
+  // The walk's request pattern comes first: pre-fix it requested 11 pages of 50
+  // (550 episodes) and reported nothing about how far it got.
+  assert.equal(calls.length, 25, 'walk must stop at the cap, not overshoot it');
+  const scannedFromCalls = calls.reduce((sum, c) => sum + Number(c.params?.limit ?? 0), 0);
+  assert.equal(scannedFromCalls, 500, 'no request may overshoot the safety cap');
+  const sc = result.structuredContent as Record<string, unknown>;
+  assert.equal(sc.scanned_episodes, 500);
+  assert.equal(sc.safety_cap_hit, true);
+  assert.equal(sc.total_episodes, 1200);
+  const out = text(result);
+  assert.match(out, /500-episode safety cap/);
+  assert.match(out, /not every match/);
+});
+
+test('show_episode_search fetch_all starts at the caller offset with the caller page size (#790)', async () => {
+  const { registered, calls } = makeHarness(registerCatalogTools, { getResponse: pagedShow(30) });
+  const result = await invoke(findTool(registered, 'show_episode_search'), { show_id: 'shw1', query: 'Match', fetch_all: true, offset: 10, limit: 5 });
+  assert.deepEqual(calls[0].params, { limit: '5', offset: '10' });
+  const sc = result.structuredContent as Record<string, unknown>;
+  assert.equal(sc.scanned_episodes, 20, 'walk covers episodes 10-29 of a 30-episode show');
+  assert.equal(sc.scanned_from, 10);
+  assert.equal(sc.scanned_to, 30);
+  assert.equal(sc.safety_cap_hit, false);
+  assert.equal(sc.pagination, undefined, 'a fetch_all walk is not a page: no next_offset by construction');
+});
+
+test('show_episode_search max_results trims rows without bounding the walk (#790)', async () => {
+  const { registered, calls } = makeHarness(registerCatalogTools, { getResponse: pagedShow(1200) });
+  const result = await invoke(findTool(registered, 'show_episode_search'), { show_id: 'shw1', query: 'Match', fetch_all: true, max_results: 3 });
+  const sc = result.structuredContent as Record<string, unknown>;
+  assert.equal(calls.length, 25, 'max_results must not shorten the scan');
+  assert.equal(sc.scanned_episodes, 500);
+  assert.equal((sc.matches as unknown[]).length, 3);
+  const out = text(result);
+  assert.match(out, /\(247 more — raise max_results, continue with offset\)/);
+  assert.ok(!/fetch_all/.test(out), 'footer must not advise the flag the caller already set');
+});
+
+test('show_episode_search page mode reports the episode window it scanned (#790)', async () => {
+  const { registered } = makeHarness(registerCatalogTools, { getResponse: pagedShow(10) });
+  const result = await invoke(findTool(registered, 'show_episode_search'), { show_id: 'shw1', query: 'Match', offset: 2, limit: 4 });
+  const sc = result.structuredContent as Record<string, unknown>;
+  assert.deepEqual(sc.pagination, { total: 10, offset: 2, limit: 4, returned: 4, next_offset: 6 });
+  assert.equal(sc.scanned_episodes, 4);
+  assert.equal(sc.safety_cap_hit, false);
+});
+
 // --------------------------------------------------- catalog_batch_lookup
 
 test('catalog_batch_lookup rejects >50 URIs via schema before any client call', async () => {
