@@ -1175,6 +1175,33 @@ Three registration keys are default ON: `statsfm` (endpoint tools in `src/tools/
 
 Canonical tools are `statsfm_taste_profile`, `statsfm_artist_affinity`, `statsfm_exposure_check`, `statsfm_listening_eras`, `statsfm_listening_sessions`, `statsfm_forgotten_favorites`, `statsfm_taste_recommendations`, and `statsfm_record_feedback`. The corresponding `taste_profile`, `artist_affinity`, `exposure_check`, `listening_eras`, `listening_sessions`, `forgotten_favorites`, `taste_recommendations`, and `record_feedback` names are legacy aliases. `statsfm_record_feedback`/`record_feedback` store local-only in-memory verdicts (love/like/mixed/boring/dislike) and never touch the network.
 
+### 5.11 Discovery and registry introspection
+
+Three pure-introspection tools register outside toolset trimming (`alwaysActive`, catalog scope key) so they survive a minimal toolset — the escape hatch for a 592-tool surface. They call no Spotify endpoint. `response_format` on these three differs from the shared contract above, because "json = raw API object" is the wrong promise for a tool that never calls the API:
+
+| `response_format` | `find_tool` / `inspect_tool` / `toolset_report` emit |
+|---|---|
+| `concise` (default) | the prose bullet list / the tool's description and pretty-printed schema / the active toolsets, per-module schema budget and batch caps |
+| `detailed` | the same prose — these payloads are already complete in prose, so the switch is a parse contract, not a detail level |
+| `json` | `JSON.stringify(payload, null, 2)` of exactly the `structuredContent` that rides alongside it |
+
+All three emit through one helper, `shapeDiscoveryResult` in `src/shaping.ts`, so the modes cannot drift per tool. `find_tool` and `inspect_tool` advertised `response_format` without reading it before #713; `toolset_report` did not declare it at all.
+
+#### `find_tool`
+**Inputs:** `query` (string, required, ≥2 chars — case-insensitive substring matched against tool names and descriptions), `response_format` (see the table above), `limit` (number, optional, 1–100, default 25 — bounds the match list in every mode).
+
+**Returns:** `structuredContent` carries `query`, `total_registered`, `matched`, and `tools` (an array of `{name, description}`); `response_format=json` returns that object as parseable JSON text. A registry the SDK will not expose is reported as `error: 'registry_unavailable'`, never as an empty surface.
+
+#### `inspect_tool`
+**Inputs:** `tool_name` (string, required — exact registered name), `response_format` (see the table above).
+
+**Returns:** `structuredContent` carries `found`, and on a hit `name`, `description`, and `input_schema` (the tool's JSON Schema). `response_format=json` returns the input schema as parseable JSON text, so an agent can build a valid follow-up call without reading prose. A miss returns `found: false` plus close matches in the prose.
+
+#### `toolset_report`
+**Inputs:** `response_format` (see the table above).
+
+**Returns:** `structuredContent` carries `registered_tools`, `active_toolsets`, `active_modules`, `read_only`, `toolsets`, `module_schema_budgets` (the per-module measurements from `src/tools/annotations.ts`), `registration_exclusions`, and `batch_caps` (the resolved `CHUNK_CAPS` table).
+
 
 ## 6. Resources
 

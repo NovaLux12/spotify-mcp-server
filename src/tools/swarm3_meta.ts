@@ -9,6 +9,12 @@
  * `_registeredTools` record, keyed by tool name; the VALUE has no `name` field.
  * Reading `tool.name` therefore produced an empty registry and all three tools
  * reported "0 tools" no matter how many were registered. The key is the name.
+ *
+ * Shaping notes (#713): all three declare `response_format` and emit through
+ * `shapeDiscoveryResult` from shaping.ts. Two of them advertised the switch
+ * without reading it, and the third did not declare it, so the discovery entry
+ * point handed an agent the same bullet list whatever it asked for. There is no
+ * `=== 'json'` branch in this file.
  */
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -19,7 +25,7 @@ import {
   resolveToolsets,
   resolveToolOverrides,
 } from '../toolsets.js';
-import { ResponseFormat } from '../shaping.js';
+import { DiscoveryResponseFormat, shapeDiscoveryResult } from '../shaping.js';
 import { CHUNK_CAPS } from '../chunk.js';
 import { type ModuleSchemaBudget, readOnlyModeEnabled } from './annotations.js';
 
@@ -76,7 +82,7 @@ export function registerSwarm3MetaTools(server: McpServer): void {
     'Search the live tool registry by name or description substring — the fastest way to discover which of the 500+ tools handles a job. Discovery set: find_tool/inspect_tool/toolset_report are always available (also via catalog). Use this first when unsure which verb to use (e.g., playlist vs snapshot vs search).',
     {
       query: z.string().min(2).describe('Case-insensitive substring to match against tool names and descriptions'),
-      response_format: ResponseFormat,
+      response_format: DiscoveryResponseFormat,
       limit: z.number().int().min(1).max(100).optional().describe('Max matches to return (default 25)'),
     },
     async (args) => {
@@ -84,10 +90,13 @@ export function registerSwarm3MetaTools(server: McpServer): void {
       const limit = args.limit ?? 25;
       const all = toolRegistry(server);
       if (all.length === 0) {
-        return {
-          content: [{ type: 'text', text: REGISTRY_UNAVAILABLE }],
-          structuredContent: { query: args.query, total_registered: 0, matched: 0, tools: [], error: 'registry_unavailable' },
-        };
+        return shapeDiscoveryResult(args.response_format, REGISTRY_UNAVAILABLE, {
+          query: args.query,
+          total_registered: 0,
+          matched: 0,
+          tools: [],
+          error: 'registry_unavailable',
+        });
       }
       const matches = all
         .filter((t) => t.name.toLowerCase().includes(q) || t.description.toLowerCase().includes(q))
@@ -96,10 +105,12 @@ export function registerSwarm3MetaTools(server: McpServer): void {
         ? matches.map((t) => `• ${t.name} — ${t.description}`).join('\n')
         : `No tools match "${args.query}". Try a shorter or different substring.`;
       const text = `Matched ${matches.length} of ${all.length} registered tools:\n\n${lines}`;
-      return {
-        content: [{ type: 'text', text }],
-        structuredContent: { query: args.query, total_registered: all.length, matched: matches.length, tools: matches.map((m) => ({ name: m.name, description: m.description })) },
-      };
+      return shapeDiscoveryResult(args.response_format, text, {
+        query: args.query,
+        total_registered: all.length,
+        matched: matches.length,
+        tools: matches.map((m) => ({ name: m.name, description: m.description })),
+      });
     },
   );
 
@@ -108,38 +119,42 @@ export function registerSwarm3MetaTools(server: McpServer): void {
     'Show one tool\'s full description and input schema before calling it',
     {
       tool_name: z.string().min(1).describe('Exact registered tool name'),
-      response_format: ResponseFormat,
+      response_format: DiscoveryResponseFormat,
     },
     async (args) => {
       const all = toolRegistry(server);
       if (all.length === 0) {
-        return {
-          content: [{ type: 'text', text: REGISTRY_UNAVAILABLE }],
-          structuredContent: { found: false, tool_name: args.tool_name, error: 'registry_unavailable' },
-        };
+        return shapeDiscoveryResult(args.response_format, REGISTRY_UNAVAILABLE, {
+          found: false,
+          tool_name: args.tool_name,
+          error: 'registry_unavailable',
+        });
       }
       const hit = all.find((t) => t.name === args.tool_name);
       if (!hit) {
         const near = all.filter((t) => t.name.toLowerCase().includes(args.tool_name.toLowerCase().slice(0, 6))).slice(0, 5).map((t) => t.name);
-        return {
-          content: [{ type: 'text', text: `Unknown tool "${args.tool_name}".${near.length ? ` Close matches: ${near.join(', ')}` : ''}` }],
-          structuredContent: { found: false, tool_name: args.tool_name },
-        };
+        return shapeDiscoveryResult(
+          args.response_format,
+          `Unknown tool "${args.tool_name}".${near.length ? ` Close matches: ${near.join(', ')}` : ''}`,
+          { found: false, tool_name: args.tool_name },
+        );
       }
       const schema = hit.inputSchema ? JSON.stringify(hit.inputSchema, null, 2) : '(no parameters)';
       const text = `${hit.name}\n\n${hit.description}\n\nInput schema:\n${schema}`;
-      return {
-        content: [{ type: 'text', text }],
-        structuredContent: { found: true, name: hit.name, description: hit.description, input_schema: hit.inputSchema ?? {} },
-      };
+      return shapeDiscoveryResult(args.response_format, text, {
+        found: true,
+        name: hit.name,
+        description: hit.description,
+        input_schema: hit.inputSchema ?? {},
+      });
     },
   );
 
   server.tool(
     'toolset_report',
     'Report the active toolsets and registration modules, plus the live registered tool count — answers "how much surface is exposed right now". Discovery set; always available. Also see find_tool / inspect_tool.',
-    {},
-    async () => {
+    { response_format: DiscoveryResponseFormat },
+    async (args) => {
       const all = toolRegistry(server);
       const modules = activeModules();
       const activeKeys = new Set(modules);
@@ -164,19 +179,16 @@ export function registerSwarm3MetaTools(server: McpServer): void {
         : `Registered tools (live): ${all.length}`;
       const capLines = Object.entries(CHUNK_CAPS).map(([kind, cap]) => `• ${kind}: ${cap} per request`).join('\n');
       const text = `${head}\nActive toolsets: ${activeSets.join(', ') || '(none)'}\nread-only: ${readOnly ? 'yes' : 'no'}\n\nToolsets (SPOTIFY_MCP_TOOLSETS):\n${setLines}\n\nPer-module schema budget (description + inputSchema):\n${budgetLines}\nRegistration exclusions: ${registrationExclusions.join(', ') || '(none)'}\n\nBatch caps (per request):\n${capLines}`;
-      return {
-        content: [{ type: 'text', text }],
-        structuredContent: {
-          registered_tools: all.length,
-          active_toolsets: activeSets,
-          active_modules: modules,
-          read_only: readOnly,
-          toolsets: TOOLSETS,
-          module_schema_budgets: moduleBudgets,
-          registration_exclusions: registrationExclusions,
-          batch_caps: CHUNK_CAPS,
-        },
-      };
+      return shapeDiscoveryResult(args.response_format, text, {
+        registered_tools: all.length,
+        active_toolsets: activeSets,
+        active_modules: modules,
+        read_only: readOnly,
+        toolsets: TOOLSETS,
+        module_schema_budgets: moduleBudgets,
+        registration_exclusions: registrationExclusions,
+        batch_caps: CHUNK_CAPS,
+      });
     },
   );
 }

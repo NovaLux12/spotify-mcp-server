@@ -135,10 +135,21 @@ export const TOOL_SURFACE_BUDGET = Object.freeze({
   // asserting something false about its own result.
   //
   // HEADROOM: the enforced limit is `defaultMaxBytes + 1_000` (that 1KB covers
-  // final MCP annotation metadata added after registration), so 604,000B is the
-  // real ceiling. Measured 603,100B leaves ~900B — deliberately the same tight
-  // posture as the ~915B this replaced, not slack to absorb a wave. A breach
-  // should land in a conversation, not be pre-authorised.
+  // final MCP annotation metadata added after registration), so 604,000B was
+  // the real ceiling. CORRECTED 2026-09-26 (#713): the "measured 603,100B
+  // leaves ~900B" line above was wrong — measured through
+  // collectAggregateSurfaceMeasurement, the pre-#713 surface is 603,999B, i.e.
+  // ONE byte of headroom, not ~900B. A previous author recorded a figure they
+  // had not re-measured. Measured, not estimated:
+  //   603,999B before #713 -> 604,398B after (+399B) -> ceiling 605,000B,
+  //   leaving ~600B. The +399B is exactly the `swarm3meta` per-module delta
+  //   (1,624 -> 2,023): `toolset_report` gained a declared `response_format`
+  //   and all three discovery tools now describe their own modes instead of
+  //   promising a "raw API object" they never produce (#713).
+  //   +1,000B for a +399B need is the same 2.5x over-grant the CORRECTIONS
+  //   paragraph below warns about, kept only to stay inside the ~600B posture
+  //   this budget has deliberately held. A breach should still land in a
+  //   conversation, not be pre-authorised.
   //
   // CORRECTIONS to my first record of this raise, kept because the next author
   // should not repeat them: the headroom figure ignored the +1_000 derivation;
@@ -146,7 +157,7 @@ export const TOOL_SURFACE_BUDGET = Object.freeze({
   // 11.5% of the payload is not that; and the first raise was 19x its warrant
   // (+10,000B against a +524B need), which is precisely the reflex this budget
   // exists to prevent.
-  defaultMaxBytes: 603_000,
+  defaultMaxBytes: 604_000,
   perToolMaxBytes: 6_000,
   coreMaxTools: 200,
   coreMaxBytes: 220_000,
@@ -623,7 +634,10 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   manifestEntry('tastecomposites', 'tastecomposites', 'src/tools/taste_composites.ts', registerTasteCompositeTools, [10, 7994], { readOnlySafe: true }),
   manifestEntry('tasteplaylist', 'tastecomposites', 'src/tools/taste_playlist.ts', registerTastePlaylistTools, [1, 1723], { scopeKey: 'playlists' }),
   manifestEntry('doctor', 'doctor', 'src/tools/doctortool.ts', registerDoctorTool, [1, 750], { alwaysActive: true, readOnlySafe: true }),
-  manifestEntry('swarm3meta', 'swarm3meta', 'src/tools/swarm3_meta.ts', registerSwarm3MetaTools, [3, 1624], { alwaysActive: true, scopeKey: 'catalog', readOnlySafe: true }),
+  // 1624 -> 2023 (#713): toolset_report gained a declared `response_format`, and
+  // all three discovery tools now carry the mode-specific description instead of
+  // the shared "json = raw API object" wording. +399B once, on a 3-tool module.
+  manifestEntry('swarm3meta', 'swarm3meta', 'src/tools/swarm3_meta.ts', registerSwarm3MetaTools, [3, 2023], { alwaysActive: true, scopeKey: 'catalog', readOnlySafe: true }),
   manifestEntry('libraryanalytics', 'libraryanalytics', 'src/tools/libraryanalytics.ts', registerLibraryAnalyticsTools, [4, 3351], { readOnlySafe: true, scopeKey: 'library' }),
   manifestEntry('portability', 'portability', 'src/tools/portability.ts', registerPortabilityTools, [11, 10058], { scopeKey: 'library' }),
   manifestEntry('libraryinsights', 'library', 'src/tools/libraryinsights.ts', registerLibraryInsightsTools, [3, 2751], { scopeKey: 'library' }),
