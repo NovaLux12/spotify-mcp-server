@@ -6,10 +6,11 @@
  * committed manifest is what reviewers and registry validators read.
  *
  * The same drift class hit the description: npm, the MCP Registry, the README
- * one-liner and the docs blurbs each claimed something different (#655). One
- * canonical sentence is authored in docs/distribution.md and pinned here, plus
- * the registry schema's ServerDetail limits — mirrored offline here, and
- * checked against the real pinned $schema with ajv when it can be fetched.
+ * one-liner and the docs blurbs each claimed something different (#655). This
+ * file authors the one canonical sentence (see CANONICAL_DESCRIPTION) and every
+ * one of those surfaces is asserted to be a mirror of it, plus the registry
+ * schema's ServerDetail limits — mirrored offline here, and checked against the
+ * real pinned $schema with ajv when it can be fetched.
  *
  * Run with: node --import tsx --test tests/registry-meta.test.ts
  */
@@ -55,18 +56,25 @@ const REGISTRY_VERSION_MAX = 255;
 
 const textLength = (value: string): number => Array.from(value).length;
 
-/** `Canonical <label>: <value>` marker lines authored in docs/distribution.md. */
-function canonicalMarker(label: string): string {
-  const matches = [...docs.matchAll(new RegExp(`^Canonical ${label}: (.+)$`, 'gm'))];
-  assert.equal(
-    matches.length,
-    1,
-    `docs/distribution.md must declare exactly one "Canonical ${label}:" marker line, found ${matches.length}`,
-  );
-  const value = matches[0]![1]!.trim();
-  assert.ok(value.length > 0, `"Canonical ${label}:" marker line must not be empty`);
-  return value;
-}
+/**
+ * The one authored copy of this server's public description (#655).
+ *
+ * The surfaces that ship a description — `package.json`, `server.json`, the
+ * README one-liner, the docs short blurb and the docs long description — are
+ * all mirrors of `CANONICAL_DESCRIPTION`, and each is asserted against it
+ * below. The copy deliberately does not live in a documentation file: a doc
+ * that also repeats the sentence is not the source of it, and authoring it
+ * there is what left the same sentence hand-copied six times, three of them
+ * inside the file that declared itself the source.
+ *
+ * The MCP Registry caps `ServerDetail.description` at 100 characters
+ * (`maxLength` in the declared `$schema`), so the notice is carried inside the
+ * capability claim rather than appended after it — the cap is a budget, not a
+ * formatting rule.
+ */
+const CAPABILITY_CLAIM = 'Spotify Web API MCP: playback, library, playlists, search, podcasts.';
+const NON_AFFILIATION_NOTICE = 'Not affiliated with Spotify.';
+const CANONICAL_DESCRIPTION = `${CAPABILITY_CLAIM} ${NON_AFFILIATION_NOTICE}`;
 
 /** Body of a `## <heading>` section, trimmed. */
 function docsSection(heading: string): string {
@@ -169,18 +177,33 @@ describe('registry metadata sync', () => {
 });
 
 describe('canonical description sync (#655)', () => {
-  // Resolved inside each test so a missing/duplicated marker fails one assertion
-  // at a time instead of aborting the whole file at import time.
-  const canonicalShort = (): string => canonicalMarker('short description');
-  const canonicalNotice = (): string => canonicalMarker('non-affiliation notice');
+  /**
+   * The surfaces whose whole value is the description. The docs long
+   * description opens with the same sentence and continues, so it is asserted
+   * by prefix below rather than listed here.
+   */
+  const mirrors = (): Array<[string, string]> => [
+    ['package.json', pkg.description],
+    ['server.json', server.description],
+    ['README.md one-liner', readmeOneLiner(readme)],
+    ['docs/distribution.md short blurb', unwrap(docsSection('Short blurb (directories)'))],
+  ];
 
-  it('npm, registry, README and the docs blurb all carry the identical description', () => {
-    const surfaces: Array<[string, string]> = [
-      ['package.json', pkg.description],
-      ['server.json', server.description],
-      ['README.md one-liner', readmeOneLiner(readme)],
-      ['docs/distribution.md short blurb', unwrap(docsSection('Short blurb (directories)'))],
-    ];
+  const longDescription = (): string => unwrap(docsSection('Long description (Glama / PulseMCP style)'));
+
+  it('the authored description is one sentence carrying the notice inside the registry cap', () => {
+    assert.ok(
+      textLength(CANONICAL_DESCRIPTION) <= REGISTRY_DESCRIPTION_MAX,
+      `the authored description is ${textLength(CANONICAL_DESCRIPTION)} chars; the MCP Registry caps description at ${REGISTRY_DESCRIPTION_MAX}`,
+    );
+    assert.ok(
+      CANONICAL_DESCRIPTION.endsWith(NON_AFFILIATION_NOTICE),
+      `the authored description (${CANONICAL_DESCRIPTION}) must end with the notice: ${NON_AFFILIATION_NOTICE}`,
+    );
+  });
+
+  it('npm, registry, the README one-liner and the docs short blurb carry the identical description', () => {
+    const surfaces = mirrors();
     const distinct = [...new Set(surfaces.map(([, value]) => value))];
     assert.equal(
       distinct.length,
@@ -191,78 +214,66 @@ describe('canonical description sync (#655)', () => {
     );
   });
 
-  it('docs/distribution.md authors one canonical short description within the registry limit', () => {
-    const short = canonicalShort();
-    assert.ok(
-      textLength(short) <= REGISTRY_DESCRIPTION_MAX,
-      `canonical short description is ${textLength(short)} chars; the MCP Registry caps description at ${REGISTRY_DESCRIPTION_MAX}`,
-    );
-  });
-
-  it('package.json description equals the canonical short description', () => {
-    const short = canonicalShort();
+  it('package.json description equals the canonical description', () => {
     assert.equal(
       pkg.description,
-      short,
-      `package.json description (${pkg.description}) must equal the canonical description (${short})`,
+      CANONICAL_DESCRIPTION,
+      `package.json description (${pkg.description}) must equal the canonical description (${CANONICAL_DESCRIPTION})`,
     );
   });
 
-  it('server.json description equals the canonical short description', () => {
-    const short = canonicalShort();
+  it('server.json description equals the canonical description', () => {
     assert.equal(
       server.description,
-      short,
-      `server.json description (${server.description}) must equal the canonical description (${short})`,
+      CANONICAL_DESCRIPTION,
+      `server.json description (${server.description}) must equal the canonical description (${CANONICAL_DESCRIPTION})`,
     );
   });
 
-  it('docs short blurb equals the canonical short description', () => {
-    const short = canonicalShort();
-    const blurb = unwrap(docsSection('Short blurb (directories)'));
-    assert.equal(
-      blurb,
-      short,
-      `docs/distribution.md short blurb (${blurb}) must equal the canonical description (${short})`,
-    );
-  });
-
-  it('docs long description opens with the canonical short description', () => {
-    const short = canonicalShort();
-    const long = unwrap(docsSection('Long description (Glama / PulseMCP style)'));
-    assert.ok(
-      long.startsWith(short),
-      `docs/distribution.md long description must open with the canonical description (${short}); it starts with: ${long.slice(0, short.length + 20)}`,
-    );
-  });
-
-  it('README one-line description equals the canonical short description', () => {
-    const short = canonicalShort();
+  it('README one-line description equals the canonical description', () => {
     const oneLiner = readmeOneLiner(readme);
     assert.equal(
       oneLiner,
-      short,
-      `README.md one-line description (${oneLiner}) must equal the canonical description (${short})`,
+      CANONICAL_DESCRIPTION,
+      `README.md one-line description (${oneLiner}) must equal the canonical description (${CANONICAL_DESCRIPTION})`,
     );
   });
 
-  it('canonical description embeds the canonical non-affiliation notice', () => {
-    const notice = canonicalNotice();
-    const short = canonicalShort();
+  it('docs short blurb equals the canonical description', () => {
+    const blurb = unwrap(docsSection('Short blurb (directories)'));
+    assert.equal(
+      blurb,
+      CANONICAL_DESCRIPTION,
+      `docs/distribution.md short blurb (${blurb}) must equal the canonical description (${CANONICAL_DESCRIPTION})`,
+    );
+  });
+
+  it('docs long description opens with the canonical description', () => {
+    const long = longDescription();
     assert.ok(
-      short.includes(notice),
-      `canonical description (${short}) must contain the notice verbatim: ${notice}`,
+      long.startsWith(CANONICAL_DESCRIPTION),
+      `docs/distribution.md long description must open with the canonical description (${CANONICAL_DESCRIPTION}); it starts with: ${long.slice(0, CANONICAL_DESCRIPTION.length + 20)}`,
+    );
+  });
+
+  it('docs/distribution.md mirrors the description exactly twice, never authoring its own copy', () => {
+    // Unwrapped first: the docs hard-wrap the sentence across lines, so a raw
+    // substring count would report zero and never fire.
+    const occurrences = unwrap(docs).split(CANONICAL_DESCRIPTION).length - 1;
+    assert.equal(
+      occurrences,
+      2,
+      `docs/distribution.md must carry the description only as the short blurb and the long description lead (2 occurrences), found ${occurrences}; any further occurrence is a hand-copied duplicate of the constant above`,
     );
   });
 
   it('README pairs the non-affiliation notice with the Developer Terms link', () => {
-    const notice = canonicalNotice();
     const disclosures = readmeAuthoredLines(readme).filter(
-      (line) => line.includes(notice) && line.includes('developer.spotify.com/terms'),
+      (line) => line.includes(NON_AFFILIATION_NOTICE) && line.includes('developer.spotify.com/terms'),
     );
     assert.ok(
       disclosures.length > 0,
-      `README.md must carry the non-affiliation notice (${notice}) alongside the Spotify Developer Terms link`,
+      `README.md must carry the non-affiliation notice (${NON_AFFILIATION_NOTICE}) alongside the Spotify Developer Terms link`,
     );
   });
 });

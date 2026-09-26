@@ -19,19 +19,27 @@ with README + server.json when the tool surface changes.
 
 ## Canonical copy (single source of truth)
 
-The two blurbs below are the only public-facing copy for this server. The short
-description is authored on the marker line here and repeated verbatim by
-`package.json.description` (npm), `server.json.description` (MCP Registry), the
-README one-liner and the short blurb section; the long description opens with
-the same sentence. `tests/registry-meta.test.ts` fails `npm test` when any of
-those surfaces drifts, so edit the marker line first and re-run the test.
+The short description is authored **once**, as the `CANONICAL_DESCRIPTION`
+constant in `tests/registry-meta.test.ts`. No documentation file authors it —
+this one used to, which is how the same sentence ended up hand-copied six
+times, three of them inside the file that called itself the source. Five
+surfaces mirror that one constant, and the suite fails `npm test` if any of them
+drifts:
+
+- `package.json.description` (npm)
+- `server.json.description` (MCP Registry)
+- the README one-liner
+- the short blurb below
+- the opening sentence of the long description below
+
+To change the copy, edit the constant, re-run
+`node --import tsx --test tests/registry-meta.test.ts`, then paste the new
+sentence into the five mirrors. The two blurbs in this file are mirrors to keep
+in step, not a sixth place to edit it.
 
 The short description is capped at 100 characters by the MCP Registry schema
 (`maxLength` on `ServerDetail.description`), which is why the detail copy lives
 in the separate long description rather than being appended here.
-
-Canonical short description: Spotify Web API MCP: playback, library, playlists, search, podcasts. Not affiliated with Spotify.
-Canonical non-affiliation notice: Not affiliated with Spotify.
 
 ## Short blurb (directories)
 
