@@ -215,19 +215,88 @@ function streamLine(s: J): string {
   return `"${s.trackName ?? '?'}" (${fmtPlayed(s.playedMs)}) — ${when}`;
 }
 
-/** Aggregate a `{ items: streams }` page into count/playedMs/first/last. */
-function summarizeStreams(streams: J[], label: string) {
+/** The per-entity stats tools all summarise the same endpoint. */
+type EntityFilter = 'track' | 'artist' | 'album';
+
+/**
+ * One page of `/users/{id}/streams`, as stats.fm actually serves it.
+ *
+ * Verified live 2026-09-25 against a Plus profile: the endpoint answers with
+ * at most `limit` of the profile's newest streams and carries no total, no
+ * page cursor and no `offset` support, so a page is a slice — never a
+ * lifetime figure. The same probe showed the `track`/`artist`/`album`
+ * parameter is silently dropped, so the page is narrowed to the requested
+ * entity here; a page that came back full means older history exists beyond
+ * it (#810).
+ */
+type StreamPage = { streams: J[]; matching: J[]; pageSize: number; capped: boolean };
+
+/** Whether one returned stream is a play of `entityId`. */
+function isStreamOf(stream: J, filter: EntityFilter, entityId: string): boolean {
+  if (filter === 'track') return stream.trackId !== undefined && String(stream.trackId) === entityId;
+  if (filter === 'album') return stream.albumId !== undefined && String(stream.albumId) === entityId;
+  const artistIds: unknown[] = Array.isArray(stream.artistIds) ? stream.artistIds : [];
+  return artistIds.some((id) => String(id) === entityId);
+}
+
+/** Fetch one page of streams for a query and narrow it to `entity`. The query may be
+ *  the profile's newest streams or a `*_date_stats` window, so nothing here may
+ *  describe the page as "the profile's newest page". */
+async function readStreamPage(
+  client: StatsfmClient,
+  userId: string,
+  params: Record<string, string>,
+  pageSize: number,
+  entity: { filter: EntityFilter; id: string },
+): Promise<StreamPage> {
+  const path = `/users/${encodeURIComponent(userId)}/streams`;
+  const body = await client.get<J>(path, { ...params, limit: String(pageSize) });
+  const streams = collectionItems(body, path);
+  return {
+    streams,
+    matching: streams.filter((s) => isStreamOf(s, entity.filter, entity.id)),
+    pageSize,
+    capped: streams.length >= pageSize,
+  };
+}
+
+/** Machine-readable provenance for a summary derived from one page. */
+function pageDisclosure(read: StreamPage): J {
+  return read.capped
+    ? { page_size: read.pageSize, streams_read: read.streams.length, capped: true }
+    : { page_size: read.pageSize, streams_read: read.streams.length };
+}
+
+/** Page-bounded aggregate of the streams actually read. */
+type StreamSummary = {
+  label: string;
+  count: number;
+  totalMs: number;
+  avgMs: number;
+  oldest: string | null;
+  newest: string | null;
+};
+
+/** Aggregate the streams actually read into count/playedMs/page bounds. */
+function summarizeStreams(streams: J[], label: string): StreamSummary {
   const count = streams.length;
   const totalMs = streams.reduce((sum, s) => sum + (typeof s.playedMs === 'number' ? s.playedMs : 0), 0);
   const ends = streams.map((s) => s.endTime).filter((t) => typeof t === 'string') as string[];
-  const first = ends.length > 0 ? ends.reduce((a, b) => (a < b ? a : b)) : null;
-  const last = ends.length > 0 ? ends.reduce((a, b) => (a > b ? a : b)) : null;
-  return { label, count, totalMs, avgMs: count > 0 ? Math.round(totalMs / count) : 0, first, last };
+  const oldest = ends.length > 0 ? ends.reduce((a, b) => (a < b ? a : b)) : null;
+  const newest = ends.length > 0 ? ends.reduce((a, b) => (a > b ? a : b)) : null;
+  return { label, count, totalMs, avgMs: count > 0 ? Math.round(totalMs / count) : 0, oldest, newest };
 }
 
-function formatSummary(sum: ReturnType<typeof summarizeStreams>): string {
-  const span = sum.first && sum.last ? ` | span: ${sum.first} → ${sum.last}` : '';
-  return `${sum.label}: ${sum.count} streams, ${fmtPlayed(sum.totalMs)} total (avg ${fmtPlayed(sum.avgMs)})${span}`;
+function formatSummary(sum: StreamSummary, read: StreamPage, filter: EntityFilter): string {
+  const span = sum.oldest && sum.newest ? ` | page span: ${sum.oldest} → ${sum.newest}` : '';
+  const line = `${sum.label}: ${sum.count} streams, ${fmtPlayed(sum.totalMs)} total (avg ${fmtPlayed(sum.avgMs)})${span}`;
+  if (read.capped) {
+    return `${line}\nPartial: ${sum.count} of the ${read.streams.length} streams this read returned are this ${filter}. The read was capped at ${read.pageSize}, so this is not a lifetime total — more may exist outside what this query returned.`;
+  }
+  if (sum.count === 0) {
+    return `${line}\nComplete: the ${read.streams.length} streams stats.fm returned for this profile include none for this ${filter}.`;
+  }
+  return line;
 }
 
 /** Short, non-guessing reason a per-friend stream lookup could not be read. */
@@ -372,9 +441,9 @@ export function registerStatsfmTools(server: McpServer, client: StatsfmClient = 
 
   // 8–10. per-entity stream aggregates (track / artist / album).
   const entityStats = [
-    { name: 'statsfm_track_stats', desc: 'Stream totals for one track within a user library', filter: 'track', idField: 'track_id' },
-    { name: 'statsfm_artist_stats', desc: 'Stream totals for one artist within a user library', filter: 'artist', idField: 'artist_id' },
-    { name: 'statsfm_album_stats', desc: 'Stream totals for one album within a user library', filter: 'album', idField: 'album_id' },
+    { name: 'statsfm_track_stats', desc: 'Stream totals for one track within a user library', filter: 'track' as const, idField: 'track_id' },
+    { name: 'statsfm_artist_stats', desc: 'Stream totals for one artist within a user library', filter: 'artist' as const, idField: 'artist_id' },
+    { name: 'statsfm_album_stats', desc: 'Stream totals for one album within a user library', filter: 'album' as const, idField: 'album_id' },
   ];
   for (const cfg of entityStats) {
     server.tool(
@@ -388,24 +457,24 @@ export function registerStatsfmTools(server: McpServer, client: StatsfmClient = 
       },
       async (args) => {
         const entityId = String((args as J)[cfg.idField]);
-        const body = await client.get<J>(`/users/${encodeURIComponent((args as J).user_id as string)}/streams`, {
-          [cfg.filter]: entityId,
-          limit: String((args as J).limit ?? 50),
-        });
-        const streams = collectionItems(body, `/users/${encodeURIComponent((args as J).user_id as string)}/streams`);
-        const sum = summarizeStreams(streams, `${cfg.filter} ${entityId}`);
+        const read = await readStreamPage(
+          client,
+          (args as J).user_id as string,
+          { [cfg.filter]: entityId },
+          (args as J).limit ?? 50,
+          { filter: cfg.filter, id: entityId },
+        );
+        const sum = summarizeStreams(read.matching, `${cfg.filter} ${entityId}`);
+        const payload: J = { ...sum, ...pageDisclosure(read) };
         if ((args as J).response_format === 'json') {
           return {
-            content: [{ type: 'text', text: JSON.stringify({ ...sum, streams }) }],
-            structuredContent: { ...sum, streams },
+            content: [{ type: 'text', text: JSON.stringify({ ...payload, streams: read.matching }) }],
+            structuredContent: { ...payload, streams: read.matching },
           };
         }
-        if (streams.length === 0) {
-          return { content: [{ type: 'text', text: `${formatSummary(sum)} — no streams found.` }] };
-        }
         return {
-          content: [{ type: 'text', text: formatSummary(sum) }],
-          structuredContent: { ...sum, streams: streams.slice(0, 10) },
+          content: [{ type: 'text', text: formatSummary(sum, read, cfg.filter) }],
+          structuredContent: { ...payload, streams: read.matching.slice(0, 10) },
         };
       },
     );
@@ -714,9 +783,9 @@ export function registerStatsfmTools(server: McpServer, client: StatsfmClient = 
 
   // 25–27. date-windowed per-entity stats (track / artist / album).
   const dateStats = [
-    { name: 'statsfm_track_date_stats', desc: 'Stream totals for one track within a date window', filter: 'track', idField: 'track_id' },
-    { name: 'statsfm_artist_date_stats', desc: 'Stream totals for one artist within a date window', filter: 'artist', idField: 'artist_id' },
-    { name: 'statsfm_album_date_stats', desc: 'Stream totals for one album within a date window', filter: 'album', idField: 'album_id' },
+    { name: 'statsfm_track_date_stats', desc: 'Stream totals for one track within a date window', filter: 'track' as const, idField: 'track_id' },
+    { name: 'statsfm_artist_date_stats', desc: 'Stream totals for one artist within a date window', filter: 'artist' as const, idField: 'artist_id' },
+    { name: 'statsfm_album_date_stats', desc: 'Stream totals for one album within a date window', filter: 'album' as const, idField: 'album_id' },
   ];
   for (const cfg of dateStats) {
     server.tool(
@@ -732,27 +801,30 @@ export function registerStatsfmTools(server: McpServer, client: StatsfmClient = 
       },
       async (args) => {
         const entityId = String((args as J)[cfg.idField]);
-        const params: Record<string, string> = {
-          [cfg.filter]: entityId,
-          limit: String((args as J).limit ?? 100),
-        };
+        const params: Record<string, string> = { [cfg.filter]: entityId };
         if ((args as J).after !== undefined) params.after = String((args as J).after);
         if ((args as J).before !== undefined) params.before = String((args as J).before);
-        const body = await client.get<J>(`/users/${encodeURIComponent((args as J).user_id as string)}/streams`, params);
-        const streams = collectionItems(body, `/users/${encodeURIComponent((args as J).user_id as string)}/streams`);
+        const read = await readStreamPage(
+          client,
+          (args as J).user_id as string,
+          params,
+          (args as J).limit ?? 100,
+          { filter: cfg.filter, id: entityId },
+        );
         const window = (args as J).after !== undefined || (args as J).before !== undefined
           ? ` [${(args as J).after ?? '…'} → ${(args as J).before ?? '…'}]`
           : '';
-        const sum = summarizeStreams(streams, `${cfg.filter} ${entityId}${window}`);
+        const sum = summarizeStreams(read.matching, `${cfg.filter} ${entityId}${window}`);
+        const payload: J = { ...sum, ...pageDisclosure(read) };
         if ((args as J).response_format === 'json') {
           return {
-            content: [{ type: 'text', text: JSON.stringify({ ...sum, streams }) }],
-            structuredContent: { ...sum, streams },
+            content: [{ type: 'text', text: JSON.stringify({ ...payload, streams: read.matching }) }],
+            structuredContent: { ...payload, streams: read.matching },
           };
         }
         return {
-          content: [{ type: 'text', text: formatSummary(sum) }],
-          structuredContent: { ...sum, streams: streams.slice(0, 10) },
+          content: [{ type: 'text', text: formatSummary(sum, read, cfg.filter) }],
+          structuredContent: { ...payload, streams: read.matching.slice(0, 10) },
         };
       },
     );

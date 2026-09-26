@@ -399,10 +399,10 @@ test('statsfm_now_playing names the current track', async () => {
 test('statsfm_track_stats aggregates streams', async () => {
   const h = makeHarness((path, params) => {
     assert.equal(path, '/users/u/streams');
-    assert.equal(params?.track, '5816601');
+    assert.equal(params?.track, '1');
     return streamsFixture();
   });
-  const out = await h.find('statsfm_track_stats').handler({ user_id: 'u', track_id: 5816601 });
+  const out = await h.find('statsfm_track_stats').handler({ user_id: 'u', track_id: 1 });
   assert.match(h.text(out), /2 streams/);
   const sc = out.structuredContent as Record<string, unknown>;
   assert.equal(sc.count, 2);
@@ -421,11 +421,202 @@ test('statsfm_artist_stats filters by artist', async () => {
 
 test('statsfm_album_stats filters by album', async () => {
   const h = makeHarness((path, params) => {
-    assert.equal(params?.album, '796569');
+    assert.equal(params?.album, '9');
     return streamsFixture();
   });
-  const out = await h.find('statsfm_album_stats').handler({ user_id: 'u', album_id: 796569 });
+  const out = await h.find('statsfm_album_stats').handler({ user_id: 'u', album_id: 9 });
   assert.match(h.text(out), /2 streams/);
+});
+
+// ------------------------------------------- page-bounded stream stats (#810)
+
+/**
+ * A profile's stream history, newest first, as stats.fm returns it: at most
+ * `limit` entries per call, `before`/`after` bounds honoured inclusively, and
+ * both `offset` and the entity filter silently dropped (verified against the
+ * live API 2026-09-25). Nothing here is derived from the caller's arguments
+ * except the paging the endpoint really honours, so every page mixes plays of
+ * the requested entity with plays of anything else — one page of N is N
+ * streams of the profile, not N plays of the entity.
+ */
+const ENTITY = { track: 5816601, album: 796569, artist: 310770 };
+
+function streamHistory(count: number, matchesEvery = 3) {
+  const newest = Date.UTC(2026, 0, 2, 12, 0, 0);
+  return Array.from({ length: count }, (_, i) => {
+    const mine = i % matchesEvery === 0;
+    return {
+      id: `h${i}`,
+      endTime: new Date(newest - i * 60_000).toISOString(),
+      playedMs: 200_000,
+      trackId: mine ? ENTITY.track : 900_000 + i,
+      trackName: mine ? 'Ya Sonra' : 'Something Else',
+      albumId: mine ? ENTITY.album : 800_000 + i,
+      artistIds: [mine ? ENTITY.artist : 700_000 + i],
+    };
+  });
+}
+
+/** How many of the first `pageSize` history rows are plays of the entity. */
+function matchingIn(history: ReturnType<typeof streamHistory>, pageSize: number, matchesEvery = 3): number {
+  return history.slice(0, pageSize).filter((_, i) => i % matchesEvery === 0).length;
+}
+
+function streamsPageResponder(history: ReturnType<typeof streamHistory>) {
+  return (path: string, params?: Record<string, string>) => {
+    assert.equal(path, '/users/u/streams');
+    const limit = Number(params?.limit);
+    assert.ok(Number.isInteger(limit) && limit > 0, `limit must reach the wire: ${JSON.stringify(params)}`);
+    const after = params?.after === undefined ? -Infinity : Number(params.after);
+    const before = params?.before === undefined ? Infinity : Number(params.before);
+    return {
+      items: history
+        .filter((s) => Date.parse(s.endTime) >= after && Date.parse(s.endTime) <= before)
+        .slice(0, limit),
+    };
+  };
+}
+
+/** The count a reader of the prose would take away. */
+function proseCount(text: string): number {
+  const lead = /^[^:\n]+: (\d+) streams,/m.exec(text);
+  assert.ok(lead, `prose must lead with the stream count it reports: ${text}`);
+  return Number(lead[1]);
+}
+
+test('a full page is disclosed as partial, and is not a total of the entity (#810)', async () => {
+  const history = streamHistory(300);
+  const h = makeHarness(streamsPageResponder(history));
+  const out = await h.find('statsfm_track_stats').handler({ user_id: 'u', track_id: ENTITY.track });
+  const txt = h.text(out);
+  const sc = out.structuredContent as Record<string, unknown>;
+
+  // Wire: one page of 50, and no reliance on `offset` (upstream ignores it).
+  assert.equal(h.calls.length, 1);
+  assert.equal(h.calls[0].params?.limit, '50');
+  assert.equal(h.calls[0].params?.offset, undefined);
+
+  // The page held 50 streams, but only some are plays of the track: the
+  // reported figure is the part actually read, and it is flagged partial.
+  const expected = matchingIn(history, 50);
+  assert.equal(sc.streams_read, 50);
+  assert.equal(sc.page_size, 50);
+  assert.equal(sc.capped, true);
+  assert.equal(sc.count, expected);
+  assert.notEqual(sc.count, 50, 'a page of 50 streams is not 50 plays of the track');
+  assert.equal(sc.totalMs, expected * 200_000, 'only the matching streams are totalled');
+  assert.match(txt, new RegExp(`${expected} of the 50 streams`));
+  assert.match(txt, /not a lifetime total/);
+  assert.match(txt, /page span:/);
+  assert.equal(proseCount(txt), sc.count, 'prose and structuredContent must agree on the count');
+});
+
+test('a history shorter than the page reports its true count with no capped flag (#810)', async () => {
+  const h = makeHarness(streamsPageResponder(streamHistory(7, 1)));
+  const out = await h.find('statsfm_track_stats').handler({ user_id: 'u', track_id: ENTITY.track });
+  const txt = h.text(out);
+  const sc = out.structuredContent as Record<string, unknown>;
+
+  assert.equal(h.calls[0].params?.limit, '50');
+  assert.equal(sc.count, 7, 'the whole exposed history fits, so the count is the real one');
+  assert.equal('capped' in sc, false, 'a short page is not a truncated read');
+  assert.equal(sc.page_size, 50);
+  assert.equal(sc.streams_read, 7);
+  assert.doesNotMatch(txt, /Partial:/);
+  assert.equal(proseCount(txt), sc.count, 'prose and structuredContent must agree on the count');
+});
+
+test('a complete read that holds no play of the entity says so, not "0 lifetime plays" (#810)', async () => {
+  const h = makeHarness(streamsPageResponder(streamHistory(6, 3)));
+  const out = await h.find('statsfm_track_stats').handler({ user_id: 'u', track_id: 4242424 });
+  const txt = h.text(out);
+  const sc = out.structuredContent as Record<string, unknown>;
+  assert.equal(sc.count, 0);
+  assert.equal('capped' in sc, false);
+  assert.match(txt, /include none for this track/);
+  assert.equal(proseCount(txt), 0);
+});
+
+test('the reported page size follows the limit that actually went out on the wire (#810)', async () => {
+  const history = streamHistory(300);
+  for (const limit of [25, 50, 100]) {
+    const h = makeHarness(streamsPageResponder(history));
+    const out = await h.find('statsfm_track_stats').handler({ user_id: 'u', track_id: ENTITY.track, limit });
+    const txt = h.text(out);
+    const sc = out.structuredContent as Record<string, unknown>;
+    assert.equal(h.calls[0].params?.limit, String(limit));
+    assert.equal(sc.page_size, limit, `page_size must mirror the requested page (limit=${limit})`);
+    assert.equal(sc.streams_read, limit, `limit=${limit} reads exactly one page of that size`);
+    assert.equal(sc.count, matchingIn(history, limit), `limit=${limit} counts only the entity's plays on that page`);
+    assert.equal(sc.capped, true, `a full page of ${limit} leaves older history unread`);
+    assert.match(txt, new RegExp(`${sc.count} of the ${limit} streams`));
+    assert.equal(proseCount(txt), sc.count);
+  }
+});
+
+test('a page that exactly fills the limit is still not read as the whole history (#810)', async () => {
+  // The endpoint exposes no total, so a full page is indistinguishable from a
+  // truncated one: it must be reported as partial rather than as a total.
+  const h = makeHarness(streamsPageResponder(streamHistory(50, 1)));
+  const out = await h.find('statsfm_track_stats').handler({ user_id: 'u', track_id: ENTITY.track, limit: 50 });
+  const sc = out.structuredContent as Record<string, unknown>;
+  assert.equal(sc.count, 50);
+  assert.equal(sc.capped, true);
+  assert.match(h.text(out), /not a lifetime total/);
+});
+
+test('all six per-entity stats tools disclose a truncated page (#810)', async () => {
+  const cases = [
+    ['statsfm_track_stats', { track_id: ENTITY.track }, 'track'],
+    ['statsfm_artist_stats', { artist_id: ENTITY.artist }, 'artist'],
+    ['statsfm_album_stats', { album_id: ENTITY.album }, 'album'],
+    ['statsfm_track_date_stats', { track_id: ENTITY.track, after: 0, before: 4102444800000 }, 'track'],
+    ['statsfm_artist_date_stats', { artist_id: ENTITY.artist, after: 0, before: 4102444800000 }, 'artist'],
+    ['statsfm_album_date_stats', { album_id: ENTITY.album, after: 0, before: 4102444800000 }, 'album'],
+  ] as const;
+  const history = streamHistory(300);
+  for (const [name, args, filter] of cases) {
+    const h = makeHarness(streamsPageResponder(history));
+    const out = await h.find(name).handler({ user_id: 'u', ...args });
+    const txt = h.text(out);
+    const sc = out.structuredContent as Record<string, unknown>;
+    assert.equal(sc.capped, true, `${name} must flag a full page as truncated`);
+    assert.equal(sc.count, matchingIn(history, sc.page_size as number), `${name} counts only this ${filter}'s plays on the page`);
+    assert.equal(proseCount(txt), sc.count, `${name} prose must agree with its payload`);
+    // Deliberately NOT asserting which page was read. The six tools do not share
+    // a read shape: the plain ones take the profile's newest page, the
+    // *_date_stats ones pass an after/before window. A qualifier naming "the
+    // profile's newest page" is false for the second group, so this asserts the
+    // claim that holds for both, and pins the false one out.
+    assert.match(txt, new RegExp(`are this ${filter}\\.`), `${name} must say how many of the read are this ${filter}`);
+    assert.match(txt, /this read returned/, `${name} must not claim which page was read`);
+    assert.doesNotMatch(txt, /newest page/, `${name} must not describe a windowed read as the newest page`);
+    assert.match(txt, /not a lifetime total/, `${name} prose must not read as a lifetime total`);
+    if (name.endsWith('_date_stats')) {
+      const params = h.calls[0].params ?? {};
+      assert.equal(params.after, String(args.after), `${name} must forward the window start`);
+      assert.equal(params.before, String(args.before), `${name} must forward the window end`);
+    }
+  }
+});
+
+test('json responses carry the same page disclosure as the prose (#810)', async () => {
+  const history = streamHistory(300);
+  const h = makeHarness(streamsPageResponder(history));
+  const out = await h.find('statsfm_track_stats').handler({
+    user_id: 'u',
+    track_id: ENTITY.track,
+    response_format: 'json',
+  });
+  const sc = out.structuredContent as Record<string, unknown>;
+  assert.equal(sc.capped, true);
+  assert.equal(sc.page_size, 50);
+  assert.equal(sc.count, matchingIn(history, 50));
+  assert.equal((sc.streams as unknown[]).length, sc.count, 'the json body carries only the entity\'s streams');
+  const parsed = JSON.parse(h.text(out)) as Record<string, unknown>;
+  assert.equal(parsed.count, sc.count);
+  assert.equal(parsed.capped, sc.capped);
+  assert.equal(parsed.page_size, sc.page_size);
 });
 
 // ---------------------------------------------------------------- search/recaps/stats
@@ -642,9 +833,9 @@ test('statsfm_track_date_stats passes the window through', async () => {
 
 test('statsfm_artist_date_stats and album_date_stats aggregate', async () => {
   const h = makeHarness(() => streamsFixture());
-  const a = await h.find('statsfm_artist_date_stats').handler({ user_id: 'u', artist_id: 1 });
+  const a = await h.find('statsfm_artist_date_stats').handler({ user_id: 'u', artist_id: 310770 });
   assert.match(h.text(a), /2 streams/);
-  const b = await h.find('statsfm_album_date_stats').handler({ user_id: 'u', album_id: 1 });
+  const b = await h.find('statsfm_album_date_stats').handler({ user_id: 'u', album_id: 9 });
   assert.match(h.text(b), /2 streams/);
 });
 
