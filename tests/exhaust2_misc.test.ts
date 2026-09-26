@@ -583,6 +583,40 @@ describe('exhaust2_misc — 27-tool misc slice', () => {
     assert.equal(Object.keys(ext.devicePresets).length, 0);
   });
 
+  // #1051: a corrupt slice sidecar must NOT silently read as an empty store,
+  // or the next mutating call would overwrite the user's hand-curated state
+  // (checkpoints / bookmarks / journal) with a default-shaped stub. The
+  // bytes survive at <path>.corrupt and the tool errors out so the caller
+  // can decide whether to repair or stop.
+  it('#1051 corrupt misc sidecar: tool throws and bytes are preserved', async () => {
+    const file = process.env.SPOTIFY_MCP_EXHAUST2_MISC_FILE!;
+    const corrupt = '{oops';
+    writeFileSync(file, corrupt, 'utf8');
+    const h = getHandler('taste_checkpoint', makeClient({
+      get: mock.fn(async (path: string) => {
+        if (path.startsWith('/me/top/tracks')) return { items: [] };
+        if (path.startsWith('/me/top/artists')) return { items: [] };
+        return null;
+      }),
+    }));
+    await assert.rejects(
+      h({ label: 'should-never-save', time_range: 'medium_term', response_format: 'concise' }),
+      /is not valid JSON/,
+    );
+    assert.equal(readFileSync(`${file}.corrupt`, 'utf8'), corrupt, 'preserved copy must be byte-identical');
+    assert.equal(readFileSync(file, 'utf8'), corrupt, 'original must remain on disk');
+  });
+
+  it('#1051 corrupt misc sidecar: missing array shape throws (not silently coerced)', async () => {
+    const file = process.env.SPOTIFY_MCP_EXHAUST2_MISC_FILE!;
+    writeFileSync(file, JSON.stringify({ checkpoints: {}, bookmarks: {}, journal: 'oops', reports: {} }), 'utf8');
+    const h = getHandler('listening_journal_append', makeClient());
+    await assert.rejects(
+      h({ note: 'never written', response_format: 'concise' }),
+      /"journal" is not an array/,
+    );
+  });
+
   // cleanup after all tests
   after(() => {
     try { rmSync(tmp, { recursive: true, force: true }); } catch { /* best-effort */ }

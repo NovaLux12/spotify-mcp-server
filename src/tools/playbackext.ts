@@ -2,17 +2,19 @@
  * playbackext (#197, #206, #198, #180, #181): local sidecar persistence for
  * playback states, device naming/volume presets, listening sessions, smart rules, show digest.
  *
- * #839 — a sidecar that cannot be read is never silently reset. ENOENT is the
- * only condition that yields an empty store; every other read failure and every
- * unparseable file is preserved under `<file>.corrupt-<ts>` and reported as
+ * #839 / #1051 — a sidecar that cannot be read is never silently reset. ENOENT
+ * is the only condition that yields an empty store; every other read failure
+ * and every unparseable file is preserved under `<file>.corrupt` (or
+ * `<file>.corrupt.N` if the first copy is still there) and reported as
  * `load_error` on the store, so the mutating tools owe the caller a warning
- * rather than a quiet wipe of their snapshots, presets and rules.
+ * rather than a quiet wipe of their snapshots, presets and rules. The
+ * preservation + parse + shape-check policy lives in src/sidecar.ts so the
+ * four other sidecar loaders do not have to re-derive it.
  */
 import { z } from 'zod';
 import { capFor } from '../chunk.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { copyFile, link, mkdir, readFile, unlink, writeFile } from 'node:fs/promises';
-import { constants as FS } from 'node:fs';
+import { mkdir, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import type { SpotifyClient } from '../client.js';
@@ -27,6 +29,7 @@ import { DryRun, ResponseFormat } from '../shaping.js';
 import { getConfig } from '../config.js';
 import { matchesArtistFilter, uniqueByArtist } from './smart.js';
 import { addToQueueBatch } from './queueops.js';
+import { loadSidecar, SidecarUnreadableError } from '../sidecar.js';
 
 type ToolResult = { content: Array<{ type: 'text'; text: string }>; structuredContent?: Record<string, unknown> };
 function textResult(text: string, structured?: Record<string, unknown>): ToolResult {
@@ -73,79 +76,11 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-/**
- * Move an unusable sidecar to `<file>.corrupt-<ts>` so its bytes survive the
- * store reset that follows (#839). `link` is used rather than `rename` because
- * rename() overwrites an existing target on POSIX: a copy made moments earlier
- * by a second corruption would be clobbered. Returns the path the bytes now
- * live at, or null when they could not be moved (in which case the caller must
- * say the file is still in place rather than imply it is gone).
- */
-async function preserveUnreadableSidecar(file: string): Promise<string | null> {
-  for (let n = 0; n < 50; n++) {
-    const target = `${file}.corrupt-${Date.now()}${n === 0 ? '' : `-${n + 1}`}`;
-    try {
-      await link(file, target);
-    } catch (err) {
-      const code = (err as NodeJS.ErrnoException).code;
-      if (code === 'EEXIST') continue; // an earlier copy owns this name
-      if (code === 'ENOENT') return null; // the file went away under us
-      if (code === 'EPERM' || code === 'ENOSYS' || code === 'EMLINK' || code === 'EXDEV') {
-        // No hardlinks here (or a cross-device move): copy without clobbering.
-        try {
-          await copyFile(file, target, FS.COPYFILE_EXCL);
-        } catch (copyErr) {
-          const copyCode = (copyErr as NodeJS.ErrnoException).code;
-          if (copyCode === 'EEXIST') continue;
-          return null;
-        }
-      } else {
-        return null;
-      }
-    }
-    // The copy exists; drop the original so the next save starts clean. A
-    // failed unlink is survivable — the copy already holds every byte.
-    await unlink(file).catch(() => undefined);
-    return target;
-  }
-  return null;
-}
-
-/** Build the empty store plus the #839 disclosure for a file we cannot use. */
-async function unreadableStore(file: string, reason: string): Promise<PlaybackExtStore> {
-  const preservedAs = await preserveUnreadableSidecar(file);
-  return {
-    ...emptyPlaybackExtStore(),
-    load_error: preservedAs
-      ? `${file} was unreadable (${reason}) and has been preserved as ${preservedAs}; it was not loaded.`
-      : `${file} was unreadable (${reason}) and could not be moved aside, so it is still in place; it was not loaded.`,
-    preserved_as: preservedAs,
-  };
-}
-
-export async function loadPlaybackExt(env: NodeJS.ProcessEnv = process.env): Promise<PlaybackExtStore> {
-  const file = playbackExtFile(env);
-  let raw: string;
-  try {
-    raw = await readFile(file, 'utf8');
-  } catch (err) {
-    // A file that was never written is genuinely empty. A file we could not
-    // read is not: the bytes may all still be there, so it is never coerced.
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return emptyPlaybackExtStore();
-    return unreadableStore(file, (err as NodeJS.ErrnoException).code ?? 'read failed');
-  }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch (err) {
-    return unreadableStore(file, err instanceof Error ? err.message : 'invalid JSON');
-  }
-  if (!isPlainObject(parsed)) return unreadableStore(file, 'top level is not a JSON object');
-  // A collection field of the wrong type would make `store.states[x] = y`
-  // throw on a write, so the file is unusable as a whole rather than partly.
+function parsePlaybackExtStore(parsed: unknown): PlaybackExtStore {
+  if (!isPlainObject(parsed)) throw new Error('top level is not a JSON object');
   for (const key of ['states', 'devicePresets', 'sessions', 'smartRules'] as const) {
     if (parsed[key] !== undefined && !isPlainObject(parsed[key])) {
-      return unreadableStore(file, `"${key}" is not a JSON object`);
+      throw new Error(`"${key}" is not a JSON object`);
     }
   }
   return {
@@ -155,6 +90,22 @@ export async function loadPlaybackExt(env: NodeJS.ProcessEnv = process.env): Pro
     smartRules: (parsed.smartRules ?? {}) as Record<string, unknown>,
     showDigest: isPlainObject(parsed.showDigest) ? (parsed.showDigest as { playlist_id?: string; last_saved?: string }) : undefined,
   };
+}
+
+export async function loadPlaybackExt(env: NodeJS.ProcessEnv = process.env): Promise<PlaybackExtStore> {
+  const file = playbackExtFile(env);
+  try {
+    return await loadSidecar<PlaybackExtStore>(file, emptyPlaybackExtStore, parsePlaybackExtStore);
+  } catch (err) {
+    if (err instanceof SidecarUnreadableError) {
+      return {
+        ...emptyPlaybackExtStore(),
+        load_error: err.message,
+        preserved_as: err.preservedAs,
+      };
+    }
+    throw err;
+  }
 }
 
 /**

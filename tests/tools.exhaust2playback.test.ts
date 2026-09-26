@@ -153,7 +153,7 @@ async function clearSidecar(): Promise<void> {
 }
 
 // sidecar isolation per test file run
-import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 const tmpRoot = await mkdtemp(join(tmpdir(), 'exhaust2-pb-'));
@@ -225,6 +225,54 @@ test('sidecar store round-trips and defaults sanely', async () => {
   const loaded = await loadExhaust2Store();
   assert.equal(loaded.muteMemory.active?.volume, 42);
   assert.match(exhaust2PlaybackFile(), /sidecar\.json$/);
+});
+
+// #1051: a corrupt sidecar must NOT silently read as an empty store, or the
+// next mutating call would overwrite the user's hand-curated data with a
+// default-shaped stub. The bytes survive at <path>.corrupt and the tool errors
+// out so the caller can decide whether to repair or stop.
+test('#1051 corrupt sidecar: tool throws and bytes are preserved', async () => {
+  await resetSidecar();
+  const file = exhaust2PlaybackFile();
+  const corrupt = '{oops';
+  await writeFile(file, corrupt, 'utf8');
+  const h = makeHarness(registerExhaust2PlaybackTools, { getResponse: (p) => (p === '/me/player' ? playbackState() : undefined) });
+  try {
+    await assert.rejects(
+      h.invoke('checkpoint_playback', { note: 'should never save' }),
+      /is not valid JSON/,
+    );
+    // The corrupt bytes survive at <file>.corrupt; the original is still on
+    // disk and byte-identical, so the user can repair from either copy.
+    const corruptBackup = `${file}.corrupt`;
+    assert.equal(await readFile(corruptBackup, 'utf8'), corrupt, 'preserved copy must be byte-identical');
+    assert.equal(await readFile(file, 'utf8'), corrupt, 'original must remain on disk');
+  } finally {
+    // Restore the sidecar so subsequent tests in this file start from a clean
+    // empty store rather than from the corrupt bytes we just preserved.
+    await resetSidecar();
+    await rm(`${file}.corrupt`, { force: true });
+    await rm(`${file}.corrupt.1`, { force: true });
+    await rm(`${file}.corrupt.2`, { force: true });
+  }
+});
+
+test('#1051 corrupt sidecar: missing collection shape throws (not silently dropped)', async () => {
+  await resetSidecar();
+  const file = exhaust2PlaybackFile();
+  await writeFile(file, JSON.stringify({ muteMemory: 'oops' }), 'utf8');
+  try {
+    await assert.rejects(
+      loadExhaust2Store(),
+      /"muteMemory" is not a JSON object/,
+    );
+    const corruptBackup = `${file}.corrupt`;
+    assert.equal((await readFile(corruptBackup, 'utf8')).length > 0, true, 'preserved copy must exist');
+  } finally {
+    await resetSidecar();
+    await rm(`${file}.corrupt`, { force: true });
+    await rm(`${file}.corrupt.1`, { force: true });
+  }
 });
 
 // ---------------------------------------------------------------- sleep_timer

@@ -274,7 +274,7 @@ describe('playbackext', () => {
   // bytes must survive and the caller must be told.
   describe('#839 corrupt sidecar preservation', () => {
     const file = () => process.env.SPOTIFY_MCP_PLAYBACKEXT_FILE as string;
-    const corruptCopies = async () => (await readdir(dir)).filter((f) => f.startsWith('playback-ext.json.corrupt-'));
+    const corruptCopies = async () => (await readdir(dir)).filter((f) => f.startsWith('playback-ext.json.corrupt'));
 
     it('preserves the original bytes and reports load_error when a mutating tool saves over unparseable JSON', async () => {
       const original = '{"states":{"evening":{"name":"evening"';

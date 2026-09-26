@@ -14,12 +14,13 @@
  */
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import type { SpotifyClient } from '../client.js';
 import type { PlaybackState, SpotifyDevice, GetDevicesResponse } from '../types/spotify.js';
 import { ResponseFormat, DryRun, describeDryRun } from '../shaping.js';
+import { loadSidecar } from '../sidecar.js';
 
 // ---------------------------------------------------------------------------
 // Sidecar store
@@ -43,15 +44,25 @@ export function scenesFilePath(env: NodeJS.ProcessEnv = process.env): string {
   return env.SPOTIFY_MCP_SCENES_FILE ?? join(homedir(), '.spotify-mcp', 'scenes.json');
 }
 
-/** Load all scenes; missing/corrupt file yields an empty store. */
+/** Load all scenes; ENOENT yields an empty store, every other failure throws #1051. */
 export async function loadScenes(env: NodeJS.ProcessEnv = process.env): Promise<SceneStore> {
-  try {
-    const raw = await readFile(scenesFilePath(env), 'utf8');
-    const parsed = JSON.parse(raw) as SceneStore;
-    return parsed && typeof parsed === 'object' ? parsed : {};
-  } catch {
-    return {};
-  }
+  return loadSidecar<SceneStore>(
+    scenesFilePath(env),
+    () => ({}),
+    (parsed) => {
+      // A scene entry whose device_hint is not a string would survive a write
+      // only to break resolveDeviceHint on apply. Treat the file as whole-file
+      // corrupt rather than silently dropping entries.
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        throw new Error('top level is not a JSON object');
+      }
+      for (const [name, value] of Object.entries(parsed as Record<string, unknown>)) {
+        if (value && typeof value === 'object' && !Array.isArray(value)) continue;
+        throw new Error(`scene "${name}" is not a JSON object`);
+      }
+      return parsed as SceneStore;
+    },
+  );
 }
 
 /** Persist the store atomically-enough: owner-only dir and file modes. */

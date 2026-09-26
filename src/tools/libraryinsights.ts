@@ -8,11 +8,12 @@ import {
   fsyncSync,
   mkdirSync,
   openSync,
-  readFileSync,
   renameSync,
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
+// `readFileSync` used to live here; loadGenreTags now delegates to loadSidecarSync
+// in src/sidecar.ts (#1051).
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
 import type { SavedTrackItem, SavedAlbumItem } from '../types/spotify.js';
@@ -28,6 +29,7 @@ import {
   listStructuredContent,
   type ResponseFormatValue,
 } from '../shaping.js';
+import { loadSidecarSync, SidecarUnreadableError } from '../sidecar.js';
 
 // ---------------------------------------------------------------------------
 // Library genre auto-tags + smart filters (issue #112 idea 1)
@@ -82,54 +84,6 @@ export function genreTagsPath(env: NodeJS.ProcessEnv = process.env): string {
 
 
 /**
- * Preserve the exact bytes of a sidecar we could not parse.
- *
- * The issue's acceptance criterion asks that a later write keep a `.corrupt`
- * copy. Rather than letting the write proceed and reset the store, the corrupt
- * bytes are copied aside at DETECTION time and the read still throws: the
- * payload is preserved and no write is ever authorised to destroy it.
- *
- * The copy NEVER overwrites an existing one. This is exactly the workflow the
- * error message prescribes — the user is pointed at the copy to repair from —
- * so a second, different corrupt state must not clobber the first one's
- * evidence. Later copies take the first free `.corrupt.N` slot and are opened
- * O_EXCL, so even a lost race between the probe and the write cannot truncate
- * a copy that is already there.
- *
- * Best-effort: a read-only or full directory must not mask the corruption
- * report itself, and the original still names the file to repair either way.
- */
-function quarantineCorruptSidecar(path: string): string | undefined {
-  let backup = `${path}.corrupt`;
-  try {
-    for (let n = 1; existsSync(backup); n += 1) backup = `${path}.corrupt.${n}`;
-    writeFileSync(backup, readFileSync(path), { mode: 0o600, flag: 'wx' });
-    chmodSync(backup, 0o600);
-    return backup;
-  } catch {
-    return undefined; // the original still names the file the user must repair
-  }
-}
-
-/** Tail of a corruption report: where the preserved copy is, and that we stopped. */
-function quarantineNote(backup: string | undefined): string {
-  if (backup === undefined) {
-    return 'It was left untouched — repair or move it aside, then retry; tagging stays blocked so '
-      + 'your existing tags cannot be overwritten.';
-  }
-  // Say so when this is not the first copy: the user is told to repair from a
-  // preserved file, and the failure they would hit next is an earlier crash
-  // state being overwritten by this one.
-  const earlier = backup.endsWith('.corrupt')
-    ? ''
-    : ` An earlier detection's copy is still at ${backup.replace(/\.corrupt\.\d+$/, '.corrupt')}, `
-      + 'kept intact so the original post-crash state was not overwritten.';
-  return `Its exact bytes were preserved at ${backup} and it was left untouched — repair or move `
-    + `it aside, then retry; tagging stays blocked so your tags cannot be overwritten.${earlier}`;
-}
-
-
-/**
  * Read the sidecar.
  *
  * Only a genuinely ABSENT file reads as an empty store. A file that exists but
@@ -143,70 +97,50 @@ function quarantineNote(backup: string | undefined): string {
  * That refusal is per-ARTIST as well as per-file. A value that is not an array
  * of genre strings, or one that would lose the artist to filtering, is corrupt
  * in exactly the same way a broken top level is, and is reported the same way.
+ *
+ * The preservation + parse shell moved into src/sidecar.ts — the same module
+ * playbackext, exhaust2_playback, exhaust2_misc, and scenes already share
+ * (#1051), so the per-sidecar policy cannot drift apart again.
  */
 export function loadGenreTags(path: string = genreTagsPath()): GenreTagStore {
-  let text: string;
   try {
-    text = readFileSync(path, 'utf8');
-  } catch (err) {
-    // A store that was never written is the normal bootstrap case.
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return { version: 1, tags: {} };
-    throw new Error(
-      `Genre tag sidecar ${path} could not be read (${(err as Error).message}). `
-      + quarantineNote(quarantineCorruptSidecar(path)),
-      { cause: err },
+    return loadSidecarSync<GenreTagStore>(
+      path,
+      () => ({ version: 1, tags: {} }),
+      validateGenreTagStore,
     );
-  }
-
-  let raw: unknown;
-  try {
-    raw = JSON.parse(text);
   } catch (err) {
-    // Includes the zero-length file a crash mid-write leaves behind.
-    throw new Error(
-      `Genre tag sidecar ${path} is not valid JSON (${(err as Error).message}). `
-      + quarantineNote(quarantineCorruptSidecar(path)),
-      { cause: err },
-    );
+    if (err instanceof SidecarUnreadableError) {
+      throw new Error(err.message, { cause: err });
+    }
+    throw err;
   }
+}
 
-  const tagsRaw = raw && typeof raw === 'object' && !Array.isArray(raw)
-    ? (raw as { tags?: unknown }).tags
+function validateGenreTagStore(parsed: unknown): GenreTagStore {
+  const tagsRaw = parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+    ? (parsed as { tags?: unknown }).tags
     : undefined;
   if (!tagsRaw || typeof tagsRaw !== 'object' || Array.isArray(tagsRaw)) {
     throw new Error(
-      `Genre tag sidecar ${path} is not a genre tag store: expected `
-      + '{"version":1,"tags":{"Artist":["genre"]}}. '
-      + quarantineNote(quarantineCorruptSidecar(path)),
+      'is not a genre tag store: expected {"version":1,"tags":{"Artist":["genre"]}}',
     );
   }
 
   const tags: Record<string, string[]> = {};
   for (const [artist, genres] of Object.entries(tagsRaw as Record<string, unknown>)) {
-    // A malformed entry is corruption, not noise. Dropping it would resolve to a
-    // smaller plausible set and the next write would persist that loss away and
-    // report success — the same class of coercion this whole path exists to end.
     if (!Array.isArray(genres) || genres.some((g) => typeof g !== 'string')) {
       throw new Error(
-        `Genre tag sidecar ${path} has a malformed entry for "${artist}": expected an array of `
-        + `genre strings, got ${JSON.stringify(genres) ?? String(genres)}. `
-        + quarantineNote(quarantineCorruptSidecar(path)),
+        `has a malformed entry for "${artist}": expected an array of genre strings, `
+        + `got ${JSON.stringify(genres) ?? String(genres)}`,
       );
     }
-    // An EMPTY list is corruption too, not a legitimate empty set: retracting an
-    // artist's last tag deletes the entry outright (tag_management remove), so
-    // the writer can never produce `{"Artist": []}`. Reading one as "no tags"
-    // would drop the artist from this read and erase the key on the next write,
-    // reported as a success — the same loss, one step quieter.
     if (genres.length === 0) {
       throw new Error(
-        `Genre tag sidecar ${path} has an empty tag list for "${artist}": retracting every tag `
-        + 'removes the entry, so an empty list is not a state this store can hold. '
-        + quarantineNote(quarantineCorruptSidecar(path)),
+        `has an empty tag list for "${artist}": retracting every tag removes the entry, `
+        + 'so an empty list is not a state this store can hold',
       );
     }
-    // Duplicate strings still collapse: the store is a set of tags, so a repeat
-    // loses no tag and is not the corruption the two cases above are.
     tags[artist] = [...new Set(genres as string[])];
   }
   return { version: 1, tags };

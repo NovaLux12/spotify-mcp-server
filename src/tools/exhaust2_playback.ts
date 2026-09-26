@@ -18,7 +18,7 @@
  */
 import { z } from 'zod';
 import { capFor } from '../chunk.js';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -43,6 +43,7 @@ import {
 } from '../shaping.js';
 import type { ResponseFormatValue } from '../shaping.js';
 import { detectSessions, loadPlaybackExt } from './playbackext.js';
+import { loadSidecar } from '../sidecar.js';
 
 // ---------------------------------------------------------------------------
 // shared helpers (house style)
@@ -204,17 +205,26 @@ interface Exhaust2Store {
 }
 
 export async function loadExhaust2Store(env: NodeJS.ProcessEnv = process.env): Promise<Exhaust2Store> {
-  try {
-    const raw = await readFile(exhaust2PlaybackFile(env), 'utf8');
-    const p = JSON.parse(raw) as Partial<Exhaust2Store>;
-    return {
-      muteMemory: p.muteMemory ?? {},
-      episodeBookmarks: p.episodeBookmarks ?? {},
-      checkpoints: p.checkpoints ?? {},
-    };
-  } catch {
-    return { muteMemory: {}, episodeBookmarks: {}, checkpoints: {} };
-  }
+  return loadSidecar<Exhaust2Store>(
+    exhaust2PlaybackFile(env),
+    () => ({ muteMemory: {}, episodeBookmarks: {}, checkpoints: {} }),
+    (parsed) => {
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        throw new Error('top level is not a JSON object');
+      }
+      const p = parsed as Record<string, unknown>;
+      for (const key of ['muteMemory', 'episodeBookmarks', 'checkpoints'] as const) {
+        if (p[key] !== undefined && (typeof p[key] !== 'object' || p[key] === null || Array.isArray(p[key]))) {
+          throw new Error(`"${key}" is not a JSON object`);
+        }
+      }
+      return {
+        muteMemory: (p.muteMemory ?? {}) as Record<string, MuteMemory>,
+        episodeBookmarks: (p.episodeBookmarks ?? {}) as Record<string, EpisodeBookmark>,
+        checkpoints: (p.checkpoints ?? {}) as Record<string, Exhaust2Checkpoint>,
+      };
+    },
+  );
 }
 
 export async function saveExhaust2Store(store: Exhaust2Store, env: NodeJS.ProcessEnv = process.env): Promise<void> {
