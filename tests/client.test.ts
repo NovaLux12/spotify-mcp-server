@@ -454,6 +454,92 @@ describe('SpotifyClient', () => {
       assert.equal(apiCount, 1);
     });
 
+    it('parses Retry-After and attaches retryAfterSec on a 429 that lands after a 401-refresh retry (issue #671)', async (t) => {
+      await seedTokens();
+      let apiCount = 0;
+      responder = (url) => {
+        if (isAccountsUrl(url)) {
+          return jsonResponse({ access_token: 'tok-refreshed', expires_in: 3600 });
+        }
+        apiCount++;
+        if (apiCount === 1) {
+          // First API call: expired token, forces a 401-refresh retry.
+          return jsonResponse({ error: { message: 'The access token expired' } }, 401);
+        }
+        if (apiCount === 2) {
+          // Second API call (after refresh): Spotify answers 429 with
+          // Retry-After=5. The bug is that this used to fall through to the
+          // generic non-ok throw and silently drop Retry-After.
+          return new Response('', { status: 429, headers: { 'Retry-After': '5' } });
+        }
+        // If anything ever reaches this third call, the 429 branch has been
+        // reactivated as a retry loop — fail loudly so the regression is
+        // obvious instead of a quiet infinite wait.
+        throw new Error(`unexpected third API call (apiCount=${apiCount})`);
+      };
+
+      t.mock.timers.enable({ apis: ['setTimeout'] });
+      const timer = spyOnSetTimeout();
+      t.after(() => timer.restore());
+
+      const client = new SpotifyClient();
+      await assert.rejects(client.get('/me'), (err: unknown) => {
+        const e = err as SpotifyApiError;
+        return (
+          e instanceof SpotifyApiError &&
+          e.status === 429 &&
+          e.retryAfterSec === 5 &&
+          /Rate limited/i.test(e.message) &&
+          /Retry-After 5s/.test(e.message)
+        );
+      });
+      // Refresh happened exactly once; we did not loop.
+      assert.equal(
+        calls.filter((c) => isAccountsUrl(c.url)).length,
+        1,
+        'exactly one refresh',
+      );
+      // First 401 + second 429 — no third API call (200 is never reached).
+      assert.equal(apiCount, 2, 'no infinite 429 retry after the 401-refresh');
+      // The 429 on a retried attempt must not schedule an in-queue sleep; we
+      // have already used our one retry budget and must throw instead.
+      assert.equal(timer.delays.length, 0, 'no in-queue sleep on a retried 429');
+    });
+
+    it('still fires cooldown accounting when a 429 lands on a retried attempt (issue #671)', async (t) => {
+      await seedTokens();
+      let apiCount = 0;
+      responder = (url) => {
+        if (isAccountsUrl(url)) {
+          return jsonResponse({ access_token: 'tok-refreshed', expires_in: 3600 });
+        }
+        apiCount++;
+        if (apiCount === 1) {
+          return jsonResponse({ error: { message: 'expired' } }, 401);
+        }
+        return new Response('', { status: 429, headers: { 'Retry-After': '7' } });
+      };
+
+      const client = new SpotifyClient();
+      await assert.rejects(client.get('/me'), (err: unknown) => {
+        assert.ok(err instanceof SpotifyApiError);
+        assert.equal(err.status, 429);
+        return true;
+      });
+      // The cooldown window is observable through the rate-limit resource
+      // (#904). It must reflect the 429 we just observed, even though it
+      // arrived on a retried attempt — otherwise the queue would happily
+      // dispatch the next request straight back into another 429. Note that
+      // `_lastThrottle` is reserved for the first-429 sleep+retry path (the
+      // "we actually waited" notice consumed by takeThrottleNotice), so it
+      // stays null on a retried 429 by design.
+      const status = client.getRateLimitStatus();
+      assert.ok(
+        status.cooldownRemainingMs > 0,
+        `cooldown must be set after a retried 429, got ${status.cooldownRemainingMs}ms`,
+      );
+    });
+
   });
 
   // -------------------------------------------------------------------------
