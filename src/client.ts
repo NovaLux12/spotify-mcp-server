@@ -381,6 +381,306 @@ export interface GetOptions {
   onNotModified?: () => void;
 }
 
+// ---------------------------------------------------------------------------
+// Token-endpoint failure classification (#677)
+// ---------------------------------------------------------------------------
+
+const TOKEN_URL = 'https://accounts.spotify.com/api/token';
+
+/**
+ * What a token-endpoint failure actually was, as far as the response (or the
+ * thrown error) says. Every value is evidence, never a guess at the nearest
+ * plausible cause:
+ *
+ *   invalid_client     — the JSON body carried `error: "invalid_client"`, so
+ *                        Spotify refused the configured app id.
+ *   invalid_grant      — the JSON body carried `error: "invalid_grant"`, so the
+ *                        stored refresh token is dead (#109).
+ *   request_rejected   — the body carried a named `error` code that is neither
+ *                        of the two with a known fix. The code is reported
+ *                        verbatim instead of being folded into one of them.
+ *   rate_limited       — HTTP 429, with `Retry-After` when the header was sent.
+ *   server_error       — HTTP 5xx, i.e. a fault on Spotify's side.
+ *   network_unreachable — no HTTP response arrived at all, so it is classified
+ *                        from the thrown error's own shape (DNS, refused,
+ *                        reset, our own abort) and never from a body.
+ *   unclassified       — a failure with no evidence that names a cause. Said
+ *                        to be unknown on purpose: an unclassified error is a
+ *                        true statement, and a misclassified one sends the
+ *                        operator after a cause the response never mentioned.
+ */
+type TokenFailureCategory =
+  | 'invalid_client'
+  | 'invalid_grant'
+  | 'request_rejected'
+  | 'rate_limited'
+  | 'server_error'
+  | 'network_unreachable'
+  | 'unclassified';
+
+/**
+ * Reason code per category. These ride the thrown `SpotifyApiError` as its
+ * `reason`, so the tool error boundary keeps the class instead of re-deriving
+ * it from a status that several very different failures share.
+ */
+const TOKEN_FAILURE_REASONS: Record<TokenFailureCategory, string> = {
+  invalid_client: 'TOKEN_INVALID_CLIENT',
+  invalid_grant: 'TOKEN_INVALID_GRANT',
+  request_rejected: 'TOKEN_REQUEST_REJECTED',
+  rate_limited: 'TOKEN_RATE_LIMITED',
+  server_error: 'TOKEN_SERVER_ERROR',
+  network_unreachable: 'TOKEN_NETWORK_UNREACHABLE',
+  unclassified: 'TOKEN_UNCLASSIFIED',
+};
+
+/**
+ * A 2xx whose body will not parse is its own case rather than a member of
+ * `unclassified`: Spotify did answer, it answered with something unreadable,
+ * and that is a different thing to tell an operator than "no evidence".
+ */
+const TOKEN_UNREADABLE_RESPONSE = 'TOKEN_UNREADABLE_RESPONSE';
+
+const TOKEN_FAILURE_REASON_SET: ReadonlySet<string> = new Set([
+  ...Object.values(TOKEN_FAILURE_REASONS),
+  TOKEN_UNREADABLE_RESPONSE,
+]);
+
+/** True when a `SpotifyApiError.reason` was minted by this classifier (#677). */
+export function isTokenFailureReason(reason: unknown): reason is string {
+  return typeof reason === 'string' && TOKEN_FAILURE_REASON_SET.has(reason);
+}
+
+interface TokenFailure {
+  category: TokenFailureCategory;
+  reason: string;
+  /**
+   * Status to surface, chosen for what it means to the *caller's* request
+   * rather than what the token endpoint said: a refresh failure is never a bad
+   * tool argument (#1007), so nothing here is a 4xx validation status.
+   */
+  status: number;
+  /** Evidence-based, and naming the token file a multi-profile install needs. */
+  message: string;
+  retryAfterSec?: number;
+  /**
+   * True when a still-valid access token makes it honest to continue instead
+   * of failing the call. Only failures that are themselves transient get it —
+   * riding out a refused client id would hide the misconfiguration until it
+   * became unauthenticated.
+   */
+  rideOut: boolean;
+  /**
+   * True when a bounded retry of the refresh itself is worth the backoff.
+   * Deliberately excludes a 429 (the wait belongs in the thrown error, not in
+   * a serialized queue) and our own abort (already a full timeout wait, so
+   * three attempts would hold the queue for three timeouts).
+   */
+  retry: boolean;
+}
+
+/** Append the token file to a failure message: a multi-profile install cannot
+ *  otherwise tell which of several token files is the broken one (#677). */
+function withTokenFile(message: string): string {
+  return `${message} (token file: ${TOKEN_FILE})`;
+}
+
+/**
+ * The token endpoint's machine-readable grant code, read from the body shape
+ * RFC 6749 §5.2 actually uses: `{"error":"invalid_grant"}` — a *string*.
+ * The Web API's own `{"error":{"message":…}}` object is deliberately not
+ * accepted, because `error.message` is prose about an API call and reading it
+ * as a grant code would invent a classification.
+ */
+function readGrantError(body: unknown): string | undefined {
+  if (body === null || typeof body !== 'object') return undefined;
+  const { error } = body as { error?: unknown };
+  if (typeof error !== 'string') return undefined;
+  const trimmed = error.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+/** One line, bounded: a cause string reaches both a tool message and a log. */
+function oneLine(value: string, max = 160): string {
+  const flat = value.replace(/[\u0000-\u001f\u007f]+/g, ' ').trim();
+  return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
+}
+
+/**
+ * Classify a non-ok token response from the two things it actually carries:
+ * the status, and the body's `error` code. Never both from one and neither
+ * from the other.
+ */
+function classifyTokenResponse(
+  status: number,
+  retryAfterHeader: string | null,
+  body: unknown,
+  bodyReadable: boolean,
+): TokenFailure {
+  const reason = (category: TokenFailureCategory): string => TOKEN_FAILURE_REASONS[category];
+
+  if (status === 429) {
+    const retryAfterSec = parseRetryAfter(retryAfterHeader);
+    return {
+      category: 'rate_limited',
+      reason: reason('rate_limited'),
+      // 429 so the wait survives the boundary rather than being flattened into
+      // a generic outage, which is what made an agent retry immediately and
+      // prolong the limit it was already inside (#503).
+      status: 429,
+      retryAfterSec,
+      rideOut: false,
+      retry: false,
+      message: withTokenFile(
+        `Token refresh was rate limited by the token endpoint (HTTP 429) — retry in ${retryAfterSec}s ` +
+          // The header is echoed as sent, one-lined and bounded: a value this
+          // server did not verify is still quoted, but it cannot inject a line
+          // break into a message that reaches a log and an agent.
+          `(Retry-After: ${retryAfterHeader === null ? `absent, so the ${RETRY_AFTER_FALLBACK_SEC}s floor applies` : oneLine(retryAfterHeader, 40)})`,
+      ),
+    };
+  }
+
+  if (status >= 500) {
+    return {
+      category: 'server_error',
+      reason: reason('server_error'),
+      // 503 because it *is* an availability failure — and it is the only
+      // token failure entitled to that wording, since it is the only one whose
+      // status is a genuine 5xx.
+      status: 503,
+      rideOut: true,
+      retry: true,
+      message: withTokenFile(
+        `Spotify's token endpoint returned HTTP ${status}` +
+          `${retryAfterHeader ? ` with Retry-After: ${oneLine(retryAfterHeader, 40)}` : ''} ` +
+          '— a server-side failure at Spotify, not a local configuration fault',
+      ),
+    };
+  }
+
+  const grantError = readGrantError(body);
+
+  if (grantError === 'invalid_grant') {
+    return {
+      category: 'invalid_grant',
+      reason: reason('invalid_grant'),
+      // 401, not the token endpoint's own 400: the request this refresh was
+      // serving carried no bad arguments, and publicFailure maps 400 to
+      // "invalid arguments; pass values that match the tool schema" (#1007).
+      status: 401,
+      rideOut: false,
+      retry: false,
+      message: withTokenFile('Token refresh failed — re-run "spotify-mcp auth" (refresh token rejected: invalid_grant)'),
+    };
+  }
+
+  if (grantError === 'invalid_client') {
+    return {
+      category: 'invalid_client',
+      reason: reason('invalid_client'),
+      status: 401,
+      rideOut: false,
+      retry: false,
+      // The most common non-recoverable refresh failure on a self-hosted
+      // install: a recreated dashboard app, or a rotated id. Reported as a
+      // retryable outage it sent the agent into a retry loop instead of
+      // telling the operator which setting is wrong (#677).
+      message: withTokenFile(
+        'Token refresh rejected — SPOTIFY_CLIENT_ID was refused by Spotify (invalid_client); '
+          + 'set it to the Client ID of your app in the Spotify Developer Dashboard and re-run '
+          + '"spotify-mcp auth" (PKCE uses no client secret)',
+      ),
+    };
+  }
+
+  if (grantError !== undefined) {
+    // Named, but not one this server has a fix for. The code is reported
+    // verbatim rather than mapped onto the closest category it resembles:
+    // guessing here is what produced the outage-shaped message this replaces.
+    return {
+      category: 'request_rejected',
+      reason: reason('request_rejected'),
+      status: 401,
+      rideOut: false,
+      retry: false,
+      message: withTokenFile(
+        `Token refresh rejected by the token endpoint with error "${oneLine(grantError, 60)}" — this server has `
+          + 'no fix for that code and asserts no cause; read the code above',
+      ),
+    };
+  }
+
+  const bodyDesc = !bodyReadable
+    ? 'a body that is not JSON'
+    : 'a JSON body with no string "error" field';
+  return {
+    category: 'unclassified',
+    reason: reason('unclassified'),
+    // 401 rather than the endpoint's own 4xx: the honest statement is that
+    // this call could not authenticate, and mapping an unreadable 4xx onto
+    // `unavailable` would be the outage claim this issue exists to remove.
+    status: 401,
+    rideOut: false,
+    retry: false,
+    message: withTokenFile(
+      `Token refresh failed with HTTP ${status} and ${bodyDesc} — the cause could not be classified `
+        + 'from the response',
+    ),
+  };
+}
+
+/**
+ * The first `code` reachable from a thrown transport error, walking `cause`
+ * (undici nests the real syscall failure under `Error: fetch failed`) and
+ * `errors` (an AggregateError over parallel A/AAAA lookups). Falls back to the
+ * error's own message, and to a literal "no cause reported" rather than to a
+ * plausible-sounding cause the error never gave.
+ */
+function networkCauseLabel(err: unknown): string {
+  const seen = new Set<unknown>();
+  const queue: unknown[] = [err];
+  while (queue.length > 0 && seen.size < 8) {
+    const current = queue.shift();
+    if (current === null || current === undefined || seen.has(current)) continue;
+    seen.add(current);
+    if (typeof current !== 'object') break;
+    const bag = current as { code?: unknown; cause?: unknown; errors?: unknown };
+    if (typeof bag.code === 'string' && bag.code.length > 0) return oneLine(bag.code, 60);
+    if (bag.cause !== undefined) queue.push(bag.cause);
+    if (Array.isArray(bag.errors)) queue.push(...bag.errors.slice(0, 4));
+  }
+  const message = err instanceof Error ? err.message : String(err);
+  return message.length > 0 ? oneLine(message, 120) : 'no cause reported';
+}
+
+/**
+ * Classify a refresh that never received an HTTP response. There is no body to
+ * read here, so the class comes from the shape of the thrown error alone and
+ * is deliberately kept separate from every response-borne class above.
+ */
+function classifyTokenTransportFailure(err: unknown): TokenFailure {
+  // fetchWithTimeout owns the abort signal, so an abort arriving from it can
+  // only be the timeout it armed — that is a fact about the call, not a guess.
+  const isOurTimeout = err instanceof SpotifyApiError && err.status === 408;
+  const timeoutSec = Math.round(getConfig().spotifyRequestTimeoutMs / 1000);
+  return {
+    category: 'network_unreachable',
+    reason: TOKEN_FAILURE_REASONS.network_unreachable,
+    // 408 for our own abort (the boundary already reads that as a timeout);
+    // 503 for a transport failure, matching transportFailure above.
+    status: isOurTimeout ? 408 : 503,
+    rideOut: true,
+    retry: !isOurTimeout,
+    message: withTokenFile(
+      isOurTimeout
+        ? `Token refresh timed out after ${timeoutSec}s without an answer from accounts.spotify.com — ` +
+          'no HTTP response was received (raise SPOTIFY_REQUEST_TIMEOUT_MS if this is a slow link)'
+        : `Token refresh could not reach accounts.spotify.com — no HTTP response was received ` +
+          `(${networkCauseLabel(err)}); this is a local network, DNS or TLS failure, not a Spotify outage`,
+    ),
+  };
+}
+
 export class SpotifyClient {
   private tokens: TokenData | null = null;
   private loadPromise: Promise<TokenData> | null = null;
@@ -633,69 +933,91 @@ export class SpotifyClient {
       client_id: clientId,
     });
 
+    // Transient refresh failures get the same bounded attempt budget as the API
+    // path (#677). The loop cannot run away: MAX_ATTEMPTS dispatches, and each
+    // re-send is a form-encoded POST that grants no access, so a retry here
+    // cannot double-apply anything.
+    for (let attempt = 0; ; attempt++) {
+      const failure = await this.refreshOnce(body.toString(), tokens);
+      if (failure === null) return;
+
+      // A still-valid access token rides out a transient refresh failure and
+      // the request proceeds (#109). A refused client id is not transient, so
+      // it is surfaced even though the old token would have worked.
+      if (failure.rideOut && Date.now() < tokens.expires_at) return;
+
+      if (failure.retry && attempt + 1 < MAX_ATTEMPTS) {
+        await sleep(this.backoffDelayMs(attempt));
+        continue;
+      }
+
+      throw new SpotifyApiError(
+        failure.status,
+        failure.message,
+        failure.retryAfterSec,
+        failure.reason,
+      );
+    }
+  }
+
+  /**
+   * One refresh round-trip against the token endpoint. Returns the classified
+   * failure, or `null` when the refresh succeeded and the new tokens are
+   * already stored.
+   *
+   * Split out of doRefreshTokens so that each of the three outcomes — no
+   * response at all, a non-ok response, a 2xx — has exactly one return path
+   * and therefore exactly one classification, with no state carried between
+   * attempts.
+   */
+  private async refreshOnce(formBody: string, tokens: TokenData): Promise<TokenFailure | null> {
     let res: Response;
     try {
-      res = await fetchWithTimeout('https://accounts.spotify.com/api/token', {
+      res = await fetchWithTimeout(TOKEN_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: body.toString(),
+        body: formBody,
       });
-    } catch {
-      // Network failure or our own timeout. If the old access token is still
-      // usable, keep it and let the current request proceed (#109); otherwise
-      // there is nothing left to authenticate with.
-      if (Date.now() < tokens.expires_at) return;
-      throw new SpotifyApiError(503, 'Spotify token service temporarily unavailable');
+    } catch (err) {
+      // No response arrived, so there is no status and no body to classify
+      // from — the thrown error's own shape is the only evidence there is,
+      // and it is never merged with the response-borne classes (#677).
+      return classifyTokenTransportFailure(err);
     }
 
     if (!res.ok) {
-      // Classify the failure before deciding what to surface (#109).
-      let grantError: string | undefined;
+      // Classify from what the response actually said (#109/#677), including
+      // whether its body was readable at all — "we could not read it" and
+      // "we read it and it named no cause" are different facts.
+      let errorBody: unknown;
+      let bodyReadable = true;
       try {
-        const errBody = (await res.json()) as { error?: unknown };
-        if (typeof errBody?.error === 'string') grantError = errBody.error;
+        errorBody = await res.json();
       } catch {
-        // Non-JSON error body — treated as an unclassified failure below.
+        bodyReadable = false;
       }
-
-      if (grantError === 'invalid_grant') {
-        // Refresh token revoked/expired — only re-auth fixes this. Thrown as
-        // 401, not the token endpoint's own 400: the request this refresh was
-        // serving carried no bad arguments, and publicFailure maps 400 to
-        // "invalid arguments; pass values that match the tool schema" (#1007).
-        throw new SpotifyApiError(401, 'Token refresh failed — re-run "spotify-mcp auth"');
-      }
-
-      // Transient outage (5xx) with a still-valid access token: ride it out.
-      if (res.status >= 500 && Date.now() < tokens.expires_at) return;
-
-      // Any other token-service failure. 503 rather than the endpoint's own
-      // status, for the same reason as above: the failing request is a call to
-      // accounts.spotify.com, not to the tool's endpoint, so its status says
-      // nothing about the caller's arguments (#1007). The upstream status is
-      // kept in the message so the cause is still visible in diagnostics.
-      throw new SpotifyApiError(
-        503,
-        `Spotify token service temporarily unavailable (token endpoint returned ${res.status})`,
-      );
-
+      return classifyTokenResponse(res.status, res.headers.get('Retry-After'), errorBody, bodyReadable);
     }
 
-    // A 2xx from the token endpoint whose body will not parse. Handled exactly
-    // like the network-failure branch above — nothing was refreshed, so ride
-    // the outage out on a still-valid access token, and fail as a 503 when
-    // there is none left to authenticate with. Left unguarded this raised a
-    // raw SyntaxError, the one error a client method could throw that is not a
-    // SpotifyApiError (#674).
+    // A 2xx whose body will not parse. Rides out a transient failure exactly
+    // like a transport error — nothing was refreshed — but is its own class:
+    // Spotify did answer, it answered with something unreadable. Left
+    // unguarded this raised a raw SyntaxError, the one error a client method
+    // could throw that is not a SpotifyApiError (#674).
     let data: { access_token: string; expires_in: number; refresh_token?: string };
     try {
       data = (await res.json()) as typeof data;
     } catch {
-      if (Date.now() < tokens.expires_at) return;
-      throw new SpotifyApiError(
-        503,
-        'Spotify token service returned an unreadable response — no valid access token to continue with',
-      );
+      return {
+        category: 'unclassified',
+        reason: TOKEN_UNREADABLE_RESPONSE,
+        status: 503,
+        rideOut: true,
+        retry: false,
+        message: withTokenFile(
+          'Spotify token service returned an unreadable response — no valid access token to continue with',
+        ),
+      };
     }
 
     // Guard against a malformed expires_in (#109): NaN/undefined would poison
@@ -710,6 +1032,7 @@ export class SpotifyClient {
     };
 
     await saveTokens(this.tokens);
+    return null;
   }
 
   /**
@@ -1064,6 +1387,18 @@ export class SpotifyClient {
       try {
         await this.doRefreshTokens();
       } catch (err) {
+        // A classified token failure (#677) keeps its own status, wait and
+        // reason: a 429 from accounts.spotify.com must stay a 429 carrying its
+        // Retry-After, and a refused client id must stay an auth failure. Only
+        // the context of *why* a refresh was attempted is added.
+        if (err instanceof SpotifyApiError && isTokenFailureReason(err.reason)) {
+          throw new SpotifyApiError(
+            err.status,
+            `Spotify rejected the access token and refreshing it failed: ${err.message}`,
+            err.retryAfterSec,
+            err.reason,
+          );
+        }
         // The refresh failure must not replace the 401 that describes what is
         // actually wrong. A 400 from accounts.spotify.com used to be thrown
         // in place of this 401 and classified as a validation error, telling

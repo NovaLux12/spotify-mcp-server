@@ -60,6 +60,22 @@ The variables below are read at the documented call sites; set them in your MCP 
 
 `SPOTIFY_MCP_TOKEN_FILE` and `SPOTIFY_MCP_PROFILE` select the persistent token file. Explicit `SPOTIFY_MCP_TOKEN_FILE` wins; otherwise a profile uses `~/.spotify-mcp/tokens.<profile>.json`; the unprofiled default is `~/.spotify-mcp/tokens.json`. Token files are created with mode 600. The `auth` command's `--profile` flag must name a profile: `--profile=`, `--profile "$UNSET_VAR"`, and a dangling trailing `--profile` are errors, because the silent alternative was to write into the shared default file while the operator believed a named profile existed.
 
+#### Reading a token-refresh failure
+
+A refresh that fails is classified by what the response actually said, so the message names the cause instead of reporting every failure as a Spotify outage. The categories you will see, and what each one means for you:
+
+| What you see | What happened | What to do |
+|---|---|---|
+| `SPOTIFY_CLIENT_ID` was refused (`invalid_client`) | The app id does not match the one your grant was issued to — a recreated dashboard app, or a rotated id | Set `SPOTIFY_CLIENT_ID` to the Client ID in the Developer Dashboard, then re-run `spotify-mcp auth`. Retrying will not help |
+| `re-run "spotify-mcp auth"` (`invalid_grant`) | The stored refresh token was revoked or expired | Re-run `spotify-mcp auth` |
+| `rate limited … retry in Ns` | `accounts.spotify.com` is limiting refreshes, usually several sessions sharing one developer account | Wait the stated number of seconds. Refreshing sooner extends the limit |
+| `HTTP 5xx`, "a server-side failure at Spotify" | Spotify's token endpoint failed | Retry shortly. Nothing local to change |
+| `no HTTP response was received`, with a DNS/TLS/connection cause | The request never reached Spotify — local connectivity, not an outage | Check the connection, then retry |
+| `timed out after Ns` | The refresh exceeded `SPOTIFY_REQUEST_TIMEOUT_MS` | Retry, or raise `SPOTIFY_REQUEST_TIMEOUT_MS` on a slow link |
+| `the cause could not be classified` | The response carried no machine-readable error, so the cause is genuinely unknown | Read the status, body-parse result and token file path in the server log, then verify `SPOTIFY_CLIENT_ID` |
+
+A named code this server has no fix for is quoted verbatim rather than being folded into one of the categories above, and a failure it cannot classify is reported as unclassified rather than guessed at. Every one of these messages names the resolved token file, so with several profiles installed you can tell which token file is the broken one. A transient failure (5xx, unreachable network) is ridden out silently when your current access token is still valid and the call proceeds normally.
+
 ### Local files: reads and writes are confined
 
 Every tool that writes a local file resolves its destination against a configured root — `SPOTIFY_MCP_EXPORT_DIR` for `export_playlist` and `export_profile_state`, `SPOTIFY_MCP_PORTABILITY_DIR` for the five `export_*` family tools. A relative `output_path` or `output_dir` resolves **inside** that root rather than against the process working directory; an absolute path outside it, a `..` escape, or a symlink leaving it is refused with the resolved path and the root in the message. `export_playlist` also refuses to replace an existing file unless you pass `overwrite: true`.

@@ -1416,6 +1416,44 @@ The finalized default registry exposes **14 prompts**: `artist_deep_dive`, `crat
 ### No active device
 When playback commands fail because no device is active (204 with no `device_id` found): return a helpful message listing available devices and asking the user to open Spotify on a device first.
 
+### Token-endpoint failures (`https://accounts.spotify.com/api/token`)
+
+A refresh can fail for genuinely different reasons, and they are classified by
+**what the response actually said** — never by the nearest plausible-looking
+cause. Each class carries a `reason` code, because several of them share a
+status and the status alone cannot tell them apart.
+
+| Evidence | Class | `reason` | Surfaced as | Retried? |
+|---|---|---|---|---|
+| Body `{"error":"invalid_client"}` | Spotify refused the configured app id | `TOKEN_INVALID_CLIENT` | 401, fix naming `SPOTIFY_CLIENT_ID` and the Developer Dashboard | No — a config fault no retry can fix |
+| Body `{"error":"invalid_grant"}` | Stored refresh token is dead | `TOKEN_INVALID_GRANT` | 401, "run `spotify-mcp auth`" | No |
+| Body `{"error":"<other code>"}` | A named code with no known fix — reported verbatim, cause not asserted | `TOKEN_REQUEST_REJECTED` | 401, code quoted in the message and the log | No |
+| HTTP 429 | Token endpoint is rate limiting | `TOKEN_RATE_LIMITED` | 429 with `retryAfterSec` from `Retry-After` (falls back to 1 s, and the message says so when the header was absent) | No — the wait belongs in the error, and re-sending sooner extends the limit |
+| HTTP 5xx | Fault on Spotify's side | `TOKEN_SERVER_ERROR` | 503 — the only token failure entitled to availability wording | Yes, on the shared `MAX_ATTEMPTS` budget |
+| No HTTP response at all (DNS, refused, reset) | Local network failure, classified from the thrown error's own shape (`code` off the `cause`/`errors` chain) | `TOKEN_NETWORK_UNREACHABLE` | 503, cause quoted, explicitly "not a Spotify outage" | Yes, on the shared budget |
+| Our own abort | The refresh exceeded `SPOTIFY_REQUEST_TIMEOUT_MS` | `TOKEN_NETWORK_UNREACHABLE` (status 408) | 408, fix naming the env var | No — already a full timeout wait |
+| 2xx whose body will not parse | Spotify answered with something unreadable | `TOKEN_UNREADABLE_RESPONSE` | 503 | No |
+| 4xx with no readable `error` string | **Cause unknown** | `TOKEN_UNCLASSIFIED` | 401, stating that it could not be classified and whether the body parsed | No |
+
+Rules that hold for every row:
+
+- **An unclassifiable failure is reported as unclassified.** It is never mapped
+  onto a nearby category, because a misclassified error sends the operator down
+  a path the response never mentioned.
+- **A 4xx body's `error` is read only as a string.** The Web API's
+  `{"error":{"message":…}}` object is prose about an API call and is not a grant
+  code, so it yields `TOKEN_UNCLASSIFIED` rather than an invented class.
+- **No token failure is described as a service outage unless the status is a
+  genuine 5xx.**
+- **A transport failure is never conflated with a response-borne one.** It has
+  no body and no status, so it is classified from the thrown error alone.
+- **Every token-failure message names the resolved token file**, so a
+  multi-profile install can tell which install is broken.
+- A transient failure (`server_error`, `network_unreachable`) is **ridden out**
+  on a still-valid access token so the current request proceeds; a
+  non-transient one (a refused client id, a dead grant) is surfaced even when
+  the old token would have worked, so the misconfiguration is not hidden.
+
 ---
 
 ## 9. Rate Limiting
