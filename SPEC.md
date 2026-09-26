@@ -981,12 +981,21 @@ Get a playlist's metadata and its items. Makes two calls: `GET /playlists/{id}` 
 **Inputs:**
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `id` | string | yes | Playlist ID |
+| `playlist_id` | string | yes | Playlist ID (`id` is a back-compat alias, per the alias table above) |
 | `limit` | number | no | Items per page, 1–100. Default: 50 |
 | `offset` | number | no | Pagination offset for items |
+| `market` | string | no | ISO 3166-1 alpha-2 country code — relinks tracks to that market and flags unavailable ones. Forwarded to **both** the metadata read and the item pages |
+| `fields` | string | no | Comma-separated response fields to keep, e.g. `total,items(track(name,uri))`. Forwarded to **both** calls |
+| `additional_types` | string[] | no | Item types beyond the default `track`; the schema accepts `track` and `episode`, sent comma-separated. Forwarded to **both** calls |
 | `fetch_all` | boolean | no | Fetch every page of items via `client.getAllPages` (capped by `SPOTIFY_MCP_FETCH_ALL_CAP`, default 500) instead of a single page |
 
 **Returns:** name, description, owner, is_public, is_collaborative, total item count, URI; plus paginated items (track/episode name, artists/show, duration_ms, added_at, URI).
+
+**Fetch-all paging.** The walk after the first page runs through `client.getAllPages`, so pages enqueue at LOW priority and report progress like the rest of the `fetch_all` family. It resumes from the caller's `offset` plus the rows already collected — the offsets ascend by the real page size, not by the count collected so far (#884).
+
+**Unavailable items.** An item with no playable track is enumerated as `[unavailable in this market]`, exactly as `get_playlist_items` renders the same row, so the numbered list and the "showing N" count above it always agree (#884).
+
+**Note on `fields` with `json`.** `json` mode returns the raw Spotify objects, so a `fields` filter that excludes `owner` yields a playlist object without one. The prose renderer reads `owner` defensively and falls back to `unknown owner` rather than throwing (#884).
 
 ---
 

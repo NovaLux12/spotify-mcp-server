@@ -382,6 +382,130 @@ describe('get_playlist (metadata + items two-call flow)', () => {
     assert.deepEqual(h.client.calls[1].arg, { limit: '10', offset: '20' });
     assert.match(textOf(out), /21\. "Nine"/); // numbering accounts for offset
   });
+
+  // ---------------------------------------------------------------------
+  // #884 — market/fields/additional_types + the shared paged helper
+  // ---------------------------------------------------------------------
+
+  it('forwards market/fields/additional_types to the metadata GET and every item page', async () => {
+    // A 3-page walk at page size 2. The stub's getAllPages advances by the
+    // server-reported `limit`, so a walk that kept the hand-rolled loop's
+    // `collected.length` cursor would re-read offset 2 and never terminate;
+    // the recorded offsets below are the proof that the walk went through the
+    // client's paged helper instead.
+    const h = harness((path, arg) => {
+      if (path === '/playlists/pl4') {
+        return {
+          ...playlistSimple('pl4', 'Filtered'),
+          images: [{ url: 'https://i.scdn.co/image/pl4', width: 300, height: 300 }],
+        };
+      }
+      assert.equal(path, '/playlists/pl4/items');
+      const offset = Number((arg as Record<string, string>).offset ?? 0);
+      return {
+        items: [
+          { item: playableTrack(`t${offset}a`, `Row ${offset}a`) },
+          { item: playableTrack(`t${offset}b`, `Row ${offset}b`) },
+        ],
+        total: 6,
+        limit: 2,
+        offset,
+      };
+    });
+
+    await h.invoke('get_playlist', {
+      playlist_id: 'pl4',
+      fetch_all: true,
+      limit: 2,
+      market: 'gb',
+      fields: 'total,items(track(name,uri))',
+      additional_types: ['track', 'episode'],
+    });
+
+    // The filters reach the wire in the spelling Spotify documents: market
+    // uppercased by the schema transform, additional_types comma-joined.
+    const filters = {
+      market: 'GB',
+      fields: 'total,items(track(name,uri))',
+      additional_types: 'track,episode',
+    };
+    const itemCalls = h.client.calls.filter((c) => c.path === '/playlists/pl4/items');
+    assert.equal(itemCalls.length, 3);
+    assert.deepEqual(itemCalls[0].arg, { limit: '2', ...filters });
+    // Offsets ascend by the REAL page size (2) — not by the count collected so
+    // far, and not restarting from zero.
+    assert.deepEqual(itemCalls[1].arg, { limit: '2', ...filters, offset: '2' });
+    assert.deepEqual(itemCalls[2].arg, { limit: '2', ...filters, offset: '4' });
+
+    // The metadata GET takes the same three parameters.
+    const metadataCall = h.client.calls.find((c) => c.path === '/playlists/pl4');
+    assert.deepEqual(metadataCall?.arg, filters);
+  });
+
+  it('resumes the fetch_all walk from the caller offset, not from zero', async () => {
+    const h = harness((path, arg) => {
+      if (path === '/playlists/pl5') {
+        return {
+          ...playlistSimple('pl5', 'Mid'),
+          images: [{ url: 'https://i.scdn.co/image/pl5', width: 300, height: 300 }],
+        };
+      }
+      const offset = Number((arg as Record<string, string>).offset ?? 0);
+      return {
+        items: [{ item: playableTrack(`t${offset}`, `Row ${offset}`) }],
+        total: 6,
+        limit: 1,
+        offset,
+      };
+    });
+
+    await h.invoke('get_playlist', { playlist_id: 'pl5', fetch_all: true, limit: 1, offset: 4 });
+
+    // Rows 4 and 5 of a 6-row playlist: the walk continues from where the
+    // first page left off rather than re-reading the head of the list.
+    assert.deepEqual(
+      h.client.calls
+        .filter((c) => c.path === '/playlists/pl5/items')
+        .map((c) => (c.arg as Record<string, string>).offset),
+      ['4', '5'],
+    );
+  });
+
+  it('counts and marks unavailable items exactly as get_playlist_items does', async () => {
+    // The same stub fixture, fed to both tools: whatever one says about the
+    // item count and the unavailable row, the other must say too (#884).
+    const fixture = (path: string) => {
+      if (path === '/playlists/pl6') {
+        return {
+          ...playlistSimple('pl6', 'Mixed', 3),
+          images: [{ url: 'https://i.scdn.co/image/pl6', width: 300, height: 300 }],
+        };
+      }
+      return {
+        items: [
+          { item: playableTrack('t1', 'One') },
+          { item: null },
+          { item: playableTrack('t3', 'Three') },
+        ],
+        total: 3,
+      };
+    };
+
+    const combined = await harness(fixture).invoke('get_playlist', { playlist_id: 'pl6' });
+    const itemsOnly = await harness(fixture).invoke('get_playlist_items', { playlist_id: 'pl6' });
+
+    // Same "3 total, showing 3" count on both tools…
+    assert.match(textOf(combined), /\(3 total, showing 3\):/);
+    assert.match(textOf(itemsOnly), /\(3 total, showing 3\):/);
+    // …and the unavailable row is enumerated rather than silently dropped, so
+    // the list length agrees with the count printed above it.
+    for (const out of [combined, itemsOnly]) {
+      const text = textOf(out);
+      assert.match(text, /1\. "One" by Artist t1/);
+      assert.match(text, /2\. \[unavailable in this market\]/);
+      assert.match(text, /3\. "Three" by Artist t3/);
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
