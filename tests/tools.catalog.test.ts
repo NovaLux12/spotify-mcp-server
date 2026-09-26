@@ -1503,19 +1503,113 @@ test('catalog_batch_lookup accepts exactly 50 URIs and fans out per type', async
   assert.match(out, /Album 0/);
 });
 
-test('catalog_batch_lookup skips unsupported types (playlists) and reports them as invalid', async () => {
+// #779: a well-formed `spotify:playlist:` URI is not malformed input. It is a
+// type this tool has no batch endpoint for, and the skip note has to say so —
+// the payload is consumed downstream as the truth about what resolved.
+test('catalog_batch_lookup reports playlist URIs as unsupported, not invalid', async () => {
   const { registered } = makeHarness(registerCatalogTools, {
     getResponse: (p) => {
       if (p === '/tracks') return { tracks: [{ id: 't1', name: 'Track 1', uri: 'spotify:track:t1' }] };
       return undefined;
     },
   });
-  const out = text(await invoke(findTool(registered, 'catalog_batch_lookup'), {
-    uris: ['spotify:track:t1', 'spotify:playlist:pl1'],
-  }));
-  assert.match(out, /Invalid URIs skipped/i);
-  assert.match(out, /spotify:playlist:pl1/);
+  const result = await invoke(findTool(registered, 'catalog_batch_lookup'), {
+    uris: ['spotify:track:t1', 'spotify:playlist:pl1', 'not-a-uri'],
+  });
+  const out = text(result);
   assert.match(out, /Track 1/);
+  assert.match(out, /1 unsupported skipped/);
+  assert.match(out, /1 invalid skipped/);
+  assert.doesNotMatch(out, /Invalid URIs skipped[^\n]*spotify:playlist:pl1/);
+  assert.match(out, /Invalid URIs skipped[^\n]*not-a-uri/);
+  assert.match(out, /Unsupported here[^\n]*spotify:playlist:pl1/);
+  assert.deepEqual(result.structuredContent?.invalid, ['not-a-uri']);
+  assert.deepEqual(result.structuredContent?.unsupported, ['spotify:playlist:pl1']);
+});
+
+test('catalog_batch_lookup json output keeps the unsupported bucket separate', async () => {
+  const { registered } = makeHarness(registerCatalogTools, {
+    getResponse: (p) => {
+      if (p === '/tracks') return { tracks: [{ id: 't1', name: 'Track 1', uri: 'spotify:track:t1' }] };
+      return undefined;
+    },
+  });
+  const result = await invoke(findTool(registered, 'catalog_batch_lookup'), {
+    uris: ['spotify:track:t1', 'spotify:playlist:pl1'],
+    response_format: 'json',
+  });
+  const payload = JSON.parse(text(result)) as { invalid: string[]; unsupported: string[] };
+  assert.deepEqual(payload.invalid, []);
+  assert.deepEqual(payload.unsupported, ['spotify:playlist:pl1']);
+});
+
+// The same conflation for any other well-formed type with no `?ids=` sibling:
+// `spotify:user:` URIs parse, so calling them invalid was wrong too.
+test('catalog_batch_lookup reports a well-formed user URI as unsupported, not invalid', async () => {
+  const { registered } = makeHarness(registerCatalogTools, {
+    getResponse: (p) => {
+      if (p === '/tracks') return { tracks: [{ id: 't1', name: 'Track 1', uri: 'spotify:track:t1' }] };
+      return undefined;
+    },
+  });
+  const result = await invoke(findTool(registered, 'catalog_batch_lookup'), {
+    uris: ['spotify:track:t1', 'spotify:user:someone'],
+  });
+  assert.deepEqual(result.structuredContent?.invalid, []);
+  assert.deepEqual(result.structuredContent?.unsupported, ['spotify:user:someone']);
+  assert.doesNotMatch(text(result), /Invalid URIs skipped/);
+});
+
+test('catalog_batch_lookup rejects an all-unsupported batch without calling them invalid', async () => {
+  const { registered } = makeHarness(registerCatalogTools);
+  await assert.rejects(
+    () => invoke(findTool(registered, 'catalog_batch_lookup'), { uris: ['spotify:playlist:p1', 'spotify:user:someone'] }),
+    (err: Error) => {
+      assert.match(err.message, /Unsupported here: spotify:playlist:p1, spotify:user:someone/);
+      assert.doesNotMatch(err.message, /Invalid/);
+      return true;
+    },
+  );
+});
+
+// A mixed batch costs one round trip per type, not one round trip per type
+// serially: every partition is outstanding before the first one answers, and
+// the render still follows the partition order rather than the order the
+// responses happened to come back in. Deterministic, not a timing race — the
+// responses are released by hand, in reverse.
+test('catalog_batch_lookup fetches every type concurrently and renders in partition order', async () => {
+  let inFlight = 0;
+  let peak = 0;
+  const pending: Array<() => void> = [];
+  const bodies: Record<string, unknown> = {
+    '/tracks': { tracks: [{ id: 't1', name: 'Track One', uri: 'spotify:track:t1' }] },
+    '/artists': { artists: [{ id: 'a1', name: 'Artist One', uri: 'spotify:artist:a1' }] },
+    '/albums': { albums: [{ id: 'al1', name: 'Album One', uri: 'spotify:album:al1' }] },
+  };
+  const { registered } = makeHarness(registerCatalogTools, {
+    getResponse: (p) => {
+      inFlight += 1;
+      peak = Math.max(peak, inFlight);
+      const { promise, resolve } = Promise.withResolvers<unknown>();
+      pending.push(() => {
+        inFlight -= 1;
+        resolve(bodies[p]);
+      });
+      return promise;
+    },
+  });
+  const walk = invoke(findTool(registered, 'catalog_batch_lookup'), {
+    uris: ['spotify:track:t1', 'spotify:artist:a1', 'spotify:album:al1'],
+  });
+  // Let the handler run to its first suspension point before judging, so the
+  // assertion is about concurrency and not about how early the walk suspends.
+  await new Promise((resolve) => { setImmediate(resolve); });
+  assert.equal(peak, 3, `expected all 3 per-type fetches outstanding at once, peak was ${peak}`);
+  assert.equal(pending.length, 3, 'each type must be settled by this test, not left hanging');
+  for (const settle of [...pending].reverse()) settle();
+  const out = text(await walk);
+  const rendered = out.split('\n').filter((l) => l.includes('| URI:'));
+  assert.deepEqual(rendered.map((l) => l.slice(l.indexOf('[') + 1, l.indexOf(']'))), ['tracks', 'artists', 'albums']);
 });
 
 

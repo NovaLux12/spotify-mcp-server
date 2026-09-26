@@ -985,7 +985,13 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
     async (args) => {
       const uris = args.uris as string[];
       const groups = new Map<string, string[]>();
+      // Two different failures, kept apart (#779): `invalid` is a URI this
+      // tool could not read at all, `unsupported` is a well-formed URI whose
+      // type has no batch endpoint here. Reporting the second as invalid told
+      // callers their valid input was malformed, and that payload is consumed
+      // as the truth about what resolved.
       const invalid: string[] = [];
+      const unsupported: string[] = [];
       for (const uri of uris) {
         const parsed = parseSpotifyUri(uri);
         if (!parsed) { invalid.push(uri); continue; }
@@ -993,35 +999,52 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
         // normalize plural key for fetchSeveral
         const kindMap: Record<string, string> = { track: 'tracks', album: 'albums', artist: 'artists', playlist: 'playlists', show: 'shows', episode: 'episodes', audiobook: 'audiobooks', chapter: 'chapters' };
         const kind = kindMap[type];
-        if (!kind) { invalid.push(uri); continue; }
-        // playlists use different endpoint not in fetchSeveral; skip with note
-        if (kind === 'playlists') { invalid.push(uri); continue; }
+        // Playlists (and any other well-formed type with no `/${kind}?ids=`
+        // sibling) are unsupported, not invalid — see the buckets above.
+        if (!kind) { unsupported.push(uri); continue; }
+        if (kind === 'playlists') { unsupported.push(uri); continue; }
         const arr = groups.get(kind) ?? [];
         arr.push(parsed.id);
         groups.set(kind, arr);
       }
-      if (groups.size === 0) throw new Error(`No resolvable URIs. Invalid: ${invalid.join(', ')}`);
-      const responseKeyMap: Record<string, string> = { tracks: 'tracks', albums: 'albums', artists: 'artists', shows: 'shows', episodes: 'episodes', audiobooks: 'audiobooks', chapters: 'chapters' };
-      const allItems: Array<{ type: string; item: unknown }> = [];
-      for (const [kind, ids] of groups) {
-        const key = responseKeyMap[kind] ?? kind;
-        const items = await fetchSeveral<Record<string, unknown>>(client, kind as SeveralKind, key, ids);
-        for (const it of items) allItems.push({ type: kind, item: it });
+      if (groups.size === 0) {
+        const why = [
+          invalid.length ? `Invalid: ${invalid.join(', ')}` : '',
+          unsupported.length ? `Unsupported here: ${unsupported.join(', ')}` : '',
+        ].filter(Boolean).join(' | ');
+        throw new Error(`No resolvable URIs. ${why}`);
       }
+      const responseKeyMap: Record<string, string> = { tracks: 'tracks', albums: 'albums', artists: 'artists', shows: 'shows', episodes: 'episodes', audiobooks: 'audiobooks', chapters: 'chapters' };
+      // One request per distinct type, but they do not have to queue up behind
+      // each other (#779). Promise.all hands back the per-type groups in the
+      // order they were partitioned above, so the rendered list is identical to
+      // the sequential walk no matter which type answers first.
+      const perKind = await Promise.all(
+        [...groups].map(async ([kind, ids]) => {
+          const key = responseKeyMap[kind] ?? kind;
+          const items = await fetchSeveral<Record<string, unknown>>(client, kind as SeveralKind, key, ids);
+          return items.map((item) => ({ type: kind, item }));
+        }),
+      );
+      const allItems: Array<{ type: string; item: unknown }> = perKind.flat();
       if (args.response_format === 'json') {
-        const raw: Record<string, unknown> = { items: allItems, invalid };
+        const raw: Record<string, unknown> = { items: allItems, invalid, unsupported };
         return { content: [{ type: 'text', text: JSON.stringify(raw) }], structuredContent: raw };
       }
       const cap = resolveMaxResults(args.max_results);
       const trunc = truncateItems(allItems, cap);
-      const lines = [`Batch lookup (${allItems.length} resolved${invalid.length ? `, ${invalid.length} invalid skipped` : ''}):`];
+      const counts = [`${allItems.length} resolved`];
+      if (invalid.length) counts.push(`${invalid.length} invalid skipped`);
+      if (unsupported.length) counts.push(`${unsupported.length} unsupported skipped`);
+      const lines = [`Batch lookup (${counts.join(', ')}):`];
       trunc.items.forEach(({ type, item }) => {
         const o = item as Record<string, unknown>;
         lines.push(`  \u2022 [${type}] "${(o.name as string) ?? (o.id as string)}" | URI: ${(o.uri as string) ?? ''}`);
       });
       if (trunc.footer) lines.push('', `(${trunc.footer})`);
-      if (invalid.length) lines.push('', `Invalid URIs skipped: ${invalid.join(', ')}`);
-      return { content: [{ type: 'text', text: lines.join('\n') }], structuredContent: { items: trunc.items, total: allItems.length, invalid } };
+      if (invalid.length) lines.push('', `Invalid URIs skipped (not readable as a Spotify URI): ${invalid.join(', ')}`);
+      if (unsupported.length) lines.push('', `Unsupported here (well-formed, but no batch endpoint for this type): ${unsupported.join(', ')}`);
+      return { content: [{ type: 'text', text: lines.join('\n') }], structuredContent: { items: trunc.items, total: allItems.length, invalid, unsupported } };
     },
   );
 
