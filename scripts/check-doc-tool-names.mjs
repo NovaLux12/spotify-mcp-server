@@ -54,7 +54,7 @@ const registrationKeyNames = new Set(census.registrationKeyNames ?? []);
  */
 const retiredToolNames = new Set(['get_show_episodes']);
 const documentedMetadata = new Set([
-  'toolset_trimmed', 'scope_blocked', 'read_only_hidden',
+  'toolset_trimmed', 'scope_filtered', 'read_only_hidden',
   'deprecated_inputs', 'deprecation_note', 'auth', 'forbidden', 'not_found',
   'rate_limited', 'unavailable', 'statsfm_resource_not_found', 'conflict',
   'unknown_param', 'unknown_tool', 'playlist_changed_since_read',

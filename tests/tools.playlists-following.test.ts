@@ -18,7 +18,7 @@ import type { SpotifyClient } from '../src/client.js';
 import type { SpotifyPaged } from '../src/types/spotify.js';
 import { registerPlaylistTools, walkTruncationNotice } from '../src/tools/playlists.js';
 import { registerFollowingTools } from '../src/tools/following.js';
-import { registerPlaylistMiscTools } from '../src/tools/playlistmisc.js';
+import { registerPlaylistFollowTools } from '../src/tools/playlistfollow.js';
 import { registerRestoreTools } from '../src/tools/restore.js';
 
 // ---------------------------------------------------------------------------
@@ -1903,7 +1903,7 @@ describe('destructive confirmation parity across remove/unpin/restore', () => {
       ['declined', { action: 'decline' }, false],
       ['error', new Error('transport failed'), false],
     ] as const) {
-      const h = harness(undefined, registerPlaylistMiscTools, result);
+      const h = harness(undefined, registerPlaylistFollowTools, result);
       if (label === 'error') {
         await assert.rejects(
           h.invoke('unpin_playlist', { playlist_id: 'pl1' }),
@@ -1919,7 +1919,7 @@ describe('destructive confirmation parity across remove/unpin/restore', () => {
       );
     }
 
-    const unsupported = harness(undefined, registerPlaylistMiscTools);
+    const unsupported = harness(undefined, registerPlaylistFollowTools);
     await assert.rejects(
       unsupported.invoke('unpin_playlist', { playlist_id: 'pl1' }),
       /Elicitation unavailable/,
@@ -1929,7 +1929,7 @@ describe('destructive confirmation parity across remove/unpin/restore', () => {
     const previous = process.env.SPOTIFY_MCP_CONFIRM;
     process.env.SPOTIFY_MCP_CONFIRM = 'never';
     try {
-      const bypass = harness(undefined, registerPlaylistMiscTools);
+      const bypass = harness(undefined, registerPlaylistFollowTools);
       await bypass.invoke('unpin_playlist', { playlist_id: 'pl1' });
       assert.equal(bypass.client.calls.filter((c) => c.method === 'DELETE').length, 1);
     } finally {

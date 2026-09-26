@@ -5,6 +5,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../src/client.js';
 import type { SpotifyPaged } from '../src/types/spotify.js';
 import { registerPlaylistMiscTools } from '../src/tools/playlistmisc.js';
+import { registerPlaylistFollowTools } from '../src/tools/playlistfollow.js';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -39,7 +40,10 @@ function harness(responder: Responder=()=>null, elicitResult?: unknown) {
     ...(elicitResult!==undefined?{server:{getClientCapabilities:()=>({elicitation:{form:{}}}),async elicitInput(req:{message:string}){ prompts.push(req.message); if(elicitResult instanceof Error) throw elicitResult; return elicitResult; }}}:{}),
   } as unknown as McpServer;
   const client = makeStubClient(responder);
+  // Two manifest rows, two registrars (#1005): pin/unpin moved to
+  // playlistfollow.ts so they can carry their own /me/library scope key.
   registerPlaylistMiscTools(fakeServer, client as unknown as SpotifyClient);
+  registerPlaylistFollowTools(fakeServer, client as unknown as SpotifyClient);
   return { registered, client, prompts, invoke: async (name:string,args:Record<string,unknown>)=>{ const t=registered.find(x=>x.name===name); assert.ok(t,`tool ${name} registered`); return t.handler(t.validate(args)); } };
 }
 const textOf=(o:{content:Array<{text:string}>})=>o.content[0].text;
@@ -156,7 +160,9 @@ describe('unpin_playlist',()=>{
 });
 
 describe('February 2026 removed-endpoint guards (playlist follow family)',()=>{
-  const srcPath=join(dirname(fileURLToPath(import.meta.url)),'..','src','tools','playlistmisc.ts');
+  // The follow family moved to playlistfollow.ts (#1005); this guard has to
+  // read the file that actually builds the request, or it protects nothing.
+  const srcPath=join(dirname(fileURLToPath(import.meta.url)),'..','src','tools','playlistfollow.ts');
   const src=readFileSync(srcPath,'utf8');
 
   it('names no removed endpoint in code — only in prose',()=>{
@@ -174,7 +180,7 @@ describe('February 2026 removed-endpoint guards (playlist follow family)',()=>{
       .filter(({line})=>/^\s*(?:\/\/|\/\*|\*)/.test(line)===false)
       .map(({n,line})=>`${n}: ${line.trim()}`);
     assert.deepEqual(offenders,[],
-      'src/tools/playlistmisc.ts names a removed endpoint outside a comment: '+offenders.join(' | '));
+      'src/tools/playlistfollow.ts names a removed endpoint outside a comment: '+offenders.join(' | '));
   });
 
   it('advertises no removed endpoint in either tool description',()=>{

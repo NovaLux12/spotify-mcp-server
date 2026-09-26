@@ -9,11 +9,14 @@
  * Restore stays a separate, additive-only concern (#160).
  *
  * The store is BOUNDED (#697): snapshots expire after
- * SPOTIFY_MCP_BACKUP_RETENTION_DAYS (default 30, 0 disables), expiry runs
- * at the start of every backup_library and on every list_backups, and
- * delete_backup removes one snapshot on request behind a confirmation gate
- * with a dry run as the default. A snapshot is a dated compilation of the
- * user's saves, so it must not outlive its purpose by default.
+ * SPOTIFY_MCP_BACKUP_RETENTION_DAYS (default 30, 0 disables) and expiry runs
+ * at the start of every backup_library and on every list_backups. A snapshot
+ * is a dated compilation of the user's saves, so it must not outlive its
+ * purpose by default. The on-request delete (delete_backup) moved to
+ * backup_delete.ts (#1017): the manifest's `readOnlySafe` flag is per
+ * registrar row, so a destructive local unlink sharing this row is either
+ * visible to read-only sessions or hides list_backups and backup_library with
+ * it.
  *
  * Incompleteness is recorded, not implied (#735): _meta.reported_totals
  * carries Spotify's own size for each collection next to the walked
@@ -182,7 +185,7 @@ export function backupDir(env: NodeJS.ProcessEnv = process.env): string {
   return env.SPOTIFY_MCP_BACKUP_DIR ?? join(homedir(), '.spotify-mcp', 'backups');
 }
 
-const BACKUP_FILE_RE = /^backup-(\d{4}-\d{2}-\d{2})-(\d+)(\.partial)?\.json$/;
+export const BACKUP_FILE_RE = /^backup-(\d{4}-\d{2}-\d{2})-(\d+)(\.partial)?\.json$/;
 
 /**
  * Next free sequence for today's date inside dir. Scans existing names so
@@ -676,7 +679,7 @@ async function readStoreEntry(dir: string, name: string): Promise<StoreEntry> {
 }
 
 /** Every backup-*.json in dir, newest-metadata-first in listing order. */
-async function readStoreEntries(dir: string): Promise<StoreEntry[]> {
+export async function readStoreEntries(dir: string): Promise<StoreEntry[]> {
   let names: string[];
   try {
     names = (await readdir(dir)).filter((name) => BACKUP_FILE_RE.test(name));
@@ -801,7 +804,7 @@ export function storeEnvelope(
 }
 
 /** Prose for the envelope, shared by backup_library and list_backups. */
-function describeEnvelope(envelope: StoreEnvelope, retentionDays: number): string {
+export function describeEnvelope(envelope: StoreEnvelope, retentionDays: number): string {
   const policy = retentionDays > 0
     ? `retention ${retentionDays} day(s) (SPOTIFY_MCP_BACKUP_RETENTION_DAYS)`
     : 'retention disabled (SPOTIFY_MCP_BACKUP_RETENTION_DAYS=0 — snapshots are kept until deleted)';
@@ -869,14 +872,14 @@ type ToolOut = {
 };
 
 /** Emit a tool result: json mode stringifies the payload; twin always attached. */
-function shapeResult(rf: ResponseFormatValue, prose: string, payload: Record<string, unknown>): ToolOut {
+export function shapeResult(rf: ResponseFormatValue, prose: string, payload: Record<string, unknown>): ToolOut {
   return {
     content: [{ type: 'text', text: rf === 'json' ? JSON.stringify(payload, null, 2) : prose }],
     structuredContent: payload,
   };
 }
 
-function formatBytes(n: number): string {
+export function formatBytes(n: number): string {
   return n < 1024 ? `${n} B` : `${(n / 1024).toFixed(1)} KiB`;
 }
 
@@ -887,7 +890,7 @@ const MetadataRecordSchema = z.record(z.string(), z.unknown());
 const MetadataCountsSchema = z.record(z.string(), z.number());
 const MetadataSidecarSchema = z.object({ meta: MetadataRecordSchema });
 
-function metadataSidecarPath(snapshotPath: string): string {
+export function metadataSidecarPath(snapshotPath: string): string {
   return `${snapshotPath.slice(0, -'.json'.length)}.meta.json`;
 }
 
@@ -981,15 +984,6 @@ function stringArrayField(record: Record<string, unknown>, key: string): string[
   if (!Array.isArray(value)) return [];
   return value.filter((item): item is string => typeof item === 'string');
 }
-
-/**
- * delete_backup is opt-OUT of preview (#627): the schema itself advertises
- * the safe default, so a client that inspects the signature — rather than
- * reading the prose — sees that a missing dry_run means "delete nothing".
- */
-const DeleteDryRun = DryRun.default(true).describe(
-  'Preview only, and the default: pass dry_run: false to delete the snapshot.',
-);
 
 
 // ---------------------------------------------------------------------------
@@ -1327,118 +1321,4 @@ export function registerBackupTools(server: McpServer, client: SpotifyClient): v
     },
   );
 
-  server.tool(
-    'delete_backup',
-    'Delete one library backup file (and its metadata sidecar) from SPOTIFY_MCP_BACKUP_DIR. Irreversible — the library rows in the file cannot be recovered from anywhere else. Destructive and confirmation-gated: dry_run defaults to true, and executing is refused when the client cannot prompt (SPOTIFY_MCP_CONFIRM=never bypasses). Paths outside the backup directory are refused.',
-    {
-      file: z.string().min(1).describe('Backup file name (e.g. backup-2026-01-02-1.json) or a path inside the backup directory'),
-      response_format: ResponseFormat,
-      dry_run: DeleteDryRun,
-    },
-    async (args) => {
-      const dir = backupDir();
-      const requested = args.file.trim();
-      // Confinement is decided on the REAL path by the shared resolver: a
-      // `..` segment, an absolute path elsewhere, or a symlink planted
-      // under a backup name all resolve first and are refused outside the
-      // store (#622/#697).
-      let resolved: { file: string };
-      try {
-        resolved = await resolveOutputPath({
-          root: dir,
-          target: requested,
-          tool: 'delete_backup',
-          kind: 'file',
-          overwrite: true,
-        });
-      } catch (error) {
-        // The shared resolver's own wording is about writing exports; the
-        // leading sentence says what the caller actually asked for, and the
-        // resolver's line stays as the reason.
-        const detail = error instanceof Error ? error.message : String(error);
-        const message = `delete_backup: "${requested}" is not inside the backup directory (${dir}); nothing was deleted. ${detail}`;
-        return shapeResult(
-          args.response_format,
-          message,
-          { ok: false, reason: 'refused', dir, requested, error: message, detail },
-        );
-      }
-      const name = basename(resolved.file);
-      if (!BACKUP_FILE_RE.test(name)) {
-        const message = `delete_backup: "${name}" is not a library backup file (expected backup-YYYY-MM-DD-N[.partial].json).`;
-        return shapeResult(
-          args.response_format,
-          message,
-          { ok: false, reason: 'not_a_backup', dir, path: resolved.file, error: message },
-        );
-      }
-      const st = await stat(resolved.file).catch(() => null);
-      if (!st?.isFile()) {
-        const message = `delete_backup: no readable backup file at "${resolved.file}".`;
-        return shapeResult(
-          args.response_format,
-          message,
-          { ok: false, reason: 'not_found', dir, path: resolved.file, error: message },
-        );
-      }
-      const sidecarPath = metadataSidecarPath(resolved.file);
-      const sidecar = await stat(sidecarPath).catch(() => null);
-      const sidecarBytes = sidecar?.isFile() ? sidecar.size : 0;
-      const changes = [
-        `Delete ${resolved.file} (${formatBytes(st.size)}) permanently — those library rows exist nowhere else`,
-        ...(sidecarBytes > 0 ? [`Delete its metadata sidecar (${formatBytes(sidecarBytes)})`] : []),
-      ];
-
-      if (args.dry_run !== false) {
-        const payload: Record<string, unknown> = {
-          ok: true,
-          dry_run: true,
-          dir,
-          path: resolved.file,
-          bytes: st.size,
-          sidecar: sidecarBytes > 0 ? sidecarPath : null,
-          sidecar_bytes: sidecarBytes,
-          retention_days: backupRetentionDays(),
-        };
-        return shapeResult(args.response_format, `${describeDryRun('delete backup', name, changes)}\nRe-run with dry_run: false to delete.`, payload);
-      }
-
-      const verdict = await confirmViaElicitation(server, {
-        message: describeConfirmation('delete backup', name, changes),
-        confirmLabel: 'Delete backup',
-      });
-      const refusal = requiredConfirmationRefusal(verdict);
-      if (refusal) return shapeResult(args.response_format, refusal.message, refusal.payload);
-
-      try {
-        await unlink(resolved.file);
-      } catch (error) {
-        const message = `delete_backup: could not delete "${resolved.file}": ${(error as NodeJS.ErrnoException).code ?? 'unknown error'}.`;
-        return shapeResult(args.response_format, message, { ok: false, reason: 'delete_failed', dir, path: resolved.file, error: message });
-      }
-      let sidecarDeleted = false;
-      if (sidecarBytes > 0) {
-        try {
-          await unlink(sidecarPath);
-          sidecarDeleted = true;
-        } catch {
-          sidecarDeleted = false;
-        }
-      }
-      return shapeResult(
-        args.response_format,
-        `Deleted backup ${resolved.file} (${formatBytes(st.size)})${sidecarDeleted ? ' and its metadata sidecar' : ''}. ${describeEnvelope(storeEnvelope(await readStoreEntries(dir), backupRetentionDays()), backupRetentionDays())}`,
-        {
-          ok: true,
-          deleted: true,
-          dry_run: false,
-          dir,
-          path: resolved.file,
-          bytes: st.size,
-          sidecar_deleted: sidecarDeleted,
-          retention_days: backupRetentionDays(),
-        },
-      );
-    },
-  );
 }

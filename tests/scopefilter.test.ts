@@ -73,6 +73,30 @@ describe('moduleBlockedByScopes', () => {
     assert.equal(moduleBlockedByScopes('following', write), false);
   });
 
+  // #1005: /me/library authorises THREE alternative scopes. The case a
+  // per-tool `user-follow-modify` check would have broken is the first one —
+  // a caller holding only playlist-modify-public is authorised, so hiding
+  // pin_playlist from them trades a raw 403 for an invisible valid tool.
+  it('playlistfollow is unblocked by playlist-modify-public ALONE (#1005)', () => {
+    assert.equal(moduleBlockedByScopes('playlistfollow', scopesFor('playlist-modify-public')), false);
+  });
+
+  it('playlistfollow is unblocked by either of the other two alternatives', () => {
+    assert.equal(moduleBlockedByScopes('playlistfollow', scopesFor('user-library-modify')), false);
+    assert.equal(moduleBlockedByScopes('playlistfollow', scopesFor('user-follow-modify')), false);
+  });
+
+  it('playlistfollow stays blocked without any of the three (#1005)', () => {
+    for (const grant of [
+      'user-read-private',
+      'playlist-read-private playlist-read-collaborative',
+      'playlist-modify-private',
+      'user-library-read user-follow-read',
+    ]) {
+      assert.equal(moduleBlockedByScopes('playlistfollow', scopesFor(grant)), true, grant);
+    }
+  });
+
   it('undefined granted scope blocks nothing (back-compat with pre-scope token files)', () => {
     const empty = scopesFor(undefined);
     for (const key of Object.keys(WRITE_SCOPE_REQUIREMENTS)) {
@@ -100,11 +124,12 @@ describe('moduleBlockedByScopes', () => {
 });
 
 describe('WRITE_SCOPE_REQUIREMENTS coverage', () => {
-  it('documents exactly the four write-capable modules', () => {
+  it('documents exactly the five write-capable scope keys', () => {
     assert.deepEqual(Object.keys(WRITE_SCOPE_REQUIREMENTS).sort(), [
       'following',
       'library',
       'playback',
+      'playlistfollow',
       'playlists',
     ]);
   });

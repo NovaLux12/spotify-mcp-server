@@ -5,6 +5,7 @@ import {
   __setTasteCompositeFetchImpl,
   __resetTasteCompositeFetchImpl,
 } from '../src/tools/taste_composites.js';
+import { registerTastePlaylistTools } from '../src/tools/taste_playlist.js';
 import { SpotifyApiError } from '../src/client.js';
 
 // ---------------------------------------------------------------- fixtures
@@ -191,9 +192,14 @@ function makeHarness(client: RecordingClient = makeClient()) {
       registered.push({ name, description, schema, handler });
     },
   };
+  // Two manifest rows (#1009): the ten read tools and the one writer.
   registerTasteCompositeTools(
     server as unknown as Parameters<typeof registerTasteCompositeTools>[0],
     client as unknown as Parameters<typeof registerTasteCompositeTools>[1],
+  );
+  registerTastePlaylistTools(
+    server as unknown as Parameters<typeof registerTastePlaylistTools>[0],
+    client as unknown as Parameters<typeof registerTastePlaylistTools>[1],
   );
   return { registered, client };
 }

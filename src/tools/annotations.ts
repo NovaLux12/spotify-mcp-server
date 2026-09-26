@@ -52,6 +52,7 @@ import { registerSmartTools } from './smart.js';
 import { registerShowRadarTools } from './showradar.js';
 import { registerSavedDedupeTools } from './saveddedupe.js';
 import { registerBackupTools } from './backup.js';
+import { registerBackupDeleteTools } from './backup_delete.js';
 import { registerRestoreTools } from './restore.js';
 import { registerUndoTools } from './undo.js';
 import { registerBackupFirstTools } from './backupfirst.js';
@@ -62,6 +63,7 @@ import { registerLibraryAnalyticsTools } from './libraryanalytics.js';
 import { registerPlaylistHealthTools } from './playlisthealth.js';
 import { registerPlaylistBatchTools } from './playlistbatch.js';
 import { registerPlaylistMiscTools } from './playlistmisc.js';
+import { registerPlaylistFollowTools } from './playlistfollow.js';
 import { registerPortabilityTools } from './portability.js';
 import { registerQueueOpsTools } from './queueops.js';
 import { registerPlaybackExtTools } from './playbackext.js';
@@ -86,6 +88,7 @@ import { registerSwarm3ShowsTools } from './swarm3_shows.js';
 import { registerSwarm3AnalyticsTools } from './swarm3_analytics.js';
 import { registerStatsfmTasteTools } from './statsfm_taste.js';
 import { registerTasteCompositeTools } from './taste_composites.js';
+import { registerTastePlaylistTools } from './taste_playlist.js';
 import { registerSwarm3RefsTools } from './swarm3_refs.js';
 import { registerSwarm3SnapshotsTools } from './swarm3_snapshots.js';
 import { registerSwarm3MetaTools } from './swarm3_meta.js';
@@ -456,7 +459,7 @@ export function applyToolAnnotations(server: McpServer): { total: number; annota
 export type ModuleRegistrationStatus =
   | 'active'
   | 'toolset_trimmed'
-  | 'scope_blocked'
+  | 'scope_filtered'
   | 'read_only_hidden';
 
 export interface ModuleSchemaBudget {
@@ -558,12 +561,14 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   manifestEntry('playlists', 'playlists', 'src/tools/playlists.ts', registerPlaylistTools, [26, 25998]),
   manifestEntry('playlistops', 'playlists', 'src/tools/playlistops.ts', registerPlaylistOpsTools, [3, 5489]),
   manifestEntry('playlistbatch', 'playlistbatch', 'src/tools/playlistbatch.ts', registerPlaylistBatchTools, [3, 4784], { scopeKey: 'playlists' }),
-  manifestEntry('playlistmisc', 'playlistmisc', 'src/tools/playlistmisc.ts', registerPlaylistMiscTools, [3, 2538], { scopeKey: 'playlists' }),
+  manifestEntry('playlistfollow', 'playlistmisc', 'src/tools/playlistfollow.ts', registerPlaylistFollowTools, [2, 1449], { scopeKey: 'playlistfollow' }),
+  manifestEntry('playlistmisc', 'playlistmisc', 'src/tools/playlistmisc.ts', registerPlaylistMiscTools, [1, 1089], { scopeKey: 'playlists' }),
   manifestEntry('personalization', 'personalization', 'src/tools/personalization.ts', registerPersonalizationTools, [3, 2532], { readOnlySafe: true }),
   manifestEntry('analytics', 'personalization', 'src/tools/analytics.ts', registerAnalyticsTools, [4, 2753], { readOnlySafe: true }),
   manifestEntry('statsfm', 'statsfm', 'src/tools/statsfm.ts', (server) => registerStatsfmTools(server), [30, 22721], { readOnlySafe: true }),
   manifestEntry('taste', 'taste', 'src/tools/statsfm_taste.ts', registerStatsfmTasteTools, [16, 13959], { readOnlySafe: true }),
-  manifestEntry('tastecomposites', 'tastecomposites', 'src/tools/taste_composites.ts', registerTasteCompositeTools, [11, 9717], { readOnlySafe: true }),
+  manifestEntry('tastecomposites', 'tastecomposites', 'src/tools/taste_composites.ts', registerTasteCompositeTools, [10, 7994], { readOnlySafe: true }),
+  manifestEntry('tasteplaylist', 'tastecomposites', 'src/tools/taste_playlist.ts', registerTastePlaylistTools, [1, 1723], { scopeKey: 'playlists' }),
   manifestEntry('doctor', 'doctor', 'src/tools/doctortool.ts', registerDoctorTool, [1, 750], { alwaysActive: true, readOnlySafe: true }),
   manifestEntry('swarm3meta', 'swarm3meta', 'src/tools/swarm3_meta.ts', registerSwarm3MetaTools, [3, 1624], { alwaysActive: true, scopeKey: 'catalog', readOnlySafe: true }),
   manifestEntry('libraryanalytics', 'libraryanalytics', 'src/tools/libraryanalytics.ts', registerLibraryAnalyticsTools, [4, 3350], { readOnlySafe: true, scopeKey: 'library' }),
@@ -574,7 +579,8 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   manifestEntry('saveddedupe', 'library', 'src/tools/saveddedupe.ts', registerSavedDedupeTools, [1, 1562], { scopeKey: 'library' }),
   manifestEntry('podcastsession', 'library', 'src/tools/podcastsession.ts', registerPodcastSessionTools, [2, 2759], { scopeKey: 'library' }),
   manifestEntry('backupfirst', 'library', 'src/tools/backupfirst.ts', registerBackupFirstTools, [1, 513], { readOnlySafe: true, scopeKey: 'library' }),
-  manifestEntry('backup', 'library', 'src/tools/backup.ts', registerBackupTools, [3, 2584], { readOnlySafe: false, scopeKey: 'library' }),
+  manifestEntry('backup', 'library', 'src/tools/backup.ts', registerBackupTools, [2, 1625], { readOnlySafe: true, scopeKey: 'library' }),
+  manifestEntry('backupdelete', 'library', 'src/tools/backup_delete.ts', registerBackupDeleteTools, [1, 959], { readOnlySafe: false, scopeKey: 'library' }),
   manifestEntry('restore', 'library', 'src/tools/restore.ts', registerRestoreTools, [1, 1841], { scopeKey: 'library' }),
   manifestEntry('undo', 'library', 'src/tools/undo.ts', registerUndoTools, [2, 1663], { scopeKey: 'library' }),
   manifestEntry('receipts', 'library', 'src/tools/annotations.ts', (server) => {
@@ -658,13 +664,49 @@ export function moduleRegistrationStatus(
   module: RegistrarManifestEntry,
   context: RegistrarManifestContext,
 ): ModuleRegistrationStatus {
-  if (module.alwaysActive) {
-    return context.scopeBlocked(module.scopeKey ?? module.registrationKey) ? 'scope_blocked' : 'active';
+  // The hard gates stay ahead of the scope filter: a toolset-trimmed or
+  // read-only-hidden module registers nothing at all, so a reduced scope
+  // grant must not become a way to surface its tools in a READONLY session
+  // (#111). Scope filtering only ever splits a module that would otherwise
+  // have been fully active — a missing write scope hides the writes (which
+  // could only 403) instead of the reads the grant still carries (#1020).
+  if (!module.alwaysActive) {
+    if (!context.isModuleActive(module.registrationKey)) return 'toolset_trimmed';
+    if (context.readOnly && module.readOnlySafe !== true) return 'read_only_hidden';
   }
-  if (context.scopeBlocked(module.scopeKey ?? module.registrationKey)) return 'scope_blocked';
-  if (!context.isModuleActive(module.registrationKey)) return 'toolset_trimmed';
-  if (context.readOnly && module.readOnlySafe !== true) return 'read_only_hidden';
-  return 'active';
+  return context.scopeBlocked(module.scopeKey ?? module.registrationKey) ? 'scope_filtered' : 'active';
+}
+
+/**
+ * Wrap `server` so a module whose write scope was not granted can still
+ * register the tools that only read. Registration calls for anything
+ * `classifyToolAnnotations` cannot prove read-only are dropped, so the gate
+ * hides the writes (which could only 403) instead of hiding the reads the
+ * consent screen still asked for — `get_saved_tracks` used to disappear from
+ * tools/list together with `save_to_library` (#1020).
+ *
+ * The classifier is an allowlist: a name that does not start with a read verb
+ * is classified a write, so an unanticipated tool is withheld rather than
+ * exposed. Every other property is forwarded to the real server with `this`
+ * bound to it, so registrars that read `_registeredTools` (doctor, swarm3_meta)
+ * still see the true registry.
+ */
+function readOnlyToolServer(server: McpServer): McpServer {
+  const isReadable = (name: unknown): boolean =>
+    typeof name === 'string' && classifyToolAnnotations(name).readOnlyHint === true;
+  return new Proxy(server, {
+    get(target, property) {
+      if (property === 'tool' || property === 'registerTool') {
+        return (...args: unknown[]): void => {
+          if (!isReadable(args[0])) return;
+          const register = Reflect.get(target, property, target) as (...call: unknown[]) => unknown;
+          register.apply(target, args);
+        };
+      }
+      const value = Reflect.get(target, property, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
 }
 
 /** Register one manifest module and retain its exact tool-name ownership. */
@@ -677,9 +719,9 @@ export function registerManifestModule(
   const metadata = serverMetadata(server);
   const status = moduleRegistrationStatus(module, context);
   metadata.statuses.set(module.key, status);
-  if (status !== 'active') return;
+  if (status === 'toolset_trimmed' || status === 'read_only_hidden') return;
   const before = new Set(registeredToolNames(server));
-  module.registrar(server, client);
+  module.registrar(status === 'scope_filtered' ? readOnlyToolServer(server) : server, client);
   metadata.tools.set(module.key, registeredToolNames(server).filter((name) => !before.has(name)));
   metadata.budgetRows = undefined;
 }
@@ -719,7 +761,10 @@ export function collectModuleSchemaBudgets(server: McpServer): ModuleSchemaBudge
       baselineSchemaBytes: module.baseline.schemaBytes,
       maxToolCount: module.ceiling.toolCount,
       maxSchemaBytes: module.ceiling.schemaBytes,
-      withinBudget: status !== 'active' || (toolCount <= module.ceiling.toolCount && schemaBytes <= module.ceiling.schemaBytes),
+      // Measured whenever the module registered anything: a scope_filtered row
+      // is a real subset of the surface, not an absent module, so it must not
+      // buy budget exemption by being partially withheld.
+      withinBudget: toolCount === 0 || (toolCount <= module.ceiling.toolCount && schemaBytes <= module.ceiling.schemaBytes),
     };
   });
   metadata.budgetRows = rows;
@@ -731,7 +776,7 @@ export function assertModuleSchemaBudgets(rows: readonly ModuleSchemaBudget[]): 
   // precomputed `withinBudget` field: a caller (or a future edit to the row
   // builder) could otherwise flip the flag without the comparison ever running,
   // and the per-module budget gate would be dead while still reporting healthy.
-  const over = rows.filter((row) => row.status === 'active'
+  const over = rows.filter((row) => row.toolCount > 0
     && (row.toolCount > row.maxToolCount || row.schemaBytes > row.maxSchemaBytes));
   if (over.length === 0) return;
   throw new Error(over.map((row) =>

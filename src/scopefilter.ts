@@ -14,12 +14,21 @@
  * "either-of": the module is available when AT LEAST ONE listed scope was
  * granted (e.g. playlists works with playlist-modify-public OR
  * playlist-modify-private; it only hides when neither was granted).
+ *
+ * The list must name every scope the endpoint accepts, not the scope the
+ * family "belongs" to. `playlistfollow` is the worked example (#1005): after
+ * the Feb 2026 endpoint removal, pin/unpin call PUT/DELETE /me/library, which
+ * authorises THREE alternatives, so a caller holding only
+ * `playlist-modify-public` must still see `pin_playlist`. Dropping that third
+ * alternative would trade a raw 403 for an invisible-but-authorised tool,
+ * which is the worse of the two.
  */
 export const WRITE_SCOPE_REQUIREMENTS: Record<string, string[]> = {
   playback: ['user-modify-playback-state'],
   playlists: ['playlist-modify-public', 'playlist-modify-private'],
   library: ['user-library-modify'],
   following: ['user-follow-modify'],
+  playlistfollow: ['user-library-modify', 'user-follow-modify', 'playlist-modify-public'],
 };
 
 /**
