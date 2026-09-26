@@ -9,6 +9,7 @@
  * batches of 100, then issues a meta receipt proving the playlist resolves.
  */
 import { z } from 'zod';
+import { capFor } from '../chunk.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
 import {
@@ -266,9 +267,10 @@ export function registerSmartTools(server: McpServer, client: SpotifyClient): vo
 
       const itemsPath = `/playlists/${encodeURIComponent(created.id)}/items`;
       let batches = 0;
-      for (let start = 0; start < picked.length; start += 100) {
+      const writeCap = capFor('playlist_writes');
+      for (let start = 0; start < picked.length; start += writeCap) {
         await client.post(itemsPath, {
-          uris: picked.slice(start, start + 100).map((t) => t.uri),
+          uris: picked.slice(start, start + writeCap).map((t) => t.uri),
         });
         batches++;
       }

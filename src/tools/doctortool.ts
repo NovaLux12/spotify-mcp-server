@@ -23,6 +23,7 @@ import {
 } from '../toolsets.js';
 import { moduleBlockedByScopes } from '../scopefilter.js';
 import { ResponseFormat } from '../shaping.js';
+import { CHUNK_CAPS } from '../chunk.js';
 import { readOnlyModeEnabled, REGISTRAR_MANIFEST } from './annotations.js';
 
 // ---------------------------------------------------------------------------
@@ -472,6 +473,7 @@ function staticRows(client: SpotifyClient): DoctorRow[] {
     `fetch_all_cap=${cfg.fetchAllCap}`,
     `max_items=${cfg.maxItems}`,
     `history=${cfg.historyEnabled ? 'enabled' : 'disabled'}`,
+    `batch_caps=${Object.entries(CHUNK_CAPS).map(([kind, cap]) => `${kind}:${cap}`).join(',')}`,
   ];
   if (cfg.profile) parts.push(`profile=${cfg.profile}`);
   if (cfg.market) parts.push(`market=${cfg.market}`);

@@ -733,6 +733,12 @@ Seven batch lookup tools fetch full details for several IDs in a single call per
 | `get_several_audiobooks` | `GET /audiobooks?ids=…` | 50 |
 | `get_several_chapters` | `GET /chapters?ids=…` | 50 |
 
+Every batch bound in the server — this table, the 100-uri playlist item
+writes, the 40-uri `/me/library` writes and the 50-uri `/me/library/contains`
+reads — is one row of `CHUNK_CAPS` in `src/chunk.ts`, read through
+`capFor(kind)`. `spotify_doctor`'s config row and `toolset_report` both print
+the resolved table, so the live policy is observable without reading the code.
+
 **Inputs:** `ids` (string[], required — longer lists are fetched in chunks of the per-request maximum and merged), plus shared response fields. The audiobook variants are market-gated like the single lookups.
 
 **Returns:** full objects per resolved ID; `response_format=json` hands back `{ items: [...] }`.

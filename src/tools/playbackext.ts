@@ -9,6 +9,7 @@
  * rather than a quiet wipe of their snapshots, presets and rules.
  */
 import { z } from 'zod';
+import { capFor } from '../chunk.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { copyFile, link, mkdir, readFile, unlink, writeFile } from 'node:fs/promises';
 import { constants as FS } from 'node:fs';
@@ -293,11 +294,13 @@ function planRefresh(playlistId: string | null, uris: string[]): RefreshStep[] {
   if (!playlistId) steps.push({ method: 'POST', path: '/me/playlists', uris: 0 });
   const target = playlistId ?? '<new playlist id>';
   const itemsPath = `/playlists/${target}/items`;
-  // PUT /playlists/{id}/items replaces the whole playlist and caps at 100 uris;
-  // anything beyond that is appended in 100-uri POST chunks.
-  steps.push({ method: playlistId ? 'PUT' : 'POST', path: itemsPath, uris: Math.min(uris.length, 100) });
-  for (let start = 100; start < uris.length; start += 100) {
-    steps.push({ method: 'POST', path: itemsPath, uris: Math.min(uris.length - start, 100) });
+  // PUT /playlists/{id}/items replaces the whole playlist and caps at
+  // CHUNK_CAPS.playlist_writes uris; anything beyond that is appended in
+  // POST chunks of the same cap.
+  const writeCap = capFor('playlist_writes');
+  steps.push({ method: playlistId ? 'PUT' : 'POST', path: itemsPath, uris: Math.min(uris.length, writeCap) });
+  for (let start = writeCap; start < uris.length; start += writeCap) {
+    steps.push({ method: 'POST', path: itemsPath, uris: Math.min(uris.length - start, writeCap) });
   }
   return steps;
 }
@@ -521,9 +524,10 @@ export function registerPlaybackExtTools(server: McpServer, client: SpotifyClien
         const pl = await client.post<{ id: string; uri: string }>('/me/playlists', { name: `Replay: ${sess.id}`, description: `Replay of session ${sess.id} — ${sess.tags.join(', ')}` });
         const id = (pl as any)?.id;
         if (!id) return respond(args.response_format as string, store, { ok: false, error: 'create_failed', session_id: args.session_id }, 'Failed to create replay playlist.');
-        // add tracks batched 100
-        for (let i = 0; i < sess.tracks.length; i += 100) {
-          await client.post(`/playlists/${id}/items`, { uris: sess.tracks.slice(i, i + 100) });
+        // add tracks in CHUNK_CAPS.playlist_writes batches
+        const writeCap = capFor('playlist_writes');
+        for (let i = 0; i < sess.tracks.length; i += writeCap) {
+          await client.post(`/playlists/${id}/items`, { uris: sess.tracks.slice(i, i + writeCap) });
         }
         return respond(args.response_format as string, store, { ok: true, session_id: args.session_id, mode: 'playlist', playlist_id: id, tracks: sess.tracks.length }, `Replayed session "${args.session_id}" → playlist ${id} (${sess.tracks.length} tracks).`);
       }
@@ -609,10 +613,12 @@ export function registerPlaybackExtTools(server: McpServer, client: SpotifyClien
         playlistId = created.id;
       }
       const itemsPath = `/playlists/${encodeURIComponent(playlistId)}/items`;
-      // PUT replaces the whole playlist (max 100 uris); the rest is appended.
-      await client.put(itemsPath, { uris: uris.slice(0, 100) });
-      for (let start = 100; start < uris.length; start += 100) {
-        await client.post(itemsPath, { uris: uris.slice(start, start + 100) });
+      // PUT replaces the whole playlist (max CHUNK_CAPS.playlist_writes uris);
+      // the rest is appended in chunks of the same cap.
+      const writeCap = capFor('playlist_writes');
+      await client.put(itemsPath, { uris: uris.slice(0, writeCap) });
+      for (let start = writeCap; start < uris.length; start += writeCap) {
+        await client.post(itemsPath, { uris: uris.slice(start, start + writeCap) });
       }
 
       const refreshedAt = new Date().toISOString();

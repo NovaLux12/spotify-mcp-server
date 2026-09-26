@@ -15,6 +15,7 @@
  *   • No deprecated endpoints (SPEC §9).
  */
 import { z } from 'zod';
+import { capFor } from '../chunk.js';
 import { MARKET_CODE } from './catalog.js';
 import { readFile, readdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
@@ -183,8 +184,9 @@ async function atomicReplace(
   const path = `/playlists/${encodeURIComponent(targetId)}/items`;
   let snapshotId: string | undefined;
   let requests = 0;
-  for (let start = 0; start < uris.length; start += 100) {
-    const chunk = uris.slice(start, start + 100);
+  const writeCap = capFor('playlist_writes');
+  for (let start = 0; start < uris.length; start += writeCap) {
+    const chunk = uris.slice(start, start + writeCap);
     const res =
       start === 0
         ? await client.put<{ snapshot_id?: string }>(path, { uris: chunk })
@@ -218,9 +220,10 @@ async function addUrisChunked(
   const path = `/playlists/${encodeURIComponent(targetId)}/items`;
   let snapshotId: string | undefined;
   let requests = 0;
-  for (let start = 0; start < uris.length; start += 100) {
+  const writeCap = capFor('playlist_writes');
+  for (let start = 0; start < uris.length; start += writeCap) {
     const res = await client.post<{ snapshot_id?: string }>(path, {
-      uris: uris.slice(start, start + 100),
+      uris: uris.slice(start, start + writeCap),
     });
     if (res?.snapshot_id) snapshotId = res.snapshot_id;
     requests++;
@@ -1165,9 +1168,10 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
         return dryOut('exclude artists', p.id, changes);
       }
       let requests = 0;
-      for (let start = 0; start < positions.length; start += 100) {
+      const writeCap = capFor('playlist_writes');
+      for (let start = 0; start < positions.length; start += writeCap) {
         await client.delete(`/playlists/${encodeURIComponent(p.id)}/items`, {
-          tracks: positions.slice(start, start + 100).map((i) => ({ uri: p.items[i].item?.uri })),
+          tracks: positions.slice(start, start + writeCap).map((i) => ({ uri: p.items[i].item?.uri })),
         });
         requests++;
       }
@@ -1681,8 +1685,8 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
       const pickedArtists = artists.slice(0, artistsCap);
 
       const perArtistTracks: string[][] = [];
-      for (let i = 0; i < pickedArtists.length; i += 5) {
-        const batch = pickedArtists.slice(i, i + 5);
+      for (let i = 0; i < pickedArtists.length; i += 5) { // cap-exempt: client-side fan-out concurrency, one request per artist
+        const batch = pickedArtists.slice(i, i + 5); // cap-exempt: fan-out width, see the loop above
         const settled = await Promise.all(
           batch.map(async (artist) => {
             const albumsPage = await client.get<{ items: SpotifyAlbumItem[] }>(

@@ -17,6 +17,7 @@
  * bookmarks, listening journal, archived monthly reports. Owner-only modes.
  */
 import { z } from 'zod';
+import { capFor } from '../chunk.js';
 import { ARTIST_ALBUM_PAGE_LIMIT, MARKET_CODE } from './catalog.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
@@ -209,14 +210,15 @@ async function findPlaylistByName(client: SpotifyClient, name: string): Promise<
   return found ? { id: found.id, name: found.name } : null;
 }
 
-/** Unified library save/remove (chunked, 40 URIs per call like save_to_library). */
+/** Unified library save/remove (chunked by CHUNK_CAPS.library_writes, like save_to_library). */
 export async function modifyLibrary(client: SpotifyClient, uris: readonly string[], op: 'save' | 'remove'): Promise<number> {
   let n = 0;
-  for (let i = 0; i < uris.length; i += 40) {
-    const chunk = uris.slice(i, i + 40).join(',');
+  const libCap = capFor('library_writes');
+  for (let i = 0; i < uris.length; i += libCap) {
+    const chunk = uris.slice(i, i + libCap).join(',');
     if (op === 'save') await client.put(`/me/library?uris=${encodeURIComponent(chunk)}`);
     else await client.delete(`/me/library?uris=${encodeURIComponent(chunk)}`);
-    n += Math.min(40, uris.length - i);
+    n += Math.min(libCap, uris.length - i);
   }
   return n;
 }
@@ -704,9 +706,10 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
           return emit(rf, `${describeDryRun('sync Discover Weekly', args.archive_name, [`Would replace ${archive.name} with ${current.length} tracks`])}`, { ...payload, dry_run: true });
         }
         if (current.length > 0) {
-          await client.put(`/playlists/${encodeURIComponent(archive.id)}/items`, { uris: current.slice(0, 100) });
-          for (let i = 100; i < current.length; i += 100) {
-            await client.post(`/playlists/${encodeURIComponent(archive.id)}/items`, { uris: current.slice(i, i + 100) });
+          const writeCap = capFor('playlist_writes');
+          await client.put(`/playlists/${encodeURIComponent(archive.id)}/items`, { uris: current.slice(0, writeCap) });
+          for (let i = writeCap; i < current.length; i += writeCap) {
+            await client.post(`/playlists/${encodeURIComponent(archive.id)}/items`, { uris: current.slice(i, i + writeCap) });
           }
         }
       }
@@ -856,9 +859,10 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
         id = created.id;
       }
       if (uris.length > 0) {
-        await client.put(`/playlists/${encodeURIComponent(id)}/items`, { uris: uris.slice(0, 100) });
-        for (let i = 100; i < uris.length; i += 100) {
-          await client.post(`/playlists/${encodeURIComponent(id)}/items`, { uris: uris.slice(i, i + 100) });
+        const writeCap = capFor('playlist_writes');
+        await client.put(`/playlists/${encodeURIComponent(id)}/items`, { uris: uris.slice(0, writeCap) });
+        for (let i = writeCap; i < uris.length; i += writeCap) {
+          await client.post(`/playlists/${encodeURIComponent(id)}/items`, { uris: uris.slice(i, i + writeCap) });
         }
       }
       return emit(rf, `"${label}" ready: ${uris.length} track(s), ${isoDay(start)} → ${isoDay(end)}.`, { ...payload, playlist_id: id });
@@ -1338,9 +1342,10 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
         id = created.id;
       }
       if (uris.length > 0) {
-        await client.put(`/playlists/${encodeURIComponent(id)}/items`, { uris: uris.slice(0, 100) });
-        for (let i = 100; i < uris.length; i += 100) {
-          await client.post(`/playlists/${encodeURIComponent(id)}/items`, { uris: uris.slice(i, i + 100) });
+        const writeCap = capFor('playlist_writes');
+        await client.put(`/playlists/${encodeURIComponent(id)}/items`, { uris: uris.slice(0, writeCap) });
+        for (let i = writeCap; i < uris.length; i += writeCap) {
+          await client.post(`/playlists/${encodeURIComponent(id)}/items`, { uris: uris.slice(i, i + writeCap) });
         }
       }
       return emit(rf, `"${name}" (${args.mode}) ready with ${uris.length} matched track(s).`, { ...payload, playlist_id: id });

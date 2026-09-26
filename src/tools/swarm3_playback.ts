@@ -11,6 +11,7 @@
  *     serialized client queue.
  */
 import { z } from 'zod';
+import { capFor } from '../chunk.js';
 import { mkdir, readdir, readFile, unlink, writeFile } from 'node:fs/promises';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
@@ -1444,6 +1445,7 @@ export function registerSwarm3PlaybackTools(server: McpServer, client: SpotifyCl
 /** Split a uri list into ≤100-URI batches for playlist item writes. */
 function chunkedUris(uris: readonly string[]): string[][] {
   const out: string[][] = [];
-  for (let i = 0; i < uris.length; i += 100) out.push(uris.slice(i, i + 100));
+  const writeCap = capFor('playlist_writes');
+  for (let i = 0; i < uris.length; i += writeCap) out.push(uris.slice(i, i + writeCap));
   return out;
 }

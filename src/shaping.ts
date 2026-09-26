@@ -10,6 +10,7 @@ import { classifySpotifyReference } from './refs.js';
 import { DEFAULT_MAX_ITEMS, getConfig } from './config.js';
 import { normalizeObjectSchema } from '@modelcontextprotocol/sdk/server/zod-compat.js';
 import { toJsonSchemaCompat } from '@modelcontextprotocol/sdk/server/zod-json-schema-compat.js';
+import { CHUNK_CAPS } from './chunk.js';
 
 /** Exact root input schema projected onto the production tools/list boundary. */
 export function finalInputSchema(input: unknown): Record<string, unknown> {
@@ -51,20 +52,11 @@ export const DryRun = z
   );
 
 /**
- * Field fragment to spread into a list-type tool's args shape. Tools add
- * their own fields alongside; wave B composes:
- *   z.object({ ...sharedListFields, id: z.string() })
- */
-export const CHUNK_CAPS = {
-  tracks: 50, albums: 20, artists: 50, episodes: 50, shows: 50, audiobooks: 50, chapters: 50,
-  playlist_writes: 100, library_writes: 40, followed: 50,
-} as const;
-
-/**
  * Per-request cap for a `/me/library` write (#624). Spotify rejects a PUT or
  * DELETE carrying more than 40 uris. `restore.ts` and `undo.ts` import this
  * rather than each hardcoding the number, which is how the two drifted apart.
- * The read endpoint `/me/library/contains` takes 50 and is capped separately.
+ * The read endpoint `/me/library/contains` takes 50 and is capped separately
+ * as `CHUNK_CAPS.library_reads`; the whole policy lives in `chunk.ts` (#583).
  */
 export const LIBRARY_WRITE_CHUNK = CHUNK_CAPS.library_writes;
 
