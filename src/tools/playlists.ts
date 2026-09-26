@@ -4,6 +4,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
 import { capFor, runChunkedPlaylistWrite } from '../chunk.js';
 import { getConfig } from '../config.js';
+import { fetchCoverJpeg, validateCoverJpegBuffer } from '../cover-image.js';
 import {
   confirmViaElicitation,
   describeConfirmation,
@@ -561,20 +562,18 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
     },
     async (args) => {
       // Validate before spending the round-trip: JPEG magic bytes in base64
-      // start with /9j, and Spotify caps cover uploads at 256 KB
-      if (!args.jpeg_base64.startsWith('/9j')) {
-        throw new Error('jpeg_base64 does not look like a JPEG (base64 data should start with "/9j")');
-      }
-      if (Buffer.from(args.jpeg_base64, 'base64').length > 256 * 1024) {
-        throw new Error('Decoded JPEG exceeds the 256 KB limit for playlist covers');
-      }
+      // start with /9j, and Spotify caps cover uploads at 256 KB. The buffer
+      // validator is the same one fetchCoverJpeg uses after a real fetch, so
+      // both cover paths agree on what "valid JPEG under the cap" means (#880).
+      const buf = Buffer.from(args.jpeg_base64, 'base64');
+      validateCoverJpegBuffer(buf);
 
       if (args.dry_run) {
         return {
           content: [{
             type: 'text',
             text: describeDryRun('upload cover image', args.playlist_id, [
-              `Upload ${Math.round(Buffer.from(args.jpeg_base64, 'base64').length / 1024)} KB JPEG cover`,
+              `Upload ${Math.round(buf.length / 1024)} KB JPEG cover`,
             ]),
           }],
         };
@@ -1946,10 +1945,10 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
     if (idx >= images.length) throw new Error(`image_index ${idx} out of range (${images.length} image(s))`);
     const url = images[idx].url;
     if (args.dry_run) return textResult(describeDryRun('clone cover', args.target_playlist_id, [`Copy ${url} → ${args.target_playlist_id}`]));
-    const resp = await fetch(url);
-    if (!resp.ok) throw new Error(`Failed to fetch cover image: ${resp.status}`);
-    const buf = Buffer.from(await resp.arrayBuffer());
-    if (buf.length > 256 * 1024) throw new Error('Cover image exceeds 256 KB');
+    // Shared helper: validates content-type + JPEG magic bytes + 256 KB cap,
+    // and uses fetchWithTimeout so a stalled CDN fails fast on timeout rather
+    // than hanging the calling process (#880).
+    const { buf } = await fetchCoverJpeg(url);
     const b64 = buf.toString('base64');
     await client.putRaw(`/playlists/${encodeURIComponent(args.target_playlist_id)}/images`, b64);
     return textResult(`Cloned cover from ${args.source_playlist_id} → ${args.target_playlist_id} (${Math.round(buf.length/1024)} KB)`);

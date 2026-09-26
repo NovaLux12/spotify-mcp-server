@@ -150,7 +150,7 @@ The same applies to `get_currently_playing` (lightweight poll). A 304 never surf
 
 Every receipt-bearing mutation can be reverted. The receipt ID returned by the tool is the handle for the rollback, and a verify step confirms the receipt itself. The undo surface is three tools; none of them touch Spotify until the human approves the rollback.
 
-- `verify_receipt` — looks up a receipt by ID and reports its recorded URIs and verification state. Read-only.
+- `verify_receipt` — looks up a receipt by ID and reports its recorded URIs and verification state. Read-only, and registered unconditionally (not trimmed by `SPOTIFY_MCP_TOOLSETS` or the scope filter), because a session that just made the write must be able to verify it. `structuredContent.found` tells the two outcomes apart; an unknown or expired id also sets `isError`, so a miss is a failed *lookup*, never evidence about the mutation.
 - `undo_mutation` — inverts a specific mutation by receipt ID. Add/save receipts roll back as a removal, removal receipts as a re-add. Playlist add undos target only the rows the add created — never every copy of the URI. Defaults to `dry_run: true`; execute needs elicitation confirmation and is refused when the host cannot prompt (`SPOTIFY_MCP_CONFIRM=never` bypasses).
 - `undo_last_mutation` — same inversion semantics as `undo_mutation`, target = the most recent reversible receipt.
 

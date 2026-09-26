@@ -328,7 +328,7 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
       const longest = rows.length > 1 && rows[longestIdx].gap_days_since_previous
         ? { after: rows[longestIdx - 1]?.name ?? null, before: rows[longestIdx].name, days: rows[longestIdx].gap_days_since_previous }
         : null;
-      const cap = resolveMaxResults(args.max_results, 500);
+      const cap = resolveMaxResults(args.max_results);
       const trunc = truncateItems(rows, cap);
       const prose = [
         `Release timeline (${sorted.length} releases, median gap ${median ?? '—'}d${longest ? `, longest drought ${longest.days}d between "${longest.after}" and "${longest.before}"` : ''}):`,
@@ -571,7 +571,7 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
           samples: items.slice(0, 5).map((i) => i.name),
         }))
         .sort((a, b) => b.count - a.count);
-      const cap = resolveMaxResults(args.max_results, 50);
+      const cap = resolveMaxResults(args.max_results);
       const trunc = truncateItems(rows, cap);
       const prose = [
         `Labels across ${metas.length} releases:`,
@@ -602,7 +602,7 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
       const albums = await artistAlbums(client, args.artist_id, args.include_groups ?? 'album,single,compilation,appears_on', fetchAllCap());
       const needle = normalizeName(args.query);
       const hits = albums.filter((a) => normalizeName(a.name).includes(needle));
-      const cap = resolveMaxResults(args.max_results, 100);
+      const cap = resolveMaxResults(args.max_results);
       const trunc = truncateItems(hits, cap);
       const prose = [
         `Releases matching "${args.query}": ${hits.length} of ${albums.length} scanned.`,
@@ -701,7 +701,7 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
       });
       const totalMs = rows.reduce((s, t) => s + t.duration_ms, 0);
       const longest = rows.reduce((best, t) => (t.duration_ms > best.duration_ms ? t : best), rows[0]);
-      const cap = resolveMaxResults(args.max_results, 200);
+      const cap = resolveMaxResults(args.max_results);
       const trunc = truncateItems(rows, cap);
       const prose = [
         `${album.name} (${album.release_date}) — ${album.total_tracks} tracks, runtime ${fmtDur(totalMs)}, longest "${longest?.name ?? '—'}" (${fmtDur(longest?.duration_ms ?? 0)}):`,
@@ -808,7 +808,7 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
           rows.push({ album: m.name, year: yearOf(m.release_date), track_number: t.track_number, name: t.name, duration_ms: t.duration_ms, duration: fmtDur(t.duration_ms), id: t.id });
         }
       }
-      const cap = resolveMaxResults(args.max_results, 150);
+      const cap = resolveMaxResults(args.max_results);
       const trunc = truncateItems(rows, cap);
       const prose = [
         `Deep cuts (${rows.length} picks across ${metas.length} albums):`,
@@ -863,7 +863,7 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
         }
       }
       rows.sort((a, b) => (a.year ?? 9999) - (b.year ?? 9999) || a.name.localeCompare(b.name));
-      const cap = resolveMaxResults(args.max_results, 150);
+      const cap = resolveMaxResults(args.max_results);
       const trunc = truncateItems(rows, cap);
       const prose = [
         `B-sides (${rows.length} non-album tracks across ${singles.length} singles):`,
@@ -986,7 +986,7 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
           longest_track: longest ? { name: longest.name, duration_ms: longest.duration_ms, duration: fmtDur(longest.duration_ms) } : null,
         };
       }).sort((a, b) => b.runtime_ms - a.runtime_ms);
-      const cap = resolveMaxResults(args.max_results, 100);
+      const cap = resolveMaxResults(args.max_results);
       const trunc = truncateItems(rows, cap);
       const prose = [
         `Album runtimes (${rows.length} albums, longest first):`,
@@ -1065,7 +1065,7 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
         }
       }
       rows.sort((a, b) => (b.release_date ?? '').localeCompare(a.release_date ?? ''));
-      const capOut = resolveMaxResults(args.max_results, 100);
+      const capOut = resolveMaxResults(args.max_results);
       const trunc = truncateItems(rows, capOut);
       const prose = [
         `Newest releases across ${artistMap.size} artist(s):`,
@@ -1178,7 +1178,7 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
         .filter((a) => liveRe.test(a.name))
         .sort((a, b) => (a.release_date ?? '').localeCompare(b.release_date ?? ''))
         .map((a) => ({ id: a.id, name: a.name, release_date: a.release_date, year: yearOf(a.release_date), album_type: a.album_type, total_tracks: a.total_tracks }));
-      const cap = resolveMaxResults(args.max_results, 100);
+      const cap = resolveMaxResults(args.max_results);
       const trunc = truncateItems(rows, cap);
       const prose = [
         `Live releases (${rows.length} of ${albums.length} scanned):`,
@@ -1211,7 +1211,7 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
         .filter((a) => !savedIds.has(a.id))
         .sort((a, b) => (a.release_date ?? '').localeCompare(b.release_date ?? ''))
         .map((a) => ({ id: a.id, name: a.name, release_date: a.release_date, year: yearOf(a.release_date), total_tracks: a.total_tracks }));
-      const cap = resolveMaxResults(args.max_results, 100);
+      const cap = resolveMaxResults(args.max_results);
       const trunc = truncateItems(rows, cap);
       const prose = [
         `Collection gaps (${rows.length} of ${albums.length} studio albums not saved):`,
@@ -1241,7 +1241,7 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
       const rows = singles
         .sort((a, b) => (a.release_date ?? '').localeCompare(b.release_date ?? ''))
         .map((s) => ({ id: s.id, name: s.name, release_date: s.release_date, year: yearOf(s.release_date), total_tracks: s.total_tracks }));
-      const cap = resolveMaxResults(args.max_results, 300);
+      const cap = resolveMaxResults(args.max_results);
       const trunc = truncateItems(rows, cap);
       const prose = [
         `Singles timeline (${singles.length}):`,

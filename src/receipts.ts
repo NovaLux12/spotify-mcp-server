@@ -417,6 +417,27 @@ export function __resetReceiptStoreForTests(): void {
   onDiskLines = 0;
 }
 
+/**
+ * The id shape `issueReceipt` mints: `rcpt_<bootId>-<n>` since #587, and the
+ * bare `rcpt_<n>` counter a pre-#587 `receipts.jsonl` can still hold. Both are
+ * accepted; anything else is a typo or a fabricated id.
+ *
+ * A receipt id only ever comes from a mutation result, so an agent that
+ * mistypes one is losing a lookup, not asking a question. Rejecting the
+ * malformed shape at the schema is what turns "Unknown or expired receipt
+ * 'recpt_4'" — which reads as a fact about the receipt — into a validation
+ * error naming the expected shape, which reads as a fact about the call.
+ */
+export const RECEIPT_ID_PATTERN = /^rcpt_(?:[0-9a-z]+-)?\d+$/i;
+
+/** Human form of {@link RECEIPT_ID_PATTERN}, quoted back in the failure message. */
+export const RECEIPT_ID_SHAPE = 'rcpt_<bootId>-<n>';
+
+/** True when `id` could be a receipt id at all — cheap, shape-only, no store read. */
+export function isPlausibleReceiptId(id: string): boolean {
+  return RECEIPT_ID_PATTERN.test(id);
+}
+
 /** Stored receipt lookup for the orchestrator-wired `verify_receipt` tool. */
 export function verifyReceipt(receiptId: string): Receipt | undefined {
   ensureLoaded();

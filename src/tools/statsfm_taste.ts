@@ -1030,7 +1030,7 @@ export function registerStatsfmTasteTools(server: McpServer, _client: SpotifyCli
         });
         if (bridges.length >= 10) break;
       }
-      const shaped = truncateItems(bridges, resolveMaxResults(args.max_results, 5));
+      const shaped = truncateItems(bridges, resolveMaxResults(args.max_results));
       const lines = [`Bridge-mode recommendations for ${u} (core: ${coreGenres.join(' / ')}):`];
       shaped.items.forEach((b, i) => {
         lines.push(`  ${i + 1}. ${b.direction}`);
