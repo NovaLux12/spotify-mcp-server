@@ -115,7 +115,7 @@ The table is generated from every TypeScript file recursively under `src/`, incl
 | `src/auth.ts` | Runtime module for src/auth.ts. (0 registered tools) | 690 |
 | `src/cache.ts` | Tiny LRU + TTL cache used by SpotifyClient for immutable catalog reads (#54). (0 registered tools) | 325 |
 | `src/chunk.ts` | The batch-size policy for the whole server, in one place (#512, #583). (0 registered tools) | 124 |
-| `src/client.ts` | Runtime module for src/client.ts. (0 registered tools) | 1247 |
+| `src/client.ts` | Runtime module for src/client.ts. (0 registered tools) | 1314 |
 | `src/config.ts` | Central configuration loader for the SPOTIFY_MCP_* environment family. (0 registered tools) | 236 |
 | `src/cover-image.ts` | Shared cover-image helpers for the three playlist cover tools (#880). (0 registered tools) | 96 |
 | `src/csvsafe.ts` | CSV cell rendering shared by every writer that emits a spreadsheet (#630). (0 registered tools) | 32 |

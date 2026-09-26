@@ -13,6 +13,10 @@
  *   - Error mapping: structured {error:{message}} bodies win; missing bodies
  *     fall back to per-status generic messages (403/404/503).
  *   - 204 No Content on GET returns null (never parses empty JSON).
+ *   - Unreadable mutation bodies (#674): a 2xx write whose body will not parse
+ *     resolves to null, never throws a raw SyntaxError, still invalidates the
+ *     read cache and still lands in the history ledger; a rejected write
+ *     invalidates nothing; an unreadable READ body still errors.
  *   - getAllPages: full walk, explicit maxItems cap, configured fetch-all
  *     cap (SPOTIFY_MCP_FETCH_ALL_CAP via initConfig), malformed-page break,
  *     per-page progress events (#65).
@@ -1136,6 +1140,209 @@ describe('SpotifyClient', () => {
       const result = await client.get('/me/player');
       assert.equal(result, null);
       assert.equal(apiCalls().length, 1);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // 6b. Unreadable mutation bodies (#674)
+  // -------------------------------------------------------------------------
+
+  describe('unreadable mutation bodies (#674)', () => {
+    // The hazard this covers is not a crash, it is a lie: a 2xx write that
+    // Spotify applied, reported back to the caller as a failure. The caller
+    // retries and double-applies (queue duplicates, double playlist adds,
+    // duplicate library saves), and the stale read cache plus the history line
+    // are skipped with it.
+
+    /** 200 + a JSON content-type, delivering `body` as the exact bytes. */
+    function jsonBodyResponse(body: string): Response {
+      return new Response(body, { status: 200, headers: { 'content-type': 'application/json' } });
+    }
+
+    it('resolves a 200 + application/json + empty body to null instead of throwing', async () => {
+      await seedTokens();
+      responder = () => jsonBodyResponse('');
+
+      const client = new SpotifyClient();
+      const result = await client.post('/me/player/queue', { uri: 'spotify:track:x' });
+      assert.equal(result, null, 'an empty body is not a failed write');
+      assert.equal(apiCalls().length, 1);
+      assert.equal(apiCalls()[0].init.method, 'POST');
+    });
+
+    it('resolves a torn JSON body to null instead of throwing', async () => {
+      await seedTokens();
+      responder = () => jsonBodyResponse('{"a":');
+
+      const client = new SpotifyClient();
+      const result = await client.post('/playlists/p1/items', { uris: ['spotify:track:x'] });
+      assert.equal(result, null);
+    });
+
+    it('still parses a well-formed body and carries its snapshot_id', async () => {
+      await seedTokens();
+      responder = () => jsonResponse({ snapshot_id: 'snap-1' }, 200, { 'content-type': 'application/json' });
+
+      const client = new SpotifyClient();
+      const result = await client.delete<{ snapshot_id: string }>('/me/tracks?ids=x');
+      assert.deepEqual(result, { snapshot_id: 'snap-1' });
+    });
+
+    it('gives every write method the same guard, not just post', async () => {
+      await seedTokens();
+      responder = () => jsonBodyResponse('{"torn":');
+
+      const client = new SpotifyClient();
+      // put / delete share post's helper; putRaw sends no parseable body at all.
+      assert.equal(await client.put('/me/player/volume?volume_percent=50', { volume_percent: 50 }), null);
+      assert.equal(await client.delete('/me/player/devices/current', null), null);
+      await client.putRaw('/playlists/p1/images', 'binary-bytes');
+      assert.deepEqual(
+        apiCalls().map((c) => `${c.init.method} ${new URL(c.url).pathname}`),
+        [
+          'PUT /v1/me/player/volume',
+          'DELETE /v1/me/player/devices/current',
+          'PUT /v1/playlists/p1/images',
+        ],
+      );
+    });
+
+    it('invalidates the read cache after a write whose body would not parse', async () => {
+      await seedTokens();
+      let albumReads = 0;
+      responder = (_url, init) => {
+        if (init.method === 'POST') return jsonBodyResponse('');
+        albumReads++;
+        return jsonResponse({ items: [{ id: `read-${albumReads}` }], total: 1, limit: 1, offset: 0 });
+      };
+
+      const client = new SpotifyClient();
+      const first = await client.get<{ items: { id: string }[] }>('/albums');
+      const cached = await client.get<{ items: { id: string }[] }>('/albums');
+      assert.deepEqual(cached, first);
+      assert.equal(albumReads, 1, 'the second read was a cache hit');
+
+      assert.equal(await client.post('/me/player/queue', { uri: 'spotify:track:x' }), null);
+
+      const after = await client.get<{ items: { id: string }[] }>('/albums');
+      assert.equal(albumReads, 2, 'the accepted write dropped the cached read');
+      assert.notDeepEqual(after, first, 'the post-write read is not the pre-write payload');
+    });
+
+    it('does not invalidate the cache for a write Spotify rejected', async () => {
+      await seedTokens();
+      let albumReads = 0;
+      responder = (_url, init) => {
+        if (init.method === 'POST') return jsonResponse({ error: { message: 'Not found.' } }, 404);
+        albumReads++;
+        return jsonResponse({ items: [{ id: `read-${albumReads}` }], total: 1, limit: 1, offset: 0 });
+      };
+
+      const client = new SpotifyClient();
+      await client.get('/albums');
+      await assert.rejects(client.post('/me/player/nope'), (err: unknown) => {
+        assert.ok(err instanceof SpotifyApiError);
+        assert.equal(err.status, 404);
+        // Spotify's own message, not a rewritten one (#1/#6).
+        assert.equal(err.message, 'Not found.');
+        return true;
+      });
+
+      await client.get('/albums');
+      assert.equal(albumReads, 1, 'a rejected write changed nothing, so the cache stands');
+    });
+
+    it('surfaces a torn token-refresh body as a SpotifyApiError, not a SyntaxError', async () => {
+      await seedTokens({ expires_at: Date.now() - 1000 }); // forces the pre-request refresh
+      responder = (url) =>
+        isAccountsUrl(url) ? jsonBodyResponse('{"access_token":') : jsonResponse({ display_name: 'tester' });
+
+      const client = new SpotifyClient();
+      await assert.rejects(client.get('/me'), (err: unknown) => {
+        assert.ok(
+          err instanceof SpotifyApiError,
+          `expected SpotifyApiError, got ${(err as Error)?.name}: ${(err as Error)?.message}`,
+        );
+        assert.equal(err.status, 503);
+        return true;
+      });
+    });
+
+    it('rides out an unreadable token refresh on a still-valid access token', async () => {
+      // Inside the 60s pre-expiry refresh window but not yet expired.
+      await seedTokens({ expires_at: Date.now() + 30_000 });
+      responder = (url) =>
+        isAccountsUrl(url) ? jsonBodyResponse('not json at all') : jsonResponse({ display_name: 'tester' });
+
+      const client = new SpotifyClient();
+      const result = await client.get<{ display_name: string }>('/me');
+      assert.deepEqual(result, { display_name: 'tester' });
+      assert.equal(apiCalls().length, 1);
+      assert.equal(authHeaderOf(apiCalls()[0]), 'Bearer tok-initial', 'the old token carried the call');
+    });
+
+    it('still reports an unreadable READ body as an error, not as a null payload', async () => {
+      await seedTokens();
+      responder = () => jsonBodyResponse('{"a":');
+
+      const client = new SpotifyClient();
+      await assert.rejects(client.get('/albums'), (err: unknown) => {
+        assert.ok(err instanceof SpotifyApiError, 'a read has no safe null to fall back to');
+        assert.match(err.message, /non-JSON body/);
+        return true;
+      });
+    });
+
+    // -- history: a mutation whose body never parsed must still be in the trail
+
+    // Scoped to the one test that reads the ledger rather than set for the whole
+    // block: appendHistory is fire-and-forget, so a per-test unlink of the file
+    // races the previous test's in-flight write and surfaces as a spurious
+    // "[spotify-mcp] history write failed" line in the suite output.
+    const histDir = path.join(tokenDir, 'history-674');
+    const ledger = path.join(histDir, 'mutations.jsonl');
+
+    async function withHistory<T>(fn: () => Promise<T>): Promise<T> {
+      const savedHistory = process.env.SPOTIFY_MCP_HISTORY;
+      const savedHistoryDir = process.env.SPOTIFY_MCP_HISTORY_DIR;
+      process.env.SPOTIFY_MCP_HISTORY = '1';
+      process.env.SPOTIFY_MCP_HISTORY_DIR = histDir;
+      await rm(histDir, { recursive: true, force: true });
+      try {
+        return await fn();
+      } finally {
+        if (savedHistory === undefined) delete process.env.SPOTIFY_MCP_HISTORY;
+        else process.env.SPOTIFY_MCP_HISTORY = savedHistory;
+        if (savedHistoryDir === undefined) delete process.env.SPOTIFY_MCP_HISTORY_DIR;
+        else process.env.SPOTIFY_MCP_HISTORY_DIR = savedHistoryDir;
+      }
+    }
+
+    it('appends a history line for a mutation whose body would not parse', async () => {
+      await withHistory(async () => {
+        await seedTokens();
+        responder = () => jsonBodyResponse('');
+        const client = new SpotifyClient();
+
+        assert.equal(await client.post('/me/player/queue', { uri: 'spotify:track:x' }), null);
+
+        // afterMutation appends off the critical path, so poll for the line.
+        let lines: string[] = [];
+        let guard = 0;
+        while (lines.length < 1 && guard++ < 1_000) {
+          try {
+            const raw = await readFile(ledger, 'utf8');
+            lines = raw.split('\n').filter((l) => l.trim().length > 0);
+          } catch {
+            lines = [];
+          }
+          if (lines.length < 1) await nextTick();
+        }
+        assert.equal(lines.length, 1, 'the write is in the audit trail');
+        const record = JSON.parse(lines[0]) as { method: string; path: string };
+        assert.equal(record.method, 'POST');
+        assert.equal(record.path, '/me/player/queue');
+      });
     });
   });
 
