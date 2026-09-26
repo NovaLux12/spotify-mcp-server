@@ -6,6 +6,10 @@
  * `search`, `search_deep` and the typed-search factory — it is opt-out
  * (SPOTIFY_MCP_SEARCH_HISTORY=0) and never throws, so a sidecar that cannot be
  * written cannot fail a search.
+ *
+ * Replay (#793): `search_rerun` clamps the stored limit into the live range
+ * before it reaches the wire, so a sidecar written under the older, higher
+ * cap still replays — and reports the limit actually sent.
  */
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -15,6 +19,13 @@ import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import type { SpotifyClient } from '../client.js';
 import { ResponseFormat } from '../shaping.js';
+import { SPOTIFY_SEARCH_MAX_LIMIT } from './search.js';
+
+/**
+ * Results-per-request a replay asks for when the sidecar records no usable
+ * limit — the same default the live search tool applies.
+ */
+const DEFAULT_REPLAY_LIMIT = 5;
 
 type ToolResult = { content: Array<{ type: 'text'; text: string }>; structuredContent?: Record<string, unknown> };
 function textResult(text: string, s?: Record<string, unknown>): ToolResult { return { content: [{ type: 'text', text }], ...(s ? { structuredContent: s } : {}) }; }
@@ -140,6 +151,20 @@ export async function appendSearchHistory(entry: SearchHistoryEntry, env: NodeJS
   await saveSearchHistory(entries, env);
 }
 
+/**
+ * The numeric limit a sidecar entry records, or NaN when it records nothing
+ * usable. The sidecar is untrusted input: `"50"` in an imported file is a
+ * limit, but `""`, `null`, `false` and `{}` only *look* coercible — `Number('')`
+ * and `Number(false)` are both 0, and reading those as a recorded 0 would
+ * clamp a replay up to one result and report `limit_clamped_from: 0`, a number
+ * the file never carried.
+ */
+function replayableLimit(stored: unknown): number {
+  if (typeof stored === 'number') return Number.isFinite(stored) ? Math.round(stored) : Number.NaN;
+  if (typeof stored === 'string' && stored.trim() !== '') return Math.round(Number(stored));
+  return Number.NaN;
+}
+
 export function registerSearchHistoryTools(server: McpServer, client: SpotifyClient): void {
   server.tool('search_history',
     'Recall past searches (local sidecar, 90-day expiry). Optionally filter by query substring. Recorded by search/search_deep/search_* tools; set SPOTIFY_MCP_SEARCH_HISTORY=0 to stop recording.',
@@ -165,7 +190,7 @@ export function registerSearchHistoryTools(server: McpServer, client: SpotifyCli
     });
 
   server.tool('search_rerun',
-    'Re-execute a stored search by history id via GET /search.',
+    'Re-execute a stored search, clamping stale limits.',
     {
       history_id: z.string().min(1).describe('History entry id'),
       response_format: ResponseFormat,
@@ -175,10 +200,42 @@ export function registerSearchHistoryTools(server: McpServer, client: SpotifyCli
       const entry = entries.find((e) => e.id === args.history_id);
       if (!entry) return textResult(`No history entry "${args.history_id}".`, { ok: false, available: entries.map((e) => e.id) });
       const types = (entry.types ?? ['track']) as string[];
-      const params: Record<string, string> = { q: entry.query, type: types.join(','), limit: String(entry.limit ?? 5) };
+      // #793: a sidecar written before the February-2026 cap, or imported from
+      // another install, can carry a limit /search will now reject with an
+      // opaque 400. The caller cannot fix it — the value comes from disk, not
+      // from its own arguments — so clamp on read and report what was sent.
+      // An imported or hand-written sidecar is not obliged to hold a *number*
+      // here. Coerce whatever is there; a value that carries no usable number
+      // is discarded, and that discard is itself an adjustment the payload has
+      // to name rather than pass off as a five-result replay the caller chose.
+      const asNumber = replayableLimit(entry.limit);
+      const usable = Number.isFinite(asNumber);
+      const limit = Math.min(SPOTIFY_SEARCH_MAX_LIMIT, Math.max(1, usable ? asNumber : DEFAULT_REPLAY_LIMIT));
+      // No recorded limit at all is not a clamp: the default was never an
+      // adjustment of anything the caller can see. Anything else that differs
+      // from what reached the wire is reported, including a value dropped for
+      // carrying no usable number.
+      const adjusted = entry.limit !== undefined && (!usable || limit !== asNumber);
+      const params: Record<string, string> = { q: entry.query, type: types.join(','), limit: String(limit) };
       if (entry.market) params.market = entry.market;
       if (entry.offset) params.offset = String(entry.offset);
       const res = await client.get<unknown>('/search', params);
-      return emit(args.response_format as string, { ok: true, history_id: entry.id, query: entry.query, types, result: res }, `Re-ran search "${entry.query}" (${types.join(',')}) — see structuredContent.result.`);
+      return emit(args.response_format as string, {
+        ok: true,
+        history_id: entry.id,
+        query: entry.query,
+        types,
+        limit_used: limit,
+        // Read back off the params that were sent, not off the entry: a stored
+        // market that did not survive into `params` was not market-scoped, and
+        // a consumer branching on `market_used !== null` must not be told
+        // otherwise.
+        market_used: 'market' in params ? params.market : null,
+        // A coercible limit reports the number the clamp was computed from; a
+        // value that would not coerce reports the raw sidecar value, which is
+        // the only account of it that exists.
+        ...(adjusted ? { limit_clamped_from: usable ? asNumber : entry.limit } : {}),
+        result: res,
+      }, `Re-ran search "${entry.query}" (${types.join(',')}, limit ${limit}${entry.market ? `, market ${entry.market}` : ''}) — see structuredContent.result.`);
     });
 }
