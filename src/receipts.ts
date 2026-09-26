@@ -73,6 +73,16 @@ export interface Receipt {
    */
   direction?: 'added' | 'removed';
   /**
+   * The direction the mutation was ISSUED with (#586): `false` for a removal,
+   * `true` for an addition or a meta receipt. Persisted so a receipt rendered
+   * after the fact — `verify_receipt` re-renders the stored receipt with no
+   * caller options — still labels its `missing` list correctly. Without it
+   * `formatReceipt` fell back to the addition vocabulary and printed a
+   * leftover removal uri as "missing uris", i.e. the opposite of what the
+   * refetch observed.
+   */
+  expect_present?: boolean;
+  /**
    * The exact playlist rows this mutation touched (#625), recorded from the
    * post-mutation walk. `undo` removes these positions rather than every copy
    * of the URI, so undoing an add cannot destroy a row that predated it.
@@ -427,6 +437,9 @@ export async function issueReceipt(
     missing,
     uris: [...opts.uris],
     direction: (opts.expectPresent ?? true) ? 'added' : 'removed',
+    // Persisted so a later re-render (verify_receipt) labels the same
+    // `missing` list the way the mutating turn did (#586).
+    expect_present: opts.expectPresent ?? true,
     ...(affected !== undefined && affected.length > 0 ? { affected } : {}),
     ...(occurrences !== undefined ? { occurrences } : {}),
     ...(_windowExceeded ? { windowExceeded: true as const, reason: _reason } : {}),
@@ -438,6 +451,19 @@ export async function issueReceipt(
     if (oldest !== undefined) store.delete(oldest);
   }
   return receipt;
+}
+
+/**
+ * The direction a receipt's `missing` list must be labelled with (#586). An
+ * explicit caller option wins (the mutating turn knows the direction it
+ * issued); otherwise the receipt carries it, and `direction` is the fallback
+ * for anything issued before `expect_present` was persisted. With neither, the
+ * issue-time default applies and the label is "missing uris".
+ */
+function expectsPresence(r: Receipt, opts?: { expectPresent?: boolean }): boolean {
+  if (opts?.expectPresent !== undefined) return opts.expectPresent;
+  if (r.expect_present !== undefined) return r.expect_present;
+  return r.direction !== 'removed';
 }
 
 /**
@@ -456,12 +482,12 @@ export function formatReceipt(
   if (r.windowExceeded) {
     lines.push(`  reason: ${r.reason ?? 'window exceeded'}`);
     if (r.missing.length > 0) {
-      const label = opts?.expectPresent === false ? 'still-present uris' : 'missing uris';
+      const label = expectsPresence(r, opts) ? 'missing uris' : 'still-present uris';
       lines.push(`  ${label}: ${r.missing.join(', ')}`);
     }
     return lines.join('\n');
   }
-  if (opts?.expectPresent === false) {
+  if (!expectsPresence(r, opts)) {
     lines.push(
       r.missing.length > 0
         ? `  still-present uris: ${r.missing.join(', ')}`
