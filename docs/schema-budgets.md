@@ -88,7 +88,7 @@ above either ceiling fails CI and server startup.
 | backupfirst | 1 | 513 | 1 | 513 | 2 | 565 |
 | backup | 3 | 2,584 | 3 | 2,584 | 4 | 2,843 |
 | restore | 1 | 1,851 | 1 | 1,851 | 2 | 2,037 |
-| undo | 2 | 1,518 | 2 | 1,518 | 3 | 1,670 |
+| undo | 2 | 1,663 | 2 | 1,663 | 3 | 1,830 |
 | receipts | 1 | 315 | 1 | 315 | 2 | 347 |
 | episodemgmt | 1 | 1,053 | 1 | 1,053 | 2 | 1,159 |
 | freshness | 1 | 2,043 | 1 | 2,043 | 2 | 2,248 |
