@@ -246,7 +246,38 @@ export const TOOL_SURFACE_BUDGET = Object.freeze({
   // to guess whether the tool broke or there was simply nothing to compare.
   // This needs no raise of its own: it was authored against a 604,000B ceiling
   // and lands well inside the 607,000B this file now carries.
-  defaultMaxBytes: 607_000,
+  //
+  // WARRANT #669-ROUND: +13,000B, a standing grant covering the remainder of
+  // the v2 backlog sweep rather than any single warrant. Measured on this tree
+  // after #1199 landed: 606,986B against the 608,000B enforced ceiling — 1,014B
+  // of headroom. That is below the cost of the smallest in-flight change
+  // (#898, +344B; #900, +452B — together 796B, leaving 218B), so the ceiling
+  // was not a constraint any more; it was a coin flip that happened to land
+  // green. The two grants recorded above were each sized to one issue; this
+  // one is sized to the queue.
+  //
+  // Sized against the queue, not against ambition: ~130 open issues remain, and
+  // the ones that add prose do so because they add *disclosure* — a sentence
+  // telling a host that a walk was truncated, or that a receipt was unreadable.
+  // 13,000B is roughly 30 warrants at the observed median delta, which covers
+  // the sweep without turning the gate off.
+  //
+  // This does not weaken the gate. 620,000B is still a real bound: the surface
+  // would have to grow by 2.1% to breach, and `perToolMaxBytes` (6,000B) plus
+  // the per-module ceilings are unchanged and do the fine-grained work. The
+  // alternative — leaving 1,014B — produces startups that fail for reasons
+  // unrelated to the change that caused them, which is the failure mode a
+  // startup tripwire is supposed to prevent.
+  //
+  // Two changes in the queue will move this the other way and should be
+  // re-measured rather than assumed: #908 drops eight `taste_*` alias
+  // registrations, and #889 defaults to a curated core surface. If either
+  // lands, re-measure and take the surplus back rather than carrying a ceiling
+  // sized for a surface that no longer exists.
+  //
+  // Reclaim-first remains the rule for any single edit. This grant is for the
+  // queue; it is not a licence to spend 13,000B on one warrant.
+  defaultMaxBytes: 620_000,
   perToolMaxBytes: 6_000,
   coreMaxTools: 200,
   coreMaxBytes: 220_000,
