@@ -136,6 +136,74 @@ const MUTATING_PREFIXES =
 const READ_ONLY_PREFIXES =
   /^(get|list|search|check|inspect|find|show|describe|report|count|is|has|read|lookup|compare|diff|history|stats|statsfm|summary|summarize|summarise|analyze|analyse|validate|estimate|diagnose|resolve|quiz|census|audit|review|coverage|timeline|heatmap|trends?|insights?|distribution|breakdown|matrix|explorer|probe|digest|briefing|radar|where)/;
 
+/**
+ * A token in a tool description that could be naming another tool. The shape is
+ * the v2 naming policy's: a lower_snake_case name with at least one underscore.
+ * Requiring the underscore is what keeps ordinary English prose out, and it
+ * also means a registration key can never collide — every registration key is
+ * a single bare word (`library`, `doctor`, `playback`).
+ */
+const TOOL_NAME_SHAPE = /\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b/g;
+
+/**
+ * lower_snake_case names that appear in descriptions but are NOT tools: keys a
+ * tool writes into its own result — report row keys, envelope flags, paging
+ * cursors, and the free-form keys of an object argument.
+ *
+ * Tool names and parameter names are deliberately absent — both are derived
+ * from the surface at test time, so a renamed tool or a dropped parameter
+ * stops being allowlisted the moment production drops it, instead of
+ * surviving here and masking a real drift. Every entry below was read off the
+ * description that produced it; a tool name belongs in the registry, never
+ * here, so allowlisting a cross-reference mistake is not an escape hatch.
+ */
+const OUTPUT_FIELD_NAMES = new Set<string>([
+  // Envelope / completeness flags a tool reports about its own result.
+  'absent_keys',
+  'cap_reached',
+  'scan_complete',
+  'search_errors',
+  'search_failed',
+  'sidecar_truncated',
+  'truncated_collections',
+  // Cursors and caps a call reports back so the next call can continue.
+  // #809: create_smart_playlist names the candidate-pool ceiling it reports.
+  'pool_capped', 'pool_cap',
+  'fetch_all_cap',
+  'from_token',
+  'next_offset',
+  // Row keys and counters inside a result payload.
+  'added_by',
+  'album_type',
+  'artists_scanned',
+  'available_markets',
+  'catalogue_total',
+  'dir_bytes',
+  'exported_at',
+  'followed_at',
+  'fully_played',
+  'is_local',
+  'is_playable',
+  'item_count',
+  'library_requests',
+  'new_entry',
+  'oldest_created',
+  'played_at',
+  'playlist_era',
+  'quietest_hour',
+  'quietest_tied_hours',
+  'resume_point',
+  'retention_until',
+  'saved_at',
+  'shows_checked',
+  'singles_capped',
+  'supports_volume',
+  'taken_at',
+  'watchlist_size',
+  // A key of a free-form object argument, not an enum member of one.
+  'last_refreshed',
+]);
+
 describe('tool surface: annotations', () => {
   it('every tool carries an explicit classification', async () => {
     const tools = await listTools({});
@@ -247,6 +315,59 @@ describe('tool surface: annotations', () => {
         assert.equal(properties[property].default, value, `${name}.${property} default`);
       }
     }
+  });
+
+  it('no description names a tool that is not registered', async () => {
+    const tools = await listTools({});
+    const registered = new Set(tools.map((tool) => tool.name));
+    // Parameters and enum values are derived from the live surface, never
+    // listed: a parameter production drops must stop being allowlisted the
+    // moment it goes, instead of surviving here and masking real drift.
+    const parameters = new Set<string>();
+    const enumValues = new Set<string>();
+    const collectEnums = (node: unknown): void => {
+      if (Array.isArray(node)) return void node.forEach(collectEnums);
+      if (!node || typeof node !== 'object') return;
+      const record = node as Record<string, unknown>;
+      if (Array.isArray(record.enum)) {
+        for (const value of record.enum) if (typeof value === 'string') enumValues.add(value);
+      }
+      for (const value of Object.values(record)) collectEnums(value);
+    };
+    for (const tool of tools) {
+      const properties = (tool.inputSchema as { properties?: Record<string, { description?: string }> } | undefined)?.properties ?? {};
+      for (const property of Object.keys(properties)) parameters.add(property);
+      collectEnums(tool.inputSchema);
+    }
+
+    // Cross-tool references are how an agent routes a second call, so a name
+    // that resolves to nothing is worse than no name at all. Real drift:
+    // restore_library_snapshot pointed at `backup_library_snapshot`, a tool
+    // that was never registered anywhere (#756).
+    const dangling: string[] = [];
+    for (const tool of tools) {
+      const properties = (tool.inputSchema as { properties?: Record<string, { description?: string }> } | undefined)?.properties ?? {};
+      const surfaces: Array<[string, string]> = [[tool.name, tool.description ?? '']];
+      for (const [property, schema] of Object.entries(properties)) {
+        surfaces.push([`${tool.name}.${property}`, schema.description ?? '']);
+      }
+      for (const [where, text] of surfaces) {
+        for (const token of text.match(TOOL_NAME_SHAPE) ?? []) {
+          if (registered.has(token) || parameters.has(token) || enumValues.has(token) || OUTPUT_FIELD_NAMES.has(token)) continue;
+          dangling.push(`${where} names unregistered tool ${token}`);
+        }
+      }
+    }
+    assert.deepEqual(dangling, [], `descriptions name tools that do not exist:\n- ${dangling.join('\n- ')}`);
+    // Presence floor: the scan above cannot pass on a degenerate surface, and
+    // the shape regex must actually be matching (rename the constant and this
+    // catches it).
+    assert.ok(tools.length > 500, `expected the full surface, got ${tools.length} tools`);
+    const restore = tools.find((tool) => tool.name === 'restore_library_snapshot');
+    assert.match(restore?.description ?? '', /\bbackup_library\b/);
+    assert.match(restore?.description ?? '', /\blist_backups\b/);
+    const backupPath = (restore?.inputSchema as { properties?: Record<string, { description?: string }> } | undefined)?.properties?.backup_path;
+    assert.match(backupPath?.description ?? '', /\bbackup_library\b/);
   });
 });
 

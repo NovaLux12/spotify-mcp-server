@@ -1,6 +1,6 @@
 /**
  * restore_library_snapshot (#160): STRICTLY ADDITIVE restore of a library
- * snapshot produced by backup_library_snapshot (#159 contract).
+ * snapshot produced by backup_library (#159 contract).
  *
  * Safety rules baked in:
  *  - Nothing existing is ever overwritten, renamed, deleted, or unfollowed.
@@ -813,12 +813,12 @@ function buildProse(
 export function registerRestoreTools(server: McpServer, client: SpotifyClient): void {
   server.tool(
     'restore_library_snapshot',
-    "STRICTLY ADDITIVE restore of a library snapshot written by backup_library_snapshot. Adds only what is missing: saves absent tracks/albums/shows/episodes/audiobooks, follows unfollowed artists, and creates NEW playlists named 'Restored · <name> (<snapshot date>)' — existing playlists are never touched and nothing is ever deleted, renamed, or overwritten. Partial/truncated snapshots are previewable but refused before confirmation or writes unless all selected data is complete. dry_run defaults to TRUE (read-only preview); setting dry_run=false requires explicit confirmation before any write, fails closed when elicitation is unavailable or errors, and allows writes when SPOTIFY_MCP_CONFIRM=never.",
+    "STRICTLY ADDITIVE restore of a library snapshot written by backup_library (see list_backups). Adds only what is missing: saves absent tracks/albums/shows/episodes/audiobooks, follows unfollowed artists, and creates NEW playlists named 'Restored · <name> (<snapshot date>)' — existing playlists are never touched and nothing is deleted, renamed, or overwritten. Partial/truncated snapshots preview but are refused before confirmation or writes unless all data is complete. dry_run defaults to TRUE (read-only preview); setting dry_run=false requires explicit confirmation before any write, fails closed when elicitation is unavailable or errors, and allows writes when SPOTIFY_MCP_CONFIRM=never.",
     {
       backup_path: z
         .string()
         .min(1)
-        .describe('Path to the snapshot JSON file from backup_library_snapshot'),
+        .describe('Snapshot JSON path from backup_library (see list_backups)'),
       categories: z
         .array(z.enum(RESTORE_CATEGORIES))
         .default([...RESTORE_CATEGORIES])

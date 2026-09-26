@@ -87,7 +87,7 @@ above either ceiling fails CI and server startup.
 | podcastsession | 2 | 2,759 | 2 | 2,759 | 3 | 3,035 |
 | backupfirst | 1 | 513 | 1 | 513 | 2 | 565 |
 | backup | 3 | 2,584 | 3 | 2,584 | 4 | 2,843 |
-| restore | 1 | 1,851 | 1 | 1,851 | 2 | 2,037 |
+| restore | 1 | 1,841 | 1 | 1,841 | 2 | 2,026 |
 | undo | 2 | 1,663 | 2 | 1,663 | 3 | 1,830 |
 | receipts | 1 | 315 | 1 | 315 | 2 | 347 |
 | episodemgmt | 1 | 1,053 | 1 | 1,053 | 2 | 1,159 |
@@ -109,7 +109,7 @@ above either ceiling fails CI and server startup.
 | exhaust2catalog | 19 | 19,176 | 19 | 19,176 | 20 | 21,094 |
 | exhaust2enggating | 0 | 0 | 0 | 0 | 1 | 0 |
 | exhaust2playback | 23 | 17,306 | 23 | 17,306 | 24 | 19,037 |
-| exhaust2playlists | 18 | 23,511 | 18 | 23,511 | 19 | 25,863 |
+| exhaust2playlists | 18 | 23,507 | 18 | 23,507 | 19 | 25,858 |
 | exhaust2misc | 27 | 23,234 | 27 | 23,234 | 28 | 25,558 |
 | exhaust2extra | 3 | 3,695 | 3 | 3,695 | 4 | 4,065 |
 | swarm3discovery | 24 | 21,887 | 24 | 21,887 | 25 | 24,076 |
@@ -121,7 +121,7 @@ above either ceiling fails CI and server startup.
 | swarm3playback | 24 | 14,247 | 24 | 14,247 | 25 | 15,672 |
 | swarm3playlistops | 24 | 31,777 | 24 | 31,777 | 25 | 34,955 |
 | swarm3snapshots | 24 | 23,744 | 24 | 23,744 | 25 | 26,119 |
-| swarm4playlists | 18 | 22,594 | 18 | 22,594 | 19 | 24,854 |
+| swarm4playlists | 18 | 22,590 | 18 | 22,590 | 19 | 24,850 |
 <!-- END:generated schema-budget-table -->
 
 To change a baseline, measure the real `tools/list` output, update the shared

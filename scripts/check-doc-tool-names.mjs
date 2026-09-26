@@ -40,6 +40,10 @@ const parameterAllowlist = new Set([
   'removed_total', 'kept_total', 'source_truncated', 'target_truncated',
   'would_confirm', 'base_read_whole', 'base_unrepresentable',
   'removed_uris', 'scan_cap', 'base_playlist', 'target_playlist',
+  // #809: create_smart_playlist documents the candidate-pool ceiling it now
+  // reports. Both are structuredContent keys on that tool, not parameters and
+  // not tools — the description is naming its own output, which is the point.
+  'pool_capped', 'pool_cap',
 ]);
 /** Registration keys are module names, not tools; docs legitimately name them. */
 const registrationKeyNames = new Set(census.registrationKeyNames ?? []);
