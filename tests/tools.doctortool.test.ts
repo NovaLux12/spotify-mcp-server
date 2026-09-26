@@ -16,7 +16,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { SpotifyApiError, type SpotifyClient } from '../src/client.js';
-import { initConfig } from '../src/config.js';
+import { SCOPE_PROFILES, initConfig } from '../src/config.js';
 import { registerDoctorTool } from '../src/tools/doctortool.js';
 
 // ---------------------------------------------------------------------------
@@ -267,13 +267,78 @@ describe('spotify_doctor', () => {
     const res = await invoke();
     const row = res.structuredContent?.rows?.find((r) => r.id === 'scope_profile');
     assert.ok(row, 'scope_profile row present');
-    assert.equal(row.status, 'info');
     assert.match(row.summary, /scope profile "core"/);
     assert.match(row.summary, /10 scopes, no library\/follow\/playlist write or email requested/);
     assert.match(row.detail!, /--scopes library\|playlists\|full/);
     // The config snapshot must agree with the profile row.
     const configRow = res.structuredContent?.rows?.find((r) => r.id === 'config');
     assert.match(configRow!.summary, /scope_profile=core/);
+  });
+
+  it('warns that the next auth drops modules this token exposes today (#700)', async () => {
+    // A legacy grant wide enough to register every write module, with the
+    // config still on the narrower default. Nothing is wrong right now, but
+    // the next auth silently removes a third of the surface — the row whose
+    // stated job is telling "you did not opt in" from "something is broken"
+    // must say so before the operator re-auths.
+    await writeTokenFile({ ...VALID_TOKENS(), scope: SCOPE_PROFILES.full.join(' ') });
+    const { invoke } = harness();
+    const res = await invoke();
+    const row = res.structuredContent?.rows?.find((r) => r.id === 'scope_profile');
+    assert.ok(row, 'scope_profile row present');
+    assert.equal(row.status, 'warn');
+    assert.match(row.summary, /the next auth will not register \d+ module\(s\) this token exposes today/);
+    assert.match(row.detail!, /this token was granted 17 scopes; profile "core" requests 10/);
+    // Nothing is unregistered right now, so the scopes row still passes.
+    const scopesRow = res.structuredContent?.rows?.find((r) => r.id === 'scopes');
+    assert.equal(scopesRow?.status, 'pass');
+  });
+
+  it('names the modules a narrowed grant keeps out of the registry, and says "Unknown tool" (#700)', async () => {
+    await writeTokenFile({ ...VALID_TOKENS(), scope: SCOPE_PROFILES.core.join(' ') });
+    const { invoke } = harness();
+    const res = await invoke({ response_format: 'json' });
+    const rows = res.structuredContent?.rows ?? [];
+    const profile = rows.find((r) => r.id === 'scope_profile');
+    assert.equal(profile?.status, 'warn');
+    assert.match(profile!.summary, /UNREGISTERED \(following, library, playlists\)/);
+    assert.match(profile!.summary, /a host answers "Unknown tool" for their tools, not 403/);
+
+    // The scopes row must not report pass while 16 modules are unregistered:
+    // the gap loop used to skip every module absent from exposed_modules, so
+    // the very gaps that explain the loss were structurally suppressed.
+    const scopes = rows.find((r) => r.id === 'scopes');
+    assert.equal(scopes?.status, 'warn');
+    assert.match(scopes!.summary, /3 capability group\(s\) not registered/);
+    assert.doesNotMatch(scopes!.summary, /auth-time/);
+  });
+
+  it('never labels the CURRENT grant with the profile the NEXT auth requests (#700)', async () => {
+    // A legacy 17-scope token on a default config: the previous default was
+    // the full set, so "auth-time profile core" asserted a grant that never
+    // happened and sent operators looking for the wrong cause.
+    await writeTokenFile({ ...VALID_TOKENS(), scope: SCOPE_PROFILES.full.join(' ') });
+    const { invoke } = harness();
+    const res = await invoke({ response_format: 'json' });
+    const scopes = res.structuredContent?.rows?.find((r) => r.id === 'scopes');
+    assert.equal(scopes?.status, 'pass');
+    assert.match(scopes!.summary, /next auth requests profile "core"/);
+    assert.doesNotMatch(scopes!.summary, /auth-time/);
+    assert.doesNotMatch(scopes!.detail ?? '', /auth-time/);
+  });
+
+  it('does not tell a missing playback grant to widen to the default profile (#700)', async () => {
+    process.env.SPOTIFY_MCP_TOOLSETS = 'playback';
+    // user-modify-playback-state is in every profile including the default, so
+    // "opt in with --scopes core" named the profile the operator already had
+    // and implied escalation to `full` would fix it.
+    await writeTokenFile({ ...VALID_TOKENS(), scope: 'user-read-private' });
+    const { invoke } = harness();
+    const res = await invoke();
+    const row = res.structuredContent?.rows?.find((r) => r.id === 'scopes');
+    assert.equal(row?.status, 'warn');
+    assert.match(row!.detail!, /re-run "spotify-mcp auth" so the grant includes user-modify-playback-state/);
+    assert.doesNotMatch(row!.detail!, /--scopes core/);
   });
 
   it('reports the opted-in profile and its mutation scopes when SPOTIFY_SCOPES widens it', async () => {

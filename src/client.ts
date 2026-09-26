@@ -369,6 +369,7 @@ export class SpotifyClient {
       access_token: string;
       expires_in: number;
       refresh_token?: string;
+      scope?: unknown;
     };
 
     // Guard against a malformed expires_in (#109): NaN/undefined would poison
@@ -376,11 +377,25 @@ export class SpotifyClient {
     // will attempt another refresh instead of sending a dead token.
     const expiresIn = Number.isFinite(data.expires_in) ? data.expires_in : 0;
 
+    // The grant belongs to the authorization, not to the access token, so a
+    // refresh must carry it forward. Dropping it is not a no-op: the module
+    // gate in scopefilter.ts fails OPEN on an empty scope set, so a refreshed
+    // token that lost the field re-registers every write module and the user
+    // meets real API 403s instead of an up-front "not registered". Spotify
+    // echoes `scope` on refresh, but an omitted or non-string field must fall
+    // back to the persisted grant rather than erase it.
+    const refreshedScope =
+      typeof data.scope === 'string' && data.scope.trim().length > 0
+        ? data.scope.trim()
+        : tokens.scope;
+
     this.tokens = {
       access_token: data.access_token,
       refresh_token: data.refresh_token ?? tokens.refresh_token,
       expires_at: Date.now() + expiresIn * 1000,
+      ...(refreshedScope === undefined ? {} : { scope: refreshedScope }),
     };
+
 
     await saveTokens(this.tokens);
   }

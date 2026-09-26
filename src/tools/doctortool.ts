@@ -238,37 +238,111 @@ async function tokenRows(): Promise<{ rows: DoctorRow[]; tokens: ParsedTokens | 
 }
 
 /**
- * The scope profile a fresh `spotify-mcp auth` would request right now, and how
- * to widen it (#700). The default profile withholds every library/follow/playlist
- * write, so this row is how an operator tells "you did not opt in" apart from
- * "something is broken".
+ * The scope profile a fresh `spotify-mcp auth` would request right now, what
+ * the CURRENT grant has switched off because of it, and how to widen (#700).
+ *
+ * Two facts an operator needs, neither derivable from the other:
+   - modules the live grant does not register. A scope-gated module is never
+     handed to the registrar, so its tools are ABSENT from tools/list and a
+     host answers "Unknown tool" — not a 403. That distinction is the whole
+     diagnosis: a user who sees 403 knows to re-auth, a user who sees
+     "Unknown tool" has no reason to suspect scopes at all.
+   - modules the NEXT auth will stop registering, when the current token was
+     granted under a wider profile than the one now configured.
  */
-function scopeProfileRow(): DoctorRow {
+function scopeProfileRow(tokens: ParsedTokens | null, surface: DoctorSurface): DoctorRow {
   const cfg = getConfig();
-  const profile = cfg.scopes ? cfg.scopeProfile : 'core';
+  const profile = cfg.scopeProfile;
   const profileScopes = cfg.scopes ?? DEFAULT_SCOPES;
   const mutations = profileScopes.filter((scope) => MUTATION_SCOPES.has(scope));
-  const summary =
+  const base =
     mutations.length === 0
       ? `scope profile "${profile}" — ${profileScopes.length} scopes, no library/follow/playlist write or email requested`
       : `scope profile "${profile}" — ${profileScopes.length} scopes including ${mutations.length} mutation scope(s): ${mutations.join(', ')}`;
-  return {
-    id: 'scope_profile',
-    status: 'info',
-    summary,
-    detail: `next auth requests: ${profileScopes.join(' ')} | profiles: ${Object.keys(SCOPE_PROFILES).join(', ')} | widen with: --scopes library|playlists|full (or SPOTIFY_SCOPES=full)`,
-  };
+
+  const nextGranted = new Set(profileScopes);
+  const droppedByNextAuth = [
+    ...new Set(
+      surface.exposed_modules.filter((key) => {
+        const owner = SCOPE_OWNER_BY_MODULE[key];
+        return owner !== undefined && moduleBlockedByScopes(owner, nextGranted);
+      }),
+    ),
+  ].sort();
+
+  const details = [
+    `next auth requests: ${profileScopes.join(' ')}`,
+    `profiles: ${Object.keys(SCOPE_PROFILES).join(', ')}`,
+    `widen with: spotify-mcp auth --scopes library|playlists|full (or SPOTIFY_SCOPES=full)`,
+  ];
+
+  const unregisteredNow = surface.hidden_by_scopes;
+  if (unregisteredNow.length > 0) {
+    const owners = [...scopeHiddenOwners(surface)].sort();
+    details.push(
+      `not registered now: ${unregisteredNow.join(', ')} — restore with ${owners.map((owner) => widenHint(owner)).join('; ')}`,
+    );
+    return {
+      id: 'scope_profile',
+      status: 'warn',
+      summary: `${base}; the current grant leaves ${unregisteredNow.length} module(s) UNREGISTERED (${owners.join(', ')}) — a host answers "Unknown tool" for their tools, not 403`,
+      detail: details.join(' | '),
+    };
+  }
+
+  if (droppedByNextAuth.length > 0) {
+    const grantedCount = typeof tokens?.scope === 'string'
+      ? tokens.scope.split(/\s+/).filter(Boolean).length
+      : null;
+    details.push(
+      grantedCount === null
+        ? `these ${droppedByNextAuth.length} module(s) are registered today only because this token file records no grant — re-run "spotify-mcp auth" to persist one, or widen now`
+        : `this token was granted ${grantedCount} scopes; profile "${profile}" requests ${profileScopes.length} — widen to keep them`,
+    );
+    return {
+      id: 'scope_profile',
+      status: 'warn',
+      summary: `${base}; the next auth will not register ${droppedByNextAuth.length} module(s) this token exposes today (${droppedByNextAuth.join(', ')})`,
+      detail: details.join(' | '),
+    };
+  }
+
+  return { id: 'scope_profile', status: 'info', summary: base, detail: details.join(' | ') };
 }
 
-/** Opt-in profile that grants a write group's requirement, named in gap hints. */
-const PROFILE_FOR_MODULE: Record<string, string> = {
-  playback: 'core',
+/**
+ * Opt-in profile that grants a write group's requirement, named in gap hints.
+ * `playback` is deliberately absent: `user-modify-playback-state` is in every
+ * profile including the default, so a token missing it is not a profile that
+ * is too narrow — pointing at "core" there named the profile the operator
+ * already had and implied widening would fix it.
+ */
+const PROFILE_FOR_MODULE: Record<string, string | undefined> = {
   playlists: 'playlists',
   library: 'library',
   following: 'library',
 };
 
-/** Auth-time scopes vs the write tools enabled by the active toolsets. */
+/** The command that grants a write group's requirement. */
+function widenHint(key: string): string {
+  const profile = PROFILE_FOR_MODULE[key];
+  if (profile) return `opt in with "spotify-mcp auth --scopes ${profile}"`;
+  const scopes = WRITE_REQUIREMENTS.find((req) => req.key === key)?.scopes ?? [];
+  return scopes.length > 0
+    ? `re-run "spotify-mcp auth" so the grant includes ${scopes.join(' or ')}`
+    : 're-run "spotify-mcp auth"';
+}
+
+/** Write-scope owners whose modules the live grant keeps out of the registry. */
+function scopeHiddenOwners(surface: DoctorSurface): ReadonlySet<string> {
+  return new Set(
+    surface.hidden_by_scopes
+      .map((key) => SCOPE_OWNER_BY_MODULE[key])
+      .filter((owner): owner is string => owner !== undefined),
+  );
+}
+
+/** The live grant vs the write tools the registry actually exposes. */
 function scopeRows(tokens: ParsedTokens | null, surface: DoctorSurface): DoctorRow[] {
   if (!tokens) return [];
   if (typeof tokens.scope !== 'string') {
@@ -276,7 +350,7 @@ function scopeRows(tokens: ParsedTokens | null, surface: DoctorSurface): DoctorR
       {
         id: 'scopes',
         status: 'warn',
-        summary: 'scopes unknown (pre-upgrade token file) — cannot compare auth-time grant against write tools',
+        summary: 'scopes unknown (pre-upgrade token file) — cannot compare the token grant against write tools',
         detail: 'Re-run "spotify-mcp auth" to persist the granted scopes for this check.',
       },
     ];
@@ -284,20 +358,34 @@ function scopeRows(tokens: ParsedTokens | null, surface: DoctorSurface): DoctorR
 
   const granted = new Set(tokens.scope.split(/\s+/).filter(Boolean));
   const grantedList = [...granted].sort().join(', ');
-  const profileNote = `auth-time profile "${getConfig().scopes ? getConfig().scopeProfile : 'core'}"`;
+  // This is the profile the NEXT auth requests, read from current config. It is
+  // not the profile the current grant was issued under: a legacy 17-scope token
+  // renders "core" here, and labelling that "auth-time" asserted a grant that
+  // never happened.
+  const profileNote = `next auth requests profile "${getConfig().scopeProfile}"`;
+  const unregisteredOwners = scopeHiddenOwners(surface);
 
-  const gaps: string[] = [];
+  const unregistered: string[] = [];
+  const unauthorized: string[] = [];
   for (const req of WRITE_REQUIREMENTS) {
-    if (!surface.exposed_modules.includes(req.key)) continue;
     const missing = req.scopes.filter((scope) => !granted.has(scope));
+    if (unregisteredOwners.has(req.key)) {
+      unregistered.push(
+        `${req.label} (${req.tools}): module not registered — absent from tools/list, so a host answers "Unknown tool" rather than 403 (missing ${missing.join(', ')}) — ${widenHint(req.key)}`,
+      );
+      continue;
+    }
+    // Trimmed by toolset or hidden by READONLY: another row already names that
+    // cause, and a scope gap reported here would be one no re-auth can close.
+    if (!surface.exposed_modules.includes(req.key)) continue;
     if (missing.length > 0) {
-      gaps.push(
-        `${req.label} (${req.tools}): missing ${missing.join(', ')} — opt in with "spotify-mcp auth --scopes ${PROFILE_FOR_MODULE[req.key] ?? 'full'}"`,
+      unauthorized.push(
+        `${req.label} (${req.tools}): missing ${missing.join(', ')} — these tools are registered and will 403 at the API — ${widenHint(req.key)}`,
       );
     }
   }
 
-  if (gaps.length === 0) {
+  if (unregistered.length === 0 && unauthorized.length === 0) {
     return [
       {
         id: 'scopes',
@@ -311,8 +399,8 @@ function scopeRows(tokens: ParsedTokens | null, surface: DoctorSurface): DoctorR
     {
       id: 'scopes',
       status: 'warn',
-      summary: `${gaps.length} write capability group(s) lack required scopes — affected tools will 403 until you re-run "spotify-mcp auth" with a wider profile (${profileNote})`,
-      detail: `${gaps.join('; ')} | granted: ${grantedList}`,
+      summary: `${unregistered.length} capability group(s) not registered (absent from tools/list, "Unknown tool" not 403) and ${unauthorized.length} exposed group(s) will 403 at the API (${profileNote})`,
+      detail: `${[...unregistered, ...unauthorized].join('; ')} | granted: ${grantedList}`,
     },
   ];
 }
@@ -509,7 +597,7 @@ function staticRows(client: SpotifyClient): DoctorRow[] {
   if (cfg.profile) parts.push(`profile=${cfg.profile}`);
   if (cfg.market) parts.push(`market=${cfg.market}`);
   if (cfg.scopes) parts.push(`scopes_override=${cfg.scopes.join(',')}`);
-  parts.push(`scope_profile=${cfg.scopes ? cfg.scopeProfile : 'core'}`);
+  parts.push(`scope_profile=${cfg.scopeProfile}`);
   rows.push({
     id: 'config',
     status: 'pass',
@@ -640,7 +728,7 @@ export async function collectDoctorReport(
   const account = await accountRows(client);
   const rows = [
     ...tokens.rows,
-    scopeProfileRow(),
+    scopeProfileRow(tokens.tokens, surface),
     ...scopeRows(tokens.tokens, surface),
     ...account,
     ...staticRows(client),

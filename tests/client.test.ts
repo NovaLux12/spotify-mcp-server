@@ -133,7 +133,7 @@ function spyOnSetTimeout(): { delays: number[]; restore: () => void } {
 
 /** Seed a valid token fixture into the temp token file. */
 async function seedTokens(
-  overrides: Partial<{ access_token: string; refresh_token: string; expires_at: number }> = {},
+  overrides: Partial<{ access_token: string; refresh_token: string; expires_at: number; scope: string }> = {},
 ): Promise<void> {
   const tokens = {
     access_token: 'tok-initial',
@@ -236,6 +236,56 @@ describe('SpotifyClient', () => {
         persisted.expires_at > Date.now() + 3000_000,
         'persisted expires_at reflects expires_in from the refresh response',
       );
+    });
+
+    it('carries the granted scopes through a refresh whose response omits them', async () => {
+      // The grant belongs to the authorization, not to the access token.
+      // Dropping it is not a no-op: scopefilter's module gate fails OPEN on
+      // an empty scope set, so a refreshed token that lost the field would
+      // re-register every write module and the user would meet real API 403s
+      // instead of an up-front "not registered".
+      await seedTokens({ expires_at: Date.now() - 1000, scope: 'user-read-private user-library-modify' });
+      responder = (url) =>
+        isAccountsUrl(url)
+          ? jsonResponse({ access_token: 'tok-refreshed', expires_in: 3600 })
+          : jsonResponse({ ok: true });
+
+      const client = new SpotifyClient();
+      await client.get('/me');
+
+      const persisted = JSON.parse(await readFile(TOKEN_FILE, 'utf8')) as { scope?: string };
+      assert.equal(persisted.scope, 'user-read-private user-library-modify');
+    });
+
+    it('records the scopes the refresh response reports instead of the stale copy', async () => {
+      await seedTokens({ expires_at: Date.now() - 1000, scope: 'user-read-private user-library-modify' });
+      responder = (url) =>
+        isAccountsUrl(url)
+          ? jsonResponse({ access_token: 'tok-refreshed', expires_in: 3600, scope: 'user-read-private' })
+          : jsonResponse({ ok: true });
+
+      const client = new SpotifyClient();
+      await client.get('/me');
+
+      const persisted = JSON.parse(await readFile(TOKEN_FILE, 'utf8')) as { scope?: string };
+      assert.equal(persisted.scope, 'user-read-private');
+    });
+
+    it('keeps the field absent when neither the file nor the response carries a grant', async () => {
+      // A pre-#111 token file has no grant to carry; writing `scope: ""` would
+      // be a fabricated record of one, and the empty string is what the gate
+      // already reads as "unknown".
+      await seedTokens({ expires_at: Date.now() - 1000 });
+      responder = (url) =>
+        isAccountsUrl(url)
+          ? jsonResponse({ access_token: 'tok-refreshed', expires_in: 3600, scope: '   ' })
+          : jsonResponse({ ok: true });
+
+      const client = new SpotifyClient();
+      await client.get('/me');
+
+      const persisted = JSON.parse(await readFile(TOKEN_FILE, 'utf8')) as Record<string, unknown>;
+      assert.ok(!('scope' in persisted), `no scope key expected, got ${JSON.stringify(persisted)}`);
     });
 
     it('throws SpotifyApiError and makes no API call when the refresh itself fails', async () => {
