@@ -106,6 +106,13 @@ interface RecordedWrite {
   body: unknown;
 }
 
+/** Per-call walk options, matching the real client's `GetAllPagesOptions`. */
+interface PageWalkOptions {
+  maxItems?: number;
+  initialOffset?: number;
+  onPage?: (info: { page: number; fetched: number }) => void;
+}
+
 /**
  * Stub client that page-serves playlist items and records writes. Metadata GETs
  * answer with the fixture's name so the balancer's backup path has something
@@ -146,37 +153,24 @@ function makeClient(playlists: Record<string, PlaylistItemObject[]>, pageSize = 
       writes.push({ method: 'DELETE', path, body });
       return null;
     },
-    /** Mirrors SpotifyClient.getAllPages over the stubbed get(), so the real
-     *  pagination loop runs against paged fixtures. */
+    /** Mirrors SpotifyClient.getAllPagesWithTruncation over the stubbed get(),
+     *  so the real pagination loop runs against paged fixtures. The playlist
+     *  set-operation tools read through the truncating variant (#902), so it
+     *  carries the same verdict the production walk returns, and the request
+     *  count (#899) those tools report their read cost from. ONE method, not
+     *  two: a delegating wrapper beside the real loop resolves to itself in
+     *  the object literal and recurses forever. */
     async getAllPages<T>(
       path: string,
       params?: Record<string, string>,
-      opts?: { maxItems?: number; initialOffset?: number },
+      opts?: PageWalkOptions,
     ): Promise<T[]> {
-      const maxItems = opts?.maxItems ?? 500;
-      const all: T[] = [];
-      let offset = opts?.initialOffset ?? 0;
-      for (;;) {
-        const page = await this.get<SpotifyPaged<T>>(path, { ...params, offset: String(offset) });
-        if (!page || !Array.isArray(page.items)) break;
-        all.push(...page.items);
-        if (all.length >= maxItems) return all.slice(0, maxItems);
-        const limit = typeof page.limit === 'number' && page.limit > 0 ? page.limit : page.items.length;
-        offset += limit;
-        if (page.items.length === 0 || page.items.length < limit) break;
-        if (typeof page.total === 'number' && offset >= page.total) break;
-      }
-      return all;
+      return (await this.getAllPagesWithTruncation<T>(path, params, opts)).items;
     },
-    /** #899: playlistops reports its read cost off this walk's request count.
-     *  Delegates to the stub above rather than re-implementing the loop, so the
-     *  paged fixtures and the recorded GETs stay defined in one place. Forwards
-     *  `params` and `opts`: dropping `maxItems` here silently caps every walk at
-     *  the stub's 500-row default, which reads as a source-side regression. */
     async getAllPagesWithTruncation<T>(
       path: string,
       params?: Record<string, string>,
-      opts?: { maxItems?: number; initialOffset?: number },
+      opts?: PageWalkOptions,
     ): Promise<{
       items: T[];
       truncated: boolean;
@@ -184,8 +178,43 @@ function makeClient(playlists: Record<string, PlaylistItemObject[]>, pageSize = 
       reportedTotal: number | null;
       pages: number;
     }> {
-      const items = await this.getAllPages<T>(path, params, opts);
-      return { items, truncated: false, truncatedByCap: false, reportedTotal: null, pages: 1 };
+      const maxItems = opts?.maxItems ?? 500;
+      const all: T[] = [];
+      let offset = opts?.initialOffset ?? 0;
+      let pageNumber = 0;
+      let lastTotal: number | null = null;
+      let pages = 0;
+      for (;;) {
+        const page = await this.get<SpotifyPaged<T>>(path, { ...params, offset: String(offset) });
+        pages++;
+        if (!page || !Array.isArray(page.items)) break;
+        if (typeof page.total === 'number') lastTotal = page.total;
+        all.push(...page.items);
+        opts?.onPage?.({ page: ++pageNumber, fetched: all.length });
+        if (all.length >= maxItems) {
+          return {
+            items: all.slice(0, maxItems),
+            truncated:
+              all.length > maxItems
+              || typeof page.total !== 'number'
+              || all.length < page.total,
+            truncatedByCap: true,
+            reportedTotal: lastTotal,
+            pages,
+          };
+        }
+        const limit = typeof page.limit === 'number' && page.limit > 0 ? page.limit : page.items.length;
+        offset += limit;
+        if (page.items.length === 0 || page.items.length < limit) break;
+        if (typeof page.total === 'number' && offset >= page.total) break;
+      }
+      return {
+        items: all,
+        truncated: lastTotal !== null && all.length < lastTotal,
+        truncatedByCap: false,
+        reportedTotal: lastTotal,
+        pages,
+      };
     },
   };
   return client;

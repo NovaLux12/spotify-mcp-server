@@ -1936,6 +1936,106 @@ describe('SpotifyClient', () => {
       assert.deepEqual(all, [{ id: 0 }]);
     });
   });
+
+  // -------------------------------------------------------------------------
+  // 10. The per-call onPage hook (#902)
+  // -------------------------------------------------------------------------
+
+  // The hook is the PRODUCTION half of #902's `requests_read`: a tool counts
+  // the pages its own walk spent. The playlistops tests exercise a STUB client
+  // that re-implements this walk, so they cannot fail if the hook here stops
+  // firing — these drive the real SpotifyClient, which is the only place the
+  // contract is actually implemented.
+
+  describe('getAllPages per-call onPage hook (#902)', () => {
+    it('calls onPage once per fetched page, with the same event the reporter gets', async () => {
+      await seedTokens();
+      responder = (url) => {
+        const offset = Number(new URL(url).searchParams.get('offset') ?? 0);
+        return jsonResponse({ items: [{ id: offset }], total: 3, limit: 1, offset });
+      };
+
+      const reported: RecordedProgress[] = [];
+      const hooked: RecordedProgress[] = [];
+      const client = new SpotifyClient();
+      client.setProgressReporter((info) => reported.push({ ...info }));
+
+      await client.getAllPages<{ id: number }>('/me/tracks', {}, {
+        onPage: (info) => hooked.push({ ...info }),
+      });
+
+      assert.equal(hooked.length, 3, 'one call per fetched page — the page count requests_read reports');
+      assert.deepEqual(hooked, reported, 'the hook and the global reporter see the same event');
+    });
+
+    it('counts the pages a CAPPED walk actually spent, not the pages the cap implies', async () => {
+      await seedTokens();
+      responder = (url) => {
+        const offset = Number(new URL(url).searchParams.get('offset') ?? 0);
+        return jsonResponse({ items: [{ id: offset }], total: 100, limit: 1, offset });
+      };
+
+      let requests = 0;
+      const client = new SpotifyClient();
+      // cap+1 is the shape merge_playlists uses: the walk stops the moment it
+      // holds cap+1 rows, so it spends 6 pages to prove the 7th was clipped.
+      await client.getAllPages<{ id: number }>('/me/tracks', {}, {
+        maxItems: 6,
+        onPage: () => { requests++; },
+      });
+
+      assert.equal(requests, 6, 'measured pages, not the 100 the server reports');
+      assert.equal(apiCalls().length, requests, 'the count matches the requests actually sent');
+    });
+
+    it('is per-call: a second walk on one client starts its own count', async () => {
+      await seedTokens();
+      responder = (url) => {
+        const offset = Number(new URL(url).searchParams.get('offset') ?? 0);
+        return jsonResponse({ items: [{ id: offset }], total: 2, limit: 1, offset });
+      };
+
+      const client = new SpotifyClient();
+      const counts: number[] = [];
+      for (const _ of [0, 1]) {
+        let n = 0;
+        await client.getAllPages('/me/tracks', {}, { onPage: () => { n++; } });
+        counts.push(n);
+      }
+
+      // The reason this is an argument and not client state: concurrent walks
+      // share one client, and a stored counter would report whichever walk
+      // finished last.
+      assert.deepEqual(counts, [2, 2], 'each walk counts its own pages; neither inherits the other');
+    });
+
+    it('a throwing onPage hook never breaks the walk', async () => {
+      await seedTokens();
+      responder = (url) => {
+        const offset = Number(new URL(url).searchParams.get('offset') ?? 0);
+        return jsonResponse({ items: [{ id: offset }], total: 2, limit: 1, offset });
+      };
+
+      const client = new SpotifyClient();
+      const all = await client.getAllPages<{ id: number }>('/me/tracks', {}, {
+        onPage: () => { throw new Error('hook exploded'); },
+      });
+
+      assert.deepEqual(all.map((i) => i.id), [0, 1], 'walk completed despite hook throw');
+    });
+
+    it('a walk with no onPage hook still completes (the hook is optional)', async () => {
+      await seedTokens();
+      responder = (url) => {
+        const offset = Number(new URL(url).searchParams.get('offset') ?? 0);
+        return jsonResponse({ items: [{ id: offset }], total: 2, limit: 1, offset });
+      };
+
+      const client = new SpotifyClient();
+      const all = await client.getAllPages<{ id: number }>('/me/tracks', {}, { maxItems: 10 });
+      assert.deepEqual(all.map((i) => i.id), [0, 1]);
+    });
+  });
 });
 
 describe('lane aging selection (#133)', () => {

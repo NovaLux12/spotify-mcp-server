@@ -182,9 +182,11 @@ function makeClient(calls: string[]): SpotifyClient {
       calls.push(path);
       return [];
     },
-    // #899: playlistops counts its read cost off the truncation walk. This
-    // delegates to getAllPages so the path-recording and stubbed rows stay in
-    // ONE place — a second copy of the fixture logic would drift from it.
+    // #899/#902: playlistops reads through the truncating variant — #899 to
+    // count its read cost off the walk, #902 because merge_playlists' source
+    // walk goes through it. This delegates to getAllPages so the path-recording
+    // and stubbed rows stay in ONE place; a second copy of the fixture logic
+    // would drift from it.
     async getAllPagesWithTruncation<T>(
       path: string,
       params?: Record<string, string>,

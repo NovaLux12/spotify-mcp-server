@@ -281,7 +281,7 @@ interface SpotifyClientOptions {
 }
 
 /** Per-page event emitted during getAllPages walks (#65). */
-interface PageProgress {
+export interface PageProgress {
   /** Monotonic id of this walk; usable directly as an MCP progressToken. */
   walkId: number;
   /** 1-based page number. */
@@ -290,6 +290,29 @@ interface PageProgress {
   fetched: number;
   /** Server-reported total when the page carried one. */
   total?: number;
+}
+
+/** Per-call options for {@link SpotifyClient.getAllPages} and its truncation variant. */
+export interface GetAllPagesOptions {
+  /** Hard cap on accumulated rows; defaults to the configured fetch-all cap. */
+  maxItems?: number;
+  /** Seed the offset cursor so a caller resuming mid-list does not restart at 0. */
+  initialOffset?: number;
+  /**
+   * Called once per page with the same {@link PageProgress} the global
+   * reporter receives, so the CALLER can count the requests its own walk
+   * spent (#902).
+   *
+   * It is a per-call argument rather than client state on purpose: the SDK
+   * dispatches `tools/call` without awaiting, so concurrent walks share one
+   * client and a stored counter would report whichever walk finished last —
+   * the same reasoning that keeps the truncation verdict off the client in
+   * #864. A tool reporting `requests_read` counts pages here rather than
+   * diffing `requestsTotal`, which also counts every other call on the client.
+   *
+   * Best-effort: a throwing hook is swallowed and cannot break the walk.
+   */
+  onPage?: (info: PageProgress) => void;
 }
 
 /**
@@ -1684,7 +1707,7 @@ export class SpotifyClient {
   async getAllPages<T>(
     path: string,
     params?: Record<string, string>,
-    opts?: { maxItems?: number; initialOffset?: number },
+    opts?: GetAllPagesOptions,
   ): Promise<T[]> {
     return (await this.getAllPagesWithTruncation<T>(path, params, opts)).items;
   }
@@ -1724,7 +1747,7 @@ export class SpotifyClient {
   async getAllPagesWithTruncation<T>(
     path: string,
     params?: Record<string, string>,
-    opts?: { maxItems?: number; initialOffset?: number },
+    opts?: GetAllPagesOptions,
   ): Promise<{ items: T[]; truncated: boolean; truncatedByCap: boolean; reportedTotal: number | null; pages: number }> {
     const maxItems = opts?.maxItems ?? this.fetchAllCap;
     const all: T[] = [];
@@ -1754,17 +1777,29 @@ export class SpotifyClient {
       if (!page || !Array.isArray(page.items)) break;
       if (typeof page.total === 'number') lastTotal = page.total;
       all.push(...page.items);
+      // One page event, fanned out to the process-wide reporter and to the
+      // caller's own hook (#902). Both are best-effort: a throwing one must
+      // never break a walk.
+      const progress: PageProgress = {
+        walkId,
+        page: ++pageNumber,
+        fetched: all.length,
+        ...(typeof page.total === 'number' ? { total: page.total } : {}),
+      };
       const reporter = this.progressReporter;
       if (reporter !== null) {
         try {
-          reporter({
-            walkId,
-            page: ++pageNumber,
-            fetched: all.length,
-            ...(typeof page.total === 'number' ? { total: page.total } : {}),
-          });
+          reporter(progress);
         } catch {
           // Progress is best-effort; a throwing reporter must never break a walk.
+        }
+      }
+      const onPage = opts?.onPage;
+      if (onPage) {
+        try {
+          onPage(progress);
+        } catch {
+          // Same contract as the global reporter.
         }
       }
       if (all.length >= maxItems) {

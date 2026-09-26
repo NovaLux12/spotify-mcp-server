@@ -55,6 +55,15 @@ const parameterAllowlist = new Set([
   // about a call's own result, not parameters and not tools.
   'would_refuse', 'target_unrepresentable',
   'removed_uris', 'scan_cap', 'base_playlist', 'target_playlist',
+  // #902: merge_playlists' result shape, documented in SPEC.md §5.6 so a
+  // merge that read a fraction of its sources says how large that fraction is.
+  // structuredContent keys on that tool, not parameters and not tools.
+  // `requests_read` is allowlisted below with `search_requests_read` (#899),
+  // and `truncated_by_cap` is allowlisted further down with `fetch_all_cap` —
+  // one entry each, not two, for keys more than one PR reports.
+  'created_new_playlist', 'duplicates_skipped',
+  'unavailable_items_skipped', 'batches_sent',
+  'rows_read', 'reported_total',
   // #809: create_smart_playlist documents the candidate-pool ceiling it now
   // reports. Both are structuredContent keys on that tool, not parameters and
   // not tools — the description is naming its own output, which is the point.
