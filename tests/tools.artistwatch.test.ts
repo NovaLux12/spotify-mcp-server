@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { registerArtistWatchTools } from '../src/tools/artistwatch.js';
@@ -459,22 +459,40 @@ async function withHome(home: string): Promise<Scoped> {
 }
 
 test('a watchlist that cannot be written is reported, never answered with an added count (#764)', async () => {
+  // The #1135 fix made the temp name unique per writer, so the old "squatted
+  // directory" injection no longer fires — it squats a name nothing opens.
+  // The honest failure mode is name-independent: take away write permission on
+  // the parent directory so `open(tmp, 'w')` cannot create the temp at all.
+  // Guarded against root (chmod is a no-op for uid 0) and Windows (chmod
+  // semantics differ), where the test cannot meaningfully exercise this.
+  if (process.platform === 'win32') return;
+  if (typeof process.getuid === 'function' && process.getuid() === 0) return;
   await withTmpDir(async (dir) => {
-    // A directory sitting where the atomic write's temp name belongs: the store
-    // reads as absent, and publishing one fails for every user, root included.
-    await mkdir(join(dir, 'artist-watchlist.json.tmp'), { recursive: true });
-    const { registered } = makeHarness(() => ({ items: [album('a1', 'Album One')] }));
-    const r = await find(registered, 'watch_artists').handler({ artist_ids: ['a1'] });
-    assert.equal(r.isError, true);
-    assert.doesNotMatch(text(r), /\b1 added\b/, 'a write that did not land is not an addition');
-    assert.match(text(r), /NOT saved/);
-    const sc = r.structuredContent as unknown as { ok: boolean; persisted: boolean; path: string; error: string; total: number };
-    assert.equal(sc.ok, false);
-    assert.equal(sc.persisted, false);
-    assert.equal(sc.path, join(dir, 'artist-watchlist.json'));
-    assert.equal(sc.total, 1);
-    assert.ok(sc.error.length > 0, 'the failure names its cause');
-    assert.equal(existsSync(join(dir, 'artist-watchlist.json')), false, 'nothing was created on disk');
+    // Seed a successful write so the directory exists and the read path lands,
+    // then lock the directory down. After this, every atomic-write step that
+    // touches the directory — mkdir (already present), open, rename — fails.
+    {
+      const { registered } = makeHarness();
+      await find(registered, 'watch_artists').handler({ artist_ids: ['seed'] });
+    }
+    await chmod(dir, 0o500);
+    try {
+      const { registered } = makeHarness(() => ({ items: [album('a1', 'Album One')] }));
+      const r = await find(registered, 'watch_artists').handler({ artist_ids: ['a1'] });
+      assert.equal(r.isError, true);
+      assert.doesNotMatch(text(r), /\b1 added\b/, 'a write that did not land is not an addition');
+      assert.match(text(r), /NOT saved/);
+      const sc = r.structuredContent as unknown as { ok: boolean; persisted: boolean; path: string; error: string };
+      assert.equal(sc.ok, false);
+      assert.equal(sc.persisted, false);
+      assert.equal(sc.path, join(dir, 'artist-watchlist.json'));
+      assert.ok(sc.error.length > 0, 'the failure names its cause');
+      // The seeded file is the only thing on disk; no new partial store landed.
+      const onDisk = JSON.parse(await readFile(join(dir, 'artist-watchlist.json'), 'utf8')) as { watchlists: Record<string, { artists: string[] }> };
+      assert.deepEqual(onDisk.watchlists.default.artists, ['seed'], 'a failed write never overwrote the seed');
+    } finally {
+      await chmod(dir, 0o700).catch(() => {});
+    }
   });
 });
 
@@ -565,23 +583,68 @@ test('a pre-v2 ./data/artist-watchlist.json is read once and migrated to the ali
 });
 
 test('a check whose seen-bookkeeping cannot be saved says the watchlist did not advance (#764)', async () => {
+  // The #1135 fix made the temp name unique per writer, so the old "squatted
+  // directory" injection no longer fires — it squats a name nothing opens.
+  // The honest failure mode is name-independent: lock the parent directory so
+  // every step of the atomic write fails. Guarded against root and Windows
+  // for the same reason as the write-failure test above.
+  if (process.platform === 'win32') return;
+  if (typeof process.getuid === 'function' && process.getuid() === 0) return;
   await withTmpDir(async (dir) => {
     await writeFile(
       join(dir, 'artist-watchlist.json'),
       JSON.stringify({ watchlists: { default: { artists: ['a1'], createdAt: 'x', lastChecked: null, seen: {} } } }),
       'utf8',
     );
-    // A directory where the atomic write's temp name belongs: the store reads
-    // fine, but publishing a new one fails for every user, root included.
-    await mkdir(join(dir, 'artist-watchlist.json.tmp'), { recursive: true });
-    const { registered } = makeHarness(() => ({ items: [album('a1', 'Album One')] }));
-    const r = await find(registered, 'check_artist_releases').handler({});
-    const sc = r.structuredContent as unknown as { persisted: boolean; total: number; path: string };
-    assert.equal(sc.total, 1, 'the scan still reports the release it read');
-    assert.equal(sc.persisted, false, 'the watchlist did not advance and must not read as if it did');
-    assert.equal(sc.path, join(dir, 'artist-watchlist.json'));
-    assert.match(text(r), /NOT saved/);
-    const onDisk = JSON.parse(await readFile(join(dir, 'artist-watchlist.json'), 'utf8')) as { watchlists: Record<string, { seen: Record<string, string[]> }> };
-    assert.deepEqual(onDisk.watchlists.default.seen, {}, 'seen was not advanced on disk');
+    await chmod(dir, 0o500);
+    try {
+      const { registered } = makeHarness(() => ({ items: [album('a1', 'Album One')] }));
+      const r = await find(registered, 'check_artist_releases').handler({});
+      const sc = r.structuredContent as unknown as { persisted: boolean; total: number; path: string };
+      assert.equal(sc.total, 1, 'the scan still reports the release it read');
+      assert.equal(sc.persisted, false, 'the watchlist did not advance and must not read as if it did');
+      assert.equal(sc.path, join(dir, 'artist-watchlist.json'));
+      assert.match(text(r), /NOT saved/);
+      const onDisk = JSON.parse(await readFile(join(dir, 'artist-watchlist.json'), 'utf8')) as { watchlists: Record<string, { seen: Record<string, string[]> }> };
+      assert.deepEqual(onDisk.watchlists.default.seen, {}, 'seen was not advanced on disk');
+    } finally {
+      await chmod(dir, 0o700).catch(() => {});
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1135: same fixed-temp-name race as #1130 fixed in freshness.ts. The store
+// is async and its caller awaits between the read and the write, so two
+// concurrent `watch_artists` invocations reach `open('<path>.tmp', 'w')` on
+// the same name; the first rename publishes it, the second fails ENOENT.
+// The fix is a per-writer unique temp name; this test pins it.
+// ---------------------------------------------------------------------------
+
+test('16 concurrent watch_artists calls against one state path all succeed and leave no temp behind (#1135)', async () => {
+  await withTmpDir(async (dir) => {
+    const { registered } = makeHarness();
+    const handler = find(registered, 'watch_artists').handler;
+    // 16 writers, one shared id. The bug we are pinning is the
+    // fixed-temp-name race: every writer creates `${path}.tmp`, the first
+    // rename publishes it, and the second rename fails ENOENT. With unique
+    // names every writer succeeds — none rejects, none reports a failed
+    // write. (Read-modify-write races between the read and the write are a
+    // separate, pre-existing concern; this test is only about the rename.)
+    const ids = Array.from({ length: 16 }, () => 'shared');
+    const results = await Promise.all(ids.map((id) => handler({ artist_ids: [id] })));
+    for (let i = 0; i < results.length; i += 1) {
+      const r = results[i] as { isError?: boolean; structuredContent?: { persisted?: boolean } };
+      assert.equal(r.isError, undefined, `writer ${i} did not error`);
+      assert.equal(r.structuredContent?.persisted, true, `writer ${i} reports persisted=true`);
+    }
+    // No temp files of any flavour survive a successful write — neither the
+    // new unique-named ones this call created, nor the dead fixed name.
+    const entries = await readdir(dir);
+    const leftoverTemps = entries.filter((e) => e.endsWith('.tmp'));
+    assert.deepEqual(leftoverTemps, [], `no temp files survive: ${leftoverTemps.join(', ')}`);
+    // The store landed, with the shared id recorded.
+    const onDisk = JSON.parse(await readFile(join(dir, 'artist-watchlist.json'), 'utf8')) as { watchlists: Record<string, { artists: string[] }> };
+    assert.deepEqual(onDisk.watchlists.default.artists, ['shared']);
   });
 });

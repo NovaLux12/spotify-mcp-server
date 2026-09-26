@@ -14,9 +14,10 @@ import {
   paginationInfo,
   listStructuredContent,
 } from '../shaping.js';
-import { chmod, mkdir, open, readFile, rename, unlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, open, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { randomBytes } from 'node:crypto';
 import { classifySpotifyReference } from '../refs.js';
 import type { SpotifyArtistAlbumRow, SpotifyPaged } from '../types/spotify.js';
 
@@ -195,10 +196,22 @@ function storeUnreadable(error: string) {
  * Temp file and target are owner-only (0600) and re-asserted after creation,
  * because a creation-time mode is masked by umask. Failures THROW — the caller
  * owes the agent a persistence failure rather than a success line (#764).
+ *
+ * The temp name MUST be unique per writer. A fixed `${path}.tmp` is a race
+ * between concurrent writers on a shared state path: both create it, the first
+ * rename moves it away, and the second fails ENOENT (#1135). `saveStore` is
+ * async and its caller awaits between the read and the write, so two
+ * concurrent `watch_artists` invocations reach `open('<path>.tmp', 'w')` on
+ * the same name. Follows the same idiom as `auth.ts` and the #1130 watermark
+ * fix in `freshness.ts`.
  */
 async function saveStore(store: WatchlistStore, path: string): Promise<void> {
-  const tmp = `${path}.tmp`;
+  const tmp = `${path}.${process.pid}.${randomBytes(8).toString('hex')}.tmp`;
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+  // The fixed `<path>.tmp` name is dead now that writers are unique. A pre-fix
+  // crash can have stranded one, and the catch below only reclaims temps this
+  // call created, so clear the old name here the way auth.ts does (#1135).
+  await rm(`${path}.tmp`, { force: true }).catch(() => {});
   try {
     const handle = await open(tmp, 'w', 0o600);
     try {
@@ -210,8 +223,9 @@ async function saveStore(store: WatchlistStore, path: string): Promise<void> {
     await chmod(tmp, 0o600);
     await rename(tmp, path);
   } catch (err) {
-    // Never strand a partial temp file for the next write to trip over.
-    try { await unlink(tmp); } catch { /* nothing left to clean up */ }
+    // A unique temp name means a failed write can leave a file nothing else
+    // will ever clean up. Do not leave litter in the state directory.
+    await rm(tmp, { force: true }).catch(() => {});
     throw err;
   }
 }
