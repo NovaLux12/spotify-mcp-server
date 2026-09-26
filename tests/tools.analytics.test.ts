@@ -17,6 +17,7 @@ import {
   hourBucketOf,
 } from '../src/tools/analytics.js';
 import { registerSwarm3AnalyticsTools } from '../src/tools/swarm3_analytics.js';
+import { registerLibraryAnalyticsTools } from '../src/tools/libraryanalytics.js';
 
 /**
  * Spelled out rather than imported: the opt-in's env-var name IS the public
@@ -24,6 +25,21 @@ import { registerSwarm3AnalyticsTools } from '../src/tools/swarm3_analytics.js';
  * silently keep both the implementation and its tests agreeing.
  */
 const ANALYTICS_OPT_IN_ENV = 'SPOTIFY_MCP_EXPERIMENTAL_ANALYTICS';
+
+/**
+ * The derived listening metrics #695 gates. Spelled out, not imported: a
+ * constant taken from the registrar would only restate the implementation and
+ * would keep agreeing with a rename that stopped matching the documentation.
+ */
+const DERIVED_ANALYTICS_TOOLS = [
+  'binge_detector_report',
+  'discovery_ratio',
+  'listening_clock',
+  'listening_clock_heatmap',
+  'mood_bucket_report',
+  'artist_listening_clock',
+  'weekday_listening_report',
+] as const;
 
 // ---------------------------------------------------------------------------
 // Stub plumbing
@@ -63,6 +79,7 @@ function harness(responder: Responder = () => null, options: { analyticsOptIn?: 
   const registered: Array<{
     name: string;
     description: string;
+    schema: z.ZodRawShape;
     validate: (args: Record<string, unknown>) => Record<string, unknown>;
     handler: (
       args: Record<string, unknown>,
@@ -84,6 +101,7 @@ function harness(responder: Responder = () => null, options: { analyticsOptIn?: 
       registered.push({
         name,
         description,
+        schema,
         validate: (args) => z.object(schema).parse(args),
         handler,
       });
@@ -728,16 +746,226 @@ describe('listening_report derived-analytics opt-in', () => {
   it('advertises only the fields it computes when the opt-in is unset', async () => {
     const { registered, invoke } = harness(standardResponder(), { analyticsOptIn: false });
     const description = descriptionOf(registered);
+    // The contract is structural, not lexical: every derived field may be named
+    // only inside the clause that also names the opt-in. A conjunction regex
+    // ("plus|including") is walked straight past by a description that claims
+    // the fields unconditionally in any other wording, which is the exact
+    // defect this test exists to catch.
+    const gateSentence = description
+      .split(/(?<=[.!?])\s+/)
+      .find((sentence) => sentence.includes(ANALYTICS_OPT_IN_ENV));
+    assert.ok(
+      gateSentence,
+      `gated description must name ${ANALYTICS_OPT_IN_ENV} in the sentence that lists the derived fields: ${description}`,
+    );
     for (const advertised of ['discovery ratio', 'era histogram', 'hour-of-day', 'repeat overlap']) {
-      // "Derived metrics (…) are gated" still names them; what must be absent
-      // is any claim that this call produces them.
-      const claimed = new RegExp(`(plus|including)[^.]*${advertised}`, 'i');
-      assert.ok(!claimed.test(description), `description must not claim it computes ${advertised}: ${description}`);
+      const first = description.toLowerCase().indexOf(advertised);
+      assert.notEqual(first, -1, `gated description should still name ${advertised}: ${description}`);
+      assert.ok(
+        first >= description.indexOf(gateSentence as string),
+        `description claims ${advertised} outside the gated clause: ${description}`,
+      );
     }
     const out = await invoke({});
     assert.match(textOf(out), /Derived metrics .* are not computed/);
     assert.doesNotMatch(textOf(out), /Discovery ratio:/);
     assert.doesNotMatch(textOf(out), /Hours:/);
+  });
+
+  it('terminates the preceding sentence before the provenance note (#695)', async () => {
+    // LOCAL_METRICS_DISCLAIMER is appended by concatenation, so a call site
+    // that forgets its own full stop renders two sentences as one run-together
+    // string in shipped tools/list. Pinned at every site, in both flag states.
+    for (const analyticsOptIn of [true, false]) {
+      const { registered } = harness(standardResponder(), { analyticsOptIn });
+      const description = descriptionOf(registered);
+      assert.match(
+        description,
+        /[.!]\sMetrics are computed locally from your own account data;/,
+        `provenance note must start its own sentence (opt-in ${analyticsOptIn}): ${description}`,
+      );
+    }
+  });
+
+  it('states the include_recent gate in the same direction the code gates it', async () => {
+    // The code is `(args.include_recent ?? true) && derived`: the walk happens
+    // when the flag is 1. A description claiming the opposite is the failure
+    // this pins — the string ships on the default surface, so every session
+    // that has not set the flag reads it.
+    const off = harness(standardResponder(), { analyticsOptIn: false });
+    const tool = off.registered.find((t) => t.name === 'listening_report');
+    assert.ok(tool, 'listening_report should be registered without the opt-in');
+    assert.equal(
+      z.object(tool.schema).shape.include_recent?.description,
+      `Ignored unless ${ANALYTICS_OPT_IN_ENV}=1, which is when the recently-played walk is made. Default: true`,
+    );
+    // And the walk really is issued in the state the description names, so the
+    // string is not merely self-consistent.
+    const on = harness(standardResponder(), { analyticsOptIn: true });
+    await on.invoke({ include_recent: true });
+    assert.ok(
+      on.calls.some((c) => c.path === '/me/player/recently-played'),
+      'with the opt-in set, include_recent must actually issue the walk',
+    );
+  });
+
+  it('leaves the recently-played walk reachable through ungated tools (#695)', async () => {
+    // docs/compliance.md states how many tools still issue this walk with the
+    // flag unset. That is a claim about the code, so it is measured here and
+    // pinned. `libraryanalytics` registers unconditionally in the manifest, so
+    // it belongs in the count: leaving it out is how an earlier draft of that
+    // document came to undercount.
+    const registered: Array<{ name: string; schema: z.ZodRawShape; handler: (a: unknown) => Promise<unknown> }> = [];
+    const fakeServer = {
+      tool(name: string, _d: string, schema: z.ZodRawShape, handler: (a: unknown) => Promise<unknown>) {
+        registered.push({ name, schema, handler });
+      },
+    } as unknown as McpServer;
+    let recentCalls = 0;
+    const recentPage = () => ({
+      items: Array.from({ length: 50 }, (_, i) => ({
+        played_at: new Date(Date.UTC(2026, 8, 20, i % 24, i % 60)).toISOString(),
+        track: { id: `t${recentCalls}-${i}`, name: `T${i}`, uri: `spotify:track:t${i}`, artists: [{ id: `a${i % 7}`, name: `A${i % 7}` }] },
+      })),
+      cursors: { after: `c${recentCalls}` },
+      next: `u${recentCalls}`,
+    });
+    const client = {
+      async get<T>(path: string): Promise<T | null> {
+        if (path === '/me/player/recently-played') {
+          recentCalls += 1;
+          return recentPage() as unknown as T;
+        }
+        return { items: [], total: 0, limit: 50 } as unknown as T;
+      },
+    };
+    const previous = process.env[ANALYTICS_OPT_IN_ENV];
+    delete process.env[ANALYTICS_OPT_IN_ENV];
+    try {
+      registerAnalyticsTools(fakeServer, client as unknown as SpotifyClient);
+      registerSwarm3AnalyticsTools(fakeServer, client as unknown as SpotifyClient);
+      registerLibraryAnalyticsTools(fakeServer, client as unknown as SpotifyClient);
+    } finally {
+      if (previous === undefined) delete process.env[ANALYTICS_OPT_IN_ENV];
+      else process.env[ANALYTICS_OPT_IN_ENV] = previous;
+    }
+    assert.deepEqual(
+      registered
+        .map((t) => t.name)
+        .filter((name) => DERIVED_ANALYTICS_TOOLS.includes(name as (typeof DERIVED_ANALYTICS_TOOLS)[number])),
+      [],
+      'no gated tool may be registered without the opt-in',
+    );
+    const walkers: string[] = [];
+    for (const tool of registered) {
+      recentCalls = 0;
+      let args: Record<string, unknown> = {};
+      try {
+        args = z.object(tool.schema).parse({}) as Record<string, unknown>;
+      } catch {
+        /* a required argument this probe cannot invent */
+      }
+      try {
+        await tool.handler(args);
+      } catch {
+        /* a handler that needs rows this probe did not supply */
+      }
+      if (recentCalls > 0) walkers.push(tool.name);
+    }
+    // docs/compliance.md names these thirteen.
+    assert.deepEqual(
+      walkers.sort(),
+      [
+        'deep_dive_report',
+        'era_preference_report',
+        'listening_consistency_score',
+        'listening_gaps_report',
+        'listening_heatmap',
+        'listening_history_export',
+        'listening_recap_brief',
+        'listening_streak_report',
+        'listening_streaks',
+        'repeat_listener_report',
+        'session_length_report',
+        'track_rotation_report',
+        'weekly_rotation_report',
+      ],
+      'the ungated set that still walks recently-played changed; docs/compliance.md must be updated with it',
+    );
+  });
+
+  it('caps a gated walk at ten pages, and three at the default depth (#695)', async () => {
+    // docs/compliance.md quotes a page ceiling, so the ceiling is measured. The
+    // loop is `while (pages < 10)`; the item budget is what normally stops it,
+    // which is why the default 150-item depth walks three pages and the
+    // schema's own `max_items: 500` maximum walks ten.
+    const recentPages = async (args: Record<string, unknown>) => {
+      const tools: Array<{ name: string; schema: z.ZodRawShape; handler: (a: unknown) => Promise<unknown> }> = [];
+      const counting = {
+        tool(name: string, _d: string, schema: z.ZodRawShape, handler: (a: unknown) => Promise<unknown>) {
+          tools.push({ name, schema, handler });
+        },
+      } as unknown as McpServer;
+      let pages = 0;
+      const client = {
+        async get<T>(path: string): Promise<T | null> {
+          if (path !== '/me/player/recently-played') return { items: [], total: 0, limit: 50 } as unknown as T;
+          pages += 1;
+          return {
+            items: Array.from({ length: 50 }, (_, i) => ({
+              played_at: new Date(Date.UTC(2026, 8, 20, i % 24, i % 60)).toISOString(),
+              track: { id: `t${pages}-${i}`, name: `T${i}`, uri: `spotify:track:t${i}`, artists: [{ id: `a${i % 7}`, name: `A${i % 7}` }] },
+            })),
+            cursors: { after: `c${pages}` },
+            next: `u${pages}`,
+          } as unknown as T;
+        },
+      };
+      const previous = process.env[ANALYTICS_OPT_IN_ENV];
+      process.env[ANALYTICS_OPT_IN_ENV] = '1';
+      try {
+        registerSwarm3AnalyticsTools(counting, client as unknown as SpotifyClient);
+      } finally {
+        if (previous === undefined) delete process.env[ANALYTICS_OPT_IN_ENV];
+        else process.env[ANALYTICS_OPT_IN_ENV] = previous;
+      }
+      const tool = tools.find((t) => t.name === 'weekday_listening_report');
+      assert.ok(tool, 'weekday_listening_report should be registered with the opt-in');
+      await tool.handler(z.object(tool.schema).parse(args));
+      return pages;
+    };
+    assert.equal(await recentPages({}), 3, 'the default 150-item depth must walk three pages');
+    assert.equal(await recentPages({ max_items: 500 }), 10, 'the schema maximum must walk ten pages, not more');
+    // The other walk docs/compliance.md quotes: libraryanalytics' own, bounded
+    // by lookback_days rather than an item budget. It is not gated, and it goes
+    // deeper than the gated walk's ceiling.
+    let heatPages = 0;
+    const heatClient = {
+      async get<T>(path: string): Promise<T | null> {
+        if (path !== '/me/player/recently-played') return { items: [], total: 0, limit: 50 } as unknown as T;
+        heatPages += 1;
+        return {
+          // Anchored to now, not a fixed date: the walk stops the moment a row
+          // falls before `now - lookback_days`, so a hard-coded stamp makes this
+          // count fall out of the budget on a later day with no code change.
+          items: Array.from({ length: 50 }, (_, i) => ({
+            played_at: new Date(Date.now() - i * 60_000).toISOString(),
+            track: { id: `h${heatPages}-${i}`, name: `H${i}`, uri: `spotify:track:h${i}`, artists: [{ id: `a${i}`, name: `A${i}` }] },
+          })),
+          cursors: { after: `c${heatPages}` },
+          next: `u${heatPages}`,
+        } as unknown as T;
+      },
+    };
+    const heatTools: Array<{ name: string; schema: z.ZodRawShape; handler: (a: unknown) => Promise<unknown> }> = [];
+    registerLibraryAnalyticsTools(
+      { tool(name: string, _d: string, schema: z.ZodRawShape, handler: (a: unknown) => Promise<unknown>) { heatTools.push({ name, schema, handler }); } } as unknown as McpServer,
+      heatClient as unknown as SpotifyClient,
+    );
+    const heatmap = heatTools.find((t) => t.name === 'listening_heatmap');
+    assert.ok(heatmap, 'listening_heatmap should be registered regardless of the opt-in');
+    await heatmap.handler(z.object(heatmap.schema).parse({}));
+    assert.equal(heatPages, 14, 'libraryanalytics walk depth changed; docs/compliance.md quotes it');
   });
 
   it('advertises and computes the derived fields when the opt-in is set', async () => {

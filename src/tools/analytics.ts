@@ -33,7 +33,12 @@ export function analyticsOptIn(env: NodeJS.ProcessEnv = process.env): boolean {
   return truthyEnv(env[ANALYTICS_OPT_IN_ENV]);
 }
 
-/** One-line provenance note appended to every analytics tool description. */
+/**
+ * One-line provenance note appended to every analytics tool description.
+ * Carries its own leading space and NO leading period: it is appended to a
+ * sentence the caller has already terminated, so the note never runs into the
+ * preceding words. `tests/tools.analytics.test.ts` pins that at every site.
+ */
 export const LOCAL_METRICS_DISCLAIMER =
   ' Metrics are computed locally from your own account data; not derived from third-party listening data.';
 
@@ -478,8 +483,8 @@ export function registerAnalyticsTools(server: McpServer, client: SpotifyClient)
   server.tool(
     'listening_report',
     (derived
-      ? 'Aggregate listening report: compares your top tracks between two time windows (rising / constant / fading), plus era histogram, discovery ratio, repeat overlap with recently played, and hour-of-day buckets'
-      : `Aggregate listening report: compares your top tracks between two time windows (rising / constant / fading). Derived metrics (era histogram, discovery ratio, repeat overlap, hour-of-day buckets) are gated: set ${ANALYTICS_OPT_IN_ENV}=1 for them`) + LOCAL_METRICS_DISCLAIMER,
+      ? 'Aggregate listening report: compares your top tracks between two time windows (rising / constant / fading), plus era histogram, discovery ratio, repeat overlap with recently played, and hour-of-day buckets.'
+      : `Aggregate listening report: compares your top tracks between two time windows (rising / constant / fading). Derived metrics (era histogram, discovery ratio, repeat overlap, hour-of-day buckets) are gated: set ${ANALYTICS_OPT_IN_ENV}=1 for them.`) + LOCAL_METRICS_DISCLAIMER,
     {
       time_range: timeRangeSchema,
       include_recent: z
@@ -488,7 +493,7 @@ export function registerAnalyticsTools(server: McpServer, client: SpotifyClient)
         .describe(
           derived
             ? 'Include recently-played analysis (repeat overlap + hour buckets). Default: true'
-            : `Ignored unless ${ANALYTICS_OPT_IN_ENV}=1, which is when no recently-played call is made. Default: true`,
+            : `Ignored unless ${ANALYTICS_OPT_IN_ENV}=1, which is when the recently-played walk is made. Default: true`,
         ),
       response_format: ResponseFormat,
       max_results: MaxResults,

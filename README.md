@@ -39,10 +39,11 @@ The finalized default MCP registry exposes **591 tools**, **16 fixed resources**
 
 | | |
 |---|---|
-| **Complete** | Playback, search, catalog, library, playlists, following, plus extras like duplicate cleanup, M3U/CSV import-export, podcast sessions, snapshot diffing, listening analytics, market checks, stats.fm taste imports, and taste composite briefs, playlists, and reports. |
+| **Complete** | Playback, search, catalog, library, playlists, following, plus extras like duplicate cleanup, M3U/CSV import-export, podcast sessions, snapshot diffing, opt-in listening analytics, market checks, stats.fm taste imports, and taste composite briefs, playlists, and reports. |
 | **Safe** | `dry_run` previews on writes, receipts that prove what landed, human confirmation for bulk deletes, and `READONLY` to hide write-capable modules. |
 | **Honest** | No zombie tools for endpoints Spotify removed. Legacy lookups explain the 403 instead of crashing; registration-gated endpoints are listed below. |
 | **Polished** | Paginated (up to 500), podcasts first-class, device-aware playback, `spotify_doctor` self-diagnosis, real test suite. |
+| | Derived listening metrics (discovery ratios, hour/weekday profiles, binge detection) are off by default behind `SPOTIFY_MCP_EXPERIMENTAL_ANALYTICS`; see [docs/compliance.md](docs/compliance.md). |
 
 ## Quick start
 
@@ -196,6 +197,7 @@ gates that hid modules, and the granted scopes in one call.
 - [ARCHITECTURE.md](ARCHITECTURE.md) — how it's built
 - [docs/configuration.md](docs/configuration.md) — all env vars
 - [docs/schema-budgets.md](docs/schema-budgets.md) — per-module schema budgets and registration order
+- [docs/compliance.md](docs/compliance.md) — the policy basis for the listening-analytics opt-in, and which tools it gates
 - [docs/statsfm.md](docs/statsfm.md) — stats.fm second source: setup, tool cheat sheet, gotchas
 - [docs/cookbook.md](docs/cookbook.md) — ten copy-paste agent recipes
 - [docs/taste.md](docs/taste.md) — anonymized taste showcase driving a playlist

@@ -38,6 +38,7 @@ A Model Context Protocol (MCP) server that gives Claude full control over Spotif
 - Multi-user / SaaS hosting
 - Lyrics (separate licensed product)
 - Spotify Connect SDK (hardware/native integration)
+- Analytics about anyone but the authenticated account: no third-party listening data, no cross-account metrics, and no persisted listener profile. Derived listening metrics are opt-in (`SPOTIFY_MCP_EXPERIMENTAL_ANALYTICS`); see [docs/compliance.md](docs/compliance.md)
 
 ---
 
