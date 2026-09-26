@@ -508,10 +508,12 @@ describe('exhaust2_misc — 27-tool misc slice', () => {
   });
 
   // #424
-  it('undo_preview reports an unknown receipt gracefully', async () => {
+  it('undo_preview reports an unknown receipt gracefully, naming the session scope and the retention rule', async () => {
     const h = getHandler('undo_preview', makeClient());
     const res = await h({ mutation_id: 'rcpt_9999', response_format: 'concise' });
-    assert.ok(res.content[0].text.includes('Unknown receipt'));
+    assert.match(res.content[0].text, /Unknown or expired receipt "rcpt_9999"/);
+    assert.match(res.content[0].text, /session-scoped/);
+    assert.match(res.content[0].text, /100 most recent mutations/);
   });
 
   it('undo_preview diffs what a receipt-driven revert would do', async () => {
@@ -527,6 +529,31 @@ describe('exhaust2_misc — 27-tool misc slice', () => {
     const h = getHandler('receipt_lookup', makeClient());
     const res = await h({ uri: 'spotify:track:a', response_format: 'concise' });
     assert.ok((res.structuredContent as { matches: number }).matches >= 1);
+  });
+
+  // #587 — `since` reads the receipt's issue time. Before, it compared the
+  // DIGITS in the id, so a boot-scoped id or a past date matched nothing.
+  it('receipt_lookup filters by issue time, not by the digits in the receipt id', async () => {
+    const receipt = await issueReceipt({ get: async () => [true] } as never, {
+      kind: 'library',
+      uris: ['spotify:track:since-filter'],
+    });
+    const h = getHandler('receipt_lookup', makeClient());
+
+    const past = await h({ since: '2000-01-01', response_format: 'concise' });
+    assert.ok(
+      (past.structuredContent as { matches: number }).matches >= 1,
+      'a date before the mutation keeps its receipts',
+    );
+
+    const future = await h({ since: '2999-01-01', response_format: 'concise' });
+    const futureData = future.structuredContent as { matches: number; receipts: Array<{ receipt_id: string }> };
+    assert.equal(futureData.matches, 0, 'a date after every mutation drops them all');
+
+    const mine = await h({ id: receipt.receipt_id, response_format: 'concise' });
+    const row = (mine.structuredContent as { receipts: Array<{ issued_at: number | null }> }).receipts[0]!;
+    assert.equal(typeof row.issued_at, 'number', 'a receipt reports when it was issued');
+    assert.ok(row.issued_at! <= Date.now() && row.issued_at! > 0);
   });
 
   // #426

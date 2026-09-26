@@ -150,6 +150,7 @@ All via env vars — no config file. Only `SPOTIFY_CLIENT_ID` is required.
 | `SPOTIFY_MCP_TOOLSETS` | `playback,catalog` | Trim by group for hosts that cap tool counts; unset or `all` registers everything. |
 | `SPOTIFY_MCP_READONLY` | `1` | Hide write-capable modules; read-only resources and prompts remain available. |
 | `SPOTIFY_MCP_HISTORY` | `1` | Log mutations to JSONL for undo and audit. |
+| `SPOTIFY_MCP_RECEIPTS` | `1` | Persist mutation receipts so `verify_receipt`/`undo_mutation` survive a restart. |
 
 Full reference: [docs/configuration.md](docs/configuration.md)
 

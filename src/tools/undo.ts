@@ -25,6 +25,7 @@ import {
   issueReceipt,
   formatReceipt,
   getAllReceipts,
+  receiptMissMessage,
   type Receipt,
 } from '../receipts.js';
 import { DryRun, ResponseFormat, LIBRARY_WRITE_CHUNK } from '../shaping.js';
@@ -423,7 +424,7 @@ export function registerUndoTools(server: McpServer, client: SpotifyClient): voi
     },
     async (args) => {
       const receipt = verifyReceipt(args.receipt_id);
-      if (!receipt) return textResult(`Unknown receipt "${args.receipt_id}" — receipts are kept for the most recent 100 mutations.`, { ok: false, reason: 'unknown_receipt' });
+      if (!receipt) return textResult(receiptMissMessage(args.receipt_id), { ok: false, reason: 'unknown_receipt' });
       if (!reversibleKind(receipt.kind)) return textResult(`Receipt ${receipt.receipt_id} (kind ${receipt.kind}) is not reversible.`, { ok: false, reason: 'not_reversible', kind: receipt.kind });
       return invertReceipt(server, client, receipt, args.dry_run as boolean | undefined);
     },

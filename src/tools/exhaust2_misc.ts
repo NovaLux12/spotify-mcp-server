@@ -42,7 +42,15 @@ import { loadPlaybackExt, playbackExtFile } from './playbackext.js';
 import { genreTagsPath, loadGenreTags } from './libraryinsights.js';
 import { historyFilePath, isHistoryEnabled, readHistory } from '../history.js';
 import type { HistoryRecord } from '../history.js';
-import { verifyReceipt, getAllReceipts } from '../receipts.js';
+import {
+  verifyReceipt,
+  getAllReceipts,
+  receiptMissMessage,
+  isReceiptsPersistent,
+  receiptsFilePath,
+  receiptRetentionLabel,
+  MAX_RECEIPTS,
+} from '../receipts.js';
 
 // ---------------------------------------------------------------------------
 // Shared shapes + result helpers
@@ -1583,7 +1591,7 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
     'Dry-run for undo_mutation: shows exactly what a receipt-driven revert WOULD do (diff of '
       + 'before/after, target inversion calls) without executing. 0-2 reads.',
     {
-      mutation_id: z.string().min(1).describe('Receipt id (rcpt_N) to preview reverting'),
+      mutation_id: z.string().min(1).describe('Receipt id (rcpt_…-N) to preview reverting'),
       check: z.boolean().optional().default(false)
         .describe('Optionally verify the target still exists (1 read)'),
       response_format: ResponseFormat,
@@ -1592,7 +1600,7 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
       const rf = args.response_format as ResponseFormatValue;
       const receipt = verifyReceipt(args.mutation_id);
       if (!receipt) {
-        return emit(rf, `Unknown receipt "${args.mutation_id}" — receipts are session-scoped and kept for the most recent 100 mutations.`, { ok: false, error: 'unknown_receipt' });
+        return emit(rf, receiptMissMessage(args.mutation_id), { ok: false, error: 'unknown_receipt' });
       }
       const invert = receipt.kind === 'playlist_items'
         ? `DELETE /playlists/${receipt.id ?? '?'}/items with ${receipt.uris.length} uri(s)`
@@ -1628,8 +1636,8 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
     'Find mutation receipts by id, date range or affected URI — closes the receipts loop '
       + '(issue → lookup). Local, zero API calls.',
     {
-      id: z.string().optional().describe('Exact receipt id (rcpt_N)'),
-      since: z.string().optional().describe('Only receipts issued... they carry no wall-clock; use id/uri filters mostly'),
+      id: z.string().optional().describe('Exact receipt id (rcpt_…-N)'),
+      since: z.string().optional().describe('Only receipts issued at/after this date; receipts with no recorded issue time are always included'),
       uri: z.string().optional().describe('Match receipts whose URI list contains this URI'),
       response_format: ResponseFormat,
     },
@@ -1640,13 +1648,21 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
       if (args.uri) rows = rows.filter((r) => r.uris.includes(args.uri!));
       const sinceTs = args.since ? ts(args.since) : NaN;
       if (Number.isFinite(sinceTs)) {
-        // Receipts do not persist timestamps; approximate ordering by id sequence number.
-        rows = rows.filter((r) => Number(r.receipt_id.replace(/\D/g, '')) * 1 >= Number(args.since!.replace(/\D/g, '')));
+        // Receipts carry a real issue time (#587), so this is a timestamp
+        // comparison rather than a guess from the id's sequence number. A
+        // receipt with no recorded time has an UNKNOWN age, which is not a
+        // verdict against the filter — it is kept and counted in the payload.
+        rows = rows.filter((r) => r.issued_at === undefined || r.issued_at >= sinceTs);
       }
       const payload = {
         ok: true, matches: rows.length,
-        receipts: rows.map((r) => ({ receipt_id: r.receipt_id, kind: r.kind, id: r.id, verified: r.verified, uris: r.uris, missing: r.missing, windowExceeded: r.windowExceeded ?? false })),
-        note: 'receipts are session-scoped (in-memory, FIFO 100)',
+        receipts: rows.map((r) => ({ receipt_id: r.receipt_id, kind: r.kind, id: r.id, verified: r.verified, uris: r.uris, missing: r.missing, windowExceeded: r.windowExceeded ?? false, issued_at: r.issued_at ?? null })),
+        note: isReceiptsPersistent()
+          ? `receipts persist to ${receiptsFilePath()} — ${MAX_RECEIPTS} most recent, ${receiptRetentionLabel()}`
+          : `receipts are session-scoped (in-memory, FIFO ${MAX_RECEIPTS}) — not persisted to disk`,
+        ...(Number.isFinite(sinceTs) && rows.some((r) => r.issued_at === undefined)
+          ? { untimed_receipts_included: rows.filter((r) => r.issued_at === undefined).length }
+          : {}),
       };
       const lines = [`Receipt lookup (${rows.length} match(es)):`];
       for (const r of rows) lines.push(`• ${r.receipt_id} — ${r.kind}${r.id ? ` ${r.id}` : ''} ${r.verified ? 'VERIFIED' : 'UNVERIFIED'} (${r.uris.length} uri(s))`);
