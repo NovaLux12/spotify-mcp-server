@@ -261,13 +261,15 @@ export function registerQueueOpsTools(server: McpServer, client: SpotifyClient):
         snapshotId = created.snapshot_id;
       }
 
-      // Add URIs in batches of CHUNK_CAPS.playlist_writes
+      // Add URIs in batches of CHUNK_CAPS.playlist_writes. Use /items — /tracks
+      // was retired for post-Nov-2024 registrations (#840, see SPEC §Playlist
+      // items path).
       let added = 0;
       let lastSnapshot: string | undefined = snapshotId;
       const writeCap = capFor('playlist_writes');
       for (let i = 0; i < collected.length; i += writeCap) {
         const batch = collected.slice(i, i + writeCap);
-        const res = await client.post<{ snapshot_id?: string }>(`/playlists/${playlistId}/tracks`, { uris: batch });
+        const res = await client.post<{ snapshot_id?: string }>(`/playlists/${playlistId}/items`, { uris: batch });
         added += batch.length;
         if (res?.snapshot_id) lastSnapshot = res.snapshot_id;
       }

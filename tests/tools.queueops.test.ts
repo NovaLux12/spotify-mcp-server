@@ -38,7 +38,13 @@ function harness(overrides: Partial<{
       if (path.includes('/users/') && path.includes('/playlists')) {
         return (overrides.createPlaylistResponse ?? { id: 'newPlId', external_urls: { spotify: 'https://open.spotify.com/playlist/newPlId' }, snapshot_id: 'snap1' }) as any;
       }
-      if (path.includes('/playlists/') && path.includes('/tracks')) return { snapshot_id: 'snap2' } as any;
+      if (path.includes('/playlists/') && path.includes('/items')) return { snapshot_id: 'snap2' } as any;
+      if (path.includes('/playlists/') && path.includes('/tracks')) {
+        // Legacy /tracks path is retired (#840). Any tool that still POSTs
+        // here is broken; surface the regression as a 404 so the assertion
+        // fails loudly.
+        throw Object.assign(new Error('legacy /playlists/{id}/tracks is retired, use /items'), { status: 404 });
+      }
       return null;
     },
     async put(path: string) { throw Object.assign(new Error('no endpoint'), { status: 404 }); },
@@ -128,9 +134,10 @@ describe('queueops', () => {
   it('save_queue_as_playlist creates playlist and adds queue URIs', async () => {
     const h = harness({ queueData: { currently_playing: track('cur'), queue: [track('q1'), track('q2')] } });
     const out = await h.invoke('save_queue_as_playlist', { name: 'My Queue' });
-    // First POST creates playlist, second POST adds tracks
+    // First POST creates playlist, second POST adds items via /items (not legacy /tracks, #840).
     assert.ok(h.posts.some((p) => p.includes('/users/') && p.includes('/playlists')));
-    assert.ok(h.posts.some((p) => p.includes('/tracks')));
+    assert.ok(h.posts.some((p) => p.includes('/items')));
+    assert.ok(!h.posts.some((p) => p.includes('/playlists/') && p.includes('/tracks')), 'must not POST to legacy /playlists/{id}/tracks');
     assert.match(out.content[0].text, /Saved 3 items/);
     assert.equal((out.structuredContent as any)?.ok, true);
   });
@@ -143,7 +150,9 @@ describe('queueops', () => {
   it('save_queue_as_playlist appends to target_playlist_id', async () => {
     const h = harness({ queueData: { currently_playing: track('cur'), queue: [track('q1')] } });
     const out = await h.invoke('save_queue_as_playlist', { target_playlist_id: 'existingPl' });
-    assert.ok(h.posts.some((p) => p.includes('existingPl/tracks')));
+    // /items path (#840), not the retired /tracks.
+    assert.ok(h.posts.some((p) => p.includes('existingPl/items')));
+    assert.ok(!h.posts.some((p) => p.includes('existingPl/tracks')), 'must not POST to legacy /playlists/{id}/tracks');
     assert.match(out.content[0].text, /Appended 2 items/i);
   });
   it('batch_add_to_queue POSTs each URI and returns a summary', async () => {
@@ -168,5 +177,23 @@ describe('queueops', () => {
     const out = await h.invoke('save_queue_as_playlist', { name: 'Tracks Only', include_episodes: false });
     // Should only save t1
     assert.equal((out.structuredContent as any)?.count, 1);
+  });
+  it('no registered tool POSTs/PUTs the retired /playlists/{id}/tracks (#840)', async () => {
+    // Drive every registered handler with a minimal valid invocation; if any
+    // of them writes through the legacy path, the harness throws 404 and the
+    // outer promise rejects, failing this test.
+    const h = harness();
+    const minimal: Record<string, unknown> = {
+      queue_playlist: { source_uri: 'spotify:playlist:pl1', mode: 'append' },
+      save_queue_as_playlist: { name: 'X' },
+      batch_add_to_queue: { uris: ['spotify:track:t1'] },
+    };
+    for (const r of h.registered) {
+      const args = minimal[(r as any).name];
+      if (!args) continue;
+      await (r as any).handler(z.object((r as any).schema).parse(args));
+    }
+    const legacyPosts = h.posts.filter((p) => /\/playlists\/[^/]+\/tracks(\?|$)/.test(p));
+    assert.deepEqual(legacyPosts, [], `legacy /playlists/{id}/tracks POST(s) detected: ${legacyPosts.join(', ')}`);
   });
 });
