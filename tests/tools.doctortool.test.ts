@@ -278,6 +278,52 @@ describe('spotify_doctor', () => {
     assert.equal(row, undefined);
   });
 
+  it('read-cache pressure surfaces as its own row (#894)', async () => {
+    await writeTokenFile(VALID_TOKENS());
+    // A cache holding entries reports what it holds and what it is allowed.
+    const holding = harness({
+      rateLimit: {
+        lastThrottleAt: null,
+        retryAfterSec: null,
+        cooldownRemainingMs: 0,
+        cacheEntries: 12,
+        cacheBytes: 3_145_728,
+        cacheMaxBytes: 8_388_608,
+        cacheSkippedOversize: 0,
+      },
+    });
+    let row = (await holding.invoke()).structuredContent?.rows?.find((r) => r.id === 'cache');
+    assert.equal(row?.status, 'pass');
+    assert.match(row!.summary, /12 entries/);
+    assert.match(row!.detail!, /cache_bytes=3145728/);
+    assert.match(row!.detail!, /cache_max_bytes=8388608/);
+    assert.match(row!.detail!, /cache_skipped_oversize=0/);
+
+    // A write refused for size is not a quiet event: those reads are never
+    // served from cache, so the row warns and says so.
+    const skipping = harness({
+      rateLimit: {
+        lastThrottleAt: null,
+        retryAfterSec: null,
+        cooldownRemainingMs: 0,
+        cacheEntries: 1,
+        cacheBytes: 4096,
+        cacheMaxBytes: 8_388_608,
+        cacheSkippedOversize: 3,
+      },
+    });
+    row = (await skipping.invoke()).structuredContent?.rows?.find((r) => r.id === 'cache');
+    assert.equal(row?.status, 'warn');
+    assert.match(row!.summary, /too large to cache/);
+    assert.match(row!.detail!, /cache_skipped_oversize=3/);
+
+    // A client that reports no cache at all gets no cache row — absence is
+    // not a zero, and must not read as one.
+    const bare = harness({ omitRateLimit: true });
+    row = (await bare.invoke()).structuredContent?.rows?.find((r) => r.id === 'cache');
+    assert.equal(row, undefined);
+  });
+
   it('config snapshot row reflects bound config', async () => {
     const file = await writeTokenFile(VALID_TOKENS());
     const { invoke } = harness();

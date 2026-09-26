@@ -505,6 +505,34 @@ function staticRows(client: SpotifyClient): DoctorRow[] {
     // Stub/test clients without the accessor: skip the row entirely.
   }
 
+  // Read-cache pressure (#894). Reported as its own row rather than folded
+  // into rate_limit: a cache quietly at its byte budget looks identical to a
+  // quiet process otherwise, and a non-zero skip count means some reads are
+  // never served from cache at all.
+  try {
+    const rl = client.getRateLimitStatus();
+    if (typeof rl.cacheEntries === 'number' && typeof rl.cacheBytes === 'number') {
+      const budget = typeof rl.cacheMaxBytes === 'number' ? rl.cacheMaxBytes : null;
+      const skipped = rl.cacheSkippedOversize ?? 0;
+      const cacheParts = [
+        `cache_entries=${rl.cacheEntries}`,
+        `cache_bytes=${rl.cacheBytes}`,
+        budget !== null ? `cache_max_bytes=${budget}` : null,
+        `cache_skipped_oversize=${skipped}`,
+      ].filter((p): p is string => p !== null);
+      rows.push({
+        id: 'cache',
+        status: skipped > 0 ? 'warn' : 'pass',
+        summary: skipped > 0
+          ? `read cache holds ${rl.cacheEntries} entr${rl.cacheEntries === 1 ? 'y' : 'ies'} / ${rl.cacheBytes} bytes — ${skipped} response(s) were too large to cache`
+          : `read cache holds ${rl.cacheEntries} entr${rl.cacheEntries === 1 ? 'y' : 'ies'} / ${rl.cacheBytes} bytes`,
+        detail: cacheParts.join(' '),
+      });
+    }
+  } catch {
+    // Stub/test clients without the accessor: skip the row entirely.
+  }
+
   const cfg = getConfig();
   const parts = [
     `token_file=${cfg.tokenFile}`,

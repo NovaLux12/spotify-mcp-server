@@ -154,7 +154,7 @@ All via env vars — no config file. Only `SPOTIFY_CLIENT_ID` is required.
 
 Full reference: [docs/configuration.md](docs/configuration.md)
 
-`spotify_doctor` (CLI + in-server tool) diagnoses token state, scope gaps, Premium gating, rate-limit cooldowns, and request/quota usage (cumulative + rolling-window counts, #904) without extra setup.
+`spotify_doctor` (CLI + in-server tool) diagnoses token state, scope gaps, Premium gating, rate-limit cooldowns, request/quota usage (cumulative + rolling-window counts, #904), and read-cache pressure (entries held, bytes retained, responses too large to cache, #894) without extra setup.
 
 ## Upgrading to 2.0
 

@@ -292,6 +292,16 @@ interface RateLimitStatus {
   requestsLastMinute: number;
   /** Requests issued in the trailing 60min (rolling window). */
   requestsLastHour: number;
+  /**
+   * Read-cache pressure (#894). Optional because a client can be constructed
+   * with the cache disabled or with a stub that has no cache at all; the
+   * fields are present whenever one exists, so an operator can tell cache
+   * pressure from the process baseline instead of guessing.
+   */
+  cacheEntries?: number;
+  cacheBytes?: number;
+  cacheMaxBytes?: number;
+  cacheSkippedOversize?: number;
 }
 
 /**
@@ -324,6 +334,11 @@ export class SpotifyClient {
 
   // Immutable-read TTL cache (#54) — null when disabled.
   readonly cache: LruTtlCache<unknown> | null;
+  // Exact wire size of each body this client parsed (#894), keyed by the
+  // parsed value, so the cache charges the bytes Spotify actually sent rather
+  // than serializing every payload a second time to measure it. Weak, so it
+  // never keeps a payload alive beyond the cache's own reference.
+  private readonly _bodySizes = new WeakMap<object, number>();
   // ETag validators for conditional reads (#601) — null when disabled. Holds
   // the payload an ETag identifies so a 304 can be answered without a body.
   readonly validators: ValidatorStore<unknown> | null;
@@ -375,7 +390,39 @@ export class SpotifyClient {
       requestsTotal: this._requestsTotal,
       requestsLastMinute: this.requestsSince(60_000),
       requestsLastHour: this.requestsSince(3_600_000),
+      ...this.cacheStats(),
     };
+  }
+
+  /**
+   * Read-cache entry count, retained bytes, budget and refused-write count
+   * (#894), or an empty object when the cache is disabled — so a caller can
+   * report "no cache" instead of "cache is empty".
+   */
+  private cacheStats(): Pick<RateLimitStatus, 'cacheEntries' | 'cacheBytes' | 'cacheMaxBytes' | 'cacheSkippedOversize'> {
+    if (!this.cache) return {};
+    return {
+      cacheEntries: this.cache.size,
+      cacheBytes: this.cache.bytes,
+      cacheMaxBytes: this.cache.limits.maxBytes,
+      cacheSkippedOversize: this.cache.skippedOversize,
+    };
+  }
+
+  /** Record the wire size of a parsed body (#894). Non-objects are not cached. */
+  private noteBodyBytes(value: unknown, bytes: number): void {
+    if (typeof value === 'object' && value !== null) this._bodySizes.set(value, bytes);
+  }
+
+  /**
+   * Retained size of a value about to be cached (#894): the wire length we
+   * measured when we parsed it, or undefined so the cache estimates — which
+   * only happens for a non-object payload, since every cached body is parsed
+   * through the branch that measures it.
+   */
+  private bodyBytes(value: unknown): number | undefined {
+    if (typeof value === 'object' && value !== null) return this._bodySizes.get(value);
+    return undefined;
   }
 
   /** Cumulative API requests issued through the drain queue (#904). */
@@ -906,30 +953,39 @@ export class SpotifyClient {
           }
           servedFrom304 = true;
           // A 304 is a cache hit: refresh the payload TTL and the validator
-          // window so the next read revalidates against the same ETag.
-          if (cacheable) this.cache!.set(key, validator.value);
+          // window so the next read revalidates against the same ETag. The
+          // payload is the same object, so its measured size is still
+          // recorded and the byte budget keeps charging it exactly once.
+          if (cacheable) this.cache!.set(key, validator.value, { bytes: this.bodyBytes(validator.value) });
           this.validators?.set(key, validator.value, validator.etag);
           opts?.onNotModified?.();
           return validator.value as T;
         }
         responseEtag = res.headers.get('etag');
         if (res.status === 204) return null;
+        // Read as text, not via res.json(), so the exact wire size of the
+        // body is available for the cache's byte budget (#894) without
+        // serializing the parsed value a second time.
+        const text = await res.text();
+        let parsed: T;
         try {
-          return (await res.json()) as T;
+          parsed = JSON.parse(text) as T;
         } catch (err) {
           if (err instanceof SyntaxError) {
-            // Body was not valid JSON. Best-effort drain so the connection
-            // can be reused, then fail with an actionable error.
-            await res.text().catch(() => undefined);
+            // Body was not valid JSON. The body is already drained by the
+            // read above, so the connection can be reused; fail with an
+            // actionable error rather than a parse stack.
             throw new SpotifyApiError(res.status, `GET ${path} returned a non-JSON body`);
           }
           throw err;
         }
+        this.noteBodyBytes(parsed, Buffer.byteLength(text, 'utf8'));
+        return parsed;
       },
       opts?.priority,
     );
     if (servedFrom304) return result;
-    if (cacheable && result !== null) this.cache!.set(key, result);
+    if (cacheable && result !== null) this.cache!.set(key, result, { bytes: this.bodyBytes(result) });
     // A body that no longer carries an ETag supersedes any stored validator:
     // keeping the old one would offer a tag whose payload we just replaced.
     if (responseEtag && result !== null) this.validators?.set(key, result, responseEtag);
