@@ -93,7 +93,7 @@ above either ceiling fails CI and server startup.
 | episodemgmt | 1 | 1,053 | 1 | 1,053 | 2 | 1,159 |
 | freshness | 1 | 2,043 | 1 | 2,043 | 2 | 2,248 |
 | searchdive | 1 | 1,561 | 1 | 1,561 | 2 | 1,718 |
-| searchhistory | 2 | 1,103 | 2 | 1,103 | 3 | 1,214 |
+| searchhistory | 2 | 1,096 | 2 | 1,096 | 3 | 1,206 |
 | browse | 3 | 2,665 | 3 | 2,665 | 4 | 2,932 |
 | artistwatch | 6 | 5,944 | 6 | 5,944 | 7 | 6,539 |
 | queueops | 3 | 3,449 | 3 | 3,449 | 4 | 3,794 |

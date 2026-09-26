@@ -594,7 +594,7 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   manifestEntry('episodemgmt', 'episodemgmt', 'src/tools/episodemgmt.ts', registerEpisodeMgmtTools, [1, 1053], { scopeKey: 'library' }),
   manifestEntry('freshness', 'following', 'src/tools/freshness.ts', registerFreshnessTools, [1, 2043], { readOnlySafe: true, scopeKey: 'following' }),
   manifestEntry('searchdive', 'search', 'src/tools/searchdive.ts', registerSearchDeepTool, [1, 1561], { readOnlySafe: true, scopeKey: 'search' }),
-  manifestEntry('searchhistory', 'searchhistory', 'src/tools/searchhistory.ts', registerSearchHistoryTools, [2, 1103], { readOnlySafe: true, scopeKey: 'search' }),
+  manifestEntry('searchhistory', 'searchhistory', 'src/tools/searchhistory.ts', registerSearchHistoryTools, [2, 1096], { readOnlySafe: true, scopeKey: 'search' }),
   manifestEntry('browse', 'browse', 'src/tools/browse.ts', registerBrowseTools, [3, 2665], { readOnlySafe: true, scopeKey: 'catalog' }),
   manifestEntry('artistwatch', 'artistwatch', 'src/tools/artistwatch.ts', registerArtistWatchTools, [6, 5944], { scopeKey: 'catalog' }),
   manifestEntry('queueops', 'queueops', 'src/tools/queueops.ts', registerQueueOpsTools, [3, 3449], { scopeKey: 'playback' }),
