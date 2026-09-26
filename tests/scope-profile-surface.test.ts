@@ -58,6 +58,29 @@ const UNAFFECTED_BY_ANY_PROFILE = [
   'get_album_tracks',
 ];
 
+/**
+ * Mutating tools a `core` token can still SEE. `src/tools/exhaustmisc.ts`
+ * registers under `scopeKey: 'exhaustmisc'`, which is not a key in
+ * WRITE_SCOPE_REQUIREMENTS, so `moduleBlockedByScopes` never blocks it: the
+ * module is always registered and its writers are always listed, on a token
+ * that holds no write scope at all. They fail at the API with a 403 — the
+ * exact outcome the gate exists to prevent, and one an operator cannot act
+ * on, because nothing in the surface says the grant is short.
+ *
+ * Pinned, not fixed, here: the gate keys live in `src/scopefilter.ts` and the
+ * scopeKey in `src/tools/annotations.ts`, both orchestrator-reserved. Until
+ * one is corrected, "the default profile withholds every write" is false —
+ * and spotify_doctor cannot see it either, because SCOPE_OWNER_BY_MODULE has
+ * no exhaustmisc entry, so the module never lands in hidden_by_scopes and
+ * raises no gap.
+ */
+const WRITES_STILL_LISTED_ON_A_CORE_TOKEN = [
+  'playlist_to_library',
+  'remove_from_library_by_playlist',
+  'unsave_orphan_tracks',
+  'split_playlist',
+];
+
 interface JsonRpcResponse {
   id?: number;
   result?: Record<string, unknown>;
@@ -259,5 +282,18 @@ describe('scope visibility matrix (#700)', () => {
       'upload_playlist_cover',
     ]);
     assert.deepEqual(missingFrom(playlistsSurface, WRITES_NEEDING_A_WIDER_PROFILE), ['save_to_library']);
+  });
+
+  it('lists mutating tools on a core token that holds no write scope at all', () => {
+    // The inverse of the preceding test, and the reason it cannot simply read
+    // "the default is safe": exhaustmisc escapes the gate entirely. Asserted
+    // as "still visible" so that closing the gate turns this RED and the fix
+    // cannot be mistaken for a surface regression.
+    assert.deepEqual(missingFrom(coreSurface, WRITES_STILL_LISTED_ON_A_CORE_TOKEN), []);
+    // Same tools under a grant that actually holds the scopes: the leak is
+    // the gate's blind spot, not these tools being absent everywhere.
+    for (const name of WRITES_STILL_LISTED_ON_A_CORE_TOKEN) {
+      assert.ok(librarySurface.has(name) || fullSurface.has(name), `${name} must stay reachable when granted`);
+    }
   });
 });
