@@ -665,7 +665,7 @@ export function registerSwarm3SnapshotsTools(server: McpServer, client: SpotifyC
       const toPath = await resolveSnapshotRef(args.to_snapshot);
       const [from, to] = await Promise.all([readSnapshotFile(fromPath), readSnapshotFile(toPath)]);
       const d = diffTrackLists(from.tracks, to.tracks);
-      const maxResults = resolveMaxResults(args.max_results, 100);
+      const maxResults = resolveMaxResults(args.max_results);
       const addedShown = d.added.slice(0, maxResults);
       const removedShown = d.removed.slice(0, maxResults);
       const payload: Record<string, unknown> = {
@@ -848,7 +848,7 @@ export function registerSwarm3SnapshotsTools(server: McpServer, client: SpotifyC
           removed_names: d.removed.slice(0, 5).map((t) => t.name || t.uri),
         });
       }
-      const shown = entries.slice(-resolveMaxResults(args.max_results, 50));
+      const shown = entries.slice(-resolveMaxResults(args.max_results));
       const payload: Record<string, unknown> = {
         ok: true,
         playlist_id: playlistId,
