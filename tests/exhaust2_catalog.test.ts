@@ -258,6 +258,36 @@ assert.equal((res.structuredContent as { album_tracks: unknown[] }).album_tracks
     const row = (res.structuredContent as { tracks: Array<{ artist_genres: Record<string, string[]> }> }).tracks[0];
     assert.deepEqual(row.artist_genres.Artist, ['indie rock']);
   });
+
+  // #1093: counts already existed for this tool (#335), but the missing_ids
+  // list was not. Without it the caller cannot distinguish a smaller lookup
+  // from a fully-resolved one — the counts alone do not say which ids were
+  // dropped.
+  it('track_enrichment_batch names the ids it could not resolve (#1093)', async () => {
+    const DEAD = '0000000000000000000001';
+    const client = makeClient({
+      get: mock.fn(async (path: string) => {
+        if (path === '/tracks') return { tracks: [trackPayload(), null] };
+        if (path === '/albums') return { albums: [] };
+        if (path === '/artists') return { artists: [{ ...artist, genres: ['indie rock'] }] };
+        return null;
+      }),
+    });
+    const res = await handlerFor('track_enrichment_batch', client)({
+      track_ids: ['t1', DEAD],
+      response_format: 'concise',
+    });
+    const counts = (res.structuredContent as { counts: Record<string, unknown> }).counts;
+    assert.deepEqual(counts.missing_ids, [DEAD]);
+    assert.equal(counts.requested, 2);
+    assert.equal(counts.resolved, 1);
+    // requested == resolved + missing_ids.length must hold, so the counts are
+    // self-consistent and a caller can trust them.
+    assert.equal(
+      (counts.requested as number),
+      (counts.resolved as number) + (counts.missing_ids as string[]).length,
+    );
+  });
 });
 
 describe('statistics + local-compute tools', () => {
@@ -274,6 +304,60 @@ describe('statistics + local-compute tools', () => {
     assert.ok(res.content[0].text.includes('total 3:00'));
     assert.ok(res.content[0].text.includes('mean 1:30'));
     assert.equal((res.structuredContent as { albums: Array<{ partial_estimate: boolean }> }).albums[0].partial_estimate, false);
+  });
+
+  // #1093: a null slot is an id the endpoint could not resolve. The header
+  // still says "(N albums)" for the resolved count, but the prose must name
+  // the unresolved ids and structuredContent must account for them — a
+  // resolved count alone leaves the caller unable to tell "Spotify dropped it"
+  // from "the caller never asked for it". Mirrors the #778 several-* pattern.
+  it('albums_runtime_batch names unresolved ids in prose and counts (#1093)', async () => {
+    const DEAD = '0000000000000000000000';
+    const client = makeClient({
+      get: mock.fn(async () => ({
+        albums: [
+          { id: 'alb1', name: 'Album', uri: 'u', album_type: 'album', release_date: '2021', total_tracks: 1, artists: [artist], images: [], tracks: { items: [
+            { id: 't1', name: 'a', uri: 'u', duration_ms: 60_000, explicit: false, track_number: 1, artists: [artist] },
+          ], total: 1 } },
+          null,
+        ],
+      })),
+    });
+    const res = await handlerFor('albums_runtime_batch', client)({
+      album_ids: ['alb1', DEAD],
+      response_format: 'concise',
+    });
+    const text = res.content[0].text;
+    // The header still reports the resolved count (matches #778 several-*
+    // convention), and the unresolved note names the dropped id.
+    assert.match(text, /Runtime per album \(1 album\):/);
+    assert.match(text, new RegExp(`1 id unresolved: ${DEAD}`));
+    // structuredContent counts the request honestly: requested = 2, resolved
+    // = 1, missing_ids carries the dropped id. requested == resolved +
+    // missing_ids.length must always hold.
+    assert.deepEqual((res.structuredContent as { counts: Record<string, unknown> }).counts, {
+      requested: 2,
+      resolved: 1,
+      missing_ids: [DEAD],
+    });
+  });
+
+  it('albums_runtime_batch with no unresolved ids reports an empty missing_ids (#1093)', async () => {
+    const client = makeClient({
+      get: mock.fn(async () => ({
+        albums: [{ id: 'alb1', name: 'Album', uri: 'u', album_type: 'album', release_date: '2021', total_tracks: 1, artists: [artist], images: [], tracks: { items: [
+          { id: 't1', name: 'a', uri: 'u', duration_ms: 60_000, explicit: false, track_number: 1, artists: [artist] },
+        ], total: 1 } }],
+      })),
+    });
+    const res = await handlerFor('albums_runtime_batch', client)({ album_ids: ['alb1'], response_format: 'concise' });
+    const text = res.content[0].text;
+    assert.ok(!/unresolved/.test(text), 'nothing was dropped, so nothing is disclosed');
+    assert.deepEqual((res.structuredContent as { counts: Record<string, unknown> }).counts, {
+      requested: 1,
+      resolved: 1,
+      missing_ids: [],
+    });
   });
 
   it('album_track_stats returns min/max/mean/median + longest', async () => {
@@ -894,6 +978,31 @@ assert.equal((res.structuredContent as { gaps_flagged: unknown[] }).gaps_flagged
     assert.ok(res.content[0].text.includes('Untagged'));
     assert.ok(res.content[0].text.includes('no genres'));
     assert.equal((res.structuredContent as { counts: { without_genres: number } }).counts.without_genres, 1);
+  });
+
+  // #1093: counts already existed here (#357) but missing_ids was not, so the
+  // resolved count could not be cross-checked against the requested list.
+  it('artist_genres_compact names the ids it could not resolve (#1093)', async () => {
+    const DEAD = '0000000000000000000002';
+    const client = makeClient({
+      get: mock.fn(async () => ({
+        artists: [{ ...artist, genres: ['pop'] }, null],
+      })),
+    });
+    const res = await handlerFor('artist_genres_compact', client)({
+      artist_ids: ['a1', DEAD],
+      response_format: 'concise',
+    });
+    const counts = (res.structuredContent as { counts: Record<string, unknown> }).counts;
+    assert.deepEqual(counts.missing_ids, [DEAD]);
+    assert.equal(counts.requested, 2);
+    assert.equal(counts.resolved, 1);
+    assert.equal(counts.without_genres, 0);
+    // Self-consistency: requested == resolved + missing_ids.length.
+    assert.equal(
+      (counts.requested as number),
+      (counts.resolved as number) + (counts.missing_ids as string[]).length,
+    );
   });
 
   it('track_enrichment_batch fetches album and artist chunks concurrently but preserves order', async () => {

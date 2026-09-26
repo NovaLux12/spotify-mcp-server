@@ -516,7 +516,22 @@ max_results: z.number().int().positive().max(2000).optional().describe('Max item
         '/tracks',
         { ids: ids.join(',') },
       );
-      const tracks = (tracksRes?.tracks ?? []).filter((t): t is TrackPayload => t != null);
+      // #1093: null slots are ids the endpoint could not resolve. Account for
+      // them by index so the caller can tell a smaller lookup from a fully-
+      // resolved one. The de-duped `ids` array is what was sent to Spotify, so
+      // requested == resolved + missing_ids.length always holds.
+      const trackSlots = tracksRes?.tracks ?? [];
+      const tracks: TrackPayload[] = [];
+      const missingTrackIds: string[] = [];
+      for (let i = 0; i < Math.max(ids.length, trackSlots.length); i += 1) {
+        const slot = trackSlots[i];
+        if (slot != null) {
+          tracks.push(slot);
+          continue;
+        }
+        const id = ids[i];
+        if (id !== undefined) missingTrackIds.push(id);
+      }
       if (tracks.length === 0) throw new Error('No playable tracks found for the given IDs');
 
       const albumIds = [...new Set(tracks.map((t) => t.album?.id).filter((x): x is string => !!x))];
@@ -568,7 +583,13 @@ max_results: z.number().int().positive().max(2000).optional().describe('Max item
       });
       return emit(rf, [`Enriched ${tracks.length} track${tracks.length === 1 ? '' : 's'}:`, '', ...lines].join('\n'), {
         tracks: rows,
-        counts: { requested: args.track_ids.length, resolved: tracks.length, albums_fetched: albums.size, artists_fetched: genresByArtist.size },
+        counts: {
+          requested: ids.length,
+          resolved: tracks.length,
+          missing_ids: [...missingTrackIds],
+          albums_fetched: albums.size,
+          artists_fetched: genresByArtist.size,
+        },
         pagination: paginationInfo({ total: tracks.length, returned: trunc.items.length }),
       });
     },
@@ -587,11 +608,27 @@ max_results: z.number().int().positive().max(2000).optional().describe('Max item
     },
     async (args) => {
       const rf = args.response_format;
+      const ids = [...new Set(args.album_ids)];
       const res = await client.get<{ albums: (AlbumPayload | null)[] }>(
         '/albums',
-        { ids: args.album_ids.join(','), ...(args.market ? { market: args.market } : {}) },
+        { ids: ids.join(','), ...(args.market ? { market: args.market } : {}) },
       );
-      const albums = (res?.albums ?? []).filter((a): a is AlbumPayload => a != null);
+      // #1093: null slots are ids the endpoint could not resolve. Account for
+      // them by index so the caller can tell a smaller lookup from a fully-
+      // resolved one. The de-duped `ids` array is what was sent to Spotify, so
+      // requested == resolved + missing_ids.length always holds.
+      const albumSlots = res?.albums ?? [];
+      const albums: AlbumPayload[] = [];
+      const missingAlbumIds: string[] = [];
+      for (let i = 0; i < Math.max(ids.length, albumSlots.length); i += 1) {
+        const slot = albumSlots[i];
+        if (slot != null) {
+          albums.push(slot);
+          continue;
+        }
+        const id = ids[i];
+        if (id !== undefined) missingAlbumIds.push(id);
+      }
       if (albums.length === 0) throw new Error('No albums found for the given IDs');
       const rows = albums.map((al) => {
         const tracks = al.tracks?.items ?? [];
@@ -613,7 +650,27 @@ max_results: z.number().int().positive().max(2000).optional().describe('Max item
       const lines = rows.map((r) =>
         `• "${r.name}" — total ${fmtDur(r.total_runtime_ms)} · mean ${fmtDur(r.mean_track_ms)} / track · ${r.tracks_used}${r.partial_estimate ? ` of ${r.track_count_reported}` : ''} tracks${r.partial_estimate ? ' (PARTIAL — album embeds only the first 50)' : ''}`,
       );
-      return emit(rf, [`Runtime per album (${rows.length} album${rows.length === 1 ? '' : 's'}):`, '', ...lines].join('\n'), { albums: rows });
+      // #1093: when ids are dropped, name them in the prose so the header
+      // ("N albums") cannot be read as "all N were resolved". Mirrors the
+      // unresolved note shape used by the #778 several-* tools.
+      const proseLines = [`Runtime per album (${albums.length} album${albums.length === 1 ? '' : 's'}):`];
+      if (missingAlbumIds.length > 0) {
+        const shown = missingAlbumIds.slice(0, 10).join(', ');
+        const more = missingAlbumIds.length > 10 ? ', …' : '';
+        proseLines.push(
+          '',
+          `${missingAlbumIds.length} ${missingAlbumIds.length === 1 ? 'id' : 'ids'} unresolved: ${shown}${more}`,
+        );
+      }
+      proseLines.push('', ...lines);
+      return emit(rf, proseLines.join('\n'), {
+        albums: rows,
+        counts: {
+          requested: ids.length,
+          resolved: albums.length,
+          missing_ids: [...missingAlbumIds],
+        },
+      });
     },
   );
 
@@ -1460,7 +1517,22 @@ max_results: z.number().int().positive().max(2000).optional().describe('Max item
       const rf = args.response_format;
       const ids = [...new Set(args.artist_ids)];
       const res = await client.get<{ artists: (SpotifyArtistFull | null)[] }>('/artists', { ids: ids.join(',') });
-      const artists = (res?.artists ?? []).filter((a): a is SpotifyArtistFull => a != null);
+      // #1093: null slots are ids the endpoint could not resolve. Account for
+      // them by index so the caller can tell a smaller lookup from a fully-
+      // resolved one. The de-duped `ids` array is what was sent to Spotify, so
+      // requested == resolved + missing_ids.length always holds.
+      const artistSlots = res?.artists ?? [];
+      const artists: SpotifyArtistFull[] = [];
+      const missingArtistIds: string[] = [];
+      for (let i = 0; i < Math.max(ids.length, artistSlots.length); i += 1) {
+        const slot = artistSlots[i];
+        if (slot != null) {
+          artists.push(slot);
+          continue;
+        }
+        const id = ids[i];
+        if (id !== undefined) missingArtistIds.push(id);
+      }
       if (artists.length === 0) throw new Error('No artists found for the given IDs');
       const cap = resolveMaxResults(undefined, getConfig().maxItems);
       const trunc = truncateItems(artists, cap);
@@ -1470,7 +1542,12 @@ max_results: z.number().int().positive().max(2000).optional().describe('Max item
       if (trunc.footer) lines.push(`(${trunc.footer})`);
       return emit(rf, [`Roster (${artists.length} artists, ${noGenres} without genre tags):`, '', ...lines].join('\n'), {
         artists: trunc.items.map((a) => ({ id: a.id, name: a.name, genres: a.genres ?? [] })),
-        counts: { requested: args.artist_ids.length, resolved: artists.length, without_genres: noGenres },
+        counts: {
+          requested: ids.length,
+          resolved: artists.length,
+          missing_ids: [...missingArtistIds],
+          without_genres: noGenres,
+        },
         pagination: paginationInfo({ total: artists.length, returned: trunc.items.length }),
       });
     },
