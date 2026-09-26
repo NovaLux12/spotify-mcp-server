@@ -31,6 +31,17 @@ if (!zodEntry.startsWith(`${localModules}${sep}`)) {
   throw new Error(`surface census resolved zod outside repository dependencies: ${zodEntry}`);
 }
 const args = process.argv.slice(2);
+/**
+ * The members of the `SeveralKind` union that `fetchSeveral` in
+ * `src/tools/catalog.ts` reads as the computed path `/${kind}`.
+ *
+ * Declared here, at module scope, rather than beside `gatedCallSites()`:
+ * `checkDocumentation()` runs at import time and reaches this before the
+ * function declarations below are hoisted past their `const` initializers. A
+ * `const` declared next to its only consumer throws a TDZ `ReferenceError`
+ * from the top-level census run, which reads as a crash rather than a gate.
+ */
+const SEVERAL_KINDS = ['tracks', 'albums', 'artists', 'episodes', 'shows', 'audiobooks', 'chapters'];
 
 if (!process.env.SPOTIFY_MCP_SURFACE_CENSUS) {
   const child = spawnSync(process.execPath, ['--import', 'tsx/esm', fileURLToPath(import.meta.url), ...args], {
@@ -88,7 +99,7 @@ const censusFileIndex = args.indexOf('--census-file');
 if (censusFileIndex >= 0 && !args[censusFileIndex + 1]) {
   throw new Error('--census-file requires a JSON file');
 }
-const { GATED_PATH_PATTERNS, isGatedPath } = await import('../src/tools/exhaust2_enggating.ts');
+const { GATED_FAMILIES, GATED_PATH_PATTERNS, isGatedPath } = await import('../src/gating.ts');
 const census = censusFileIndex >= 0
   ? JSON.parse(readFileSync(resolve(args[censusFileIndex + 1]), 'utf8'))
   : await readProductionRegistry();
@@ -152,6 +163,7 @@ const packageExcerpt = JSON.stringify({
 const shortSurface = `The finalized default MCP registry exposes **${result.tools} tools**, **${result.resources} fixed resources**, **${result.resourceTemplates} resource templates**, and **${result.prompts} prompts**. Toolsets and production gates can trim a configured host; these totals describe the default production \`tools/list\` after finalizers.`;
 const blocks = [
   ['README.md', 'surface-census', shortSurface],
+  ['README.md', 'gated-endpoints', gatedEndpointTable()],
   ['ARCHITECTURE.md', 'surface-census', `${shortSurface} The tool surface is attributed to ${result.toolModuleFiles} files under \`src/tools/\`.`],
   ['ARCHITECTURE.md', 'module-map', architecture],
   ['SPEC.md', 'package-contract', ['```json', packageExcerpt, '```'].join('\n')],
@@ -438,6 +450,140 @@ function skillSurface(census) {
   return `Current default production baseline: **${census.tools} tools**, **${census.resources} fixed resources**, **${census.resourceTemplates} resource templates**, and **${census.prompts} prompts**. Regenerate with \`npm run count:tools -- --write\`; never substitute historical prose.`;
 }
 
+/**
+ * The README's registration-gated table, rendered from `GATED_FAMILIES` in
+ * `src/gating.ts` (#605).
+ *
+ * Generating this is the whole fix. The prose version was a hand-maintained
+ * copy of a list that also lives in code, and it had already drifted: it
+ * advertised `/recommendations`, `/me/apps` and `/me/chapters` as responses a
+ * caller would see, none of which any shipped tool can produce, and it
+ * described the `/me/{type}/contains` family as fully wrapped after #862 had
+ * migrated the playlist-follow check onto `GET /me/library/contains`. Deriving
+ * the table means a family added to `GATING` shows up here on the next
+ * `--write`, and `checkGatedEndpointTruth` fails `--check` when a family's
+ * hand-maintained `tools` list stops matching the real call sites.
+ */
+function gatedEndpointTable() {
+  const rows = GATED_FAMILIES.map((family) => {
+    const tools = family.tools.length
+      ? family.tools.map((t) => `\`${t}\``).join(', ')
+      : family.id === 'browse-new-releases'
+        ? '*(none — no shipped tool reads this path)*'
+        : '*(none — migrated to `GET /me/library/contains`)*';
+    const behaviour = family.tools.length === 0
+      ? 'Replaced; no call site'
+      : family.fallback === 'replaced'
+        ? 'Replaced with per-id reads'
+        : '403 explained';
+    return `| \`${family.id}\` — ${family.label} | ${tools} | ${behaviour} |`;
+  });
+  return [
+    '| Endpoint family | Shipped tools that call it | On a current registration |',
+    '|---|---|---|',
+    ...rows,
+  ].join('\n');
+}
+
+/**
+ * Static scan for gated `client.get` / `client.getAllPages` call sites under
+ * `src/tools/`.
+ *
+ * This exists so the `tools` column above cannot rot into a claim. It is a
+ * lexical scan, not a call-graph walk, with two deliberate limits:
+ *
+ *   - It only reads files that construct against `SpotifyClient`.
+ *     `src/tools/statsfm.ts` issues `/users/{id}`-shaped paths against the
+ *     **stats.fm** API -- a different host, not covered by
+ *     `installGatedPathContract` -- which must not be counted here.
+ *   - `src/tools/catalog.ts` reaches the batch family through the computed
+ *     path `/${kind}`, which a string-literal scan cannot read. The
+ *     `SEVERAL_KINDS` expansion below covers that one case explicitly, and
+ *     `checkGatedEndpointTruth` fails if a family has a hand-declared tool but
+ *     no scan hit, so a new computed-path call site cannot pass unnoticed.
+ */
+
+/**
+ * Extract the first string-literal argument of every `client.get` /
+ * `client.getAllPages` call in `source`, as `{ path, index }`.
+ *
+ * A regex cannot do this: the calls carry TypeScript generics that themselves
+ * nest (`client.get<{ categories: Paged<CategoryItem> }>('/browse/categories')`),
+ * so `<\s*[^>]*>` stops at the inner `>`. This walks the text instead --
+ * skipping a balanced `<...>` when one follows the method name, then reading
+ * the first quoted or backticked literal argument.
+ */
+function clientGetPaths(source) {
+  const out = [];
+  const re = /client\.(get|getAllPages)\b/g;
+  let m;
+  while ((m = re.exec(source)) !== null) {
+    let i = re.lastIndex;
+    // Skip a balanced generic argument list.
+    if (source[i] === '<') {
+      let depth = 0;
+      for (; i < source.length; i++) {
+        if (source[i] === '<') depth++;
+        else if (source[i] === '>') {
+          depth--;
+          if (depth === 0) { i++; break; }
+        }
+      }
+    }
+    // Skip whitespace to the call's open paren.
+    while (i < source.length && /\s/.test(source[i])) i++;
+    if (source[i] !== '(') continue;
+    i++;
+    while (i < source.length && /[\s]/.test(source[i])) i++;
+    const quote = source[i];
+    if (quote !== "'" && quote !== '"' && quote !== '`') continue;
+    const end = source.indexOf(quote, i + 1);
+    if (end === -1) continue;
+    out.push({ path: source.slice(i + 1, end), index: m.index });
+  }
+  return out;
+}
+
+function gatedCallSites() {
+  // `server.tool(` is followed by the tool name on the same line or the next.
+  const toolRe = /server\.tool\(\s*(?:\n\s*)?'([a-z0-9_]+)'/g;
+  const hits = [];
+  const record = (family, file, line, tool, path) => {
+    if (family) hits.push({ family: family.id, file, line, tool, path });
+  };
+  for (const file of readdirSync(join(ROOT, 'src', 'tools')).sort()) {
+    if (!file.endsWith('.ts')) continue;
+    const source = readFileSync(join(ROOT, 'src', 'tools', file), 'utf8');
+    if (!source.includes('SpotifyClient')) continue;
+    const lineAt = (index) => source.slice(0, index).split('\n').length;
+    const toolSpans = [...source.matchAll(toolRe)].map((t) => ({ name: t[1], at: t.index }));
+    const toolAt = (index) => {
+      let name = null;
+      for (const t of toolSpans) { if (t.at <= index) name = t.name; else break; }
+      return name;
+    };
+    for (const { path: raw, index } of clientGetPaths(source)) {
+      const path = raw.split('?')[0];
+      // A template literal's `${...}` is a path segment the classifier treats
+      // as opaque, so collapse interpolations before classifying.
+      const probe = path.replace(/\$\{[^}]*\}/g, 'x');
+      const line = lineAt(index);
+      record(GATED_FAMILIES.find((f) => f.pattern.test(probe)), file, line, toolAt(index), path);
+      // `fetchSeveral` reads the batch family as `/${kind}`; expand the seven
+      // members of the `SeveralKind` union so the family is actually seen.
+      if (probe === '/x') {
+        for (const kind of SEVERAL_KINDS) {
+          record(
+            GATED_FAMILIES.find((f) => f.pattern.test(`/${kind}`)),
+            file, line, toolAt(index), `/${kind} (via \`/\${kind}\` in fetchSeveral)`,
+          );
+        }
+      }
+    }
+  }
+  return hits;
+}
+
 function markers(file, name) {
   if (file.endsWith('.ts')) {
     return [`// BEGIN:generated ${name}`, `// END:generated ${name}`];
@@ -542,6 +688,51 @@ function checkGatedEndpointTruth() {
   // surface-census mjs is the only place this length is pinned; tests
   // (#329 / #725) check the same constant via isGatedPath case rows.
   if (GATED_PATH_PATTERNS.length !== 8) errors.push(`GATED_PATH_PATTERNS: expected 8 exported patterns, found ${GATED_PATH_PATTERNS.length}`);
+
+  // #605: every family's documented example must be accepted by its own
+  // pattern. Without this the table could name a path the classifier rejects,
+  // which is how a hand-maintained list drifts away from the code.
+  for (const family of GATED_FAMILIES) {
+    if (!family.pattern.test(family.example)) {
+      errors.push(`GATED_FAMILIES[${family.id}]: documented example ${family.example} is not matched by its own pattern`);
+    }
+  }
+
+  // #605: the hand-maintained `tools` column must match the real call sites.
+  // A family that gained a wrapper without naming the tool here, or lost its
+  // last wrapper while still claiming one, fails the census.
+  const registered = new Set(census.toolNames);
+  const scanned = new Map();
+  for (const hit of gatedCallSites()) {
+    if (!scanned.has(hit.family)) scanned.set(hit.family, new Set());
+    scanned.get(hit.family).add(hit.file);
+  }
+  for (const family of GATED_FAMILIES) {
+    const live = scanned.get(family.id) ?? new Set();
+    if (family.tools.length === 0 && live.size > 0) {
+      errors.push(`GATED_FAMILIES[${family.id}]: declares no shipped tools, but gated call sites exist in ${[...live].join(', ')}`);
+    }
+    if (family.tools.length > 0 && live.size === 0) {
+      errors.push(`GATED_FAMILIES[${family.id}]: claims tools [${family.tools.join(', ')}] but no gated client.get call site was found in src/tools/`);
+    }
+    for (const tool of family.tools) {
+      if (!registered.has(tool)) {
+        errors.push(`GATED_FAMILIES[${family.id}]: names tool ${tool}, which is not in the finalized production registry`);
+      }
+    }
+  }
+
+  // #605: the README table is generated, so the substantive claim to check is
+  // that the framing around it no longer asserts the absolutes that made the
+  // three README statements contradict each other.
+  for (const banned of [
+    'No zombie tools for endpoints Spotify removed',
+    'Every non-deprecated endpoint',
+  ]) {
+    if (readme.includes(banned)) {
+      errors.push(`README.md: still claims "${banned}", which the generated gated-endpoints table contradicts`);
+    }
+  }
   for (const endpoint of ['/artists/{id}/top-tracks', '/me/{type}/contains']) {
     if (!readme.includes(endpoint)) errors.push(`README.md: missing gated endpoint ${endpoint}`);
   }
