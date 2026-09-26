@@ -30,21 +30,19 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 
 import { SpotifyClient } from '../src/client.js';
 import { moduleBlockedByScopes, scopesFor } from '../src/scopefilter.js';
-import { REGISTRAR_MANIFEST, classifyToolAnnotations, registerManifestModule } from '../src/tools/annotations.js';
+import { REGISTRAR_MANIFEST, classifyToolAnnotations, registerManifestModules } from '../src/tools/annotations.js';
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
 /** Register the whole manifest through the production gate. */
-function visibleTools(options: { scope?: string; readOnly?: boolean }): Set<string> {
+async function visibleTools(options: { scope?: string; readOnly?: boolean }): Promise<Set<string>> {
   const server = new McpServer({ name: 'row-safety-test', version: '0.0.0' });
   const granted = scopesFor(options.scope);
-  for (const module of REGISTRAR_MANIFEST) {
-    registerManifestModule(server, new SpotifyClient(), module, {
-      readOnly: options.readOnly ?? false,
-      isModuleActive: () => true,
-      scopeBlocked: (key) => moduleBlockedByScopes(key, granted),
-    });
-  }
+  await registerManifestModules(server, new SpotifyClient(), {
+    readOnly: options.readOnly ?? false,
+    isModuleActive: () => true,
+    scopeBlocked: (key) => moduleBlockedByScopes(key, granted),
+  });
   return new Set(Object.keys((server as unknown as { _registeredTools: Record<string, unknown> })._registeredTools));
 }
 
@@ -72,31 +70,31 @@ describe('#1005 pin/unpin advertise the scopes /me/library actually accepts', ()
   // hide a tool the caller's token authorises, which is worse than the 403
   // this gate exists to prevent.
   for (const grant of ['playlist-modify-public', 'user-library-modify', 'user-follow-modify']) {
-    it(`exposes pin_playlist/unpin_playlist to a "${grant}"-only grant`, () => {
-      const names = visibleTools({ scope: grant });
+    it(`exposes pin_playlist/unpin_playlist to a "${grant}"-only grant`, async () => {
+      const names = await visibleTools({ scope: grant });
       assert.ok(names.has('pin_playlist'), `pin_playlist hidden from a ${grant} grant, which authorises it`);
       assert.ok(names.has('unpin_playlist'), `unpin_playlist hidden from a ${grant} grant, which authorises it`);
     });
   }
 
-  it('withholds the pair from playlist-modify-private, which does not authorise /me/library', () => {
+  it('withholds the pair from playlist-modify-private, which does not authorise /me/library', async () => {
     // The pre-fix row carried `scopeKey: 'playlists'` (public OR private), so a
     // private-only caller saw both tools and got a raw 403 from Spotify on
     // every call. playlist_template_apply still needs the private scope and
     // keeps its own row, so nothing legitimate is lost with the pair.
-    const names = visibleTools({ scope: 'playlist-modify-private' });
+    const names = await visibleTools({ scope: 'playlist-modify-private' });
     assert.equal(names.has('pin_playlist'), false, 'pin_playlist advertised to a grant that cannot authorise it');
     assert.equal(names.has('unpin_playlist'), false, 'unpin_playlist advertised to a grant that cannot authorise it');
     assert.ok(names.has('playlist_template_apply'), 'the playlist-create tool keeps playlist-modify-private');
   });
 
-  it('withholds the pair from a read-only grant', () => {
-    const names = visibleTools({ scope: READ_ONLY_GRANT });
+  it('withholds the pair from a read-only grant', async () => {
+    const names = await visibleTools({ scope: READ_ONLY_GRANT });
     assert.equal(names.has('pin_playlist'), false);
     assert.equal(names.has('unpin_playlist'), false);
   });
 
-  it('keeps every scope the endpoint accepts on the row', () => {
+  it('keeps every scope the endpoint accepts on the row', async () => {
     // Pinned against a future "simplification" of the either-of list: dropping
     // the third alternative is the exact regression #1005 was filed for.
     const accepted = ['user-library-modify', 'user-follow-modify', 'playlist-modify-public'];
@@ -112,36 +110,36 @@ describe('#1005 pin/unpin advertise the scopes /me/library actually accepts', ()
 });
 
 describe('#1009 taste_to_playlist is the only writer in the taste family', () => {
-  it('is absent from a read-only session while the ten reads stay', () => {
-    const names = visibleTools({ readOnly: true });
+  it('is absent from a read-only session while the ten reads stay', async () => {
+    const names = await visibleTools({ readOnly: true });
     assert.equal(names.has('taste_to_playlist'), false, 'a writer advertised in SPOTIFY_MCP_READONLY');
     const missing = TASTE_READ_TOOLS.filter((name) => !names.has(name));
     assert.deepEqual(missing, [], 'read-only session lost the pure-read taste tools');
   });
 
-  it('is withheld from a grant with no playlist-write scope, reads unaffected', () => {
-    const names = visibleTools({ scope: READ_ONLY_GRANT });
+  it('is withheld from a grant with no playlist-write scope, reads unaffected', async () => {
+    const names = await visibleTools({ scope: READ_ONLY_GRANT });
     assert.equal(names.has('taste_to_playlist'), false, 'exposed without a scope that can create a playlist');
     const missing = TASTE_READ_TOOLS.filter((name) => !names.has(name));
     assert.deepEqual(missing, [], 'a missing write scope took the reads with it');
   });
 
-  it('is reachable for a caller who holds playlist-modify-public', () => {
-    const names = visibleTools({ scope: 'playlist-modify-public' });
+  it('is reachable for a caller who holds playlist-modify-public', async () => {
+    const names = await visibleTools({ scope: 'playlist-modify-public' });
     assert.ok(names.has('taste_to_playlist'));
   });
 });
 
 describe('#1017 delete_backup no longer costs a read-only session the reads', () => {
-  it('hides the delete and keeps list_backups/backup_library visible', () => {
-    const names = visibleTools({ readOnly: true });
+  it('hides the delete and keeps list_backups/backup_library visible', async () => {
+    const names = await visibleTools({ readOnly: true });
     assert.equal(names.has('delete_backup'), false, 'a destructive local unlink advertised in SPOTIFY_MCP_READONLY');
     for (const read of ['list_backups', 'backup_library']) {
       assert.ok(names.has(read), `read-only session lost ${read}, which reads Spotify and mutates nothing`);
     }
   });
 
-  it('keeps list_backups reachable for a read-scoped read-only session', () => {
+  it('keeps list_backups reachable for a read-scoped read-only session', async () => {
     // The real read-only persona carries read scopes, so the row is
     // scope_filtered rather than blocked: list_backups is still a read the
     // grant authorises and must survive that filter. backup_library is the
@@ -149,14 +147,14 @@ describe('#1017 delete_backup no longer costs a read-only session the reads', ()
     // are to the local backup directory. Its name starts with `backup`, which
     // the MUTATING_PREFIXES regex counts as a mutating verb, so the classifier
     // override is what lets it past the scope filter (#1101).
-    const names = visibleTools({ scope: READ_ONLY_GRANT, readOnly: true });
+    const names = await visibleTools({ scope: READ_ONLY_GRANT, readOnly: true });
     assert.ok(names.has('list_backups'), 'a read-scoped read-only session cannot list its own backups');
     assert.ok(names.has('backup_library'), 'a read-scoped read-only session cannot snapshot its own library');
     assert.equal(names.has('delete_backup'), false, 'delete_backup reachable in SPOTIFY_MCP_READONLY');
   });
 
-  it('exposes all three to a normal session', () => {
-    const names = visibleTools({ scope: 'user-library-modify' });
+  it('exposes all three to a normal session', async () => {
+    const names = await visibleTools({ scope: 'user-library-modify' });
     for (const tool of ['list_backups', 'backup_library', 'delete_backup']) {
       assert.ok(names.has(tool), `${tool} missing from a normal session with the library scope`);
     }
@@ -195,7 +193,7 @@ describe('#1017 the flag means what the gate does with it', () => {
     }
   }
 
-  it('no readOnlySafe row registers a tool that writes', () => {
+  it('no readOnlySafe row registers a tool that writes', async () => {
     assert.deepEqual(offenders, [], 'rows claiming readOnlySafe while registering a writer: ' + offenders.join(', '));
   });
 });
@@ -206,18 +204,18 @@ describe('#1101 backup_library is read-only against Spotify (#1017 sibling)', ()
   // `backup`, which the MUTATING_PREFIXES regex counts as a mutating verb, so
   // the OVERRIDES table has to carry it explicitly (#1101) — a blanket change
   // to the `backup` prefix would re-classify the writer under the same roof.
-  it('classifies backup_library as read-only via OVERRIDES', () => {
+  it('classifies backup_library as read-only via OVERRIDES', async () => {
     const annotations = classifyToolAnnotations('backup_library');
     assert.equal(annotations.readOnlyHint, true, 'backup_library is read-only against Spotify; MUTATING_PREFIXES catches it on the prefix alone');
     assert.equal(annotations.destructiveHint, undefined, 'readOnlyHint wins outright in OVERRIDES, so destructiveHint must not leak through');
   });
 
-  it('survives the scope filter under a read-only grant', () => {
+  it('survives the scope filter under a read-only grant', async () => {
     // readOnlyToolServer keeps only the tools classifyToolAnnotations can prove
     // read-only, so a `backup_library` that classifies as a write is withheld
     // here even when its row is readOnlySafe (#1020). After the override, the
     // scope_filtered backup row registers both tools.
-    const names = visibleTools({ scope: READ_ONLY_GRANT, readOnly: true });
+    const names = await visibleTools({ scope: READ_ONLY_GRANT, readOnly: true });
     assert.ok(names.has('backup_library'), 'backup_library filtered out under a read-only grant it is shaped for');
     assert.ok(names.has('list_backups'), 'list_backups dropped alongside backup_library');
   });

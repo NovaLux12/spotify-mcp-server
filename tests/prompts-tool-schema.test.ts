@@ -25,7 +25,7 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { registerPrompts } from '../src/prompts/index.js';
 import {
   REGISTRAR_MANIFEST,
-  registerManifestModule,
+  registerManifestModules,
 } from '../src/tools/annotations.js';
 import { SpotifyClient } from '../src/client.js';
 import { moduleBlockedByScopes, scopesFor } from '../src/scopefilter.js';
@@ -53,7 +53,7 @@ async function collectToolSchemas(
   return out;
 }
 
-function buildServerWithAllTools(): McpServer {
+async function buildServerWithAllTools(): Promise<McpServer> {
   const server = new McpServer({ name: 'test', version: '0.0.0' });
   const client = new SpotifyClient();
   // Real install gets every scope; the gate only hides writers under a
@@ -68,22 +68,20 @@ function buildServerWithAllTools(): McpServer {
       'user-modify-playback-state', 'streaming',
     ].join(' '),
   );
-  for (const module of REGISTRAR_MANIFEST) {
-    registerManifestModule(server, client, module, {
-      readOnly: false,
-      // Always-active matches how the surface-budget audit (#1124) and the
-      // scope-filter test (#1020) build a complete registry; toolsets trim
-      // would just hide tools prompts still reference, and the prompt text
-      // is supposed to be a guide for the default surface.
-      isModuleActive: () => true,
-      scopeBlocked: (key) => moduleBlockedByScopes(key, granted),
-    });
-  }
+  await registerManifestModules(server, client, {
+    readOnly: false,
+    // Always-active matches how the surface-budget audit (#1124) and the
+    // scope-filter test (#1020) build a complete registry; toolsets trim
+    // would just hide tools prompts still reference, and the prompt text
+    // is supposed to be a guide for the default surface.
+    isModuleActive: () => true,
+    scopeBlocked: (key) => moduleBlockedByScopes(key, granted),
+  });
   return server;
 }
 
 async function renderAllPrompts(): Promise<Map<string, string>> {
-  const server = buildServerWithAllTools();
+  const server = await buildServerWithAllTools();
   registerPrompts(server);
   const client = new Client({ name: 'tester', version: '0.0.0' });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
@@ -180,7 +178,7 @@ function extractBody(body: string): ExtractedBody {
 // ---------------------------------------------------------------- tests
 
 test('every prompt names real tools that exist in the registry (#716)', async () => {
-  const server = buildServerWithAllTools();
+  const server = await buildServerWithAllTools();
   registerPrompts(server);
   const schemas = await collectToolSchemas(server);
   const rendered = await renderAllPrompts();
@@ -201,7 +199,7 @@ test('every prompt names real tools that exist in the registry (#716)', async ()
 });
 
 test('every prompt call-form argument is declared by the tool schema (#716)', async () => {
-  const server = buildServerWithAllTools();
+  const server = await buildServerWithAllTools();
   registerPrompts(server);
   const schemas = await collectToolSchemas(server);
   const rendered = await renderAllPrompts();

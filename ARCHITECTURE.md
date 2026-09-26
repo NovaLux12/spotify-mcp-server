@@ -101,6 +101,34 @@ Each `register*Tools(server, client)` function calls `server.tool(...)` or, for 
 
 Resources are registered through `server.resource(...)` as fixed `spotify://` URIs and RFC-6570 templates. Every fixed URI has a `{?format=json}` twin; playlist tracks and catalog entities also have query-absorbing twins where required. The generated inventory below is derived from `resources/list` and `resources/templates/list`, so it includes saved tracks/audiobooks, following, history, and genre heatmap resources without a second hand-maintained list.
 
+## Startup: lazy module loading (#906)
+
+The manifest in `src/tools/annotations.ts` is the single list of tool modules — key, registration key, source file, registrar export name, baseline and ceiling. It holds each module as a **specifier string plus a thunk** (`lazyModule('./playlists.js', 'registerPlaylistTools')`), not as an imported binding, and `registerManifestModules` imports only the modules whose status comes out of the toolset/read-only/scope gates as registering. The resources and prompts surfaces load the same way.
+
+This is what makes toolset trimming a real saving rather than a payload-only one. Before it, naming a registrar in the manifest meant importing its module, so every `src/tools/*` file was evaluated before the gate could answer — 68 of them, whether the session would serve 592 tools or 106.
+
+The startup gates are deliberately **not** lazy. `startMcpServer` still runs, in order: the tool naming policy, `assertModuleSchemaBudgets`, `applyToolAnnotations`, `installToolErrorBoundary`, `assertAggregateSurfaceBudget` — all after every module that will serve tools has registered, and all against the same live registry. A trimmed module is not measured (it serves nothing), but every module that *is* served is measured exactly as before, so a budget breach still fails startup rather than passing silently. `registerManifestModule` throws if it is handed a module whose registrar was never loaded, and a failed import rejects rather than yielding a silently smaller `tools/list`.
+
+Registration order is unchanged: the imports run concurrently, then registration walks the manifest in order, so `tools/list` ordering is byte-identical to the pre-lazy tree.
+
+### Measured startup cost
+
+`scripts/measure-startup.mjs` spawns the real `dist/index.js` over stdio, waits for `tools/list`, and reads the child's peak RSS (`VmHWM`). `SPOTIFY_MCP_DIST_ROOT` points it at a different build, so the two columns below come from an A/B of `origin/main`'s `dist` against this branch's, run interleaved on the same host. Figures are machine-specific and were taken on a shared build host; the shape, not the absolute values, is the point.
+
+| `SPOTIFY_MCP_TOOLSETS` | | tools | `src/tools/*` evaluated | startup to `tools/list` | peak RSS |
+|---|---|---|---|---|---|
+| `all` (default) | before | 592 | 68 | 361–371 ms | 166 MB |
+| | **after** | 592 | 68 | 369–377 ms | **158 MB** |
+| `playback` | before | 106 | 68 | 198–202 ms | 109 MB |
+| | **after** | 106 | **18** | **180–192 ms** | 114 MB |
+
+Read this table honestly, because the win is narrower than the framing of #906:
+
+- **The module count is the real result.** A trimmed toolset evaluates 18 files instead of 68, and the tool surface is bit-for-bit the same 106 tools. That is machine-independent, reproducible, and is what CI asserts.
+- **Wall-clock barely moves, and RSS is not a clean win.** For `playback`, startup improves by roughly 8%, and peak RSS *rises* about 5 MB; for the default install RSS falls about 8 MB while wall-clock is flat. Loading 50 fewer modules is not free — the loader, the dynamic-import machinery and the thunk table cost something back — and on this host the node/V8 floor dominates either way. Anyone expecting the issue's absolute `< 180 ms` / `< 110 MB` should re-measure rather than take either column as a promise; the pre-change baseline for `playback` here was already ~199 ms, so those thresholds describe faster hardware than this change can be judged against.
+
+The **module count** is what `tests/lazy-module-loading.test.ts` asserts, through an ESM `resolve` hook that records what the module system actually loads rather than what our own bookkeeping claims. Wall-clock and RSS are deliberately not asserted, because encoding one machine's milliseconds in a test only produces red builds on slow runners; run the script above to re-measure.
+
 ## Module map
 
 <!-- BEGIN:generated surface-census -->
@@ -121,7 +149,7 @@ The table is generated from every TypeScript file recursively under `src/`, incl
 | `src/csvsafe.ts` | CSV cell rendering shared by every writer that emits a spreadsheet (#630). (0 registered tools) | 32 |
 | `src/gating.ts` | The app-registration-gated error contract (#791, #428, #429; audit A14-016/A8-036) -- the graceful 403 mapping for Spotify's app-registration-gated endpoint family (probed 2026-08-26, memory/edge-probe-2026-08-26.json). (0 registered tools) | 204 |
 | `src/history.ts` | Opt-in mutation history JSONL (#64, hardened in #628). (0 registered tools) | 375 |
-| `src/index.ts` | Runtime module for src/index.ts. (0 registered tools) | 270 |
+| `src/index.ts` | Runtime module for src/index.ts. (0 registered tools) | 281 |
 | `src/lib/statsfm-client.ts` | Minimal client for the public stats.fm API (https://api.stats.fm/api/v1). (0 registered tools) | 138 |
 | `src/markets.ts` | Runtime module for src/markets.ts. (0 registered tools) | 221 |
 | `src/paths.ts` | Local-path confinement for export/import tools (#622). (0 registered tools) | 346 |
@@ -135,7 +163,7 @@ The table is generated from every TypeScript file recursively under `src/`, incl
 | `src/shaping.ts` | Shared shaping helpers for tool responses (#51/#52/#53/#57/#58): zod schema fragments, truncation math, pagination info, structuredContent emission, mutation batch summaries and dry-run descriptions. (0 registered tools) | 980 |
 | `src/sidecar.ts` | Shared policy for local JSON sidecars (#839, #1051). (0 registered tools) | 199 |
 | `src/tools/analytics.ts` | Runtime module for src/tools/analytics.ts. (4 registered tools) | 515 |
-| `src/tools/annotations.ts` | MCP tool annotations (#565 / A0-002, A4-005). (1 registered tool) | 1480 |
+| `src/tools/annotations.ts` | MCP tool annotations (#565 / A0-002, A4-005). (1 registered tool) | 1593 |
 | `src/tools/artistwatch.ts` | Runtime module for src/tools/artistwatch.ts. (6 registered tools) | 881 |
 | `src/tools/audiobookcopilot.ts` | Audiobook chapter copilot (#112 idea 4): tools for navigating long-form audiobooks — full chapter tables regardless of the ~18-chapter app break (bounded by the fetch-all cap, and the bound is disclosed), 1-based chapter jumps, and "where was I?" (3 registered tools) | 396 |
 | `src/tools/audiobooks.ts` | Runtime module for src/tools/audiobooks.ts. (4 registered tools) | 400 |

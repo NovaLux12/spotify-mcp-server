@@ -28,71 +28,12 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
 import { StatsfmApiError } from '../lib/statsfm-client.js';
 import { truthyEnv } from '../config.js';
-import { registerPlaybackTools } from './playback.js';
-import { registerSearchTools } from './search.js';
-import { registerCatalogTools } from './catalog.js';
-import { registerPersonalizationTools } from './personalization.js';
-import { registerLibraryTools } from './library.js';
-import { registerFollowingTools } from './following.js';
-import { registerAudiobookTools } from './audiobooks.js';
-import { registerPlaylistTools } from './playlists.js';
-import { registerUsersTools } from './users.js';
-import { registerPlaylistOpsTools } from './playlistops.js';
-import { registerLibraryInsightsTools } from './libraryinsights.js';
-import { registerFreshnessTools } from './freshness.js';
-import { registerSearchDeepTool } from './searchdive.js';
-import { registerPodcastSessionTools } from './podcastsession.js';
-import { registerAudiobookCopilotTools } from './audiobookcopilot.js';
-import { registerScenesTools } from './scenes.js';
-import { registerPlaylistDnaTools } from './playlistdna.js';
-import { registerAnalyticsTools } from './analytics.js';
-import { registerExportTools } from './export.js';
-import { registerImportTools } from './import.js';
-import { registerSmartTools } from './smart.js';
-import { registerShowRadarTools } from './showradar.js';
-import { registerSavedDedupeTools } from './saveddedupe.js';
-import { registerBackupTools } from './backup.js';
-import { registerBackupDeleteTools } from './backup_delete.js';
-import { registerRestoreTools } from './restore.js';
-import { registerUndoTools } from './undo.js';
-import { registerBackupFirstTools } from './backupfirst.js';
-import { registerLibraryHygieneTools } from './libraryhygiene.js';
-import { registerBrowseTools } from './browse.js';
-import { registerArtistWatchTools } from './artistwatch.js';
-import { registerLibraryAnalyticsTools } from './libraryanalytics.js';
-import { registerPlaylistHealthTools } from './playlisthealth.js';
-import { registerPlaylistBatchTools } from './playlistbatch.js';
-import { registerPlaylistMiscTools } from './playlistmisc.js';
-import { registerPlaylistFollowTools } from './playlistfollow.js';
-import { registerPortabilityTools } from './portability.js';
-import { registerQueueOpsTools } from './queueops.js';
-import { registerPlaybackExtTools } from './playbackext.js';
-import { registerPlaybackIntelTools } from './playbackintel.js';
-import { registerSearchHistoryTools } from './searchhistory.js';
-import { registerExhaustMiscTools } from './exhaustmisc.js';
-import { registerExhaust2CatalogTools } from './exhaust2_catalog.js';
-import { registerExhaust2PlaybackTools } from './exhaust2_playback.js';
-import { registerExhaust2PlaylistsTools } from './exhaust2_playlists.js';
-import { registerExhaust2MiscTools } from './exhaust2_misc.js';
-import { registerExhaust2EnggatingTools } from './exhaust2_enggating.js';
-import { registerExhaust2ExtraTools } from './exhaust2_extra.js';
-import { registerEpisodeMgmtTools } from './episodemgmt.js';
-import { registerDoctorTool } from './doctortool.js';
-import { registerSwarm3PlaybackTools } from './swarm3_playback.js';
-import { registerSwarm3PlaylistopsTools } from './swarm3_playlistops.js';
-import { registerSwarm3DiscoveryTools } from './swarm3_discovery.js';
-import { registerSwarm3bDiscoveryTools } from './swarm3b_discovery.js';
-import { registerSwarm4PlaylistsTools } from './swarm4_playlists.js';
-import { registerSwarm3LibraryTools } from './swarm3_library.js';
-import { registerSwarm3ShowsTools } from './swarm3_shows.js';
-import { registerSwarm3AnalyticsTools } from './swarm3_analytics.js';
-import { registerStatsfmTasteTools } from './statsfm_taste.js';
-import { registerTasteCompositeTools } from './taste_composites.js';
-import { registerTastePlaylistTools } from './taste_playlist.js';
-import { registerSwarm3RefsTools } from './swarm3_refs.js';
-import { registerSwarm3SnapshotsTools } from './swarm3_snapshots.js';
-import { registerSwarm3MetaTools } from './swarm3_meta.js';
-import { registerStatsfmTools } from './statsfm.js';
+// Tool modules are NOT imported here (#906). The manifest below names each
+// one and loads it through a thunk, so a module whose registration key is
+// inactive is never evaluated. A static `import { registerXTools }` would
+// force evaluation of all 63 modules before the toolset gate could answer —
+// which is why trimming the surface used to shrink the payload without
+// shrinking startup or RSS. See RegistrarSpec and loadManifestRegistrars.
 import { formatReceipt, MAX_RECEIPTS, RECEIPT_ID_PATTERN, RECEIPT_ID_SHAPE, receiptMissMessage, verifyReceipt } from '../receipts.js';
 import { z } from 'zod';
 import { CallToolRequestSchema, ListToolsRequestSchema, type ServerResult } from '@modelcontextprotocol/sdk/types.js';
@@ -643,11 +584,99 @@ export interface GatedSurface {
   readonly schemaBytes: number;
 }
 
-export interface RegistrarManifestEntry {
+/**
+ * A module's registration function.
+ *
+ * `client` is optional because three registrars take no client at all
+ * (`registerSwarm3MetaTools`, and the local receipts registrar) and one takes
+ * a `StatsfmClient` rather than a `SpotifyClient` — see `lazyModule`'s `adapt`.
+ * `registerManifestModule` always passes it; the type only says a module is
+ * not required to consume it.
+ */
+export type ModuleRegistrar = (server: McpServer, client?: SpotifyClient) => void;
+
+export interface RegistrarSpec {
+  /**
+   * Repo-relative source path, used in budget-breach messages and in the
+   * generated census module map. Derived from the specifier by `lazyModule` so
+   * it cannot drift away from the module that is actually imported.
+   */
+  readonly file: string;
+  /**
+   * The registrar's export name. Carried as data because a thunk has no
+   * `.name`, and the census module map has always named the export a reader
+   * can grep for.
+   */
+  readonly name: string;
+  /** Import the module and return its registrar. Memoized. */
+  readonly load: () => Promise<ModuleRegistrar>;
+}
+
+/** Resolve an export out of a freshly imported module, failing loudly. */
+async function resolveExport(specifier: string, name: string): Promise<ModuleRegistrar> {
+  const imported = await import(specifier) as Record<string, unknown>;
+  const registrar = imported[name];
+  if (typeof registrar !== 'function') {
+    throw new Error(`tool module ${specifier} has no callable export "${name}"`);
+  }
+  return registrar as ModuleRegistrar;
+}
+
+/**
+ * A tool module the manifest imports on demand (#906).
+ *
+ * The thunk is the whole point. A manifest that held `registerSearchTools`
+ * directly would have had to import `./search.js` in order to name it, so every
+ * module was evaluated before the toolset gate could answer — which is why
+ * trimming 83% of the tools used to shrink the payload without shrinking
+ * startup or RSS. Here the specifier is a string, so nothing is fetched until
+ * `load()` is called for a module that is about to register.
+ *
+ * `adapt` exists for the one module whose second parameter is NOT a
+ * `SpotifyClient`. `registerStatsfmTools` takes a `StatsfmClient` with a
+ * default, and the manifest used to hide that behind a `(server) => ...`
+ * wrapper which dropped the client it was handed. Calling the export directly
+ * would have passed Spotify's client into a stats.fm tool, sending its
+ * requests to api.spotify.com — a runtime bug that no schema comparison in the
+ * test suite can see.
+ */
+export function lazyModule(
+  specifier: string,
+  name: string,
+  adapt?: (registrar: ModuleRegistrar) => ModuleRegistrar,
+): RegistrarSpec {
+  let pending: Promise<ModuleRegistrar> | undefined;
+  return {
+    file: specifier.replace(/^\.\//, 'src/tools/').replace(/\.js$/, '.ts'),
+    name,
+    load: async () => {
+      pending ??= resolveExport(specifier, name);
+      const registrar = await pending;
+      return adapt ? adapt(registrar) : registrar;
+    },
+  };
+}
+
+/**
+ * A registrar defined in this file rather than in an imported module (the
+ * receipts tool). Nothing to import, so `load` resolves immediately — but it
+ * goes through the same field so the manifest has exactly one shape and
+ * `registerManifestModules` needs no special case for it.
+ */
+export function localModule(file: string, name: string, registrar: ModuleRegistrar): RegistrarSpec {
+  return { file, name, load: async () => registrar };
+}
+
+export interface RegistrarManifestEntry extends RegistrarSpec {
   readonly key: string;
   readonly registrationKey: string;
-  readonly file: string;
-  readonly registrar: (server: McpServer, client: SpotifyClient) => void;
+  /**
+   * The resolved registrar, present only on entries returned by
+   * `loadManifestRegistrars`. `registerManifestModule` requires it for any
+   * module that will actually register, and throws rather than silently
+   * registering nothing when it is missing.
+   */
+  readonly registrar?: ModuleRegistrar;
   readonly scopeKey?: string;
   readonly alwaysActive?: boolean;
   readonly readOnlySafe?: boolean;
@@ -672,15 +701,13 @@ export interface RegistrarManifestContext {
 export const manifestEntry = (
   key: string,
   registrationKey: string,
-  file: string,
-  registrar: RegistrarManifestEntry['registrar'],
+  spec: RegistrarSpec,
   baseline: readonly [toolCount: number, schemaBytes: number],
-  options: Partial<Omit<RegistrarManifestEntry, 'key' | 'registrationKey' | 'file' | 'registrar' | 'baseline' | 'ceiling'>> = {},
+  options: Partial<Omit<RegistrarManifestEntry, 'key' | 'registrationKey' | 'file' | 'name' | 'load' | 'registrar' | 'baseline' | 'ceiling'>> = {},
 ): RegistrarManifestEntry => ({
   key,
   registrationKey,
-  file,
-  registrar,
+  ...spec,
   scopeKey: registrationKey,
   readOnlySafe: false,
   ...options,
@@ -702,15 +729,74 @@ export const manifestEntry = (
   })(),
 });
 
+/**
+ * The `verify_receipt` tool (#688), which lives in this file rather than in
+ * `src/tools/`.
+ *
+ * It was an inline arrow passed straight to `manifestEntry`, which cost the
+ * census module map its one honest label: an arrow has no `.name`, so the map
+ * fell back to the module key and printed `receipts` where every other row
+ * printed the export a reader can grep for. Naming it costs one declaration and
+ * lets `localModule` keep the manifest on a single shape (#906).
+ */
+function registerVerifyReceiptTool(server: McpServer): void {
+  server.tool(
+    'verify_receipt',
+    // Session scope is the single most common way this tool misleads: the
+    // store is process-local and FIFO-capped, so an id from a previous
+    // session is simply gone — which says nothing about whether the
+    // mutation landed. State it here, where the agent reads it, rather than
+    // only in the miss message it will see too late.
+    `Verify that a previous mutation actually landed on Spotify by looking up its receipt. `
+      + `Receipts are session-scoped: the ${MAX_RECEIPTS} most recent mutations, in this process only, `
+      + `and lost on restart unless SPOTIFY_MCP_RECEIPTS is set. `
+      + `An unknown or expired id returns isError with found:false — a fact about the lookup, not about the mutation.`,
+    {
+      receipt_id: z
+        .string()
+        .regex(RECEIPT_ID_PATTERN, `Receipt ID must look like ${RECEIPT_ID_SHAPE} — copy it verbatim from a receipt-bearing mutation result.`)
+        .describe(`Receipt ID copied verbatim from a receipt-bearing mutation result (${RECEIPT_ID_SHAPE})`),
+    },
+    async (args) => {
+      const receipt = verifyReceipt(args.receipt_id);
+      if (!receipt) {
+        // A miss is a failed lookup, not a successful one. Without isError
+        // an agent that branches on `result.isError` (and a host that
+        // renders green on success) reads this as "the receipt was checked
+        // and the write is fine" (#688).
+        return {
+          content: [{ type: 'text', text: receiptMissMessage(args.receipt_id) }],
+          isError: true,
+          structuredContent: {
+            found: false,
+            receipt_id: args.receipt_id,
+            reason: 'unknown',
+            receipts_kept: MAX_RECEIPTS,
+          },
+        };
+      }
+      // `found` is the one field both branches share, so a caller can branch
+      // on it instead of parsing prose. The receipt's own fields stay
+      // flattened on top: hosts already read `verified` / `missing` /
+      // `expect_present` here, and nesting them under `receipt` would
+      // silently break every one of them.
+      return {
+        content: [{ type: 'text', text: formatReceipt(receipt) }],
+        structuredContent: { found: true, ...receipt },
+      };
+    },
+  );
+}
+
 export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
-  manifestEntry('search', 'search', 'src/tools/search.ts', registerSearchTools, [1, 1821], { readOnlySafe: true }),
-  manifestEntry('catalog', 'catalog', 'src/tools/catalog.ts', registerCatalogTools, [31, 26953], { readOnlySafe: true }),
-  manifestEntry('library', 'library', 'src/tools/library.ts', registerLibraryTools, [16, 14957]),
-  manifestEntry('playback', 'playback', 'src/tools/playback.ts', registerPlaybackTools, [16, 12287]),
-  manifestEntry('following', 'following', 'src/tools/following.ts', registerFollowingTools, [5, 3953]),
-  manifestEntry('users', 'users', 'src/tools/users.ts', registerUsersTools, [2, 1613]),
-  manifestEntry('audiobooks', 'audiobooks', 'src/tools/audiobooks.ts', registerAudiobookTools, [4, 3715]),
-  manifestEntry('audiobookcopilot', 'audiobooks', 'src/tools/audiobookcopilot.ts', registerAudiobookCopilotTools, [3, 1985]),
+  manifestEntry('search', 'search', lazyModule('./search.js', 'registerSearchTools'), [1, 1821], { readOnlySafe: true }),
+  manifestEntry('catalog', 'catalog', lazyModule('./catalog.js', 'registerCatalogTools'), [31, 26953], { readOnlySafe: true }),
+  manifestEntry('library', 'library', lazyModule('./library.js', 'registerLibraryTools'), [16, 14957]),
+  manifestEntry('playback', 'playback', lazyModule('./playback.js', 'registerPlaybackTools'), [16, 12287]),
+  manifestEntry('following', 'following', lazyModule('./following.js', 'registerFollowingTools'), [5, 3953]),
+  manifestEntry('users', 'users', lazyModule('./users.js', 'registerUsersTools'), [2, 1613]),
+  manifestEntry('audiobooks', 'audiobooks', lazyModule('./audiobooks.js', 'registerAudiobookTools'), [4, 3715]),
+  manifestEntry('audiobookcopilot', 'audiobooks', lazyModule('./audiobookcopilot.js', 'registerAudiobookCopilotTools'), [3, 1985]),
   // #888: +210B across the two playlist tool descriptions. The warrant is
   // disclosure, not decoration: `playlist_subtract` and `playlist_union` can
   // both empty a playlist, and neither said so. `playlist_subtract` also
@@ -730,119 +816,77 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   // 26,119 + 210 + 647 happens to land on the measurement, but the addition is
   // a coincidence of two independent edits and is not how the number was
   // obtained.
-  manifestEntry('playlists', 'playlists', 'src/tools/playlists.ts', registerPlaylistTools, [26, 26976]),
-  manifestEntry('playlistops', 'playlists', 'src/tools/playlistops.ts', registerPlaylistOpsTools, [3, 5489]),
-  manifestEntry('playlistbatch', 'playlistbatch', 'src/tools/playlistbatch.ts', registerPlaylistBatchTools, [3, 4784], { scopeKey: 'playlists' }),
-  manifestEntry('playlistfollow', 'playlistmisc', 'src/tools/playlistfollow.ts', registerPlaylistFollowTools, [2, 1449], { scopeKey: 'playlistfollow' }),
-  manifestEntry('playlistmisc', 'playlistmisc', 'src/tools/playlistmisc.ts', registerPlaylistMiscTools, [1, 1089], { scopeKey: 'playlists' }),
-  manifestEntry('personalization', 'personalization', 'src/tools/personalization.ts', registerPersonalizationTools, [3, 2532], { readOnlySafe: true }),
-  manifestEntry('analytics', 'personalization', 'src/tools/analytics.ts', registerAnalyticsTools, [4, 2817], { readOnlySafe: true }),
+  manifestEntry('playlists', 'playlists', lazyModule('./playlists.js', 'registerPlaylistTools'), [26, 26976]),
+  manifestEntry('playlistops', 'playlists', lazyModule('./playlistops.js', 'registerPlaylistOpsTools'), [3, 5489]),
+  manifestEntry('playlistbatch', 'playlistbatch', lazyModule('./playlistbatch.js', 'registerPlaylistBatchTools'), [3, 4784], { scopeKey: 'playlists' }),
+  manifestEntry('playlistfollow', 'playlistmisc', lazyModule('./playlistfollow.js', 'registerPlaylistFollowTools'), [2, 1449], { scopeKey: 'playlistfollow' }),
+  manifestEntry('playlistmisc', 'playlistmisc', lazyModule('./playlistmisc.js', 'registerPlaylistMiscTools'), [1, 1089], { scopeKey: 'playlists' }),
+  manifestEntry('personalization', 'personalization', lazyModule('./personalization.js', 'registerPersonalizationTools'), [3, 2532], { readOnlySafe: true }),
+  manifestEntry('analytics', 'personalization', lazyModule('./analytics.js', 'registerAnalyticsTools'), [4, 2817], { readOnlySafe: true }),
   // #720: the range parameter description now names its accepted values, and
   // statsfm_taste/taste_composites share the one exported schema. Tool counts
   // are unchanged; schema bytes rose 196/46/46 for the longer description, so
   // the derived ceilings move from 24994/15355/8794 to 25208/15405/8844 — under
   // +1% each, against a 592-tool tools/list payload.
-  manifestEntry('statsfm', 'statsfm', 'src/tools/statsfm.ts', (server) => registerStatsfmTools(server), [30, 22917], { readOnlySafe: true }),
-  manifestEntry('taste', 'taste', 'src/tools/statsfm_taste.ts', registerStatsfmTasteTools, [16, 14005], { readOnlySafe: true }),
-  manifestEntry('tastecomposites', 'tastecomposites', 'src/tools/taste_composites.ts', registerTasteCompositeTools, [10, 8040], { readOnlySafe: true }),
-  manifestEntry('tasteplaylist', 'tastecomposites', 'src/tools/taste_playlist.ts', registerTastePlaylistTools, [1, 1723], { scopeKey: 'playlists' }),
-  manifestEntry('doctor', 'doctor', 'src/tools/doctortool.ts', registerDoctorTool, [1, 750], { alwaysActive: true, readOnlySafe: true }),
+  //
+  // #906: the only registrar whose 2nd parameter is not a SpotifyClient.
+  // stats.fm has its own client and the export's default must win, so the
+  // adapt drops the client it is handed rather than passing Spotify's into a
+  // stats.fm request.
+  manifestEntry('statsfm', 'statsfm', lazyModule('./statsfm.js', 'registerStatsfmTools', (register) => (server) => register(server)), [30, 22917], { readOnlySafe: true }),
+  manifestEntry('taste', 'taste', lazyModule('./statsfm_taste.js', 'registerStatsfmTasteTools'), [16, 14005], { readOnlySafe: true }),
+  manifestEntry('tastecomposites', 'tastecomposites', lazyModule('./taste_composites.js', 'registerTasteCompositeTools'), [10, 8040], { readOnlySafe: true }),
+  manifestEntry('tasteplaylist', 'tastecomposites', lazyModule('./taste_playlist.js', 'registerTastePlaylistTools'), [1, 1723], { scopeKey: 'playlists' }),
+  manifestEntry('doctor', 'doctor', lazyModule('./doctortool.js', 'registerDoctorTool'), [1, 750], { alwaysActive: true, readOnlySafe: true }),
   // 1624 -> 2023 (#713): toolset_report gained a declared `response_format`, and
   // all three discovery tools now carry the mode-specific description instead of
   // the shared "json = raw API object" wording. +399B once, on a 3-tool module.
-  manifestEntry('swarm3meta', 'swarm3meta', 'src/tools/swarm3_meta.ts', registerSwarm3MetaTools, [3, 2023], { alwaysActive: true, scopeKey: 'catalog', readOnlySafe: true }),
-  manifestEntry('libraryanalytics', 'libraryanalytics', 'src/tools/libraryanalytics.ts', registerLibraryAnalyticsTools, [4, 3351], { readOnlySafe: true, scopeKey: 'library' }),
-  manifestEntry('portability', 'portability', 'src/tools/portability.ts', registerPortabilityTools, [11, 10058], { scopeKey: 'library' }),
-  manifestEntry('libraryinsights', 'library', 'src/tools/libraryinsights.ts', registerLibraryInsightsTools, [3, 2751], { scopeKey: 'library' }),
-  manifestEntry('libraryhygiene', 'library', 'src/tools/libraryhygiene.ts', registerLibraryHygieneTools, [1, 734], { scopeKey: 'library' }),
-  manifestEntry('showradar', 'library', 'src/tools/showradar.ts', registerShowRadarTools, [1, 1967], { readOnlySafe: true, scopeKey: 'library' }),
-  manifestEntry('saveddedupe', 'library', 'src/tools/saveddedupe.ts', registerSavedDedupeTools, [1, 1562], { scopeKey: 'library' }),
-  manifestEntry('podcastsession', 'library', 'src/tools/podcastsession.ts', registerPodcastSessionTools, [2, 3427], { scopeKey: 'library' }),
-  manifestEntry('backupfirst', 'library', 'src/tools/backupfirst.ts', registerBackupFirstTools, [1, 513], { readOnlySafe: true, scopeKey: 'library' }),
-  manifestEntry('backup', 'library', 'src/tools/backup.ts', registerBackupTools, [2, 1632], { readOnlySafe: true, scopeKey: 'library' }),
-  manifestEntry('backupdelete', 'library', 'src/tools/backup_delete.ts', registerBackupDeleteTools, [1, 959], { readOnlySafe: false, scopeKey: 'library' }),
-  manifestEntry('restore', 'library', 'src/tools/restore.ts', registerRestoreTools, [1, 1888], { scopeKey: 'library' }),
-  manifestEntry('undo', 'library', 'src/tools/undo.ts', registerUndoTools, [2, 1663], { scopeKey: 'library' }),
-  manifestEntry('receipts', 'receipts', 'src/tools/annotations.ts', (server) => {
-    server.tool(
-      'verify_receipt',
-      // Session scope is the single most common way this tool misleads: the
-      // store is process-local and FIFO-capped, so an id from a previous
-      // session is simply gone — which says nothing about whether the
-      // mutation landed. State it here, where the agent reads it, rather than
-      // only in the miss message it will see too late.
-      `Verify that a previous mutation actually landed on Spotify by looking up its receipt. `
-        + `Receipts are session-scoped: the ${MAX_RECEIPTS} most recent mutations, in this process only, `
-        + `and lost on restart unless SPOTIFY_MCP_RECEIPTS is set. `
-        + `An unknown or expired id returns isError with found:false — a fact about the lookup, not about the mutation.`,
-      {
-        receipt_id: z
-          .string()
-          .regex(RECEIPT_ID_PATTERN, `Receipt ID must look like ${RECEIPT_ID_SHAPE} — copy it verbatim from a receipt-bearing mutation result.`)
-          .describe(`Receipt ID copied verbatim from a receipt-bearing mutation result (${RECEIPT_ID_SHAPE})`),
-      },
-      async (args) => {
-        const receipt = verifyReceipt(args.receipt_id);
-        if (!receipt) {
-          // A miss is a failed lookup, not a successful one. Without isError
-          // an agent that branches on `result.isError` (and a host that
-          // renders green on success) reads this as "the receipt was checked
-          // and the write is fine" (#688).
-          return {
-            content: [{ type: 'text', text: receiptMissMessage(args.receipt_id) }],
-            isError: true,
-            structuredContent: {
-              found: false,
-              receipt_id: args.receipt_id,
-              reason: 'unknown',
-              receipts_kept: MAX_RECEIPTS,
-            },
-          };
-        }
-        // `found` is the one field both branches share, so a caller can branch
-        // on it instead of parsing prose. The receipt's own fields stay
-        // flattened on top: hosts already read `verified` / `missing` /
-        // `expect_present` here, and nesting them under `receipt` would
-        // silently break every one of them.
-        return {
-          content: [{ type: 'text', text: formatReceipt(receipt) }],
-          structuredContent: { found: true, ...receipt },
-        };
-      },
-    );
-  }, [1, 626], { alwaysActive: true, readOnlySafe: true }),
-  manifestEntry('episodemgmt', 'episodemgmt', 'src/tools/episodemgmt.ts', registerEpisodeMgmtTools, [1, 1053], { scopeKey: 'library' }),
-  manifestEntry('freshness', 'following', 'src/tools/freshness.ts', registerFreshnessTools, [1, 2043], { readOnlySafe: true, scopeKey: 'following' }),
-  manifestEntry('searchdive', 'search', 'src/tools/searchdive.ts', registerSearchDeepTool, [1, 1561], { readOnlySafe: true, scopeKey: 'search' }),
-  manifestEntry('searchhistory', 'searchhistory', 'src/tools/searchhistory.ts', registerSearchHistoryTools, [2, 1096], { readOnlySafe: true, scopeKey: 'search' }),
-  manifestEntry('browse', 'browse', 'src/tools/browse.ts', registerBrowseTools, [3, 2634], { readOnlySafe: true, scopeKey: 'catalog' }),
-  manifestEntry('artistwatch', 'artistwatch', 'src/tools/artistwatch.ts', registerArtistWatchTools, [6, 5934], { scopeKey: 'catalog' }),
-  manifestEntry('queueops', 'queueops', 'src/tools/queueops.ts', registerQueueOpsTools, [3, 3449], { scopeKey: 'playback' }),
-  manifestEntry('playbackext', 'playbackext', 'src/tools/playbackext.ts', registerPlaybackExtTools, [13, 8033], { scopeKey: 'playback' }),
-  manifestEntry('playbackintel', 'playbackintel', 'src/tools/playbackintel.ts', registerPlaybackIntelTools, [15, 11663], { scopeKey: 'playback' }),
-  manifestEntry('scenes', 'playback', 'src/tools/scenes.ts', registerScenesTools, [7, 4456], { scopeKey: 'playback' }),
-  manifestEntry('playlisthealth', 'playlisthealth', 'src/tools/playlisthealth.ts', registerPlaylistHealthTools, [8, 5285], { scopeKey: 'playlists' }),
-  manifestEntry('playlistdna', 'playlists', 'src/tools/playlistdna.ts', registerPlaylistDnaTools, [1, 1310], { readOnlySafe: true, scopeKey: 'playlists' }),
-  manifestEntry('export', 'playlists', 'src/tools/export.ts', registerExportTools, [1, 1363], { scopeKey: 'playlists' }),
-  manifestEntry('import', 'playlists', 'src/tools/import.ts', registerImportTools, [1, 1211], { scopeKey: 'playlists' }),
-  manifestEntry('smart', 'playlists', 'src/tools/smart.ts', registerSmartTools, [1, 2364], { scopeKey: 'playlists' }),
-  manifestEntry('exhaustmisc', 'playlists', 'src/tools/exhaustmisc.ts', registerExhaustMiscTools, [10, 7924], { scopeKey: 'exhaustmisc' }),
-  manifestEntry('exhaust2catalog', 'exhaust2catalog', 'src/tools/exhaust2_catalog.ts', registerExhaust2CatalogTools, [19, 19176], { readOnlySafe: true, scopeKey: 'catalog' }),
-  manifestEntry('exhaust2enggating', 'exhaust2enggating', 'src/tools/exhaust2_enggating.ts', registerExhaust2EnggatingTools, [0, 0], { readOnlySafe: true, scopeKey: 'catalog' }),
-  manifestEntry('exhaust2playback', 'exhaust2playback', 'src/tools/exhaust2_playback.ts', registerExhaust2PlaybackTools, [23, 17306], { scopeKey: 'playback' }),
-  manifestEntry('exhaust2playlists', 'exhaust2playlists', 'src/tools/exhaust2_playlists.ts', registerExhaust2PlaylistsTools, [18, 23507], { scopeKey: 'playlists' }),
-  manifestEntry('exhaust2misc', 'exhaust2misc', 'src/tools/exhaust2_misc.ts', registerExhaust2MiscTools, [27, 23866], { scopeKey: 'library' }),
-  manifestEntry('exhaust2extra', 'exhaust2extra', 'src/tools/exhaust2_extra.ts', registerExhaust2ExtraTools, [3, 3695], { scopeKey: 'playlists' }),
-  manifestEntry('swarm3discovery', 'swarm3discovery', 'src/tools/swarm3_discovery.ts', registerSwarm3DiscoveryTools, [24, 21887], { readOnlySafe: true, scopeKey: 'catalog' }),
-  manifestEntry('swarm3bdiscovery', 'swarm3bdiscovery', 'src/tools/swarm3b_discovery.ts', registerSwarm3bDiscoveryTools, [24, 20039], { readOnlySafe: true, scopeKey: 'catalog' }),
-  manifestEntry('swarm3shows', 'swarm3shows', 'src/tools/swarm3_shows.ts', registerSwarm3ShowsTools, [24, 21075], { scopeKey: 'catalog' }),
-  manifestEntry('swarm3refs', 'swarm3refs', 'src/tools/swarm3_refs.ts', registerSwarm3RefsTools, [6, 4331], { readOnlySafe: true, scopeKey: 'catalog' }),
-  manifestEntry('swarm3analytics', 'swarm3analytics', 'src/tools/swarm3_analytics.ts', registerSwarm3AnalyticsTools, [24, 18880], { readOnlySafe: true, scopeKey: 'personalization' }),
-  manifestEntry('swarm3library', 'swarm3library', 'src/tools/swarm3_library.ts', registerSwarm3LibraryTools, [24, 18092], { readOnlySafe: true, scopeKey: 'library' }),
-  manifestEntry('swarm3playback', 'swarm3playback', 'src/tools/swarm3_playback.ts', registerSwarm3PlaybackTools, [24, 14247], { scopeKey: 'playback' }),
-  manifestEntry('swarm3playlistops', 'swarm3playlistops', 'src/tools/swarm3_playlistops.ts', registerSwarm3PlaylistopsTools, [24, 31777], { scopeKey: 'playlists' }),
-  manifestEntry('swarm3snapshots', 'swarm3snapshots', 'src/tools/swarm3_snapshots.ts', registerSwarm3SnapshotsTools, [24, 23744], { scopeKey: 'playlists' }),
-  manifestEntry('swarm4playlists', 'swarm4playlists', 'src/tools/swarm4_playlists.ts', registerSwarm4PlaylistsTools, [18, 22590], { scopeKey: 'playlists' }),
+  manifestEntry('swarm3meta', 'swarm3meta', lazyModule('./swarm3_meta.js', 'registerSwarm3MetaTools'), [3, 2023], { alwaysActive: true, scopeKey: 'catalog', readOnlySafe: true }),
+  manifestEntry('libraryanalytics', 'libraryanalytics', lazyModule('./libraryanalytics.js', 'registerLibraryAnalyticsTools'), [4, 3351], { readOnlySafe: true, scopeKey: 'library' }),
+  manifestEntry('portability', 'portability', lazyModule('./portability.js', 'registerPortabilityTools'), [11, 10058], { scopeKey: 'library' }),
+  manifestEntry('libraryinsights', 'library', lazyModule('./libraryinsights.js', 'registerLibraryInsightsTools'), [3, 2751], { scopeKey: 'library' }),
+  manifestEntry('libraryhygiene', 'library', lazyModule('./libraryhygiene.js', 'registerLibraryHygieneTools'), [1, 734], { scopeKey: 'library' }),
+  manifestEntry('showradar', 'library', lazyModule('./showradar.js', 'registerShowRadarTools'), [1, 1967], { readOnlySafe: true, scopeKey: 'library' }),
+  manifestEntry('saveddedupe', 'library', lazyModule('./saveddedupe.js', 'registerSavedDedupeTools'), [1, 1562], { scopeKey: 'library' }),
+  manifestEntry('podcastsession', 'library', lazyModule('./podcastsession.js', 'registerPodcastSessionTools'), [2, 3427], { scopeKey: 'library' }),
+  manifestEntry('backupfirst', 'library', lazyModule('./backupfirst.js', 'registerBackupFirstTools'), [1, 513], { readOnlySafe: true, scopeKey: 'library' }),
+  manifestEntry('backup', 'library', lazyModule('./backup.js', 'registerBackupTools'), [2, 1632], { readOnlySafe: true, scopeKey: 'library' }),
+  manifestEntry('backupdelete', 'library', lazyModule('./backup_delete.js', 'registerBackupDeleteTools'), [1, 959], { readOnlySafe: false, scopeKey: 'library' }),
+  manifestEntry('restore', 'library', lazyModule('./restore.js', 'registerRestoreTools'), [1, 1888], { scopeKey: 'library' }),
+  manifestEntry('undo', 'library', lazyModule('./undo.js', 'registerUndoTools'), [2, 1663], { scopeKey: 'library' }),
+  manifestEntry('receipts', 'receipts', localModule('src/tools/annotations.ts', 'registerVerifyReceiptTool', registerVerifyReceiptTool), [1, 626], { alwaysActive: true, readOnlySafe: true }),
+  manifestEntry('episodemgmt', 'episodemgmt', lazyModule('./episodemgmt.js', 'registerEpisodeMgmtTools'), [1, 1053], { scopeKey: 'library' }),
+  manifestEntry('freshness', 'following', lazyModule('./freshness.js', 'registerFreshnessTools'), [1, 2043], { readOnlySafe: true, scopeKey: 'following' }),
+  manifestEntry('searchdive', 'search', lazyModule('./searchdive.js', 'registerSearchDeepTool'), [1, 1561], { readOnlySafe: true, scopeKey: 'search' }),
+  manifestEntry('searchhistory', 'searchhistory', lazyModule('./searchhistory.js', 'registerSearchHistoryTools'), [2, 1096], { readOnlySafe: true, scopeKey: 'search' }),
+  manifestEntry('browse', 'browse', lazyModule('./browse.js', 'registerBrowseTools'), [3, 2634], { readOnlySafe: true, scopeKey: 'catalog' }),
+  manifestEntry('artistwatch', 'artistwatch', lazyModule('./artistwatch.js', 'registerArtistWatchTools'), [6, 5934], { scopeKey: 'catalog' }),
+  manifestEntry('queueops', 'queueops', lazyModule('./queueops.js', 'registerQueueOpsTools'), [3, 3449], { scopeKey: 'playback' }),
+  manifestEntry('playbackext', 'playbackext', lazyModule('./playbackext.js', 'registerPlaybackExtTools'), [13, 8033], { scopeKey: 'playback' }),
+  manifestEntry('playbackintel', 'playbackintel', lazyModule('./playbackintel.js', 'registerPlaybackIntelTools'), [15, 11663], { scopeKey: 'playback' }),
+  manifestEntry('scenes', 'playback', lazyModule('./scenes.js', 'registerScenesTools'), [7, 4456], { scopeKey: 'playback' }),
+  manifestEntry('playlisthealth', 'playlisthealth', lazyModule('./playlisthealth.js', 'registerPlaylistHealthTools'), [8, 5285], { scopeKey: 'playlists' }),
+  manifestEntry('playlistdna', 'playlists', lazyModule('./playlistdna.js', 'registerPlaylistDnaTools'), [1, 1310], { readOnlySafe: true, scopeKey: 'playlists' }),
+  manifestEntry('export', 'playlists', lazyModule('./export.js', 'registerExportTools'), [1, 1363], { scopeKey: 'playlists' }),
+  manifestEntry('import', 'playlists', lazyModule('./import.js', 'registerImportTools'), [1, 1211], { scopeKey: 'playlists' }),
+  manifestEntry('smart', 'playlists', lazyModule('./smart.js', 'registerSmartTools'), [1, 2364], { scopeKey: 'playlists' }),
+  manifestEntry('exhaustmisc', 'playlists', lazyModule('./exhaustmisc.js', 'registerExhaustMiscTools'), [10, 7924], { scopeKey: 'exhaustmisc' }),
+  manifestEntry('exhaust2catalog', 'exhaust2catalog', lazyModule('./exhaust2_catalog.js', 'registerExhaust2CatalogTools'), [19, 19176], { readOnlySafe: true, scopeKey: 'catalog' }),
+  manifestEntry('exhaust2enggating', 'exhaust2enggating', lazyModule('./exhaust2_enggating.js', 'registerExhaust2EnggatingTools'), [0, 0], { readOnlySafe: true, scopeKey: 'catalog' }),
+  manifestEntry('exhaust2playback', 'exhaust2playback', lazyModule('./exhaust2_playback.js', 'registerExhaust2PlaybackTools'), [23, 17306], { scopeKey: 'playback' }),
+  manifestEntry('exhaust2playlists', 'exhaust2playlists', lazyModule('./exhaust2_playlists.js', 'registerExhaust2PlaylistsTools'), [18, 23507], { scopeKey: 'playlists' }),
+  manifestEntry('exhaust2misc', 'exhaust2misc', lazyModule('./exhaust2_misc.js', 'registerExhaust2MiscTools'), [27, 23866], { scopeKey: 'library' }),
+  manifestEntry('exhaust2extra', 'exhaust2extra', lazyModule('./exhaust2_extra.js', 'registerExhaust2ExtraTools'), [3, 3695], { scopeKey: 'playlists' }),
+  manifestEntry('swarm3discovery', 'swarm3discovery', lazyModule('./swarm3_discovery.js', 'registerSwarm3DiscoveryTools'), [24, 21887], { readOnlySafe: true, scopeKey: 'catalog' }),
+  manifestEntry('swarm3bdiscovery', 'swarm3bdiscovery', lazyModule('./swarm3b_discovery.js', 'registerSwarm3bDiscoveryTools'), [24, 20039], { readOnlySafe: true, scopeKey: 'catalog' }),
+  manifestEntry('swarm3shows', 'swarm3shows', lazyModule('./swarm3_shows.js', 'registerSwarm3ShowsTools'), [24, 21075], { scopeKey: 'catalog' }),
+  manifestEntry('swarm3refs', 'swarm3refs', lazyModule('./swarm3_refs.js', 'registerSwarm3RefsTools'), [6, 4331], { readOnlySafe: true, scopeKey: 'catalog' }),
+  manifestEntry('swarm3analytics', 'swarm3analytics', lazyModule('./swarm3_analytics.js', 'registerSwarm3AnalyticsTools'), [24, 18880], { readOnlySafe: true, scopeKey: 'personalization' }),
+  manifestEntry('swarm3library', 'swarm3library', lazyModule('./swarm3_library.js', 'registerSwarm3LibraryTools'), [24, 18092], { readOnlySafe: true, scopeKey: 'library' }),
+  manifestEntry('swarm3playback', 'swarm3playback', lazyModule('./swarm3_playback.js', 'registerSwarm3PlaybackTools'), [24, 14247], { scopeKey: 'playback' }),
+  manifestEntry('swarm3playlistops', 'swarm3playlistops', lazyModule('./swarm3_playlistops.js', 'registerSwarm3PlaylistopsTools'), [24, 31777], { scopeKey: 'playlists' }),
+  manifestEntry('swarm3snapshots', 'swarm3snapshots', lazyModule('./swarm3_snapshots.js', 'registerSwarm3SnapshotsTools'), [24, 23744], { scopeKey: 'playlists' }),
+  manifestEntry('swarm4playlists', 'swarm4playlists', lazyModule('./swarm4_playlists.js', 'registerSwarm4PlaylistsTools'), [18, 22590], { scopeKey: 'playlists' }),
 ] as const;
 
 interface SchemaRegistryEntry {
@@ -934,10 +978,79 @@ export function registerManifestModule(
   const status = moduleRegistrationStatus(module, context);
   metadata.statuses.set(module.key, status);
   if (status === 'toolset_trimmed' || status === 'read_only_hidden') return;
+  if (!module.registrar) {
+    // Fail loudly rather than registering nothing. A caller that skipped
+    // `loadManifestRegistrars` used to get every tool in the manifest; now it
+    // would get a silently emptier tools/list that still passes every budget
+    // gate, because a module with no tools is exempt from its own ceiling.
+    throw new Error(
+      `manifest module "${module.key}" (${module.file}) has no loaded registrar: `
+        + 'resolve it with loadManifestRegistrars() before registering',
+    );
+  }
   const before = new Set(registeredToolNames(server));
   module.registrar(status === 'scope_filtered' ? readOnlyToolServer(server) : server, client);
   metadata.tools.set(module.key, registeredToolNames(server).filter((name) => !before.has(name)));
   metadata.budgetRows = undefined;
+}
+
+/**
+ * Whether a module will register anything at all under `context` — the
+ * complement of `registerManifestModule`'s early return.
+ *
+ * Kept next to that early return on purpose: the load decision and the
+ * registration decision have to be the same predicate, or a module could be
+ * imported for nothing (the cost #906 is removing) or loaded-but-skipped.
+ */
+function moduleWillRegister(module: RegistrarManifestEntry, context: RegistrarManifestContext): boolean {
+  const status = moduleRegistrationStatus(module, context);
+  return status !== 'toolset_trimmed' && status !== 'read_only_hidden';
+}
+
+/**
+ * Import every module that is about to register, and return the manifest with
+ * those registrars resolved (#906).
+ *
+ * The returned array keeps manifest order, and trimmed modules come back
+ * unresolved rather than dropped, so the caller still walks the full manifest
+ * and `registerManifestModule` still records a status row for every module —
+ * which `toolset_report` and the per-module budget table both read.
+ *
+ * Imports run concurrently. That does not reorder registration: registration
+ * happens afterwards, in a plain `for` loop over this array, so `tools/list`
+ * order is byte-identical to the pre-lazy tree. (Module *evaluation* order is
+ * not guaranteed, but the registrars are pure function definitions — the tree
+ * already evaluated them in import order and nothing read a module-level
+ * side effect during evaluation.)
+ */
+export async function loadManifestRegistrars(
+  modules: readonly RegistrarManifestEntry[],
+  context: RegistrarManifestContext,
+): Promise<RegistrarManifestEntry[]> {
+  const resolved = await Promise.all(modules.map(async (module) =>
+    moduleWillRegister(module, context) ? { ...module, registrar: await module.load() } : module));
+  return resolved;
+}
+
+/**
+ * The production registration path: import only what registers, then register
+ * in manifest order.
+ *
+ * Everything downstream — the naming policy, the per-module schema budget
+ * gate, annotation application, the error boundary and the aggregate surface
+ * gate — still runs in `startMcpServer` after this returns, against a registry
+ * that holds every tool the process will serve. Laziness changes WHEN a module
+ * is evaluated, never WHETHER a module that serves tools is measured.
+ */
+export async function registerManifestModules(
+  server: McpServer,
+  client: SpotifyClient,
+  context: RegistrarManifestContext,
+  modules: readonly RegistrarManifestEntry[] = REGISTRAR_MANIFEST,
+): Promise<void> {
+  for (const module of await loadManifestRegistrars(modules, context)) {
+    registerManifestModule(server, client, module, context);
+  }
 }
 
 /** Tool names owned by one manifest module for wire-level audit tests/reports. */

@@ -66,11 +66,16 @@ Object.assign(process.env, CENSUS_ENV);
 
 const {
   moduleToolNames,
+  loadManifestRegistrars,
   registerManifestModule,
   REGISTRAR_MANIFEST,
 } = await import('../src/tools/annotations.ts');
+// `module.name` is the registrar's export name, carried as data since the
+// loader is a thunk with no `.name` to read (#906). Two rows changed here:
+// `statsfm` and `receipts` used to print their module key because their
+// registrars were inline arrows; both now name a real export.
 const productionManifest = REGISTRAR_MANIFEST.map((module) => ({
-  registrar: module.registrar.name || module.key,
+  registrar: module.name || module.key,
   file: normalizeRepoPath(module.file),
   key: module.registrationKey,
   ungated: module.alwaysActive === true,
@@ -257,12 +262,14 @@ async function attributeToolsToModules(liveToolNames, finalizedTools) {
   const attributed = new Map();
 
   try {
-    for (const module of REGISTRAR_MANIFEST) {
-      registerManifestModule(server, clientStub, module, {
-        readOnly: false,
-        isModuleActive: () => true,
-        scopeBlocked: () => false,
-      });
+    // The census measures the whole default surface, so it loads every module
+    // (#906). It asks for the resolved manifest explicitly rather than going
+    // through `registerManifestModules`, which would gate on the census's own
+    // context — this loop registers unconditionally to attribute every name.
+    const censusContext = { readOnly: false, isModuleActive: () => true, scopeBlocked: () => false };
+    const loaded = await loadManifestRegistrars(REGISTRAR_MANIFEST, censusContext);
+    for (const module of loaded) {
+      registerManifestModule(server, clientStub, module, censusContext);
       for (const name of moduleToolNames(server, module.key)) {
         const file = normalizeRepoPath(module.file);
         const owners = attributed.get(name) ?? [];
