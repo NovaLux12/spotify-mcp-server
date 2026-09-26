@@ -892,6 +892,111 @@ describe('SpotifyClient', () => {
       );
     });
 
+    // #718: the verdict and the cause are separate answers, and a caller that
+    // has to write "truncated at SPOTIFY_MCP_FETCH_ALL_CAP" needs to know the
+    // cap is WHY. A walk that ends on a short page while the server's own
+    // `total` still counts more rows is the case that separates them: rows are
+    // missing, and the cap never bound the walk.
+    it('reports rows missing without blaming the cap when a short page undercounts the total', async () => {
+      await seedTokens();
+      responder = (url) => {
+        const offset = Number(new URL(url).searchParams.get('offset') ?? 0);
+        const size = offset === 0 ? 50 : 2;
+        return jsonResponse({
+          items: Array.from({ length: size }, (_, i) => ({ id: offset + i })),
+          total: 500,
+          limit: 50,
+          offset,
+        });
+      };
+
+      const client = new SpotifyClient();
+      const walk = await client.getAllPagesWithTruncation<{ id: number }>(
+        '/me/tracks',
+        {},
+        { maxItems: 500 },
+      );
+
+      assert.equal(walk.items.length, 52, 'precondition: the walk stopped on a short page');
+      assert.equal(walk.truncated, true, '52 collected against a reported 500 is not a complete read');
+      assert.equal(walk.truncatedByCap, false, 'a 500 cap never bound a 52-row walk');
+      assert.equal(walk.reportedTotal, 500, "the server's own count travels with the verdict");
+    });
+
+    it('attributes a cap-stopped walk to the cap and carries the reported total', async () => {
+      await seedTokens();
+      responder = (url) => {
+        const offset = Number(new URL(url).searchParams.get('offset') ?? 0);
+        const items = Array.from({ length: 100 }, (_, i) => ({ id: offset + i }));
+        return jsonResponse({ items, total: 1_204, limit: 100, offset });
+      };
+
+      const client = new SpotifyClient();
+      const walk = await client.getAllPagesWithTruncation<{ id: number }>(
+        '/me/tracks',
+        {},
+        { maxItems: 500 },
+      );
+
+      assert.equal(walk.truncatedByCap, true, 'the cap is what ended this walk');
+      assert.equal(walk.reportedTotal, 1_204, 'and the total the server reported is not lost');
+    });
+
+    it('reports an unknown total as null, never the walked count', async () => {
+      await seedTokens();
+      responder = (url) => {
+        const offset = Number(new URL(url).searchParams.get('offset') ?? 0);
+        // No `total` key at all: the walk can say nothing about the size.
+        return jsonResponse({ items: Array.from({ length: 5 }, (_, i) => ({ id: offset + i })), limit: 5, offset });
+      };
+
+      const client = new SpotifyClient();
+      const walk = await client.getAllPagesWithTruncation<{ id: number }>(
+        '/me/tracks',
+        {},
+        { maxItems: 5 },
+      );
+
+      assert.equal(walk.truncated, true);
+      assert.equal(
+        walk.reportedTotal,
+        null,
+        'a total nobody reported must stay null rather than become the 5 rows walked',
+      );
+    });
+
+    it('leaves reportedTotal null on a short-page walk that reported no total', async () => {
+      // The end-of-data branch, with no `total` anywhere: there is nothing to
+      // reconcile against, so the walk reports unknown rather than passing the
+      // rows it collected off as the size of the collection.
+      await seedTokens();
+      responder = (url) => {
+        const offset = Number(new URL(url).searchParams.get('offset') ?? 0);
+        const size = offset === 0 ? 50 : 3;
+        return jsonResponse({
+          items: Array.from({ length: size }, (_, i) => ({ id: offset + i })),
+          limit: 50,
+          offset,
+        });
+      };
+
+      const client = new SpotifyClient();
+      const walk = await client.getAllPagesWithTruncation<{ id: number }>(
+        '/me/tracks',
+        {},
+        { maxItems: 500 },
+      );
+
+      assert.equal(walk.items.length, 53, 'precondition: the walk ended on a short page');
+      assert.equal(walk.truncated, false, 'with no total reported, a short page is the end of the data');
+      assert.equal(walk.truncatedByCap, false);
+      assert.equal(
+        walk.reportedTotal,
+        null,
+        'a total nobody reported must stay null rather than become the 53 rows walked',
+      );
+    });
+
     // The MCP SDK dispatches `tools/call` without awaiting — protocol.js fires
     // `_onrequest` straight from the transport's onmessage — so two overlapping
     // calls interleave their awaits on ONE shared client. A verdict stored on

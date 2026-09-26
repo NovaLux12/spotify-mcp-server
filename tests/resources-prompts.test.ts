@@ -55,13 +55,19 @@ function makeClientStub(opts: StubOptions = {}): SpotifyClient {
       return opts.getResponse?.(path, params);
     },
     getAllPages: async (path: string) => opts.getAllPagesResponse?.(path) ?? [],
+    // The saved/playlist resources report the walk's cap verdict (#718); this
+    // seam hands back a complete walk, so the tests below stay about rendering.
+    getAllPagesWithTruncation: async (path: string) => ({
+      items: opts.getAllPagesResponse?.(path) ?? [],
+      truncated: false,
+    }),
     getRateLimitStatus: () => ({
       lastThrottleAt: null as number | null,
       retryAfterSec: null as number | null,
       cooldownRemainingMs: 0,
     }),
   };
-  // Test seam: registerResources only needs these three members of the class.
+  // Test seam: registerResources only needs these members of the class.
   return stub as unknown as SpotifyClient;
 }
 
@@ -225,8 +231,13 @@ test('saved albums/shows/episodes walk pages and support ?format=json (#59)', as
   assert.match(albums.text, /Saved albums \(1\)/);
   assert.match(albums.text, /"A Night at the Opera" — Queen \(1975-10-31, 12 tracks/);
 
+  // #718: the payload now carries the walk's cap verdict, not just a total.
   const showsJson = firstContent(await client.readResource({ uri: 'spotify://me/saved/shows?format=json' }));
-  assert.deepEqual(JSON.parse(showsJson.text), { total: 1, items: [showItem] });
+  const shows = JSON.parse(showsJson.text);
+  assert.equal(shows.total, 1);
+  assert.equal(shows.truncated, false);
+  assert.equal(shows.truncation_note, undefined);
+  assert.deepEqual(shows.items, [showItem]);
 
   const episodes = firstContent(await client.readResource({ uri: 'spotify://me/saved/episodes' }));
   assert.match(episodes.text, /"Episode One" — Great Podcast \(30:00/);

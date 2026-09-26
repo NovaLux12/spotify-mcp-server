@@ -18,17 +18,20 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
 import { SpotifyApiError } from '../client.js';
 import type {
-  SearchResponse,
   SpotifyAlbumItem,
+  SpotifyAlbumRow as AlbumPayload,
   SpotifyAlbumSimple,
-  SpotifyAudiobookSimple,
   SpotifyArtistFull,
   SpotifyArtistSimple,
+  SpotifyAudiobookRow as AudiobookSearchItem,
+  SpotifyAudiobookSimple,
   SpotifyChapterSimple,
+  SpotifyEpisodeRow,
   SpotifyEpisodeSimple,
   SpotifyPlaylistSimple,
+  SpotifySearchResults as CatalogSearchResponse,
   SpotifyShowSimple,
-  SpotifyTrack,
+  SpotifyTrackRow as TrackPayload,
   SpotifyTrackSimple,
 } from '../types/spotify.js';
 import {
@@ -116,30 +119,6 @@ function chunk<T>(items: readonly T[], size: number): T[][] {
   return out;
 }
 
-/** Full album payload widens the simplified type with label/copyright fields. */
-interface AlbumPayload extends SpotifyAlbumItem {
-  label?: string;
-  copyrights?: Array<{ text: string; type: string }>;
-  tracks?: { items: SpotifyTrackSimple[]; total: number };
-}
-
-/** Track payloads as returned by /search and /tracks — album carries dates. */
-interface TrackPayload extends Omit<SpotifyTrack, 'album'> {
-  album: SpotifyAlbumSimple & {
-    release_date?: string;
-    release_date_precision?: string;
-    album_type?: string;
-    total_tracks?: number;
-  };
-  external_ids?: { isrc?: string; upc?: string };
-  is_playable?: boolean;
-  album_type?: string;
-}
-
-/** /search widened with the audiobook section (missing from SearchResponse). */
-interface CatalogSearchResponse extends SearchResponse {
-  audiobooks?: { items: SpotifyAudiobookSimple[]; total: number };
-}
 
 type SearchArgs = { query: string; limit?: number; offset?: number; market?: string };
 
@@ -425,7 +404,7 @@ export function registerExhaust2CatalogTools(server: McpServer, client: SpotifyC
         .describe('Comma-separated album groups: album,single,appears_on,compilation. Default: album,single'),
       since_year: z.number().int().min(1900).max(2100).optional().describe('Only releases from this year onward'),
       response_format: ResponseFormat,
-      max_results: z.number().int().positive().max(2000).optional().describe('Max items to return (default: SPOTIFY_MCP_MAX_ITEMS env or 50)'),
+      max_results: z.number().int().positive().max(2000).optional().describe('Max rows to return (default: SPOTIFY_MCP_FETCH_ALL_CAP or 500)'),
     },
     async (args) => {
       const rf = args.response_format;
@@ -445,7 +424,7 @@ export function registerExhaust2CatalogTools(server: McpServer, client: SpotifyC
       const sorted = [...trimmed].sort((a, b) => (b.release_date ?? '').localeCompare(a.release_date ?? ''));
       const cap = resolveMaxResults(args.max_results, fetchAllCap);
       const trunc = truncateItems(sorted, cap);
-      const header = `Discography timeline (${sorted.length} release${sorted.length === 1 ? '' : 's'}${args.since_year ? ` since ${args.since_year}` : ''}):`;
+      const header = `Discography timeline (${sorted.length} release${sorted.length === 1 ? '' : 's'}${albums.length >= fetchAllCap ? ' — fetch-all cap REACHED, prefix only' : ''}${args.since_year ? ` since ${args.since_year}` : ''}):`;
       const lines = trunc.items.map(
         (a) => `• ${a.release_date ?? '?'} · ${a.album_type ?? 'album'} · "${a.name}" · ${a.total_tracks ?? '?'} tracks`,
       );
@@ -857,7 +836,7 @@ max_results: z.number().int().positive().max(2000).optional().describe('Max item
         .optional()
         .describe('Minimum gap to flag as a hiatus, in days. Default: 14'),
       response_format: ResponseFormat,
-      max_results: z.number().int().positive().max(2000).optional().describe('Max items to return (default: SPOTIFY_MCP_MAX_ITEMS env or 50)'),
+      max_results: z.number().int().positive().max(2000).optional().describe('Max rows to return (default: SPOTIFY_MCP_FETCH_ALL_CAP or 500)'),
     },
     async (args) => {
       const rf = args.response_format;
@@ -886,7 +865,7 @@ max_results: z.number().int().positive().max(2000).optional().describe('Max item
           }
         }
       }
-      lines.push('', `Timeline (oldest → newest, ${chronological.length} episodes):`);
+      lines.push('', `Timeline (oldest → newest, ${chronological.length} episodes${episodes.length >= fetchAllCap ? ' — fetch-all cap REACHED, prefix only' : ''}):`);
       lines.push(...trunc.items.map((e) => `• ${e.release_date ?? '?'} — "${e.name}" (${fmtDur(e.duration_ms)})`));
       if (trunc.footer) lines.push(`(${trunc.footer})`);
       return emit(rf, lines.join('\n'), {
@@ -895,6 +874,8 @@ max_results: z.number().int().positive().max(2000).optional().describe('Max item
         gaps_flagged: gaps,
         gap_threshold_days: threshold,
         episodes: trunc.items.map((e) => ({ id: e.id, uri: e.uri, name: e.name, release_date: e.release_date ?? null, duration_ms: e.duration_ms })),
+        fetch_all_cap: fetchAllCap,
+        truncated_by_cap: episodes.length >= fetchAllCap,
         pagination: paginationInfo({ total: chronological.length, returned: trunc.items.length }),
       });
     },
@@ -1097,7 +1078,7 @@ max_results: z.number().int().positive().max(2000).optional().describe('Max item
     {
       audiobook_id: z.string().min(1).describe('Spotify audiobook ID'),
       response_format: ResponseFormat,
-      max_results: z.number().int().positive().max(2000).optional().describe('Max items to return (default: SPOTIFY_MCP_MAX_ITEMS env or 50)'),
+      max_results: z.number().int().positive().max(2000).optional().describe('Max rows to return (default: SPOTIFY_MCP_FETCH_ALL_CAP or 500)'),
     },
     async (args) => {
       const rf = args.response_format;
@@ -1135,6 +1116,8 @@ max_results: z.number().int().positive().max(2000).optional().describe('Max item
         chapters: trunc.items.map((c) => ({ chapter_number: c.chapter_number, name: c.name, duration_ms: c.duration_ms, id: c.id })),
         total_runtime_ms: total,
         midpoint_chapter: { chapter_number: midpoint.chapter_number, name: midpoint.name },
+        fetch_all_cap: fetchAllCap,
+        truncated_by_cap: chapters.length >= fetchAllCap,
         pagination: paginationInfo({ total: chapters.length, returned: trunc.items.length }),
       });
     },
@@ -1384,7 +1367,7 @@ max_results: z.number().int().positive().max(2000).optional().describe('Max item
     },
     async (args) => {
       const rf = args.response_format;
-      const episode = await client.get<SpotifyEpisodeFullLocal>(`/episodes/${encodeURIComponent(args.episode_id)}`);
+      const episode = await client.get<SpotifyEpisodeRow>(`/episodes/${encodeURIComponent(args.episode_id)}`);
       if (!episode) throw new Error(`Episode "${args.episode_id}" not found`);
       const showId = episode.show?.id;
       const neighbours = showId
@@ -1498,22 +1481,3 @@ max_results: z.number().int().positive().max(2000).optional().describe('Max item
   );
 }
 
-// ---------------------------------------------------------------------------
-// Local widened search/episode types (Spotify adds fields beyond the shared
-// simplified types; declared last so the registration body stays readable).
-// ---------------------------------------------------------------------------
-
-interface SpotifyEpisodeFullLocal {
-  id: string;
-  name: string;
-  uri: string;
-  duration_ms: number;
-  release_date: string | null;
-  description: string;
-  show: { id: string; name: string; uri?: string } | null;
-}
-
-interface AudiobookSearchItem extends Omit<SpotifyAudiobookSimple, 'narrators'> {
-  release_date?: string;
-  narrators?: Array<{ name: string }>;
-}

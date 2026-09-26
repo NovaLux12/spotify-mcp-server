@@ -3,9 +3,9 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
 import type {
   SpotifyTrack,
-  SpotifyArtistFull,
   SpotifyPaged,
   RecentlyPlayedResponse,
+  SpotifyArtistRow,
 } from '../types/spotify.js';
 import {
   ResponseFormat,
@@ -22,13 +22,6 @@ function formatDuration(ms: number): string {
   return `${minutes}:${seconds.toString().padStart(2, '0')}`;
 }
 
-// /me/top/artists actually returns followers/popularity even though
-// SpotifyArtistFull models the GET /artists/{id} subset — widen locally
-// (same pattern as search.ts) so detailed mode can surface them.
-type TopArtist = SpotifyArtistFull & {
-  followers?: { total: number };
-  popularity?: number;
-};
 export const timeRangeSchema = z
   .enum(['short_term', 'medium_term', 'long_term'])
   .optional()
@@ -128,7 +121,10 @@ export function registerPersonalizationTools(server: McpServer, client: SpotifyC
         limit: String(args.limit ?? 20),
         offset: String(args.offset ?? 0),
       };
-      const result = await client.get<SpotifyPaged<TopArtist>>('/me/top/artists', params);
+      // /me/top/artists rows carry followers/popularity, which
+      // SpotifyArtistFull (modelled on GET /artists/{id}) does not declare —
+      // SpotifyArtistRow is the shared row for exactly that widening.
+      const result = await client.get<SpotifyPaged<SpotifyArtistRow>>('/me/top/artists', params);
       if (!result) throw new Error('Could not retrieve top artists');
 
       if (args.response_format === 'json') {

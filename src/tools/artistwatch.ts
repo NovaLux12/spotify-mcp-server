@@ -17,6 +17,7 @@ import { chmod, mkdir, open, readFile, rename, unlink, writeFile } from 'node:fs
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { classifySpotifyReference } from '../refs.js';
+import type { SpotifyArtistAlbumRow, SpotifyPaged } from '../types/spotify.js';
 
 /**
  * Store plumbing (#764).
@@ -248,7 +249,7 @@ function ensureList(store: WatchlistStore, name: string): WatchlistEntry {
   return store.watchlists[name];
 }
 
-function isNewRelease(album: AlbumItem, lookbackDays?: number): boolean {
+function isNewRelease(album: SpotifyArtistAlbumRow, lookbackDays?: number): boolean {
   if (lookbackDays === undefined || lookbackDays === null) return true;
   const d = new Date(album.release_date);
   if (Number.isNaN(d.getTime())) return true;
@@ -342,7 +343,7 @@ export function registerArtistWatchTools(server: McpServer, client: SpotifyClien
       };
       if (includeGroups) params.include_groups = includeGroups;
       if (args.market) params.market = args.market;
-      const data = await client.get<{ items: AlbumItem[]; total: number; limit: number; offset: number }>(
+      const data = await client.get<SpotifyPaged<SpotifyArtistAlbumRow>>(
         `/artists/${encodeURIComponent(args.artist_id)}/albums`,
         params,
       );
@@ -429,7 +430,7 @@ export function registerArtistWatchTools(server: McpServer, client: SpotifyClien
       response_format: ResponseFormat,
     },
     async (args) => {
-      const data = await client.get<{ items: AlbumItem[] }>(
+      const data = await client.get<SpotifyPaged<SpotifyArtistAlbumRow>>(
         `/artists/${encodeURIComponent(args.artist_id)}/albums`,
         { include_groups: 'album,single', limit: String(Math.min(args.limit ?? ARTIST_ALBUM_PAGE_LIMIT, ARTIST_ALBUM_PAGE_LIMIT)), offset: '0', ...(args.market ? { market: args.market } : {}) },
       );
@@ -593,11 +594,11 @@ export function registerArtistWatchTools(server: McpServer, client: SpotifyClien
       // anything new, and a quota wall must not read as "scanned 0" (#771).
       let artistsScanned = 0;
       const failures: ArtistLookupFailure[] = [];
-      const perArtist: Array<{ artist_id: string; newReleases: AlbumItem[] }> = [];
+      const perArtist: Array<{ artist_id: string; newReleases: SpotifyArtistAlbumRow[] }> = [];
       for (const artistId of artistsToCheck) {
         artistsScanned++;
         try {
-          const data = await client.get<{ items: AlbumItem[] }>(`/artists/${encodeURIComponent(artistId)}/albums`, {
+          const data = await client.get<SpotifyPaged<SpotifyArtistAlbumRow>>(`/artists/${encodeURIComponent(artistId)}/albums`, {
             include_groups: 'album,single',
             limit: String(Math.min(args.limit ?? ARTIST_ALBUM_PAGE_LIMIT, ARTIST_ALBUM_PAGE_LIMIT)),
             offset: '0',
@@ -774,11 +775,11 @@ export function registerArtistWatchTools(server: McpServer, client: SpotifyClien
       let artistsScanned = 0;
       let artistsRead = 0;
       const failures: ArtistLookupFailure[] = [];
-      const perArtist: Array<{ artist_id: string; releases: AlbumItem[] }> = [];
+      const perArtist: Array<{ artist_id: string; releases: SpotifyArtistAlbumRow[] }> = [];
       for (const artistId of artistsToCheck) {
         artistsScanned++;
         try {
-          const data = await client.get<{ items: AlbumItem[] }>(`/artists/${encodeURIComponent(artistId)}/albums`, {
+          const data = await client.get<SpotifyPaged<SpotifyArtistAlbumRow>>(`/artists/${encodeURIComponent(artistId)}/albums`, {
             include_groups: 'album,single',
             limit: String(ARTIST_ALBUM_PAGE_LIMIT),
             offset: '0',

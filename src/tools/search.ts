@@ -4,9 +4,8 @@ import { recordSearch } from './searchhistory.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
 import type {
-  SearchResponse,
-  SpotifyAudiobookSimple,
   SpotifyPlaylistSimple,
+  SpotifySearchResults,
 } from '../types/spotify.js';
 import {
   ResponseFormat,
@@ -18,14 +17,6 @@ import {
 
 /** Spotify's February 2026 /search cap: requests above 10 return Invalid limit. */
 export const SPOTIFY_SEARCH_MAX_LIMIT = 10;
-
-// Spotify's search endpoint returns an `audiobooks` key when `type=audiobook`
-// is requested (issue #44), but the shared SearchResponse interface does not
-// carry it yet. Widen locally so the formatter can render that section
-// without touching src/types/spotify.ts.
-type SearchResults = SearchResponse & {
-  audiobooks?: { items: SpotifyAudiobookSimple[]; total: number };
-};
 
 function formatDuration(ms: number): string {
   const minutes = Math.floor(ms / 60000);
@@ -39,10 +30,10 @@ function formatDuration(ms: number): string {
 // This helper pulls a section's items out as a guaranteed non-empty array
 // OR returns \`null\` for 'section not present' — which is what the caller
 // checks before formatting.
-function sectionItems<K extends keyof SearchResults>(
-  results: SearchResults,
+function sectionItems<K extends keyof SpotifySearchResults>(
+  results: SpotifySearchResults,
   key: K,
-): NonNullable<SearchResults[K]> | null {
+): NonNullable<SpotifySearchResults[K]> | null {
   const section = results[key] as { items?: unknown[] } | undefined;
   if (!Array.isArray(section?.items)) return null;
   // Spotify can return literal `null` entries inside `items[]` for content
@@ -51,7 +42,7 @@ function sectionItems<K extends keyof SearchResults>(
   const items = section!.items.filter(Boolean);
   if (items.length === 0) return null;
   section!.items = items;
-  return section as NonNullable<SearchResults[K]>;
+  return section as NonNullable<SpotifySearchResults[K]>;
 }
 
 export function registerSearchTools(server: McpServer, client: SpotifyClient): void {
@@ -104,12 +95,10 @@ export function registerSearchTools(server: McpServer, client: SpotifyClient): v
       if (args.include_external) params.include_external = args.include_external;
       if (args.market) params.market = args.market;
 
-      const results = await client.get<SearchResponse>('/search', params);
-      if (!results) {
+      const all = await client.get<SpotifySearchResults>('/search', params);
+      if (!all) {
         return { content: [{ type: 'text', text: 'No results found.' }] };
       }
-
-      const all = results as SearchResults;
       // #766: this is the only thing that ever writes the sidecar the
       // search_history / search_rerun / search_history_stats readers read.
       // recordSearch is best-effort: an unwritable sidecar must not fail a
@@ -131,9 +120,9 @@ export function registerSearchTools(server: McpServer, client: SpotifyClient): v
       // reachable for chaining agents. Spread keeps this a checked literal
       // assignable to Record<string, unknown> without an unchecked cast.
       if (args.response_format === 'json') {
-        const raw: Record<string, unknown> = { ...results };
+        const raw: Record<string, unknown> = { ...all };
         return {
-          content: [{ type: 'text', text: JSON.stringify(results) }],
+          content: [{ type: 'text', text: JSON.stringify(all) }],
           structuredContent: raw,
         };
       }
