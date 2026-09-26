@@ -24,8 +24,11 @@ applied, so its budget covers the payload hosts actually receive.
 
 Annotations, tool names, resources, and prompts are intentionally excluded from
 this module-attribution measurement. A module is `active`, `toolset_trimmed`,
-`scope_blocked`, or `read_only_hidden`; inactive rows report zero live tools and
-list what host trimming drops.
+`scope_filtered`, or `read_only_hidden`; inactive rows report zero live tools
+and list what host trimming drops. A `scope_filtered` row is the exception: the
+module registered the tools `classifyToolAnnotations` proves read-only and
+withheld the writers its granted scopes cannot reach (#1020), so it is still
+measured against its ceiling.
 
 ## Registration order
 
@@ -70,12 +73,14 @@ above either ceiling fails CI and server startup.
 | playlists | 26 | 25,998 | 26 | 25,998 | 27 | 28,598 |
 | playlistops | 3 | 5,489 | 3 | 5,489 | 4 | 6,038 |
 | playlistbatch | 3 | 4,784 | 3 | 4,784 | 4 | 5,263 |
-| playlistmisc | 3 | 2,538 | 3 | 2,538 | 4 | 2,792 |
+| playlistfollow | 2 | 1,449 | 2 | 1,449 | 3 | 1,594 |
+| playlistmisc | 1 | 1,089 | 1 | 1,089 | 2 | 1,198 |
 | personalization | 3 | 2,532 | 3 | 2,532 | 4 | 2,786 |
 | analytics | 4 | 2,753 | 4 | 2,753 | 5 | 3,029 |
 | statsfm | 30 | 22,721 | 30 | 22,721 | 31 | 24,994 |
 | taste | 16 | 13,959 | 16 | 13,959 | 17 | 15,355 |
-| tastecomposites | 11 | 9,717 | 11 | 9,717 | 12 | 10,689 |
+| tastecomposites | 10 | 7,994 | 10 | 7,994 | 11 | 8,794 |
+| tasteplaylist | 1 | 1,723 | 1 | 1,723 | 2 | 1,896 |
 | doctor | 1 | 750 | 1 | 750 | 2 | 826 |
 | swarm3meta | 3 | 1,624 | 3 | 1,624 | 4 | 1,787 |
 | libraryanalytics | 4 | 3,350 | 4 | 3,350 | 5 | 3,686 |
@@ -86,7 +91,8 @@ above either ceiling fails CI and server startup.
 | saveddedupe | 1 | 1,562 | 1 | 1,562 | 2 | 1,719 |
 | podcastsession | 2 | 2,759 | 2 | 2,759 | 3 | 3,035 |
 | backupfirst | 1 | 513 | 1 | 513 | 2 | 565 |
-| backup | 3 | 2,584 | 3 | 2,584 | 4 | 2,843 |
+| backup | 2 | 1,625 | 2 | 1,625 | 3 | 1,788 |
+| backupdelete | 1 | 959 | 1 | 959 | 2 | 1,055 |
 | restore | 1 | 1,841 | 1 | 1,841 | 2 | 2,026 |
 | undo | 2 | 1,663 | 2 | 1,663 | 3 | 1,830 |
 | receipts | 1 | 315 | 1 | 315 | 2 | 347 |
