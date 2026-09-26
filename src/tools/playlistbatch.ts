@@ -236,6 +236,18 @@ async function resolveSourceUris(
   return { resolved, failed, invalid, resolvedPerSource };
 }
 function dedupeUris(uris: string[]): { unique: string[]; duplicates: number } { const seen = new Set<string>(); const unique: string[] = []; let duplicates = 0; for (const u of uris) { if (seen.has(u)) { duplicates++; continue; } seen.add(u); unique.push(u); } return { unique, duplicates }; }
+
+/**
+ * One read row of the source playlist, carrying the 0-based position the row
+ * occupied. A move targets these positions instead of the bare URI, because a
+ * bare URI removes EVERY occurrence of that track (#866) — which silently
+ * discards the intentional repeats a DJ set or a hook-heavy playlist carries.
+ */
+interface SourceRow {
+  entry: PlaylistItemObject;
+  uri: string;
+  position: number;
+}
 /**
  * Group `failed` entries by their source-type so a structured payload can carry
  * one number per type instead of the full list (#867). Order is fixed so a
@@ -359,22 +371,44 @@ export function registerPlaylistBatchTools(server: McpServer, client: SpotifyCli
     const lines = [`Copied playlist "${meta.name ?? sourceId}" (${uris.length} track(s)) to new playlist "${args.new_name}" (${newId})` + ` across ${batches} batch(es)` + (unavailable > 0 ? `; ${unavailable} unavailable item(s) skipped` : '') + '.', batchSummary(uris.length, uris)]; if (args.response_format === 'json') return textResult(jsonText({ ok: true, source_playlist: sourceId, new_playlist: newId, track_count: uris.length, batches, snapshot_id: snapshotId }));
     const view = truncateItems(uris, resolveMaxResults(args.max_results)); if (view.items.length > 0) { lines.push(''); lines.push(...view.items.map((u) => `  • ${u}`)); if (view.footer) lines.push(`(${view.footer})`); } lines.push(formatReceipt(receipt)); const text = snapshotId ? `${lines.join('\n')}\nSnapshot ID: ${snapshotId}` : lines.join('\n'); return textResult(text, { ok: true, source_playlist: sourceId, new_playlist: newId, track_count: uris.length, snapshot_id: snapshotId, receipt: receipt as unknown as Record<string, unknown> });
   });
-  server.registerTool('move_items_between_playlists', { description: 'Bulk rehome items between playlists. Mode copy keeps the source intact; mode move removes from source after copying. Supports dedupe against target and optional name/artist filter.', inputSchema: z.object({ source_playlist_id: PlaylistId.describe('Source playlist ID, spotify:playlist: URI, or URL'), target_playlist_id: PlaylistId.describe('Target playlist ID, spotify:playlist: URI, or URL'), mode: z.enum(['copy', 'move']).default('copy').describe('copy = leave source intact; move = remove from source after copy'), dedupe: z.boolean().optional().default(true).describe('Skip tracks already in target. Default: true'), filter: z.string().optional().describe('Optional substring filter: only transfer tracks whose name or artist name contains this string (case-insensitive)'), dry_run: DryRun, ...BATCH_WALK_FIELDS, ...sharedListFields }) }, async (args) => {
+  server.registerTool('move_items_between_playlists', { description: 'Bulk rehome items between playlists. Mode copy keeps the source intact; mode move removes from source after copying — by playlist position, removing exactly the transferred occurrences and leaving any other copy in the source. Supports dedupe against target and optional name/artist filter.', inputSchema: z.object({ source_playlist_id: PlaylistId.describe('Source playlist ID, spotify:playlist: URI, or URL'), target_playlist_id: PlaylistId.describe('Target playlist ID, spotify:playlist: URI, or URL'), mode: z.enum(['copy', 'move']).default('copy').describe('copy = leave source intact; move = remove from source after copy'), dedupe: z.boolean().optional().default(true).describe('Skip tracks already in target. Default: true'), filter: z.string().optional().describe('Optional substring filter: only transfer tracks whose name or artist name contains this string (case-insensitive)'), dry_run: DryRun, ...BATCH_WALK_FIELDS, ...sharedListFields }) }, async (args) => {
     const sourceId = args.source_playlist_id; const targetId = args.target_playlist_id; const dedupe = args.dedupe ?? true;
     let sourceTruncated = false;
     const firstRead = await fetchPlaylistItems(client, sourceId, args);
     sourceTruncated ||= firstRead.truncated;
-    let sourceItems = firstRead.items;
+    const sourceItems = firstRead.items;
     if (sourceItems.length === 0) return textResult(`Source playlist ${sourceId} is empty — nothing to ${args.mode}.`, { ok: true, moved: 0, source: sourceId, target: targetId });
-    if (args.filter) { const needle = args.filter.toLowerCase(); sourceItems = sourceItems.filter((entry) => { const t = entry.item; if (!t) return false; const name = (t.name ?? '').toLowerCase(); if (name.includes(needle)) return true; if ('artists' in t && Array.isArray((t as SpotifyTrack).artists)) return (t as SpotifyTrack).artists.some((a) => a.name.toLowerCase().includes(needle)); if ('show' in t && (t as SpotifyEpisode).show?.name) return (t as SpotifyEpisode).show.name.toLowerCase().includes(needle); return false; }); if (sourceItems.length === 0) return textResult(`No tracks in source playlist ${sourceId} matched filter "${args.filter}" — nothing to ${args.mode}.`, { ok: true, moved: 0, filter: args.filter }); }
-    const seenWithin = new Set<string>(); const orderedUris: string[] = []; let dupWithin = 0; for (const entry of sourceItems) { const uri = entry.item?.uri; if (!uri) continue; if (dedupe && seenWithin.has(uri)) { dupWithin++; continue; } seenWithin.add(uri); orderedUris.push(uri); }
-    let skippedExisting = 0; let toTransfer = orderedUris; let targetTruncated = false; if (dedupe) { const { items: targetItems, truncated } = await fetchPlaylistItems(client, targetId, args); targetTruncated ||= truncated; const targetSet = new Set<string>(); for (const entry of targetItems) if (entry.item?.uri) targetSet.add(entry.item.uri); const filtered: string[] = []; for (const uri of orderedUris) { if (targetSet.has(uri)) skippedExisting++; else filtered.push(uri); } toTransfer = filtered; }
-    if (toTransfer.length === 0) { const reason = skippedExisting > 0 || dupWithin > 0 ? `all ${orderedUris.length} track(s) already in target or duplicates — nothing to ${args.mode}` : 'no transferable tracks'; return textResult(`${reason}.`, { ok: true, moved: 0, skipped_duplicates: skippedExisting + dupWithin }); }
-    if (args.dry_run) { const view = truncateItems(toTransfer, resolveMaxResults(args.max_results)); const action = args.mode === 'move' ? 'move' : 'copy'; const dest = args.mode === 'move' ? `${sourceId} → ${targetId} (removing from source)` : `${sourceId} → ${targetId}`; return textResult(`[dry run] move_items_between_playlists — nothing was changed.\nWould ${action} ${toTransfer.length} track(s): ${dest}\n` + view.items.map((u) => `  - ${u}`).join('\n') + (view.footer ? `\n(${view.footer})` : '') + (skippedExisting + dupWithin > 0 ? `\n(${skippedExisting + dupWithin} duplicate(s) skipped)` : ''), { ok: true, dry_run: true, mode: args.mode, source: sourceId, target: targetId, would_transfer: toTransfer.length, uris: view.items, total: toTransfer.length, returned: view.items.length, skipped_duplicates: skippedExisting + dupWithin, source_truncated: sourceTruncated, target_truncated: targetTruncated }); }
-    if (toTransfer.length >= MOVE_ELICIT_THRESHOLD) { const verdict = await confirmViaElicitation(server, { message: describeConfirmation(`${args.mode} tracks between playlists`, `${sourceId} → ${targetId}`, [`${args.mode === 'move' ? 'Move' : 'Copy'} ${toTransfer.length} track(s) from ${sourceId} to ${targetId}:`, ...toTransfer.slice(0, 10), ...(toTransfer.length > 10 ? [`(…and ${toTransfer.length - 10} more)`] : [])]) }); const refusal = requiredConfirmationRefusal(verdict); if (refusal) return textResult(refusal.message, refusal.payload); }
-    // #865: mode=move issues an add and then a remove. Both are chunked, so
-    // either can fail mid-batch; the older code returned the snapshot anchor
-    // from whichever chunk answered last and dropped the partial state.
+    // #866: a source playlist may hold the same track more than once, and a
+    // move has to take out exactly the occurrences it copied. The array index
+    // of a read row IS its 0-based playlist position, so capture it HERE,
+    // before the filter pass — `filter()` returns a new array, and an index
+    // taken afterwards would address the wrong row. Rows without a URI are
+    // dropped here because they can never be transferred or targeted.
+    const sourceRows: SourceRow[] = [];
+    sourceItems.forEach((entry, position) => { const uri = entry.item?.uri; if (uri) sourceRows.push({ entry, uri, position }); });
+    let rows = sourceRows;
+    if (args.filter) { const needle = args.filter.toLowerCase(); rows = rows.filter(({ entry }) => { const t = entry.item; if (!t) return false; const name = (t.name ?? '').toLowerCase(); if (name.includes(needle)) return true; if ('artists' in t && Array.isArray((t as SpotifyTrack).artists)) return (t as SpotifyTrack).artists.some((a) => a.name.toLowerCase().includes(needle)); if ('show' in t && (t as SpotifyEpisode).show?.name) return (t as SpotifyEpisode).show.name.toLowerCase().includes(needle); return false; }); if (rows.length === 0) return textResult(`No tracks in source playlist ${sourceId} matched filter "${args.filter}" — nothing to ${args.mode}.`, { ok: true, moved: 0, filter: args.filter }); }
+    const seenWithin = new Set<string>(); const orderedUris: string[] = []; const orderedRows: SourceRow[] = []; let dupWithin = 0; for (const row of rows) { if (dedupe && seenWithin.has(row.uri)) { dupWithin++; continue; } seenWithin.add(row.uri); orderedUris.push(row.uri); orderedRows.push(row); }
+    const orderedCount = orderedUris.length;
+    let skippedExisting = 0; let transferRows = orderedRows; let targetTruncated = false; if (dedupe) { const { items: targetItems, truncated } = await fetchPlaylistItems(client, targetId, args); targetTruncated ||= truncated; const targetSet = new Set<string>(); for (const entry of targetItems) if (entry.item?.uri) targetSet.add(entry.item.uri); const filtered: SourceRow[] = []; for (const row of orderedRows) { if (targetSet.has(row.uri)) skippedExisting++; else filtered.push(row); } transferRows = filtered; }
+    const toTransfer = transferRows.map((r) => r.uri);
+    if (toTransfer.length === 0) { const reason = skippedExisting > 0 || dupWithin > 0 ? `all ${orderedCount} track(s) already in target or duplicates — nothing to ${args.mode}` : 'no transferable tracks'; return textResult(`${reason}.`, { ok: true, moved: 0, skipped_duplicates: skippedExisting + dupWithin }); }
+    if (args.dry_run) { const view = truncateItems(toTransfer, resolveMaxResults(args.max_results)); const action = args.mode === 'move' ? 'move' : 'copy'; const dest = args.mode === 'move' ? `${sourceId} → ${targetId} (removing from source)` : `${sourceId} → ${targetId}`; return textResult(`[dry run] move_items_between_playlists — nothing was changed.\nWould ${action} ${toTransfer.length} track(s): ${dest}\n` + view.items.map((u) => `  - ${u}`).join('\n') + (view.footer ? `\n(${view.footer})` : '') + (skippedExisting + dupWithin > 0 ? `\n(${skippedExisting + dupWithin} duplicate(s) skipped)` : '') + (args.mode === 'move' ? `\nWould remove ${toTransfer.length} occurrence(s) from ${sourceId}, each addressed by playlist position, so other copies of the same track stay in the source.` : ''), { ok: true, dry_run: true, mode: args.mode, source: sourceId, target: targetId, would_transfer: toTransfer.length, would_remove_occurrences: args.mode === 'move' ? toTransfer.length : 0, uris: view.items, total: toTransfer.length, returned: view.items.length, skipped_duplicates: skippedExisting + dupWithin, source_truncated: sourceTruncated, target_truncated: targetTruncated }); }
+    // #866: the removal is planned up front, from the source rows that were
+    // actually transferred, and ordered by DESCENDING position. There is no
+    // runtime re-check of the plan against the read: the positions ARE indices
+    // the walk produced, so any comparison here would be comparing the
+    // derivation with itself and could never fail. The property that actually
+    // makes the chunked delete safe is the ordering, and it is asserted where it
+    // is observable — on the requests, in tests/tools.playlistbatch.test.ts.
+    const removals: Array<{ uri: string; position: number }> = args.mode === 'move'
+      ? transferRows.map((r) => ({ uri: r.uri, position: r.position })).sort((a, b) => b.position - a.position)
+      : [];
+    if (toTransfer.length >= MOVE_ELICIT_THRESHOLD) { const verdict = await confirmViaElicitation(server, { message: describeConfirmation(`${args.mode} tracks between playlists`, `${sourceId} → ${targetId}`, [`${args.mode === 'move' ? 'Move' : 'Copy'} ${toTransfer.length} track(s) from ${sourceId} to ${targetId}:`, ...toTransfer.slice(0, 10), ...(toTransfer.length > 10 ? [`(…and ${toTransfer.length - 10} more)`] : []), ...(args.mode === 'move' ? ['Each is removed from the source by playlist position, so any other copy of the same track stays put.'] : [])]) }); const refusal = requiredConfirmationRefusal(verdict); if (refusal) return textResult(refusal.message, refusal.payload); }
+    // #865: the add is chunked, so it can fail mid-batch and leave the target
+    // holding a prefix with no way to tell which URIs landed. `runChunkedPlaylistWrite`
+    // reports the failed chunk and the committed prefix, so a retry resumes at the
+    // right offset instead of duplicating what already transferred.
     const writeCap = capFor('playlist_writes');
     const addResult = await runChunkedPlaylistWrite(toTransfer, writeCap, (chunk) => client.post<{ snapshot_id?: string }>(`/playlists/${encodeURIComponent(targetId)}/items`, { uris: chunk }));
     if (!addResult.ok) {
@@ -384,21 +418,37 @@ export function registerPlaylistBatchTools(server: McpServer, client: SpotifyCli
       const prose = `Partial ${args.mode} from ${sourceId} → ${targetId}: ${addResult.failed_chunk_index === 0 ? 'the first add chunk failed' : `${addResult.failed_chunk_index} add chunk(s) committed to target (${committedCount} URI(s))`}, add chunk ${addResult.failed_chunk_index + 1} of ${addResult.attempted_chunks} failed.${committedUpTo} Retry the remaining ${toTransfer.length - committedCount} URI(s); the committed target prefix is already there. (${addResult.error})`;
       return textResult(prose, { ...addResult, mode: args.mode, source: sourceId, target: targetId, step: 'add', attempted_uris: toTransfer.length, committed_uris: committedCount, remaining_uris: toTransfer.length - committedCount });
     }
-    let removeSnapshot: string | undefined;
+    const addSnapshot = addResult.snapshot_id; const addBatches = addResult.chunks;
+    // #866: each transferred occurrence is removed with `{ uri, positions: [p] }`,
+    // ordered DESCENDING. Descending is what makes multi-entry requests safe
+    // under either reading of the endpoint: a removal only re-indexes rows ABOVE
+    // it, so every later entry in the same request — and every later request —
+    // still addresses the row it was planned against. The old bare-URI delete had
+    // no position to order and took out every repeat of the track.
+    let removeSnapshot: string | undefined; let removedOccurrences = 0; let removeBatches = 0;
     if (args.mode === 'move') {
-      const removeResult = await runChunkedPlaylistWrite(toTransfer, writeCap, (chunk) => client.delete<{ snapshot_id?: string }>(`/playlists/${encodeURIComponent(sourceId)}/items`, { tracks: chunk.map((uri) => ({ uri })) }));
+      // #865's partial-write contract, carrying #866's positional payload. The
+      // chunk rows are recovered BY INDEX, not by looking a URI up: with
+      // `dedupe: false` the same URI can appear twice in `removals` at two
+      // different positions, and a uri→position map would collapse those two
+      // distinct occurrences into one and silently drop a removal.
+      const removeResult = await runChunkedPlaylistWrite(removals.map((r) => r.uri), writeCap, (chunkUris, chunkIndex) => {
+        const start = chunkIndex * writeCap;
+        const chunkRows = removals.slice(start, start + chunkUris.length);
+        return client.delete<{ snapshot_id?: string }>(`/playlists/${encodeURIComponent(sourceId)}/items`, { tracks: chunkRows.map((r) => ({ uri: r.uri, positions: [r.position] })) });
+      });
       if (!removeResult.ok) {
         const committedCount = removeResult.last_committed_chunk_uris.length;
         const lastUri = removeResult.last_committed_chunk_uris[removeResult.last_committed_chunk_uris.length - 1];
-        const committedUpTo = lastUri ? ` Last URI removed from source: ${lastUri}.` : '';
-        const prose = `Partial ${args.mode} from ${sourceId} → ${targetId}: target add succeeded for all ${toTransfer.length} URI(s), but ${removeResult.failed_chunk_index === 0 ? 'the first remove chunk failed' : `remove chunks 1–${removeResult.failed_chunk_index} completed (${committedCount} URI(s))`}, remove chunk ${removeResult.failed_chunk_index + 1} of ${removeResult.attempted_chunks} failed.${committedUpTo} ${committedCount} URI(s) now exist on BOTH playlists; retry the remaining ${toTransfer.length - committedCount} remove(s) against ${sourceId}. (${removeResult.error})`;
-        return textResult(prose, { ...removeResult, mode: args.mode, source: sourceId, target: targetId, step: 'remove', attempted_uris: toTransfer.length, committed_uris: committedCount, remaining_uris: toTransfer.length - committedCount, snapshot_id: addResult.snapshot_id });
+        const committedUpTo = lastUri ? ` Last occurrence removed from source: ${lastUri}.` : '';
+        const prose = `Partial ${args.mode} from ${sourceId} → ${targetId}: target add succeeded for all ${toTransfer.length} URI(s), but ${removeResult.failed_chunk_index === 0 ? 'the first remove chunk failed' : `remove chunks 1–${removeResult.failed_chunk_index} completed (${committedCount} occurrence(s))`}, remove chunk ${removeResult.failed_chunk_index + 1} of ${removeResult.attempted_chunks} failed.${committedUpTo} ${committedCount} occurrence(s) now exist on BOTH playlists; retry the remaining ${removals.length - committedCount} removal(s) against ${sourceId}. (${removeResult.error})`;
+        return textResult(prose, { ...removeResult, mode: args.mode, source: sourceId, target: targetId, step: 'remove', attempted_occurrences: removals.length, committed_occurrences: committedCount, remaining_occurrences: removals.length - committedCount, snapshot_id: addSnapshot });
       }
-      removeSnapshot = removeResult.snapshot_id;
+      removeSnapshot = removeResult.snapshot_id; removedOccurrences = removals.length; removeBatches = removeResult.chunks;
     }
-    const addSnapshot = addResult.snapshot_id; const addBatches = addResult.chunks;
+    if (args.mode === 'move' && removedOccurrences !== toTransfer.length) throw new Error(`Copied ${toTransfer.length} track(s) from ${sourceId} to ${targetId} but removed ${removedOccurrences} source occurrence(s) — the counts disagree, so re-read the source playlist before retrying.`);
     const receipt = await issueReceipt(client, { kind: 'playlist_items', id: targetId, uris: toTransfer });
-    const actionLabel = args.mode === 'move' ? 'Moved' : 'Copied'; const lines = [`${actionLabel} ${toTransfer.length} track(s) from ${sourceId} to ${targetId} across ${addBatches} batch(es)` + (skippedExisting + dupWithin > 0 ? `; skipped ${skippedExisting + dupWithin} duplicate(s)` : '') + (args.filter ? ` (filter: "${args.filter}")` : '') + '.', batchSummary(toTransfer.length, toTransfer)]; if (args.response_format === 'json') return textResult(jsonText({ ok: true, mode: args.mode, source: sourceId, target: targetId, transferred: toTransfer.length, add_batches: addBatches, snapshot_id: addSnapshot, remove_snapshot: removeSnapshot }));
-    const view = truncateItems(toTransfer, resolveMaxResults(args.max_results)); if (view.items.length > 0) { lines.push(''); lines.push(...view.items.map((u) => `  • ${u}`)); if (view.footer) lines.push(`(${view.footer})`); } lines.push(formatReceipt(receipt)); let snapLine = ''; if (addSnapshot) snapLine += `\nSnapshot ID: ${addSnapshot}`; if (removeSnapshot) snapLine += `\nSource snapshot ID: ${removeSnapshot}`; return textResult(`${lines.join('\n')}${snapLine}`, { ok: true, mode: args.mode, source: sourceId, target: targetId, transferred: toTransfer.length, snapshot_id: addSnapshot, receipt: receipt as unknown as Record<string, unknown> });
+    const actionLabel = args.mode === 'move' ? 'Moved' : 'Copied'; const lines = [`${actionLabel} ${toTransfer.length} track(s) from ${sourceId} to ${targetId} across ${addBatches} batch(es)` + (skippedExisting + dupWithin > 0 ? `; skipped ${skippedExisting + dupWithin} duplicate(s)` : '') + (args.filter ? ` (filter: "${args.filter}")` : '') + '.', batchSummary(toTransfer.length, toTransfer)]; if (args.mode === 'move') lines.push(`Removed ${removedOccurrences} occurrence(s) from the source by playlist position; any other copy of the same track was left in place.`); if (args.response_format === 'json') return textResult(jsonText({ ok: true, mode: args.mode, source: sourceId, target: targetId, transferred: toTransfer.length, removed_occurrences: removedOccurrences, add_batches: addBatches, remove_batches: removeBatches, snapshot_id: addSnapshot, remove_snapshot: removeSnapshot }));
+    const view = truncateItems(toTransfer, resolveMaxResults(args.max_results)); if (view.items.length > 0) { lines.push(''); lines.push(...view.items.map((u) => `  • ${u}`)); if (view.footer) lines.push(`(${view.footer})`); } lines.push(formatReceipt(receipt)); let snapLine = ''; if (addSnapshot) snapLine += `\nSnapshot ID: ${addSnapshot}`; if (removeSnapshot) snapLine += `\nSource snapshot ID: ${removeSnapshot}`; return textResult(`${lines.join('\n')}${snapLine}`, { ok: true, mode: args.mode, source: sourceId, target: targetId, transferred: toTransfer.length, removed_occurrences: removedOccurrences, snapshot_id: addSnapshot, receipt: receipt as unknown as Record<string, unknown> });
   });
 }

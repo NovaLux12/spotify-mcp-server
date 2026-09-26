@@ -116,7 +116,7 @@ if you lower the limit to force one.
 | audiobookcopilot | 3 | 1,985 | 3 | 1,985 | 4 | 2,184 |
 | playlists | 26 | 26,976 | 26 | 26,976 | 27 | 29,674 |
 | playlistops | 3 | 5,489 | 3 | 5,489 | 4 | 6,038 |
-| playlistbatch | 3 | 4,784 | 3 | 4,784 | 4 | 5,263 |
+| playlistbatch | 3 | 4,896 | 3 | 4,896 | 4 | 5,386 |
 | playlistfollow | 2 | 1,449 | 2 | 1,449 | 3 | 1,594 |
 | playlistmisc | 1 | 1,089 | 1 | 1,089 | 2 | 1,198 |
 | personalization | 3 | 2,532 | 3 | 2,532 | 4 | 2,786 |

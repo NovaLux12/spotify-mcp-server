@@ -279,6 +279,13 @@ export const TOOL_SURFACE_BUDGET = Object.freeze({
   // budget change of its own — recorded because a later author measuring the
   // delta against `swarm3meta` should find the arithmetic already done.
   //
+  // WARRANT #866: +130B, spent entirely on stating that
+  // `move_items_between_playlists` in mode=move removes exactly the transferred
+  // occurrences rather than every repeat of the track. A caller that does not
+  // know this cannot tell a deliberate repeat from a lost one. This supersedes
+  // the 604,434B / 605,000B state the branch recorded against a pre-wave
+  // ceiling; the gate below is the authority on whether it still fits.
+  //
   // CORRECTIONS to my first record of this raise, kept because the next author
   // should not repeat them: the headroom figure ignored the +1_000 derivation;
   // the justification described a {description, inputSchema}-only budget when
@@ -335,6 +342,20 @@ export const TOOL_SURFACE_BUDGET = Object.freeze({
   //
   // Reclaim-first remains the rule for any single edit. This grant is for the
   // queue; it is not a licence to spend 13,000B on one warrant.
+  // WARRANT #866: +112B, the `playlistbatch` baseline moving 4,784 -> 4,896
+  // (tool count unchanged at 3). It is the sentence in
+  // `move_items_between_playlists`' own description stating that mode=move
+  // removes exactly the transferred occurrences, addressed by playlist
+  // position, rather than every repeat of the track — without it a host
+  // reading the result cannot tell a deliberate repeat from a lost one.
+  //
+  // Reclaim-first is the rule and it is honoured here: the sentence said the
+  // same thing twice ("leaving any other copy of the same track in the source"
+  // -> "leaving any other copy in the source"), which is why the warrant is
+  // +112B rather than the +130B it was first measured at. What remains lands
+  // inside the SWEEP-2026-09 grant above, so this branch raises no ceiling of
+  // its own and the aggregate gate keeps every per-tool and per-module ceiling
+  // it had.
   defaultMaxBytes: 620_000,
   perToolMaxBytes: 6_000,
   coreMaxTools: 200,
@@ -821,7 +842,7 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   // obtained.
   manifestEntry('playlists', 'playlists', 'src/tools/playlists.ts', registerPlaylistTools, [26, 26976]),
   manifestEntry('playlistops', 'playlists', 'src/tools/playlistops.ts', registerPlaylistOpsTools, [3, 5489]),
-  manifestEntry('playlistbatch', 'playlistbatch', 'src/tools/playlistbatch.ts', registerPlaylistBatchTools, [3, 4784], { scopeKey: 'playlists' }),
+  manifestEntry('playlistbatch', 'playlistbatch', 'src/tools/playlistbatch.ts', registerPlaylistBatchTools, [3, 4896], { scopeKey: 'playlists' }),
   manifestEntry('playlistfollow', 'playlistmisc', 'src/tools/playlistfollow.ts', registerPlaylistFollowTools, [2, 1449], { scopeKey: 'playlistfollow' }),
   manifestEntry('playlistmisc', 'playlistmisc', 'src/tools/playlistmisc.ts', registerPlaylistMiscTools, [1, 1089], { scopeKey: 'playlists' }),
   manifestEntry('personalization', 'personalization', 'src/tools/personalization.ts', registerPersonalizationTools, [3, 2532], { readOnlySafe: true }),
