@@ -19,6 +19,7 @@ import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { classifySpotifyReference } from '../refs.js';
+import { mapLimit } from '../concurrency.js';
 import type { SpotifyArtistAlbumRow, SpotifyPaged } from '../types/spotify.js';
 
 /**
@@ -547,6 +548,9 @@ export function registerArtistWatchTools(server: McpServer, client: SpotifyClien
     'check_artist_releases',
     'Check watched artists for new releases since last check (or within lookback_days). '
       + 'WARNING: N artists in watchlist = N API requests. Use max_artists to budget and dry_run to preview cost. '
+      + 'The album lookups are independent, so several run at a time (width: SPOTIFY_MCP_MAX_CONCURRENCY, '
+      + 'else SPOTIFY_MCP_FANOUT_CONCURRENCY, else 4) '
+      + 'instead of N serial round trips. '
       + 'Unreadable artists are listed in `failures` with the reason and excluded from the results; artists_scanned counts artists examined, not those with new releases.',
     {
       watchlist_name: z.string().optional().describe('Watchlist name. Default: "default"'),
@@ -611,41 +615,66 @@ export function registerArtistWatchTools(server: McpServer, client: SpotifyClien
       let artistsScanned = 0;
       const failures: ArtistLookupFailure[] = [];
       const perArtist: Array<{ artist_id: string; newReleases: SpotifyArtistAlbumRow[] }> = [];
-      for (const artistId of artistsToCheck) {
-        artistsScanned++;
-        try {
-          const data = await client.get<SpotifyPaged<SpotifyArtistAlbumRow>>(`/artists/${encodeURIComponent(artistId)}/albums`, {
-            include_groups: 'album,single',
-            limit: String(Math.min(args.limit ?? ARTIST_ALBUM_PAGE_LIMIT, ARTIST_ALBUM_PAGE_LIMIT)),
-            offset: '0',
-          });
-          const items = data?.items ?? [];
-          const seen = new Set(entry.seen[artistId] ?? []);
-          const filtered = items.filter((al) => !seen.has(al.id) && isNewRelease(al, args.lookback_days));
-          perArtist.push({ artist_id: artistId, newReleases: filtered });
-        } catch (err) {
-          const stop = scanStopReason(err);
-          if (stop) {
-            // A rate limit or a dead token is not this artist's fault and not
-            // per-artist: stop spending the budget on requests that cannot
-            // succeed, keeping everything collected so far.
-            if (stop.kind === 'quota') {
-              quotaHit = true;
-              quotaRetryAfter = stop.retryAfter;
-            } else if (stop.kind === 'rate_limit') {
-              rateLimited = true;
-              rateRetryAfter = stop.retryAfter;
-            } else {
-              authFailed = true;
+      // #783: one album lookup per artist, independent of each other, so they
+      // run overlapped under a width bound instead of one round trip at a time.
+      // Results are read back in `artistsToCheck` order, so the rows and the
+      // `seen` bookkeeping below stay a function of the watchlist rather than of
+      // which response settled first.
+      //
+      // The stop flags are set inside `fn`, not after: `shouldStop` is only
+      // consulted by a worker that is about to start the NEXT artist, so a flag
+      // raised after the fan-out returned would stop nothing.
+      const scan = await mapLimit(
+        artistsToCheck,
+        getConfig().fanoutConcurrency,
+        async (artistId) => {
+          artistsScanned++;
+          try {
+            const data = await client.get<SpotifyPaged<SpotifyArtistAlbumRow>>(`/artists/${encodeURIComponent(artistId)}/albums`, {
+              include_groups: 'album,single',
+              limit: String(Math.min(args.limit ?? ARTIST_ALBUM_PAGE_LIMIT, ARTIST_ALBUM_PAGE_LIMIT)),
+              offset: '0',
+            });
+            const items = data?.items ?? [];
+            const seen = new Set(entry.seen[artistId] ?? []);
+            return { releases: items.filter((al) => !seen.has(al.id) && isNewRelease(al, args.lookback_days)) };
+          } catch (err) {
+            const stop = scanStopReason(err);
+            if (stop) {
+              // A rate limit or a dead token is not this artist's fault and not
+              // per-artist: stop spending the budget on requests that cannot
+              // succeed, keeping everything collected so far. Nothing is retried.
+              if (stop.kind === 'quota') {
+                quotaHit = true;
+                quotaRetryAfter = stop.retryAfter;
+              } else if (stop.kind === 'rate_limit') {
+                rateLimited = true;
+                rateRetryAfter = stop.retryAfter;
+              } else {
+                authFailed = true;
+              }
+              // Lookups *issued* by the time the wall was seen. The siblings
+              // already in flight still land and still count as read.
+              quotaScanned = artistsScanned;
+              return { stop: true as const };
             }
-            quotaScanned = artistsScanned;
-            break;
+            // One stale or mistyped id in a persisted watchlist must not cost
+            // the caller every other artist's results: record it and keep
+            // scanning (#772).
+            return { failure: { artist_id: artistId, ...describeLookupFailure(err) } };
           }
-          // One stale or mistyped id in a persisted watchlist must not cost the
-          // caller every other artist's results: record it and keep scanning (#772).
-          failures.push({ artist_id: artistId, ...describeLookupFailure(err) });
+        },
+        { shouldStop: () => quotaHit || rateLimited || authFailed },
+      );
+      // Read back in watchlist order — `results` is index-aligned, so this is
+      // the watchlist's order and not the order responses happened to settle.
+      scan.results.forEach((outcome, index) => {
+        if (!outcome) return;
+        if ('failure' in outcome && outcome.failure) failures.push(outcome.failure);
+        if ('releases' in outcome && outcome.releases) {
+          perArtist.push({ artist_id: artistsToCheck[index] as string, newReleases: outcome.releases });
         }
-      }
+      });
       const artistsRead = perArtist.length;
       // Only mark seen for successful lookups
       for (const { artist_id, newReleases } of perArtist) {
@@ -680,9 +709,13 @@ export function registerArtistWatchTools(server: McpServer, client: SpotifyClien
         truncated_by_budget: truncated,
         max_artists: budget,
         effective_cap: effectiveCap,
-        ...(quotaHit ? { quota_hit: true, retry_after: quotaRetryAfter ?? null, quota_scanned: quotaScanned } : {}),
-        ...(rateLimited ? { rate_limited: true, retry_after: rateRetryAfter ?? null, rate_limit_scanned: quotaScanned } : {}),
-        ...(authFailed ? { auth_error: true, auth_error_scanned: quotaScanned } : {}),
+        // #783: the width this scan actually used, so an operator trading
+        // latency against burst size can see which trade was taken.
+        fanout_concurrency: getConfig().fanoutConcurrency,
+        fanout_concurrency_source: getConfig().fanoutConcurrencySource,
+        ...(quotaHit ? { quota_hit: true, retry_after: quotaRetryAfter ?? null, quota_scanned: quotaScanned, artists_not_attempted: Math.max(0, artistsToCheck.length - quotaScanned) } : {}),
+        ...(rateLimited ? { rate_limited: true, retry_after: rateRetryAfter ?? null, rate_limit_scanned: quotaScanned, artists_not_attempted: Math.max(0, artistsToCheck.length - quotaScanned) } : {}),
+        ...(authFailed ? { auth_error: true, auth_error_scanned: quotaScanned, artists_not_attempted: Math.max(0, artistsToCheck.length - quotaScanned) } : {}),
         ...persistExtra,
       };
       if (args.response_format === 'json') {
@@ -730,6 +763,9 @@ export function registerArtistWatchTools(server: McpServer, client: SpotifyClien
     'artist_release_digest',
     'Show a digest of new releases since the last check for a watchlist. '
       + 'WARNING: N artists = N requests. Use max_artists to budget and dry_run to preview. '
+      + 'The album lookups are independent, so several run at a time (width: SPOTIFY_MCP_MAX_CONCURRENCY, '
+      + 'else SPOTIFY_MCP_FANOUT_CONCURRENCY, else 4) '
+      + 'instead of N serial round trips. '
       + 'Unreadable artists are listed in `failures` with the reason; artists_scanned counts artists examined, not those with new releases.',
     {
       watchlist_name: z.string().optional().describe('Watchlist name. Default: "default"'),
@@ -792,39 +828,56 @@ export function registerArtistWatchTools(server: McpServer, client: SpotifyClien
       let artistsRead = 0;
       const failures: ArtistLookupFailure[] = [];
       const perArtist: Array<{ artist_id: string; releases: SpotifyArtistAlbumRow[] }> = [];
-      for (const artistId of artistsToCheck) {
-        artistsScanned++;
-        try {
-          const data = await client.get<SpotifyPaged<SpotifyArtistAlbumRow>>(`/artists/${encodeURIComponent(artistId)}/albums`, {
-            include_groups: 'album,single',
-            limit: String(ARTIST_ALBUM_PAGE_LIMIT),
-            offset: '0',
-          });
-          artistsRead++;
-          const items = data?.items ?? [];
-          const seen = new Set(entry.seen[artistId] ?? []);
-          const unseen = items.filter((al) => !seen.has(al.id));
-          if (unseen.length) perArtist.push({ artist_id: artistId, releases: unseen });
-        } catch (err) {
-          const stop = scanStopReason(err);
-          if (stop) {
-            if (stop.kind === 'quota') {
-              quotaHit = true;
-              quotaRetryAfter = stop.retryAfter;
-            } else if (stop.kind === 'rate_limit') {
-              rateLimited = true;
-              rateRetryAfter = stop.retryAfter;
-            } else {
-              authFailed = true;
+      // #783: same bounded fan-out as check_artist_releases, same reason, same
+      // ordering guarantee and the same "flags are set inside fn" rule.
+      const scan = await mapLimit(
+        artistsToCheck,
+        getConfig().fanoutConcurrency,
+        async (artistId) => {
+          artistsScanned++;
+          try {
+            const data = await client.get<SpotifyPaged<SpotifyArtistAlbumRow>>(`/artists/${encodeURIComponent(artistId)}/albums`, {
+              include_groups: 'album,single',
+              limit: String(ARTIST_ALBUM_PAGE_LIMIT),
+              offset: '0',
+            });
+            const items = data?.items ?? [];
+            const seen = new Set(entry.seen[artistId] ?? []);
+            return { releases: items.filter((al) => !seen.has(al.id)) };
+          } catch (err) {
+            const stop = scanStopReason(err);
+            if (stop) {
+              if (stop.kind === 'quota') {
+                quotaHit = true;
+                quotaRetryAfter = stop.retryAfter;
+              } else if (stop.kind === 'rate_limit') {
+                rateLimited = true;
+                rateRetryAfter = stop.retryAfter;
+              } else {
+                authFailed = true;
+              }
+              quotaScanned = artistsScanned;
+              return { stop: true as const };
             }
-            quotaScanned = artistsScanned;
-            break;
+            // Same tolerance as check_artist_releases: a stale id is named, the
+            // rest of the digest still lands (#772).
+            return { failure: { artist_id: artistId, ...describeLookupFailure(err) } };
           }
-          // Same tolerance as check_artist_releases: a stale id is named, the
-          // rest of the digest still lands (#772).
-          failures.push({ artist_id: artistId, ...describeLookupFailure(err) });
+        },
+        { shouldStop: () => quotaHit || rateLimited || authFailed },
+      );
+      scan.results.forEach((outcome, index) => {
+        if (!outcome) return;
+        if ('failure' in outcome && outcome.failure) failures.push(outcome.failure);
+        if ('releases' in outcome && outcome.releases) {
+          // perArtist holds only artists that had something unseen, so it
+          // cannot stand in for scan accounting — count the read separately.
+          artistsRead++;
+          if (outcome.releases.length) {
+            perArtist.push({ artist_id: artistsToCheck[index] as string, releases: outcome.releases });
+          }
         }
-      }
+      });
       const allUnseen = perArtist.flatMap((p) => p.releases.map((al) => ({ artist_id: p.artist_id, album: al })));
       const baseExtra = {
         watchlist: listName,
@@ -837,12 +890,15 @@ export function registerArtistWatchTools(server: McpServer, client: SpotifyClien
         truncated_by_budget: truncated,
         max_artists: budget,
         effective_cap: effectiveCap,
+        // #783: the width this scan actually used, as in check_artist_releases.
+        fanout_concurrency: getConfig().fanoutConcurrency,
+        fanout_concurrency_source: getConfig().fanoutConcurrencySource,
         lastChecked: entry.lastChecked,
         watchlist_path: path,
         ...(migratedFrom ? { migrated_from: migratedFrom } : {}),
-        ...(quotaHit ? { quota_hit: true, retry_after: quotaRetryAfter ?? null, quota_scanned: quotaScanned } : {}),
-        ...(rateLimited ? { rate_limited: true, retry_after: rateRetryAfter ?? null, rate_limit_scanned: quotaScanned } : {}),
-        ...(authFailed ? { auth_error: true, auth_error_scanned: quotaScanned } : {}),
+        ...(quotaHit ? { quota_hit: true, retry_after: quotaRetryAfter ?? null, quota_scanned: quotaScanned, artists_not_attempted: Math.max(0, artistsToCheck.length - quotaScanned) } : {}),
+        ...(rateLimited ? { rate_limited: true, retry_after: rateRetryAfter ?? null, rate_limit_scanned: quotaScanned, artists_not_attempted: Math.max(0, artistsToCheck.length - quotaScanned) } : {}),
+        ...(authFailed ? { auth_error: true, auth_error_scanned: quotaScanned, artists_not_attempted: Math.max(0, artistsToCheck.length - quotaScanned) } : {}),
       };
       if (args.response_format === 'json') {
         const raw: Record<string, unknown> = { ...baseExtra, lastChecked: entry.lastChecked, digest: allUnseen };

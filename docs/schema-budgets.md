@@ -131,7 +131,7 @@ if you lower the limit to force one.
 | portability | 11 | 10,058 | 11 | 10,058 | 12 | 11,064 |
 | libraryinsights | 3 | 2,751 | 3 | 2,751 | 4 | 3,027 |
 | libraryhygiene | 1 | 734 | 1 | 734 | 2 | 808 |
-| showradar | 1 | 1,967 | 1 | 1,967 | 2 | 2,164 |
+| showradar | 1 | 2,125 | 1 | 2,125 | 2 | 2,338 |
 | saveddedupe | 1 | 1,562 | 1 | 1,562 | 2 | 1,719 |
 | podcastsession | 2 | 3,427 | 2 | 3,427 | 3 | 3,770 |
 | backupfirst | 1 | 513 | 1 | 513 | 2 | 565 |
@@ -142,10 +142,10 @@ if you lower the limit to force one.
 | receipts | 1 | 626 | 1 | 626 | 2 | 689 |
 | episodemgmt | 1 | 1,053 | 1 | 1,053 | 2 | 1,159 |
 | freshness | 1 | 2,043 | 1 | 2,043 | 2 | 2,248 |
-| searchdive | 1 | 1,561 | 1 | 1,561 | 2 | 1,718 |
+| searchdive | 1 | 1,683 | 1 | 1,683 | 2 | 1,852 |
 | searchhistory | 2 | 1,096 | 2 | 1,096 | 3 | 1,206 |
 | browse | 3 | 2,634 | 3 | 2,634 | 4 | 2,898 |
-| artistwatch | 6 | 5,934 | 6 | 5,934 | 7 | 6,528 |
+| artistwatch | 6 | 6,284 | 6 | 6,284 | 7 | 6,913 |
 | queueops | 3 | 3,449 | 3 | 3,449 | 4 | 3,794 |
 | playbackext | 13 | 8,033 | 13 | 8,033 | 14 | 8,837 |
 | playbackintel | 15 | 11,663 | 15 | 11,663 | 16 | 12,830 |

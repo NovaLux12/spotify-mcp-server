@@ -33,6 +33,15 @@ export interface SpotifyMcpConfig {
   spotifyRequestTimeoutMs: number;
   /** Per-call budget for freshness artist/show lookups (#242). */
   freshnessBudget: number;
+  /**
+   * How many requests a tool-side fan-out may have in flight at once (#783).
+   * Bounded parallelism, not a rate limit: the request count is unchanged.
+   * Yields to SPOTIFY_MCP_MAX_CONCURRENCY, the request funnel's own width
+   * (#892), when that is set; otherwise SPOTIFY_MCP_FANOUT_CONCURRENCY.
+   */
+  fanoutConcurrency: number;
+  /** Which knob supplied fanoutConcurrency, for the disclosure the tools emit. */
+  fanoutConcurrencySource: string;
   /** OAuth scopes override (SPOTIFY_SCOPES). Null = use DEFAULT_SCOPES. */
   scopes: string[] | null;
   /** Default market fallback (SPOTIFY_MCP_MARKET). Null = not set / invalid. */
@@ -42,6 +51,17 @@ export interface SpotifyMcpConfig {
 export const DEFAULT_MAX_ITEMS = 50;
 export const DEFAULT_FETCH_ALL_CAP = 500;
 export const DEFAULT_FRESHNESS_BUDGET = 25;
+
+/**
+ * Default fan-out width for the freshness-radar walks (#783).
+ *
+ * 4 rather than something higher on purpose: the request count per scan is
+ * unchanged either way, and a wide burst on a shared rate-limited client buys
+ * no wall clock that a narrow one does not, while making a burst 429 likelier.
+ * A caller that genuinely wants fewer outstanding reads sets the variable to 1
+ * and gets the old strictly-serial walk.
+ */
+export const DEFAULT_FANOUT_CONCURRENCY = 4;
 
 /** Default per-request HTTP timeout when SPOTIFY_REQUEST_TIMEOUT_MS is unset. */
 export const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
@@ -207,6 +227,7 @@ export function resolveMarket(
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): SpotifyMcpConfig {
   // SPOTIFY_SCOPES validation — let parseScopes throw with the offending scope named.
   const scopes = parseScopes(env.SPOTIFY_SCOPES);
+  const fanout = resolveFanoutConcurrency(env);
   return {
     maxItems: positiveInt(env.SPOTIFY_MCP_MAX_ITEMS, DEFAULT_MAX_ITEMS),
     fetchAllCap: positiveInt(env.SPOTIFY_MCP_FETCH_ALL_CAP, DEFAULT_FETCH_ALL_CAP),
@@ -217,9 +238,59 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): SpotifyMcpConf
     historyEnabled: truthyEnv(env.SPOTIFY_MCP_HISTORY),
     spotifyRequestTimeoutMs: positiveInt(env.SPOTIFY_REQUEST_TIMEOUT_MS, DEFAULT_REQUEST_TIMEOUT_MS),
     freshnessBudget: positiveInt(env.SPOTIFY_MCP_FRESHNESS_BUDGET, DEFAULT_FRESHNESS_BUDGET),
+    fanoutConcurrency: fanout.limit,
+    fanoutConcurrencySource: fanout.source,
     scopes,
     market: parseMarket(env.SPOTIFY_MCP_MARKET),
   };
+}
+
+/**
+ * Resolve the fan-out width and where it came from (#783).
+ *
+ * The source travels with the value because the radar payloads name it in
+ * prose: reporting the default's name while a variable is actually in force is
+ * the same small lie showradar's `resolveBudget` was written to avoid. An
+ * unset, unparsable or non-positive value falls back, parsing exactly as
+ * positiveInt does.
+ *
+ * ## Precedence: the funnel's knob wins (#892)
+ *
+ * `SPOTIFY_MCP_MAX_CONCURRENCY` is read FIRST, ahead of this tool's own
+ * `SPOTIFY_MCP_FANOUT_CONCURRENCY`. That ordering is the whole point, and it
+ * is not cosmetic:
+ *
+ *  - Both knobs bound the same quantity — requests in flight — from two
+ *    different places. If each had its own independent default (4 here, 3
+ *    there), the effective width would be whichever happened to be smaller,
+ *    chosen by a comparison no operator can see and no payload can report.
+ *    Setting the tool-side width to the funnel's own number means the two
+ *    agree by construction, so the fan-out is never the reason a call is
+ *    slower than the funnel allows.
+ *  - The disclosure these values feed (`fanout_concurrency`) has to stay TRUE.
+ *    A tool reporting `4` while the funnel permits `3` is describing a
+ *    concurrency that never happened — AGENTS.md §6's "a correctly named
+ *    payload field can still lie about its value", in the exact shape this
+ *    change would otherwise have walked into.
+ *
+ * `SPOTIFY_MCP_FANOUT_CONCURRENCY` remains as the fallback for environments
+ * where the funnel knob is not set, and is the only way to narrow a single
+ * scan below the funnel width (to keep a bulk scan from taking every permit
+ * an interactive read could use). Set it and `source` says so, so the payload
+ * never reports the funnel's number for a width the operator actually chose.
+ */
+export function resolveFanoutConcurrency(
+  env: NodeJS.ProcessEnv = process.env,
+): { limit: number; source: string } {
+  const funnel = Number.parseInt(env.SPOTIFY_MCP_MAX_CONCURRENCY ?? '', 10);
+  if (Number.isFinite(funnel) && funnel > 0) {
+    return { limit: funnel, source: 'SPOTIFY_MCP_MAX_CONCURRENCY' };
+  }
+  const parsed = Number.parseInt(env.SPOTIFY_MCP_FANOUT_CONCURRENCY ?? '', 10);
+  if (Number.isFinite(parsed) && parsed > 0) {
+    return { limit: parsed, source: 'SPOTIFY_MCP_FANOUT_CONCURRENCY' };
+  }
+  return { limit: DEFAULT_FANOUT_CONCURRENCY, source: 'default' };
 }
 
 let current: SpotifyMcpConfig | null = null;

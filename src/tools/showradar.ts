@@ -26,6 +26,7 @@ import {
   sharedListFields,
   truncateItems,
 } from '../shaping.js';
+import { mapLimit } from '../concurrency.js';
 import { getConfig } from '../config.js';
 import {
   MARKET_CODE,
@@ -174,12 +175,21 @@ export interface ShowRadarResult {
   quota_hit: boolean;
   /** Retry-After in seconds when quota_hit, else null. */
   retry_after: number | null;
-  /** When quota_hit, the number of shows scanned before it. Otherwise shows_scanned. */
+  /** When quota_hit, the lookups issued by the time the wall was seen. Otherwise shows_scanned. */
   quota_scanned_shows: number;
+  /**
+   * #783: shows the quota wall kept this call from ever asking about, out of
+   * the shows it would otherwise have scanned. 0 unless quota_hit.
+   */
+  shows_not_issued: number;
   /** #782: the market the per-show episode lookups carried, or null when none did. */
   market: string | null;
   /** #782: where that market came from. Absent is a real outcome, not a gap. */
   market_source: MarketResolution['source'];
+  /** #783: how many per-show lookups the scan kept in flight at once. */
+  fanout_concurrency: number;
+  /** #783: which knob supplied it, so a tuned width is not reported as the default. */
+  fanout_concurrency_source: string;
 }
 
 /** Args the radar accepts from any caller (tool handler or save_show_digest). */
@@ -245,6 +255,9 @@ export async function collectShowRadarEpisodes(
         quota_scanned_shows: 0,
         market: null,
         market_source: 'none',
+        fanout_concurrency: getConfig().fanoutConcurrency,
+        fanout_concurrency_source: getConfig().fanoutConcurrencySource,
+        shows_not_issued: 0,
       };
     }
     throw err;
@@ -277,6 +290,9 @@ export async function collectShowRadarEpisodes(
       quota_scanned_shows: 0,
       market: null,
       market_source: 'none',
+      fanout_concurrency: getConfig().fanoutConcurrency,
+      fanout_concurrency_source: getConfig().fanoutConcurrencySource,
+      shows_not_issued: 0,
     };
   }
   const truncatedByBudget = savedShows.length > effectiveCap;
@@ -320,6 +336,9 @@ export async function collectShowRadarEpisodes(
         quota_scanned_shows: 0,
         market: market.market ?? null,
         market_source: market.source,
+        fanout_concurrency: getConfig().fanoutConcurrency,
+        fanout_concurrency_source: getConfig().fanoutConcurrencySource,
+        shows_not_issued: 0,
       };
     }
     throw err;
@@ -330,41 +349,78 @@ export async function collectShowRadarEpisodes(
 
   const candidates: ShowRadarEpisode[] = [];
   let showsScanned = 0;
-  for (const entry of showsToScan) {
-    const show = entry?.show;
-    if (!show?.id) continue;
-    try {
-      const resp = await client.get<SpotifyPaged<SpotifyEpisodeSimple>>(
-        `/shows/${encodeURIComponent(show.id)}/episodes`,
-        market.market
-          ? { limit: String(args.per_show_limit), market: market.market }
-          : { limit: String(args.per_show_limit) },
-      );
-      showsScanned++;
-      for (const ep of resp?.items ?? []) {
-        if (!ep?.release_date || ep.release_date < cutoff) continue;
-        candidates.push({
-          show_id: show.id,
-          show_name: show.name ?? show.id,
-          episode_id: ep.id,
-          episode_name: ep.name ?? ep.id,
-          release_date: ep.release_date,
-          duration_ms: ep.duration_ms ?? 0,
-          uri: ep.uri,
-          saved: ep.uri ? savedUris.has(ep.uri) : false,
-        });
-      }
-    } catch (err) {
-      const q = isQuotaError(err);
-      if (q.quota) {
+  // #783: the per-show lookups are independent reads, so they run overlapped
+  // under a width bound rather than one round trip at a time. The rows are
+  // collected per show and re-assembled in `scanned` order below, so the output
+  // is a function of the saved-shows listing and not of which response landed
+  // first. A 429 stops *scheduling*; the shows already in flight settle and
+  // their episodes are kept, because those requests are already spent.
+  const scanned = showsToScan
+    .map((entry) => (entry?.show?.id ? entry.show : null))
+    .filter((show): show is NonNullable<typeof show> => show !== null);
+
+  // The stop flag has to be raised inside `fn`: `shouldStop` is only consulted
+  // by a worker that is about to start the NEXT show, so a flag set after the
+  // fan-out returned would stop nothing and the whole budget would still go out.
+  let showsAttempted = 0;
+  let fatal: unknown;
+  const perShow = await mapLimit(
+    scanned,
+    getConfig().fanoutConcurrency,
+    async (show) => {
+      showsAttempted++;
+      try {
+        const resp = await client.get<SpotifyPaged<SpotifyEpisodeSimple>>(
+          `/shows/${encodeURIComponent(show.id)}/episodes`,
+          market.market
+            ? { limit: String(args.per_show_limit), market: market.market }
+            : { limit: String(args.per_show_limit) },
+        );
+        return (resp?.items ?? [])
+          .filter((ep) => ep?.release_date && ep.release_date >= cutoff)
+          .map((ep) => ({
+            show_id: show.id,
+            show_name: show.name ?? show.id,
+            episode_id: ep.id,
+            episode_name: ep.name ?? ep.id,
+            release_date: ep.release_date,
+            duration_ms: ep.duration_ms ?? 0,
+            uri: ep.uri,
+            saved: ep.uri ? savedUris.has(ep.uri) : false,
+          }));
+      } catch (err) {
+        const q = isQuotaError(err);
+        if (!q.quota) {
+          // A non-quota failure ends the call, as it always did. Re-raised
+          // after the fan-out drains so the siblings already in flight are not
+          // abandoned mid-request; the named show tells the caller which
+          // lookup it came from, which a serial loop never had to say.
+          fatal ??= withMarketHint(err, market.market, args.market, `${SHOW_EPISODES_GATED} for show ${show.id}`);
+          return undefined;
+        }
         quotaHit = true;
         quotaRetryAfter = q.retryAfter;
-        quotaScannedShows = showsScanned;
-        break;
+        // Lookups issued by the time the wall was seen, not lookups that came
+        // back: under a fan-out the two differ, and the payload reports both.
+        quotaScannedShows = showsAttempted;
+        return undefined;
       }
-      throw withMarketHint(err, market.market, args.market, SHOW_EPISODES_GATED);
-    }
+    },
+    {
+      shouldStop: () => quotaHit || fatal !== undefined,
+    },
+  );
+  if (fatal !== undefined) throw fatal;
+  for (const rows of perShow.results) {
+    if (!rows) continue;
+    showsScanned++;
+    candidates.push(...rows);
   }
+  // Shows the wall kept us from ever asking about, out of the ones this call
+  // would otherwise have scanned. Bounded by the scan list, not by
+  // `effective_cap`: that is the cap, and a library smaller than the cap would
+  // otherwise report shows that were never candidates for this scan at all.
+  const showsNotIssued = quotaHit ? Math.max(0, scanned.length - quotaScannedShows) : 0;
 
   // Newest first; tie-break by show/episode id for determinism.
   candidates.sort(
@@ -378,7 +434,11 @@ export async function collectShowRadarEpisodes(
     saved_shows_total: savedShows.length,
     shows_listing_truncated: showsListingTruncated,
     shows_list_cap: showsListCap,
-    shows_scanned: quotaHit ? quotaScannedShows : showsScanned,
+    // #783: shows_scanned counts lookups that returned; quota_scanned_shows
+    // counts lookups *issued* when the wall was seen. Under a fan-out the two
+    // differ — siblings in flight at that moment still land — so each reports
+    // what it actually measured.
+    shows_scanned: showsScanned,
     truncated_by_budget: truncatedByBudget,
     max_shows: budget,
     budget_source: budgetSource,
@@ -387,8 +447,11 @@ export async function collectShowRadarEpisodes(
     quota_hit: quotaHit,
     retry_after: quotaRetryAfter ?? null,
     quota_scanned_shows: quotaHit ? quotaScannedShows : showsScanned,
+    shows_not_issued: showsNotIssued,
     market: market.market ?? null,
     market_source: market.source,
+    fanout_concurrency: getConfig().fanoutConcurrency,
+    fanout_concurrency_source: getConfig().fanoutConcurrencySource,
   };
 }
 
@@ -397,7 +460,10 @@ export function registerShowRadarTools(server: McpServer, client: SpotifyClient)
     'show_new_episodes',
     'Find new episodes across your saved podcast shows: reports episodes '
       + 'released within the lookback window (default 7 days), marking which are already '
-      + 'saved in your episode library. Fetches /me/shows then each show\'s latest episodes. '
+      + 'saved in your episode library. Fetches /me/shows then each show\'s latest episodes, '
+      + 'overlapping episode lookups (width: SPOTIFY_MCP_MAX_CONCURRENCY, else '
+      + 'SPOTIFY_MCP_FANOUT_CONCURRENCY, else 4) '
+      + 'so a 25-show scan is not 25 serial round trips. '
       + 'WARNING: M saved shows → M+1 requests (1 show page + M episode lookups). Use max_shows to budget '
       + 'and cost_preview to see the cost without making any calls. This tool is read-only: nothing is ever changed.',
     {
@@ -486,16 +552,33 @@ export function registerShowRadarTools(server: McpServer, client: SpotifyClient)
         saved_shows_total: r.saved_shows_total,
         shows_listing_truncated: r.shows_listing_truncated,
         shows_list_cap: r.shows_list_cap,
-        shows_scanned: r.quota_hit ? r.quota_scanned_shows : r.shows_scanned,
+        // #783: shows_scanned counts the lookups that came back. Under a
+        // fan-out that is no longer the same number as the lookups issued, so
+        // the issued count gets its own field on the quota branch below
+        // rather than being passed off here as "scanned".
+        shows_scanned: r.shows_scanned,
         truncated_by_budget: r.truncated_by_budget,
         max_shows: r.max_shows,
         budget_source: r.budget_source,
         effective_cap: r.effective_cap,
         per_show_limit: r.per_show_limit,
         new_episodes: r.episodes.length,
+        // #783: the width is reported so an operator can tell a scan that
+        // overlapped from one that ran serially, and so a stalled scan has a
+        // tunable to point at.
+        fanout_concurrency: r.fanout_concurrency,
+        fanout_concurrency_source: r.fanout_concurrency_source,
       };
       if (r.quota_hit) {
-        Object.assign(extra, { quota_hit: true, retry_after: r.retry_after, shows_scanned: r.quota_scanned_shows });
+        Object.assign(extra, {
+          quota_hit: true,
+          retry_after: r.retry_after,
+          // #783: the wall was seen after this many lookups had been issued,
+          // and the rest of the budget was deliberately never sent. Both are
+          // stated so a partial scan is not read as a complete one.
+          shows_scan_issued: r.quota_scanned_shows,
+          shows_not_issued: r.shows_not_issued,
+        });
       }
 
       if (r.episodes.length === 0) {
@@ -504,9 +587,9 @@ export function registerShowRadarTools(server: McpServer, client: SpotifyClient)
         // never be confused for the former (#173).
         const base = r.saved_shows_total === 0
           ? 'No saved shows in your library — nothing to scan.'
-          : `No new episodes found across ${r.quota_hit ? r.quota_scanned_shows : r.shows_scanned} saved show(s) in the last ${r.days} day(s) (since ${r.cutoff}).`;
+          : `No new episodes found across ${r.shows_scanned} saved show(s) in the last ${r.days} day(s) (since ${r.cutoff}).`;
         const suffix = r.quota_hit
-          ? ` Quota exceeded mid-scan (QUOTA_EXCEEDED) after ${r.quota_scanned_shows} shows.${r.retry_after != null ? ` Retry-After: ${r.retry_after}s.` : ''}`
+          ? ` Quota exceeded mid-scan (QUOTA_EXCEEDED) after ${r.quota_scanned_shows} show lookups were issued; ${r.shows_not_issued} of the ${Math.min(r.effective_cap, r.saved_shows_total)} shows in scope were never sent.${r.retry_after != null ? ` Retry-After: ${r.retry_after}s.` : ''}`
           : r.truncated_by_budget ? ` (scan capped at ${r.effective_cap} shows; ${r.saved_shows_total - r.effective_cap} shows not scanned — raise max_shows to see more)` : '';
         const budgetNote = r.truncated_by_budget ? ` Truncated by budget: ${r.effective_cap} of ${r.saved_shows_total} shows scanned.` : '';
         return withMarketSource(
@@ -530,7 +613,7 @@ export function registerShowRadarTools(server: McpServer, client: SpotifyClient)
       }
 
       const lines = [
-        `Found ${r.episodes.length} new episode(s) across ${r.quota_hit ? r.quota_scanned_shows : r.shows_scanned} saved show(s) since ${r.cutoff}:`,
+        `Found ${r.episodes.length} new episode(s) across ${r.shows_scanned} saved show(s) since ${r.cutoff}:`,
       ];
       for (const ep of view.items) {
         const flag = ep.saved ? ' [saved]' : '';
@@ -541,7 +624,7 @@ export function registerShowRadarTools(server: McpServer, client: SpotifyClient)
       if (r.truncated_by_budget) lines.push(`Truncated by budget: scanned ${r.effective_cap} of ${r.saved_shows_total} saved shows (budget ${r.max_shows} from ${r.budget_source}, effective cap ${r.effective_cap}). Raise max_shows or the budget variable to scan more.`);
       if (r.quota_hit) {
         const retryMsg = r.retry_after != null ? ` Retry-After: ${r.retry_after}s.` : '';
-        lines.push(`Quota exceeded mid-scan (QUOTA_EXCEEDED) after ${r.quota_scanned_shows} shows — partial results.${retryMsg}`);
+        lines.push(`Quota exceeded mid-scan (QUOTA_EXCEEDED) after ${r.quota_scanned_shows} show lookups were issued (fan-out width ${r.fanout_concurrency}); ${r.shows_not_issued} of the ${Math.min(r.effective_cap, r.saved_shows_total)} shows in scope were never sent — partial results.${retryMsg}`);
       }
       return withMarketSource(textResult(lines.join('\n'), { ok: true, ...extra, episodes: view.items }), market);
     },
