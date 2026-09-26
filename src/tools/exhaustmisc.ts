@@ -81,7 +81,7 @@ export function registerExhaustMiscTools(server: McpServer, client: SpotifyClien
   // 1. search_within_playlist (#310) — text search inside one playlist (scout-b C1)
   server.tool(
     'search_within_playlist',
-    "Text search inside a single playlist: a client-side filter over the rows the walk read, cheaper than paging get_playlist_items yourself for a narrow query — but it can only see that window, so scanned_items/scan_cap/scan_truncated say how much of the playlist was actually read. Matches item name, artist, album and show name; kind narrows a mixed playlist to tracks only or episodes only. Quota: 🟢 GET /playlists/{id}/items paged.",
+    "Text search inside a single playlist: a client-side filter over the rows the walk read, cheaper than paging get_playlist_items yourself for a narrow query — but it can only see that window, so scanned_items/scan_cap/scan_truncated say how much of the playlist was actually read. Matches item name, artist, album and show name; kind narrows a mixed playlist to tracks only or episodes only. Quota: GET /playlists/{id}/items paged.",
     {
       ...sharedListFields,
       // #110/#731: `playlist_id` is the canonical parameter across the playlist
@@ -182,7 +182,7 @@ export function registerExhaustMiscTools(server: McpServer, client: SpotifyClien
   // 2. search_history_stats (#315) — analytics over search sidecar (scout-c C5)
   server.tool(
     'search_history_stats',
-    'Analytics over the local search-history sidecar: top queries, type breakdown, recency. Quota: 🟢 local only (no API).',
+    'Analytics over the local search-history sidecar: top queries, type breakdown, recency. Quota: local only (no API).',
     {
       top_n: z.number().int().min(1).max(50).optional().describe('Top N queries to show (default 10)'),
       response_format: ResponseFormat,
@@ -230,7 +230,7 @@ export function registerExhaustMiscTools(server: McpServer, client: SpotifyClien
   // 3. audiobook_progress (#316) — book-level progress rollup (scout-c C7)
   server.tool(
     'audiobook_progress',
-    'Audiobook progress rollup: chapters total, played count, current chapter, percent complete. Walks every chapter page up to the shared fetch-all cap and reports scan coverage. Quota: 🟡 1 audiobook GET + chapter page GETs.',
+    'Audiobook progress rollup: chapters total, played count, current chapter, percent complete. Walks every chapter page up to the shared fetch-all cap and reports scan coverage. Quota: 1 audiobook GET + chapter page GETs.',
     {
       audiobook_id: z.string().min(1).describe('Audiobook ID'),
       market: MARKET_CODE.optional().describe('Market, e.g. \'US\''),
@@ -282,7 +282,7 @@ export function registerExhaustMiscTools(server: McpServer, client: SpotifyClien
   // 4. unsave_orphan_tracks — delete saved tracks not in any playlist
   server.tool(
     'unsave_orphan_tracks',
-    'Find saved tracks that appear in no playlist (orphans) and optionally unsave them. Quota: 🟡 walks library + all playlists (capped). Destructive when dry_run=false.',
+    'Find saved tracks that appear in no playlist (orphans) and optionally unsave them. Quota: walks library + all playlists (capped). Destructive when dry_run=false.',
     {
       dry_run: DryRun,
       max_remove: z.number().int().min(1).max(5000).optional().describe('Max orphans to remove (default 50)'),
@@ -350,7 +350,7 @@ export function registerExhaustMiscTools(server: McpServer, client: SpotifyClien
   // 5. playlist_to_library — save all tracks of a playlist to Liked Songs
   server.tool(
     'playlist_to_library',
-    'Save all tracks of a playlist to your Liked Songs (library). Quota: 🟢 GET playlist items + PUT /me/tracks (chunked 50).',
+    'Save all tracks of a playlist to your Liked Songs (library). Quota: GET playlist items + PUT /me/tracks (chunked 50).',
     {
       playlist_id: z.string().min(1).describe('Source playlist ID'),
       dry_run: DryRun,
@@ -415,7 +415,7 @@ export function registerExhaustMiscTools(server: McpServer, client: SpotifyClien
   // 6. followed_playlists_audit
   server.tool(
     'followed_playlists_audit',
-    'Inventory of followed vs owned playlists: counts, collab, public, follower totals. Quota: 🟢 GET /me/playlists paged.',
+    'Inventory of followed vs owned playlists: counts, collab, public, follower totals. Quota: GET /me/playlists paged.',
     {
       only_followed: z.boolean().optional().describe('Only followed (not owned) playlists (default false)'),
       response_format: ResponseFormat,
@@ -486,7 +486,7 @@ export function registerExhaustMiscTools(server: McpServer, client: SpotifyClien
   // 7. get_playlist_added_dates
   server.tool(
     'get_playlist_added_dates',
-    'List when each track was added to a playlist (added_at + added_by). Quota: 🟢 GET /playlists/{id}/items paged.',
+    'List when each track was added to a playlist (added_at + added_by). Quota: GET /playlists/{id}/items paged.',
     {
       playlist_id: z.string().min(1).describe('Playlist ID'),
       sort: z.enum(['added_asc', 'added_desc']).optional().describe('Sort by added_at (default added_asc)'),
@@ -530,7 +530,7 @@ export function registerExhaustMiscTools(server: McpServer, client: SpotifyClien
   // 8. split_playlist
   server.tool(
     'split_playlist',
-    'Split a playlist into N chunks (new playlists). Quota: 🟡 GET all + N POST /me/playlists + N POST items.',
+    'Split a playlist into N chunks (new playlists). Quota: GET all + N POST /me/playlists + N POST items.',
     {
       playlist_id: z.string().min(1).describe('Source playlist ID'),
       parts: z.number().int().min(2).max(10).describe('Number of parts (2–10)'),
@@ -600,7 +600,7 @@ export function registerExhaustMiscTools(server: McpServer, client: SpotifyClien
   // 9. find_duplicate_tracks_across_playlists
   server.tool(
     'find_duplicate_tracks_across_playlists',
-    'Find tracks that appear in more than one of the given playlists (cross-playlist dupes). Quota: 🟡 N GETs (one per playlist). Also covers: find_duplicates_in_playlist (single-playlist), find_duplicate_playlists — See also: find_duplicates_in_playlist, find_duplicate_playlists.',
+    'Find tracks that appear in more than one of the given playlists (cross-playlist dupes). Quota: N GETs (one per playlist).',
     {
       ...playlistListInputFields(['playlist_ids'], { min: 2, max: 20, limitReason: PAGED_WALK_LIST_REASON }),
       response_format: ResponseFormat,
@@ -646,7 +646,7 @@ export function registerExhaustMiscTools(server: McpServer, client: SpotifyClien
   // 10. remove_from_library_by_playlist — remove library tracks that are in a playlist
   server.tool(
     'remove_from_library_by_playlist',
-    'Remove from Liked Songs any tracks that also appear in a given playlist. Quota: 🟡 2 GETs + DELETE (chunked).',
+    'Remove from Liked Songs any tracks that also appear in a given playlist. Quota: 2 GETs + DELETE (chunked).',
     {
       playlist_id: z.string().min(1).describe('Playlist ID whose tracks will be removed from library'),
       dry_run: DryRun,

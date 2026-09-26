@@ -277,7 +277,7 @@ export function registerPlaylistOpsTools(server: McpServer, client: SpotifyClien
   // diff_playlists
   server.tool(
     'diff_playlists',
-    'Compare two playlists up to the configured source cap: tracks only in A, only in B (by track ID), and tracks present in both but at different positions. Rendered rows are capped by max_results; truncation metadata reports when source walks hit scan_cap. Also covers: playlist_diff (snapshot diff), playlist_difference_plan (A minus B plan) — See also: playlist_diff, playlist_difference_plan.',
+    'Compare two playlists up to the configured source cap: tracks only in A, only in B (by track ID), and tracks present in both but at different positions. Rendered rows are capped by max_results; truncation metadata reports when source walks hit scan_cap.',
     {
       ...sharedListFields,
       ...PlaylistWalkFields,

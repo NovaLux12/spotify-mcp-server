@@ -1173,7 +1173,7 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
   // ----- gap-fill: get_category (#256) -----
   server.tool(
     'get_category',
-    'Get a single Spotify browse category by ID. Removed Feb 2026, no replacement endpoint. Quota: 🟢 single.',
+    'Get a single Spotify browse category by ID. Removed Feb 2026, no replacement endpoint. Quota: 1 call.',
     {
       category_id: z.string().min(1).describe('Category ID'),
       country: MARKET_CODE.optional().describe('ISO 3166-1 alpha-2 country code, e.g. \'US\''),
@@ -1209,13 +1209,13 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
   // ----- typed search family (#257-263) via factory -----
   type TypedSearchKind = 'track' | 'artist' | 'album' | 'playlist' | 'show' | 'episode' | 'audiobook';
   const typedSearchMeta: Record<TypedSearchKind, { tool: string; description: string; key: string }> = {
-    track: { tool: 'search_tracks', description: 'Search tracks only (GET /search?type=track). Quota: 🟢 single.', key: 'tracks' },
-    artist: { tool: 'search_artists', description: 'Search artists only (GET /search?type=artist). Quota: 🟢 single.', key: 'artists' },
-    album: { tool: 'search_albums', description: 'Search albums only (GET /search?type=album). Quota: 🟢 single.', key: 'albums' },
-    playlist: { tool: 'search_playlists', description: 'Search playlists only (GET /search?type=playlist). Quota: 🟢 single.', key: 'playlists' },
-    show: { tool: 'search_shows', description: 'Search podcast shows only (GET /search?type=show). Quota: 🟢 single.', key: 'shows' },
-    episode: { tool: 'search_episodes', description: 'Search podcast episodes only (GET /search?type=episode). Quota: 🟢 single.', key: 'episodes' },
-    audiobook: { tool: 'search_audiobooks', description: 'Search audiobooks only (GET /search?type=audiobook). Audiobooks are only available in the US, UK, CA, IE, NZ and AU markets. Quota: 🟢 single.', key: 'audiobooks' },
+    track: { tool: 'search_tracks', description: 'Search tracks only (GET /search?type=track). Quota: 1 call.', key: 'tracks' },
+    artist: { tool: 'search_artists', description: 'Search artists only (GET /search?type=artist). Quota: 1 call.', key: 'artists' },
+    album: { tool: 'search_albums', description: 'Search albums only (GET /search?type=album). Quota: 1 call.', key: 'albums' },
+    playlist: { tool: 'search_playlists', description: 'Search playlists only (GET /search?type=playlist). Quota: 1 call.', key: 'playlists' },
+    show: { tool: 'search_shows', description: 'Search podcast shows only (GET /search?type=show). Quota: 1 call.', key: 'shows' },
+    episode: { tool: 'search_episodes', description: 'Search podcast episodes only (GET /search?type=episode). Quota: 1 call.', key: 'episodes' },
+    audiobook: { tool: 'search_audiobooks', description: 'Search audiobooks only (GET /search?type=audiobook). Audiobooks are only available in the US, UK, CA, IE, NZ and AU markets. Quota: 1 call.', key: 'audiobooks' },
   };
   function makeTypedSearchTool(kind: TypedSearchKind): void {
     const meta = typedSearchMeta[kind];
@@ -1329,7 +1329,7 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
   // ----- catalog_batch_lookup (#268) -----
   server.tool(
     'catalog_batch_lookup',
-    'Resolve a mixed list of Spotify URIs (tracks/albums/artists/shows/episodes/audiobooks/chapters) in partitioned batch calls. Quota: 🟡 1 per distinct type + chunking.',
+    'Resolve a mixed list of Spotify URIs (tracks/albums/artists/shows/episodes/audiobooks/chapters) in partitioned batch calls. Quota: 1 per distinct type + chunking.',
     {
       uris: z.array(z.string().min(1)).min(1).max(50).describe('Spotify URIs (spotify:track:..., spotify:album:..., etc.) 1–50 mixed'),
       ...sharedListFields,
@@ -1412,7 +1412,7 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
   // ----- get_artist_singles / get_artist_appearances (#269, #270) -----
   server.tool(
     'get_artist_singles',
-    "List an artist's singles only (GET /artists/{id}/albums?include_groups=single). Quota: 🟢 single.",
+    "List an artist's singles only (GET /artists/{id}/albums?include_groups=single). Quota: 1 call.",
     {
       artist_id: spotifyId('artist'),
       limit: z.number().int().min(1).max(ARTIST_ALBUM_PAGE_LIMIT).optional().describe(`Results per page, 1–${ARTIST_ALBUM_PAGE_LIMIT}. Default: ${ARTIST_ALBUM_PAGE_LIMIT}`),
@@ -1429,7 +1429,7 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
   );
   server.tool(
     'get_artist_appearances',
-    "List albums an artist appears on (GET /artists/{id}/albums?include_groups=appears_on). Quota: 🟢 single.",
+    "List albums an artist appears on (GET /artists/{id}/albums?include_groups=appears_on). Quota: 1 call.",
     {
       artist_id: spotifyId('artist'),
       limit: z.number().int().min(1).max(ARTIST_ALBUM_PAGE_LIMIT).optional().describe(`Results per page, 1–${ARTIST_ALBUM_PAGE_LIMIT}. Default: ${ARTIST_ALBUM_PAGE_LIMIT}`),
@@ -1450,7 +1450,7 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
   // ----- market_validate (#271) -----
   server.tool(
     'market_validate',
-    'Validate ISO 3166-1 market codes against GET /markets (cached) and optionally return the account market from /me. Quota: 🟢 1–2 calls.',
+    'Validate ISO 3166-1 market codes against GET /markets (cached) and optionally return the account market from /me. Quota: 1–2 calls.',
     {
       markets: z.array(MARKET_CODE).optional().describe('Market codes to validate (2-letter). If omitted, just lists valid markets / account market.'),
       include_account_market: z.boolean().optional().describe('Include account country from /me'),
@@ -1516,7 +1516,7 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
   // ----- browse_category_deepdive (rank 59 / #317) -----
   server.tool(
     'browse_category_deepdive',
-    'Category → playlists → optional items peek in one call. Removed Feb 2026, no replacement endpoint. Quota: 🟡 2–3 calls.',
+    'Category → playlists → optional items peek in one call. Removed Feb 2026, no replacement endpoint. Quota: 2–3 calls.',
     {
       category_id: z.string().min(1).describe('Category ID'),
       country: MARKET_CODE.optional().describe('ISO 3166-1 alpha-2 country code, e.g. \'US\''),
@@ -1609,7 +1609,7 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
   // ----- show_episode_search (rank 60 / #318) -----
   server.tool(
     'show_episode_search',
-    'Full-text search within one show\'s episodes (GET /shows/{id}/episodes paged + client-side q). Quota: 🟡 1–N pages (fetch_all walks).',
+    'Full-text search within one show\'s episodes (GET /shows/{id}/episodes paged + client-side q). Quota: 1–N pages (fetch_all walks).',
     {
       show_id: spotifyId('show'),
       query: z.string().min(1).describe('Case-insensitive substring over name/description'),

@@ -250,7 +250,7 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
   // ------------------------------------------------------------------ 1
   server.tool(
     'artist_discography_explorer',
-    'Overview stats for one artist\'s discography: release counts by type, first and latest releases, active span and releases per active year. Accepts an artist ID, URI, URL or name (name → closest search match). Quota: 🟡 one paginated /artists/{id}/albums walk.',
+    'Overview stats for one artist\'s discography: release counts by type, first and latest releases, active span and releases per active year. Accepts an artist ID, URI, URL or name (name → closest search match). Quota: one paginated /artists/{id}/albums walk.',
     {
       artist: z.string().min(1).describe('Artist ID, URI, URL, or name to resolve via search'),
       include_groups: IncludeGroups,
@@ -303,7 +303,7 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
   // ------------------------------------------------------------------ 2
   server.tool(
     'artist_album_timeline',
-    '[local-compute] Chronological release table (oldest → newest) with inter-release gap days, median gap and the longest drought highlighted. Quota: 🟡 one paginated /artists/{id}/albums walk.',
+    '[local-compute] Chronological release table (oldest → newest) with inter-release gap days, median gap and the longest drought highlighted. Quota: one paginated /artists/{id}/albums walk.',
     {
       artist_id: spotifyId('artist').describe('Spotify artist ID, URI, or URL'),
       include_groups: IncludeGroups,
@@ -353,7 +353,7 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
   // ------------------------------------------------------------------ 3
   server.tool(
     'artist_era_map',
-    'Cluster an artist\'s releases into eras separated by quiet periods longer than `gap_years`, with one representative album per era and era spans. Quota: 🟡 one paginated /artists/{id}/albums walk.',
+    'Cluster an artist\'s releases into eras separated by quiet periods longer than `gap_years`, with one representative album per era and era spans. Quota: one paginated /artists/{id}/albums walk.',
     {
       artist_id: spotifyId('artist').describe('Spotify artist ID, URI, or URL'),
       gap_years: z.number().min(0.5).max(20).optional().describe('Quiet period (in years) that starts a new era. Default: 2'),
@@ -398,7 +398,7 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
   // ------------------------------------------------------------------ 4
   server.tool(
     'artist_release_type_breakdown',
-    'Break an artist\'s discography down by album type (album · single · compilation · appears_on): counts, first and latest per type, and sample titles. Quota: 🟡 one paginated /artists/{id}/albums walk.',
+    'Break an artist\'s discography down by album type (album · single · compilation · appears_on): counts, first and latest per type, and sample titles. Quota: one paginated /artists/{id}/albums walk.',
     {
       artist_id: spotifyId('artist').describe('Spotify artist ID, URI, or URL'),
       include_groups: IncludeGroups,
@@ -437,7 +437,7 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
   // ------------------------------------------------------------------ 5
   server.tool(
     'artist_latest_releases',
-    'Fetch the most recent N releases from an artist\'s catalog with age in days — a quick "what\'s new here" read. Quota: 🟡 one paginated /artists/{id}/albums walk.',
+    'Fetch the most recent N releases from an artist\'s catalog with age in days — a quick "what\'s new here" read. Quota: one paginated /artists/{id}/albums walk.',
     {
       artist_id: spotifyId('artist').describe('Spotify artist ID, URI, or URL'),
       limit: z.number().int().min(1).max(50).optional().describe('How many recent releases to show. Default: 5'),
@@ -474,7 +474,7 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
 
   server.tool(
     'artist_reissue_detector',
-    'Detect alternate versions (live/deluxe/remaster/expanded editions) in an artist\'s release titles and group them by base title — spot the canonical release vs its variants. Quota: 🟡 one paginated /artists/{id}/albums walk.',
+    'Detect alternate versions (live/deluxe/remaster/expanded editions) in an artist\'s release titles and group them by base title — spot the canonical release vs its variants. Quota: one paginated /artists/{id}/albums walk.',
     {
       artist_id: spotifyId('artist').describe('Spotify artist ID, URI, or URL'),
       max_releases: z.number().int().positive().max(1000).optional().describe('Releases to scan. Default: SPOTIFY_MCP_FETCH_ALL_CAP'),
@@ -515,7 +515,7 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
   // ------------------------------------------------------------------ 7
   server.tool(
     'artist_debut_release_finder',
-    'Dig up an artist\'s earliest release with full detail plus everything else they released in that same year — the origin story view. Quota: 🟡 one paginated /artists/{id}/albums walk.',
+    'Dig up an artist\'s earliest release with full detail plus everything else they released in that same year — the origin story view. Quota: one paginated /artists/{id}/albums walk.',
     {
       artist_id: spotifyId('artist').describe('Spotify artist ID, URI, or URL'),
       response_format: ResponseFormat,
@@ -547,7 +547,7 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
   // ------------------------------------------------------------------ 8
   server.tool(
     'label_discography_explorer',
-    'Group an artist\'s albums and singles by record label (via batched /albums?ids= payloads) and rank labels by release count with year ranges. Quota: 🔴 paginated walk + batched /albums lookups.',
+    'Group an artist\'s albums and singles by record label (via batched /albums?ids= payloads) and rank labels by release count with year ranges. Quota: paginated walk + batched /albums lookups.',
     {
       artist_id: spotifyId('artist').describe('Spotify artist ID, URI, or URL'),
       include_groups: IncludeGroups,
@@ -591,7 +591,7 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
   // ------------------------------------------------------------------ 9
   server.tool(
     'artist_discography_search',
-    'Full-text filter over an artist\'s release titles — find that live album, deluxe edition or collaboration without scrolling the whole catalog. Quota: 🟡 one paginated /artists/{id}/albums walk.',
+    'Full-text filter over an artist\'s release titles — find that live album, deluxe edition or collaboration without scrolling the whole catalog. Quota: one paginated /artists/{id}/albums walk.',
     {
       artist_id: spotifyId('artist').describe('Spotify artist ID, URI, or URL'),
       query: z.string().min(1).describe('Case-insensitive text to match against release titles'),
@@ -624,7 +624,7 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
   // ------------------------------------------------------------------ 10
   server.tool(
     'artist_decade_span',
-    'Histogram of an artist\'s releases per decade with the dominant decade called out. Quota: 🟡 one paginated /artists/{id}/albums walk.',
+    'Histogram of an artist\'s releases per decade with the dominant decade called out. Quota: one paginated /artists/{id}/albums walk.',
     {
       artist_id: spotifyId('artist').describe('Spotify artist ID, URI, or URL'),
       include_groups: IncludeGroups,
@@ -664,7 +664,7 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
   // ------------------------------------------------------------------ 11
   server.tool(
     'album_track_explorer',
-    'Full track listing for one album with per-track cross-album duplicate counts — spot which songs are unique to this release vs recycled across the discography. Quota: 🔴 one album fetch + one paginated discography walk.',
+    'Full track listing for one album with per-track cross-album duplicate counts — spot which songs are unique to this release vs recycled across the discography. Quota: one album fetch + one paginated discography walk.',
     {
       album_id: spotifyId('album').describe('Spotify album ID, URI, or URL'),
       response_format: ResponseFormat,
@@ -730,7 +730,7 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
   // ------------------------------------------------------------------ 12
   server.tool(
     'album_openers_report',
-    'List track 1 (the side-A opener) of every studio album by an artist, chronologically — the "how each record begins" view. Quota: 🔴 paginated walk + batched /albums lookups.',
+    'List track 1 (the side-A opener) of every studio album by an artist, chronologically — the "how each record begins" view. Quota: paginated walk + batched /albums lookups.',
     {
       artist_id: spotifyId('artist').describe('Spotify artist ID, URI, or URL'),
       max_albums: z.number().int().positive().max(100).optional().describe('Albums to scan (album group only). Default: 30'),
@@ -776,7 +776,7 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
   // ------------------------------------------------------------------ 13
   server.tool(
     'deep_cuts_finder',
-    'Deep cuts per album: tracks past position 2 that are neither the title track nor among the SCANNED singles. Bounded by max_singles (default 500); payload: singles_capped. Quota: 🔴 paginated walk + batched /albums lookups.',
+    'Deep cuts per album: tracks past position 2 that are neither the title track nor among the SCANNED singles. Bounded by max_singles (default 500); payload: singles_capped. Quota: paginated walk + batched /albums lookups.',
     {
       artist_id: spotifyId('artist').describe('Spotify artist ID, URI, or URL'),
       max_albums: z.number().int().positive().max(100).optional().describe('Studio albums to scan. Default: 20'),
@@ -837,7 +837,7 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
   // ------------------------------------------------------------------ 14
   server.tool(
     'b_sides_detector',
-    'Detect B-sides: tracks that appear on an artist\'s singles but never on any album — the non-LP catalogue. Quota: 🔴 paginated walks + batched /albums lookups.',
+    'Detect B-sides: tracks that appear on an artist\'s singles but never on any album — the non-LP catalogue. Quota: paginated walks + batched /albums lookups.',
     {
       artist_id: spotifyId('artist').describe('Spotify artist ID, URI, or URL'),
       max_singles: z.number().int().positive().max(200).optional().describe('Singles to scan. Default: 50'),
@@ -883,7 +883,7 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
   // ------------------------------------------------------------------ 15
   server.tool(
     'track_release_origin',
-    'Find where a track first appeared: walks an artist\'s releases chronologically and reports the earliest album/single/compilation containing the track, plus later re-appearances. Quota: 🔴 paginated walk + batched /albums lookups.',
+    'Find where a track first appeared: walks an artist\'s releases chronologically and reports the earliest album/single/compilation containing the track, plus later re-appearances. Quota: paginated walk + batched /albums lookups.',
     {
       artist_id: spotifyId('artist').describe('Spotify artist ID, URI, or URL'),
       track_name: z.string().min(1).describe('Track title to locate (case-insensitive)'),
@@ -918,7 +918,7 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
   // ------------------------------------------------------------------ 16
   server.tool(
     'album_anniversary_check',
-    'Upcoming album anniversaries for an artist within the next `window_days`, with milestone years (5/10/15/…) flagged — plan re-listens or anniversary posts. Quota: 🟡 one paginated /artists/{id}/albums walk.',
+    'Upcoming album anniversaries for an artist within the next `window_days`, with milestone years (5/10/15/…) flagged — plan re-listens or anniversary posts. Quota: one paginated /artists/{id}/albums walk.',
     {
       artist_id: spotifyId('artist').describe('Spotify artist ID, URI, or URL'),
       window_days: z.number().int().min(1).max(365).optional().describe('Look-ahead window in days. Default: 30'),
@@ -965,7 +965,7 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
   // ------------------------------------------------------------------ 17
   server.tool(
     'album_duration_report',
-    'Runtime profile for an artist\'s studio albums: total length, track count and longest track per album, ranked by runtime — find the epics and the EPs. Quota: 🔴 paginated walk + batched /albums lookups.',
+    'Runtime profile for an artist\'s studio albums: total length, track count and longest track per album, ranked by runtime — find the epics and the EPs. Quota: paginated walk + batched /albums lookups.',
     {
       artist_id: spotifyId('artist').describe('Spotify artist ID, URI, or URL'),
       max_albums: z.number().int().positive().max(100).optional().describe('Albums to scan. Default: 30'),
@@ -1011,7 +1011,7 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
   // ------------------------------------------------------------------ 18
   server.tool(
     'new_music_from_saved_artists',
-    'Newest releases across the artists you follow (and optionally those in your saved albums), sorted by release date — your personal new-release feed. Quota: 🔴 followed-artist walk + per-artist album peeks.',
+    'Newest releases across the artists you follow (and optionally those in your saved albums), sorted by release date — your personal new-release feed. Quota: followed-artist walk + per-artist album peeks.',
     {
       artist_limit: z.number().int().positive().max(50).optional().describe('Max artists to check. Default: 20'),
       include_saved_album_artists: z.boolean().optional().describe('Also include artists from your saved albums. Default: true'),
@@ -1093,7 +1093,7 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
   // ------------------------------------------------------------------ 19
   server.tool(
     'artist_scout_from_playlists',
-    'Find new-to-you artists: pull the artist roster from one of your playlists and rank the ones you have NOT saved any tracks of — discovery from your own rotation. Quota: 🔴 playlist walk + saved-tracks membership check.',
+    'Find new-to-you artists: pull the artist roster from one of your playlists and rank the ones you have NOT saved any tracks of — discovery from your own rotation. Quota: playlist walk + saved-tracks membership check.',
     {
       playlist_id: spotifyId('playlist').describe('Spotify playlist ID, URI, or URL'),
       max_items: z.number().int().positive().max(1000).optional().describe('Playlist items to scan. Default: 200'),
@@ -1166,7 +1166,7 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
   // ------------------------------------------------------------------ 20
   server.tool(
     'artist_live_albums_finder',
-    'List an artist\'s live releases (titles matching live/unplugged/live-at patterns) chronologically. Quota: 🟡 one paginated /artists/{id}/albums walk.',
+    'List an artist\'s live releases (titles matching live/unplugged/live-at patterns) chronologically. Quota: one paginated /artists/{id}/albums walk.',
     {
       artist_id: spotifyId('artist').describe('Spotify artist ID, URI, or URL'),
       response_format: ResponseFormat,
@@ -1198,7 +1198,7 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
   // ------------------------------------------------------------------ 21
   server.tool(
     'artist_collection_gaps',
-    'List an artist\'s studio albums missing from your saved collection — the exact records to add next. Quota: 🔴 paginated walk + saved-albums membership check.',
+    'List an artist\'s studio albums missing from your saved collection — the exact records to add next. Quota: paginated walk + saved-albums membership check.',
     {
       artist_id: spotifyId('artist').describe('Spotify artist ID, URI, or URL'),
       response_format: ResponseFormat,
@@ -1231,7 +1231,7 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
   // ------------------------------------------------------------------ 22
   server.tool(
     'artist_singles_timeline',
-    'Chronological singles timeline for an artist (date · title · track count). Quota: 🟡 one paginated /artists/{id}/albums walk (singles group).',
+    'Chronological singles timeline for an artist (date · title · track count). Quota: one paginated /artists/{id}/albums walk (singles group).',
     {
       artist_id: spotifyId('artist').describe('Spotify artist ID, URI, or URL'),
       response_format: ResponseFormat,
@@ -1261,7 +1261,7 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
   // ------------------------------------------------------------------ 23
   server.tool(
     'genre_dive_search',
-    'Search artists by genre keyword (e.g. "britpop", "afrobeat") and list the matching profiles with their genre tags — the entry point for a genre dive. Quota: 🟢 one GET /search call.',
+    'Search artists by genre keyword (e.g. "britpop", "afrobeat") and list the matching profiles with their genre tags — the entry point for a genre dive. Quota: one GET /search call.',
     {
       genre: z.string().min(1).describe('Genre keyword to search for'),
       market: MARKET_CODE.optional().describe("ISO 3166-1 alpha-2 market code, e.g. 'US'"),
@@ -1291,7 +1291,7 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
   // ------------------------------------------------------------------ 24
   server.tool(
     'scene_sampler_search',
-    'Build a scene sampler: search artists by a scene/genre keyword, then fetch each act\'s newest release as a one-track-per-artist listening plan. Quota: 🟡 one /search call + one album peek per artist.',
+    'Build a scene sampler: search artists by a scene/genre keyword, then fetch each act\'s newest release as a one-track-per-artist listening plan. Quota: one /search call + one album peek per artist.',
     {
       scene: z.string().min(1).describe('Scene/genre keyword (e.g. "shoegaze")'),
       max_artists: z.number().int().min(1).max(10).optional().describe('Artists to sample (search cap 10). Default: 8'),

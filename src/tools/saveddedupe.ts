@@ -483,8 +483,7 @@ export function registerSavedDedupeTools(server: McpServer, client: SpotifyClien
       + 'On opt-in, near-duplicate groups show same-title/artist tracks whose ISRC, release, or '
       + 'duration differs; these are distinct saved tracks and are review-only with no removals. '
       + 'Undated saves sort after dated saves. Optionally pass a playlist_id to cross-reference '
-      + 'which group members also appear in that playlist. Never mutates your library. '
-      + 'Also covers: find_duplicates_in_playlist — See also: find_duplicates_in_playlist, find_duplicate_tracks_across_playlists.',
+      + 'which group members also appear in that playlist. Never mutates your library.',
     {
       response_format: ResponseFormat,
       max_results: MaxResults,

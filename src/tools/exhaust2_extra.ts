@@ -414,7 +414,7 @@ export function registerExhaust2ExtraTools(server: McpServer, client: SpotifyCli
   // 1. playlist_fill_from_search (#398)
   server.tool(
     'playlist_fill_from_search',
-    'Grow a playlist to N items from search queries you supply: round-robin one pick per query per pass, first unseen track match wins, pages each query in Spotify-compliant 10-result requests, then performs chunked adds. Complements listening-data grow_playlist. Quota: 🟡 one or more 10-result search pages per query + chunked adds, after a capped pre-read of the current items; a capped pre-read reports existing_truncated and an unknown resulting length.',
+    'Grow a playlist to N items from search queries you supply: round-robin one pick per query per pass, first unseen track match wins, pages each query in Spotify-compliant 10-result requests, then performs chunked adds. Complements listening-data grow_playlist. Quota: one or more 10-result search pages per query + chunked adds, after a capped pre-read of the current items; a capped pre-read reports existing_truncated and an unknown resulting length.',
     {
       playlist_id: z.string().describe('Playlist to grow (ID or spotify:playlist: URI)'),
       // #899: the bound is a READ-COST ceiling — one `/search` page walk per
@@ -563,7 +563,7 @@ export function registerExhaust2ExtraTools(server: McpServer, client: SpotifyCli
   // 2. playlist_expression_algebra (#399)
   server.tool(
     'playlist_expression_algebra',
-    'Mini set-algebra over playlists: `REF ∪ (REF ∩ REF) − REF` → NEW playlist. Operators: ∩ (binds tightest), then ∪ and − left-assoc; ASCII aliases | + for union, & for intersection. Refs are playlist IDs or spotify:playlist: URIs; results dedupe preserving first-seen order. Each ref costs 1 GET plus up to SPOTIFY_MCP_FETCH_ALL_CAP/100 URI-only item pages. Quota: 🟢 1 + item pages per ref, then 1 create + chunked adds. A ref stopped at the cap sets truncated=true with total and returned; the result is then incomplete.',
+    'Mini set-algebra over playlists: `REF ∪ (REF ∩ REF) − REF` → NEW playlist. Operators: ∩ (binds tightest), then ∪ and − left-assoc; ASCII aliases | + for union, & for intersection. Refs are playlist IDs or spotify:playlist: URIs; results dedupe preserving first-seen order. Each ref costs 1 GET plus up to SPOTIFY_MCP_FETCH_ALL_CAP/100 URI-only item pages. Quota: 1 + item pages per ref, then 1 create + chunked adds. A ref stopped at the cap sets truncated=true with total and returned; the result is then incomplete.',
     {
       expression: z.string().min(3).describe(
         'Set expression, e.g. "37i9dQZF1DXcBWIGoYBM5M ∪ (4bKpVbPAsKv0aSsbIm2Ggt ∩ 6mtXbPAsKv0aSsbIm2Ggt) − 1a2B3cD4e5F6g7H8i9J0kL". '
@@ -643,7 +643,7 @@ export function registerExhaust2ExtraTools(server: McpServer, client: SpotifyCli
   // 3. playlist_cover_from_track (#400)
   server.tool(
     'playlist_cover_from_track',
-    'Set the playlist cover from a track album art: pick by position in the playlist, pass any track URI, or default to the first track with art. Fetches the image (largest JPEG candidate ≤ 256 KB) and PUTs /playlists/{id}/images. Quota: 🟢 GET + PUT (+1 image fetch, disclosed).',
+    'Set the playlist cover from a track album art: pick by position in the playlist, pass any track URI, or default to the first track with art. Fetches the image (largest JPEG candidate ≤ 256 KB) and PUTs /playlists/{id}/images. Quota: GET + PUT (+1 image fetch, disclosed).',
     {
       playlist_id: z.string().describe('Playlist to re-cover (ID or spotify:playlist: URI)'),
       track_uri: z.string().optional().describe('Any track (spotify:track: URI or bare ID) whose album art to use. Overrides position'),

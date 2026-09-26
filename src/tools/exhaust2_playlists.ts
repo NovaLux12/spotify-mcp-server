@@ -613,7 +613,7 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
     'playlist_intersect',
     'Keep only the tracks present in ALL of 2–10 playlists, written as one atomic replace — '
       + 'the missing set op (union/subtract/XOR exist). Without a target it reports the '
-      + 'intersection read-only. Quota: 🟢 N GETs + 1 PUT when committing. Also covers: playlist_intersection (same op, unified) — See also: playlist_intersection.',
+      + 'intersection read-only. Quota: N GETs + 1 PUT when committing.',
     {
       ...PlaylistListFields,
       ...legacyPlaylistListFields(['source_playlist_ids'], { limitReason: PAGED_WALK_LIST_REASON }),
@@ -685,7 +685,7 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
     'playlist_add_by_search',
     '"Add Radiohead Paranoid Android to Chill Mix" in one shot: search the catalog, pick the '
       + 'top result(s), and add the URI(s) to a playlist. Highest-traffic curation gesture. '
-      + 'Quota: 🟡 1 search + 1 add call.',
+      + 'Quota: 1 search + 1 add call.',
     {
       playlist_id: z.string().describe('Destination playlist, as ID or spotify:playlist: URI'),
       query: z.string().describe('Search query, e.g. "Radiohead Paranoid Android"'),
@@ -746,7 +746,7 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
     'playlist_trim_to_duration',
     'Fit a playlist to a target runtime (e.g. "exactly 30 min for the commute"): greedy '
       + 'keep-first/last/random selection within ±tolerance seconds, written as one atomic '
-      + 'replace. Complements item-count playlist_trim. Quota: 🟢 GET + 1 PUT.',
+      + 'replace. Complements item-count playlist_trim. Quota: GET + 1 PUT.',
     {
       playlist_id: z.string().describe('Playlist to trim, as ID or spotify:playlist: URI'),
       target_minutes: z.number().positive().describe('Target runtime in minutes'),
@@ -837,7 +837,7 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
     'saved_tracks_roulette',
     'Deal N random cards from a saved shelf into a FRESH playlist. Album shelves are expanded '
       + 'through bounded /albums/{id}/tracks reads (configured fetch-all cap per album); any '
-      + 'expansion failure or empty/region-blocked album aborts before creation. Quota: 🟡 getAllPages + album fan-out + 1 create + chunked adds.',
+      + 'expansion failure or empty/region-blocked album aborts before creation. Quota: getAllPages + album fan-out + 1 create + chunked adds.',
     {
       count: z.number().int().min(10).max(100).optional().describe('How many cards to deal (10–100). Default 20'),
       from: z.enum(['tracks', 'albums', 'episodes']).optional().describe('Save shelf to draw from. Default tracks'),
@@ -908,7 +908,7 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
     'playlist_slice',
     'Copy a slice of one playlist — positions start..end, first/last N, or an added-at date '
       + 'range — into a NEW playlist. Era snapshots, side A/B, decadal splits. '
-      + 'Quota: 🟢 GET + create + chunked adds.',
+      + 'Quota: GET + create + chunked adds.',
     {
       playlist_id: z.string().describe('Source playlist (ID or spotify:playlist: URI)'),
       mode: z.enum(['first', 'last', 'range', 'added_between']).describe('Slice mode'),
@@ -973,7 +973,7 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
     'playlist_names_bulk_normalize',
     'One-shot name hygiene across your library: strip "(Official Copy)"-style noise, trailing '
       + '"2" duplicates, apply a prefix/suffix, or renumber. Preview → commit. '
-      + 'Quota: 🟡 GET + N PUTs (N = renamed only).',
+      + 'Quota: GET + N PUTs (N = renamed only).',
     {
       op: z.enum(['strip_noise', 'prefix', 'suffix', 'renumber']).optional().describe('Normalize op. Default strip_noise'),
       prefix: z.string().optional().describe('prefix: text to prepend'),
@@ -1081,7 +1081,7 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
     'playlist_keep_only',
     'Inverse removal: keep only matching items (by uri / artist / type / query) and drop '
       + 'everything else — one atomic replace, no N+1 deletes. '
-      + 'Quota: 🟢 GET + 1 PUT.',
+      + 'Quota: GET + 1 PUT.',
     {
       playlist_id: z.string().describe('Playlist to prune (ID or spotify:playlist: URI)'),
       keep_by: z.enum(['uris', 'artist', 'type', 'query']).describe('Match mode for what to KEEP'),
@@ -1154,7 +1154,7 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
   server.tool(
     'playlist_strip_episodes',
     'Purify a playlist after collab drift: strip every podcast EPISODE (or every TRACK) with one '
-      + 'client-side filter + atomic replace. Quota: 🟢 GET + 1 PUT.',
+      + 'client-side filter + atomic replace. Quota: GET + 1 PUT.',
     {
       playlist_id: z.string().describe('Playlist to purify (ID or spotify:playlist: URI)'),
       strip: z.enum(['episodes', 'tracks']).optional().describe('What to remove. Default episodes'),
@@ -1195,7 +1195,7 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
     'playlist_move_to_top',
     'Bring matching items (uris / artist / query) to the FRONT of a playlist in one atomic '
       + 'replace. Deliberately avoids Spotify reorder N+1 for large moves. '
-      + 'Quota: 🟢 GET + 1 PUT.',
+      + 'Quota: GET + 1 PUT.',
     {
       playlist_id: z.string().describe('Playlist to reorder (ID or spotify:playlist: URI)'),
       match_uris: z.array(z.string()).optional().describe('Track uris to move to the top'),
@@ -1250,7 +1250,7 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
   server.tool(
     'playlist_exclude_artists',
     'Remove every track by one or more artist IDs from a playlist — the "purge the artist" '
-      + 'one-shot. Quota: 🟢 GET + chunked deletes.',
+      + 'one-shot. Quota: GET + chunked deletes.',
     {
       playlist_id: z.string().describe('Playlist to purge (ID or spotify:playlist: URI)'),
       artist_ids: z.array(z.string()).min(1).max(20).describe('Artist IDs/URIs to exclude (1–20)'),
@@ -1334,7 +1334,7 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
     'playlist_staleness_score',
     'Local staleness check: days since the most-recent / median added_at in a playlist, a '
       + 'fresh/aging/stale/fossil grade, and refresh suggestions. Read-only. '
-      + 'Quota: 🟢 1–2 GETs.',
+      + 'Quota: 1–2 GETs.',
     {
       playlist_id: z.string().describe('Playlist to score (ID or spotify:playlist: URI)'),
       threshold_days: z.number().int().min(1).optional().describe('Days over which a playlist counts as stale. Default 90'),
@@ -1403,7 +1403,7 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
     'playlist_artist_heat',
     'Local artist-concentration check: top-artist share, an HHI concentration index, and the '
       + 'repeat-offender list with track counts. "Is this mix just one band?" '
-      + 'Quota: 🟢 1 GET.',
+      + 'Quota: 1 GET.',
     {
       playlist_id: z.string().describe('Playlist to analyse (ID or spotify:playlist: URI)'),
       top_n: z.number().int().min(1).optional().describe('Artists to list. Default 5'),
@@ -1460,7 +1460,7 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
   server.tool(
     'playlist_era_profile',
     'Local release-era profile: decade histogram, median track age, and a time-capsule verdict. '
-      + 'Pairs with playlist_era slices. Quota: 🟢 1 GET (market refetch disclosed).',
+      + 'Pairs with playlist_era slices. Quota: 1 GET (market refetch disclosed).',
     {
       playlist_id: z.string().describe('Playlist to profile (ID or spotify:playlist: URI)'),
       market: MARKET_CODE.optional().describe('ISO 3166-1 alpha-2 market, e.g. \'US\' — when given, items are REFETCHED with this market and the profile is computed from THOSE rows, so album release dates resolve (disclosed second GET)'),
@@ -1534,7 +1534,7 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
   server.tool(
     'playlist_overlap_matrix',
     'Pairwise Jaccard overlap for 2–10 playlists — which of your mixes have drifted into the '
-      + 'same set. Quota: 🟢 N GETs.',
+      + 'same set. Quota: N GETs.',
     {
       ...PlaylistListFields,
       ...legacyPlaylistListFields(['playlist_ids'], { limitReason: PAGED_WALK_LIST_REASON }),
@@ -1592,7 +1592,7 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
   server.tool(
     'saved_tracks_by_artist',
     'List your SAVED tracks for one artist ("everything I\'ve saved by X"): resolves the artist '
-      + 'ID when given a name, then filters the liked shelf. Quota: 🟡 getAllPages + 1 search (name input).',
+      + 'ID when given a name, then filters the liked shelf. Quota: getAllPages + 1 search (name input).',
     {
       artist: z.string().describe('Artist ID/URI, or a name (1 search to resolve)'),
       market: MARKET_CODE.optional().describe('ISO 3166-1 alpha-2 market for the artist search, e.g. \'US\''),
@@ -1658,7 +1658,7 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
   server.tool(
     'saved_library_delta',
     'Diff your current saved tracks/albums against a local backup snapshot (from backup_library): '
-      + 'added/removed since. Quota: 🟡 getAllPages walks + local file read.',
+      + 'added/removed since. Quota: getAllPages walks + local file read.',
     {
       snapshot_id: z.string().optional().describe('Snapshot id or backup file name (e.g. "backup-2026-08-01-1")'),
       type: z.enum(['all', 'tracks', 'albums']).optional().describe('Which shelves to diff. Default all'),
@@ -1721,7 +1721,7 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
     'library_to_playlist',
     'Export saved tracks, or playable track URIs expanded from saved albums, into a NEW '
       + 'playlist. Album shelves use bounded /albums/{id}/tracks reads and abort before creation '
-      + 'on any expansion error or empty/region-blocked album. Quota: 🟡 getAllPages + album fan-out + create + chunked adds.',
+      + 'on any expansion error or empty/region-blocked album. Quota: getAllPages + album fan-out + create + chunked adds.',
     {
       from: z.enum(['tracks', 'albums']).optional().describe('Which saved shelf to export. Default tracks'),
       name: z.string().optional().describe('Playlist name. Default "Liked Songs export YYYY-MM-DD"'),
@@ -1806,7 +1806,7 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
       + '/me/following (cursor-paged, capped by artists_cap), fans out one albums GET per artist '
       + 'plus one album GET per picked album (concurrency 5 — disclosed fan-out), takes ≤per_artist '
       + 'newest tracks per artist, then round-robin-merges them into a new playlist. '
-      + 'dry_run=true (default) previews the mix. Quota: 🔴 ~artists_cap×(1+per_artist) GETs + create/adds.',
+      + 'dry_run=true (default) previews the mix. Quota: ~artists_cap×(1+per_artist) GETs + create/adds.',
     {
       artists_cap: z.number().int().min(1).max(20).optional().describe('Max followed artists to include (default 10)'),
       per_artist: z.number().int().min(1).max(5).optional().describe('Max tracks per artist (1–5, default 2)'),

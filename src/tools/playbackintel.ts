@@ -4,7 +4,7 @@
  * play_at, device_health, seek_relative, playback_timeline, repeat_queue_toggle,
  * now_playing_history, playback_compare_states, peek_next
  * + triage extras: get_playback_context, volume_step, market_availability
- * Each tool notes quota in description (🟢/🟡).
+ * Each tool states its quota cost in words in the description.
  */
 import { z } from 'zod';
 import { MARKET_CODE } from './catalog.js';
@@ -97,7 +97,7 @@ function marketProbeFailureReason(err: unknown): string {
 export function registerPlaybackIntelTools(server: McpServer, client: SpotifyClient): void {
   // 272 play_on — device-name-aware play
   server.tool('play_on',
-    'Play a context/uris/search query on a named device (resolves device name → id via GET /me/player/devices, then PUT /me/player/play). 🟡 (1 read + 1 write; +1 if volume/shuffle). Supports device name substring or exact id.',
+    'Play a context/uris/search query on a named device (resolves device name → id via GET /me/player/devices, then PUT /me/player/play). Quota: 1 read + 1 write (+1 if volume/shuffle). Supports device name substring or exact id.',
     {
       device: z.string().min(1).describe('Device name substring (case-insensitive) or exact device id'),
       query: z.string().optional().describe('Search query to play (tracks) — alternatives: context_uri or uris'),
@@ -174,7 +174,7 @@ export function registerPlaybackIntelTools(server: McpServer, client: SpotifyCli
 
   // 273 queue_next — insert-next with honest tail disclosure
   server.tool('queue_next',
-    'Queue a track/episode to play next (tail insert with honest disclosure — Spotify has no insert-next API; tail placement is the API reality). Optionally notes temp-playlist workaround. 🟢 (1 write)',
+    'Queue a track/episode to play next (tail insert with honest disclosure — Spotify has no insert-next API; tail placement is the API reality). Optionally notes temp-playlist workaround. Quota: 1 write',
     {
       uri: z.string().min(1).describe('Spotify track or episode URI (spotify:track:… / spotify:episode:…)'),
       device_id: z.string().optional().describe('Target device id'),
@@ -194,7 +194,7 @@ export function registerPlaybackIntelTools(server: McpServer, client: SpotifyCli
 
   // 274 describe_queue — enriched queue + context
   server.tool('describe_queue',
-    'Enriched queue view: currently playing + up-next with durations, total remaining, and source context label. 🟢 (1 read) or 🟡 (2 if include_context resolves playlist/album name). Also covers: raw queue via get_queue, snapshot via get_queue_snapshot — See also: get_queue, get_queue_snapshot.',
+    'Enriched queue view: currently playing + up-next with durations, total remaining, and source context label. Quota: 1 read, or 2 if include_context resolves playlist/album name.',
     { max_results: MaxResults, include_context: z.boolean().default(true).describe('Resolve context URI to playlist/album name (extra GET)'), response_format: ResponseFormat },
     async (args) => {
       const cap = resolveMaxResults(args.max_results as number | undefined);
@@ -232,7 +232,7 @@ export function registerPlaybackIntelTools(server: McpServer, client: SpotifyCli
 
   // 275 describe_listening_session — recently-played + detectSessions
   server.tool('describe_listening_session',
-    'Playback history timeline from recently-played, optionally grouped into sessions (30-min gap via detectSessions). 🟢 (1 page) / 🟡 (2 pages). Read-only.',
+    'Playback history timeline from recently-played, optionally grouped into sessions (30-min gap via detectSessions). Quota: 1-2 pages. Read-only.',
     { limit: z.number().int().min(1).max(50).optional().describe('Max items (default 20)'), as_session: z.boolean().optional().describe('Group into sessions by 30-min gaps (default false)'), response_format: ResponseFormat },
     async (args) => {
       const limit = Math.min(args.limit ?? 20, 50);
@@ -259,7 +259,7 @@ export function registerPlaybackIntelTools(server: McpServer, client: SpotifyCli
 
   // 276 play_at — H:MM:SS parsing -> position_ms
   server.tool('play_at',
-    'Start playback at a specific position — accepts H:MM:SS / MM:SS / seconds string or position_ms. Wraps PUT /me/player/play with offset/position_ms. 🟢 (1 write).',
+    'Start playback at a specific position — accepts H:MM:SS / MM:SS / seconds string or position_ms. Wraps PUT /me/player/play with offset/position_ms. Quota: 1 write.',
     {
       context_uri: z.string().optional().describe('Context URI (playlist/album/artist) — XOR uris'),
       uris: z.array(z.string()).max(100).optional().describe('Up to 100 track/episode URIs — XOR context_uri'),
@@ -323,7 +323,7 @@ export function registerPlaybackIntelTools(server: McpServer, client: SpotifyCli
 
   // 277 device_health
   server.tool('device_health',
-    'Device availability & capability report — merges GET /me/player/devices + GET /me/player active id + sidecar labels/presets. 🟢 (1-2 reads, local merge). Read-only.',
+    'Device availability & capability report — merges GET /me/player/devices + GET /me/player active id + sidecar labels/presets. Quota: 1-2 reads plus a local merge. Read-only.',
     { response_format: ResponseFormat },
     async (args) => {
       const [devRes, player]: [GetDevicesResponse | null, PlaybackState | null] = await Promise.all([
@@ -352,7 +352,7 @@ export function registerPlaybackIntelTools(server: McpServer, client: SpotifyCli
 
   // 278 seek_relative
   server.tool('seek_relative',
-    'Relative seek — forward/back by delta_ms from current progress (GET /me/player then PUT /me/player/seek, clamped to [0, duration]). 🟢 (1 read + 1 write).',
+    'Relative seek — forward/back by delta_ms from current progress (GET /me/player then PUT /me/player/seek, clamped to [0, duration]). Quota: 1 read + 1 write.',
     { delta_ms: z.number().int().describe('Delta in ms (+ forward, - backward), e.g. 30000 or -15000'), device_id: z.string().optional().describe('Target device id'), response_format: ResponseFormat, dry_run: PlaybackDryRun },
     async (args) => {
       const state: any = await client.get('/me/player');
@@ -370,7 +370,7 @@ export function registerPlaybackIntelTools(server: McpServer, client: SpotifyCli
 
   // 279 playback_timeline
   server.tool('playback_timeline',
-    'Progress forecast — elapsed/remaining for current track and optional queue runway, plus ETA wall-clock. 🟢/🟡 (1 read; +1 if include_queue). Read-only.',
+    'Progress forecast — elapsed/remaining for current track and optional queue runway, plus ETA wall-clock. Quota: 1 read (+1 if include_queue). Read-only.',
     { include_queue: z.boolean().default(true).describe('Include queue total/ETA (extra GET /me/player/queue)'), response_format: ResponseFormat },
     async (args) => {
       const state: any = await client.get('/me/player');
@@ -395,7 +395,7 @@ export function registerPlaybackIntelTools(server: McpServer, client: SpotifyCli
 
   // 280 repeat_queue_toggle
   server.tool('repeat_queue_toggle',
-    'One-call queue-repeat helper — sets repeat=context/off and optionally shuffle in 1-2 writes. 🟢.',
+    'One-call queue-repeat helper — sets repeat=context/off and optionally shuffle in 1-2 writes. Quota: 1-2 writes.',
     { enable: z.boolean().describe('true → repeat=context, false → repeat=off'), shuffle: z.boolean().optional().describe('Also set shuffle state'), device_id: z.string().optional().describe('Target device id'), response_format: ResponseFormat, dry_run: PlaybackDryRun },
     async (args) => {
       const state = args.enable ? 'context' : 'off';
@@ -414,7 +414,7 @@ export function registerPlaybackIntelTools(server: McpServer, client: SpotifyCli
 
   // 281 now_playing_history
   server.tool('now_playing_history',
-    'Merged listening stream — recently-played plus currently-playing item on top (deduped). 🟡 (2 reads). Read-only.',
+    'Merged listening stream — recently-played plus currently-playing item on top (deduped). Quota: 2 reads. Read-only.',
     { limit: z.number().int().min(1).max(50).optional().describe('Max recently-played items (default 10)'), dedupe: z.boolean().default(true).describe('Deduplicate currently-playing if already most-recent'), response_format: ResponseFormat },
     async (args) => {
       const limit = Math.min(args.limit ?? 10, 50);
@@ -440,7 +440,7 @@ export function registerPlaybackIntelTools(server: McpServer, client: SpotifyCli
 
   // 282 playback_compare_states
   server.tool('playback_compare_states',
-    'Diff two saved playback snapshots (sidecar only, no API). Shows item/shuffle/repeat/progress/device/context changes. 🟢 (0 API calls).',
+    'Diff two saved playback snapshots (sidecar only, no API). Shows item/shuffle/repeat/progress/device/context changes. Quota: 0 API calls (sidecar only).',
     { state_a: z.string().min(1).describe('First snapshot name'), state_b: z.string().min(1).describe('Second snapshot name'), response_format: ResponseFormat },
     async (args) => {
       const store = await loadPlaybackExt();
@@ -467,7 +467,7 @@ export function registerPlaybackIntelTools(server: McpServer, client: SpotifyCli
 
   // peek_next (scout #2.2 adjacent) — queue lookahead
   server.tool('peek_next',
-    'Queue lookahead — next N tracks with durations and total runway. Right-sized via max_results. 🟢 (1 read). Read-only.',
+    'Queue lookahead — next N tracks with durations and total runway. Right-sized via max_results. Quota: 1 read. Read-only.',
     { count: z.number().int().min(1).max(50).optional().describe('Alias for max_results: how many to peek (default 5)'), max_results: MaxResults, response_format: ResponseFormat },
     async (args) => {
       const n = (args.count as number | undefined) ?? (args.max_results as number | undefined) ?? 5;
@@ -486,7 +486,7 @@ export function registerPlaybackIntelTools(server: McpServer, client: SpotifyCli
 
   // get_playback_context (scout-a §2.2) — resolve context.uri to catalog
   server.tool('get_playback_context',
-    'Resolve the current playback context URI (from GET /me/player) to catalog metadata — playlist/album/artist/show name, owner, track count. 🟢/🟡 (1-2 reads). Read-only.',
+    'Resolve the current playback context URI (from GET /me/player) to catalog metadata — playlist/album/artist/show name, owner, track count. Quota: 1-2 reads. Read-only.',
     { response_format: ResponseFormat },
     async (args) => {
       const player = await client.get<PlaybackState>('/me/player');
@@ -508,7 +508,7 @@ export function registerPlaybackIntelTools(server: McpServer, client: SpotifyCli
 
   // volume_step — relative volume nudge
   server.tool('volume_step',
-    'Nudge volume up/down by a step (reads current volume via GET /me/player, then PUT /me/player/volume clamped 0-100). 🟡 (1 read + 1 write).',
+    'Nudge volume up/down by a step (reads current volume via GET /me/player, then PUT /me/player/volume clamped 0-100). Quota: 1 read + 1 write.',
     { step: z.number().int().min(-100).max(100).describe('Delta, e.g. +10 or -10'), device_id: z.string().optional().describe('Target device id (else active)'), response_format: ResponseFormat, dry_run: PlaybackDryRun },
     async (args) => {
       const player:any = await client.get('/me/player');
@@ -524,7 +524,7 @@ export function registerPlaybackIntelTools(server: McpServer, client: SpotifyCli
 
   // market_availability — per-entity multi-market check
   server.tool('market_availability',
-    'Per-entity multi-market preview — checks if a track/episode/album is playable in each of 1-10 given markets (N× GET /{type}/{id}?market=X, issued concurrently). Reports per-market availability, Spotify\'s own is_playable, and why any probe failed. 🟡 (N reads, 1-10). Read-only.',
+    'Per-entity multi-market preview — checks if a track/episode/album is playable in each of 1-10 given markets (N× GET /{type}/{id}?market=X, issued concurrently). Reports per-market availability, Spotify\'s own is_playable, and why any probe failed. Quota: N reads, 1-10. Read-only.',
     { uri: z.string().min(1).describe('Spotify URI (track/episode/album)'), markets: z.array(MARKET_CODE).min(1).max(10).describe('Market codes to test (1-10, e.g. ["US","JP","DE"])'), response_format: ResponseFormat },
     async (args) => {
       const parsed = parseSpotifyUri(args.uri as string);

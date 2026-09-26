@@ -1147,7 +1147,7 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
   // reorder_playlist_items
   server.tool(
     'reorder_playlist_items',
-    'Move a range of items within a playlist. Spotify semantics: when insert_before > range_start, the effective destination shifts down by range_length because the moved range is lifted out first (e.g. moving [2] to insert_before=4 lands it AT index 3). Also covers: playlist_resequence (full resequence), playlist_move_block — See also: playlist_resequence, playlist_move_block.',
+    'Move a range of items within a playlist. Spotify semantics: when insert_before > range_start, the effective destination shifts down by range_length because the moved range is lifted out first (e.g. moving [2] to insert_before=4 lands it AT index 3).',
     {
       playlist_id: z.string().describe('Playlist ID'),
       range_start: z.number().int().min(0).describe('Index of the first item to move'),
@@ -1298,7 +1298,7 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
   // remove_from_playlist's { uri, positions } entries.
   server.tool(
     'find_duplicates_in_playlist',
-    'Find duplicate tracks in a playlist: repeated URIs plus relinked copies of the same song appearing under different URIs. Also covers: find_duplicate_tracks_across_playlists (cross-playlist), find_duplicate_playlists (playlist-level), remove_duplicate_playlist_items — See also: find_duplicate_tracks_across_playlists, find_duplicate_playlists, remove_duplicate_playlist_items.',
+    'Find duplicate tracks in a playlist: repeated URIs plus relinked copies of the same song appearing under different URIs.',
     {
       ...sharedListFields,
       playlist_id: z.string().describe('Playlist ID'),
@@ -1527,7 +1527,7 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
     'Remove duplicate items from a playlist: keeps the first occurrence of each track and removes '
       + 'later repeats. Exact URI repeats are always cleaned; pass include_relinked=true to also '
       + 'collapse same-song entries that appear under different URIs (remasters/relinks). '
-      + 'Supports dry_run; removals of 10+ items ask for confirmation via elicitation. Also covers: playlist_dedupe_advanced, dedupe_playlist_plan — See also: playlist_dedupe_advanced, dedupe_playlist_plan.',
+      + 'Supports dry_run; removals of 10+ items ask for confirmation via elicitation.',
     {
       playlist_id: z.string().describe('Playlist ID'),
       include_relinked: z
@@ -2048,7 +2048,7 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
   });
 
   // clone_playlist_cover (#285)
-  server.tool('clone_playlist_cover', 'Copy cover image from source playlist to target. Quota: 🟢 GET images + PUT images (plus image fetch).', { source_playlist_id: PlaylistId.describe('Source playlist ID, URI, or URL'), target_playlist_id: PlaylistId.describe('Target playlist ID, URI, or URL'), image_index: z.number().int().min(0).optional().describe('Which cover image to copy (0-based). Default 0'), dry_run: DryRun }, async (args) => {
+  server.tool('clone_playlist_cover', 'Copy cover image from source playlist to target. Quota: GET images + PUT images (plus image fetch).', { source_playlist_id: PlaylistId.describe('Source playlist ID, URI, or URL'), target_playlist_id: PlaylistId.describe('Target playlist ID, URI, or URL'), image_index: z.number().int().min(0).optional().describe('Which cover image to copy (0-based). Default 0'), dry_run: DryRun }, async (args) => {
     const images = await client.get<SpotifyImage[]>(`/playlists/${encodeURIComponent(args.source_playlist_id)}/images`);
     if (!images || images.length === 0) throw new Error('Source playlist has no custom cover image');
     const idx = args.image_index ?? 0;
@@ -2065,7 +2065,7 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
   });
 
   // compare_playlist_covers (#286)
-  server.tool('compare_playlist_covers', 'Compare two playlists covers: URL equality, dimensions. Quota: 🟢 2 GETs.', { ...PlaylistPairFields, ...legacyPlaylistPairFields([['playlist_id_a', 'playlist_id_b']]), ...PlaylistPairWalkFields, ...sharedListFields }, async (args) => {
+  server.tool('compare_playlist_covers', 'Compare two playlists covers: URL equality, dimensions. Quota: 2 GETs.', { ...PlaylistPairFields, ...legacyPlaylistPairFields([['playlist_id_a', 'playlist_id_b']]), ...PlaylistPairWalkFields, ...sharedListFields }, async (args) => {
     const input = resolvePlaylistInput(args, { kind: 'pair', aliases: [['playlist_id_a', 'playlist_id_b']] });
     const [playlistA, playlistB] = input.values;
     const [aImgs, bImgs] = await Promise.all([client.get<SpotifyImage[]>(`/playlists/${encodeURIComponent(playlistA)}/images`), client.get<SpotifyImage[]>(`/playlists/${encodeURIComponent(playlistB)}/images`)]);
@@ -2081,7 +2081,7 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
   });
 
   // get_playlist_snapshot (#295)
-  server.tool('get_playlist_snapshot', 'Expose snapshot_id + item count for optimistic concurrency. Quota: 🟢 2 GETs.', { playlist_id: z.string().describe('Playlist ID, spotify:playlist: URI, or URL'), ...sharedListFields }, async (args) => {
+  server.tool('get_playlist_snapshot', 'Expose snapshot_id + item count for optimistic concurrency. Quota: 2 GETs.', { playlist_id: z.string().describe('Playlist ID, spotify:playlist: URI, or URL'), ...sharedListFields }, async (args) => {
     const id = encodeURIComponent(normalizePlaylistReference(args.playlist_id));
     const [meta, page] = await Promise.all([client.get<{ snapshot_id?: string; name?: string }>(`/playlists/${id}`), client.get<PlaylistItemsResponse>(`/playlists/${id}/items`, { limit: '1' })]);
     const payload = { playlist_id: args.playlist_id, snapshot_id: meta?.snapshot_id ?? null, total: page?.total ?? 0, name: meta?.name ?? null };
@@ -2090,7 +2090,7 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
   });
 
   // playlist_collab_toggle (#294)
-  server.tool('playlist_collab_toggle', 'Toggle collaborative/public flags (guards public=true && collaborative=true 400). Quota: 🟢 GET + PUT.', { playlist_id: z.string().describe('Playlist ID, spotify:playlist: URI, or URL'), collaborative: z.boolean().optional().describe('Target collaborative state for the playlist'), public: z.boolean().optional().describe('Target visibility: true makes the playlist public'), dry_run: DryRun }, async (args) => {
+  server.tool('playlist_collab_toggle', 'Toggle collaborative/public flags (guards public=true && collaborative=true 400). Quota: GET + PUT.', { playlist_id: z.string().describe('Playlist ID, spotify:playlist: URI, or URL'), collaborative: z.boolean().optional().describe('Target collaborative state for the playlist'), public: z.boolean().optional().describe('Target visibility: true makes the playlist public'), dry_run: DryRun }, async (args) => {
     if (args.collaborative === undefined && args.public === undefined) throw new Error('Provide at least one of collaborative or public');
     if (args.collaborative === true && args.public === true) throw new Error('A playlist cannot be both public and collaborative');
     const playlistId = normalizePlaylistReference(args.playlist_id);
@@ -2134,7 +2134,7 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
   });
 
   // playlist_sort (#287)
-  server.tool('playlist_sort', 'Sort a playlist in place by added_at/name/artist/duration. Quota: 🟢 GET all + PUT/POST. popularity is not a sort key: the API no longer returns it on playlist items. Also covers: sort_playlist_plan / sort_playlist_apply (safe plan/apply) — See also: sort_playlist_plan, sort_playlist_apply.', { playlist_id: z.string().describe('Playlist ID, spotify:playlist: URI, or URL'), sort_by: z.enum(['added_asc','added_desc','name_asc','name_desc','artist_asc','duration_asc','duration_desc']).default('name_asc').describe('Sort key applied to the playlist'), dry_run: DryRun, ...sharedListFields }, async (args) => {
+  server.tool('playlist_sort', 'Sort a playlist in place by added_at/name/artist/duration. Quota: GET all + PUT/POST. popularity is not a sort key: the API no longer returns it on playlist items.', { playlist_id: z.string().describe('Playlist ID, spotify:playlist: URI, or URL'), sort_by: z.enum(['added_asc','added_desc','name_asc','name_desc','artist_asc','duration_asc','duration_desc']).default('name_asc').describe('Sort key applied to the playlist'), dry_run: DryRun, ...sharedListFields }, async (args) => {
     const playlistId = normalizePlaylistReference(args.playlist_id);
     const items = await client.getAllPages<PlaylistItemObject>(`/playlists/${encodeURIComponent(playlistId)}/items`, { limit: '100' }, { maxItems: getConfig().fetchAllCap });
     const entries = items.map((row, idx) => ({ uri: row.item?.uri ?? '', name: (row.item as SpotifyTrack | undefined)?.name ?? '', artist: ((row.item as SpotifyTrack | undefined)?.artists?.[0]?.name ?? ''), duration: (row.item as SpotifyTrack | undefined)?.duration_ms ?? 0, added: row.added_at, idx })).filter(e => !!e.uri);
@@ -2184,7 +2184,7 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
   });
 
   // playlist_shuffle (#288)
-  server.tool('playlist_shuffle', 'Fisher-Yates shuffle a playlist (seeded optional). Quota: 🟢 GET all + PUT/POST.', { playlist_id: z.string().describe('Playlist ID, spotify:playlist: URI, or URL'), seed: z.string().optional().describe('Deterministic shuffle seed; omit for a random order'), dry_run: DryRun }, async (args) => {
+  server.tool('playlist_shuffle', 'Fisher-Yates shuffle a playlist (seeded optional). Quota: GET all + PUT/POST.', { playlist_id: z.string().describe('Playlist ID, spotify:playlist: URI, or URL'), seed: z.string().optional().describe('Deterministic shuffle seed; omit for a random order'), dry_run: DryRun }, async (args) => {
     const playlistId = normalizePlaylistReference(args.playlist_id);
     const { uris, unavailablePositions, truncated } = await getPlaylistRows(playlistId);
     let shuffled = [...uris];
@@ -2205,7 +2205,7 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
   });
 
   // playlist_reverse (#289)
-  server.tool('playlist_reverse', 'Reverse a playlist in one atomic replace. Quota: 🟢 GET all + PUT/POST. Also covers: reverse_playlist_plan — See also: reverse_playlist_plan.', { playlist_id: z.string().describe('Playlist ID, spotify:playlist: URI, or URL'), dry_run: DryRun }, async (args) => {
+  server.tool('playlist_reverse', 'Reverse a playlist in one atomic replace. Quota: GET all + PUT/POST.', { playlist_id: z.string().describe('Playlist ID, spotify:playlist: URI, or URL'), dry_run: DryRun }, async (args) => {
     const playlistId = normalizePlaylistReference(args.playlist_id);
     const { uris, unavailablePositions, truncated } = await getPlaylistRows(playlistId);
     const rev = [...uris].reverse();
@@ -2223,7 +2223,7 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
   });
 
   // playlist_union (#290)
-  server.tool('playlist_union', 'Union of 2–10 playlists into target (deduped, first-seen order). An empty union empties the target the same way subtract does. Quota: 🟢 N GETs + PUT/POST; replacing an existing target also reads its current items and its playlist metadata to measure the destructive impact.', { ...PlaylistListFields, ...legacyPlaylistListFields(['source_playlist_ids'], { limitReason: PAGED_WALK_LIST_REASON }), ...TargetPlaylistFields, ...PlaylistSetWalkFields, response_format: ResponseFormat, dedupe: z.boolean().default(true).describe('Drop duplicate URIs across the merged sources. Default true'), dry_run: DryRun }, async (args) => {
+  server.tool('playlist_union', 'Union of 2–10 playlists into target (deduped, first-seen order). An empty union empties the target the same way subtract does. Quota: N GETs + PUT/POST; replacing an existing target also reads its current items and its playlist metadata to measure the destructive impact.', { ...PlaylistListFields, ...legacyPlaylistListFields(['source_playlist_ids'], { limitReason: PAGED_WALK_LIST_REASON }), ...TargetPlaylistFields, ...PlaylistSetWalkFields, response_format: ResponseFormat, dedupe: z.boolean().default(true).describe('Drop duplicate URIs across the merged sources. Default true'), dry_run: DryRun }, async (args) => {
     const input = resolvePlaylistInput(args, { kind: 'list', aliases: ['source_playlist_ids'] });
     if ((args.target_playlist_id === undefined) === (args.target_name === undefined)) {
       throw new Error('Invalid arguments: provide exactly one of target_playlist_id (replace an existing playlist) or target_name (create a new playlist).');
@@ -2391,7 +2391,7 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
   });
 
   // playlist_subtract (#291)
-  server.tool('playlist_subtract', 'Remove tracks of B..N from A. Subtracting every track empties A via one PUT with an empty uris array (Spotify\'s documented clear); a reply with no snapshot_id reports unconfirmed, not ok. Quota: 🟢 N GETs + PUT.', { base_playlist_id: PlaylistId.optional().describe('Base playlist ID, URI, or URL. Optional only for the deprecated positional form, where playlists[0] is the base.'), ...playlistListInputFields(['subtract_playlist_ids'], { min: 1, max: 10, limitReason: PAGED_WALK_LIST_REASON }), ...PlaylistSetWalkFields, response_format: ResponseFormat, dry_run: DryRun }, async (args) => {
+  server.tool('playlist_subtract', 'Remove tracks of B..N from A. Subtracting every track empties A via one PUT with an empty uris array (Spotify\'s documented clear); a reply with no snapshot_id reports unconfirmed, not ok. Quota: N GETs + PUT.', { base_playlist_id: PlaylistId.optional().describe('Base playlist ID, URI, or URL. Optional only for the deprecated positional form, where playlists[0] is the base.'), ...playlistListInputFields(['subtract_playlist_ids'], { min: 1, max: 10, limitReason: PAGED_WALK_LIST_REASON }), ...PlaylistSetWalkFields, response_format: ResponseFormat, dry_run: DryRun }, async (args) => {
     const input = resolvePlaylistInput(args, { kind: 'list', aliases: ['subtract_playlist_ids'] });
     // Pre-2.0 contract: `playlists: [A, B, C]` meant "A minus B and C", i.e. the
     // base was positional. The canonical contract names it explicitly. Both are
@@ -2546,7 +2546,7 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
   });
 
   // playlist_symmetric_difference (#292)
-  server.tool('playlist_symmetric_difference', 'Tracks in exactly one of two playlists (XOR). Quota: 🟢 2 GETs.', { ...PlaylistPairFields, ...legacyPlaylistPairFields([['playlist_id_a', 'playlist_id_b']]), ...PlaylistPairWalkFields, ...sharedListFields }, async (args) => {
+  server.tool('playlist_symmetric_difference', 'Tracks in exactly one of two playlists (XOR). Quota: 2 GETs.', { ...PlaylistPairFields, ...legacyPlaylistPairFields([['playlist_id_a', 'playlist_id_b']]), ...PlaylistPairWalkFields, ...sharedListFields }, async (args) => {
     const input = resolvePlaylistInput(args, { kind: 'pair', aliases: [['playlist_id_a', 'playlist_id_b']] });
     const [playlistA, playlistB] = input.values;
     const [aUris, bUris] = await Promise.all([getAllUris(playlistA, args), getAllUris(playlistB, args)]);
@@ -2564,7 +2564,7 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
   });
 
   // playlist_trim (#293)
-  server.tool('playlist_trim', 'Trim playlist to N items (keep first/last/random). Quota: 🟢 GET all + PUT/POST.', { playlist_id: z.string().describe('Playlist ID, spotify:playlist: URI, or URL'), keep: z.number().int().min(1).max(500).describe('How many items to keep'), keep_which: z.enum(['first','last','random']).default('first').describe('Which end of the playlist to keep items from. Default first'), dry_run: DryRun }, async (args) => {
+  server.tool('playlist_trim', 'Trim playlist to N items (keep first/last/random). Quota: GET all + PUT/POST.', { playlist_id: z.string().describe('Playlist ID, spotify:playlist: URI, or URL'), keep: z.number().int().min(1).max(500).describe('How many items to keep'), keep_which: z.enum(['first','last','random']).default('first').describe('Which end of the playlist to keep items from. Default first'), dry_run: DryRun }, async (args) => {
     const playlistId = normalizePlaylistReference(args.playlist_id);
     const { uris, unavailablePositions, truncated } = await getPlaylistRows(playlistId);
     if (uris.length <= args.keep) return textResult(`Playlist already ${uris.length} ≤ ${args.keep} — nothing to trim`);

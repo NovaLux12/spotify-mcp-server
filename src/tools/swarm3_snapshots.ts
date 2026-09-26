@@ -473,7 +473,7 @@ export function registerSwarm3SnapshotsTools(server: McpServer, client: SpotifyC
   // -- 1. take_playlist_snapshot -------------------------------------------
   server.tool(
     'take_playlist_snapshot',
-    'Capture a live playlist’s items (uri, name, added_at) into a timestamped local JSON snapshot file; dry_run=true previews the walk and target filename without writing. Newest, transactional snapshot (swarm) — preferred over legacy snapshot_playlist. See also list_saved_snapshots, read_playlist_snapshot, diff_playlist_snapshots. Also covers: playlist snapshot (swarm). Snapshot guide: take_playlist_snapshot (create), list_saved_snapshots (list), read_playlist_snapshot (read), diff_playlist_snapshots / snapshot_new_tracks / snapshot_removed_tracks (diff), restore_playlist_from_snapshot / restore_playlist_plan (restore).',
+    'Capture a live playlist’s items (uri, name, added_at) into a timestamped local JSON snapshot file; dry_run=true previews the walk and target filename without writing. Newest, transactional snapshot (swarm) — preferred over legacy snapshot_playlist. See also list_saved_snapshots, read_playlist_snapshot, diff_playlist_snapshots.',
     {
       playlist: spotifyId('playlist').describe('Playlist ID or spotify:playlist: URI to snapshot'),
       notes: z.string().optional().describe('Free-text note stored in the snapshot _meta block'),

@@ -949,7 +949,7 @@ export function registerLibraryTools(server: McpServer, client: SpotifyClient): 
   // get_saved_counts (#296, #749)
   server.tool(
     'get_saved_counts',
-    "Library size snapshot: counts for tracks/albums/shows/episodes/audiobooks/playlists via limit=1 reads — no item paging. The total covers library saves only: playlists are owned and followed collections, so their count is reported alongside the library rows and excluded from the total. A collection that could not be read (rate limited, gated, or erroring) is reported as unreadable with its reason and left out of the total — it is never reported as 0. One attempt per collection: a rate limit is surfaced, not retried. Quota: 🟢 6 GETs.",
+    "Library size snapshot: counts for tracks/albums/shows/episodes/audiobooks/playlists via limit=1 reads — no item paging. The total covers library saves only: playlists are owned and followed collections, so their count is reported alongside the library rows and excluded from the total. A collection that could not be read (rate limited, gated, or erroring) is reported as unreadable with its reason and left out of the total — it is never reported as 0. One attempt per collection: a rate limit is surfaced, not retried. Quota: 6 GETs.",
     {
       response_format: ResponseFormat,
     },
@@ -1069,7 +1069,7 @@ export function registerLibraryTools(server: McpServer, client: SpotifyClient): 
   // search_saved_albums (#264)
   server.tool(
     'search_saved_albums',
-    'Search saved albums (client-side filter over bounded walk). Quota: 🟢 GET /me/albums paged.',
+    'Search saved albums (client-side filter over bounded walk). Quota: GET /me/albums paged.',
     {
       query: z.string().optional().describe('Substring match against album name/artist'),
       artist: z.string().optional().describe('Substring match against album artist'),
@@ -1107,7 +1107,7 @@ export function registerLibraryTools(server: McpServer, client: SpotifyClient): 
   // search_saved_shows (#265)
   server.tool(
     'search_saved_shows',
-    'Search saved podcast shows (bounded walk + client-side filter). Quota: 🟢 GET /me/shows paged.',
+    'Search saved podcast shows (bounded walk + client-side filter). Quota: GET /me/shows paged.',
     {
       query: z.string().optional().describe('Substring match against show name/publisher'),
       max_results: MaxResults,
@@ -1140,7 +1140,7 @@ export function registerLibraryTools(server: McpServer, client: SpotifyClient): 
   // search_saved_episodes (#266)
   server.tool(
     'search_saved_episodes',
-    'Search saved episodes (bounded walk + client-side filter). Quota: 🟢 GET /me/episodes paged.',
+    'Search saved episodes (bounded walk + client-side filter). Quota: GET /me/episodes paged.',
     {
       query: z.string().optional().describe('Substring against episode/show name'),
       show: z.string().optional().describe('Substring against show name'),
@@ -1173,7 +1173,7 @@ export function registerLibraryTools(server: McpServer, client: SpotifyClient): 
   // search_saved_audiobooks (#267)
   server.tool(
     'search_saved_audiobooks',
-    'Search saved audiobooks (bounded walk + client-side filter). Quota: 🟢 GET /me/audiobooks paged.',
+    'Search saved audiobooks (bounded walk + client-side filter). Quota: GET /me/audiobooks paged.',
     {
       query: z.string().optional().describe('Substring against audiobook name/author'),
       max_results: MaxResults,
