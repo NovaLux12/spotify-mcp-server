@@ -92,10 +92,12 @@ jobs:
 
   publish-mcp-registry:
     runs-on: ubuntu-latest
-    # 15, not 10: the retry budget below is up to 10 attempts 30s apart, so a
-    # 10-minute job limit could time out mid-retry and report a timeout where
-    # the real answer was "npm had not propagated yet".
-    timeout-minutes: 15
+    # Sized against the worst case the retry step can reach, not the common one:
+    # ~70s setup + 10 x 90s attempts + 9 x 30s sleeps = ~21 min. A limit below
+    # that ends the job with "cancelled due to timeout" — the same unhelpful
+    # answer this step exists to replace, just reached a different way. 25
+    # leaves ~4 min of margin.
+    timeout-minutes: 25
     needs: publish-npm
     permissions:
       contents: read
@@ -128,26 +130,52 @@ jobs:
         # release. Retrying inside the job is the fix; a genuine auth or
         # validation failure still fails the job, just later and with the last
         # error preserved (#1126).
+        #
+        # Every failure is retried identically, on purpose. Telling propagation
+        # lag apart from a bad OIDC token or a schema rejection would mean
+        # matching on the publisher's error text, which this repo does not pin —
+        # so the classifier would rot silently the first time that text changed.
+        # Ten identical attempts cost minutes, and only on a release.
         run: |
           set -euo pipefail
           max_attempts=10
+          # A hung publisher would otherwise block the loop indefinitely and the
+          # job would end on the job-level timeout with no reason given. The
+          # budget above assumes each attempt is bounded by this.
+          attempt_timeout=90
           last_error=""
+          last_status=""
           for attempt in $(seq 1 "$max_attempts"); do
-            if output="$(./mcp-publisher publish 2>&1)"; then
+            set +e
+            output="$(timeout "$attempt_timeout" ./mcp-publisher publish 2>&1)"
+            status=$?
+            set -e
+            if [ "$status" -eq 0 ]; then
               echo "$output"
               echo "registry publish succeeded on attempt $attempt/$max_attempts"
               exit 0
             fi
             last_error="$output"
+            last_status="$status"
             if [ "$attempt" -lt "$max_attempts" ]; then
-              echo "attempt $attempt/$max_attempts failed — npm propagation may be lagging, retrying in 30s" >&2
-              printf '%s\n' "$output" | tail -n 20 >&2
+              echo "attempt $attempt/$max_attempts failed (exit $status) — npm propagation may be lagging, retrying in 30s" >&2
+              if [ -n "$output" ]; then printf '%s\n' "$output" | tail -n 20 >&2; else echo "(no output)" >&2; fi
               sleep 30
             fi
           done
-          echo "::error::registry publish failed after $max_attempts attempts. Last error:" >&2
-          printf '%s\n' "$last_error" >&2
+          # Annotation on stdout: GitHub parses workflow commands from both
+          # streams, but stdout is the documented channel and is what older
+          # runners scanned.
+          echo "::error::registry publish failed after $max_attempts attempts (last exit $last_status)"
+          if [ -n "$last_error" ]; then
+            echo "Last error:" >&2
+            printf '%s\n' "$last_error" >&2
+          else
+            echo "The last attempt produced no output at all, so there is no error to report." >&2
+            echo "If it exited 124, mcp-publisher exceeded the ${attempt_timeout}s per-attempt timeout." >&2
+          fi
           echo "If @novalux12/spotify-mcp is on npm, this is most likely propagation lag rather than a" >&2
           echo "bad release. Cheapest recovery is to re-run this job only:" >&2
           echo "  gh run rerun ${{ github.run_id }} --failed" >&2
+          echo "A rerun gets its own run id, so use the new one if that also fails." >&2
           exit 1
