@@ -24,6 +24,7 @@ import {
 } from '../shaping.js';
 
 import { StatsfmApiError, StatsfmClient } from '../lib/statsfm-client.js';
+import { statsfmRangeSchema } from './statsfm.js';
 
 // ---------------------------------------------------------------------------
 // Parsed-payload fixture seam over the shared stats.fm client
@@ -500,10 +501,13 @@ const statsfmUserSchema = z
   .min(1)
   .describe('stats.fm user ID (or username) — public profile, no auth needed');
 
-const rangeSchema = z
-  .enum(['lifetime', 'month', 'week'])
-  .optional()
-  .describe('stats.fm range window. Default: lifetime');
+/**
+ * `range` is the shared stats.fm ranking window (#720) — the same upstream
+ * parameter the endpoint tools in `statsfm.ts` send, so it must carry the same
+ * values. This module used to keep a private copy that offered `week`/`month`,
+ * which stats.fm rejects with `400 invalid range`.
+ */
+const rangeSchema = statsfmRangeSchema;
 
 interface ToolOut {
   [k: string]: unknown;

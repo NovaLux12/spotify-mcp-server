@@ -737,9 +737,14 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   manifestEntry('playlistmisc', 'playlistmisc', 'src/tools/playlistmisc.ts', registerPlaylistMiscTools, [1, 1089], { scopeKey: 'playlists' }),
   manifestEntry('personalization', 'personalization', 'src/tools/personalization.ts', registerPersonalizationTools, [3, 2532], { readOnlySafe: true }),
   manifestEntry('analytics', 'personalization', 'src/tools/analytics.ts', registerAnalyticsTools, [4, 2817], { readOnlySafe: true }),
-  manifestEntry('statsfm', 'statsfm', 'src/tools/statsfm.ts', (server) => registerStatsfmTools(server), [30, 22721], { readOnlySafe: true }),
-  manifestEntry('taste', 'taste', 'src/tools/statsfm_taste.ts', registerStatsfmTasteTools, [16, 13959], { readOnlySafe: true }),
-  manifestEntry('tastecomposites', 'tastecomposites', 'src/tools/taste_composites.ts', registerTasteCompositeTools, [10, 7994], { readOnlySafe: true }),
+  // #720: the range parameter description now names its accepted values, and
+  // statsfm_taste/taste_composites share the one exported schema. Tool counts
+  // are unchanged; schema bytes rose 196/46/46 for the longer description, so
+  // the derived ceilings move from 24994/15355/8794 to 25208/15405/8844 — under
+  // +1% each, against a 592-tool tools/list payload.
+  manifestEntry('statsfm', 'statsfm', 'src/tools/statsfm.ts', (server) => registerStatsfmTools(server), [30, 22917], { readOnlySafe: true }),
+  manifestEntry('taste', 'taste', 'src/tools/statsfm_taste.ts', registerStatsfmTasteTools, [16, 14005], { readOnlySafe: true }),
+  manifestEntry('tastecomposites', 'tastecomposites', 'src/tools/taste_composites.ts', registerTasteCompositeTools, [10, 8040], { readOnlySafe: true }),
   manifestEntry('tasteplaylist', 'tastecomposites', 'src/tools/taste_playlist.ts', registerTastePlaylistTools, [1, 1723], { scopeKey: 'playlists' }),
   manifestEntry('doctor', 'doctor', 'src/tools/doctortool.ts', registerDoctorTool, [1, 750], { alwaysActive: true, readOnlySafe: true }),
   // 1624 -> 2023 (#713): toolset_report gained a declared `response_format`, and
