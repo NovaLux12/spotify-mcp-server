@@ -478,6 +478,138 @@ describe('upload_playlist_cover', () => {
 });
 
 // ---------------------------------------------------------------------------
+// clone_playlist_cover (#880)
+// ---------------------------------------------------------------------------
+
+describe('clone_playlist_cover', () => {
+  // JPEG SOI + first APP0 marker segment — the smallest plausible JPEG body.
+  const jpegBytes = (n: number) => {
+    const buf = Buffer.alloc(n);
+    buf[0] = 0xff;
+    buf[1] = 0xd8;
+    buf[2] = 0xff;
+    return buf;
+  };
+
+  const sourceImages = () => [{ url: "https://img/cover.jpg", width: 640, height: 640 }];
+  // PlaylistId is a 22-char base62 check; both IDs are valid fixtures.
+  const srcId = "4abcdefghijklmnopqrstu";
+  const dstId = "5abcdefghijklmnopqrstu";
+
+  it('rejects a non-JPEG content-type before any PUT to /images', async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () => new Response(Buffer.from('not a jpeg'), {
+      status: 200,
+      headers: { 'content-type': 'image/png' },
+    } as ResponseInit)) as typeof fetch;
+    try {
+      const h = harness((path) => {
+        if (path === `/playlists/${srcId}/images`) return sourceImages();
+        return null;
+      });
+      await assert.rejects(
+        () => h.invoke('clone_playlist_cover', {
+          source_playlist_id: srcId,
+          target_playlist_id: dstId,
+          dry_run: false,
+        }),
+        /not JPEG/,
+      );
+      assert.equal(
+        h.client.calls.filter((c) => c.method === 'PUT_RAW').length,
+        0,
+        'a non-JPEG response must never reach the PUT /images endpoint',
+      );
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('rejects a content-type=jpeg body whose magic bytes are wrong, before any PUT', async () => {
+    // The old handler only enforced size; a server that lied with the wrong
+    // content-type, or one that served a payload that wasn't actually a JPEG,
+    // would slip past and end up in the user's playlist cover slot. The new
+    // helper checks magic bytes (#880).
+    const originalFetch = globalThis.fetch;
+    const fakeJpeg = Buffer.from('this is not a real JPEG body');
+    globalThis.fetch = (async () => new Response(fakeJpeg, {
+      status: 200,
+      headers: { 'content-type': 'image/jpeg' },
+    } as ResponseInit)) as typeof fetch;
+    try {
+      const h = harness((path) => {
+        if (path === `/playlists/${srcId}/images`) return sourceImages();
+        return null;
+      });
+      await assert.rejects(
+        () => h.invoke('clone_playlist_cover', {
+          source_playlist_id: srcId,
+          target_playlist_id: dstId,
+          dry_run: false,
+        }),
+        /magic bytes/i,
+      );
+      assert.equal(h.client.calls.filter((c) => c.method === 'PUT_RAW').length, 0);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('rejects a JPEG body that exceeds the 256 KB cap, before any PUT', async () => {
+    const originalFetch = globalThis.fetch;
+    const oversized = jpegBytes(256 * 1024 + 1);
+    globalThis.fetch = (async () => new Response(oversized, {
+      status: 200,
+      headers: { 'content-type': 'image/jpeg' },
+    } as ResponseInit)) as typeof fetch;
+    try {
+      const h = harness((path) => {
+        if (path === `/playlists/${srcId}/images`) return sourceImages();
+        return null;
+      });
+      await assert.rejects(
+        () => h.invoke('clone_playlist_cover', {
+          source_playlist_id: srcId,
+          target_playlist_id: dstId,
+          dry_run: false,
+        }),
+        /256 KB/,
+      );
+      assert.equal(h.client.calls.filter((c) => c.method === 'PUT_RAW').length, 0);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('PUTs the base64 JPEG when the cover is fetched, validated, and within the cap', async () => {
+    const originalFetch = globalThis.fetch;
+    const jpeg = jpegBytes(1024);
+    globalThis.fetch = (async () => new Response(jpeg, {
+      status: 200,
+      headers: { 'content-type': 'image/jpeg' },
+    } as ResponseInit)) as typeof fetch;
+    try {
+      const h = harness((path) => {
+        if (path === `/playlists/${srcId}/images`) return sourceImages();
+        return null;
+      });
+      const out = await h.invoke('clone_playlist_cover', {
+        source_playlist_id: srcId,
+        target_playlist_id: dstId,
+        dry_run: false,
+      });
+      const puts = h.client.calls.filter((c) => c.method === 'PUT_RAW');
+      assert.equal(puts.length, 1);
+      assert.equal(puts[0]?.path, `/playlists/${dstId}/images`);
+      assert.equal(puts[0]?.arg, jpeg.toString('base64'));
+      assert.match(textOf(out), /Cloned cover/);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // create_playlist
 // ---------------------------------------------------------------------------
 
