@@ -60,12 +60,12 @@ above either ceiling fails CI and server startup.
 | Module | Tools | Schema bytes | Baseline tools | Baseline bytes | Effective tool ceiling | Effective byte ceiling |
 |---|---:|---:|---:|---:|---:|---:|
 | search | 1 | 1,821 | 1 | 1,821 | 2 | 2,004 |
-| catalog | 31 | 27,015 | 31 | 27,015 | 32 | 29,717 |
+| catalog | 31 | 26,957 | 31 | 27,015 | 32 | 29,717 |
 | library | 16 | 14,957 | 16 | 14,957 | 17 | 16,453 |
 | playback | 16 | 12,287 | 16 | 12,287 | 17 | 13,516 |
 | following | 5 | 3,921 | 5 | 3,921 | 6 | 4,314 |
 | users | 2 | 1,613 | 2 | 1,613 | 3 | 1,775 |
-| audiobooks | 4 | 3,535 | 4 | 3,535 | 5 | 3,889 |
+| audiobooks | 4 | 3,715 | 4 | 3,535 | 5 | 3,889 |
 | audiobookcopilot | 3 | 1,870 | 3 | 1,870 | 4 | 2,057 |
 | playlists | 26 | 25,998 | 26 | 25,998 | 27 | 28,598 |
 | playlistops | 3 | 5,489 | 3 | 5,489 | 4 | 6,038 |
@@ -79,7 +79,7 @@ above either ceiling fails CI and server startup.
 | doctor | 1 | 750 | 1 | 750 | 2 | 826 |
 | swarm3meta | 3 | 1,624 | 3 | 1,624 | 4 | 1,787 |
 | libraryanalytics | 4 | 3,350 | 4 | 3,350 | 5 | 3,686 |
-| portability | 11 | 9,762 | 11 | 9,762 | 12 | 10,739 |
+| portability | 11 | 9,804 | 11 | 9,762 | 12 | 10,739 |
 | libraryinsights | 3 | 2,751 | 3 | 2,751 | 4 | 3,027 |
 | libraryhygiene | 1 | 734 | 1 | 734 | 2 | 808 |
 | showradar | 1 | 1,675 | 1 | 1,675 | 2 | 1,843 |
@@ -94,7 +94,7 @@ above either ceiling fails CI and server startup.
 | freshness | 1 | 2,043 | 1 | 2,043 | 2 | 2,248 |
 | searchdive | 1 | 1,561 | 1 | 1,561 | 2 | 1,718 |
 | searchhistory | 2 | 1,096 | 2 | 1,096 | 3 | 1,206 |
-| browse | 3 | 2,665 | 3 | 2,665 | 4 | 2,932 |
+| browse | 3 | 2,664 | 3 | 2,665 | 4 | 2,932 |
 | artistwatch | 6 | 5,944 | 6 | 5,944 | 7 | 6,539 |
 | queueops | 3 | 3,449 | 3 | 3,449 | 4 | 3,794 |
 | playbackext | 13 | 7,857 | 13 | 7,857 | 14 | 8,643 |
@@ -106,7 +106,7 @@ above either ceiling fails CI and server startup.
 | import | 1 | 1,211 | 1 | 1,211 | 2 | 1,333 |
 | smart | 1 | 2,364 | 1 | 2,364 | 2 | 2,601 |
 | exhaustmisc | 10 | 7,924 | 10 | 7,924 | 11 | 8,717 |
-| exhaust2catalog | 19 | 19,283 | 19 | 19,283 | 20 | 21,212 |
+| exhaust2catalog | 19 | 19,272 | 19 | 19,283 | 20 | 21,212 |
 | exhaust2enggating | 0 | 0 | 0 | 0 | 1 | 0 |
 | exhaust2playback | 23 | 17,306 | 23 | 17,306 | 24 | 19,037 |
 | exhaust2playlists | 18 | 23,511 | 18 | 23,511 | 19 | 25,863 |

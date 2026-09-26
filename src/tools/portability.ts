@@ -23,7 +23,7 @@ import { getConfig } from '../config.js';
 // own store paths (scenesFilePath(), historyFilePath()) rather than to a
 // caller-supplied destination. chmod is here for the history-file mode
 // enforcement in export_profile_state.
-import { chmod, mkdir, writeFile, readFile, readdir, stat } from 'node:fs/promises';
+import { appendFile, chmod, copyFile, mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import { exportRootDir, resolveOutputPath, writeOutputFile } from '../paths.js';
@@ -280,6 +280,145 @@ async function tryReadJson(path: string): Promise<unknown | null> {
     return JSON.parse(raw);
   } catch {
     return null;
+  }
+}
+
+/** #752: a record store value — arrays and nulls are not records. */
+const isPlainRecord = (v: unknown): v is Record<string, unknown> =>
+  typeof v === 'object' && v !== null && !Array.isArray(v);
+
+/**
+ * #752: sub-maps whose OWN keys are the entry identity. Spreading only the
+ * top level would let the incoming sub-map replace the existing one and drop
+ * every pre-existing entry inside it.
+ */
+const NESTED_SUBMAPS: Record<string, readonly string[]> = {
+  genre_tags: ['tags'],
+  playback_ext: ['states', 'devicePresets', 'sessions', 'smartRules'],
+  artist_watchlist: ['watchlists'],
+};
+
+/**
+ * #752: scenes.json is a bare `Record<sceneName, Scene>` (scenes.ts), but an
+ * archive may carry the enveloped `{version, scenes:{…}}` form. Either way
+ * the scene map is the store's key space, so it is merged on scene names
+ * rather than replaced wholesale.
+ */
+function sceneMapOf(store: Record<string, unknown>): Record<string, unknown> {
+  return isPlainRecord(store.scenes) ? store.scenes : store;
+}
+
+/** #752: the 90-day window searchhistory.ts already enforces on read and write. */
+const SEARCH_HISTORY_TTL_MS = 90 * 86_400_000;
+
+/** #752: an entry's identity — its `id`, else its own serialisation. */
+function searchEntryKey(entry: unknown): string {
+  if (isPlainRecord(entry) && typeof entry.id === 'string' && entry.id.length > 0) return `id:${entry.id}`;
+  return `raw:${JSON.stringify(entry ?? null)}`;
+}
+
+/** What a merge did, per store, so a dry run can report it without writing. */
+interface MergeOutcome {
+  data: unknown;
+  /** Entries already in the local store. */
+  existing_keys: number;
+  added: number;
+  conflicts: number;
+  dropped_duplicates: number;
+  dropped_expired: number;
+  /** Entries whose timestamp could not be read: kept, never guessed at. */
+  unreadable_timestamps: number;
+}
+
+const NO_DROPPED = { dropped_duplicates: 0, dropped_expired: 0, unreadable_timestamps: 0 };
+
+/** Entries the incoming store adds vs. keys it overrides on the existing one. */
+function keyCounts(existing: Record<string, unknown>, merged: Record<string, unknown>): { added: number; conflicts: number } {
+  const existingKeys = new Set(Object.keys(existing));
+  let added = 0;
+  let conflicts = 0;
+  for (const key of Object.keys(merged)) (existingKeys.has(key) ? conflicts++ : added++);
+  return { added, conflicts };
+}
+
+/** #752: union a record store on its own keys, incoming wins per key. */
+function mergeRecordStore(label: string, existing: Record<string, unknown>, incoming: Record<string, unknown>): MergeOutcome {
+  if (label === 'scenes') {
+    const map = { ...sceneMapOf(existing), ...sceneMapOf(incoming) };
+    return {
+      // The envelope comes from the archive alone: spreading the existing
+      // store's bare keys alongside it would leave phantom scenes at the top
+      // level for loadScenes() to read.
+      data: isPlainRecord(incoming.scenes) ? { ...incoming, scenes: map } : map,
+      existing_keys: Object.keys(sceneMapOf(existing)).length,
+      ...keyCounts(sceneMapOf(existing), map),
+      ...NO_DROPPED,
+    };
+  }
+  const merged: Record<string, unknown> = { ...existing, ...incoming };
+  for (const sub of NESTED_SUBMAPS[label] ?? []) {
+    const eSub = existing[sub];
+    const iSub = incoming[sub];
+    if (isPlainRecord(eSub) && isPlainRecord(iSub)) merged[sub] = { ...eSub, ...iSub };
+  }
+  return { data: merged, existing_keys: Object.keys(existing).length, ...keyCounts(existing, merged), ...NO_DROPPED };
+}
+
+/**
+ * #752: de-duplicate search history on merge and hold it to the retention
+ * window its own reader applies. A blind concat doubled the file on every
+ * re-import and kept rows that every reader then filtered out.
+ */
+function mergeSearchHistory(existing: unknown[], incoming: unknown[]): MergeOutcome {
+  const cutoff = Date.now() - SEARCH_HISTORY_TTL_MS;
+  const seen = new Set<string>();
+  const kept: unknown[] = [];
+  let dropped_duplicates = 0;
+  let dropped_expired = 0;
+  let unreadable_timestamps = 0;
+  for (const entry of [...existing, ...incoming]) {
+    const key = searchEntryKey(entry);
+    if (seen.has(key)) {
+      dropped_duplicates++;
+      continue;
+    }
+    seen.add(key);
+    const at = new Date(isPlainRecord(entry) ? String(entry.timestamp ?? '') : '').getTime();
+    if (!Number.isFinite(at)) {
+      // Not a judgement about the entry — its age is simply unreadable, so it
+      // is kept rather than dropped or aged on a guess.
+      unreadable_timestamps++;
+    } else if (at < cutoff) {
+      dropped_expired++;
+      continue;
+    }
+    kept.push(entry);
+  }
+  return {
+    data: kept,
+    existing_keys: existing.length,
+    added: kept.length - existing.length,
+    conflicts: 0,
+    dropped_duplicates,
+    dropped_expired,
+    unreadable_timestamps,
+  };
+}
+
+/** #752: overwrite is destructive, so the store it replaces is kept beside it. */
+async function writeStoreBackup(filePath: string): Promise<string> {
+  const backup = `${filePath}.bak`;
+  await copyFile(filePath, backup);
+  await chmod(backup, 0o600);
+  return backup;
+}
+
+async function fileExists(path: string): Promise<boolean> {
+  try {
+    await stat(path);
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -783,10 +922,11 @@ export function registerPortabilityTools(server: McpServer, client: SpotifyClien
 
   server.tool(
     'import_profile_state',
-    'Restore local sidecar stores from a profile-state archive. Merge adds to existing stores; overwrite replaces them. Refuses archives newer than this server\'s schema version.',
+    'Restore local sidecar stores from a profile-state archive. merge unions each store on its own keys and de-duplicates search_history by entry id; overwrite replaces each store, keeping a 0600 <file>.bak of what it replaced. dry_run reports the per-store plan and writes nothing. Refuses newer schema versions.',
     {
       input_path: z.string().describe('Path to the profile-state archive JSON file'),
-      mode: z.enum(['merge', 'overwrite']).optional().default('merge').describe('merge = add to existing stores; overwrite = replace them'),
+      mode: z.enum(['merge', 'overwrite']).optional().default('merge').describe('merge = union on each store\'s own keys; overwrite = replace, keeping a .bak'),
+      dry_run: DryRun,
       response_format: ResponseFormat,
     },
     async (args) => {
@@ -808,68 +948,172 @@ export function registerPortabilityTools(server: McpServer, client: SpotifyClien
       }
 
       const allowedKeys = new Set(['scenes', 'genre_tags', 'playback_ext', 'search_history', 'artist_watchlist', 'mutations_history']);
+
+      /**
+       * #752: one row of the per-store plan. Planning only reads, so the same
+       * rows back both the dry run and the commit.
+       */
+      interface StorePlan {
+        store: string;
+        path: string;
+        action: 'created' | 'merged' | 'overwritten' | 'appended' | 'skipped';
+        summary: string;
+        /** The exact value to write. Never echoed into a result payload. */
+        data: unknown;
+        existing_keys: number | null;
+        added: number;
+        conflicts: number;
+        dropped_duplicates: number;
+        dropped_expired: number;
+        unreadable_timestamps: number;
+        /** Overwrite only: the .bak this run wrote, or would write. */
+        backup: string | null;
+      }
+
+      /** The plan as reported — the bytes headed for the store are withheld. */
+      const planRow = ({ data: _bytes, ...row }: StorePlan): Omit<StorePlan, 'data'> => row;
+
+      /** #752: the merge line, shared by the dry run and the commit report. */
+      const mergeSummary = (label: string, o: MergeOutcome): string => {
+        const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`;
+        const notes = [`${label}: ${o.existing_keys} existing + ${o.added} new${o.conflicts > 0 ? `, ${plural(o.conflicts, 'conflict')} overwritten` : ''}`];
+        if (o.dropped_duplicates > 0) notes.push(`dropped ${plural(o.dropped_duplicates, 'duplicate entry')}`);
+        if (o.dropped_expired > 0) notes.push(`dropped ${plural(o.dropped_expired, 'entry')} older than 90 days`);
+        if (o.unreadable_timestamps > 0) notes.push(`kept ${plural(o.unreadable_timestamps, 'entry')} whose timestamp could not be read`);
+        return notes.join('; ');
+      };
+
+      const plan: StorePlan[] = [];
       const results: Record<string, string> = {};
+      const backups: Record<string, string> = {};
 
       const writeStore = async (filePath: string, data: unknown) => {
         await mkdir(dirname(filePath), { recursive: true, mode: 0o700 });
         await writeFile(filePath, `${JSON.stringify(data, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
       };
 
-      const mergeOrOverwrite = async (
+      const planStore = async (
         label: string,
         filePath: string,
         incoming: unknown,
-        isRecord: boolean,
+        kind: 'record' | 'array',
       ): Promise<void> => {
         if (incoming == null) return;
+        const present = await fileExists(filePath);
+        const incomingCount = kind === 'array'
+          ? (Array.isArray(incoming) ? incoming.length : 0)
+          : (isPlainRecord(incoming) ? Object.keys(incoming).length : 0);
+        const base = {
+          store: label,
+          path: filePath,
+          existing_keys: 0,
+          added: 0,
+          conflicts: 0,
+          ...NO_DROPPED,
+          backup: null as string | null,
+        };
+
         if (args.mode === 'overwrite') {
-          await writeStore(filePath, incoming);
-          results[label] = 'overwritten';
+          plan.push({
+            ...base,
+            action: present ? 'overwritten' : 'created',
+            data: incoming,
+            added: incomingCount,
+            backup: present ? `${filePath}.bak` : null,
+            summary: present
+              ? `replace ${label} with ${incomingCount} archive entries — the current store is kept at ${filePath}.bak`
+              : `create ${label} with ${incomingCount} archive entries (no local store to replace)`,
+          });
           return;
         }
-        // merge
+
         const existing = await tryReadJson(filePath);
-        if (isRecord && existing && typeof existing === 'object' && incoming && typeof incoming === 'object') {
-          // For record stores, merge keys (incoming wins on conflict)
-          const merged = { ...(existing as Record<string, unknown>), ...(incoming as Record<string, unknown>) };
-          // Special handling for nested record shapes
-          // genre_tags: { version, tags: {...} } -> merge tags
-          if (label === 'genre_tags') {
-            const eTags = (existing as { tags?: Record<string, unknown> }).tags ?? {};
-            const iTags = (incoming as { tags?: Record<string, unknown> }).tags ?? {};
-            (merged as Record<string, unknown>).tags = { ...(eTags as Record<string, unknown>), ...(iTags as Record<string, unknown>) };
-          }
-          // playback_ext: { states, devicePresets, sessions, ... } -> merge each sub-record
-          if (label === 'playback_ext') {
-            for (const sub of ['states', 'devicePresets', 'sessions', 'smartRules']) {
-              const eSub = (existing as Record<string, unknown>)[sub];
-              const iSub = (incoming as Record<string, unknown>)[sub];
-              if (eSub && typeof eSub === 'object' && iSub && typeof iSub === 'object') {
-                (merged as Record<string, unknown>)[sub] = { ...(eSub as Record<string, unknown>), ...(iSub as Record<string, unknown>) };
-              }
-            }
-          }
-          // artist_watchlist: { watchlists: {...} } -> merge watchlists
-          if (label === 'artist_watchlist') {
-            const eWl = (existing as { watchlists?: Record<string, unknown> }).watchlists ?? {};
-            const iWl = (incoming as { watchlists?: Record<string, unknown> }).watchlists ?? {};
-            (merged as Record<string, unknown>).watchlists = { ...(eWl as Record<string, unknown>), ...(iWl as Record<string, unknown>) };
-          }
-          await writeStore(filePath, merged);
-          results[label] = 'merged';
-        } else if (Array.isArray(existing) && Array.isArray(incoming)) {
-          // search_history: array — concat
-          const merged = [...existing, ...incoming];
-          await writeStore(filePath, merged);
-          results[label] = 'merged';
-        } else if (existing == null) {
-          await writeStore(filePath, incoming);
-          results[label] = 'created';
-        } else {
-          // Fallback: overwrite if shapes don't match merge expectations
-          await writeStore(filePath, incoming);
-          results[label] = 'overwritten';
+        // A local store that is not this kind — absent, or present in another
+        // shape — has no keys to merge with, so it merges against an empty one
+        // and is reported as the create-or-replace it really is. The
+        // de-duplication and retention the merge applies then hold on the very
+        // first import too.
+        const compatible = kind === 'record' ? isPlainRecord(existing) : Array.isArray(existing);
+        const pushMerge = (outcome: MergeOutcome) => {
+          plan.push({
+            ...base,
+            action: compatible ? 'merged' : present ? 'overwritten' : 'created',
+            data: outcome.data,
+            existing_keys: outcome.existing_keys,
+            added: outcome.added,
+            conflicts: outcome.conflicts,
+            dropped_duplicates: outcome.dropped_duplicates,
+            dropped_expired: outcome.dropped_expired,
+            unreadable_timestamps: outcome.unreadable_timestamps,
+            backup: present ? `${filePath}.bak` : null,
+            summary: compatible
+              ? mergeSummary(label, outcome)
+              : present
+                ? `${label}: the local store does not match the archive's ${kind} shape, so it is replaced with ${outcome.added} archive entries — the current store is kept at ${filePath}.bak`
+                : `create ${label} with ${outcome.added} archive entries (no local store to merge into)`,
+          });
+        };
+        if (kind === 'record' && isPlainRecord(incoming)) {
+          pushMerge(mergeRecordStore(label, compatible ? (existing as Record<string, unknown>) : {}, incoming));
+          return;
         }
+        if (kind === 'array' && Array.isArray(incoming)) {
+          pushMerge(mergeSearchHistory(compatible ? (existing as unknown[]) : [], incoming));
+          return;
+        }
+        // The archive does not carry this store in a shape the store's own
+        // reader accepts, so writing it would break every reader of the file.
+        // The local store is left alone and the skip is reported.
+        plan.push({
+          ...base,
+          action: 'skipped',
+          data: null,
+          summary: `${label}: the archive's entry is not a ${kind} store, so the local store is left unchanged`,
+        });
+      };
+
+      /** #752: the mutation ledger is JSONL, appended to rather than rewritten. */
+      const planLedger = async (value: unknown): Promise<void> => {
+        if (!Array.isArray(value)) return;
+        const histPath = historyFilePath();
+        const present = await fileExists(histPath);
+        // An unreadable ledger reports no count rather than a fabricated zero.
+        const existingKeys = present
+          ? await readFile(histPath, 'utf8').then(
+            (raw) => raw.split('\n').filter((l) => l.trim().length > 0).length,
+            () => null,
+          )
+          : 0;
+        const data = `${value.map((r) => JSON.stringify(r)).join('\n')}\n`;
+        if (args.mode === 'overwrite') {
+          plan.push({
+            store: 'mutations_history',
+            path: histPath,
+            action: present ? 'overwritten' : 'created',
+            summary: present
+              ? `replace mutations_history with ${value.length} ledger records — the current ledger is kept at ${histPath}.bak`
+              : `create mutations_history with ${value.length} ledger records (no local ledger to replace)`,
+            data,
+            existing_keys: 0,
+            added: value.length,
+            conflicts: 0,
+            ...NO_DROPPED,
+            backup: present ? `${histPath}.bak` : null,
+          });
+          return;
+        }
+        plan.push({
+          store: 'mutations_history',
+          path: histPath,
+          action: 'appended',
+          summary: `append ${value.length} ledger record(s) to mutations_history`,
+          data,
+          existing_keys: existingKeys,
+          added: value.length,
+          conflicts: 0,
+          ...NO_DROPPED,
+          backup: null,
+        });
       };
 
       for (const [key, value] of Object.entries(stores)) {
@@ -877,51 +1121,83 @@ export function registerPortabilityTools(server: McpServer, client: SpotifyClien
         if (value == null) continue;
         switch (key) {
           case 'scenes':
-            await mergeOrOverwrite('scenes', scenesFilePath(), value, true);
+            await planStore('scenes', scenesFilePath(), value, 'record');
             break;
           case 'genre_tags':
-            await mergeOrOverwrite('genre_tags', genreTagsPath(), value, true);
+            await planStore('genre_tags', genreTagsPath(), value, 'record');
             break;
           case 'playback_ext':
-            await mergeOrOverwrite('playback_ext', playbackExtFile(), value, true);
+            await planStore('playback_ext', playbackExtFile(), value, 'record');
             break;
           case 'search_history':
-            await mergeOrOverwrite('search_history', searchHistoryFile(), value, false);
+            await planStore('search_history', searchHistoryFile(), value, 'array');
             break;
           case 'artist_watchlist':
-            await mergeOrOverwrite('artist_watchlist', watchlistFilePath(), value, true);
+            await planStore('artist_watchlist', watchlistFilePath(), value, 'record');
             break;
-          case 'mutations_history': {
-            if (Array.isArray(value)) {
-              const histPath = historyFilePath();
-              await mkdir(dirname(histPath), { recursive: true, mode: HISTORY_DIR_MODE });
-              // Mode arguments only apply at creation, so re-assert after the
-              // write: a pre-existing or copied-in ledger must not stay
-              // group/world-readable (#628).
-              await chmod(dirname(histPath), HISTORY_DIR_MODE);
-              if (args.mode === 'overwrite') {
-                const lines = (value as unknown[]).map((r) => JSON.stringify(r)).join('\n') + '\n';
-                await writeFile(histPath, lines, { encoding: 'utf8', mode: HISTORY_FILE_MODE });
-                results.mutations_history = 'overwritten';
-              } else {
-                const lines = (value as unknown[]).map((r) => JSON.stringify(r)).join('\n') + '\n';
-                const { appendFile } = await import('node:fs/promises');
-                try {
-                  await appendFile(histPath, lines, { encoding: 'utf8', mode: HISTORY_FILE_MODE } as unknown as Record<string, unknown>);
-                } catch {
-                  await writeFile(histPath, lines, { encoding: 'utf8', mode: HISTORY_FILE_MODE });
-                }
-                results.mutations_history = 'merged';
-              }
-              await chmod(histPath, HISTORY_FILE_MODE);
-            }
+          case 'mutations_history':
+            await planLedger(value);
             break;
-          }
         }
       }
 
-      const payload = { ok: true, mode: args.mode, input_path: args.input_path, results };
-      return shapeResult(rf, `Imported profile state from ${args.input_path} (mode: ${args.mode}) — ${Object.entries(results).map(([k, v]) => `${k}:${v}`).join(', ') || 'nothing to import'}.`, payload);
+      if (args.dry_run) {
+        const payload = {
+          ok: true,
+          dry_run: true,
+          executed: false,
+          mode: args.mode,
+          input_path: args.input_path,
+          plan: plan.map(planRow),
+        };
+        return shapeResult(rf, describeDryRun('import_profile_state', args.input_path, plan.map((p) => p.summary)), payload);
+      }
+
+      for (const step of plan) {
+        if (step.action === 'skipped') {
+          results[step.store] = 'skipped';
+          continue;
+        }
+        if (step.backup) backups[step.store] = await writeStoreBackup(step.path);
+        if (step.store === 'mutations_history') {
+          await mkdir(dirname(step.path), { recursive: true, mode: HISTORY_DIR_MODE });
+          // Mode arguments only apply at creation, so re-assert after the
+          // write: a pre-existing or copied-in ledger must not stay
+          // group/world-readable (#628).
+          await chmod(dirname(step.path), HISTORY_DIR_MODE);
+          const body = step.data as string;
+          if (step.action === 'appended') {
+            try {
+              await appendFile(step.path, body, { encoding: 'utf8', mode: HISTORY_FILE_MODE } as unknown as Record<string, unknown>);
+            } catch {
+              await writeFile(step.path, body, { encoding: 'utf8', mode: HISTORY_FILE_MODE });
+            }
+          } else {
+            await writeFile(step.path, body, { encoding: 'utf8', mode: HISTORY_FILE_MODE });
+          }
+          await chmod(step.path, HISTORY_FILE_MODE);
+          results.mutations_history = step.action === 'appended' ? 'merged' : step.action;
+          continue;
+        }
+        await writeStore(step.path, step.data);
+        results[step.store] = step.action;
+      }
+
+      const payload = {
+        ok: true,
+        dry_run: false,
+        executed: true,
+        mode: args.mode,
+        input_path: args.input_path,
+        results,
+        ...(Object.keys(backups).length > 0 ? { backups } : {}),
+        plan: plan.map(planRow),
+      };
+      const backupNote = Object.keys(backups).length > 0
+        ? ` Replaced stores were backed up first: ${Object.entries(backups).map(([k, v]) => `${k} → ${v}`).join(', ')}.`
+        : '';
+      return shapeResult(rf, `Imported profile state from ${args.input_path} (mode: ${args.mode}) — ${plan.map((p) => p.summary).join(' | ') || 'nothing to import'}.${backupNote}`, payload);
+
     },
   );
 
