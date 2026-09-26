@@ -48,9 +48,31 @@ beforeEach(async () => { dir = await mkdtemp(join(tmpdir(), 'pbext-')); process.
 afterEach(async () => { delete process.env.SPOTIFY_MCP_PLAYBACKEXT_FILE; await rm(dir, { recursive: true, force: true }); });
 
 describe('playbackext', () => {
-  it('registers 13+ tools', () => {
+  // #667: the old `it('registers 13+ tools')` / `length >= 12` pair could not
+  // fail — the title promised a floor of 13, the bound allowed 12, so losing
+  // one registration entirely still passed. Pin the exact set: a dropped tool
+  // is a silent feature loss and an added one is drift.
+  it('registers exactly the 13 playback-extension tools', () => {
     const { client } = makeClient(); const h = serverHarness(client);
-    assert.ok(h.registered.length >= 12);
+    assert.deepEqual(
+      h.registered.map((r: { name: string }) => r.name).sort(),
+      [
+        'apply_device_presets',
+        'list_device_presets',
+        'list_playback_states',
+        'list_sessions',
+        'refresh_smart_playlist',
+        'rename_device',
+        'replay_session',
+        'restore_playback_state',
+        'save_playback_state',
+        'save_show_digest',
+        'save_smart_playlist_rule',
+        'set_device_volume_preset',
+        'tag_listening_session',
+      ],
+      'playback-extension tool surface drifted (added or dropped a registration)',
+    );
   });
   it('save + list + restore playback state', async () => {
     const { client, puts } = makeClient({ playback: { is_playing: true, progress_ms: 5000, shuffle_state: true, repeat_state: 'context', item: { uri: 'spotify:track:abc', name: 'Abc', type: 'track' } } });
@@ -63,16 +85,29 @@ describe('playbackext', () => {
     assert.match(restored.content[0].text, /Restored/);
     assert.ok(puts.some((p) => p.includes('/me/player/play')));
   });
+  // #667: `/Kitchen|dev1/` was satisfied by either half alone — a row that
+  // printed the device id but lost the label passed, which is the exact
+  // half-broken state rename_device exists to prevent. Assert the whole row.
   it('device presets round-trip', async () => {
-    const { client } = makeClient(); const h = serverHarness(client);
+    const { client, puts } = makeClient(); const h = serverHarness(client);
     await h.invoke('rename_device', { device_id: 'dev1', new_name: 'Kitchen' });
     await h.invoke('set_device_volume_preset', { device_id: 'dev1', volume_percent: 42 });
     const listed = await h.invoke('list_device_presets', {});
-    assert.match(listed.content[0].text, /Kitchen|dev1/);
+    assert.equal(
+      listed.content[0].text,
+      '1 device preset(s):\n- dev1: label="Kitchen" vol=42',
+      'list_device_presets must report dev1 carrying both its label and its volume',
+    );
     const dry = await h.invoke('apply_device_presets', { dry_run: true });
-    assert.match(dry.content[0].text, /Would apply|dry run/i);
+    assert.equal(
+      dry.content[0].text,
+      '[dry run] Would apply 1 preset(s):\n  - dev1: volume 42',
+      'a dry run must name the device and the volume it would write',
+    );
+    assert.equal(puts.length, 0, 'a dry run must not reach the API');
     const applied = await h.invoke('apply_device_presets', {});
-    assert.match(applied.content[0].text, /Applied/);
+    assert.equal(applied.content[0].text, 'Applied 1/1 volume presets.');
+    assert.deepEqual(puts, ['/me/player/volume?volume_percent=42&device_id=dev1']);
   });
   // #830: Spotify declares volume_percent as the required query parameter; the
   // `volume` spelling is silently rejected, so every preset write was a no-op.
