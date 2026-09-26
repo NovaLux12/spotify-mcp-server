@@ -39,15 +39,15 @@ function emit(fmt: string | undefined, echo: Record<string, unknown>, text: stri
 export function playbackExtFile(env: NodeJS.ProcessEnv = process.env): string {
   return env.SPOTIFY_MCP_PLAYBACKEXT_FILE ?? join(homedir(), '.spotify-mcp', 'playback-ext.json');
 }
-export interface PlaybackSnapshot {
+interface PlaybackSnapshot {
   name: string;
   saved_at: string;
   playback: PlaybackState | null;
   note?: string;
 }
-export interface DevicePreset { label?: string; volume?: number }
-export interface ListeningSession { id: string; tags: string[]; created_at: string; tracks: string[]; note?: string }
-export interface PlaybackExtStore {
+interface DevicePreset { label?: string; volume?: number }
+interface ListeningSession { id: string; tags: string[]; created_at: string; tracks: string[]; note?: string }
+interface PlaybackExtStore {
   states: Record<string, PlaybackSnapshot>;
   devicePresets: Record<string, DevicePreset>;
   sessions: Record<string, ListeningSession>;
@@ -214,7 +214,7 @@ const SMART_SOURCES = ['top_tracks', 'recently_played', 'saved_tracks'] as const
 type SmartSource = (typeof SMART_SOURCES)[number];
 
 /** The rule object save_smart_playlist_rule persists and refresh_smart_playlist rebuilds from. */
-export interface SmartPlaylistRule {
+interface SmartPlaylistRule {
   source: SmartSource;
   time_range: 'short_term' | 'medium_term' | 'long_term';
   limit: number;
@@ -230,7 +230,7 @@ export interface SmartPlaylistRule {
 }
 
 /** Coerce an arbitrary persisted rule record into the supported rule contract. */
-export function normalizeSmartRule(raw: unknown, defaultScanCap: number): SmartPlaylistRule {
+function normalizeSmartRule(raw: unknown, defaultScanCap: number): SmartPlaylistRule {
   const r = (raw ?? {}) as Record<string, unknown>;
   const source = SMART_SOURCES.includes(r.source as SmartSource) ? (r.source as SmartSource) : 'top_tracks';
   const timeRange = r.time_range;
@@ -249,7 +249,7 @@ export function normalizeSmartRule(raw: unknown, defaultScanCap: number): SmartP
   };
 }
 
-export interface SmartResolution {
+interface SmartResolution {
   uris: string[];
   candidates_scanned: number;
   truncated_at_scan_cap: boolean;

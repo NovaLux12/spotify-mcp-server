@@ -28,7 +28,7 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
 
-export { GATED_PATH_PATTERNS, graceful403Message, isGatedPath } from '../gating.js';
+export { GATED_PATH_PATTERNS, isGatedPath } from '../gating.js';
 
 /**
  * Slice registration. Registers no tools: the gating contract is installed

@@ -62,7 +62,7 @@ function canonicalPlayableUri(value: string): string {
   return canonical;
 }
 
-export interface ParsedDocument {
+interface ParsedDocument {
   format: 'm3u' | 'csv';
   /** Deduplicated URIs in first-seen document order. */
   uris: string[];

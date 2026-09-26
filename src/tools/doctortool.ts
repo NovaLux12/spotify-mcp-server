@@ -30,9 +30,9 @@ import { readOnlyModeEnabled, REGISTRAR_MANIFEST } from './annotations.js';
 // Row model
 // ---------------------------------------------------------------------------
 
-export type DoctorStatus = 'pass' | 'fail' | 'warn' | 'info';
+type DoctorStatus = 'pass' | 'fail' | 'warn' | 'info';
 
-export interface DoctorRow {
+interface DoctorRow {
   /** Stable check id, e.g. 'token', 'scopes', 'premium', 'rate_limit', 'config'. */
   id: string;
   status: DoctorStatus;
@@ -46,14 +46,14 @@ export interface DoctorRow {
   message?: string;
 }
 
-export interface DoctorReport {
+interface DoctorReport {
   /** True when no row has status 'fail' (warns/infos don't fail a diagnostic). */
   ok: boolean;
   rows: DoctorRow[];
   surface: DoctorSurface;
 }
 
-export interface DoctorSurface {
+interface DoctorSurface {
   registry_available: boolean;
   registered_tools: number;
   total_modules: number;

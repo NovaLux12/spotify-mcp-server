@@ -25,7 +25,7 @@ import { ResponseFormat, DryRun, describeDryRun } from '../shaping.js';
 // Sidecar store
 // ---------------------------------------------------------------------------
 
-export interface Scene {
+interface Scene {
   /** Device name substring or exact device id, resolved against /me/player/devices. */
   device_hint?: string;
   /** Master volume percent 0–100. */
@@ -239,14 +239,14 @@ export function __setWindDownScheduler(timers?: WindDownTimers | null): void {
   windDownTimers = timers ?? realTimers;
 }
 
-export interface WindDownStepFailure {
+interface WindDownStepFailure {
   step: number;
   at_minute: number;
   action: 'volume' | 'pause';
   error: string;
 }
 
-export interface WindDownStatus {
+interface WindDownStatus {
   key: string;
   state: 'scheduled' | 'running' | 'completed' | 'failed' | 'cancelled';
   started_at: string;
@@ -257,11 +257,11 @@ export interface WindDownStatus {
   failures: WindDownStepFailure[];
 }
 
-export type ActiveWindDownStep =
+type ActiveWindDownStep =
   | { action: 'volume'; volume: number; at_minute: number }
   | { action: 'pause'; volume: null; at_minute: number };
 
-export interface ActiveWindDown extends WindDownStatus {
+interface ActiveWindDown extends WindDownStatus {
   cancelled: boolean;
   pending: WindDownHandle[];
   /** Remaining steps (earliest first), keyed by their absolute minute mark. */

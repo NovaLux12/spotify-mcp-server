@@ -194,7 +194,7 @@ async function gatherCandidates(
 }
 
 /** Greedy in-order pack: take each playable episode that fits, stop at the first overrun. */
-export function packSession(
+function packSession(
   candidates: PlannedEpisode[],
   minutes: number,
   candidatesTruncated = false,

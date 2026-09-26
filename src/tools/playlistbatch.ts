@@ -15,7 +15,7 @@ type ToolResult = { content: TextContent[]; structuredContent?: Record<string, u
 function textResult(text: string, structured?: Record<string, unknown>): ToolResult { const content: TextContent[] = [{ type: 'text', text }]; return structured ? { content, structuredContent: structured } : { content }; }
 const jsonText = (data: unknown): string => JSON.stringify(data, null, 2);
 export const BATCH_ADD_ELICIT_THRESHOLD = 100;
-export const MOVE_ELICIT_THRESHOLD = 50;
+const MOVE_ELICIT_THRESHOLD = 50;
 const FETCH_ALL_CAP = () => getConfig().fetchAllCap;
 const BATCH_WALK_FIELDS = {
   limit: z.number().int().min(1).max(100).optional().describe('Source page size, 1–100. Default: 100'),

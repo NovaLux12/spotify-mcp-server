@@ -167,7 +167,7 @@ export interface HistoryRecord {
   [key: string]: unknown;
 }
 
-export interface HistoryReadOptions {
+interface HistoryReadOptions {
   /** Max records to return, oldest-dropped. Default DEFAULT_HISTORY_READ_LIMIT. */
   limit?: number;
   /** Override the file to read (rotation archive derived from it). */
@@ -185,7 +185,7 @@ export const DEFAULT_HISTORY_READ_LIMIT = 500;
 export const HISTORY_FILE_MODE = 0o600;
 export const HISTORY_DIR_MODE = 0o700;
 /** Single rotation generation; keeps total on-disk history at 2 x maxBytes. */
-export const HISTORY_ARCHIVE_SUFFIX = '.1';
+const HISTORY_ARCHIVE_SUFFIX = '.1';
 
 const READ_CHUNK_BYTES = 64 * 1024;
 
@@ -233,7 +233,7 @@ export function redactPath(raw: string): string {
  * Truncated SHA-256 of the exact request path. Lets an audit correlate two
  * records that hit the same target without storing the target itself.
  */
-export function targetFingerprint(raw: string): string {
+function targetFingerprint(raw: string): string {
   return createHash('sha256').update(raw).digest('hex').slice(0, 16);
 }
 

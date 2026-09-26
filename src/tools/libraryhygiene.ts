@@ -28,16 +28,16 @@ import type { ResponseFormatValue } from '../shaping.js';
 import { getConfig } from '../config.js';
 
 /** Hard cap on distinct GET /albums/{id} lookups per analysis run (#112 idea 5). */
-export const ALBUM_LOOKUP_CAP = 200;
+const ALBUM_LOOKUP_CAP = 200;
 
 /** Albums per GET /albums?ids= call (#763) — the batch endpoint's per-request id cap. */
-export const ALBUM_BATCH_SIZE = CHUNK_CAPS.albums;
+const ALBUM_BATCH_SIZE = CHUNK_CAPS.albums;
 
 /** `/me/tracks` page size used by the walk (see analyze). */
 const TRACK_PAGE_LIMIT = 50;
 
 /** Coverage ratio at which an album counts as near-complete (inclusive). */
-export const NEAR_COMPLETE_THRESHOLD = 0.7;
+const NEAR_COMPLETE_THRESHOLD = 0.7;
 
 // ---------------------------------------------------------------------------
 // Shapes
@@ -50,7 +50,7 @@ interface LikedTrackRef {
 }
 
 /** All liked tracks sharing one parent album. */
-export interface AlbumGroup {
+interface AlbumGroup {
   album_id: string;
   album_name: string;
   album_uri: string;
@@ -66,7 +66,7 @@ export interface AlbumGroup {
   coverage: number | null;
 }
 
-export interface NearCompleteFinding {
+interface NearCompleteFinding {
   kind: 'near_complete_album';
   album_id: string;
   album_name: string;
@@ -80,7 +80,7 @@ export interface NearCompleteFinding {
   suggestion: string;
 }
 
-export interface OrphanedSingleFinding {
+interface OrphanedSingleFinding {
   kind: 'orphaned_single';
   track_id: string;
   track_name: string;
@@ -146,7 +146,7 @@ function shapeResult(rf: ResponseFormatValue, prose: string, payload: AnalysisRe
 
 const pct = (ratio: number): string => `${Math.round(ratio * 100)}%`;
 
-export function buildSuggestion(likedCount: number): string {
+function buildSuggestion(likedCount: number): string {
   return `save the album and optionally prune the ${likedCount} single${likedCount === 1 ? '' : 's'} you liked individually`;
 }
 

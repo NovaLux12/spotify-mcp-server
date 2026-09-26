@@ -71,13 +71,13 @@ export interface ReceiptClient {
   get<T>(path: string, params?: Record<string, string>): Promise<T | null>;
 }
 
-export type ReceiptKind = 'playlist_items' | 'library' | 'playlist_meta';
+type ReceiptKind = 'playlist_items' | 'library' | 'playlist_meta';
 
 /**
  * One entry per URI whose playlist occurrences a mutation touched: the
  * zero-based row indices the mutation added or removed (#625).
  */
-export interface ReceiptAffected {
+interface ReceiptAffected {
   uri: string;
   positions: number[];
 }

@@ -38,8 +38,8 @@ export function exportRootDir(env: NodeJS.ProcessEnv = process.env): string {
  * silently becoming "keep forever"; the floor for an ENABLED window is
  * MIN_BACKUP_RETENTION_DAYS, so the smallest non-zero window is one day.
  */
-export const DEFAULT_BACKUP_RETENTION_DAYS = 30;
-export const MIN_BACKUP_RETENTION_DAYS = 1;
+const DEFAULT_BACKUP_RETENTION_DAYS = 30;
+const MIN_BACKUP_RETENTION_DAYS = 1;
 
 export function backupRetentionDays(env: NodeJS.ProcessEnv = process.env): number {
   const raw = env.SPOTIFY_MCP_BACKUP_RETENTION_DAYS;
@@ -74,7 +74,7 @@ async function realpathAllowingMissing(target: string): Promise<string> {
   }
 }
 
-export interface ResolveOutputBase {
+interface ResolveOutputBase {
   /** Configured output root; nothing outside it may be written. */
   root: string;
   /** Caller destination: absolute, or interpreted relative to `root`. */
@@ -88,18 +88,18 @@ export interface ResolveOutputBase {
   overwrite?: boolean;
 }
 
-export interface ResolveOutputOptions extends ResolveOutputBase {
+interface ResolveOutputOptions extends ResolveOutputBase {
   kind: 'file' | 'directory';
 }
 
 /** Resolved destination for a directory: the directory to write into. */
-export interface ResolvedDirectory {
+interface ResolvedDirectory {
   /** Absolute, symlink-resolved directory the tool may write into. */
   readonly dir: string;
 }
 
 /** Resolved destination for a file: its parent, plus the file itself. */
-export interface ResolvedFile extends ResolvedDirectory {
+interface ResolvedFile extends ResolvedDirectory {
   /** Absolute, symlink-resolved file path. */
   readonly file: string;
 }
@@ -202,7 +202,7 @@ function isInsideRoot(root: string, target: string): boolean {
 // ---------------------------------------------------------------------------
 
 /** Default ceiling on a document a tool will pull into memory: 32 MB. */
-export const DEFAULT_MAX_DOCUMENT_BYTES = 32 * 1024 * 1024;
+const DEFAULT_MAX_DOCUMENT_BYTES = 32 * 1024 * 1024;
 
 /**
  * NEW ENV VAR SPOTIFY_MCP_MAX_DOCUMENT_MB — per-document read ceiling in MB
@@ -216,7 +216,7 @@ export function maxDocumentBytes(env: NodeJS.ProcessEnv = process.env): number {
   return mb * 1024 * 1024;
 }
 
-export interface ResolveInputOptions {
+interface ResolveInputOptions {
   /** Every directory a read may come from; anything else is refused. */
   roots: readonly string[];
   /** Tool name, quoted in every refusal so the caller knows who refused. */
@@ -229,7 +229,7 @@ export interface ResolveInputOptions {
   envHint?: string;
 }
 
-export interface ResolvedInput {
+interface ResolvedInput {
   /** Absolute, symlink-resolved path of a regular file inside a root. */
   path: string;
   /** Size the file had at stat() time. */

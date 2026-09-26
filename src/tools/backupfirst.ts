@@ -24,7 +24,7 @@ class BackupFirstError extends Error {
 }
 
 /** Create a pre-flight snapshot and return its path + counts. Throws on failure. */
-export async function createPreflightSnapshot(
+async function createPreflightSnapshot(
   client: SpotifyClient,
   opts?: { notes?: string },
 ): Promise<{ file: string; counts: Record<string, unknown>; bytes: number }> {

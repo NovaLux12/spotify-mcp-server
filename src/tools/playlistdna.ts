@@ -63,7 +63,7 @@ function shapeResult(
 export const ARTIST_BONUS = 2;
 
 /** One scored grow candidate. */
-export interface DnaCandidate {
+interface DnaCandidate {
   track_id: string;
   uri: string;
   name: string;
@@ -109,7 +109,7 @@ function collectSeeds(rows: ItemRows): { ids: Set<string>; artists: Map<string, 
   return { ids, artists };
 }
 
-export interface GrowPlanInput {
+interface GrowPlanInput {
   targetId: string;
   targetName: string;
   targetItems: ItemRows;
@@ -119,7 +119,7 @@ export interface GrowPlanInput {
   size: number;
 }
 
-export interface GrowPlan {
+interface GrowPlan {
   targetId: string;
   targetName: string;
   seedTracks: number;
@@ -131,7 +131,7 @@ export interface GrowPlan {
  * Pure scoring core over pre-fetched pages so tests can drive fixtures
  * directly through the same code path the handler uses.
  */
-export function buildGrowPlan(input: GrowPlanInput): GrowPlan {
+function buildGrowPlan(input: GrowPlanInput): GrowPlan {
   // 1. Seeds.
   const { ids: seedIds, artists: seedArtists } = collectSeeds(input.targetItems);
 

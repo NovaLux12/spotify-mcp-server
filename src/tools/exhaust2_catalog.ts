@@ -72,7 +72,7 @@ function emit(rf: ResponseFormatValue, prose: string, payload: Record<string, un
 }
 
 /** m:ss duration formatting for prose rows; h:mm:ss once an hour or more. */
-export function fmtDur(ms: number): string {
+function fmtDur(ms: number): string {
   if (!Number.isFinite(ms) || ms < 0) return '?:??';
   const s = Math.floor((ms % 60_000) / 1000);
   if (ms >= 3_600_000) {
@@ -85,7 +85,7 @@ export function fmtDur(ms: number): string {
 }
 
 /** Parse the year prefix of an ISO-ish Spotify release date, or null. */
-export function yearOf(date: string | null | undefined): number | null {
+function yearOf(date: string | null | undefined): number | null {
   if (!date) return null;
   const y = Number(date.slice(0, 4));
   return Number.isInteger(y) && y > 0 ? y : null;
@@ -104,7 +104,7 @@ function daysBetween(a: number, b: number): number {
 }
 
 /** Lowercase, strip punctuation/symbols, collapse whitespace. */
-export function normalizeName(name: string): string {
+function normalizeName(name: string): string {
   return name
     .toLowerCase()
     .normalize('NFKD')
@@ -195,7 +195,7 @@ function emitSearchResult(
  * on /browse/categories or /artists/{id}/top-tracks becomes a short-circuit
  * disclosure naming the gate, never a raw Forbidden error.
  */
-export function gatedEndpointMessage(endpoint: string): string {
+function gatedEndpointMessage(endpoint: string): string {
   return (
     `Spotify returned 403 for ${endpoint} — this endpoint is app-registration gated ` +
     '(the #329 gated surface: browse categories and artist top-tracks are not enabled ' +
@@ -213,7 +213,7 @@ function isGatedError(err: unknown): err is SpotifyApiError {
  * album read costs one extra request, so the walk is bounded and anything past
  * the cap is disclosed rather than silently skipped.
  */
-export const COLLAB_TRACK_CREDIT_CAP = 10;
+const COLLAB_TRACK_CREDIT_CAP = 10;
 
 /**
  * Reason recorded when an album's track-credits request comes back without a
@@ -221,7 +221,7 @@ export const COLLAB_TRACK_CREDIT_CAP = 10;
  * whose body has no `items` array. That is a failed read, not a
  * collaborator-free album, so it takes the same #803 path as a throw.
  */
-export const ALBUM_CREDITS_MISSING_REASON = 'no track list in the response';
+const ALBUM_CREDITS_MISSING_REASON = 'no track list in the response';
 
 /**
  * Short, non-guessing reason one album's track credits could not be read
@@ -229,7 +229,7 @@ export const ALBUM_CREDITS_MISSING_REASON = 'no track list in the response';
  * ALBUM_CREDITS_MISSING_REASON) — is reported as unreadable with its reason,
  * never folded into "this album has no collaborators" (the #803 class).
  */
-export function albumCreditFailureReason(err: unknown): string {
+function albumCreditFailureReason(err: unknown): string {
   if (err instanceof SpotifyApiError) {
     if (err.status === 429) {
       return `rate limited (429${err.retryAfterSec != null ? `, retry after ${err.retryAfterSec}s` : ''})`;
