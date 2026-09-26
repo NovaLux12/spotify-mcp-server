@@ -51,6 +51,11 @@ const parameterAllowlist = new Set([
   // now names. Neither is a tool or a parameter; both are what a call reports
   // back about its own result.
   'fetch_all_cap', 'truncated_by_cap',
+  // #697: list_backups reports the on-disk size and the age window of the
+  // snapshots it found, so the retention prose in docs/configuration.md can
+  // name them. StructuredContent keys on that tool — the doc is describing
+  // the tool's own output, not routing to another tool.
+  'dir_bytes', 'oldest_created', 'oldest_retention_until',
 ]);
 /** Registration keys are module names, not tools; docs legitimately name them. */
 const registrationKeyNames = new Set(census.registrationKeyNames ?? []);
