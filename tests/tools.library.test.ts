@@ -1000,4 +1000,32 @@ describe('partial per-type writes keep the committed subset visible and invertib
     assert.equal(sc.receipt_error, 'No unified library access');
     assert.match(out.content[0].text, /No receipt: verification failed \(No unified library access\)\./);
   });
+
+  it('records per-type writes on the partial receipt so undo routes through them (#1095)', async () => {
+    const h = harness((path) => {
+      if (path === SCOPE_403) throw new SpotifyApiError(403, 'Insufficient client scope');
+      if (path === '/me/tracks/contains') return [true];
+      if (path === '/me/albums/contains') return [true];
+      return null;
+    });
+
+    const out = await h.invoke('save_items', { uris: MIXED });
+    const sc = out.structuredContent as PartialPayload;
+
+    // The receipt records the per-type buckets that actually landed, in the
+    // shape undo uses to replay the same per-type endpoints (#1095). A bucket
+    // that did NOT land is absent — the receipt is exactly the committed set.
+    assert.deepEqual(sc.receipt?.writes, [
+      { type: 'track', ids: ['t1'] },
+      { type: 'album', ids: ['a1'] },
+    ]);
+    // The unified save_to_library path does NOT set writes — older receipts
+    // and unified-tool receipts stay inversable through /me/library.
+    const unified = await h.invoke('save_to_library', { uris: ['spotify:track:u1'] });
+    assert.equal(
+      (unified.structuredContent as { receipt?: { writes?: unknown } }).receipt?.writes,
+      undefined,
+      'save_to_library does not record per-type writes',
+    );
+  });
 });

@@ -276,6 +276,25 @@ function savedItemsPath(type: SavedUriType, ids: string[]): string {
 }
 
 /**
+ * The wire shape a per-type write takes for the legacy library endpoints
+ * (#1095). `path` is the full request path, including `?ids=` for show /
+ * audiobook buckets; `body` is the JSON body when one is needed (tracks /
+ * albums / episodes) and `undefined` when ids already ride the URL. Exposed
+ * so `undo_mutation` can invert a legacy `save_items` / `remove_saved_items`
+ * receipt through the same per-type endpoint the mutation used, on
+ * credentials that cannot reach `/me/library`.
+ */
+export interface SavedBucketWriteTarget {
+  path: string;
+  body?: { ids: string[] };
+}
+
+export function savedBucketWrite(type: SavedUriType, ids: string[]): SavedBucketWriteTarget {
+  if (IDS_AS_QUERY[type]) return { path: savedItemsPath(type, ids) };
+  return { path: `/me/${type}s`, body: { ids } };
+}
+
+/**
  * One per-URI-type bucket outcome from the legacy per-type save/remove loops
  * (#748). These loops write one bucket per type in sequence; a rejection in
  * bucket N used to discard the successes of buckets 1..N-1 behind a bare
@@ -287,6 +306,9 @@ interface SavedBucketOutcome {
   type: SavedUriType;
   /** URIs in this bucket, as partitioned from the caller's request. */
   requested: number;
+  /** Raw ids the bucket sent to Spotify. Recorded so the receipt can replay
+   * the per-type write on undo (#1095), without re-parsing the caller's uris. */
+  ids: string[];
   ok: boolean;
   /** Rejection message; absent when the bucket landed. */
   error?: string;
@@ -302,6 +324,14 @@ interface SavedBucketRun {
   outcomes: SavedBucketOutcome[];
   /** Canonical URIs whose bucket landed, in bucket order. */
   committed: string[];
+  /**
+   * The per-type buckets that landed (#1095). Carried verbatim into the
+   * receipt so `undo_mutation` can replay each bucket through its per-type
+   * endpoint (`/me/tracks`, `/me/albums`, `/me/shows?ids=…`, …) instead of
+   * `/me/library`, which is exactly the endpoint the legacy tools exist to
+   * avoid on grandfathered credentials.
+   */
+  writes: Array<{ type: SavedUriType; ids: string[] }>;
   /** First rejection, rethrown verbatim when nothing landed. */
   firstError: unknown;
 }
@@ -317,20 +347,24 @@ async function runSavedBuckets(
 ): Promise<SavedBucketRun> {
   const outcomes: SavedBucketOutcome[] = [];
   const committed: string[] = [];
+  const writes: Array<{ type: SavedUriType; ids: string[] }> = [];
   let firstError: unknown;
   for (const type of SAVED_URI_TYPES) {
     const ids = buckets[type];
     if (ids.length === 0) continue;
     try {
       await write(type, ids);
-      outcomes.push({ type, requested: ids.length, ok: true });
-      committed.push(...ids.map((id) => `spotify:${type}:${id}`));
+      const copy = [...ids];
+      outcomes.push({ type, requested: ids.length, ids: copy, ok: true });
+      writes.push({ type, ids: copy });
+      committed.push(...copy.map((id) => `spotify:${type}:${id}`));
     } catch (err) {
       firstError ??= err;
       const api = err instanceof SpotifyApiError ? err : undefined;
       outcomes.push({
         type,
         requested: ids.length,
+        ids: [...ids],
         ok: false,
         error: err instanceof Error ? err.message : String(err),
         ...(api ? { status: api.status } : {}),
@@ -339,7 +373,7 @@ async function runSavedBuckets(
       });
     }
   }
-  return { outcomes, committed, firstError };
+  return { outcomes, committed, writes, firstError };
 }
 
 /**
@@ -403,6 +437,7 @@ async function savedBucketsPartialOut(
   verb: 'Saved' | 'Removed',
   outcomes: SavedBucketOutcome[],
   committed: readonly string[],
+  writes: ReadonlyArray<{ type: SavedUriType; ids: string[] }>,
   expectPresent: boolean,
 ): Promise<ToolOut> {
   const failed = outcomes.filter((o) => !o.ok);
@@ -413,6 +448,10 @@ async function savedBucketsPartialOut(
     kind: 'library',
     uris: [...committed],
     expectPresent,
+    // Record the per-type buckets so undo replays them through the same
+    // endpoints the mutation used — not /me/library, which is the endpoint
+    // these legacy tools exist to avoid (#1095).
+    ...(writes.length > 0 ? { writes: writes.map((w) => ({ type: w.type, ids: [...w.ids] })) } : {}),
   });
   const prose =
     `${verb} ${committed.length} of ${requestedTotal} item(s) (${groups}) — ` +
@@ -741,13 +780,13 @@ export function registerLibraryTools(server: McpServer, client: SpotifyClient): 
       }
       // #748: each bucket stands alone — a rejection in one no longer discards
       // the buckets that already landed, and the committed subset gets a receipt.
-      const { outcomes, committed, firstError } = await runSavedBuckets(buckets, (type, ids) =>
+      const { outcomes, committed, writes, firstError } = await runSavedBuckets(buckets, (type, ids) =>
         client.put(savedItemsPath(type, ids), IDS_AS_QUERY[type] ? undefined : { ids }),
       );
       if (outcomes.some((o) => !o.ok)) {
         // Nothing landed: the original error still answers, status/retry-after intact.
         if (committed.length === 0) throw firstError;
-        return savedBucketsPartialOut(args.response_format, client, 'Saved', outcomes, committed, true);
+        return savedBucketsPartialOut(args.response_format, client, 'Saved', outcomes, committed, writes, true);
       }
       const counts = outcomes.map((o) => `${o.requested} ${o.type}${o.requested === 1 ? '' : 's'}`);
       return mutationOut(
@@ -778,7 +817,7 @@ export function registerLibraryTools(server: McpServer, client: SpotifyClient): 
       }
       // #748: mirror of save_items — a rejected bucket must not erase the
       // removals that already landed, and those removals get a receipt.
-      const { outcomes, committed, firstError } = await runSavedBuckets(buckets, (type, ids) =>
+      const { outcomes, committed, writes, firstError } = await runSavedBuckets(buckets, (type, ids) =>
         client.delete(savedItemsPath(type, ids), IDS_AS_QUERY[type] ? undefined : { ids }),
       );
       if (outcomes.some((o) => !o.ok)) {
@@ -789,6 +828,7 @@ export function registerLibraryTools(server: McpServer, client: SpotifyClient): 
           'Removed',
           outcomes,
           committed,
+          writes,
           false,
         );
       }
