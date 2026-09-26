@@ -1,0 +1,24 @@
+{
+  "$schema": "https://unpkg.com/knip@5/schema.json",
+  "entry": [
+    "tests/*.test.ts",
+    "scripts/*.mjs",
+    "scripts/*.sh"
+  ],
+  "project": [
+    "src/**/*.ts",
+    "tests/**/*.ts",
+    "scripts/**/*.mjs"
+  ],
+  "include": [
+    "exports",
+    "types"
+  ],
+  "ignoreExportsUsedInFile": false,
+  "ignoreIssues": {
+    "src/config.ts": ["exports", "types"],
+    "src/tools/annotations.ts": ["exports", "types"],
+    "src/scopefilter.ts": ["exports", "types"],
+    "src/tools/confirm.ts": ["exports", "types"]
+  }
+}

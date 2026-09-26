@@ -101,20 +101,13 @@ export const PlaylistRef = z
   .transform(normalizePlaylistReference)
   .describe('Playlist ID, spotify:playlist: URI, or Spotify playlist URL; use this reference in the canonical or documented legacy field');
 
-/** Canonical ordered collection used by every set/diff tool. */
-export const PlaylistRefs = z
-  .array(PlaylistRef)
-  .min(2)
-  .max(10)
-  .describe('Canonical ordered playlists (2–10). Provide this field or the complete documented legacy alias; IDs, spotify:playlist: URIs, and Spotify playlist URLs are accepted.');
-
-export interface PlaylistListLimits {
+interface PlaylistListLimits {
   readonly min?: number;
   readonly max?: number;
 }
 
 /** Canonical ordered collection with an operation-specific cardinality. */
-export function playlistListFields({ min = 2, max = 10 }: PlaylistListLimits = {}) {
+function playlistListFields({ min = 2, max = 10 }: PlaylistListLimits = {}) {
   return {
     playlists: z
       .array(PlaylistRef)
@@ -142,17 +135,17 @@ export const TargetPlaylistFields = {
   target_name: z.string().optional().describe('Name for a newly created target playlist; provide exactly one of target_playlist_id or target_name'),
 } as const;
 
-export type PlaylistListAlias =
+type PlaylistListAlias =
   | 'playlist_ids'
   | 'source_playlist_ids'
   | 'subtract_playlist_ids'
   | 'sources';
 
-export type PlaylistPairSide =
+type PlaylistPairSide =
   | 'playlist_id_a' | 'playlist_a_id' | 'a'
   | 'playlist_id_b' | 'playlist_b_id' | 'b';
 
-export type PlaylistPairAlias = readonly [PlaylistPairSide, PlaylistPairSide];
+type PlaylistPairAlias = readonly [PlaylistPairSide, PlaylistPairSide];
 
 /** Legacy aliases are supported through v2.0 and removed in v2.1. */
 export function legacyPlaylistListFields<const A extends PlaylistListAlias>(
@@ -193,7 +186,7 @@ export function playlistListInputFields<const A extends PlaylistListAlias>(
   };
 }
 
-export interface PlaylistInputResolution {
+interface PlaylistInputResolution {
   /** Canonical, normalized values in caller-supplied order. */
   values: string[];
   /** Legacy input names actually present on the call. */
@@ -202,7 +195,7 @@ export interface PlaylistInputResolution {
   deprecationNote: string | null;
 }
 
-export type PlaylistInputConfig =
+type PlaylistInputConfig =
   | { kind: 'list'; aliases: readonly PlaylistListAlias[] }
   | { kind: 'pair'; aliases: readonly PlaylistPairAlias[] };
 
@@ -326,7 +319,7 @@ export function withPlaylistInputNote(text: string, resolved: PlaylistInputResol
 // Truncation math (#53)
 // ---------------------------------------------------------------------------
 
-export interface TruncationCapabilities {
+interface TruncationCapabilities {
   maxResults?: boolean;
   maxItems?: boolean;
   offset?: boolean;
@@ -335,7 +328,7 @@ export interface TruncationCapabilities {
   limit?: boolean;
 }
 
-export interface TruncationMetadata {
+interface TruncationMetadata {
   truncated: boolean;
   returned: number;
   total: number;
@@ -343,7 +336,7 @@ export interface TruncationMetadata {
   next_offset?: number;
 }
 
-export interface TruncationResult<T> {
+interface TruncationResult<T> {
   /** Items to render (already sliced). */
   items: T[];
   total: number;
@@ -361,7 +354,7 @@ function directFooterAdvice(capabilities: TruncationCapabilities | undefined): s
 }
 
 /** Continuation advice containing only controls present in the tool schema. */
-export function truncationAdvice(capabilities: TruncationCapabilities): string {
+function truncationAdvice(capabilities: TruncationCapabilities): string {
   const advice: string[] = [];
   if (capabilities.maxResults) advice.push('raise max_results');
   if (capabilities.maxItems) advice.push('raise max_items');
@@ -418,7 +411,7 @@ export function resolveMaxResults(explicit: number | undefined, fallback = getCo
   return Math.max(1, Math.floor(fallback));
 }
 
-export interface CompletenessFooterOptions {
+interface CompletenessFooterOptions {
   fetched: number;
   cap: number;
   truncated: boolean;

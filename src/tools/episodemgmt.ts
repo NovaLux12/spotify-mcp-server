@@ -17,7 +17,7 @@ import { DryRun, describeDryRun, ResponseFormat } from '../shaping.js';
  * elicitation (or the server-wide SPOTIFY_MCP_CONFIRM=never). Strictly greater
  * than: 50 itself is a single delete request, not a bulk operation.
  */
-export const ARCHIVE_ELICIT_THRESHOLD = 50;
+const ARCHIVE_ELICIT_THRESHOLD = 50;
 
 
 

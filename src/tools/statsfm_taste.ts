@@ -30,10 +30,10 @@ import { StatsfmApiError, StatsfmClient } from '../lib/statsfm-client.js';
 // ---------------------------------------------------------------------------
 
 /** Base for every request in this module. */
-export const STATSFM_API_BASE = 'https://api.stats.fm/api/v1';
+const STATSFM_API_BASE = 'https://api.stats.fm/api/v1';
 
 /** Minimal fetch: full URL in, parsed JSON out (or throw). */
-export type StatsfmFetchImpl = (url: string) => Promise<unknown>;
+type StatsfmFetchImpl = (url: string) => Promise<unknown>;
 
 const liveStatsfmClient = new StatsfmClient(async (url) => fetch(url, {
   headers: {
@@ -228,7 +228,7 @@ export function normalizeStreams(payload: unknown): TasteStream[] {
 }
 
 /** Normalized top-list row (artists / tracks / genres). */
-export interface TopRow {
+interface TopRow {
   id: string;
   name: string;
   count: number;
@@ -247,7 +247,7 @@ export function normalizeTopList(payload: unknown): TopRow[] {
 // ---------------------------------------------------------------------------
 
 /** Exposure ladder for a single subject. Thresholds are documented, not magic. */
-export type ExposureTier = 'unheard' | 'sampled' | 'explored' | 'established' | 'favorite';
+type ExposureTier = 'unheard' | 'sampled' | 'explored' | 'established' | 'favorite';
 
 export function classifyExposure(lifetimeStreams: number): ExposureTier {
   if (lifetimeStreams <= 0) return 'unheard';
@@ -258,7 +258,7 @@ export function classifyExposure(lifetimeStreams: number): ExposureTier {
 }
 
 /** One listening session: maximal run of streams separated by at most gapMin. */
-export interface ListeningSession {
+interface ListeningSession {
   startMs: number;
   endMs: number;
   streams: number;
@@ -344,7 +344,7 @@ export function summarizeMonths(streams: TasteStream[]): MonthlySummary[] {
 }
 
 /** One listening era: a run of months with a stable signature artist/volume. */
-export interface ListeningEra {
+interface ListeningEra {
   startMonth: string;
   endMonth: string;
   months: number;
@@ -420,9 +420,9 @@ export function detectEras(months: MonthlySummary[]): ListeningEra[] {
 }
 
 /** Day-part buckets (UTC; stats.fm timestamps carry no local zone). */
-export type DayPart = 'night' | 'morning' | 'afternoon' | 'evening';
+type DayPart = 'night' | 'morning' | 'afternoon' | 'evening';
 
-export function dayPartOfHour(hourUtc: number): DayPart {
+function dayPartOfHour(hourUtc: number): DayPart {
   if (hourUtc < 6) return 'night';
   if (hourUtc < 12) return 'morning';
   if (hourUtc < 18) return 'afternoon';
@@ -441,10 +441,10 @@ export function summarizeDayParting(streams: TasteStream[]): Record<DayPart, num
 // Local-only feedback store (record_feedback never touches the network)
 // ---------------------------------------------------------------------------
 
-export type FeedbackRating = 'love' | 'like' | 'mixed' | 'boring' | 'dislike';
-export type FeedbackSubjectType = 'track' | 'artist' | 'album' | 'genre';
+type FeedbackRating = 'love' | 'like' | 'mixed' | 'boring' | 'dislike';
+type FeedbackSubjectType = 'track' | 'artist' | 'album' | 'genre';
 
-export interface FeedbackEntry {
+interface FeedbackEntry {
   id: number;
   at: string;
   subject_type: FeedbackSubjectType;
@@ -456,7 +456,7 @@ export interface FeedbackEntry {
 const feedbackStore: FeedbackEntry[] = [];
 let feedbackSeq = 0;
 
-export function recordFeedbackEntry(input: {
+function recordFeedbackEntry(input: {
   subject_type: FeedbackSubjectType;
   subject: string;
   rating: FeedbackRating;
@@ -474,7 +474,7 @@ export function recordFeedbackEntry(input: {
   return entry;
 }
 
-export function listFeedbackEntries(): FeedbackEntry[] {
+function listFeedbackEntries(): FeedbackEntry[] {
   return [...feedbackStore];
 }
 
@@ -513,19 +513,6 @@ function textOut(lines: string[], structured?: Record<string, unknown>): ToolOut
 // ---------------------------------------------------------------------------
 // Dual registration: canonical statsfm_* names + backwards-compat taste_* aliases
 // ---------------------------------------------------------------------------
-
-/** Canonical name → legacy alias pairs. Aliases keep existing clients working. */
-export const TASTE_TOOL_ALIASES: Readonly<Record<string, string>> = {
-  statsfm_taste_profile: 'taste_profile',
-  statsfm_artist_affinity: 'artist_affinity',
-  statsfm_exposure_check: 'exposure_check',
-  statsfm_listening_eras: 'listening_eras',
-  statsfm_listening_sessions: 'listening_sessions',
-  statsfm_forgotten_favorites: 'forgotten_favorites',
-  statsfm_taste_recommendations: 'taste_recommendations',
-  statsfm_record_feedback: 'record_feedback',
-};
-
 // ---------------------------------------------------------------------------
 // Registration
 // ---------------------------------------------------------------------------

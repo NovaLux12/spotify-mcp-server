@@ -134,7 +134,7 @@ function daypartOf(hour: number): (typeof DAYPARTS)[number] {
 }
 
 /** Decade bucket for an album release_date, or "unknown". */
-export function swarm3DecadeOf(releaseDate: string | undefined | null): string {
+function swarm3DecadeOf(releaseDate: string | undefined | null): string {
   if (!releaseDate) return 'unknown';
   const year = Number.parseInt(releaseDate.slice(0, 4), 10);
   if (!Number.isFinite(year) || year <= 0) return 'unknown';

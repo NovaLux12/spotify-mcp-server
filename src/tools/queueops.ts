@@ -22,12 +22,12 @@ function mutationResult(format: string | undefined, echo: Record<string, unknown
   return { content: [{ type: 'text', text }], structuredContent: echo };
 }
 
-export interface QueueFailure {
+interface QueueFailure {
   uri: string;
   reason: string;
 }
 
-export interface QueueBatchResult {
+interface QueueBatchResult {
   queued: number;
   failed: QueueFailure[];
 }

@@ -132,7 +132,7 @@ function extinfValue(value: string): string {
  * share the write-a-document-and-return-a-summary pattern, can carry the
  * identical string instead of a drifting paraphrase.
  */
-export const EXPORT_RETENTION_NOTE =
+const EXPORT_RETENTION_NOTE =
   'This file contains Spotify Content exported at your request. Delete it when you no longer ' +
   'need it; Spotify Developer Terms Sec. IV.3.a.i prohibit indefinite storage of Spotify ' +
   'Content. The export is user-managed: it has no expiry, and removing the ' +
@@ -153,7 +153,7 @@ const CLOUD_SYNC_ROOTS: readonly { name: string; rel: string }[] = [
   { name: 'iCloud Drive', rel: 'Library/Mobile Documents' },
 ];
 
-export interface ExportDisclosure {
+interface ExportDisclosure {
   /** Same text in prose and structuredContent, so neither surface hides it. */
   retention_note: string;
   /** Names the provider and root when the file is synced; null otherwise. */
@@ -186,7 +186,7 @@ async function cloudSyncRootOf(file: string): Promise<{ name: string; root: stri
  * must be the resolved path (resolveOutputPath's `file`), not the caller's
  * string, or a relative path or symlink would hide the real location.
  */
-export async function exportDisclosure(file: string): Promise<ExportDisclosure> {
+async function exportDisclosure(file: string): Promise<ExportDisclosure> {
   const synced = await cloudSyncRootOf(file);
   return {
     retention_note: EXPORT_RETENTION_NOTE,

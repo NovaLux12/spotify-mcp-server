@@ -60,20 +60,20 @@ import type {
 // ---------------------------------------------------------------------------
 
 /** One saved-library row: full URI, display name, when it was added. */
-export interface BackupSavedRow {
+interface BackupSavedRow {
   uri: string;
   name: string;
   added_at: string;
 }
 
 /** Followed artist row (the follow API carries no added_at). */
-export interface BackupArtistRow {
+interface BackupArtistRow {
   uri: string;
   name: string;
 }
 
 /** One playlist with its paged items (uri + name only). */
-export interface BackupPlaylistRow {
+interface BackupPlaylistRow {
   uri: string;
   name: string;
   /** Spotify's own item total when reported (`items.total`), else items.length. */
@@ -85,7 +85,7 @@ export interface BackupPlaylistRow {
   items_error?: string;
 }
 
-export type BackupCollectionName =
+type BackupCollectionName =
   | 'liked_tracks'
   | 'saved_albums'
   | 'saved_shows'
@@ -94,7 +94,7 @@ export type BackupCollectionName =
   | 'followed_artists'
   | 'playlists';
 
-export interface BackupCollectionStatus {
+interface BackupCollectionStatus {
   fetched: number;
   cap: number;
   complete: boolean;
@@ -113,7 +113,7 @@ const COLLECTION_SUBJECTS: Record<BackupCollectionName, string> = {
 };
 
 /** Cheap top-level block mirrored to an owner-only sidecar for list_backups. */
-export interface BackupMeta {
+interface BackupMeta {
   created: string;
   /** True on every file this server writes: the file holds Spotify Content. */
   spotify_data: true;
@@ -216,7 +216,7 @@ export async function nextBackupSeq(dir: string, dateStamp: string): Promise<num
 }
 
 /** One snapshot file in the backup store, as a search hit reports it. */
-export interface BackupArtifact {
+interface BackupArtifact {
   /** File name inside the store. */
   name: string;
   /** Absolute path to the snapshot. */
@@ -234,9 +234,9 @@ export interface BackupArtifact {
  * a measured fact; 'unreadable' is not, and is never collapsed into an
  * empty listing (#754).
  */
-export type BackupStoreState = 'ok' | 'absent' | 'unreadable';
+type BackupStoreState = 'ok' | 'absent' | 'unreadable';
 
-export interface BackupStoreListing {
+interface BackupStoreListing {
   /** The store directory that was read. */
   dir: string;
   state: BackupStoreState;
@@ -614,7 +614,7 @@ const DAY_MS = 86_400_000;
 const PRUNE_HINT_THRESHOLD = 5;
 
 /** created + the configured window, or null when pruning is disabled. */
-export function retentionUntil(created: string, retentionDays: number): string | null {
+function retentionUntil(created: string, retentionDays: number): string | null {
   if (retentionDays <= 0) return null;
   const ms = Date.parse(created);
   if (!Number.isFinite(ms)) return null;
@@ -698,14 +698,14 @@ export async function readStoreEntries(dir: string): Promise<StoreEntry[]> {
   return Promise.all(names.map((name) => readStoreEntry(dir, name)));
 }
 
-export interface PrunedBackup {
+interface PrunedBackup {
   path: string;
   created: string;
   age_days: number;
   bytes: number;
 }
 
-export interface PruneResult {
+interface PruneResult {
   /** Configured window in days; 0 means pruning is switched off. */
   retention_days: number;
   enabled: boolean;
@@ -734,7 +734,7 @@ function emptyPrune(retentionDays: number): PruneResult {
  * directory wearing a backup name is skipped, never followed, and a file
  * whose date cannot be established is kept rather than guessed at.
  */
-export async function pruneStore(
+async function pruneStore(
   dir: string,
   entries: readonly StoreEntry[],
   retentionDays: number,
@@ -768,7 +768,7 @@ export async function pruneStore(
 }
 
 /** One-shot prune for callers that do not already hold the store listing. */
-export async function pruneBackups(
+async function pruneBackups(
   env: NodeJS.ProcessEnv = process.env,
   now: number = Date.now(),
 ): Promise<PruneResult> {
@@ -776,7 +776,7 @@ export async function pruneBackups(
   return pruneStore(dir, await readStoreEntries(dir), backupRetentionDays(env), now);
 }
 
-export interface StoreEnvelope {
+interface StoreEnvelope {
   count: number;
   /** Bytes on disk for these snapshots plus their sidecars. */
   dir_bytes: number;

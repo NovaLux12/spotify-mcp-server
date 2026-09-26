@@ -81,7 +81,7 @@ function escapeHtml(value: string): string {
     .replace(/'/g, '&#39;');
 }
 
-export const DEFAULT_SCOPES_LIST: readonly string[] = [
+const DEFAULT_SCOPES_LIST: readonly string[] = [
   'user-read-private',
   'user-read-email',
   'user-read-playback-state',
@@ -114,7 +114,7 @@ const KNOWN_SCOPES = new Set<string>([
  * Parse SPOTIFY_SCOPES / --scopes CLI flag: space- or comma-separated, validated,
  * de-duplicated. Returns null when not set.
  */
-export function parseScopesString(raw: string | undefined): string[] | null {
+function parseScopesString(raw: string | undefined): string[] | null {
   if (!raw || raw.trim() === '') return null;
   const parts = raw
     .split(/[\s,]+/)
@@ -137,7 +137,7 @@ export function parseScopesString(raw: string | undefined): string[] | null {
 }
 
 /** Resolve scopes for the current auth flow: CLI --scopes > SPOTIFY_SCOPES env > default. */
-export function resolveScopes(cliScopes?: string): string {
+function resolveScopes(cliScopes?: string): string {
   // CLI takes precedence
   if (cliScopes !== undefined) {
     const parsed = parseScopesString(cliScopes);
@@ -149,7 +149,7 @@ export function resolveScopes(cliScopes?: string): string {
 }
 
 /** Parse --profile / --scopes from process.argv (auth subcommand). */
-export function parseAuthArgs(argv: string[] = process.argv.slice(2)): {
+function parseAuthArgs(argv: string[] = process.argv.slice(2)): {
   profile?: string;
   scopes?: string;
 } {
@@ -185,7 +185,7 @@ function validateProfileName(name: string): string {
  * Resolve token file path. Precedence: SPOTIFY_MCP_TOKEN_FILE > --profile / SPOTIFY_MCP_PROFILE > default.
  * Exported as function for dynamic resolution (tests + multi-profile).
  */
-export function getTokenFile(cliProfile?: string): string {
+function getTokenFile(cliProfile?: string): string {
   if (process.env.SPOTIFY_MCP_TOKEN_FILE) return process.env.SPOTIFY_MCP_TOKEN_FILE;
   const profile = cliProfile ?? process.env.SPOTIFY_MCP_PROFILE;
   if (profile) {

@@ -34,7 +34,7 @@ function emit(fmt: string | undefined, echo: Record<string, unknown>, text: stri
   return { content: [{ type: 'text', text }], structuredContent: echo };
 }
 
-export interface SearchHistoryEntry {
+interface SearchHistoryEntry {
   id: string;
   query: string;
   types?: string[];
@@ -57,7 +57,7 @@ const TOP_RESULT_IDS = 3;
  * `SPOTIFY_MCP_SEARCH_HISTORY=0` (or false/no/off) opts out for users who do
  * not want their search terms on disk.
  */
-export function isSearchHistoryEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+function isSearchHistoryEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
   return !['0', 'false', 'no', 'off'].includes((env.SPOTIFY_MCP_SEARCH_HISTORY ?? '').trim().toLowerCase());
 }
 
@@ -79,7 +79,7 @@ function topResultIds(items: readonly unknown[] | null | undefined, max: number 
   return out;
 }
 
-export interface RecordSearchInput {
+interface RecordSearchInput {
   query: string;
   types: string[];
   /** Result rows across every requested type, in the order a rerun would replay. */
@@ -136,7 +136,7 @@ export async function loadSearchHistory(env: NodeJS.ProcessEnv = process.env): P
   } catch { return []; }
 }
 
-export async function saveSearchHistory(entries: SearchHistoryEntry[], env: NodeJS.ProcessEnv = process.env): Promise<void> {
+async function saveSearchHistory(entries: SearchHistoryEntry[], env: NodeJS.ProcessEnv = process.env): Promise<void> {
   const file = searchHistoryFile(env);
   await mkdir(dirname(file), { recursive: true, mode: 0o700 });
   // expiry on save too

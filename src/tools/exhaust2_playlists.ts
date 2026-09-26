@@ -441,7 +441,7 @@ async function resolveDedupeParams(
  * Run a read, converting a raw 403 into the graceful "app-registration gated"
  * short-circuit contract — never a bare Forbidden to the agent.
  */
-export async function getWithGating<T>(
+async function getWithGating<T>(
   client: SpotifyClient,
   path: string,
   params?: Record<string, string>,

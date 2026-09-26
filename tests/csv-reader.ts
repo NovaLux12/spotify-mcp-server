@@ -7,7 +7,7 @@
  * `tests/*.test.ts` is the only glob `npm test` runs, so this helper is never
  * collected as a suite.
  */
-export function parseCsvRow(line: string): string[] {
+function parseCsvRow(line: string): string[] {
   const cells: string[] = [];
   let cell = '';
   let inQuotes = false;

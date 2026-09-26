@@ -41,7 +41,7 @@ export interface SnapTrackRow {
 }
 
 /** Cheap top-level block so list/report tools never parse full track arrays. */
-export interface SnapMeta {
+interface SnapMeta {
   snapshot_id: string;
   playlist_id: string;
   playlist_name: string;
@@ -57,13 +57,13 @@ export interface SnapMeta {
 }
 
 /** Top-level shape of a plsnap-*.json file. Unknown keys = forward-compatible. */
-export interface PlaylistSnapshot {
+interface PlaylistSnapshot {
   _meta: SnapMeta;
   tracks: SnapTrackRow[];
 }
 
 /** Snapshot dir; SPOTIFY_MCP_SNAPSHOT_DIR overrides the whole directory. */
-export function snapshotDir(env: NodeJS.ProcessEnv = process.env): string {
+function snapshotDir(env: NodeJS.ProcessEnv = process.env): string {
   return env.SPOTIFY_MCP_SNAPSHOT_DIR ?? join(homedir(), '.spotify-mcp', 'playlist-snapshots');
 }
 
@@ -143,7 +143,7 @@ async function nextSeq(dir: string, re: RegExp, dateStamp: string, group: number
 }
 
 /** Parse + minimally validate one snapshot file. Throws Error on corrupt data. */
-export async function readSnapshotFile(path: string): Promise<PlaylistSnapshot> {
+async function readSnapshotFile(path: string): Promise<PlaylistSnapshot> {
   const raw = await readFile(path, 'utf8');
   const parsed = JSON.parse(raw) as Partial<PlaylistSnapshot>;
   if (!parsed || typeof parsed !== 'object') throw new Error('not a JSON object');
@@ -161,7 +161,7 @@ export async function readSnapshotFile(path: string): Promise<PlaylistSnapshot> 
  * Resolve a snapshot reference: absolute/relative path, full filename, or
  * snapshot_id (filename stem). Returns the resolved path.
  */
-export async function resolveSnapshotRef(ref: string): Promise<string> {
+async function resolveSnapshotRef(ref: string): Promise<string> {
   const trimmed = ref.trim();
   if (trimmed.includes('/')) return trimmed;
   const dir = snapshotDir();
@@ -251,7 +251,7 @@ function groupByPlaylist(
 // Track diff core (multiset semantics so duplicate URIs behave sanely)
 // ---------------------------------------------------------------------------
 
-export interface TrackDiff {
+interface TrackDiff {
   added: SnapTrackRow[];
   removed: SnapTrackRow[];
   added_count: number;

@@ -135,7 +135,7 @@ const PlaylistSetWalkFields = {
 // makes a playlist more visible (private→public, or enabling collaboration)
 // elicits; toward-private flips never do. The threshold counts how many
 // toward-visible field flips trigger prompting (1 = any single flip).
-export const VISIBILITY_ELICIT_THRESHOLD = 1;
+const VISIBILITY_ELICIT_THRESHOLD = 1;
 
 // Playlist metadata as returned by GET /playlists/{id}, which includes cover
 // images (unlike the simplified playlists in paged listings)

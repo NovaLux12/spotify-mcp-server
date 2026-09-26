@@ -11,7 +11,7 @@
  *   - errors           → `{ "status": <http>, "path": ..., "message": ... }`
  */
 
-export const STATSFM_BASE_URL = 'https://api.stats.fm/api/v1';
+const STATSFM_BASE_URL = 'https://api.stats.fm/api/v1';
 
 export class StatsfmApiError extends Error {
   constructor(
@@ -84,7 +84,7 @@ export function statsfmTransportError(): StatsfmApiError {
   return new StatsfmApiError(0, 'stats.fm request failed', undefined, 'transport_error');
 }
 
-export type StatsfmFetch = (url: string) => Promise<Response>;
+type StatsfmFetch = (url: string) => Promise<Response>;
 
 export class StatsfmClient {
   private readonly fetchFn: StatsfmFetch;
@@ -135,16 +135,4 @@ export class StatsfmClient {
     }
     return body as T | null;
   }
-}
-
-/** `{ item: T }` envelope helpers for single-resource responses. */
-export function unwrapItem<T>(body: { item?: T | null } | null): T | null {
-  if (!body || typeof body !== 'object') return null;
-  return body.item ?? null;
-}
-
-/** `{ items: T[] }` envelope helpers for collection responses. */
-export function unwrapItems<T>(body: { items?: T[] } | null): T[] {
-  if (!body || typeof body !== 'object') return [];
-  return Array.isArray(body.items) ? body.items : [];
 }

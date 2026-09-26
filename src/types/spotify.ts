@@ -6,14 +6,6 @@ export interface TokenData {
   scope?: string; // space-separated granted scopes persisted at auth time (#111 item 6); absent in older token files
 }
 
-// Spotify API error body
-export interface SpotifyErrorBody {
-  error: {
-    status: number;
-    message: string;
-  };
-}
-
 // Devices
 export interface SpotifyDevice {
   id: string | null;

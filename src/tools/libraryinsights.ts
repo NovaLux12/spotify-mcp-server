@@ -263,7 +263,7 @@ function tagsForArtist(tags: Record<string, string[]>, artist: string): string[]
 // ---------------------------------------------------------------------------
 
 /** One aggregated row per genre tag across the saved library. */
-export interface GenreRow {
+interface GenreRow {
   genre: string;
   /** Saved tracks with at least one tagged artist carrying this genre. */
   tracks: number;
@@ -276,7 +276,7 @@ export interface GenreRow {
 }
 
 /** Per-collection walk accounting, so a capped walk is never read as a whole one. */
-export interface WalkInfo {
+interface WalkInfo {
   /** Items the walk actually returned. */
   fetched: number;
   /** The fetch-all cap bounding this walk. */

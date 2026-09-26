@@ -172,13 +172,13 @@ export function exhaust2PlaybackFile(env: NodeJS.ProcessEnv = process.env): stri
   return env.SPOTIFY_MCP_EXHAUST2_PLAYBACK_FILE ?? join(homedir(), '.spotify-mcp', 'exhaust2-playback.json');
 }
 
-export interface MuteMemory {
+interface MuteMemory {
   volume: number;
   muted_at: string;
   device_id: string | null;
   device_name: string | null;
 }
-export interface EpisodeBookmark {
+interface EpisodeBookmark {
   id: string;
   saved_at: string;
   note?: string;
@@ -190,13 +190,13 @@ export interface EpisodeBookmark {
   duration_ms: number | null;
   device_id: string | null;
 }
-export interface Exhaust2Checkpoint {
+interface Exhaust2Checkpoint {
   id: string;
   saved_at: string;
   note?: string;
   playback: PlaybackState | null;
 }
-export interface Exhaust2Store {
+interface Exhaust2Store {
   muteMemory: Record<string, MuteMemory>;
   episodeBookmarks: Record<string, EpisodeBookmark>;
   checkpoints: Record<string, Exhaust2Checkpoint>;
@@ -226,8 +226,8 @@ export async function saveExhaust2Store(store: Exhaust2Store, env: NodeJS.Proces
 // in-process timer registry (sleep_timer + volume_ramp; cancel-safe)
 // ---------------------------------------------------------------------------
 
-export type Exhaust2TimerKind = 'sleep_timer' | 'volume_ramp';
-export type Exhaust2TimerState = 'scheduled' | 'running' | 'completed' | 'failed' | 'cancelled';
+type Exhaust2TimerKind = 'sleep_timer' | 'volume_ramp';
+type Exhaust2TimerState = 'scheduled' | 'running' | 'completed' | 'failed' | 'cancelled';
 
 export interface Exhaust2TimerHandle {
   unref?(): unknown;
@@ -254,14 +254,14 @@ export function __setExhaust2Scheduler(timers?: Exhaust2TimerScheduler | null): 
   exhaust2Timers = timers ?? realExhaust2Timers;
 }
 
-export interface Exhaust2TimerFailure {
+interface Exhaust2TimerFailure {
   step: number;
   at_minute: number;
   action: 'pause' | 'play' | 'volume';
   error: string;
 }
 
-export interface Exhaust2TimerStatus {
+interface Exhaust2TimerStatus {
   kind: Exhaust2TimerKind;
   description: string;
   started_at: string;
@@ -405,7 +405,7 @@ function volumeQuery(percent: number, deviceId?: string | null): string {
 // volume ramp math (pure, exported for tests)
 // ---------------------------------------------------------------------------
 
-export interface RampStep { index: number; percent: number; after_minutes: number }
+interface RampStep { index: number; percent: number; after_minutes: number }
 
 /**
  * Linear ramp from → to: ceil(minutes/step_minutes) even steps; the last

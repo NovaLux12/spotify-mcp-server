@@ -112,7 +112,7 @@ async function fetchTrackSearchPage(
 // set algebra (pure, exported for tests)
 // ---------------------------------------------------------------------------
 
-export type SetExpr =
+type SetExpr =
   | { kind: 'ref'; ref: string }
   | { kind: 'union' | 'inter' | 'diff'; left: SetExpr; right: SetExpr };
 
@@ -124,7 +124,7 @@ const TOKEN_RE = /spotify:playlist:[A-Za-z0-9]+|[A-Za-z0-9]+|[∪|+∩&−–\-(
 type Token = { t: 'ref'; v: string } | { t: 'op'; v: string } | { t: 'lp' } | { t: 'rp' };
 
 /** Tokenize an algebra expression; throws on any unrecognized character. */
-export function tokenizeSetExpression(src: string): Token[] {
+function tokenizeSetExpression(src: string): Token[] {
   const tokens: Token[] = [];
   let rest = src;
   while (rest.length > 0) {
@@ -234,7 +234,7 @@ export function evalSetExpression(ast: SetExpr, resolve: (ref: string) => readon
 // round-robin search picks (pure, exported for tests)
 // ---------------------------------------------------------------------------
 
-export interface RoundRobinPick {
+interface RoundRobinPick {
   query_index: number;
   query: string;
   uri: string;
@@ -276,7 +276,7 @@ export function pickRoundRobin(
 // cover candidates (pure, exported for tests)
 // ---------------------------------------------------------------------------
 
-export interface CoverImage {
+interface CoverImage {
   url: string;
   width?: number | null;
   height?: number | null;
