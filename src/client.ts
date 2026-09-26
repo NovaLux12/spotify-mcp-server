@@ -45,6 +45,98 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/**
+ * Longest single wait the client will hold the serialized request queue for,
+ * whoever asked for it: a 429 `Retry-After` (#108) or a 5xx backoff (#675).
+ * Past this the caller gets the error with the wait attached rather than a
+ * queue that holds every other request hostage.
+ */
+const RETRY_SLEEP_CAP_SEC = 10;
+
+/** Wait used when a `Retry-After` header is absent or unparsable (#20). */
+const RETRY_AFTER_FALLBACK_SEC = 1;
+
+/**
+ * Total dispatches one logical request may consume, shared by the 401-refresh,
+ * the 429 backoff (#671), the 5xx backoff and transport-error retries (#675).
+ * Bounded on purpose: an unbounded backoff against a permanently unhealthy
+ * Spotify is its own outage, and a tight retry loop earns a rate limit.
+ */
+const MAX_ATTEMPTS = 3;
+
+/** First-retry backoff base and its uniform jitter width: 250ms, then 500ms. */
+const RETRY_BACKOFF_BASE_MS = 250;
+const RETRY_BACKOFF_JITTER_MS = 250;
+
+/**
+ * Gateway/upstream failures — statuses where the request was rejected rather
+ * than applied, so a re-send is safe even for a mutation. 500 is deliberately
+ * absent: it is Spotify's own logic failing, and re-sending does not help.
+ */
+const RETRYABLE_STATUSES: ReadonlySet<number> = new Set([502, 503, 504]);
+
+/**
+ * Verbs whose re-send cannot double-apply a change (RFC 9110 §9.2.2). Only
+ * these may be re-sent after a *thrown* transport error, where we never
+ * received an answer and so never learned whether the request landed.
+ */
+const IDEMPOTENT_METHODS: ReadonlySet<string> = new Set([
+  'GET',
+  'HEAD',
+  'PUT',
+  'DELETE',
+  'OPTIONS',
+]);
+
+/**
+ * Seconds to wait before re-sending, parsed from a `Retry-After` header.
+ *
+ * RFC 9110 §10.2.3 defines two forms and the previous `Number.parseInt` read
+ * only one: delta-seconds parsed, and the HTTP-date form became NaN and fell
+ * through to the 1 s floor. A server asking for minutes was therefore retried
+ * after one second — which earns another 429, and with N spotify-mcp processes
+ * sharing one developer account produces a synchronized retry wave.
+ *
+ * A past HTTP-date means "retry now", not "wait backwards". An absent or
+ * unparsable header keeps the pre-existing 1 s floor, so garbage still cannot
+ * poison the cooldown with NaN (#20). Note `Date.parse` happily reads a bare
+ * signed number as a year (`Date.parse('-5')` is a date in 2001), so the
+ * HTTP-date branch requires a letter — every legal HTTP-date form has one, and
+ * without the guard `-5` would silently become a 0 s wait.
+ */
+export function parseRetryAfter(header: string | null, now: number = Date.now()): number {
+  const raw = (header ?? '').trim();
+  if (raw.length === 0) return RETRY_AFTER_FALLBACK_SEC;
+  // delta-seconds. Fractional values are accepted too: a truncating parseInt
+  // would round "0.5" to a 0 s wait.
+  if (/^\d+(?:\.\d+)?$/.test(raw)) {
+    const seconds = Number(raw);
+    return Number.isFinite(seconds) && seconds >= 0 ? seconds : RETRY_AFTER_FALLBACK_SEC;
+  }
+  if (!/[A-Za-z]/.test(raw)) return RETRY_AFTER_FALLBACK_SEC;
+  const at = Date.parse(raw);
+  if (Number.isNaN(at)) return RETRY_AFTER_FALLBACK_SEC;
+  return Math.max(0, (at - now) / 1000);
+}
+
+/**
+ * A transport failure (DNS, connection reset, socket hang-up) has no HTTP
+ * status, but it must still reach callers as a typed `SpotifyApiError`: a raw
+ * `TypeError` falls through the tool error boundary to `internal`, which
+ * advises a blind re-run of the whole tool — precisely the retry that would
+ * double-apply a mutation. 503 is the status the boundary already maps to
+ * `unavailable`, which is what a network blip actually is.
+ *
+ * A synthesized 408 timeout is passed through unchanged: it is already typed,
+ * it names the method, URL and timeout, and downgrading it to 503 would
+ * discard that.
+ */
+function transportFailure(method: string, url: string, err: unknown): SpotifyApiError {
+  if (err instanceof SpotifyApiError) return err;
+  const cause = err instanceof Error ? err.message : String(err);
+  return new SpotifyApiError(503, `${method} ${url} failed: ${cause}`);
+}
+
 // Player-namespace 404s are not missing objects: the /me/player/* endpoints
 // answer 404 with "Player command failed: No active device found" whenever
 // nothing anywhere is playing. That is the most common playback failure, and
@@ -136,6 +228,12 @@ interface SpotifyClientOptions {
   validatorTtlMs?: number;
   /** Disable the read cache entirely (tests, special flows). */
   disableCache?: boolean;
+  /**
+   * Jitter source for the 5xx/transport backoff (#675). Defaults to
+   * `Math.random`; injectable so a test can pin the sequence and assert the
+   * jitter is a real spread rather than an accident of the base doubling.
+   */
+  random?: () => number;
 }
 
 /** Per-page event emitted during getAllPages walks (#65). */
@@ -225,6 +323,7 @@ export class SpotifyClient {
   // the payload an ETag identifies so a 304 can be answered without a body.
   readonly validators: ValidatorStore<unknown> | null;
   private readonly fetchAllCap: number;
+  private readonly random: () => number;
 
   // Long-walk progress reporting (#65); index.ts installs a notifier that
   // forwards events as MCP progress notifications.
@@ -233,6 +332,7 @@ export class SpotifyClient {
 
   constructor(opts: SpotifyClientOptions = {}) {
     this.fetchAllCap = opts.fetchAllCap ?? getConfig().fetchAllCap;
+    this.random = opts.random ?? Math.random;
     this.cache = opts.disableCache ? null : new LruTtlCache<unknown>(opts.cache);
     this.validators = opts.disableCache
       ? null
@@ -530,6 +630,21 @@ export class SpotifyClient {
     return `${url}?${new URLSearchParams(params)}`;
   }
 
+  /**
+   * Jittered exponential backoff for the `retryCount`-th retry: 250 ms, then
+   * 500 ms, each plus a uniform 0–250 ms of jitter.
+   *
+   * The jitter is load-bearing, not decoration. Every spotify-mcp process
+   * sharing one developer account sees the same 5xx at the same moment, and
+   * an unjittered exponential would march them all back in lockstep — the
+   * synchronized retry wave that turns one outage into a self-inflicted one.
+   */
+  private backoffDelayMs(retryCount: number): number {
+    const base = RETRY_BACKOFF_BASE_MS * 2 ** retryCount;
+    const jitter = this.random() * RETRY_BACKOFF_JITTER_MS;
+    return Math.min(base + jitter, RETRY_SLEEP_CAP_SEC * 1000);
+  }
+
   private async rawRequest(
     method: string,
     url: string,
@@ -552,15 +667,29 @@ export class SpotifyClient {
     // resource comes back as a bodiless 304 instead of a full re-download.
     if (conditional?.ifNoneMatch) headers['If-None-Match'] = conditional.ifNoneMatch;
 
-    const res = await fetchWithTimeout(url, {
-      method,
-      headers,
-      body: body === undefined
-        ? undefined
-        : contentType !== undefined
-          ? String(body)
-          : JSON.stringify(body),
-    });
+    let res: Response;
+    try {
+      res = await fetchWithTimeout(url, {
+        method,
+        headers,
+        body: body === undefined
+          ? undefined
+          : contentType !== undefined
+            ? String(body)
+            : JSON.stringify(body),
+      });
+    } catch (err) {
+      // A thrown transport error means no answer arrived, so we also never
+      // learned whether the request was applied. Re-sending is safe only for
+      // an idempotent verb: re-sending a POST that already mutated something
+      // would silently double-apply it (#675). A verb that *did* get an
+      // answer is handled below, where 502/503/504 prove it was rejected.
+      if (!IDEMPOTENT_METHODS.has(method.toUpperCase()) || retryCount + 1 >= MAX_ATTEMPTS) {
+        throw transportFailure(method, url, err);
+      }
+      await sleep(this.backoffDelayMs(retryCount));
+      return this.rawRequest(method, url, body, retryCount + 1, contentType, conditional);
+    }
 
     // Token expired mid-flight — refresh and retry once
     if (res.status === 401 && retryCount === 0) {
@@ -588,10 +717,11 @@ export class SpotifyClient {
     // throw at the bottom of the function and silently drops the rate-limit
     // signal (#671).
     if (res.status === 429) {
-      // Parse defensively: a garbage header must not yield NaN, which would
-      // permanently poison _rateLimitUntil and disable backoff.
-      const raw = Number.parseInt(res.headers.get('Retry-After') ?? '', 10);
-      const retryAfter = Number.isFinite(raw) && raw >= 0 ? raw : 1;
+      // Parse both RFC 9110 forms (#675): a bare parseInt read delta-seconds
+      // only, so an HTTP-date fell to the 1 s floor and the retry came back
+      // long before the window Spotify asked for. Garbage still lands on that
+      // floor, which keeps it from poisoning _rateLimitUntil with NaN (#20).
+      const retryAfter = parseRetryAfter(res.headers.get('Retry-After'));
       this._rateLimitUntil = Date.now() + retryAfter * 1000;
 
       // Read the body for error.reason (July-2026: 'QUOTA_EXCEEDED' when the
@@ -610,7 +740,6 @@ export class SpotifyClient {
         // body wasn't JSON — header-only handling below still applies
       }
 
-      const BURST_SLEEP_CAP_SEC = 10;
       if (reason === 'QUOTA_EXCEEDED') {
         throw new SpotifyApiError(
           429,
@@ -633,13 +762,13 @@ export class SpotifyClient {
         );
       }
 
-      if (retryAfter > BURST_SLEEP_CAP_SEC) {
+      if (retryAfter > RETRY_SLEEP_CAP_SEC) {
         // Too long to sleep inside the queue: fail fast with the wait time;
         // _rateLimitUntil already makes subsequent enqueued requests reject
         // until the window passes.
         throw new SpotifyApiError(
           429,
-          `Rate limited — Retry-After ${retryAfter}s exceeds the in-queue wait cap (${BURST_SLEEP_CAP_SEC}s); retry later.`,
+          `Rate limited — Retry-After ${retryAfter}s exceeds the in-queue wait cap (${RETRY_SLEEP_CAP_SEC}s); retry later.`,
           retryAfter,
           reason,
         );
@@ -647,6 +776,36 @@ export class SpotifyClient {
 
       this._lastThrottle = { retryAfterSec: retryAfter, waitedMs: retryAfter * 1000, at: Date.now() };
       await sleep(retryAfter * 1000);
+      return this.rawRequest(method, url, body, retryCount + 1, contentType, conditional);
+    }
+
+    // Gateway/upstream failures (#675). Spotify answered, which means it
+    // rejected the request rather than acting on it, so a re-send is safe even
+    // for a mutation — unlike the transport path above, where we never got an
+    // answer. The wait stays inside the queue; the attempt count is what
+    // bounds this, so a permanently unhealthy Spotify cannot turn one tool
+    // call into an unbounded stall. `_rateLimitUntil` is deliberately left
+    // alone: a 5xx cooldown is per-request, and arming the shared quota
+    // window on it would block every queued call behind one flaky route.
+    if (RETRYABLE_STATUSES.has(res.status) && retryCount + 1 < MAX_ATTEMPTS) {
+      const serverWait = res.headers.get('Retry-After');
+      // A `Retry-After` here is Spotify naming its own cooldown, so it wins
+      // over our computed backoff; without one we use jittered exponential
+      // backoff, which is what stops N processes on one developer account
+      // from retrying in lockstep.
+      const requestedMs = serverWait === null
+        ? this.backoffDelayMs(retryCount)
+        : parseRetryAfter(serverWait) * 1000;
+      if (requestedMs > RETRY_SLEEP_CAP_SEC * 1000) {
+        // Beyond the in-queue cap. Fail fast rather than park the queue, and
+        // never report a short wait when the server named a long one.
+        throw new SpotifyApiError(
+          res.status,
+          `Spotify answered ${res.status} with Retry-After ${Math.round(requestedMs / 1000)}s — `
+            + `above the ${RETRY_SLEEP_CAP_SEC}s in-queue wait cap; retry later.`,
+        );
+      }
+      await sleep(requestedMs);
       return this.rawRequest(method, url, body, retryCount + 1, contentType, conditional);
     }
 

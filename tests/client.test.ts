@@ -25,7 +25,7 @@
  * written under os.tmpdir().
  */
 
-import { describe, it, before, after, beforeEach, afterEach } from 'node:test';
+import { describe, it, before, after, beforeEach, afterEach, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, writeFile, readFile, rm, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -39,7 +39,7 @@ const tokenDir = await mkdtemp(path.join(tmpdir(), 'spotify-mcp-client-test-'));
 process.env.SPOTIFY_MCP_TOKEN_FILE = path.join(tokenDir, 'tokens.json');
 process.env.SPOTIFY_CLIENT_ID = 'test-client-id';
 
-const { SpotifyClient, SpotifyApiError, selectNextLaneTask } = await import('../src/client.ts');
+const { SpotifyClient, SpotifyApiError, selectNextLaneTask, parseRetryAfter } = await import('../src/client.ts');
 const { TOKEN_FILE } = await import('../src/auth.ts');
 const { initConfig } = await import('../src/config.ts');
 
@@ -56,6 +56,66 @@ describe('TOKEN_FILE contract', () => {
   });
 });
 
+
+// ---------------------------------------------------------------------------
+// Retry-After parsing (RFC 9110 §10.2.3) — pure, no clock, no network
+// ---------------------------------------------------------------------------
+
+describe('parseRetryAfter', () => {
+  // A fixed `now` so every HTTP-date expectation is exact.
+  const now = Date.parse('Sun, 06 Nov 1994 08:49:37 GMT');
+
+  it('reads delta-seconds', () => {
+    assert.equal(parseRetryAfter('5', now), 5);
+    assert.equal(parseRetryAfter('0', now), 0);
+    assert.equal(parseRetryAfter('  45  ', now), 45, 'tolerates surrounding whitespace');
+  });
+
+  it('reads a fractional delta instead of truncating it to zero', () => {
+    // parseInt('0.5') is 0 — a header asking for half a second would have
+    // become a zero-length wait.
+    assert.equal(parseRetryAfter('0.5', now), 0.5);
+  });
+
+  it('reads an IMF-fixdate Retry-After as seconds from now', () => {
+    assert.equal(parseRetryAfter('Sun, 06 Nov 1994 08:50:07 GMT', now), 30);
+  });
+
+  it('reads the RFC 850 and asctime HTTP-date forms too', () => {
+    assert.equal(parseRetryAfter('Sunday, 06-Nov-94 08:50:07 GMT', now), 30);
+    assert.equal(parseRetryAfter('Sun Nov  6 08:50:07 1994', now), 30);
+  });
+
+  it('treats a past HTTP-date as retry-now, not a backwards wait', () => {
+    assert.equal(parseRetryAfter('Sun, 06 Nov 1994 08:49:07 GMT', now), 0);
+  });
+
+  it('falls back to 1s for an absent or unparsable header', () => {
+    assert.equal(parseRetryAfter(null, now), 1);
+    assert.equal(parseRetryAfter('', now), 1);
+    assert.equal(parseRetryAfter('   ', now), 1);
+    assert.equal(parseRetryAfter('soon', now), 1);
+    assert.equal(parseRetryAfter('12:30', now), 1);
+  });
+
+  it('falls back to 1s for a negative or signed number, which is not an HTTP-date', () => {
+    // Date.parse('-5') is a real date in 2001, so without a guard this would
+    // quietly become a 0s wait — an immediate retry in exactly the situation
+    // the backoff exists to prevent.
+    assert.equal(parseRetryAfter('-5', now), 1);
+    assert.equal(parseRetryAfter('+5', now), 1);
+  });
+
+  it('never returns NaN, so it cannot poison a sleep or a cooldown deadline', () => {
+    for (const header of [null, '', ' ', 'soon', '-5', 'NaN', '1e9', '0x10', 'Sun, 99 Xxx 9999']) {
+      const value = parseRetryAfter(header, now);
+      assert.ok(
+        Number.isFinite(value) && value >= 0,
+        `parseRetryAfter(${JSON.stringify(header)}) must be a finite non-negative number, got ${value}`,
+      );
+    }
+  });
+});
 
 // ---------------------------------------------------------------------------
 // Fetch stub harness
@@ -129,6 +189,33 @@ function spyOnSetTimeout(): { delays: number[]; restore: () => void } {
       globalThis.setTimeout = inner;
     },
   };
+}
+
+/**
+ * Release `count` pending backoff sleeps against the mocked clock, draining
+ * the event loop before and after each tick so the client's promise chain can
+ * schedule the next one. Every wait is virtual: a test never spends real time
+ * on a backoff. Asserts that each expected sleep was actually scheduled, so a
+ * client that stopped retrying fails here rather than hanging on a tick.
+ */
+async function releaseBackoffs(
+  t: TestContext,
+  timer: { delays: number[] },
+  count: number,
+  isSettled: () => boolean,
+): Promise<void> {
+  for (let released = 0; released < count; released++) {
+    await waitFor(() => timer.delays.length > released || isSettled());
+    assert.ok(
+      timer.delays.length > released,
+      `expected backoff sleep #${released + 1} before the request settled`,
+    );
+    // Tick past anything the client could legally wait for (the in-queue cap
+    // is 10s); extra time is harmless when the scheduled sleep is shorter.
+    t.mock.timers.tick(11_000);
+    await nextTick();
+  }
+  await waitFor(() => isSettled());
 }
 
 /** Seed a valid token fixture into the temp token file. */
@@ -543,6 +630,288 @@ describe('SpotifyClient', () => {
   });
 
   // -------------------------------------------------------------------------
+  // 4b. Bounded 5xx / transport retry (#675)
+  // -------------------------------------------------------------------------
+
+  describe('5xx and transport retry', () => {
+    /** A DNS failure / connection reset as `fetch` actually surfaces it. */
+    function connectionReset(): TypeError {
+      return Object.assign(new TypeError('fetch failed'), {
+        cause: Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' }),
+      });
+    }
+
+    it('retries a 503 once and succeeds, honouring its Retry-After', async (t) => {
+      await seedTokens();
+      let apiCount = 0;
+      responder = () => {
+        apiCount++;
+        if (apiCount === 1) {
+          return new Response('', { status: 503, headers: { 'Retry-After': '2' } });
+        }
+        return jsonResponse({ after503: true });
+      };
+
+      t.mock.timers.enable({ apis: ['setTimeout'] });
+      const timer = spyOnSetTimeout();
+      t.after(() => timer.restore());
+
+      let settled = false;
+      const pending = new SpotifyClient()
+        .get<{ after503: boolean }>('/me')
+        .finally(() => {
+          settled = true;
+        });
+      await releaseBackoffs(t, timer, 1, () => settled);
+
+      assert.equal(timer.delays.length, 1, 'exactly one backoff sleep scheduled');
+      assert.equal(timer.delays[0], 2000, 'Retry-After=2s honoured on the 5xx backoff');
+      assert.deepEqual(await pending, { after503: true });
+      assert.equal(apiCount, 2, 'exactly one retry after the 503');
+    });
+
+    it('honours an HTTP-date Retry-After on a 5xx instead of the 1s fallback', async (t) => {
+      await seedTokens();
+      let apiCount = 0;
+      responder = () => {
+        apiCount++;
+        if (apiCount === 1) {
+          return new Response('', {
+            status: 503,
+            // RFC 9110's second Retry-After form. The old parseInt read this as
+            // NaN and fell to the 1s floor, so the wait below would have been
+            // 1s instead of ~5s. Kept under the 10s in-queue cap so the retry
+            // actually happens; the 30s case is pinned in parseRetryAfter's
+            // own unit tests.
+            headers: { 'Retry-After': new Date(Date.now() + 5_000).toUTCString() },
+          });
+        }
+        return jsonResponse({ afterDate: true });
+      };
+
+      t.mock.timers.enable({ apis: ['setTimeout'] });
+      const timer = spyOnSetTimeout();
+      t.after(() => timer.restore());
+
+      let settled = false;
+      const pending = new SpotifyClient()
+        .get('/me')
+        .finally(() => {
+          settled = true;
+        });
+      await releaseBackoffs(t, timer, 1, () => settled);
+      await pending;
+
+      assert.equal(timer.delays.length, 1);
+      // toUTCString truncates to whole seconds, so allow a second of slack.
+      // The discriminator is the 1s fallback: 1000 would mean the HTTP-date
+      // was not parsed.
+      assert.ok(
+        Math.abs((timer.delays[0] ?? 0) - 5_000) <= 1000,
+        `HTTP-date Retry-After should wait ~5s, waited ${timer.delays[0]}ms`,
+      );
+      assert.equal(apiCount, 2);
+    });
+
+    it('stops at the attempt budget rather than retrying a 503 forever', async (t) => {
+      await seedTokens();
+      let apiCount = 0;
+      responder = () => {
+        apiCount++;
+        return new Response('', { status: 503 });
+      };
+
+      t.mock.timers.enable({ apis: ['setTimeout'] });
+      const timer = spyOnSetTimeout();
+      t.after(() => timer.restore());
+
+      let settled = false;
+      const pending = new SpotifyClient()
+        .get('/me')
+        .catch(() => undefined)
+        .finally(() => {
+          settled = true;
+        });
+      await releaseBackoffs(t, timer, 2, () => settled);
+      await pending;
+
+      // Bounded: 1 initial dispatch + 2 retries, and no fourth attempt.
+      assert.equal(apiCount, 3, 'the retry budget bounds a permanently unhealthy Spotify');
+      assert.equal(timer.delays.length, 2, 'one backoff per retry, not a tight loop');
+    });
+
+    it('does not retry a 500 — Spotify\'s own logic failing is not transient', async (t) => {
+      await seedTokens();
+      let apiCount = 0;
+      responder = () => {
+        apiCount++;
+        return new Response('', { status: 500 });
+      };
+
+      t.mock.timers.enable({ apis: ['setTimeout'] });
+      const timer = spyOnSetTimeout();
+      t.after(() => timer.restore());
+
+      await assert.rejects(new SpotifyClient().get('/me'), SpotifyApiError);
+      assert.equal(apiCount, 1, '500 is outside the retryable gateway set');
+      assert.equal(timer.delays.length, 0, 'no backoff sleep for a 500');
+    });
+
+    it('fails fast without sleeping when a 5xx Retry-After exceeds the in-queue cap', async (t) => {
+      await seedTokens();
+      let apiCount = 0;
+      responder = () => {
+        apiCount++;
+        return new Response('', { status: 503, headers: { 'Retry-After': '60' } });
+      };
+
+      t.mock.timers.enable({ apis: ['setTimeout'] });
+      const timer = spyOnSetTimeout();
+      t.after(() => timer.restore());
+
+      await assert.rejects(new SpotifyClient().get('/me'), (err: unknown) => {
+        const e = err as SpotifyApiError;
+        assert.ok(e instanceof SpotifyApiError);
+        assert.equal(e.status, 503);
+        // The message must name the long wait, not "try again shortly" —
+        // a server that says a minute must never be reported as a short one.
+        assert.match(e.message, /Retry-After 60s/);
+        assert.match(e.message, /10s in-queue wait cap/);
+        return true;
+      });
+      assert.equal(timer.delays.length, 0, 'no in-queue sleep beyond the cap');
+      assert.equal(apiCount, 1);
+    });
+
+    it('spreads the 5xx backoff with jitter, not just base doubling', async (t) => {
+      await seedTokens();
+      t.mock.timers.enable({ apis: ['setTimeout'] });
+      const timer = spyOnSetTimeout();
+      t.after(() => timer.restore());
+
+      /** Delays a client schedules for `random` before giving up on a 503. */
+      const backoffsFor = async (random: () => number): Promise<number[]> => {
+        let apiCount = 0;
+        responder = () => {
+          apiCount++;
+          return new Response('', { status: 503 });
+        };
+        timer.delays.length = 0;
+        let settled = false;
+        const pending = new SpotifyClient({ random })
+          .get('/me')
+          .catch(() => undefined)
+          .finally(() => {
+            settled = true;
+          });
+        await releaseBackoffs(t, timer, 2, () => settled);
+        await pending;
+        assert.equal(apiCount, 3, 'every run is bounded by the same budget');
+        return [...timer.delays];
+      };
+
+      // 250ms * 2^n, plus random() * 250ms of jitter. The first retry already
+      // differs across the three jitter draws (250 / 375 / 500), so the spread
+      // is the jitter itself rather than the base doubling two retries apart.
+      assert.deepEqual(await backoffsFor(() => 0), [250, 500]);
+      assert.deepEqual(await backoffsFor(() => 0.5), [375, 625]);
+      assert.deepEqual(await backoffsFor(() => 1), [500, 750]);
+    });
+
+    it('does NOT retry a POST that lost its connection — a mutation must not be re-sent', async (t) => {
+      await seedTokens();
+      let apiCount = 0;
+      responder = () => {
+        apiCount++;
+        throw connectionReset();
+      };
+
+      t.mock.timers.enable({ apis: ['setTimeout'] });
+      const timer = spyOnSetTimeout();
+      t.after(() => timer.restore());
+
+      await assert.rejects(
+        new SpotifyClient().post('/me/player/queue', { uris: ['spotify:track:1'] }),
+        (err: unknown) => {
+          // Not a raw TypeError: the error boundary classifies an untyped
+          // throw as `internal` and advises a blind re-run of the tool, which
+          // is the retry that would double-apply the mutation.
+          assert.ok(
+            err instanceof SpotifyApiError,
+            `expected SpotifyApiError, got ${err?.constructor?.name}: ${err}`,
+          );
+          const e = err as SpotifyApiError;
+          assert.equal(e.status, 503, 'a network blip is unavailable, not internal');
+          assert.match(e.message, /^POST https:\/\/api\.spotify\.com\/v1\/me\/player\/queue failed: fetch failed/);
+          return true;
+        },
+      );
+      assert.equal(apiCount, 1, 'the POST was never re-sent');
+      assert.equal(timer.delays.length, 0, 'no backoff sleep for a non-idempotent transport failure');
+    });
+
+    it('retries an idempotent GET through a connection reset, then reports a typed 503', async (t) => {
+      await seedTokens();
+      let apiCount = 0;
+      responder = () => {
+        apiCount++;
+        throw connectionReset();
+      };
+
+      t.mock.timers.enable({ apis: ['setTimeout'] });
+      const timer = spyOnSetTimeout();
+      t.after(() => timer.restore());
+
+      let settled = false;
+      let thrown: unknown;
+      const pending = new SpotifyClient()
+        .get('/me')
+        .catch((err: unknown) => {
+          thrown = err;
+        })
+        .finally(() => {
+          settled = true;
+        });
+      await releaseBackoffs(t, timer, 2, () => settled);
+      await pending;
+
+      const err = thrown as SpotifyApiError;
+      assert.ok(err instanceof SpotifyApiError, `expected SpotifyApiError, got ${err}`);
+      assert.equal(err.status, 503);
+      assert.match(err.message, /^GET https:\/\/api\.spotify\.com\/v1\/me failed: fetch failed/);
+      assert.equal(apiCount, 3, 'a GET is idempotent, so it is retried within budget');
+    });
+
+    it('leaves the shared quota cooldown alone — a 5xx backoff is per-request', async (t) => {
+      await seedTokens();
+      responder = () => new Response('', { status: 503, headers: { 'Retry-After': '2' } });
+
+      t.mock.timers.enable({ apis: ['setTimeout'] });
+      const timer = spyOnSetTimeout();
+      t.after(() => timer.restore());
+
+      const client = new SpotifyClient();
+      let settled = false;
+      const pending = client
+        .get('/me')
+        .catch(() => undefined)
+        .finally(() => {
+          settled = true;
+        });
+      await releaseBackoffs(t, timer, 2, () => settled);
+      await pending;
+
+      // Arming _rateLimitUntil here would make quotaPreflight() block every
+      // queued call behind one flaky route. Only a 429 owns that window.
+      assert.equal(
+        client.getRateLimitStatus().cooldownRemainingMs,
+        0,
+        'a 503 backoff must not arm the shared quota cooldown',
+      );
+    });
+  });
+
+  // -------------------------------------------------------------------------
   // 5. Error mapping
   // -------------------------------------------------------------------------
 
@@ -708,20 +1077,37 @@ describe('SpotifyClient', () => {
       });
     });
 
-    it('falls back to the generic 503 message when the body is unparseable', async () => {
+    it('falls back to the generic 503 message when the body is unparseable', async (t) => {
       await seedTokens();
       responder = () => new Response('Gateway fell over', { status: 503 });
 
+      // A 503 is now retried with backoff (#675), so the clock is mocked to
+      // keep those waits virtual instead of spending them in real time.
+      t.mock.timers.enable({ apis: ['setTimeout'] });
+      const timer = spyOnSetTimeout();
+      t.after(() => timer.restore());
+
       const client = new SpotifyClient();
-      await assert.rejects(client.get('/me'), (err: unknown) => {
-        assert.ok(err instanceof SpotifyApiError);
-        assert.equal(err.status, 503);
-        assert.equal(
-          err.message,
-          'Spotify service is temporarily unavailable — try again shortly',
-        );
-        return true;
-      });
+      let settled = false;
+      let thrown: unknown;
+      const pending = client
+        .get('/me')
+        .catch((err: unknown) => {
+          thrown = err;
+        })
+        .finally(() => {
+          settled = true;
+        });
+      await releaseBackoffs(t, timer, 2, () => settled);
+      await pending;
+
+      const err = thrown as SpotifyApiError;
+      assert.ok(err instanceof SpotifyApiError);
+      assert.equal(err.status, 503);
+      assert.equal(
+        err.message,
+        'Spotify service is temporarily unavailable — try again shortly',
+      );
     });
 
     it('uses the generic fallback when the message field is blank whitespace', async () => {
