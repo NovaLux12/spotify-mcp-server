@@ -33,7 +33,7 @@ import {
 import type { ResponseFormatValue, PaginationInfo } from '../shaping.js';
 import { getConfig } from '../config.js';
 import { readOnlyModeEnabled } from './annotations.js';
-import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { randomBytes } from 'node:crypto';
@@ -182,7 +182,9 @@ async function readWatermark(): Promise<string | null> {
 
 /**
  * Atomically advance the watermark to `date`. Temp-file + rename keeps the
- * update crash-safe; the temp file is created 0600 so the final file is too.
+ * update crash-safe; the temp file is created 0600 and re-asserted after
+ * the write (#1084: a `mode` argument only applies at creation), so the
+ * final file is too.
  *
  * The temp name MUST be unique per writer. A fixed `${target}.tmp` is a race
  * between concurrent writers on a shared state path: both create it, the
@@ -201,6 +203,10 @@ async function writeWatermark(date: string): Promise<void> {
   await rm(`${target}.tmp`, { force: true }).catch(() => {});
   try {
     await writeFile(tmp, `${JSON.stringify({ last_check: date }, null, 2)}\n`, { mode: 0o600 });
+    // #1084: re-assert 0600 after the write — a `mode` argument only applies at
+    // creation, and a leftover tmp from a previous run could carry a looser
+    // mode that would otherwise ride the rename into the final file.
+    await chmod(tmp, 0o600);
     await rename(tmp, target);
   } catch (err) {
     // A unique temp name means a failed write can leave a file nothing else

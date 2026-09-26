@@ -13,6 +13,9 @@ import { registerPlaylistTools } from '../src/tools/playlists.js';
 import { registerSwarm3PlaylistopsTools } from '../src/tools/swarm3_playlistops.js';
 import { registerSwarm4PlaylistsTools } from '../src/tools/swarm4_playlists.js';
 import type { PlaylistItemObject, SpotifyTrack } from '../src/types/spotify.js';
+import { chmodSync, mkdtempSync, readdirSync, statSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 type SchemaProperty = { type?: string; items?: unknown; [key: string]: unknown };
 type ListedTool = { name: string; inputSchema?: { properties?: Record<string, SchemaProperty> } };
@@ -726,5 +729,59 @@ describe('playlist set/diff schema and resolver contract (#912)', () => {
     });
     assert.ok(!result.isError, textOf(result));
     assert.deepEqual(harness.calls, [`/playlists/${PLAYLIST_1}/items`, `/playlists/${PLAYLIST_2}/items`]);
+  });
+});
+
+// #1084: every new playlistops-pre-*.json snapshot must end up 0600 after
+// backupItemsBeforeWrite runs through sort_playlist_apply, even if a previous
+// run had loosened the directory or the file existed already.
+describe('playlistops pre-write backup mode (#1084)', () => {
+  let backupDir: string;
+  let prevBackupDir: string | undefined;
+
+  before(() => {
+    backupDir = mkdtempSync(join(tmpdir(), 'plops-backup-'));
+    prevBackupDir = process.env.SPOTIFY_MCP_BACKUP_DIR;
+    process.env.SPOTIFY_MCP_BACKUP_DIR = backupDir;
+  });
+
+  after(() => {
+    if (prevBackupDir === undefined) delete process.env.SPOTIFY_MCP_BACKUP_DIR;
+    else process.env.SPOTIFY_MCP_BACKUP_DIR = prevBackupDir;
+    rmSync(backupDir, { recursive: true, force: true });
+  });
+
+  it('writes the pre-write backup with mode 0600', async () => {
+    const before = readdirSync(backupDir);
+    const localHarness = await makeHarness();
+    try {
+      await localHarness.invoke('sort_playlist_apply', {
+        playlist_id: PLAYLIST_1,
+        sort_by: 'name',
+        direction: 'asc',
+        dry_run: false,
+      });
+      const after = readdirSync(backupDir);
+      const newFiles = after.filter((f) => !before.includes(f));
+      assert.ok(newFiles.length > 0, 'sort_playlist_apply should have created a backup file');
+      for (const f of newFiles) {
+        assert.equal(statSync(join(backupDir, f)).mode & 0o777, 0o600, `backup ${f} must be 0600`);
+      }
+    } finally {
+      await localHarness.close();
+    }
+  });
+
+  it('records a pre-existing world-readable backup file as the precondition #1084 closes', () => {
+    // Mimic a pre-existing backup whose mode was loosened by a previous bug.
+    // The chmod in swarm3_playlistops.ts only runs after a write, so the real
+    // regression assertion is the one above; this case just records the
+    // pre-state the defensive chmod guards against.
+    const stamp = '2026-01-01T00-00-00-000Z';
+    const name = `playlistops-pre-${PLAYLIST_1}-${stamp}.json`;
+    const file = join(backupDir, name);
+    writeFileSync(file, JSON.stringify({ _kind: 'playlistops pre-write backup' }));
+    chmodSync(file, 0o644);
+    assert.equal(statSync(file).mode & 0o777, 0o644, 'sanity: pre-write file is world-readable');
   });
 });

@@ -14,7 +14,7 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { randomBytes } from 'node:crypto';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import type { SpotifyClient } from '../client.js';
@@ -143,6 +143,9 @@ async function saveSearchHistory(entries: SearchHistoryEntry[], env: NodeJS.Proc
   const cutoff = Date.now() - 90 * 86400_000;
   const filtered = entries.filter((e) => new Date(e.timestamp).getTime() >= cutoff);
   await writeFile(file, `${JSON.stringify(filtered, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
+  // #1084: mode only applies at creation; re-assert so a pre-existing or
+  // copied-in store does not stay world-readable after this write.
+  await chmod(file, 0o600);
 }
 
 export async function appendSearchHistory(entry: SearchHistoryEntry, env: NodeJS.ProcessEnv = process.env): Promise<void> {

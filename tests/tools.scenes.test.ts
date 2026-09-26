@@ -7,6 +7,8 @@ import { describe, it, beforeEach, afterEach } from 'node:test';
 import { z } from 'zod';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm, stat } from 'node:fs/promises';
+import { chmod, mkdir, writeFile } from 'node:fs/promises';
+import { dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -384,6 +386,32 @@ describe('apply_scene dry_run', () => {
     const out = await h.invoke('apply_scene', { name: 'gone', dry_run: true });
     assert.match(textOf(out), /SKIP/);
     assert.match(textOf(out), /Nothing was changed\./);
+  });
+});
+
+// #1084: a pre-existing scenes.json that was copied in with a world-readable
+// mode must be tightened to 0600 when the server writes through `save_scene`.
+describe('scene sidecar file mode (#1084)', () => {
+  it('tightens a world-readable pre-existing scenes.json to 0600 on write', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'scenes-mode-'));
+    try {
+      const file = join(dir, 'nested', 'scenes.json');
+      await mkdir(dirname(file), { recursive: true });
+      await writeFile(file, JSON.stringify({ stale: { device_hint: 'old' } }), { mode: 0o644 });
+      await chmod(file, 0o644);
+      const prev = process.env.SPOTIFY_MCP_SCENES_FILE;
+      process.env.SPOTIFY_MCP_SCENES_FILE = file;
+      try {
+        const h = harness(deviceList);
+        await h.invoke('save_scene', { name: 'fresh', device_hint: 'Living' });
+        assert.equal((await stat(file)).mode & 0o777, 0o600);
+      } finally {
+        if (prev === undefined) delete process.env.SPOTIFY_MCP_SCENES_FILE;
+        else process.env.SPOTIFY_MCP_SCENES_FILE = prev;
+      }
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });
 
