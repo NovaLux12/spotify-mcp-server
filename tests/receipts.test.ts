@@ -16,6 +16,9 @@ import {
   type Receipt,
   type ReceiptClient,
 } from '../src/receipts.js';
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { SpotifyClient } from '../src/client.js';
+import { REGISTRAR_MANIFEST, registerManifestModule } from '../src/tools/annotations.js';
 
 // ---------------------------------------------------------------------------
 // Stub plumbing
@@ -523,5 +526,80 @@ describe('issueReceipt occurrence recording (#625)', () => {
       uris: ['spotify:track:x', 'spotify:track:y'],
     });
     assert.deepEqual(receipt.occurrences, { 'spotify:track:x': 2, 'spotify:track:y': 1 });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #586 — verify_receipt must not invert a removal receipt's vocabulary
+// ---------------------------------------------------------------------------
+
+describe('verify_receipt label direction (#586)', () => {
+  /**
+   * Call the REAL `verify_receipt` tool — the registration that ships — rather
+   * than `formatReceipt` directly. The defect lived in the gap between the two:
+   * the mutating turn passed `{ expectPresent: false }`, the re-render passed
+   * nothing, and the removal branch never ran.
+   */
+  async function callVerifyReceipt(receiptId: string): Promise<{ text: string; structuredContent: Record<string, unknown> }> {
+    const server = new McpServer({ name: 'verify-receipt-audit', version: '0.0.0' });
+    const context = { readOnly: false, isModuleActive: () => true, scopeBlocked: () => false };
+    const module = REGISTRAR_MANIFEST.find((m) => m.key === 'receipts');
+    assert.ok(module, 'the receipts module must be in the registrar manifest');
+    registerManifestModule(server, new SpotifyClient(), module!, context);
+    const registry = (server as unknown as {
+      _registeredTools: Record<string, { handler: (args: Record<string, unknown>) => Promise<{ content: Array<{ text: string }>; structuredContent?: Record<string, unknown> }> }>;
+    })._registeredTools;
+    const tool = registry.verify_receipt;
+    assert.ok(tool, 'verify_receipt must be registered');
+    const out = await tool.handler({ receipt_id: receiptId });
+    return { text: out.content[0].text, structuredContent: out.structuredContent ?? {} };
+  }
+
+  it('labels a removal receipt\'s leftover uris still-present, not missing', async () => {
+    // A removal of [gone, keep] where `keep` is still in the playlist.
+    const client = stubClient(() => pagedItems([track('spotify:track:keep')]));
+    const receipt = await issueReceipt(client, {
+      kind: 'playlist_items',
+      id: 'pl1',
+      uris: ['spotify:track:gone', 'spotify:track:keep'],
+      expectPresent: false,
+    });
+    assert.deepEqual(receipt.missing, ['spotify:track:keep'], 'the uri the refetch saw is the leftover');
+
+    const { text, structuredContent } = await callVerifyReceipt(receipt.receipt_id);
+    assert.match(text, /still-present uris: spotify:track:keep/);
+    assert.doesNotMatch(text, /missing uris/,
+      'a still-present uri must never be reported as missing — that reads as a removal that worked');
+    assert.equal(structuredContent.expect_present, false,
+      'an agent must be able to branch on the recorded direction, not parse prose');
+    assert.deepEqual(structuredContent.missing, ['spotify:track:keep']);
+  });
+
+  it('keeps the addition vocabulary for an add whose uri did not land', async () => {
+    const client = stubClient(() => pagedItems([track('spotify:track:other')]));
+    const receipt = await issueReceipt(client, {
+      kind: 'playlist_items',
+      id: 'pl1',
+      uris: ['spotify:track:absent'],
+    });
+    assert.deepEqual(receipt.missing, ['spotify:track:absent']);
+
+    const { text, structuredContent } = await callVerifyReceipt(receipt.receipt_id);
+    assert.match(text, /missing uris: spotify:track:absent/);
+    assert.doesNotMatch(text, /still-present/);
+    assert.equal(structuredContent.expect_present, true);
+  });
+
+  it('confirms absence rather than presence once the removal fully landed', async () => {
+    const client = stubClient(() => pagedItems([]));
+    const receipt = await issueReceipt(client, {
+      kind: 'playlist_items',
+      id: 'pl1',
+      uris: ['spotify:track:gone'],
+      expectPresent: false,
+    });
+    const { text } = await callVerifyReceipt(receipt.receipt_id);
+    assert.match(text, /all uris confirmed absent/);
+    assert.doesNotMatch(text, /all uris confirmed\n/);
   });
 });

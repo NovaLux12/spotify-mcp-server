@@ -1509,8 +1509,8 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
   // -----------------------------------------------------------------------
   server.tool(
     'saved_library_delta',
-    'Diff your current saved tracks/albums against a local backup snapshot (from backup_now): '
-      + 'added since / removed since. Quota: 🟡 getAllPages walks + local file read.',
+    'Diff your current saved tracks/albums against a local backup snapshot (from backup_library): '
+      + 'added/removed since. Quota: 🟡 getAllPages walks + local file read.',
     {
       snapshot_id: z.string().optional().describe('Snapshot id or backup file name (e.g. "backup-2026-08-01-1")'),
       type: z.enum(['all', 'tracks', 'albums']).optional().describe('Which shelves to diff. Default all'),
@@ -1530,7 +1530,7 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
         if (!fileName) throw new Error(`Snapshot "${args.snapshot_id}" not found in ${dir}`);
       } else {
         fileName = files.sort().pop();
-        if (!fileName) throw new Error('No local backups found — run backup_now first.');
+        if (!fileName) throw new Error('No local backups found — run backup_library first.');
       }
       const raw = JSON.parse(await readFile(join(dir, fileName), 'utf8')) as {
         liked_tracks?: Array<{ uri?: string; name?: string }>;

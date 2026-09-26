@@ -1042,7 +1042,13 @@ export function registerLibraryTools(server: McpServer, client: SpotifyClient): 
       const addedAfter = parseDateBound('added_after', args.added_after);
       const capN = args.scan_cap ?? getConfig().fetchAllCap;
       const all = await client.getAllPages<SavedAlbumItem>('/me/albums', { limit: '50' }, { maxItems: capN });
-      let filtered = all;
+      // A saved row can come back with a null `album` — content Spotify can no
+      // longer serve. It cannot be matched, and every facet below
+      // dereferences `album`, so it is dropped here and reported rather than
+      // crashing the filter or counting as a match (#761).
+      const albums = all.filter((i) => i?.album);
+      const unavailable = all.length - albums.length;
+      let filtered = albums;
       if (args.query) { const q = args.query.toLowerCase(); filtered = filtered.filter(i => i.album.name.toLowerCase().includes(q) || i.album.artists.some(a => a.name.toLowerCase().includes(q))); }
       if (args.artist) { const q = args.artist.toLowerCase(); filtered = filtered.filter(i => i.album.artists.some(a => a.name.toLowerCase().includes(q))); }
       if (addedAfter !== undefined) { filtered = filtered.filter(i => Date.parse(i.added_at) > addedAfter); }
@@ -1052,7 +1058,8 @@ export function registerLibraryTools(server: McpServer, client: SpotifyClient): 
       for (const it of t.items) renderAlbumLine(lines, it, rf === 'detailed');
       if (t.footer) lines.push(`(${t.footer})`);
       if (all.length >= capN) lines.push('(truncated at fetch_all_cap)');
-      return shapeResult(rf as ResponseFormatValue, lines.join('\n'), listStructuredContent(t.items, pagination, { scanned: all.length, matched: filtered.length }));
+      if (unavailable > 0) lines.push(`(${unavailable} saved row(s) carried no album payload and could not be matched)`);
+      return shapeResult(rf as ResponseFormatValue, lines.join('\n'), listStructuredContent(t.items, pagination, { scanned: all.length, matched: filtered.length, unavailable_rows: unavailable }));
     },
   );
 
@@ -1070,7 +1077,13 @@ export function registerLibraryTools(server: McpServer, client: SpotifyClient): 
       const rf = args.response_format;
       const capN = args.scan_cap ?? getConfig().fetchAllCap;
       const all = await client.getAllPages<SavedShowItem>('/me/shows', { limit: '50' }, { maxItems: capN });
-      let filtered = all;
+      // A saved row can come back with a null `show` — content Spotify can no
+      // longer serve. It cannot be matched, and both the facet and the render
+      // below dereference `show`, so it is dropped here and reported rather
+      // than crashing the search or counting as a match (#761).
+      const shows = all.filter((i) => i?.show);
+      const unavailable = all.length - shows.length;
+      let filtered = shows;
       if (args.query) { const q = args.query.toLowerCase(); filtered = filtered.filter(i => i.show.name.toLowerCase().includes(q) || (i.show.publisher ?? '').toLowerCase().includes(q)); }
       const t = truncateItems(filtered, cap(args));
       const pagination = paginationInfo({ total: filtered.length, returned: t.items.length });
@@ -1078,7 +1091,8 @@ export function registerLibraryTools(server: McpServer, client: SpotifyClient): 
       for (const it of t.items) renderShowLine(lines, it, rf === 'detailed');
       if (t.footer) lines.push(`(${t.footer})`);
       if (all.length >= capN) lines.push('(truncated at fetch_all_cap)');
-      return shapeResult(rf as ResponseFormatValue, lines.join('\n'), listStructuredContent(t.items, pagination, { scanned: all.length, matched: filtered.length }));
+      if (unavailable > 0) lines.push(`(${unavailable} saved row(s) carried no show payload and could not be matched)`);
+      return shapeResult(rf as ResponseFormatValue, lines.join('\n'), listStructuredContent(t.items, pagination, { scanned: all.length, matched: filtered.length, unavailable_rows: unavailable }));
     },
   );
 
@@ -1097,7 +1111,11 @@ export function registerLibraryTools(server: McpServer, client: SpotifyClient): 
       const rf = args.response_format;
       const capN = args.scan_cap ?? getConfig().fetchAllCap;
       const all = await client.getAllPages<SavedEpisodeItem>('/me/episodes', { limit: '50' }, { maxItems: capN });
-      let filtered = all;
+      // A saved row can come back with a null `episode`; it cannot be matched
+      // and both facets below dereference it, so drop + report (#761).
+      const episodes = all.filter((i) => i?.episode);
+      const unavailable = all.length - episodes.length;
+      let filtered = episodes;
       if (args.query) { const q = args.query.toLowerCase(); filtered = filtered.filter(i => i.episode.name.toLowerCase().includes(q)); }
       if (args.show) { const q = args.show.toLowerCase(); filtered = filtered.filter(i => i.episode.show.name.toLowerCase().includes(q)); }
       const t = truncateItems(filtered, cap(args));
@@ -1106,7 +1124,8 @@ export function registerLibraryTools(server: McpServer, client: SpotifyClient): 
       for (const it of t.items) renderEpisodeLine(lines, it, rf === 'detailed');
       if (t.footer) lines.push(`(${t.footer})`);
       if (all.length >= capN) lines.push('(truncated at fetch_all_cap)');
-      return shapeResult(rf as ResponseFormatValue, lines.join('\n'), listStructuredContent(t.items, pagination, { scanned: all.length, matched: filtered.length }));
+      if (unavailable > 0) lines.push(`(${unavailable} saved row(s) carried no episode payload and could not be matched)`);
+      return shapeResult(rf as ResponseFormatValue, lines.join('\n'), listStructuredContent(t.items, pagination, { scanned: all.length, matched: filtered.length, unavailable_rows: unavailable }));
     },
   );
 
@@ -1125,7 +1144,11 @@ export function registerLibraryTools(server: McpServer, client: SpotifyClient): 
       const capN = args.scan_cap ?? getConfig().fetchAllCap;
       type SavedAudiobookItem = { added_at: string; audiobook: { name: string; authors: Array<{ name: string }>; uri: string } };
       const all = await client.getAllPages<SavedAudiobookItem>('/me/audiobooks', { limit: '50' }, { maxItems: capN });
-      let filtered = all;
+      // A saved row can come back with a null `audiobook`; it cannot be matched
+      // and both the facet and the render below dereference it (#761).
+      const audiobooks = all.filter((i) => i?.audiobook);
+      const unavailable = all.length - audiobooks.length;
+      let filtered = audiobooks;
       if (args.query) { const q = args.query.toLowerCase(); filtered = filtered.filter(i => i.audiobook.name.toLowerCase().includes(q) || i.audiobook.authors.some(a => a.name.toLowerCase().includes(q))); }
       const t = truncateItems(filtered, cap(args));
       const pagination = paginationInfo({ total: filtered.length, returned: t.items.length });
@@ -1133,7 +1156,8 @@ export function registerLibraryTools(server: McpServer, client: SpotifyClient): 
       for (const it of t.items) lines.push(`  • "${it.audiobook.name}" by ${it.audiobook.authors.map(a=>a.name).join(', ')} | URI: ${it.audiobook.uri} | Added: ${it.added_at}`);
       if (t.footer) lines.push(`(${t.footer})`);
       if (all.length >= capN) lines.push('(truncated at fetch_all_cap)');
-      return shapeResult(rf as ResponseFormatValue, lines.join('\n'), listStructuredContent(t.items, pagination, { scanned: all.length, matched: filtered.length }));
+      if (unavailable > 0) lines.push(`(${unavailable} saved row(s) carried no audiobook payload and could not be matched)`);
+      return shapeResult(rf as ResponseFormatValue, lines.join('\n'), listStructuredContent(t.items, pagination, { scanned: all.length, matched: filtered.length, unavailable_rows: unavailable }));
     },
   );
 
@@ -1194,15 +1218,22 @@ export function registerLibraryTools(server: McpServer, client: SpotifyClient): 
       const walkCap = args.max_items ?? getConfig().fetchAllCap;
       const all = await client.getAllPages<SavedTrackItem>('/me/tracks', { limit: '50' }, { maxItems: walkCap });
       const truncated = all.length >= walkCap;
-      let filtered = all;
+      // `/me/tracks` documents `track` as nullable: a saved track Spotify can
+      // no longer serve comes back as `{ added_at, track: null }`. The
+      // artist/album facets and the name/artist sorts below all dereference
+      // `s.track`, so those rows are dropped once here — reported, never
+      // counted as a match (#761).
+      const tracks = all.filter((s) => s?.track);
+      const unavailable = all.length - tracks.length;
+      let filtered = tracks;
       const q = args.query?.toLowerCase();
       if (q) filtered = filtered.filter(s => {
-        const tr = s.track; if (!tr) return false;
-        const hay = [tr.name ?? '', ...(tr.artists ?? []).map(a=>a.name), (tr as any).album?.name ?? ''].join(' ').toLowerCase();
+        const tr = s.track;
+        const hay = [tr.name ?? '', ...(tr.artists ?? []).map(a=>a.name), tr.album?.name ?? ''].join(' ').toLowerCase();
         return hay.includes(q);
       });
       if (args.artist) { const a = args.artist.toLowerCase(); filtered = filtered.filter(s => (s.track.artists ?? []).some(ar => ar.name.toLowerCase().includes(a))); }
-      if (args.album) { const a = args.album.toLowerCase(); filtered = filtered.filter(s => ((s.track as any).album?.name ?? '').toLowerCase().includes(a)); }
+      if (args.album) { const a = args.album.toLowerCase(); filtered = filtered.filter(s => (s.track.album?.name ?? '').toLowerCase().includes(a)); }
       if (addedAfter !== undefined) filtered = filtered.filter(s => Date.parse(s.added_at) > addedAfter);
       if (addedBefore !== undefined) filtered = filtered.filter(s => Date.parse(s.added_at) < addedBefore);
       const sort = args.sort_by ?? 'added_desc';
@@ -1218,11 +1249,12 @@ export function registerLibraryTools(server: McpServer, client: SpotifyClient): 
       const sliced = filtered.slice(0, Math.min(limit, cap(args)));
       const lines = [`Saved tracks search: ${totalMatches} match(es) across ${all.length} walked${truncated ? ` (walk truncated at ${walkCap})` : ''}, showing ${sliced.length}:`];
       for (const s of sliced) {
-        const tr = s.track; const artists = (tr.artists??[]).map(a=>a.name).join(', '); const album = (tr as any).album?.name ?? '';
+        const tr = s.track; const artists = (tr.artists??[]).map(a=>a.name).join(', '); const album = tr.album?.name ?? '';
         lines.push(`  • "${tr.name}" by ${artists} — ${album} (added ${s.added_at}) | URI: ${tr.uri}`);
       }
       if (truncated) lines.push(`(walk hit cap ${walkCap} — pass max_items to scan more)`);
-      const payload = { total_matches: totalMatches, walked: all.length, scan_cap: walkCap, truncated, items: sliced.map(s=>({ track: s.track, added_at: s.added_at })), returned: sliced.length };
+      if (unavailable > 0) lines.push(`(${unavailable} saved row(s) carried no track payload and could not be matched)`);
+      const payload = { total_matches: totalMatches, walked: all.length, unavailable_rows: unavailable, scan_cap: walkCap, truncated, items: sliced.map(s=>({ track: s.track, added_at: s.added_at })), returned: sliced.length };
       return shapeResult(rf, lines.join('\n'), payload as unknown as Record<string, unknown>);
     },
   );

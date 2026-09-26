@@ -388,7 +388,7 @@ async function readSnapshot(file: string): Promise<LibraryBackup> {
     const all = await listSnapshotFiles();
     const hint = all.length > 0
       ? ` Available snapshots: ${all.slice(0, 8).join(', ')}${all.length > 8 ? '…' : ''}`
-      : ` No snapshots found in ${backupDir()} — run backup_now first.`;
+      : ` No snapshots found in ${backupDir()} — run backup_library first.`;
     throw new Error(`Snapshot "${file}" not found.${hint}`);
   }
   const parsed = JSON.parse(raw) as LibraryBackup;
@@ -1292,9 +1292,8 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
   // -----------------------------------------------------------------------
   server.tool(
     'playlist_history',
-    'List your local backup snapshots (from backup_now): file name, created timestamp, and the '
-      + 'counts each snapshot carries. The entry point for snapshot_detail / changelog / '
-      + 'clone_snapshot. Read-only, no API calls.',
+    'List local backup snapshots (from backup_library): filename, created timestamp, per-snapshot counts. '
+      + 'See also: playlist_snapshot_detail, playlist_changelog, playlist_clone_snapshot. Read-only, no API calls.',
     {
       ...sharedListFields,
     },
@@ -1330,7 +1329,7 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
               ),
               view.footer ? `  (${view.footer})` : '',
             ].filter(Boolean)
-          : ['  (none yet — run backup_now to create one)']),
+          : ['  (none yet — run backup_library to create one)']),
       ];
       return shape(rf, prose.join('\n'), {
         ok: true,
