@@ -168,7 +168,8 @@ const OUTPUT_FIELD_NAMES = new Set<string>([
   'truncated_collections',
   // StructuredContent keys the walk/disclosure work added and ARCHITECTURE.md
   // now names. Neither is a tool or a parameter; both are what a call reports
-  // back about its own result.
+  // back about its own result. #786's list_all_chapters names the same key
+  // for the same reason, so this stays one entry with two provenance comments.
   'truncated_by_cap',
   // #757: restore_library_snapshot documents the snapshot schema version it
   // now refuses on. A key inside the file it reads, not a tool or parameter.
