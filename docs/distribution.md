@@ -127,6 +127,10 @@ curl --fail --silent --show-error \
        and ._meta["io.modelcontextprotocol.registry/official"].isLatest == true'
 ```
 
+A 404 from that `npm view` right after a publish is npm propagation, not a
+missing artifact — do not re-publish on it. CONTRIBUTING.md §3 has the
+cache-busted read and the recovery command.
+
 The npm command must print the exact version without the leading `v`; both
 `server.json` checks and the Registry `isLatest` check must return `true`.
 The publish workflow skips an npm version that is already present, so a

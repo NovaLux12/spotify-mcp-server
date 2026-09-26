@@ -192,15 +192,15 @@ equally wrong:
 |---|---|---|
 | `…/versions/latest` | the current version, with `isLatest` | yes — this is the check above |
 | `…/versions` | every published version, newest first, each with `isLatest` and timestamps | yes — correct, and the way to audit an *older* version or its deprecation status |
-| `/v0/servers?search=…` | a **paginated** slice of published versions, and a lagging one | no — see below |
+| `/v0/servers?search=…` | a **paginated** slice whose first page can omit the newest release | no — see below |
 
 `?search=` is the trap, and the shape matters. Its response carries
 `metadata.nextCursor` and a `metadata.count`, and the versions it returns can
 stop short of the newest published — a page of results is not the full history,
 so the highest version in a search result is not evidence of what is live.
-Worse, its ordering looks alphabetical rather than semantic, so the first row
-is not the newest (`1.10.0` sorts ahead of `1.2.1`); reading one row off a
-search and believing it is how a stale-looking number gets quoted as fact.
+Worse, its ordering is alphabetical rather than semantic, so the first row is
+not the newest (`1.10.0` sorts ahead of `1.2.1`); reading one row off a search
+and believing it is how a stale-looking number gets quoted as fact.
 
 The failure this guards against is concluding a publish failed and
 re-publishing a version that is already out. npm versions are immutable and the
