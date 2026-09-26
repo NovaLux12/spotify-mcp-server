@@ -111,15 +111,29 @@ const KNOWN_SCOPES = new Set<string>([
 ]);
 
 /**
- * Parse SPOTIFY_SCOPES / --scopes CLI flag: space- or comma-separated, validated,
- * de-duplicated. Returns null when not set.
+ * Parse SPOTIFY_SCOPES / --scopes: space- or comma-separated, validated,
+ * de-duplicated. Returns null **only** when the value is absent (undefined).
+ *
+ * A value that is present but names no scope is an error, not "unset" (#617).
+ * Conflating the two made `--scopes=` and `SPOTIFY_SCOPES=" "` fall through to
+ * the 17-scope default — the widest consent set, five mutation scopes
+ * included, the exact opposite of the narrow request the operator made, and the
+ * opposite of the minimum-scope rule in AGENTS.md §1.
  */
-function parseScopesString(raw: string | undefined): string[] | null {
-  if (!raw || raw.trim() === '') return null;
+export function parseScopesString(
+  raw: string | undefined,
+  label = '--scopes',
+): string[] | null {
+  if (raw === undefined) return null;
   const parts = raw
     .split(/[\s,]+/)
     .map((s) => s.trim())
     .filter(Boolean);
+  if (parts.length === 0) {
+    throw new Error(
+      `${label} was given but contained no scope names — pass at least one scope, or unset it to use the defaults.`,
+    );
+  }
   const deduped: string[] = [];
   const seen = new Set<string>();
   for (const s of parts) {
@@ -132,39 +146,70 @@ function parseScopesString(raw: string | undefined): string[] | null {
     seen.add(s);
     deduped.push(s);
   }
-  if (deduped.length === 0) return null;
   return deduped;
 }
 
-/** Resolve scopes for the current auth flow: CLI --scopes > SPOTIFY_SCOPES env > default. */
-function resolveScopes(cliScopes?: string): string {
+/**
+ * Resolve scopes for the current auth flow: CLI --scopes > SPOTIFY_SCOPES env > default.
+ * The env argument is injectable so the precedence is testable without mutating
+ * process.env; only a genuine absence (undefined) falls through to the default.
+ */
+export function resolveScopes(
+  cliScopes?: string,
+  envScopes: string | undefined = process.env.SPOTIFY_SCOPES,
+): string {
   // CLI takes precedence
-  if (cliScopes !== undefined) {
-    const parsed = parseScopesString(cliScopes);
-    if (parsed) return parsed.join(' ');
-  }
-  const envParsed = parseScopesString(process.env.SPOTIFY_SCOPES);
-  if (envParsed) return envParsed.join(' ');
+  const cli = parseScopesString(cliScopes, '--scopes');
+  if (cli) return cli.join(' ');
+  const env = parseScopesString(envScopes, 'SPOTIFY_SCOPES');
+  if (env) return env.join(' ');
   return DEFAULT_SCOPES;
 }
 
-/** Parse --profile / --scopes from process.argv (auth subcommand). */
-function parseAuthArgs(argv: string[] = process.argv.slice(2)): {
+/** Profile names become file names, so they are restricted to a safe charset. */
+const PROFILE_NAME_PATTERN = /^[A-Za-z0-9._-]+$/;
+
+const EMPTY_PROFILE_ERROR = '--profile requires a name matching [A-Za-z0-9._-]+';
+const EMPTY_SCOPES_ERROR = '--scopes was given but contained no scope names';
+
+/**
+ * Parse --profile / --scopes from argv (auth subcommand).
+ *
+ * A flag that is present but carries no value is an error (#617), not a
+ * fall-through to the default. `--profile ""` and a dangling trailing
+ * `--profile` used to be indistinguishable from "no profile at all", so
+ * `auth --profile "$UNSET_VAR"` wrote tokens into the shared default file
+ * while the operator believed a named profile had been created. An empty
+ * `--scopes` used to be read as "unset" and widened the request to every
+ * default scope.
+ */
+export function parseAuthArgs(argv: string[] = process.argv.slice(2)): {
   profile?: string;
   scopes?: string;
 } {
   const result: { profile?: string; scopes?: string } = {};
   for (let i = 0; i < argv.length; i++) {
-    if (argv[i] === '--profile' && i + 1 < argv.length) {
+    const arg = argv[i];
+    if (arg === '--profile') {
+      if (i + 1 >= argv.length || argv[i + 1].trim() === '') {
+        throw new Error(EMPTY_PROFILE_ERROR);
+      }
       result.profile = argv[i + 1];
       i++;
-    } else if (argv[i].startsWith('--profile=')) {
-      result.profile = argv[i].slice('--profile='.length);
-    } else if (argv[i] === '--scopes' && i + 1 < argv.length) {
+    } else if (arg.startsWith('--profile=')) {
+      const value = arg.slice('--profile='.length);
+      if (value.trim() === '') throw new Error(EMPTY_PROFILE_ERROR);
+      result.profile = value;
+    } else if (arg === '--scopes') {
+      if (i + 1 >= argv.length || argv[i + 1].trim() === '') {
+        throw new Error(EMPTY_SCOPES_ERROR);
+      }
       result.scopes = argv[i + 1];
       i++;
-    } else if (argv[i].startsWith('--scopes=')) {
-      result.scopes = argv[i].slice('--scopes='.length);
+    } else if (arg.startsWith('--scopes=')) {
+      const value = arg.slice('--scopes='.length);
+      if (value.trim() === '') throw new Error(EMPTY_SCOPES_ERROR);
+      result.scopes = value;
     }
   }
   return result;
@@ -172,7 +217,7 @@ function parseAuthArgs(argv: string[] = process.argv.slice(2)): {
 
 function validateProfileName(name: string): string {
   const trimmed = name.trim();
-  if (!/^[A-Za-z0-9._-]+$/.test(trimmed)) {
+  if (!PROFILE_NAME_PATTERN.test(trimmed)) {
     throw new Error(`Invalid --profile "${trimmed}": must match [A-Za-z0-9._-]+`);
   }
   if (trimmed === '.' || trimmed === '..') {
@@ -184,8 +229,12 @@ function validateProfileName(name: string): string {
 /**
  * Resolve token file path. Precedence: SPOTIFY_MCP_TOKEN_FILE > --profile / SPOTIFY_MCP_PROFILE > default.
  * Exported as function for dynamic resolution (tests + multi-profile).
+ *
+ * A cliProfile of '' is impossible from parseAuthArgs (#617 rejects it), and the
+ * `if (profile)` guard below is what makes an empty value mean "no profile" —
+ * so the emptiness check lives in the argv parser, not here.
  */
-function getTokenFile(cliProfile?: string): string {
+export function getTokenFile(cliProfile?: string): string {
   if (process.env.SPOTIFY_MCP_TOKEN_FILE) return process.env.SPOTIFY_MCP_TOKEN_FILE;
   const profile = cliProfile ?? process.env.SPOTIFY_MCP_PROFILE;
   if (profile) {
@@ -454,7 +503,16 @@ export async function runAuthFlow(): Promise<void> {
     process.exit(1);
   }
 
-  const authArgs = parseAuthArgs();
+  // argv is validated before anything else can succeed: an empty or dangling
+  // --profile / --scopes must fail here, not be read as "not set" (#617).
+  const authArgs = (() => {
+    try {
+      return parseAuthArgs();
+    } catch (err) {
+      console.error(`Error: ${err instanceof Error ? err.message : err}`);
+      process.exit(1);
+    }
+  })() as { profile?: string; scopes?: string };
   const effectiveScopes = (() => {
     try {
       return resolveScopes(authArgs.scopes);
@@ -464,8 +522,9 @@ export async function runAuthFlow(): Promise<void> {
     }
   })() as string;
 
-  // Validate profile early so we fail fast
-  if (authArgs.profile) {
+  // Validate profile early so we fail fast. `!== undefined` rather than a
+  // truthiness test: an empty name must be rejected, not skipped (#617).
+  if (authArgs.profile !== undefined) {
     try {
       validateProfileName(authArgs.profile);
     } catch (err) {

@@ -11,6 +11,7 @@ import assert from 'node:assert/strict';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import type { SpotifyClient } from '../src/client.js';
+import { SpotifyApiError } from '../src/client.js';
 import { registerPlaylistOpsTools } from '../src/tools/playlistops.js';
 import type { PlaylistItemObject, SpotifyPaged } from '../src/types/spotify.js';
 
@@ -176,6 +177,7 @@ const PAIR_B = 'R'.repeat(22);
 const OVERLAP_1 = '1'.repeat(22);
 const OVERLAP_2 = '2'.repeat(22);
 const OVERLAP_3 = '3'.repeat(22);
+const PARTIAL_A = 'N'.repeat(22);
 
 
 /**
@@ -396,6 +398,93 @@ describe('merge_playlists', () => {
     assert.match(text, /5 unique track\(s\)/);
     assert.match(text, /3 more/);
     assert.equal((text.match(/spotify:track:m\d/g) ?? []).length, 5); // batchSummary previews 3 + 2 rendered rows
+  });
+
+  // #865 — the unguarded batch loop left no way to tell a partial merge
+  // from a complete one when a later batch rejected.
+  describe('partial write state (#865)', () => {
+    const bigSource = Array.from({ length: 150 }, (_, i) => item(`p${String(i).padStart(3, '0')}`));
+    const bigUris = bigSource.map((it) => (it.item as { uri: string }).uri);
+
+    it('reports the committed prefix when a later batch rejects', async () => {
+      let batchCount = 0;
+      const h = harness(
+        playlistResponder({ [PARTIAL_A]: bigSource }, (path) => {
+          if (path === `/playlists/${TARGET}/items`) {
+            batchCount++;
+            if (batchCount === 1) return { snapshot_id: 'snap-1' };
+            throw new SpotifyApiError(503, 'Service Unavailable');
+          }
+          return { snapshot_id: 's' };
+        }),
+      );
+
+      const out = await h.invoke('merge_playlists', {
+        sources: [PARTIAL_A],
+        target_playlist_id: TARGET,
+      });
+      const p = out.structuredContent!;
+      assert.equal(p.partial_write_failure, true);
+      assert.equal(p.attempted_chunks, 2);
+      assert.equal(p.failed_chunk_index, 1);
+      assert.equal(p.last_committed_chunk_index, 0);
+      assert.deepEqual(p.last_committed_chunk_uris, bigUris.slice(0, 100));
+      assert.equal(p.committed_uris, 100);
+      assert.equal(p.remaining_uris, 50);
+      assert.equal(p.attempted_uris, 150);
+      assert.match(String(p.error), /Service Unavailable/);
+      assert.match(textOf(out), /Partial merge into playlist/);
+      assert.match(textOf(out), /batch 2 of 2 failed/);
+      // The helper aborts at the failing chunk — no further batch was issued.
+      assert.equal(batchCount, 2);
+    });
+
+    it('reports nothing committed when the first batch rejects', async () => {
+      const h = harness(
+        playlistResponder({ [PARTIAL_A]: bigSource }, (path) => {
+          if (path === `/playlists/${TARGET}/items`) throw new SpotifyApiError(403, 'Forbidden');
+          return { snapshot_id: 's' };
+        }),
+      );
+
+      const out = await h.invoke('merge_playlists', {
+        sources: [PARTIAL_A],
+        target_playlist_id: TARGET,
+      });
+      const p = out.structuredContent!;
+      assert.equal(p.partial_write_failure, true);
+      assert.equal(p.failed_chunk_index, 0);
+      assert.equal(p.last_committed_chunk_index, -1);
+      assert.deepEqual(p.last_committed_chunk_uris, []);
+      assert.equal(p.committed_uris, 0);
+      assert.equal(p.remaining_uris, 150);
+      assert.match(textOf(out), /aborted before any track landed/);
+    });
+
+    it('reports the committed prefix in json response_format too', async () => {
+      let batchCount = 0;
+      const h = harness(
+        playlistResponder({ [PARTIAL_A]: bigSource }, (path) => {
+          if (path === `/playlists/${TARGET}/items`) {
+            batchCount++;
+            if (batchCount === 1) return { snapshot_id: 'snap-1' };
+            throw new SpotifyApiError(429, 'Rate limited');
+          }
+          return { snapshot_id: 's' };
+        }),
+      );
+
+      const out = await h.invoke('merge_playlists', {
+        sources: [PARTIAL_A],
+        target_playlist_id: TARGET,
+        response_format: 'json',
+      });
+      const parsed = JSON.parse(textOf(out));
+      assert.equal(parsed.partial_write_failure, true);
+      assert.equal(parsed.failed_chunk_index, 1);
+      assert.equal(parsed.committed_uris, 100);
+      assert.equal(out.structuredContent!.partial_write_failure, true);
+    });
   });
 });
 

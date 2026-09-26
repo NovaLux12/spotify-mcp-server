@@ -140,13 +140,23 @@ export function resolveTokenFile(env: NodeJS.ProcessEnv = process.env): string {
 /**
  * Parse SPOTIFY_SCOPES: space- or comma-separated, validated against known
  * vocabulary, de-duplicated. Returns null when unset. Throws on unknown scope.
+ *
+ * A variable that is set but names no scope throws rather than reading as
+ * "unset" (#617): the old fall-through silently substituted DEFAULT_SCOPES, so
+ * `SPOTIFY_SCOPES=" "` requested all 17 scopes — every mutation scope — where
+ * the operator had asked for the narrowest set. Unset it instead of emptying it.
  */
 export function parseScopes(raw: string | undefined): string[] | null {
-  if (!raw || raw.trim() === '') return null;
+  if (raw === undefined) return null;
   const parts = raw
     .split(/[\s,]+/)
     .map((s) => s.trim())
     .filter(Boolean);
+  if (parts.length === 0) {
+    throw new Error(
+      'SPOTIFY_SCOPES was given but contained no scope names — unset it to use the default scopes, or list scopes explicitly.',
+    );
+  }
   const deduped: string[] = [];
   const seen = new Set<string>();
   for (const s of parts) {
@@ -159,7 +169,6 @@ export function parseScopes(raw: string | undefined): string[] | null {
     seen.add(s);
     deduped.push(s);
   }
-  if (deduped.length === 0) return null;
   return deduped;
 }
 

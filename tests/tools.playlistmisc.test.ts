@@ -3,6 +3,7 @@ import { z } from 'zod';
 import assert from 'node:assert/strict';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../src/client.js';
+import { SpotifyApiError } from '../src/client.js';
 import type { SpotifyPaged } from '../src/types/spotify.js';
 import { registerPlaylistMiscTools } from '../src/tools/playlistmisc.js';
 import { registerPlaylistFollowTools } from '../src/tools/playlistfollow.js';
@@ -226,5 +227,51 @@ describe('playlist_template_apply',()=>{
   it('fails when no candidates',async()=>{
     const h=harness(()=>({items:[],total:0,limit:50,offset:0}));
     await assert.rejects(()=>h.invoke('playlist_template_apply',{template:'focus',limit:5}),/No candidate/);
+  });
+  // #865 — the old loop let a rejecting fill POST escape with nothing but the
+  // bare error, hiding the fact that the playlist had ALREADY been created.
+  // `limit` tops out at 100 so this path is always one chunk; the report that
+  // matters is naming the orphan playlist so it can be reused or deleted.
+  it('reports the orphaned playlist when the fill request rejects (#865)',async()=>{
+    const h=harness((path,b)=>{
+      if(path==='/me/playlists' && b) return {id:'new123',uri:'spotify:playlist:new123'};
+      if(path.includes('/me/top/tracks')) return {items:[track('t1'),track('t2')],total:2,limit:50,offset:0};
+      if(path.includes('/me/tracks')) return {items:[],total:0,limit:50,offset:0};
+      if(path.startsWith('/playlists/new123/items')) throw new SpotifyApiError(503,'Service Unavailable');
+      return null;
+    });
+    const out=await h.invoke('playlist_template_apply',{template:'gym',name:'Gym Test',limit:2});
+    const p=out.structuredContent!;
+    assert.equal(p.partial_write_failure,true);
+    assert.equal(p.attempted_chunks,1);
+    assert.equal(p.failed_chunk_index,0);
+    assert.equal(p.last_committed_chunk_index,-1);
+    assert.deepEqual(p.last_committed_chunk_uris,[]);
+    assert.equal(p.committed_uris,0);
+    assert.equal(p.remaining_uris,2);
+    // The id is the whole point: without it the caller cannot find the
+    // playlist this call already created.
+    assert.equal(p.playlist_id,'new123');
+    assert.equal(p.playlist_uri,'spotify:playlist:new123');
+    assert.match(String(p.error),/Service Unavailable/);
+    assert.match(textOf(out),/no track landed/);
+    assert.match(textOf(out),/new123/);
+    // The create POST is not rolled back, and no second write is issued.
+    assert.equal(h.client.calls.filter(c=>c.method==='POST'&&c.path.startsWith('/playlists/new123/items')).length,1);
+  });
+  it('reports the same partial state under response_format=json (#865)',async()=>{
+    const h=harness((path,b)=>{
+      if(path==='/me/playlists' && b) return {id:'new123',uri:'spotify:playlist:new123'};
+      if(path.includes('/me/top/tracks')) return {items:[track('t1')],total:1,limit:50,offset:0};
+      if(path.includes('/me/tracks')) return {items:[],total:0,limit:50,offset:0};
+      if(path.startsWith('/playlists/new123/items')) throw new SpotifyApiError(500,'boom');
+      return null;
+    });
+    const out=await h.invoke('playlist_template_apply',{template:'gym',name:'Gym Test',limit:1,response_format:'json'});
+    const parsed=JSON.parse(textOf(out));
+    assert.equal(parsed.partial_write_failure,true);
+    assert.equal(parsed.playlist_id,'new123');
+    assert.equal(parsed.committed_uris,0);
+    assert.equal(out.structuredContent!.partial_write_failure,true);
   });
 });

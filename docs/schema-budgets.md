@@ -82,7 +82,7 @@ above either ceiling fails CI and server startup.
 | tastecomposites | 10 | 7,994 | 10 | 7,994 | 11 | 8,794 |
 | tasteplaylist | 1 | 1,723 | 1 | 1,723 | 2 | 1,896 |
 | doctor | 1 | 750 | 1 | 750 | 2 | 826 |
-| swarm3meta | 3 | 1,624 | 3 | 1,624 | 4 | 1,787 |
+| swarm3meta | 3 | 2,023 | 3 | 2,023 | 4 | 2,226 |
 | libraryanalytics | 4 | 3,351 | 4 | 3,351 | 5 | 3,687 |
 | portability | 11 | 10,058 | 11 | 10,058 | 12 | 11,064 |
 | libraryinsights | 3 | 2,751 | 3 | 2,751 | 4 | 3,027 |
@@ -116,7 +116,7 @@ above either ceiling fails CI and server startup.
 | exhaust2enggating | 0 | 0 | 0 | 0 | 1 | 0 |
 | exhaust2playback | 23 | 17,306 | 23 | 17,306 | 24 | 19,037 |
 | exhaust2playlists | 18 | 23,507 | 18 | 23,507 | 19 | 25,858 |
-| exhaust2misc | 27 | 23,264 | 27 | 23,264 | 28 | 25,591 |
+| exhaust2misc | 27 | 23,866 | 27 | 23,866 | 28 | 26,253 |
 | exhaust2extra | 3 | 3,695 | 3 | 3,695 | 4 | 4,065 |
 | swarm3discovery | 24 | 21,887 | 24 | 21,887 | 25 | 24,076 |
 | swarm3bdiscovery | 24 | 20,039 | 24 | 20,039 | 25 | 22,043 |

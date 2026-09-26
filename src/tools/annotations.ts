@@ -113,13 +113,66 @@ export const TOOL_SURFACE_BUDGET = Object.freeze({
   // #979 and #791 together added ~904B more legitimate disclosure, then
   // -> 603_000 (2026-09-27) for the batch landing #821/#773/#839 — the
   // discovery-walk cap disclosure, the `peek_error` field, and the
-  // sidecar-corruption `load_error`/`preserved_as` pair, then -> 604_000
-  // (2026-09-26) for #688's `verify_receipt` description and `receipt_id`
-  // pattern. Measured cost of that last one: +330B, of which ~210B is the
-  // sentence telling the agent that receipts are session-scoped and lost on
-  // restart. That sentence is the fix: an agent that does not know the store
-  // is process-local will treat a receipt it can no longer look up as
-  // evidence about the mutation, which is the exact failure #688 reports.
+  // sidecar-corruption `load_error`/`preserved_as` pair. Measured cost of
+  // that batch over 602,000: +1,015B, of which the decorative-clause trim on
+  // four `swarm3b_discovery` descriptions gave back 250B inside the same edit.
+  //
+  // Then -> 604_000 (2026-09-26) TWICE, by two independent raises that landed
+  // on the same figure from branches cut before the other merged, so the
+  // aggregate they actually produce is the sum, not either measurement alone:
+  //   #827 moved the seven mutating tools in `exhaust2_misc.ts` onto the shared
+  //        `DryRunDefault` fragment. +602B (23,264B -> 23,866B), measured both
+  //        against the aggregate and against the per-module delta.
+  //   #688 rewrote `verify_receipt`'s description and `receipt_id` pattern.
+  //        +330B, of which ~210B is the sentence telling the agent that
+  //        receipts are session-scoped and lost on restart. That sentence is
+  //        the fix: an agent that does not know the store is process-local will
+  //        treat a receipt it can no longer look up as evidence about the
+  //        mutation, which is the exact failure #688 reports.
+  // Each was measured against a 603,999B base, so neither number survives the
+  // merge on its own. Measured after merging both: 604,906B — slightly under
+  // the 603,999 + 602 + 330 = 604,931B the arithmetic predicts, because #688
+  // also rewrote a description whose neighbours shifted. Re-measure rather than
+  // trusting either this line or the sum.
+  //
+  // Then -> 607_000 (2026-09-26) once, as a single explicitly sized raise for
+  // the whole in-flight wave rather than a per-PR one. The two raises above were
+  // each legitimate but both sized against a base that excluded the other, so
+  // they collided: 604,906B landed with 94B left, which is not headroom, it is
+  // a trap for the next agent who adds a real sentence. Several PRs were in
+  // flight at once, each measuring its own delta in isolation, so none could see
+  // the collision coming and the repo had no way to accept all of them. The
+  // lesson is that this budget is a SHARED resource and per-branch measurement
+  // cannot price it; only a single measurement of the merged tree can.
+  //
+  // WARRANT — every open branch at the time of writing, each delta measured
+  // per-module and confirmed against the aggregate:
+  //   #827  +602B — publishes the `dry_run` default on seven mutating tools.
+  //         The one that matters most: without it a host cannot tell a preview
+  //         from a commit, and `discover_weekly_diff` with `save_after` and no
+  //         `dry_run` replaced a playlist's entire contents with no preview and
+  //         no confirmation.
+  //   #713  +399B — makes `response_format` do what its schema already promised
+  //         on find_tool / inspect_tool / toolset_report.
+  //   #884  +647B — market / fields / additional_types on get_playlist, verified
+  //         against the OpenAPI schema. Also fixes a loop that ignored the
+  //         caller's `offset` and silently re-read the head of a playlist.
+  //   #781  +226B — declares the `offset` the paging signal depends on, so a
+  //         `next_offset` is actionable rather than advisory.
+  //   #901  +105B — states the fail-fast when artist top-tracks is gated.
+  //   #688  +330B — receipts are session-scoped and lost on restart. (Already
+  //         landed in main; listed because it is part of the same accounting.)
+  //   Total ~2,309B. 604,000 -> 607,000 is +3,000B against it: a 30% margin,
+  //   which is the discipline this file exists to enforce. The first raise in
+  //   this history was 19x its warrant; this is deliberately not that.
+  //
+  //   Sizing note for the next author: measure the aggregate BEFORE promising a
+  //   number in prose, and measure it on the MERGED tree. Two independent
+  //   measurements in this file's own history were each arithmetically right
+  //   and jointly wrong, because each was taken on a tree missing the other
+  //   branch. A per-branch estimate is not a substitute, however carefully it
+  //   is derived.
+
   // Read the numbers below before sizing another raise; AGENTS.md §3 requires
   // this record to be accurate about host-session payload impact, and my first
   // attempt at that record was wrong in three ways (see "CORRECTIONS").
@@ -134,16 +187,40 @@ export const TOOL_SURFACE_BUDGET = Object.freeze({
   //
   // WARRANT: +524B for `include_track_features`, then +914B across #979 (the
   // four falsified-value fixes, whose whole point is honest disclosure) and
-  // #791 (the graceful-403 contract). Total +1,438B of real disclosure across
-  // three changes; every byte of it buys a sentence that stops a tool
-  // asserting something false about its own result.
+  // #791 (the graceful-403 contract), then +602B for #827. Total +2,040B of
+  // real disclosure across four changes; every byte of it buys a sentence
+  // that stops a tool asserting something false about its own result — or,
+  // here, publishing the `dry_run` default so a host can tell a preview from
+  // a commit without probing the handler. #827's +602B is the `dry_run`
+  // fragment swap across seven tools plus the `discover_weekly_diff`
+  // description naming the archive replace it performs.
   //
   // HEADROOM: the enforced limit is `defaultMaxBytes + 1_000` (that 1KB covers
-  // final MCP annotation metadata added after registration), so 605,000B is the
-  // real ceiling. Measured 604,330B leaves ~670B — tighter than the ~900B the
-  // previous raise left, which is a deliberate signal that this budget is
-  // close to done, not slack to absorb a wave. A breach should land in a
-  // conversation, not be pre-authorised.
+  // final MCP annotation metadata added after registration), so the real
+  // ceiling is now 608,000B. Measured on this tree before the raise:
+  // 604,906B. Adding the remaining in-flight warrants above (~1,679B) lands near
+  // 606,585B, leaving ~1,415B — roughly the ~900B posture the earlier raises
+  // kept, and unlike the 94B trap that forced this raise. Re-measure after the
+  // wave lands rather than trusting that arithmetic; every figure in this file
+  // that was computed rather than measured has been wrong at least once.
+  //
+  // A breach should still land in a conversation, not be pre-authorised. The
+  // right first move is to reclaim bytes from decorative prose in the same edit
+  // that needs them, exactly as the 603,000 batch did when it took 250B back
+  // out of four `swarm3b_discovery` descriptions — disclosure that prevents a
+  // wrong answer is worth its bytes, but prose that only restates the schema is
+  // not.
+
+  //
+  // WARRANT #713: +399B, the whole cost of honouring `response_format` in the
+  // discovery trio. `toolset_report` gained a declared `response_format` and
+  // all three discovery tools now describe their own modes instead of promising
+  // a "raw API object" they never produce. Measured, not estimated: the
+  // `swarm3meta` per-module figure moves 1,624 -> 2,023 (+399B, tool count
+  // unchanged at 3) and the aggregate moves by the same +399B. Fits under the
+  // existing 605,000B ceiling with ~270B to spare, so this raise needs no
+  // budget change of its own — recorded because a later author measuring the
+  // delta against `swarm3meta` should find the arithmetic already done.
   //
   // CORRECTIONS to my first record of this raise, kept because the next author
   // should not repeat them: the headroom figure ignored the +1_000 derivation;
@@ -151,7 +228,7 @@ export const TOOL_SURFACE_BUDGET = Object.freeze({
   // 11.5% of the payload is not that; and the first raise was 19x its warrant
   // (+10,000B against a +524B need), which is precisely the reflex this budget
   // exists to prevent.
-  defaultMaxBytes: 604_000,
+  defaultMaxBytes: 607_000,
   perToolMaxBytes: 6_000,
   coreMaxTools: 200,
   coreMaxBytes: 220_000,
@@ -628,7 +705,10 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   manifestEntry('tastecomposites', 'tastecomposites', 'src/tools/taste_composites.ts', registerTasteCompositeTools, [10, 7994], { readOnlySafe: true }),
   manifestEntry('tasteplaylist', 'tastecomposites', 'src/tools/taste_playlist.ts', registerTastePlaylistTools, [1, 1723], { scopeKey: 'playlists' }),
   manifestEntry('doctor', 'doctor', 'src/tools/doctortool.ts', registerDoctorTool, [1, 750], { alwaysActive: true, readOnlySafe: true }),
-  manifestEntry('swarm3meta', 'swarm3meta', 'src/tools/swarm3_meta.ts', registerSwarm3MetaTools, [3, 1624], { alwaysActive: true, scopeKey: 'catalog', readOnlySafe: true }),
+  // 1624 -> 2023 (#713): toolset_report gained a declared `response_format`, and
+  // all three discovery tools now carry the mode-specific description instead of
+  // the shared "json = raw API object" wording. +399B once, on a 3-tool module.
+  manifestEntry('swarm3meta', 'swarm3meta', 'src/tools/swarm3_meta.ts', registerSwarm3MetaTools, [3, 2023], { alwaysActive: true, scopeKey: 'catalog', readOnlySafe: true }),
   manifestEntry('libraryanalytics', 'libraryanalytics', 'src/tools/libraryanalytics.ts', registerLibraryAnalyticsTools, [4, 3351], { readOnlySafe: true, scopeKey: 'library' }),
   manifestEntry('portability', 'portability', 'src/tools/portability.ts', registerPortabilityTools, [11, 10058], { scopeKey: 'library' }),
   manifestEntry('libraryinsights', 'library', 'src/tools/libraryinsights.ts', registerLibraryInsightsTools, [3, 2751], { scopeKey: 'library' }),
@@ -709,7 +789,7 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   manifestEntry('exhaust2enggating', 'exhaust2enggating', 'src/tools/exhaust2_enggating.ts', registerExhaust2EnggatingTools, [0, 0], { readOnlySafe: true, scopeKey: 'catalog' }),
   manifestEntry('exhaust2playback', 'exhaust2playback', 'src/tools/exhaust2_playback.ts', registerExhaust2PlaybackTools, [23, 17306], { scopeKey: 'playback' }),
   manifestEntry('exhaust2playlists', 'exhaust2playlists', 'src/tools/exhaust2_playlists.ts', registerExhaust2PlaylistsTools, [18, 23507], { scopeKey: 'playlists' }),
-  manifestEntry('exhaust2misc', 'exhaust2misc', 'src/tools/exhaust2_misc.ts', registerExhaust2MiscTools, [27, 23264], { scopeKey: 'library' }),
+  manifestEntry('exhaust2misc', 'exhaust2misc', 'src/tools/exhaust2_misc.ts', registerExhaust2MiscTools, [27, 23866], { scopeKey: 'library' }),
   manifestEntry('exhaust2extra', 'exhaust2extra', 'src/tools/exhaust2_extra.ts', registerExhaust2ExtraTools, [3, 3695], { scopeKey: 'playlists' }),
   manifestEntry('swarm3discovery', 'swarm3discovery', 'src/tools/swarm3_discovery.ts', registerSwarm3DiscoveryTools, [24, 21887], { readOnlySafe: true, scopeKey: 'catalog' }),
   manifestEntry('swarm3bdiscovery', 'swarm3bdiscovery', 'src/tools/swarm3b_discovery.ts', registerSwarm3bDiscoveryTools, [24, 20039], { readOnlySafe: true, scopeKey: 'catalog' }),

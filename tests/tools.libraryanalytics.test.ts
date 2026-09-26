@@ -24,22 +24,42 @@ function makeStubClient(responder: Responder) {
       calls.push({ path, params });
       return responder(path, params) as T | null;
     },
-    async getAllPages<T>(path: string, params?: Record<string, string>, opts?: { maxItems?: number }): Promise<T[]> {
+    // Mirrors the real walk, and the real verdict rules in client.ts: the cap
+    // is only a truncation if rows really are missing, and `reportedTotal` is
+    // the server's own count or null — never the walked length.
+    async getAllPagesWithTruncation<T>(path: string, params?: Record<string, string>, opts?: { maxItems?: number }) {
       const maxItems = opts?.maxItems ?? 500;
       const all: T[] = [];
       let offset = Number(params?.offset ?? 0);
+      let lastTotal: number | null = null;
       for (;;) {
         const pageParams = { ...params, offset: String(offset) };
         const page = await this.get<SpotifyPaged<T>>(path, pageParams);
         if (!page || !Array.isArray(page.items)) break;
+        if (typeof page.total === 'number') lastTotal = page.total;
         all.push(...page.items);
-        if (all.length >= maxItems) return all.slice(0, maxItems);
+        if (all.length >= maxItems) {
+          return {
+            items: all.slice(0, maxItems) as T[],
+            truncated: all.length > maxItems || typeof page.total !== 'number' || all.length < page.total,
+            truncatedByCap: true,
+            reportedTotal: lastTotal,
+          };
+        }
         const limit = typeof page.limit === 'number' && page.limit > 0 ? page.limit : page.items.length;
         offset += limit;
         if (page.items.length === 0 || page.items.length < limit) break;
         if (typeof page.total === 'number' && offset >= page.total) break;
       }
-      return all;
+      return {
+        items: all as T[],
+        truncated: lastTotal !== null && all.length < lastTotal,
+        truncatedByCap: false,
+        reportedTotal: lastTotal,
+      };
+    },
+    async getAllPages<T>(path: string, params?: Record<string, string>, opts?: { maxItems?: number }): Promise<T[]> {
+      return (await this.getAllPagesWithTruncation<T>(path, params, opts)).items;
     },
   };
   return client;
@@ -617,6 +637,131 @@ describe('library_coverage_report unreadable playlists (#739) and scan envelope 
     assert.equal(out.structuredContent?.playlists_skipped, 10);
     assert.equal(out.structuredContent?.coverage_complete, false);
     assert.match(textOf(out), /only the first 50 of 60 playlists were scanned/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1173 — the deprecated /playlists/{id}/tracks read.
+//
+// `get-playlists-tracks` is `deprecated: true` in the official OpenAPI schema
+// (summary "Get Playlist Items [DEPRECATED]"). It is deprecated, NOT removed,
+// which is why the tool kept working and the call site was missed. The
+// fallback that still reached for it could never rescue a read: the schema
+// gives the deprecated path the SAME ownership rule as /items (403 unless the
+// caller owns or collaborates on the playlist), so a /items refusal was a
+// refusal there too. It only doubled requests on the most quota-heavy route.
+// ---------------------------------------------------------------------------
+describe('library_coverage_report deprecated /tracks path (#1173)', () => {
+  it('never calls /playlists/{id}/tracks, not even when /items fails', async () => {
+    const h = harness((path) => {
+      if (path === '/me/tracks') return { items: [{ track: { id: 't1', name: 'T1', uri: 'spotify:track:t1' } }], total: 1, limit: 50, offset: 0, next: null };
+      if (path === '/me/playlists') return { items: [{ id: 'pl1', name: 'Collaborative' }], total: 1, limit: 50, offset: 0, next: null };
+      // Both the documented path AND the deprecated alias refuse. The tool must
+      // stop at the first and record the playlist unreadable — never probe the
+      // deprecated path to find out.
+      if (path.startsWith('/playlists/')) throw new SpotifyApiError(403, 'Forbidden', undefined, 'FORBIDDEN');
+      return { items: [], total: 0, limit: 50, offset: 0, next: null };
+    });
+    const out = await h.invoke('library_coverage_report', { max_playlists: 1 });
+    const playlistCalls = h.client.calls.filter((c) => c.path.startsWith('/playlists/'));
+    assert.deepEqual(playlistCalls.map((c) => c.path), ['/playlists/pl1/items'], 'one /items request and no compatibility probe');
+    assert.equal(playlistCalls.filter((c) => c.path.endsWith('/tracks')).length, 0, 'the deprecated path must never be requested');
+    const unreadable = out.structuredContent?.unreadable_playlists as Array<{ playlist_id: string; error: string }>;
+    assert.equal(unreadable.length, 1, 'a refused read is still recorded as unreadable, not as empty');
+    assert.match(unreadable[0].error, /Forbidden/);
+    assert.equal(out.structuredContent?.coverage_complete, false);
+    assert.equal(out.structuredContent?.legacy_fallbacks, undefined, 'the counter for the removed probe is gone, not left reporting 0');
+  });
+
+  it('reads every playlist-item row shape: {item}, {track}, and a bare item', async () => {
+    // /items returns { added_at, item }; the legacy shape was { added_at,
+    // track }; a bare item object is tolerated so no row is dropped for want of
+    // a wrapper during the deprecation window.
+    const h = harness((path) => {
+      if (path === '/me/tracks') {
+        return { items: [{ track: { id: 'a', name: 'A', uri: 'spotify:track:a' } }, { track: { id: 'b', name: 'B', uri: 'spotify:track:b' } }, { track: { id: 'c', name: 'C', uri: 'spotify:track:c' } }], total: 3, limit: 50, offset: 0, next: null };
+      }
+      if (path === '/me/playlists') return { items: [{ id: 'pl1', name: 'P1' }], total: 1, limit: 50, offset: 0, next: null };
+      if (path === '/playlists/pl1/items') {
+        return {
+          items: [
+            { added_at: '2026-06-15T12:00:00Z', item: { id: 'a', name: 'A', uri: 'spotify:track:a' } },
+            { added_at: '2026-06-15T12:00:00Z', track: { id: 'b', name: 'B', uri: 'spotify:track:b' } },
+            { id: 'c', name: 'C', uri: 'spotify:track:c' },
+          ],
+          total: 3, limit: 100, offset: 0, next: null,
+        };
+      }
+      return { items: [], total: 0, limit: 50, offset: 0, next: null };
+    });
+    const out = await h.invoke('library_coverage_report', { max_playlists: 1 });
+    // All three saved tracks are in the playlist, so the tool must see all
+    // three. Reading only some shapes would report the rest as orphans.
+    assert.equal(out.structuredContent?.orphan_count, 0, 'every row shape must contribute its id');
+    assert.equal(out.structuredContent?.coverage_ratio, 1);
+    assert.equal(out.structuredContent?.coverage_complete, true);
+  });
+
+  it('prefers the server-reported playlist total over the capped walk length', async () => {
+    // 60 playlists exist, but scan_cap=2 caps the listing walk at 2. Reading
+    // the walked length as the library size yields "2 of 2", skipped=0 and
+    // coverage_complete=true — a capped read reported as a complete one.
+    const playlists = Array.from({ length: 60 }, (_, i) => ({ id: `pl${i}`, name: `P${i}` }));
+    const h = harness((path, params) => {
+      if (path === '/me/tracks') return pagedResponder({ '/me/tracks': [] })(path, params);
+      if (path === '/me/playlists') return pagedResponder({ '/me/playlists': playlists })(path, params);
+      if (path.startsWith('/playlists/')) return { items: [], total: 0, limit: 100, offset: 0, next: null };
+      return { items: [], total: 0, limit: 50, offset: 0, next: null };
+    });
+    const out = await h.invoke('library_coverage_report', { scan_cap: 2 });
+    assert.equal(out.structuredContent?.playlists_available, 60, 'the count is the server total, not the 2-row walk window');
+    assert.equal(out.structuredContent?.playlists_scanned, 2);
+    assert.equal(out.structuredContent?.playlists_skipped, 58);
+    assert.equal(out.structuredContent?.coverage_complete, false, 'a capped listing walk is not a complete coverage scan');
+    assert.equal(out.structuredContent?.coverage_ratio_is_lower_bound, true);
+    assert.equal(out.structuredContent?.truncated, true);
+    const prose = textOf(out);
+    assert.match(prose, /only the first 2 of 60 playlists were scanned/);
+    // The remedy named must be the knob that actually bound the scan.
+    assert.match(prose, /raise scan_cap/);
+  });
+
+  it('keeps coverage_complete true when the listing walk is not capped', async () => {
+    // The total-preferring fix must not downgrade a genuinely complete scan:
+    // the counter should only be a lower bound when a walk really was short.
+    const playlists = Array.from({ length: 3 }, (_, i) => ({ id: `pl${i}`, name: `P${i}` }));
+    const h = harness((path, params) => {
+      if (path === '/me/tracks') return pagedResponder({ '/me/tracks': [] })(path, params);
+      if (path === '/me/playlists') return pagedResponder({ '/me/playlists': playlists })(path, params);
+      if (path.startsWith('/playlists/')) return { items: [], total: 0, limit: 100, offset: 0, next: null };
+      return { items: [], total: 0, limit: 50, offset: 0, next: null };
+    });
+    const out = await h.invoke('library_coverage_report', { max_playlists: 3, scan_cap: 50 });
+    assert.equal(out.structuredContent?.playlists_available, 3);
+    assert.equal(out.structuredContent?.playlists_skipped, 0);
+    assert.equal(out.structuredContent?.coverage_complete, true, 'a fully-read listing is still a complete scan');
+    assert.equal(out.structuredContent?.truncated, false);
+  });
+
+  it('falls back to the walked length when the server reports no total', async () => {
+    // A total nobody reported stays unknown: it must not manufacture skipped
+    // playlists, and it must not silence the cap that really did fire.
+    const playlists = Array.from({ length: 4 }, (_, i) => ({ id: `pl${i}`, name: `P${i}` }));
+    const h = harness((path, params) => {
+      if (path === '/me/tracks') return pagedResponder({ '/me/tracks': [] })(path, params);
+      if (path === '/me/playlists') {
+        // Same paging, but `total` is stripped from every page.
+        const paged = pagedResponder({ '/me/playlists': playlists })(path, params) as Record<string, unknown>;
+        const { total: _omitted, ...rest } = paged;
+        return rest;
+      }
+      if (path.startsWith('/playlists/')) return { items: [], total: 0, limit: 100, offset: 0, next: null };
+      return { items: [], total: 0, limit: 50, offset: 0, next: null };
+    });
+    const out = await h.invoke('library_coverage_report', { scan_cap: 2 });
+    assert.equal(out.structuredContent?.playlists_available, 2, 'no total from the server, so the walked length is the only count');
+    assert.equal(out.structuredContent?.playlists_skipped, 0, 'an unknown total cannot prove playlists were skipped');
+    assert.equal(out.structuredContent?.truncated, true, 'the cap that did fire is still disclosed');
   });
 });
 
