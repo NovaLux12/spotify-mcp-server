@@ -23,6 +23,7 @@ import {
 } from '../shaping.js';
 import type { ResponseFormatValue } from '../shaping.js';
 import { getConfig } from '../config.js';
+import { ARTIST_ALBUM_PAGE_LIMIT } from './catalog.js';
 import { chunk } from '../chunk.js';
 import { spotifyId, resolveSpotifyId } from '../refs.js';
 import { MARKET_CODE } from './catalog.js';
@@ -135,7 +136,16 @@ async function runSearch<T>(
   return { items: items as T[], total: typeof section?.total === 'number' ? section.total : null };
 }
 
-/** Walk an artist's releases (paged, fetch-all cap). */
+/**
+ * Walk an artist's releases (paged, fetch-all cap).
+ *
+ * The per-page `limit` is pinned to `ARTIST_ALBUM_PAGE_LIMIT` (10) because that
+ * is the documented maximum for `GET /artists/{id}/albums`. Sending the
+ * fetch-all cap here looked harmless — the walk still pages — but Spotify
+ * rejects a `limit` above the documented maximum outright, so a larger value
+ * 400s the whole request. The accumulator cap belongs in `maxItems`, which is
+ * where the fetch-all cap already is (#1209).
+ */
 async function walkArtistAlbums(
   client: SpotifyClient,
   artistId: string,
@@ -144,7 +154,7 @@ async function walkArtistAlbums(
 ): Promise<ReleaseRow[]> {
   return client.getAllPages<ReleaseRow>(
     `/artists/${encodeURIComponent(artistId)}/albums`,
-    { include_groups: includeGroups, limit: '50' },
+    { include_groups: includeGroups, limit: String(ARTIST_ALBUM_PAGE_LIMIT) },
     { maxItems: maxItems ?? getConfig().fetchAllCap },
   );
 }
@@ -851,10 +861,11 @@ export function registerSwarm3DiscoveryTools(server: McpServer, client: SpotifyC
       const second = new Map<string, { name: string; via: string[] }>();
       const firstIds = new Set(expand.map((c) => c.id));
       for (const c of expand) {
-        const rels = await client.getAllPages<ReleaseRow>(
-          `/artists/${encodeURIComponent(c.id)}/albums`,
-          { include_groups: 'album,single', limit: '50' },
-          { maxItems: args.releases_per_collab ?? 10 },
+        const rels = await walkArtistAlbums(
+          client,
+          c.id,
+          'album,single',
+          args.releases_per_collab ?? 10,
         );
         for (const rel of rels) {
           for (const ar of rel.artists ?? []) {
