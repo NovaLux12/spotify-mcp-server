@@ -22,6 +22,7 @@ import {
   resolveToolsets,
 } from '../toolsets.js';
 import { moduleBlockedByScopes } from '../scopefilter.js';
+import { historyWriteStatus } from '../history.js';
 import { ResponseFormat } from '../shaping.js';
 import { readOnlyModeEnabled, REGISTRAR_MANIFEST } from './annotations.js';
 
@@ -434,6 +435,39 @@ function surfaceRow(surface: DoctorSurface): DoctorRow {
   };
 }
 
+/**
+ * Mutation-history trail health (#591). The ledger is what history_search and
+ * the undo family read, and a lost append is invisible in the file itself —
+ * an unwritable directory leaves a trail that reads as complete. So the
+ * resolved path and the write-failure count are reported here, and any lost
+ * append is a `fail` row: the audit trail is not trustworthy.
+ */
+function historyRow(): DoctorRow {
+  const history = historyWriteStatus();
+  if (!history.enabled) {
+    return {
+      id: 'history',
+      status: 'info',
+      summary: `mutation history disabled — no audit trail is being written (${history.path})`,
+    };
+  }
+  if (history.failures > 0) {
+    return {
+      id: 'history',
+      status: 'fail',
+      summary:
+        `mutation history writes failed ${history.failures} time(s) — the trail at ` +
+        `${history.path} is incomplete, so history_search and undo may be missing records`,
+      detail: `last_failure=${history.last_failure ?? 'unknown'}`,
+    };
+  }
+  return {
+    id: 'history',
+    status: 'pass',
+    summary: `mutation history enabled — ${history.path} (0 write failures)`,
+  };
+}
+
 function staticRows(client: SpotifyClient): DoctorRow[] {
   const rows: DoctorRow[] = [];
 
@@ -481,6 +515,8 @@ function staticRows(client: SpotifyClient): DoctorRow[] {
     status: 'pass',
     summary: parts.join(' '),
   });
+
+  rows.push(historyRow());
 
   return rows;
 }

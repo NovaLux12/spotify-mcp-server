@@ -73,6 +73,8 @@ Containment is decided on the *real* path — every component is resolved before
 
 Set `SPOTIFY_MCP_HISTORY=1` to append one JSONL record per agent-driven mutation. `SPOTIFY_MCP_HISTORY_DIR` changes the directory; the file is `mutations.jsonl`. Records contain only the mutation method, path, and receipt/snapshot metadata — never tokens or request bodies.
 
+Each record's `who` field names the tool that issued the mutation (e.g. `add_to_playlist`), falling back to `agent` only when the call did not come through a tool. `history_search` matches on it, and the `spotify_doctor` row `history` reports the resolved ledger path plus how many appends have been lost. A lost append never fails the mutation it describes, but it warns once per process on stderr and turns that doctor row red, because a trail with gaps otherwise reads as complete when it is not.
+
 ### Toolsets and registration keys
 
 `SPOTIFY_MCP_TOOLSETS` accepts a comma-separated subset of these toolsets, or `all`/empty/unset for the full surface:

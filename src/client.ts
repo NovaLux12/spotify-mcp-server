@@ -2,7 +2,8 @@ import { readFile } from 'node:fs/promises';
 import { loadTokens, saveTokens, TOKEN_FILE } from './auth.js';
 import { LruTtlCache, shouldBypassCache, cacheKey } from './cache.js';
 import { getConfig } from './config.js';
-import { appendHistory } from './history.js';
+import { appendHistory, currentToolName } from './history.js';
+import type { MutationRecord } from './history.js';
 
 const BASE_URL = 'https://api.spotify.com/v1';
 import type { TokenData, SpotifyPaged } from './types/spotify.js';
@@ -281,19 +282,26 @@ export class SpotifyClient {
 
   /**
    * Record a completed mutation in the opt-in history JSONL (#64). Only the
-   * whitelisted fields survive serialization; failures are swallowed so a
-   * history problem can never fail the underlying mutation.
+   * whitelisted fields survive serialization; appendHistory never rejects, so
+   * a history problem can never fail the underlying mutation — it is counted
+   * and reported by spotify_doctor instead (#591).
    */
   private recordMutation(method: string, path: string, response: unknown): Promise<void> {
     const snapshotId =
       response !== null && typeof response === 'object' && 'snapshot_id' in response
-        ? String((response as { snapshot_id: unknown }).snapshot_id)
+        ? String(response.snapshot_id)
         : undefined;
-    return appendHistory({
+    // Typed against MutationRecord (#591): a renamed or mistyped field is a
+    // compile error rather than a silently dropped audit field. `who` is the
+    // tool running on this async context, or undefined outside one (the writer
+    // then records the historical 'agent' default).
+    const record: MutationRecord = {
       method,
       path,
-      ...(snapshotId !== undefined ? { snapshot_id: snapshotId } : {}),
-    }).catch(() => undefined);
+      who: currentToolName(),
+      snapshot_id: snapshotId,
+    };
+    return appendHistory(record);
   }
 
   /**
