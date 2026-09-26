@@ -430,7 +430,7 @@ export function registerExhaust2CatalogTools(server: McpServer, client: SpotifyC
         .describe('Comma-separated album groups: album,single,appears_on,compilation. Default: album,single'),
       since_year: z.number().int().min(1900).max(2100).optional().describe('Only releases from this year onward'),
       response_format: ResponseFormat,
-      max_results: z.number().int().positive().max(2000).optional().describe('Max items to return (default: SPOTIFY_MCP_MAX_ITEMS env or 50)'),
+      max_results: z.number().int().positive().max(2000).optional().describe('Max rows to return (default: SPOTIFY_MCP_FETCH_ALL_CAP or 500)'),
     },
     async (args) => {
       const rf = args.response_format;
@@ -450,7 +450,7 @@ export function registerExhaust2CatalogTools(server: McpServer, client: SpotifyC
       const sorted = [...trimmed].sort((a, b) => (b.release_date ?? '').localeCompare(a.release_date ?? ''));
       const cap = resolveMaxResults(args.max_results, fetchAllCap);
       const trunc = truncateItems(sorted, cap);
-      const header = `Discography timeline (${sorted.length} release${sorted.length === 1 ? '' : 's'}${args.since_year ? ` since ${args.since_year}` : ''}):`;
+      const header = `Discography timeline (${sorted.length} release${sorted.length === 1 ? '' : 's'}${albums.length >= fetchAllCap ? ' — fetch-all cap REACHED, prefix only' : ''}${args.since_year ? ` since ${args.since_year}` : ''}):`;
       const lines = trunc.items.map(
         (a) => `• ${a.release_date ?? '?'} · ${a.album_type ?? 'album'} · "${a.name}" · ${a.total_tracks ?? '?'} tracks`,
       );
@@ -862,7 +862,7 @@ max_results: z.number().int().positive().max(2000).optional().describe('Max item
         .optional()
         .describe('Minimum gap to flag as a hiatus, in days. Default: 14'),
       response_format: ResponseFormat,
-      max_results: z.number().int().positive().max(2000).optional().describe('Max items to return (default: SPOTIFY_MCP_MAX_ITEMS env or 50)'),
+      max_results: z.number().int().positive().max(2000).optional().describe('Max rows to return (default: SPOTIFY_MCP_FETCH_ALL_CAP or 500)'),
     },
     async (args) => {
       const rf = args.response_format;
@@ -891,7 +891,7 @@ max_results: z.number().int().positive().max(2000).optional().describe('Max item
           }
         }
       }
-      lines.push('', `Timeline (oldest → newest, ${chronological.length} episodes):`);
+      lines.push('', `Timeline (oldest → newest, ${chronological.length} episodes${episodes.length >= fetchAllCap ? ' — fetch-all cap REACHED, prefix only' : ''}):`);
       lines.push(...trunc.items.map((e) => `• ${e.release_date ?? '?'} — "${e.name}" (${fmtDur(e.duration_ms)})`));
       if (trunc.footer) lines.push(`(${trunc.footer})`);
       return emit(rf, lines.join('\n'), {
@@ -900,6 +900,8 @@ max_results: z.number().int().positive().max(2000).optional().describe('Max item
         gaps_flagged: gaps,
         gap_threshold_days: threshold,
         episodes: trunc.items.map((e) => ({ id: e.id, uri: e.uri, name: e.name, release_date: e.release_date ?? null, duration_ms: e.duration_ms })),
+        fetch_all_cap: fetchAllCap,
+        truncated_by_cap: episodes.length >= fetchAllCap,
         pagination: paginationInfo({ total: chronological.length, returned: trunc.items.length }),
       });
     },
@@ -1102,7 +1104,7 @@ max_results: z.number().int().positive().max(2000).optional().describe('Max item
     {
       audiobook_id: z.string().min(1).describe('Spotify audiobook ID'),
       response_format: ResponseFormat,
-      max_results: z.number().int().positive().max(2000).optional().describe('Max items to return (default: SPOTIFY_MCP_MAX_ITEMS env or 50)'),
+      max_results: z.number().int().positive().max(2000).optional().describe('Max rows to return (default: SPOTIFY_MCP_FETCH_ALL_CAP or 500)'),
     },
     async (args) => {
       const rf = args.response_format;
@@ -1140,6 +1142,8 @@ max_results: z.number().int().positive().max(2000).optional().describe('Max item
         chapters: trunc.items.map((c) => ({ chapter_number: c.chapter_number, name: c.name, duration_ms: c.duration_ms, id: c.id })),
         total_runtime_ms: total,
         midpoint_chapter: { chapter_number: midpoint.chapter_number, name: midpoint.name },
+        fetch_all_cap: fetchAllCap,
+        truncated_by_cap: chapters.length >= fetchAllCap,
         pagination: paginationInfo({ total: chapters.length, returned: trunc.items.length }),
       });
     },
