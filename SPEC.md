@@ -800,6 +800,20 @@ Get recently played tracks with timestamps.
 
 ---
 
+#### `taste_shift_report`
+Compare the `short_term` and `long_term` top-track and top-artist lists, reporting per domain what is rising, what is falling, and how much the two windows overlap (Jaccard). Quota: 4× `GET /me/top/*`.
+
+**Inputs:**
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `limit` | number | no | 1–50, applied to each window. Default: 20 |
+
+**Returns** (`structuredContent`): `window_sizes` — `short_term` / `long_term` item counts totalled across both top lists — plus `tracks` and `artists`, each carrying its own `window_sizes` pair, a `jaccard`, and up to 10 `rising` and 10 `falling` ids.
+
+`jaccard` is `null` when **both** windows of that domain are empty: the two sets have no union to divide by, so the comparison was never made and the maximum-similarity answer is refused. A single empty side yields `0`, which is what the same arithmetic always produced. Whenever any of the four lists comes back empty the prose leads with `insufficient history to compare` and names the empty side, while the domains that did compute still print their value. Hosts must read `null` as "not enough data", not as a score.
+
+---
+
 ### 5.5 Library
 
 > **Feb 2026 note**: Save, remove, and check operations accept **Spotify URIs** (e.g., `spotify:track:abc123`) rather than bare IDs. Two families exist: the legacy trio (`save_items`, `remove_saved_items`, `check_saved_items`) partitions its URIs by type across the per-type `/me/{type}s` endpoints, while the unified trio (`save_to_library`, `remove_from_library`, `check_in_library`) issues a single call against `/me/library`.

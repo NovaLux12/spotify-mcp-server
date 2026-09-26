@@ -36,6 +36,10 @@ const parameterAllowlist = new Set([
   'requests_planned', 'token_refresh', 'web_search',
   // Enum values and explicitly-removed field names, not parameters.
   'appears_on', 'available_markets',
+  // `time_range` enum members of the /me/top/* personalization tools. #807's
+  // SPEC entry names them as the windows taste_shift_report compares, and as
+  // the two halves of the `window_sizes` it returns.
+  'short_term', 'long_term',
   // StructuredContent field names, not parameters: the documented count split.
   'removed_total', 'kept_total', 'source_truncated', 'target_truncated',
   'would_confirm', 'base_read_whole', 'base_unrepresentable',
@@ -84,6 +88,11 @@ const parameterAllowlist = new Set([
   // and discloses what the cap withheld, so SPEC.md can name those keys.
   // structuredContent keys on that tool, not tools and not parameters.
   'moves_total', 'moves_returned', 'moves_withheld', 'moves_truncated',
+  // #807: taste_shift_report reports the size of each window it compared, so a
+  // caller can tell "taste did not change" from "there was nothing to compare"
+  // without parsing the prose. A StructuredContent key on that tool, not a
+  // parameter — SPEC.md is describing the tool's own output.
+  'window_sizes',
 ]);
 /** Registration keys are module names, not tools; docs legitimately name them. */
 const registrationKeyNames = new Set(census.registrationKeyNames ?? []);

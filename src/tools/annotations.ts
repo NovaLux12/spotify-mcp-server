@@ -238,6 +238,14 @@ export const TOOL_SURFACE_BUDGET = Object.freeze({
   // 11.5% of the payload is not that; and the first raise was 19x its warrant
   // (+10,000B against a +524B need), which is precisely the reflex this budget
   // exists to prevent.
+  //
+  // WARRANT #807: +64B, the `analytics` per-module baseline moving
+  // 2,753 -> 2,817 (tool count unchanged at 4). It is the sentence in
+  // `taste_shift_report`'s own description stating that `jaccard` is null when
+  // both windows of a domain are empty — without it a host reading a null has
+  // to guess whether the tool broke or there was simply nothing to compare.
+  // This needs no raise of its own: it was authored against a 604,000B ceiling
+  // and lands well inside the 607,000B this file now carries.
   defaultMaxBytes: 607_000,
   perToolMaxBytes: 6_000,
   coreMaxTools: 200,
@@ -716,7 +724,7 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   manifestEntry('playlistfollow', 'playlistmisc', 'src/tools/playlistfollow.ts', registerPlaylistFollowTools, [2, 1449], { scopeKey: 'playlistfollow' }),
   manifestEntry('playlistmisc', 'playlistmisc', 'src/tools/playlistmisc.ts', registerPlaylistMiscTools, [1, 1089], { scopeKey: 'playlists' }),
   manifestEntry('personalization', 'personalization', 'src/tools/personalization.ts', registerPersonalizationTools, [3, 2532], { readOnlySafe: true }),
-  manifestEntry('analytics', 'personalization', 'src/tools/analytics.ts', registerAnalyticsTools, [4, 2753], { readOnlySafe: true }),
+  manifestEntry('analytics', 'personalization', 'src/tools/analytics.ts', registerAnalyticsTools, [4, 2817], { readOnlySafe: true }),
   manifestEntry('statsfm', 'statsfm', 'src/tools/statsfm.ts', (server) => registerStatsfmTools(server), [30, 22721], { readOnlySafe: true }),
   manifestEntry('taste', 'taste', 'src/tools/statsfm_taste.ts', registerStatsfmTasteTools, [16, 13959], { readOnlySafe: true }),
   manifestEntry('tastecomposites', 'tastecomposites', 'src/tools/taste_composites.ts', registerTasteCompositeTools, [10, 7994], { readOnlySafe: true }),
