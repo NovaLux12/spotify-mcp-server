@@ -245,7 +245,8 @@ describe('SpotifyClient', () => {
       const client = new SpotifyClient();
       await assert.rejects(client.get('/me'), (err: unknown) => {
         assert.ok(err instanceof SpotifyApiError);
-        assert.equal(err.status, 400);
+        // 401, not the token endpoint's own 400 (#1007).
+        assert.equal(err.status, 401);
         assert.match(err.message, /Token refresh failed/);
         return true;
       });
