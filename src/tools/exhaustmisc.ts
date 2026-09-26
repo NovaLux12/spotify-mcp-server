@@ -32,6 +32,7 @@ import {
 import { CHUNK_CAPS, capFor } from '../chunk.js';
 import { issueReceipt, type Receipt } from '../receipts.js';
 import { receiptRecords, receiptsLines, writeVerdict } from './playlistreceipts.js';
+import { resolvePlaylistId, walkTruncationNotice } from './playlists.js';
 import type { PlaylistItemObject } from '../types/spotify.js';
 
 // ---------------------------------------------------------------------------
@@ -51,6 +52,26 @@ function cap(args: { max_results?: number }): number {
   return resolveMaxResults(args.max_results);
 }
 
+/** The three values `search_within_playlist`'s `kind` filter accepts. */
+type PlaylistItemKind = 'track' | 'episode' | 'any';
+
+/**
+ * Which of the two `/playlists/{id}/items` row shapes a row is (#731).
+ *
+ * `type` is the discriminator both shared types declare (`SpotifyTrack.type:
+ * 'track'`, `SpotifyEpisode.type: 'episode'`), so it is read first. The shape
+ * fallback covers a row that arrives without it, because a track carries
+ * `artists`/`album` and an episode a `show`. A row matching neither returns
+ * null rather than a guess: `kind:'track'` must not swallow a row nobody can
+ * identify, and the caller counts those instead of hiding them.
+ */
+function playlistItemKind(item: Record<string, unknown>): Exclude<PlaylistItemKind, 'any'> | null {
+  if (item.type === 'track' || item.type === 'episode') return item.type;
+  if (item.show !== undefined) return 'episode';
+  if (Array.isArray(item.artists) || item.album !== undefined) return 'track';
+  return null;
+}
+
 // ---------------------------------------------------------------------------
 // registration
 // ---------------------------------------------------------------------------
@@ -59,22 +80,51 @@ export function registerExhaustMiscTools(server: McpServer, client: SpotifyClien
   // 1. search_within_playlist (#310) — text search inside one playlist (scout-b C1)
   server.tool(
     'search_within_playlist',
-    'Text search inside a single playlist (client-side filter over full item walk). Quota: 🟢 GET /playlists/{id}/items paged.',
+    "Text search inside a single playlist: a client-side filter over the rows the walk read, cheaper than paging get_playlist_items yourself for a narrow query — but it can only see that window, so scanned_items/scan_cap/scan_truncated say how much of the playlist was actually read. Matches item name, artist, album and show name; kind narrows a mixed playlist to tracks only or episodes only. Quota: 🟢 GET /playlists/{id}/items paged.",
     {
-      playlist_id: z.string().min(1).describe('Playlist ID'),
-      query: z.string().min(1).describe('Substring to match against track/episode name, artist, album'),
-      market: MARKET_CODE.optional().describe('Market for track relinking, e.g. \'US\''),
       ...sharedListFields,
+      // #110/#731: `playlist_id` is the canonical parameter across the playlist
+      // tools, resolved through the same shared helper as get_playlist_items,
+      // so `id` works here too and conflicting values fail before any I/O.
+      playlist_id: z.string().optional().describe("Playlist ID (or pass it as 'id')"),
+      id: z.string().optional().describe("Alias for playlist_id, matching get_playlist_items"),
+      query: z.string().min(1).describe('Substring to match against track/episode name, artist, album, show name'),
+      kind: z.enum(['track', 'episode', 'any']).default('any').describe("Item kinds to match: 'track', 'episode', or 'any' (default — both). Mixed playlists hold both row shapes"),
+      market: MARKET_CODE.optional().describe('Market for track relinking, e.g. \'US\''),
     },
     async (args) => {
       const rf = args.response_format as ResponseFormatValue | undefined;
+      const playlistRef = resolvePlaylistId(args.playlist_id, args.id);
+      // Read defensively: handlers are also invoked directly in tests, where
+      // zod's `.default('any')` has not run.
+      const kind: PlaylistItemKind = args.kind ?? 'any';
       const q = args.query.toLowerCase();
-      const params: Record<string, string> = { limit: '50' };
+      const params: Record<string, string> = { limit: '100' };
       if (args.market) params.market = args.market;
-      const all = await client.getAllPages<PlaylistItemObject>(`/playlists/${encodeURIComponent(args.playlist_id)}/items`, params);
+      // #731: the walk shares get_playlist_items' cap and its #864 truncation
+      // verdict, so a capped scan is reported instead of reading as a narrow
+      // result. Page size is 100, as elsewhere in the playlist family — it
+      // halves the request count over the old 50 without changing the window.
+      const scanCap = getConfig().fetchAllCap;
+      const walk = await client.getAllPagesWithTruncation<PlaylistItemObject>(
+        `/playlists/${encodeURIComponent(playlistRef)}/items`,
+        params,
+        { maxItems: scanCap },
+      );
+      const all = walk.items;
+      // Rows that identify as neither shape, counted rather than assigned.
+      let unclassified = 0;
       const matched = all.filter((row) => {
         const item = row.item as unknown as Record<string, unknown> | null;
         if (!item) return false;
+        if (kind !== 'any') {
+          const rowKind = playlistItemKind(item);
+          if (rowKind === null) {
+            unclassified += 1;
+            return false;
+          }
+          if (rowKind !== kind) return false;
+        }
         const name = typeof item.name === 'string' ? item.name.toLowerCase() : '';
         if (name.includes(q)) return true;
         const artists = (item as { artists?: Array<{ name: string }> }).artists;
@@ -87,22 +137,41 @@ export function registerExhaustMiscTools(server: McpServer, client: SpotifyClien
       });
       const t = truncateItems(matched, cap(args));
       const pagination = paginationInfo({ total: matched.length, returned: t.items.length });
+      const notice = walkTruncationNotice(all.length, scanCap, walk.truncated);
       const lines: string[] = [
-        `Search within playlist ${args.playlist_id}: "${args.query}" — ${matched.length} match(es) of ${all.length} items, showing ${t.items.length}:`,
+        `Search within playlist ${playlistRef}: "${args.query}" (kind: ${kind}) — ${matched.length} match(es) of ${all.length} scanned item(s), showing ${t.items.length}:`,
       ];
       for (let i = 0; i < t.items.length; i++) {
         const row = t.items[i];
         const item = row.item as unknown as Record<string, unknown> | null;
         const name = item && typeof item.name === 'string' ? (item.name as string) : 'unknown';
         const uri = item && typeof item.uri === 'string' ? (item.uri as string) : '';
-        lines.push(`  ${i + 1}. ${name} — ${uri}`);
+        // The kind is spelled out per row because a mixed playlist is exactly
+        // the case where "which of these are episodes" is the question.
+        const rowKind = item ? (playlistItemKind(item) ?? 'unknown') : 'unavailable';
+        const artists = item ? (item as { artists?: Array<{ name: string }> }).artists : undefined;
+        const show = item ? (item as { show?: { name: string } }).show : undefined;
+        const by = Array.isArray(artists) && artists.length > 0
+          ? artists.map((a) => a.name).join(', ')
+          : (show && typeof show.name === 'string' ? show.name : '');
+        lines.push(`  ${i + 1}. [${rowKind}] ${name}${by ? ` — ${by}` : ''} — ${uri}`);
       }
       if (t.footer) lines.push(`(${t.footer})`);
+      if (notice) lines.push(notice);
+      if (unclassified > 0) {
+        lines.push(`(${unclassified} item(s) matched neither shape and were excluded; they are counted as items_of_unknown_kind.)`);
+      }
       const structured: Record<string, unknown> = listStructuredContent(t.items as unknown as Record<string, unknown>[], pagination, {
-        playlist_id: args.playlist_id,
+        playlist_id: playlistRef,
         query: args.query,
-        scanned: all.length,
+        kind,
+        // #731: `scanned` became `scanned_items` so the row count reads as
+        // what it is, next to the `matched` count beside it.
+        scanned_items: all.length,
         matched: matched.length,
+        scan_cap: scanCap,
+        scan_truncated: walk.truncated,
+        ...(unclassified > 0 ? { items_of_unknown_kind: unclassified } : {}),
       });
       if (rf === 'json') return { content: [{ type: 'text', text: JSON.stringify(structured, null, 2) }], structuredContent: structured };
       return textResult(lines.join('\n'), structured);

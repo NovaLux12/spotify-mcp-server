@@ -153,7 +153,7 @@ The table is generated from every TypeScript file recursively under `src/`, incl
 | `src/tools/exhaust2_misc.ts` | exhaust2 misc slice — feature swarm v1.24.0. (27 registered tools) | 1852 |
 | `src/tools/exhaust2_playback.ts` | exhaust2 playback slice — feature swarm v1.24.0 (issues #358-#379). (23 registered tools) | 1371 |
 | `src/tools/exhaust2_playlists.ts` | exhaust2 playlists slice — feature swarm v1.24.0 (issues #380–#400). (18 registered tools) | 1892 |
-| `src/tools/exhaustmisc.ts` | exhaustmisc — mop-up for the 60-issue exhaustive sweep. (10 registered tools) | 632 |
+| `src/tools/exhaustmisc.ts` | exhaustmisc — mop-up for the 60-issue exhaustive sweep. (10 registered tools) | 701 |
 | `src/tools/export.ts` | export_playlist (#155): dump a playlist's full item list as an M3U or CSV document — either written to a local file (mode 0600) or returned inline (truncated at max_results rows with a footer noting the full length). (1 registered tool) | 396 |
 | `src/tools/following.ts` | Runtime module for src/tools/following.ts. (5 registered tools) | 506 |
 | `src/tools/freshness.ts` | freshness radar (#112 idea 2): personal replacement for the removed /browse/new-releases surface. (1 registered tool) | 684 |
@@ -173,7 +173,7 @@ The table is generated from every TypeScript file recursively under `src/`, incl
 | `src/tools/playlistmisc.ts` | Playlist misc (#208): mood-vibe template playlists composed from the user's existing library/top data. pin/unpin (follow/unfollow) moved to playlistfollow.ts: they call /me/library, which authorises a different either-of scope set than the playlist-modify pair this file's tools need (#1005), so they need their own manifest row to be gated honestly. (1 registered tool) | 172 |
 | `src/tools/playlistops.ts` | Playlist power tools (#96): merge_playlists, diff_playlists, overlap_playlists. (3 registered tools) | 494 |
 | `src/tools/playlistreceipts.ts` | Shared receipt plumbing for the playlist write helpers (#879). (0 registered tools) | 79 |
-| `src/tools/playlists.ts` | Runtime module for src/tools/playlists.ts. (26 registered tools) | 2522 |
+| `src/tools/playlists.ts` | Runtime module for src/tools/playlists.ts. (26 registered tools) | 2526 |
 | `src/tools/podcastsession.ts` | Podcast session composer (#112 idea 3): greedy-packs the user's saved podcast episodes into a listening session of a fixed length in minutes, then (optionally) starts it on a device. (2 registered tools) | 492 |
 | `src/tools/portability.ts` | Portability (#188 + #192 + #238 + #240 + #223 + #220): save_discover_weekly / save_release_radar (archive personalized playlists) + export_library_json / export_followed_artists + export_profile_state/import_profile_state + export_listening_history (11 registered tools) | 2097 |
 | `src/tools/queueops.ts` | queueops (#194, #202, #224, #231): queue_playlist + save_queue_as_playlist. queue_reorder / queue_remove / queue_clear were removed in #231 — those endpoints do not exist (only GET and POST /me/player/queue are real). (3 registered tools) | 328 |

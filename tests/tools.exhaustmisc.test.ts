@@ -8,11 +8,36 @@ function makeClient(overrides: Record<string, unknown> = {}) {
   return {
     get: mock.fn(async () => null),
     getAllPages: mock.fn(async () => []),
+    // #731: search_within_playlist walks through the truncation-carrying
+    // variant (so a capped scan is reported rather than reading as a narrow
+    // result). The bare-array stub above still serves the other nine tools.
+    getAllPagesWithTruncation: mock.fn(async () => ({
+      items: [] as unknown[],
+      truncated: false,
+      truncatedByCap: false,
+      reportedTotal: null as number | null,
+    })),
     put: mock.fn(async () => null),
     post: mock.fn(async () => null),
     delete: mock.fn(async () => null),
     ...overrides,
   } as unknown as import('../src/client.js').SpotifyClient;
+}
+
+/** Capture one registered tool's handler by name, in the shape the tests use. */
+type Handler = (args: unknown) => Promise<{ content: Array<{ text: string }>; structuredContent?: Record<string, unknown> }>;
+
+/** Keeps search_history_stats off the developer's real history sidecar. */
+const ISOLATED_SEARCH_HISTORY = '/tmp/smcp-exhaustmisc-test-search-history.json';
+
+function serverCapturing(name: string): { server: McpServer; handler: () => Handler } {
+  let captured: unknown = null;
+  const server = {
+    tool(toolName: string, _desc: string, _shape: unknown, h: (args: unknown) => Promise<unknown>) {
+      if (toolName === name) captured = h;
+    },
+  } as unknown as McpServer;
+  return { server, handler: () => captured as Handler };
 }
 
 function registeredTools(client: ReturnType<typeof makeClient>): string[] {
@@ -57,29 +82,160 @@ describe('exhaustmisc — mop-up 10 tools', () => {
   });
 
   it('search_within_playlist filters by query', async () => {
-    let captured: unknown = null;
-    const server = {
-      tool(_name: string, _desc: string, _shape: unknown, handler: (args: unknown) => Promise<unknown>) {
-        if (_name === 'search_within_playlist') captured = handler;
-      },
-    } as unknown as McpServer;
+    const { server, handler } = serverCapturing('search_within_playlist');
     const client = makeClient({
-      getAllPages: mock.fn(async () => [
-        { item: { uri: 'spotify:track:1', name: 'Hello World', artists: [{ name: 'Adele' }], album: { name: '25' } }, added_at: '2024-01-01' },
-        { item: { uri: 'spotify:track:2', name: 'Goodbye', artists: [{ name: 'Beatles' }], album: { name: 'Abbey' } }, added_at: '2024-01-02' },
-      ]),
+      getAllPagesWithTruncation: mock.fn(async () => ({
+        items: [
+          { item: { uri: 'spotify:track:1', name: 'Hello World', artists: [{ name: 'Adele' }], album: { name: '25' } }, added_at: '2024-01-01' },
+          { item: { uri: 'spotify:track:2', name: 'Goodbye', artists: [{ name: 'Beatles' }], album: { name: 'Abbey' } }, added_at: '2024-01-02' },
+        ],
+        truncated: false,
+        truncatedByCap: false,
+        reportedTotal: 2,
+      })),
     });
     registerExhaustMiscTools(server, client);
-    const handler = captured as (args: unknown) => Promise<{ content: Array<{ text: string }>; structuredContent?: Record<string, unknown> }>;
-    const res = await handler({ playlist_id: 'pl1', query: 'hello', response_format: 'concise', max_results: 50 });
+    const res = await handler()({ playlist_id: 'pl1', query: 'hello', response_format: 'concise', max_results: 50 });
     assert.ok(res.content[0].text.includes('1 match'));
     assert.equal((res.structuredContent as { matched: number }).matched, 1);
+  });
+
+  // #731: a playlist holding both row shapes. `kind` has to split these, and
+  // the row that declares neither shape has to be counted rather than filed
+  // under one of them.
+  const MIXED_PLAYLIST = [
+    { added_at: '2024-01-01', item: { type: 'track', uri: 'spotify:track:t1', name: 'Hello Darling', artists: [{ name: 'Adele' }], album: { name: '25' } } },
+    { added_at: '2024-01-02', item: { type: 'episode', uri: 'spotify:episode:e1', name: 'Hello, from the show', show: { name: 'Hello Radio' } } },
+    { added_at: '2024-01-03', item: { type: 'track', uri: 'spotify:track:t2', name: 'Goodbye', artists: [{ name: 'Beatles' }], album: { name: 'Abbey' } } },
+    { added_at: '2024-01-04', item: { type: 'episode', uri: 'spotify:episode:e2', name: 'Unrelated chatter', show: { name: 'Quiet Hours' } } },
+  ];
+
+  it('search_within_playlist kind splits a mixed playlist by row shape', async () => {
+    const { server, handler } = serverCapturing('search_within_playlist');
+    const walk = mock.fn(async () => ({
+      items: MIXED_PLAYLIST,
+      truncated: false,
+      truncatedByCap: false,
+      reportedTotal: MIXED_PLAYLIST.length,
+    }));
+    registerExhaustMiscTools(server, makeClient({ getAllPagesWithTruncation: walk }));
+
+    // Expected sets are the client-side filter over the SAME window, spelled
+    // out rather than recomputed from the handler's own filter.
+    const expected: Record<string, string[]> = {
+      any: ['spotify:track:t1', 'spotify:episode:e1'],
+      track: ['spotify:track:t1'],
+      episode: ['spotify:episode:e1'],
+    };
+    for (const [kind, uris] of Object.entries(expected)) {
+      const res = await handler()({
+        playlist_id: 'pl1',
+        query: 'hello',
+        kind,
+        response_format: 'json',
+        max_results: 50,
+      });
+      const payload = res.structuredContent as { kind: string; matched: number; items: Array<{ item: { uri: string } }> };
+      assert.equal(payload.kind, kind, `kind must echo the requested filter for ${kind}`);
+      assert.equal(payload.matched, uris.length, `matched count for kind=${kind}`);
+      assert.deepEqual(payload.items.map((row) => row.item.uri), uris, `returned URIs for kind=${kind}`);
+    }
+    // The walk is read once per call and covers the whole playlist; the kind
+    // filter is client-side over that window, not a narrower request.
+    assert.equal(walk.mock.callCount(), 3);
+  });
+
+  it('search_within_playlist defaults to any and excludes rows of unknown kind', async () => {
+    const { server, handler } = serverCapturing('search_within_playlist');
+    const rows = [...MIXED_PLAYLIST, { added_at: '2024-01-05', item: { uri: 'spotify:local:x9', name: 'Hello ???' } }];
+    registerExhaustMiscTools(server, makeClient({
+      getAllPagesWithTruncation: mock.fn(async () => ({
+        items: rows,
+        truncated: false,
+        truncatedByCap: false,
+        reportedTotal: rows.length,
+      })),
+    }));
+
+    // Omitting `kind` is the pre-#731 behaviour: every row the text matches,
+    // including the one that identifies as neither shape.
+    const unfiltered = await handler()({ playlist_id: 'pl1', query: 'hello', response_format: 'json', max_results: 50 });
+    const anyPayload = unfiltered.structuredContent as { kind: string; items: Array<{ item: { uri: string } }>; items_of_unknown_kind?: number };
+    assert.equal(anyPayload.kind, 'any', 'the default is any');
+    assert.deepEqual(anyPayload.items.map((row) => row.item.uri), [
+      'spotify:track:t1', 'spotify:episode:e1', 'spotify:local:x9',
+    ]);
+
+    // Asking for a kind must not quietly file that row under it. It is
+    // excluded and counted, so the caller can see the result is incomplete.
+    const tracks = await handler()({ playlist_id: 'pl1', query: 'hello', kind: 'track', response_format: 'concise', max_results: 50 });
+    const trackPayload = tracks.structuredContent as { items: Array<{ item: { uri: string } }>; items_of_unknown_kind?: number };
+    assert.deepEqual(trackPayload.items.map((row) => row.item.uri), ['spotify:track:t1']);
+    assert.equal(trackPayload.items_of_unknown_kind, 1);
+    assert.ok(
+      tracks.content[0].text.includes('1 item(s) matched neither shape'),
+      `excluded rows must be disclosed in prose: ${tracks.content[0].text}`,
+    );
+  });
+
+  it('search_within_playlist reports the scanned window and a capped walk', async () => {
+    initConfig({ SPOTIFY_MCP_FETCH_ALL_CAP: '2' });
+    const { server, handler } = serverCapturing('search_within_playlist');
+    const walk = mock.fn(async () => ({
+      items: MIXED_PLAYLIST.slice(0, 2),
+      truncated: true,
+      truncatedByCap: true,
+      reportedTotal: 4,
+    }));
+    registerExhaustMiscTools(server, makeClient({ getAllPagesWithTruncation: walk }));
+    const res = await handler()({ playlist_id: 'pl1', query: 'hello', response_format: 'concise', max_results: 50 });
+    const payload = res.structuredContent as {
+      scanned_items: number;
+      matched: number;
+      scan_cap: number;
+      scan_truncated: boolean;
+      items: Array<{ item: { uri: string } }>;
+    };
+    // The cap is the SAME one get_playlist_items walks under, and it is
+    // handed to the walk rather than applied afterwards.
+    assert.deepEqual(walk.mock.calls[0].arguments, [
+      '/playlists/pl1/items',
+      { limit: '100' },
+      { maxItems: 2 },
+    ]);
+    assert.equal(payload.scan_cap, 2);
+    assert.equal(payload.scan_truncated, true);
+    assert.equal(payload.scanned_items, 2, 'scanned_items is what the filter actually saw, not the playlist total');
+    assert.equal(payload.matched, 2);
+    assert.deepEqual(payload.items.map((row) => row.item.uri), ['spotify:track:t1', 'spotify:episode:e1']);
+    // A capped scan that read nothing readable must not read as "2 matches, done".
+    assert.ok(res.content[0].text.includes('TRUNCATED'), `capped walk must be disclosed in prose: ${res.content[0].text}`);
+    initConfig({ SPOTIFY_MCP_SEARCH_HISTORY_FILE: ISOLATED_SEARCH_HISTORY });
+  });
+
+  it('search_within_playlist accepts the shared playlist_id / id resolver', async () => {
+    const { server, handler } = serverCapturing('search_within_playlist');
+    const walk = mock.fn(async () => ({ items: [], truncated: false, truncatedByCap: false, reportedTotal: 0 }));
+    registerExhaustMiscTools(server, makeClient({ getAllPagesWithTruncation: walk }));
+
+    await handler()({ id: 'pl1', query: 'hello', response_format: 'concise', max_results: 50 });
+    assert.equal(walk.mock.calls[0].arguments[0], '/playlists/pl1/items');
+
+    // Conflicting values fail before any API round-trip, as they do for
+    // get_playlist_items — not after a walk against the wrong playlist.
+    await assert.rejects(
+      handler()({ playlist_id: 'pl1', id: 'pl2', query: 'hello', response_format: 'concise', max_results: 50 }),
+      /Conflicting values/,
+    );
+    assert.equal(walk.mock.callCount(), 1, 'the conflicting call must not have walked the API');
   });
 
   // Isolate from the developer's real ~/.spotify-mcp/search-history.json. This
   // test passes only because nothing used to write there; now that the search
   // tools record history, a non-empty home sidecar makes it fail on any machine.
-  initConfig({ SPOTIFY_MCP_SEARCH_HISTORY_FILE: '/tmp/smcp-exhaustmisc-test-search-history.json' });
+  // Every `initConfig()` reset in this file re-applies it, because a bare reset
+  // would hand search_history_stats the developer's real sidecar again.
+  initConfig({ SPOTIFY_MCP_SEARCH_HISTORY_FILE: ISOLATED_SEARCH_HISTORY });
 
   it('search_history_stats handles missing file gracefully', async () => {
     let captured: unknown = null;

@@ -1107,6 +1107,26 @@ Find duplicate tracks in a playlist: exact URI repeats plus relinked copies of t
 
 ---
 
+#### `search_within_playlist` (#731)
+Text search inside one playlist, as a client-side filter over the rows the walk read. For a narrow query that is cheaper than paging `get_playlist_items` yourself; the trade-off is that the filter can only ever see the window the walk read, so the payload says how much of the playlist that was. Text is matched (case-insensitively) against the item name, artist names, album name and show name. `kind` narrows a mixed playlist — the same `/playlists/{id}/items` rows carry both shapes, and before this tool existed an agent looking for episodes had to walk the whole playlist by hand.
+
+The walk uses `get_playlist_items`' cap and its truncation verdict: `SPOTIFY_MCP_FETCH_ALL_CAP` bounds the walk, and a scan that hits the cap says so rather than reporting a narrow result as a complete one.
+
+**Inputs:**
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `playlist_id` | string | no | Playlist ID (or pass it as `id`) |
+| `id` | string | no | Alias for `playlist_id`, matching `get_playlist_items`; passing both is allowed only when they agree, and conflicting values fail before any API call |
+| `query` | string | yes | Substring to match against track/episode name, artist, album, show name |
+| `kind` | string | no | `track`, `episode`, or `any`. Default: `any` — which is the pre-2.0 behaviour, since the text match already reached episodes, so widening is not a silent behaviour change for existing callers |
+| `market` | string | no | ISO 3166-1 alpha-2 country code, for track relinking |
+| `response_format` | string | no | shared |
+| `max_results` | number | no | shared — how many MATCHES are returned, not how many rows are scanned |
+
+**Returns:** the matching rows (name, artist or show, URI, and the row's kind), the pagination block, and the walk's own coverage: `scanned_items` (rows the filter actually saw), `matched`, `scan_cap`, `scan_truncated`, plus the resolved `playlist_id`, `query` and `kind`. Rows that identify as neither shape are excluded from a `track`/`episode` filter and counted as `items_of_unknown_kind` rather than filed under a kind nobody confirmed. A truncated walk also appends the playlist family's shared `TRUNCATED` prose clause.
+
+---
+
 #### `get_playlist_cover`
 Get a playlist's cover image URLs.
 

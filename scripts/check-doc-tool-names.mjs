@@ -98,6 +98,11 @@ const parameterAllowlist = new Set([
   // shared paging-signal contract names. A key a tool returns about its own
   // page — not a parameter the caller sends, and not a tool.
   'next_offset',
+  // #731: search_within_playlist gained a `kind` filter, which made the walk
+  // behind it report its own coverage so a capped scan is distinguishable
+  // from a narrow one. These are the structuredContent keys it returns about
+  // its own result — not tools, and not parameters of anything.
+  'scanned_items', 'scan_truncated', 'items_of_unknown_kind',
 ]);
 /** Registration keys are module names, not tools; docs legitimately name them. */
 const registrationKeyNames = new Set(census.registrationKeyNames ?? []);
