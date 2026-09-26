@@ -43,7 +43,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import type { SpotifyClient } from '../src/client.js';
-import { REGISTRAR_MANIFEST } from '../src/tools/annotations.js';
+import { REGISTRAR_MANIFEST, loadManifestRegistrars } from '../src/tools/annotations.js';
 
 /**
  * Explicit allowlist: genuine non-previewable locals. Each entry needs a
@@ -165,8 +165,16 @@ async function enumerateLiveRegistry(): Promise<SurfacedTool[]> {
     observed.add(args[0] as string);
     return origRegisterTool(...args);
   };
-  for (const { key, registrar } of REGISTRAR_MANIFEST) {
+  // Every module is wanted here, so this probe asks the manifest to resolve
+  // them all rather than gating: the point is the full default surface (#906).
+  const resolved = await loadManifestRegistrars(REGISTRAR_MANIFEST, {
+    readOnly: false,
+    isModuleActive: () => true,
+    scopeBlocked: () => false,
+  });
+  for (const { key, registrar } of resolved) {
     const before = new Set(observed);
+    assert.ok(registrar, `${key} must be resolved before registration`);
     registrar(server, stub);
     for (const name of observed) {
       if (!before.has(name) && !moduleByTool.has(name)) moduleByTool.set(name, key);

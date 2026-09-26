@@ -34,9 +34,10 @@ import {
   NEVER_MUTATING_PLANS,
   READ_ONLY_OVERRIDES,
   moduleToolNames,
+  localModule,
   manifestEntry,
   serializedSchemaBytes,
-  registerManifestModule,
+  registerManifestModules,
   REGISTRAR_MANIFEST,
   installToolErrorBoundary,
   TOOL_SURFACE_BUDGET,
@@ -490,7 +491,7 @@ describe('tool surface: budget', () => {
     const server = new McpServer({ name: 'schema-audit', version: '0.0.0' });
     const client = new SpotifyClient();
     const context = { readOnly: false, isModuleActive: () => true, scopeBlocked: () => false };
-    for (const module of REGISTRAR_MANIFEST) registerManifestModule(server, client, module, context);
+    await registerManifestModules(server, client, context);
     const rows = collectModuleSchemaBudgets(server);
     assert.equal(rows.length, REGISTRAR_MANIFEST.length);
     assert.doesNotThrow(() => assertModuleSchemaBudgets(rows));
@@ -537,13 +538,13 @@ describe('tool surface: budget', () => {
     const DEFAULT_SURFACE: readonly [number, number] = [17, 13_339];
     const OPTED_IN_SURFACE: readonly [number, number] = [24, 19_594];
 
-    const ungated = manifestEntry('probe', 'probe', 'src/tools/probe.ts', registrar, DEFAULT_SURFACE);
+    const ungated = manifestEntry('probe', 'probe', localModule('src/tools/probe.ts', 'probeRegistrar', registrar), DEFAULT_SURFACE);
     // The ungated derivation is unchanged: a ceiling is still one tool and 10%
     // over the baseline, so an ordinary module grows visibly.
     assert.equal(ungated.ceiling.toolCount, 18);
     assert.equal(ungated.ceiling.schemaBytes, Math.ceil(13_339 * 1.1));
 
-    const gated = manifestEntry('probe', 'probe', 'src/tools/probe.ts', registrar, DEFAULT_SURFACE, {
+    const gated = manifestEntry('probe', 'probe', localModule('src/tools/probe.ts', 'probeRegistrar', registrar), DEFAULT_SURFACE, {
       gatedSurface: {
         gatedBy: 'SPOTIFY_MCP_EXPERIMENTAL_ANALYTICS',
         toolCount: OPTED_IN_SURFACE[0],
@@ -564,7 +565,7 @@ describe('tool surface: budget', () => {
     // A gated surface SMALLER than the baseline is a mis-declaration, not a
     // licence to shrink the ceiling: the census measures the default, so
     // shrinking below it would fail an ordinary install.
-    const shrinks = manifestEntry('probe', 'probe', 'src/tools/probe.ts', registrar, DEFAULT_SURFACE, {
+    const shrinks = manifestEntry('probe', 'probe', localModule('src/tools/probe.ts', 'probeRegistrar', registrar), DEFAULT_SURFACE, {
       gatedSurface: { gatedBy: 'SPOTIFY_MCP_EXPERIMENTAL_ANALYTICS', toolCount: 12, schemaBytes: 9_000 },
     });
     assert.equal(shrinks.ceiling.toolCount, 18, 'Math.max must not let a gated figure below the baseline win');
@@ -598,7 +599,7 @@ describe('tool surface: budget', () => {
     const server = new McpServer({ name: 'order-audit', version: '0.0.0' });
     const client = new SpotifyClient();
     const context = { readOnly: false, isModuleActive: () => true, scopeBlocked: () => false };
-    for (const module of REGISTRAR_MANIFEST) registerManifestModule(server, client, module, context);
+    await registerManifestModules(server, client, context);
     const names = Object.keys((server as unknown as { _registeredTools: Record<string, unknown> })._registeredTools);
     const coreCount = REGISTRAR_MANIFEST.slice(0, 4).reduce((sum, module) => sum + module.baseline.toolCount, 0);
     assert.deepEqual(names.slice(0, coreCount), [
@@ -627,7 +628,7 @@ describe('tool surface: budget', () => {
     const server = new McpServer({ name: 'wire-audit', version: '0.0.0' });
     const client = new SpotifyClient();
     const context = { readOnly: false, isModuleActive: () => true, scopeBlocked: () => false };
-    for (const module of REGISTRAR_MANIFEST) registerManifestModule(server, client, module, context);
+    await registerManifestModules(server, client, context);
     applyToolAnnotations(server);
     installToolErrorBoundary(server);
     const mcpClient = new Client({ name: 'wire-client', version: '0.0.0' });
@@ -655,7 +656,7 @@ describe('tool surface: budget', () => {
     const server = new McpServer({ name: 'report-audit', version: '0.0.0' });
     const client = new SpotifyClient();
     const context = { readOnly: false, isModuleActive: () => true, scopeBlocked: () => false };
-    for (const module of REGISTRAR_MANIFEST) registerManifestModule(server, client, module, context);
+    await registerManifestModules(server, client, context);
     const tool = (server as unknown as { _registeredTools: Record<string, { handler: (args: Record<string, never>) => Promise<{ structuredContent: { module_schema_budgets: unknown[] }; content: Array<{ text: string }> }> }> })._registeredTools.toolset_report;
     const result = await tool.handler({});
     assert.deepEqual(result.structuredContent.module_schema_budgets, collectModuleSchemaBudgets(server));

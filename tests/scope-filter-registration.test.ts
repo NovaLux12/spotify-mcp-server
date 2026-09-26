@@ -6,12 +6,11 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { SpotifyClient } from '../src/client.js';
 import { moduleBlockedByScopes, scopesFor } from '../src/scopefilter.js';
 import {
-  REGISTRAR_MANIFEST,
   assertModuleSchemaBudgets,
   classifyToolAnnotations,
   collectModuleSchemaBudgets,
   moduleToolNames,
-  registerManifestModule,
+  registerManifestModules,
 } from '../src/tools/annotations.js';
 
 /**
@@ -67,16 +66,14 @@ const READ_TOOLS_OF_WRITE_MODULES = [
   'verify_receipt',
 ];
 
-function register(options: { scope?: string; readOnly?: boolean }): McpServer {
+async function register(options: { scope?: string; readOnly?: boolean }): Promise<McpServer> {
   const server = new McpServer({ name: 'scope-filter-test', version: '0.0.0' });
   const granted = scopesFor(options.scope);
-  for (const module of REGISTRAR_MANIFEST) {
-    registerManifestModule(server, new SpotifyClient(), module, {
-      readOnly: options.readOnly ?? false,
-      isModuleActive: () => true,
-      scopeBlocked: (key) => moduleBlockedByScopes(key, granted),
-    });
-  }
+  await registerManifestModules(server, new SpotifyClient(), {
+    readOnly: options.readOnly ?? false,
+    isModuleActive: () => true,
+    scopeBlocked: (key) => moduleBlockedByScopes(key, granted),
+  });
   return server;
 }
 
@@ -92,20 +89,20 @@ function filteredModuleKeys(server: McpServer): string[] {
 }
 
 describe('scope-filtered module registration (#1020)', () => {
-  it('keeps the read tools of write-gated modules reachable under a read-only grant', () => {
-    const names = new Set(toolNames(register({ scope: READ_ONLY_GRANT })));
+  it('keeps the read tools of write-gated modules reachable under a read-only grant', async () => {
+    const names = new Set(toolNames(await register({ scope: READ_ONLY_GRANT })));
     const missing = READ_TOOLS_OF_WRITE_MODULES.filter((name) => !names.has(name));
     assert.deepEqual(missing, [], `read tools absent from tools/list under a read-only grant: [${missing.join(', ')}]`);
   });
 
-  it('withholds every writer of those modules under the same grant', () => {
-    const names = new Set(toolNames(register({ scope: READ_ONLY_GRANT })));
+  it('withholds every writer of those modules under the same grant', async () => {
+    const names = new Set(toolNames(await register({ scope: READ_ONLY_GRANT })));
     const leaked = WRITE_TOOLS.filter((name) => names.has(name));
     assert.deepEqual(leaked, [], `write tools exposed without their write scope: [${leaked.join(', ')}]`);
   });
 
-  it('exposes no tool the read/write classifier cannot prove read-only', () => {
-    const server = register({ scope: READ_ONLY_GRANT });
+  it('exposes no tool the read/write classifier cannot prove read-only', async () => {
+    const server = await register({ scope: READ_ONLY_GRANT });
     const names = toolNames(server);
     assert.ok(names.length > 0, 'the read-only grant must still register a surface');
     const registered = new Set(names);
@@ -118,8 +115,8 @@ describe('scope-filtered module registration (#1020)', () => {
     const owned = filteredModuleKeys(server).flatMap((module) => moduleToolNames(server, module));
     assert.ok(owned.every((name) => registered.has(name)), 'a filtered module reported a tool it did not register');
   });
-  it('reports the partially registered modules instead of an absent one', () => {
-    const server = register({ scope: READ_ONLY_GRANT });
+  it('reports the partially registered modules instead of an absent one', async () => {
+    const server = await register({ scope: READ_ONLY_GRANT });
     const filtered = new Set(filteredModuleKeys(server));
     assert.ok(filtered.has('library') && filtered.has('playlists') && filtered.has('following'),
       `expected the three scope-gated registration keys to be scope_filtered, got [${[...filtered].join(', ')}]`);
@@ -133,8 +130,8 @@ describe('scope-filtered module registration (#1020)', () => {
     );
   });
 
-  it('keeps the schema budget measured for a partially registered module', () => {
-    const server = register({ scope: READ_ONLY_GRANT });
+  it('keeps the schema budget measured for a partially registered module', async () => {
+    const server = await register({ scope: READ_ONLY_GRANT });
     const rows = collectModuleSchemaBudgets(server);
     const library = rows.find((row) => row.module === 'library');
     assert.ok(library && library.status === 'scope_filtered', 'library must report the filtered status');
@@ -142,14 +139,14 @@ describe('scope-filtered module registration (#1020)', () => {
     assert.doesNotThrow(() => assertModuleSchemaBudgets(rows));
   });
 
-  it('registers the unchanged full surface when no scope information exists', () => {
-    const failOpen = toolNames(register({})).sort();
-    const unfiltered = toolNames(register({ scope: 'user-modify-playback-state playlist-modify-public user-library-modify user-follow-modify' })).sort();
+  it('registers the unchanged full surface when no scope information exists', async () => {
+    const failOpen = toolNames(await register({})).sort();
+    const unfiltered = toolNames(await register({ scope: 'user-modify-playback-state playlist-modify-public user-library-modify user-follow-modify' })).sort();
     assert.deepEqual(failOpen, unfiltered, 'an unscoped token file must register exactly the unfiltered surface');
   });
 
-  it('lets the read-only gate outrank the scope filter', () => {
-    const names = new Set(toolNames(register({ scope: READ_ONLY_GRANT, readOnly: true })));
+  it('lets the read-only gate outrank the scope filter', async () => {
+    const names = new Set(toolNames(await register({ scope: READ_ONLY_GRANT, readOnly: true })));
     // #111: modules that are not readOnlySafe register nothing in a READONLY
     // session, so a reduced grant must not become a route to their reads.
     for (const name of ['undo_preview', 'restore_playlist_plan', 'apply_volume_plan', 'save_queue_as_playlist', 'get_saved_tracks']) {

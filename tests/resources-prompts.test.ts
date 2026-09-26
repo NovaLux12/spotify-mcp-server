@@ -510,7 +510,7 @@ test('the prompt allow-list is the live registry, not a copy of it (#670)', asyn
   //    Which module to drop, and which of its tools prompts name, is worked
   //    out from the registry rather than written down — so this still means
   //    something after a tool moves.
-  const analyticsOwns = new Set(moduleToolNames(buildFullRegistryServer(), 'analytics'));
+  const analyticsOwns = new Set(moduleToolNames(await buildFullRegistryServer(), 'analytics'));
   const promptNamed = [...analyticsOwns].filter((name) => referenced.has(name));
   assert.ok(
     promptNamed.length > 0,
