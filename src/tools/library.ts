@@ -21,7 +21,13 @@ import {
   DryRun,
 } from '../shaping.js';
 import type { ResponseFormatValue, PaginationInfo } from '../shaping.js';
-import { issueReceipt, formatReceipt, type Receipt, type ReceiptClient } from '../receipts.js';
+import {
+  issueReceipt,
+  formatReceipt,
+  type IssueReceiptOpts,
+  type Receipt,
+  type ReceiptClient,
+} from '../receipts.js';
 import { getConfig } from '../config.js';
 import {
   classifySpotifyReference,
@@ -72,6 +78,40 @@ function mutationOut(
 }
 
 /**
+ * Issue a receipt, tolerating an unreadable verification (#748).
+ * `issueReceipt` refetches live state and can throw; every caller in this file
+ * has already committed a write by the time it runs, so a failed read must
+ * never become a lost result. `error` names the failure and the receipt is
+ * null — a failed read is not a verdict.
+ */
+async function guardedReceipt(
+  client: ReceiptClient,
+  opts: IssueReceiptOpts,
+): Promise<{ receipt: Receipt | null; error?: string }> {
+  try {
+    return { receipt: await issueReceipt(client, opts) };
+  } catch (err) {
+    return { receipt: null, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/**
+ * Render a receipt, or say plainly that none could be issued. One wording for
+ * both callers so the fallback cannot drift between the partial-bucket result
+ * and the single-request one.
+ */
+function receiptLines(
+  receipt: Receipt | null,
+  error: string | undefined,
+  opts: { expectPresent?: boolean },
+  followUp: string,
+): string {
+  return receipt
+    ? formatReceipt(receipt, opts)
+    : `No receipt: verification failed (${error}).${followUp}`;
+}
+
+/**
  * Mutation confirmation + post-mutation verification receipt (#112 idea 11):
  * refetches minimal state so the agent sees explicit confirmation of what
  * landed in the same turn as the write.
@@ -79,8 +119,9 @@ function mutationOut(
  * #748: the write has already landed by the time the receipt is read, so a
  * failed verification read must not be reported as a failed write — that
  * would hide committed work behind a bare error and invite a duplicate retry.
- * The mutation result stands; the receipt is null with `receipt_error` saying
- * why it could not be read.
+ * The mutation result stands: `ok` stays true and `affected`/`uris` stay the
+ * full requested set, with `receipt: null` + `receipt_error` saying why the
+ * receipt is missing.
  */
 async function mutationOutVerified(
   rf: ResponseFormatValue,
@@ -92,18 +133,16 @@ async function mutationOutVerified(
   receiptOpts: { expectPresent?: boolean } = {},
 ): Promise<ToolOut> {
   const base = mutationOut(rf, prose, n, uris);
-  let receipt: Receipt | null = null;
-  let receiptError: string | undefined;
-  try {
-    receipt = await issueReceipt(client, { kind, uris: [...uris], ...receiptOpts });
-  } catch (err) {
-    receiptError = err instanceof Error ? err.message : String(err);
-  }
-  const receiptLine = receipt
-    ? formatReceipt(receipt, receiptOpts)
-    : `No receipt: verification failed (${receiptError}).`;
+  const { receipt, error: receiptError } = await guardedReceipt(client, {
+    kind,
+    uris: [...uris],
+    ...receiptOpts,
+  });
   // json mode must stay parseable: the receipt rides structuredContent only.
-  const text = rf === 'json' ? base.content[0].text : `${base.content[0].text}\n${receiptLine}`;
+  const text =
+    rf === 'json'
+      ? base.content[0].text
+      : `${base.content[0].text}\n${receiptLines(receipt, receiptError, receiptOpts, '')}`;
   return {
     content: [{ type: 'text', text }],
     structuredContent: {
@@ -369,24 +408,20 @@ async function savedBucketsPartialOut(
   const requestedTotal = outcomes.reduce((a, o) => a + o.requested, 0);
   const failedText = failed.map((o) => `${o.type} (${o.requested}): ${o.error}`).join('; ');
   const groups = `${outcomes.length - failed.length} of ${outcomes.length} groups landed`;
-  let receipt: Receipt | null = null;
-  let receiptError: string | undefined;
-  try {
-    receipt = await issueReceipt(legacyContainsClient(client), {
-      kind: 'library',
-      uris: [...committed],
-      expectPresent,
-    });
-  } catch (err) {
-    receiptError = err instanceof Error ? err.message : String(err);
-  }
+  const { receipt, error: receiptError } = await guardedReceipt(legacyContainsClient(client), {
+    kind: 'library',
+    uris: [...committed],
+    expectPresent,
+  });
   const prose =
     `${verb} ${committed.length} of ${requestedTotal} item(s) (${groups}) — ` +
-    `not ${verb.toLowerCase()}: ${failedText}.` +
-    (receipt
-      ? `\n${formatReceipt(receipt, { expectPresent })}`
-      : `\nNo receipt: verification failed (${receiptError}) — confirm the committed ` +
-        'subset with check_saved_items.');
+    `not ${verb.toLowerCase()}: ${failedText}.\n` +
+    receiptLines(
+      receipt,
+      receiptError,
+      { expectPresent },
+      ' Confirm the committed subset with check_saved_items.',
+    );
   return shapeResult(rf, prose, {
     ok: false,
     partial: true,

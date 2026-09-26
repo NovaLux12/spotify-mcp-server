@@ -908,6 +908,25 @@ describe('partial per-type writes keep the committed subset visible and invertib
     assert.equal(preview.would, 'add');
     // The audiobook that never landed must not be re-added by the undo.
     assert.deepEqual(preview.uris, COMMITTED);
+
+    // The blind "last mutation" path must reach the same verdict: the partial
+    // receipt is the FIFO head, so undo_last_mutation inverts the committed
+    // subset in the removal's direction — not the whole requested set.
+    const last = await h.invoke('undo_last_mutation', { dry_run: true });
+    const lastPreview = last.structuredContent as {
+      receipt_id: string;
+      direction: string;
+      would: string;
+      uris: string[];
+    };
+    assert.equal(lastPreview.receipt_id, sc.receipt!.receipt_id);
+    assert.equal(lastPreview.direction, 'removed');
+    assert.equal(lastPreview.would, 'add');
+    assert.deepEqual(lastPreview.uris, COMMITTED);
+    assert.match(
+      last.content[0].text,
+      /Would add 2 URI\(s\):\n {2}- spotify:track:t1\n {2}- spotify:album:a1/,
+    );
   });
 
   it('still returns the partial result when the receipt verification read itself fails', async () => {
