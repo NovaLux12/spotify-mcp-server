@@ -66,7 +66,7 @@ above either ceiling fails CI and server startup.
 | catalog | 31 | 26,953 | 31 | 26,953 | 32 | 29,649 |
 | library | 16 | 14,957 | 16 | 14,957 | 17 | 16,453 |
 | playback | 16 | 12,287 | 16 | 12,287 | 17 | 13,516 |
-| following | 5 | 3,921 | 5 | 3,921 | 6 | 4,314 |
+| following | 5 | 3,953 | 5 | 3,953 | 6 | 4,349 |
 | users | 2 | 1,613 | 2 | 1,613 | 3 | 1,775 |
 | audiobooks | 4 | 3,715 | 4 | 3,715 | 5 | 4,087 |
 | audiobookcopilot | 3 | 1,985 | 3 | 1,985 | 4 | 2,184 |
@@ -83,7 +83,7 @@ above either ceiling fails CI and server startup.
 | tasteplaylist | 1 | 1,723 | 1 | 1,723 | 2 | 1,896 |
 | doctor | 1 | 750 | 1 | 750 | 2 | 826 |
 | swarm3meta | 3 | 1,624 | 3 | 1,624 | 4 | 1,787 |
-| libraryanalytics | 4 | 3,350 | 4 | 3,350 | 5 | 3,686 |
+| libraryanalytics | 4 | 3,351 | 4 | 3,351 | 5 | 3,687 |
 | portability | 11 | 10,058 | 11 | 10,058 | 12 | 11,064 |
 | libraryinsights | 3 | 2,751 | 3 | 2,751 | 4 | 3,027 |
 | libraryhygiene | 1 | 734 | 1 | 734 | 2 | 808 |

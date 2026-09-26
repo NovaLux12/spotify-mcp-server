@@ -8,9 +8,12 @@
  * Run: node --import tsx --test tests/tools.following.test.ts
  */
 
-import { describe, it } from 'node:test';
+import { describe, it, beforeEach, afterEach } from 'node:test';
 import { z } from 'zod';
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../src/client.js';
 import { registerFollowingTools } from '../src/tools/following.js';
@@ -499,5 +502,121 @@ describe('follow family normalises artist references (#745)', () => {
       /Invalid artist reference "spotify:track:x".*expected artist/,
     );
     assert.equal(h.calls.length, 1, 'the rejected reference never reached Spotify');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// following_analytics — group_by over the tag sidecar (#733). Spotify no
+// longer returns artist `genres`, `popularity`, or `followers` on the followed
+// artist object. The only remaining dimension is `genre` (sourced from the
+// sidecar); `popularity` and `followers` report `available:false` with no
+// coerced zeros.
+// ---------------------------------------------------------------------------
+
+// Sidecar helpers. Each test runs against an isolated temp store so a malformed
+// file left over from another test cannot poison this one (#1053-style blast
+// radius — same pattern as tests/tools.libraryinsights.test.ts).
+const savedSidecarEnv = process.env.SPOTIFY_MCP_GENRE_TAGS_FILE;
+let sidecarDir: string;
+let sidecarPath: string;
+
+beforeEach(() => {
+  sidecarDir = mkdtempSync(join(tmpdir(), 'following-tags-'));
+  sidecarPath = join(sidecarDir, 'genre-tags.json');
+  process.env.SPOTIFY_MCP_GENRE_TAGS_FILE = sidecarPath;
+});
+
+afterEach(() => {
+  rmSync(sidecarDir, { recursive: true, force: true });
+  if (savedSidecarEnv === undefined) delete process.env.SPOTIFY_MCP_GENRE_TAGS_FILE;
+  else process.env.SPOTIFY_MCP_GENRE_TAGS_FILE = savedSidecarEnv;
+});
+
+function seedTags(entries: Record<string, string[]>): void {
+  writeFileSync(sidecarPath, `${JSON.stringify({ version: 1, tags: entries }, null, 2)}\n`, 'utf8');
+}
+
+/** One followed-artist page with `n` artists named `Artist <i>`. */
+function followedPage(n: number) {
+  return {
+    artists: {
+      items: Array.from({ length: n }, (_, i) => followedArtist(`a${i}`, `Artist ${i}`)),
+      total: n,
+      cursors: null,
+      next: null,
+    },
+  };
+}
+
+describe('following_analytics', () => {
+  it('group_by=genre: sources counts from the tag sidecar with no artist.genres on the wire', async () => {
+    seedTags({ 'Artist 0': ['pop'], 'Artist 1': ['pop', 'indie'], 'Artist 2': ['indie'] });
+    const h = makeHarness(() => followedPage(3));
+    const out = await h.invoke('following_analytics', { group_by: 'genre' });
+    const sc = out.structuredContent as {
+      available: boolean; source: string;
+      items: Array<{ key: string; count: number }>;
+      total_artists: number; tagged_artists: number;
+    };
+    assert.equal(sc.available, true);
+    assert.equal(sc.source, 'user-declared tags');
+    assert.equal(sc.total_artists, 3);
+    assert.equal(sc.tagged_artists, 3, 'every followed artist had a sidecar entry');
+    // pop = 2 (Artist 0 + Artist 1), indie = 2 (Artist 1 + Artist 2). Ties
+    // broken by key so pop precedes indie alphabetically.
+    assert.deepEqual(sc.items.slice(0, 2).map((i) => i.key), ['indie', 'pop']);
+    assert.equal(sc.items.find((i) => i.key === 'pop')?.count, 2);
+    assert.equal(sc.items.find((i) => i.key === 'indie')?.count, 2);
+    assert.match(textOf(out), /user-declared tags/);
+  });
+
+  it('group_by=genre: returns available:false when the sidecar has no entries', async () => {
+    seedTags({});
+    const h = makeHarness(() => followedPage(2));
+    const out = await h.invoke('following_analytics', { group_by: 'genre' });
+    const sc = out.structuredContent as {
+      available: boolean; reason: string; source: string;
+      items: unknown[]; tagged_artists: number;
+    };
+    assert.equal(sc.available, false, 'an empty sidecar makes the dimension unavailable');
+    assert.match(sc.reason, /Spotify no longer returns artist genres/);
+    // The acceptance clause: no bucket key derived from coerced zeros.
+    // Specifically the writer does not invent "Artist 0" or "0-24" rows.
+    assert.deepEqual(sc.items, []);
+    assert.equal(sc.tagged_artists, 0);
+    assert.match(textOf(out), /no followed artist has a tag declared/);
+  });
+
+  it('group_by=genre: returns available:false when no walked artist has a tag declared', async () => {
+    // Sidecar has entries, but none of them are followed artists.
+    seedTags({ 'Unrelated': ['rock'] });
+    const h = makeHarness(() => followedPage(2));
+    const out = await h.invoke('following_analytics', { group_by: 'genre' });
+    const sc = out.structuredContent as { available: boolean; tagged_artists: number };
+    assert.equal(sc.available, false);
+    assert.equal(sc.tagged_artists, 0);
+  });
+
+  it('group_by=popularity: returns available:false with no coerced bucket keys (#733)', async () => {
+    const h = makeHarness(() => followedPage(3));
+    const out = await h.invoke('following_analytics', { group_by: 'popularity' });
+    const sc = out.structuredContent as {
+      available: boolean; group_by: string; items: unknown[]; total_artists: number;
+    };
+    assert.equal(sc.available, false, 'popularity has no source on the wire — refuse to coerce zeros');
+    assert.equal(sc.group_by, 'popularity');
+    // The acceptance clause: no bucket key derived from coerced zeros. The
+    // old `{ "75-100": N }` output would be a number-lie here.
+    assert.deepEqual(sc.items, [], 'no bucket keys appear');
+    assert.match(textOf(out), /Spotify no longer returns .*popularity/);
+  });
+
+  it('group_by=followers: returns available:false with no coerced bucket keys (#733)', async () => {
+    const h = makeHarness(() => followedPage(3));
+    const out = await h.invoke('following_analytics', { group_by: 'followers' });
+    const sc = out.structuredContent as { available: boolean; items: unknown[] };
+    assert.equal(sc.available, false);
+    assert.deepEqual(sc.items, []);
+    assert.match(textOf(out), /Spotify no longer returns.*follower counts/);
   });
 });
