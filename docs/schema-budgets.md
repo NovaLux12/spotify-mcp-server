@@ -70,7 +70,7 @@ above either ceiling fails CI and server startup.
 | users | 2 | 1,613 | 2 | 1,613 | 3 | 1,775 |
 | audiobooks | 4 | 3,715 | 4 | 3,715 | 5 | 4,087 |
 | audiobookcopilot | 3 | 1,870 | 3 | 1,870 | 4 | 2,057 |
-| playlists | 26 | 25,998 | 26 | 25,998 | 27 | 28,598 |
+| playlists | 26 | 26,119 | 26 | 26,119 | 27 | 28,731 |
 | playlistops | 3 | 5,489 | 3 | 5,489 | 4 | 6,038 |
 | playlistbatch | 3 | 4,784 | 3 | 4,784 | 4 | 5,263 |
 | playlistfollow | 2 | 1,449 | 2 | 1,449 | 3 | 1,594 |
@@ -84,7 +84,7 @@ above either ceiling fails CI and server startup.
 | doctor | 1 | 750 | 1 | 750 | 2 | 826 |
 | swarm3meta | 3 | 1,624 | 3 | 1,624 | 4 | 1,787 |
 | libraryanalytics | 4 | 3,350 | 4 | 3,350 | 5 | 3,686 |
-| portability | 11 | 10,095 | 11 | 10,095 | 12 | 11,105 |
+| portability | 11 | 10,058 | 11 | 10,058 | 12 | 11,064 |
 | libraryinsights | 3 | 2,751 | 3 | 2,751 | 4 | 3,027 |
 | libraryhygiene | 1 | 734 | 1 | 734 | 2 | 808 |
 | showradar | 1 | 1,675 | 1 | 1,675 | 2 | 1,843 |
@@ -93,7 +93,7 @@ above either ceiling fails CI and server startup.
 | backupfirst | 1 | 513 | 1 | 513 | 2 | 565 |
 | backup | 2 | 1,625 | 2 | 1,625 | 3 | 1,788 |
 | backupdelete | 1 | 959 | 1 | 959 | 2 | 1,055 |
-| restore | 1 | 1,841 | 1 | 1,841 | 2 | 2,026 |
+| restore | 1 | 1,888 | 1 | 1,888 | 2 | 2,077 |
 | undo | 2 | 1,663 | 2 | 1,663 | 3 | 1,830 |
 | receipts | 1 | 315 | 1 | 315 | 2 | 347 |
 | episodemgmt | 1 | 1,053 | 1 | 1,053 | 2 | 1,159 |
@@ -101,7 +101,7 @@ above either ceiling fails CI and server startup.
 | searchdive | 1 | 1,561 | 1 | 1,561 | 2 | 1,718 |
 | searchhistory | 2 | 1,096 | 2 | 1,096 | 3 | 1,206 |
 | browse | 3 | 2,634 | 3 | 2,634 | 4 | 2,898 |
-| artistwatch | 6 | 5,944 | 6 | 5,944 | 7 | 6,539 |
+| artistwatch | 6 | 5,934 | 6 | 5,934 | 7 | 6,528 |
 | queueops | 3 | 3,449 | 3 | 3,449 | 4 | 3,794 |
 | playbackext | 13 | 7,857 | 13 | 7,857 | 14 | 8,643 |
 | playbackintel | 15 | 11,663 | 15 | 11,663 | 16 | 12,830 |

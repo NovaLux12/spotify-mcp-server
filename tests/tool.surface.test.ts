@@ -166,6 +166,9 @@ const OUTPUT_FIELD_NAMES = new Set<string>([
   'search_failed',
   'sidecar_truncated',
   'truncated_collections',
+  // #757: restore_library_snapshot documents the snapshot schema version it
+  // now refuses on. A key inside the file it reads, not a tool or parameter.
+  'schema_version',
   // Cursors and caps a call reports back so the next call can continue.
   // #809: create_smart_playlist names the candidate-pool ceiling it reports.
   'pool_capped', 'pool_cap',

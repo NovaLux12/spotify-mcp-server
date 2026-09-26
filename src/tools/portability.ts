@@ -1403,7 +1403,7 @@ export function registerPortabilityTools(server: McpServer, client: SpotifyClien
             await planStore('search_history', searchHistoryFile(), value, 'array');
             break;
           case 'artist_watchlist':
-            await mergeOrOverwrite('artist_watchlist', artistWatchlistPath(), value, true);
+            await planStore('artist_watchlist', artistWatchlistPath(), value, 'record');
             break;
           case 'mutations_history':
             await planLedger(value);

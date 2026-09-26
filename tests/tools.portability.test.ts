@@ -755,7 +755,6 @@ describe('import_from_sidecar (#1008 surfaces the exporter truncation flags)',()
   });
 });
 
-<<<<<<< HEAD
 // ---------------------------------------------------------------------------
 // #760: behaviour cover for the portability tools that shipped untested.
 //
@@ -1213,7 +1212,10 @@ describe('library_snapshot_diff (counts come from the URIs actually in the files
       assert.equal((payload.added_sample as string[]).length,10);
       assert.match(textOf(out),/\+14 added/);
     } finally { await rm(dir,{recursive:true,force:true}); }
-=======
+  });
+});
+
+
 describe('export_profile_state',()=>{
   it('reads the artist watchlist from the file the artist-watch tools actually write (#764)',async()=>{
     const home=await mkdtemp(join(tmpdir(),'pp-home-'));
@@ -1249,6 +1251,5 @@ describe('export_profile_state',()=>{
       await rm(port,{recursive:true,force:true});
       await rm(cwd,{recursive:true,force:true});
     }
->>>>>>> 951692e1cc2e454cdc690f0c01f0ade5017ce359
   });
 });
