@@ -18,11 +18,7 @@
  */
 import { z } from 'zod';
 import { capFor } from '../chunk.js';
-<<<<<<< HEAD
 import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
-=======
-import { mkdir, writeFile } from 'node:fs/promises';
->>>>>>> 9390c68 (fix(#1051): collapse four sidecar loaders onto shared policy module)
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
