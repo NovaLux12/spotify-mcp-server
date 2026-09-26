@@ -66,9 +66,13 @@ interface Tool {
 interface JsonRpc { id?: number; result?: { tools?: Tool[] }; error?: { code: number; message: string } }
 
 async function listTools(env: Record<string, string>): Promise<Tool[]> {
+  const baseEnv: NodeJS.ProcessEnv = { ...process.env, SPOTIFY_CLIENT_ID: 'surface-test', SPOTIFY_MCP_TOOLSETS: 'all', ENABLE_TOOLS: '', DISABLE_TOOLS: '' };
+  // SPOTIFY_SCOPES must be absent, not empty: since #617 a set-but-empty value
+  // is a startup error, so the harness can no longer "unset" it by assigning ''.
+  delete baseEnv.SPOTIFY_SCOPES;
   const child = spawn('node', ['--import', 'tsx/esm', 'src/index.ts'], {
     cwd: REPO_ROOT,
-    env: { ...process.env, SPOTIFY_CLIENT_ID: 'surface-test', SPOTIFY_MCP_TOOLSETS: 'all', ENABLE_TOOLS: '', DISABLE_TOOLS: '', SPOTIFY_SCOPES: '', ...env },
+    env: { ...baseEnv, ...env },
     stdio: ['pipe', 'pipe', 'pipe'],
   });
   let buffer = '';

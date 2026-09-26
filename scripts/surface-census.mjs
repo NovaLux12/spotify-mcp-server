@@ -54,13 +54,16 @@ const CENSUS_ENV = Object.freeze({
   SPOTIFY_MCP_FRESHNESS_BUDGET: '25',
   SPOTIFY_MCP_HISTORY: '0',
   SPOTIFY_MCP_PROFILE: '',
-  SPOTIFY_SCOPES: '',
   SPOTIFY_MCP_MARKET: '',
 });
 for (const key of Object.keys(process.env)) {
   if (key.startsWith('SPOTIFY_')) delete process.env[key];
 }
 Object.assign(process.env, CENSUS_ENV);
+// SPOTIFY_SCOPES is deliberately absent rather than blanked with '': since #617 a
+// set-but-empty value is a hard error (it used to read as "unset" and quietly
+// request the widest default scope set). The sweep above already removed it.
+
 const {
   moduleToolNames,
   registerManifestModule,
