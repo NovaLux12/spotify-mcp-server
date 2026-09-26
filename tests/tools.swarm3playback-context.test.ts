@@ -164,6 +164,33 @@ describe('get_context_inspect walks by raw page length (#845)', () => {
     }
   });
 
+  it('finds the target on a 3-page stub playlist (#845 acceptance criteria)', async () => {
+    // The issue's acceptance criterion: a 3-page stub playlist with two null
+    // rows on page 1 and the target on page 2 must report position = raw-index
+    // + 1 and not re-read page 1. The walk pages on the API's own row cursor
+    // (0, then 4) and never touches page 3.
+    const rows = [
+      track('spotify:track:r1'), nullRow, track('spotify:track:r3'), nullRow, // page 1: rows 1-4
+      track('spotify:track:r5'), track('spotify:track:r6'), track('spotify:track:r7'), track('spotify:track:t'), // page 2: rows 5-8, target on row 8
+      track('spotify:track:r9'), track('spotify:track:r10'), track('spotify:track:r11'), track('spotify:track:r12'), // page 3: rows 9-12, not reached
+    ];
+    const calls: Call[] = [];
+    initConfig({ SPOTIFY_MCP_FETCH_ALL_CAP: '500' });
+    try {
+      const h = makeHarness(pagedPlaylist(rows, 4, calls));
+      const out = await h.invoke('get_context_inspect', {});
+      assert.equal(out.structuredContent?.position_in_context, 8);
+      assert.match(out.content.map((c) => c.text).join('\n'), /Track 8/);
+      // Two requests, on the raw row cursor: page 1's length (4), not the
+      // filtered count of 2. Page 3 must NOT be requested.
+      assert.deepEqual(calls.map((c) => c.offset), [0, 4]);
+      assert.equal(calls.length, 2);
+      assert.equal(out.structuredContent?.walked, 8);
+    } finally {
+      initConfig();
+    }
+  });
+
   it('walks on past a page whose rows all filter away', async () => {
     // Page 1 is three unavailable rows: no playable uri at all. A filtered
     // cursor sees an empty page, reports "could not be determined" and never
