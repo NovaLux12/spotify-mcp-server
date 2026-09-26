@@ -124,7 +124,7 @@ The table is generated from every TypeScript file recursively under `src/`, incl
 | `src/markets.ts` | Runtime module for src/markets.ts. (0 registered tools) | 165 |
 | `src/paths.ts` | Local-path confinement for export/import tools (#622). (0 registered tools) | 346 |
 | `src/prompts/index.ts` | Runtime module for src/prompts/index.ts. (0 registered tools) | 311 |
-| `src/receipts.ts` | Mutation receipts (#112 idea 11). (0 registered tools) | 742 |
+| `src/receipts.ts` | Mutation receipts (#112 idea 11). (0 registered tools) | 773 |
 | `src/refs.ts` | Shared Spotify reference parser and resolver. (0 registered tools) | 229 |
 | `src/resources/index.ts` | Runtime module for src/resources/index.ts. (0 registered tools) | 869 |
 | `src/resources/templates.ts` | RFC-6570 resource templates over single-get catalog endpoints (#111, pattern 2). (0 registered tools) | 321 |
@@ -154,7 +154,7 @@ The table is generated from every TypeScript file recursively under `src/`, incl
 | `src/tools/following.ts` | Runtime module for src/tools/following.ts. (5 registered tools) | 473 |
 | `src/tools/freshness.ts` | freshness radar (#112 idea 2): personal replacement for the removed /browse/new-releases surface. (1 registered tool) | 678 |
 | `src/tools/import.ts` | import_playlist (#165): the inverse of export_playlist. (1 registered tool) | 443 |
-| `src/tools/library.ts` | Runtime module for src/tools/library.ts. (16 registered tools) | 1299 |
+| `src/tools/library.ts` | Runtime module for src/tools/library.ts. (16 registered tools) | 1339 |
 | `src/tools/libraryanalytics.ts` | Runtime module for src/tools/libraryanalytics.ts. (4 registered tools) | 683 |
 | `src/tools/libraryhygiene.ts` | Album completion & consolidation hygiene (#112 idea 5). (1 registered tool) | 532 |
 | `src/tools/libraryinsights.ts` | Runtime module for src/tools/libraryinsights.ts. (3 registered tools) | 687 |
@@ -195,7 +195,7 @@ The table is generated from every TypeScript file recursively under `src/`, incl
 | `src/tools/swarm4_playlists.ts` | swarm4 playlists slice — feature swarm v1.25.0 (issues #420–#437). (18 registered tools) | 1690 |
 | `src/tools/taste_composites.ts` | Wave-2 taste composites: 10 composite tools over the stats.fm PUBLIC API v1 (no auth), shaping taste data into playlist specs, briefs, and reports. (10 registered tools) | 811 |
 | `src/tools/taste_playlist.ts` | `taste_to_playlist` — the one writer in the taste composite family (#1009). (1 registered tool) | 344 |
-| `src/tools/undo.ts` | Undo for receipt-driven mutations (#217, #625). (2 registered tools) | 449 |
+| `src/tools/undo.ts` | Undo for receipt-driven mutations (#217, #625). (2 registered tools) | 467 |
 | `src/tools/users.ts` | Runtime module for src/tools/users.ts. (2 registered tools) | 195 |
 | `src/toolsets.ts` | Toolsets (#95): coarse-grained grouping of registration entry points so an operator can trim the server's exposed surface via `SPOTIFY_MCP_TOOLSETS` (e.g. "playback,library" for a car dashboard, or "catalog,personalization" for a read-only recommender). (0 registered tools) | 232 |
 | `src/types/spotify.ts` | Token storage schema (0 registered tools) | 550 |

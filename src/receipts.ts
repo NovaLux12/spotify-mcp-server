@@ -74,6 +74,18 @@ export interface ReceiptClient {
 type ReceiptKind = 'playlist_items' | 'library' | 'playlist_meta';
 
 /**
+ * The per-type buckets the legacy `save_items` / `remove_saved_items` tools
+ * write (#1095). One bucket is one Spotify endpoint (`/me/tracks`,
+ * `/me/albums`, `/me/shows`, `/me/episodes`, `/me/audiobooks`); `undo_mutation`
+ * reads the receipt's `writes` to invert through these endpoints instead of
+ * the unified `/me/library` the unified tools use, so a receipt issued by a
+ * legacy tool stays executable on the credentials the legacy tools exist for.
+ *
+ * Mirrors `SAVED_URI_TYPES` in `src/tools/library.ts`; keep them in sync.
+ */
+export type LibraryBucketType = 'track' | 'album' | 'show' | 'episode' | 'audiobook';
+
+/**
  * One entry per URI whose playlist occurrences a mutation touched: the
  * zero-based row indices the mutation added or removed (#625).
  */
@@ -97,6 +109,16 @@ export interface Receipt {
   missing: string[];
   /** URIs that were part of the original mutation (for undo). */
   uris: string[];
+  /**
+   * Per-type writes a legacy library mutation landed (#1095). Each entry is
+   * one bucket the legacy `save_items` / `remove_saved_items` tools wrote,
+   * so `undo_mutation` can invert through the same per-type endpoints the
+   * mutation used (`/me/tracks`, `/me/albums`, `/me/shows?ids=…`, …) rather
+   * than `/me/library`. Receipts without this field still invert through
+   * `/me/library` so older receipts and receipts from `save_to_library` /
+   * `remove_from_library` keep working.
+   */
+  writes?: Array<{ type: LibraryBucketType; ids: string[] }>;
   /**
    * Which way the mutation went (#625): `added` for save/add receipts, `removed`
    * for removal receipts. Derived from `expectPresent` so `undo` can invert the
@@ -178,6 +200,14 @@ export interface IssueReceiptOpts {
   createdPositions?: Array<{ uri: string; position: number }>;
   /** Expected number of rows removed (for window-exceeded detection). */
   expectedRemovedCount?: number;
+  /**
+   * Per-type writes the mutation landed (#1095). Forwarded onto the receipt
+   * so `undo_mutation` can invert through the same per-type endpoints the
+   * mutation used instead of `/me/library`. Set only by legacy
+   * `save_items` / `remove_saved_items`, which deliberately avoid
+   * `/me/library` for credentials that cannot use it.
+   */
+  writes?: Array<{ type: LibraryBucketType; ids: string[] }>;
 }
 
 // Live receipt store: an in-module Map capped at MAX_RECEIPTS with FIFO
@@ -680,6 +710,7 @@ export async function issueReceipt(
     ...(affected !== undefined && affected.length > 0 ? { affected } : {}),
     ...(occurrences !== undefined ? { occurrences } : {}),
     ...(_windowExceeded ? { windowExceeded: true as const, reason: _reason } : {}),
+    ...(opts.writes !== undefined && opts.writes.length > 0 ? { writes: opts.writes.map((w) => ({ type: w.type, ids: [...w.ids] })) } : {}),
     issued_at: Date.now(),
   };
   ensureLoaded();
