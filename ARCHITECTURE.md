@@ -124,7 +124,7 @@ The table is generated from every TypeScript file recursively under `src/`, incl
 | `src/markets.ts` | Runtime module for src/markets.ts. (0 registered tools) | 165 |
 | `src/paths.ts` | Local-path confinement for export/import tools (#622). (0 registered tools) | 346 |
 | `src/progress.ts` | Ambient progress-token context for MCP `tools/call` requests (#728). (0 registered tools) | 136 |
-| `src/prompts/index.ts` | Runtime module for src/prompts/index.ts. (0 registered tools) | 311 |
+| `src/prompts/index.ts` | Runtime module for src/prompts/index.ts. (0 registered tools) | 316 |
 | `src/receipts.ts` | Mutation receipts (#112 idea 11). (0 registered tools) | 781 |
 | `src/refs.ts` | Shared Spotify reference parser and resolver. (0 registered tools) | 229 |
 | `src/resources/index.ts` | Runtime module for src/resources/index.ts. (0 registered tools) | 869 |
