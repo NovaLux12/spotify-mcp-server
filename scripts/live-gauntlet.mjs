@@ -51,7 +51,22 @@ const MUTATING = new Set([
 // Endpoints Spotify removed in its Feb 2026 Web API changes: registered but
 // expected to fail on newer app registrations. A failure here is reported as
 // SKIP, not FAIL.
-const REMOVED = new Set(['get_artist_top_tracks', 'get_available_markets', 'get_user_profile', 'get_user_playlists_by_id']);
+// Endpoints Spotify removed in its Feb 2026 Web API changes: registered but
+// expected to fail on newer app registrations. A failure here is reported as
+// SKIP, not FAIL.
+//
+// `follow_artists` / `unfollow_artists` are the awkward case: Spotify removed
+// `PUT/DELETE /me/following` and gave no replacement, because `/me/library` has
+// no `spotify:artist:` URI type. They are registered and cannot work, so they
+// belong here until the tools themselves are removed. When the tools are
+// deleted, delete their MUTATING entries and args builders instead of moving
+// them here — this file reads a live `tools/list`.
+const REMOVED = new Set([
+  'get_artist_top_tracks', 'get_available_markets', 'get_user_profile', 'get_user_playlists_by_id',
+  'follow_artists', 'unfollow_artists',
+  // browse/categories: also removed Feb 2026, with no replacement endpoint. See #1013.
+  'get_categories', 'get_category_playlists',
+]);
 
 // Endpoints that 403 Forbidden on current app registrations (2026-08-27 edge
 // probe): documented /me/*/contains family, browse categories, and friends.

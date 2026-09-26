@@ -437,6 +437,106 @@ describe('whats_new', () => {
     );
   });
 
+  // #683 — a day that does not exist on the calendar must be rejected by name,
+  // never rolled into a neighbouring month the way `new Date()` silently does
+  // (2026-02-30 -> 2026-03-02, 2026-02-29 -> 2026-03-01).
+  const IMPOSSIBLE_SINCE: Array<[string, RegExp]> = [
+    ['2026-02-30', /2026-02 has 28 days.*day 30 does not exist/],
+    ['2026-02-29', /2026-02 has 28 days.*day 29 does not exist/],
+    ['2026-13-01', /month 13 does not exist/],
+  ];
+
+  for (const [since, expected] of IMPOSSIBLE_SINCE) {
+    it(`rejects since="${since}" naming the since field, before any API call`, async () => {
+      const h = harness((path) => {
+        if (path === '/me/following') return followedPage(['a1'], null);
+        if (path === '/artists/a1/albums') return albumsOf('a1', [['alb', 'Drop', '2026-03-05']]);
+        throw new Error(`unexpected path ${path}`);
+      });
+
+      const err = await h.invoke('whats_new', { since, kinds: ['albums'] }).then(
+        () => null,
+        (e: unknown) => e,
+      );
+      assert.ok(err, `since="${since}" must be rejected`);
+      const message = err instanceof Error ? err.message : String(err);
+      // Names the offending field, echoes the offending value, explains why.
+      assert.match(message, /since/);
+      assert.ok(message.includes(since), `error should echo ${since}: ${message}`);
+      assert.match(message, expected);
+      // Rejected at validation: no scan happened, so no window was queried.
+      assert.equal(h.client.calls.length, 0, 'no API call may be made for an impossible since');
+    });
+  }
+
+  it('accepts a real leap day since=2028-02-29 and scans that window', async () => {
+    const h = harness((path) => {
+      if (path === '/me/following') return followedPage(['a1'], null);
+      if (path === '/artists/a1/albums') {
+        return albumsOf('a1', [['pre', 'Before', '2028-02-28'], ['on', 'Leap Day LP', '2028-02-29']]);
+      }
+      throw new Error(`unexpected path ${path}`);
+    });
+
+    const out = await h.invoke('whats_new', { since: '2028-02-29', kinds: ['albums'] });
+
+    const payload = out.structuredContent as { cutoff: string; items: Array<{ name: string }> };
+    assert.equal(payload.cutoff, '2028-02-29');
+    // Inclusive on the boundary day, exclusive before it.
+    assert.deepEqual(payload.items.map((i) => i.name), ['Leap Day LP']);
+  });
+
+  it('drops an impossible upstream release_date instead of rolling it forward', async () => {
+    const h = harness((path) => {
+      if (path === '/me/following') return followedPage(['a1'], null);
+      if (path === '/artists/a1/albums') {
+        return albumsOf('a1', [
+          ['bogus', 'Impossible Day', '2026-02-30'],
+          ['real', 'Real Day', '2026-03-05'],
+        ]);
+      }
+      throw new Error(`unexpected path ${path}`);
+    });
+
+    const out = await h.invoke('whats_new', { since: '2026-01-01', kinds: ['albums'] });
+
+    const payload = out.structuredContent as { items: Array<{ name: string; date_key: string }> };
+    assert.deepEqual(payload.items.map((i) => i.name), ['Real Day']);
+    // The bogus date must not surface as the rolled-over 2026-03-02.
+    assert.ok(!textOf(out).includes('2026-03-02'));
+  });
+
+  it('rejects a stored watermark that is not a real calendar day', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'freshness-test-'));
+    const statePath = join(dir, 'freshness.json');
+    try {
+      await writeFile(statePath, JSON.stringify({ last_check: '2026-02-30' }, null, 2), {
+        mode: 0o600,
+      });
+      await withEnv({ SPOTIFY_MCP_FRESHNESS_STATE: statePath }, async () => {
+        const h = harness((path) => {
+          if (path === '/me/following') return followedPage(['a1'], null);
+          throw new Error(`unexpected path ${path}`);
+        });
+
+        await assert.rejects(
+          () => h.invoke('whats_new', { since: 'last-check', kinds: ['albums'] }),
+          (e: unknown) => {
+            const message = e instanceof Error ? e.message : String(e);
+            assert.match(message, /watermark/);
+            assert.ok(message.includes('2026-02-30'), `error should echo the stored value: ${message}`);
+            return true;
+          },
+        );
+        // The corrupt watermark must not be used as a cutoff or re-persisted.
+        const stored = JSON.parse(await readFile(statePath, 'utf8')) as { last_check: string };
+        assert.equal(stored.last_check, '2026-02-30');
+      });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it('json mode emits the raw payload as text alongside structuredContent', async () => {
     const h = harness((path) => {
       if (path === '/me/following') return followedPage(['a1'], null);

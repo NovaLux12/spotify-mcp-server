@@ -14,9 +14,10 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
-import { quotaPreflight, quotaSnapshot, quotaWindowRemaining, quotaDelta } from '../client.js';
+import { quotaPreflight, quotaSnapshot, quotaWindowRemaining, quotaDelta, SpotifyApiError } from '../client.js';
 import type { SavedTrackItem, SpotifyAlbumFull } from '../types/spotify.js';
 import {
+  CHUNK_CAPS,
   ResponseFormat,
   MaxResults,
   resolveMaxResults,
@@ -28,6 +29,12 @@ import { getConfig } from '../config.js';
 
 /** Hard cap on distinct GET /albums/{id} lookups per analysis run (#112 idea 5). */
 export const ALBUM_LOOKUP_CAP = 200;
+
+/** Albums per GET /albums?ids= call (#763) — the batch endpoint's per-request id cap. */
+export const ALBUM_BATCH_SIZE = CHUNK_CAPS.albums;
+
+/** `/me/tracks` page size used by the walk (see analyze). */
+const TRACK_PAGE_LIMIT = 50;
 
 /** Coverage ratio at which an album counts as near-complete (inclusive). */
 export const NEAR_COMPLETE_THRESHOLD = 0.7;
@@ -100,9 +107,17 @@ interface AnalysisResult {
     tracks_truncated_by_cap: boolean;
   };
   album_lookups: {
+    /** Distinct albums resolved — batches of 20, so this is not the request count. */
     made: number;
     cap: number;
     truncated_by_cap: boolean;
+    /** GET /albums?ids= calls actually issued for those albums. */
+    batch_requests: number;
+    batch_size: number;
+    /** True when a batch was rate-limited; analysis degrades to a partial. */
+    rate_limited: boolean;
+    rate_limit_message?: string;
+    retry_after_sec?: number | null;
   };
   counts: {
     near_complete: number;
@@ -135,6 +150,12 @@ export function buildSuggestion(likedCount: number): string {
   return `save the album and optionally prune the ${likedCount} single${likedCount === 1 ? '' : 's'} you liked individually`;
 }
 
+/** One `/albums?ids=` outcome: resolved albums, or the 429 that replaced them. */
+interface BatchOutcome {
+  throttled: { message: string; retry_after_sec: number | null } | null;
+  albums: SpotifyAlbumFull[];
+}
+
 /**
  * Walk the liked-tracks library, group by album, look up album totals
  * (cached per album id, capped), and derive hygiene findings.
@@ -150,9 +171,10 @@ async function analyze(
   const lookupShrunk = lookupCap < ALBUM_LOOKUP_CAP;
   const walked = await client.getAllPages<SavedTrackItem>(
     '/me/tracks',
-    { limit: '50' },
+    { limit: String(TRACK_PAGE_LIMIT) },
     { maxItems: fetchAllCap + 1 },
   );
+
   const tracksTruncatedByCap = walked.length > fetchAllCap;
   const saved = walked.slice(0, fetchAllCap);
 
@@ -200,23 +222,51 @@ async function analyze(
     (a, b) => b.liked_count - a.liked_count || a.album_id.localeCompare(b.album_id),
   );
 
-  // ---- GET /albums/{id} per group (cached, capped) ------------------------
+  // ---- Batched GET /albums?ids= fan-in (cached, capped) -------------------
+  // #763: one GET /albums/{id} per group cost up to 200 serial round trips.
+  // The batch endpoint returns the same album objects (total_tracks,
+  // album_type, embedded track listing), so the analysis is unchanged while
+  // the request count drops to ceil(albums / ALBUM_BATCH_SIZE).
   const albumCache = new Map<string, SpotifyAlbumFull | null>();
-  let lookups = 0;
-  let lookupTruncated = false;
+  const budgeted = groups.slice(0, lookupCap);
+  const lookupTruncated = groups.length > budgeted.length;
+  const lookups = budgeted.length;
+
+  const idChunks: string[][] = [];
+  for (let i = 0; i < budgeted.length; i += ALBUM_BATCH_SIZE) {
+    idChunks.push(budgeted.slice(i, i + ALBUM_BATCH_SIZE).map((g) => encodeURIComponent(g.album_id)));
+  }
+
+  // A 429 on a batch degrades the run to a partial with Retry-After-aware
+  // messaging instead of aborting the whole analysis (#763 point 4).
+  const batchResults = await Promise.all(
+    idChunks.map(async (chunk): Promise<BatchOutcome> => {
+      try {
+        const res = await client.get<{ albums?: (SpotifyAlbumFull | null)[] }>('/albums', {
+          ids: chunk.join(','),
+        });
+        // Spotify returns null for ids it could not resolve; drop them.
+        return { throttled: null, albums: (res?.albums ?? []).filter((a): a is SpotifyAlbumFull => !!a?.id) };
+      } catch (err) {
+        if (err instanceof SpotifyApiError && err.status === 429) {
+          return {
+            throttled: { message: err.message, retry_after_sec: err.retryAfterSec ?? null },
+            albums: [],
+          };
+        }
+        throw err;
+      }
+    }),
+  );
+
+  // Promise.all preserves chunk order, so cache insertion stays deterministic.
+  for (const outcome of batchResults) {
+    for (const album of outcome.albums) albumCache.set(album.id, album);
+  }
+  const throttled = batchResults.find((b) => b.throttled !== null)?.throttled ?? null;
+
   for (const group of groups) {
-    if (lookups >= lookupCap) {
-      lookupTruncated = true;
-      break;
-    }
-    let full: SpotifyAlbumFull | null;
-    if (albumCache.has(group.album_id)) {
-      full = albumCache.get(group.album_id) ?? null;
-    } else {
-      full = await client.get<SpotifyAlbumFull>(`/albums/${encodeURIComponent(group.album_id)}`);
-      albumCache.set(group.album_id, full);
-      lookups++;
-    }
+    const full = albumCache.get(group.album_id) ?? null;
     if (full) {
       group.total_tracks =
         typeof full.total_tracks === 'number' ? full.total_tracks : null;
@@ -305,6 +355,15 @@ async function analyze(
       made: lookups,
       cap: lookupCap,
       truncated_by_cap: lookupTruncated,
+      batch_requests: batchResults.length,
+      batch_size: ALBUM_BATCH_SIZE,
+      rate_limited: throttled !== null,
+      ...(throttled
+        ? {
+          rate_limit_message: throttled.message,
+          retry_after_sec: throttled.retry_after_sec,
+        }
+        : {}),
     },
     ...(lookupShrunk ? { requests_planned: ALBUM_LOOKUP_CAP, budget_shrunk: true } : {}),
     counts: {
@@ -338,9 +397,19 @@ function renderProse(result: AnalysisResult, maxResults: number): string {
       })}.`,
   );
   lines.push(
-    `Album lookups: ${album_lookups.made} made (cap ${album_lookups.cap} `
+    `Album lookups: ${album_lookups.made} made in ${album_lookups.batch_requests} batched `
+      + `GET /albums?ids= call${album_lookups.batch_requests === 1 ? '' : 's'} `
+      + `(batches of ${album_lookups.batch_size}; cap ${album_lookups.cap} `
       + `${album_lookups.truncated_by_cap ? 'REACHED — some albums were not checked' : 'not reached'}).`,
   );
+  if (album_lookups.rate_limited) {
+    lines.push(
+      `  PARTIAL: album batches were rate limited — ${album_lookups.rate_limit_message}. `
+        + `Albums without a resolved total are excluded from the findings below; `
+        + `${album_lookups.retry_after_sec != null ? `wait ~${album_lookups.retry_after_sec}s and ` : ''}`
+        + 're-run to fill the gaps.',
+    );
+  }
 
   if (scanned.liked_tracks === 0) {
     lines.push('', 'No liked tracks found — nothing to analyze.');
@@ -389,6 +458,41 @@ function renderProse(result: AnalysisResult, maxResults: number): string {
   return lines.join('\n');
 }
 
+const DryRunScan = z
+  .boolean()
+  .optional()
+  .describe('Preview cost only.');
+
+/** #763: cost preview for `library_hygiene` — issues zero API requests. */
+function renderDryRun(client: SpotifyClient): { prose: string; payload: Record<string, unknown> } {
+  const fetchAllCap = getConfig().fetchAllCap;
+  const lookupCap = Math.min(ALBUM_LOOKUP_CAP, quotaWindowRemaining(client));
+  const walkPages = Math.max(1, Math.ceil(fetchAllCap / TRACK_PAGE_LIMIT));
+  const albumBatches = Math.ceil(lookupCap / ALBUM_BATCH_SIZE);
+  const estimatedRequests = walkPages + albumBatches;
+  const prose =
+    `[dry run] library_hygiene would walk /me/tracks (up to ${walkPages} page${walkPages === 1 ? '' : 's'} `
+    + `for ${fetchAllCap} liked tracks) and fan in up to ${lookupCap} album`
+    + `${lookupCap === 1 ? '' : 's'} via ${albumBatches} batched GET /albums?ids= call`
+    + `${albumBatches === 1 ? '' : 's'} (${ALBUM_BATCH_SIZE} per call). `
+    + `Cost: ~${estimatedRequests} requests, 0 made. Album totals for every liked album in the library `
+    + 'are not known without the walk, so the album-batch figure is the budgeted upper bound.';
+  return {
+    prose,
+    payload: {
+      ok: true,
+      dry_run: true,
+      requests_made: 0,
+      album_lookup_cap: lookupCap,
+      album_lookup_shrunk: lookupCap < ALBUM_LOOKUP_CAP,
+      batch_size: ALBUM_BATCH_SIZE,
+      track_walk_requests: walkPages,
+      estimated_album_batch_requests: albumBatches,
+      estimated_requests: estimatedRequests,
+    },
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Registration
 // ---------------------------------------------------------------------------
@@ -396,15 +500,20 @@ function renderProse(result: AnalysisResult, maxResults: number): string {
 export function registerLibraryHygieneTools(server: McpServer, client: SpotifyClient): void {
   server.tool(
     'library_hygiene',
-    'Read-only album completion & consolidation analysis over your liked tracks: flags '
-      + 'near-complete albums worth saving in full and lone singles with nothing else liked '
-      + 'from their artist (low confidence). Suggests only — never mutates your library.',
+    'Read-only album hygiene analysis over your liked tracks: flags near-complete albums '
+      + 'worth saving in full and lone singles with nothing else liked from their artist '
+      + '(low confidence). Batched fan-in; never mutates. dry_run previews cost.',
     {
       response_format: ResponseFormat,
       max_results: MaxResults,
+      dry_run: DryRunScan,
     },
     async (args) => {
       const rf = args.response_format;
+      if (args.dry_run) {
+        const preview = renderDryRun(client);
+        return shapeResult(rf, preview.prose, preview.payload as unknown as AnalysisResult);
+      }
       const gate = quotaPreflight(client);
       if (gate.blocked) {
         return shapeResult(rf, gate.message, {

@@ -1,23 +1,34 @@
-# Wave 2 composites — shipped read-only taste tools
+# Wave 2 composites — shipped taste tools (read-only except `taste_to_playlist`)
 <!-- BEGIN:generated surface-census -->
-Current default production surface: **591 tools**, including the shipped taste composites documented below. Earlier release totals in this page's history are not current registry truth; regenerate this block with `npm run count:tools -- --write`.
+Current default production surface: **592 tools**, including the shipped taste composites documented below. Earlier release totals in this page's history are not current registry truth; regenerate this block with `npm run count:tools -- --write`.
 <!-- END:generated surface-census -->
 
-The shipped `taste_composites.ts` module contributes eleven read-only tools in the `taste` toolset. Earlier release totals are historical context, not current registry truth.
+The shipped `taste_composites.ts` module contributes eleven tools in the `taste` toolset: ten read-only, plus `taste_to_playlist`, which previews by default and writes only when a caller passes `dry_run: false`. Earlier release totals are historical context, not current registry truth.
 
-## Read-only guarantees
+## Data-source and write guarantees
 
 Every composite in `src/tools/taste_composites.ts`:
 
-- Reads ONLY the stats.fm public API v1 (`https://api.stats.fm/api/v1`, no
+- Reads the stats.fm public API v1 (`https://api.stats.fm/api/v1`, no
   auth) — top artists / tracks / genres / streams endpoints.
-- Never calls any Spotify write API. Playlist-shaped output is a
-  copy-pasteable track list plus a `DRY_RUN` receipt describing what a human
-  (or a Spotify write tool) would do next.
+- The ten read-only composites never call any Spotify write API. Playlist-
+  shaped output from them is a copy-pasteable track list plus a `DRY_RUN`
+  receipt describing what a human (or a Spotify write tool) would do next.
+- `taste_to_playlist` is the single writer. It calls NO Spotify endpoint at
+  all while `dry_run` is true (the default). With `dry_run: false` it
+  performs one `POST /me/playlists` and chunked `PUT`/`POST
+  /playlists/{id}/items` adds, and refuses outright under
+  `SPOTIFY_MCP_READONLY` before any wire call. See #723.
 - `stats.fm` `externalIds.spotify[]` entries are frequently dead (≈12% in
   the wild), so every track-list output includes Spotify-search fallback
   guidance (`search_tracks "Artist - Title"`) and a `missing[]` section for
   rows with no usable Spotify id.
+- On a `dry_run: false` commit, tracks whose stats.fm id is unusable are
+  looked up with one `/search` GET each. Only a 404 or an empty result set
+  means "search matched nothing" (`unresolved[]`); a lookup that itself fails
+  (401 / 429 / 5xx / transport) is reported under `search_errors[]` as
+  *existence unknown*, and a run in which no lookup could be served is
+  blocked with `blocked: 'search_failed'` and writes nothing.
 - Pure shaping on top of the lenient normalizers in `statsfm_taste.ts`
   (`normalizeStreams`, `normalizeTopList`, `groupSessions`,
   `summarizeMonths`, `detectEras`, `summarizeDayParting`,
@@ -28,7 +39,7 @@ Every composite in `src/tools/taste_composites.ts`:
 
 | # | Tool | Inputs | Output |
 |---|------|--------|--------|
-| 1 | `taste_to_playlist` | `statsfm_user`, `track_count` (default 20, max 50), `seed` (core\|recent\|mixed, default mixed), `dry_run` (default true) | Ordered `Artist — Title` list blended from lifetime tops + recent streams, DRY_RUN receipt first, Spotify-search fallback guidance, `missing[]` for rows without Spotify ids |
+| 1 | `taste_to_playlist` | `statsfm_user`, `track_count` (default 20, max 50), `seed` (core\|recent\|mixed, default mixed), `dry_run` (default true), `playlist_name` (optional) | Ordered `Artist — Title` list blended from lifetime tops + recent streams. `dry_run: true` (default) → DRY_RUN receipt, zero Spotify calls. `dry_run: false` → creates the playlist and adds every pick that resolves, with `unresolved[]` / `search_errors[]` for the rest |
 | 2 | `taste_daily_brief` | `statsfm_user`, `date` (YYYY-MM-DD, default yesterday UTC) | Yesterday top-3 tracks + 2 revival picks (lifetime tops absent that day) + novelty share vs lifetime core |
 | 3 | `taste_era_playlist` | `statsfm_user`, `era_index` (default latest), `track_count` (default 15) | Era window (start→end month, signature artist) + representative track list for that era + copy-paste block |
 | 4 | `taste_forgotten_bangers` | `statsfm_user`, `top_limit` (default 50), `track_count` (default 15) | Forgotten-favorites playlist spec: lifetime tops missing from recent sample, ranked, with revival pick |

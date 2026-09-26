@@ -1,7 +1,8 @@
 import { z } from 'zod';
 import { MARKET_CODE } from './catalog.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import type { SpotifyClient } from '../client.js';
+import { SpotifyApiError, type SpotifyClient } from '../client.js';
+import { isRemovedEndpointFailure } from '../gating.js';
 import type { SpotifyArtistFull, SpotifyPlaylistSimple, SpotifyPaged } from '../types/spotify.js';
 import {
   ResponseFormat,
@@ -33,6 +34,40 @@ function resolveBrowseMarket(
   return market ?? country;
 }
 
+/**
+ * #1013: Spotify's February 2026 changelog removed GET /browse/categories and
+ * GET /browse/categories/{id} outright and lists no replacement, and no
+ * surviving endpoint exposes browse categories. The 2026-08-26 gate probe
+ * already classifies /browse/categories* as app-registration-gated
+ * (src/gating.ts), so a failure here is a dead endpoint — never a missing
+ * category, an empty list or a quota problem. Same contract as
+ * get_available_markets and get_user_profile: name the removal, and report a
+ * response that carried no payload as unreadable rather than as zero.
+ *
+ * `noun` names what could not be read, so the no-payload case reports the same
+ * fact as the wire-failure case: nothing was read, so nothing is returned.
+ */
+function browseCategoriesUnavailable(path: string, noun: string, err?: unknown): Error {
+  // A gated 403 reaches the tool as the #428 graceful-contract Error, so that
+  // text is kept verbatim and the removal is appended to it rather than
+  // replacing a contract the README and other modules depend on.
+  const detail =
+    err === undefined
+      ? `the response carried no ${noun} payload, so nothing was read. `
+      : err instanceof SpotifyApiError
+        ? `Spotify answered ${err.status} — ${err.message} `
+        : err instanceof Error
+          ? `${err.message} `
+          : 'Spotify rejected the request. ';
+  return new Error(
+    `The browse-categories lookup (${path}) could not be answered: ${detail} GET /browse/categories and ` +
+      'GET /browse/categories/{id} were removed by Spotify’s February 2026 Web API changes and have ' +
+      'no replacement endpoint, so no category list can be read from them; run with credentials from a ' +
+      'grandfathered (pre-Nov-2024) app if you need one.',
+    err === undefined ? undefined : { cause: err },
+  );
+}
+
 export function registerBrowseTools(server: McpServer, client: SpotifyClient): void {
   server.tool(
     'get_artist_genres',
@@ -59,7 +94,7 @@ export function registerBrowseTools(server: McpServer, client: SpotifyClient): v
 
   server.tool(
     'get_categories',
-    'List Spotify browse categories (GET /browse/categories)',
+    'List Spotify browse categories. Removed Feb 2026, no replacement endpoint',
     {
       limit: z.number().int().min(1).max(50).optional().describe('Results per page, 1\u201350. Default: 20'),
       offset: z.number().int().min(0).optional().describe('Offset. Default: 0'),
@@ -79,9 +114,17 @@ export function registerBrowseTools(server: McpServer, client: SpotifyClient): v
       const market = resolveBrowseMarket(args.market, args.country);
       if (market) params.market = market;
       if (args.locale) params.locale = args.locale;
-      const data = await client.get<{ categories: SpotifyPaged<CategoryItem> }>('/browse/categories', params);
+      let data: { categories: SpotifyPaged<CategoryItem> } | null;
+      try {
+        data = await client.get<{ categories: SpotifyPaged<CategoryItem> }>('/browse/categories', params);
+      } catch (err) {
+        if (isRemovedEndpointFailure(err)) {
+          throw browseCategoriesUnavailable('/browse/categories', 'categories', err);
+        }
+        throw err;
+      }
       if (!data?.categories) {
-        return { content: [{ type: 'text', text: 'No categories found.' }] };
+        throw browseCategoriesUnavailable('/browse/categories', 'categories');
       }
       if (args.response_format === 'json') {
         const raw = data as unknown as Record<string, unknown>;
@@ -102,9 +145,9 @@ export function registerBrowseTools(server: McpServer, client: SpotifyClient): v
 
   server.tool(
     'get_category_playlists',
-    'Get playlists for a browse category (GET /browse/categories/{id}/playlists)',
+    'Get playlists for a browse category. Removed Feb 2026, no replacement endpoint',
     {
-      category_id: z.string().describe('Category ID (from get_categories)'),
+      category_id: z.string().describe('Category ID'),
       limit: z.number().int().min(1).max(50).optional().describe('Results per page, 1\u201350. Default: 20'),
       offset: z.number().int().min(0).optional().describe('Offset. Default: 0'),
       market: MARKET_CODE.optional().describe(
@@ -121,12 +164,18 @@ export function registerBrowseTools(server: McpServer, client: SpotifyClient): v
       if (args.offset !== undefined) params.offset = String(args.offset);
       const market = resolveBrowseMarket(args.market, args.country);
       if (market) params.market = market;
-      const data = await client.get<{ playlists: PlaylistPage }>(
-        `/browse/categories/${encodeURIComponent(args.category_id)}/playlists`,
-        params,
-      );
+      const path = `/browse/categories/${encodeURIComponent(args.category_id)}/playlists`;
+      let data: { playlists: PlaylistPage } | null;
+      try {
+        data = await client.get<{ playlists: PlaylistPage }>(path, params);
+      } catch (err) {
+        if (isRemovedEndpointFailure(err)) {
+          throw browseCategoriesUnavailable(path, 'playlists', err);
+        }
+        throw err;
+      }
       if (!data?.playlists) {
-        return { content: [{ type: 'text', text: `No playlists found for category "${args.category_id}".` }] };
+        throw browseCategoriesUnavailable(path, 'playlists');
       }
       if (args.response_format === 'json') {
         const raw = data as unknown as Record<string, unknown>;

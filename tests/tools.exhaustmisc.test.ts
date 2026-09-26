@@ -24,6 +24,22 @@ function registeredTools(client: ReturnType<typeof makeClient>): string[] {
   return names;
 }
 
+/** Request path from a recorded client call, narrowed rather than assumed. */
+function recordedPath(arg: unknown): string {
+  assert.equal(typeof arg, 'string', `recorded request path must be a string, got ${JSON.stringify(arg)}`);
+  return arg;
+}
+
+/** The `uris` array of a recorded request body, narrowed rather than assumed. */
+function recordedUris(body: unknown): string[] {
+  assert.ok(body !== null && typeof body === 'object' && 'uris' in body, `recorded body must carry uris: ${JSON.stringify(body)}`);
+  const { uris } = body;
+  assert.ok(Array.isArray(uris), `uris must be an array: ${JSON.stringify(body)}`);
+  // A non-string entry is dropped rather than coerced, which makes any batch
+  // mismatch fail on the caller's deepEqual instead of passing silently.
+  return uris.filter((u): u is string => typeof u === 'string');
+}
+
 describe('exhaustmisc — mop-up 10 tools', () => {
   it('registers 10 tools', () => {
     const names = registeredTools(makeClient());
@@ -59,6 +75,11 @@ describe('exhaustmisc — mop-up 10 tools', () => {
     assert.ok(res.content[0].text.includes('1 match'));
     assert.equal((res.structuredContent as { matched: number }).matched, 1);
   });
+
+  // Isolate from the developer's real ~/.spotify-mcp/search-history.json. This
+  // test passes only because nothing used to write there; now that the search
+  // tools record history, a non-empty home sidecar makes it fail on any machine.
+  initConfig({ SPOTIFY_MCP_SEARCH_HISTORY_FILE: '/tmp/smcp-exhaustmisc-test-search-history.json' });
 
   it('search_history_stats handles missing file gracefully', async () => {
     let captured: unknown = null;
@@ -242,5 +263,191 @@ describe('exhaustmisc — mop-up 10 tools', () => {
     assert.equal(contains[0].path, '/me/library/contains');
     assert.equal(contains[0].params?.uris, 'spotify:track:t1');
     assert.ok(!calls.some((c) => c.path.includes('/me/tracks/contains')));
+  });
+
+  // #819: the description advertises "public, follower totals" — the payload
+  // must carry the rollups it names, summed from the rows actually read.
+  it('followed_playlists_audit reports the public/private and follower totals it advertises', async () => {
+    let captured: unknown = null;
+    const server = {
+      tool(_name: string, _desc: string, _shape: unknown, handler: (args: unknown) => Promise<unknown>) {
+        if (_name === 'followed_playlists_audit') captured = handler;
+      },
+    } as unknown as McpServer;
+    const rows = [
+      { id: 'pl-a', name: 'A', owner: { id: 'other-1' }, collaborative: false, public: true, followers: { total: 5 }, tracks: { total: 10 } },
+      { id: 'pl-b', name: 'B', owner: { id: 'other-2' }, collaborative: true, public: false, followers: { total: 7 }, tracks: { total: 20 } },
+      { id: 'pl-c', name: 'C', owner: { id: 'other-3' }, collaborative: false, public: true, followers: { total: 0 }, tracks: { total: 30 } },
+    ];
+    const client = makeClient({
+      get: mock.fn(async (path: string) => (path === '/me' ? { id: 'me' } : null)),
+      getAllPages: mock.fn(async (path: string) => (path === '/me/playlists' ? rows : [])),
+    });
+    registerExhaustMiscTools(server, client);
+    const handler = captured as (args: unknown) => Promise<{ content: Array<{ text: string }>; structuredContent?: Record<string, unknown> }>;
+    const res = await handler({ only_followed: true, response_format: 'concise', max_results: 50 });
+    const sc = res.structuredContent as {
+      followed: number;
+      public: { count: number; private: number; unknown: number };
+      followers: { total: number; reported: number; unknown: number; per_playlist?: unknown };
+    };
+    assert.equal(sc.followed, 3);
+    assert.deepEqual(sc.public, { count: 2, private: 1, unknown: 0 });
+    // 5 + 7 + 0 from the fixture, summed by hand rather than recomputed from
+    // the code under test.
+    assert.equal(sc.followers.total, 12);
+    assert.equal(sc.followers.reported, 3);
+    assert.equal(sc.followers.unknown, 0);
+    // `items` already carries each row verbatim under the truncateItems cap; a
+    // second full-length per-playlist copy would walk past the `returned` count
+    // the payload itself advertises.
+    assert.equal(sc.followers.per_playlist, undefined);
+    const prose = res.content[0].text;
+    assert.ok(prose.includes('2 public'), prose);
+    assert.ok(prose.includes('1 private'), prose);
+    assert.ok(prose.includes('12 follower(s)'), prose);
+  });
+
+  // A row that reports neither field must land in the unknown buckets, not be
+  // silently coerced to "private" or to "0 followers" (#750: never publish a
+  // total that was never fetched).
+  it('followed_playlists_audit separates unreported visibility and follower counts from reported ones', async () => {
+    let captured: unknown = null;
+    const server = {
+      tool(_name: string, _desc: string, _shape: unknown, handler: (args: unknown) => Promise<unknown>) {
+        if (_name === 'followed_playlists_audit') captured = handler;
+      },
+    } as unknown as McpServer;
+    const rows = [
+      { id: 'pl-known', name: 'Known', owner: { id: 'other-1' }, collaborative: false, public: true, followers: { total: 4 }, tracks: { total: 1 } },
+      { id: 'pl-bare', name: 'Bare', owner: { id: 'other-2' }, collaborative: false, public: null, tracks: { total: 1 } },
+    ];
+    const client = makeClient({
+      get: mock.fn(async (path: string) => (path === '/me' ? { id: 'me' } : null)),
+      getAllPages: mock.fn(async (path: string) => (path === '/me/playlists' ? rows : [])),
+    });
+    registerExhaustMiscTools(server, client);
+    const handler = captured as (args: unknown) => Promise<{ content: Array<{ text: string }>; structuredContent?: Record<string, unknown> }>;
+    const res = await handler({ response_format: 'concise', max_results: 50 });
+    const sc = res.structuredContent as {
+      public: { count: number; private: number; unknown: number };
+      followers: { total: number; reported: number; unknown: number };
+    };
+    assert.deepEqual(sc.public, { count: 1, private: 0, unknown: 1 });
+    assert.equal(sc.followers.total, 4);
+    // A `?? 0` default would report 2/0 here — the bare row's count was never
+    // fetched, so it must not be counted as a reported zero.
+    assert.equal(sc.followers.reported, 1);
+    assert.equal(sc.followers.unknown, 1);
+    assert.ok(res.content[0].text.includes('4 follower(s) across 1/2 playlist(s)'), res.content[0].text);
+  });
+
+  // #820: creation and item writes must use the modern pair; the legacy
+  // /users/{id}/playlists + /playlists/{id}/tracks paths are retired for
+  // post-Nov-2024 app registrations.
+  it('split_playlist writes through /me/playlists and /playlists/{id}/items only', async () => {
+    let captured: unknown = null;
+    const server = {
+      tool(_name: string, _desc: string, _shape: unknown, handler: (args: unknown) => Promise<unknown>) {
+        if (_name === 'split_playlist') captured = handler;
+      },
+    } as unknown as McpServer;
+    const items = Array.from({ length: 205 }, (_, i) => ({ item: { uri: `spotify:track:t${i}` } }));
+    const created: string[] = [];
+    const client = makeClient({
+      get: mock.fn(async (path: string) => {
+        if (path === '/me') return { id: 'me' };
+        if (path === '/playlists/src') return { id: 'src', name: 'Source' };
+        return null;
+      }),
+      getAllPages: mock.fn(async () => items),
+      post: mock.fn(async (path: string) => {
+        if (path === '/me/playlists') {
+          const id = `new-${created.length}`;
+          created.push(id);
+          return { id };
+        }
+        return null;
+      }),
+    });
+    registerExhaustMiscTools(server, client);
+    const handler = captured as (args: unknown) => Promise<unknown>;
+    await handler({ playlist_id: 'src', parts: 2, dry_run: false });
+    const postMock = client.post as { mock: { calls: Array<{ arguments: unknown[] }> } };
+    const calls = postMock.mock.calls;
+    const paths = calls.map((c) => recordedPath(c.arguments[0]));
+    assert.equal(paths.filter((p) => p === '/me/playlists').length, 2);
+    assert.ok(
+      paths.every((p) => p === '/me/playlists' || /^\/playlists\/new-\d+\/items$/.test(p)),
+      paths.join(', '),
+    );
+    assert.ok(!paths.some((p) => /^\/users\/.+\/playlists$/.test(p)), paths.join(', '));
+    assert.ok(!paths.some((p) => /\/tracks$/.test(p)), paths.join(', '));
+    // The allow-list above only PERMITS `/items`; it does not require it, so a
+    // handler that created the parts and then wrote nothing at all would still
+    // pass. Require the writes: 205 uris over parts=2 chunks to [103, 102], each
+    // appended in CHUNK_CAPS.playlist_writes (100) batches, so 4 item posts
+    // carrying [100, 3, 100, 2] uris — every source URI written exactly once, in
+    // order, to the playlist created for its own part.
+    const itemCalls = calls.filter((c) => recordedPath(c.arguments[0]).endsWith('/items'));
+    assert.equal(itemCalls.length, 4);
+    assert.deepEqual(itemCalls.map((c) => recordedUris(c.arguments[1]).length), [100, 3, 100, 2]);
+    assert.deepEqual(itemCalls.map((c) => recordedPath(c.arguments[0])), [
+      '/playlists/new-0/items',
+      '/playlists/new-0/items',
+      '/playlists/new-1/items',
+      '/playlists/new-1/items',
+    ]);
+    // The written set is the source set, in source order — a dropped or
+    // reordered batch changes this, and so does a write to the wrong part.
+    assert.deepEqual(itemCalls.flatMap((c) => recordedUris(c.arguments[1])), items.map((i) => i.item.uri));
+  });
+
+  it('split_playlist fails with a named error when the profile cannot be read', async () => {
+    let captured: unknown = null;
+    const server = {
+      tool(_name: string, _desc: string, _shape: unknown, handler: (args: unknown) => Promise<unknown>) {
+        if (_name === 'split_playlist') captured = handler;
+      },
+    } as unknown as McpServer;
+    const client = makeClient({
+      get: mock.fn(async (path: string) => (path === '/playlists/src' ? { id: 'src', name: 'Source' } : null)),
+      getAllPages: mock.fn(async () => [{ item: { uri: 'spotify:track:t1' } }]),
+      post: mock.fn(async () => ({ id: 'new' })),
+    });
+    registerExhaustMiscTools(server, client);
+    const handler = captured as (args: unknown) => Promise<unknown>;
+    await assert.rejects(
+      handler({ playlist_id: 'src', parts: 2, dry_run: false }),
+      /Could not read the current user profile/,
+    );
+    const postMock = client.post as { mock: { callCount(): number } };
+    assert.equal(postMock.mock.callCount(), 0);
+  });
+
+  it('split_playlist reports the same chunk plan on the dry-run and commit paths', async () => {
+    let captured: unknown = null;
+    const server = {
+      tool(_name: string, _desc: string, _shape: unknown, handler: (args: unknown) => Promise<unknown>) {
+        if (_name === 'split_playlist') captured = handler;
+      },
+    } as unknown as McpServer;
+    const items = Array.from({ length: 205 }, (_, i) => ({ item: { uri: `spotify:track:t${i}` } }));
+    const client = makeClient({
+      get: mock.fn(async (path: string) => {
+        if (path === '/me') return { id: 'me' };
+        if (path === '/playlists/src') return { id: 'src', name: 'Source' };
+        return null;
+      }),
+      getAllPages: mock.fn(async () => items),
+      post: mock.fn(async (path: string) => (path === '/me/playlists' ? { id: 'new' } : null)),
+    });
+    registerExhaustMiscTools(server, client);
+    const handler = captured as (args: unknown) => Promise<{ structuredContent?: Record<string, unknown> }>;
+    const dry = await handler({ playlist_id: 'src', parts: 3, dry_run: true });
+    const commit = await handler({ playlist_id: 'src', parts: 3, dry_run: false });
+    // 205 uris over 3 parts: ceil(205/3) = 69 per part, last part takes the remainder.
+    assert.deepEqual(dry.structuredContent!.chunk_sizes, [69, 69, 67]);
+    assert.deepEqual(commit.structuredContent!.chunk_sizes, [69, 69, 67]);
   });
 });

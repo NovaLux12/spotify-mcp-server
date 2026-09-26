@@ -12,7 +12,7 @@ import {
   batchSummary,
 } from '../shaping.js';
 import type { ResponseFormatValue } from '../shaping.js';
-import { confirmViaElicitation, describeConfirmation } from './confirm.js';
+import { confirmViaElicitation, describeConfirmation, requiredConfirmationRefusal } from './confirm.js';
 import { issueReceipt, formatReceipt } from '../receipts.js';
 import type {
   SpotifyPaged,
@@ -58,6 +58,17 @@ const TEMPLATES = {
 
 type TemplateName = keyof typeof TEMPLATES;
 
+/**
+ * pin_playlist is opt-OUT of preview (#870), so the default lives here rather
+ * than in the shared `DryRun` shape, which every other tool reads as opt-in
+ * preview. Declaring it in the schema is the point: a client that inspects the
+ * tool signature — rather than the prose — sees that a missing dry_run means
+ * "do nothing".
+ */
+const PinDryRun = DryRun.default(true).describe(
+  'Preview only (default): pass dry_run: false to execute the follow.',
+);
+
 async function loadCandidates(client: SpotifyClient, source: string): Promise<SpotifyTrack[]> {
   if (source === 'top_tracks') {
     const p1 = await client.get<SpotifyPaged<SpotifyTrack>>('/me/top/tracks', { limit: '50', offset: '0' });
@@ -81,22 +92,54 @@ function dedupeUris(tracks: readonly SpotifyTrack[]): SpotifyTrack[] {
   });
 }
 
+// Feb 2026: Spotify removed PUT/DELETE /playlists/{id}/followers outright and
+// folded playlist following into the unified library endpoints, whose
+// documented URI list explicitly includes spotify:playlist:{id}. So "pin" is
+// saving the playlist URI to the library and "unpin" is removing it. The
+// replacement takes no request body, so the old `public` visibility flag has
+// no equivalent: `false` is rejected outright, and `true` is accepted for
+// call-site compatibility but reaches neither the request nor the
+// confirmation prompt — a library save is inherently private, so claiming
+// "public: true" at the moment the user authorises the write is a lie, not a
+// default.
+function playlistLibraryPath(playlistId: string): string {
+  const uris = new URLSearchParams({ uris: `spotify:playlist:${playlistId}` }).toString();
+  return `/me/library?${uris}`;
+}
+
+
 export function registerPlaylistMiscTools(server: McpServer, client: SpotifyClient): void {
   server.tool(
     'pin_playlist',
-    'Follow (pin) a playlist to your library. PUT /playlists/{id}/followers.',
+    'Follow (pin) a playlist into your library via PUT /me/library. Supports dry_run (default true); writes require confirmation unless SPOTIFY_MCP_CONFIRM=never.',
     {
       playlist_id: z.string().describe('Playlist ID to follow'),
-      public: z.boolean().optional().describe('Whether the follow should be public (Spotify default: true)'),
+      public: z
+        .boolean()
+        .optional()
+        .describe('Must be true or omitted; the library endpoint has no visibility parameter.'),
+      dry_run: PinDryRun,
       response_format: ResponseFormat,
     },
     async (args) => {
       const rf = args.response_format as ResponseFormatValue;
-      const id = encodeURIComponent(args.playlist_id);
-      const body: Record<string, unknown> = {};
-      if (args.public !== undefined) body.public = args.public;
-      const hasBody = Object.keys(body).length > 0;
-      await client.put(`/playlists/${id}/followers`, hasBody ? body : undefined);
+      if (args.public === false) {
+        throw new Error(
+          'pin_playlist cannot honour public=false: the Feb 2026 replacement PUT /me/library has no visibility parameter. Omit `public` or pass true.',
+        );
+      }
+      if (args.dry_run) {
+        const payload = { ok: true, dry_run: true, playlist_id: args.playlist_id, would_pin: true };
+        return shapeResult(rf, describeDryRun('pin playlist', args.playlist_id, [`Follow playlist ${args.playlist_id}`]), payload);
+      }
+      const verdict = await confirmViaElicitation(server, {
+        message: describeConfirmation('pin playlist', args.playlist_id, [
+          `Follow playlist ${args.playlist_id}`,
+        ]),
+      });
+      const refusal = requiredConfirmationRefusal(verdict);
+      if (refusal) return shapeResult(rf, refusal.message, refusal.payload);
+      await client.put(playlistLibraryPath(args.playlist_id));
       const payload = { ok: true, playlist_id: args.playlist_id, pinned: true };
       return shapeResult(rf, `Pinned playlist ${args.playlist_id}.`, payload);
     },
@@ -104,7 +147,7 @@ export function registerPlaylistMiscTools(server: McpServer, client: SpotifyClie
 
   server.tool(
     'unpin_playlist',
-    'Unfollow (unpin) a playlist. DELETE /playlists/{id}/followers. Supports dry_run; writes require explicit confirmation unless SPOTIFY_MCP_CONFIRM=never.',
+    'Unfollow (unpin) a playlist via DELETE /me/library. Supports dry_run; writes require explicit confirmation unless SPOTIFY_MCP_CONFIRM=never.',
     {
       playlist_id: z.string().describe('Playlist ID to unfollow'),
       dry_run: DryRun,
@@ -128,7 +171,7 @@ export function registerPlaylistMiscTools(server: McpServer, client: SpotifyClie
       if (verdict === 'unsupported' && process.env.SPOTIFY_MCP_CONFIRM !== 'never') {
         throw new Error('Elicitation unavailable — refusing to unpin playlist without confirmation');
       }
-      await client.delete(`/playlists/${encodeURIComponent(args.playlist_id)}/followers`);
+      await client.delete(playlistLibraryPath(args.playlist_id));
       return shapeResult(rf, `Unpinned playlist ${args.playlist_id}.`, { ok: true, playlist_id: args.playlist_id, pinned: false });
     },
   );

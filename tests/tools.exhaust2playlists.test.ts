@@ -204,6 +204,103 @@ test('playlist_era_profile histograms decades and issues a TIME CAPSULE verdict'
   assert.equal(p.verdict, 'CURRENT');
 });
 
+// ---------------------------------------------------------------------------
+// #874 — playlist_era_profile: a market refetch must FEED the analysis
+// ---------------------------------------------------------------------------
+
+/** Two tracks whose release dates differ completely between the default-market
+ *  read and the market read, so the output identifies which rows were used. */
+const ERA_DEFAULT_ROWS = [
+  item(track('t1', 'One', { release: '2024-05-01' })),
+  item(track('t2', 'Two', { release: '2025-11-02' })),
+];
+const ERA_GB_ROWS = [
+  item(track('t1', 'One', { release: '1995-06-15' })),
+  item(track('t2', 'Two', { release: '1974-02-20' })),
+];
+
+/**
+ * Client that records each paged walk with the REAL query params it was handed
+ * and serves a different row set per market. The shared makeFakeClient drops
+ * params, which would hide whether market ever reached the query string.
+ */
+function makeMarketAwareClient(
+  meta: Record<string, unknown>,
+  byMarket: Record<string, Array<Record<string, unknown>>>,
+): FakeClient {
+  const calls: Call[] = [];
+  return {
+    calls,
+    get: async (path: string) => {
+      calls.push({ method: 'GET', path });
+      return meta;
+    },
+    post: async () => null,
+    put: async () => null,
+    getAllPages: async (path: string, params?: Record<string, unknown>) => {
+      calls.push({ method: 'GET', path, params: { ...(params ?? {}) } });
+      const market = (params?.market as string | undefined) ?? '';
+      return byMarket[market] ?? [];
+    },
+  };
+}
+
+test('playlist_era_profile computes the profile from the market-refetched rows (#874)', async () => {
+  const client = makeMarketAwareClient(
+    { id: 'mx', name: 'Market Mix' },
+    { '': ERA_DEFAULT_ROWS, GB: ERA_GB_ROWS },
+  );
+  const registered: RegisteredTool[] = [];
+  registerExhaust2PlaylistsTools(makeServer(registered), client);
+  const t = find(registered, 'playlist_era_profile');
+  const r = await t.handler({ playlist_id: 'mx', market: 'GB', response_format: 'json' });
+  const p = r.structuredContent as Record<string, unknown>;
+
+  // The second walk is the disclosed refetch and it carries the market.
+  const walks = client.calls.filter((c) => c.path === '/playlists/mx/items');
+  assert.equal(walks.length, 2, 'expected the disclosed second paged walk');
+  assert.equal(walks[0]?.params?.market, undefined, 'first walk must stay market-less');
+  assert.equal(walks[1]?.params?.market, 'GB', 'refetch must forward the market');
+
+  // The profile follows the REFETCHED rows (1990s/1970s), not the first read
+  // (2020s) — proof the discarded-rows bug is gone rather than a mock echo.
+  assert.equal(p.albums_resolved, 2);
+  assert.deepEqual(p.decade_histogram, { '1970s': 1, '1990s': 1 });
+  assert.equal(p.median_year, 1995);
+  assert.equal(p.verdict, 'TIME CAPSULE');
+});
+
+test('playlist_era_profile without market does one walk and uses those rows (#874)', async () => {
+  const client = makeMarketAwareClient({ id: 'mx', name: 'Market Mix' }, { '': ERA_DEFAULT_ROWS });
+  const registered: RegisteredTool[] = [];
+  registerExhaust2PlaylistsTools(makeServer(registered), client);
+  const t = find(registered, 'playlist_era_profile');
+  const r = await t.handler({ playlist_id: 'mx', response_format: 'json' });
+  const p = r.structuredContent as Record<string, unknown>;
+
+  const walks = client.calls.filter((c) => c.path === '/playlists/mx/items');
+  assert.equal(walks.length, 1, 'no market means no refetch walk');
+  assert.equal(walks[0]?.params?.market, undefined);
+  assert.deepEqual(p.decade_histogram, { '2020s': 2 });
+  assert.equal(p.median_year, 2025);
+});
+
+test('playlist_era_profile mentions the refetch only when one was performed (#874)', async () => {
+  const withMarket = makeMarketAwareClient({ id: 'mx', name: 'Market Mix' }, { '': ERA_DEFAULT_ROWS, GB: ERA_GB_ROWS });
+  const registeredWith: RegisteredTool[] = [];
+  registerExhaust2PlaylistsTools(makeServer(registeredWith), withMarket);
+  const rWith = await find(registeredWith, 'playlist_era_profile').handler({ playlist_id: 'mx', market: 'GB' });
+  assert.match(text(rWith), /refetched with the given market/);
+  assert.match(text(rWith), /1970s: 1/, 'prose histogram must be the refetched rows');
+
+  const without = makeMarketAwareClient({ id: 'mx', name: 'Market Mix' }, { '': ERA_DEFAULT_ROWS });
+  const registeredWithout: RegisteredTool[] = [];
+  registerExhaust2PlaylistsTools(makeServer(registeredWithout), without);
+  const rWithout = await find(registeredWithout, 'playlist_era_profile').handler({ playlist_id: 'mx' });
+  assert.doesNotMatch(text(rWithout), /refetched with the given market/);
+  assert.match(text(rWithout), /2020s: 2/);
+});
+
 test('playlist_strip_episodes default strips episodes (dry run: plan only, no PUT)', async () => {
   const client = makeFakeClient(PLAYLIST_ROUTE);
   const registered: RegisteredTool[] = [];

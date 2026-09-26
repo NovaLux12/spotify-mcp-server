@@ -55,7 +55,11 @@ function shapeResult(
   };
 }
 
-/** Artist bonus added to the raw co-occurrence count. */
+/**
+ * Artist bonus added to the raw co-occurrence count. That count is a DISTINCT
+ * playlist count, so the bonus can outweigh the base on a track living in
+ * exactly one other playlist.
+ */
 export const ARTIST_BONUS = 2;
 
 /** One scored grow candidate. */
@@ -64,9 +68,16 @@ export interface DnaCandidate {
   uri: string;
   name: string;
   artists: string[];
-  /** Co-occurrence count across other playlists (+ ARTIST_BONUS when applicable). */
+  /**
+   * Distinct-playlist co-occurrence count across other playlists
+   * (+ ARTIST_BONUS when applicable). A track repeated inside one playlist
+   * contributes 1, not N.
+   */
   score: number;
-  /** How many of your other playlists contain this track. */
+  /**
+   * How many of your other playlists contain this track. Duplicates within a
+   * single playlist are counted once, so this never exceeds playlists_walked.
+   */
   playlists: number;
   /** Seed-artist names this track shares (exact lowercase match), if any. */
   shared_seed_artists: string[];
@@ -124,12 +135,17 @@ export function buildGrowPlan(input: GrowPlanInput): GrowPlan {
   // 1. Seeds.
   const { ids: seedIds, artists: seedArtists } = collectSeeds(input.targetItems);
 
-  // 2. Inverted index trackId → occurrence count over OTHER playlists only.
+  // 2. Inverted index trackId → DISTINCT other-playlist count.
+  //    A track listed several times in ONE playlist still lives in just one
+  //    playlist: both `playlists` and the >=2 gate below are playlist counts, so
+  //    per-playlist repeats must not inflate them.
   const index = new Map<string, { count: number; track: SpotifyTrack }>();
   for (const pl of input.otherPlaylists) {
+    const seenHere = new Set<string>();
     for (const row of pl.items) {
       const t = asTrack(row);
-      if (!t?.id) continue;
+      if (!t?.id || seenHere.has(t.id)) continue;
+      seenHere.add(t.id);
       let entry = index.get(t.id);
       if (!entry) {
         entry = { count: 0, track: t };

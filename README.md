@@ -10,7 +10,7 @@ An MCP server that wraps the Spotify Web API — lets Claude and other AI assist
 A broad Spotify Web API tool surface, plus extras most servers skip. Registration-gated wrappers are explained rather than hidden; see the [full list →](SPEC.md).
 
 <!-- BEGIN:generated surface-census -->
-The finalized default MCP registry exposes **591 tools**, **16 fixed resources**, **33 resource templates**, and **14 prompts**. Toolsets and production gates can trim a configured host; these totals describe the default production `tools/list` after finalizers.
+The finalized default MCP registry exposes **592 tools**, **16 fixed resources**, **33 resource templates**, and **14 prompts**. Toolsets and production gates can trim a configured host; these totals describe the default production `tools/list` after finalizers.
 <!-- END:generated surface-census -->
 
 ---
@@ -19,18 +19,25 @@ The finalized default MCP registry exposes **591 tools**, **16 fixed resources**
 >
 > Copy the block below into Claude Code, Cursor, OpenClaw, or any coding agent — it will set SpotifyMCP up for you.
 >
+> ⚠️ **Never paste your Spotify credentials into a chat.** Spotify defines the Client ID as a Security Code in its [Developer Terms](https://developer.spotify.com/terms) (Sec. VI.1.a), and Sec. VI.1.c–d forbids disclosing it. Anything you type into a conversation is retained by the model provider, written to shell history, and carried in the agent's context window. The Client ID is the only credential this server needs, and it is a *Security Code* rather than a public identifier — treat it like a password.
+>
 > ```
 > Set up the Spotify MCP server from https://github.com/NovaLux12/spotify-mcp-server.
 >
 > 1. Walk me through creating a Spotify app at https://developer.spotify.com/dashboard
->    with redirect URI http://127.0.0.1:8888/callback, or use the Client ID I paste below.
-> 2. Clone, build, and authenticate:
+>    with redirect URI http://127.0.0.1:8888/callback. Point me at where the dashboard
+>    shows the Client ID, then stop — I will copy it myself.
+> 2. Clone and build:
 >    git clone https://github.com/NovaLux12/spotify-mcp-server.git
 >    cd spotify-mcp-server && npm ci && npm run build
->    SPOTIFY_CLIENT_ID=<paste-here> npm run auth
-> 3. Wire it into my MCP host config and verify with the get_me tool.
->
-> My Spotify Client ID: <paste here or say "help me create one">
+> 3. Show me which file my MCP host reads server environment from (the host's server
+>    config, or a local .env — Node >=22.9 loads it via --env-file-if-exists) and
+>    print the exact line to add. I will type the Client ID in myself. Do not ask me
+>    for it and never echo it back.
+> 4. Start the server and run the auth command yourself, then finish the browser login
+>    when it opens. This server uses PKCE, so there is no client secret and no
+>    credential to fetch beyond the Client ID.
+> 5. Verify with the read-only spotify_doctor tool and report its rows.
 > ```
 
 ---

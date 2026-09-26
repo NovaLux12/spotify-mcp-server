@@ -11,8 +11,10 @@
 import { describe, it } from 'node:test';
 import { z } from 'zod';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../src/client.js';
+import { SpotifyApiError } from '../src/client.js';
 import type { SavedTrackItem, SpotifyAlbumFull } from '../src/types/spotify.js';
 import { registerLibraryHygieneTools } from '../src/tools/libraryhygiene.js';
 
@@ -160,8 +162,17 @@ const albumFull = (
   },
 });
 
-/** Responder serving a /me/tracks library of exactly `tracks` in pages of 50. */
-function libraryResponder(tracks: SavedTrackItem[], albums: Record<string, SpotifyAlbumFull>) {
+/**
+ * Responder serving a /me/tracks library of exactly `tracks` in pages of 50,
+ * plus the batched GET /albums?ids= fan-in. Single GET /albums/{id} is
+ * deliberately NOT served: a regression to per-album lookups must fail loudly.
+ */
+function libraryResponder(
+  tracks: SavedTrackItem[],
+  albums: Record<string, SpotifyAlbumFull>,
+  opts: { throttleBatch?: number; retryAfterSec?: number } = {},
+) {
+  let batchIndex = 0;
   return (path: string, params?: Record<string, string>) => {
     if (path === '/me/tracks') {
       const limit = 50;
@@ -173,15 +184,33 @@ function libraryResponder(tracks: SavedTrackItem[], albums: Record<string, Spoti
         offset,
       };
     }
-    if (path.startsWith('/albums/')) {
-      const id = decodeURIComponent(path.slice('/albums/'.length));
-      return albums[id] ?? null;
+    if (path === '/albums') {
+      const mine = batchIndex++;
+      if (opts.throttleBatch !== undefined && mine === opts.throttleBatch) {
+        throw new SpotifyApiError(
+          429,
+          'Rate limited — Retry-After exceeded the in-queue wait cap; retry later.',
+          opts.retryAfterSec ?? 9,
+        );
+      }
+      // Spotify returns a null slot for any id it could not resolve.
+      const ids = (params?.ids ?? '').split(',').filter(Boolean);
+      return { albums: ids.map((id) => albums[decodeURIComponent(id)] ?? null) };
     }
     return null;
   };
 }
 
-const albumCalls = (calls: Array<{ path: string }>) =>
+/** GET /albums?ids= fan-in calls (the batched form, not `/albums/{id}`). */
+const albumCalls = (calls: Array<{ path: string }>) => calls.filter((c) => c.path === '/albums');
+
+/** Ids requested per batch call, in call order. */
+function albumBatchIds(calls: Array<{ path: string; arg?: Record<string, string> }>): string[][] {
+  return albumCalls(calls).map((c) => (c.arg?.ids ?? '').split(','));
+}
+
+/** Any legacy single-album lookup — must always be empty after #763. */
+const singleAlbumCalls = (calls: Array<{ path: string }>) =>
   calls.filter((c) => c.path.startsWith('/albums/'));
 
 // ---------------------------------------------------------------------------
@@ -189,7 +218,7 @@ const albumCalls = (calls: Array<{ path: string }>) =>
 // ---------------------------------------------------------------------------
 
 describe('library_hygiene grouping and album lookups', () => {
-  it('groups liked tracks by album id and issues exactly one GET per album id', async () => {
+  it('groups liked tracks by album id and requests each distinct album id once', async () => {
     const tracks = [
       likedTrack({ id: 't1', artistId: 'a1', albumId: 'alb1' }),
       likedTrack({ id: 't2', artistId: 'a1', albumId: 'alb1' }),
@@ -207,9 +236,10 @@ describe('library_hygiene grouping and album lookups', () => {
     const out = await h.invoke('library_hygiene', {});
     const payload = out.structuredContent!;
 
-    // One GET per DISTINCT album id despite alb1 holding three liked tracks.
-    const paths = albumCalls(h.client.calls).map((c) => c.path);
-    assert.deepEqual(paths.sort(), ['/albums/alb1', '/albums/alb2', '/albums/alb3']);
+    // One batched fan-in covering every DISTINCT album id, despite alb1 holding
+    // three liked tracks. Busiest-first ordering puts alb1 first.
+    assert.deepEqual(albumBatchIds(h.client.calls), [['alb1', 'alb2', 'alb3']]);
+    assert.deepEqual(singleAlbumCalls(h.client.calls), []);
 
     const groups = payload.groups as Array<Record<string, unknown>>;
     assert.equal(groups.length, 3);
@@ -223,9 +253,9 @@ describe('library_hygiene grouping and album lookups', () => {
     assert.deepEqual(payload.counts, { near_complete: 0, orphaned_singles: 0 });
   });
 
-  it('caches album lookups across groups sharing an album id is impossible by construction — cache map still dedupes repeated ids defensively', async () => {
+  it('sends an album id in exactly one batch position, so repeated ids cannot be double-looked-up', async () => {
     // Two liked entries with the same album id arrive via different tracks; the
-    // group key collapses them, but the cache guarantees at most one GET even
+    // group key collapses them, so the album id appears in the fan-in once even
     // if a future refactor iterates tracks directly.
     const tracks = [
       likedTrack({ id: 't1', artistId: 'a1', albumId: 'alb1' }),
@@ -234,7 +264,7 @@ describe('library_hygiene grouping and album lookups', () => {
     const albums = { alb1: albumFull('alb1', { total_tracks: 4, trackIds: ['t1', 't2'] }) };
     const h = harness(libraryResponder(tracks, albums));
     await h.invoke('library_hygiene', {});
-    assert.equal(albumCalls(h.client.calls).length, 1);
+    assert.deepEqual(albumBatchIds(h.client.calls), [['alb1']]);
   });
 });
 
@@ -284,6 +314,34 @@ describe('library_hygiene coverage boundaries', () => {
 // ---------------------------------------------------------------------------
 
 describe('library_hygiene caps and truncation notes', () => {
+  it('fans a 210-album library in over ceil(200/20) = 10 batch requests (#763)', async () => {
+    // The regression this guards: the pre-#763 loop issued one serial
+    // GET /albums/{id} per group, i.e. 200 round trips for this fixture.
+    const tracks = Array.from({ length: 210 }, (_, i) =>
+      likedTrack({ id: `t${i}`, artistId: 'a1', albumId: `alb${i}` }),
+    );
+    const albums: Record<string, SpotifyAlbumFull> = {};
+    for (let i = 0; i < 210; i++) {
+      albums[`alb${i}`] = albumFull(`alb${i}`, { total_tracks: 2, trackIds: [`t${i}`] });
+    }
+    const h = harness(libraryResponder(tracks, albums));
+    await h.invoke('library_hygiene', {});
+
+    const batches = albumBatchIds(h.client.calls);
+    assert.equal(batches.length, 10);
+    // 20 ids per call, except the cap-straddling tail: 200 albums => 10x20.
+    for (const ids of batches) assert.equal(ids.length, 20);
+    // 200 distinct album ids requested exactly once, in one budgeted sweep.
+    assert.equal(new Set(batches.flat()).size, 200);
+    assert.deepEqual(singleAlbumCalls(h.client.calls), []);
+
+    const lookups = (await h.invoke('library_hygiene', {})).structuredContent!
+      .album_lookups as Record<string, unknown>;
+    assert.equal(lookups.made, 200);
+    assert.equal(lookups.batch_requests, 10);
+    assert.equal(lookups.batch_size, 20);
+  });
+
   it('stops album lookups at the 200 cap and notes the truncation', async () => {
     const tracks = Array.from({ length: 210 }, (_, i) =>
       likedTrack({ id: `t${i}`, artistId: 'a1', albumId: `alb${i}` }),
@@ -296,7 +354,8 @@ describe('library_hygiene caps and truncation notes', () => {
     const out = await h.invoke('library_hygiene', {});
     const payload = out.structuredContent!;
 
-    assert.equal(albumCalls(h.client.calls).length, 200);
+    assert.equal(albumCalls(h.client.calls).length, 10);
+    assert.equal(albumBatchIds(h.client.calls).flat().length, 200);
     const lookups = payload.album_lookups as Record<string, unknown>;
     assert.equal(lookups.made, 200);
     assert.equal(lookups.cap, 200);
@@ -520,5 +579,91 @@ describe('library_hygiene edges and shapes', () => {
 
     // Sorted by coverage ratio descending: 0.9 first.
     assert.match(renderedBullets[0], /9\/10/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #763 — batched fan-in cost preview + rate-limit partials
+// ---------------------------------------------------------------------------
+
+describe('library_hygiene dry_run cost preview (#763)', () => {
+  it('issues zero API calls and reports the estimated request count', async () => {
+    const h = harness(libraryResponder([], {}));
+    const out = await h.invoke('library_hygiene', { dry_run: true });
+    const payload = out.structuredContent!;
+
+    assert.deepEqual(h.client.calls, []);
+    assert.equal(payload.dry_run, true);
+    assert.equal(payload.requests_made, 0);
+    assert.equal(payload.album_lookup_cap, 200);
+    assert.equal(payload.batch_size, 20);
+    // ceil(200 / 20) album batches, plus the /me/tracks walk (500 / 50).
+    assert.equal(payload.estimated_album_batch_requests, 10);
+    assert.equal(payload.track_walk_requests, 10);
+    assert.equal(payload.estimated_requests, 20);
+    assert.match(textOf(out), /\[dry run\] library_hygiene would walk \/me\/tracks/);
+    assert.match(textOf(out), /10 batched GET \/albums\?ids= calls/);
+  });
+
+  it('previews without walking even when a full library is served', async () => {
+    const tracks = Array.from({ length: 210 }, (_, i) =>
+      likedTrack({ id: `t${i}`, artistId: 'a1', albumId: `alb${i}` }),
+    );
+    const albums = Object.fromEntries(
+      Array.from({ length: 210 }, (_, i) => [
+        `alb${i}`,
+        albumFull(`alb${i}`, { total_tracks: 2, trackIds: [`t${i}`] }),
+      ]),
+    );
+    const h = harness(libraryResponder(tracks, albums));
+    const out = await h.invoke('library_hygiene', { dry_run: true });
+
+    // The whole point of the preview: a 210-album library costs 0 calls, not 21.
+    assert.deepEqual(h.client.calls, []);
+    assert.equal(out.structuredContent!.estimated_requests, 20);
+    assert.match(textOf(out), /0 made/);
+  });
+});
+
+describe('library_hygiene rate-limited batch partials (#763)', () => {
+  it('keeps the batches that resolved and reports the 429 Retry-After instead of aborting', async () => {
+    const tracks = Array.from({ length: 60 }, (_, i) =>
+      likedTrack({ id: `t${i}`, artistId: 'a1', albumId: `alb${i}` }),
+    );
+    const albums = Object.fromEntries(
+      tracks.map((t) => {
+        const id = t.track.album.id;
+        return [id, albumFull(id, { total_tracks: 2, trackIds: [t.track.id] })];
+      }),
+    );
+    // Middle batch throttled: batches 0 and 2 still land.
+    const h = harness(libraryResponder(tracks, albums, { throttleBatch: 1, retryAfterSec: 11 }));
+    const out = await h.invoke('library_hygiene', {});
+    const payload = out.structuredContent!;
+
+    assert.equal(payload.album_lookups.rate_limited, true);
+    assert.equal(payload.album_lookups.retry_after_sec, 11);
+    assert.match(payload.album_lookups.rate_limit_message, /Rate limited/);
+    assert.match(textOf(out), /PARTIAL: album batches were rate limited/);
+    assert.match(textOf(out), /wait ~11s/);
+
+    // 40 of 60 albums resolved; the 20 in the throttled batch stay unresolved
+    // rather than the whole run being lost.
+    const resolved = (payload.groups as Array<{ total_tracks: number | null }>)
+      .filter((g) => g.total_tracks !== null);
+    assert.equal(resolved.length, 40);
+    assert.equal((payload.groups as Array<{ total_tracks: number | null }>)
+      .filter((g) => g.total_tracks === null).length, 20);
+  });
+});
+
+describe('library_hygiene source guards (#763)', () => {
+  it('never issues a per-album GET /albums/{id} lookup', () => {
+    const src = readFileSync(
+      new URL('../src/tools/libraryhygiene.ts', import.meta.url),
+      'utf8',
+    );
+    // A single-album fan-in would reintroduce the 200-round-trip regression.
+    assert.doesNotMatch(src, /`\/albums\/\$\{/);
   });
 });

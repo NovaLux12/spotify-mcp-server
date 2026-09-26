@@ -11,7 +11,7 @@
 import { describe, it } from 'node:test';
 import { z } from 'zod';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -537,6 +537,125 @@ describe('export_playlist output_path confinement (#622)', () => {
       });
       assert.ok((await readFile(filePath, 'utf8')).startsWith('#EXTM3U\n'));
     } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #702: retention + cloud-sync disclosure on a written export
+// ---------------------------------------------------------------------------
+
+/** Point os.homedir() at a scratch directory for the duration of a case. */
+async function withStubbedHome<T>(home: string, run: () => Promise<T>): Promise<T> {
+  const previous = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE };
+  process.env.HOME = home;
+  process.env.USERPROFILE = home;
+  try {
+    return await run();
+  } finally {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+}
+
+describe('export_playlist retention + cloud-sync disclosure (#702)', () => {
+  const responder: Responder = (path, arg) =>
+    path === `/playlists/${PLAYLIST_ID}` ? { id: PLAYLIST_ID, name: 'Mix' } : mixedResponder(path, arg);
+
+  it('separates the requested path from the resolved one and states the retention duty', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'spotify-export-test-'));
+    const home = await mkdtemp(join(tmpdir(), 'spotify-home-'));
+    try {
+      await withStubbedHome(await realpath(home), () =>
+        withExportRoot(dir, async () => {
+          // Relative request: the two paths are genuinely different strings,
+          // so a payload carrying only one of them would be a guess.
+          const out = await harness(responder).invoke('export_playlist', {
+            playlist_id: PLAYLIST_ID,
+            output_path: 'mix.m3u',
+          });
+          const resolved = join(await realpath(dir), 'mix.m3u');
+          assert.equal(out.structuredContent?.output_path, 'mix.m3u');
+          assert.equal(out.structuredContent?.output_path_resolved, resolved);
+
+          const note = out.structuredContent?.retention_note;
+          assert.equal(typeof note, 'string');
+          assert.match(String(note), /Delete it when you no longer need it/);
+          // The Server names the real mechanism that does NOT clean up:
+          // there is no logout/purge flow that removes an exported file.
+          assert.match(
+            String(note),
+            /removing the token file or stopping the Server does not delete it/,
+          );
+          // No synced directory here, so nothing to warn about.
+          assert.equal(out.structuredContent?.cloud_sync_warning, null);
+
+          // Same note and same resolved path on the prose surface.
+          const text = textOf(out);
+          assert.ok(text.includes(String(note)));
+          assert.ok(text.includes(resolved));
+          assert.doesNotMatch(text, /Warning:/);
+
+          // Still owner-only, and the file named above is the real one.
+          assert.equal((await stat(resolved)).mode & 0o777, 0o600);
+        }),
+      );
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it('warns, naming the provider, when the resolved path is inside a cloud-synced dir', async () => {
+    const home = await realpath(await mkdtemp(join(tmpdir(), 'spotify-home-')));
+    const synced = join(home, 'Dropbox', 'spotify-exports');
+    try {
+      await mkdir(synced, { recursive: true });
+      await withStubbedHome(home, () =>
+        withExportRoot(synced, async () => {
+          const out = await harness(responder).invoke('export_playlist', {
+            playlist_id: PLAYLIST_ID,
+            output_path: 'mix.m3u',
+          });
+          const warning = out.structuredContent?.cloud_sync_warning;
+          assert.equal(typeof warning, 'string');
+          assert.match(String(warning), /Dropbox/);
+          assert.match(
+            String(warning),
+            new RegExp(synced.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
+          );
+          assert.ok(textOf(out).includes(`Warning: ${warning}`));
+        }),
+      );
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it('stays quiet for an output root that is not a synced directory', async () => {
+    const home = await realpath(await mkdtemp(join(tmpdir(), 'spotify-home-')));
+    const dir = await mkdtemp(join(tmpdir(), 'spotify-export-test-'));
+    try {
+      await withStubbedHome(home, () =>
+        withExportRoot(dir, async () => {
+          const out = await harness(responder).invoke('export_playlist', {
+            playlist_id: PLAYLIST_ID,
+            output_path: join(dir, 'mix.m3u'),
+          });
+          assert.equal(out.structuredContent?.cloud_sync_warning, null);
+          const text = textOf(out);
+          assert.doesNotMatch(text, /Warning:/);
+          assert.doesNotMatch(text, /Dropbox|Google Drive|OneDrive|iCloud/);
+          // The retention note is unconditional — it is about the file, not
+          // where the file happens to live.
+          assert.match(text, /Delete it when you no longer need it/);
+        }),
+      );
+    } finally {
+      await rm(home, { recursive: true, force: true });
       await rm(dir, { recursive: true, force: true });
     }
   });

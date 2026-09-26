@@ -48,30 +48,156 @@ function stubServer(opts: { canConfirm?: boolean } = {}): { server: McpServer; h
   return { server, handlers };
 }
 
-function stubClient(): { client: SpotifyClient; calls: RecordedCall[] } {
+/**
+ * A stub Spotify over a MUTABLE account, so the post-state refetch undo relies
+ * on actually observes the writes it made. A stub that answers every GET with
+ * `{}` cannot confirm anything, and would make the honest-reporting contract
+ * untestable.
+ */
+function stubClient(): {
+  client: SpotifyClient;
+  calls: RecordedCall[];
+  saved: Set<string>;
+  playlists: Record<string, string[]>;
+} {
   const calls: RecordedCall[] = [];
+  const saved = new Set<string>();
+  const playlists: Record<string, string[]> = {};
+
+  /** Resolve `/playlists/{id}/items` to that playlist's row list. */
+  const playlistIdOf = (path: string): string | null => {
+    const match = /^\/playlists\/([^/]+)\/items$/.exec(path);
+    return match ? decodeURIComponent(match[1]!) : null;
+  };
+
   const client = {
-    async get(path: string): Promise<unknown> {
-      calls.push({ method: 'GET', path });
-      // Every verification fetch "succeeds" but reports nothing present; the
-      // receipt is still issued, which is all undo needs.
-      return {};
+    async get(path: string, params?: Record<string, string>): Promise<unknown> {
+      calls.push({ method: 'GET', path, arg: params });
+      if (path === '/me/library/contains') {
+        return (params?.uris ?? '').split(',').filter(Boolean).map((uri) => saved.has(uri));
+      }
+      const id = playlistIdOf(path);
+      if (id === null) return {};
+      playlists[id] ??= [];
+      const offset = Number(params?.offset ?? '0');
+      const limit = Number(params?.limit ?? '100');
+      const page = playlists[id]!.slice(offset, offset + limit);
+      return {
+        items: page.map((uri) => ({ item: { uri } })),
+        total: playlists[id]!.length,
+        // Spotify advertises a further page whenever rows remain.
+        next: offset + limit < playlists[id]!.length ? 'more' : undefined,
+      };
     },
     async post(path: string, arg?: unknown): Promise<unknown> {
       calls.push({ method: 'POST', path, arg });
+      const id = playlistIdOf(path);
+      if (id !== null) {
+        // The documented per-request cap. Encoding it here (not "whatever the
+        // code under test sends") means a caller that batches more than 100
+        // uris fails the way Spotify fails, instead of passing silently.
+        const uris = stringList(arg, 'uris');
+        if (uris.length > 100) throw new Error(`400: a playlist write takes at most 100 uris, got ${uris.length}`);
+        // `position` inserts at that zero-based index; omitted means append.
+        const rows = playlists[id] ?? [];
+        const at = numberField(arg, 'position');
+        playlists[id] =
+          at === null
+            ? [...rows, ...stringList(arg, 'uris')]
+            : [...rows.slice(0, at), ...stringList(arg, 'uris'), ...rows.slice(at)];
+      }
       return { snapshot_id: 'snap-post' };
     },
     async put(path: string, arg?: unknown): Promise<unknown> {
       calls.push({ method: 'PUT', path, arg });
+      if (path.startsWith('/me/library?')) for (const uri of urisParam(path)) saved.add(uri);
       return null;
     },
     async delete(path: string, arg?: unknown): Promise<unknown> {
       calls.push({ method: 'DELETE', path, arg });
+      if (path.startsWith('/me/library?')) {
+        for (const uri of urisParam(path)) saved.delete(uri);
+        return null;
+      }
+      const id = playlistIdOf(path);
+      if (id !== null) {
+        // This stub encodes the DOCUMENTED contract, not whatever the code
+        // under test happens to send: `DELETE /playlists/{id}/items` takes
+        // `{ tracks: [{ uri, positions? }] }`. A body without `tracks` is
+        // rejected the way the real endpoint rejects it, so an implementation
+        // that invents a different shape fails here instead of passing.
+        const tracks = trackList(arg);
+        if (tracks === null) throw new Error('400: body must carry a "tracks" array');
+        const rows = playlists[id] ?? [];
+        const drop = new Set<number>();
+        let anyPositions = false;
+        for (const entry of tracks) {
+          for (const position of entry.positions) {
+            anyPositions = true;
+            if (position < 0 || position >= rows.length) {
+              throw new Error(`400: position ${position} is out of range for ${rows.length} rows`);
+            }
+            if (rows[position] !== entry.uri) {
+              throw new Error(`400: position ${position} does not hold ${entry.uri}`);
+            }
+            drop.add(position);
+          }
+        }
+        // A bare-URI entry drops every copy; a positional entry drops exactly
+        // the rows it names. That is the behaviour being relied on.
+        playlists[id] = anyPositions
+          ? rows.filter((_, index) => !drop.has(index))
+          : rows.filter((uri) => !tracks.some((entry) => entry.uri === uri));
+      }
       return { snapshot_id: 'snap-delete' };
     },
   } as unknown as SpotifyClient;
-  return { client, calls };
+  return { client, calls, saved, playlists };
 }
+
+/** Read a string[] request-body field, narrowing rather than asserting. */
+function stringList(body: unknown, key: string): string[] {
+  const value = fieldOf(body, key);
+  return Array.isArray(value) && value.every((v) => typeof v === 'string') ? (value as string[]) : [];
+}
+
+/** Read a number[] request-body field; null when the field is absent. */
+function numberList(body: unknown, key: string): number[] | null {
+  const value = fieldOf(body, key);
+  return Array.isArray(value) && value.every((v) => typeof v === 'number') ? (value as number[]) : null;
+}
+
+/**
+ * Parse the documented `{ tracks: [{ uri, positions? }] }` body, narrowing
+ * rather than assuming. Returns null when the shape is not the documented one.
+ * An entry with no `positions` means "every occurrence of this uri".
+ */
+function trackList(body: unknown): Array<{ uri: string; positions: number[] }> | null {
+  const value = fieldOf(body, 'tracks');
+  if (!Array.isArray(value)) return null;
+  const out: Array<{ uri: string; positions: number[] }> = [];
+  for (const entry of value) {
+    if (typeof entry !== 'object' || entry === null || !('uri' in entry)) return null;
+    const record = entry as Record<string, unknown>;
+    if (typeof record.uri !== 'string') return null;
+    out.push({ uri: record.uri, positions: numberList(entry, 'positions') ?? [] });
+  }
+  return out;
+}
+
+/** Read a numeric request-body field; null when absent or not a number. */
+function numberField(body: unknown, key: string): number | null {
+  const value = fieldOf(body, key);
+  return typeof value === 'number' ? value : null;
+}
+
+function fieldOf(body: unknown, key: string): unknown {
+  if (typeof body !== 'object' || body === null || !(key in body)) return undefined;
+  return (body as Record<string, unknown>)[key];
+}
+
+const urisParam = (path: string): string[] =>
+  (new URLSearchParams(path.split('?')[1] ?? '').get('uris') ?? '').split(',').filter(Boolean);
 
 const writes = (calls: RecordedCall[]): RecordedCall[] =>
   calls.filter((c) => c.method !== 'GET');
@@ -129,19 +255,32 @@ describe('undo_mutation direction inversion', () => {
     assert.match(out.content[0]!.text, /dry run/);
   });
 
-  it('undoes a playlist add by removing items in chunks of 100', async () => {
+  it('undoes a playlist add by removing its rows in chunks of 100', async () => {
     const { server, handlers } = stubServer();
-    const { client, calls } = stubClient();
+    const { client, calls, playlists } = stubClient();
     registerUndoTools(server, client);
 
+    // The add landed: the playlist really holds 150 rows now, so the receipt
+    // records a row position for each and the undo has rows to target.
     const uris = Array.from({ length: 150 }, (_, i) => `spotify:track:${i}`);
+    playlists.pl1 = [...uris];
     const receipt = await issueReceipt(client, { kind: 'playlist_items', id: 'pl1', uris, expectPresent: true });
+    assert.equal(receipt.affected?.length, 150, 'receipt records the row each add created');
+
     const out = await handlers.get('undo_mutation')!({ receipt_id: receipt.receipt_id, dry_run: false });
 
     assert.equal(out.structuredContent?.ok, true);
     const dels = writes(calls).filter((c) => c.method === 'DELETE');
-    assert.equal(dels.length, 2, 'expected two chunked deletes for 150 URIs');
+    assert.equal(dels.length, 2, 'expected two chunked deletes for 150 rows');
     assert.equal(dels[0]!.path, '/playlists/pl1/items');
+    for (const del of dels) {
+      const tracks = trackList(del.arg);
+      assert.ok(tracks, `delete body must carry a tracks array, got ${JSON.stringify(del.arg)}`);
+      for (const entry of tracks) {
+        assert.ok(entry.positions.length > 0, 'undo must address rows by position, not by bare URI');
+      }
+    }
+    assert.deepEqual(playlists.pl1, [], 'every added row removed');
   });
 
   it('redacts a failed first undo attempt with fixed counts', async () => {
@@ -188,6 +327,349 @@ describe('undo_mutation direction inversion', () => {
     for (const secret of ['SENTINEL_UNDO_PARTIAL', 'token=secret', 'https://example.test']) {
       assert.equal(publicText.includes(secret), false, `partial undo leaked ${secret}`);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #625 — occurrence-targeted undo and honest post-state reporting
+// ---------------------------------------------------------------------------
+
+describe('undo_mutation occurrence targeting (#625)', () => {
+  it('removes only the row an add created when the URI was already present', async () => {
+    const { server, handlers } = stubServer();
+    const { client, calls, playlists } = stubClient();
+    registerUndoTools(server, client);
+
+    // Track X is already in the playlist at row 0; the add appends a second
+    // copy at row 1. A bare-URI delete would take BOTH rows.
+    playlists.pl1 = ['spotify:track:pre', 'spotify:track:x'];
+    const receipt = await issueReceipt(client, {
+      kind: 'playlist_items',
+      id: 'pl1',
+      uris: ['spotify:track:x'],
+      expectPresent: true,
+    });
+    assert.deepEqual(receipt.affected, [{ uri: 'spotify:track:x', positions: [1] }]);
+
+    const out = await handlers.get('undo_mutation')!({ receipt_id: receipt.receipt_id, dry_run: false });
+
+    const del = writes(calls).find((c) => c.method === 'DELETE');
+    assert.ok(del, 'expected a playlist delete');
+    assert.deepEqual(del.arg, { tracks: [{ uri: 'spotify:track:x', positions: [1] }] },
+      'the documented tracks shape, addressing the added row and not every occurrence');
+    assert.deepEqual(playlists.pl1, ['spotify:track:pre'], 'the pre-existing row survives');
+    assert.equal(out.structuredContent?.ok, true);
+  });
+
+  it('undoes a positional add without destroying the row that predated it', async () => {
+    const { server, handlers } = stubServer();
+    const { client, playlists } = stubClient();
+    registerUndoTools(server, client);
+
+    // [A, X, B] with X inserted at 0 -> [X, A, X, B]. Deriving the added row as
+    // "X's last occurrence" would pick index 2, the X that predates the add,
+    // and leave the added row behind. The 4-row playlist is entirely inside
+    // the walk window, so only the insert position can distinguish the two.
+    playlists.pl1 = ['spotify:track:x', 'spotify:track:a', 'spotify:track:x', 'spotify:track:b'];
+    const receipt = await issueReceipt(client, {
+      kind: 'playlist_items',
+      id: 'pl1',
+      uris: ['spotify:track:x'],
+      insertPosition: 0,
+    });
+    assert.deepEqual(receipt.affected, [{ uri: 'spotify:track:x', positions: [0] }]);
+
+    const out = await handlers.get('undo_mutation')!({ receipt_id: receipt.receipt_id, dry_run: false });
+    assert.equal(out.structuredContent?.ok, true);
+    assert.deepEqual(playlists.pl1, ['spotify:track:a', 'spotify:track:x', 'spotify:track:b'],
+      'the pre-add ordering is restored exactly');
+  });
+
+  it('verifies a mixed add — one duplicate, one new — without a false alarm', async () => {
+    const { server, handlers } = stubServer();
+    const { client, playlists } = stubClient();
+    registerUndoTools(server, client);
+
+    // [X, A] plus an appended add of [X, Y] gives [X, A, X, Y]. Undoing
+    // removes X's added row and Y's row, leaving [X, A, Y]: X is still
+    // present because it predates the mutation, Y is absent. A single
+    // expectPresent flag cannot express that — expecting presence flags Y as
+    // missing, expecting absence flags X — so a correct rollback would be
+    // reported as post_state_mismatch.
+    playlists.pl1 = ['spotify:track:x', 'spotify:track:a', 'spotify:track:x', 'spotify:track:y'];
+    const receipt = await issueReceipt(client, {
+      kind: 'playlist_items',
+      id: 'pl1',
+      uris: ['spotify:track:x', 'spotify:track:y'],
+    });
+
+    const out = await handlers.get('undo_mutation')!({ receipt_id: receipt.receipt_id, dry_run: false });
+
+    assert.equal(out.structuredContent?.ok, true, 'a correct rollback must not be reported as a mismatch');
+    assert.deepEqual(out.structuredContent?.expected_present, ['spotify:track:x']);
+    assert.deepEqual(out.structuredContent?.expected_absent, ['spotify:track:y']);
+    // Back to the pre-add state: X's original row survives, while the X the
+    // add appended and the newly added Y are both gone.
+    assert.deepEqual(playlists.pl1, ['spotify:track:x', 'spotify:track:a']);
+    assert.match(out.content[0]!.text, /1 URI\(s\) confirmed absent; 1 URI\(s\) confirmed present/);
+  });
+
+  it('refuses an add undo on a playlist beyond the walk window, sparing pre-existing rows', async () => {
+    const { server, handlers } = stubServer();
+    const { client, calls, playlists } = stubClient();
+    registerUndoTools(server, client);
+
+    // 600 rows: the walk sees 500, so the copy the add appended is off-window.
+    // The last VISIBLE copy of x is the one that predates the add — undo must
+    // not target it, which means refusing rather than guessing.
+    const rows = Array.from({ length: 600 }, (_, i) => `spotify:track:r${i}`);
+    rows[499] = 'spotify:track:x';
+    playlists.pl1 = [...rows, 'spotify:track:x'];
+    const receipt = await issueReceipt(client, {
+      kind: 'playlist_items',
+      id: 'pl1',
+      uris: ['spotify:track:x'],
+    });
+    assert.equal(receipt.affected, undefined, 'no positions may be derived from a partial walk');
+
+    const out = await handlers.get('undo_mutation')!({ receipt_id: receipt.receipt_id, dry_run: false });
+    assert.equal(out.structuredContent?.ok, false);
+    assert.equal(out.structuredContent?.reason, 'occurrences_unrecorded');
+    assert.equal(writes(calls).length, 0);
+    assert.equal(playlists.pl1.length, 601, 'the pre-existing row survives');
+  });
+
+  it('restores a targeted removal at its recorded position', async () => {
+    const { server, handlers } = stubServer();
+    const { client, calls, playlists } = stubClient();
+    registerUndoTools(server, client);
+
+    playlists.pl1 = ['spotify:track:a', 'spotify:track:b', 'spotify:track:c'];
+    // Remove row 1 (track b) by position.
+    await issueReceipt(client, {
+      kind: 'playlist_items',
+      id: 'pl1',
+      uris: ['spotify:track:b'],
+      expectPresent: false,
+      targetedPositions: [{ uri: 'spotify:track:b', position: 1 }],
+    });
+    playlists.pl1 = ['spotify:track:a', 'spotify:track:c'];
+
+    const out = await handlers.get('undo_last_mutation')!({ dry_run: false });
+    assert.equal(out.structuredContent?.ok, true);
+    const post = writes(calls).find((c) => c.method === 'POST');
+    assert.ok(post, 'expected a re-add');
+    assert.deepEqual(post.arg, { uris: ['spotify:track:b'], position: 1 },
+      'the row goes back where it was, not appended');
+    assert.deepEqual(playlists.pl1, ['spotify:track:a', 'spotify:track:b', 'spotify:track:c']);
+  });
+
+  it('refuses to chain an add undo onto a survivor that predates the mutation', async () => {
+    const { server, handlers } = stubServer();
+    const { client, calls, playlists } = stubClient();
+    registerUndoTools(server, client);
+
+    // ['a'] then an add of the same uri -> ['a','a']. Every copy has a
+    // pre-mutation twin, so undoing the add removes its own row and leaves
+    // ['a'] — and the receipt that undo hands back must NOT claim the
+    // survivor as a row it created. That claim is the trap: the rollback only
+    // ever deleted, so chaining an undo onto it read index 0 (the row that
+    // predates everything) as its own and emptied the playlist.
+    playlists.pl1 = ['spotify:track:a'];
+    playlists.pl1 = ['spotify:track:a', 'spotify:track:a'];
+    const add = await issueReceipt(client, {
+      kind: 'playlist_items', id: 'pl1', uris: ['spotify:track:a'], expectPresent: true,
+    });
+    assert.deepEqual(add.affected, [{ uri: 'spotify:track:a', positions: [1] }]);
+
+    const first = await handlers.get('undo_mutation')!({ receipt_id: add.receipt_id, dry_run: false });
+    assert.equal(first.structuredContent?.ok, true);
+    assert.deepEqual(playlists.pl1, ['spotify:track:a'], 'the pre-existing row survives the undo');
+
+    const stay = (first.structuredContent?.receipt ?? null) as { receipt_id?: string; affected?: unknown } | null;
+    assert.ok(stay?.receipt_id, 'the undo issues a receipt for the post-state');
+    assert.equal(stay.affected, undefined,
+      'a delete-only rollback created no rows, so it claims none');
+
+    const before = writes(calls).length;
+    const chained = await handlers.get('undo_mutation')!({ receipt_id: stay.receipt_id!, dry_run: false });
+    assert.equal(chained.structuredContent?.ok, false);
+    assert.equal(chained.structuredContent?.reason, 'occurrences_unrecorded');
+    assert.equal(writes(calls).length, before, 'the refused chain issues zero writes');
+    assert.deepEqual(playlists.pl1, ['spotify:track:a'],
+      'the pre-existing row survives — the playlist is not emptied');
+  });
+
+  it('records the row a positional re-insert created, not the twin that predates it', async () => {
+    const { server, handlers } = stubServer();
+    const { client, playlists } = stubClient();
+    registerUndoTools(server, client);
+    const x = 'spotify:track:x', b = 'spotify:track:b';
+    const y = 'spotify:track:y', z = 'spotify:track:z';
+
+    // [x, b, y, b, z]: removing row 1 leaves a second 'b' at index 2. The undo
+    // re-inserts at index 1, so the row IT created is index 1 — but the append
+    // rule records a re-added uri's LAST occurrence, which is the pre-existing
+    // 'b' now sitting at index 3. Chaining an undo onto that receipt deleted
+    // the wrong row and left the playlist scrambled. A single-uri playlist
+    // like ['a','b','c'] hides this, because there the two rules coincide.
+    playlists.pl1 = [x, b, y, b, z];
+    const rem = await issueReceipt(client, {
+      kind: 'playlist_items', id: 'pl1', uris: [b],
+      expectPresent: false,
+      targetedPositions: [{ uri: b, position: 1 }],
+    });
+    playlists.pl1 = [x, y, b, z];
+
+    const out = await handlers.get('undo_mutation')!({ receipt_id: rem.receipt_id, dry_run: false });
+    assert.equal(out.structuredContent?.ok, true, out.content[0]?.text);
+    assert.deepEqual(playlists.pl1, [x, b, y, b, z], 'the row goes back where it was');
+
+    const stay = (out.structuredContent?.receipt ?? null) as { receipt_id?: string; affected?: unknown } | null;
+    assert.deepEqual(stay.affected, [{ uri: b, positions: [1] }],
+      'records the re-inserted row, not the pre-existing twin at index 3');
+
+    // Chaining now removes the row the re-insert created, so the playlist
+    // returns to its post-removal order rather than being scrambled.
+    const chained = await handlers.get('undo_mutation')!({ receipt_id: stay!.receipt_id!, dry_run: false });
+    assert.equal(chained.structuredContent?.ok, true, chained.content[0]?.text);
+    assert.deepEqual(playlists.pl1, [x, y, b, z], 'the chained undo reverses exactly the re-insert');
+  });
+
+  it('records every row a multi-run re-insert created', async () => {
+    const { server, handlers } = stubServer();
+    const { client, playlists } = stubClient();
+    registerUndoTools(server, client);
+    const row = (n: string) => `spotify:track:${n}`;
+
+    // Removing rows 1 and 3 leaves two separate runs, re-inserted at two
+    // different indices — a shape no single `insertPosition` can describe.
+    playlists.pl1 = [row('a'), row('b'), row('c'), row('d'), row('e')];
+    const rem = await issueReceipt(client, {
+      kind: 'playlist_items', id: 'pl1', uris: [row('b'), row('d')],
+      expectPresent: false,
+      targetedPositions: [{ uri: row('b'), position: 1 }, { uri: row('d'), position: 3 }],
+    });
+    playlists.pl1 = [row('a'), row('c'), row('e')];
+
+    const out = await handlers.get('undo_mutation')!({ receipt_id: rem.receipt_id, dry_run: false });
+    assert.equal(out.structuredContent?.ok, true, out.content[0]?.text);
+    assert.deepEqual(playlists.pl1, [row('a'), row('b'), row('c'), row('d'), row('e')]);
+
+    const stay = (out.structuredContent?.receipt ?? null) as { affected?: unknown } | null;
+    assert.deepEqual(stay.affected, [
+      { uri: row('b'), positions: [1] },
+      { uri: row('d'), positions: [3] },
+    ], 'both created rows are attributed to the rows the re-insert made');
+  });
+
+  it('splits a re-insert run longer than the API cap into 100-uri sub-requests', async () => {
+    const { server, handlers } = stubServer();
+    const { client, playlists, calls } = stubClient();
+    registerUndoTools(server, client);
+    const head = 'spotify:track:head';
+
+    // 101 ADJACENT rows removed by a single call. `remove_from_playlist` caps
+    // `uris` at 100 ENTRIES, but each entry's `positions` is an uncapped
+    // array — so one entry naming 101 positions is a schema-legal removal.
+    // The undo re-inserts them as one run, the only shape that overflows the
+    // 100-uri write cap, and an oversized request is rejected outright: the
+    // rollback would restore nothing at all.
+    const original = Array.from({ length: 101 }, (_, i) => `spotify:track:t${i}`);
+    playlists.pl1 = [head, ...original];
+    const rem = await issueReceipt(client, {
+      kind: 'playlist_items', id: 'pl1', uris: original,
+      expectPresent: false,
+      targetedPositions: original.map((uri, i) => ({ uri, position: i + 1 })),
+    });
+    playlists.pl1 = [head];
+
+    const out = await handlers.get('undo_mutation')!({ receipt_id: rem.receipt_id, dry_run: false });
+    assert.equal(out.structuredContent?.ok, true, out.content[0]?.text);
+
+    const posts = writes(calls).filter((c) => c.method === 'POST');
+    assert.deepEqual(posts.map((p) => stringList(p.arg, 'uris').length), [100, 1],
+      'the run is split at the API cap instead of sent as one 101-uri request');
+    assert.deepEqual(posts.map((p) => numberField(p.arg, 'position')), [1, 101],
+      'the second sub-request resumes at the index the first one filled');
+    assert.deepEqual(playlists.pl1, [head, ...original],
+      'all 101 rows are restored, in their original order');
+  });
+
+  it('refuses an add undo when the receipt records no row positions', async () => {
+    const { server, handlers } = stubServer();
+    const { client, calls, playlists } = stubClient();
+    registerUndoTools(server, client);
+
+    // A receipt that cannot say which row the add created (pre-#625 receipt, or
+    // rows beyond the verification window) must not fall back to a bare-URI
+    // delete, which would remove pre-existing rows.
+    playlists.pl1 = ['spotify:track:x', 'spotify:track:other'];
+    const receipt = await issueReceipt(client, { kind: 'playlist_items', id: 'pl1', uris: [], expectPresent: true });
+    receipt.uris = ['spotify:track:x'];
+    delete receipt.affected;
+
+    const out = await handlers.get('undo_mutation')!({ receipt_id: receipt.receipt_id, dry_run: false });
+
+    assert.equal(out.structuredContent?.ok, false);
+    assert.equal(out.structuredContent?.reason, 'occurrences_unrecorded');
+    assert.equal(writes(calls).length, 0, 'a refused undo issues zero writes');
+    assert.deepEqual(playlists.pl1, ['spotify:track:x', 'spotify:track:other']);
+  });
+
+  it('marks a pre-#625 receipt as direction_assumed instead of silently adding', async () => {
+    const { server, handlers } = stubServer();
+    const { client, saved } = stubClient();
+    registerUndoTools(server, client);
+    saved.add('spotify:track:a');
+
+    const receipt = await issueReceipt(client, { kind: 'library', uris: ['spotify:track:a'], expectPresent: true });
+    delete receipt.direction; // as written by a v1 build
+
+    const preview = await handlers.get('undo_mutation')!({ receipt_id: receipt.receipt_id });
+    assert.equal(preview.structuredContent?.direction_assumed, true);
+    assert.match(preview.content[0]!.text, /assumed, not recorded/);
+
+    const out = await handlers.get('undo_mutation')!({ receipt_id: receipt.receipt_id, dry_run: false });
+    assert.equal(out.structuredContent?.direction_assumed, true);
+  });
+
+  it('reports the post-state mismatch instead of claiming N URIs were inverted', async () => {
+    const { server, handlers } = stubServer();
+    const { client, saved } = stubClient();
+    registerUndoTools(server, client);
+    saved.add('spotify:track:a');
+    // The delete returns 200 but leaves the item in the library.
+    (client as unknown as { delete: () => Promise<null> }).delete = async () => null;
+
+    const receipt = await issueReceipt(client, { kind: 'library', uris: ['spotify:track:a'], expectPresent: true });
+    const out = await handlers.get('undo_mutation')!({ receipt_id: receipt.receipt_id, dry_run: false });
+
+    assert.equal(out.structuredContent?.ok, false);
+    assert.equal(out.structuredContent?.reason, 'post_state_mismatch');
+    assert.deepEqual(out.structuredContent?.unconfirmed_uris, ['spotify:track:a']);
+    assert.doesNotMatch(out.content[0]!.text, /inverted 1 URI/);
+    assert.match(out.content[0]!.text, /did NOT confirm: spotify:track:a/);
+    assert.deepEqual(out.structuredContent?.expected_absent, ['spotify:track:a']);
+  });
+
+  it('chunk-writes a 41-URI library undo at the documented 40-uri cap, encoded', async () => {
+    const { server, handlers } = stubServer();
+    const { client, calls, saved } = stubClient();
+    registerUndoTools(server, client);
+    const uris = Array.from({ length: 41 }, (_, i) => `spotify:track:${i}`);
+    for (const uri of uris) saved.add(uri);
+    const receipt = await issueReceipt(client, { kind: 'library', uris, expectPresent: true });
+
+    await handlers.get('undo_mutation')!({ receipt_id: receipt.receipt_id, dry_run: false });
+
+    const dels = writes(calls).filter((c) => c.method === 'DELETE' && c.path.startsWith('/me/library?'));
+    assert.equal(dels.length, 2, '41 uris need 2 requests at the 40-uri cap');
+    for (const del of dels) {
+      const sent = new URLSearchParams(del.path.split('?')[1] ?? '').get('uris') ?? '';
+      assert.ok(sent.split(',').length <= 40, 'no request may exceed the 40-uri write cap');
+    }
+    assert.equal(saved.size, 0, 'every saved URI is removed');
   });
 });
 

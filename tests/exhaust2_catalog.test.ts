@@ -1,9 +1,11 @@
 import { describe, it, mock } from 'node:test';
 import assert from 'node:assert/strict';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { z } from 'zod';
 import { registerExhaust2CatalogTools } from '../src/tools/exhaust2_catalog.js';
 import { registerArtistWatchTools } from '../src/tools/artistwatch.js';
-import { SpotifyApiError } from '../src/client.js';
+import { SpotifyApiError, SpotifyClient } from '../src/client.js';
+import { initConfig } from '../src/config.js';
 
 type Handler = (args: Record<string, unknown>) => Promise<{
   content: Array<{ type: string; text: string }>;
@@ -33,6 +35,37 @@ function handlerFor(name: string, client: ReturnType<typeof makeClient>): Handle
   return captured;
 }
 
+/**
+ * The declared input shape for a tool, rebuilt as a real zod object. The MCP
+ * server validates arguments against this before the handler runs
+ * (see installToolErrorBoundary), so schema-level behaviour has to be probed
+ * here rather than through `handlerFor`, which hands args straight to the
+ * handler and would bypass validation entirely.
+ */
+function shapeFor(name: string, client: SpotifyClient): z.ZodObject<z.ZodRawShape> {
+  let captured: unknown;
+  const server = {
+    tool(n: string, _desc: string, shape: unknown, _h: Handler) {
+      if (n === name) captured = shape;
+    },
+  } as unknown as McpServer;
+  registerExhaust2CatalogTools(server, client);
+  if (!captured) throw new Error(`tool ${name} not registered`);
+  return z.object(captured as z.ZodRawShape);
+}
+
+/**
+ * The first offending parameter name, mirroring annotations.ts `validationParam`,
+ * which is what the error boundary reports back to the caller.
+ */
+function offendingParam(error: { issues: ReadonlyArray<{ path: ReadonlyArray<unknown> }> }): string | undefined {
+  for (const issue of error.issues) {
+    const first = issue.path[0];
+    if (typeof first === 'string' && first.length > 0) return first;
+  }
+  return undefined;
+}
+
 function allToolNames(client: ReturnType<typeof makeClient>): string[] {
   const names: string[] = [];
   const server = { tool(name: string) { names.push(name); } } as unknown as McpServer;
@@ -50,6 +83,53 @@ function trackPayload(overrides: Record<string, unknown> = {}) {
     external_ids: { isrc: 'USXXX0000001' },
     ...overrides,
   };
+}
+
+/**
+ * A real-walk client for #774: `get` serves genuinely paginated album-track
+ * responses and the PROTOTYPE `getAllPagesWithTruncation` does the walking, so
+ * these tests exercise the production paging loop and its truncation verdict
+ * rather than a re-implementation of it. Track i+1 has duration (i+1)ms, so
+ * the expected statistics are computable by hand.
+ */
+function pagedAlbumClient(rowCount: number, albumTotalTracks: number) {
+  const rows = Array.from({ length: rowCount }, (_, i) => ({
+    id: `t${i + 1}`, name: `Track ${i + 1}`, uri: `spotify:track:t${i + 1}`,
+    duration_ms: (i + 1) * 1000, explicit: false, track_number: i + 1, artists: [artist],
+  }));
+  const offsets: string[] = [];
+  const client = Object.create(SpotifyClient.prototype) as unknown as {
+    get: (path: string, params?: Record<string, string>) => Promise<unknown>;
+    fetchAllCap?: number;
+    walkCounter: number;
+    progressReporter: null;
+  };
+  client.get = async (path: string, params?: Record<string, string>) => {
+    if (!path.endsWith('/tracks')) {
+      return {
+        id: 'alb1', name: 'Album', uri: 'spotify:album:alb1', album_type: 'album',
+        release_date: '2021', artists: [artist], images: [],
+        total_tracks: albumTotalTracks, tracks: { items: [], total: albumTotalTracks },
+      };
+    }
+    const offset = Number(params?.offset ?? 0);
+    const limit = Number(params?.limit ?? 50);
+    offsets.push(String(offset));
+    return { items: rows.slice(offset, offset + limit), total: rows.length, limit, offset };
+  };
+  client.walkCounter = 0;
+  client.progressReporter = null;
+  return { client, rows, offsets };
+}
+
+/** Install a fetch-all cap for the duration of `fn`, then restore the env snapshot. */
+async function withFetchAllCap<T>(cap: number, fn: () => Promise<T>): Promise<T> {
+  initConfig({ ...process.env, SPOTIFY_MCP_FETCH_ALL_CAP: String(cap) });
+  try {
+    return await fn();
+  } finally {
+    initConfig(process.env);
+  }
 }
 
 const EXPECTED_TOOLS = 19;
@@ -155,24 +235,84 @@ describe('statistics + local-compute tools', () => {
   });
 
   it('album_track_stats returns min/max/mean/median + longest', async () => {
-    const client = makeClient({
-      get: mock.fn(async (path: string) => {
-        if (path.includes('/tracks')) {
-          return { items: [
-            { id: 't1', name: 'Short', uri: 'u', duration_ms: 60_000, explicit: false, track_number: 1, artists: [artist] },
-            { id: 't2', name: 'Long', uri: 'u', duration_ms: 300_000, explicit: false, track_number: 2, artists: [artist] },
-            { id: 't3', name: 'Mid', uri: 'u', duration_ms: 180_000, explicit: false, track_number: 3, artists: [artist] },
-          ], total: 3 };
-        }
-        return { id: 'alb1', name: 'Album', uri: 'u', album_type: 'album', release_date: '2021', total_tracks: 3, artists: [artist], images: [] };
-      }),
-    });
-    const res = await handlerFor('album_track_stats', client)({ album_id: 'alb1', response_format: 'concise' });
+    const { client } = pagedAlbumClient(3, 3);
+    const res = await handlerFor('album_track_stats', client as never)({ album_id: 'alb1', response_format: 'concise' });
     const stats = (res.structuredContent as { stats: { min_ms: number; max_ms: number; mean_ms: number; median_ms: number } }).stats;
-    assert.equal(stats.min_ms, 60_000);
-    assert.equal(stats.max_ms, 300_000);
-    assert.equal(stats.median_ms, 180_000);
-    assert.ok(res.content[0].text.includes('"Long" (5:00)'));
+    assert.equal(stats.min_ms, 1_000);
+    assert.equal(stats.max_ms, 3_000);
+    assert.equal(stats.median_ms, 2_000);
+    assert.ok(res.content[0].text.includes('"Track 3"'));
+  });
+
+  // #774: a short album is complete and says so — no partial flag. Cannot pass
+  // vacuously: the fixture reports tracks.total = 3 and the walk returns 3.
+  it('album_track_stats reports no partial flag for a fully-walked short album', async () => {
+    const { client, offsets } = pagedAlbumClient(3, 3);
+    const res = await handlerFor('album_track_stats', client as never)({ album_id: 'alb1', response_format: 'concise' });
+    const stats = (res.structuredContent as { stats: { track_count: number; tracks_listed: number; partial_estimate: boolean } }).stats;
+    assert.equal(stats.track_count, 3);
+    assert.equal(stats.tracks_listed, 3);
+    assert.equal(stats.partial_estimate, false);
+    assert.deepEqual(offsets, ['0']);
+    assert.ok(!res.content[0].text.includes('PARTIAL'));
+  });
+
+  // #774: 120 tracks over 3 pages. Pre-fix this read ONE page of 50 and
+  // reported track_count 50 with no completeness signal.
+  it('album_track_stats walks every page: 120 tracks over 3 pages', async () => {
+    const { client, offsets } = pagedAlbumClient(120, 120);
+    const res = await handlerFor('album_track_stats', client as never)({ album_id: 'alb1', response_format: 'concise' });
+    const stats = (res.structuredContent as {
+      stats: { track_count: number; tracks_listed: number; partial_estimate: boolean; min_ms: number; max_ms: number; mean_ms: number; median_ms: number; total_runtime_ms: number };
+    }).stats;
+    assert.deepEqual(offsets, ['0', '50', '100']);
+    assert.equal(stats.track_count, 120);
+    assert.equal(stats.tracks_listed, 120);
+    assert.equal(stats.partial_estimate, false);
+    // Hand-computed over all 120 durations (1000..120000 ms).
+    assert.equal(stats.min_ms, 1_000);
+    assert.equal(stats.max_ms, 120_000);
+    assert.equal(stats.mean_ms, 60_500);
+    assert.equal(stats.median_ms, 60_500);
+    assert.equal(stats.total_runtime_ms, 7_260_000);
+    assert.ok(res.content[0].text.includes('(120 listed tracks)'));
+    assert.ok(!res.content[0].text.includes('PARTIAL'));
+  });
+
+  // #774: when the walk IS cut off by the cap, the numbers cover only the
+  // walked window and the payload plus the prose must say so.
+  it('album_track_stats flags a cap-truncated walk instead of reporting it as the album', async () => {
+    const { client, offsets } = pagedAlbumClient(200, 200);
+    const res = await withFetchAllCap(60, () =>
+      handlerFor('album_track_stats', client as never)({ album_id: 'alb1', response_format: 'concise' }));
+    const stats = (res.structuredContent as {
+      stats: { track_count: number; tracks_listed: number; partial_estimate: boolean; total_runtime_ms: number };
+    }).stats;
+    assert.equal(stats.track_count, 60);
+    assert.equal(stats.tracks_listed, 200);
+    assert.equal(stats.partial_estimate, true);
+    assert.equal((res.structuredContent as { fetch_all_cap: number }).fetch_all_cap, 60);
+    // Only the first 60 durations (1000..60000 ms) are in these numbers.
+    assert.equal(stats.total_runtime_ms, 1_830_000);
+    assert.ok(res.content[0].text.includes('PARTIAL'));
+    assert.ok(res.content[0].text.includes('60'));
+    assert.ok(res.content[0].text.includes('200'));
+    assert.deepEqual(offsets, ['0', '50']);
+  });
+
+  // #774: an album read that carried no track count is UNKNOWN, not silently
+  // filled in with the walked length.
+  it('album_track_stats reports tracks_listed as null when the album read carried no count', async () => {
+    const { client } = pagedAlbumClient(3, 3);
+    const bare = client as { get: (path: string, params?: Record<string, string>) => Promise<unknown> };
+    const realGet = bare.get;
+    bare.get = async (path: string, params?: Record<string, string>) =>
+      (path.endsWith('/tracks') ? realGet(path, params) : null);
+    const res = await handlerFor('album_track_stats', bare as never)({ album_id: 'alb1', response_format: 'concise' });
+    const stats = (res.structuredContent as { stats: { track_count: number; tracks_listed: number | null; partial_estimate: boolean } }).stats;
+    assert.equal(stats.track_count, 3);
+    assert.equal(stats.tracks_listed, null);
+    assert.equal(stats.partial_estimate, false);
   });
 
   it('artist_discography_stats reports counts, rate, longest gap', async () => {
@@ -259,6 +399,78 @@ assert.equal((res.structuredContent as { gaps_flagged: unknown[] }).gaps_flagged
     assert.ok(res.content[0].text.includes('All versions (2)'));
   });
 
+  // #777: both tools declare `market` but used to drop it, so every /search
+  // ran against the token's default market. The requests themselves are the
+  // assertion — a stub that never sees `market` fails here.
+  it('search_by_isrc sends the requested market on /search and reports market_used', async () => {
+    const seen: Array<Record<string, string | undefined>> = [];
+    const client = makeClient({
+      get: mock.fn(async (_p: string, params?: Record<string, string>) => {
+        seen.push(params ?? {});
+        return { tracks: { items: [trackPayload({ external_ids: { isrc: 'USUM71703861' } })], total: 1 } };
+      }),
+    });
+    const res = await handlerFor('search_by_isrc', client)({
+      isrc: 'USUM71703861', market: 'GB', response_format: 'concise',
+    });
+    assert.equal(seen.length, 1);
+    assert.deepEqual(seen.map((p) => p.market), ['GB']);
+    assert.equal(res.structuredContent!.market_used, 'GB');
+    assert.ok(res.content[0].text.includes('market GB'));
+  });
+
+  it('search_by_isrc reports from_token and sends no market when none is given', async () => {
+    const seen: Array<Record<string, string | undefined>> = [];
+    const client = makeClient({
+      get: mock.fn(async (_p: string, params?: Record<string, string>) => {
+        seen.push(params ?? {});
+        return { tracks: { items: [], total: 0 } };
+      }),
+    });
+    const res = await handlerFor('search_by_isrc', client)({ isrc: 'USUM71703861', response_format: 'concise' });
+    assert.equal(seen.length, 1);
+    assert.equal(seen[0].market, undefined);
+    assert.equal(res.structuredContent!.market_used, 'from_token');
+    assert.ok(res.content[0].text.includes('no track found in market from_token'));
+  });
+
+  it('find_canonical_track sends the market on both the precise and fallback searches', async () => {
+    const seen: Array<Record<string, string | undefined>> = [];
+    let calls = 0;
+    const client = makeClient({
+      get: mock.fn(async (_p: string, params?: Record<string, string>) => {
+        seen.push(params ?? {});
+        calls += 1;
+        // Precise filter comes back empty so the broad fallback also runs.
+        return calls === 1
+          ? { tracks: { items: [], total: 0 } }
+          : { tracks: { items: [trackPayload({ id: 'de', uri: 'spotify:track:de' })], total: 1 } };
+      }),
+    });
+    const res = await handlerFor('find_canonical_track', client)({
+      title: 'Song', artist: 'Artist', market: 'DE', response_format: 'concise',
+    });
+    assert.equal(seen.length, 2);
+    assert.deepEqual(seen.map((p) => p.market), ['DE', 'DE']);
+    assert.equal(res.structuredContent!.market_used, 'DE');
+    assert.equal(res.structuredContent!.fallback_search, true);
+  });
+
+  it('find_canonical_track reports from_token when no market is supplied', async () => {
+    const seen: Array<Record<string, string | undefined>> = [];
+    const client = makeClient({
+      get: mock.fn(async (_p: string, params?: Record<string, string>) => {
+        seen.push(params ?? {});
+        return { tracks: { items: [trackPayload()], total: 1 } };
+      }),
+    });
+    const res = await handlerFor('find_canonical_track', client)({ title: 'Song', artist: 'Artist', response_format: 'concise' });
+    assert.equal(seen.length, 1);
+    assert.equal(seen[0].market, undefined);
+    assert.equal(res.structuredContent!.market_used, 'from_token');
+    assert.ok(res.content[0].text.includes('market searched: from_token'));
+  });
+
   it('audiobook_chapter_map totals runtime and finds midpoint', async () => {
     const client = makeClient({
       get: mock.fn(async (path: string) => (path.startsWith('/audiobooks/') && !path.includes('/chapters')
@@ -274,6 +486,29 @@ assert.equal((res.structuredContent as { gaps_flagged: unknown[] }).gaps_flagged
     assert.ok(res.content[0].text.includes('#2 "Part 2"'));
   });
 
+  // The documented /artists/{id}/albums shape is a SIMPLIFIED album object —
+  // no `tracks` key (#770). The old fixture invented one, which is why the
+  // impossible album-track read passed CI.
+  const guest = { id: 'a2', name: 'Guest', uri: 'spotify:artist:a2' };
+  const third = { id: 'a3', name: 'Third', uri: 'spotify:artist:a3' };
+  const simplifiedAlbum = {
+    id: 'alb1', name: 'Collab LP', uri: 'spotify:album:alb1', album_type: 'album',
+    release_date: '2022', total_tracks: 1, artists: [artist, guest], images: [],
+  };
+  type CollabRow = { id: string; name: string; co_appearances: number; on_top_tracks: boolean; on_album_tracks: boolean };
+  type CollabStructured = {
+    collaborators: CollabRow[];
+    top_tracks_available: boolean;
+    credits_source: string;
+    track_features_included: boolean;
+    unreadable_count?: number;
+    track_features_partial?: boolean;
+    unreadable_albums?: Array<{ album_id: string; album_name: string | null; reason: string }>;
+    albums_credited?: number;
+    truncated_count?: number;
+    truncated_albums?: Array<{ album_id: string; album_name: string | null; tracks_read: number; tracks_reported: number | null }>;
+  };
+
   it('artist_collab_network falls back to albums when top-tracks is gated', async () => {
     const client = makeClient({
       get: mock.fn(async (path: string) => {
@@ -281,18 +516,208 @@ assert.equal((res.structuredContent as { gaps_flagged: unknown[] }).gaps_flagged
         if (path.startsWith('/artists/') && !path.includes('/albums')) return { ...artist, genres: [] };
         return null;
       }),
-      getAllPages: mock.fn(async () => [
-        { id: 'alb1', name: 'Collab LP', uri: 'u', album_type: 'album', release_date: '2022', total_tracks: 1, artists: [artist, { id: 'a2', name: 'Guest', uri: 'spotify:artist:a2' }], images: [], tracks: { items: [
-          { id: 't1', name: 'Duet', uri: 'u', duration_ms: 100_000, explicit: false, track_number: 1, artists: [artist, { id: 'a2', name: 'Guest', uri: 'spotify:artist:a2' }, { id: 'a3', name: 'Third', uri: 'spotify:artist:a3' }] },
-        ], total: 1 } },
-      ]),
+      getAllPages: mock.fn(async () => [simplifiedAlbum]),
     });
     const res = await handlerFor('artist_collab_network', client)({ artist_id: 'a1', response_format: 'concise' });
-    const structured = res.structuredContent as { collaborators: Array<{ name: string; co_appearances: number }>; top_tracks_available: boolean };
+    const structured = res.structuredContent as CollabStructured;
     assert.equal(structured.top_tracks_available, false);
     assert.equal(structured.collaborators[0].name, 'Guest');
-    assert.equal(structured.collaborators[0].co_appearances, 2);
+    // One album credit only: the old fixture counted a second "co-appearance"
+    // out of a track list the endpoint never returns.
+    assert.equal(structured.collaborators[0].co_appearances, 1);
+    assert.equal(structured.collaborators[0].on_album_tracks, false);
     assert.ok(res.content[0].text.includes('app-registration gated'));
+  });
+
+  it('artist_collab_network claims no track-level collaborator by default', async () => {
+    const client = makeClient({
+      get: mock.fn(async (path: string) => {
+        if (path.endsWith('/top-tracks')) return { tracks: [trackPayload({ artists: [artist] })] };
+        if (path.startsWith('/artists/') && !path.includes('/albums')) return { ...artist, genres: [] };
+        return null;
+      }),
+      getAllPages: mock.fn(async () => [simplifiedAlbum]),
+    });
+    const res = await handlerFor('artist_collab_network', client)({ artist_id: 'a1', response_format: 'concise' });
+    const structured = res.structuredContent as CollabStructured;
+    assert.equal(structured.track_features_included, false);
+    assert.equal(structured.credits_source, 'album_credits');
+    // Third appears only inside the (non-existent) embedded track list, so a
+    // tool that still trusted `al.tracks` would report it here.
+    assert.equal(structured.collaborators.some((c) => c.name === 'Third'), false);
+    assert.ok(res.content[0].text.includes('Album-level co-billing only'));
+  });
+
+  it('artist_collab_network include_track_features reports the featured artist from a real album-tracks call', async () => {
+    const client = makeClient({
+      get: mock.fn(async (path: string) => {
+        if (path === '/albums/alb1/tracks') {
+          return { items: [{ id: 't1', name: 'Duet', uri: 'u', duration_ms: 100_000, explicit: false, track_number: 1, artists: [artist, guest, third] }] };
+        }
+        if (path.endsWith('/top-tracks')) return { tracks: [trackPayload({ artists: [artist] })] };
+        if (path.startsWith('/artists/') && !path.includes('/albums')) return { ...artist, genres: [] };
+        return null;
+      }),
+      getAllPages: mock.fn(async () => [simplifiedAlbum]),
+    });
+    const res = await handlerFor('artist_collab_network', client)({ artist_id: 'a1', include_track_features: true, response_format: 'concise' });
+    const structured = res.structuredContent as CollabStructured;
+    // Asserted FIRST: against the pre-fix source the featured artist is simply
+    // absent, so this line — not a metadata flag — is what proves the credit
+    // really came from a GET /albums/{id}/tracks the old code never made.
+    const featured = structured.collaborators.find((c) => c.name === 'Third');
+    assert.ok(featured, 'Third is credited on the album track and must be reported');
+    assert.equal(featured.on_album_tracks, true);
+    assert.equal(structured.track_features_included, true);
+    assert.equal(structured.credits_source, 'album_and_track_credits');
+    // Album credit + track credit = 2 distinct appearances for Guest.
+    const guestRow = structured.collaborators.find((c) => c.name === 'Guest');
+    assert.equal(guestRow?.co_appearances, 2);
+    // A complete read: nothing here is undisclosed, so no partial flag.
+    assert.equal(structured.track_features_partial, undefined);
+    assert.equal(structured.albums_credited, 1);
+  });
+
+  it('artist_collab_network lists an unreadable album with its reason instead of zero collaborators', async () => {
+    const client = makeClient({
+      get: mock.fn(async (path: string) => {
+        if (path === '/albums/alb1/tracks') throw new SpotifyApiError(403, 'Forbidden');
+        if (path.endsWith('/top-tracks')) return { tracks: [trackPayload({ artists: [artist] })] };
+        if (path.startsWith('/artists/') && !path.includes('/albums')) return { ...artist, genres: [] };
+        return null;
+      }),
+      getAllPages: mock.fn(async () => [simplifiedAlbum]),
+    });
+    const res = await handlerFor('artist_collab_network', client)({ artist_id: 'a1', include_track_features: true, response_format: 'concise' });
+    const structured = res.structuredContent as CollabStructured;
+    assert.equal(structured.track_features_partial, true);
+    assert.equal(structured.unreadable_count, 1);
+    assert.deepEqual(structured.unreadable_albums, [
+      { album_id: 'alb1', album_name: 'Collab LP', reason: 'forbidden or app-registration gated (403)' },
+    ]);
+    // Every credit count here is observed, not assumed: the only read failed.
+    assert.equal(structured.albums_credited, 0);
+    // The readable album credit is still reported — the bad one did not poison it.
+    assert.ok(structured.collaborators.some((c) => c.name === 'Guest'));
+    assert.ok(res.content[0].text.includes('not zero'));
+  });
+
+  // A 204 (client.get -> null) and a 200 with no `items` are the same defect
+  // as a throw: the credits are unknown, not empty. Both used to fold into
+  // `page?.items ?? []` and report a complete read (the #803 class).
+  it('artist_collab_network reports a short (non-throwing) album-tracks page as unreadable, not as a complete read', async () => {
+    const second = { ...simplifiedAlbum, id: 'alb2', name: 'Second LP' };
+    const client = makeClient({
+      get: mock.fn(async (path: string) => {
+        if (path === '/albums/alb1/tracks') return null; // HTTP 204
+        if (path === '/albums/alb2/tracks') return {}; // HTTP 200, no items
+        if (path.endsWith('/top-tracks')) return { tracks: [trackPayload({ artists: [artist] })] };
+        if (path.startsWith('/artists/') && !path.includes('/albums')) return { ...artist, genres: [] };
+        return null;
+      }),
+      getAllPages: mock.fn(async () => [simplifiedAlbum, second]),
+    });
+    const res = await handlerFor('artist_collab_network', client)({ artist_id: 'a1', include_track_features: true, response_format: 'concise' });
+    const structured = res.structuredContent as CollabStructured;
+    assert.equal(structured.track_features_partial, true);
+    assert.equal(structured.unreadable_count, 2);
+    assert.deepEqual(structured.unreadable_albums, [
+      { album_id: 'alb1', album_name: 'Collab LP', reason: 'no track list in the response' },
+      { album_id: 'alb2', album_name: 'Second LP', reason: 'no track list in the response' },
+    ]);
+    // Neither read happened, so no album is counted as credited and no album
+    // credit is claimed to have come off a track list.
+    assert.equal(structured.albums_credited, 0);
+    assert.equal(structured.collaborators.every((c) => !c.on_album_tracks), true);
+    assert.ok(res.content[0].text.includes('not zero'));
+  });
+
+  // A genuine empty track list IS a read that observed zero collaborators, so
+  // it must not be swept into the unreadable bucket alongside the short pages.
+  it('artist_collab_network treats a real empty track list as a complete zero, not an unreadable album', async () => {
+    const client = makeClient({
+      get: mock.fn(async (path: string) => {
+        if (path === '/albums/alb1/tracks') return { items: [], total: 0 };
+        if (path.endsWith('/top-tracks')) return { tracks: [trackPayload({ artists: [artist] })] };
+        if (path.startsWith('/artists/') && !path.includes('/albums')) return { ...artist, genres: [] };
+        return null;
+      }),
+      getAllPages: mock.fn(async () => [simplifiedAlbum]),
+    });
+    const res = await handlerFor('artist_collab_network', client)({ artist_id: 'a1', include_track_features: true, response_format: 'concise' });
+    const structured = res.structuredContent as CollabStructured;
+    assert.equal(structured.unreadable_count, undefined);
+    assert.equal(structured.track_features_partial, undefined);
+    assert.equal(structured.albums_credited, 1);
+    assert.ok(structured.collaborators.some((c) => c.name === 'Guest' && !c.on_album_tracks));
+  });
+
+  // limit: '50' means a long album is only partly read; the album-level cap is
+  // disclosed, so the track-level one has to be too.
+  it('artist_collab_network discloses an album whose track credits were truncated at the page size', async () => {
+    const client = makeClient({
+      get: mock.fn(async (path: string) => {
+        if (path === '/albums/alb1/tracks') {
+          return {
+            items: [{ id: 't1', name: 'Opener', uri: 'u', duration_ms: 100_000, explicit: false, track_number: 1, artists: [artist, third] }],
+            total: 120,
+            next: 'https://api.spotify.com/v1/albums/alb1/tracks?offset=1',
+          };
+        }
+        if (path.endsWith('/top-tracks')) return { tracks: [trackPayload({ artists: [artist] })] };
+        if (path.startsWith('/artists/') && !path.includes('/albums')) return { ...artist, genres: [] };
+        return null;
+      }),
+      getAllPages: mock.fn(async () => [simplifiedAlbum]),
+    });
+    const res = await handlerFor('artist_collab_network', client)({ artist_id: 'a1', include_track_features: true, response_format: 'concise' });
+    const structured = res.structuredContent as CollabStructured;
+    assert.equal(structured.truncated_count, 1);
+    assert.deepEqual(structured.truncated_albums, [
+      { album_id: 'alb1', album_name: 'Collab LP', tracks_read: 1, tracks_reported: 120 },
+    ]);
+    // A truncated read is not a failed one: the credit it did return stands.
+    assert.equal(structured.unreadable_count, undefined);
+    assert.equal(structured.track_features_partial, true);
+    assert.equal(structured.albums_credited, 1);
+    assert.ok(structured.collaborators.some((c) => c.name === 'Third'));
+    assert.ok(res.content[0].text.includes('Partial'));
+  });
+
+  // A `next` cursor without a numeric `total` says "this page is not the last
+  // one" and nothing about how much is left. Reporting tracks_read as the total
+  // would put "1 of 1" inside the very list that exists to say credits are
+  // missing, so the unknown has to survive as null.
+  it('artist_collab_network reports an unknown total as unknown rather than inventing one from the page it read', async () => {
+    const client = makeClient({
+      get: mock.fn(async (path: string) => {
+        if (path === '/albums/alb1/tracks') {
+          return {
+            items: [{ id: 't1', name: 'Opener', uri: 'u', duration_ms: 100_000, explicit: false, track_number: 1, artists: [artist, third] }],
+            next: 'https://api.spotify.com/v1/albums/alb1/tracks?offset=1',
+          };
+        }
+        if (path.endsWith('/top-tracks')) return { tracks: [trackPayload({ artists: [artist] })] };
+        if (path.startsWith('/artists/') && !path.includes('/albums')) return { ...artist, genres: [] };
+        return null;
+      }),
+      getAllPages: mock.fn(async () => [simplifiedAlbum]),
+    });
+    const res = await handlerFor('artist_collab_network', client)({ artist_id: 'a1', include_track_features: true, response_format: 'concise' });
+    const structured = res.structuredContent as CollabStructured;
+    assert.equal(structured.truncated_count, 1);
+    assert.deepEqual(structured.truncated_albums, [
+      { album_id: 'alb1', album_name: 'Collab LP', tracks_read: 1, tracks_reported: null },
+    ]);
+    // The credit this page did return still stands, and the disclosure still
+    // fires — only the invented total is gone.
+    assert.equal(structured.unreadable_count, undefined);
+    assert.equal(structured.track_features_partial, true);
+    assert.equal(structured.albums_credited, 1);
+    assert.ok(structured.collaborators.some((c) => c.name === 'Third'));
+    const text = res.content[0].text;
+    assert.ok(text.includes('Collab LP (1 tracks, total unknown)'), text);
+    assert.equal(text.includes('1 of 1 tracks'), false, text);
   });
 
   it('search_market_diff splits result sets by market', async () => {
@@ -310,6 +735,71 @@ assert.equal((res.structuredContent as { gaps_flagged: unknown[] }).gaps_flagged
     assert.equal(structured.only_in_a[0].name, 'US Only');
     assert.equal(structured.only_in_b[0].name, 'GB Only');
     assert.ok(res.content[0].text.includes('both markets: 1'));
+  });
+
+  // #776: `types` accepted two entries but only `types[0]` was ever searched,
+  // so a second type was dropped without a word in the payload. The cap is now
+  // 1, which makes the excess a schema failure the caller can see and act on.
+  it('search_market_diff rejects two requested types and names the parameter', async () => {
+    const shape = shapeFor('search_market_diff', makeClient());
+    const two = await shape.safeParseAsync({
+      query: 'q', market_a: 'US', market_b: 'GB', response_format: 'concise', types: ['track', 'album'],
+    });
+    assert.equal(two.success, false, 'a two-type request must not validate');
+    // The error boundary reports `issue.path[0]` back to the caller, so the
+    // rejection is only actionable if it points at `types`.
+    assert.equal(offendingParam(two.error), 'types');
+  });
+
+  it('search_market_diff rejects a CSV types string rather than guessing at it', async () => {
+    const shape = shapeFor('search_market_diff', makeClient());
+    const csv = await shape.safeParseAsync({
+      query: 'q', market_a: 'US', market_b: 'GB', response_format: 'concise', types: 'track,album',
+    });
+    assert.equal(csv.success, false, 'a CSV string must not be silently split or coerced');
+    assert.equal(offendingParam(csv.error), 'types');
+  });
+
+  // Non-vacuous guard for the single-type path: the section reported back must
+  // be the type actually requested, and every search must have asked for it.
+  // A handler that ignored `types` and always searched 'track' fails both.
+  it('search_market_diff searches and reports exactly the one requested type', async () => {
+    const requested: Array<string | undefined> = [];
+    const client = makeClient({
+      get: mock.fn(async (_p: string, params?: Record<string, string>) => {
+        requested.push(params?.type);
+        // Distinct identity per market: the diff keys on uri/id, so sharing
+        // one would dedupe into `both` and leave `only_in_a` empty.
+        const us = params?.market === 'US';
+        const items = [{ id: us ? 'a-us' : 'a-gb', uri: `spotify:album:a-${us ? 'us' : 'gb'}`, name: us ? 'US Album' : 'GB Album' }];
+        // Only the albums section is populated, so reading the wrong section
+        // yields no items rather than a plausible-looking wrong answer.
+        return { albums: { items, total: items.length } };
+      }),
+    });
+    const res = await handlerFor('search_market_diff', client)({
+      query: 'q', market_a: 'US', market_b: 'GB', response_format: 'concise', types: ['album'],
+    });
+    const structured = res.structuredContent as { type: string; only_in_a: Array<{ name: string }> };
+    assert.equal(structured.type, 'album');
+    assert.deepEqual(requested, ['album', 'album']);
+    assert.equal(structured.only_in_a[0].name, 'US Album');
+  });
+
+  it('search_market_diff still defaults to track when types is omitted', async () => {
+    const requested: Array<string | undefined> = [];
+    const client = makeClient({
+      get: mock.fn(async (_p: string, params?: Record<string, string>) => {
+        requested.push(params?.type);
+        return { tracks: { items: [], total: 0 } };
+      }),
+    });
+    const res = await handlerFor('search_market_diff', client)({
+      query: 'q', market_a: 'US', market_b: 'GB', response_format: 'concise',
+    });
+    const structured = res.structuredContent as { type: string };
+    assert.equal(structured.type, 'track');
+    assert.deepEqual(requested, ['track', 'track']);
   });
 
   it('episode_context_bundle finds prev/next neighbours', async () => {

@@ -234,6 +234,38 @@ function isGatedError(err: unknown): err is SpotifyApiError {
   return err instanceof SpotifyApiError && err.status === 403;
 }
 
+/**
+ * Opt-in /albums/{id}/tracks fan-out cap for `artist_collab_network`. Each
+ * album read costs one extra request, so the walk is bounded and anything past
+ * the cap is disclosed rather than silently skipped.
+ */
+export const COLLAB_TRACK_CREDIT_CAP = 10;
+
+/**
+ * Reason recorded when an album's track-credits request comes back without a
+ * usable track list at all — HTTP 204 (`client.get` returns null) or a 200
+ * whose body has no `items` array. That is a failed read, not a
+ * collaborator-free album, so it takes the same #803 path as a throw.
+ */
+export const ALBUM_CREDITS_MISSING_REASON = 'no track list in the response';
+
+/**
+ * Short, non-guessing reason one album's track credits could not be read
+ * (#770). Every failed read — a throw, or a response with no track list (see
+ * ALBUM_CREDITS_MISSING_REASON) — is reported as unreadable with its reason,
+ * never folded into "this album has no collaborators" (the #803 class).
+ */
+export function albumCreditFailureReason(err: unknown): string {
+  if (err instanceof SpotifyApiError) {
+    if (err.status === 429) {
+      return `rate limited (429${err.retryAfterSec != null ? `, retry after ${err.retryAfterSec}s` : ''})`;
+    }
+    if (err.status === 403) return 'forbidden or app-registration gated (403)';
+    if (err.status === 404) return 'album not found (404)';
+    return `Spotify error ${err.status}${err.reason ? ` (${err.reason})` : ''}`;
+  }
+  return err instanceof Error ? err.message : String(err);
+}
 // ---------------------------------------------------------------------------
 // Registration
 // ---------------------------------------------------------------------------
@@ -629,14 +661,24 @@ max_results: z.number().int().positive().max(2000).optional().describe('Max item
       const rf = args.response_format;
       const fetchAllCap = getConfig().fetchAllCap;
       const albumMeta = await client.get<AlbumPayload>(`/albums/${encodeURIComponent(args.album_id)}`);
-      const page = await client.get<{ items: SpotifyTrackSimple[]; total: number }>(
+      // #774: one 50-track page is not the album. Walk every page (bounded by
+      // the fetch-all cap) and CARRY the truncation verdict — a capped walk
+      // must never be presented as the album's statistics.
+      const walk = await client.getAllPagesWithTruncation<SpotifyTrackSimple>(
         `/albums/${encodeURIComponent(args.album_id)}/tracks`,
         { limit: '50', ...(args.market ? { market: args.market } : {}) },
+        { maxItems: fetchAllCap },
       );
-      if (!page || !Array.isArray(page.items) || page.items.length === 0) {
+      const tracks = walk.items;
+      if (tracks.length === 0) {
         throw new Error(`Album "${args.album_id}" not found or has no listed tracks`);
       }
-      const tracks = page.items;
+      // The album's own track count, when the album read carried one. A field
+      // that was not read is UNKNOWN (null), never coerced to the walked length.
+      const tracksListed = typeof albumMeta?.tracks?.total === 'number'
+        ? albumMeta.tracks.total
+        : typeof albumMeta?.total_tracks === 'number' ? albumMeta.total_tracks : null;
+      const partialEstimate = walk.truncated;
       const durations = tracks.map((s) => s.duration_ms ?? 0).sort((a, b) => a - b);
       const total = durations.reduce((n, d) => n + d, 0);
       const mean = Math.round(total / durations.length);
@@ -650,19 +692,27 @@ max_results: z.number().int().positive().max(2000).optional().describe('Max item
           : { id: args.album_id },
         stats: {
           track_count: tracks.length,
+          tracks_listed: tracksListed,
+          partial_estimate: partialEstimate,
           min_ms: durations[0],
           max_ms: durations[durations.length - 1],
           mean_ms: mean,
           median_ms: median,
           total_runtime_ms: total,
         },
+        fetch_all_cap: fetchAllCap,
         longest_track: { id: longest.id, name: longest.name, duration_ms: longest.duration_ms },
       };
       const name = albumMeta?.name ? `"${albumMeta.name}"` : args.album_id;
+      // A capped walk is stated in the prose, never left to be inferred from
+      // a number that reads like an album total.
+      const countLine = partialEstimate
+        ? `Track stats for ${name} (PARTIAL — first ${tracks.length} of ${tracksListed ?? 'an unknown number of'} listed tracks, scan capped at ${fetchAllCap}):`
+        : `Track stats for ${name} (${tracks.length} listed tracks):`;
       const prose = [
-        `Track stats for ${name} (${tracks.length} listed tracks):`,
+        countLine,
         `  shortest: ${fmtDur(durations[0])} · median: ${fmtDur(median)} · mean: ${fmtDur(mean)} · longest: ${fmtDur(durations[durations.length - 1])}`,
-        `  total runtime: ${fmtDur(total)}`,
+        `  total runtime: ${fmtDur(total)}${partialEstimate ? ' (partial — excludes the tracks the cap cut off)' : ''}`,
         `  longest track: "${longest.name}" (${fmtDur(longest.duration_ms)})`,
       ].join('\n');
       return emit(rf, prose, payload);
@@ -940,8 +990,9 @@ max_results: z.number().int().positive().max(2000).optional().describe('Max item
       if (!/^[A-Z]{2}[A-Z0-9]{3}\d{7}$/.test(isrc)) {
         throw new Error(`"${args.isrc}" is not a valid ISRC (expected CC-XXX-YYNNNNN shape, 12 alphanumeric chars)`);
       }
+      const marketUsed = args.market ?? 'from_token';
       const { items, total } = await runTypedSearch<TrackPayload>(
-        client, 'tracks', 'track', { query: isrc }, `isrc:${isrc}`,
+        client, 'tracks', 'track', { query: isrc, market: args.market }, `isrc:${isrc}`,
       );
       const lines = items.map(
         (t) => `• "${t.name}" — ${(t.artists ?? []).map((a) => a.name).join(', ')} | ${t.album?.name ?? '?'} (${yearOf(t.album?.release_date) ?? '?'}) | ${t.uri}`,
@@ -949,11 +1000,11 @@ max_results: z.number().int().positive().max(2000).optional().describe('Max item
       return emitSearchResult(
         rf,
         items.length > 0
-          ? `ISRC ${isrc} resolved to ${items.length} track${items.length === 1 ? '' : 's'}:`
-          : `ISRC ${isrc} — no track found. The recording may not be distributed in this market's catalog.`,
+          ? `ISRC ${isrc} resolved to ${items.length} track${items.length === 1 ? '' : 's'} in market ${marketUsed}:`
+          : `ISRC ${isrc} — no track found in market ${marketUsed}. The recording may not be distributed in this market's catalog.`,
         lines,
         items.map((t) => ({ id: t.id, uri: t.uri, name: t.name, artists: (t.artists ?? []).map((a) => a.name), album: t.album?.name ?? null, isrc: t.external_ids?.isrc ?? null })),
-        total, { isrc }, 50,
+        total, { isrc, market_used: marketUsed }, 50,
       );
     },
   );
@@ -972,13 +1023,14 @@ max_results: z.number().int().positive().max(2000).optional().describe('Max item
     },
     async (args) => {
       const rf = args.response_format;
+      const marketUsed = args.market ?? 'from_token';
       const precise = `track:"${args.title.replace(/"/g, '')}" artist:"${args.artist.replace(/"/g, '')}"`;
-      let { items } = await runTypedSearch<TrackPayload>(client, 'tracks', 'track', { query: precise }, precise);
+      let { items } = await runTypedSearch<TrackPayload>(client, 'tracks', 'track', { query: precise, market: args.market }, precise);
       let fallback = false;
       if (items.length === 0) {
         fallback = true;
         const broad = await runTypedSearch<TrackPayload>(
-          client, 'tracks', 'track', { query: `${args.title} ${args.artist}` },
+          client, 'tracks', 'track', { query: `${args.title} ${args.artist}`, market: args.market },
         );
         items = broad.items;
       }
@@ -1025,7 +1077,7 @@ max_results: z.number().int().positive().max(2000).optional().describe('Max item
       const prose = [
         `Canonical version of "${args.title}" by ${args.artist}:`,
         `  "${canonical.name}" — ${(canonical.artists ?? []).map((a) => a.name).join(', ')} | ${canonical.album?.name ?? '?'} (${canonical.album?.release_date ?? '?'})`,
-        `  URI: ${canonical.uri}`,
+        `  URI: ${canonical.uri} (market searched: ${marketUsed})`,
         fallback ? '  (precise filter empty — broad search fallback used)' : '',
         '',
         `All versions (${variants.length}):`,
@@ -1036,6 +1088,7 @@ max_results: z.number().int().positive().max(2000).optional().describe('Max item
         variants,
         groups: groupsList.length,
         fallback_search: fallback,
+        market_used: marketUsed,
       });
     },
   );
@@ -1097,6 +1150,8 @@ max_results: z.number().int().positive().max(2000).optional().describe('Max item
     'artist_collab_network',
     '[local-compute] Featured/collab artists extracted from an artist\'s top tracks and recent albums with '
       + 'co-appearance counts — computed from real payloads, not the dead related-artists endpoint. '
+      + 'NOTE: /artists/{id}/albums returns SIMPLIFIED album objects (no track list), so the default is '
+      + 'album-level co-billing only; pass include_track_features to read track credits for real. '
       + 'NOTE: /artists/{id}/top-tracks is on the #329 registration-gated surface; if it 403s the network is '
       + 'computed from recent albums only, with an explicit disclosure. Quota: 🟡 1 + paginated API calls.',
     {
@@ -1111,19 +1166,28 @@ max_results: z.number().int().positive().max(2000).optional().describe('Max item
         .describe('How many recent albums to walk. Default: 10'),
       response_format: ResponseFormat,
       max_results: z.number().int().positive().max(2000).optional().describe('Max items to return (default: SPOTIFY_MCP_MAX_ITEMS env or 50)'),
+      include_track_features: z
+        .boolean()
+        .optional()
+        .describe(
+          `Opt in: also read track-level credits (1 extra GET /albums/{id}/tracks per album, up to ${COLLAB_TRACK_CREDIT_CAP} `
+            + 'albums) so featured-artist collaborations are counted. Default: false. Albums whose credits could not be '
+            + 'read are listed as unreadable with the reason, never counted as zero collaborators.',
+        ),
     },
     async (args) => {
       const rf = args.response_format;
       const target = await client.get<SpotifyArtistFull>(`/artists/${encodeURIComponent(args.artist_id)}`);
       if (!target) throw new Error(`Artist "${args.artist_id}" not found`);
-      const counts = new Map<string, { name: string; count: number; via_top: boolean }>();
-      const record = (artist: SpotifyArtistSimple | undefined, viaTop: boolean) => {
+      const counts = new Map<string, { name: string; count: number; via_top: boolean; via_album_tracks: boolean }>();
+      const record = (artist: SpotifyArtistSimple | undefined, viaTop: boolean, viaAlbumTracks: boolean) => {
         if (!artist || artist.id === target.id) return;
         const prev = counts.get(artist.id);
         counts.set(artist.id, {
           name: artist.name,
           count: (prev?.count ?? 0) + 1,
           via_top: (prev?.via_top ?? false) || viaTop,
+          via_album_tracks: (prev?.via_album_tracks ?? false) || viaAlbumTracks,
         });
       };
       let topTracksNote: string | null = null;
@@ -1132,7 +1196,7 @@ max_results: z.number().int().positive().max(2000).optional().describe('Max item
           `/artists/${encodeURIComponent(args.artist_id)}/top-tracks`,
           args.market ? { market: args.market } : {},
         );
-        for (const t of top?.tracks ?? []) for (const a of t.artists ?? []) record(a, true);
+        for (const t of top?.tracks ?? []) for (const a of t.artists ?? []) record(a, true, false);
       } catch (err) {
         if (isGatedError(err)) {
           topTracksNote = gatedEndpointMessage('/artists/{id}/top-tracks') + ' Falling back to recent albums only.';
@@ -1141,32 +1205,116 @@ max_results: z.number().int().positive().max(2000).optional().describe('Max item
         }
       }
       const maxAlbums = args.max_albums ?? 10;
-      const albums = await client.getAllPages<AlbumPayload>(
+      // Typed as SpotifyAlbumItem, NOT AlbumPayload: /artists/{id}/albums returns
+      // simplified objects with no `tracks` key, so the compiler rejects the
+      // impossible album-track read that #770 used to pretend worked.
+      const albums = await client.getAllPages<SpotifyAlbumItem>(
         `/artists/${encodeURIComponent(args.artist_id)}/albums`,
         { include_groups: 'album,single', limit: String(ARTIST_ALBUM_PAGE_LIMIT) },
         { maxItems: maxAlbums },
       );
-      for (const al of albums) {
-        for (const a of al.artists ?? []) record(a, false);
-        for (const track of al.tracks?.items ?? []) for (const a of track.artists ?? []) record(a, false);
+      for (const al of albums) for (const a of al.artists ?? []) record(a, false, false);
+      // Track-level credits cost one request per album, so they are opt-in and
+      // bounded; both the cap and any failed read are disclosed.
+      const includeTrackFeatures = args.include_track_features === true;
+      const creditAlbums = includeTrackFeatures ? albums.slice(0, COLLAB_TRACK_CREDIT_CAP) : [];
+      const albumsSkippedByCap = includeTrackFeatures ? albums.length - creditAlbums.length : 0;
+      const unreadableAlbums: Array<{ album_id: string; album_name: string | null; reason: string }> = [];
+      // One request per album, so a long album's credits are only partly read
+      // (the page caps at 50). Recorded per album rather than left implicit.
+      // `tracks_reported` is the API's own `total`, and stays null when the
+      // response omitted it: substituting items.length would claim "all N were
+      // read" inside a list that exists to say the opposite (#803 class).
+      const truncatedAlbums: Array<{ album_id: string; album_name: string | null; tracks_read: number; tracks_reported: number | null }> = [];
+      for (const al of creditAlbums) {
+        try {
+          const page = await client.get<{ items?: unknown; total?: number; next?: string | null }>(
+            `/albums/${encodeURIComponent(al.id)}/tracks`,
+            { limit: '50', ...(args.market ? { market: args.market } : {}) },
+          );
+          // A 204 (null) and an item-less 200 are BOTH short reads. `?? []`
+          // here would report the album as read-and-empty, which is the
+          // fabricated zero this tool exists not to produce (#803).
+          if (!Array.isArray(page?.items)) {
+            unreadableAlbums.push({ album_id: al.id, album_name: al.name ?? null, reason: ALBUM_CREDITS_MISSING_REASON });
+            continue;
+          }
+          const items = page.items as SpotifyTrackSimple[];
+          const tracksReported = typeof page?.total === 'number' ? page.total : null;
+          // A page with a `next` cursor but no `total` cannot say how much is
+          // missing; it says only that this page is not the last one.
+          if (page?.next || (tracksReported !== null && tracksReported > items.length)) {
+            truncatedAlbums.push({
+              album_id: al.id,
+              album_name: al.name ?? null,
+              tracks_read: items.length,
+              tracks_reported: tracksReported,
+            });
+          }
+          for (const t of items) for (const a of t.artists ?? []) record(a, false, true);
+        } catch (err) {
+          // An unreadable album is not a collaborator-free one: recording it
+          // keeps a 403/404/429 out of the ranking as a fabricated zero (#803).
+          unreadableAlbums.push({ album_id: al.id, album_name: al.name ?? null, reason: albumCreditFailureReason(err) });
+        }
       }
+      const creditsSource = includeTrackFeatures ? 'album_and_track_credits' : 'album_credits';
       const collabs = [...counts.entries()]
-        .map(([id, v]) => ({ id, name: v.name, co_appearances: v.count, on_top_tracks: v.via_top }))
+        .map(([id, v]) => ({ id, name: v.name, co_appearances: v.count, on_top_tracks: v.via_top, on_album_tracks: v.via_album_tracks }))
         .sort((a, b) => b.co_appearances - a.co_appearances || a.name.localeCompare(b.name));
       const cap = resolveMaxResults(args.max_results, getConfig().maxItems);
       const trunc = truncateItems(collabs, cap);
       const lines = [
         `Collab network for "${target.name}" — ${collabs.length} distinct collaborator(s) from ${albums.length} recent album(s)/single(s)${topTracksNote ? ' (top-tracks GATED — albums only)' : ' and top tracks'}:`,
         '',
-        ...trunc.items.map((c) => `• ${c.name} — ${c.co_appearances} co-appearance${c.co_appearances === 1 ? '' : 's'}${c.on_top_tracks ? ' [top tracks]' : ''} | spotify:artist:${c.id}`),
+        ...trunc.items.map((c) => `• ${c.name} — ${c.co_appearances} co-appearance${c.co_appearances === 1 ? '' : 's'}${c.on_top_tracks ? ' [top tracks]' : ''}${c.on_album_tracks ? ' [album tracks]' : ''} | spotify:artist:${c.id}`),
       ];
       if (trunc.footer) lines.push(`(${trunc.footer})`);
       if (topTracksNote) lines.push('', topTracksNote);
+      if (!includeTrackFeatures) {
+        lines.push(
+          '',
+          'Album-level co-billing only: /artists/{id}/albums returns simplified album objects with no track list, '
+            + 'so track-level features are not counted. Re-run with include_track_features: true to read album track credits.',
+        );
+      }
+      if (albumsSkippedByCap > 0) {
+        lines.push('', `${albumsSkippedByCap} older album(s) beyond the ${COLLAB_TRACK_CREDIT_CAP}-album track-credit cap were walked but not read for track credits.`);
+      }
+      if (unreadableAlbums.length > 0) {
+        lines.push(
+          '',
+          `Unreadable — track credits unknown, not zero (${unreadableAlbums.length} album(s) excluded from the network): `
+            + unreadableAlbums.map((u) => `${u.album_name ?? u.album_id} (${u.reason})`).join(', '),
+        );
+      }
+      if (truncatedAlbums.length > 0) {
+        lines.push(
+          '',
+          `Partial — track credits beyond the first 50 of ${truncatedAlbums.length} album(s) were not read: `
+            + truncatedAlbums.map((t) => `${t.album_name ?? t.album_id} (${t.tracks_reported === null ? `${t.tracks_read} tracks, total unknown` : `${t.tracks_read} of ${t.tracks_reported} tracks`})`).join(', '),
+        );
+      }
       return emit(rf, lines.join('\n'), {
         artist: { id: target.id, name: target.name },
         collaborators: trunc.items,
         albums_walked: albums.length,
         top_tracks_available: topTracksNote === null,
+        credits_source: creditsSource,
+        track_features_included: includeTrackFeatures,
+        // albums_credited counts reads that actually returned a track list, so
+        // it never reports a credit the tool did not observe.
+        ...(includeTrackFeatures ? { album_credit_cap: COLLAB_TRACK_CREDIT_CAP, albums_credited: creditAlbums.length - unreadableAlbums.length } : {}),
+        ...(albumsSkippedByCap > 0 ? { albums_skipped_by_credit_cap: albumsSkippedByCap } : {}),
+        ...(unreadableAlbums.length > 0
+          ? { unreadable_albums: unreadableAlbums, unreadable_count: unreadableAlbums.length }
+          : {}),
+        ...(truncatedAlbums.length > 0
+          ? { truncated_albums: truncatedAlbums, truncated_count: truncatedAlbums.length }
+          : {}),
+        // Set by either a failed read or a partly-read album: in both cases the
+        // network is a subset of the credits, not the whole of them.
+        ...(unreadableAlbums.length > 0 || truncatedAlbums.length > 0 ? { track_features_partial: true } : {}),
         ...(topTracksNote ? { disclosure: topTracksNote } : {}),
         pagination: paginationInfo({ total: collabs.length, returned: trunc.items.length }),
       });
@@ -1180,12 +1328,15 @@ max_results: z.number().int().positive().max(2000).optional().describe('Max item
       + 'Quota: 🟡 2 GET /search calls (one per market).',
     {
       query: z.string().min(1).describe('Search query'),
+      // One type per call. `types` was capped at 2 but only `types[0]` was ever
+      // searched, so a second entry was accepted and silently dropped; the cap
+      // is now 1, and the excess is rejected at the schema so the caller is
+      // told which parameter to fix instead of getting a one-type answer.
       types: z
         .array(z.enum(['track', 'artist', 'album', 'playlist', 'show', 'episode', 'audiobook']))
-        .min(1)
-        .max(2)
+        .length(1)
         .optional()
-        .describe("Types to search (up to 2). Default: ['track']"),
+        .describe("Type to search. Default: ['track']"),
       market_a: MARKET_CODE.describe("First market code, e.g. 'US'"),
       market_b: MARKET_CODE.describe("Second market code, e.g. 'GB'"),
       limit: SearchLimit,
@@ -1193,7 +1344,9 @@ max_results: z.number().int().positive().max(2000).optional().describe('Max item
     },
     async (args) => {
       const rf = args.response_format;
-      const type = (args.types ?? ['track'])[0];
+      // `.length(1)` means at most one type reaches the handler, so there is no
+      // longer a second requested type that could go unsearched.
+      const type = args.types?.[0] ?? 'track';
       const sectionKey = type === 'audiobook' ? 'audiobooks' : type === 'track' ? 'tracks' : type === 'artist' ? 'artists' : type === 'album' ? 'albums' : type === 'playlist' ? 'playlists' : type === 'show' ? 'shows' : 'episodes';
       const a = await runTypedSearch<{ uri?: string; id?: string; name?: string }>(client, sectionKey, type, { query: args.query, limit: args.limit, market: args.market_a });
       const b = await runTypedSearch<{ uri?: string; id?: string; name?: string }>(client, sectionKey, type, { query: args.query, limit: args.limit, market: args.market_b });

@@ -425,7 +425,7 @@ Quick reference for all endpoints used. All paths are relative to `https://api.s
 ## 5. Tools
 
 <!-- BEGIN:generated tool-surface -->
-The finalized default MCP registry exposes **591 tools** (all 591 attributed to the 63 files under `src/tools/`), organized by 44 registration keys and 13 named toolsets. Registration keys: `artistwatch`, `audiobooks`, `browse`, `catalog`, `doctor`, `episodemgmt`, `exhaust2catalog`, `exhaust2enggating`, `exhaust2extra`, `exhaust2misc`, `exhaust2playback`, `exhaust2playlists`, `following`, `library`, `libraryanalytics`, `personalization`, `playback`, `playbackext`, `playbackintel`, `playlistbatch`, `playlisthealth`, `playlistmisc`, `playlists`, `portability`, `prompts`, `queueops`, `resources`, `search`, `searchhistory`, `statsfm`, `swarm3analytics`, `swarm3bdiscovery`, `swarm3discovery`, `swarm3library`, `swarm3meta`, `swarm3playback`, `swarm3playlistops`, `swarm3refs`, `swarm3shows`, `swarm3snapshots`, `swarm4playlists`, `taste`, `tastecomposites`, `users`. `node scripts/surface-census.mjs` derives the authoritative inventory by starting the real `src/index.ts` stdio entry and calling `tools/list`, `resources/list`, `resources/templates/list`, and `prompts/list` after production gates and finalizers, without network access.
+The finalized default MCP registry exposes **592 tools** (all 592 attributed to the 63 files under `src/tools/`), organized by 44 registration keys and 13 named toolsets. Registration keys: `artistwatch`, `audiobooks`, `browse`, `catalog`, `doctor`, `episodemgmt`, `exhaust2catalog`, `exhaust2enggating`, `exhaust2extra`, `exhaust2misc`, `exhaust2playback`, `exhaust2playlists`, `following`, `library`, `libraryanalytics`, `personalization`, `playback`, `playbackext`, `playbackintel`, `playlistbatch`, `playlisthealth`, `playlistmisc`, `playlists`, `portability`, `prompts`, `queueops`, `resources`, `search`, `searchhistory`, `statsfm`, `swarm3analytics`, `swarm3bdiscovery`, `swarm3discovery`, `swarm3library`, `swarm3meta`, `swarm3playback`, `swarm3playlistops`, `swarm3refs`, `swarm3shows`, `swarm3snapshots`, `swarm4playlists`, `taste`, `tastecomposites`, `users`. `node scripts/surface-census.mjs` derives the authoritative inventory by starting the real `src/index.ts` stdio entry and calling `tools/list`, `resources/list`, `resources/templates/list`, and `prompts/list` after production gates and finalizers, without network access.
 <!-- END:generated tool-surface -->
 
 ### Shared tool contract
@@ -676,7 +676,7 @@ Get full details for a podcast show.
 | `id` | string | yes | Show ID |
 | `market` | string | no | ISO 3166-1 alpha-2 country code |
 
-**Returns:** name, description, publisher, explicit, total_episodes, languages, media_type, URI, first page of episodes (name, duration_ms, release_date, resume_point, URI).
+**Returns:** name, description, publisher, explicit, total_episodes, languages, media_type, URI, and a ten-row episode preview (name, duration_ms, release_date, resume_point, URI). When the show holds more, the card states how many episodes of how many it showed and points at `list_show_episodes`.
 
 ---
 
@@ -1099,16 +1099,16 @@ Get full details for an audiobook.
 | `id` | string | yes | Audiobook ID |
 | `market` | string | no | ISO 3166-1 alpha-2 country code |
 
-**Returns:** name, authors, narrators, description, publisher, total_chapters, media_type, URI, first page of chapters.
+**Returns:** name, authors, narrators, description, publisher, total_chapters, media_type, URI, and a ten-row chapter preview. When the book holds more, the card states how many chapters of how many it showed and points at `get_audiobook_chapters`.
 
 ---
 
 #### `get_audiobook_chapters`
 List an audiobook's chapters with pagination. Resume positions require the `user-read-playback-position` scope.
 
-**Inputs:** `id` (string, required), `limit` (1–50, default 20), `offset` (optional)
+**Inputs:** `id` (string, required), `limit` (1–50, default 20), `offset` (optional), `fetch_all` (boolean, default false)
 
-**Returns:** chapter name, description, duration_ms, release_date, resume_point, URI; plus total chapter count.
+**Returns:** chapter name, description, duration_ms, release_date, resume_point, URI; plus total chapter count. `fetch_all: true` walks every page up to `SPOTIFY_MCP_FETCH_ALL_CAP` instead of returning one page, and reports the walk's verdict — in the prose, in `structuredContent` and in json mode — so a walk stopped at the cap never reads as a complete chapter list. Without it, a page cut short of the total prints the next `offset`.
 
 ---
 

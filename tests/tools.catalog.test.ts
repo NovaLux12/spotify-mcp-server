@@ -1,8 +1,42 @@
-import test from 'node:test';
+import test, { afterEach, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { registerCatalogTools, resetProfileCountryCache as resetCatalogMarketCache } from '../src/tools/catalog.js';
 import { SpotifyApiError } from '../src/client.js';
 import { registerAudiobookTools, resetProfileCountryCache as resetAudiobooksMarketCache } from '../src/tools/audiobooks.js';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { z } from 'zod';
+
+// The typed-search factory records every executed search to the local
+// sidecar (#766). Point it at a temp file so the suite never writes to the
+// developer's real ~/.spotify-mcp/search-history.json.
+let historyDir: string;
+let historyFile: string;
+beforeEach(async () => {
+  historyDir = await mkdtemp(join(tmpdir(), 'cat-sh-'));
+  historyFile = join(historyDir, 'search-history.json');
+  process.env.SPOTIFY_MCP_SEARCH_HISTORY_FILE = historyFile;
+  delete process.env.SPOTIFY_MCP_SEARCH_HISTORY;
+});
+afterEach(async () => {
+  delete process.env.SPOTIFY_MCP_SEARCH_HISTORY_FILE;
+  delete process.env.SPOTIFY_MCP_SEARCH_HISTORY;
+  await rm(historyDir, { recursive: true, force: true });
+});
+
+const HISTORY_ENTRY = z.object({
+  query: z.string(),
+  types: z.array(z.string()).optional(),
+  top_result_ids: z.array(z.string()),
+  limit: z.number().optional(),
+  market: z.string().optional(),
+  offset: z.number().optional(),
+});
+
+async function readHistory() {
+  return z.array(HISTORY_ENTRY).parse(JSON.parse(await readFile(historyFile, 'utf8')));
+}
 
 // ---------------------------------------------------------------- fixtures
 
@@ -1342,6 +1376,133 @@ test('browse_category_deepdive fetches category + playlists', async () => {
   assert.equal(calls.length, 2);
 });
 
+// #1013: GET /browse/categories/{id} and its /playlists child were removed by
+// Spotify's February 2026 Web API changes. Pre-fix the deep dive reported a dead
+// endpoint as a missing category, or answered with the category alone and
+// silently dropped the playlist page — a partial answer read as a complete one.
+test('#1013 browse_category_deepdive names the removed category endpoint on 403', async () => {
+  const { registered } = makeHarness(registerCatalogTools, {
+    getError: (p) => (p === '/browse/categories/mood' ? new SpotifyApiError(403, 'Forbidden') : undefined),
+  });
+  await assert.rejects(
+    () => invoke(findTool(registered, 'browse_category_deepdive'), { category_id: 'mood' }),
+    (err: Error) => {
+      assert.match(err.message, /February 2026 Web API changes/);
+      assert.match(err.message, /no replacement endpoint/);
+      assert.doesNotMatch(err.message, /not found/i);
+      return true;
+    },
+  );
+});
+
+test('#1013 browse_category_deepdive fails instead of silently dropping a dead playlist page', async () => {
+  const { registered } = makeHarness(registerCatalogTools, {
+    getResponse: (p) => (p === '/browse/categories/mood' ? { id: 'mood', name: 'Mood', href: 'h', icons: [] } : undefined),
+    getError: (p) => (p === '/browse/categories/mood/playlists' ? new SpotifyApiError(403, 'Forbidden') : undefined),
+  });
+  await assert.rejects(
+    () => invoke(findTool(registered, 'browse_category_deepdive'), { category_id: 'mood' }),
+    (err: Error) => {
+      assert.match(err.message, /\/browse\/categories\/mood\/playlists/);
+      assert.match(err.message, /February 2026 Web API changes/);
+      return true;
+    },
+  );
+});
+
+test('#1013 browse_category_deepdive reports a payload-less category read as unreadable', async () => {
+  const { registered } = makeHarness(registerCatalogTools, { getResponse: () => undefined });
+  await assert.rejects(
+    () => invoke(findTool(registered, 'browse_category_deepdive'), { category_id: 'mood' }),
+    (err: Error) => {
+      assert.match(err.message, /no category payload/);
+      assert.doesNotMatch(err.message, /Category "mood" not found/);
+      return true;
+    },
+  );
+});
+
+test('#1013 get_category names the removed single-category endpoint instead of a missing category', async () => {
+  const { registered } = makeHarness(registerCatalogTools, {
+    getError: (p) => (p === '/browse/categories/mood' ? new SpotifyApiError(404, 'Not found.') : undefined),
+  });
+  await assert.rejects(
+    () => invoke(findTool(registered, 'get_category'), { category_id: 'mood' }),
+    (err: Error) => {
+      assert.match(err.message, /February 2026 Web API changes/);
+      assert.match(err.message, /no replacement endpoint/);
+      assert.doesNotMatch(err.message, /Category "mood" not found/);
+      return true;
+    },
+  );
+});
+
+// The peek reads /playlists/{id}/items, whose rows are { added_at, item }.
+// #773: the legacy /tracks path returned plain track rows, so the peek
+// rendered a table of `unknown` for every row.
+test('browse_category_deepdive peek reads /playlists/{id}/items rows', async () => {
+  const { registered, calls } = makeHarness(registerCatalogTools, {
+    getResponse: (p) => {
+      if (p === '/browse/categories/mood') return { id: 'mood', name: 'Mood', href: 'h', icons: [] };
+      if (p === '/browse/categories/mood/playlists') return { playlists: { items: [{ id: 'pl1', name: 'Chill Hits', uri: 'spotify:playlist:pl1' }], total: 1 } };
+      if (p === '/playlists/pl1/items') {
+        return {
+          items: [
+            { added_at: '2026-01-01T00:00:00Z', item: { id: 'trkA', name: 'Sunset Drive', uri: 'spotify:track:trkA', type: 'track' } },
+            { added_at: '2026-01-01T00:00:00Z', item: { id: 'trkB', name: 'Night Bus', uri: 'spotify:track:trkB', type: 'track' } },
+          ],
+          total: 2,
+        };
+      }
+      return undefined;
+    },
+  });
+  const result = await invoke(findTool(registered, 'browse_category_deepdive'), { category_id: 'mood', peek_items: true });
+  const out = text(result);
+  assert.match(out, /Sunset Drive/);
+  assert.match(out, /spotify:track:trkA/);
+  assert.match(out, /Night Bus/);
+  assert.ok(!/unknown/.test(out), `peek rendered unknown rows: ${out}`);
+  assert.equal(result.structuredContent?.peek_error, null);
+  const peekCall = calls.find((c) => c.path === '/playlists/pl1/items');
+  assert.ok(peekCall, `expected a peek on /playlists/pl1/items, saw ${JSON.stringify(calls)}`);
+  assert.equal(peekCall?.params?.additional_types, 'track');
+});
+
+// A peek that could not be read is unknown, not an empty playlist.
+test('browse_category_deepdive reports peek_error instead of an empty peek', async () => {
+  const { registered } = makeHarness(registerCatalogTools, {
+    getResponse: (p) => {
+      if (p === '/browse/categories/mood') return { id: 'mood', name: 'Mood', href: 'h', icons: [] };
+      if (p === '/browse/categories/mood/playlists') return { playlists: { items: [{ id: 'pl1', name: 'Chill Hits', uri: 'spotify:playlist:pl1' }], total: 1 } };
+      return undefined;
+    },
+    getError: (p) => (p === '/playlists/pl1/items' ? new SpotifyApiError(403, 'Forbidden') : undefined),
+  });
+  const result = await invoke(findTool(registered, 'browse_category_deepdive'), { category_id: 'mood', peek_items: true });
+  const out = text(result);
+  assert.equal(result.structuredContent?.peek, null);
+  assert.equal(typeof result.structuredContent?.peek_error, 'string');
+  assert.match(String(result.structuredContent?.peek_error), /Forbidden/);
+  assert.match(out, /preview unavailable/);
+  assert.ok(!/Peek \(first playlist/.test(out), `failed peek must not read as a populated peek: ${out}`);
+});
+
+test('browse_category_deepdive peek_error is present in json mode', async () => {
+  const { registered } = makeHarness(registerCatalogTools, {
+    getResponse: (p) => {
+      if (p === '/browse/categories/mood') return { id: 'mood', name: 'Mood', href: 'h', icons: [] };
+      if (p === '/browse/categories/mood/playlists') return { playlists: { items: [{ id: 'pl1', name: 'Chill Hits', uri: 'spotify:playlist:pl1' }], total: 1 } };
+      return undefined;
+    },
+    getError: (p) => (p === '/playlists/pl1/items' ? new SpotifyApiError(500, 'boom') : undefined),
+  });
+  const result = await invoke(findTool(registered, 'browse_category_deepdive'), { category_id: 'mood', peek_items: true, response_format: 'json' });
+  const parsed = JSON.parse(text(result)) as Record<string, unknown>;
+  assert.ok('peek_error' in parsed, 'json payload must carry peek_error');
+  assert.match(String(parsed.peek_error), /boom/);
+});
+
 test('show_episode_search filters by query', async () => {
   const { registered } = makeHarness(registerCatalogTools, { getResponse: (p) => (p === '/shows/shw1/episodes' ? { items: [episodeSimpleFixture({ id: 'ep1', name: 'AMA with Jack', description: 'ask me anything' }), episodeSimpleFixture({ id: 'ep2', name: 'Other', description: 'nothing' })], total: 2 } : undefined) });
   const out = text(await invoke(findTool(registered, 'show_episode_search'), { show_id: 'shw1', query: 'AMA' }));
@@ -1353,6 +1514,75 @@ test('show_episode_search reports no matches', async () => {
   const { registered } = makeHarness(registerCatalogTools, { getResponse: (p) => (p === '/shows/shw1/episodes' ? { items: [episodeSimpleFixture({ name: 'Other' })], total: 1 } : undefined) });
   const out = text(await invoke(findTool(registered, 'show_episode_search'), { show_id: 'shw1', query: 'zzz' }));
   assert.match(out, /No episodes matching/);
+});
+
+// A show whose even-numbered episode titles match "Match": the fixture pages
+// like the real endpoint so a walk can be counted.
+function pagedShow(total: number) {
+  return (_path: string, params?: Record<string, string>) => {
+    const off = Number(params?.offset ?? 0);
+    const lim = Number(params?.limit ?? 20);
+    const end = Math.min(total, off + lim);
+    const items = [];
+    for (let i = off; i < end; i += 1) {
+      items.push(episodeSimpleFixture({
+        id: `ep${i}`,
+        name: i % 2 === 0 ? `Match ${i}` : `Filler ${i}`,
+        description: 'episode body',
+      }));
+    }
+    return { items, total, offset: off, limit: lim, next_offset: end < total ? end : null };
+  };
+}
+
+test('show_episode_search fetch_all reports the 500-episode safety cap instead of a full-show claim (#790)', async () => {
+  const { registered, calls } = makeHarness(registerCatalogTools, { getResponse: pagedShow(1200) });
+  const result = await invoke(findTool(registered, 'show_episode_search'), { show_id: 'shw1', query: 'Match', fetch_all: true });
+  // The walk's request pattern comes first: pre-fix it requested 11 pages of 50
+  // (550 episodes) and reported nothing about how far it got.
+  assert.equal(calls.length, 25, 'walk must stop at the cap, not overshoot it');
+  const scannedFromCalls = calls.reduce((sum, c) => sum + Number(c.params?.limit ?? 0), 0);
+  assert.equal(scannedFromCalls, 500, 'no request may overshoot the safety cap');
+  const sc = result.structuredContent as Record<string, unknown>;
+  assert.equal(sc.scanned_episodes, 500);
+  assert.equal(sc.safety_cap_hit, true);
+  assert.equal(sc.total_episodes, 1200);
+  const out = text(result);
+  assert.match(out, /500-episode safety cap/);
+  assert.match(out, /not every match/);
+});
+
+test('show_episode_search fetch_all starts at the caller offset with the caller page size (#790)', async () => {
+  const { registered, calls } = makeHarness(registerCatalogTools, { getResponse: pagedShow(30) });
+  const result = await invoke(findTool(registered, 'show_episode_search'), { show_id: 'shw1', query: 'Match', fetch_all: true, offset: 10, limit: 5 });
+  assert.deepEqual(calls[0].params, { limit: '5', offset: '10' });
+  const sc = result.structuredContent as Record<string, unknown>;
+  assert.equal(sc.scanned_episodes, 20, 'walk covers episodes 10-29 of a 30-episode show');
+  assert.equal(sc.scanned_from, 10);
+  assert.equal(sc.scanned_to, 30);
+  assert.equal(sc.safety_cap_hit, false);
+  assert.equal(sc.pagination, undefined, 'a fetch_all walk is not a page: no next_offset by construction');
+});
+
+test('show_episode_search max_results trims rows without bounding the walk (#790)', async () => {
+  const { registered, calls } = makeHarness(registerCatalogTools, { getResponse: pagedShow(1200) });
+  const result = await invoke(findTool(registered, 'show_episode_search'), { show_id: 'shw1', query: 'Match', fetch_all: true, max_results: 3 });
+  const sc = result.structuredContent as Record<string, unknown>;
+  assert.equal(calls.length, 25, 'max_results must not shorten the scan');
+  assert.equal(sc.scanned_episodes, 500);
+  assert.equal((sc.matches as unknown[]).length, 3);
+  const out = text(result);
+  assert.match(out, /\(247 more — raise max_results, continue with offset\)/);
+  assert.ok(!/fetch_all/.test(out), 'footer must not advise the flag the caller already set');
+});
+
+test('show_episode_search page mode reports the episode window it scanned (#790)', async () => {
+  const { registered } = makeHarness(registerCatalogTools, { getResponse: pagedShow(10) });
+  const result = await invoke(findTool(registered, 'show_episode_search'), { show_id: 'shw1', query: 'Match', offset: 2, limit: 4 });
+  const sc = result.structuredContent as Record<string, unknown>;
+  assert.deepEqual(sc.pagination, { total: 10, offset: 2, limit: 4, returned: 4, next_offset: 6 });
+  assert.equal(sc.scanned_episodes, 4);
+  assert.equal(sc.safety_cap_hit, false);
 });
 
 // --------------------------------------------------- catalog_batch_lookup
@@ -1403,19 +1633,113 @@ test('catalog_batch_lookup accepts exactly 50 URIs and fans out per type', async
   assert.match(out, /Album 0/);
 });
 
-test('catalog_batch_lookup skips unsupported types (playlists) and reports them as invalid', async () => {
+// #779: a well-formed `spotify:playlist:` URI is not malformed input. It is a
+// type this tool has no batch endpoint for, and the skip note has to say so —
+// the payload is consumed downstream as the truth about what resolved.
+test('catalog_batch_lookup reports playlist URIs as unsupported, not invalid', async () => {
   const { registered } = makeHarness(registerCatalogTools, {
     getResponse: (p) => {
       if (p === '/tracks') return { tracks: [{ id: 't1', name: 'Track 1', uri: 'spotify:track:t1' }] };
       return undefined;
     },
   });
-  const out = text(await invoke(findTool(registered, 'catalog_batch_lookup'), {
-    uris: ['spotify:track:t1', 'spotify:playlist:pl1'],
-  }));
-  assert.match(out, /Invalid URIs skipped/i);
-  assert.match(out, /spotify:playlist:pl1/);
+  const result = await invoke(findTool(registered, 'catalog_batch_lookup'), {
+    uris: ['spotify:track:t1', 'spotify:playlist:pl1', 'not-a-uri'],
+  });
+  const out = text(result);
   assert.match(out, /Track 1/);
+  assert.match(out, /1 unsupported skipped/);
+  assert.match(out, /1 invalid skipped/);
+  assert.doesNotMatch(out, /Invalid URIs skipped[^\n]*spotify:playlist:pl1/);
+  assert.match(out, /Invalid URIs skipped[^\n]*not-a-uri/);
+  assert.match(out, /Unsupported here[^\n]*spotify:playlist:pl1/);
+  assert.deepEqual(result.structuredContent?.invalid, ['not-a-uri']);
+  assert.deepEqual(result.structuredContent?.unsupported, ['spotify:playlist:pl1']);
+});
+
+test('catalog_batch_lookup json output keeps the unsupported bucket separate', async () => {
+  const { registered } = makeHarness(registerCatalogTools, {
+    getResponse: (p) => {
+      if (p === '/tracks') return { tracks: [{ id: 't1', name: 'Track 1', uri: 'spotify:track:t1' }] };
+      return undefined;
+    },
+  });
+  const result = await invoke(findTool(registered, 'catalog_batch_lookup'), {
+    uris: ['spotify:track:t1', 'spotify:playlist:pl1'],
+    response_format: 'json',
+  });
+  const payload = JSON.parse(text(result)) as { invalid: string[]; unsupported: string[] };
+  assert.deepEqual(payload.invalid, []);
+  assert.deepEqual(payload.unsupported, ['spotify:playlist:pl1']);
+});
+
+// The same conflation for any other well-formed type with no `?ids=` sibling:
+// `spotify:user:` URIs parse, so calling them invalid was wrong too.
+test('catalog_batch_lookup reports a well-formed user URI as unsupported, not invalid', async () => {
+  const { registered } = makeHarness(registerCatalogTools, {
+    getResponse: (p) => {
+      if (p === '/tracks') return { tracks: [{ id: 't1', name: 'Track 1', uri: 'spotify:track:t1' }] };
+      return undefined;
+    },
+  });
+  const result = await invoke(findTool(registered, 'catalog_batch_lookup'), {
+    uris: ['spotify:track:t1', 'spotify:user:someone'],
+  });
+  assert.deepEqual(result.structuredContent?.invalid, []);
+  assert.deepEqual(result.structuredContent?.unsupported, ['spotify:user:someone']);
+  assert.doesNotMatch(text(result), /Invalid URIs skipped/);
+});
+
+test('catalog_batch_lookup rejects an all-unsupported batch without calling them invalid', async () => {
+  const { registered } = makeHarness(registerCatalogTools);
+  await assert.rejects(
+    () => invoke(findTool(registered, 'catalog_batch_lookup'), { uris: ['spotify:playlist:p1', 'spotify:user:someone'] }),
+    (err: Error) => {
+      assert.match(err.message, /Unsupported here: spotify:playlist:p1, spotify:user:someone/);
+      assert.doesNotMatch(err.message, /Invalid/);
+      return true;
+    },
+  );
+});
+
+// A mixed batch costs one round trip per type, not one round trip per type
+// serially: every partition is outstanding before the first one answers, and
+// the render still follows the partition order rather than the order the
+// responses happened to come back in. Deterministic, not a timing race — the
+// responses are released by hand, in reverse.
+test('catalog_batch_lookup fetches every type concurrently and renders in partition order', async () => {
+  let inFlight = 0;
+  let peak = 0;
+  const pending: Array<() => void> = [];
+  const bodies: Record<string, unknown> = {
+    '/tracks': { tracks: [{ id: 't1', name: 'Track One', uri: 'spotify:track:t1' }] },
+    '/artists': { artists: [{ id: 'a1', name: 'Artist One', uri: 'spotify:artist:a1' }] },
+    '/albums': { albums: [{ id: 'al1', name: 'Album One', uri: 'spotify:album:al1' }] },
+  };
+  const { registered } = makeHarness(registerCatalogTools, {
+    getResponse: (p) => {
+      inFlight += 1;
+      peak = Math.max(peak, inFlight);
+      const { promise, resolve } = Promise.withResolvers<unknown>();
+      pending.push(() => {
+        inFlight -= 1;
+        resolve(bodies[p]);
+      });
+      return promise;
+    },
+  });
+  const walk = invoke(findTool(registered, 'catalog_batch_lookup'), {
+    uris: ['spotify:track:t1', 'spotify:artist:a1', 'spotify:album:al1'],
+  });
+  // Let the handler run to its first suspension point before judging, so the
+  // assertion is about concurrency and not about how early the walk suspends.
+  await new Promise((resolve) => { setImmediate(resolve); });
+  assert.equal(peak, 3, `expected all 3 per-type fetches outstanding at once, peak was ${peak}`);
+  assert.equal(pending.length, 3, 'each type must be settled by this test, not left hanging');
+  for (const settle of [...pending].reverse()) settle();
+  const out = text(await walk);
+  const rendered = out.split('\n').filter((l) => l.includes('| URI:'));
+  assert.deepEqual(rendered.map((l) => l.slice(l.indexOf('[') + 1, l.indexOf(']'))), ['tracks', 'artists', 'albums']);
 });
 
 
@@ -1628,4 +1952,63 @@ test('#789 get_several_shows accepts id, URI and URL and joins bare ids on the w
 
 test('#789 get_several_audiobooks accepts id, URI and URL and joins bare ids on the wire', async () => {
   await assertSeveralJoinsBareIds('get_several_audiobooks', 'audiobook', '/audiobooks', 'audiobooks');
+});
+
+// ------------------------------------------------- search history recording
+
+test('a typed search records exactly one history entry, not one per registered tool (#766)', async () => {
+  const { registered } = makeHarness(registerCatalogTools, {
+    getResponse: (p) => (p === '/search' ? { tracks: { items: [{ id: 't1', name: 'Song', uri: 'spotify:track:t1' }], total: 1 } } : undefined),
+  });
+  // Seven typed search tools come from this one factory; one call must record
+  // one entry, and the other six must record nothing.
+  assert.equal(registered.filter((t) => t.name.startsWith('search_')).length, 7);
+  await invoke(findTool(registered, 'search_tracks'), { query: 'hello' });
+  const entries = await readHistory();
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0]!.query, 'hello');
+  assert.deepEqual(entries[0]!.types, ['track']);
+  assert.deepEqual(entries[0]!.top_result_ids, ['spotify:track:t1']);
+});
+
+test('a typed search records its market, offset and limit scope (#766)', async () => {
+  const { registered } = makeHarness(registerCatalogTools, {
+    getResponse: (p) => (p === '/search' ? { artists: { items: [{ id: 'ar1', name: 'Queen', uri: 'spotify:artist:ar1' }], total: 1 } } : undefined),
+  });
+  // MARKET_CODE uppercases before the handler runs; this harness calls the
+  // handler directly, so pass the normalised form the MCP layer would deliver.
+  await invoke(findTool(registered, 'search_artists'), { query: 'queen', market: 'DE', offset: 30, limit: 4 });
+  const [entry] = await readHistory();
+  assert.equal(entry!.market, 'DE');
+  assert.equal(entry!.offset, 30);
+  assert.equal(entry!.limit, 4);
+  assert.deepEqual(entry!.types, ['artist']);
+});
+
+test('a typed search in json mode still records the search (#766)', async () => {
+  const { registered } = makeHarness(registerCatalogTools, {
+    getResponse: (p) => (p === '/search' ? { albums: { items: [{ id: 'al1', name: 'Album', uri: 'spotify:album:al1' }], total: 1 } } : undefined),
+  });
+  await invoke(findTool(registered, 'search_albums'), { query: 'a night', response_format: 'json' });
+  const entries = await readHistory();
+  assert.equal(entries.length, 1);
+  assert.deepEqual(entries[0]!.types, ['album']);
+});
+
+test('a typed search that returns nothing records nothing (#766)', async () => {
+  const { registered } = makeHarness(registerCatalogTools, {
+    getResponse: (p) => (p === '/search' ? { tracks: { items: [], total: 0 } } : undefined),
+  });
+  await invoke(findTool(registered, 'search_tracks'), { query: 'zzz' });
+  await assert.rejects(readFile(historyFile, 'utf8'), { code: 'ENOENT' });
+});
+
+test('SPOTIFY_MCP_SEARCH_HISTORY=0 leaves the typed searches unrecorded (#766)', async () => {
+  process.env.SPOTIFY_MCP_SEARCH_HISTORY = '0';
+  const { registered } = makeHarness(registerCatalogTools, {
+    getResponse: (p) => (p === '/search' ? { tracks: { items: [{ id: 't1', name: 'Song', uri: 'spotify:track:t1' }], total: 1 } } : undefined),
+  });
+  const out = text(await invoke(findTool(registered, 'search_tracks'), { query: 'hello' }));
+  assert.match(out, /Song/);
+  await assert.rejects(readFile(historyFile, 'utf8'), { code: 'ENOENT' });
 });

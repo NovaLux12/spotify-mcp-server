@@ -133,6 +133,77 @@ describe('batch_add_to_playlist', () => {
     const add = h.client.calls.find((call) => call.method === 'POST' && call.path === `/playlists/${TARGET}/items`);
     assert.deepEqual(add?.arg, { uris: [`spotify:track:${trackId}`, `spotify:episode:${episodeId}`] });
   });
+
+  // #864: batch_add_to_playlist advertises dedupe "against the existing
+  // playlist", but the target read is capped — a URI parked past the cap
+  // looks absent and gets re-added, and the commit result said nothing about
+  // the coverage that produced the answer.
+  describe('capped target walks are disclosed (#864)', () => {
+    const bigTarget = (count: number) =>
+      Array.from({ length: count }, (_, i) => ({ item: { uri: track(`p${i}`) } }));
+
+    it('reports the short target walk and re-adds a URI the cap could not see', async () => {
+      const h = harness((path, _a, method) => {
+        if (method === 'POST') return { snapshot_id: 'snap' } as unknown;
+        if (path === `/playlists/${TARGET}/items`) {
+          return { items: bigTarget(600), total: 600, limit: 100, offset: 0, next: null } as unknown;
+        }
+        return { items: [], total: 0, limit: 100, offset: 0, next: null } as unknown;
+      });
+
+      const out = await h.invoke('batch_add_to_playlist', {
+        target_playlist_id: TARGET,
+        source_uris: [track('p550')],
+      });
+      const p = out.structuredContent as Record<string, unknown>;
+
+      assert.equal(p.target_truncated, true);
+      assert.equal(p.scan_cap, 500);
+      assert.match(textOf(out), /TRUNCATED/);
+      // p550 sits at position 550, past the cap — the guard could not see it.
+      const post = h.client.calls.find((c) => c.method === 'POST' && c.path === `/playlists/${TARGET}/items`);
+      assert.deepEqual((post?.arg as { uris: string[] }).uris, [track('p550')]);
+    });
+
+    it('the dry run discloses it before anything is written', async () => {
+      const h = harness((path) => {
+        if (path === `/playlists/${TARGET}/items`) {
+          return { items: bigTarget(600), total: 600, limit: 100, offset: 0, next: null } as unknown;
+        }
+        return { items: [], total: 0, limit: 100, offset: 0, next: null } as unknown;
+      });
+
+      const out = await h.invoke('batch_add_to_playlist', {
+        target_playlist_id: TARGET,
+        source_uris: [track('p550')],
+        dry_run: true,
+      });
+      const p = out.structuredContent as Record<string, unknown>;
+
+      assert.equal(h.client.calls.filter((c) => c.method === 'POST').length, 0);
+      assert.equal(p.target_truncated, true);
+      assert.match(textOf(out), /TRUNCATED/);
+    });
+
+    it('stays quiet when the target walk reads the whole playlist', async () => {
+      const h = harness((path, _a, method) => {
+        if (method === 'POST') return { snapshot_id: 'snap' } as unknown;
+        if (path === `/playlists/${TARGET}/items`) {
+          return { items: bigTarget(3), total: 3, limit: 100, offset: 0, next: null } as unknown;
+        }
+        return { items: [], total: 0, limit: 100, offset: 0, next: null } as unknown;
+      });
+
+      const out = await h.invoke('batch_add_to_playlist', {
+        target_playlist_id: TARGET,
+        source_uris: [track('p1')],
+      });
+      const p = out.structuredContent as Record<string, unknown>;
+
+      assert.equal(p.target_truncated, false);
+      assert.doesNotMatch(textOf(out), /TRUNCATED/);
+    });
+  });
 });
 
 describe('copy_playlist', () => {

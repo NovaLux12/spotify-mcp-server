@@ -75,34 +75,84 @@ function dedupeUris(tracks: readonly SpotifyTrack[]): SpotifyTrack[] {
   });
 }
 
-async function loadCandidates(client: SpotifyClient, source: string, scanCap?: number): Promise<SpotifyTrack[]> {
+/** Rows one /me/top/tracks page carries, and the pool ceiling two pages allow. */
+const TOP_TRACKS_PAGE = 50;
+const TOP_TRACKS_POOL_CAP = TOP_TRACKS_PAGE * 2;
+/** /me/player/recently-played caps a page at 50, so one page is the whole read. */
+const RECENT_POOL_CAP = 50;
+
+/**
+ * One bounded read of a candidate source, and the ceiling it was taken under.
+ * `capped` is the honest verdict: the last read came back FULL, so the pool
+ * may hold more than we read and `candidates` is a floor, not a count. A
+ * source that simply ran out reports capped: false.
+ */
+interface CandidatePool {
+  candidates: SpotifyTrack[];
+  /** Ceiling that applies to this source, reported whether or not it bit. */
+  cap: number;
+  capped: boolean;
+}
+
+async function loadCandidates(
+  client: SpotifyClient,
+  source: string,
+  opts: { scanCap: number; timeRange?: 'short_term' | 'medium_term' | 'long_term' },
+): Promise<CandidatePool> {
+  const topTracksPage = (offset: number) => client.get<SpotifyPaged<SpotifyTrack>>('/me/top/tracks', {
+    time_range: opts.timeRange ?? 'medium_term',
+    limit: String(TOP_TRACKS_PAGE),
+    offset: String(offset),
+  });
   switch (source) {
     case 'top_tracks': {
-      // Two pages of 50 is plenty: filters only shrink the candidate pool.
-      const page1 = await client.get<SpotifyPaged<SpotifyTrack>>('/me/top/tracks', {
-        limit: '50',
-        offset: '0',
-      });
-      const page2 = await client.get<SpotifyPaged<SpotifyTrack>>('/me/top/tracks', {
-        limit: '50',
-        offset: '50',
-      });
-      return [...(page1?.items ?? []), ...(page2?.items ?? [])].filter((t) => t?.uri);
+      // Two pages of 50: a ceiling, and one the caller is told about rather
+      // than one that quietly stands in for the caller's own `limit`.
+      const first = await topTracksPage(0);
+      if (!first) throw new Error('Could not retrieve top tracks');
+      const head = first.items ?? [];
+      if (head.length < TOP_TRACKS_PAGE) {
+        return { candidates: head.filter((t) => t?.uri), cap: TOP_TRACKS_POOL_CAP, capped: false };
+      }
+      const second = await topTracksPage(TOP_TRACKS_PAGE);
+      if (!second) throw new Error('Could not retrieve top tracks');
+      return {
+        candidates: [...head, ...(second.items ?? [])].filter((t) => t?.uri),
+        cap: TOP_TRACKS_POOL_CAP,
+        capped: (second.items ?? []).length >= TOP_TRACKS_PAGE,
+      };
     }
     case 'recently_played': {
       const res = await client.get<{ items?: RecentlyPlayedItem[] }>(
         '/me/player/recently-played',
-        { limit: '50' },
+        { limit: String(RECENT_POOL_CAP) },
       );
       if (!res) throw new Error('Could not retrieve recently played tracks');
-      return (res.items ?? [])
-        .filter((item) => item?.track)
-        .map((item) => item.track as SpotifyTrack);
+      const items = res.items ?? [];
+      return {
+        candidates: items
+          .filter((item) => item?.track)
+          .map((item) => item.track as SpotifyTrack),
+        cap: RECENT_POOL_CAP,
+        capped: items.length >= RECENT_POOL_CAP,
+      };
     }
     default: {
-      const cap = scanCap ?? getConfig().fetchAllCap;
-      const saved = await client.getAllPages<SavedTrackItem>('/me/tracks', { limit: '50' }, { maxItems: cap });
-      return saved.map((entry) => entry?.track).filter((t): t is SpotifyTrack => Boolean(t?.uri));
+      // The client already knows whether the walk stopped at the cap (#864).
+      // Re-deriving it from the row count calls a library that ENDS at the cap
+      // truncated, which is the same floor-counted-as-a-count lie.
+      const walk = await client.getAllPagesWithTruncation<SavedTrackItem>(
+        '/me/tracks',
+        { limit: '50' },
+        { maxItems: opts.scanCap },
+      );
+      return {
+        candidates: walk.items
+          .map((entry) => entry?.track)
+          .filter((t): t is SpotifyTrack => Boolean(t?.uri)),
+        cap: opts.scanCap,
+        capped: walk.truncated,
+      };
     }
   }
 }
@@ -114,6 +164,8 @@ export function registerSmartTools(server: McpServer, client: SpotifyClient): vo
       + 'recently played, or saved tracks — with optional artist-name filtering and a '
       + 'one-track-per-artist toggle. When source=saved_tracks the pool is the newest N saved tracks '
       + '(N=scan_cap, default fetchAllCap=500) and truncation is reported. No deprecated recommendations endpoints involved. '
+      + 'Every source has a pool ceiling (top_tracks 100, recently_played 50, saved_tracks scan_cap), '
+      + 'reported as pool_capped with pool_cap — a capped pool is a floor, not a complete scan. '
       + 'dry_run previews the exact track list without creating anything.',
     {
       name: z.string().min(1).describe('Playlist name'),
@@ -147,10 +199,20 @@ export function registerSmartTools(server: McpServer, client: SpotifyClient): vo
     },
     async (args) => {
       const scanCap = args.scan_cap ?? getConfig().fetchAllCap;
-      let rawCandidates = await loadCandidates(client, args.source, scanCap);
-      const candidatesScanned = rawCandidates.length;
-      const truncatedAtCap = args.source === 'saved_tracks' && candidatesScanned >= scanCap;
-      let candidates = dedupeUris(rawCandidates);
+      const pool = await loadCandidates(client, args.source, {
+        scanCap,
+        timeRange: args.time_range,
+      });
+      const candidatesScanned = pool.candidates.length;
+      const poolCapped = pool.capped;
+      // `truncated_at_fetch_all_cap` keeps its old, narrower meaning: only the
+      // scan cap cut this pool. The fixed source ceilings report as pool_capped.
+      const truncatedAtCap = args.source === 'saved_tracks' && poolCapped;
+      const poolNote = poolCapped
+        ? `(candidate pool hit its ceiling of ${pool.cap} — at most ${pool.cap} candidate(s) were read `
+          + `from ${args.source}, so this is a floor, not a complete scan)`
+        : '';
+      let candidates = dedupeUris(pool.candidates);
 
       if (args.artist_filter && args.artist_filter.length > 0) {
         candidates = candidates.filter((t) => matchesArtistFilter(t, args.artist_filter!));
@@ -171,13 +233,15 @@ export function registerSmartTools(server: McpServer, client: SpotifyClient): vo
           ...view.items.map((t) => `• ${t.artists.map((a) => a.name).join(', ')} — ${t.name}`),
           ...(view.footer ? [view.footer] : []),
         ];
-        if (truncatedAtCap) lines.push(`(saved_tracks pool truncated at scan_cap=${scanCap} — newest ${scanCap} only)`);
+        if (poolNote) lines.push(poolNote);
         return textResult(lines.join('\n'), {
           ok: true,
           dry_run: true,
           source: args.source,
           selected: picked.length,
           candidates_scanned: candidatesScanned,
+          pool_capped: poolCapped,
+          pool_cap: pool.cap,
           truncated_at_fetch_all_cap: truncatedAtCap,
           newest_first: args.source === 'saved_tracks',
           scan_cap: scanCap,
@@ -220,6 +284,7 @@ export function registerSmartTools(server: McpServer, client: SpotifyClient): vo
           + `${args.source}${args.time_range && args.source === 'top_tracks' ? `, ${args.time_range}` : ''})`
           + `\nID: ${created.id}\nURI: ${created.uri}\nURL: ${created.external_urls?.spotify ?? '(none)'}`
           + `\n${batchSummary(picked.length, picked.map((t) => t.uri))}`
+          + (poolNote ? `\n${poolNote}` : '')
           + `\n${formatReceipt(receipt)}`,
         {
           ok: true,
@@ -228,6 +293,8 @@ export function registerSmartTools(server: McpServer, client: SpotifyClient): vo
           source: args.source,
           added: picked.length,
           candidates_scanned: candidatesScanned,
+          pool_capped: poolCapped,
+          pool_cap: pool.cap,
           truncated_at_fetch_all_cap: truncatedAtCap,
           newest_first: args.source === 'saved_tracks',
           scan_cap: scanCap,

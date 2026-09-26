@@ -195,3 +195,239 @@ test('watch_artists warns when >50 artists', async () => {
     assert.ok(sc.warning);
   });
 });
+
+// #771 — artists_scanned must count the artists the scan actually examined,
+// not the ones that happened to have something new.
+test('artist_release_digest reports artists scanned, not artists with hits', async () => {
+  await withTmpDir(async ()=>{
+    const { registered } = makeHarness((path)=>{
+      if (path.includes('/artists/art3/albums')) return { items:[album('d3','Digest Three')] };
+      return { items:[] };
+    });
+    await find(registered,'watch_artists').handler({ artist_ids:['art1','art2','art3'] });
+    const r = await find(registered,'artist_release_digest').handler({});
+    const sc = r.structuredContent as unknown as Record<string,unknown>;
+    assert.equal(sc.artists_scanned, 3);
+    assert.equal(sc.artists_read, 3);
+    assert.equal(sc.artists_failed, 0);
+    assert.deepEqual(sc.failures, []);
+    assert.match(text(r), /scanned 3\/3 artists/);
+  });
+});
+
+test('artist_release_digest counts the quota position, not the number of hits', async () => {
+  await withTmpDir(async ()=>{
+    let callN = 0;
+    const { registered } = makeHarness((path)=>{
+      if (path.includes('/artists/')) {
+        callN++;
+        // Only the last artist has anything unseen, and the 2nd hits the quota
+        // wall: the old accounting reported "scanned 0" for a scan that
+        // examined an artist and stopped.
+        if (callN === 2) throw Object.assign(new Error('quota'), { status: 429, reason: 'QUOTA_EXCEEDED', retryAfterSec: 9 });
+        if (path.includes('/artists/art3/albums')) return { items:[album('d3','Digest Three')] };
+      }
+      return { items:[] };
+    });
+    await find(registered,'watch_artists').handler({ artist_ids:['art1','art2','art3'] });
+    const r = await find(registered,'artist_release_digest').handler({});
+    const sc = r.structuredContent as unknown as Record<string,unknown>;
+    assert.equal(sc.quota_hit, true);
+    assert.equal(sc.quota_scanned, 2);
+    assert.equal(sc.artists_scanned, 2);
+    assert.equal(sc.artists_read, 1);
+    assert.equal(callN, 2);
+  });
+});
+
+// #772 — a stale id in a persisted watchlist must not cost the caller every
+// other artist's results, and must never read as "0 new releases".
+test('check_artist_releases keeps other artists when one id is unreadable', async () => {
+  await withTmpDir(async ()=>{
+    const { registered } = makeHarness((path)=>{
+      if (path.includes('/artists/art1/albums')) return { items:[album('x1','Alpha Album')] };
+      if (path.includes('/artists/art3/albums')) return { items:[album('x3','Gamma Album')] };
+      if (path.includes('/artists/bogus/albums')) throw Object.assign(new Error('non-existing id'), { status: 404, reason: 'NOT_FOUND' });
+      return null;
+    });
+    await find(registered,'watch_artists').handler({ artist_ids:['art1','bogus','art3'] });
+    const r = await find(registered,'check_artist_releases').handler({});
+    const sc = r.structuredContent as unknown as {
+      artists_scanned:number; artists_read:number; artists_failed:number; total:number;
+      failures:Array<{artist_id:string;reason:string;status?:number}>;
+      items:Array<{artist_id:string;album:{name:string}}>;
+    };
+    assert.equal(sc.artists_failed, 1);
+    assert.equal(sc.failures.length, 1);
+    assert.equal(sc.failures[0].artist_id, 'bogus');
+    assert.equal(sc.failures[0].status, 404);
+    assert.match(sc.failures[0].reason, /non-existing id/);
+    // The readable artists survive, and the failed one is not folded in as a
+    // zero-release row.
+    assert.equal(sc.total, 2);
+    assert.deepEqual(sc.items.map(i=>i.artist_id).sort(), ['art1','art3']);
+    assert.equal(sc.artists_read, 2);
+    assert.equal(sc.artists_scanned, 3);
+    const t = text(r);
+    assert.match(t, /Alpha Album/);
+    assert.match(t, /Gamma Album/);
+    assert.match(t, /bogus/);
+    assert.match(t, /could not be read/);
+  });
+});
+
+test('check_artist_releases reports an all-failed watchlist as unreadable, not empty', async () => {
+  await withTmpDir(async ()=>{
+    const { registered } = makeHarness((path)=>{
+      if (path.includes('/artists/')) throw Object.assign(new Error('upstream 500'), { status: 500 });
+      return null;
+    });
+    await find(registered,'watch_artists').handler({ artist_ids:['bogus1','bogus2'] });
+    const r = await find(registered,'check_artist_releases').handler({});
+    const sc = r.structuredContent as unknown as { artists_read:number; artists_failed:number; failures:Array<{artist_id:string}>; total:number };
+    assert.equal(sc.artists_read, 0);
+    assert.equal(sc.artists_failed, 2);
+    assert.equal(sc.total, 0);
+    assert.deepEqual(sc.failures.map(f=>f.artist_id), ['bogus1','bogus2']);
+    const t = text(r);
+    assert.match(t, /could not be read/);
+    assert.doesNotMatch(t, /No new releases/);
+  });
+});
+
+test('check_artist_releases quota mid-scan still returns the rows collected before it', async () => {
+  await withTmpDir(async ()=>{
+    let callN = 0;
+    const { registered } = makeHarness((path)=>{
+      if (path.includes('/artists/')) {
+        callN++;
+        if (callN === 3) throw Object.assign(new Error('quota'), { status: 429, reason: 'QUOTA_EXCEEDED', retryAfterSec: 11 });
+        return { items:[album(`r${callN}`,`Release ${callN}`)] };
+      }
+      return null;
+    });
+    await find(registered,'watch_artists').handler({ artist_ids:['art1','art2','art3'] });
+    const r = await find(registered,'check_artist_releases').handler({});
+    const sc = r.structuredContent as unknown as {
+      quota_hit:boolean; quota_scanned:number; artists_scanned:number; artists_read:number; total:number;
+      items:Array<{artist_id:string;album:{name:string}}>;
+    };
+    assert.equal(sc.quota_hit, true);
+    assert.equal(sc.quota_scanned, 3);
+    assert.equal(sc.artists_scanned, 3);
+    assert.equal(sc.artists_read, 2);
+    // Non-vacuous: the two rows read before the wall are present.
+    assert.equal(sc.total, 2);
+    assert.deepEqual(sc.items.map(i=>i.album.name), ['Release 1','Release 2']);
+  });
+});
+
+test('artist_release_digest keeps the readable artists when one lookup fails', async () => {
+  await withTmpDir(async ()=>{
+    const { registered } = makeHarness((path)=>{
+      if (path.includes('/artists/art1/albums')) return { items:[album('d1','Digest One')] };
+      if (path.includes('/artists/stale/albums')) throw Object.assign(new Error('non-existing id'), { status: 404, reason: 'NOT_FOUND' });
+      return { items:[] };
+    });
+    await find(registered,'watch_artists').handler({ artist_ids:['art1','stale'] });
+    const r = await find(registered,'artist_release_digest').handler({});
+    const sc = r.structuredContent as unknown as {
+      artists_scanned:number; artists_read:number; artists_failed:number; total:number;
+      failures:Array<{artist_id:string;reason:string}>; items:Array<{artist_id:string;album:{name:string}}>;
+    };
+    assert.equal(sc.total, 1);
+    assert.deepEqual(sc.items.map(i=>i.artist_id), ['art1']);
+    assert.equal(sc.artists_read, 1);
+    assert.equal(sc.artists_scanned, 2);
+    assert.equal(sc.artists_failed, 1);
+    assert.equal(sc.failures[0].artist_id, 'stale');
+    assert.match(sc.failures[0].reason, /non-existing id/);
+    const t = text(r);
+    assert.match(t, /Digest One/);
+    assert.match(t, /stale/);
+    assert.match(t, /could not be read/);
+  });
+});
+
+// A burst limit or a dead token is not this artist's fault: it must stop the
+// scan rather than spend the remaining budget on requests that cannot succeed.
+test('check_artist_releases stops on a burst 429 instead of collecting it as a failure', async () => {
+  await withTmpDir(async ()=>{
+    let callN = 0;
+    const { registered } = makeHarness((path)=>{
+      if (path.includes('/artists/')) {
+        callN++;
+        if (callN === 2) throw Object.assign(new Error('rate limited'), { status: 429, retryAfterSec: 3 });
+        return { items:[album('s1','Before Limit')] };
+      }
+      return null;
+    });
+    await find(registered,'watch_artists').handler({ artist_ids:['art1','art2','art3','art4'] });
+    const r = await find(registered,'check_artist_releases').handler({});
+    const sc = r.structuredContent as unknown as {
+      rate_limited:boolean; retry_after:number; rate_limit_scanned:number; quota_hit?:boolean;
+      artists_scanned:number; artists_read:number; artists_failed:number; failures:unknown[]; total:number;
+    };
+    assert.equal(sc.rate_limited, true);
+    assert.equal(sc.retry_after, 3);
+    assert.equal(sc.rate_limit_scanned, 2);
+    assert.equal(sc.quota_hit, undefined);
+    assert.equal(sc.artists_scanned, 2);
+    assert.equal(sc.artists_read, 1);
+    // Not a per-artist failure: the scan stopped, so the rest were never tried.
+    assert.equal(sc.artists_failed, 0);
+    assert.deepEqual(sc.failures, []);
+    assert.equal(sc.total, 1);
+    assert.equal(callN, 2);
+    assert.match(text(r), /Rate limited \(429\)/);
+  });
+});
+
+test('check_artist_releases stops on a 401 that survived the token refresh', async ()=>{
+  await withTmpDir(async ()=>{
+    let callN = 0;
+    const { registered } = makeHarness((path)=>{
+      if (path.includes('/artists/')) {
+        callN++;
+        if (callN === 2) throw Object.assign(new Error('The access token expired'), { status: 401 });
+        return { items:[album('t1','Before Expiry')] };
+      }
+      return null;
+    });
+    await find(registered,'watch_artists').handler({ artist_ids:['art1','art2','art3'] });
+    const r = await find(registered,'check_artist_releases').handler({});
+    const sc = r.structuredContent as unknown as { auth_error:boolean; auth_error_scanned:number; artists_scanned:number; total:number };
+    assert.equal(sc.auth_error, true);
+    assert.equal(sc.auth_error_scanned, 2);
+    assert.equal(sc.artists_scanned, 2);
+    assert.equal(sc.total, 1);
+    assert.equal(callN, 2);
+    const t = text(r);
+    assert.match(t, /401/);
+    assert.match(t, /spotify-mcp auth/);
+  });
+});
+
+test('artist_release_digest stops on a burst 429 and keeps prior rows', async ()=>{
+  await withTmpDir(async ()=>{
+    let callN = 0;
+    const { registered } = makeHarness((path)=>{
+      if (path.includes('/artists/')) {
+        callN++;
+        if (callN === 2) throw Object.assign(new Error('rate limited'), { status: 429, retryAfterSec: 5 });
+        return { items:[album('u1','Digest Before Limit')] };
+      }
+      return null;
+    });
+    await find(registered,'watch_artists').handler({ artist_ids:['art1','art2','art3'] });
+    const r = await find(registered,'artist_release_digest').handler({});
+    const sc = r.structuredContent as unknown as { rate_limited:boolean; rate_limit_scanned:number; artists_scanned:number; total:number; items:Array<{album:{name:string}}> };
+    assert.equal(sc.rate_limited, true);
+    assert.equal(sc.rate_limit_scanned, 2);
+    assert.equal(sc.artists_scanned, 2);
+    assert.equal(sc.total, 1);
+    assert.deepEqual(sc.items.map(i=>i.album.name), ['Digest Before Limit']);
+    assert.equal(callN, 2);
+    assert.match(text(r), /Rate limited \(429\)/);
+  });
+});
