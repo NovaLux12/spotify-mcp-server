@@ -7,7 +7,9 @@
  * Conventions (repo-wide):
  *   - Shared shaping helpers from ../shaping.ts (ResponseFormat/MaxResults/
  *     resolveMaxResults/truncateItems) — never hand-rolled.
- *   - Mutating tools default dry_run=true and return an explicit PLAN.
+ *   - Mutating tools use the shared `DryRunDefault` fragment (default TRUE)
+ *     and branch on `isDryRun(args)`, so an omitted flag previews and the
+ *     write is an explicit opt-in (#827).
  *   - Phantom endpoints are never faked: honest workarounds carry an explicit
  *     disclosure line in their description.
  *   - No deprecated endpoints (SPEC §9). Gated surfaces fail gracefully.
@@ -28,7 +30,8 @@ import { SpotifyApiError, quotaPreflight, quotaSnapshot, quotaWindowRemaining, q
 import {
   ResponseFormat,
   MaxResults,
-  DryRun,
+  DryRunDefault,
+  isDryRun,
   resolveMaxResults,
   truncateItems,
   describeDryRun,
@@ -304,8 +307,7 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
       recent: z.number().int().min(1).max(40).optional().default(1)
         .describe('Save the N most recent plays (only used as fallback when nothing is currently playing). Default 1.'),
       market: MARKET_CODE.optional().describe('ISO-3166 market code passed on the player read, e.g. \'US\''),
-      dry_run: z.boolean().optional().default(true)
-        .describe('Preview the save plan without writing (default true)'),
+      dry_run: DryRunDefault,
       response_format: ResponseFormat,
     },
     async (args) => {
@@ -327,7 +329,7 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
       }
       const uris = [...new Set(picks.map((p) => p.uri))];
       const plan = `Save to library: ${picks.map((p) => `${p.name ?? 'unknown'} (${p.uri})`).join(', ') || 'nothing'}`;
-      if (args.dry_run || uris.length === 0) {
+      if (isDryRun(args) || uris.length === 0) {
         return emit(rf, `[dry run] quick_save_now (${source}) — nothing was changed.\n${plan}`, {
           ok: uris.length > 0, dry_run: true, source, uris,
           ...(uris.length === 0 ? { hint: 'Nothing currently playing and no recent plays found.' } : {}),
@@ -697,7 +699,8 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
     'discover_weekly_diff',
     'This week\'s Discover Weekly vs the last copy in your archive playlist: what is new, '
       + 'what overlapped, and which tracks you already liked. 2-3 reads (+1 write only with '
-      + 'save_after). Resolves both playlists by exact name.',
+      + 'save_after and dry_run=false). save_after REPLACES the archive playlist\'s whole item '
+      + 'list, so it previews by default. Resolves both playlists by exact name.',
     {
       archive_name: z.string().optional().default('Discover Weekly Archive')
         .describe('Archive playlist name kept by save_discover_weekly. Default "Discover Weekly Archive".'),
@@ -705,7 +708,7 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
         .describe('How many saved tracks to scan for "already liked" detection. Default 500.'),
       save_after: z.boolean().optional().default(false)
         .describe('After the diff, sync the archive playlist to this week\'s copy (adds writes)'),
-      dry_run: DryRun,
+      dry_run: DryRunDefault,
       response_format: ResponseFormat,
     },
     async (args) => {
@@ -728,13 +731,18 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
       const fresh = current.filter((u) => !archived.has(u));
       const overlap = current.filter((u) => archived.has(u));
       const alreadyLiked = fresh.filter((u) => liked.has(u));
+      const dryRun = isDryRun(args);
       const payload = {
         ok: true, discover_weekly_id: dw.id, total: current.length,
         new_since_archive: fresh, overlapping: overlap, already_liked: alreadyLiked,
         archive_found: archive !== null, archive_id: archive?.id ?? null,
+        // #827: always state the mode that produced this payload, so a caller
+        // that passed save_after and got a diff back can tell a preview from a
+        // committed archive replace.
+        dry_run: dryRun,
       };
       if (args.save_after && archive) {
-        if (args.dry_run) {
+        if (dryRun) {
           return emit(rf, `${describeDryRun('sync Discover Weekly', args.archive_name, [`Would replace ${archive.name} with ${current.length} tracks`])}`, { ...payload, dry_run: true });
         }
         if (current.length > 0) {
@@ -774,8 +782,7 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
         .describe('Only consider tracks saved at least this long ago. Default 30.'),
       max_playlists: z.number().int().min(0).max(500).optional().default(50)
         .describe('Budget for playlist scans (each scan pages that playlist). Default 50.'),
-      dry_run: z.boolean().optional().default(true)
-        .describe('Plan only (default). Set false to remove the candidates from your library.'),
+      dry_run: DryRunDefault,
       max_results: MaxResults,
       response_format: ResponseFormat,
     },
@@ -823,7 +830,7 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
         ...quotaDelta(client, snapshot),
         ...(shrink ? { requests_planned: args.max_playlists + 2, budget_shrunk: true } : {}),
       };
-      if (args.dry_run) {
+      if (isDryRun(args)) {
         return emit(rf, describeDryRun('dead-library cleanup', 'your library', [
           `Would remove ${candidates.length} unplayed, playlist-absent track(s)`,
           ...candidates.slice(0, 5).map((c) => `${c.name} (saved ${c.added_at || 'unknown'})`),
@@ -854,7 +861,7 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
       dedupe: z.boolean().optional().default(true).describe('Keep one entry per track. Default true.'),
       rerun: z.boolean().optional().default(true)
         .describe('If a playlist with the same name exists, replace its content instead of failing.'),
-      dry_run: z.boolean().optional().default(true).describe('Preview the plan (default true).'),
+      dry_run: DryRunDefault,
       response_format: ResponseFormat,
     },
     async (args) => {
@@ -872,7 +879,7 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
       const uris = plays.map((p) => p.track.uri);
       const payload = { ok: true, playlist: label, start: isoDay(start), end: isoDay(end), tracks: uris.length, uris };
       const existing = await findPlaylistByName(client, label);
-      if (args.dry_run) {
+      if (isDryRun(args)) {
         const changes = [
           existing
             ? `Would replace all item(s) in existing playlist "${label}"`
@@ -1229,7 +1236,7 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
       label: z.string().optional().describe('Bookmark name (required for save)'),
       position_ms: z.number().int().min(0).optional().default(0).describe('Position in the book, ms. Default 0.'),
       chapter_name: z.string().optional().describe('Optional chapter name for context'),
-      dry_run: DryRun,
+      dry_run: DryRunDefault,
       response_format: ResponseFormat,
     },
     async (args) => {
@@ -1246,7 +1253,7 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
         if (!args.book_uri || !args.label) {
           return emit(rf, 'save requires book_uri and label.', { ok: false, error: 'missing_params' });
         }
-        if (args.dry_run) {
+        if (isDryRun(args)) {
           return emit(rf, describeDryRun('save bookmark', key, [`Would save "${args.label}" @ ${args.position_ms}ms`]), { ok: true, dry_run: true });
         }
         const list = s.bookmarks[key] ?? [];
@@ -1259,7 +1266,7 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
       if (!args.book_uri) return emit(rf, 'delete requires book_uri.', { ok: false, error: 'missing_params' });
       const before = s.bookmarks[key] ?? [];
       const kept = args.label ? before.filter((b) => b.label !== args.label) : [];
-      if (args.dry_run) {
+      if (isDryRun(args)) {
         return emit(rf, describeDryRun('delete bookmarks', key, [`Would remove ${before.length - kept.length} bookmark(s)`]), { ok: true, dry_run: true, removed: before.length - kept.length });
       }
       s.bookmarks[key] = kept;
@@ -1337,7 +1344,7 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
       mode: z.enum(['create', 'refresh']).optional().default('create').describe('create builds a new playlist; refresh rewrites the existing one. Default create'),
       playlist_name: z.string().optional().describe('Playlist name (create mode). Default: "Tagged: <tags>".'),
       playlist_id: z.string().optional().describe('Playlist to refresh (refresh mode). Auto-resolved from playlist_name if omitted.'),
-      dry_run: z.boolean().optional().default(true).describe('Preview the match list (default true).'),
+      dry_run: DryRunDefault,
       response_format: ResponseFormat,
     },
     async (args) => {
@@ -1357,7 +1364,7 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
       const uris = [...new Set(matched.map((r) => r.track!.uri))];
       const name = args.playlist_name ?? `Tagged: ${args.tags.join(', ')}`;
       const payload = { ok: true, tags: args.tags, matches: uris.length, uris, playlist_name: name, mode: args.mode };
-      if (args.dry_run) {
+      if (isDryRun(args)) {
         return emit(rf, describeDryRun(`playlist from tags [${args.tags.join(', ')}]`, name, [
           `Would put ${uris.length} matched track(s) into "${name}" (${args.mode})`,
           ...matched.slice(0, 5).map((r) => `${r.track!.name} — ${r.track!.artists?.map((a) => a.name).join(', ') ?? ''}`),
@@ -1750,7 +1757,7 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
       + 'live device list; flags dead labels and can prune them. 1 read + sidecar. dry_run plans.',
     {
       prune: z.boolean().optional().default(false).describe('Remove dead device presets/labels from the sidecar'),
-      dry_run: z.boolean().optional().default(true).describe('Plan the prune without writing (default true).'),
+      dry_run: DryRunDefault,
       response_format: ResponseFormat,
     },
     async (args) => {
@@ -1785,7 +1792,7 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
         dead_scene_hints: deadScenes,
       };
       const payload = scenesLoadError ? { ...basePayload, load_error: scenesLoadError } : basePayload;
-      if (!args.prune || args.dry_run) {
+      if (!args.prune || isDryRun(args)) {
         const prose = describeDryRun('device-sidecar sync', '~/.spotify-mcp sidecars', [
           `Dead presets: ${deadPresets.join(', ') || 'none'}`,
           `Scenes with dead device hints: ${deadScenes.join(', ') || 'none'}`,
@@ -1839,7 +1846,7 @@ async function savePlaybackExtSafe(store: PlaybackExtStore): Promise<void> {
 
 /** Footer helper for discover_weekly_diff prose. */
 function saveLine(args: { save_after?: boolean; dry_run?: boolean }): string {
-  if (args.save_after && !args.dry_run) return ' — archive synced to this week\'s copy';
+  if (args.save_after && !isDryRun(args)) return ' — archive synced to this week\'s copy';
   if (args.save_after) return ' — archive would be synced (dry run)';
   return '';
 }

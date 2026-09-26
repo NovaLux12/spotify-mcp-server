@@ -856,6 +856,32 @@ describe('add_to_playlist / remove_from_playlist / update_playlist / reorder_pla
     );
     assert.equal(h.client.calls.length, 0);
   });
+
+  it('add_to_playlist reports partial_write_failure when its single POST rejects (#865)', async () => {
+    // add_to_playlist is a single-chunk write today (cap 100). A 5xx on
+    // the POST should still surface the same partial_write_failure contract
+    // so a future cap lift does not need a second codepath.
+    //
+    // The stub Responder is (path, arg) — it does not receive the HTTP
+    // method, so dispatch on the one path this call writes to.
+    const h = harness((path: string) => {
+      if (path === '/playlists/pl/items') throw new SpotifyApiError(500, 'add_to_playlist POST failed');
+      return { items: [], total: 0 };
+    });
+    const out = await h.invoke('add_to_playlist', { playlist_id: 'pl', uris: ['spotify:track:a', 'spotify:track:b'] });
+    const payload = out.structuredContent as Record<string, unknown>;
+    assert.equal(payload.partial_write_failure, true);
+    assert.equal(payload.attempted_chunks, 1);
+    assert.equal(payload.failed_chunk_index, 0);
+    assert.equal(payload.last_committed_chunk_index, -1);
+    assert.deepEqual(payload.last_committed_chunk_uris, []);
+    assert.equal(payload.committed_uris, 0);
+    assert.equal(payload.remaining_uris, 2);
+    assert.match(payload.error as string, /add_to_playlist POST failed/);
+    assert.match(textOf(out), /failed before any URI landed/);
+    // The write failed, so no receipt verification GET followed it.
+    assert.equal(h.client.calls.filter((c) => c.method === 'GET').length, 0);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1090,6 +1116,60 @@ describe('replace_playlist_items', () => {
       (err: unknown) => err instanceof z.ZodError,
     );
     assert.equal(h.client.calls.length, 0);
+  });
+
+  it('reports partial_write_failure when a chunked replace POST throws (#865)', async () => {
+    // 150 URIs → 1 PUT (atomic) + 1 POST (append). The POST is what fails.
+    //
+    // The stub Responder is (path, arg) and never sees the HTTP method, but
+    // both writes share `/playlists/pl/items`, so the call ordinal is the
+    // only discriminator: write 1 is the PUT, write 2 is the append POST.
+    const uris = Array.from({ length: 150 }, (_, i) => `spotify:track:r${i}`);
+    let writes = 0;
+    const h = harness((path: string) => {
+      if (path !== '/playlists/pl/items') return { items: [], total: 0 };
+      writes++;
+      if (writes === 1) return { snapshot_id: 'snap-put' };
+      throw new SpotifyApiError(503, 'replace append failed');
+    }, registerPlaylistTools, { action: 'accept', content: { confirm: true } });
+    const out = await h.invoke('replace_playlist_items', { playlist_id: 'pl', uris });
+    const payload = out.structuredContent as Record<string, unknown>;
+    assert.equal(payload.partial_write_failure, true);
+    assert.equal(payload.attempted_chunks, 2);
+    assert.equal(payload.failed_chunk_index, 1);
+    assert.equal(payload.last_committed_chunk_index, 0);
+    assert.deepEqual(payload.last_committed_chunk_uris, uris.slice(0, 100));
+    assert.equal(payload.committed_uris, 100);
+    assert.equal(payload.attempted_uris, 150);
+    assert.equal(payload.remaining_uris, 50);
+    assert.match(payload.error as string, /replace append failed/);
+    // Both writes reached the wire; the second one threw, so the receipt's
+    // verification GET never ran.
+    assert.deepEqual(wireCalls(h.client.calls).map((c) => c.method), ['PUT', 'POST']);
+    assert.match(textOf(out), /Partial replace on playlist pl/);
+    assert.match(textOf(out), /chunk 0 was a successful atomic replace/);
+  });
+
+  it('reports partial_write_failure when the atomic PUT chunk throws (#865)', async () => {
+    // 250 URIs → 1 PUT (fails) + 2 POSTs that never run. Nothing landed.
+    const uris = Array.from({ length: 250 }, (_, i) => `spotify:track:f${i}`);
+    const h = harness((path: string) => {
+      if (path === '/playlists/pl/items') throw new SpotifyApiError(403, 'PUT rejected');
+      return { items: [], total: 0 };
+    }, registerPlaylistTools, { action: 'accept', content: { confirm: true } });
+    const out = await h.invoke('replace_playlist_items', { playlist_id: 'pl', uris });
+    const payload = out.structuredContent as Record<string, unknown>;
+    assert.equal(payload.partial_write_failure, true);
+    assert.equal(payload.failed_chunk_index, 0);
+    assert.equal(payload.last_committed_chunk_index, -1);
+    assert.deepEqual(payload.last_committed_chunk_uris, []);
+    assert.equal(payload.committed_uris, 0);
+    assert.equal(payload.attempted_uris, 250);
+    assert.equal(payload.remaining_uris, 250);
+    assert.match(payload.error as string, /PUT rejected/);
+    // The POSTs never ran: the helper aborts before issuing them.
+    assert.equal(h.client.calls.filter((c) => c.method === 'POST').length, 0);
+    assert.match(textOf(out), /aborted before any URI landed/);
   });
 });
 

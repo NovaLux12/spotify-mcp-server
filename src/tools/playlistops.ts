@@ -6,7 +6,7 @@
  * mutates, and its dry_run previews page the sources but never POSTs.
  */
 import { z } from 'zod';
-import { capFor } from '../chunk.js';
+import { capFor, runChunkedPlaylistWrite } from '../chunk.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
 import { getConfig } from '../config.js';
@@ -193,16 +193,25 @@ export function registerPlaylistOpsTools(server: McpServer, client: SpotifyClien
 
       // Append in batches of 100 (Spotify's per-request URI cap).
       const itemsPath = `/playlists/${encodeURIComponent(targetId)}/items`;
-      let snapshotId: string | undefined;
-      let requestCount = 0;
+      const mergedUris = merged.map((t) => t.uri);
       const writeCap = capFor('playlist_writes');
-      for (let start = 0; start < merged.length; start += writeCap) {
-        const res = await client.post<{ snapshot_id?: string }>(itemsPath, {
-          uris: merged.slice(start, start + writeCap).map((t) => t.uri),
-        });
-        requestCount++;
-        if (res?.snapshot_id) snapshotId = res.snapshot_id;
+      // #865: a merge that dies on batch N leaves the target holding a
+      // partial merge. Report the committed prefix so a retry resumes at the
+      // right offset instead of re-appending everything already there.
+      const write = await runChunkedPlaylistWrite(mergedUris, writeCap, (chunk) =>
+        client.post<{ snapshot_id?: string }>(itemsPath, { uris: chunk }),
+      );
+      if (!write.ok) {
+        const committedCount = write.last_committed_chunk_uris.length;
+        const lastUri = write.last_committed_chunk_uris[committedCount - 1];
+        const prose = write.failed_chunk_index === 0
+          ? `merge_playlists aborted before any track landed on playlist ${targetId}: ${write.error}. Nothing was merged.`
+          : `Partial merge into playlist ${targetId}: chunks 1–${write.failed_chunk_index} committed (${committedCount} track(s)), batch ${write.failed_chunk_index + 1} of ${write.attempted_chunks} failed.${lastUri ? ` Last URI committed: ${lastUri}.` : ''} Retry the remaining ${mergedUris.length - committedCount} track(s); the committed prefix is already on the playlist. (${write.error})`;
+        const payload = withPlaylistInputMetadata({ ...write, target_playlist: targetId, attempted_uris: mergedUris.length, committed_uris: committedCount, remaining_uris: mergedUris.length - committedCount, playlists: sourceRefs, duplicates_skipped: duplicates, unavailable_items_skipped: unavailable, truncated, scan_cap: sourceCap, created_new_playlist: creatingNew }, input);
+        return textResult(args.response_format === 'json' ? jsonText(payload) : withPlaylistInputNote(prose, input), payload);
       }
+      const snapshotId = write.snapshot_id;
+      const requestCount = write.chunks;
 
       const summary = {
         ok: true,

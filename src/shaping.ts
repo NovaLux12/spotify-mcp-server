@@ -56,6 +56,37 @@ export const DryRun = z
   );
 
 /**
+ * `dry_run` for a MUTATING tool: same flag, but it defaults to TRUE, so an
+ * omitted field is a preview and the write is an explicit opt-in (#827).
+ *
+ * `DryRun` alone declares no default, so a handler that branches on
+ * `args.dry_run` treats an omitted flag as `false` — and commits. On a
+ * replace-shaped write (e.g. `PUT /playlists/{id}/items`, which discards the
+ * playlist's entire previous item list) that is a silent destructive default
+ * with no preview and no receipt. That is why every mutating tool in this
+ * server is supposed to default the flag; the fragment that does so lives
+ * here, once, rather than in each tool module (which is how the modules
+ * drifted apart in the first place).
+ *
+ * Add `.default(true)` to the *schema* so the published `tools/list` entry
+ * states the behaviour, AND branch on `isDryRun(args)` in the handler — a
+ * handler that only trusts the parsed default still writes when it is called
+ * with a raw args object, which is what the unit tests and any direct caller
+ * do.
+ */
+export const DryRunDefault = DryRun.default(true).describe(
+  'Preview only: perform the read side and return a PLAN without changing anything. '
+    + 'Default true — pass dry_run=false to commit.',
+);
+
+/**
+ * Effective dry-run flag. The `DryRunDefault` fragment already defaults true,
+ * so a parsed call always carries the value; this keeps the default at the
+ * decision point too, so an omitted or hand-built args object previews.
+ */
+export const isDryRun = (args: { dry_run?: boolean }): boolean => args.dry_run ?? true;
+
+/**
  * Per-request cap for a `/me/library` write (#624). Spotify rejects a PUT or
  * DELETE carrying more than 40 uris. `restore.ts` and `undo.ts` import this
  * rather than each hardcoding the number, which is how the two drifted apart.
@@ -68,6 +99,55 @@ export const sharedListFields = {
   response_format: ResponseFormat,
   max_results: MaxResults,
 } as const;
+
+// ---------------------------------------------------------------------------
+// Discovery-tool response shaping (#713)
+// ---------------------------------------------------------------------------
+
+/** The MCP result shape every tool returns, so callers can spread it. */
+export interface ShapedResult {
+  [key: string]: unknown;
+  content: Array<{ type: 'text'; text: string }>;
+  structuredContent: Record<string, unknown>;
+}
+
+/**
+ * `response_format` handling for the pure-introspection discovery tools
+ * (`find_tool`, `inspect_tool`, `toolset_report`).
+ *
+ * #713: `find_tool` and `inspect_tool` advertised `response_format` and never
+ * read it, and `toolset_report` did not declare it at all, so an agent asking
+ * for machine-readable discovery output got the same bullet list three ways and
+ * had to regex it. All three now emit through this one helper so the modes
+ * cannot drift apart again.
+ *
+ * `json` serializes the payload that also rides as `structuredContent`; both
+ * prose modes return the handler's own text, because these payloads are
+ * already complete in prose and the switch is a parse contract, not a detail
+ * level. The mode is read defensively: handlers are also invoked directly in
+ * tests, where zod's `.default('concise')` has not run.
+ */
+export function shapeDiscoveryResult(
+  format: ResponseFormatValue | undefined,
+  prose: string,
+  payload: Record<string, unknown>,
+): ShapedResult {
+  return {
+    content: [{ type: 'text', text: format === 'json' ? JSON.stringify(payload, null, 2) : prose }],
+    structuredContent: payload,
+  };
+}
+
+/**
+ * The three discovery tools' `response_format` description. The shared
+ * `ResponseFormat` fragment stays as-is for the other ~590 tools; these three
+ * spell out what each mode actually emits because "json = raw API object" is
+ * the wrong promise for a tool that never calls the API.
+ */
+export const DiscoveryResponseFormat = ResponseFormat.describe(
+  "'concise' (default) = prose bullet list; 'detailed' = the same prose; " +
+    "'json' = the result payload as parseable JSON text, identical to structuredContent",
+);
 
 // ---------------------------------------------------------------------------
 // Canonical playlist set-operation inputs (#912)

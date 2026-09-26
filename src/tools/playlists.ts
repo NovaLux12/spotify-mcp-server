@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { issueReceipt, formatReceipt } from '../receipts.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
-import { capFor } from '../chunk.js';
+import { capFor, runChunkedPlaylistWrite } from '../chunk.js';
 import { getConfig } from '../config.js';
 import { fetchCoverJpeg, validateCoverJpegBuffer } from '../cover-image.js';
 import {
@@ -786,7 +786,20 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
       const body: Record<string, unknown> = { uris: toAdd };
       if (args.position !== undefined) body.position = args.position;
 
-      const res = await client.post<{ snapshot_id?: string }>(`/playlists/${id}/items`, body);
+      // #865: add_to_playlist is capped at 100 URIs so it is normally a single
+      // chunk, but a 5xx or rejected POST with nothing committed still has to
+      // surface the partial state in the same shape as the multi-chunk tools.
+      // Using runChunkedPlaylistWrite keeps the contract uniform — a future
+      // cap lift would not need a second codepath.
+      const write = await runChunkedPlaylistWrite(toAdd, toAdd.length, () => client.post<{ snapshot_id?: string }>(`/playlists/${id}/items`, body));
+      if (!write.ok) {
+        // toAdd is at most 100, so attempted_chunks is always 1 here.
+        return textResult(
+          `add_to_playlist failed before any URI landed on playlist ${args.playlist_id}: ${write.error}. Nothing was added.`,
+          { ...write, playlist_id: args.playlist_id, attempted_uris: toAdd.length, committed_uris: 0, remaining_uris: toAdd.length, ...scanMeta },
+        );
+      }
+      const res = write.snapshot_id ? { snapshot_id: write.snapshot_id } : undefined;
       // Receipt (#112 idea 11): verify the added URIs actually landed.
       const receipt = await issueReceipt(client, {
         kind: 'playlist_items',
@@ -1145,18 +1158,33 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
         }
       }
       const id = encodeURIComponent(args.playlist_id);
-      let snapshotId: string | undefined;
-      let requestCount = 0;
+      // #865: replace_playlist_items atomically PUTs the first chunk, then
+      // POSTs the remainder. A failure on chunk N (a later POST, a 5xx on
+      // the PUT itself, etc.) left the caller with no way to know what was
+      // on the playlist. The performChunk callback chooses PUT for chunk 0
+      // and POST for the rest, mirroring the old for-loop.
       const writeCap = capFor('playlist_writes');
-      for (let start = 0; start < args.uris.length; start += writeCap) {
-        const chunk = { uris: args.uris.slice(start, start + writeCap) };
-        const res =
-          start === 0
-            ? await client.put<{ snapshot_id?: string }>(`/playlists/${id}/items`, chunk)
-            : await client.post<{ snapshot_id?: string }>(`/playlists/${id}/items`, chunk);
-        requestCount++;
-        if (res?.snapshot_id) snapshotId = res.snapshot_id;
+      const write = await runChunkedPlaylistWrite(args.uris, writeCap, (chunk, chunkIndex) => {
+        const body = { uris: chunk };
+        return chunkIndex === 0
+          ? client.put<{ snapshot_id?: string }>(`/playlists/${id}/items`, body)
+          : client.post<{ snapshot_id?: string }>(`/playlists/${id}/items`, body);
+      });
+      if (!write.ok) {
+        const committedCount = write.last_committed_chunk_uris.length;
+        const lastUri = write.last_committed_chunk_uris[write.last_committed_chunk_uris.length - 1];
+        // The PUT chunk 0 is the only "true" replace — anything later is an
+        // append onto the replaced playlist, so a partial failure still
+        // means the playlist now holds a *partial* new contents, not its old
+        // contents. The retry must skip the already-committed prefix.
+        const committedUpTo = lastUri ? ` Last URI committed: ${lastUri}.` : '';
+        const prose = write.failed_chunk_index === 0
+          ? `replace_playlist_items aborted before any URI landed on playlist ${args.playlist_id}: ${write.error}. Nothing was changed.`
+          : `Partial replace on playlist ${args.playlist_id}: chunk 0 was a successful atomic replace, chunks 1–${write.failed_chunk_index} appended (${committedCount} URI(s) total), chunk ${write.failed_chunk_index + 1} of ${write.attempted_chunks} failed.${committedUpTo} Retry the remaining ${args.uris.length - committedCount} URI(s); the playlist currently holds the committed prefix. (${write.error})`;
+        return textResult(prose, { ...write, playlist_id: args.playlist_id, attempted_uris: args.uris.length, committed_uris: committedCount, remaining_uris: args.uris.length - committedCount });
       }
+      const snapshotId = write.snapshot_id;
+      const requestCount = write.chunks;
 
       // Receipt (#112 idea 11): replace is present-semantics — verify the
       // new contents actually landed.
@@ -1820,17 +1848,40 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
     const meta = await client.get<SpotifyPlaylistPage>(`/playlists/${encodeURIComponent(playlistId)}`);
     return playlistItemTotal(meta);
   }
-  async function replaceWithUris(playlistId: string, uris: string[]): Promise<string | undefined> {
+  // #865: replaceWithUris is shared by the destructive-replace family
+  // (sort / shuffle / reverse / union / subtract / trim). Until this fix a
+  // mid-batch failure bubbled the thrown error up to the caller with no
+  // chunk context. Now we return a partial-write failure and let each
+  // caller render it in its own prose/structuredContent shape; the helper
+  // surfaces every field the multi-chunk contract requires.
+  async function replaceWithUris(playlistId: string, uris: string[]): Promise<
+    | { ok: true; snapshot_id: string | undefined }
+    | ({ ok: false; partial_write_failure: true; playlist_id: string; attempted_uris: number; committed_uris: number; remaining_uris: number; attempted_chunks: number; failed_chunk_index: number; last_committed_chunk_index: number; last_committed_chunk_uris: string[]; error: string })
+  > {
     const enc = encodeURIComponent(playlistId);
-    let snap: string | undefined;
     const writeCap = capFor('playlist_writes');
-    for (let s = 0; s < uris.length; s += writeCap) {
-      const chunk = uris.slice(s, s + writeCap);
-      const res = s === 0 ? await client.put<{ snapshot_id?: string }>(`/playlists/${enc}/items`, { uris: chunk }) : await client.post<{ snapshot_id?: string }>(`/playlists/${enc}/items`, { uris: chunk });
-      if (res?.snapshot_id) snap = res.snapshot_id;
+    // An empty URI list is a single PUT (chunked path returns 0 chunks); the
+    // empty-PUT branch is preserved exactly so trim/clear still emit one call.
+    if (uris.length === 0) {
+      try {
+        const res = await client.put<{ snapshot_id?: string }>(`/playlists/${enc}/items`, { uris: [] });
+        return { ok: true, snapshot_id: res?.snapshot_id };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return { ok: false, partial_write_failure: true, playlist_id: playlistId, attempted_uris: 0, committed_uris: 0, remaining_uris: 0, attempted_chunks: 1, failed_chunk_index: 0, last_committed_chunk_index: -1, last_committed_chunk_uris: [], error: message };
+      }
     }
-    if (uris.length === 0) { const res = await client.put<{ snapshot_id?: string }>(`/playlists/${enc}/items`, { uris: [] }); if (res?.snapshot_id) snap = res.snapshot_id; }
-    return snap;
+    const write = await runChunkedPlaylistWrite(uris, writeCap, (chunk, chunkIndex) => {
+      const body = { uris: chunk };
+      return chunkIndex === 0
+        ? client.put<{ snapshot_id?: string }>(`/playlists/${enc}/items`, body)
+        : client.post<{ snapshot_id?: string }>(`/playlists/${enc}/items`, body);
+    });
+    if (!write.ok) {
+      const committedCount = write.last_committed_chunk_uris.length;
+      return { ...write, playlist_id: playlistId, attempted_uris: uris.length, committed_uris: committedCount, remaining_uris: uris.length - committedCount };
+    }
+    return { ok: true, snapshot_id: write.snapshot_id };
   }
 
   // check_playlist_following (#284, fixed #862) — follow state via the
@@ -2004,8 +2055,15 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
     const sorted = keyed.sort((a, b) => (typeof a.k === 'number' && typeof b.k === 'number' ? sign * (a.k - b.k) : sign * String(a.k).localeCompare(String(b.k)))).map(x => x.e);
     const uris = sorted.map(e=>e.uri);
     if (args.dry_run) return textResult(describeDryRun('sort playlist', playlistId, [`Would sort ${uris.length} items by ${args.sort_by}`, ...uris.slice(0,5)]));
-    const snap = await replaceWithUris(playlistId, uris);
-    return textResult(withSnapshot(`Sorted ${uris.length} item(s) by ${args.sort_by}`, snap));
+    const write = await replaceWithUris(playlistId, uris);
+    if (!write.ok) {
+      const lastUri = write.last_committed_chunk_uris[write.last_committed_chunk_uris.length - 1];
+      const prose = write.failed_chunk_index === 0
+        ? `Sort aborted before any URI landed on playlist ${playlistId}: ${write.error}. Nothing was changed.`
+        : `Partial sort on playlist ${playlistId}: chunk 0 sorted ${write.last_committed_chunk_uris.length} URI(s) atomically, chunks 1–${write.failed_chunk_index} appended the rest, chunk ${write.failed_chunk_index + 1} of ${write.attempted_chunks} failed.${lastUri ? ` Last URI committed: ${lastUri}.` : ''} Retry the remaining ${write.remaining_uris} URI(s); the playlist currently holds the committed prefix. (${write.error})`;
+      return textResult(prose, write);
+    }
+    return textResult(withSnapshot(`Sorted ${uris.length} item(s) by ${args.sort_by}`, write.snapshot_id));
   });
 
   // playlist_shuffle (#288)
@@ -2017,8 +2075,15 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
     if (args.seed) { let h = 0; for (let i=0;i<args.seed.length;i++) h = (h*31 + args.seed.charCodeAt(i))>>>0; let s=h; rng = () => { s = (s*1664525+1013904223)>>>0; return s/0x100000000; }; }
     for (let i=shuffled.length-1;i>0;i--){ const j=Math.floor(rng()*(i+1)); [shuffled[i],shuffled[j]]=[shuffled[j],shuffled[i]]; }
     if (args.dry_run) return textResult(describeDryRun('shuffle playlist', playlistId, [`Would shuffle ${uris.length} items`, ...shuffled.slice(0,5)]));
-    const snap = await replaceWithUris(playlistId, shuffled);
-    return textResult(withSnapshot(`Shuffled ${shuffled.length} item(s)`, snap));
+    const write = await replaceWithUris(playlistId, shuffled);
+    if (!write.ok) {
+      const lastUri = write.last_committed_chunk_uris[write.last_committed_chunk_uris.length - 1];
+      const prose = write.failed_chunk_index === 0
+        ? `Shuffle aborted before any URI landed on playlist ${playlistId}: ${write.error}. Nothing was changed.`
+        : `Partial shuffle on playlist ${playlistId}: chunk 0 replaced ${write.last_committed_chunk_uris.length} URI(s) atomically, chunks 1–${write.failed_chunk_index} appended the rest, chunk ${write.failed_chunk_index + 1} of ${write.attempted_chunks} failed.${lastUri ? ` Last URI committed: ${lastUri}.` : ''} Retry the remaining ${write.remaining_uris} URI(s); the playlist currently holds the committed prefix. (${write.error})`;
+      return textResult(prose, write);
+    }
+    return textResult(withSnapshot(`Shuffled ${shuffled.length} item(s)`, write.snapshot_id));
   });
 
   // playlist_reverse (#289)
@@ -2027,8 +2092,15 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
     const uris = await getAllUris(playlistId);
     const rev = [...uris].reverse();
     if (args.dry_run) return textResult(describeDryRun('reverse playlist', playlistId, [`Would reverse ${uris.length} items`]));
-    const snap = await replaceWithUris(playlistId, rev);
-    return textResult(withSnapshot(`Reversed ${rev.length} item(s)`, snap));
+    const write = await replaceWithUris(playlistId, rev);
+    if (!write.ok) {
+      const lastUri = write.last_committed_chunk_uris[write.last_committed_chunk_uris.length - 1];
+      const prose = write.failed_chunk_index === 0
+        ? `Reverse aborted before any URI landed on playlist ${playlistId}: ${write.error}. Nothing was changed.`
+        : `Partial reverse on playlist ${playlistId}: chunk 0 reversed ${write.last_committed_chunk_uris.length} URI(s) atomically, chunks 1–${write.failed_chunk_index} appended the rest, chunk ${write.failed_chunk_index + 1} of ${write.attempted_chunks} failed.${lastUri ? ` Last URI committed: ${lastUri}.` : ''} Retry the remaining ${write.remaining_uris} URI(s); the playlist currently holds the committed prefix. (${write.error})`;
+      return textResult(prose, write);
+    }
+    return textResult(withSnapshot(`Reversed ${rev.length} item(s)`, write.snapshot_id));
   });
 
   // playlist_union (#290)
@@ -2147,7 +2219,15 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
       }
     }
     if (!targetId){ const created = await client.post<{id:string}>(`/me/playlists`, { name: args.target_name, public: false }); if(!created?.id) throw new Error('Could not create playlist'); targetId = created.id; }
-    const snap = await replaceWithUris(targetId!, union);
+    const write = await replaceWithUris(targetId!, union);
+    if (!write.ok) {
+      const lastUri = write.last_committed_chunk_uris[write.last_committed_chunk_uris.length - 1];
+      const prose = write.failed_chunk_index === 0
+        ? `Union aborted before any URI landed on playlist ${targetId}: ${write.error}. Nothing was changed.`
+        : `Partial union on playlist ${targetId}: chunk 0 replaced ${write.last_committed_chunk_uris.length} URI(s) atomically, chunks 1–${write.failed_chunk_index} appended the rest, chunk ${write.failed_chunk_index + 1} of ${write.attempted_chunks} failed.${lastUri ? ` Last URI committed: ${lastUri}.` : ''} Retry the remaining ${write.remaining_uris} URI(s); the playlist currently holds the committed prefix. (${write.error})`;
+      return textResult(args.response_format === 'json' ? jsonText(write) : withPlaylistInputNote(prose, input), withPlaylistInputMetadata(write, input));
+    }
+    const snap = write.snapshot_id;
     const payload = withPlaylistInputMetadata({
       ok: true,
       target_playlist: targetId,
@@ -2271,7 +2351,15 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
     if (latestBase.rowCount !== base.rowCount || latestBase.uris.length !== base.uris.length || latestBase.uris.join('\n') !== base.uris.join('\n') || latestReadWhole !== readWholePlaylist || latestImpact.removed !== removed) {
       throw new Error('base playlist changed during subtract; re-run to review the new destructive impact');
     }
-    const snap = await replaceWithUris(basePlaylistId, remaining);
+    const write = await replaceWithUris(basePlaylistId, remaining);
+    if (!write.ok) {
+      const lastUri = write.last_committed_chunk_uris[write.last_committed_chunk_uris.length - 1];
+      const prose = write.failed_chunk_index === 0
+        ? `Subtract aborted before any URI landed on playlist ${basePlaylistId}: ${write.error}. Nothing was changed.`
+        : `Partial subtract on playlist ${basePlaylistId}: chunk 0 replaced ${write.last_committed_chunk_uris.length} URI(s) atomically, chunks 1–${write.failed_chunk_index} appended the rest, chunk ${write.failed_chunk_index + 1} of ${write.attempted_chunks} failed.${lastUri ? ` Last URI committed: ${lastUri}.` : ''} Retry the remaining ${write.remaining_uris} URI(s); the playlist currently holds the committed prefix. (${write.error})`;
+      return textResult(args.response_format === 'json' ? jsonText(write) : withPlaylistInputNote(prose, input, positionalNote), withPlaylistInputMetadata(write, input, positionalNote));
+    }
+    const snap = write.snapshot_id;
     const payload = withPlaylistInputMetadata({
       ok: true,
       base_playlist: basePlaylistId,
@@ -2319,7 +2407,14 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
     else if (args.keep_which === 'last') kept = uris.slice(-args.keep);
     else { const shuffled=[...uris]; for(let i=shuffled.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [shuffled[i],shuffled[j]]=[shuffled[j],shuffled[i]];} kept=shuffled.slice(0,args.keep); }
     if (args.dry_run) return textResult(describeDryRun('trim playlist', playlistId, [`Would trim ${uris.length} → ${kept.length} (${args.keep_which})`]));
-    const snap = await replaceWithUris(playlistId, kept);
-    return textResult(withSnapshot(`Trimmed ${uris.length} → ${kept.length} (${args.keep_which})`, snap));
+    const write = await replaceWithUris(playlistId, kept);
+    if (!write.ok) {
+      const lastUri = write.last_committed_chunk_uris[write.last_committed_chunk_uris.length - 1];
+      const prose = write.failed_chunk_index === 0
+        ? `Trim aborted before any URI landed on playlist ${playlistId}: ${write.error}. Nothing was changed.`
+        : `Partial trim on playlist ${playlistId}: chunk 0 replaced ${write.last_committed_chunk_uris.length} URI(s) atomically, chunks 1–${write.failed_chunk_index} appended the rest, chunk ${write.failed_chunk_index + 1} of ${write.attempted_chunks} failed.${lastUri ? ` Last URI committed: ${lastUri}.` : ''} Retry the remaining ${write.remaining_uris} URI(s); the playlist currently holds the committed prefix. (${write.error})`;
+      return textResult(prose, write);
+    }
+    return textResult(withSnapshot(`Trimmed ${uris.length} → ${kept.length} (${args.keep_which})`, write.snapshot_id));
   });
 }
