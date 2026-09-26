@@ -41,6 +41,7 @@ import { WRITE_SCOPE_REQUIREMENTS, moduleBlockedByScopes, scopesFor } from '../s
 import { loadScenes, scenesFilePath } from './scenes.js';
 import { loadPlaybackExt, playbackExtFile } from './playbackext.js';
 import { genreTagsPath, loadGenreTags } from './libraryinsights.js';
+import { loadSidecar } from '../sidecar.js';
 import { historyFilePath, isHistoryEnabled, readHistory } from '../history.js';
 import type { HistoryRecord } from '../history.js';
 import {
@@ -182,21 +183,39 @@ function miscFilePath(env: NodeJS.ProcessEnv = process.env): string {
   return env.SPOTIFY_MCP_EXHAUST2_MISC_FILE ?? join(homedir(), '.spotify-mcp', 'exhaust2-misc.json');
 }
 
-/** Load the slice sidecar; missing/corrupt file yields an empty store. */
+/** Load the slice sidecar; ENOENT yields empty, every other failure throws #1051. */
 async function loadMiscStore(env: NodeJS.ProcessEnv = process.env): Promise<MiscStore> {
-  try {
-    const raw = await readFile(miscFilePath(env), 'utf8');
-    const p = JSON.parse(raw) as Partial<MiscStore>;
-    if (!p || typeof p !== 'object') throw new Error('bad');
-    return {
-      checkpoints: p.checkpoints ?? {},
-      bookmarks: p.bookmarks ?? {},
-      journal: p.journal ?? [],
-      reports: p.reports ?? {},
-    };
-  } catch {
-    return { checkpoints: {}, bookmarks: {}, journal: [], reports: {} };
-  }
+  return loadSidecar<MiscStore>(
+    miscFilePath(env),
+    () => ({ checkpoints: {}, bookmarks: {}, journal: [], reports: {} }),
+    (parsed) => {
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        throw new Error('top level is not a JSON object');
+      }
+      const p = parsed as Record<string, unknown>;
+      // checkpoints and bookmarks are per-key maps; reports is an opaque bag;
+      // journal is an append-only array. A wrong shape in any of them would
+      // surface as a confusing write-time TypeError — block it at load.
+      if (p.checkpoints !== undefined && (typeof p.checkpoints !== 'object' || p.checkpoints === null || Array.isArray(p.checkpoints))) {
+        throw new Error('"checkpoints" is not a JSON object');
+      }
+      if (p.bookmarks !== undefined && (typeof p.bookmarks !== 'object' || p.bookmarks === null || Array.isArray(p.bookmarks))) {
+        throw new Error('"bookmarks" is not a JSON object');
+      }
+      if (p.journal !== undefined && !Array.isArray(p.journal)) {
+        throw new Error('"journal" is not an array');
+      }
+      if (p.reports !== undefined && (typeof p.reports !== 'object' || p.reports === null || Array.isArray(p.reports))) {
+        throw new Error('"reports" is not a JSON object');
+      }
+      return {
+        checkpoints: (p.checkpoints ?? {}) as Record<string, TasteCheckpoint>,
+        bookmarks: (p.bookmarks ?? {}) as Record<string, ChapterBookmark[]>,
+        journal: (p.journal ?? []) as JournalEntry[],
+        reports: (p.reports ?? {}) as Record<string, unknown>,
+      };
+    },
+  );
 }
 
 /** Persist the slice sidecar: owner-only dir and file modes. */
