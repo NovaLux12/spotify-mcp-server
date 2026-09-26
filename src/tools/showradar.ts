@@ -27,12 +27,24 @@ import {
   truncateItems,
 } from '../shaping.js';
 import { getConfig } from '../config.js';
+import {
+  MARKET_CODE,
+  resolveRequestMarket,
+  resetProfileCountryCache,
+  withMarketHint,
+  withMarketSource,
+  type MarketResolution,
+} from '../markets.js';
 import type {
   SavedEpisodeItem,
   SavedShowItem,
   SpotifyEpisodeSimple,
   SpotifyPaged,
 } from '../types/spotify.js';
+
+// Re-exported so this module's tests import the market cache hook the same way
+// the catalog and audiobooks suites do (#782).
+export { resetProfileCountryCache };
 
 type TextContent = { type: 'text'; text: string };
 type ToolResult = { content: TextContent[]; structuredContent?: Record<string, unknown> };
@@ -41,6 +53,15 @@ const textResult = (text: string, structured?: Record<string, unknown>): ToolRes
   content: [{ type: 'text', text }],
   ...(structured ? { structuredContent: structured } : {}),
 });
+
+/** The show/episode lookups this module makes are market-gated, so a hint that
+ *  names the family is more use than the generic wording (#782). */
+const SHOW_EPISODES_GATED = 'Show episode lookups';
+
+const MARKET_HINT =
+  'ISO 3166-1 alpha-2 country code for the per-show episode lookups, e.g. "US". '
+  + 'Defaults to SPOTIFY_MCP_MARKET, then to the account country — these '
+  + 'lookups are market-gated, so a wrong default silently drops episode rows.';
 
 /**
  * Read-only cost preview (#794). The shared `DryRun` fragment is a *mutation*
@@ -155,6 +176,10 @@ export interface ShowRadarResult {
   retry_after: number | null;
   /** When quota_hit, the number of shows scanned before it. Otherwise shows_scanned. */
   quota_scanned_shows: number;
+  /** #782: the market the per-show episode lookups carried, or null when none did. */
+  market: string | null;
+  /** #782: where that market came from. Absent is a real outcome, not a gap. */
+  market_source: MarketResolution['source'];
 }
 
 /** Args the radar accepts from any caller (tool handler or save_show_digest). */
@@ -162,6 +187,8 @@ export interface CollectShowRadarEpisodesArgs {
   days: number;
   per_show_limit: number;
   max_shows?: number;
+  /** #782: caller market for the per-show episode lookups; omitted means default. */
+  market?: string;
 }
 
 /**
@@ -216,6 +243,8 @@ export async function collectShowRadarEpisodes(
         quota_hit: true,
         retry_after: quotaRetryAfter ?? null,
         quota_scanned_shows: 0,
+        market: null,
+        market_source: 'none',
       };
     }
     throw err;
@@ -246,10 +275,20 @@ export async function collectShowRadarEpisodes(
       quota_hit: false,
       retry_after: null,
       quota_scanned_shows: 0,
+      market: null,
+      market_source: 'none',
     };
   }
   const truncatedByBudget = savedShows.length > effectiveCap;
   const showsToScan = savedShows.slice(0, effectiveCap);
+
+  // #782: the per-show /shows/{id}/episodes lookups below are market-gated and
+  // sent no market at all, so an account outside Spotify's default market lost
+  // episode rows and a short list read as "this show has no more episodes".
+  // Resolved once here — after the empty-library exit, so a scan that reads
+  // nothing does not pay for a /me round-trip — and once for every caller,
+  // including save_show_digest, which shares this function.
+  const market = await resolveRequestMarket(client, args.market);
 
   // Cross-ref: which episodes are already saved (/me/episodes)?
   let savedEpisodes: SavedEpisodeItem[] = [];
@@ -279,6 +318,8 @@ export async function collectShowRadarEpisodes(
         quota_hit: true,
         retry_after: quotaRetryAfter ?? null,
         quota_scanned_shows: 0,
+        market: market.market ?? null,
+        market_source: market.source,
       };
     }
     throw err;
@@ -295,7 +336,9 @@ export async function collectShowRadarEpisodes(
     try {
       const resp = await client.get<SpotifyPaged<SpotifyEpisodeSimple>>(
         `/shows/${encodeURIComponent(show.id)}/episodes`,
-        { limit: String(args.per_show_limit) },
+        market.market
+          ? { limit: String(args.per_show_limit), market: market.market }
+          : { limit: String(args.per_show_limit) },
       );
       showsScanned++;
       for (const ep of resp?.items ?? []) {
@@ -319,7 +362,7 @@ export async function collectShowRadarEpisodes(
         quotaScannedShows = showsScanned;
         break;
       }
-      throw err;
+      throw withMarketHint(err, market.market, args.market, SHOW_EPISODES_GATED);
     }
   }
 
@@ -344,6 +387,8 @@ export async function collectShowRadarEpisodes(
     quota_hit: quotaHit,
     retry_after: quotaRetryAfter ?? null,
     quota_scanned_shows: quotaHit ? quotaScannedShows : showsScanned,
+    market: market.market ?? null,
+    market_source: market.source,
   };
 }
 
@@ -386,6 +431,7 @@ export function registerShowRadarTools(server: McpServer, client: SpotifyClient)
             + 'WARNING: each lookup is an API request.',
         ),
       cost_preview: CostPreview,
+      market: MARKET_CODE.optional().describe(MARKET_HINT),
     },
     async (args) => {
       const cutoff = cutoffDate(args.days);
@@ -426,7 +472,11 @@ export function registerShowRadarTools(server: McpServer, client: SpotifyClient)
         days: args.days,
         per_show_limit: args.per_show_limit,
         max_shows: args.max_shows,
+        market: args.market,
       });
+      // #782: reported on every exit below, so a short list cannot be read as
+      // "the show has no more episodes" when it was a market-scoped one.
+      const market: MarketResolution = { market: r.market ?? undefined, source: r.market_source };
 
       const showsListingNote = r.shows_listing_truncated ? listingCapNote(r.saved_shows_total, r.shows_list_cap) : '';
       const extra: Record<string, unknown> = {
@@ -459,18 +509,24 @@ export function registerShowRadarTools(server: McpServer, client: SpotifyClient)
           ? ` Quota exceeded mid-scan (QUOTA_EXCEEDED) after ${r.quota_scanned_shows} shows.${r.retry_after != null ? ` Retry-After: ${r.retry_after}s.` : ''}`
           : r.truncated_by_budget ? ` (scan capped at ${r.effective_cap} shows; ${r.saved_shows_total - r.effective_cap} shows not scanned — raise max_shows to see more)` : '';
         const budgetNote = r.truncated_by_budget ? ` Truncated by budget: ${r.effective_cap} of ${r.saved_shows_total} shows scanned.` : '';
-        return textResult(base + suffix + budgetNote + showsListingNote, { ...extra, ok: true, episodes: [] });
+        return withMarketSource(
+          textResult(base + suffix + budgetNote + showsListingNote, { ...extra, ok: true, episodes: [] }),
+          market,
+        );
       }
 
       const maxResults = resolveMaxResults(args.max_results, getConfig().maxItems);
       const view = truncateItems(r.episodes, maxResults);
 
       if (args.response_format === 'json') {
-        return textResult(JSON.stringify({ ...extra, episodes: view.items }, null, 2), {
-          ok: true,
-          ...extra,
-          episodes: view.items,
-        });
+        return withMarketSource(
+          textResult(JSON.stringify({ ...extra, episodes: view.items }, null, 2), {
+            ok: true,
+            ...extra,
+            episodes: view.items,
+          }),
+          market,
+        );
       }
 
       const lines = [
@@ -487,7 +543,7 @@ export function registerShowRadarTools(server: McpServer, client: SpotifyClient)
         const retryMsg = r.retry_after != null ? ` Retry-After: ${r.retry_after}s.` : '';
         lines.push(`Quota exceeded mid-scan (QUOTA_EXCEEDED) after ${r.quota_scanned_shows} shows — partial results.${retryMsg}`);
       }
-      return textResult(lines.join('\n'), { ok: true, ...extra, episodes: view.items });
+      return withMarketSource(textResult(lines.join('\n'), { ok: true, ...extra, episodes: view.items }), market);
     },
   );
 }

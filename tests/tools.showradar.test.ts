@@ -4,12 +4,12 @@
  * sorting, and empty-library handling.
  */
 
-import { describe, it } from 'node:test';
+import { afterEach, beforeEach, describe, it } from 'node:test';
 import { z } from 'zod';
 import assert from 'node:assert/strict';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../src/client.js';
-import { registerShowRadarTools } from '../src/tools/showradar.js';
+import { registerShowRadarTools, resetProfileCountryCache } from '../src/tools/showradar.js';
 import { initConfig } from '../src/config.js';
 
 // ---------------------------------------------------------------------------
@@ -53,6 +53,8 @@ function harness(opts: {
   shows?: ReturnType<typeof show>[];
   episodesByShow?: Record<string, ReturnType<typeof ep>[]>;
   savedEpisodeUris?: string[];
+  /** Country the fake GET /me reports, or undefined for a current registration (#782). */
+  meCountry?: string;
 } = {}) {
   const registered: RegisteredTool[] = [];
   const fakeServer = {
@@ -64,6 +66,8 @@ function harness(opts: {
   const shows = opts.shows ?? [];
   const episodesByShow = opts.episodesByShow ?? {};
   const savedUris = new Set(opts.savedEpisodeUris ?? []);
+  /** Every GET, with the parameters that actually went on the wire (#782). */
+  const gets: Array<{ path: string; params?: Record<string, string> }> = [];
 
   const client = {
     async getAllPages<T>(path: string, _params?: Record<string, string>, opts?: { maxItems?: number }): Promise<T[]> {
@@ -81,6 +85,8 @@ function harness(opts: {
       return [];
     },
     async get<T>(path: string, params?: Record<string, string>): Promise<T | null> {
+      gets.push({ path, params });
+      if (path === '/me') return { id: 'usr1', country: opts.meCountry } as T;
       const m = /^\/shows\/([^/]+)\/episodes$/.exec(path);
       if (!m) return null;
       const showId = decodeURIComponent(m[1]);
@@ -93,6 +99,7 @@ function harness(opts: {
   registerShowRadarTools(fakeServer, client as unknown as SpotifyClient);
   return {
     registered,
+    gets,
     invoke: async (args: Record<string, unknown> = {}) => {
       const tool = registered.find((t) => t.name === 'show_new_episodes');
       assert.ok(tool, 'tool registered');
@@ -427,5 +434,125 @@ describe('show_new_episodes /me/shows listing cap', () => {
       assert.equal(p.new_episodes, 3);
       assert.doesNotMatch(textOf(out), /listing capped/i);
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #782 — the per-show episode walk is market-gated and used to send no market
+// ---------------------------------------------------------------------------
+
+describe('show_new_episodes market default (#782)', () => {
+  const twoShows = {
+    shows: [show('s1', 'Show One'), show('s2', 'Show Two')],
+    episodesByShow: {
+      s1: [ep('e1', daysAgo(1))],
+      s2: [ep('e2', daysAgo(1))],
+    },
+  };
+
+  beforeEach(() => {
+    // The profile-country lookup is memoised process-wide, so one test's
+    // answer would otherwise decide every later test's default market.
+    resetProfileCountryCache();
+  });
+
+  afterEach(() => {
+    delete process.env.SPOTIFY_MCP_MARKET;
+    initConfig(process.env);
+    resetProfileCountryCache();
+  });
+
+  it('defaults the episodes request to the account country', async () => {
+    const h = harness({ ...twoShows, meCountry: 'GB' });
+
+    const out = await h.invoke({ days: 7 });
+
+    // Asserted on the request the fake client received, not on a value
+    // recomputed from the handler: this is what Spotify would have received.
+    const episodeReads = h.gets.filter((c) => c.path === '/shows/s1/episodes');
+    assert.equal(episodeReads.length, 1);
+    assert.equal(episodeReads[0].params?.market, 'GB');
+    const payload = out.structuredContent as Record<string, unknown>;
+    assert.equal(payload.market, 'GB');
+    assert.equal(payload.market_source, 'account');
+  });
+
+  it('an explicit market argument wins, and does not fall through to the account', async () => {
+    const h = harness({ ...twoShows, meCountry: 'GB' });
+
+    const out = await h.invoke({ days: 7, market: 'DE' });
+
+    // Not vacuous: the account country is a different code, and a lookup that
+    // simply echoed whatever the argument was would also have to be the thing
+    // that skipped /me.
+    assert.equal(h.gets.filter((c) => c.path === '/shows/s1/episodes')[0].params?.market, 'DE');
+    assert.equal(h.gets.filter((c) => c.path === '/me').length, 0);
+    const payload = out.structuredContent as Record<string, unknown>;
+    assert.equal(payload.market, 'DE');
+    assert.equal(payload.market_source, 'argument');
+  });
+
+  it('normalises a lowercase argument before it reaches the wire', async () => {
+    const h = harness({ ...twoShows, meCountry: 'GB' });
+
+    await h.invoke({ days: 7, market: 'de' });
+
+    assert.equal(h.gets.filter((c) => c.path === '/shows/s1/episodes')[0].params?.market, 'DE');
+  });
+
+  it('prefers SPOTIFY_MCP_MARKET over the account country', async () => {
+    await withEnv({ SPOTIFY_MCP_MARKET: 'JP' }, async () => {
+      const h = harness({ ...twoShows, meCountry: 'GB' });
+
+      const out = await h.invoke({ days: 7 });
+
+      assert.equal(h.gets.filter((c) => c.path === '/shows/s1/episodes')[0].params?.market, 'JP');
+      // A configured default also removes the need to ask the account at all.
+      assert.equal(h.gets.filter((c) => c.path === '/me').length, 0);
+      const payload = out.structuredContent as Record<string, unknown>;
+      assert.equal(payload.market_source, 'config');
+    });
+  });
+
+  it('with nothing to default from, sends no market and says the result is unscoped', async () => {
+    const h = harness(twoShows);
+
+    const out = await h.invoke({ days: 7 });
+
+    const read = h.gets.find((c) => c.path === '/shows/s1/episodes');
+    assert.ok(read, 'the episodes lookup happened');
+    assert.equal('market' in (read.params ?? {}), false);
+    // "No new episodes" is exactly the answer that reads as fact, so the
+    // payload has to say the scan was not scoped to a market.
+    const payload = out.structuredContent as Record<string, unknown>;
+    assert.equal(payload.market, null);
+    assert.equal(payload.market_source, 'none');
+  });
+
+  it('makes no API call for a cost preview, and names no market it did not use', async () => {
+    const h = harness({ ...twoShows, meCountry: 'GB' });
+
+    const out = await h.invoke({ days: 7, cost_preview: true });
+
+    assert.deepEqual(h.gets, []);
+    const payload = out.structuredContent as Record<string, unknown>;
+    // A market resolved during a preview would be a request that never ran.
+    assert.equal('market' in payload, false);
+  });
+
+  it('does not ask the account when the library holds no shows', async () => {
+    const h = harness({ shows: [], meCountry: 'GB' });
+
+    await h.invoke({ days: 7 });
+
+    // A scan that reads nothing should not pay for a /me round-trip.
+    assert.equal(h.gets.filter((c) => c.path === '/me').length, 0);
+  });
+
+  it('rejects an unassigned market code locally, before any request', async () => {
+    const h = harness({ ...twoShows, meCountry: 'GB' });
+
+    await assert.rejects(() => h.invoke({ days: 7, market: 'XX' }), /ISO 3166-1/);
+    assert.deepEqual(h.gets, []);
   });
 });
