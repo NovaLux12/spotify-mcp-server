@@ -43,15 +43,27 @@ export function scenesFilePath(env: NodeJS.ProcessEnv = process.env): string {
   return env.SPOTIFY_MCP_SCENES_FILE ?? join(homedir(), '.spotify-mcp', 'scenes.json');
 }
 
-/** Load all scenes; missing/corrupt file yields an empty store. */
+/**
+ * Load all scenes; a missing file yields an empty store (#1070). An unreadable
+ * file — parse failure, wrong top level, EACCES, partial write — throws so a
+ * caller that only wants a `SceneStore` is not handed an empty one for a file
+ * whose contents are unknown: the next save would silently replace it.
+ * Tools that want to *report* the failure instead of throwing should wrap
+ * this call in try/catch and surface `error.message` as `load_error` (#839).
+ */
 export async function loadScenes(env: NodeJS.ProcessEnv = process.env): Promise<SceneStore> {
+  let raw: string;
   try {
-    const raw = await readFile(scenesFilePath(env), 'utf8');
-    const parsed = JSON.parse(raw) as SceneStore;
-    return parsed && typeof parsed === 'object' ? parsed : {};
-  } catch {
-    return {};
+    raw = await readFile(scenesFilePath(env), 'utf8');
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return {};
+    throw err;
   }
+  const parsed = JSON.parse(raw) as SceneStore;
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error('top level is not a JSON object');
+  }
+  return parsed;
 }
 
 /** Persist the store atomically-enough: owner-only dir and file modes. */

@@ -1737,28 +1737,52 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
       const liveNames = new Set((live?.devices ?? []).map((d) => d.name));
       const liveIds = new Set((live?.devices ?? []).map((d) => d.id));
       const matches = (label: string) => liveNames.has(label) || liveIds.has(label);
+      // #1070: read scenes and playback-ext independently. loadScenes() throws
+      // for an unreadable scenes sidecar (per #839); a failure there must not
+      // take down the playback-ext half or strip the dead-preset signal from
+      // the response. The scenes failure is surfaced as `load_error` on the
+      // response, exactly the way the playback-ext tools do.
+      let sceneStore: SceneStore = {};
+      let scenesLoadError: string | null = null;
+      try {
+        sceneStore = await loadScenes();
+      } catch (err) {
+        scenesLoadError = `scenes.json was unreadable (${err instanceof Error ? err.message : String(err)}); it was not loaded.`;
+      }
       const ext = await loadPlaybackExt();
       const deadPresets = Object.keys(ext.devicePresets).filter((label) => !matches(label));
-      const sceneStore = await loadScenes();
-      const deadScenes = Object.entries(sceneStore)
-        .filter(([, s]) => s.device_hint !== undefined && !matches(s.device_hint))
-        .map(([name]) => name);
-      const payload = {
-        ok: true, live_devices: (live?.devices ?? []).map((d) => ({ id: d.id, name: d.name, type: d.type })),
-        dead_presets: deadPresets, dead_scene_hints: deadScenes,
+      const deadScenes = scenesLoadError
+        ? []
+        : Object.entries(sceneStore)
+            .filter(([, s]) => s.device_hint !== undefined && !matches(s.device_hint))
+            .map(([name]) => name);
+      const basePayload = {
+        ok: true,
+        live_devices: (live?.devices ?? []).map((d) => ({ id: d.id, name: d.name, type: d.type })),
+        dead_presets: deadPresets,
+        dead_scene_hints: deadScenes,
       };
+      const payload = scenesLoadError ? { ...basePayload, load_error: scenesLoadError } : basePayload;
       if (!args.prune || args.dry_run) {
-        return emit(rf, describeDryRun('device-sidecar sync', '~/.spotify-mcp sidecars', [
+        const prose = describeDryRun('device-sidecar sync', '~/.spotify-mcp sidecars', [
           `Dead presets: ${deadPresets.join(', ') || 'none'}`,
           `Scenes with dead device hints: ${deadScenes.join(', ') || 'none'}`,
           args.prune ? 'Re-run with dry_run=false to prune.' : 'Pass prune=true to remove them.',
-        ]), payload);
+        ]);
+        return emit(rf, scenesLoadError ? `WARNING: ${scenesLoadError}\n${prose}` : prose, payload);
       }
       for (const label of deadPresets) delete ext.devicePresets[label];
-      for (const name of deadScenes) delete sceneStore[name].device_hint;
+      if (!scenesLoadError) {
+        for (const name of deadScenes) delete sceneStore[name].device_hint;
+        await saveScenesSafe(sceneStore);
+      }
       await savePlaybackExtSafe(ext);
-      await saveScenesSafe(sceneStore);
-      return emit(rf, `Pruned ${deadPresets.length} dead preset(s) and ${deadScenes.length} dead scene hint(s).`, { ...payload, pruned: true });
+      const summaryText = `Pruned ${deadPresets.length} dead preset(s) and ${deadScenes.length} dead scene hint(s).`;
+      return emit(
+        rf,
+        scenesLoadError ? `WARNING: ${scenesLoadError}\n${summaryText}` : summaryText,
+        { ...payload, pruned: true },
+      );
     },
   );
 }
