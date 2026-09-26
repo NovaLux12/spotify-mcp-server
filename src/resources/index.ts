@@ -18,6 +18,7 @@ import type {
   SavedTrackItem,
   FollowedArtistsResponse,
 } from '../types/spotify.js';
+import { playlistItemTotal } from '../types/spotify.js';
 import { getConfig } from '../config.js';
 
 function formatDuration(ms: number): string {
@@ -64,9 +65,9 @@ function formatItem(item: RenderableItem): string {
 }
 
 function playlistTotal(playlist: SpotifyPlaylistSimple): number | 'unknown' {
-  const legacyPlaylist = playlist as unknown as { tracks?: { total?: number } };
-  const paging = playlist.items ?? legacyPlaylist.tracks;
-  return typeof paging?.total === 'number' ? paging.total : 'unknown';
+  // `items.total` is canonical; `tracks.total` is the pre-Feb-2026 spelling and
+  // only a fallback. Neither present is 'unknown', never 0 (#589).
+  return playlistItemTotal(playlist) ?? 'unknown';
 }
 
 type ResourceError = SpotifyApiError | { status: number; retryAfterSec?: number };

@@ -3,8 +3,8 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { SpotifyApiError, type SpotifyClient } from '../client.js';
 import type {
   SpotifyPaged,
-  SpotifyPlaylistSimple,
   SpotifyImage,
+  SpotifyPlaylistRow,
 } from '../types/spotify.js';
 import {
   ResponseFormat,
@@ -75,16 +75,6 @@ interface PublicUserProfile {
   images?: SpotifyImage[] | null;
 }
 
-/**
- * One listing row (#762). Spotify documents `owner` on a playlist object, but
- * a deleted user or a private wrapper playlist can return `owner: null`; the
- * shared type declares it non-nullable, so widen it here rather than trusting
- * the payload at render time.
- */
-type PlaylistRow = Omit<SpotifyPlaylistSimple, 'owner'> & {
-  owner: SpotifyPlaylistSimple['owner'] | null;
-};
-
 export function registerUsersTools(server: McpServer, client: SpotifyClient): void {
 
   // get_user_profile
@@ -152,9 +142,9 @@ export function registerUsersTools(server: McpServer, client: SpotifyClient): vo
 
       // Feb 2026: GET /users/{id}/playlists was removed (403 for newer
       // registrations).
-      let result: SpotifyPaged<PlaylistRow> | null;
+      let result: SpotifyPaged<SpotifyPlaylistRow> | null;
       try {
-        result = await client.get<SpotifyPaged<PlaylistRow>>(
+        result = await client.get<SpotifyPaged<SpotifyPlaylistRow>>(
           `/users/${encodeURIComponent(args.user_id)}/playlists`,
           params,
         );
@@ -175,7 +165,7 @@ export function registerUsersTools(server: McpServer, client: SpotifyClient): vo
       const total = typeof result.total === 'number' ? result.total : allItems.length;
 
       const detailed = args.response_format === 'detailed';
-      const renderLine = (pl: PlaylistRow): string => {
+      const renderLine = (pl: SpotifyPlaylistRow): string => {
         const trackCount = pl.items?.total ?? 0;
         // #762: `owner` can arrive null; fall back to its id, then to a
         // placeholder, so one malformed row cannot fail the whole listing.

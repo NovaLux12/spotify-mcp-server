@@ -21,6 +21,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
 import { DryRun, ResponseFormat, describeDryRun, parseSpotifyUri } from '../shaping.js';
 import type { ResponseFormatValue } from '../shaping.js';
+import { playlistItemTotal, type SpotifyPlaylistPage } from '../types/spotify.js';
 
 // ---------------------------------------------------------------------------
 // local shaping helpers (slice-convention: self-contained)
@@ -473,12 +474,15 @@ export function registerExhaust2ExtraTools(server: McpServer, client: SpotifyCli
       const rf = args.response_format as ResponseFormatValue;
       const dry = args.dry_run ?? true;
       const id = normalizeRef(args.playlist_id);
-      const meta = await client.get<{ id?: string; name?: string; tracks?: { total?: number } | null }>(`/playlists/${encodeURIComponent(id)}`);
+      const meta = await client.get<{ id?: string; name?: string } & SpotifyPlaylistPage>(`/playlists/${encodeURIComponent(id)}`);
       if (!meta) throw new Error(`Playlist "${args.playlist_id}" not found`);
       // The playlist's real length, as reported by the playlist object. The
       // item walk below is bounded, so its row count can never stand in here.
-      const rawTotal = meta.tracks?.total;
-      const playlistTotal = typeof rawTotal === 'number' && Number.isFinite(rawTotal) ? rawTotal : null;
+      // #589: `items.total` is canonical and `tracks.total` is the pre-Feb-2026
+      // spelling; reading only the latter reported "length unknown" for every
+      // playlist on the current payload shape.
+      const rawTotal = playlistItemTotal(meta);
+      const playlistTotal = rawTotal !== undefined && Number.isFinite(rawTotal) ? rawTotal : null;
       const totalPhrase = playlistTotal === null
         ? 'playlist length unknown'
         : `playlist has ${playlistTotal} item(s)`;

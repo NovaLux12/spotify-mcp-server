@@ -28,8 +28,8 @@ import type {
   SavedTrackItem,
   SpotifyArtistFull,
   SearchResponse,
-  SpotifyAlbumFull,
   SpotifyAlbumItem,
+  SpotifyAlbumRow as AlbumWithMeta,
   SpotifyPaged,
   SpotifyTrackSimple,
 } from '../types/spotify.js';
@@ -163,12 +163,6 @@ function searchParams(q: string, type: string, limit: number, market?: string, o
   const params: Record<string, string> = { q, type, limit: String(Math.min(10, Math.max(1, limit))), offset: String(offset) };
   if (market) params.market = market;
   return params;
-}
-
-/** Album payload extended with fields the API returns but our base type omits. */
-interface AlbumWithMeta extends SpotifyAlbumFull {
-  label?: string;
-  copyrights?: Array<{ text?: string }>;
 }
 
 /**

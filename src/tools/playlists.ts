@@ -36,13 +36,17 @@ import {
 } from '../shaping.js';
 import type {
   SpotifyPaged,
+  SpotifyPlaylistPage,
   SpotifyPlaylistSimple,
+  SpotifyPlaylistVisibilityRow,
+  SpotifyPlaylistWithImages,
   PlaylistItemObject,
   PlaylistItemsResponse,
   SpotifyImage,
   SpotifyTrack,
   SpotifyEpisode,
 } from '../types/spotify.js';
+import { playlistItemTotal } from '../types/spotify.js';
 
 type TextContent = { type: 'text'; text: string };
 type ToolResult = { content: TextContent[]; structuredContent?: Record<string, unknown> };
@@ -136,19 +140,6 @@ const PlaylistSetWalkFields = {
 // elicits; toward-private flips never do. The threshold counts how many
 // toward-visible field flips trigger prompting (1 = any single flip).
 export const VISIBILITY_ELICIT_THRESHOLD = 1;
-
-// Playlist metadata as returned by GET /playlists/{id}, which includes cover
-// images (unlike the simplified playlists in paged listings)
-interface PlaylistWithImages extends SpotifyPlaylistSimple {
-  images?: SpotifyImage[] | null;
-}
-
-// GET /playlists/{id} exposes the current public/collaborative flags needed
-// to detect toward-visible flips before update_playlist PUTs (#157).
-interface PlaylistVisibility extends PlaylistWithImages {
-  public?: boolean | null;
-  collaborative?: boolean;
-}
 
 // Human label for a possibly-unknown visibility flag in confirmation text.
 function visibilityLabel(v: boolean | null | undefined): string {
@@ -354,7 +345,7 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
       if (args.offset !== undefined) itemParams.offset = String(args.offset);
 
       const [metadata, firstPage] = await Promise.all([
-        client.get<PlaylistWithImages>(`/playlists/${id}`),
+        client.get<SpotifyPlaylistWithImages>(`/playlists/${id}`),
         client.get<PlaylistItemsResponse>(`/playlists/${id}/items`, itemParams),
       ]);
       if (!metadata) throw new Error('Playlist not found');
@@ -998,7 +989,7 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
       let currentPublic: boolean | null | undefined;
       let currentCollaborative: boolean | undefined;
       if (towardPublic || towardCollaborative) {
-        const meta = await client.get<PlaylistVisibility>(
+        const meta = await client.get<SpotifyPlaylistVisibilityRow>(
           `/playlists/${encodeURIComponent(playlistId)}`,
         );
         currentPublic = meta?.public;
@@ -1822,11 +1813,11 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
    * Reads `items.total`, not `tracks.total`: the OpenAPI schema marks
    * PlaylistObject.tracks deprecated in favour of `items` (which is a
    * PagingPlaylistTrackObject, and PagingObject requires `total`).
+   * `playlistItemTotal` is that precedence, in one shared place (#589).
    */
   async function getPlaylistRowTotal(playlistId: string): Promise<number | undefined> {
-    const meta = await client.get<{ items?: { total?: number } }>(`/playlists/${encodeURIComponent(playlistId)}`);
-    const total = meta?.items?.total;
-    return typeof total === 'number' ? total : undefined;
+    const meta = await client.get<SpotifyPlaylistPage>(`/playlists/${encodeURIComponent(playlistId)}`);
+    return playlistItemTotal(meta);
   }
   async function replaceWithUris(playlistId: string, uris: string[]): Promise<string | undefined> {
     const enc = encodeURIComponent(playlistId);

@@ -342,6 +342,57 @@ test('playlist_cover_from_track reports the real playlist length, not the bounde
   assert.equal(p.items_scanned, 0);
 });
 
+test('playlist_cover_from_track reads the canonical items.total, not only the legacy tracks.total', async () => {
+  // Feb 2026: Spotify deprecated PlaylistObject.tracks in favour of `items`.
+  // A payload carrying only the canonical page must still yield a length; the
+  // pre-fix reader looked at `tracks` alone and answered "length unknown" for
+  // every playlist on the current shape (#589).
+  const scanned = Array.from({ length: 500 }, (_, i) => ({
+    added_at: '2026-01-01',
+    item: { type: 'track', uri: `spotify:track:${i}`, name: `T${i}`, album: { images: [] } },
+  }));
+  const client = makeFakeClient({
+    '/playlists/big2': { id: 'big2', name: 'Big', items: { total: 1000 } },
+    '/playlists/big2/items': scanned,
+    '/tracks/9': { uri: 'spotify:track:9', name: 'Nine', album: { images: [{ url: 'https://img/nine.jpg', width: 640 }] } },
+  });
+  const registered: RegisteredTool[] = [];
+  registerExhaust2ExtraTools(makeServer(registered), client);
+  const t = find(registered, 'playlist_cover_from_track');
+
+  await assert.rejects(() => t.handler({ playlist_id: 'big2', position: 700 }), (err: Error) => {
+    assert.match(err.message, /playlist has 1000 item\(s\)/);
+    assert.doesNotMatch(err.message, /playlist length unknown/);
+    return true;
+  });
+
+  const r = await t.handler({ playlist_id: 'big2', track_uri: 'spotify:track:9' });
+  assert.equal((r.structuredContent as Record<string, unknown>).playlist_total, 1000);
+});
+
+test('playlist_cover_from_track says the length is unknown rather than inventing one', async () => {
+  // Neither page present: the answer is "unknown", not 0 and not the walk count.
+  const client = makeFakeClient({
+    '/playlists/empty1': { id: 'empty1', name: 'Empty' },
+    '/playlists/empty1/items': [],
+    '/tracks/9': { uri: 'spotify:track:9', name: 'Nine', album: { images: [{ url: 'https://img/nine.jpg', width: 640 }] } },
+  });
+  const registered: RegisteredTool[] = [];
+  registerExhaust2ExtraTools(makeServer(registered), client);
+  const t = find(registered, 'playlist_cover_from_track');
+
+  const r = await t.handler({ playlist_id: 'empty1', track_uri: 'spotify:track:9' });
+  // null, not 0: nothing stated a length, and 0 would read as "empty playlist".
+  assert.equal((r.structuredContent as Record<string, unknown>).playlist_total, null);
+  assert.equal((r.structuredContent as Record<string, unknown>).items_scanned, 0);
+
+  // The walk-based error path says the same thing in prose.
+  await assert.rejects(
+    () => t.handler({ playlist_id: 'empty1' }),
+    /playlist length unknown/,
+  );
+});
+
 test('missing playlist fails fast', async () => {
   const registered: RegisteredTool[] = [];
   registerExhaust2ExtraTools(makeServer(registered), makeFakeClient({}));

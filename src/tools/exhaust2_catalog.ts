@@ -18,17 +18,20 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
 import { SpotifyApiError } from '../client.js';
 import type {
-  SearchResponse,
   SpotifyAlbumItem,
+  SpotifyAlbumRow as AlbumPayload,
   SpotifyAlbumSimple,
-  SpotifyAudiobookSimple,
   SpotifyArtistFull,
   SpotifyArtistSimple,
+  SpotifyAudiobookRow as AudiobookSearchItem,
+  SpotifyAudiobookSimple,
   SpotifyChapterSimple,
+  SpotifyEpisodeRow,
   SpotifyEpisodeSimple,
   SpotifyPlaylistSimple,
+  SpotifySearchResults as CatalogSearchResponse,
   SpotifyShowSimple,
-  SpotifyTrack,
+  SpotifyTrackRow as TrackPayload,
   SpotifyTrackSimple,
 } from '../types/spotify.js';
 import {
@@ -116,30 +119,6 @@ function chunk<T>(items: readonly T[], size: number): T[][] {
   return out;
 }
 
-/** Full album payload widens the simplified type with label/copyright fields. */
-interface AlbumPayload extends SpotifyAlbumItem {
-  label?: string;
-  copyrights?: Array<{ text: string; type: string }>;
-  tracks?: { items: SpotifyTrackSimple[]; total: number };
-}
-
-/** Track payloads as returned by /search and /tracks — album carries dates. */
-interface TrackPayload extends Omit<SpotifyTrack, 'album'> {
-  album: SpotifyAlbumSimple & {
-    release_date?: string;
-    release_date_precision?: string;
-    album_type?: string;
-    total_tracks?: number;
-  };
-  external_ids?: { isrc?: string; upc?: string };
-  is_playable?: boolean;
-  album_type?: string;
-}
-
-/** /search widened with the audiobook section (missing from SearchResponse). */
-interface CatalogSearchResponse extends SearchResponse {
-  audiobooks?: { items: SpotifyAudiobookSimple[]; total: number };
-}
 
 type SearchArgs = { query: string; limit?: number; offset?: number; market?: string };
 
@@ -1384,7 +1363,7 @@ max_results: z.number().int().positive().max(2000).optional().describe('Max item
     },
     async (args) => {
       const rf = args.response_format;
-      const episode = await client.get<SpotifyEpisodeFullLocal>(`/episodes/${encodeURIComponent(args.episode_id)}`);
+      const episode = await client.get<SpotifyEpisodeRow>(`/episodes/${encodeURIComponent(args.episode_id)}`);
       if (!episode) throw new Error(`Episode "${args.episode_id}" not found`);
       const showId = episode.show?.id;
       const neighbours = showId
@@ -1498,22 +1477,3 @@ max_results: z.number().int().positive().max(2000).optional().describe('Max item
   );
 }
 
-// ---------------------------------------------------------------------------
-// Local widened search/episode types (Spotify adds fields beyond the shared
-// simplified types; declared last so the registration body stays readable).
-// ---------------------------------------------------------------------------
-
-interface SpotifyEpisodeFullLocal {
-  id: string;
-  name: string;
-  uri: string;
-  duration_ms: number;
-  release_date: string | null;
-  description: string;
-  show: { id: string; name: string; uri?: string } | null;
-}
-
-interface AudiobookSearchItem extends Omit<SpotifyAudiobookSimple, 'narrators'> {
-  release_date?: string;
-  narrators?: Array<{ name: string }>;
-}
