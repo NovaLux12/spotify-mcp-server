@@ -33,6 +33,7 @@ The variables below are read at the documented call sites; set them in your MCP 
 | `SPOTIFY_MCP_GENRE_TAGS_FILE` | `~/.spotify-mcp/genre-tags.json` | Artist-to-genre-tags sidecar. |
 | `SPOTIFY_MCP_DATA_DIR` | `~/.spotify-mcp` for watchlists; `~/.spotify-mcp/playlist-snapshots` for playlist-health snapshots | Data directory read by the artist-watchlist, portability-watchlist, and playlist-health call sites. The watchlist default no longer depends on the process working directory. |
 | `SPOTIFY_MCP_BACKUP_DIR` | `~/.spotify-mcp/backups` | Directory for `backup_library` snapshots. |
+| `SPOTIFY_MCP_BACKUP_RETENTION_DAYS` | `30` | Whole days a `backup_library` snapshot is kept before it is pruned. `0` disables pruning entirely. Any unusable value (empty, non-numeric, negative, fractional) falls back to the default, never to "keep forever"; the smallest enabled window is `1` day. |
 | `SPOTIFY_MCP_PORTABILITY_DIR` | `~/.spotify-mcp/portability` | Output root for the five `export_*` family tools. |
 | `SPOTIFY_MCP_EXPORT_DIR` | `~/.spotify-mcp/exports` | Output root for `export_playlist` and `export_profile_state`. |
 | `SPOTIFY_MCP_ALLOW_PATHS` | unset | Extra directories `import_playlist` may read from, `:`-separated. The default read roots are `SPOTIFY_MCP_PORTABILITY_DIR`, `SPOTIFY_MCP_BACKUP_DIR` and `SPOTIFY_MCP_EXPORT_DIR`. |
@@ -82,6 +83,30 @@ Each record's `who` field names the tool that issued the mutation (e.g. `add_to_
 ### Mutation receipts
 
 Set `SPOTIFY_MCP_RECEIPTS=1` to persist each mutation receipt to `receipts.jsonl` and reload the newest 100 on startup, so `verify_receipt` and `undo_mutation` still work after a host restart, a crash, or a session longer than 100 mutations. `SPOTIFY_MCP_RECEIPTS_DIR` sets the directory (it falls back to `SPOTIFY_MCP_HISTORY_DIR`, then `~/.spotify-mcp`); `SPOTIFY_MCP_RECEIPTS_TTL_HOURS` sets the retention window (default 24 hours, `0` for no expiry). Receipt ids are scoped to the process that issued them (`rcpt_<bootId>-<n>`), so an id from an earlier session resolves to nothing rather than to a different mutation. With persistence off the store is process-local, and a miss reports that scope and the retention rule instead of implying account history.
+
+### Backup snapshot retention
+
+`SPOTIFY_MCP_BACKUP_DIR` holds one dated library compilation per `backup_library` run, so the
+store is bounded rather than cumulative. `SPOTIFY_MCP_BACKUP_RETENTION_DAYS` is how long a
+snapshot survives: **30 days by default**. The window is enforced as a prune pass that runs at
+the start of every `backup_library` and every `list_backups` call, and each run reports the
+snapshots it removed and the bytes freed.
+
+Set it to `0` to disable pruning entirely — nothing is ever expired, and each snapshot's
+`_meta.retention_until` is `null`. That is the only way to opt into keep-forever retention; the
+1-day floor is the smallest *enabled* window, so `1` is the tightest expiry you can configure.
+
+An unusable value never becomes an unbounded window. Empty, non-numeric, negative, and
+fractional values (`""`, `"abc"`, `"-1"`, `"2.5"`) all fall back to the **default of 30 days**
+rather than to "keep forever", because a typo should expire data, not retain it indefinitely.
+`SPOTIFY_MCP_BACKUP_RETENTION_DAYS=0` is the deliberate, explicit exception and is honoured
+exactly as written. Every snapshot also records `_meta.retention_until` at write time, so a
+file stays self-describing even after the variable changes; `list_backups` additionally
+reports `dir_bytes`, `oldest_created`, and the oldest survivor's `oldest_retention_until`.
+
+To remove one snapshot ahead of its window, use the `delete_backup` tool, which is
+confirmation-gated, dry-run by default, and path-confined to `SPOTIFY_MCP_BACKUP_DIR`.
+ dcb6adcf111cd0992e9ae4911cf119373a6280a8
 ### Toolsets and registration keys
 
 `SPOTIFY_MCP_TOOLSETS` accepts a comma-separated subset of these toolsets, or `all`/empty/unset for the full surface:
