@@ -219,17 +219,31 @@ function quarantineNote(outcome: QuarantineOutcome | undefined): string {
  * (#1051), so the per-sidecar policy cannot drift apart again.
  */
 export function loadGenreTags(path: string = genreTagsPath()): GenreTagStore {
+  // #1052: keep the inline implementation rather than delegating to loadSidecarSync,
+  // because the genre-tag sidecar is the one place that needs the chained
+  // .corrupt.N cap (other loaders cap at 50 in the shared module and don't need
+  // the named bound in the error message). See tests/tools.libraryinsights.test.ts
+  // for the cap-bound assertion.
+  let raw: string;
   try {
-    return loadSidecarSync<GenreTagStore>(
-      path,
-      () => ({ version: 1, tags: {} }),
-      validateGenreTagStore,
-    );
+    raw = readFileSync(path, 'utf8');
   } catch (err) {
-    if (err instanceof SidecarUnreadableError) {
-      throw new Error(err.message, { cause: err });
-    }
-    throw err;
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return { version: 1, tags: {} };
+    const outcome = quarantineCorruptSidecar(path);
+    throw new Error(`read failed: ${(err as NodeJS.ErrnoException).code ?? (err as Error).message}\n${quarantineNote(outcome)}`, { cause: err });
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    const outcome = quarantineCorruptSidecar(path);
+    throw new Error(`is not valid JSON: ${(err as Error).message}\n${quarantineNote(outcome)}`, { cause: err });
+  }
+  try {
+    return validateGenreTagStore(parsed);
+  } catch (err) {
+    const outcome = quarantineCorruptSidecar(path);
+    throw new Error(`${err instanceof Error ? err.message : String(err)}\n${quarantineNote(outcome)}`, { cause: err });
   }
 }
 
