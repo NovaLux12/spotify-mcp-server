@@ -1115,25 +1115,47 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
           counts.set(a.id, cur);
         }
       }
-      const saved = await client.getAllPages<SavedTrackItem>('/me/tracks', { limit: '50' }, { maxItems: 500 });
+      // #802: the membership check was hard-capped at 500 liked tracks, so any
+      // artist saved past offset 500 looked like a newcomer. Use the configured
+      // fetch-all cap so the walk tracks every other library walk in the repo,
+      // and read the truncation verdict from the shared
+      // getAllPagesWithTruncation contract — a bare array cannot tell "we
+      // walked it all" from "we stopped at the bound".
+      const fetchAllCapValue = fetchAllCap();
+      const savedWalk = await client.getAllPagesWithTruncation<SavedTrackItem>(
+        '/me/tracks',
+        { limit: '50' },
+        { maxItems: fetchAllCapValue },
+      );
+      const saved = savedWalk.items;
+      const libraryScanTruncated = savedWalk.truncated;
       const savedArtistIds = new Set(saved.flatMap((row) => (row.track?.artists ?? []).map((a) => a.id)));
-      const newcomers = [...counts.entries()]
+      const notInScannedLibrary = [...counts.entries()]
         .filter(([id]) => !savedArtistIds.has(id))
         .map(([id, v]) => ({ artist_id: id, artist: v.name, playlist_appearances: v.n, sample_track: v.sample }))
         .sort((a, b) => b.playlist_appearances - a.playlist_appearances)
         .slice(0, Math.min(50, Math.max(1, args.max_artists ?? 15)));
+      // #802: when the scan is incomplete the prose says so in the same line,
+      // and the verdict field names "not_in_scanned_library" so a caller
+      // reading the payload cannot mistake it for a "new to you" claim.
+      const verdictLine = libraryScanTruncated
+        ? `${notInScannedLibrary.length} of ${counts.size} playlist artists not in your first ${saved.length} liked tracks (scan bounded; newer tracks were not checked)`
+        : `${notInScannedLibrary.length} of ${counts.size} playlist artists not in your saved tracks (compared against ${saved.length} liked tracks, newest first)`;
       const prose = [
-        `New-to-you artists from playlist ${args.playlist_id} (${newcomers.length} of ${counts.size} playlist artists not in your saved tracks):`,
+        `New-to-you artists from playlist ${args.playlist_id} — ${verdictLine}:`,
         '',
-        ...(newcomers.length
-          ? newcomers.map((r) => `${r.playlist_appearances}× ${r.artist}${r.sample_track ? ` — e.g. "${r.sample_track}"` : ''}`)
+        ...(notInScannedLibrary.length
+          ? notInScannedLibrary.map((r) => `${r.playlist_appearances}× ${r.artist}${r.sample_track ? ` — e.g. "${r.sample_track}"` : ''}`)
           : ['Every artist here is already in your saved tracks — no newcomers this time.']),
-      ].join('\n');
+        libraryScanTruncated ? `\n(TRUNCATED: liked-tracks scan reached the cap of ${fetchAllCapValue}; raise SPOTIFY_MCP_FETCH_ALL_CAP to widen the comparison.)` : '',
+      ].filter((l) => l !== '').join('\n');
       const payload = {
         playlist_id: args.playlist_id,
         playlist_artists_seen: counts.size,
         saved_tracks_scanned: saved.length,
-        items: newcomers,
+        library_scan_cap: fetchAllCapValue,
+        library_scan_truncated: libraryScanTruncated,
+        not_in_scanned_library: notInScannedLibrary,
       };
       return emit(rf, prose, payload);
     },
