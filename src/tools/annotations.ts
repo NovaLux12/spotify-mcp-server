@@ -548,7 +548,7 @@ const manifestEntry = (
 
 export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   manifestEntry('search', 'search', 'src/tools/search.ts', registerSearchTools, [1, 1821], { readOnlySafe: true }),
-  manifestEntry('catalog', 'catalog', 'src/tools/catalog.ts', registerCatalogTools, [31, 27012], { readOnlySafe: true }),
+  manifestEntry('catalog', 'catalog', 'src/tools/catalog.ts', registerCatalogTools, [31, 27015], { readOnlySafe: true }),
   manifestEntry('library', 'library', 'src/tools/library.ts', registerLibraryTools, [16, 14957]),
   manifestEntry('playback', 'playback', 'src/tools/playback.ts', registerPlaybackTools, [16, 12287]),
   manifestEntry('following', 'following', 'src/tools/following.ts', registerFollowingTools, [5, 3921]),
@@ -605,7 +605,7 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   manifestEntry('playlistdna', 'playlists', 'src/tools/playlistdna.ts', registerPlaylistDnaTools, [1, 1310], { readOnlySafe: true, scopeKey: 'playlists' }),
   manifestEntry('export', 'playlists', 'src/tools/export.ts', registerExportTools, [1, 1363], { scopeKey: 'playlists' }),
   manifestEntry('import', 'playlists', 'src/tools/import.ts', registerImportTools, [1, 1211], { scopeKey: 'playlists' }),
-  manifestEntry('smart', 'playlists', 'src/tools/smart.ts', registerSmartTools, [1, 2182], { scopeKey: 'playlists' }),
+  manifestEntry('smart', 'playlists', 'src/tools/smart.ts', registerSmartTools, [1, 2364], { scopeKey: 'playlists' }),
   manifestEntry('exhaustmisc', 'playlists', 'src/tools/exhaustmisc.ts', registerExhaustMiscTools, [10, 7924], { scopeKey: 'exhaustmisc' }),
   manifestEntry('exhaust2catalog', 'exhaust2catalog', 'src/tools/exhaust2_catalog.ts', registerExhaust2CatalogTools, [19, 19283], { readOnlySafe: true, scopeKey: 'catalog' }),
   manifestEntry('exhaust2enggating', 'exhaust2enggating', 'src/tools/exhaust2_enggating.ts', registerExhaust2EnggatingTools, [0, 0], { readOnlySafe: true, scopeKey: 'catalog' }),
