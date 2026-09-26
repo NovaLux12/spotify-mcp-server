@@ -108,6 +108,29 @@ const documentedMetadata = new Set([
   'rate_limited', 'unavailable', 'statsfm_resource_not_found', 'conflict',
   'unknown_param', 'unknown_tool', 'playlist_changed_since_read',
 ]);
+/**
+ * Range vocabulary (#720). The JSON-example check already rejects a bad
+ * `range` value inside a ```json fence, but the ranges *reference* is prose:
+ * docs/statsfm.md told taste-tool callers to pass `week`/`month` while the
+ * endpoint tools enforced `weeks`/`months`, and stats.fm itself answers
+ * `400 invalid range` for the singular spellings. Prose is where this drift
+ * actually lived, so prose is what gets checked.
+ *
+ * The accepted set is read from the production schemas rather than declared
+ * here, so this check cannot drift from the registry it is meant to police.
+ *
+ * `year` is deliberately absent from the candidate set: `statsfm_recaps`
+ * takes an optional calendar `year`, so treating it as a range literal would
+ * flag a correct sentence about a different parameter.
+ */
+const RANGE_CANDIDATES = new Set([
+  'today', 'day', 'days', 'week', 'weeks', 'month', 'months',
+  '6month', '6months', 'all-time', 'all_time', 'alltime',
+]);
+
+/** A line that says these values are *rejected* is not documenting them. */
+const RANGE_REJECTION = /\b400\b|\brejects?\b|rejected\b|not\s+accepted|\bnot\s+valid\b|\binvalid\b/i;
+
 const markdownFiles = [
   'README.md',
   'SPEC.md',
@@ -153,6 +176,7 @@ function collectDocumentToolContractErrors(source, file, registry) {
     checkCallRecipes(file, source, registry);
     checkToolArgumentTables(file, source, registry);
     checkModuleMapEntries(file, source, registry);
+    checkRangeEnumLiterals(file, source, registry);
   } finally {
     errors.push = originalPush;
   }
@@ -166,6 +190,29 @@ function checkBacktickToolNames(file, source, registry = census) {
     const name = match[1];
     if (knownTools.has(name) || knownNonTools.has(name)) continue;
     errors.push(`${relative(ROOT, file)}:${lineAt(source, match.index)}: undocumented snake_case tool reference \`${name}\``);
+  }
+}
+
+function productionRangeEnum(registry) {
+  const values = new Set();
+  for (const schema of Object.values(registry.toolInputSchemas ?? {})) {
+    const range = schema?.properties?.range;
+    if (range && Array.isArray(range.enum)) for (const value of range.enum) values.add(value);
+  }
+  return values;
+}
+
+function checkRangeEnumLiterals(file, source, registry = census) {
+  const accepted = productionRangeEnum(registry);
+  if (accepted.size === 0) return;
+  const lines = source.split('\n');
+  for (let index = 0; index < lines.length; index += 1) {
+    if (!/\brange\b/i.test(lines[index]) || RANGE_REJECTION.test(lines[index])) continue;
+    for (const match of lines[index].matchAll(/`([^`\n]+)`/g)) {
+      const literal = match[1].trim().toLowerCase();
+      if (!RANGE_CANDIDATES.has(literal) || accepted.has(literal)) continue;
+      errors.push(`${relative(ROOT, file)}:${index + 1}: documented range value \`${match[1]}\` is not one of the production range enum (${[...accepted].sort().join(', ')})`);
+    }
   }
 }
 

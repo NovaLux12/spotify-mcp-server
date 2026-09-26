@@ -77,9 +77,9 @@ above either ceiling fails CI and server startup.
 | playlistmisc | 1 | 1,089 | 1 | 1,089 | 2 | 1,198 |
 | personalization | 3 | 2,532 | 3 | 2,532 | 4 | 2,786 |
 | analytics | 4 | 2,817 | 4 | 2,817 | 5 | 3,099 |
-| statsfm | 30 | 22,721 | 30 | 22,721 | 31 | 24,994 |
-| taste | 16 | 13,959 | 16 | 13,959 | 17 | 15,355 |
-| tastecomposites | 10 | 7,994 | 10 | 7,994 | 11 | 8,794 |
+| statsfm | 30 | 22,917 | 30 | 22,917 | 31 | 25,209 |
+| taste | 16 | 14,005 | 16 | 14,005 | 17 | 15,406 |
+| tastecomposites | 10 | 8,040 | 10 | 8,040 | 11 | 8,844 |
 | tasteplaylist | 1 | 1,723 | 1 | 1,723 | 2 | 1,896 |
 | doctor | 1 | 750 | 1 | 750 | 2 | 826 |
 | swarm3meta | 3 | 2,023 | 3 | 2,023 | 4 | 2,226 |

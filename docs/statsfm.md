@@ -82,10 +82,12 @@ Use the registered `record_feedback` alias for the same call. Entries survive ne
 
 ## Ranges
 
-The endpoint top-list tools accept the named range values **`weeks`**, **`months`**, and **`lifetime`** (lowercase, defaulting to `lifetime`). Taste-intelligence tools and taste composites accept **`week`**, **`month`**, and **`lifetime`** only where their schemas include `range`; many taste tools instead use fixed windows or no range argument. Do not interchange the singular and plural spellings.
+Every tool that takes a `range` accepts the same three values, and only these three: **`weeks`**, **`months`**, and **`lifetime`** (lowercase, defaulting to `lifetime`). This holds for the endpoint top-list tools, the taste-intelligence tools, and the taste composites alike — they all send `range` to the same stats.fm query parameter, so there is one vocabulary across the whole surface, exported once as `statsfmRangeSchema` in `src/tools/statsfm.ts`.
+
+The singular spellings `week` and `month` are not accepted. stats.fm rejects them with `400 invalid range`; so are `6months`, `year`, and `all-time`. Because `range` is optional with a `lifetime` default, a rejected value is worth catching before the call rather than discovering from a silent lifetime answer.
 
 - `lifetime` needs a completed history import; without it, lifetime results are limited to the imported window.
-- `week`/`month` and `weeks`/`months` reflect current rotation. Compare a short window against `lifetime` to separate phases from identity.
+- `weeks` and `months` reflect current rotation. Compare a short window against `lifetime` to separate phases from identity.
 - `statsfm_streams_stats` and date-windowed tools use Unix-millisecond `after`/`before` bounds instead of a named `range`.
 - `statsfm_recaps` uses an optional calendar `year`, not a range.
 

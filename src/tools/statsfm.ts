@@ -83,10 +83,26 @@ function statsPayload(body: unknown, path: string): J {
 
 const userIdSchema = () =>
   z.string().min(1).describe('stats.fm user id or customId (e.g. "martijn")');
-const rangeSchema = z
-  .enum(['weeks', 'months', 'lifetime'])
+/**
+ * The one ranking-window vocabulary for the whole stats.fm surface (#720).
+ *
+ * Verified live 2026-09-26 against `GET /users/{id}/top/artists`: stats.fm
+ * answers `400 {"message":"invalid range"}` for the singular `week`/`month`
+ * spellings (and for `6months`, `year`, `all-time`). `weeks`/`months`/
+ * `lifetime` are the complete accepted set, so this enum is the contract
+ * rather than a local guess.
+ *
+ * This module, `statsfm_taste.ts`, and `taste_composites.ts` all forward
+ * `range` to that same upstream query parameter, so all three import this
+ * schema. Three private copies previously drifted apart and the two taste
+ * copies advertised values upstream rejects outright.
+ */
+export const STATSFM_RANGES = ['weeks', 'months', 'lifetime'] as const;
+
+export const statsfmRangeSchema = z
+  .enum(STATSFM_RANGES)
   .optional()
-  .describe('Ranking window. Default: lifetime');
+  .describe('Ranking window: weeks, months, or lifetime. Default: lifetime');
 const limitSchema = (max = 100, def = 10) =>
   z.number().int().min(1).max(max).optional().describe(`1–${max}. Default: ${def}`);
 const offsetSchema = () =>
@@ -378,7 +394,7 @@ export function registerStatsfmTools(server: McpServer, client: StatsfmClient = 
       cfg.desc,
       {
         user_id: userIdSchema(),
-        range: rangeSchema,
+        range: statsfmRangeSchema,
         limit: limitSchema(),
         offset: offsetSchema(),
         response_format: ResponseFormat,
@@ -603,7 +619,7 @@ export function registerStatsfmTools(server: McpServer, client: StatsfmClient = 
       {
         user_id: userIdSchema(),
         [isAlbum ? 'album_id' : 'artist_id']: z.union([z.string(), z.number()]).describe(`stats.fm ${isAlbum ? 'album' : 'artist'} id`),
-        range: rangeSchema,
+        range: statsfmRangeSchema,
         limit: limitSchema(),
         offset: offsetSchema(),
         response_format: ResponseFormat,

@@ -38,6 +38,7 @@ import {
   type TasteStream,
 } from './statsfm_taste.js';
 import { StatsfmApiError, statsfmApiErrorFromHttp, statsfmTransportError } from '../lib/statsfm-client.js';
+import { statsfmRangeSchema } from './statsfm.js';
 import { readOnlyModeEnabled } from './annotations.js';
 
 // Retry-After parsing, reason extraction and the redaction policy live in
@@ -125,10 +126,13 @@ export const statsfmUserSchema = z
   .min(1)
   .describe('stats.fm user ID (or username) — public profile, no auth needed');
 
-const rangeSchema = z
-  .enum(['lifetime', 'month', 'week'])
-  .optional()
-  .describe('stats.fm range window. Default: lifetime');
+/**
+ * `range` is the shared stats.fm ranking window (#720) — the same upstream
+ * parameter the endpoint tools in `statsfm.ts` send, so it must carry the same
+ * values. This module used to keep a private copy that offered `week`/`month`,
+ * which stats.fm rejects with `400 invalid range`.
+ */
+const rangeSchema = statsfmRangeSchema;
 
 /**
  * `dry_run` fragment defaulting to TRUE (repo convention: previews are the

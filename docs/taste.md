@@ -17,7 +17,7 @@ The eight taste-intelligence tools live under the `taste` toolset with canonical
 | `statsfm_taste_recommendations` | `taste_recommendations` |
 | `statsfm_record_feedback` | `record_feedback` |
 
-Network-backed taste tools require an explicit `statsfm_user` string. The local-only `statsfm_record_feedback` / `record_feedback` pair is the identity-free exception: it stores entries in process memory and never contacts stats.fm. Taste schemas use the singular range values `week`, `month`, and `lifetime` where `range` is accepted. User-scoped endpoint tools use plural `weeks` and `months` and require `user_id`; see the [stats.fm tool reference](statsfm.md#ranges).
+Network-backed taste tools require an explicit `statsfm_user` string. The local-only `statsfm_record_feedback` / `record_feedback` pair is the identity-free exception: it stores entries in process memory and never contacts stats.fm. Where `range` is accepted, taste tools use the same three values as the endpoint tools — `weeks`, `months`, and `lifetime` — because they send the same stats.fm query parameter. User-scoped endpoint tools require `user_id`; see the [stats.fm tool reference](statsfm.md#ranges).
 
 `statsfm_taste_profile` with `response_format: "json"` returns raw stats.fm payloads under exactly these top-level keys: `topArtists`, `topGenres`, `topTracks`, and `recentStreams`. The server does not translate that JSON mode into the summary fields used by its concise and detailed modes.
 
