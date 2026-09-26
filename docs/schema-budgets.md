@@ -116,7 +116,7 @@ above either ceiling fails CI and server startup.
 | exhaust2enggating | 0 | 0 | 0 | 0 | 1 | 0 |
 | exhaust2playback | 23 | 17,306 | 23 | 17,306 | 24 | 19,037 |
 | exhaust2playlists | 18 | 23,507 | 18 | 23,507 | 19 | 25,858 |
-| exhaust2misc | 27 | 23,234 | 27 | 23,234 | 28 | 25,558 |
+| exhaust2misc | 27 | 23,264 | 27 | 23,264 | 28 | 25,591 |
 | exhaust2extra | 3 | 3,695 | 3 | 3,695 | 4 | 4,065 |
 | swarm3discovery | 24 | 21,887 | 24 | 21,887 | 25 | 24,076 |
 | swarm3bdiscovery | 24 | 20,039 | 24 | 20,039 | 25 | 22,043 |
