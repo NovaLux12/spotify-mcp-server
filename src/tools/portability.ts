@@ -23,7 +23,7 @@ import { getConfig } from '../config.js';
 // own store paths (scenesFilePath(), historyFilePath()) rather than to a
 // caller-supplied destination. chmod is here for the history-file mode
 // enforcement in export_profile_state.
-import { chmod, mkdir, writeFile, readFile, readdir } from 'node:fs/promises';
+import { chmod, mkdir, writeFile, readFile, readdir, stat } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import { exportRootDir, resolveOutputPath, writeOutputFile } from '../paths.js';
@@ -44,7 +44,16 @@ import { scenesFilePath, loadScenes } from './scenes.js';
 import { genreTagsPath } from './libraryinsights.js';
 import { playbackExtFile } from './playbackext.js';
 import { searchHistoryFile } from './searchhistory.js';
-import { HISTORY_DIR_MODE, HISTORY_FILE_MODE, historyFilePath, readHistory } from '../history.js';
+import {
+  DEFAULT_HISTORY_READ_LIMIT,
+  HISTORY_DIR_MODE,
+  HISTORY_FILE_MODE,
+  historyFilePath,
+  isHistoryEnabled,
+  readHistory,
+} from '../history.js';
+import type { HistoryRecord } from '../history.js';
+import { backupDir, readBackupStore } from './backup.js';
 
 type ToolOut = {
   content: Array<{ type: 'text'; text: string }>;
@@ -61,6 +70,64 @@ function shapeResult(rf: ResponseFormatValue, prose: string, payload: Record<str
 function portabilityDir(env: NodeJS.ProcessEnv = process.env): string {
   return env.SPOTIFY_MCP_PORTABILITY_DIR ?? join(homedir(), '.spotify-mcp', 'portability');
 }
+
+// ---------------------------------------------------------------------------
+// #754: history_search reads three stores, not one. Each store reports how its
+// read ENDED: a store that could not be read is 'unreadable' with a null
+// total, never an empty listing. A store that does not exist is 'absent',
+// which genuinely holds nothing.
+// ---------------------------------------------------------------------------
+
+/** Which store a hit came from; also the `scope` filter's vocabulary. */
+const HISTORY_SEARCH_SCOPES = ['portability', 'backups', 'history', 'all'] as const;
+type HistorySearchScope = (typeof HISTORY_SEARCH_SCOPES)[number];
+
+type StoreState = 'ok' | 'absent' | 'unreadable' | 'skipped';
+
+/** Hits returned before the response is truncated; the rest are disclosed. */
+const HISTORY_SEARCH_HIT_CAP = 50;
+
+/** The ledger fields a query is matched against, and the only ones echoed back. */
+const HISTORY_RECORD_FIELDS = ['ts', 'who', 'method', 'path', 'target', 'snapshot_id'] as const;
+
+interface StoreSummary {
+  /** How the read ended; 'skipped' means the scope filter excluded it. */
+  state: StoreState;
+  /** Candidates examined, or null when the store could not be read. */
+  total: number | null;
+  /** Candidates matching the query; 0 whenever the store yielded no candidates. */
+  matched: number;
+}
+
+/** Enumerate a directory, separating "nothing there" from "cannot tell". */
+async function listStore(dir: string): Promise<{ state: StoreState; names: string[] | null }> {
+  try {
+    return { state: 'ok', names: await readdir(dir) };
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === 'ENOENT'
+      ? { state: 'absent', names: [] }
+      : { state: 'unreadable', names: null };
+  }
+}
+
+function historyRecordMatches(record: HistoryRecord, q: string): boolean {
+  return HISTORY_RECORD_FIELDS.some((field) => {
+    const value = record[field];
+    return typeof value === 'string' && value.toLowerCase().includes(q);
+  });
+}
+
+/** Echo only the whitelisted ledger fields: the file is a flat JSONL a user can hand-edit. */
+function historyRecordHit(record: HistoryRecord): Record<string, unknown> {
+  const hit: Record<string, unknown> = { source: 'history' };
+  for (const field of HISTORY_RECORD_FIELDS) {
+    const value = record[field];
+    if (typeof value === 'string') hit[field] = value;
+  }
+  return hit;
+}
+
+const skippedStore = (): StoreSummary => ({ state: 'skipped', total: null, matched: 0 });
 
 
 // ---------------------------------------------------------------------------
@@ -864,7 +931,7 @@ export function registerPortabilityTools(server: McpServer, client: SpotifyClien
 
   server.tool(
     'export_listening_history',
-    'Export your listening history (recently played) to a JSON or CSV sidecar by walking /me/player/recently-played with before-cursor pagination. Respects SPOTIFY_MCP_FETCH_ALL_CAP; writes file 0600 and reports path + counts. Analogous to export_library_json.',
+    'Export your listening history (recently played) to a JSON or CSV sidecar by walking /me/player/recently-played with before-cursor pagination. Respects SPOTIFY_MCP_FETCH_ALL_CAP; writes file 0600 and reports path + counts.',
     {
       output_dir: z.string().optional().describe('Local directory to write into, confined to the output root (default ~/.spotify-mcp/portability, set SPOTIFY_MCP_PORTABILITY_DIR to move it)'),
       format: z.enum(['json', 'csv']).optional().default('json').describe('Output format: json or csv'),
@@ -1030,7 +1097,7 @@ export function registerPortabilityTools(server: McpServer, client: SpotifyClien
   // library_snapshot_diff — diff two sidecar files locally
   server.tool(
     'library_snapshot_diff',
-    'Diff two portability/library sidecar JSON files (library.json or playlists.json): added/removed counts + samples. Quota: 🟢 local only (no API).',
+    'Diff two sidecar JSON files (library.json or playlists.json): added/removed counts + samples. Quota: 🟢 local only (no API).',
     {
       before_path: z.string().describe('Path to before snapshot JSON'),
       after_path: z.string().describe('Path to after snapshot JSON'),
@@ -1062,23 +1129,113 @@ export function registerPortabilityTools(server: McpServer, client: SpotifyClien
     },
   );
 
-  // history_search — search portability sidecar filenames + mutation history
+  // history_search — search the portability, backup and mutation-history stores (#754)
   server.tool(
     'history_search',
-    'Search local portability/backups for files matching a query (filename substring). Quota: 🟢 local only (no API).',
+    'Search portability, backup and mutation-history stores; hits name their source. Quota: 🟢 local only (no API).',
     {
-      query: z.string().optional().describe('Substring to match (default: all)'),
+      query: z.string().optional().describe('Substring to match'),
+      scope: z.enum(HISTORY_SEARCH_SCOPES).optional().default('all').describe('Scope'),
       response_format: ResponseFormat,
     },
     async (args) => {
       const rf = args.response_format as ResponseFormatValue;
-      const dir = portabilityDir();
-      let files: string[] = [];
-      try { files = await readdir(dir); } catch { files = []; }
-      const q = (args.query ?? '').toLowerCase();
-      const matched = q ? files.filter((f) => f.toLowerCase().includes(q)) : files;
-      const payload = { ok: true, dir, total: files.length, matched_count: matched.length, files: matched.slice(0, 50) };
-      return shapeResult(rf, `Found ${matched.length}/${files.length} file(s) matching "${args.query ?? ''}" in ${dir}.`, payload);
+      const scope = (args.scope ?? 'all') as HistorySearchScope;
+      const q = (args.query ?? '').trim().toLowerCase();
+      const searched = (store: Exclude<HistorySearchScope, 'all'>): boolean => scope === 'all' || scope === store;
+      const notes: string[] = [];
+      const hits: Array<Record<string, unknown>> = [];
+      const sources: Record<string, StoreSummary> = {};
+
+      if (searched('portability')) {
+        const dir = portabilityDir();
+        const listing = await listStore(dir);
+        if (listing.names === null) {
+          sources.portability = { state: 'unreadable', total: null, matched: 0 };
+          notes.push(`${dir} could not be listed — its contents are unknown, not empty.`);
+        } else {
+          const matched = listing.names.filter((n) => !q || n.toLowerCase().includes(q));
+          for (const name of matched) hits.push({ source: 'portability', name, path: join(dir, name) });
+          sources.portability = { state: listing.state, total: listing.names.length, matched: matched.length };
+          if (listing.state === 'absent') notes.push(`No portability directory at ${dir}.`);
+        }
+      } else {
+        sources.portability = skippedStore();
+      }
+
+      if (searched('backups')) {
+        const store = await readBackupStore();
+        if (store.artifacts === null) {
+          sources.backups = { state: 'unreadable', total: null, matched: 0 };
+          notes.push(`${store.dir} could not be listed — its contents are unknown, not empty.`);
+        } else {
+          const matched = store.artifacts.filter((a) => !q || a.name.toLowerCase().includes(q));
+          for (const artifact of matched) hits.push({ source: 'backups', ...artifact });
+          sources.backups = { state: store.state, total: store.artifacts.length, matched: matched.length };
+          if (store.state === 'absent') notes.push(`No backup store at ${store.dir}.`);
+        }
+      } else {
+        sources.backups = skippedStore();
+      }
+
+      if (searched('history')) {
+        const file = historyFilePath();
+        const state: StoreState = await stat(file).then(
+          () => 'ok',
+          (err: NodeJS.ErrnoException) => (err.code === 'ENOENT' ? 'absent' : 'unreadable'),
+        );
+        if (state === 'unreadable') {
+          sources.history = { state, total: null, matched: 0 };
+          notes.push(`${file} could not be read — its contents are unknown, not empty.`);
+        } else if (state === 'absent') {
+          sources.history = { state, total: 0, matched: 0 };
+          notes.push(`No mutation ledger at ${file}.`);
+        } else {
+          const records = await readHistory({ file, limit: DEFAULT_HISTORY_READ_LIMIT });
+          const matched = q ? records.filter((r) => historyRecordMatches(r, q)) : records;
+          for (const record of matched) hits.push(historyRecordHit(record));
+          sources.history = { state, total: records.length, matched: matched.length };
+          if (records.length === DEFAULT_HISTORY_READ_LIMIT) {
+            notes.push(`The ledger was read up to its ${DEFAULT_HISTORY_READ_LIMIT}-record ceiling; older records may exist.`);
+          }
+        }
+        if (!isHistoryEnabled()) {
+          notes.push('SPOTIFY_MCP_HISTORY is off, so nothing new is being recorded: matches cover only records written while it was enabled.');
+        }
+      } else {
+        sources.history = skippedStore();
+      }
+
+      const read = Object.values(sources).filter((s) => s.state !== 'skipped');
+      const unreadable = read.filter((s) => s.state === 'unreadable');
+      const storeNames = (Object.keys(sources) as string[]).filter((n) => sources[n]!.state !== 'skipped');
+      const total = read.reduce((sum, s) => sum + (s.total ?? 0), 0);
+      const matchedCount = hits.length;
+      const shown = hits.slice(0, HISTORY_SEARCH_HIT_CAP);
+      const breakdown = storeNames
+        .filter((n) => sources[n]!.matched > 0)
+        .map((n) => `${sources[n]!.matched} from ${n}`)
+        .join(', ');
+      const prose = [
+        `Found ${matchedCount}/${total} item(s) matching "${args.query ?? ''}" across ${storeNames.join(', ') || 'no store'}${breakdown ? `: ${breakdown}` : ''}.`,
+        ...(unreadable.length > 0 ? [`${unreadable.length} store(s) could not be read — their totals are unknown, not zero.`] : []),
+        ...(matchedCount > shown.length ? [`Showing the first ${shown.length} of ${matchedCount} hit(s).`] : []),
+        ...notes,
+      ].join('\n');
+      const payload = {
+        ok: true,
+        query: args.query ?? '',
+        scope,
+        dirs: { portability: portabilityDir(), backups: backupDir(), history: historyFilePath() },
+        total,
+        matched_count: matchedCount,
+        sources,
+        hits: shown,
+        hits_truncated: matchedCount > shown.length,
+        unreadable_sources: unreadable.length,
+        notes,
+      };
+      return shapeResult(rf, prose, payload);
     },
   );
 

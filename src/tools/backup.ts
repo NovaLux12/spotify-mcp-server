@@ -203,6 +203,70 @@ export async function nextBackupSeq(dir: string, dateStamp: string): Promise<num
   return max + 1;
 }
 
+/** One snapshot file in the backup store, as a search hit reports it. */
+export interface BackupArtifact {
+  /** File name inside the store. */
+  name: string;
+  /** Absolute path to the snapshot. */
+  path: string;
+  /** Size in bytes; null when lstat() could not read the file at all. */
+  bytes: number | null;
+  /** Filesystem mtime (ISO-8601); null when lstat() could not read the file. */
+  mtime: string | null;
+  /** What lstat() saw; null when the file could not be stat()ed. */
+  regular_file: boolean | null;
+}
+
+/**
+ * How a store read ended. 'absent' (nothing has ever been written there) is
+ * a measured fact; 'unreadable' is not, and is never collapsed into an
+ * empty listing (#754).
+ */
+export type BackupStoreState = 'ok' | 'absent' | 'unreadable';
+
+export interface BackupStoreListing {
+  /** The store directory that was read. */
+  dir: string;
+  state: BackupStoreState;
+  /**
+   * Snapshots in the store, name-sorted (readdir order is not guaranteed).
+   * `null` when state is 'unreadable' — an unreadable store is not an empty
+   * one. `[]` when state is 'absent', which genuinely holds no snapshots.
+   */
+  artifacts: BackupArtifact[] | null;
+}
+
+/**
+ * List the backup store for cross-store search (history_search, #754). Only
+ * `backup-<date>-<seq>.json` counts, the same shape the store itself writes.
+ * Per-file stats come from lstat and stay null when the file cannot be
+ * stat()ed: an unreadable file is reported as unread, never as zero bytes.
+ */
+export async function readBackupStore(env: NodeJS.ProcessEnv = process.env): Promise<BackupStoreListing> {
+  const dir = backupDir(env);
+  let names: string[];
+  try {
+    names = (await readdir(dir)).filter((name) => BACKUP_FILE_RE.test(name));
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    return code === 'ENOENT'
+      ? { dir, state: 'absent', artifacts: [] }
+      : { dir, state: 'unreadable', artifacts: null };
+  }
+  const artifacts = await Promise.all(names.sort().map(async (name): Promise<BackupArtifact> => {
+    const path = join(dir, name);
+    const st = await lstat(path).catch(() => null);
+    return {
+      name,
+      path,
+      bytes: st ? st.size : null,
+      mtime: st ? st.mtime.toISOString() : null,
+      regular_file: st ? st.isFile() : null,
+    };
+  }));
+  return { dir, state: 'ok', artifacts };
+}
+
 // ---------------------------------------------------------------------------
 // Collection (read-only GETs, all walks capped)
 // ---------------------------------------------------------------------------
