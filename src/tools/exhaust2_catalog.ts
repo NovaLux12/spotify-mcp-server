@@ -1328,12 +1328,15 @@ max_results: z.number().int().positive().max(2000).optional().describe('Max item
       + 'Quota: 🟡 2 GET /search calls (one per market).',
     {
       query: z.string().min(1).describe('Search query'),
+      // One type per call. `types` was capped at 2 but only `types[0]` was ever
+      // searched, so a second entry was accepted and silently dropped; the cap
+      // is now 1, and the excess is rejected at the schema so the caller is
+      // told which parameter to fix instead of getting a one-type answer.
       types: z
         .array(z.enum(['track', 'artist', 'album', 'playlist', 'show', 'episode', 'audiobook']))
-        .min(1)
-        .max(2)
+        .length(1)
         .optional()
-        .describe("Types to search (up to 2). Default: ['track']"),
+        .describe("Type to search. Default: ['track']"),
       market_a: MARKET_CODE.describe("First market code, e.g. 'US'"),
       market_b: MARKET_CODE.describe("Second market code, e.g. 'GB'"),
       limit: SearchLimit,
@@ -1341,7 +1344,9 @@ max_results: z.number().int().positive().max(2000).optional().describe('Max item
     },
     async (args) => {
       const rf = args.response_format;
-      const type = (args.types ?? ['track'])[0];
+      // `.length(1)` means at most one type reaches the handler, so there is no
+      // longer a second requested type that could go unsearched.
+      const type = args.types?.[0] ?? 'track';
       const sectionKey = type === 'audiobook' ? 'audiobooks' : type === 'track' ? 'tracks' : type === 'artist' ? 'artists' : type === 'album' ? 'albums' : type === 'playlist' ? 'playlists' : type === 'show' ? 'shows' : 'episodes';
       const a = await runTypedSearch<{ uri?: string; id?: string; name?: string }>(client, sectionKey, type, { query: args.query, limit: args.limit, market: args.market_a });
       const b = await runTypedSearch<{ uri?: string; id?: string; name?: string }>(client, sectionKey, type, { query: args.query, limit: args.limit, market: args.market_b });

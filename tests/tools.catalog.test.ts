@@ -1376,6 +1376,67 @@ test('browse_category_deepdive fetches category + playlists', async () => {
   assert.equal(calls.length, 2);
 });
 
+// #1013: GET /browse/categories/{id} and its /playlists child were removed by
+// Spotify's February 2026 Web API changes. Pre-fix the deep dive reported a dead
+// endpoint as a missing category, or answered with the category alone and
+// silently dropped the playlist page — a partial answer read as a complete one.
+test('#1013 browse_category_deepdive names the removed category endpoint on 403', async () => {
+  const { registered } = makeHarness(registerCatalogTools, {
+    getError: (p) => (p === '/browse/categories/mood' ? new SpotifyApiError(403, 'Forbidden') : undefined),
+  });
+  await assert.rejects(
+    () => invoke(findTool(registered, 'browse_category_deepdive'), { category_id: 'mood' }),
+    (err: Error) => {
+      assert.match(err.message, /February 2026 Web API changes/);
+      assert.match(err.message, /no replacement endpoint/);
+      assert.doesNotMatch(err.message, /not found/i);
+      return true;
+    },
+  );
+});
+
+test('#1013 browse_category_deepdive fails instead of silently dropping a dead playlist page', async () => {
+  const { registered } = makeHarness(registerCatalogTools, {
+    getResponse: (p) => (p === '/browse/categories/mood' ? { id: 'mood', name: 'Mood', href: 'h', icons: [] } : undefined),
+    getError: (p) => (p === '/browse/categories/mood/playlists' ? new SpotifyApiError(403, 'Forbidden') : undefined),
+  });
+  await assert.rejects(
+    () => invoke(findTool(registered, 'browse_category_deepdive'), { category_id: 'mood' }),
+    (err: Error) => {
+      assert.match(err.message, /\/browse\/categories\/mood\/playlists/);
+      assert.match(err.message, /February 2026 Web API changes/);
+      return true;
+    },
+  );
+});
+
+test('#1013 browse_category_deepdive reports a payload-less category read as unreadable', async () => {
+  const { registered } = makeHarness(registerCatalogTools, { getResponse: () => undefined });
+  await assert.rejects(
+    () => invoke(findTool(registered, 'browse_category_deepdive'), { category_id: 'mood' }),
+    (err: Error) => {
+      assert.match(err.message, /no category payload/);
+      assert.doesNotMatch(err.message, /Category "mood" not found/);
+      return true;
+    },
+  );
+});
+
+test('#1013 get_category names the removed single-category endpoint instead of a missing category', async () => {
+  const { registered } = makeHarness(registerCatalogTools, {
+    getError: (p) => (p === '/browse/categories/mood' ? new SpotifyApiError(404, 'Not found.') : undefined),
+  });
+  await assert.rejects(
+    () => invoke(findTool(registered, 'get_category'), { category_id: 'mood' }),
+    (err: Error) => {
+      assert.match(err.message, /February 2026 Web API changes/);
+      assert.match(err.message, /no replacement endpoint/);
+      assert.doesNotMatch(err.message, /Category "mood" not found/);
+      return true;
+    },
+  );
+});
+
 // The peek reads /playlists/{id}/items, whose rows are { added_at, item }.
 // #773: the legacy /tracks path returned plain track rows, so the peek
 // rendered a table of `unknown` for every row.
@@ -1572,19 +1633,113 @@ test('catalog_batch_lookup accepts exactly 50 URIs and fans out per type', async
   assert.match(out, /Album 0/);
 });
 
-test('catalog_batch_lookup skips unsupported types (playlists) and reports them as invalid', async () => {
+// #779: a well-formed `spotify:playlist:` URI is not malformed input. It is a
+// type this tool has no batch endpoint for, and the skip note has to say so —
+// the payload is consumed downstream as the truth about what resolved.
+test('catalog_batch_lookup reports playlist URIs as unsupported, not invalid', async () => {
   const { registered } = makeHarness(registerCatalogTools, {
     getResponse: (p) => {
       if (p === '/tracks') return { tracks: [{ id: 't1', name: 'Track 1', uri: 'spotify:track:t1' }] };
       return undefined;
     },
   });
-  const out = text(await invoke(findTool(registered, 'catalog_batch_lookup'), {
-    uris: ['spotify:track:t1', 'spotify:playlist:pl1'],
-  }));
-  assert.match(out, /Invalid URIs skipped/i);
-  assert.match(out, /spotify:playlist:pl1/);
+  const result = await invoke(findTool(registered, 'catalog_batch_lookup'), {
+    uris: ['spotify:track:t1', 'spotify:playlist:pl1', 'not-a-uri'],
+  });
+  const out = text(result);
   assert.match(out, /Track 1/);
+  assert.match(out, /1 unsupported skipped/);
+  assert.match(out, /1 invalid skipped/);
+  assert.doesNotMatch(out, /Invalid URIs skipped[^\n]*spotify:playlist:pl1/);
+  assert.match(out, /Invalid URIs skipped[^\n]*not-a-uri/);
+  assert.match(out, /Unsupported here[^\n]*spotify:playlist:pl1/);
+  assert.deepEqual(result.structuredContent?.invalid, ['not-a-uri']);
+  assert.deepEqual(result.structuredContent?.unsupported, ['spotify:playlist:pl1']);
+});
+
+test('catalog_batch_lookup json output keeps the unsupported bucket separate', async () => {
+  const { registered } = makeHarness(registerCatalogTools, {
+    getResponse: (p) => {
+      if (p === '/tracks') return { tracks: [{ id: 't1', name: 'Track 1', uri: 'spotify:track:t1' }] };
+      return undefined;
+    },
+  });
+  const result = await invoke(findTool(registered, 'catalog_batch_lookup'), {
+    uris: ['spotify:track:t1', 'spotify:playlist:pl1'],
+    response_format: 'json',
+  });
+  const payload = JSON.parse(text(result)) as { invalid: string[]; unsupported: string[] };
+  assert.deepEqual(payload.invalid, []);
+  assert.deepEqual(payload.unsupported, ['spotify:playlist:pl1']);
+});
+
+// The same conflation for any other well-formed type with no `?ids=` sibling:
+// `spotify:user:` URIs parse, so calling them invalid was wrong too.
+test('catalog_batch_lookup reports a well-formed user URI as unsupported, not invalid', async () => {
+  const { registered } = makeHarness(registerCatalogTools, {
+    getResponse: (p) => {
+      if (p === '/tracks') return { tracks: [{ id: 't1', name: 'Track 1', uri: 'spotify:track:t1' }] };
+      return undefined;
+    },
+  });
+  const result = await invoke(findTool(registered, 'catalog_batch_lookup'), {
+    uris: ['spotify:track:t1', 'spotify:user:someone'],
+  });
+  assert.deepEqual(result.structuredContent?.invalid, []);
+  assert.deepEqual(result.structuredContent?.unsupported, ['spotify:user:someone']);
+  assert.doesNotMatch(text(result), /Invalid URIs skipped/);
+});
+
+test('catalog_batch_lookup rejects an all-unsupported batch without calling them invalid', async () => {
+  const { registered } = makeHarness(registerCatalogTools);
+  await assert.rejects(
+    () => invoke(findTool(registered, 'catalog_batch_lookup'), { uris: ['spotify:playlist:p1', 'spotify:user:someone'] }),
+    (err: Error) => {
+      assert.match(err.message, /Unsupported here: spotify:playlist:p1, spotify:user:someone/);
+      assert.doesNotMatch(err.message, /Invalid/);
+      return true;
+    },
+  );
+});
+
+// A mixed batch costs one round trip per type, not one round trip per type
+// serially: every partition is outstanding before the first one answers, and
+// the render still follows the partition order rather than the order the
+// responses happened to come back in. Deterministic, not a timing race — the
+// responses are released by hand, in reverse.
+test('catalog_batch_lookup fetches every type concurrently and renders in partition order', async () => {
+  let inFlight = 0;
+  let peak = 0;
+  const pending: Array<() => void> = [];
+  const bodies: Record<string, unknown> = {
+    '/tracks': { tracks: [{ id: 't1', name: 'Track One', uri: 'spotify:track:t1' }] },
+    '/artists': { artists: [{ id: 'a1', name: 'Artist One', uri: 'spotify:artist:a1' }] },
+    '/albums': { albums: [{ id: 'al1', name: 'Album One', uri: 'spotify:album:al1' }] },
+  };
+  const { registered } = makeHarness(registerCatalogTools, {
+    getResponse: (p) => {
+      inFlight += 1;
+      peak = Math.max(peak, inFlight);
+      const { promise, resolve } = Promise.withResolvers<unknown>();
+      pending.push(() => {
+        inFlight -= 1;
+        resolve(bodies[p]);
+      });
+      return promise;
+    },
+  });
+  const walk = invoke(findTool(registered, 'catalog_batch_lookup'), {
+    uris: ['spotify:track:t1', 'spotify:artist:a1', 'spotify:album:al1'],
+  });
+  // Let the handler run to its first suspension point before judging, so the
+  // assertion is about concurrency and not about how early the walk suspends.
+  await new Promise((resolve) => { setImmediate(resolve); });
+  assert.equal(peak, 3, `expected all 3 per-type fetches outstanding at once, peak was ${peak}`);
+  assert.equal(pending.length, 3, 'each type must be settled by this test, not left hanging');
+  for (const settle of [...pending].reverse()) settle();
+  const out = text(await walk);
+  const rendered = out.split('\n').filter((l) => l.includes('| URI:'));
+  assert.deepEqual(rendered.map((l) => l.slice(l.indexOf('[') + 1, l.indexOf(']'))), ['tracks', 'artists', 'albums']);
 });
 
 

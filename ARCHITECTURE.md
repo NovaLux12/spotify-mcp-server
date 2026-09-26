@@ -115,7 +115,7 @@ The table is generated from every TypeScript file recursively under `src/`, incl
 | `src/client.ts` | Runtime module for src/client.ts. (0 registered tools) | 895 |
 | `src/config.ts` | Central configuration loader for the SPOTIFY_MCP_* environment family. (0 registered tools) | 227 |
 | `src/csvsafe.ts` | CSV cell rendering shared by every writer that emits a spreadsheet (#630). (0 registered tools) | 32 |
-| `src/gating.ts` | The app-registration-gated error contract (#791, #428, #429; audit A14-016/A8-036) -- the graceful 403 mapping for Spotify's app-registration-gated endpoint family (probed 2026-08-26, memory/edge-probe-2026-08-26.json). (0 registered tools) | 120 |
+| `src/gating.ts` | The app-registration-gated error contract (#791, #428, #429; audit A14-016/A8-036) -- the graceful 403 mapping for Spotify's app-registration-gated endpoint family (probed 2026-08-26, memory/edge-probe-2026-08-26.json). (0 registered tools) | 151 |
 | `src/history.ts` | Opt-in mutation history JSONL (#64, hardened in #628). (0 registered tools) | 256 |
 | `src/index.ts` | Runtime module for src/index.ts. (0 registered tools) | 275 |
 | `src/lib/statsfm-client.ts` | Minimal client for the public stats.fm API (https://api.stats.fm/api/v1). (0 registered tools) | 150 |
@@ -131,15 +131,15 @@ The table is generated from every TypeScript file recursively under `src/`, incl
 | `src/tools/annotations.ts` | MCP tool annotations (#565 / A0-002, A4-005). (1 registered tool) | 1208 |
 | `src/tools/artistwatch.ts` | Runtime module for src/tools/artistwatch.ts. (6 registered tools) | 642 |
 | `src/tools/audiobookcopilot.ts` | Audiobook chapter copilot (#112 idea 4): tools for navigating long-form audiobooks — full chapter tables regardless of the ~18-chapter app break, 1-based chapter jumps, and "where was I?" (3 registered tools) | 291 |
-| `src/tools/audiobooks.ts` | Runtime module for src/tools/audiobooks.ts. (4 registered tools) | 330 |
-| `src/tools/backup.ts` | Library backup (#159): snapshot the entire reachable library — liked tracks, saved albums/shows/episodes/audiobooks, followed artists and every playlist (with items) — into a timestamped local JSON file plus a bounded metadata sidecar used by list_backups. (3 registered tools) | 1380 |
+| `src/tools/audiobooks.ts` | Runtime module for src/tools/audiobooks.ts. (4 registered tools) | 436 |
+| `src/tools/backup.ts` | Library backup (#159): snapshot the entire reachable library — liked tracks, saved albums/shows/episodes/audiobooks, followed artists and every playlist (with items) — into a timestamped local JSON file plus a bounded metadata sidecar used by list_backups. (3 registered tools) | 1444 |
 | `src/tools/backupfirst.ts` | backup_first (#216): pre-flight snapshot for account-wide destructive tools. (1 registered tool) | 88 |
-| `src/tools/browse.ts` | Runtime module for src/tools/browse.ts. (3 registered tools) | 153 |
-| `src/tools/catalog.ts` | Runtime module for src/tools/catalog.ts. (31 registered tools) | 1323 |
+| `src/tools/browse.ts` | Runtime module for src/tools/browse.ts. (3 registered tools) | 202 |
+| `src/tools/catalog.ts` | Runtime module for src/tools/catalog.ts. (31 registered tools) | 1414 |
 | `src/tools/confirm.ts` | Elicitation-gated confirmation for destructive playlist operations (#111 item 5). (0 registered tools) | 191 |
 | `src/tools/doctortool.ts` | spotify_doctor (#111 idea 9 + #228): the CLI `doctor` command (runDoctor in index.ts) as an in-server TOOL so MCP agents can self-diagnose the most common failure class — missing/expired tokens, scope gaps between the auth-time grant and the write tools exposed by the active toolsets, Premium gating they cannot introspect, and an active rate-limit cooldown. (1 registered tool) | 659 |
 | `src/tools/episodemgmt.ts` | episodemgmt (#204, #187, #230): archive_played_episodes. mark_episode_played was removed in #230 — PUT /me/episodes/{id} with resume_point is not a real Spotify endpoint (real endpoint is PUT /me/episodes? (1 registered tool) | 271 |
-| `src/tools/exhaust2_catalog.ts` | exhaust2 catalog slice — feature swarm v1.24.0 (issues #332–#357). (19 registered tools) | 1519 |
+| `src/tools/exhaust2_catalog.ts` | exhaust2 catalog slice — feature swarm v1.24.0 (issues #332–#357). (19 registered tools) | 1524 |
 | `src/tools/exhaust2_enggating.ts` | exhaust2 enggating slice -- now a registration placeholder only (#791). (0 registered tools) | 40 |
 | `src/tools/exhaust2_extra.ts` | exhaust2 extra slice — the final three playlists-surface tools (#398-#400). (3 registered tools) | 558 |
 | `src/tools/exhaust2_misc.ts` | exhaust2 misc slice — feature swarm v1.24.0. (27 registered tools) | 1770 |
@@ -165,7 +165,7 @@ The table is generated from every TypeScript file recursively under `src/`, incl
 | `src/tools/playlistops.ts` | Playlist power tools (#96): merge_playlists, diff_playlists, overlap_playlists. (3 registered tools) | 481 |
 | `src/tools/playlists.ts` | Runtime module for src/tools/playlists.ts. (26 registered tools) | 2293 |
 | `src/tools/podcastsession.ts` | Podcast session composer (#112 idea 3): greedy-packs the user's saved podcast episodes into a listening session of a fixed length in minutes, then (optionally) starts it on a device. (2 registered tools) | 406 |
-| `src/tools/portability.ts` | Portability (#188 + #192 + #238 + #240 + #223 + #220): save_discover_weekly / save_release_radar (archive personalized playlists) + export_library_json / export_followed_artists + export_profile_state/import_profile_state + export_listening_history (11 registered tools) | 1236 |
+| `src/tools/portability.ts` | Portability (#188 + #192 + #238 + #240 + #223 + #220): save_discover_weekly / save_release_radar (archive personalized playlists) + export_library_json / export_followed_artists + export_profile_state/import_profile_state + export_listening_history (11 registered tools) | 1669 |
 | `src/tools/queueops.ts` | queueops (#194, #202, #224, #231): queue_playlist + save_queue_as_playlist. queue_reorder / queue_remove / queue_clear were removed in #231 — those endpoints do not exist (only GET and POST /me/player/queue are real). (3 registered tools) | 316 |
 | `src/tools/restore.ts` | restore_library_snapshot (#160): STRICTLY ADDITIVE restore of a library snapshot produced by backup_library_snapshot (#159 contract). (1 registered tool) | 909 |
 | `src/tools/saveddedupe.ts` | Saved-track duplicate detection (#156). (1 registered tool) | 525 |
