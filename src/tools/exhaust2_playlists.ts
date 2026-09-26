@@ -1856,7 +1856,6 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
       // Round-robin merge: one track per artist per round.
       const mix: string[] = [];
       const cursors = perArtistTracks.map(() => 0);
-      let round = 0;
       let addedInRound = 1;
       while (addedInRound > 0) {
         addedInRound = 0;
@@ -1867,9 +1866,7 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
             addedInRound++;
           }
         }
-        round++;
       }
-      void round;
       const name = args.name ?? `Collab Mix — ${formatDateStamp()}`;
       if (dryRun) {
         return dryOut('collab mix', `new playlist "${name}"`, [

@@ -458,7 +458,7 @@ export function registerPlaybackExtTools(server: McpServer, client: SpotifyClien
       // Create new session from recently-played (auto-detect)
       const recent = await client.get<{ items: Array<{ played_at: string; track: { uri: string } }> }>('/me/player/recently-played', { limit: '50' });
       const raw = recent?.items ?? [];
-      const detected = detectSessions(raw as any);
+      const detected = detectSessions(raw);
       // Use the most recent detected session as the template
       const latest = detected[detected.length - 1];
       const tracks = latest ? latest.tracks : raw.slice(0, 20).map((r) => r.track.uri);
@@ -487,7 +487,7 @@ export function registerPlaybackExtTools(server: McpServer, client: SpotifyClien
         return respond(args.response_format as string, store, { ok: true, session_id: args.session_id, mode: 'queue', queued, failed, total: sess.tracks.length }, `Replayed session "${args.session_id}" → queued ${queued}/${sess.tracks.length} tracks${failed.length ? ` (${failed.length} failed)` : ''}.`);
       } else {
         const pl = await client.post<{ id: string; uri: string }>('/me/playlists', { name: `Replay: ${sess.id}`, description: `Replay of session ${sess.id} — ${sess.tags.join(', ')}` });
-        const id = (pl as any)?.id;
+        const id = pl?.id;
         if (!id) return respond(args.response_format as string, store, { ok: false, error: 'create_failed', session_id: args.session_id }, 'Failed to create replay playlist.');
         // add tracks in CHUNK_CAPS.playlist_writes batches
         const writeCap = capFor('playlist_writes');
@@ -514,7 +514,7 @@ export function registerPlaybackExtTools(server: McpServer, client: SpotifyClien
       if (sessions.length === 0) {
         // best-effort auto-detect preview
         const recent = await client.get<{ items: Array<{ played_at: string; track: { uri: string; name: string } }> }>('/me/player/recently-played', { limit: '50' });
-        const detected = recent?.items ? detectSessions(recent.items as any).length : 0;
+        const detected = recent?.items ? detectSessions(recent.items).length : 0;
         return respond(args.response_format as string, store, { ok: true, count: 0, detected_sessions: detected }, `No tagged sessions${args.tag ? ` for tag "${args.tag}"` : ''}. Detected ${detected} session(s) in recently-played. Use tag_listening_session to label one.`);
       }
       const lines = sessions.map((s) => `- ${s.id}: [${s.tags.join(', ')}] ${s.tracks.length} tracks (${s.created_at})${s.note ? ` — ${s.note}` : ''}`);

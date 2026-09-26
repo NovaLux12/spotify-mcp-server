@@ -88,7 +88,7 @@ export function registerPlaybackIntelTools(server: McpServer, client: SpotifyCli
         label = hit.uri;
       } else if (hasContext) { playBody = { context_uri: args.context_uri }; label = args.context_uri as string; }
       else { playBody = { uris: args.uris }; label = (args.uris as string[])[0]; }
-      if (args.position_ms !== undefined) (playBody as any).position_ms = args.position_ms;
+      if (args.position_ms !== undefined) playBody.position_ms = args.position_ms;
       if (args.dry_run) {
         const steps = [`Resolve "${args.device}" → ${deviceId}`, `Play ${label} on ${deviceId}${args.volume!==undefined?` @ vol ${args.volume}`:''}${args.shuffle!==undefined?` shuffle=${args.shuffle}`:''}`];
         return { content: [{ type:'text', text: describeDryRun('play_on', label, steps) }], structuredContent: { ok:true, dry_run:true, resolved_device_id: deviceId, playBody } };
@@ -282,19 +282,21 @@ export function registerPlaybackIntelTools(server: McpServer, client: SpotifyCli
     'Device availability & capability report — merges GET /me/player/devices + GET /me/player active id + sidecar labels/presets. 🟢 (1-2 reads, local merge). Read-only.',
     { response_format: ResponseFormat },
     async (args) => {
-      const [devRes, player]: any[] = await Promise.all([
+      const [devRes, player]: [GetDevicesResponse | null, PlaybackState | null] = await Promise.all([
         client.get<GetDevicesResponse>('/me/player/devices'),
-        client.get('/me/player').catch(()=> null),
+        client.get<PlaybackState>('/me/player').catch(()=> null),
       ]);
       const devices: SpotifyDevice[] = devRes?.devices ?? [];
-      const activeId = (player as any)?.device?.id ?? null;
-      const store = await loadPlaybackExt().catch(()=> ({ devicePresets:{} } as any));
-      const presets: Record<string, any> = (store as any).devicePresets ?? {};
+      const activeId = player?.device?.id ?? null;
+      // A sidecar that will not load must not invent device presets: an empty
+      // map and a missing store read identically here, so the report still says
+      // "no preset" rather than silently claiming the saved one was applied.
+      const presets = (await loadPlaybackExt().catch(() => null))?.devicePresets ?? {};
       const enriched = devices.map(d=> ({
-        id: d.id, name: d.name, type: (d as any).type ?? null, is_active: d.id === activeId,
-        is_restricted: (d as any).is_restricted ?? null, is_private_session: (d as any).is_private_session ?? null,
-        volume_percent: (d as any).volume_percent ?? null,
-        supports_volume: (d as any).supports_volume ?? ((d as any).volume_percent !== null),
+        id: d.id, name: d.name, type: d.type ?? null, is_active: d.id === activeId,
+        is_restricted: d.is_restricted ?? null, is_private_session: d.is_private_session ?? null,
+        volume_percent: d.volume_percent ?? null,
+        supports_volume: d.supports_volume ?? (d.volume_percent !== null),
         label: presets[d.id as string]?.label ?? null, preset_volume: presets[d.id as string]?.volume ?? null,
       }));
       const lines = [`Devices (${devices.length}), active: ${activeId ?? 'none'}:`];
@@ -398,10 +400,10 @@ export function registerPlaybackIntelTools(server: McpServer, client: SpotifyCli
     { state_a: z.string().min(1).describe('First snapshot name'), state_b: z.string().min(1).describe('Second snapshot name'), response_format: ResponseFormat },
     async (args) => {
       const store = await loadPlaybackExt();
-      const a = (store as any).states?.[args.state_a as string];
-      const b = (store as any).states?.[args.state_b as string];
-      if (!a) return textResult(`No snapshot "${args.state_a}". Available: ${Object.keys((store as any).states ?? {}).join(', ')||'none'}`, { ok:false });
-      if (!b) return textResult(`No snapshot "${args.state_b}". Available: ${Object.keys((store as any).states ?? {}).join(', ')||'none'}`, { ok:false });
+      const a = store.states?.[args.state_a as string];
+      const b = store.states?.[args.state_b as string];
+      if (!a) return textResult(`No snapshot "${args.state_a}". Available: ${Object.keys(store.states ?? {}).join(', ')||'none'}`, { ok:false });
+      if (!b) return textResult(`No snapshot "${args.state_b}". Available: ${Object.keys(store.states ?? {}).join(', ')||'none'}`, { ok:false });
       const pa = a.playback; const pb = b.playback;
       const diff: Record<string, unknown> = {};
       const lines = [`Diff "${args.state_a}" vs "${args.state_b}":`];
@@ -411,8 +413,8 @@ export function registerPlaybackIntelTools(server: McpServer, client: SpotifyCli
       cmp('progress_ms', pa?.progress_ms ?? null, pb?.progress_ms ?? null);
       cmp('shuffle_state', pa?.shuffle_state ?? null, pb?.shuffle_state ?? null);
       cmp('repeat_state', pa?.repeat_state ?? null, pb?.repeat_state ?? null);
-      cmp('device', (pa?.device as any)?.id ?? null, (pb?.device as any)?.id ?? null);
-      cmp('context_uri', (pa as any)?.context?.uri ?? null, (pb as any)?.context?.uri ?? null);
+      cmp('device', pa?.device?.id ?? null, pb?.device?.id ?? null);
+      cmp('context_uri', pa?.context?.uri ?? null, pb?.context?.uri ?? null);
       if (Object.keys(diff).length===0) lines.push(' (no differences)');
       const echo:Record<string,unknown>={ ok:true, state_a: args.state_a, state_b: args.state_b, diff, has_diff: Object.keys(diff).length>0 };
       if (args.response_format==='json') return { content:[{type:'text', text: JSON.stringify(echo,null,2)}], structuredContent: echo };
@@ -443,8 +445,8 @@ export function registerPlaybackIntelTools(server: McpServer, client: SpotifyCli
     'Resolve the current playback context URI (from GET /me/player) to catalog metadata — playlist/album/artist/show name, owner, track count. 🟢/🟡 (1-2 reads). Read-only.',
     { response_format: ResponseFormat },
     async (args) => {
-      const player:any = await client.get('/me/player');
-      const ctx = player?.context?.uri as string | undefined;
+      const player = await client.get<PlaybackState>('/me/player');
+      const ctx = player?.context?.uri;
       if (!ctx) return textResult('No active context (nothing playing or context is null).', { ok:true, context: null, player_item: player?.item ?? null });
       const parsed = parseSpotifyUri(ctx);
       let resolved: Record<string,unknown> = { uri: ctx, type: parsed?.type ?? 'unknown', id: parsed?.id ?? null };
@@ -453,8 +455,8 @@ export function registerPlaybackIntelTools(server: McpServer, client: SpotifyCli
         else if (parsed?.type === 'album') { const al:any = await client.get(`/albums/${parsed.id}`); resolved = { ...resolved, name: al?.name, artists: al?.artists?.map((a:any)=>a.name), total_tracks: al?.total_tracks, release_date: al?.release_date }; }
         else if (parsed?.type === 'artist') { const ar:any = await client.get(`/artists/${parsed.id}`); resolved = { ...resolved, name: ar?.name, genres: ar?.genres, followers: ar?.followers?.total }; }
         else if (parsed?.type === 'show') { const sh:any = await client.get(`/shows/${parsed.id}`); resolved = { ...resolved, name: sh?.name, publisher: sh?.publisher, total_episodes: sh?.total_episodes }; }
-      } catch (e:any) { (resolved as any).resolve_error = e?.message ?? String(e); }
-      const echo:Record<string,unknown>={ ok:true, context_uri: ctx, resolved, player_item: player?.item ? { uri: (player.item as any).uri, name: (player.item as any).name } : null };
+      } catch (e:any) { resolved.resolve_error = e?.message ?? String(e); }
+      const echo:Record<string,unknown>={ ok:true, context_uri: ctx, resolved, player_item: player?.item ? { uri: player.item.uri, name: player.item.name } : null };
       const text = `Context: ${ctx} → ${JSON.stringify(resolved)}`;
       if (args.response_format==='json') return { content:[{type:'text', text: JSON.stringify(echo,null,2)}], structuredContent: echo };
       return { content:[{type:'text', text }], structuredContent: echo };

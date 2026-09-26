@@ -36,6 +36,12 @@ jobs:
       - name: Typecheck
         run: npx tsc --noEmit
 
+      - name: Payload-shape guard (no `as any` under src/tools)
+        # #758. `as any` at a payload boundary is the cast that turns off the
+        # check which would otherwise catch a Spotify field rename, so it is
+        # gated rather than merely discouraged. Type the payload instead.
+        run: node scripts/check-no-explicit-any.mjs
+
       - name: Generate finalized surface census
         run: node scripts/surface-census.mjs > .surface-census.json
 

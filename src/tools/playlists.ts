@@ -1636,8 +1636,8 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
     },
     async (args) => {
       // dry_run is the canonical flag; apply is a deprecated alias for backwards compat
-      const rawDryRun = (args as any).dry_run;
-      const rawApply = (args as any).apply;
+      const rawDryRun = args.dry_run;
+      const rawApply = args.apply;
       const effectiveApply = rawDryRun !== undefined ? !rawDryRun : !!rawApply;
       const effectiveDryRun = !effectiveApply;
       const listScan = await client.getAllPagesWithTruncation<SpotifyPlaylistSimple>('/me/playlists', {
