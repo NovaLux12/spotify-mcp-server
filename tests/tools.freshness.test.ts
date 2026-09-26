@@ -13,6 +13,7 @@ import { describe, it } from 'node:test';
 import { z } from 'zod';
 import assert from 'node:assert/strict';
 import { mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -740,6 +741,35 @@ describe('watermark write concurrency', () => {
         const leftovers = (await readdir(dir)).filter((f) => f.endsWith('.tmp'));
         assert.deepEqual(leftovers, [], 'no temp files may survive a successful write');
       });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('reclaims a temp stranded under the pre-fix fixed name', async () => {
+    // The unique temp name fixes the race, but it also means a crash under
+    // the OLD `${target}.tmp` name leaves a file the catch block will never
+    // see, because this call did not create it. Every write now clears that
+    // name on the way past, the way auth.ts does.
+    //
+    // Fails without the fix: the stranded file is still there afterwards.
+    const dir = await mkdtemp(join(tmpdir(), 'freshness-legacy-'));
+    const statePath = join(dir, 'freshness.json');
+    const legacy = `${statePath}.tmp`;
+    try {
+      await writeFile(legacy, 'half-written garbage', 'utf8');
+      await withEnv({ SPOTIFY_MCP_FRESHNESS_STATE: statePath }, async () => {
+        const h = harness((path) => {
+          if (path === '/me/following') return followedPage(['a1'], null);
+          if (path === '/artists/a1/albums') return albumsOf('a1', [['alb', 'Drop', '2026-08-15']]);
+          throw new Error(`unexpected path ${path}`);
+        });
+        await h.invoke('whats_new', { since: '2026-08-01', kinds: ['albums'] });
+      });
+
+      assert.equal(existsSync(legacy), false, 'the stranded pre-fix temp must be reclaimed');
+      const stored = JSON.parse(await readFile(statePath, 'utf8')) as { last_check: string };
+      assert.equal(stored.last_check, new Date().toISOString().slice(0, 10), 'the watermark still advanced');
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

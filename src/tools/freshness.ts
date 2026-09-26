@@ -195,6 +195,10 @@ async function writeWatermark(date: string): Promise<void> {
   const target = watermarkFilePath();
   const tmp = `${target}.${process.pid}.${randomBytes(8).toString('hex')}.tmp`;
   await mkdir(dirname(target), { recursive: true });
+  // The fixed `<target>.tmp` name is dead now that writers are unique. A
+  // pre-fix crash can have stranded one, and the catch below only reclaims
+  // temps this call created, so clear the old name here the way auth.ts does.
+  await rm(`${target}.tmp`, { force: true }).catch(() => {});
   try {
     await writeFile(tmp, `${JSON.stringify({ last_check: date }, null, 2)}\n`, { mode: 0o600 });
     await rename(tmp, target);
