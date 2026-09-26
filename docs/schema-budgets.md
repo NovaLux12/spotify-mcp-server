@@ -76,7 +76,7 @@ above either ceiling fails CI and server startup.
 | playlistfollow | 2 | 1,449 | 2 | 1,449 | 3 | 1,594 |
 | playlistmisc | 1 | 1,089 | 1 | 1,089 | 2 | 1,198 |
 | personalization | 3 | 2,532 | 3 | 2,532 | 4 | 2,786 |
-| analytics | 4 | 2,753 | 4 | 2,753 | 5 | 3,029 |
+| analytics | 4 | 2,940 | 4 | 2,940 | 5 | 3,235 |
 | statsfm | 30 | 22,721 | 30 | 22,721 | 31 | 24,994 |
 | taste | 16 | 13,959 | 16 | 13,959 | 17 | 15,355 |
 | tastecomposites | 10 | 7,994 | 10 | 7,994 | 11 | 8,794 |
@@ -122,7 +122,7 @@ above either ceiling fails CI and server startup.
 | swarm3bdiscovery | 24 | 20,039 | 24 | 20,039 | 25 | 22,043 |
 | swarm3shows | 24 | 21,075 | 24 | 21,075 | 25 | 23,183 |
 | swarm3refs | 6 | 4,331 | 6 | 4,331 | 7 | 4,765 |
-| swarm3analytics | 24 | 18,880 | 24 | 18,880 | 25 | 20,768 |
+| swarm3analytics | 17 | 13,339 | 17 | 13,339 | 18 | 14,673 |
 | swarm3library | 24 | 17,987 | 24 | 17,987 | 25 | 19,786 |
 | swarm3playback | 24 | 14,247 | 24 | 14,247 | 25 | 15,672 |
 | swarm3playlistops | 24 | 31,777 | 24 | 31,777 | 25 | 34,955 |

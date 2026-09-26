@@ -18,7 +18,7 @@ a real API response. Historical issue numbers, branch names, and prose counts
 are leads at most, never current truth.
 
 <!-- BEGIN:generated surface-census -->
-Current default production baseline: **592 tools**, **16 fixed resources**, **33 resource templates**, and **14 prompts**. Regenerate with `npm run count:tools -- --write`; never substitute historical prose.
+Current default production baseline: **585 tools**, **16 fixed resources**, **33 resource templates**, and **14 prompts**. Regenerate with `npm run count:tools -- --write`; never substitute historical prose.
 <!-- END:generated surface-census -->
 
 ## Procedure
