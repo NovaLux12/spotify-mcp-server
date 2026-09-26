@@ -269,15 +269,22 @@ interface ListeningSession {
 export function groupSessions(streams: TasteStream[], gapMinutes = 30): ListeningSession[] {
   const sessions: ListeningSession[] = [];
   let current: ListeningSession | null = null;
+  // Membership lives in a Set, not in `tracks` (#903): the array stays the
+  // ordered, caller-visible list while `includes` stops being the hot path.
+  // The set is a local and is never attached to the session, so the returned
+  // shape is exactly what the previous `includes` version returned.
+  let seen: Set<string> = new Set();
   const gapMs = Math.max(1, gapMinutes) * 60_000;
   for (const s of streams) {
     if (!current || s.playedAtMs - current.endMs > gapMs) {
       current = { startMs: s.playedAtMs, endMs: s.playedAtMs, streams: 0, tracks: [] };
       sessions.push(current);
+      seen = new Set();
     }
     current.endMs = s.playedAtMs;
     current.streams += 1;
-    if (s.trackName !== 'unknown track' && !current.tracks.includes(s.trackName)) {
+    if (s.trackName !== 'unknown track' && !seen.has(s.trackName)) {
+      seen.add(s.trackName);
       current.tracks.push(s.trackName);
     }
   }

@@ -912,6 +912,8 @@ All playlist set-operation, diff, overlap, intersection, union, subtraction, mer
 
 **Returned versus total counts.** Where a set operation returns arrays, `removed`/`kept` (and `uris`/`removed_uris` beside them) count only the rows actually returned, bounded by `max_results`; `removed_total`/`kept_total` carry the true impact the confirmation prompt quoted. A capped response therefore never reports a count its own arrays contradict.
 
+**Planned-move arrays.** `balance_playlist_pairs` plans one move object per track, so the plan is bounded by the same `max_results` cap as its prose: `moves` in structuredContent carries the capped rows, and `moves_total` / `moves_returned` / `moves_withheld` / `moves_truncated` disclose the full plan the array withheld. `response_format: 'json'` is the full-record opt-in — it returns every move and reports `moves_withheld: 0`.
+
 **Migration note (v2.0 → v2.1):** legacy names remain callable through v2.0 and are removed in v2.1. Supplying both canonical and legacy values is accepted only when they normalize to the same values in the same order; missing, incomplete, differently ordered, or conflicting inputs fail before any Spotify request and name both conflicting fields. Legacy results include `deprecated_inputs` plus `deprecation_note` in structuredContent and the same one-line note in prose/JSON text. Canonical-only calls omit both fields.
 
 #### `get_playlist`
