@@ -43,7 +43,10 @@ function literalBatchBounds(source: string): Array<{ line: number; text: string 
     if (text.includes('cap-exempt:')) return;
     const loopStep = /for\s*\([^;]*;[^;]*;\s*\w+\s*\+=\s*(\d+)\s*\)/.exec(text);
     const sliceEnd = /slice\(\s*\w+\s*,\s*\w+\s*\+\s*(\d+)\s*\)/.exec(text);
-    for (const hit of [loopStep, sliceEnd]) {
+    // A local `chunk(items, size)` helper is the same defect wearing a
+    // different hat: the size is still a per-call-site policy statement.
+    const chunkSize = /\bchunk\(\s*[^,()]+(?:\([^()]*\))?\s*,\s*(\d+)\s*\)/.exec(text);
+    for (const hit of [loopStep, sliceEnd, chunkSize]) {
       if (hit && Number(hit[1]) > 1) out.push({ line: index + 1, text: text.trim() });
     }
   });
@@ -173,6 +176,12 @@ describe('#583 — CHUNK_CAPS is the single batch-size policy', () => {
     const found = literalBatchBounds(planted);
     assert.equal(found.length, 2, 'the loop step and its slice end are both literal bounds');
     assert.ok(found.every((hit) => hit.line === 2 || hit.line === 3));
+
+    const plantedHelper = [
+      'function chunk<T>(items: readonly T[], size: number): T[][] { return [] as T[][]; }',
+      'for (const part of chunk(uris, 100)) { await post(part); }',
+    ].join('\n');
+    assert.equal(literalBatchBounds(plantedHelper).length, 1, 'a local chunk(x, 100) is a literal bound too');
   });
 
   it('the literal-batch rule accepts a cap-sourced loop and a marked exemption', () => {

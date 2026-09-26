@@ -22,6 +22,7 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
+import { chunk } from '../chunk.js';
 import type {
   FollowedArtistsResponse,
   SavedAlbumItem,
@@ -152,11 +153,6 @@ function normalizeName(name: string): string {
     .trim();
 }
 
-function chunk<T>(items: readonly T[], size: number): T[][] {
-  const out: T[][] = [];
-  for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
-  return out;
-}
 
 /** Build /search query params (Feb-2026 cap: limit ≤ 10). */
 function searchParams(q: string, type: string, limit: number, market?: string, offset = 0): Record<string, string> {
@@ -230,7 +226,7 @@ async function fetchAlbumBatches(
   ids: readonly string[],
 ): Promise<AlbumWithMeta[]> {
   const out: AlbumWithMeta[] = [];
-  for (const batch of chunk(ids, 20)) {
+  for (const batch of chunk(ids, 'albums')) {
     const res = await client.get<{ albums: AlbumWithMeta[] | null }>('/albums', { ids: batch.join(',') });
     if (res?.albums) out.push(...res.albums);
   }

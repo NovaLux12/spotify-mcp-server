@@ -14,6 +14,7 @@
  */
 import { z } from 'zod';
 import { ARTIST_ALBUM_PAGE_LIMIT, MARKET_CODE } from './catalog.js';
+import { chunk } from '../chunk.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
 import { SpotifyApiError } from '../client.js';
@@ -110,11 +111,6 @@ export function normalizeName(name: string): string {
     .trim();
 }
 
-function chunk<T>(items: readonly T[], size: number): T[][] {
-  const out: T[][] = [];
-  for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
-  return out;
-}
 
 /** Full album payload widens the simplified type with label/copyright fields. */
 interface AlbumPayload extends SpotifyAlbumItem {
@@ -545,7 +541,7 @@ max_results: z.number().int().positive().max(2000).optional().describe('Max item
       if (tracks.length === 0) throw new Error('No playable tracks found for the given IDs');
 
       const albumIds = [...new Set(tracks.map((t) => t.album?.id).filter((x): x is string => !!x))];
-      const albumGroups = chunk(albumIds, 20);
+      const albumGroups = chunk(albumIds, 'albums');
       const albumResponses = await Promise.all(
         albumGroups.map((group) => client.get<{ albums: (AlbumPayload | null)[] }>('/albums', { ids: group.join(',') })),
       );
@@ -555,7 +551,7 @@ max_results: z.number().int().positive().max(2000).optional().describe('Max item
       }
       const artistIds = [...new Set(tracks.flatMap((t) => (t.artists ?? []).map((a) => a.id)).filter((x): x is string => !!x))];
       const genresByArtist = new Map<string, string[]>();
-      const artistGroups = chunk(artistIds, 50);
+      const artistGroups = chunk(artistIds, 'artists');
       const artistResponses = await Promise.all(
         artistGroups.map((group) => client.get<{ artists: (SpotifyArtistFull | null)[] }>('/artists', { ids: group.join(',') })),
       );

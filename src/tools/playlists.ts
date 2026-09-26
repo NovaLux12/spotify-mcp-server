@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { issueReceipt, formatReceipt } from '../receipts.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
+import { capFor } from '../chunk.js';
 import { getConfig } from '../config.js';
 import {
   confirmViaElicitation,
@@ -1156,8 +1157,9 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
       const id = encodeURIComponent(args.playlist_id);
       let snapshotId: string | undefined;
       let requestCount = 0;
-      for (let start = 0; start < args.uris.length; start += 100) {
-        const chunk = { uris: args.uris.slice(start, start + 100) };
+      const writeCap = capFor('playlist_writes');
+      for (let start = 0; start < args.uris.length; start += writeCap) {
+        const chunk = { uris: args.uris.slice(start, start + writeCap) };
         const res =
           start === 0
             ? await client.put<{ snapshot_id?: string }>(`/playlists/${id}/items`, chunk)
@@ -1831,8 +1833,9 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
   async function replaceWithUris(playlistId: string, uris: string[]): Promise<string | undefined> {
     const enc = encodeURIComponent(playlistId);
     let snap: string | undefined;
-    for (let s = 0; s < uris.length; s += 100) {
-      const chunk = uris.slice(s, s + 100);
+    const writeCap = capFor('playlist_writes');
+    for (let s = 0; s < uris.length; s += writeCap) {
+      const chunk = uris.slice(s, s + writeCap);
       const res = s === 0 ? await client.put<{ snapshot_id?: string }>(`/playlists/${enc}/items`, { uris: chunk }) : await client.post<{ snapshot_id?: string }>(`/playlists/${enc}/items`, { uris: chunk });
       if (res?.snapshot_id) snap = res.snapshot_id;
     }

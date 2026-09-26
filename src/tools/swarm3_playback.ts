@@ -11,7 +11,7 @@
  *     serialized client queue.
  */
 import { z } from 'zod';
-import { capFor } from '../chunk.js';
+import { capFor, chunk } from '../chunk.js';
 import { mkdir, readdir, readFile, unlink, writeFile } from 'node:fs/promises';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
@@ -805,9 +805,10 @@ export function registerSwarm3PlaybackTools(server: McpServer, client: SpotifyCl
           created.push({ name: c.playlist_name, tracks: 0 });
           continue;
         }
-        const first = c.uris.slice(0, 100);
+        const writeCap = capFor('playlist_writes');
+        const first = c.uris.slice(0, writeCap);
         await client.put(`/playlists/${encodeURIComponent(pl.id)}/items`, { uris: first });
-        for (const part of chunkedUris(c.uris.slice(100))) {
+        for (const part of chunkedUris(c.uris.slice(writeCap))) {
           await client.post(`/playlists/${encodeURIComponent(pl.id)}/items`, { uris: part });
         }
         created.push({ name: c.playlist_name, id: pl.id, tracks: c.track_count });
@@ -1442,10 +1443,7 @@ export function registerSwarm3PlaybackTools(server: McpServer, client: SpotifyCl
 // Local util (defined last; hoisted use in split_queue_plan)
 // ---------------------------------------------------------------------------
 
-/** Split a uri list into ≤100-URI batches for playlist item writes. */
+/** Split a uri list into CHUNK_CAPS.playlist_writes batches for playlist item writes. */
 function chunkedUris(uris: readonly string[]): string[][] {
-  const out: string[][] = [];
-  const writeCap = capFor('playlist_writes');
-  for (let i = 0; i < uris.length; i += writeCap) out.push(uris.slice(i, i + writeCap));
-  return out;
+  return chunk(uris, 'playlist_writes');
 }

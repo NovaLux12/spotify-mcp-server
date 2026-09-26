@@ -21,6 +21,7 @@ import {
 } from '../shaping.js';
 import type { ResponseFormatValue } from '../shaping.js';
 import { getConfig } from '../config.js';
+import { chunk } from '../chunk.js';
 import { spotifyId, resolveSpotifyId } from '../refs.js';
 import { MARKET_CODE } from './catalog.js';
 
@@ -99,11 +100,6 @@ function baseTitle(name: string): string {
   );
 }
 
-function chunk<T>(items: readonly T[], size: number): T[][] {
-  const out: T[][] = [];
-  for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
-  return out;
-}
 
 /** Full album payload: simplified listing widened with label/copyright/tracks. */
 interface AlbumPayload extends SpotifyAlbumItem {
@@ -192,7 +188,7 @@ async function fetchFullAlbums(
   market?: string,
 ): Promise<Map<string, AlbumPayload>> {
   const out = new Map<string, AlbumPayload>();
-  for (const group of chunk([...new Set(ids)], 20)) {
+  for (const group of chunk([...new Set(ids)], 'albums')) {
     const res = await client.get<{ albums: (AlbumPayload | null)[] }>(
       '/albums',
       { ids: group.join(','), ...marketParams(market) },

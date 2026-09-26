@@ -14,6 +14,7 @@
 import { z } from 'zod';
 import { mkdir, readdir, readFile, stat, unlink, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
+import { chunk } from '../chunk.js';
 import { join } from 'node:path';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
@@ -103,11 +104,6 @@ function formatBytes(n: number): string {
   return n < 1024 ? `${n} B` : `${(n / 1024).toFixed(1)} KiB`;
 }
 
-function chunk<T>(arr: readonly T[], size: number): T[][] {
-  const out: T[][] = [];
-  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
-  return out;
-}
 
 // ---------------------------------------------------------------------------
 // Local file plumbing
@@ -409,14 +405,14 @@ async function applyPlaylistOps(
   let added = 0;
   let removed = 0;
   let requests = 0;
-  for (const part of chunk(removeUris, 100)) {
+  for (const part of chunk(removeUris, 'playlist_writes')) {
     await client.delete(`/playlists/${encodeURIComponent(playlistId)}/items`, {
       tracks: part.map((uri) => ({ uri })),
     });
     removed += part.length;
     requests += 1;
   }
-  for (const part of chunk(addUris, 100)) {
+  for (const part of chunk(addUris, 'playlist_writes')) {
     await client.post(`/playlists/${encodeURIComponent(playlistId)}/items`, { uris: [...part] });
     added += part.length;
     requests += 1;
@@ -439,8 +435,8 @@ function computeRestoreOps(playlistId: string, live: SnapTrackRow[], target: Sna
     playlist_id: playlistId,
     add_uris: d.added.map((r) => r.uri),
     remove_uris: d.removed.map((r) => r.uri),
-    add_requests: chunk(d.added.map((r) => r.uri), 100).length,
-    remove_requests: chunk(d.removed.map((r) => r.uri), 100).length,
+    add_requests: chunk(d.added.map((r) => r.uri), 'playlist_writes').length,
+    remove_requests: chunk(d.removed.map((r) => r.uri), 'playlist_writes').length,
   };
 }
 
@@ -1284,8 +1280,8 @@ export function registerSwarm3SnapshotsTools(server: McpServer, client: SpotifyC
         playlist_id: targetId,
         add_uris: addUris,
         remove_uris: removeUris,
-        add_requests: chunk(addUris, 100).length,
-        remove_requests: chunk(removeUris, 100).length,
+        add_requests: chunk(addUris, 'playlist_writes').length,
+        remove_requests: chunk(removeUris, 'playlist_writes').length,
       };
       const payload: Record<string, unknown> = {
         ok: true,
@@ -1338,8 +1334,8 @@ export function registerSwarm3SnapshotsTools(server: McpServer, client: SpotifyC
           playlist_id: targetId,
           add_uris: addUris,
           remove_uris: removeUris,
-          add_requests: chunk(addUris, 100).length,
-          remove_requests: chunk(removeUris, 100).length,
+          add_requests: chunk(addUris, 'playlist_writes').length,
+          remove_requests: chunk(removeUris, 'playlist_writes').length,
         };
         const payload: Record<string, unknown> = {
           dry_run: true,
