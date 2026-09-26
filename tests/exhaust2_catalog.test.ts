@@ -1,6 +1,7 @@
 import { describe, it, mock } from 'node:test';
 import assert from 'node:assert/strict';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { z } from 'zod';
 import { registerExhaust2CatalogTools } from '../src/tools/exhaust2_catalog.js';
 import { registerArtistWatchTools } from '../src/tools/artistwatch.js';
 import { SpotifyApiError, SpotifyClient } from '../src/client.js';
@@ -32,6 +33,37 @@ function handlerFor(name: string, client: ReturnType<typeof makeClient>): Handle
   registerExhaust2CatalogTools(server, client);
   if (!captured) throw new Error(`tool ${name} not registered`);
   return captured;
+}
+
+/**
+ * The declared input shape for a tool, rebuilt as a real zod object. The MCP
+ * server validates arguments against this before the handler runs
+ * (see installToolErrorBoundary), so schema-level behaviour has to be probed
+ * here rather than through `handlerFor`, which hands args straight to the
+ * handler and would bypass validation entirely.
+ */
+function shapeFor(name: string, client: SpotifyClient): z.ZodObject<z.ZodRawShape> {
+  let captured: unknown;
+  const server = {
+    tool(n: string, _desc: string, shape: unknown, _h: Handler) {
+      if (n === name) captured = shape;
+    },
+  } as unknown as McpServer;
+  registerExhaust2CatalogTools(server, client);
+  if (!captured) throw new Error(`tool ${name} not registered`);
+  return z.object(captured as z.ZodRawShape);
+}
+
+/**
+ * The first offending parameter name, mirroring annotations.ts `validationParam`,
+ * which is what the error boundary reports back to the caller.
+ */
+function offendingParam(error: { issues: ReadonlyArray<{ path: ReadonlyArray<unknown> }> }): string | undefined {
+  for (const issue of error.issues) {
+    const first = issue.path[0];
+    if (typeof first === 'string' && first.length > 0) return first;
+  }
+  return undefined;
 }
 
 function allToolNames(client: ReturnType<typeof makeClient>): string[] {
@@ -703,6 +735,71 @@ assert.equal((res.structuredContent as { gaps_flagged: unknown[] }).gaps_flagged
     assert.equal(structured.only_in_a[0].name, 'US Only');
     assert.equal(structured.only_in_b[0].name, 'GB Only');
     assert.ok(res.content[0].text.includes('both markets: 1'));
+  });
+
+  // #776: `types` accepted two entries but only `types[0]` was ever searched,
+  // so a second type was dropped without a word in the payload. The cap is now
+  // 1, which makes the excess a schema failure the caller can see and act on.
+  it('search_market_diff rejects two requested types and names the parameter', async () => {
+    const shape = shapeFor('search_market_diff', makeClient());
+    const two = await shape.safeParseAsync({
+      query: 'q', market_a: 'US', market_b: 'GB', response_format: 'concise', types: ['track', 'album'],
+    });
+    assert.equal(two.success, false, 'a two-type request must not validate');
+    // The error boundary reports `issue.path[0]` back to the caller, so the
+    // rejection is only actionable if it points at `types`.
+    assert.equal(offendingParam(two.error), 'types');
+  });
+
+  it('search_market_diff rejects a CSV types string rather than guessing at it', async () => {
+    const shape = shapeFor('search_market_diff', makeClient());
+    const csv = await shape.safeParseAsync({
+      query: 'q', market_a: 'US', market_b: 'GB', response_format: 'concise', types: 'track,album',
+    });
+    assert.equal(csv.success, false, 'a CSV string must not be silently split or coerced');
+    assert.equal(offendingParam(csv.error), 'types');
+  });
+
+  // Non-vacuous guard for the single-type path: the section reported back must
+  // be the type actually requested, and every search must have asked for it.
+  // A handler that ignored `types` and always searched 'track' fails both.
+  it('search_market_diff searches and reports exactly the one requested type', async () => {
+    const requested: Array<string | undefined> = [];
+    const client = makeClient({
+      get: mock.fn(async (_p: string, params?: Record<string, string>) => {
+        requested.push(params?.type);
+        // Distinct identity per market: the diff keys on uri/id, so sharing
+        // one would dedupe into `both` and leave `only_in_a` empty.
+        const us = params?.market === 'US';
+        const items = [{ id: us ? 'a-us' : 'a-gb', uri: `spotify:album:a-${us ? 'us' : 'gb'}`, name: us ? 'US Album' : 'GB Album' }];
+        // Only the albums section is populated, so reading the wrong section
+        // yields no items rather than a plausible-looking wrong answer.
+        return { albums: { items, total: items.length } };
+      }),
+    });
+    const res = await handlerFor('search_market_diff', client)({
+      query: 'q', market_a: 'US', market_b: 'GB', response_format: 'concise', types: ['album'],
+    });
+    const structured = res.structuredContent as { type: string; only_in_a: Array<{ name: string }> };
+    assert.equal(structured.type, 'album');
+    assert.deepEqual(requested, ['album', 'album']);
+    assert.equal(structured.only_in_a[0].name, 'US Album');
+  });
+
+  it('search_market_diff still defaults to track when types is omitted', async () => {
+    const requested: Array<string | undefined> = [];
+    const client = makeClient({
+      get: mock.fn(async (_p: string, params?: Record<string, string>) => {
+        requested.push(params?.type);
+        return { tracks: { items: [], total: 0 } };
+      }),
+    });
+    const res = await handlerFor('search_market_diff', client)({
+      query: 'q', market_a: 'US', market_b: 'GB', response_format: 'concise',
+    });
+    const structured = res.structuredContent as { type: string };
+    assert.equal(structured.type, 'track');
+    assert.deepEqual(requested, ['track', 'track']);
   });
 
   it('episode_context_bundle finds prev/next neighbours', async () => {
