@@ -19,6 +19,7 @@
  *   • No deprecated endpoints (SPEC §9).
  */
 import { z } from 'zod';
+import { capFor } from '../chunk.js';
 import { readFile, readdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -147,8 +148,9 @@ async function atomicReplace(
   const path = `/playlists/${encodeURIComponent(targetId)}/items`;
   let snapshotId: string | undefined;
   let requests = 0;
-  for (let start = 0; start < uris.length; start += 100) {
-    const chunk = uris.slice(start, start + 100);
+  const writeCap = capFor('playlist_writes');
+  for (let start = 0; start < uris.length; start += writeCap) {
+    const chunk = uris.slice(start, start + writeCap);
     const res =
       start === 0
         ? await client.put<{ snapshot_id?: string }>(path, { uris: chunk })
@@ -182,9 +184,10 @@ async function addUrisChunked(
   const path = `/playlists/${encodeURIComponent(targetId)}/items`;
   let snapshotId: string | undefined;
   let requests = 0;
-  for (let start = 0; start < uris.length; start += 100) {
+  const writeCap = capFor('playlist_writes');
+  for (let start = 0; start < uris.length; start += writeCap) {
     const res = await client.post<{ snapshot_id?: string }>(path, {
-      uris: uris.slice(start, start + 100),
+      uris: uris.slice(start, start + writeCap),
     });
     if (res?.snapshot_id) snapshotId = res.snapshot_id;
     requests++;

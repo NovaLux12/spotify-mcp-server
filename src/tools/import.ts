@@ -17,6 +17,7 @@
  * elicitation-gated before the first POST.
  */
 import { z } from 'zod';
+import { capFor } from '../chunk.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
 import { SpotifyApiError } from '../client.js';
@@ -410,9 +411,10 @@ export function registerImportTools(server: McpServer, client: SpotifyClient): v
       const itemsPath = `/playlists/${id}/items`;
       let batchesSent = 0;
       let snapshotId: string | undefined;
-      for (let start = 0; start < toAdd.length; start += 100) {
+      const writeCap = capFor('playlist_writes');
+      for (let start = 0; start < toAdd.length; start += writeCap) {
         const res = await client.post<{ snapshot_id?: string }>(itemsPath, {
-          uris: toAdd.slice(start, start + 100),
+          uris: toAdd.slice(start, start + writeCap),
         });
         batchesSent++;
         if (res?.snapshot_id) snapshotId = res.snapshot_id;

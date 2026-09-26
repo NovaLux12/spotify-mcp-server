@@ -18,6 +18,7 @@
  *     consumer tolerates its absence ("(unknown publisher)").
  */
 import { z } from 'zod';
+import { capFor } from '../chunk.js';
 import { MARKET_CODE } from './catalog.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
@@ -326,8 +327,9 @@ async function fetchSavedEpisodeIdSet(
   const saved = new Set<string>();
   let requests = 0;
   try {
-    for (let i = 0; i < ids.length; i += 50) {
-      const chunk = ids.slice(i, i + 50);
+    const episodeCap = capFor('episodes');
+    for (let i = 0; i < ids.length; i += episodeCap) {
+      const chunk = ids.slice(i, i + episodeCap);
       // Counted before the await: a request that throws still consumed quota, and
       // the caller must be told what the failed library leg cost.
       requests++;

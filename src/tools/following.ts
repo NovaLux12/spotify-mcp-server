@@ -4,7 +4,6 @@ import type { SpotifyClient } from '../client.js';
 import type { FollowedArtistsResponse, SpotifyArtistFull } from '../types/spotify.js';
 import { classifySpotifyReference } from '../refs.js';
 import {
-  CHUNK_CAPS,
   ResponseFormat,
   MaxResults,
   resolveMaxResults,
@@ -15,6 +14,7 @@ import {
   describeDryRun,
 } from '../shaping.js';
 import type { ResponseFormatValue, PaginationInfo } from '../shaping.js';
+import { CHUNK_CAPS, capFor } from '../chunk.js';
 import { getConfig } from '../config.js';
 
 // ---------------------------------------------------------------------------
@@ -438,10 +438,11 @@ export function registerFollowingTools(server: McpServer, client: SpotifyClient)
       // the two follow readers can never disagree about how far a walk goes.
       const all = (await walkFollowedArtists(client)).items;
       if (all.length === 0) return shapeResult(rf, 'No followed artists.', listStructuredContent([], paginationInfo({ total: 0, returned: 0 })));
-      // Enrich in batches of 50 via /artists?ids=
+      // Enrich in batches of CHUNK_CAPS.artists via /artists?ids=
       const enriched: SpotifyArtistFull[] = [];
-      for (let i = 0; i < all.length; i += 50) {
-        const ids = all.slice(i, i + 50).map(a => a.id).join(',');
+      const artistCap = capFor('artists');
+      for (let i = 0; i < all.length; i += artistCap) {
+        const ids = all.slice(i, i + artistCap).map(a => a.id).join(',');
         const batch = await client.get<{ artists: SpotifyArtistFull[] }>('/artists', { ids });
         if (batch?.artists) enriched.push(...batch.artists.filter(Boolean));
       }

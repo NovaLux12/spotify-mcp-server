@@ -4,6 +4,7 @@
  * endpoints do not exist (only GET and POST /me/player/queue are real).
  */
 import { z } from 'zod';
+import { capFor } from '../chunk.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { SpotifyApiError } from '../client.js';
 import type { SpotifyClient } from '../client.js';
@@ -260,11 +261,12 @@ export function registerQueueOpsTools(server: McpServer, client: SpotifyClient):
         snapshotId = created.snapshot_id;
       }
 
-      // Add URIs in batches of 100
+      // Add URIs in batches of CHUNK_CAPS.playlist_writes
       let added = 0;
       let lastSnapshot: string | undefined = snapshotId;
-      for (let i = 0; i < collected.length; i += 100) {
-        const batch = collected.slice(i, i + 100);
+      const writeCap = capFor('playlist_writes');
+      for (let i = 0; i < collected.length; i += writeCap) {
+        const batch = collected.slice(i, i + writeCap);
         const res = await client.post<{ snapshot_id?: string }>(`/playlists/${playlistId}/tracks`, { uris: batch });
         added += batch.length;
         if (res?.snapshot_id) lastSnapshot = res.snapshot_id;

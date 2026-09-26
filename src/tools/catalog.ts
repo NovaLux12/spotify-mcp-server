@@ -28,6 +28,7 @@ import {
   parseSpotifyUri,
   type ResponseFormatValue,
 } from '../shaping.js';
+import { chunk, capFor, type ChunkCapKind } from '../chunk.js';
 import { recordSearch } from './searchhistory.js';
 import { spotifyId, spotifyIdArray, type SpotifyReferenceKind } from '../refs.js';
 import {
@@ -128,21 +129,16 @@ function formatDuration(ms: number): string {
 // ------------------------------------------------ get_several_* family (#43)
 // Per-request ID caps for GET /<type>?ids=. Inputs larger than the cap are
 // chunked into multiple queued calls and merged in request order; items
-// Spotify could not resolve come back null; every requested id is accounted
+// Spotify could not resolve come back null, and every requested id is accounted
 // for, so an id the batch dropped is named in the tool's own output (#778).
-const SEVERAL_LIMITS = {
-  tracks: 50,
-  albums: 20,
-  artists: 50,
-  episodes: 50,
-  shows: 50,
-  audiobooks: 50,
-  chapters: 50,
-} as const;
+//
+// The caps are the shared table in `chunk.ts` (#583): this family used to
+// carry a second copy of the same seven numbers, which is how a limit change
+// would have had to be made in two places.
 
 export const ARTIST_ALBUM_PAGE_LIMIT = 10;
 
-type SeveralKind = keyof typeof SEVERAL_LIMITS;
+type SeveralKind = Extract<ChunkCapKind, 'tracks' | 'albums' | 'artists' | 'episodes' | 'shows' | 'audiobooks' | 'chapters'>;
 
 // #789: batch id lists go through the same shared reference grammar as every
 // other tool, so a caller can pass bare ids, `spotify:<kind>:` URIs, or
@@ -164,11 +160,10 @@ async function fetchSeveral<T>(
   responseKey: string,
   ids: string[],
 ): Promise<{ items: T[]; missing: string[] }> {
-  const limit = SEVERAL_LIMITS[kind];
-  const chunks: string[][] = [];
-  for (let i = 0; i < ids.length; i += limit) {
-    chunks.push(ids.slice(i, i + limit));
-  }
+  // #583: the bound comes from the shared table, not a local copy (#778's
+  // per-id accounting is preserved by reporting what the batch could not resolve).
+  const chunks = chunk(ids, kind);
+
 
   // 523: parallelize chunk fetches (was sequential for-loop) — order preserved via Promise.all index
   const __chunkResults = await Promise.all(
@@ -232,7 +227,7 @@ function noMatchingSeveral(kind: SeveralKind, missing: readonly string[]): strin
 }
 
 function severalIdsSchema(kind: SeveralKind) {
-  const max = SEVERAL_LIMITS[kind];
+  const max = capFor(kind);
   const referenceKind = SEVERAL_REFERENCE_KINDS[kind];
   // spotifyIdArray already returns a ZodArray, so the element list is chosen
   // here — wrapping either branch in z.array() would nest ids one level deep.

@@ -16,6 +16,7 @@
 import { z } from 'zod';
 import { MARKET_CODE } from './catalog.js';
 import { SPOTIFY_SEARCH_MAX_LIMIT } from './search.js';
+import { chunk } from '../chunk.js';
 
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
@@ -45,11 +46,6 @@ function normalizeRef(ref: string): string {
   return parsed?.id ?? ref.trim();
 }
 
-function chunk<T>(arr: readonly T[], size: number): T[][] {
-  const out: T[][] = [];
-  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
-  return out;
-}
 
 /** Fully page a playlist's playable uris (first-seen order preserved). */
 async function fetchPlaylistUris(client: SpotifyClient, ref: string): Promise<string[]> {
@@ -64,10 +60,10 @@ async function fetchPlaylistUris(client: SpotifyClient, ref: string): Promise<st
   return rows.map((r) => r.item?.uri ?? '').filter((u) => u.startsWith('spotify:'));
 }
 
-/** Chunked adds to an existing playlist: POST /playlists/{id}/items, 100/call. */
+/** Chunked adds to an existing playlist, CHUNK_CAPS.playlist_writes uris per POST. */
 async function addUrisChunked(client: SpotifyClient, playlistId: string, uris: readonly string[]): Promise<number> {
   let requests = 0;
-  for (const part of chunk(uris, 100)) {
+  for (const part of chunk(uris, 'playlist_writes')) {
     await client.post(`/playlists/${encodeURIComponent(playlistId)}/items`, { uris: part });
     requests++;
   }

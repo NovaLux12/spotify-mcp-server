@@ -17,6 +17,7 @@
  * process only.
  */
 import { z } from 'zod';
+import { capFor } from '../chunk.js';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -975,8 +976,9 @@ export function registerExhaust2PlaybackTools(server: McpServer, client: Spotify
       const pl = await client.post<{ id?: string; uri?: string }>('/me/playlists', { name, description: `Queue snapshot from ${new Date().toISOString()} — ${items.length} items` });
       const plId = pl?.id;
       if (!plId) return textResult('Failed to create the snapshot playlist.', { ok: false, error: 'playlist_create_failed', ...queueDisclosure });
-      for (let i = 0; i < items.length; i += 100) {
-        await client.post(`/playlists/${encodeURIComponent(plId)}/items`, { uris: items.slice(i, i + 100) });
+      const writeCap = capFor('playlist_writes');
+      for (let i = 0; i < items.length; i += writeCap) {
+        await client.post(`/playlists/${encodeURIComponent(plId)}/items`, { uris: items.slice(i, i + writeCap) });
       }
       const playQs = args.device_id ? `?device_id=${encodeURIComponent(args.device_id)}` : '';
       await client.put(`/me/player/play${playQs}`, { context_uri: pl.uri ?? `spotify:playlist:${plId}` });

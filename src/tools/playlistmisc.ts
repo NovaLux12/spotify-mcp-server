@@ -6,6 +6,7 @@
  * (#1005), so they need their own manifest row to be gated honestly.
  */
 import { z } from 'zod';
+import { capFor } from '../chunk.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
 import {
@@ -130,8 +131,9 @@ export function registerPlaylistMiscTools(server: McpServer, client: SpotifyClie
 
       const itemsPath = `/playlists/${encodeURIComponent(created.id)}/items`;
       const uris = candidates.map((t) => t.uri);
-      for (let i = 0; i < uris.length; i += 100) {
-        await client.post(itemsPath, { uris: uris.slice(i, i + 100) });
+      const writeCap = capFor('playlist_writes');
+      for (let i = 0; i < uris.length; i += writeCap) {
+        await client.post(itemsPath, { uris: uris.slice(i, i + writeCap) });
       }
 
       const receipt = await issueReceipt(client, { kind: 'playlist_meta', id: created.id, uris: [] });

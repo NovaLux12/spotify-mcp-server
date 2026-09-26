@@ -23,6 +23,7 @@ import {
   truncateItems,
   paginationInfo,
 } from '../shaping.js';
+import { capFor } from '../chunk.js';
 import { normalizeStreams } from './statsfm_taste.js';
 import { readOnlyModeEnabled } from './annotations.js';
 import {
@@ -292,9 +293,10 @@ export function registerTastePlaylistTools(server: McpServer, client: SpotifyCli
       }
       let adds = 0;
       let snapshotId: string | undefined;
-      for (let start = 0; start < uris.length; start += 100) {
+      const writeCap = capFor('playlist_writes');
+      for (let start = 0; start < uris.length; start += writeCap) {
         const path = `/playlists/${encodeURIComponent(playlistId)}/items`;
-        const chunk = uris.slice(start, start + 100);
+        const chunk = uris.slice(start, start + writeCap);
         const res = start === 0
           ? await client.put<{ snapshot_id?: string }>(path, { uris: chunk })
           : await client.post<{ snapshot_id?: string }>(path, { uris: chunk });

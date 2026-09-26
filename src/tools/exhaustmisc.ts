@@ -16,7 +16,6 @@ import {
   ResponseFormat,
   MaxResults,
   DryRun,
-  CHUNK_CAPS,
   playlistListInputFields,
   resolvePlaylistInput,
   sharedListFields,
@@ -30,6 +29,7 @@ import {
   withPlaylistInputNote,
   type ResponseFormatValue,
 } from '../shaping.js';
+import { CHUNK_CAPS, capFor } from '../chunk.js';
 import type { PlaylistItemObject } from '../types/spotify.js';
 
 // ---------------------------------------------------------------------------
@@ -265,8 +265,9 @@ export function registerExhaustMiscTools(server: McpServer, client: SpotifyClien
       }
       // Spotify DELETE /me/tracks?ids= accepts at most 50 IDs per request.
       const ids = orphans.map((o) => o.track.id);
-      for (let i = 0; i < ids.length; i += 50) {
-        await client.delete(`/me/tracks?ids=${ids.slice(i, i + 50).join(',')}`);
+      const trackCap = capFor('tracks');
+      for (let i = 0; i < ids.length; i += trackCap) {
+        await client.delete(`/me/tracks?ids=${ids.slice(i, i + trackCap).join(',')}`);
       }
       const text = `Removed ${orphans.length} orphan track(s): ${batchSummary(orphans.length, orphanUris)}`;
       if (rf === 'json') return { content: [{ type: 'text', text: JSON.stringify(structured, null, 2) }], structuredContent: structured };
@@ -302,8 +303,9 @@ export function registerExhaustMiscTools(server: McpServer, client: SpotifyClien
         // which 403s on current app registrations (#329 probe, #330) — same
         // saved-state semantics: URIs in, order-preserving booleans out.
         const already = new Set<string>();
-        for (let i = 0; i < trackUris.length; i += 50) {
-          const chunk = trackUris.slice(i, i + 50);
+        const readCap = capFor('library_reads');
+        for (let i = 0; i < trackUris.length; i += readCap) {
+          const chunk = trackUris.slice(i, i + readCap);
           const res = await client.get<boolean[]>('/me/library/contains', { uris: chunk.join(',') });
           if (Array.isArray(res)) chunk.forEach((uri, idx) => { if (res[idx]) already.add(uri.split(':').pop()!); });
         }
@@ -327,8 +329,9 @@ export function registerExhaustMiscTools(server: McpServer, client: SpotifyClien
         if (rf === 'json') return { content: [{ type: 'text', text: JSON.stringify(structured, null, 2) }], structuredContent: structured };
         return textResult(`All ${trackUris.length} tracks already saved — nothing to do.`, structured);
       }
-      for (let i = 0; i < toSave.length; i += 50) {
-        const chunk = toSave.slice(i, i + 50);
+      const trackCap = capFor('tracks');
+      for (let i = 0; i < toSave.length; i += trackCap) {
+        const chunk = toSave.slice(i, i + trackCap);
         await client.put('/me/tracks', { ids: chunk });
       }
       const text = `Saved ${toSave.length} track(s) from playlist ${args.playlist_id} to library (skipped ${skipped}).`;
@@ -505,8 +508,9 @@ export function registerExhaustMiscTools(server: McpServer, client: SpotifyClien
           description: `Split from ${args.playlist_id} part ${i + 1}/${args.parts}`,
         });
         if (pl && chunks[i].length > 0) {
-          for (let j = 0; j < chunks[i].length; j += CHUNK_CAPS.playlist_writes) {
-            await client.post(`/playlists/${encodeURIComponent(pl.id)}/items`, { uris: chunks[i].slice(j, j + CHUNK_CAPS.playlist_writes) });
+          const writeCap = capFor('playlist_writes');
+          for (let j = 0; j < chunks[i].length; j += writeCap) {
+            await client.post(`/playlists/${encodeURIComponent(pl.id)}/items`, { uris: chunks[i].slice(j, j + writeCap) });
           }
         }
         if (pl) created.push({ id: pl.id, name });
@@ -585,8 +589,9 @@ export function registerExhaustMiscTools(server: McpServer, client: SpotifyClien
       // current app registrations (#329 probe, #330): same saved-state
       // semantics, URIs in, order-preserving booleans out.
       const savedSet = new Set<string>();
-      for (let i = 0; i < trackUris.length; i += 50) {
-        const chunk = trackUris.slice(i, i + 50);
+      const readCap = capFor('library_reads');
+      for (let i = 0; i < trackUris.length; i += readCap) {
+        const chunk = trackUris.slice(i, i + readCap);
         const res = await client.get<boolean[]>('/me/library/contains', { uris: chunk.join(',') });
         if (Array.isArray(res)) chunk.forEach((uri, idx) => { if (res[idx]) savedSet.add(uri.split(':').pop()!); });
       }
@@ -607,8 +612,9 @@ export function registerExhaustMiscTools(server: McpServer, client: SpotifyClien
         if (rf === 'json') return { content: [{ type: 'text', text: JSON.stringify(structured, null, 2) }], structuredContent: structured };
         return textResult('No tracks from that playlist are in your library — nothing to remove.', structured);
       }
-      for (let i = 0; i < toRemove.length; i += 50) {
-        const chunk = toRemove.slice(i, i + 50);
+      const trackCap = capFor('tracks');
+      for (let i = 0; i < toRemove.length; i += trackCap) {
+        const chunk = toRemove.slice(i, i + trackCap);
         await client.delete(`/me/tracks?ids=${chunk.join(',')}`);
       }
       const text = `Removed ${toRemove.length} track(s) from library that were in playlist ${args.playlist_id}: ${batchSummary(toRemove.length, toRemove.map((id) => `spotify:track:${id}`))}`;

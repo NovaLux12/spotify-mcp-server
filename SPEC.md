@@ -733,6 +733,16 @@ Seven batch lookup tools fetch full details for several IDs in a single call per
 | `get_several_audiobooks` | `GET /audiobooks?ids=…` | 50 |
 | `get_several_chapters` | `GET /chapters?ids=…` | 50 |
 
+These limits, the 100-uri playlist item writes, the 40-uri `/me/library`
+writes and the 50-uri `/me/library/contains` reads are the rows of
+`CHUNK_CAPS` in `src/chunk.ts`. A batch loop under `src/tools/` takes its
+bound from that table through `capFor(kind)` or `chunk(items, kind)`; a bare
+number there is rejected by `tests/chunk-caps.test.ts` unless the line says
+`cap-exempt:` and why. `spotify_doctor`'s config row and `toolset_report`
+both print the resolved table, so the live policy is observable without
+reading the code. `restore.ts` and `undo.ts` still hold their own named
+chunk constants pending their own migration.
+
 **Inputs:** `ids` (string[], required — longer lists are fetched in chunks of the per-request maximum and merged), plus shared response fields. The audiobook variants are market-gated like the single lookups.
 
 **Returns:** full objects per resolved ID plus a `counts` block (`requested`, `resolved`, and `counts.missing_ids`); `response_format=json` hands back the items together with the same `counts` block.

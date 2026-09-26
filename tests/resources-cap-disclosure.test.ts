@@ -47,7 +47,7 @@ const { registerFollowingTools } = await import('../src/tools/following.ts');
 // The follower walk's real page size, so the cursor fixture returns a FULL
 // page (a truncated cursor walk is a full page plus a live cursor, not a
 // short one) and the cap below is a cap the walk really hits.
-const { CHUNK_CAPS } = await import('../src/shaping.ts');
+const { CHUNK_CAPS } = await import('../src/chunk.ts');
 const FOLLOWED_PAGE_LIMIT = CHUNK_CAPS.followed;
 const { Client: McpClient } = await import('@modelcontextprotocol/sdk/client/index.js');
 const { McpServer } = await import('@modelcontextprotocol/sdk/server/mcp.js');
