@@ -43,3 +43,82 @@ export function chunk<T>(items: readonly T[], kind: ChunkCapKind): T[][] {
   for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
   return out;
 }
+
+/**
+ * Partial-write state for a multi-chunk playlist write that failed
+ * mid-batch (#865). The caller learns:
+ *   - `attempted_chunks` — total chunks the call planned to issue
+ *   - `failed_chunk_index` — zero-based index of the chunk whose request rejected
+ *   - `last_committed_chunk_index` — `-1` if no chunk landed, else the last one that did
+ *   - `last_committed_chunk_uris` — `[]` if nothing landed, else the URIs of the last successful chunk
+ *   - `error` — the message the throwing request carried (Spotify's `error.message` when present)
+ * Combined with the input URI list a retry can skip the already-committed prefix.
+ */
+export interface PlaylistPartialWriteFailure {
+  ok: false;
+  partial_write_failure: true;
+  attempted_chunks: number;
+  failed_chunk_index: number;
+  last_committed_chunk_index: number;
+  last_committed_chunk_uris: string[];
+  error: string;
+}
+
+export type ChunkedPlaylistWriteResult =
+  | { ok: true; chunks: number; snapshot_id: string | undefined }
+  | PlaylistPartialWriteFailure;
+
+/**
+ * Execute a multi-chunk playlist write and surface what committed when the
+ * loop aborts before the last chunk (#865). `performChunk` is called once per
+ * chunk and receives the chunk's URI slice plus its zero-based index; it may
+ * be a POST, a PUT, or a DELETE — the orchestrator only cares that a thrown
+ * error stops the loop and is reported. `chunkSize` is normally
+ * {@link capFor}('playlist_writes'), but callers pass the cap they used so the
+ * `attempted_chunks` count matches the loop.
+ *
+ * On success: `{ ok: true, chunks, snapshot_id }`. The `snapshot_id` is the
+ * last response that carried one — Spotify only returns it on mutation
+ * endpoints, and the most recent is the one that authorises the next write.
+ *
+ * On failure: a {@link PlaylistPartialWriteFailure} that names the failed
+ * chunk and the URIs of the last chunk that DID commit. The caller is then
+ * responsible for shaping the tool's prose and structuredContent; the helper
+ * never throws on chunk failure.
+ */
+export async function runChunkedPlaylistWrite(
+  uris: string[],
+  chunkSize: number,
+  performChunk: (chunk: string[], chunkIndex: number) => Promise<{ snapshot_id?: string } | null | undefined>,
+): Promise<ChunkedPlaylistWriteResult> {
+  // A zero-length write is "all chunks committed, none planned" rather than a
+  // partial-failure — callers that compute `attempted_chunks` for prose can
+  // divide by zero otherwise.
+  if (uris.length === 0) return { ok: true, chunks: 0, snapshot_id: undefined };
+  const totalChunks = Math.ceil(uris.length / chunkSize);
+  let snapshot_id: string | undefined;
+  let lastCommittedChunkIndex = -1;
+  let lastCommittedChunkUris: string[] = [];
+  for (let i = 0; i < uris.length; i += chunkSize) {
+    const chunk = uris.slice(i, i + chunkSize);
+    const chunkIndex = i / chunkSize;
+    try {
+      const res = await performChunk(chunk, chunkIndex);
+      if (res?.snapshot_id) snapshot_id = res.snapshot_id;
+      lastCommittedChunkIndex = chunkIndex;
+      lastCommittedChunkUris = chunk;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return {
+        ok: false,
+        partial_write_failure: true,
+        attempted_chunks: totalChunks,
+        failed_chunk_index: chunkIndex,
+        last_committed_chunk_index: lastCommittedChunkIndex,
+        last_committed_chunk_uris: lastCommittedChunkUris,
+        error: message,
+      };
+    }
+  }
+  return { ok: true, chunks: totalChunks, snapshot_id };
+}

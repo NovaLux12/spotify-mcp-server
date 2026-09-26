@@ -2,7 +2,7 @@
  * Playlist batch operations — Stream D (#183, #189, #200).
  */
 import { z } from 'zod';
-import { capFor } from '../chunk.js';
+import { capFor, runChunkedPlaylistWrite } from '../chunk.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { SpotifyApiError, type SpotifyClient } from '../client.js';
 import { getConfig } from '../config.js';
@@ -314,7 +314,19 @@ export function registerPlaylistBatchTools(server: McpServer, client: SpotifyCli
     }
     if (toAdd.length === 0) return withMarketSource(textResult(`All ${resolved.length} resolved track(s) already present or duplicates — nothing added.` + (failed.length > 0 ? `\nSource(s) that resolved nothing:\n${formatFailedSources(failed)}` : '') + (notice ? `\n${notice}` : ''), { ok: true, added: 0, duplicates_skipped: duplicates + skippedExisting, skipped_empty: failed.length, failed, failed_per_source: failedPerSource, resolved_per_source: resolvedPerSource, source_truncated: sourceTruncated, target_truncated: targetTruncated, scan_cap: scanCap }), marketResolution);
     if (toAdd.length >= BATCH_ADD_ELICIT_THRESHOLD) { const verdict = await confirmViaElicitation(server, { message: describeConfirmation('add tracks to playlist', targetId, [`Add ${toAdd.length} track(s) from ${args.source_uris.length} source(s):`, ...toAdd.slice(0, 10), ...(toAdd.length > 10 ? [`(…and ${toAdd.length - 10} more)`] : [])]) }); const refusal = requiredConfirmationRefusal(verdict); if (refusal) return textResult(refusal.message, refusal.payload); }
-    const path = `/playlists/${encodeURIComponent(targetId)}/items`; let snapshotId: string | undefined; let batches = 0; const writeCap = capFor('playlist_writes'); for (let i = 0; i < toAdd.length; i += writeCap) { const chunk = toAdd.slice(i, i + writeCap); const res = await client.post<{ snapshot_id?: string }>(path, { uris: chunk }); batches++; if (res?.snapshot_id) snapshotId = res.snapshot_id; }
+    const path = `/playlists/${encodeURIComponent(targetId)}/items`; const writeCap = capFor('playlist_writes');
+    // #865: a multi-chunk add that fails partway must report what already
+    // landed so a retry can resume from the right offset; the older loop
+    // either swallowed the error or threw without the chunk index.
+    const addResult = await runChunkedPlaylistWrite(toAdd, writeCap, (chunk) => client.post<{ snapshot_id?: string }>(path, { uris: chunk }));
+    if (!addResult.ok) {
+      const committedCount = addResult.last_committed_chunk_uris.length;
+      const lastUri = addResult.last_committed_chunk_uris[addResult.last_committed_chunk_uris.length - 1];
+      const committedUpTo = lastUri ? ` Last URI committed: ${lastUri}.` : '';
+      const prose = `Partial write to playlist ${targetId}: ${addResult.failed_chunk_index === 0 ? 'the first chunk failed' : `chunks 1–${addResult.failed_chunk_index} committed (${committedCount} URI(s))`}, chunk ${addResult.failed_chunk_index + 1} of ${addResult.attempted_chunks} failed.${committedUpTo} Retry the remaining ${toAdd.length - committedCount} URI(s); the committed prefix is already on the playlist. (${addResult.error})`;
+      return textResult(prose, { ...addResult, target_playlist: targetId, attempted_uris: toAdd.length, committed_uris: committedCount, remaining_uris: toAdd.length - committedCount });
+    }
+    const snapshotId = addResult.snapshot_id; const batches = addResult.chunks;
     const receipt = await issueReceipt(client, { kind: 'playlist_items', id: targetId, uris: toAdd });
     const lines = [`Added ${toAdd.length} track(s) to playlist ${targetId} across ${batches} batch(es)` + (duplicates + skippedExisting > 0 ? `; skipped ${duplicates + skippedExisting} duplicate(s)` : '') + '.', batchSummary(toAdd.length, toAdd)];
     if (failed.length > 0) lines.push(`Source(s) that resolved nothing:\n${formatFailedSources(failed)}`);
@@ -329,7 +341,20 @@ export function registerPlaylistBatchTools(server: McpServer, client: SpotifyCli
     if (args.dry_run) { const lines = [`[dry run] copy_playlist — nothing was changed.`, `Would create ${args.collaborative ? 'collaborative' : args.public ? 'public' : 'private'} playlist "${args.new_name}"` + (args.description ? ` — "${args.description}"` : meta.description ? ` — "${meta.description}"` : '') + ` with ${uris.length} track(s) from "${meta.name ?? sourceId}"` + (unavailable > 0 ? ` (${unavailable} unavailable item(s) skipped)` : '') + '.']; if (uris.length > 0) lines.push(...uris.map((u) => `  - ${u}`)); return textResult(lines.join('\n'), { ok: true, dry_run: true, source_playlist: sourceId, source_name: meta.name ?? null, would_create: args.new_name, track_count: uris.length, unavailable_skipped: unavailable, source_truncated: sourceTruncated, uris }); }
     const body: Record<string, unknown> = { name: args.new_name, public: args.public ?? false, collaborative: args.collaborative ?? false }; const desc = args.description ?? meta.description ?? undefined; if (desc !== undefined) body.description = desc;
     const created = await client.post<{ id: string; uri?: string; external_urls?: { spotify?: string } }>('/me/playlists', body); if (!created?.id) throw new Error('Could not create playlist'); const newId = created.id;
-    let snapshotId: string | undefined; let batches = 0; const writeCap = capFor('playlist_writes'); for (let i = 0; i < uris.length; i += writeCap) { const chunk = uris.slice(i, i + writeCap); const res = await client.post<{ snapshot_id?: string }>(`/playlists/${encodeURIComponent(newId)}/items`, { uris: chunk }); batches++; if (res?.snapshot_id) snapshotId = res.snapshot_id; }
+    // #865: copy_playlist creates the destination then chunks the add — the
+    // older loop crashed on chunk N with no way to tell which URIs already
+    // landed. Surface the same partial_write_failure contract as the other
+    // multi-chunk writes so a retry can resume from the right offset.
+    const writeCap = capFor('playlist_writes');
+    const addResult = await runChunkedPlaylistWrite(uris, writeCap, (chunk) => client.post<{ snapshot_id?: string }>(`/playlists/${encodeURIComponent(newId)}/items`, { uris: chunk }));
+    if (!addResult.ok) {
+      const committedCount = addResult.last_committed_chunk_uris.length;
+      const lastUri = addResult.last_committed_chunk_uris[addResult.last_committed_chunk_uris.length - 1];
+      const committedUpTo = lastUri ? ` Last URI committed: ${lastUri}.` : '';
+      const prose = `Partial copy to new playlist ${newId}: ${addResult.failed_chunk_index === 0 ? 'the first chunk failed' : `chunks 1–${addResult.failed_chunk_index} committed (${committedCount} URI(s))`}, chunk ${addResult.failed_chunk_index + 1} of ${addResult.attempted_chunks} failed.${committedUpTo} Retry the remaining ${uris.length - committedCount} URI(s); the committed prefix is already on the new playlist. (${addResult.error})`;
+      return textResult(prose, { ...addResult, source_playlist: sourceId, new_playlist: newId, attempted_uris: uris.length, committed_uris: committedCount, remaining_uris: uris.length - committedCount });
+    }
+    const snapshotId = addResult.snapshot_id; const batches = addResult.chunks;
     const receipt = await issueReceipt(client, { kind: 'playlist_items', id: newId, uris });
     const lines = [`Copied playlist "${meta.name ?? sourceId}" (${uris.length} track(s)) to new playlist "${args.new_name}" (${newId})` + ` across ${batches} batch(es)` + (unavailable > 0 ? `; ${unavailable} unavailable item(s) skipped` : '') + '.', batchSummary(uris.length, uris)]; if (args.response_format === 'json') return textResult(jsonText({ ok: true, source_playlist: sourceId, new_playlist: newId, track_count: uris.length, batches, snapshot_id: snapshotId }));
     const view = truncateItems(uris, resolveMaxResults(args.max_results)); if (view.items.length > 0) { lines.push(''); lines.push(...view.items.map((u) => `  • ${u}`)); if (view.footer) lines.push(`(${view.footer})`); } lines.push(formatReceipt(receipt)); const text = snapshotId ? `${lines.join('\n')}\nSnapshot ID: ${snapshotId}` : lines.join('\n'); return textResult(text, { ok: true, source_playlist: sourceId, new_playlist: newId, track_count: uris.length, snapshot_id: snapshotId, receipt: receipt as unknown as Record<string, unknown> });
@@ -347,8 +372,31 @@ export function registerPlaylistBatchTools(server: McpServer, client: SpotifyCli
     if (toTransfer.length === 0) { const reason = skippedExisting > 0 || dupWithin > 0 ? `all ${orderedUris.length} track(s) already in target or duplicates — nothing to ${args.mode}` : 'no transferable tracks'; return textResult(`${reason}.`, { ok: true, moved: 0, skipped_duplicates: skippedExisting + dupWithin }); }
     if (args.dry_run) { const view = truncateItems(toTransfer, resolveMaxResults(args.max_results)); const action = args.mode === 'move' ? 'move' : 'copy'; const dest = args.mode === 'move' ? `${sourceId} → ${targetId} (removing from source)` : `${sourceId} → ${targetId}`; return textResult(`[dry run] move_items_between_playlists — nothing was changed.\nWould ${action} ${toTransfer.length} track(s): ${dest}\n` + view.items.map((u) => `  - ${u}`).join('\n') + (view.footer ? `\n(${view.footer})` : '') + (skippedExisting + dupWithin > 0 ? `\n(${skippedExisting + dupWithin} duplicate(s) skipped)` : ''), { ok: true, dry_run: true, mode: args.mode, source: sourceId, target: targetId, would_transfer: toTransfer.length, uris: view.items, total: toTransfer.length, returned: view.items.length, skipped_duplicates: skippedExisting + dupWithin, source_truncated: sourceTruncated, target_truncated: targetTruncated }); }
     if (toTransfer.length >= MOVE_ELICIT_THRESHOLD) { const verdict = await confirmViaElicitation(server, { message: describeConfirmation(`${args.mode} tracks between playlists`, `${sourceId} → ${targetId}`, [`${args.mode === 'move' ? 'Move' : 'Copy'} ${toTransfer.length} track(s) from ${sourceId} to ${targetId}:`, ...toTransfer.slice(0, 10), ...(toTransfer.length > 10 ? [`(…and ${toTransfer.length - 10} more)`] : [])]) }); const refusal = requiredConfirmationRefusal(verdict); if (refusal) return textResult(refusal.message, refusal.payload); }
-    let addSnapshot: string | undefined; let addBatches = 0; const writeCap = capFor('playlist_writes'); for (let i = 0; i < toTransfer.length; i += writeCap) { const chunk = toTransfer.slice(i, i + writeCap); const res = await client.post<{ snapshot_id?: string }>(`/playlists/${encodeURIComponent(targetId)}/items`, { uris: chunk }); addBatches++; if (res?.snapshot_id) addSnapshot = res.snapshot_id; }
-    let removeSnapshot: string | undefined; if (args.mode === 'move') { const writeCap = capFor('playlist_writes'); for (let i = 0; i < toTransfer.length; i += writeCap) { const chunk = toTransfer.slice(i, i + writeCap); const res = await client.delete<{ snapshot_id?: string }>(`/playlists/${encodeURIComponent(sourceId)}/items`, { tracks: chunk.map((uri) => ({ uri })) }); if (res?.snapshot_id) removeSnapshot = res.snapshot_id; } }
+    // #865: mode=move issues an add and then a remove. Both are chunked, so
+    // either can fail mid-batch; the older code returned the snapshot anchor
+    // from whichever chunk answered last and dropped the partial state.
+    const writeCap = capFor('playlist_writes');
+    const addResult = await runChunkedPlaylistWrite(toTransfer, writeCap, (chunk) => client.post<{ snapshot_id?: string }>(`/playlists/${encodeURIComponent(targetId)}/items`, { uris: chunk }));
+    if (!addResult.ok) {
+      const committedCount = addResult.last_committed_chunk_uris.length;
+      const lastUri = addResult.last_committed_chunk_uris[addResult.last_committed_chunk_uris.length - 1];
+      const committedUpTo = lastUri ? ` Last URI committed to target: ${lastUri}.` : '';
+      const prose = `Partial ${args.mode} from ${sourceId} → ${targetId}: ${addResult.failed_chunk_index === 0 ? 'the first add chunk failed' : `${addResult.failed_chunk_index} add chunk(s) committed to target (${committedCount} URI(s))`}, add chunk ${addResult.failed_chunk_index + 1} of ${addResult.attempted_chunks} failed.${committedUpTo} Retry the remaining ${toTransfer.length - committedCount} URI(s); the committed target prefix is already there. (${addResult.error})`;
+      return textResult(prose, { ...addResult, mode: args.mode, source: sourceId, target: targetId, step: 'add', attempted_uris: toTransfer.length, committed_uris: committedCount, remaining_uris: toTransfer.length - committedCount });
+    }
+    let removeSnapshot: string | undefined;
+    if (args.mode === 'move') {
+      const removeResult = await runChunkedPlaylistWrite(toTransfer, writeCap, (chunk) => client.delete<{ snapshot_id?: string }>(`/playlists/${encodeURIComponent(sourceId)}/items`, { tracks: chunk.map((uri) => ({ uri })) }));
+      if (!removeResult.ok) {
+        const committedCount = removeResult.last_committed_chunk_uris.length;
+        const lastUri = removeResult.last_committed_chunk_uris[removeResult.last_committed_chunk_uris.length - 1];
+        const committedUpTo = lastUri ? ` Last URI removed from source: ${lastUri}.` : '';
+        const prose = `Partial ${args.mode} from ${sourceId} → ${targetId}: target add succeeded for all ${toTransfer.length} URI(s), but ${removeResult.failed_chunk_index === 0 ? 'the first remove chunk failed' : `remove chunks 1–${removeResult.failed_chunk_index} completed (${committedCount} URI(s))`}, remove chunk ${removeResult.failed_chunk_index + 1} of ${removeResult.attempted_chunks} failed.${committedUpTo} ${committedCount} URI(s) now exist on BOTH playlists; retry the remaining ${toTransfer.length - committedCount} remove(s) against ${sourceId}. (${removeResult.error})`;
+        return textResult(prose, { ...removeResult, mode: args.mode, source: sourceId, target: targetId, step: 'remove', attempted_uris: toTransfer.length, committed_uris: committedCount, remaining_uris: toTransfer.length - committedCount, snapshot_id: addResult.snapshot_id });
+      }
+      removeSnapshot = removeResult.snapshot_id;
+    }
+    const addSnapshot = addResult.snapshot_id; const addBatches = addResult.chunks;
     const receipt = await issueReceipt(client, { kind: 'playlist_items', id: targetId, uris: toTransfer });
     const actionLabel = args.mode === 'move' ? 'Moved' : 'Copied'; const lines = [`${actionLabel} ${toTransfer.length} track(s) from ${sourceId} to ${targetId} across ${addBatches} batch(es)` + (skippedExisting + dupWithin > 0 ? `; skipped ${skippedExisting + dupWithin} duplicate(s)` : '') + (args.filter ? ` (filter: "${args.filter}")` : '') + '.', batchSummary(toTransfer.length, toTransfer)]; if (args.response_format === 'json') return textResult(jsonText({ ok: true, mode: args.mode, source: sourceId, target: targetId, transferred: toTransfer.length, add_batches: addBatches, snapshot_id: addSnapshot, remove_snapshot: removeSnapshot }));
     const view = truncateItems(toTransfer, resolveMaxResults(args.max_results)); if (view.items.length > 0) { lines.push(''); lines.push(...view.items.map((u) => `  • ${u}`)); if (view.footer) lines.push(`(${view.footer})`); } lines.push(formatReceipt(receipt)); let snapLine = ''; if (addSnapshot) snapLine += `\nSnapshot ID: ${addSnapshot}`; if (removeSnapshot) snapLine += `\nSource snapshot ID: ${removeSnapshot}`; return textResult(`${lines.join('\n')}${snapLine}`, { ok: true, mode: args.mode, source: sourceId, target: targetId, transferred: toTransfer.length, snapshot_id: addSnapshot, receipt: receipt as unknown as Record<string, unknown> });

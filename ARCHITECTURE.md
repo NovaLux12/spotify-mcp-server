@@ -24,7 +24,7 @@ flowchart TD
     C -- "load + refresh" --> TOK
 ```
 
-`index.ts` wires everything at startup: it creates one `SpotifyClient`, passes that shared instance to every active tool module and to the resource/prompt registrars, then connects a `StdioServerTransport`. Registration is filtered by the resolved toolset (`SPOTIFY_MCP_TOOLSETS`, with `SPOTIFY_MCP_ENABLE_TOOLS`/`SPOTIFY_MCP_DISABLE_TOOLS` overrides) and, where applicable, granted Spotify scopes. `spotify_doctor` and the discovery trio (`find_tool`, `inspect_tool`, `toolset_report`) register outside toolset trimming; the trio is the discovery escape hatch for minimal toolsets and remains subject to the catalog scope gate. `verify_receipt` is likewise unconditional (#688): it reads an in-process map, so it needs no scope, and a trimmed session must still be able to look up a receipt its own mutation issued.
+`index.ts` wires everything at startup: it creates one `SpotifyClient`, passes that shared instance to every active tool module and to the resource/prompt registrars, then connects a `StdioServerTransport`. Registration is filtered by the resolved toolset (`SPOTIFY_MCP_TOOLSETS`, with `SPOTIFY_MCP_ENABLE_TOOLS`/`SPOTIFY_MCP_DISABLE_TOOLS` overrides) and, where applicable, granted Spotify scopes. `spotify_doctor` and the discovery trio (`find_tool`, `inspect_tool`, `toolset_report`) register outside toolset trimming; the trio is the discovery escape hatch for minimal toolsets and remains subject to the catalog scope gate. `verify_receipt` is read-only but is not unconditional: it registers under the `library` key.
 
 ## Authentication flows
 
@@ -113,7 +113,7 @@ The table is generated from every TypeScript file recursively under `src/`, incl
 |---|---|---:|
 | `src/auth.ts` | Runtime module for src/auth.ts. (0 registered tools) | 631 |
 | `src/cache.ts` | Tiny LRU + TTL cache used by SpotifyClient for immutable catalog reads (#54). (0 registered tools) | 204 |
-| `src/chunk.ts` | The batch-size policy for the whole server, in one place (#512, #583). (0 registered tools) | 45 |
+| `src/chunk.ts` | The batch-size policy for the whole server, in one place (#512, #583). (0 registered tools) | 124 |
 | `src/client.ts` | Runtime module for src/client.ts. (0 registered tools) | 1032 |
 | `src/config.ts` | Central configuration loader for the SPOTIFY_MCP_* environment family. (0 registered tools) | 227 |
 | `src/cover-image.ts` | Shared cover-image helpers for the three playlist cover tools (#880). (0 registered tools) | 96 |
@@ -165,13 +165,13 @@ The table is generated from every TypeScript file recursively under `src/`, incl
 | `src/tools/playback.ts` | Runtime module for src/tools/playback.ts. (16 registered tools) | 958 |
 | `src/tools/playbackext.ts` | playbackext (#197, #206, #198, #180, #181): local sidecar persistence for playback states, device naming/volume presets, listening sessions, smart rules, show digest. (13 registered tools) | 688 |
 | `src/tools/playbackintel.ts` | playbackintel — exhaustive playback/queue/player intel (#272-283 slice) 12 tools: play_on, queue_next, describe_queue, describe_listening_session, play_at, device_health, seek_relative, playback_timeline, repeat_queue_toggle, now_playing_history, playback_compare_states, peek_next + triage extras: get_playback_context, volume_step, market_availability Each tool notes quota in description (🟢/🟡). (15 registered tools) | 522 |
-| `src/tools/playlistbatch.ts` | Playlist batch operations — Stream D (#183, #189, #200). (3 registered tools) | 356 |
+| `src/tools/playlistbatch.ts` | Playlist batch operations — Stream D (#183, #189, #200). (3 registered tools) | 404 |
 | `src/tools/playlistdna.ts` | Runtime module for src/tools/playlistdna.ts. (1 registered tool) | 346 |
 | `src/tools/playlistfollow.ts` | Playlist follow/unfollow (#1005), split out of playlistmisc.ts. (2 registered tools) | 128 |
 | `src/tools/playlisthealth.ts` | Runtime module for src/tools/playlisthealth.ts. (8 registered tools) | 481 |
-| `src/tools/playlistmisc.ts` | Playlist misc (#208): mood-vibe template playlists composed from the user's existing library/top data. pin/unpin (follow/unfollow) moved to playlistfollow.ts: they call /me/library, which authorises a different either-of scope set than the playlist-modify pair this file's tools need (#1005), so they need their own manifest row to be gated honestly. (1 registered tool) | 152 |
-| `src/tools/playlistops.ts` | Playlist power tools (#96): merge_playlists, diff_playlists, overlap_playlists. (3 registered tools) | 483 |
-| `src/tools/playlists.ts` | Runtime module for src/tools/playlists.ts. (26 registered tools) | 2325 |
+| `src/tools/playlistmisc.ts` | Playlist misc (#208): mood-vibe template playlists composed from the user's existing library/top data. pin/unpin (follow/unfollow) moved to playlistfollow.ts: they call /me/library, which authorises a different either-of scope set than the playlist-modify pair this file's tools need (#1005), so they need their own manifest row to be gated honestly. (1 registered tool) | 172 |
+| `src/tools/playlistops.ts` | Playlist power tools (#96): merge_playlists, diff_playlists, overlap_playlists. (3 registered tools) | 492 |
+| `src/tools/playlists.ts` | Runtime module for src/tools/playlists.ts. (26 registered tools) | 2420 |
 | `src/tools/podcastsession.ts` | Podcast session composer (#112 idea 3): greedy-packs the user's saved podcast episodes into a listening session of a fixed length in minutes, then (optionally) starts it on a device. (2 registered tools) | 406 |
 | `src/tools/portability.ts` | Portability (#188 + #192 + #238 + #240 + #223 + #220): save_discover_weekly / save_release_radar (archive personalized playlists) + export_library_json / export_followed_artists + export_profile_state/import_profile_state + export_listening_history (11 registered tools) | 1965 |
 | `src/tools/queueops.ts` | queueops (#194, #202, #224, #231): queue_playlist + save_queue_as_playlist. queue_reorder / queue_remove / queue_clear were removed in #231 — those endpoints do not exist (only GET and POST /me/player/queue are real). (3 registered tools) | 320 |
