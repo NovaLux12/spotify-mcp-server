@@ -2,6 +2,7 @@ import test, { afterEach, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { registerCatalogTools, resetProfileCountryCache as resetCatalogMarketCache } from '../src/tools/catalog.js';
 import { SpotifyApiError } from '../src/client.js';
+import { installGatedPathContract } from '../src/gating.js';
 import { registerAudiobookTools, resetProfileCountryCache as resetAudiobooksMarketCache } from '../src/tools/audiobooks.js';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -167,7 +168,7 @@ function makeHarness(
     ) => registered.push({ name, description, schema, handler }),
   };
   register(server as never, client as never);
-  return { registered, calls };
+  return { registered, calls, client };
 }
 
 function findTool(registered: RegisteredTool[], name: string): RegisteredTool {
@@ -1533,8 +1534,12 @@ test('market_validate with no markets lists valid', async () => {
 });
 
 test('market_validate handles 403 gracefully', async () => {
-  const { registered } = makeHarness(registerCatalogTools, { getError: (p) => (p === '/markets' ? new SpotifyApiError(403, 'Forbidden') : undefined) });
-  const out = text(await invoke(findTool(registered, 'market_validate'), { markets: ['US'] }));
+  // #765: isGatedError now requires the gated-path annotation, so the test
+  // runs the contract against the fake client to mirror the production
+  // entry point (src/index.ts installs it unconditionally).
+  const harness = makeHarness(registerCatalogTools, { getError: (p) => (p === '/markets' ? new SpotifyApiError(403, 'Forbidden') : undefined) });
+  installGatedPathContract(harness.client);
+  const out = text(await invoke(findTool(harness.registered, 'market_validate'), { markets: ['US'] }));
   assert.match(out, /403|removed|unavailable/i);
 });
 

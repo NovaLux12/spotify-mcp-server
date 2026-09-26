@@ -5,6 +5,7 @@ import { z } from 'zod';
 import { registerExhaust2CatalogTools } from '../src/tools/exhaust2_catalog.js';
 import { registerArtistWatchTools } from '../src/tools/artistwatch.js';
 import { SpotifyApiError, SpotifyClient } from '../src/client.js';
+import { installGatedPathContract } from '../src/gating.js';
 import { initConfig } from '../src/config.js';
 
 type Handler = (args: Record<string, unknown>) => Promise<{
@@ -405,10 +406,15 @@ assert.equal((res.structuredContent as { gaps_flagged: unknown[] }).gaps_flagged
     });
     const ok = await handlerFor('category_resolver', okClient)({ text: 'chill vibes', response_format: 'concise' });
     assert.equal((ok.structuredContent as { best_match: { id: string } }).best_match.id, 'chill');
-    const gated = makeClient({
+    // #765: isGatedError now requires the gated-path annotation the contract
+    // installs, so the test must run the contract against the gated client to
+    // exercise the real production shape (the production entry point in
+    // src/index.ts installs it unconditionally).
+    const gatedClient = makeClient({
       get: mock.fn(async () => { throw new SpotifyApiError(403, 'Forbidden'); }),
     });
-    const res = await handlerFor('category_resolver', gated)({ text: 'chill', response_format: 'concise' });
+    installGatedPathContract(gatedClient);
+    const res = await handlerFor('category_resolver', gatedClient)({ text: 'chill', response_format: 'concise' });
     assert.equal((res.structuredContent as { gated: boolean }).gated, true);
     assert.ok(res.content[0].text.includes('app-registration gated'));
   });
@@ -560,6 +566,10 @@ assert.equal((res.structuredContent as { gaps_flagged: unknown[] }).gaps_flagged
       }),
       getAllPages: mock.fn(async () => [simplifiedAlbum]),
     });
+    // #765: the contract annotates the gated 403 in place so the tool
+    // handler's isGatedError branch still matches -- install it before
+    // driving the handler, the way src/index.ts does on every startup.
+    installGatedPathContract(client);
     const res = await handlerFor('artist_collab_network', client)({ artist_id: 'a1', response_format: 'concise' });
     const structured = res.structuredContent as CollabStructured;
     assert.equal(structured.top_tracks_available, false);

@@ -3,10 +3,11 @@
  *
  * The graceful-403 gating contract this slice used to install (the #329
  * app-registration-gated class; #428 browse_403_graceful, #429
- * gated_surface_selfflag) is cross-cutting: it is implemented at the shared
- * SpotifyClient's `get` choke point (getAllPages walks route through
- * `this.get`, so one wrapper covers every paging helper) and it decides what
- * a caller sees for every gated path.
+ * gated_surface_selfflag, #765 graceful_403_preserve_instance) is
+ * cross-cutting: it is implemented at the shared SpotifyClient's `get` choke
+ * point (getAllPages walks route through `this.get`, so one wrapper covers
+ * every paging helper) and it decides what a caller sees for every gated
+ * path.
  *
  * Registering that install as a tool module coupled a cross-cutting error
  * mapping to this module's toolset key: `SPOTIFY_MCP_DISABLE_TOOLS=
@@ -16,7 +17,9 @@
  * the graceful explanation on another. The contract therefore lives in
  * `src/gating.ts` and is installed unconditionally by
  * `installGatedPathContract` from the client construction path in
- * `src/index.ts`.
+ * `src/index.ts`. As of #765 the wrapper annotates and rethrows the original
+ * SpotifyApiError (carrying `gatedSurface` / `gatedPath`); it does not
+ * replace the error type, so tool-level `isGatedError` fallbacks still match.
  *
  * This module still exists, and still re-exports the classifier, because the
  * surface census (`scripts/surface-census.mjs`, guarded by
