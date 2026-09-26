@@ -186,6 +186,11 @@ const OUTPUT_FIELD_NAMES = new Set<string>([
   'fetch_all_cap',
   'from_token',
   'next_offset',
+  // #898: playlist_fill_from_search's description names the flag that says its
+  // pre-read of the target playlist stopped at the fetch-all cap, so the
+  // already-present exclusion set is incomplete. A key the tool reports about
+  // its own result, not a tool it is routing to.
+  'existing_truncated',
   // Row keys and counters inside a result payload.
   'added_by',
   'album_type',

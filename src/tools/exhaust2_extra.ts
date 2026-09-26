@@ -17,8 +17,10 @@ import { z } from 'zod';
 import { MARKET_CODE } from './catalog.js';
 import { SPOTIFY_SEARCH_MAX_LIMIT } from './search.js';
 import { chunk } from '../chunk.js';
+import { getConfig } from '../config.js';
 import { fetchCoverJpeg, rankCoverCandidates } from '../cover-image.js';
 import { issueReceipt, type Receipt } from '../receipts.js';
+import { walkTruncationNotice } from './playlists.js';
 import { receiptRecords, receiptsLines, writeVerdict } from './playlistreceipts.js';
 
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -50,17 +52,121 @@ function normalizeRef(ref: string): string {
 }
 
 
+/**
+ * The paging filter every item walk below sends. `item(uri)` projects each row
+ * down to the only field the set algebra reads: the walk before this sent no
+ * filter at all, so every row carried a whole TrackObject — name, artists,
+ * album, images — to keep one URI from it.
+ *
+ * `total` and `limit` keep the page ENVELOPE readable, and they are not
+ * optional decoration: `getAllPagesWithTruncation` advances its cursor by the
+ * page's own `limit` and decides whether a short page really was the end from
+ * `total` (#718). Filter them away and a clipped walk is indistinguishable from
+ * a complete one — the exact silent truncation this helper now reports.
+ */
+const URI_FIELDS = 'items(item(uri)),total,limit';
+
+/**
+ * One playlist's URIs plus the verdict on whether they are ALL of them (#898).
+ *
+ * `truncated` is the load-bearing field. Every caller here turns this list
+ * into a WRITE — a set-algebra playlist, a search-fill add — so a list that
+ * stopped at the cap and read as complete would drop items with nothing to
+ * show for it. `truncatedByCap` says the cap is why, which is what an operator
+ * can act on by raising SPOTIFY_MCP_FETCH_ALL_CAP.
+ */
+interface PlaylistUriScan {
+  /** The ref as written in the expression/argument, for messages. */
+  ref: string;
+  name: string | null;
+  /** Playlist length as Spotify states it; null when it states none. */
+  total: number | null;
+  /** URIs read, first-seen order preserved. A PREFIX of the playlist when truncated. */
+  uris: string[];
+  /** uris.length — what this scan actually holds. */
+  returned: number;
+  truncated: boolean;
+  truncatedByCap: boolean;
+  /** The ceiling that applied: getConfig().fetchAllCap. */
+  cap: number;
+}
+
+/** The shared "this walk stopped early" sentence (#864), or null when it did not. */
+function scanNotice(scan: PlaylistUriScan): string | null {
+  return walkTruncationNotice(scan.returned, scan.cap, scan.truncated);
+}
+
+/** Per-ref scan row as it appears in a tool payload. */
+function scanRow(scan: PlaylistUriScan): Record<string, unknown> {
+  return {
+    ref: scan.ref,
+    returned: scan.returned,
+    total: scan.total,
+    truncated: scan.truncated,
+    truncated_by_cap: scan.truncatedByCap,
+    scan_cap: scan.cap,
+  };
+}
+
+/**
+ * Sum the refs' stated lengths for a whole-expression figure. `null` unless
+ * EVERY ref stated one — a total that silently omits the playlists whose
+ * length was unknown would understate the gap it is meant to quantify.
+ */
+function knownTotal(scans: readonly PlaylistUriScan[]): number | null {
+  let sum = 0;
+  for (const scan of scans) {
+    if (scan.total === null) return null;
+    sum += scan.total;
+  }
+  return sum;
+}
+
+/** Walk every distinct ref of a set expression once, keeping each verdict. */
+async function scanExpressionRefs(
+  client: SpotifyClient,
+  refs: readonly string[],
+): Promise<PlaylistUriScan[]> {
+  const scans: PlaylistUriScan[] = [];
+  const seen = new Set<string>();
+  for (const ref of refs) {
+    if (seen.has(ref)) continue;
+    seen.add(ref);
+    scans.push(await fetchPlaylistUris(client, ref));
+  }
+  return scans;
+}
+
 /** Fully page a playlist's playable uris (first-seen order preserved). */
-async function fetchPlaylistUris(client: SpotifyClient, ref: string): Promise<string[]> {
+async function fetchPlaylistUris(client: SpotifyClient, ref: string): Promise<PlaylistUriScan> {
   const id = normalizeRef(ref);
-  const meta = await client.get<{ id?: string; name?: string }>(`/playlists/${encodeURIComponent(id)}`);
-  if (!meta) throw new Error(`Playlist "${ref}" not found`);
-  const rows = await client.getAllPages<{ added_at?: string; item?: { uri?: string } | null }>(
-    `/playlists/${encodeURIComponent(id)}/items`,
-    { limit: '100' },
-    { maxItems: 10_000 },
+  const meta = await client.get<{ id?: string; name?: string } & SpotifyPlaylistPage>(
+    `/playlists/${encodeURIComponent(id)}`,
   );
-  return rows.map((r) => r.item?.uri ?? '').filter((u) => u.startsWith('spotify:'));
+  if (!meta) throw new Error(`Playlist "${ref}" not found`);
+  const cap = getConfig().fetchAllCap;
+  const walk = await client.getAllPagesWithTruncation<{ item?: { uri?: string } | null }>(
+    `/playlists/${encodeURIComponent(id)}/items`,
+    { limit: '100', fields: URI_FIELDS },
+    { maxItems: cap },
+  );
+  const uris = walk.items.map((r) => r.item?.uri ?? '').filter((u) => u.startsWith('spotify:'));
+  const metaTotal = playlistItemTotal(meta);
+  return {
+    ref,
+    name: meta.name ?? null,
+    // The walk's own `total` is the page it actually read; the playlist object's
+    // count is the fallback when that page was filtered or omitted one. Neither
+    // being a number means Spotify stated no length, which is `null` — not 0.
+    total:
+      walk.reportedTotal
+      ?? (metaTotal !== undefined && Number.isFinite(metaTotal) ? metaTotal : null),
+    uris,
+    returned: uris.length,
+    truncated: walk.truncated,
+    truncatedByCap: walk.truncatedByCap,
+    cap,
+  };
 }
 
 /**
@@ -299,7 +405,7 @@ export function registerExhaust2ExtraTools(server: McpServer, client: SpotifyCli
   // 1. playlist_fill_from_search (#398)
   server.tool(
     'playlist_fill_from_search',
-    'Grow a playlist to N items from search queries you supply: round-robin one pick per query per pass, first unseen track match wins, pages each query in Spotify-compliant 10-result requests, then performs chunked adds. Complements listening-data grow_playlist. Quota: 🟡 one or more 10-result search pages per query + chunked adds.',
+    'Grow a playlist to N items from search queries you supply: round-robin one pick per query per pass, first unseen track match wins, pages each query in Spotify-compliant 10-result requests, then performs chunked adds. Complements listening-data grow_playlist. Quota: 🟡 one or more 10-result search pages per query + chunked adds, after a capped pre-read of the current items; a capped pre-read reports existing_truncated and an unknown resulting length.',
     {
       playlist_id: z.string().describe('Playlist to grow (ID or spotify:playlist: URI)'),
       queries: z.array(z.string().min(1)).min(1).max(25).describe('Search queries, cycled round-robin (1–25)'),
@@ -313,9 +419,10 @@ export function registerExhaust2ExtraTools(server: McpServer, client: SpotifyCli
       const rf = args.response_format as ResponseFormatValue;
       const dry = args.dry_run ?? true;
       const id = normalizeRef(args.playlist_id);
-      const meta = await client.get<{ id?: string; name?: string }>(`/playlists/${encodeURIComponent(id)}`);
-      if (!meta) throw new Error(`Playlist "${args.playlist_id}" not found`);
-      const existing = new Set(await fetchPlaylistUris(client, id));
+      // The scan carries the playlist's own length, so the separate meta GET
+      // this used to make first is redundant — one request per call saved.
+      const scan = await fetchPlaylistUris(client, args.playlist_id);
+      const existing = new Set(scan.uris);
       const perQuery: string[][] = args.queries.map(() => []);
       const nextOffsets = args.queries.map(() => 0);
       const pagesFetched = args.queries.map(() => 0);
@@ -352,15 +459,32 @@ export function registerExhaust2ExtraTools(server: McpServer, client: SpotifyCli
       }
       const byQuery = new Map<number, number>();
       for (const p of picks) byQuery.set(p.query_index, (byQuery.get(p.query_index) ?? 0) + 1);
+      // #898: the playlist's real length and the length actually READ are two
+      // different numbers, and this walk is capped. Printing the read count as
+      // the playlist length — or letting an incomplete read drive the
+      // already-present exclusion set, which then re-adds items that were
+      // there — is the silent-truncation bug this payload now names.
+      const totalPhrase = scan.total === null
+        ? 'playlist length unknown'
+        : `playlist has ${scan.total} item(s)`;
+      const readPhrase = scan.truncated
+        ? `${scan.returned} item(s) readable (walk stopped at the cap, ${scan.cap})`
+        : `${scan.returned} item(s) readable`;
       const planLines = [
-        `Playlist "${meta.name ?? id}" (${existing.size} item(s)) + ${picks.length} search pick(s):`,
+        `Playlist "${scan.name ?? id}" — ${totalPhrase}; ${readPhrase}; ${existing.size} already present + ${picks.length} search pick(s):`,
         ...args.queries.map((q, i) => `  [${i}] "${q}" → ${byQuery.get(i) ?? 0} pick(s) (of ${perQuery[i]?.length ?? 0} candidate(s) across ${pagesFetched[i] ?? 0} page(s))`),
       ];
+      const notice = scanNotice(scan);
       const payload: Record<string, unknown> = {
         ok: true,
         playlist: id,
-        playlist_name: meta.name ?? null,
+        playlist_name: scan.name,
         existing: existing.size,
+        existing_scanned: scan.returned,
+        existing_total: scan.total,
+        existing_truncated: scan.truncated,
+        existing_truncated_by_cap: scan.truncatedByCap,
+        scan_cap: scan.cap,
         target,
         added: picks.length,
         per_query: Object.fromEntries(args.queries.map((q, i) => [q, byQuery.get(i) ?? 0])),
@@ -377,18 +501,26 @@ export function registerExhaust2ExtraTools(server: McpServer, client: SpotifyCli
       if (dry) {
         return shape(
           rf,
-          `${describeDryRun('fill from search', id, planLines)}\n${picks.slice(0, 10).map((p) => `  + ${p.uri} (via "${p.query}")`).join('\n')}${picks.length > 10 ? `\n  … ${picks.length - 10} more` : ''}`,
+          `${describeDryRun('fill from search', id, planLines)}\n${picks.slice(0, 10).map((p) => `  + ${p.uri} (via "${p.query}")`).join('\n')}${picks.length > 10 ? `\n  … ${picks.length - 10} more` : ''}${notice ? `\n${notice}` : ''}`,
           { ...payload, dry_run: true },
         );
       }
       if (picks.length === 0) throw new Error('No unseen tracks matched any query — nothing to add.');
       const add = await addUrisChunked(client, id, picks.map((p) => p.uri));
       const receiptLines = receiptsLines(add.receipts);
-      const prose = `Added ${picks.length} track(s) to "${meta.name ?? id}" (${add.requests} add request(s)); playlist now ${existing.size + picks.length} item(s).`;
+      // Only a COMPLETE pre-read can state the playlist's new length. A capped
+      // read is missing rows, so `existing.size + picks` is arithmetic over a
+      // number nobody verified — and a pick that was already there is now in
+      // the write twice. Say "unknown" rather than print a total (#803 class).
+      const nowTotal = scan.truncated ? null : existing.size + picks.length;
+      const truncationProse = scan.truncated
+        ? ` Resulting length unknown: only the first ${scan.returned} item(s) were read, so a pick may already have been in the playlist.`
+        : '';
+      const prose = `Added ${picks.length} track(s) to "${scan.name ?? id}" (${add.requests} add request(s)); playlist now ${nowTotal ?? 'unknown'} item(s).${truncationProse}`;
       return shape(
         rf,
         receiptLines ? `${prose}\n${receiptLines}` : prose,
-        { ...payload, ...writeVerdict(add.receipts, picks.length), dry_run: false, requests: add.requests, now_total: existing.size + picks.length, receipts: receiptRecords(add.receipts) },
+        { ...payload, ...writeVerdict(add.receipts, picks.length), dry_run: false, requests: add.requests, now_total: nowTotal, receipts: receiptRecords(add.receipts) },
       );
     },
   );
@@ -396,7 +528,7 @@ export function registerExhaust2ExtraTools(server: McpServer, client: SpotifyCli
   // 2. playlist_expression_algebra (#399)
   server.tool(
     'playlist_expression_algebra',
-    'Mini set-algebra over playlists: `REF ∪ (REF ∩ REF) − REF` → NEW playlist. Operators: ∩ (binds tightest), then ∪ and − left-assoc; ASCII aliases | + for union, & for intersection. Refs are playlist IDs or spotify:playlist: URIs; results dedupe preserving first-seen order. Quota: 🟢 N GETs + 1 write.',
+    'Mini set-algebra over playlists: `REF ∪ (REF ∩ REF) − REF` → NEW playlist. Operators: ∩ (binds tightest), then ∪ and − left-assoc; ASCII aliases | + for union, & for intersection. Refs are playlist IDs or spotify:playlist: URIs; results dedupe preserving first-seen order. Each ref costs 1 GET plus up to SPOTIFY_MCP_FETCH_ALL_CAP/100 URI-only item pages. Quota: 🟢 1 + item pages per ref, then 1 create + chunked adds. A ref stopped at the cap sets truncated=true with total and returned; the result is then incomplete.',
     {
       expression: z.string().min(3).describe(
         'Set expression, e.g. "37i9dQZF1DXcBWIGoYBM5M ∪ (4bKpVbPAsKv0aSsbIm2Ggt ∩ 6mtXbPAsKv0aSsbIm2Ggt) − 1a2B3cD4e5F6g7H8i9J0kL". '
@@ -411,25 +543,42 @@ export function registerExhaust2ExtraTools(server: McpServer, client: SpotifyCli
       const rf = args.response_format as ResponseFormatValue;
       const dry = args.dry_run ?? true;
       const { ast, refs } = parseSetExpression(args.expression);
-      const sets = new Map<string, string[]>();
-      const sizes: Record<string, number> = {};
-      for (const ref of refs) {
-        if (sets.has(ref)) continue;
-        const uris = await fetchPlaylistUris(client, ref);
-        sets.set(ref, uris);
-        sizes[ref] = uris.length;
-      }
+      const scans = await scanExpressionRefs(client, refs);
+      const sets = new Map<string, string[]>(scans.map((s) => [s.ref, s.uris]));
+      const sizes: Record<string, number> = Object.fromEntries(scans.map((s) => [s.ref, s.returned]));
       const result = evalSetExpression(ast, (ref) => sets.get(ref) ?? []);
       if (result.length === 0) throw new Error('Expression evaluates to an empty set — nothing to write.');
+      // #898: the whole expression is computed from whatever each ref's walk
+      // read, so a clipped ref silently drops rows out of the union, the
+      // intersection and the difference alike. One `truncated: true` over the
+      // refs, plus per-ref total/returned, is what lets the agent decide
+      // whether to raise SPOTIFY_MCP_FETCH_ALL_CAP or re-run the expression.
+      const clipped = scans.filter((s) => s.truncated);
+      const truncated = clipped.length > 0;
+      const returned = scans.reduce((sum, s) => sum + s.returned, 0);
+      const truncationFields: Record<string, unknown> = {
+        truncated,
+        total: knownTotal(scans),
+        returned,
+        truncated_refs: clipped.map((s) => s.ref),
+        ref_scans: scans.map(scanRow),
+        scan_cap: getConfig().fetchAllCap,
+      };
+      const refPhrase = (s: PlaylistUriScan): string => (s.truncated
+        ? `${s.ref} (${s.returned} of ${s.total ?? '?'} item(s) — TRUNCATED)`
+        : `${s.ref} (${s.returned} item(s))`);
       const planLines = [
-        `Refs: ${refs.map((r) => `${r} (${sizes[r]} item(s))`).join(', ')}`,
+        `Refs: ${scans.map(refPhrase).join(', ')}`,
         `Result: ${result.length} unique item(s)`,
+        ...(truncated
+          ? [`⚠ ${clipped.length} of ${scans.length} ref walk(s) stopped at the cap — the result is computed from a partial read of those refs.`]
+          : []),
       ];
       if (dry) {
         return shape(
           rf,
           `${describeDryRun('expression algebra', args.target_name, planLines)}\n${result.slice(0, 10).map((u) => `  · ${u}`).join('\n')}${result.length > 10 ? `\n  … ${result.length - 10} more` : ''}`,
-          { ok: true, dry_run: true, expression: args.expression, refs, sizes, result_count: result.length, result_preview: result.slice(0, 25) },
+          { ok: true, dry_run: true, expression: args.expression, refs, sizes, result_count: result.length, result_preview: result.slice(0, 25), ...truncationFields },
         );
       }
       const created = await client.post<{ id?: string }>('/me/playlists', {
@@ -440,11 +589,14 @@ export function registerExhaust2ExtraTools(server: McpServer, client: SpotifyCli
       if (!createdId) throw new Error('Playlist creation returned no id');
       const add = await addUrisChunked(client, createdId, result);
       const receiptLines = receiptsLines(add.receipts);
-      const prose = `Created "${args.target_name}" (${createdId}) with ${result.length} item(s) from the expression (${add.requests} add request(s)).`;
+      const truncationProse = truncated
+        ? ` The result is INCOMPLETE: ${clipped.map((s) => `"${s.ref}" (${s.returned} of ${s.total ?? '?'} read)`).join(', ')} stopped at the fetch-all cap.`
+        : '';
+      const prose = `Created "${args.target_name}" (${createdId}) with ${result.length} item(s) from the expression (${add.requests} add request(s)).${truncationProse}`;
       return shape(
         rf,
         receiptLines ? `${prose}\n${receiptLines}` : prose,
-        { ...writeVerdict(add.receipts, result.length), dry_run: false, playlist: createdId, name: args.target_name, result_count: result.length, refs, sizes, requests: add.requests, receipts: receiptRecords(add.receipts) },
+        { ...writeVerdict(add.receipts, result.length), dry_run: false, playlist: createdId, name: args.target_name, result_count: result.length, refs, sizes, requests: add.requests, receipts: receiptRecords(add.receipts), ...truncationFields },
       );
     },
   );

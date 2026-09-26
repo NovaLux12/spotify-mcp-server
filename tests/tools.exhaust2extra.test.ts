@@ -17,9 +17,23 @@ interface FakeClient {
   post: (path: string, body?: unknown) => Promise<unknown>;
   putRaw: (path: string, body: string) => Promise<unknown>;
   getAllPages: (path: string, params?: Record<string, unknown>, opts?: unknown) => Promise<unknown[]>;
+  getAllPagesWithTruncation: (
+    path: string,
+    params?: Record<string, unknown>,
+    opts?: { maxItems?: number },
+  ) => Promise<{ items: unknown[]; truncated: boolean; truncatedByCap: boolean; reportedTotal: number | null }>;
   calls: Call[];
 }
 
+/**
+ * A paged route: an array is the playlist's WHOLE item list, and this shim
+ * pages it the way `SpotifyClient.getAllPagesWithTruncation` does, so a route
+ * of 5 rows and a cap of 2 really does stop at 2 and really does report
+ * truncation. The client-side walk loop itself is covered in client.test.ts;
+ * this file drives the CALL SITE (what cap it passes, what it does with the
+ * verdict). `tests/exhaust2extra-fetchcap.test.ts` runs the same slice against
+ * the real client so the loop is never only this shim's version of it.
+ */
 function makeFakeClient(routes: Record<string, unknown>): FakeClient {
   const calls: Call[] = [];
   const self: FakeClient = {
@@ -49,6 +63,39 @@ function makeFakeClient(routes: Record<string, unknown>): FakeClient {
       const out = routes[path];
       if (out instanceof Error) throw out;
       return Array.isArray(out) ? out : [];
+    },
+    getAllPagesWithTruncation: async (path, params, opts) => {
+      const maxItems = opts?.maxItems ?? Number.MAX_SAFE_INTEGER;
+      const pageSize = Number(params?.limit ?? 100) || 100;
+      const rows = (() => {
+        const out = routes[path];
+        if (out instanceof Error) throw out;
+        return Array.isArray(out) ? out : [];
+      })();
+      const total = rows.length;
+      const all: unknown[] = [];
+      let offset = 0;
+      for (;;) {
+        const slice = rows.slice(offset, offset + pageSize);
+        calls.push({ method: 'GET', path, params: { ...params, offset: String(offset) } });
+        all.push(...slice);
+        if (all.length >= maxItems) {
+          return {
+            items: all.slice(0, maxItems),
+            truncated: all.length > maxItems || all.length < total,
+            truncatedByCap: true,
+            reportedTotal: total,
+          };
+        }
+        if (slice.length < pageSize) break;
+        offset += pageSize;
+      }
+      return {
+        items: all,
+        truncated: all.length < total,
+        truncatedByCap: false,
+        reportedTotal: total,
+      };
     },
   };
   return self;
