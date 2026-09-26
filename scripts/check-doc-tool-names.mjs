@@ -47,6 +47,10 @@ const parameterAllowlist = new Set([
   // #757: restore_library_snapshot documents the snapshot schema version it
   // refuses on. A key inside the file it reads, not a tool or parameter.
   'schema_version',
+  // StructuredContent keys the walk/disclosure work added and ARCHITECTURE.md
+  // now names. Neither is a tool or a parameter; both are what a call reports
+  // back about its own result.
+  'fetch_all_cap', 'truncated_by_cap',
 ]);
 /** Registration keys are module names, not tools; docs legitimately name them. */
 const registrationKeyNames = new Set(census.registrationKeyNames ?? []);
