@@ -740,6 +740,102 @@ describe('sidecar robustness', () => {
     assert.equal(statSync(`${sidecarPath}.corrupt.1`).mode & 0o777, 0o600);
   });
 
+  // #1052: an identical corruption on a later read must reuse the existing copy,
+  // not append another `.corrupt.N` of the same bytes. Five reads of the same
+  // file must still leave exactly one .corrupt file in the directory.
+  it('repeated reads of an unchanged corruption reuse the existing copy (#1052)', () => {
+    const corrupt = '{"version":1,"tags":{"Aurora":["pop"]},,';
+    writeFileSync(sidecarPath, corrupt, 'utf8');
+    // Five failed reads back-to-back is what a stuck retry loop looks like.
+    for (let i = 0; i < 5; i += 1) {
+      assert.throws(() => loadGenreTags(sidecarPath), (err: Error) => {
+        // The error names the bound: without it a stuck caller cannot tell the
+        // cap from a missing copy.
+        assert.match(err.message, /capped at 3 copies/);
+        // The single reused copy is named every time, not a slot swept up.
+        assert.match(err.message, new RegExp(`\\.corrupt\\b`));
+        return true;
+      });
+    }
+    // Exactly one copy, holding the only preserved bytes.
+    const copies = [
+      existsSync(`${sidecarPath}.corrupt`) ? `${sidecarPath}.corrupt` : null,
+      existsSync(`${sidecarPath}.corrupt.1`) ? `${sidecarPath}.corrupt.1` : null,
+      existsSync(`${sidecarPath}.corrupt.2`) ? `${sidecarPath}.corrupt.2` : null,
+    ].filter((c): c is string => c !== null);
+    assert.deepEqual(copies, [`${sidecarPath}.corrupt`]);
+    assert.equal(readFileSync(`${sidecarPath}.corrupt`, 'utf8'), corrupt);
+  });
+
+  // #1052: a chain of DIFFERENT corruptions must not grow without bound. Three
+  // distinct bytes take the three slots; a fourth distinct corruption is
+  // reported but not added — and the message names the cap so the user knows.
+  it('a chain of distinct corruptions stops at the cap and is named in the message (#1052)', () => {
+    const slot0 = `${sidecarPath}.corrupt`;
+    const slot1 = `${sidecarPath}.corrupt.1`;
+    const slot2 = `${sidecarPath}.corrupt.2`;
+    const states = [
+      '{"version":1,"tags":{"A":["x"]},,',
+      '{"version":1,"tags":{"B":["y"]',
+      '{"version":1,"tags":{"C":["z"]} ',
+      '{"version":1,"tags":{"D":["w"]}',  // 4th distinct — must NOT get a slot
+    ];
+    for (const [i, bytes] of states.entries()) {
+      writeFileSync(sidecarPath, bytes, 'utf8');
+      assert.throws(() => loadGenreTags(sidecarPath), (err: Error) => {
+        // Every report names the cap; only the FIRST detection does NOT name a
+        // preserved slot at ".corrupt.1" or beyond — it is the first free one.
+        assert.match(err.message, /capped at 3 copies/);
+        if (i < 3) {
+          // First three: get a fresh slot and the message says "no new file
+          // was added" only when the bytes matched an existing copy. The
+          // FIRST detection has no earlier detection at .corrupt yet, the
+          // second and third do.
+          if (i === 0) assert.doesNotMatch(err.message, /earlier detection/);
+          else assert.match(err.message, /earlier detection's copy is still at /);
+        } else {
+          // Cap is reached: no new file was added; the message still names
+          // the most-recent preserved slot so the user knows where their
+          // bytes live.
+          assert.match(err.message, /earlier detection's copy is still at /);
+        }
+        return true;
+      });
+    }
+    // Exactly three slots, .corrupt and .corrupt.1 and .corrupt.2, no .corrupt.3.
+    assert.equal(existsSync(slot0), true);
+    assert.equal(existsSync(slot1), true);
+    assert.equal(existsSync(slot2), true);
+    assert.equal(existsSync(`${sidecarPath}.corrupt.3`), false);
+    assert.equal(readFileSync(slot0, 'utf8'), states[0]);
+    assert.equal(readFileSync(slot1, 'utf8'), states[1]);
+    assert.equal(readFileSync(slot2, 'utf8'), states[2]);
+  });
+
+  // #1052: distinct bytes hitting the cap followed by a re-read of one of
+  // those bytes must reuse the matching slot. The cap doesn't disable
+  // dedup — it just refuses to add new distinct copies.
+  it('at cap, a re-read of a preserved byte set reuses its slot (#1052)', () => {
+    writeFileSync(sidecarPath, '{"version":1,"tags":{"A":["x"]},,', 'utf8');
+    assert.throws(() => loadGenreTags(sidecarPath));
+    writeFileSync(sidecarPath, '{"version":1,"tags":{"B":["y"]', 'utf8');
+    assert.throws(() => loadGenreTags(sidecarPath));
+    writeFileSync(sidecarPath, '{"version":1,"tags":{"C":["z"]} ', 'utf8');
+    assert.throws(() => loadGenreTags(sidecarPath));
+    // 4th distinct corruption fills the cap (no copy added)…
+    writeFileSync(sidecarPath, '{"version":1,"tags":{"D":["w"]}', 'utf8');
+    assert.throws(() => loadGenreTags(sidecarPath));
+    // …then the user re-corrupts to a byte set matching the FIRST one.
+    // The dedicated slot is reused, no .corrupt.3 file created.
+    writeFileSync(sidecarPath, '{"version":1,"tags":{"A":["x"]},,', 'utf8');
+    assert.throws(() => loadGenreTags(sidecarPath), (err: Error) => {
+      assert.match(err.message, /no new file was added/);
+      assert.match(err.message, /\.corrupt\b/);
+      return true;
+    });
+    assert.equal(existsSync(`${sidecarPath}.corrupt.3`), false);
+  });
+
   it('a write interrupted before the rename leaves the previous store intact', async () => {
     const h = harness();
     await h.invoke('tag_management', { action: 'add', artist: 'Aurora', tags: ['pop'] });
