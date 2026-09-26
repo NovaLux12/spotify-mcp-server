@@ -33,6 +33,7 @@ import {
   collectModuleSchemaBudgets,
   NEVER_MUTATING_PLANS,
   moduleToolNames,
+  manifestEntry,
   serializedSchemaBytes,
   registerManifestModule,
   REGISTRAR_MANIFEST,
@@ -491,6 +492,65 @@ describe('tool surface: budget', () => {
       () => assertModuleSchemaBudgets([{ ...rows[0], schemaBytes: rows[0].maxSchemaBytes, toolCount: rows[0].maxToolCount, withinBudget: false }]),
       'a module exactly at its ceiling is within budget even if a flag says otherwise',
     );
+  });
+
+  it('sizes a gated module ceiling for the opted-in surface, not just the default (#1128)', () => {
+    // The failure this pins: a module whose tool surface depends on config has
+    // a baseline describing the DEFAULT surface, because the census strips
+    // SPOTIFY_* and the generated tables report an ordinary install. Sizing the
+    // ceiling on that baseline alone makes an opted-in process register more
+    // tools than the ceiling allows and the server refuses to start — while the
+    // default path stays green in CI, so only a user who sets the flag finds
+    // out their server no longer boots.
+    //
+    // The numbers are the ones measured on the analytics gate: 17 tools /
+    // 13,339B with the opt-in off, 24 / 19,594B with it on.
+    const registrar = (server: McpServer) => { server.tool('gated_probe', 'probe', {}, async () => ({ content: [] })); };
+    const DEFAULT_SURFACE: readonly [number, number] = [17, 13_339];
+    const OPTED_IN_SURFACE: readonly [number, number] = [24, 19_594];
+
+    const ungated = manifestEntry('probe', 'probe', 'src/tools/probe.ts', registrar, DEFAULT_SURFACE);
+    // The ungated derivation is unchanged: a ceiling is still one tool and 10%
+    // over the baseline, so an ordinary module grows visibly.
+    assert.equal(ungated.ceiling.toolCount, 18);
+    assert.equal(ungated.ceiling.schemaBytes, Math.ceil(13_339 * 1.1));
+
+    const gated = manifestEntry('probe', 'probe', 'src/tools/probe.ts', registrar, DEFAULT_SURFACE, {
+      gatedSurface: { gatedBy: 'SPOTIFY_MCP_EXPERIMENTAL_ANALYTICS', toolCount: 24, schemaBytes: 19_594 },
+    });
+
+    // The ceiling is sized for the LARGER of the two surfaces — this is the
+    // allowance whose absence made the opted-in server refuse to boot.
+    assert.equal(gated.ceiling.toolCount, 25, 'one tool over the opted-in surface, not over the default');
+    assert.equal(gated.ceiling.schemaBytes, Math.ceil(19_594 * 1.1));
+
+    // The baseline is untouched: the census still measures the default surface,
+    // so the generated surface tables keep reporting an ordinary install.
+    assert.equal(gated.baseline.toolCount, 17);
+    assert.equal(gated.baseline.schemaBytes, 13_339);
+
+    // Both surfaces must now clear the module gate. Without the allowance the
+    // opted-in row is exactly the measurement the gate rejected.
+    const row = (toolCount: number, schemaBytes: number) => ({
+      module: gated.key,
+      registrationKey: gated.registrationKey,
+      file: gated.file,
+      status: 'active' as const,
+      toolCount,
+      schemaBytes,
+      baselineToolCount: gated.baseline.toolCount,
+      baselineSchemaBytes: gated.baseline.schemaBytes,
+      maxToolCount: gated.ceiling.toolCount,
+      maxSchemaBytes: gated.ceiling.schemaBytes,
+      withinBudget: true,
+    });
+    assert.doesNotThrow(() => assertModuleSchemaBudgets([row(24, 19_594)]), 'the opted-in surface must pass');
+    assert.doesNotThrow(() => assertModuleSchemaBudgets([row(17, 13_339)]), 'the default surface must pass');
+
+    // …and it is still a ceiling, not a rubber stamp: a registrar that grows
+    // past the opted-in surface still fails and forces a manifest edit.
+    assert.throws(() => assertModuleSchemaBudgets([row(26, 19_594)]), /exceeds schema budget/);
+    assert.throws(() => assertModuleSchemaBudgets([row(25, Math.ceil(19_594 * 1.1) + 1)]), /exceeds schema budget/);
   });
 
   it('registers the exact core-first name sequence with every module once', async () => {
