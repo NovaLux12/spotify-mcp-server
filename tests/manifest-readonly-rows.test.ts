@@ -30,7 +30,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 
 import { SpotifyClient } from '../src/client.js';
 import { moduleBlockedByScopes, scopesFor } from '../src/scopefilter.js';
-import { REGISTRAR_MANIFEST, registerManifestModule } from '../src/tools/annotations.js';
+import { REGISTRAR_MANIFEST, classifyToolAnnotations, registerManifestModule } from '../src/tools/annotations.js';
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -144,13 +144,14 @@ describe('#1017 delete_backup no longer costs a read-only session the reads', ()
   it('keeps list_backups reachable for a read-scoped read-only session', () => {
     // The real read-only persona carries read scopes, so the row is
     // scope_filtered rather than blocked: list_backups is still a read the
-    // grant authorises and must survive that filter. (backup_library is NOT
-    // asserted here: every call it makes is a GET, but its name starts with
-    // `backup`, which the annotation classifier counts as a mutating verb, so
-    // the scope filter withholds it. That is the classifier's row, not
-    // readOnlySafe's — filed separately rather than pinned here.)
+    // grant authorises and must survive that filter. backup_library is the
+    // same shape: every Spotify call it makes is a GET, and its only writes
+    // are to the local backup directory. Its name starts with `backup`, which
+    // the MUTATING_PREFIXES regex counts as a mutating verb, so the classifier
+    // override is what lets it past the scope filter (#1101).
     const names = visibleTools({ scope: READ_ONLY_GRANT, readOnly: true });
     assert.ok(names.has('list_backups'), 'a read-scoped read-only session cannot list its own backups');
+    assert.ok(names.has('backup_library'), 'a read-scoped read-only session cannot snapshot its own library');
     assert.equal(names.has('delete_backup'), false, 'delete_backup reachable in SPOTIFY_MCP_READONLY');
   });
 
@@ -196,5 +197,28 @@ describe('#1017 the flag means what the gate does with it', () => {
 
   it('no readOnlySafe row registers a tool that writes', () => {
     assert.deepEqual(offenders, [], 'rows claiming readOnlySafe while registering a writer: ' + offenders.join(', '));
+  });
+});
+
+describe('#1101 backup_library is read-only against Spotify (#1017 sibling)', () => {
+  // backup_library makes no Spotify write: every call is a GET, and the only
+  // writes it performs are to the local backup directory. Its name starts with
+  // `backup`, which the MUTATING_PREFIXES regex counts as a mutating verb, so
+  // the OVERRIDES table has to carry it explicitly (#1101) — a blanket change
+  // to the `backup` prefix would re-classify the writer under the same roof.
+  it('classifies backup_library as read-only via OVERRIDES', () => {
+    const annotations = classifyToolAnnotations('backup_library');
+    assert.equal(annotations.readOnlyHint, true, 'backup_library is read-only against Spotify; MUTATING_PREFIXES catches it on the prefix alone');
+    assert.equal(annotations.destructiveHint, undefined, 'readOnlyHint wins outright in OVERRIDES, so destructiveHint must not leak through');
+  });
+
+  it('survives the scope filter under a read-only grant', () => {
+    // readOnlyToolServer keeps only the tools classifyToolAnnotations can prove
+    // read-only, so a `backup_library` that classifies as a write is withheld
+    // here even when its row is readOnlySafe (#1020). After the override, the
+    // scope_filtered backup row registers both tools.
+    const names = visibleTools({ scope: READ_ONLY_GRANT, readOnly: true });
+    assert.ok(names.has('backup_library'), 'backup_library filtered out under a read-only grant it is shaped for');
+    assert.ok(names.has('list_backups'), 'list_backups dropped alongside backup_library');
   });
 });
