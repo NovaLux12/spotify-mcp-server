@@ -583,6 +583,59 @@ describe('exhaust2_misc — 27-tool misc slice', () => {
     assert.equal(Object.keys(ext.devicePresets).length, 0);
   });
 
+  // #1070: device_sync_state must read scenes and playback-ext independently.
+  // A corrupt scenes.json used to take down the whole tool and the caller
+  // was told nothing about which store failed. The fix surfaces scenes
+  // corruption as `load_error` on the response (same shape as the
+  // playback-ext #839 surfacing) and the playback-ext half keeps running.
+  it('device_sync_state surfaces scenes corruption as load_error and still reconciles presets (#1070)', async () => {
+    writeFileSync(process.env.SPOTIFY_MCP_PLAYBACKEXT_FILE!, `${JSON.stringify({ states: {}, devicePresets: { Ghost: { volume: 30 } }, sessions: {}, smartRules: {} })}\n`);
+    writeFileSync(process.env.SPOTIFY_MCP_SCENES_FILE!, '{"Fresh": {oops', 'utf8');
+    const client = makeClient({
+      get: mock.fn(async (path: string) => (path === '/me/player/devices' ? { devices: [{ id: 'd1', name: 'Speaker', type: 'speaker' }] } : null)),
+    });
+    const plan = await getHandler('device_sync_state', client)({ prune: true, dry_run: true, response_format: 'concise' });
+
+    // Tool did NOT throw (assertion = no exception bubbled past `await`).
+    const text = plan.content[0].text;
+    const echo = plan.structuredContent as Record<string, unknown>;
+
+    // Prose carries the warning so a human reader sees it before the plan.
+    assert.match(text, /^WARNING: scenes\.json was unreadable/);
+    assert.match(text, /Ghost/, 'playbackext half still reports the dead preset');
+
+    // structuredContent surfaces load_error AND the playbackext result.
+    assert.equal(typeof echo.load_error, 'string', 'load_error is required on the response');
+    assert.match(echo.load_error as string, /scenes\.json was unreadable/);
+    assert.match(echo.load_error as string, /it was not loaded/);
+    assert.deepEqual(echo.dead_scene_hints, [], 'no scenes processed when the sidecar is unreadable');
+    assert.deepEqual(echo.dead_presets, ['Ghost'], 'playback-ext half still reconciles presets');
+    assert.ok(Array.isArray(echo.live_devices));
+    assert.equal((echo.live_devices as Array<{ name: string }>)[0]!.name, 'Speaker');
+
+    // dry_run=true must NOT have written either sidecar: the scenes file is
+    // still corrupt and the playback-ext file is unchanged.
+    assert.match(readFileSync(process.env.SPOTIFY_MCP_SCENES_FILE!, 'utf8'), /\{oops/);
+    const ext = JSON.parse(readFileSync(process.env.SPOTIFY_MCP_PLAYBACKEXT_FILE!, 'utf8'));
+    assert.ok(ext.devicePresets.Ghost, 'Ghost is still in playback-ext until prune=true,dry_run=false');
+
+    // prune=true,dry_run=false still prunes the playback-ext sidecar and
+    // surfaces the scenes failure on the same response.
+    const pruned = await getHandler('device_sync_state', client)({ prune: true, dry_run: false, response_format: 'concise' });
+    const prunedEcho = pruned.structuredContent as Record<string, unknown>;
+    assert.match(pruned.content[0].text, /^WARNING: scenes\.json was unreadable/);
+    assert.match(pruned.content[0].text, /Pruned 1 dead preset/);
+    assert.equal(typeof prunedEcho.load_error, 'string');
+    assert.equal(prunedEcho.pruned, true);
+    assert.deepEqual(prunedEcho.dead_presets, ['Ghost']);
+    const extAfter = JSON.parse(readFileSync(process.env.SPOTIFY_MCP_PLAYBACKEXT_FILE!, 'utf8'));
+    assert.equal(Object.keys(extAfter.devicePresets).length, 0, 'playback-ext sidecar was pruned');
+    // The corrupt scenes file is left in place — we never had a SceneStore to
+    // save, so a save would have destroyed the original bytes. The caller is
+    // told it is unreadable via load_error, exactly the contract.
+    assert.match(readFileSync(process.env.SPOTIFY_MCP_SCENES_FILE!, 'utf8'), /\{oops/);
+  });
+
   // cleanup after all tests
   after(() => {
     try { rmSync(tmp, { recursive: true, force: true }); } catch { /* best-effort */ }
