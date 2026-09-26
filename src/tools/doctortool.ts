@@ -614,7 +614,7 @@ async function accountRows(client: SpotifyClient): Promise<DoctorRow[]> {
 }
 
 /** Run every doctor check. Includes best-effort live account probe when client is network-capable. */
-async function collectDoctorReport(
+export async function collectDoctorReport(
   client: SpotifyClient,
   server?: McpServer,
 ): Promise<DoctorReport> {
