@@ -1,6 +1,9 @@
-import { describe, it } from 'node:test';
+import { describe, it, beforeEach, afterEach } from 'node:test';
 import { z } from 'zod';
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../src/client.js';
 import { SpotifyApiError } from '../src/client.js';
@@ -77,9 +80,9 @@ function pagedResponder(fixtures: Record<string, unknown[]>, perPage = 50): Resp
   };
 }
 
-const trackItem = (id: string, added_at = '2026-06-15T12:00:00Z', genres: string[] = []) => ({
+const trackItem = (id: string, added_at = '2026-06-15T12:00:00Z') => ({
   added_at,
-  track: { id, name: `Track ${id}`, uri: `spotify:track:${id}`, artists: [{ name: `Artist ${id}`, genres }] },
+  track: { id, name: `Track ${id}`, uri: `spotify:track:${id}`, artists: [{ name: `Artist ${id}` }] },
 });
 const albumItem = (id: string, added_at = '2026-06-15T12:00:00Z') => ({
   added_at, album: { id, name: `Album ${id}`, uri: `spotify:album:${id}`, artists: [{ name: `Artist ${id}` }] },
@@ -91,6 +94,35 @@ describe('registration', () => {
     assert.deepEqual(h.registered.map((r) => r.name).sort(), ['genre_trends_over_time', 'library_coverage_report', 'library_growth_report', 'listening_heatmap']);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Sidecar setup for genre_trends_over_time tests — Spotify no longer returns
+// artist genres, so the tool sources from the user-declared tag sidecar. Each
+// test writes an isolated store under SPOTIFY_MCP_GENRE_TAGS_FILE; the global
+// is restored on teardown so other tests in the suite (or in shared files) are
+// not affected (#733).
+// ---------------------------------------------------------------------------
+const savedSidecarEnv = process.env.SPOTIFY_MCP_GENRE_TAGS_FILE;
+let sidecarDir: string;
+let sidecarPath: string;
+
+beforeEach(() => {
+  sidecarDir = mkdtempSync(join(tmpdir(), 'gtrends-'));
+  sidecarPath = join(sidecarDir, 'genre-tags.json');
+  process.env.SPOTIFY_MCP_GENRE_TAGS_FILE = sidecarPath;
+});
+
+afterEach(() => {
+  rmSync(sidecarDir, { recursive: true, force: true });
+  if (savedSidecarEnv === undefined) delete process.env.SPOTIFY_MCP_GENRE_TAGS_FILE;
+  else process.env.SPOTIFY_MCP_GENRE_TAGS_FILE = savedSidecarEnv;
+});
+
+/** Write a one-artist tag store directly. The shape mirrors tag_management. */
+function seedTags(entries: Record<string, string[]>): void {
+  const store = { version: 1, tags: entries };
+  writeFileSync(sidecarPath, `${JSON.stringify(store, null, 2)}\n`, 'utf8');
+}
 
 describe('library_coverage_report', () => {
   it('empty library: coverage 0, no orphans', async () => {
@@ -328,7 +360,11 @@ describe('library_growth_report', () => {
 });
 
 describe('genre_trends_over_time', () => {
-  it('tracks genre counts per period with emerging/declining', async () => {
+  it('sources genre counts from the sidecar (no artists[].genres on the wire) and reports emerging tags', async () => {
+    // Spotify no longer returns artist genres on saved-track rows, so artists
+    // arrive without a `genres` field — the sidecar (via tag_management) is
+    // the only source of truth for taste signal (#733).
+    seedTags({ 'Artist t1': ['pop'], 'Artist t2': ['pop', 'indie'], 'Artist t3': ['indie'] });
     const now = new Date();
     const curIso = now.toISOString();
     const prev = new Date(now); prev.setUTCMonth(now.getUTCMonth() - 1);
@@ -337,21 +373,83 @@ describe('genre_trends_over_time', () => {
       if (path === '/me/tracks') {
         return pagedResponder({
           '/me/tracks': [
-            trackItem('t1', prevIso, ['pop']),
-            trackItem('t2', curIso, ['pop', 'indie']),
-            trackItem('t3', curIso, ['indie']),
+            trackItem('t1', prevIso),
+            trackItem('t2', curIso),
+            trackItem('t3', curIso),
           ],
         })(path, params);
       }
       return { items: [], total: 0, limit: 50, offset: 0, next: null };
     });
     const out = await h.invoke('genre_trends_over_time', { period: 'monthly', lookback: 2 });
-    const periods = out.structuredContent?.periods as Array<{ period: string; top_genres: Array<{ genre: string; count: number }> }>;
+    const sc = out.structuredContent as {
+      available: boolean; source: string;
+      periods: Array<{ period: string; top_genres: Array<{ genre: string; count: number }> }>;
+      emerging: Array<{ genre: string }>;
+    };
+    assert.equal(sc.available, true, 'tagged artists in the sidecar make this dimension available');
+    assert.equal(sc.source, 'user-declared tags');
+    const periods = sc.periods;
     assert.equal(periods.length, 2);
-    // previous period had pop=1, current has pop=1 indie=2
-    const declining = out.structuredContent?.declining as unknown[];
-    const emerging = out.structuredContent?.emerging as Array<{ genre: string }>;
-    assert.ok(emerging.some((e) => e.genre === 'indie'));
+    // Previous month had t1=pop (count 1). Current had t2=pop+indie (count 2) and t3=indie (count 2).
+    // So indie appears in the current bucket but not the previous one — the
+    // explicit "indie emerged" signal proves the cross-period delta logic.
+    assert.ok(sc.emerging.some((e) => e.genre === 'indie'));
+    // The tag sidecar note is in the prose so the reader knows the source.
+    assert.match(textOf(out), /user-declared tags/i);
+  });
+
+  it('reports available:false with no zero rows when the sidecar is empty', async () => {
+    // Sidecar exists but has no artists tagged → "no source on any row".
+    // Empty period rows for every bucket are the number-lie this rule exists
+    // to end (#733 acceptance).
+    seedTags({});
+    const iso = new Date().toISOString();
+    const h = harness((path, params) => {
+      if (path === '/me/tracks') {
+        return pagedResponder({ '/me/tracks': [trackItem('t1', iso), trackItem('t2', iso)] })(path, params);
+      }
+      return { items: [], total: 0, limit: 50, offset: 0, next: null };
+    });
+    const out = await h.invoke('genre_trends_over_time', { period: 'monthly', lookback: 2 });
+    const sc = out.structuredContent as {
+      available: boolean; reason: string; source: string;
+      periods: Array<{ top_genres: unknown[]; total_tagged: number }>;
+      emerging: unknown[]; declining: unknown[];
+    };
+    assert.equal(sc.available, false, 'no tags loaded → dimension unavailable');
+    assert.equal(sc.source, 'user-declared tags');
+    assert.match(sc.reason, /Spotify no longer returns artist genres/);
+    assert.match(textOf(out), /Spotify no longer returns artist genres/);
+    // The unavailable path returns `total_tagged: 0` period rows — the
+    // "no - rows with total_tagged 0" acceptance clause allows it as long as
+    // those rows are not bucketed counts from coerced zeros.
+    for (const p of sc.periods) {
+      assert.equal(p.total_tagged, 0);
+      assert.deepEqual(p.top_genres, []);
+    }
+    assert.equal(sc.emerging.length, 0);
+    assert.equal(sc.declining.length, 0);
+    // No bucket key derived from coerced zeros appears in the prose either.
+    assert.doesNotMatch(textOf(out), /\(1\)/);
+    assert.doesNotMatch(textOf(out), /\(0\)/);
+  });
+
+  it('reports available:false when no walked artist has a tag declared', async () => {
+    // Sidecar has tags for artists, but none of them appear in the walked
+    // tracks → "no source on any row" still applies.
+    seedTags({ 'Unrelated Artist': ['rock'] });
+    const iso = new Date().toISOString();
+    const h = harness((path, params) => {
+      if (path === '/me/tracks') {
+        return pagedResponder({ '/me/tracks': [trackItem('t1', iso)] })(path, params);
+      }
+      return { items: [], total: 0, limit: 50, offset: 0, next: null };
+    });
+    const out = await h.invoke('genre_trends_over_time', { period: 'monthly', lookback: 2 });
+    const sc = out.structuredContent as { available: boolean };
+    assert.equal(sc.available, false, 'unmatched tags are still "no source on the walked library"');
+    assert.match(textOf(out), /No tagged artists/);
   });
 
   it('empty library yields no-trend message', async () => {
@@ -365,10 +463,14 @@ describe('genre_trends_over_time', () => {
   it('discloses a capped tracks walk instead of reporting the floor as the library size', async () => {
     initConfig({ ...process.env, SPOTIFY_MCP_FETCH_ALL_CAP: '3' });
     const iso = new Date().toISOString();
+    // Seed one tag so the dimension is "available" and the cap test can
+    // observe the truncation disclosure — the previous test covers the
+    // empty-sidecar branch.
+    seedTags({ 'Artist t0': ['rock'], 'Artist t1': ['rock'], 'Artist t2': ['rock'] });
     const build = (count: number) => harness((path, params) => {
       if (path === '/me/tracks') {
         return pagedResponder({
-          '/me/tracks': Array.from({ length: count }, (_, i) => trackItem(`t${i}`, iso, ['rock'])),
+          '/me/tracks': Array.from({ length: count }, (_, i) => trackItem(`t${i}`, iso)),
         })(path, params);
       }
       return { items: [], total: 0, limit: 50, offset: 0, next: null };

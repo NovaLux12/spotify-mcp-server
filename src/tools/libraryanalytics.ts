@@ -14,6 +14,7 @@ import {
 import type { ResponseFormatValue } from '../shaping.js';
 import { getConfig } from '../config.js';
 import { SpotifyApiError } from '../client.js';
+import { loadGenreTags, tagsForArtist } from './libraryinsights.js';
 
 type ToolOut = {
   content: Array<{ type: 'text'; text: string }>;
@@ -62,19 +63,16 @@ function enumeratePeriods(period: string, lookback: number, now = new Date()): s
   return keys;
 }
 
-function genresForTrack(track: unknown): string[] {
-  const t = track as { artists?: Array<{ name?: string; genres?: string[] }> };
+function tagsForTrackArtists(track: unknown, tagStore: Record<string, string[]>): string[] {
+  const t = track as { artists?: Array<{ name?: string }> };
   const artists = t?.artists;
   if (!Array.isArray(artists)) return [];
-  const out: string[] = [];
+  const out = new Set<string>();
   for (const a of artists) {
-    if (Array.isArray((a as { genres?: string[] }).genres)) {
-      for (const g of (a as { genres: string[] }).genres) {
-        if (typeof g === 'string' && g) out.push(g.toLowerCase());
-      }
-    }
+    if (!a || typeof a.name !== 'string') continue;
+    for (const g of tagsForArtist(tagStore, a.name)) out.add(g);
   }
-  return [...new Set(out)];
+  return [...out];
 }
 
 // ---------------------------------------------------------------------------
@@ -594,7 +592,7 @@ export function registerLibraryAnalyticsTools(server: McpServer, client: Spotify
   // 4. genre_trends_over_time
   server.tool(
     'genre_trends_over_time',
-    'How your taste shifts — per-period top genres via artist genres/tags, with deltas and emerging/declining tags. Read-only.',
+    'How your taste shifts — per-period top genres from user-declared tags, with deltas and emerging/declining tags. Read-only.',
     {
       response_format: ResponseFormat,
       period: z.enum(['monthly', 'quarterly']).optional().describe('Bucket size (default monthly)'),
@@ -615,64 +613,105 @@ export function registerLibraryAnalyticsTools(server: McpServer, client: Spotify
       const keys = enumeratePeriods(p, lb);
       const keySet = new Set(keys);
 
+      // Spotify no longer returns `artists[].genres` on saved-track rows, so the
+      // genre signal is the user-declared sidecar (#733). If the sidecar is
+      // empty, this dimension has no source on any row and the tool reports it
+      // as unavailable rather than fabricating an empty trend.
+      const tagStore = (() => {
+        try { return loadGenreTags().tags; } catch { return {}; }
+      })();
+      const noTagsLoaded = Object.keys(tagStore).length === 0;
+
       // bucket -> genre -> count
       const bucketGenres = new Map<string, Map<string, number>>();
       for (const k of keys) bucketGenres.set(k, new Map());
 
-      for (const it of tracks) {
-        if (!it?.added_at || !it.track) continue;
-        const dt = new Date(it.added_at);
-        if (Number.isNaN(dt.getTime())) continue;
-        const k = periodKey(dt, p);
-        if (!keySet.has(k)) continue;
-        const genres = genresForTrack(it.track);
-        const m = bucketGenres.get(k)!;
-        for (const g of genres) m.set(g, (m.get(g) ?? 0) + 1);
+      if (!noTagsLoaded) {
+        for (const it of tracks) {
+          if (!it?.added_at || !it.track) continue;
+          const dt = new Date(it.added_at);
+          if (Number.isNaN(dt.getTime())) continue;
+          const k = periodKey(dt, p);
+          if (!keySet.has(k)) continue;
+          const genres = tagsForTrackArtists(it.track, tagStore);
+          if (genres.length === 0) continue;
+          const m = bucketGenres.get(k)!;
+          for (const g of genres) m.set(g, (m.get(g) ?? 0) + 1);
+        }
       }
 
-      type PeriodRow = { period: string; top_genres: Array<{ genre: string; count: number }>; total_tagged: number };
-      const periods: PeriodRow[] = keys.map((k) => {
-        const m = bucketGenres.get(k)!;
-        const sorted = [...m.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
-        const top = sorted.slice(0, maxResults).map(([genre, count]) => ({ genre, count }));
-        const total = [...m.values()].reduce((a, b) => a + b, 0);
-        return { period: k, top_genres: top, total_tagged: total };
-      });
-
-      // deltas: last vs previous period
       const lastMap = bucketGenres.get(keys[keys.length - 1]) ?? new Map();
       const prevMap = keys.length >= 2 ? (bucketGenres.get(keys[keys.length - 2]) ?? new Map()) : new Map();
-      const allGenres = new Set([...lastMap.keys(), ...prevMap.keys()]);
-      const deltas: Array<{ genre: string; previous: number; current: number; delta: number }> = [];
-      for (const g of allGenres) {
-        const prev = prevMap.get(g) ?? 0;
-        const cur = lastMap.get(g) ?? 0;
-        deltas.push({ genre: g, previous: prev, current: cur, delta: cur - prev });
-      }
-      deltas.sort((a, b) => b.delta - a.delta || a.genre.localeCompare(b.genre));
-      const emerging = deltas.filter((d) => d.delta > 0).slice(0, 5);
-      const declining = [...deltas].filter((d) => d.delta < 0).sort((a, b) => a.delta - b.delta).slice(0, 5);
+      const bucketHasAny = (m: Map<string, number>) => m.size > 0;
+      const hasAnyData = !noTagsLoaded && (bucketHasAny(lastMap) || bucketHasAny(prevMap) || [...bucketGenres.values()].some(bucketHasAny));
 
       const lines: string[] = [];
       if (tracks.length === 0) {
         lines.push('No saved tracks — nothing to trend.');
+      } else if (!hasAnyData) {
+        // The dimension exists in the schema but has no source on any row in
+        // the walked window. Empty rows would be a number-lie for unavailable
+        // data, so the prose names the real action and the payload says so.
+        const note = noTagsLoaded
+          ? 'Spotify no longer returns artist genres; declare tags with tag_management to populate this report.'
+          : 'No tagged artists appeared in the saved-tracks walk — declare tags with tag_management to populate this report.';
+        lines.push(note);
       } else {
-        lines.push(`Genre trends (${p}, last ${lb} period(s), ${tracks.length} saved tracks${tracksCapped ? ` — walk capped at ${walkCap}, so every count below is a lower bound` : ''}):`);
+        type PeriodRow = { period: string; top_genres: Array<{ genre: string; count: number }>; total_tagged: number };
+        const periods: PeriodRow[] = keys.map((k) => {
+          const m = bucketGenres.get(k)!;
+          const sorted = [...m.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+          const top = sorted.slice(0, maxResults).map(([genre, count]) => ({ genre, count }));
+          const total = [...m.values()].reduce((a, b) => a + b, 0);
+          return { period: k, top_genres: top, total_tagged: total };
+        });
+
+        // deltas: last vs previous period
+        const allGenres = new Set([...lastMap.keys(), ...prevMap.keys()]);
+        const deltas: Array<{ genre: string; previous: number; current: number; delta: number }> = [];
+        for (const g of allGenres) {
+          const prev = prevMap.get(g) ?? 0;
+          const cur = lastMap.get(g) ?? 0;
+          deltas.push({ genre: g, previous: prev, current: cur, delta: cur - prev });
+        }
+        deltas.sort((a, b) => b.delta - a.delta || a.genre.localeCompare(b.genre));
+        const emerging = deltas.filter((d) => d.delta > 0).slice(0, 5);
+        const declining = [...deltas].filter((d) => d.delta < 0).sort((a, b) => a.delta - b.delta).slice(0, 5);
+
+        lines.push(`Genre trends (user-declared tags; ${p}, last ${lb} period(s), ${tracks.length} saved tracks${tracksCapped ? ` — walk capped at ${walkCap}, so every count below is a lower bound` : ''}):`);
         for (const pr of periods) {
           const top = pr.top_genres.map((g) => `${g.genre}(${g.count})`).join(', ') || '—';
           lines.push(`  ${pr.period}: ${top}`);
         }
         if (emerging.length > 0) lines.push(`Emerging: ${emerging.map((e) => `${e.genre} (+${e.delta})`).join(', ')}`);
         if (declining.length > 0) lines.push(`Declining: ${declining.map((e) => `${e.genre} (${e.delta})`).join(', ')}`);
+
+        const payload = {
+          period: p,
+          lookback: lb,
+          source: 'user-declared tags',
+          available: true,
+          periods,
+          deltas,
+          emerging,
+          declining,
+          total_saved_tracks: tracks.length,
+          scan_cap: walkCap,
+          truncated: tracksCapped,
+        };
+        return shapeResult(rf, lines.join('\n'), payload);
       }
 
       const payload = {
         period: p,
         lookback: lb,
-        periods,
-        deltas,
-        emerging,
-        declining,
+        source: 'user-declared tags',
+        available: false,
+        reason: 'Spotify no longer returns artist genres; declare tags with tag_management to populate this report.',
+        periods: keys.map((k) => ({ period: k, top_genres: [], total_tagged: 0 })),
+        deltas: [],
+        emerging: [],
+        declining: [],
         total_saved_tracks: tracks.length,
         scan_cap: walkCap,
         truncated: tracksCapped,
