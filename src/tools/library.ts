@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { MARKET_CODE } from './catalog.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import type { SpotifyClient, SpotifyApiError } from '../client.js';
+import { SpotifyApiError, type SpotifyClient } from '../client.js';
 import type {
   SpotifyPaged,
   SavedTrackItem,
@@ -21,7 +21,13 @@ import {
   DryRun,
 } from '../shaping.js';
 import type { ResponseFormatValue, PaginationInfo } from '../shaping.js';
-import { issueReceipt, formatReceipt } from '../receipts.js';
+import {
+  issueReceipt,
+  formatReceipt,
+  type IssueReceiptOpts,
+  type Receipt,
+  type ReceiptClient,
+} from '../receipts.js';
 import { getConfig } from '../config.js';
 import {
   classifySpotifyReference,
@@ -72,9 +78,50 @@ function mutationOut(
 }
 
 /**
+ * Issue a receipt, tolerating an unreadable verification (#748).
+ * `issueReceipt` refetches live state and can throw; every caller in this file
+ * has already committed a write by the time it runs, so a failed read must
+ * never become a lost result. `error` names the failure and the receipt is
+ * null — a failed read is not a verdict.
+ */
+async function guardedReceipt(
+  client: ReceiptClient,
+  opts: IssueReceiptOpts,
+): Promise<{ receipt: Receipt | null; error?: string }> {
+  try {
+    return { receipt: await issueReceipt(client, opts) };
+  } catch (err) {
+    return { receipt: null, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/**
+ * Render a receipt, or say plainly that none could be issued. One wording for
+ * both callers so the fallback cannot drift between the partial-bucket result
+ * and the single-request one.
+ */
+function receiptLines(
+  receipt: Receipt | null,
+  error: string | undefined,
+  opts: { expectPresent?: boolean },
+  followUp: string,
+): string {
+  return receipt
+    ? formatReceipt(receipt, opts)
+    : `No receipt: verification failed (${error}).${followUp}`;
+}
+
+/**
  * Mutation confirmation + post-mutation verification receipt (#112 idea 11):
  * refetches minimal state so the agent sees explicit confirmation of what
  * landed in the same turn as the write.
+ *
+ * #748: the write has already landed by the time the receipt is read, so a
+ * failed verification read must not be reported as a failed write — that
+ * would hide committed work behind a bare error and invite a duplicate retry.
+ * The mutation result stands: `ok` stays true and `affected`/`uris` stay the
+ * full requested set, with `receipt: null` + `receipt_error` saying why the
+ * receipt is missing.
  */
 async function mutationOutVerified(
   rf: ResponseFormatValue,
@@ -86,17 +133,22 @@ async function mutationOutVerified(
   receiptOpts: { expectPresent?: boolean } = {},
 ): Promise<ToolOut> {
   const base = mutationOut(rf, prose, n, uris);
-  const receipt = await issueReceipt(client, { kind, uris: [...uris], ...receiptOpts });
+  const { receipt, error: receiptError } = await guardedReceipt(client, {
+    kind,
+    uris: [...uris],
+    ...receiptOpts,
+  });
   // json mode must stay parseable: the receipt rides structuredContent only.
   const text =
     rf === 'json'
       ? base.content[0].text
-      : `${base.content[0].text}\n${formatReceipt(receipt, receiptOpts)}`;
+      : `${base.content[0].text}\n${receiptLines(receipt, receiptError, receiptOpts, '')}`;
   return {
     content: [{ type: 'text', text }],
     structuredContent: {
       ...(base.structuredContent ?? {}),
-      receipt: receipt as unknown as Record<string, unknown>,
+      receipt: receipt as unknown as Record<string, unknown> | null,
+      ...(receiptError ? { receipt_error: receiptError } : {}),
     },
   };
 }
@@ -220,6 +272,166 @@ const IDS_AS_QUERY: Record<SavedUriType, boolean> = {
 function savedItemsPath(type: SavedUriType, ids: string[]): string {
   if (!IDS_AS_QUERY[type]) return `/me/${type}s`;
   return `/me/${type}s?ids=${encodeURIComponent(ids.join(','))}`;
+}
+
+/**
+ * One per-URI-type bucket outcome from the legacy per-type save/remove loops
+ * (#748). These loops write one bucket per type in sequence; a rejection in
+ * bucket N used to discard the successes of buckets 1..N-1 behind a bare
+ * error — a silent partial mutation with no receipt, so `undo_last_mutation`
+ * had nothing to invert. Every bucket is now attempted on its own and reported
+ * here, with the rejection's status/retry-after/reason carried through.
+ */
+interface SavedBucketOutcome {
+  type: SavedUriType;
+  /** URIs in this bucket, as partitioned from the caller's request. */
+  requested: number;
+  ok: boolean;
+  /** Rejection message; absent when the bucket landed. */
+  error?: string;
+  /** HTTP status of the rejection, when the client reported one. */
+  status?: number;
+  /** Retry-after hint of the rejection, when the client reported one. */
+  retry_after_sec?: number;
+  /** Spotify `error.reason` of the rejection, when present. */
+  reason?: string;
+}
+
+interface SavedBucketRun {
+  outcomes: SavedBucketOutcome[];
+  /** Canonical URIs whose bucket landed, in bucket order. */
+  committed: string[];
+  /** First rejection, rethrown verbatim when nothing landed. */
+  firstError: unknown;
+}
+
+/**
+ * Attempt every non-empty bucket independently so one rejection cannot erase
+ * the buckets that already succeeded. `firstError` is the original error
+ * object, status/retry-after intact, for the all-failed case.
+ */
+async function runSavedBuckets(
+  buckets: Record<SavedUriType, string[]>,
+  write: (type: SavedUriType, ids: string[]) => Promise<unknown>,
+): Promise<SavedBucketRun> {
+  const outcomes: SavedBucketOutcome[] = [];
+  const committed: string[] = [];
+  let firstError: unknown;
+  for (const type of SAVED_URI_TYPES) {
+    const ids = buckets[type];
+    if (ids.length === 0) continue;
+    try {
+      await write(type, ids);
+      outcomes.push({ type, requested: ids.length, ok: true });
+      committed.push(...ids.map((id) => `spotify:${type}:${id}`));
+    } catch (err) {
+      firstError ??= err;
+      const api = err instanceof SpotifyApiError ? err : undefined;
+      outcomes.push({
+        type,
+        requested: ids.length,
+        ok: false,
+        error: err instanceof Error ? err.message : String(err),
+        ...(api ? { status: api.status } : {}),
+        ...(api?.retryAfterSec !== undefined ? { retry_after_sec: api.retryAfterSec } : {}),
+        ...(api?.reason ? { reason: api.reason } : {}),
+      });
+    }
+  }
+  return { outcomes, committed, firstError };
+}
+
+/**
+ * `/me/library/contains` is the unified endpoint these legacy per-type tools
+ * deliberately do not depend on — a grandfathered credential that cannot use
+ * `/me/library` at all is exactly the credential that produces a partial
+ * write (#748). Translate the receipt's verification read into the per-type
+ * `/me/{type}s/contains` calls `check_saved_items` already uses, so the
+ * committed subset is verifiable wherever the buckets themselves are writable.
+ * Any rejection propagates unchanged: a failed read is not an absent item.
+ */
+function legacyContainsClient(client: SpotifyClient): ReceiptClient {
+  return {
+    async get<T>(path: string, params?: Record<string, string>): Promise<T | null> {
+      const uris = path === '/me/library/contains' ? params?.uris : undefined;
+      if (uris === undefined) return client.get<T>(path, params);
+      const wanted = uris.split(',');
+      const flags = new Array<boolean>(wanted.length).fill(false);
+      const slots: Record<SavedUriType, number[]> = {
+        track: [],
+        album: [],
+        show: [],
+        episode: [],
+        audiobook: [],
+      };
+      wanted.forEach((uri, i) => {
+        const parsed = classifySpotifyReference(uri, undefined, { allowShortIds: true });
+        const type = parsed.kind as SavedUriType | undefined;
+        if (!parsed.valid || !parsed.id || !type || !SAVED_URI_TYPES.includes(type)) return;
+        slots[type].push(i);
+      });
+      for (const type of SAVED_URI_TYPES) {
+        const indexes = slots[type];
+        if (indexes.length === 0) continue;
+        const ids = indexes.map((i) => wanted[i]!.split(':').slice(2).join(':'));
+        const contains = await client.get<boolean[]>(`/me/${type}s/contains`, {
+          ids: ids.join(','),
+        });
+        if (!contains) throw new Error(`Could not check saved ${type}s`);
+        indexes.forEach((uriIndex, j) => {
+          if (contains[j]) flags[uriIndex] = true;
+        });
+      }
+      return flags as T;
+    },
+  };
+}
+
+/**
+ * Partial save/remove result (#748). `ok: false` because the requested set did
+ * not fully land, `affected` counts only the buckets that did, and `results`
+ * names every bucket with its own outcome — an unread or rejected group is
+ * reported as such, never counted as saved. The receipt covers exactly the
+ * committed URIs so undo inverts the committed subset and nothing else; when
+ * even the verification read fails, `receipt` is null with `receipt_error`
+ * saying so rather than a fabricated verdict.
+ */
+async function savedBucketsPartialOut(
+  rf: ResponseFormatValue,
+  client: SpotifyClient,
+  verb: 'Saved' | 'Removed',
+  outcomes: SavedBucketOutcome[],
+  committed: readonly string[],
+  expectPresent: boolean,
+): Promise<ToolOut> {
+  const failed = outcomes.filter((o) => !o.ok);
+  const requestedTotal = outcomes.reduce((a, o) => a + o.requested, 0);
+  const failedText = failed.map((o) => `${o.type} (${o.requested}): ${o.error}`).join('; ');
+  const groups = `${outcomes.length - failed.length} of ${outcomes.length} groups landed`;
+  const { receipt, error: receiptError } = await guardedReceipt(legacyContainsClient(client), {
+    kind: 'library',
+    uris: [...committed],
+    expectPresent,
+  });
+  const prose =
+    `${verb} ${committed.length} of ${requestedTotal} item(s) (${groups}) — ` +
+    `not ${verb.toLowerCase()}: ${failedText}.\n` +
+    receiptLines(
+      receipt,
+      receiptError,
+      { expectPresent },
+      ' Confirm the committed subset with check_saved_items.',
+    );
+  return shapeResult(rf, prose, {
+    ok: false,
+    partial: true,
+    affected: committed.length,
+    requested: requestedTotal,
+    uris: [...committed],
+    results: outcomes,
+    receipt: receipt as unknown as Record<string, unknown> | null,
+    ...(receiptError ? { receipt_error: receiptError } : {}),
+  });
 }
 
 // Unified library endpoints (#37): the modern path accepting any mix of URI
@@ -526,19 +738,21 @@ export function registerLibraryTools(server: McpServer, client: SpotifyClient): 
       if (args.dry_run) {
         return dryRunOut(args.response_format, 'save_items', 'user library', uris);
       }
-      const counts: string[] = [];
-      let saved = 0;
-      for (const type of SAVED_URI_TYPES) {
-        const ids = buckets[type];
-        if (ids.length === 0) continue;
-        await client.put(savedItemsPath(type, ids), IDS_AS_QUERY[type] ? undefined : { ids });
-        counts.push(`${ids.length} ${type}${ids.length === 1 ? '' : 's'}`);
-        saved += ids.length;
+      // #748: each bucket stands alone — a rejection in one no longer discards
+      // the buckets that already landed, and the committed subset gets a receipt.
+      const { outcomes, committed, firstError } = await runSavedBuckets(buckets, (type, ids) =>
+        client.put(savedItemsPath(type, ids), IDS_AS_QUERY[type] ? undefined : { ids }),
+      );
+      if (outcomes.some((o) => !o.ok)) {
+        // Nothing landed: the original error still answers, status/retry-after intact.
+        if (committed.length === 0) throw firstError;
+        return savedBucketsPartialOut(args.response_format, client, 'Saved', outcomes, committed, true);
       }
+      const counts = outcomes.map((o) => `${o.requested} ${o.type}${o.requested === 1 ? '' : 's'}`);
       return mutationOut(
         args.response_format,
-        `Saved ${saved} item(s) to library (${counts.join(', ')}).`,
-        saved,
+        `Saved ${committed.length} item(s) to library (${counts.join(', ')}).`,
+        committed.length,
         uris,
       );
     },
@@ -561,17 +775,26 @@ export function registerLibraryTools(server: McpServer, client: SpotifyClient): 
       if (args.dry_run) {
         return dryRunOut(args.response_format, 'remove_saved_items', 'user library', uris);
       }
-      let removed = 0;
-      for (const type of SAVED_URI_TYPES) {
-        const ids = buckets[type];
-        if (ids.length === 0) continue;
-        await client.delete(savedItemsPath(type, ids), IDS_AS_QUERY[type] ? undefined : { ids });
-        removed += ids.length;
+      // #748: mirror of save_items — a rejected bucket must not erase the
+      // removals that already landed, and those removals get a receipt.
+      const { outcomes, committed, firstError } = await runSavedBuckets(buckets, (type, ids) =>
+        client.delete(savedItemsPath(type, ids), IDS_AS_QUERY[type] ? undefined : { ids }),
+      );
+      if (outcomes.some((o) => !o.ok)) {
+        if (committed.length === 0) throw firstError;
+        return savedBucketsPartialOut(
+          args.response_format,
+          client,
+          'Removed',
+          outcomes,
+          committed,
+          false,
+        );
       }
       return mutationOut(
         args.response_format,
-        `Removed ${removed} item(s) from library.`,
-        removed,
+        `Removed ${committed.length} item(s) from library.`,
+        committed.length,
         uris,
       );
     },

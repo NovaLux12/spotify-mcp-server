@@ -12,8 +12,10 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import type { SpotifyClient } from '../src/client.js';
+import { SpotifyApiError, type SpotifyClient } from '../src/client.js';
 import { registerLibraryTools } from '../src/tools/library.js';
+import { registerUndoTools } from '../src/tools/undo.js';
+import { verifyReceipt } from '../src/receipts.js';
 
 // ---------------------------------------------------------------------------
 // Stub plumbing
@@ -81,7 +83,7 @@ function makeStubClient(responder: Responder = () => null) {
   return client;
 }
 
-function harness(responder: Responder = () => null) {
+function harness(responder: Responder = () => null, opts: { withUndo?: boolean } = {}) {
   const registered: RegisteredTool[] = [];
   const fakeServer = {
     tool(
@@ -95,6 +97,7 @@ function harness(responder: Responder = () => null) {
   } as unknown as McpServer;
   const client = makeStubClient(responder);
   registerLibraryTools(fakeServer, client as unknown as SpotifyClient);
+  if (opts.withUndo) registerUndoTools(fakeServer, client as unknown as SpotifyClient);
 
   return {
     registered,
@@ -792,5 +795,208 @@ describe('mutation receipts in json mode (#112 idea 11)', () => {
       receipt?: { verified: boolean };
     };
     assert.equal(sc.receipt?.verified, true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Partial per-type writes (#748)
+// ---------------------------------------------------------------------------
+
+describe('partial per-type writes keep the committed subset visible and invertible (#748)', () => {
+  const MIXED = ['spotify:track:t1', 'spotify:album:a1', 'spotify:audiobook:b1'];
+  const COMMITTED = ['spotify:track:t1', 'spotify:album:a1'];
+  const SCOPE_403 = '/me/audiobooks?ids=b1';
+
+  interface PartialPayload {
+    ok: boolean;
+    partial?: boolean;
+    affected: number;
+    requested?: number;
+    uris: string[];
+    results?: Array<{ type: string; requested: number; ok: boolean; error?: string; status?: number }>;
+    receipt: { receipt_id: string; direction: string; verified: boolean; uris: string[] } | null;
+    receipt_error?: string;
+  }
+
+  it('save_items names the committed groups, the failing group, and receipts only the committed URIs', async () => {
+    const h = harness((path) => {
+      if (path === SCOPE_403) throw new SpotifyApiError(403, 'Insufficient client scope');
+      if (path === '/me/tracks/contains') return [true];
+      if (path === '/me/albums/contains') return [true];
+      return null;
+    });
+
+    const out = await h.invoke('save_items', { uris: MIXED });
+    const sc = out.structuredContent as PartialPayload;
+
+    // The call as a whole did not land — say so, and say how much did.
+    assert.equal(sc.ok, false);
+    assert.equal(sc.partial, true);
+    assert.equal(sc.affected, 2);
+    assert.equal(sc.requested, 3);
+    assert.deepEqual(sc.uris, COMMITTED);
+    assert.deepEqual(
+      sc.results?.map((r) => [r.type, r.ok, r.requested]),
+      [
+        ['track', true, 1],
+        ['album', true, 1],
+        ['audiobook', false, 1],
+      ],
+    );
+    const failed = sc.results![2]!;
+    assert.equal(failed.error, 'Insufficient client scope');
+    assert.equal(failed.status, 403);
+
+    // The receipt is verified through the per-type endpoints these legacy tools
+    // already depend on — never the unified /me/library/contains that a
+    // grandfathered credential, the very credential that 403s here, cannot reach.
+    assert.deepEqual(
+      wireCalls(h.client.calls).filter((c) => c.method === 'GET'),
+      [
+        { method: 'GET', path: '/me/tracks/contains', arg: { ids: 't1' } },
+        { method: 'GET', path: '/me/albums/contains', arg: { ids: 'a1' } },
+      ],
+    );
+    assert.equal(sc.receipt?.direction, 'added');
+    assert.equal(sc.receipt?.verified, true);
+    assert.deepEqual(sc.receipt?.uris, COMMITTED);
+    // Registered in the store, so undo can find it — not a rendered echo.
+    assert.deepEqual(verifyReceipt(sc.receipt!.receipt_id), sc.receipt);
+  });
+
+  it('save_items prose states the partial count and the rejection, not a bare error', async () => {
+    const h = harness((path) => {
+      if (path === SCOPE_403) throw new SpotifyApiError(403, 'Insufficient client scope');
+      if (path === '/me/tracks/contains') return [true];
+      if (path === '/me/albums/contains') return [true];
+      return null;
+    });
+
+    const text = (await h.invoke('save_items', { uris: MIXED })).content[0].text;
+
+    assert.match(text, /^Saved 2 of 3 item\(s\) \(2 of 3 groups landed\) — not saved: /);
+    assert.match(text, /audiobook \(1\): Insufficient client scope\./);
+    assert.match(text, /Receipt rcpt_\d+: VERIFIED \(library\)/);
+  });
+
+  it('remove_saved_items issues a removed-direction receipt that undo inverts as exactly the committed subset', async () => {
+    const h = harness(
+      (path) => {
+        if (path === SCOPE_403) throw new SpotifyApiError(403, 'Insufficient client scope');
+        if (path === '/me/tracks/contains') return [false];
+        if (path === '/me/albums/contains') return [false];
+        return null;
+      },
+      { withUndo: true },
+    );
+
+    const out = await h.invoke('remove_saved_items', { uris: MIXED });
+    const sc = out.structuredContent as PartialPayload;
+
+    assert.equal(sc.ok, false);
+    assert.equal(sc.affected, 2);
+    assert.deepEqual(sc.uris, COMMITTED);
+    assert.equal(sc.receipt?.direction, 'removed');
+    assert.equal(sc.receipt?.verified, true);
+
+    const undo = await h.invoke('undo_mutation', {
+      receipt_id: sc.receipt!.receipt_id,
+      dry_run: true,
+    });
+    const preview = undo.structuredContent as { direction: string; would: string; uris: string[] };
+    assert.equal(preview.direction, 'removed');
+    assert.equal(preview.would, 'add');
+    // The audiobook that never landed must not be re-added by the undo.
+    assert.deepEqual(preview.uris, COMMITTED);
+
+    // The blind "last mutation" path must reach the same verdict: the partial
+    // receipt is the FIFO head, so undo_last_mutation inverts the committed
+    // subset in the removal's direction — not the whole requested set.
+    const last = await h.invoke('undo_last_mutation', { dry_run: true });
+    const lastPreview = last.structuredContent as {
+      receipt_id: string;
+      direction: string;
+      would: string;
+      uris: string[];
+    };
+    assert.equal(lastPreview.receipt_id, sc.receipt!.receipt_id);
+    assert.equal(lastPreview.direction, 'removed');
+    assert.equal(lastPreview.would, 'add');
+    assert.deepEqual(lastPreview.uris, COMMITTED);
+    assert.match(
+      last.content[0].text,
+      /Would add 2 URI\(s\):\n {2}- spotify:track:t1\n {2}- spotify:album:a1/,
+    );
+  });
+
+  it('still returns the partial result when the receipt verification read itself fails', async () => {
+    const h = harness((path) => {
+      if (path === SCOPE_403) throw new SpotifyApiError(403, 'Insufficient client scope');
+      if (path === '/me/tracks/contains') {
+        throw new SpotifyApiError(403, 'Cannot read saved tracks');
+      }
+      if (path === '/me/albums/contains') return [true];
+      return null;
+    });
+
+    const out = await h.invoke('save_items', { uris: MIXED });
+    const sc = out.structuredContent as PartialPayload;
+
+    // A failed verification read is not an absent item and not a lost write:
+    // the committed subset is still reported, with the receipt marked unavailable.
+    assert.equal(sc.ok, false);
+    assert.equal(sc.affected, 2);
+    assert.deepEqual(sc.uris, COMMITTED);
+    assert.equal(sc.receipt, null);
+    assert.equal(sc.receipt_error, 'Cannot read saved tracks');
+    assert.match(
+      out.content[0].text,
+      /No receipt: verification failed \(Cannot read saved tracks\)/,
+    );
+  });
+
+  it('rethrows the original rejection, status and retry-after intact, when no bucket lands', async () => {
+    const h = harness((path) => {
+      if (path.startsWith('/me/') && !path.includes('/contains')) {
+        throw new SpotifyApiError(429, 'API rate limited', 7);
+      }
+      return null;
+    });
+
+    await assert.rejects(h.invoke('save_items', { uris: MIXED }), (err: unknown) => {
+      assert.ok(err instanceof SpotifyApiError);
+      assert.equal(err.status, 429);
+      assert.equal(err.retryAfterSec, 7);
+      return true;
+    });
+    // Nothing landed, so nothing is reported as landed and no receipt is invented.
+    assert.equal(
+      h.client.calls.filter((c) => c.method === 'GET').length,
+      0,
+      'no verification read, because no write landed',
+    );
+  });
+
+  // Same class, single-request siblings: the write lands before the receipt is
+  // read, so a failed verification read must not read as a failed write.
+  it('save_to_library keeps reporting the landed write when the receipt read fails', async () => {
+    const h = harness((path) => {
+      if (path === '/me/library/contains') throw new SpotifyApiError(403, 'No unified library access');
+      return null;
+    });
+
+    const out = await h.invoke('save_to_library', { uris: ['spotify:track:t1'] });
+    const sc = out.structuredContent as {
+      ok: boolean;
+      affected: number;
+      receipt: unknown;
+      receipt_error?: string;
+    };
+
+    assert.equal(sc.ok, true);
+    assert.equal(sc.affected, 1);
+    assert.equal(sc.receipt, null);
+    assert.equal(sc.receipt_error, 'No unified library access');
+    assert.match(out.content[0].text, /No receipt: verification failed \(No unified library access\)\./);
   });
 });
