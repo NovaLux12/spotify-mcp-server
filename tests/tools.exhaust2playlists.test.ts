@@ -513,3 +513,158 @@ test('missing playlist fails fast with a clear error', async () => {
   const t = find(registered, 'playlist_staleness_score');
   await assert.rejects(() => t.handler({ playlist_id: 'nope' }), /not found/);
 });
+
+// ---------------------------------------------------------------------------
+// #868 — playlist_names_bulk_normalize: real ownership, resume, partial failure
+// ---------------------------------------------------------------------------
+
+/** `/me/playlists` row: id, name, and the `owner` id the tool must compare. */
+function pl(id: string, name: string, ownerId: string): Record<string, unknown> {
+  return {
+    id,
+    name,
+    uri: `spotify:playlist:${id}`,
+    description: null,
+    owner: { display_name: ownerId, id: ownerId },
+    items: { total: 0 },
+  };
+}
+
+const ME_ID = 'me-1';
+const OTHER_ID = 'someone-else';
+
+test('playlist_names_bulk_normalize skips followed playlists under the owned default (#868)', async () => {
+  // Two owned + two followed playlists all carry `owner.id`, but only the
+  // owned ones should be renamed when apply_to defaults to 'owned'.
+  const client = makeFakeClient({
+    '/me': { id: ME_ID },
+    '/me/playlists': [
+      pl('own-a', 'Mine (Official Copy)', ME_ID),
+      pl('own-b', 'Mine Two', ME_ID),
+      pl('fol-a', 'Friends Mix (Official Copy)', OTHER_ID),
+      pl('fol-b', 'Friends Two', OTHER_ID),
+    ],
+  });
+  const registered: RegisteredTool[] = [];
+  registerExhaust2PlaylistsTools(makeServer(registered), client);
+  const r = await find(registered, 'playlist_names_bulk_normalize').handler({
+    op: 'strip_noise',
+    dry_run: false,
+    response_format: 'json',
+  });
+  const p = r.structuredContent as Record<string, unknown>;
+  const renames = p.renames as Array<{ id: string; from: string; to: string }>;
+  const renamedIds = renames.map((x) => x.id).sort();
+  // Only the owned playlist with noise gets renamed; the followed rows and
+  // the already-clean owned row are skipped.
+  assert.deepEqual(renamedIds, ['own-a']);
+  assert.equal(p.renamed, 1);
+  assert.equal(p.failed, 0);
+  // The followed row was NOT touched.
+  const puts = client.calls.filter((c) => c.method === 'PUT');
+  assert.equal(puts.length, 1);
+  assert.equal(puts[0]?.path, '/playlists/own-a');
+});
+
+test('playlist_names_bulk_normalize renames every followed playlist when apply_to=all (#868)', async () => {
+  const client = makeFakeClient({
+    '/me': { id: ME_ID },
+    '/me/playlists': [
+      pl('own-a', 'Mine (Official Copy)', ME_ID),
+      pl('fol-a', 'Friends Mix (Official Copy)', OTHER_ID),
+    ],
+  });
+  const registered: RegisteredTool[] = [];
+  registerExhaust2PlaylistsTools(makeServer(registered), client);
+  const r = await find(registered, 'playlist_names_bulk_normalize').handler({
+    op: 'strip_noise',
+    apply_to: 'all',
+    dry_run: false,
+    response_format: 'json',
+  });
+  const p = r.structuredContent as Record<string, unknown>;
+  const renamedIds = (p.renames as Array<{ id: string }>).map((x) => x.id).sort();
+  assert.deepEqual(renamedIds, ['fol-a', 'own-a']);
+  assert.equal(p.renamed, 2);
+});
+
+test('playlist_names_bulk_normalize resumes past already-landed renames (#868)', async () => {
+  // Simulates a re-run after a previous run already renamed a playlist to
+  // its target: the playlist is now back in the listing with the new name,
+  // and the same deterministic computation produces the same target, so the
+  // tool should NOT issue a redundant PUT.
+  const client = makeFakeClient({
+    '/me': { id: ME_ID },
+    '/me/playlists': [
+      pl('own-a', 'Mine', ME_ID),          // already at the target
+      pl('own-b', 'Mine Two (Copy)', ME_ID), // still has noise
+    ],
+  });
+  const registered: RegisteredTool[] = [];
+  registerExhaust2PlaylistsTools(makeServer(registered), client);
+  const r = await find(registered, 'playlist_names_bulk_normalize').handler({
+    op: 'strip_noise',
+    dry_run: false,
+    response_format: 'json',
+  });
+  const p = r.structuredContent as Record<string, unknown>;
+  const renamedIds = (p.renames as Array<{ id: string }>).map((x) => x.id).sort();
+  assert.deepEqual(renamedIds, ['own-b']);
+  assert.equal(p.renamed, 1);
+  const puts = client.calls.filter((c) => c.method === 'PUT');
+  assert.equal(puts.length, 1);
+  assert.equal(puts[0]?.path, '/playlists/own-b');
+});
+
+test('playlist_names_bulk_normalize continues past a mid-run 403 and reports it (#868)', async () => {
+  const client = makeFakeClient({
+    '/me': { id: ME_ID },
+    '/me/playlists': [
+      pl('own-a', 'A (Copy)', ME_ID),
+      pl('own-b', 'B (Copy)', ME_ID),
+      pl('own-c', 'C (Copy)', ME_ID),
+    ],
+    'PUT /playlists/own-b': Object.assign(new Error('forbidden'), { status: 403 }),
+  });
+  const registered: RegisteredTool[] = [];
+  registerExhaust2PlaylistsTools(makeServer(registered), client);
+  const r = await find(registered, 'playlist_names_bulk_normalize').handler({
+    op: 'strip_noise',
+    dry_run: false,
+    response_format: 'json',
+  });
+  const p = r.structuredContent as Record<string, unknown>;
+  assert.equal(p.renamed, 2);
+  assert.equal(p.failed, 1);
+  assert.equal(p.ok, false);
+  const failures = p.failures as Array<{ id: string; status: number; from: string; to: string }>;
+  assert.equal(failures.length, 1);
+  assert.equal(failures[0]?.id, 'own-b');
+  assert.equal(failures[0]?.status, 403);
+  // Every playlist is still attempted; only own-b fails.
+  const puts = client.calls.filter((c) => c.method === 'PUT').map((c) => c.path).sort();
+  assert.deepEqual(puts, ['/playlists/own-a', '/playlists/own-b', '/playlists/own-c']);
+});
+
+test('playlist_names_bulk_normalize dry-run still applies the ownership filter (#868)', async () => {
+  const client = makeFakeClient({
+    '/me': { id: ME_ID },
+    '/me/playlists': [
+      pl('own-a', 'Mine (Copy)', ME_ID),
+      pl('fol-a', 'Friends (Copy)', OTHER_ID),
+    ],
+  });
+  const registered: RegisteredTool[] = [];
+  registerExhaust2PlaylistsTools(makeServer(registered), client);
+  const r = await find(registered, 'playlist_names_bulk_normalize').handler({
+    op: 'strip_noise',
+    dry_run: true,
+    response_format: 'json',
+  });
+  const prose = text(r);
+  // Owned one appears, followed one does not.
+  assert.match(prose, /"Mine \(Copy\)" → "Mine"/);
+  assert.doesNotMatch(prose, /Friends/);
+  // Dry-run must not issue PUTs.
+  assert.equal(client.calls.some((c) => c.method === 'PUT'), false);
+});
