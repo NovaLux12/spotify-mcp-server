@@ -1083,9 +1083,20 @@ describe('check_following_artists', () => {
 });
 
 // ---------------------------------------------------------------------------
-// #862 — the follow check must send the ids the endpoint requires, and a
-// rejected read must never be reported as `following: false`
+// #862 — the follow check must read the endpoint Spotify still serves, and a
+// read that fails must never be reported as `following: false`
 // ---------------------------------------------------------------------------
+
+// Routes the Feb 2026 Web API changelog marks [REMOVED]
+// (developer.spotify.com/documentation/web-api/references/changes/february-2026).
+// A request to one of these can only ever fail, so naming one in a shipped
+// description is a contract the server cannot honour.
+const FEB_2026_REMOVED_FOLLOW_READS = [
+  '/me/following/contains',
+  '/playlists/playlist-id/followers/contains',
+  '/me/albums/contains',
+  '/me/tracks/contains',
+];
 
 describe('check_playlist_following (#862)', () => {
   interface FollowRow {
@@ -1093,48 +1104,89 @@ describe('check_playlist_following (#862)', () => {
     following: boolean | null;
     error?: string;
   }
-  // Playlist references are validated as 22 base62 chars by the tool schema.
+  // Playlist references are validated by the tool schema, not by a fixed width.
   const pid = (tag: string) => (tag + 'x'.repeat(22)).slice(0, 22);
-  /** The ids CSV the tool actually put on the wire for one recorded call. */
+  /** The `uris` CSV the tool actually put on the wire for one recorded call. */
+  const sentUris = (arg: unknown): string =>
+    arg !== null && typeof arg === 'object' && 'uris' in arg && typeof arg.uris === 'string'
+      ? arg.uris
+      : '';
+  /** The same CSV reduced back to bare playlist ids, for readable assertions. */
   const sentIds = (arg: unknown): string =>
-    arg !== null && typeof arg === 'object' && 'ids' in arg && typeof arg.ids === 'string' ? arg.ids : '';
+    sentUris(arg)
+      .split(',')
+      .filter(Boolean)
+      .map((u) => u.replace(/^spotify:playlist:/, ''))
+      .join(',');
   /** The structured rows, after checking the payload really is a row array. */
   const rowsOf = (out: { structuredContent?: Record<string, unknown> }): FollowRow[] => {
     const rows = out.structuredContent?.results;
     assert.ok(Array.isArray(rows), 'structuredContent.results should be an array');
     return rows as FollowRow[];
   };
+  /** Ids 00..n-1, for driving the batch boundary. */
+  const numbered = (n: number) => Array.from({ length: n }, (_, i) => pid(String(i).padStart(2, '0')));
 
-  it('sends the required ids param to the follow-contains endpoint', async () => {
+  it('asks the live library-contains route, with spotify:playlist: URIs, and no other route', async () => {
     const h = harness(() => [true, false]);
 
     await h.invoke('check_playlist_following', { playlists: [pid('aa'), pid('bb')] });
 
+    // deepEqual over the whole call log: a request to any other path — the
+    // removed follow-contains routes included — makes this fail.
     assert.deepEqual(wireCalls(h.client.calls), [
       {
         method: 'GET',
-        path: '/me/following/contains',
-        arg: { type: 'playlist', ids: `${pid('aa')},${pid('bb')}` },
+        path: '/me/library/contains',
+        arg: { uris: `spotify:playlist:${pid('aa')},spotify:playlist:${pid('bb')}` },
       },
     ]);
   });
 
-  it('batches ids 5 at a time, sending every id exactly once', async () => {
-    const h = harness((_path, arg) => sentIds(arg).split(',').filter(Boolean).map(() => true));
-    const tags = ['aa', 'bb', 'cc', 'dd', 'ee', 'ff', 'gg'];
+  it('advertises the live route in tools/list and names no removed one', () => {
+    const h = harness(() => [true]);
+    const tool = h.registered.find((t) => t.name === 'check_playlist_following');
+    assert.ok(tool, 'check_playlist_following should be registered');
+    // The agent-facing string is the contract; it must name the route that
+    // actually answers, with the parameter that route actually takes.
+    assert.match(tool.description, /GET \/me\/library\/contains\?uris=/);
+    for (const removed of FEB_2026_REMOVED_FOLLOW_READS) {
+      assert.ok(!tool.description.includes(removed), `description still names removed route ${removed}`);
+    }
+  });
 
-    const out = await h.invoke('check_playlist_following', { playlists: tags.map(pid) });
+  it('caps each request at the documented 40-URI maximum (41 ids → 40 then 1)', async () => {
+    const h = harness((_path, arg) => sentIds(arg).split(',').filter(Boolean).map(() => true));
+    const ids = numbered(41);
+
+    const out = await h.invoke('check_playlist_following', { playlists: ids });
+
+    const batches = wireCalls(h.client.calls).map((c) => sentIds(c.arg));
+    assert.deepEqual(
+      batches.map((b) => b.split(',').length),
+      [40, 1],
+    );
+    // A 41st uri in one request is a 400 from Spotify, not a saved round trip.
+    assert.ok(batches.every((b) => b.split(',').length <= 40));
+    assert.deepEqual(
+      batches.flatMap((b) => b.split(',')).sort(),
+      [...ids].sort(),
+      'every requested id is sent exactly once',
+    );
+    assert.match(textOf(out), /Playlist following \(41 checked, showing 41\)/);
+  });
+
+  it('splits the tool maximum of 50 ids into 40 + 10, never 50 in one request', async () => {
+    const h = harness((_path, arg) => sentIds(arg).split(',').filter(Boolean).map(() => true));
+    const ids = numbered(50);
+
+    const out = await h.invoke('check_playlist_following', { playlists: ids });
 
     assert.deepEqual(
-      wireCalls(h.client.calls).map((c) => sentIds(c.arg)),
-      [tags.slice(0, 5).map(pid).join(','), tags.slice(5).map(pid).join(',')],
+      wireCalls(h.client.calls).map((c) => sentIds(c.arg).split(',').length),
+      [40, 10],
     );
-    const sent = wireCalls(h.client.calls)
-      .flatMap((c) => sentIds(c.arg).split(','))
-      .sort();
-    assert.deepEqual(sent, tags.map(pid).sort());
-    // Every requested id produced a verdict, none silently dropped.
-    assert.match(textOf(out), /Playlist following \(7 checked, showing 7\)/);
+    assert.match(textOf(out), /Playlist following \(50 checked, showing 50\)/);
   });
 
   it('maps verdicts back to input order', async () => {
@@ -1190,29 +1242,22 @@ describe('check_playlist_following (#862)', () => {
       if (ids.includes(pid('bad'))) throw new SpotifyApiError(500, 'boom');
       return ids.map(() => true);
     });
-
-    const out = await h.invoke('check_playlist_following', {
-      playlists: [pid('ok1'), pid('ok2'), pid('ok3'), pid('ok4'), pid('ok5'), pid('bad')],
-    });
+    // 40 readable ids, then the failing one — the failure must not poison the
+    // batch that came back cleanly.
+    const ok = numbered(40);
+    const out = await h.invoke('check_playlist_following', { playlists: [...ok, pid('bad')] });
 
     assert.deepEqual(
       rowsOf(out).map((r) => [r.playlist_id, r.following]),
-      [
-        [pid('ok1'), true],
-        [pid('ok2'), true],
-        [pid('ok3'), true],
-        [pid('ok4'), true],
-        [pid('ok5'), true],
-        [pid('bad'), null],
-      ],
+      [...ok.map((id) => [id, true] as const), [pid('bad'), null]],
     );
     const text = textOf(out);
-    assert.ok(text.includes(`✓ ${pid('ok1')}`), text);
+    assert.ok(text.includes(`✓ ${ok[0]}`), text);
     assert.doesNotMatch(text, /✗/);
   });
 
   it('treats a short verdict array as unreadable, not as "not followed"', async () => {
-    // Spotify returned fewer verdicts than ids asked for: the missing one is
+    // Spotify returned fewer verdicts than uris asked for: the missing one is
     // an unread, not a negative answer.
     const h = harness(() => [true]);
     const out = await h.invoke('check_playlist_following', {
