@@ -56,8 +56,16 @@ export function chunk<T>(items: readonly T[], kind: ChunkCapKind): T[][] {
  *   - `failed_chunk_index` — zero-based index of the chunk whose request rejected
  *   - `last_committed_chunk_index` — `-1` if no chunk landed, else the last one that did
  *   - `last_committed_chunk_uris` — `[]` if nothing landed, else the URIs of the last successful chunk
+ *   - `committed_uris` — how many URIs landed ACROSS ALL committed chunks
  *   - `error` — the message the throwing request carried (Spotify's `error.message` when present)
  * Combined with the input URI list a retry can skip the already-committed prefix.
+ *
+ * `committed_uris` is not `last_committed_chunk_uris.length`: that array holds
+ * ONE chunk, so the two agree only when exactly one chunk committed (i.e. the
+ * second chunk of the write rejected). Reading the total off the last chunk
+ * understates a 4-chunk write that died on its fourth chunk as "100 committed"
+ * when 300 were, and a retry built on that number re-adds the already-committed
+ * prefix (#865 follow-up).
  */
 export interface PlaylistPartialWriteFailure {
   ok: false;
@@ -66,6 +74,7 @@ export interface PlaylistPartialWriteFailure {
   failed_chunk_index: number;
   last_committed_chunk_index: number;
   last_committed_chunk_uris: string[];
+  committed_uris: number;
   error: string;
 }
 
@@ -104,6 +113,9 @@ export async function runChunkedPlaylistWrite(
   let snapshot_id: string | undefined;
   let lastCommittedChunkIndex = -1;
   let lastCommittedChunkUris: string[] = [];
+  // Every committed chunk is a prefix of `uris`, so the committed count is the
+  // running total of chunk lengths — not the last chunk's length.
+  let committedUris = 0;
   for (let i = 0; i < uris.length; i += chunkSize) {
     const chunk = uris.slice(i, i + chunkSize);
     const chunkIndex = i / chunkSize;
@@ -112,6 +124,7 @@ export async function runChunkedPlaylistWrite(
       if (res?.snapshot_id) snapshot_id = res.snapshot_id;
       lastCommittedChunkIndex = chunkIndex;
       lastCommittedChunkUris = chunk;
+      committedUris += chunk.length;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       return {
@@ -121,6 +134,7 @@ export async function runChunkedPlaylistWrite(
         failed_chunk_index: chunkIndex,
         last_committed_chunk_index: lastCommittedChunkIndex,
         last_committed_chunk_uris: lastCommittedChunkUris,
+        committed_uris: committedUris,
         error: message,
       };
     }

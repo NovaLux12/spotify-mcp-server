@@ -140,8 +140,8 @@ export function registerPlaylistMiscTools(server: McpServer, client: SpotifyClie
         client.post<{ snapshot_id?: string }>(itemsPath, { uris: chunk }),
       );
       if (!write.ok) {
-        const committedCount = write.last_committed_chunk_uris.length;
-        const lastUri = write.last_committed_chunk_uris[committedCount - 1];
+        const committedCount = write.committed_uris;
+        const lastUri = write.last_committed_chunk_uris[write.last_committed_chunk_uris.length - 1];
         const prose = write.failed_chunk_index === 0
           ? `Created "${playlistName}" (${created.id}) but no track landed: ${write.error}. The playlist exists and is empty; retry the add of ${uris.length} track(s).`
           : `Partial apply of template "${args.template}" into new playlist ${created.id}: chunks 1–${write.failed_chunk_index} committed (${committedCount} track(s)), chunk ${write.failed_chunk_index + 1} of ${write.attempted_chunks} failed.${lastUri ? ` Last URI committed: ${lastUri}.` : ''} Retry the remaining ${uris.length - committedCount} track(s); the committed prefix is already there. (${write.error})`;
@@ -151,7 +151,6 @@ export function registerPlaylistMiscTools(server: McpServer, client: SpotifyClie
           playlist_id: created.id,
           playlist_uri: created.uri,
           attempted_uris: uris.length,
-          committed_uris: committedCount,
           remaining_uris: uris.length - committedCount,
         });
       }

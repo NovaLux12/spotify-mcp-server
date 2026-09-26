@@ -767,6 +767,42 @@ describe('multi-chunk write partial state (#865)', () => {
     assert.match(textOf(out), /the first chunk failed/);
   });
 
+  it('committed_uris counts every committed chunk, not just the last one (#865 follow-up)', async () => {
+    // 350 source URIs → 4 chunks (100/100/100/50). Chunks 0–2 commit, chunk 3
+    // throws. The two-chunk tests above cannot see this: with one committed
+    // chunk, `last_committed_chunk_uris.length` happens to equal the committed
+    // total. Here it is 100 while 300 URIs actually landed, so a retry built
+    // on that number would re-add chunks 0–2 — the exact duplication #865
+    // exists to prevent.
+    const wideSource = Array.from({ length: 350 }, (_, i) => track(`w${i}`));
+    let postCount = 0;
+    const h = harness((_path, _arg, method) => {
+      if (method !== 'POST') return { items: [], total: 0, limit: 100, offset: 0, next: null } as unknown;
+      postCount++;
+      if (postCount <= 3) return { snapshot_id: `snap-${postCount}` } as unknown;
+      throw new SpotifyApiError(503, 'Service Unavailable');
+    }, { action: 'accept', content: { confirm: true } });
+    const out = await h.invoke('batch_add_to_playlist', { target_playlist_id: TARGET, source_uris: wideSource });
+    const payload = out.structuredContent as Record<string, unknown>;
+    assert.equal(payload.partial_write_failure, true);
+    assert.equal(payload.attempted_chunks, 4);
+    assert.equal(payload.failed_chunk_index, 3);
+    assert.equal(payload.last_committed_chunk_index, 2);
+    // `last_committed_chunk_uris` keeps its documented meaning: ONE chunk.
+    assert.deepEqual(payload.last_committed_chunk_uris, wideSource.slice(200, 300));
+    // The count is the total across chunks 0, 1 and 2 — not chunk 2 alone.
+    assert.equal(payload.committed_uris, 300, 'committed_uris must total every committed chunk, not the last one');
+    assert.equal(payload.attempted_uris, 350);
+    assert.equal(payload.remaining_uris, 50);
+    // Prose agrees with the payload, so a reader who only sees the text still
+    // knows to resume at URI 300 rather than URI 100.
+    assert.match(textOf(out), /chunks 1–3 committed \(300 URI\(s\)\)/);
+    assert.match(textOf(out), /Retry the remaining 50 URI\(s\)/);
+    // Nothing was issued after the failure: 3 successful chunks + the failed one.
+    const posts = h.client.calls.filter((c) => c.method === 'POST' && c.path === `/playlists/${TARGET}/items`);
+    assert.equal(posts.length, 4);
+  });
+
   it('copy_playlist reports last_committed_chunk when a chunked add rejects', async () => {
     // 150 source URIs → 2 chunks (100 / 50); chunk 1 throws.
     const srcUris = Array.from({ length: 150 }, (_, i) => track(`c${i}`));
