@@ -114,6 +114,15 @@ const parameterAllowlist = new Set([
   // tunable and its precedence. structuredContent keys describing the tool's
   // own result, not tools and not parameters.
   'fanout_concurrency', 'fanout_concurrency_source',
+  // #898: playlist_expression_algebra and playlist_fill_from_search both walk
+  // source playlists under SPOTIFY_MCP_FETCH_ALL_CAP and both turn what they
+  // read into a write, so each reports whether its reads were whole. The
+  // algebra names the clipped refs and the per-ref counts; the fill names its
+  // own pre-read and refuses to state a resulting length off a clipped one.
+  // structuredContent keys naming a tool's own result, not tools and not
+  // parameters.
+  'truncated_refs', 'ref_scans', 'existing_truncated', 'existing_scanned',
+  'existing_total', 'existing_truncated_by_cap', 'now_total',
 ]);
 /** Registration keys are module names, not tools; docs legitimately name them. */
 const registrationKeyNames = new Set(census.registrationKeyNames ?? []);

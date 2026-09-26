@@ -622,7 +622,28 @@ Search Spotify's catalog.
 
 **Returns:** grouped results by type. Each item includes URI, name, and type-specific fields (artist names, album name, release date, duration, etc.).
 
-`playlist_fill_from_search` also sends at most 10 track results per `/search` request. It requests later offsets only when the requested number of new playlist items has not yet been found, and its plan discloses the candidate count and pages searched for every query.
+`playlist_fill_from_search` also sends at most 10 track results per `/search` request. It requests later offsets only when the requested number of new playlist items has not yet been found, and its plan discloses the candidate count and pages searched for every query. Its pre-read of the playlist's existing items is covered by [the exhaust2 playlist-item walk contract](#exhaust2-playlist-item-walk-contract-898).
+
+---
+
+#### exhaust2 playlist-item walk contract (#898)
+
+`playlist_expression_algebra` and `playlist_fill_from_search` both read source playlists through one helper, and both turn what they read into a **write**. The walk is therefore capped by `SPOTIFY_MCP_FETCH_ALL_CAP` (default 500) and the cap is **disclosed**: a clipped walk must never reach a caller as a list that reads as the whole playlist, because that silently drops items out of the playlist it writes.
+
+| Field | Meaning |
+|---|---|
+| `truncated` | `true` when at least one source playlist's walk stopped short. Present on `playlist_expression_algebra` in both dry-run and committed results. |
+| `total` | Rows the source playlists hold as Spotify states them — `null` unless every ref stated a count, never a partial sum. |
+| `returned` | URIs actually read across all refs. |
+| `truncated_refs` | The refs whose walk stopped short. Empty when nothing was clipped. |
+| `ref_scans` | Per ref: `ref`, `returned`, `total`, `truncated`, `truncated_by_cap`, `scan_cap`. |
+| `scan_cap` | The `SPOTIFY_MCP_FETCH_ALL_CAP` value in force. |
+| `existing_truncated`, `existing_scanned`, `existing_total`, `existing_truncated_by_cap` | `playlist_fill_from_search`'s view of the same walk for its single target playlist. `existing_truncated` is what says the already-present exclusion set is incomplete — a pick may duplicate an item the walk never read. |
+| `now_total` | `playlist_fill_from_search` only: the playlist's length after the write, computed from a **complete** pre-read. `null` when the pre-read was capped, because `existing + added` would be arithmetic over a count nobody verified. |
+
+`truncated` and `truncated_by_cap` are different questions and both are reported. A walk can end at the cap having cut nothing off (cap exactly equals the reported total): `truncated_by_cap` is then `true` and `truncated` is `false`, and only the second one means rows are missing.
+
+Item pages request `fields=items(item(uri)),total,limit`. The set algebra reads only URIs, so no nested track object is transferred or retained; `total` and `limit` stay in the filter because the walk reads them to tell a short page that was the end of the list from one that was not. Each ref costs 1 `GET /playlists/{id}` plus up to `⌈SPOTIFY_MCP_FETCH_ALL_CAP / 100⌉` item pages — a multi-ref expression multiplies that by the number of distinct refs.
 
 ---
 
