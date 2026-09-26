@@ -4,10 +4,10 @@
  * no client imports.
  */
 
-export const DEFAULT_CACHE_TTL_MS = 5 * 60_000;
-export const DEFAULT_CACHE_MAX_ENTRIES = 200;
+const DEFAULT_CACHE_TTL_MS = 5 * 60_000;
+const DEFAULT_CACHE_MAX_ENTRIES = 200;
 
-export interface LruTtlCacheOptions {
+interface LruTtlCacheOptions {
   /** Entry lifetime in ms. Default 5 minutes (#54). */
   ttlMs?: number;
   /** Maximum entries before the least-recently-used entry is evicted. */

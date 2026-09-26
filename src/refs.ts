@@ -21,7 +21,7 @@ export const SPOTIFY_REFERENCE_KINDS = [
 ] as const;
 
 export type SpotifyReferenceKind = (typeof SPOTIFY_REFERENCE_KINDS)[number];
-export type SpotifyReferenceForm = 'id' | 'uri' | 'url' | 'invalid';
+type SpotifyReferenceForm = 'id' | 'uri' | 'url' | 'invalid';
 
 export interface SpotifyReferenceClassification {
   input: string;
@@ -32,7 +32,7 @@ export interface SpotifyReferenceClassification {
   error: string | null;
 }
 
-export interface ClassifySpotifyReferenceOptions {
+interface ClassifySpotifyReferenceOptions {
   /**
    * Compatibility escape hatch for API fields that historically accept an
    * unvalidated ID component inside a spotify: URI. Entity-id schemas do not

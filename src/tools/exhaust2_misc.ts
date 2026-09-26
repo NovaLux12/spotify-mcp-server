@@ -90,7 +90,7 @@ function isoDay(d: number): string {
 }
 
 /** Bounds for a YYYY-MM calendar month (default: previous full month). */
-export function monthBounds(month?: string): { start: number; end: number; label: string } {
+function monthBounds(month?: string): { start: number; end: number; label: string } {
   if (month && /^\d{4}-\d{2}$/.test(month)) {
     const [y, m] = month.split('-').map(Number);
     const start = Date.UTC(y, m - 1, 1);
@@ -102,7 +102,7 @@ export function monthBounds(month?: string): { start: number; end: number; label
 }
 
 /** Count listening sessions (plays clustered with gaps > 30 min). */
-export function countSessions(playedAt: readonly string[]): number {
+function countSessions(playedAt: readonly string[]): number {
   const sorted = playedAt.map((p) => ts(p)).filter((t) => Number.isFinite(t)).sort((a, b) => a - b);
   let sessions = sorted.length > 0 ? 1 : 0;
   for (let i = 1; i < sorted.length; i++) {
@@ -116,7 +116,7 @@ function playDate(item: { played_at?: string }): number {
 }
 
 /** Cursor-walk recently-played between two epoch bounds (after inclusive, before exclusive). */
-export async function loadPlaysBetween(
+async function loadPlaysBetween(
   client: SpotifyClient,
   afterMs: number,
   beforeMs: number,
@@ -147,7 +147,7 @@ export async function loadPlaysBetween(
 // Slice sidecar (~/.spotify-mcp/exhaust2-misc.json)
 // ---------------------------------------------------------------------------
 
-export interface TasteCheckpoint {
+interface TasteCheckpoint {
   label: string;
   saved_at: string;
   time_range: string;
@@ -155,7 +155,7 @@ export interface TasteCheckpoint {
   tracks: Array<{ name: string; artist_names: string[]; uri: string }>;
 }
 
-export interface ChapterBookmark {
+interface ChapterBookmark {
   book_uri: string;
   label: string;
   position_ms: number;
@@ -163,26 +163,26 @@ export interface ChapterBookmark {
   created_at: string;
 }
 
-export interface JournalEntry {
+interface JournalEntry {
   ts: string;
   note: string;
   session?: string;
   tag?: string;
 }
 
-export interface MiscStore {
+interface MiscStore {
   checkpoints: Record<string, TasteCheckpoint>;
   bookmarks: Record<string, ChapterBookmark[]>;
   journal: JournalEntry[];
   reports: Record<string, unknown>;
 }
 
-export function miscFilePath(env: NodeJS.ProcessEnv = process.env): string {
+function miscFilePath(env: NodeJS.ProcessEnv = process.env): string {
   return env.SPOTIFY_MCP_EXHAUST2_MISC_FILE ?? join(homedir(), '.spotify-mcp', 'exhaust2-misc.json');
 }
 
 /** Load the slice sidecar; missing/corrupt file yields an empty store. */
-export async function loadMiscStore(env: NodeJS.ProcessEnv = process.env): Promise<MiscStore> {
+async function loadMiscStore(env: NodeJS.ProcessEnv = process.env): Promise<MiscStore> {
   try {
     const raw = await readFile(miscFilePath(env), 'utf8');
     const p = JSON.parse(raw) as Partial<MiscStore>;
@@ -218,7 +218,7 @@ async function findPlaylistByName(client: SpotifyClient, name: string): Promise<
 }
 
 /** Unified library save/remove (chunked, 40 URIs per call like save_to_library). */
-export async function modifyLibrary(client: SpotifyClient, uris: readonly string[], op: 'save' | 'remove'): Promise<number> {
+async function modifyLibrary(client: SpotifyClient, uris: readonly string[], op: 'save' | 'remove'): Promise<number> {
   let n = 0;
   for (let i = 0; i < uris.length; i += 40) {
     const chunk = uris.slice(i, i + 40).join(',');
@@ -230,7 +230,7 @@ export async function modifyLibrary(client: SpotifyClient, uris: readonly string
 }
 
 /** Followed artists via the cursor-paged /me/following endpoint. */
-export async function loadFollowedArtists(client: SpotifyClient, max = 200): Promise<Array<{ id: string; name: string; genres: string[] }>> {
+async function loadFollowedArtists(client: SpotifyClient, max = 200): Promise<Array<{ id: string; name: string; genres: string[] }>> {
   const out: Array<{ id: string; name: string; genres: string[] }> = [];
   let after: string | undefined;
   while (out.length < max) {

@@ -42,7 +42,7 @@ const RECENT_PAGE_SIZE = 50; // per-call cap for recently-played
 const RECENT_MAX_PAGES = 3; // ≤3 cursor walks ⇒ ≤150 items
 const RECENT_MAX_ITEMS = RECENT_MAX_PAGES * RECENT_PAGE_SIZE; // 150, the hard ceiling
 
-export interface ListeningReport {
+interface ListeningReport {
   time_range: 'short_term' | 'medium_term' | 'long_term';
   fetched: {
     top_tracks_time_range: number;

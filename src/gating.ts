@@ -87,10 +87,10 @@ const INSTALL_FLAG = '__graceful403Installed__';
 /**
  * Marker key set on the graceful-403 error `installGatedPathContract` throws.
  */
-export const GATED_PATH_CONTRACT = Symbol.for('spotify-mcp.gatedPathContract');
+const GATED_PATH_CONTRACT = Symbol.for('spotify-mcp.gatedPathContract');
 
 /** True when `err` is the graceful-403 error `installGatedPathContract` raises. */
-export function isGatedPathContractError(err: unknown): boolean {
+function isGatedPathContractError(err: unknown): boolean {
   return err instanceof Error && (err as unknown as Record<symbol, unknown>)[GATED_PATH_CONTRACT] === true;
 }
 

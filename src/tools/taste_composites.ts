@@ -52,9 +52,9 @@ const statsfmError = (status: number, _upstreamMessage: string, body: unknown, h
 // with statsfm_taste.ts on purpose so fixtures stay hermetic per module)
 // ---------------------------------------------------------------------------
 
-export const TASTE_COMPOSITE_API_BASE = 'https://api.stats.fm/api/v1';
+const TASTE_COMPOSITE_API_BASE = 'https://api.stats.fm/api/v1';
 
-export type TasteCompositeFetchImpl = (url: string) => Promise<unknown>;
+type TasteCompositeFetchImpl = (url: string) => Promise<unknown>;
 
 async function defaultFetchImpl(url: string): Promise<unknown> {
   let res: Response;

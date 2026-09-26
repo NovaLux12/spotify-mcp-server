@@ -31,13 +31,13 @@ import type { ResponseFormatValue } from '../shaping.js';
 import { getConfig } from '../config.js';
 
 /** Two durations within this window count as the same recording length. */
-export const DURATION_TOLERANCE_MS = 2000;
+const DURATION_TOLERANCE_MS = 2000;
 
 // ---------------------------------------------------------------------------
 // Shapes
 // ---------------------------------------------------------------------------
 
-export interface SavedTrackMember {
+interface SavedTrackMember {
   id: string;
   uri: string;
   name: string;
@@ -51,7 +51,7 @@ export interface SavedTrackMember {
   added_at: string;
 }
 
-export interface DuplicateGroup {
+interface DuplicateGroup {
   kind: 'exact' | 'near_duplicate';
   /** Human-readable explanation of the evidence behind this classification. */
   match_basis:
@@ -114,7 +114,7 @@ function shapeResult(rf: ResponseFormatValue, prose: string, payload: AnalysisRe
 // ---------------------------------------------------------------------------
 
 /** Lowercase, strip punctuation/symbols, collapse whitespace. */
-export function normalizeTrackName(name: string): string {
+function normalizeTrackName(name: string): string {
   return name
     .toLowerCase()
     .normalize('NFKD')
@@ -124,12 +124,12 @@ export function normalizeTrackName(name: string): string {
 }
 
 /** Sorted, deduplicated lowercase artist-name set joined with '|'. */
-export function artistKey(names: readonly string[]): string {
+function artistKey(names: readonly string[]): string {
   return [...new Set(names.map((n) => n.toLowerCase().trim()))].sort().join('|');
 }
 
 /** Identity used to bucket potentially-duplicate recordings together. */
-export function identityKey(normalizedName: string, artists: readonly string[]): string {
+function identityKey(normalizedName: string, artists: readonly string[]): string {
   return `${normalizedName}::${artistKey(artists)}`;
 }
 
@@ -138,7 +138,7 @@ export function identityKey(normalizedName: string, artists: readonly string[]):
  * joins the open cluster while it stays within ±DURATION_TOLERANCE_MS of the
  * cluster's anchor, otherwise it opens a new cluster.
  */
-export function clusterByDuration(members: readonly SavedTrackMember[]): SavedTrackMember[][] {
+function clusterByDuration(members: readonly SavedTrackMember[]): SavedTrackMember[][] {
   const sorted = [...members].sort((a, b) => a.duration_ms - b.duration_ms);
   const clusters: SavedTrackMember[][] = [];
   let current: SavedTrackMember[] = [];
@@ -176,7 +176,7 @@ function recordingKey(member: SavedTrackMember): string | null {
  * computed once for each same-ISRC/same-album/duration bucket. Near groups are
  * review-only because a different ISRC, release, or version is a distinct save.
  */
-export function findDuplicateGroups(
+function findDuplicateGroups(
   members: readonly SavedTrackMember[],
   includeNearDuplicates: boolean,
 ): DuplicateGroup[] {

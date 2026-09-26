@@ -38,18 +38,18 @@ import { LIBRARY_BACKUP_SCHEMA_VERSION } from './backup.js';
 // ---------------------------------------------------------------------------
 
 /** Saved-library row: {uri,name,added_at}; followed artists omit added_at. */
-export interface SnapshotRow {
+interface SnapshotRow {
   uri: string;
   name: string;
   added_at?: string;
 }
 
-export interface SnapshotPlaylistItem {
+interface SnapshotPlaylistItem {
   uri: string;
   name: string;
 }
 
-export interface SnapshotPlaylist {
+interface SnapshotPlaylist {
   name: string;
   uri?: string | null;
   item_count?: number | null;
@@ -91,7 +91,7 @@ export interface LibrarySnapshot {
   playlists?: SnapshotPlaylist[];
 }
 
-export const RESTORE_CATEGORIES = [
+const RESTORE_CATEGORIES = [
   'liked_tracks',
   'saved_albums',
   'saved_shows',
@@ -100,7 +100,7 @@ export const RESTORE_CATEGORIES = [
   'followed_artists',
   'playlists',
 ] as const;
-export type RestoreCategory = (typeof RESTORE_CATEGORIES)[number];
+type RestoreCategory = (typeof RESTORE_CATEGORIES)[number];
 
 const SNAPSHOT_ROW_KEYS = [
   'liked_tracks',
@@ -178,7 +178,7 @@ function unrestorableSnapshotReason(
  * Read + validate a snapshot file. Every problem surfaces as one clear error
  * naming the path and what exactly is wrong — never a raw parse trace.
  */
-export async function loadSnapshot(path: string): Promise<LibrarySnapshot> {
+async function loadSnapshot(path: string): Promise<LibrarySnapshot> {
   let raw: string;
   try {
     raw = await readFile(path, 'utf8');
@@ -267,7 +267,7 @@ export async function loadSnapshot(path: string): Promise<LibrarySnapshot> {
 }
 
 /** YYYY-MM-DD slice of _meta.created, or 'unknown date'. */
-export function snapshotDate(snapshot: LibrarySnapshot): string {
+function snapshotDate(snapshot: LibrarySnapshot): string {
   const created = snapshot._meta?.created;
   return typeof created === 'string' && created.length >= 10 ? created.slice(0, 10) : 'unknown date';
 }
@@ -299,13 +299,13 @@ interface CategoryPlan {
   notes: string[];
 }
 
-export interface PlaylistCreation {
+interface PlaylistCreation {
   snapshotName: string;
   restoredName: string;
   itemUris: string[];
 }
 
-export interface RestorePlan {
+interface RestorePlan {
   snapshotCreated: string | null;
   snapshotState: 'complete' | 'partial' | 'unknown';
   restorableComplete: boolean | null;
@@ -391,7 +391,7 @@ function freshCategoryPlan(category: RestoreCategory): CategoryPlan {
 }
 
 /** Compute the additive plan with read-only calls only. */
-export async function computeRestorePlan(
+async function computeRestorePlan(
   client: SpotifyClient,
   snapshot: LibrarySnapshot,
   categories: readonly RestoreCategory[],
@@ -534,9 +534,9 @@ export async function computeRestorePlan(
 // Execution (strictly additive writes only, straight off the verified plan)
 // ---------------------------------------------------------------------------
 
-export type ExecutedByCategory = Partial<Record<RestoreCategory, number>>;
+type ExecutedByCategory = Partial<Record<RestoreCategory, number>>;
 
-export interface CreatedPlaylist {
+interface CreatedPlaylist {
   snapshotName: string;
   restoredAs: string;
   itemsAdded: number;
@@ -547,7 +547,7 @@ export interface CreatedPlaylist {
  * the API's error text is not safe to echo back to a model, and the counts are
  * what a caller needs to decide whether to retry.
  */
-export interface RestoreFailure {
+interface RestoreFailure {
   category: RestoreCategory;
  /** Where in the category's write sequence the failure occurred. */
   stage: 'library_write' | 'follow_write' | 'playlist_create' | 'playlist_items';
@@ -564,7 +564,7 @@ export interface RestoreFailure {
    */
 }
 
-export interface RestoreOutcome {
+interface RestoreOutcome {
   executed: ExecutedByCategory;
   createdPlaylists: CreatedPlaylist[];
   failures: RestoreFailure[];

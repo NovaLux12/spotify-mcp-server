@@ -124,7 +124,7 @@ function genericMessageFor(status: number): string {
   return `Spotify API error ${status}`;
 }
 
-export interface SpotifyClientOptions {
+interface SpotifyClientOptions {
   /** Fetch-all cap override (#55); defaults to config fetchAllCap. */
   fetchAllCap?: number;
   /** TTL cache tuning (#54); omit for defaults. */
@@ -139,7 +139,7 @@ export interface SpotifyClientOptions {
 }
 
 /** Per-page event emitted during getAllPages walks (#65). */
-export interface PageProgress {
+interface PageProgress {
   /** Monotonic id of this walk; usable directly as an MCP progressToken. */
   walkId: number;
   /** 1-based page number. */
@@ -156,7 +156,7 @@ export interface PageProgress {
  * interactive traffic cannot starve background walks. Pure so tests can pin
  * the promotion boundary without timers.
  */
-export interface LaneTask {
+interface LaneTask {
   run: () => Promise<unknown>;
   resolve: (v: unknown) => void;
   reject: (e: unknown) => void;
@@ -179,7 +179,7 @@ export function selectNextLaneTask(
  * Structured rate-limit + quota-usage state (#56/#59/#904). The first three
  * fields predate #904 and are unchanged; the request counters are additive.
  */
-export interface RateLimitStatus {
+interface RateLimitStatus {
   lastThrottleAt: number | null;
   retryAfterSec: number | null;
   cooldownRemainingMs: number;

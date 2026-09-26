@@ -53,7 +53,7 @@ const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
  * never asked for. We validate by comparing UTC calendar parts, so no rollover
  * is possible.
  */
-export function isRealCalendarDate(value: string): boolean {
+function isRealCalendarDate(value: string): boolean {
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
   if (!m) return false;
   const year = Number(m[1]);
@@ -67,7 +67,7 @@ export function isRealCalendarDate(value: string): boolean {
 }
 
 /** Explain why a YYYY-MM-DD string is not an existing calendar day. */
-export function describeImpossibleDate(value: string): string | null {
+function describeImpossibleDate(value: string): string | null {
   if (isRealCalendarDate(value)) return null;
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
   if (!m) return 'expected the YYYY-MM-DD form';
@@ -104,7 +104,7 @@ function daysBack(n: number): string {
  * impossible day (e.g. a bogus upstream "2026-02-30"). Callers must gate on
  * `isRealCalendarDate` before trusting it as a real day.
  */
-export function normalizeReleaseDate(raw: string): string {
+function normalizeReleaseDate(raw: string): string {
   if (/^\d{4}$/.test(raw)) return `${raw}-01-01`;
   if (/^\d{4}-\d{2}$/.test(raw)) return `${raw}-01`;
   return raw.slice(0, 10);
