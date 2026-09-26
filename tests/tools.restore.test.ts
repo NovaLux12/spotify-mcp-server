@@ -48,8 +48,22 @@ interface LiveState {
   playlists: Array<{ id: string; name: string }>;
 }
 
-function makeClient(state: LiveState) {
+/**
+ * Stub offset-paging client.
+ *
+ * `getAllPagesWithTruncation` pages the live playlist array for real and
+ * returns the same verdict the real client does (#864/#718): a walk that
+ * stopped on the cap is `truncated`, and a walk that ended on a short page is
+ * only `truncated` when the server's own `total` still counts more rows.
+ * `getAllPages` delegates to it exactly as `SpotifyClient.getAllPages` does, so
+ * a caller that asks for a bare array gets the capped one — which is the whole
+ * point of #737, and why a single-page stub could never have caught it.
+ *
+ * `fetchAllCap` stands in for SPOTIFY_MCP_FETCH_ALL_CAP (default 500).
+ */
+function makeClient(state: LiveState, opts: { fetchAllCap?: number } = {}) {
   const calls: Call[] = [];
+  const fetchAllCap = opts.fetchAllCap ?? 500;
   const client = {
     calls,
     async get(_path: string, params?: Record<string, string>) {
@@ -64,12 +78,51 @@ function makeClient(state: LiveState) {
       }
       return null;
     },
-    async getAllPages<T>(_path: string, _params?: Record<string, string>): Promise<T[]> {
+    async getAllPagesWithTruncation<T>(
+      _path: string,
+      _params?: Record<string, string>,
+      walkOpts?: { maxItems?: number },
+    ): Promise<{ items: T[]; truncated: boolean; truncatedByCap: boolean; reportedTotal: number | null }> {
       calls.push({ method: 'GET', path: `${_path} (paged)` });
-      if (_path === '/me/playlists') {
-        return state.playlists.map((p) => ({ ...p })) as T[];
+      const maxItems = walkOpts?.maxItems ?? fetchAllCap;
+      if (_path !== '/me/playlists') {
+        return { items: [] as T[], truncated: false, truncatedByCap: false, reportedTotal: null };
       }
-      return [] as T[];
+      const total = state.playlists.length;
+      const all: T[] = [];
+      let offset = 0;
+      let reportedTotal: number | null = null;
+      for (;;) {
+        const limit = Number(_params?.limit ?? 50) || 50;
+        // Spotify's own paging shape: items[], total, limit, offset.
+        const items = state.playlists.slice(offset, offset + limit);
+        reportedTotal = total;
+        all.push(...(items.map((p) => ({ ...p })) as T[]));
+        if (all.length >= maxItems) {
+          return {
+            items: all.slice(0, maxItems),
+            truncated: all.length > maxItems || all.length < total,
+            truncatedByCap: true,
+            reportedTotal,
+          };
+        }
+        if (items.length === 0 || items.length < limit) break;
+        offset += limit;
+        if (offset >= total) break;
+      }
+      return {
+        items: all,
+        truncated: reportedTotal !== null && all.length < reportedTotal,
+        truncatedByCap: false,
+        reportedTotal,
+      };
+    },
+    async getAllPages<T>(
+      _path: string,
+      _params?: Record<string, string>,
+      walkOpts?: { maxItems?: number },
+    ): Promise<T[]> {
+      return (await client.getAllPagesWithTruncation<T>(_path, _params, walkOpts)).items;
     },
     async post(_path: string, body?: unknown) {
       calls.push({ method: 'POST', path: _path, body });
@@ -94,7 +147,11 @@ function makeClient(state: LiveState) {
 
 type ElicitVerdict = 'accept' | 'decline' | 'unsupported';
 
-function harness(state: LiveState, elicit: ElicitVerdict = 'unsupported') {
+function harness(
+  state: LiveState,
+  elicit: ElicitVerdict = 'unsupported',
+  clientOpts: { fetchAllCap?: number } = {},
+) {
   const registered: RegisteredTool[] = [];
   const base = {
     tool(
@@ -124,7 +181,7 @@ function harness(state: LiveState, elicit: ElicitVerdict = 'unsupported') {
                 : { action: 'decline' },
           },
         };
-  const client = makeClient(state);
+  const client = makeClient(state, clientOpts);
   registerRestoreTools(fakeServer as unknown as McpServer, client as unknown as SpotifyClient);
   return {
     registered,
@@ -948,6 +1005,168 @@ describe('restore_library_snapshot contentless snapshots (#757)', () => {
       const payload = out.structuredContent as Record<string, any>;
       assert.equal(payload.snapshot_state, 'unknown');
       assert.equal(payload.partial, null);
+    } finally {
+      await rm(join(path, '..'), { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #737 — the name-reservation walk must be COMPLETE
+// ---------------------------------------------------------------------------
+
+describe('restore_library_snapshot name reservation (#737)', () => {
+  /** Live account of `count` playlists; `collisionName` lands at `collisionIndex`. */
+  function accountOf(count: number, collisionName: string, collisionIndex: number) {
+    const playlists = Array.from({ length: count }, (_, i) => ({
+      id: `pl_live_${i}`,
+      name: `Live ${i}`,
+    }));
+    playlists[collisionIndex] = { id: 'pl_collision', name: collisionName };
+    const state = emptyState();
+    state.playlists = playlists;
+    return state;
+  }
+
+  function collisionSnapshot(name: string): LibrarySnapshot {
+    return {
+      _meta: { created: CREATED, counts: {} },
+      playlists: [
+        {
+          name,
+          items: [
+            { uri: 'spotify:track:c1', name: 'C1' },
+            { uri: 'spotify:track:c2', name: 'C2' },
+          ],
+        },
+      ],
+    };
+  }
+
+  it('sees a name collision on page 15 of a 900-playlist account (cap 500) and creates no duplicate', async () => {
+    // The collision sits at index 700 — page 15, four hundred rows past the
+    // default cap of 500. A walk that stops at the cap never sees it.
+    const state = accountOf(900, 'Gone Playlist', 700);
+    const path = await snapshotFile(collisionSnapshot('Gone Playlist'));
+    try {
+      const h = harness(state, 'accept', { fetchAllCap: 500 });
+      const out = await h.invoke('restore_library_snapshot', {
+        backup_path: path,
+        categories: ['playlists'],
+        dry_run: false,
+      });
+
+      const creates = h.client.calls.filter(
+        (c) => c.method === 'POST' && c.path === '/me/playlists',
+      );
+      assert.equal(
+        creates.length,
+        0,
+        'a playlist existing beyond the old cap must not be duplicated',
+      );
+      assert.equal(
+        h.client.calls.some((c) => c.path.startsWith('/playlists/pl_collision')),
+        false,
+        'the existing same-name playlist is never written into',
+      );
+
+      const payload = out.structuredContent as Record<string, any>;
+      assert.deepEqual(payload.playlists.skipped_existing, ['Gone Playlist']);
+      assert.equal(
+        payload.playlists.existing_scanned,
+        900,
+        'the whole account must be compared, not the first 500',
+      );
+      assert.equal(payload.playlists.existing_truncated, false);
+      assert.equal(payload.playlists.existing_scan_total, 900);
+    } finally {
+      await rm(join(path, '..'), { recursive: true, force: true });
+    }
+  });
+
+  it('reports the scan coverage in the dry-run plan and in prose', async () => {
+    const state = accountOf(900, 'Gone Playlist', 700);
+    const path = await snapshotFile(collisionSnapshot('Gone Playlist'));
+    try {
+      const h = harness(state, 'accept', { fetchAllCap: 500 });
+      const out = await h.invoke('restore_library_snapshot', {
+        backup_path: path,
+        categories: ['playlists'],
+      });
+
+      const payload = out.structuredContent as Record<string, any>;
+      assert.equal(payload.status, 'planned');
+      assert.equal(payload.playlists.existing_scanned, 900);
+      assert.equal(payload.playlists.existing_truncated, false);
+      assert.ok(
+        payload.playlists.existing_scan_cap >= 900,
+        'the reservation walk must not inherit the 500 fetch-all cap',
+      );
+      assert.match(textOf(out), /Name-reservation scan: fetched 900 of 900 existing playlists compared/);
+      assert.match(textOf(out), /complete; cap not reached/);
+    } finally {
+      await rm(join(path, '..'), { recursive: true, force: true });
+    }
+  });
+
+  it('refuses the write path when the reservation walk is itself clipped', async () => {
+    // 2500 playlists: past even the 2000-row floor, so the walk truncates and
+    // the guard cannot be called complete.
+    const state = accountOf(2500, 'Gone Playlist', 2400);
+    const path = await snapshotFile(collisionSnapshot('Gone Playlist'));
+    try {
+      const h = harness(state, 'accept', { fetchAllCap: 500 });
+      await assert.rejects(
+        () =>
+          h.invoke('restore_library_snapshot', {
+            backup_path: path,
+            categories: ['playlists'],
+            dry_run: false,
+          }),
+        /name-reservation scan/,
+        'a clipped reservation scan must not silently narrow the duplicate guard',
+      );
+      assert.equal(writesOf(h.client).length, 0, 'nothing written');
+    } finally {
+      await rm(join(path, '..'), { recursive: true, force: true });
+    }
+  });
+
+  it('says so in the dry-run plan when the reservation walk is clipped', async () => {
+    const state = accountOf(2500, 'Gone Playlist', 2400);
+    const path = await snapshotFile(collisionSnapshot('Gone Playlist'));
+    try {
+      const h = harness(state, 'accept', { fetchAllCap: 500 });
+      const out = await h.invoke('restore_library_snapshot', {
+        backup_path: path,
+        categories: ['playlists'],
+      });
+
+      const payload = out.structuredContent as Record<string, any>;
+      assert.equal(payload.playlists.existing_truncated, true);
+      assert.equal(payload.playlists.existing_scanned, 2000);
+      assert.equal(payload.playlists.existing_scan_total, 2500);
+      assert.match(textOf(out), /TRUNCATED/);
+      assert.match(textOf(out), /invisible/i);
+    } finally {
+      await rm(join(path, '..'), { recursive: true, force: true });
+    }
+  });
+
+  it('reports null coverage when no reservation walk ran', async () => {
+    const state = emptyState();
+    state.savedUris = ['spotify:track:have1'];
+    const path = await snapshotFile(baseSnapshot());
+    try {
+      const h = harness(state);
+      const out = await h.invoke('restore_library_snapshot', {
+        backup_path: path,
+        categories: ['liked_tracks'],
+      });
+      const payload = out.structuredContent as Record<string, any>;
+      // "did not run" is not "found none", and null says which.
+      assert.equal(payload.playlists.existing_scanned, null);
+      assert.equal(payload.playlists.existing_truncated, null);
     } finally {
       await rm(join(path, '..'), { recursive: true, force: true });
     }

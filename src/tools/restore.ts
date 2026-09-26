@@ -140,6 +140,30 @@ const ADD_ITEMS_CHUNK = 100;
  */
 const SNAPSHOT_URI_PATTERN = /^spotify:[a-z]+:[A-Za-z0-9]+$/;
 
+/**
+ * Floor for the name-reservation walk over `/me/playlists` (#737).
+ *
+ * The guard that keeps a restore from duplicating an existing playlist is only
+ * as good as this walk, and the walk used to inherit the default fetch-all cap
+ * of 500. An account with 900 playlists therefore had rows 501-900 invisible to
+ * the guard while the restore went on creating `Restored · <name> (<date>)`
+ * copies of playlists that were already there — the exact promise the tool
+ * makes, broken without a word about it.
+ *
+ * The walk is a name lookup, not an analysis: pages are small and it runs once
+ * per restore, so a generous floor costs far less than a duplicate. Headroom
+ * over the snapshot's own playlist count keeps the scan ahead of what it is
+ * being compared against, and the floor covers accounts larger than the
+ * snapshot. If even this walk is clipped, the tool refuses to restore rather
+ * than guess — see the reservation refusal in the handler.
+ */
+const RESERVATION_SCAN_FLOOR = 2000;
+
+/** Cap for the reservation walk: the floor, or snapshot size + headroom. */
+function reservationScanCap(snapshotPlaylistCount: number): number {
+  return Math.max(RESERVATION_SCAN_FLOOR, snapshotPlaylistCount + getConfig().fetchAllCap);
+}
+
 function chunk<T>(items: readonly T[], size: number): T[][] {
   const out: T[][] = [];
   for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
@@ -307,6 +331,27 @@ interface PlaylistCreation {
   itemUris: string[];
 }
 
+/**
+ * How much of the account the playlist name-reservation guard actually saw
+ * (#737). The guard's whole promise — an existing playlist of the same name is
+ * never written into or duplicated — rests on this walk, so its coverage is
+ * reported rather than assumed.
+ *
+ * `scanned` is null when no walk ran (playlists category unselected, or the
+ * snapshot carries no playlist rows). That is NOT the same as 0: a scanned-0
+ * account is a claim, an unrun scan is the absence of one.
+ */
+interface ReservationScan {
+  /** Existing playlists compared against the snapshot's names. */
+  scanned: number;
+  /** True when the walk stopped short, so the guard cannot be called complete. */
+  truncated: boolean;
+  /** Cap in force for this walk. */
+  cap: number;
+  /** The server's own playlist count, or null when it reported none. */
+  reportedTotal: number | null;
+}
+
 interface RestorePlan {
   snapshotCreated: string | null;
   snapshotState: 'complete' | 'partial' | 'unknown';
@@ -317,6 +362,8 @@ interface RestorePlan {
   perCategory: CategoryPlan[];
   playlistCreations: PlaylistCreation[];
   skippedPlaylists: string[];
+  /** Null when the reservation walk never ran; see ReservationScan. */
+  reservation: ReservationScan | null;
 }
 
 /** Dedupe rows on uri, counting repeats as skips. */
@@ -401,6 +448,8 @@ async function computeRestorePlan(
   const perCategory: CategoryPlan[] = [];
   const playlistCreations: PlaylistCreation[] = [];
   const skippedPlaylists: string[] = [];
+  // Null until the playlists branch actually walks /me/playlists (#737).
+  let reservationScan: ReservationScan | null = null;
   const shortfalls: string[] = [];
   const selected: readonly string[] = categories;
   const collectionMetadata = snapshot._meta?.collections;
@@ -466,10 +515,27 @@ async function computeRestorePlan(
       const snapshotPlaylists = snapshot.playlists ?? [];
       plan.total = snapshotPlaylists.length;
       if (snapshotPlaylists.length > 0) {
-        const current = await client.getAllPages<{ id: string; name: string }>('/me/playlists', {
-          limit: '50',
-        });
-        const currentNames = new Set(current.map((p) => p.name));
+        // #737: this walk is the whole basis of the "never duplicates an
+        // existing playlist" promise, so it asks for the truncation verdict
+        // instead of taking a bare array. A bare array cannot distinguish
+        // "read every playlist" from "stopped at the cap", and a walk
+        // silently cut short is a guard quietly comparing against half the
+        // account — the same lie as a payload field that reports a value it
+        // never read. The verdict travels with the plan and blocks the write
+        // path when the walk is clipped.
+        const cap = reservationScanCap(snapshotPlaylists.length);
+        const walk = await client.getAllPagesWithTruncation<{ id: string; name: string }>(
+          '/me/playlists',
+          { limit: '50' },
+          { maxItems: cap },
+        );
+        reservationScan = {
+          scanned: walk.items.length,
+          truncated: walk.truncated,
+          cap,
+          reportedTotal: walk.reportedTotal,
+        };
+        const currentNames = new Set(walk.items.map((p) => p.name));
         const dateSuffix = snapshotDate(snapshot);
         for (const pl of snapshotPlaylists) {
           const expected = typeof pl.item_count === 'number' ? pl.item_count : null;
@@ -529,6 +595,7 @@ async function computeRestorePlan(
     perCategory,
     playlistCreations,
     skippedPlaylists,
+    reservation: reservationScan,
   };
 }
 
@@ -824,6 +891,13 @@ function buildPayload(
         items_added: c.itemsAdded,
       })),
       skipped_existing: plan.skippedPlaylists,
+      // #737: the guard's coverage, so a caller can tell "no playlist of that
+      // name exists" from "we did not see the whole account". Null (no walk
+      // ran) is deliberately distinct from 0.
+      existing_scanned: plan.reservation?.scanned ?? null,
+      existing_truncated: plan.reservation?.truncated ?? null,
+      existing_scan_cap: plan.reservation?.cap ?? null,
+      existing_scan_total: plan.reservation?.reportedTotal ?? null,
       ...(outcome ? { not_created: outcome.playlistsNotCreated } : {}),
       ...(outcome
         ? {
@@ -894,6 +968,29 @@ function buildProse(
     );
   }
 
+  // #737: the reservation guard's own coverage, in the same vocabulary as
+  // every other collection walk. "Skipped existing playlist" is only a proof
+  // for the names this scan actually saw; without this line a clipped scan
+  // reads identically to a complete one.
+  if (plan.reservation) {
+    lines.push(
+      `Name-reservation scan: ${completenessFooter({
+        fetched: plan.reservation.scanned,
+        cap: plan.reservation.cap,
+        truncated: plan.reservation.truncated,
+        subject: 'existing playlists compared',
+        total: plan.reservation.reportedTotal,
+      })}`,
+    );
+    if (plan.reservation.truncated) {
+      lines.push(
+        '  · the reservation scan was clipped, so a playlist beyond it with a matching name is INVISIBLE ' +
+          'to the duplicate guard — the restore is refused rather than risk writing a copy over it. ' +
+          'Raise SPOTIFY_MCP_FETCH_ALL_CAP and re-run.',
+      );
+    }
+  }
+
   // Once writes have run, the per-playlist lines come from the OUTCOME: a
   // playlist whose create failed must not be listed as created, and one that
   // took only some items must not claim them all.
@@ -960,6 +1057,23 @@ export function registerRestoreTools(server: McpServer, client: SpotifyClient): 
       if (!args.dry_run && plan.restorableComplete === false) {
         throw new Error(
           `Refusing to restore incomplete snapshot at ${args.backup_path}: ${plan.shortfalls.join('; ')}`,
+        );
+      }
+      // #737: the write path's other fail-closed gate. The tool promises an
+      // existing playlist of the same name is never written into or
+      // duplicated, and that promise is kept only by the /me/playlists scan
+      // having seen the whole account. A clipped scan cannot support it, and
+      // proceeding anyway is how a restore silently splits the user's library
+      // in two. A dry run is unaffected — it writes nothing, and its plan
+      // carries the coverage so the caller can see why the write would stop.
+      if (!args.dry_run && plan.reservation?.truncated === true) {
+        throw new Error(
+          `Refusing to restore into ${args.backup_path}: the name-reservation scan of /me/playlists stopped ` +
+            `at ${plan.reservation.scanned} playlist(s) (cap ${plan.reservation.cap}` +
+            `${plan.reservation.reportedTotal === null ? '' : `, server reports ${plan.reservation.reportedTotal}`}), ` +
+            'so a playlist beyond the scan with a matching name would be invisible and the restore would create ' +
+            'a duplicate of it. Raise SPOTIFY_MCP_FETCH_ALL_CAP so the scan can cover the account, then re-run. ' +
+            'Run with dry_run (the default) to see the plan and the scan coverage.',
         );
       }
 
