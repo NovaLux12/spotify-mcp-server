@@ -166,7 +166,14 @@ function makeClient(calls: string[]): SpotifyClient {
   return {
     async get<T>(path: string): Promise<T | null> {
       calls.push(path);
-      if (path.endsWith('/followers/contains')) return [true] as T;
+      // #1004: this used to answer `/playlists/{id}/followers/contains`, a
+      // route Spotify's February 2026 changelog marks REMOVED. No tool calls
+      // it any more — `check_playlist_following` reads
+      // `GET /me/library/contains?uris=spotify:playlist:<id>` (#862) — so the
+      // branch was dead, and a dead branch that answers a removed endpoint is
+      // worse than none: it reads like the server depends on the route.
+      // `tools.playlists-following.test.ts` is where that is pinned, with a
+      // deepEqual over the whole call log rather than a permissive mock.
       if (path.endsWith('/images')) return [] as T;
       const id = decodeURIComponent(path.replace('/playlists/', ''));
       return { id, name: `Playlist ${id}` } as T;

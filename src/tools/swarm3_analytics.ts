@@ -4,7 +4,9 @@
  * All 24 tools are read-only analytics over the personalization surface:
  *   • /me/player/recently-played (cursor walk — offset pagination NOT supported there)
  *   • /me/top/tracks + /me/top/artists (time_range windows)
- *   • /artists?ids=… batch (genres only, for the genre census)
+ *   • /artists/{id} per-id reads (genres only, for the genre census — the
+ *     batch `GET /artists?ids=` route was removed by Spotify in Feb 2026,
+ *     #1004)
  *
  * House conventions honoured here:
  *   • shaping.ts helpers only (ResponseFormat / MaxResults / resolveMaxResults /
@@ -13,7 +15,7 @@
  *     recommendations, related-artists, genres-from-seed.
  *   • NO popularity / followers / available_markets fields — never read.
  *     Live-verified: /me/top/artists rows carry no genres either, so the genre
- *     census resolves genres via the batch /artists endpoint (allowed).
+ *     census resolves genres through the per-id /artists/{id} read.
  *   • Track objects widened locally to expose album.release_date (same as
  *     analytics.ts / search.ts / personalization.ts).
  *   • Deterministic output ordering; stable property names.
@@ -28,9 +30,9 @@ import {
   truncateItems,
   paginationInfo,
 } from '../shaping.js';
-import { capFor } from '../chunk.js';
 import type { ResponseFormatValue } from '../shaping.js';
 import { spotifyId } from '../refs.js';
+import { fetchArtistsPerId } from './catalog.js';
 import type {
   SpotifyPaged,
   RecentlyPlayedItem,
@@ -836,7 +838,7 @@ export function registerSwarm3AnalyticsTools(server: McpServer, client: SpotifyC
   // 13. top_genre_census — weighted genre census from top artists
   server.tool(
     'top_genre_census',
-    'Build a weighted genre census from your top artists (rank-weighted across the three windows; genres resolved via the batch /artists endpoint, default 40 artists per window). Quota: 3× GET /me/top/artists + 1× GET /artists?ids=.',
+    'Build a weighted genre census from your top artists (rank-weighted across the three windows; genres resolved per id via GET /artists/{id}, default 40 artists per window). Quota: 3× GET /me/top/artists + 1× GET /artists/{id} per distinct artist (the batch GET /artists?ids= was removed in Feb 2026).',
     {
       limit: z.coerce.number().int().positive().max(50).optional().default(40).describe('Artists fetched per window (default 40).'),
       max_results: MaxResults,
@@ -854,51 +856,20 @@ export function registerSwarm3AnalyticsTools(server: McpServer, client: SpotifyC
       const ids = new Set(windows.flat().map((a) => a.id));
       if (ids.size === 0) return empty(rf, 'No top artists available for this account.');
       // #801: a census can union up to 3 × TOP_LIMIT ids across the three
-      // windows. /artists?ids= caps at CHUNK_CAPS.artists per call, so walk
-      // every id in chunks; if the batch endpoint 403s on a post-Nov-2024
-      // registration, fall back to per-item GETs.
+      // windows, so every id has to be looked at — not just the first batch.
+      // #1004: `GET /artists?ids=` is one of the endpoints Spotify's February
+      // 2026 changelog removed outright, and it names no replacement, so there
+      // is no batch to try before falling back: the per-id `GET /artists/{id}`
+      // read is the one that still answers. The fan-out cost is one request
+      // per distinct id, published as `artist_requests` below rather than the
+      // old "1 batched call" claim.
       const idList = [...ids];
+      const artistRead = await fetchArtistsPerId(client, idList);
       const genresById = new Map<string, string[]>();
-      const unresolvedIds: string[] = [];
-      const batchCap = capFor('artists');
-      for (let i = 0; i < idList.length; i += batchCap) {
-        const chunk = idList.slice(i, i + batchCap);
-        let detail: { artists: Array<{ id: string; genres?: string[] } | null> | null } | null = null;
-        let batchErr: unknown = null;
-        try {
-          detail = await client.get<{ artists: Array<{ id: string; genres?: string[] } | null> | null }>(
-            '/artists',
-            { ids: chunk.join(',') },
-          );
-        } catch (err) {
-          batchErr = err;
-        }
-        if (batchErr != null) {
-          for (const id of chunk) {
-            try {
-              const one = await client.get<{ id: string; genres?: string[] }>(`/artists/${encodeURIComponent(id)}`);
-              if (one?.id) genresById.set(one.id, one.genres ?? []);
-              else unresolvedIds.push(id);
-            } catch {
-              unresolvedIds.push(id);
-            }
-          }
-          continue;
-        }
-        // #1093: null slots are ids the endpoint could not resolve. Account
-        // for them by index so the caller can tell a smaller lookup from a
-        // fully-resolved one.
-        const slots = detail?.artists ?? [];
-        for (let j = 0; j < Math.max(chunk.length, slots.length); j += 1) {
-          const slot = slots[j];
-          if (slot?.id) {
-            genresById.set(slot.id, slot.genres ?? []);
-            continue;
-          }
-          const id = chunk[j];
-          if (id !== undefined) unresolvedIds.push(id);
-        }
-      }
+      for (const [id, artist] of artistRead.byId) genresById.set(id, artist.genres ?? []);
+      // #1093: an id that could not be read is named, never dropped, so the
+      // census header cannot be read as "all N resolved".
+      const unresolvedIds = artistRead.unresolved.map((u) => u.id);
       const weighted: Record<string, number> = {};
       const artistCounts: Record<string, number> = {};
       windows.forEach((list, wi) => {
@@ -924,6 +895,11 @@ export function registerSwarm3AnalyticsTools(server: McpServer, client: SpotifyC
         artists_with_genres: idList.filter((id) => (genresById.get(id)?.length ?? 0) > 0).length,
         resolved,
         unresolved_ids: [...unresolvedIds],
+        // #1004: the per-id fan-out's real request count and the reason behind
+        // each unresolved id, so "N resolved" is never read as a batch lookup
+        // that silently lost ids.
+        artist_requests: artistRead.requests,
+        unresolved: artistRead.unresolved,
         scoring: 'score = (limit - rank + 1) × window weight (short 3 / medium 2 / long 1) summed per genre',
         items: tr.items,
         pagination: paginationInfo({ total: tr.total, returned: tr.returned }),

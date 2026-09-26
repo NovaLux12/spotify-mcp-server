@@ -267,7 +267,7 @@ function genreHarness(
   };
 }
 
-describe('top_genre_census walks every census id in chunks (#801)', () => {
+describe('top_genre_census reads every census id per-id (#1004)', () => {
   // 120 distinct ids: 40 per window, no overlap, so the union size is 120.
   const windowArtists = (start: number, count: number) =>
     Array.from({ length: count }, (_, i) => ({ id: `a${(start + i).toString().padStart(3, '0')}`, name: `Artist ${start + i}` }));
@@ -278,19 +278,36 @@ describe('top_genre_census walks every census id in chunks (#801)', () => {
     long_term: windowArtists(80, 40),
   };
 
-  it('resolves all 120 ids by paging the batch endpoint in chunks of 50, not just the first 50', async () => {
-    const calls: Array<{ path: string; ids: string[] }> = [];
+  const topArtistsResponder = (path: string, params?: Record<string, string>) => {
+    if (path === '/me/top/artists') {
+      const tr = params?.time_range ?? 'short_term';
+      return { items: topArtistsByWindow[tr as keyof typeof topArtistsByWindow] ?? [] };
+    }
+    return undefined;
+  };
+
+  // #1004: `GET /artists?ids=` ("Get Several Artists") is one of the endpoints
+  // Spotify's February 2026 changelog removed outright, and it names no
+  // replacement. The old code called it first and only fell back to per-id
+  // GETs on a gated 403, which means on a current registration every census
+  // burned a request on a route that can only fail. The census now goes
+  // straight to the per-id read, and this is the assertion that pins it: a
+  // single call to the removed route fails the test, it does not degrade.
+  it('never requests the removed batch artist route and resolves all 120 ids per-id', async () => {
+    const perIdCalls: string[] = [];
+    const removedRouteCalls: string[] = [];
     const h = genreHarness((path, params) => {
-      if (path === '/me/top/artists') {
-        const tr = params?.time_range ?? 'short_term';
-        return { items: topArtistsByWindow[tr as keyof typeof topArtistsByWindow] ?? [] };
+      const top = topArtistsResponder(path, params);
+      if (top !== undefined) return top;
+      if (path === '/artists' || path.startsWith('/artists?')) {
+        removedRouteCalls.push(path);
+        return { artists: [] };
       }
-      if (path === '/artists') {
-        const ids = (params?.ids ?? '').split(',').filter(Boolean);
-        calls.push({ path, ids });
-        return {
-          artists: ids.map((id) => ({ id, name: `Artist ${id}`, genres: [`g-${id}`] })),
-        };
+      const single = /^\/artists\/(.+)$/.exec(path);
+      if (single) {
+        const id = decodeURIComponent(single[1]);
+        perIdCalls.push(id);
+        return { id, name: `Artist ${id}`, genres: [`g-${id}`] };
       }
       return null;
     });
@@ -300,19 +317,18 @@ describe('top_genre_census walks every census id in chunks (#801)', () => {
       artists_census: number;
       resolved: number;
       unresolved_ids: string[];
+      artist_requests: number;
       items: Array<{ genre: string; weighted_score: number }>;
     };
 
-    // #801 acceptance: every census id is resolved, not just the first 50.
+    assert.deepEqual(removedRouteCalls, [], 'a removed-endpoint request went out');
+    // #801 acceptance, restated for the per-id read: every census id is
+    // looked at, not just the first window's worth.
     assert.equal(payload.artists_census, 120, 'union of 3 × 40 distinct ids');
-    assert.equal(payload.resolved, 120, 'every id the batch endpoint returned a slot for');
-    assert.deepEqual(payload.unresolved_ids, [], 'no ids dropped by the batch lookup');
-
-    // The batch endpoint was called 3 times: 50 + 50 + 20 ids.
-    assert.equal(calls.length, 3, 'one /artists?ids= call per 50-id chunk');
-    assert.equal(calls[0].ids.length, 50);
-    assert.equal(calls[1].ids.length, 50);
-    assert.equal(calls[2].ids.length, 20);
+    assert.equal(payload.resolved, 120, 'every id resolved');
+    assert.deepEqual(payload.unresolved_ids, [], 'no ids dropped');
+    assert.equal(perIdCalls.length, 120, 'one /artists/{id} call per census id');
+    assert.equal(payload.artist_requests, 120, 'the fan-out publishes its real request count');
 
     // No "unknown" bucket once every id resolved with a genre.
     assert.equal(payload.items.find((r) => r.genre === 'unknown'), undefined);
@@ -324,21 +340,16 @@ describe('top_genre_census walks every census id in chunks (#801)', () => {
     assert.equal(pagination.total, 120, 'all 120 genres accounted for in pagination');
   });
 
-  it('falls back to per-item GETs when the batch endpoint 403s and still resolves every id', async () => {
-    const fallbackCalls: string[] = [];
+  // #1004: a per-id read that fails is named, with the reason, and it is not
+  // folded into an "unknown" genre as though the artist had no tags.
+  it('names the ids whose per-id read failed, and reports the reason', async () => {
     const h = genreHarness((path, params) => {
-      if (path === '/me/top/artists') {
-        const tr = params?.time_range ?? 'short_term';
-        return { items: topArtistsByWindow[tr as keyof typeof topArtistsByWindow] ?? [] };
-      }
-      if (path === '/artists' && params?.ids) {
-        // Batch endpoint gated on post-Nov-2024 app registrations.
-        throw new SpotifyApiError(403, 'batch lookup gated');
-      }
+      const top = topArtistsResponder(path, params);
+      if (top !== undefined) return top;
       const single = /^\/artists\/(.+)$/.exec(path);
       if (single) {
         const id = decodeURIComponent(single[1]);
-        fallbackCalls.push(id);
+        if (id.endsWith('9')) throw new SpotifyApiError(429, 'Rate limited');
         return { id, name: `Artist ${id}`, genres: [`g-${id}`] };
       }
       return null;
@@ -349,43 +360,19 @@ describe('top_genre_census walks every census id in chunks (#801)', () => {
       artists_census: number;
       resolved: number;
       unresolved_ids: string[];
+      unresolved: Array<{ id: string; reason: string }>;
     };
 
+    // Ids ending in 9 across the three windows: a009, a019, a029, a039, a049,
+    // …, a119 — 12 of the 120.
     assert.equal(payload.artists_census, 120);
-    assert.equal(payload.resolved, 120, 'every id resolved via per-item fallback');
-    assert.deepEqual(payload.unresolved_ids, []);
-    assert.equal(fallbackCalls.length, 120, 'one per-item /artists/{id} call per census id');
-  });
-
-  it('reports unresolved_ids in structuredContent when the batch lookup returns null slots', async () => {
-    const h = genreHarness((path, params) => {
-      if (path === '/me/top/artists') {
-        const tr = params?.time_range ?? 'short_term';
-        return { items: topArtistsByWindow[tr as keyof typeof topArtistsByWindow] ?? [] };
-      }
-      if (path === '/artists') {
-        const ids = (params?.ids ?? '').split(',').filter(Boolean);
-        // Drop the last id of every chunk as a null slot (#1093 pattern).
-        return {
-          artists: ids.map((id, idx) => (idx === ids.length - 1 ? null : {
-            id,
-            name: `Artist ${id}`,
-            genres: [`g-${id}`],
-          })),
-        };
-      }
-      return null;
-    });
-
-    const out = await h.invoke('top_genre_census');
-    const payload = out.structuredContent as {
-      artists_census: number;
-      resolved: number;
-      unresolved_ids: string[];
-    };
-
-    assert.equal(payload.artists_census, 120);
-    assert.equal(payload.resolved, 117);
-    assert.equal(payload.unresolved_ids.length, 3);
+    assert.equal(payload.unresolved_ids.length, 12);
+    assert.equal(payload.resolved, 108);
+    assert.equal(payload.unresolved.length, 12);
+    assert.match(payload.unresolved[0].reason, /Rate limited/);
+    // requested == resolved + unresolved, the accounting the header relies on.
+    assert.equal(payload.artists_census, payload.resolved + payload.unresolved_ids.length);
+    // The prose names them rather than reporting a confident total.
+    assert.match(out.content[0].text, /12 ids unresolved/);
   });
 });

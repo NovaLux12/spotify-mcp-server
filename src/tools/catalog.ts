@@ -228,6 +228,119 @@ async function fetchSeveral<T>(
   };
 }
 
+/**
+ * #1004: read artists with per-id `GET /artists/{id}` requests — the only
+ * read Spotify still serves for this data.
+ *
+ * The February 2026 changelog removed "Get Several Artists" (`GET /artists`
+ * with `?ids=`) outright and names no replacement, so there is nothing to
+ * fall back FROM: trying the batch first and degrading on a 403 only burns a
+ * request and, on a registration where the removed route answers 404, looks
+ * like a batch of unresolvable ids (#638/#725 graded the batch endpoints as
+ * registration-gated; AGENTS.md §2 is explicit that the graceful-403 wrapper
+ * does not make a removed endpoint safe). The per-id route is the documented
+ * replacement, so this goes straight there.
+ *
+ * Cost is the trade: one request per distinct id, not one per 50. The fan-out
+ * runs at a fixed window width because the client's request queue serialises
+ * and rate-limits every call anyway, and a wide `Promise.all` would only
+ * enqueue the same work sooner. The width matches the `collab_mix_from_followed`
+ * fan-out (`exhaust2_playlists.ts`) so there is one precedent, not two.
+ *
+ * A per-id failure is recorded with its reason, never swallowed into an empty
+ * list: the callers publish `requested == resolved + missing`, so an id that
+ * could not be read must be named, not dropped (#1093's accounting rule).
+ */
+export const ARTIST_FANOUT_WIDTH = 5;
+
+export interface PerIdArtistRead {
+  /** Every artist that resolved, keyed by the id that was requested. */
+  byId: Map<string, SpotifyArtistFull>;
+  /**
+   * Ids whose per-id GET failed, each with the reason Spotify (or the
+   * transport) gave. In requested order, and never empty-slot-padded: an id
+   * that failed is absent from `byId` and named here.
+   */
+  unresolved: Array<{ id: string; reason: string }>;
+  /**
+   * `GET /artists/{id}` requests issued, counted before the response cache.
+   * Published so a tool that fans out can disclose its real request count
+   * instead of quoting the batch endpoint's "one call".
+   */
+  requests: number;
+}
+
+export async function fetchArtistsPerId(
+  client: SpotifyClient,
+  ids: readonly string[],
+  opts: { width?: number } = {},
+): Promise<PerIdArtistRead> {
+  // De-dupe first: a track's album often lists the same artist twice, and the
+  // census unions three windows, so the raw list over-counts by a lot.
+  const wanted: string[] = [];
+  const seen = new Set<string>();
+  for (const id of ids) {
+    if (id === '' || seen.has(id)) continue;
+    seen.add(id);
+    wanted.push(id);
+  }
+  const width = Math.max(1, opts.width ?? ARTIST_FANOUT_WIDTH);
+  const byId = new Map<string, SpotifyArtistFull>();
+  const unresolved: PerIdArtistRead['unresolved'] = [];
+  let requests = 0;
+  for (let i = 0; i < wanted.length; i += width) {
+    const window = wanted.slice(i, i + width);
+    const settled = await Promise.allSettled(
+      window.map(async (id) => {
+        requests += 1;
+        try {
+          const artist = await client.get<SpotifyArtistFull>(`/artists/${encodeURIComponent(id)}`);
+          return { id, artist, error: undefined as unknown };
+        } catch (error) {
+          return { id, artist: null as SpotifyArtistFull | null, error };
+        }
+      }),
+    );
+    for (let w = 0; w < settled.length; w += 1) {
+      const outcome = settled[w];
+      const id = window[w];
+      if (outcome.status === 'rejected') {
+        // The window itself rejected rather than one of its entries, which
+        // the per-entry try/catch should have prevented. Reported rather than
+        // dropped: a silently shortened roster is the #1093 failure mode.
+        unresolved.push({ id, reason: describeFailure(outcome.reason, 'request failed') });
+        continue;
+      }
+      const { artist, error } = outcome.value;
+      if (error !== undefined) {
+        unresolved.push({ id, reason: describeFailure(error, 'request failed') });
+        continue;
+      }
+      // A 200 that carries no id, or a different id than was asked for, is an
+      // unread, not an artist. Keying the map on the requested id would hand
+      // the caller a value the payload never confirmed (#804's rule, one field
+      // over: never guess a field that could contradict the wire).
+      if (artist == null || artist.id == null) {
+        unresolved.push({ id, reason: 'Spotify returned no artist for this id' });
+        continue;
+      }
+      if (artist.id !== id) {
+        unresolved.push({ id, reason: `Spotify returned a different artist (${artist.id}) for the requested id` });
+        continue;
+      }
+      byId.set(id, artist);
+    }
+  }
+  return { byId, unresolved, requests };
+}
+
+/** #1004: an unreadable per-id failure is reported with its reason, never dropped. */
+function describeFailure(err: unknown, fallback: string): string {
+  if (err instanceof Error && err.message.trim() !== '') return err.message;
+  if (typeof err === 'string' && err.trim() !== '') return err;
+  return fallback;
+}
+
 /** #778: one-line disclosure of the ids a batch could not resolve. */
 function unresolvedIdsNote(missing: readonly string[]): string {
   if (missing.length === 0) return '';

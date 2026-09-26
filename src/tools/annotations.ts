@@ -167,12 +167,26 @@ export const TOOL_SURFACE_BUDGET = Object.freeze({
   //         the parameter an account outside Spotify's default market silently
   //         loses episode rows, and a shorter list reads as "no more episodes".
   //         Measured on the merged tree this branch rebased onto, not against
-  //         the older base its own PR quoted: the aggregate is 579,136B across
-  //         592 tools, so the whole cost is absorbed by the 607,000B already
-  //         granted above and this PR needs no raise of its own. The per-module
-  //         baselines move to the measured 1967B and 3427B.
-  //   Total ~3,269B. 604,000 -> 607,000 is +3,000B against the warrants known
-  //   when it was granted: a 30% margin, which is the discipline this file
+  //         the older base its own PR quoted, so the whole cost is absorbed by
+  //         the 607,000B already granted above and this PR needs no raise of its
+  //         own. The per-module baselines move to the measured 1967B and 3427B.
+  //         (Its draft quoted the aggregate as 579,136B. The measured figure on
+  //         the tree carrying #1004 and this wave is 607,715B over the same 592
+  //         tools — the smaller number is missing the ~27KB of names, titles,
+  //         annotations and execution metadata the aggregate gate actually
+  //         budgets. Both still clear 608,000B, so nothing here changes the
+  //         ceiling; the figure is corrected only so the next author is not
+  //         quoted 27KB of headroom that does not exist.)
+  //   #1004 +136B — the three tools that read artists had to re-quote their
+  //         request quota now that `GET /artists?ids=` is gone, so each
+  //         describes the per-id `GET /artists/{id}` fan-out it actually
+  //         performs and discloses the requests it made (exhaust2catalog
+  //         19,176 -> 19,241 and swarm3analytics 18,880 -> 18,951 per module,
+  //         +65 and +71). Measured on a 603,999B base like the two raises
+  //         above, so it is in the same accounting and not a separate raise:
+  //         its branch proposed 604,000, which this 607,000 supersedes.
+  //   Total ~3,405B. 604,000 -> 607,000 is +3,000B against the warrants known
+  //   when it was granted: a ~30% margin, which is the discipline this file
   //   exists to enforce. The first raise in this history was 19x its warrant;
   //   this is deliberately not that.
   //
@@ -197,22 +211,55 @@ export const TOOL_SURFACE_BUDGET = Object.freeze({
   //
   // WARRANT: +524B for `include_track_features`, then +914B across #979 (the
   // four falsified-value fixes, whose whole point is honest disclosure) and
-  // #791 (the graceful-403 contract), then +602B for #827. Total +2,040B of
-  // real disclosure across four changes; every byte of it buys a sentence
-  // that stops a tool asserting something false about its own result — or,
-  // here, publishing the `dry_run` default so a host can tell a preview from
-  // a commit without probing the handler. #827's +602B is the `dry_run`
-  // fragment swap across seven tools plus the `discover_weekly_diff`
-  // description naming the archive replace it performs.
+  // #791 (the graceful-403 contract), then +602B for #827 and +136B for #1004.
+  // Total +2,176B of real disclosure across five changes; every byte of it buys
+  // a sentence that stops a tool asserting something false about its own
+  // result — or, in #827's case, publishing the `dry_run` default so a host can
+  // tell a preview from a commit without probing the handler. #827's +602B is
+  // the `dry_run` fragment swap across seven tools plus the
+  // `discover_weekly_diff` description naming the archive replace it performs.
   //
   // HEADROOM: the enforced limit is `defaultMaxBytes + 1_000` (that 1KB covers
   // final MCP annotation metadata added after registration), so the real
-  // ceiling is now 608,000B. Measured on this tree before the raise:
-  // 604,906B. Adding the remaining in-flight warrants above (~1,679B) lands near
-  // 606,585B, leaving ~1,415B — roughly the ~900B posture the earlier raises
-  // kept, and unlike the 94B trap that forced this raise. Re-measure after the
-  // wave lands rather than trusting that arithmetic; every figure in this file
-  // that was computed rather than measured has been wrong at least once.
+  // ceiling is 608,000B. The wave this raise was sized for has landed and then
+  // some: measured on the tree carrying #1004 and the whole wave (592 tools),
+  // 607,715B — 285B of headroom, which is not headroom.
+  //
+  // Read that as the successor to the 94B trap that forced the 607,000 raise in
+  // the first place: that figure was 94B, and the honest conclusion then was
+  // that the budget is a shared resource that per-branch measurement cannot
+  // price. The wave has now spent it again, without a single PR asking to.
+  // #1004's own warrant is +136B, so raising for it here would be a ~7x raise
+  // against its warrant — the same reflex this file exists to prevent, and the
+  // first raise in its history was 19x. So this change does NOT raise the
+  // ceiling. It records the exhaustion instead, which is the cheaper half of
+  // the rule: the next honest sentence lands in a conversation with whoever
+  // owns the surface, rather than discovering the ceiling in a failed
+  // startup.
+  //
+  // 607,715B is a measurement on the MERGED tree, not an estimate: build the
+  // registry the way `src/index.ts` does and call
+  // `collectAggregateSurfaceMeasurement`; `assertAggregateSurfaceBudget` puts
+  // the measured byte count in its error message if you lower the limit to
+  // force one. Every figure in this file that was computed rather than
+  // measured has been wrong at least once — including, on the sibling #782,
+  // one that was low by ~27KB, and the "measured 603,100B" line above, which
+  // was high by ~900B. Re-measure; do not trust the numbers in prose.
+  //
+  // #1004's own branch proposed 604_000, sized against a 603,999B base that
+  // predated this whole wave. The 607_000 raise supersedes it — the merged
+  // aggregate fits under 608,000B without it — so its cost is recorded above as
+  // a warrant line, not as a second raise.
+  //
+  // WHY A WARRANT WAS NEEDED AT ALL (#1004). The record written with the
+  // 603,000 raise said "measured 603,100B"; by the time #1004 was cut, later
+  // PRs had taken the real figure to 603,999B — one byte under the 604,000B
+  // ceiling that `defaultMaxBytes: 603_000` implies. A budget whose stated
+  // headroom has silently evaporated breaches on the next honest sentence, so
+  // build the registry the way `src/index.ts` does and call
+  // `collectAggregateSurfaceMeasurement` before trusting any number in this
+  // comment; `assertAggregateSurfaceBudget` puts the measured byte count in its
+  // error message if you lower the limit to force one.
   //
   // A breach should still land in a conversation, not be pre-authorised. The
   // right first move is to reclaim bytes from decorative prose in the same edit
@@ -827,7 +874,8 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   manifestEntry('import', 'playlists', 'src/tools/import.ts', registerImportTools, [1, 1211], { scopeKey: 'playlists' }),
   manifestEntry('smart', 'playlists', 'src/tools/smart.ts', registerSmartTools, [1, 2364], { scopeKey: 'playlists' }),
   manifestEntry('exhaustmisc', 'playlists', 'src/tools/exhaustmisc.ts', registerExhaustMiscTools, [10, 7924], { scopeKey: 'exhaustmisc' }),
-  manifestEntry('exhaust2catalog', 'exhaust2catalog', 'src/tools/exhaust2_catalog.ts', registerExhaust2CatalogTools, [19, 19176], { readOnlySafe: true, scopeKey: 'catalog' }),
+  // [19, 19241] measured post-#1004 (the artist leg reads /artists/{id} now).
+  manifestEntry('exhaust2catalog', 'exhaust2catalog', 'src/tools/exhaust2_catalog.ts', registerExhaust2CatalogTools, [19, 19241], { readOnlySafe: true, scopeKey: 'catalog' }),
   manifestEntry('exhaust2enggating', 'exhaust2enggating', 'src/tools/exhaust2_enggating.ts', registerExhaust2EnggatingTools, [0, 0], { readOnlySafe: true, scopeKey: 'catalog' }),
   manifestEntry('exhaust2playback', 'exhaust2playback', 'src/tools/exhaust2_playback.ts', registerExhaust2PlaybackTools, [23, 17306], { scopeKey: 'playback' }),
   manifestEntry('exhaust2playlists', 'exhaust2playlists', 'src/tools/exhaust2_playlists.ts', registerExhaust2PlaylistsTools, [18, 23507], { scopeKey: 'playlists' }),
@@ -837,7 +885,8 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   manifestEntry('swarm3bdiscovery', 'swarm3bdiscovery', 'src/tools/swarm3b_discovery.ts', registerSwarm3bDiscoveryTools, [24, 20039], { readOnlySafe: true, scopeKey: 'catalog' }),
   manifestEntry('swarm3shows', 'swarm3shows', 'src/tools/swarm3_shows.ts', registerSwarm3ShowsTools, [24, 21075], { scopeKey: 'catalog' }),
   manifestEntry('swarm3refs', 'swarm3refs', 'src/tools/swarm3_refs.ts', registerSwarm3RefsTools, [6, 4331], { readOnlySafe: true, scopeKey: 'catalog' }),
-  manifestEntry('swarm3analytics', 'swarm3analytics', 'src/tools/swarm3_analytics.ts', registerSwarm3AnalyticsTools, [24, 18880], { readOnlySafe: true, scopeKey: 'personalization' }),
+  // [24, 18951] measured post-#1004 (top_genre_census reads /artists/{id} now).
+  manifestEntry('swarm3analytics', 'swarm3analytics', 'src/tools/swarm3_analytics.ts', registerSwarm3AnalyticsTools, [24, 18951], { readOnlySafe: true, scopeKey: 'personalization' }),
   manifestEntry('swarm3library', 'swarm3library', 'src/tools/swarm3_library.ts', registerSwarm3LibraryTools, [24, 18092], { readOnlySafe: true, scopeKey: 'library' }),
   manifestEntry('swarm3playback', 'swarm3playback', 'src/tools/swarm3_playback.ts', registerSwarm3PlaybackTools, [24, 14247], { scopeKey: 'playback' }),
   manifestEntry('swarm3playlistops', 'swarm3playlistops', 'src/tools/swarm3_playlistops.ts', registerSwarm3PlaylistopsTools, [24, 31777], { scopeKey: 'playlists' }),
