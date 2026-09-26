@@ -70,12 +70,17 @@ interface ParsedDocument {
   /** Lines/rows skipped because they held no extractable Spotify URI. */
   skipped_rows: number;
   /**
-   * Every playable URI the document held, repeats included, counted in the
-   * same pass that produced `uris`. `uri_occurrences - uris.length` is the true
-   * in-document duplicate count; deriving it from a second whole-body match
-   * pass is what let the reported figure go negative for CSV.
+   * The true in-document duplicate count: entries whose extracted URI repeated
+   * one already taken, counted in the same pass that produced `uris`.
+   *
+   * Counted, never derived by subtraction. The previous shape added one to a
+   * per-row tally and subtracted `uris.length` at the end, which counted
+   * *URI-shaped fields* rather than *URIs actually extracted*: a row whose
+   * title happened to be `spotify:track:<id>` and whose real URI sat in a
+   * later column contributed 2 to the tally and 1 to `uris`, so a document
+   * with no repeat at all reported one duplicate (#632).
    */
-  uri_occurrences: number;
+  duplicates: number;
 }
 
 /**
@@ -91,14 +96,15 @@ export function parseM3u(content: string): ParsedDocument {
   const uris: string[] = [];
   const seen = new Set<string>();
   let skipped = 0;
-  let occurrences = 0;
+  let duplicates = 0;
   for (const rawLine of content.split(/\r?\n/)) {
     const line = rawLine.trim();
     if (line === '') continue;
     if (line.startsWith('#')) continue;
     if (isPlayableUri(line)) {
-      occurrences++;
-      if (!seen.has(line)) {
+      if (seen.has(line)) {
+        duplicates++;
+      } else {
         seen.add(line);
         uris.push(line);
       }
@@ -106,7 +112,7 @@ export function parseM3u(content: string): ParsedDocument {
       skipped++;
     }
   }
-  return { format: 'm3u', uris, skipped_rows: skipped, uri_occurrences: occurrences };
+  return { format: 'm3u', uris, skipped_rows: skipped, duplicates };
 }
 
 /**
@@ -155,7 +161,7 @@ export function parseCsv(content: string): ParsedDocument {
   const uris: string[] = [];
   const seen = new Set<string>();
   let skipped = 0;
-  let occurrences = 0;
+  let duplicates = 0;
   let uriColumn = -1;
   let firstRow = true;
   for (const rawLine of content.split(/\r?\n/)) {
@@ -173,17 +179,21 @@ export function parseCsv(content: string): ParsedDocument {
         continue;
       }
     }
-    occurrences += playable.length;
     const declared = uriColumn >= 0 ? fields[uriColumn] : undefined;
     const uri = declared !== undefined && isPlayableUri(declared) ? declared : declared === undefined ? playable[playable.length - 1] : undefined;
-    if (uri && !seen.has(uri)) {
+    if (!uri) {
+      skipped++;
+    } else if (seen.has(uri)) {
+      // Counted against the URI this row actually yields. A sibling field that
+      // merely looks like a URI was never extracted, so repeating it is not a
+      // duplicate and must not be counted as one.
+      duplicates++;
+    } else {
       seen.add(uri);
       uris.push(uri);
-    } else if (!uri) {
-      skipped++;
     }
   }
-  return { format: 'csv', uris, skipped_rows: skipped, uri_occurrences: occurrences };
+  return { format: 'csv', uris, skipped_rows: skipped, duplicates };
 }
 
 /** Format auto-detection: M3U markers win; otherwise look at the shape. */
@@ -352,7 +362,15 @@ export function registerImportTools(server: McpServer, client: SpotifyClient): v
           : { present: new Set<string>(), truncated: false };
       const toAdd = canonicalUris.filter((uri) => !existing.present.has(uri));
       const skippedExisting = canonicalUris.length - toAdd.length;
-      const duplicatesInDocument = Math.max(0, parsed.uri_occurrences - canonicalUris.length);
+      // Two genuinely different spellings of one URI (a short id and its full
+      // form, say) collapse during canonicalisation. That is a real in-document
+      // duplicate too, so it counts alongside the ones the parser saw.
+      const collapsedByCanonicalisation = parsed.uris.length - canonicalUris.length;
+      // Non-negative by construction — the parser counts repeats and the
+      // canonicalisation gap is a subtraction of a subset — and clamped anyway
+      // because this is a public field and a negative here is what agents acted
+      // on in the first place (#632).
+      const duplicatesInDocument = Math.max(0, parsed.duplicates + collapsedByCanonicalisation);
       const target = meta.name ?? args.playlist_id;
       const basePayload = {
         playlist_id: args.playlist_id,
