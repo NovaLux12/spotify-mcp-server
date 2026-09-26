@@ -1,4 +1,4 @@
-import { describe, it, mock, before, after } from 'node:test';
+import { describe, it, mock, before, after, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, chmodSync, statSync } from 'node:fs';
@@ -81,8 +81,42 @@ function publishedDryRunDefault(shape: Record<string, unknown> | undefined): unk
   return json.properties?.dry_run?.default;
 }
 
-const PLAYED_NOW = (uri: string, name = 'Song') => ({
-  played_at: new Date().toISOString(),
+/**
+ * The instant every clock-sensitive test in this file runs at.
+ *
+ * It is deliberately mid-day and mid-month: the tools read the wall clock to
+ * open a window (`morning_briefing` from local midnight to now,
+ * `monthly_listening_report` across a whole UTC month), so a fixture stamped
+ * "now" is one millisecond from falling out of its own window whenever the
+ * suite happens to start near a UTC boundary. Pinning time is what makes the
+ * answer the same at 00:00:30 UTC on the 1st of a month as it is at noon on
+ * the 15th (#664).
+ */
+const PINNED_NOW = Date.parse('2026-06-15T18:00:00.000Z');
+
+/**
+ * A mid-day UTC play, inside `morning_briefing`'s "today" window under every
+ * UTC offset (local midnight lands no later than 12:00Z, and no earlier than
+ * 10:00Z) and strictly before the pinned clock, because `loadPlaysBetween`
+ * takes an exclusive upper bound.
+ */
+const PINNED_PLAY = '2026-06-15T12:30:00.000Z';
+
+/** Freeze the wall clock for one test. `t` restores it when the test ends. */
+function pinClock(t: TestContext): void {
+  t.mock.timers.enable({ apis: ['Date'], now: PINNED_NOW });
+}
+
+/**
+ * A recently-played row stamped at an explicit instant.
+ *
+ * The timestamp is a parameter, never `new Date()`. The tools in this slice
+ * bucket by UTC day/month and filter on `played_at < Date.now()`, so a fixture
+ * read off the real clock has its result decided by *when the suite started*
+ * rather than by the behaviour under test (#664).
+ */
+const PLAYED_AT = (uri: string, playedAt: string, name = 'Song') => ({
+  played_at: playedAt,
   track: { uri, name, duration_ms: 180_000, artists: [{ name: 'Adele' }] },
 });
 
@@ -133,8 +167,9 @@ describe('exhaust2_misc — 27-tool misc slice', () => {
   });
 
   // #402
-  it('morning_briefing renders digest sections from budgeted reads', async () => {
-    const played = PLAYED_NOW('spotify:track:p1');
+  it('morning_briefing renders digest sections from budgeted reads', async (t) => {
+    pinClock(t);
+    const played = PLAYED_AT('spotify:track:p1', PINNED_PLAY);
     const h = getHandler('morning_briefing', makeClient({
       get: mock.fn(async (path: string) => {
         if (path === '/me/following') {
@@ -176,17 +211,14 @@ describe('exhaust2_misc — 27-tool misc slice', () => {
 
   // #403
   it('monthly_listening_report computes minutes, days and sessions for a month', async (t) => {
-    // Pin the clock: with the real clock the two plays below could straddle UTC
-    // midnight (suite started within a minute of it) and "Active days" became 2.
-    t.mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-06-15T12:00:00.000Z') });
-    const month = '2026-06';
+    pinClock(t);
     const h = getHandler('monthly_listening_report', makeClient({
       get: mock.fn(async (path: string) => {
         if (path.includes('recently-played')) {
           return {
             items: [
-              PLAYED_NOW('spotify:track:a'),
-              { ...PLAYED_NOW('spotify:track:a'), played_at: new Date(Date.parse('2026-06-15T11:59:00.000Z')).toISOString() },
+              PLAYED_AT('spotify:track:a', '2026-06-15T12:00:00.000Z'),
+              PLAYED_AT('spotify:track:a', '2026-06-15T11:59:00.000Z'),
             ],
             next: null,
           };
@@ -194,10 +226,41 @@ describe('exhaust2_misc — 27-tool misc slice', () => {
         return null;
       }),
     }));
-    const res = await h({ month, response_format: 'concise' });
-    t.mock.timers.reset();
+    const res = await h({ month: '2026-06', response_format: 'concise' });
     assert.ok(res.content[0].text.includes('Active days: 1'));
     assert.equal((res.structuredContent as { plays: number }).plays, 2);
+  });
+
+  // #664, suggested implementation 2: the UTC-month bucketing used to be
+  // implied by a fixture that happened to sit inside the month. State it at
+  // the boundary instead, so the behaviour is asserted rather than assumed —
+  // and so the month-boundary window that used to make this file red is a
+  // test that passes.
+  it('monthly_listening_report buckets a play by its UTC month at a month boundary', async (t) => {
+    t.mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-09-01T00:00:30.000Z') });
+    const client = makeClient({
+      get: mock.fn(async (path: string) => {
+        if (path.includes('recently-played')) {
+          // Newest first, the order the API returns: the cursor walk stops at
+          // the first row older than the window it was asked for.
+          return {
+            items: [
+              PLAYED_AT('spotify:track:sep', '2026-09-01T00:00:00.000Z'),
+              PLAYED_AT('spotify:track:aug', '2026-08-31T23:59:00.000Z'),
+            ],
+            next: null,
+          };
+        }
+        return null;
+      }),
+    });
+    const h = getHandler('monthly_listening_report', client);
+    const august = await h({ month: '2026-08', response_format: 'concise' });
+    const september = await h({ month: '2026-09', response_format: 'concise' });
+    assert.equal((august.structuredContent as { plays: number }).plays, 1, '23:59 on the 31st belongs to August');
+    assert.equal((september.structuredContent as { plays: number }).plays, 1, '00:00 on the 1st belongs to September');
+    assert.ok(august.content[0].text.includes('Active days: 1'));
+    assert.ok(september.content[0].text.includes('Active days: 1'));
   });
   // #404
   it('year_in_review renders markdown review with tops and decade mix', async () => {
@@ -337,9 +400,12 @@ describe('exhaust2_misc — 27-tool misc slice', () => {
   });
 
   // #409
-  it('week_in_review_playlist plans, then creates and fills the weekly playlist', async () => {
+  it('week_in_review_playlist plans, then creates and fills the weekly playlist', async (t) => {
+    // The tool reads the trailing 7 days as `[now - 7d, now)`; a fixture stamped
+    // "now" is excluded by the exclusive bound and the playlist is built empty.
+    pinClock(t);
     const client = makeClient({
-      get: mock.fn(async (path: string) => (path.includes('recently-played') ? { items: [PLAYED_NOW('spotify:track:w1')], next: null } : null)),
+      get: mock.fn(async (path: string) => (path.includes('recently-played') ? { items: [PLAYED_AT('spotify:track:w1', PINNED_PLAY)], next: null } : null)),
       getAllPages: mock.fn(async (path: string) => (path === '/me/playlists' ? [] : [])),
       put: mock.fn(async () => null),
       post: mock.fn(async () => ({ id: 'newpl' })),
@@ -375,11 +441,15 @@ describe('exhaust2_misc — 27-tool misc slice', () => {
   });
 
   // #412
-  it('playlist_staleness_report computes median age and 90d adds', async () => {
+  it('playlist_staleness_report computes median age and 90d adds', async (t) => {
+    pinClock(t);
     const h = getHandler('playlist_staleness_report', makeClient({
       getAllPages: mock.fn(async (path: string) => {
         if (path === '/me/playlists') return [{ id: 'p1', name: 'Oldies' }];
-        if (path.startsWith('/playlists/p1/items')) return [{ added_at: '2020-01-01T00:00:00Z' }, { added_at: new Date(Date.now() - 10 * 86400_000).toISOString() }];
+        // One ancient add and one exactly 10 days before the pinned clock, so
+        // the "added last 90d" count is a property of the fixture, not of when
+        // the suite happened to start.
+        if (path.startsWith('/playlists/p1/items')) return [{ added_at: '2020-01-01T00:00:00Z' }, { added_at: '2026-06-05T18:00:00.000Z' }];
         return [];
       }),
     }));
@@ -563,20 +633,22 @@ describe('exhaust2_misc — 27-tool misc slice', () => {
   });
 
   // #422
-  it('listening_week_in_time charts a past week inside the window', async () => {
-    const today = new Date().toISOString().slice(0, 10);
+  it('listening_week_in_time charts a past week inside the window', async (t) => {
+    // The tool rejects a week more than 95 days back from *now*, so the window
+    // edge is only a fixed distance if the clock is fixed too.
+    pinClock(t);
     const h = getHandler('listening_week_in_time', makeClient({
-      get: mock.fn(async (path: string) => (path.includes('recently-played') ? { items: [PLAYED_NOW('spotify:track:x', 'Hit')] } : null)),
+      get: mock.fn(async (path: string) => (path.includes('recently-played') ? { items: [PLAYED_AT('spotify:track:x', PINNED_PLAY, 'Hit')] } : null)),
     }));
-    const res = await h({ week_start: today, top_n: 5, response_format: 'concise' });
+    const res = await h({ week_start: '2026-06-15', top_n: 5, response_format: 'concise' });
     assert.ok(res.content[0].text.includes('Top tracks'));
     assert.ok(res.content[0].text.includes('Hit'));
   });
 
-  it('listening_week_in_time refuses weeks older than the 90-day window', async () => {
-    const old = new Date(Date.now() - 200 * 86400_000).toISOString().slice(0, 10);
+  it('listening_week_in_time refuses weeks older than the 90-day window', async (t) => {
+    pinClock(t);
     const h = getHandler('listening_week_in_time', makeClient());
-    const res = await h({ week_start: old, response_format: 'concise' });
+    const res = await h({ week_start: '2026-01-01', response_format: 'concise' });
     assert.ok(res.content[0].text.includes('90-day'));
   });
 

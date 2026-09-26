@@ -42,6 +42,13 @@ jobs:
         # gated rather than merely discouraged. Type the payload instead.
         run: node scripts/check-no-explicit-any.mjs
 
+      - name: Test debug-output guard (no stray prints in tests)
+        # #664. A console.log left in a test is an assertion that cannot fail,
+        # and it lands in CI logs where nobody owns it. Assert on the value or
+        # delete the statement. `console.error` / `console.warn` and the
+        # capture-and-restore idiom are deliberately allowed.
+        run: node scripts/check-no-test-debug-output.mjs
+
       - name: Generate finalized surface census
         run: node scripts/surface-census.mjs > .surface-census.json
 
