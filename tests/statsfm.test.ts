@@ -506,7 +506,8 @@ test('a full page is disclosed as partial, and is not a total of the entity (#81
   assert.notEqual(sc.count, 50, 'a page of 50 streams is not 50 plays of the track');
   assert.equal(sc.totalMs, expected * 200_000, 'only the matching streams are totalled');
   assert.match(txt, new RegExp(`${expected} of the 50 streams`));
-  assert.match(txt, /not a lifetime total/);
+  assert.match(txt, /was capped at/);
+  assert.match(txt, /the read did not cover all of them/);
   assert.match(txt, /page span:/);
   assert.equal(proseCount(txt), sc.count, 'prose and structuredContent must agree on the count');
 });
@@ -533,7 +534,7 @@ test('a complete read that holds no play of the entity says so, not "0 lifetime 
   const sc = out.structuredContent as Record<string, unknown>;
   assert.equal(sc.count, 0);
   assert.equal('capped' in sc, false);
-  assert.match(txt, /include none for this track/);
+  assert.match(txt, /none of the \d+ streams in .* is this track/);
   assert.equal(proseCount(txt), 0);
 });
 
@@ -562,7 +563,7 @@ test('a page that exactly fills the limit is still not read as the whole history
   const sc = out.structuredContent as Record<string, unknown>;
   assert.equal(sc.count, 50);
   assert.equal(sc.capped, true);
-  assert.match(h.text(out), /not a lifetime total/);
+  assert.match(h.text(out), /was capped at/);
 });
 
 test('all six per-entity stats tools disclose a truncated page (#810)', async () => {
@@ -589,9 +590,10 @@ test('all six per-entity stats tools disclose a truncated page (#810)', async ()
     // profile's newest page" is false for the second group, so this asserts the
     // claim that holds for both, and pins the false one out.
     assert.match(txt, new RegExp(`are this ${filter}\\.`), `${name} must say how many of the read are this ${filter}`);
-    assert.match(txt, /this read returned/, `${name} must not claim which page was read`);
+    assert.match(txt, /streams in (the .* window|this profile's newest streams)/, `${name} prose must name what the read actually selected`);
     assert.doesNotMatch(txt, /newest page/, `${name} must not describe a windowed read as the newest page`);
-    assert.match(txt, /not a lifetime total/, `${name} prose must not read as a lifetime total`);
+    assert.match(txt, /was capped at/, `${name} prose must say the read was capped`);
+    assert.match(txt, /the read did not cover all of them/, `${name} prose must not read as a total for the scope`);
     if (name.endsWith('_date_stats')) {
       const params = h.calls[0].params ?? {};
       assert.equal(params.after, String(args.after), `${name} must forward the window start`);

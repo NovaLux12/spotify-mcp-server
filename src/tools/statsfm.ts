@@ -229,7 +229,7 @@ type EntityFilter = 'track' | 'artist' | 'album';
  * entity here; a page that came back full means older history exists beyond
  * it (#810).
  */
-type StreamPage = { streams: J[]; matching: J[]; pageSize: number; capped: boolean };
+type StreamPage = { streams: J[]; matching: J[]; pageSize: number; capped: boolean; scope: string };
 
 /** Whether one returned stream is a play of `entityId`. */
 function isStreamOf(stream: J, filter: EntityFilter, entityId: string): boolean {
@@ -237,6 +237,16 @@ function isStreamOf(stream: J, filter: EntityFilter, entityId: string): boolean 
   if (filter === 'album') return stream.albumId !== undefined && String(stream.albumId) === entityId;
   const artistIds: unknown[] = Array.isArray(stream.artistIds) ? stream.artistIds : [];
   return artistIds.some((id) => String(id) === entityId);
+}
+
+/** What the query actually selected. A `*_date_stats` call passes an after/before
+ *  window, so its read is a windowed slice and must never be described as the
+ *  profile's newest page. */
+function streamScope(params: Record<string, string>): string {
+  const from = params.after ?? params.until;
+  const to = params.before ?? params.since;
+  if (from || to) return `the ${from ? `after ${from}` : 'start of history'} → ${to ? `before ${to}` : 'now'} window`;
+  return "this profile's newest streams";
 }
 
 /** Fetch one page of streams for a query and narrow it to `entity`. The query may be
@@ -257,6 +267,7 @@ async function readStreamPage(
     matching: streams.filter((s) => isStreamOf(s, entity.filter, entity.id)),
     pageSize,
     capped: streams.length >= pageSize,
+    scope: streamScope(params),
   };
 }
 
@@ -291,10 +302,10 @@ function formatSummary(sum: StreamSummary, read: StreamPage, filter: EntityFilte
   const span = sum.oldest && sum.newest ? ` | page span: ${sum.oldest} → ${sum.newest}` : '';
   const line = `${sum.label}: ${sum.count} streams, ${fmtPlayed(sum.totalMs)} total (avg ${fmtPlayed(sum.avgMs)})${span}`;
   if (read.capped) {
-    return `${line}\nPartial: ${sum.count} of the ${read.streams.length} streams this read returned are this ${filter}. The read was capped at ${read.pageSize}, so this is not a lifetime total — more may exist outside what this query returned.`;
+    return `${line}\nPartial: ${sum.count} of the ${read.streams.length} streams in ${read.scope} are this ${filter}. That read was capped at ${read.pageSize}, so this is not a total for ${read.scope} — the read did not cover all of them.`;
   }
   if (sum.count === 0) {
-    return `${line}\nComplete: the ${read.streams.length} streams stats.fm returned for this profile include none for this ${filter}.`;
+    return `${line}\nComplete: none of the ${read.streams.length} streams in ${read.scope} is this ${filter}.`;
   }
   return line;
 }
