@@ -624,6 +624,42 @@ function listeningHistoryDir(env: NodeJS.ProcessEnv = process.env): string {
 }
 
 // ---------------------------------------------------------------------------
+// #751: one playlist row, as export_all_playlists writes it
+// ---------------------------------------------------------------------------
+
+/**
+ * A row of playlists.json. Every field that could hide a short read is stated
+ * on the row itself rather than inferred from `items.length`:
+ *
+ * - `items_truncated` — the walk stopped at `items_cap`, so the list is
+ *   partial. A playlist that happens to be exactly `cap` long is not
+ *   truncated; only the walk knows which it saw.
+ * - `unreadable` + `items_error` — the walk failed, so the row carries no
+ *   items because they could not be READ, not because the playlist is empty.
+ *   `items_error` is the snapshot field name restore_library_snapshot already
+ *   reads, so one refusal rule covers both writers; `items_unreadable` is the
+ *   alias that shipped in v2.1.2.
+ * - `total` is null, never 0, when Spotify reported no item count: a missing
+ *   value coerced to a plausible number is a lie about the playlist (§6).
+ */
+interface PlaylistExportRow {
+  id: string;
+  name: string;
+  uri: string;
+  /** Spotify's reported item total, or null when it reported none. */
+  total: number | null;
+  /** The cap in force for this row's walk; null when no walk ran. */
+  items_cap: number | null;
+  items_truncated: boolean;
+  items: Array<{ uri: string; name: string }>;
+  /** Present (true) only when the item walk failed. */
+  unreadable?: true;
+  items_error?: string;
+  /** Alias of items_error, retained from the v2.1.2 sidecar shape. */
+  items_unreadable?: string;
+}
+
+// ---------------------------------------------------------------------------
 // #637 + #736: additive restore of a library.json sidecar
 // ---------------------------------------------------------------------------
 
@@ -1592,6 +1628,22 @@ export function registerPortabilityTools(server: McpServer, client: SpotifyClien
   );
 
   // export_all_playlists — collection export (issue sweep #2)
+  //
+  // #751: the sidecar discloses what it could not read. Every row states its
+  // own verdict — `items_truncated` + `items_cap` when the cap cut its item
+  // list short, `unreadable` + `items_error` when the walk failed, `total:null`
+  // when Spotify reported no item count — under the same field names the
+  // snapshot writers use, so restore_library_snapshot's existing refusal rule
+  // covers this file too. `scope=owned` is refused, never widened, when /me
+  // does not resolve.
+  //
+  // The tool description above is deliberately unchanged by #751: the aggregate
+  // surface budget had 1B of headroom on main (603,999 of 604,000), so the
+  // contract above is documented here and in the row shape rather than paid for
+  // with a description that fails server startup. The budget record in
+  // annotations.ts asks that such a breach "land in a conversation" — it did,
+  // and the next disclosure sentence needs a coordinated raise, not a quiet
+  // one carried by an unrelated PR.
   server.tool(
     'export_all_playlists',
     'Export every owned (or all) playlist with metadata + items to a sidecar file. Quota: GET /me/playlists + N×GET /playlists/{id}/items; capped by fetchAllCap.',
@@ -1611,58 +1663,138 @@ export function registerPortabilityTools(server: McpServer, client: SpotifyClien
         kind: 'directory',
       });
       const cap = getConfig().fetchAllCap;
-      const me = await client.get<{ id?: string }>('/me');
-      const myId = me?.id as string | undefined;
+      const scope = args.scope ?? 'all';
+      // #751: an owned-only export depends on knowing WHO you are, so the
+      // profile is read only when the answer is needed. A /me that does not
+      // resolve used to leave the filter simply switched off: the file was
+      // labelled scope=owned while holding every followed playlist the caller
+      // asked to exclude, and nothing in it said so. Refuse instead of widen —
+      // no file is written, so nothing mislabelled can reach a restore.
+      let myId: string | undefined;
+      if (scope === 'owned') {
+        let lookupError: string | null = null;
+        try {
+          const me = await client.get<{ id?: string }>('/me');
+          myId = typeof me?.id === 'string' && me.id !== '' ? me.id : undefined;
+        } catch (e) {
+          lookupError = e instanceof Error ? e.message : String(e);
+        }
+        if (myId === undefined) {
+          const reason = lookupError ?? 'GET /me returned no user id';
+          const error = `GET /me could not be read (${reason})`;
+          return shapeResult(
+            rf,
+            `Refused to export with scope=owned: your user id could not be read — ${error}. ` +
+              'Writing a file labelled scope=owned that actually holds every playlist would be worse than writing none, ' +
+              'so nothing was exported. Re-run with scope=all to export everything, or fix authentication and retry scope=owned.',
+            { ok: false, error, scope, scope_applied: false, dir, format: args.format ?? 'json', cap, total: 0, playlists_exported: 0, unreadable: {}, capped_playlists: [] },
+          );
+        }
+      }
       // #864/#1008: both walks report their own truncation verdict, and an
       // item read that fails is named as unread rather than exported as an
       // empty playlist. A capped walk and an unreadable playlist are different
       // facts and both used to read as "this playlist has no items".
       const listWalk = await client.getAllPagesWithTruncation<SpotifyPlaylistSimple>('/me/playlists', { limit: '50' }, { maxItems: cap });
       const playlistsTruncated = listWalk.truncated;
-      let playlists = listWalk.items;
-      if (args.scope === 'owned' && myId) playlists = playlists.filter((p) => p?.owner?.id === myId);
+      const playlists = scope === 'owned'
+        ? listWalk.items.filter((p) => p?.owner?.id === myId)
+        : listWalk.items;
       const exportedAt = new Date().toISOString();
-      const playlistRows: Array<{ id: string; name: string; uri: string; total: number; items: Array<{ uri: string; name: string }>; items_unreadable?: string }> = playlists.map((p) => ({ id: p.id, name: p.name, uri: p.uri, total: p.items?.total ?? 0, items: [] }));
+      const includeItems = args.include_items !== false;
+      const playlistRows: PlaylistExportRow[] = playlists.map((p) => ({
+        id: p.id,
+        name: p.name,
+        uri: p.uri,
+        // Spotify's own item total when it reported one, else null. A missing
+        // count is unknown, not zero — defaulting it to 0 would claim the
+        // playlist is empty on the strength of a field that was never sent.
+        total: typeof p.items?.total === 'number' ? p.items.total : null,
+        // The cap in force for this row's walk, so a partial row can be read
+        // without cross-referencing the document header. Null when no walk ran.
+        items_cap: includeItems ? cap : null,
+        items_truncated: false,
+        items: [],
+      }));
       const cappedPlaylists: string[] = [];
       const unreadablePlaylists: string[] = [];
-      if (args.include_items !== false) {
+      if (includeItems) {
         for (const row of playlistRows) {
           try {
             const walk = await client.getAllPagesWithTruncation<PlaylistItemObject>(`/playlists/${encodeURIComponent(row.id)}/items`, { limit: '100' }, { maxItems: cap });
             row.items = walk.items.map((r) => ({ uri: (r?.item as { uri?: string })?.uri ?? '', name: (r?.item as { name?: string })?.name ?? '' })).filter((x) => x.uri);
-            if (walk.truncated) cappedPlaylists.push(row.id);
+            if (walk.truncated) {
+              // #751: the row itself says it is partial. restore_library_snapshot
+              // refuses a playlist row carrying items_truncated or items_error,
+              // so a capped export can no longer be restored as a short one.
+              row.items_truncated = true;
+              cappedPlaylists.push(row.id);
+            }
           } catch (e) {
+            const message = e instanceof Error ? e.message : String(e);
             row.items = [];
-            row.items_unreadable = e instanceof Error ? e.message : String(e);
+            // items_error is the snapshot field name the restore side already
+            // reads (a7-backup-integrity-flags): one rule, one name. The
+            // items_unreadable alias shipped in v2.1.2 and is kept for readers
+            // written against it.
+            row.unreadable = true;
+            row.items_error = message;
+            row.items_unreadable = message;
             unreadablePlaylists.push(row.id);
           }
         }
       }
       const truncated = playlistsTruncated || cappedPlaylists.length > 0;
       const unreadable: Record<string, string> = {};
-      for (const row of playlistRows) if (row.items_unreadable) unreadable[row.id] = row.items_unreadable;
+      for (const row of playlistRows) if (row.items_error) unreadable[row.id] = row.items_error;
       const notes: string[] = [];
+      if (!includeItems) notes.push('include_items=false: every row carries metadata only, with items_cap=null — restore_library_snapshot reads this file\'s item lists as absent, not as empty.');
       if (playlistsTruncated) notes.push(`The /me/playlists walk hit the cap of ${cap}, so this export covers only the first ${playlists.length} playlist(s) — raise SPOTIFY_MCP_FETCH_ALL_CAP for the rest.`);
-      if (cappedPlaylists.length > 0) notes.push(`Item walks hit the cap of ${cap} for ${cappedPlaylists.length} playlist(s) (${cappedPlaylists.join(', ')}) — their item lists are partial.`);
-      if (unreadablePlaylists.length > 0) notes.push(`Item list UNREADABLE for ${unreadablePlaylists.length} playlist(s) (${unreadablePlaylists.join(', ')}): ${Object.entries(unreadable).map(([id, why]) => `${id} (${why})`).join('; ')} — they are exported with an empty item list, not as playlists that hold nothing.`);
+      if (cappedPlaylists.length > 0) notes.push(`Item walks hit the cap of ${cap} for ${cappedPlaylists.length} playlist(s) (${cappedPlaylists.join(', ')}) — those rows carry items_truncated: true and their item lists are partial.`);
+      if (unreadablePlaylists.length > 0) notes.push(`Item list UNREADABLE for ${unreadablePlaylists.length} playlist(s) (${unreadablePlaylists.join(', ')}): ${Object.entries(unreadable).map(([id, why]) => `${id} (${why})`).join('; ')} — they are exported with an empty item list and unreadable: true, not as playlists that hold nothing.`);
       const notesSuffix = notes.length > 0 ? `\n${notes.join('\n')}` : '';
+      const shared = {
+        ok: unreadablePlaylists.length === 0,
+        dir,
+        scope,
+        // True here because the only way to reach this point with scope=owned
+        // is a resolved /me; the refusal above is the scope_applied:false case.
+        scope_applied: true,
+        items_included: includeItems,
+        total: playlistRows.length,
+        cap,
+        cap_reached: playlistsTruncated,
+        truncated,
+        capped_playlists: cappedPlaylists,
+        unreadable,
+      };
       if (args.format === 'csv') {
-        const headers = ['playlist_id', 'playlist_name', 'item_uri', 'item_name'];
+        // #751: the CSV carried no per-row verdict at all, so a capped or
+        // unreadable playlist was indistinguishable from an empty one. One
+        // status column keeps the two formats telling the same story.
+        const headers = ['playlist_id', 'playlist_name', 'item_uri', 'item_name', 'items_status'];
         const rows: string[][] = [];
         for (const pl of playlistRows) {
-          if (pl.items.length === 0) rows.push([pl.id, pl.name, '', '']);
-          else for (const it of pl.items) rows.push([pl.id, pl.name, it.uri, it.name]);
+          const status = pl.unreadable
+            ? 'unreadable'
+            : pl.items_truncated
+              ? 'truncated'
+              : includeItems
+                ? 'complete'
+                : 'not_included';
+          if (pl.items.length === 0) rows.push([pl.id, pl.name, '', '', status]);
+          else for (const it of pl.items) rows.push([pl.id, pl.name, it.uri, it.name, status]);
         }
         const lines = csvTable(headers, rows);
         const fp = join(dir, 'playlists.csv');
         await writeOutputFile(fp, lines);
-        return shapeResult(rf, `Exported ${playlistRows.length} playlist(s) (${rows.length} rows) to ${fp}.${notesSuffix}`, { ok: unreadablePlaylists.length === 0, dir, file: fp, format: 'csv', total: playlistRows.length, rows: rows.length, cap, cap_reached: playlistsTruncated, truncated, capped_playlists: cappedPlaylists, unreadable });
+        return shapeResult(rf, `Exported ${playlistRows.length} playlist(s) (${rows.length} rows) to ${fp}.${notesSuffix}`, { ...shared, file: fp, format: 'csv', rows: rows.length });
       }
-      const doc = { exported_at: exportedAt, total: playlistRows.length, scope: args.scope, cap, cap_reached: playlistsTruncated, truncated, capped_playlists: cappedPlaylists, unreadable, playlists: playlistRows };
+      const doc = { exported_at: exportedAt, total: playlistRows.length, scope, scope_applied: true, items_included: includeItems, cap, cap_reached: playlistsTruncated, truncated, capped_playlists: cappedPlaylists, unreadable, playlists: playlistRows };
       const fp = join(dir, 'playlists.json');
       const body = `${JSON.stringify(doc, null, 2)}\n`;
       await writeOutputFile(fp, body);
-      return shapeResult(rf, `Exported ${playlistRows.length} playlist(s) to ${fp} (${Buffer.byteLength(body)} bytes).${notesSuffix}`, { ok: unreadablePlaylists.length === 0, dir, file: fp, format: 'json', bytes: Buffer.byteLength(body), total: playlistRows.length, scope: args.scope, cap, cap_reached: playlistsTruncated, truncated, capped_playlists: cappedPlaylists, unreadable });
+      return shapeResult(rf, `Exported ${playlistRows.length} playlist(s) to ${fp} (${Buffer.byteLength(body)} bytes).${notesSuffix}`, { ...shared, file: fp, format: 'json', bytes: Buffer.byteLength(body) });
     },
   );
 
