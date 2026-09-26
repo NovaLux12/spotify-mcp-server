@@ -18,14 +18,11 @@ import { dirname, join } from 'node:path';
 import type { SpotifyClient } from '../client.js';
 import type {
   PlaybackState,
-  RecentlyPlayedItem,
-  SavedTrackItem,
-  SpotifyPaged,
   SpotifyTrack,
 } from '../types/spotify.js';
 import { DryRun, ResponseFormat } from '../shaping.js';
 import { getConfig } from '../config.js';
-import { matchesArtistFilter, uniqueByArtist } from './smart.js';
+import { dedupeUris, loadCandidates, matchesArtistFilter, uniqueByArtist } from './smart.js';
 import { addToQueueBatch } from './queueops.js';
 
 type ToolResult = { content: Array<{ type: 'text'; text: string }>; structuredContent?: Record<string, unknown> };
@@ -254,32 +251,42 @@ interface SmartResolution {
   uris: string[];
   candidates_scanned: number;
   truncated_at_scan_cap: boolean;
+  /** Source ceiling the pool was read under (top_tracks 100, recently_played 50, saved_tracks scan_cap). */
+  pool_cap: number;
+  /** True when the source ceiling cut this pool — a floor, not a complete scan. */
+  pool_capped: boolean;
 }
 
-/** Resolve a rule to the candidate URIs a rebuild would write, in playlist order. */
+/**
+ * Resolve a rule to the candidate URIs a rebuild would write, in playlist order.
+ *
+ * #1092: this used to duplicate loadCandidates from smart.ts with all three
+ * pool ceilings and none of the disclosures. Two copies of one loader drifted
+ * about a user-visible parameter (time_range) and let a caller see honest
+ * ceilings on one side and silence on the other. Now it calls into the shared
+ * loader and surfaces the same pool_cap / pool_capped / candidates_scanned
+ * triple create_smart_playlist reports.
+ */
 async function resolveRuleCandidates(client: SpotifyClient, rule: SmartPlaylistRule): Promise<SmartResolution> {
-  let pool: SpotifyTrack[];
-  let truncatedAtCap = false;
-  if (rule.source === 'recently_played') {
-    const res = await client.get<{ items?: RecentlyPlayedItem[] }>('/me/player/recently-played', { limit: '50' });
-    pool = (res?.items ?? []).map((i) => i?.track).filter((t): t is SpotifyTrack => Boolean(t?.uri));
-  } else if (rule.source === 'saved_tracks') {
-    const saved = await client.getAllPages<SavedTrackItem>('/me/tracks', { limit: '50' }, { maxItems: rule.scan_cap });
-    pool = saved.map((entry) => entry?.track).filter((t): t is SpotifyTrack => Boolean(t?.uri));
-    truncatedAtCap = pool.length >= rule.scan_cap;
-  } else {
-    const page1 = await client.get<SpotifyPaged<SpotifyTrack>>('/me/top/tracks', { limit: '50', offset: '0', time_range: rule.time_range });
-    const page2 = await client.get<SpotifyPaged<SpotifyTrack>>('/me/top/tracks', { limit: '50', offset: '50', time_range: rule.time_range });
-    pool = [...(page1?.items ?? []), ...(page2?.items ?? [])].filter((t) => t?.uri);
-  }
-  const candidatesScanned = pool.length;
-  // Dedupe by URI keeping first occurrence (recently-played repeats), then the
-  // same artist filters create_smart_playlist applies, in the same order.
-  const seen = new Set<string>();
-  let candidates = pool.filter((t) => (seen.has(t.uri) ? false : (seen.add(t.uri), true)));
+  const pool = await loadCandidates(client, rule.source, {
+    scanCap: rule.scan_cap,
+    timeRange: rule.time_range,
+  });
+  const candidatesScanned = pool.candidates.length;
+  // `truncated_at_scan_cap` keeps its old, narrower meaning: only the saved
+  // scan cap cut this pool. The fixed source ceilings report as pool_capped.
+  const truncatedAtCap = rule.source === 'saved_tracks' && pool.capped;
+  // Same dedupe + artist filter order create_smart_playlist applies.
+  let candidates = dedupeUris(pool.candidates);
   if (rule.artist_filter.length > 0) candidates = candidates.filter((t) => matchesArtistFilter(t, rule.artist_filter));
   if (rule.unique_artists) candidates = uniqueByArtist(candidates);
-  return { uris: candidates.slice(0, rule.limit).map((t) => t.uri), candidates_scanned: candidatesScanned, truncated_at_scan_cap: truncatedAtCap };
+  return {
+    uris: candidates.slice(0, rule.limit).map((t) => t.uri),
+    candidates_scanned: candidatesScanned,
+    truncated_at_scan_cap: truncatedAtCap,
+    pool_cap: pool.cap,
+    pool_capped: pool.capped,
+  };
 }
 
 interface RefreshStep { method: 'PUT' | 'POST'; path: string; uris: number }
@@ -568,7 +575,7 @@ export function registerPlaybackExtTools(server: McpServer, client: SpotifyClien
     });
 
   server.tool('refresh_smart_playlist',
-    'Rebuild a playlist from its persisted rule: resolve candidates, then replace the contents (PUT /playlists/{id}/items), creating the playlist on the first refresh. A non-dry-run refresh always writes. The playlist id is stored back on the rule so later refreshes replace it.',
+    'Rebuild a playlist from its persisted rule: resolve candidates, then replace the contents (PUT /playlists/{id}/items), creating the playlist on the first refresh. A non-dry-run refresh always writes. The playlist id is stored back on the rule so later refreshes replace it. Every source has a pool ceiling (top_tracks 100, recently_played 50, saved_tracks scan_cap), reported as pool_capped with pool_cap — a capped pool is a floor, not a complete scan.',
     {
       name: z.string().min(1).describe('Rule name saved via save_smart_playlist_rule'),
       playlist_id: z.string().optional().describe('Playlist id to rebuild in place. Defaults to the id recorded by the previous refresh; otherwise the playlist is created.'),
@@ -585,10 +592,18 @@ export function registerPlaybackExtTools(server: McpServer, client: SpotifyClien
       // Same resolution for plan and commit: one code path builds both.
       const rule = normalizeSmartRule(stored, getConfig().fetchAllCap);
       const resolved = await resolveRuleCandidates(client, rule);
-      const { uris, candidates_scanned, truncated_at_scan_cap } = resolved;
+      const { uris, candidates_scanned, truncated_at_scan_cap, pool_capped, pool_cap } = resolved;
+      // Same disclosure language create_smart_playlist uses (#809).
+      const poolNote = pool_capped
+        ? `(candidate pool hit its ceiling of ${pool_cap} — at most ${pool_cap} candidate(s) were read `
+          + `from ${rule.source}, so this is a floor, not a complete scan)`
+        : '';
       if (uris.length === 0) {
-        return respond(fmt, store, { ok: false, error: 'no_candidates', name, rule, candidates_scanned, playlist_id: rule.playlist_id ?? null },
-          `Rule "${name}" matched 0 candidate tracks — nothing was created or changed. Loosen artist_filter or widen source/time_range.`);
+        return respond(fmt, store, {
+          ok: false, error: 'no_candidates', name, rule,
+          candidates_scanned, pool_capped, pool_cap,
+          playlist_id: rule.playlist_id ?? null,
+        }, `Rule "${name}" matched 0 candidate tracks — nothing was created or changed. Loosen artist_filter or widen source/time_range.`);
       }
 
       const targetId = (args.playlist_id as string | undefined) ?? rule.playlist_id ?? null;
@@ -598,8 +613,9 @@ export function registerPlaybackExtTools(server: McpServer, client: SpotifyClien
         return respond(fmt, store, {
           ok: true, dry_run: true, name, rule, playlist_id: targetId,
           would_create: targetId === null, selected: uris.length,
-          candidates_scanned, truncated_at_scan_cap, plan: steps, uris,
-        }, `[dry run] Would refresh smart playlist "${name}" (${uris.length} track(s) from ${rule.source}${truncated_at_scan_cap ? `, pool truncated at scan_cap=${rule.scan_cap}` : ''}):\n${planLines.join('\n')}`);
+          candidates_scanned, pool_capped, pool_cap, truncated_at_scan_cap,
+          plan: steps, uris,
+        }, `[dry run] Would refresh smart playlist "${name}" (${uris.length} track(s) from ${rule.source}${poolNote ? ` — ${poolNote.replace(/^\(|\)$/g, '')}` : ''}):\n${planLines.join('\n')}`);
       }
 
       let playlistId = targetId;
@@ -627,9 +643,9 @@ export function registerPlaybackExtTools(server: McpServer, client: SpotifyClien
       return respond(fmt, store, {
         ok: true, name, playlist_id: playlistId, created: targetId === null,
         tracks: uris.length, batches_sent: steps.length - (targetId === null ? 1 : 0),
-        candidates_scanned, truncated_at_scan_cap, source: rule.source,
+        candidates_scanned, pool_capped, pool_cap, truncated_at_scan_cap, source: rule.source,
         last_refreshed: refreshedAt, calls: steps, uris,
-      }, `Refreshed smart playlist "${name}" → ${targetId === null ? 'created' : 'rebuilt'} playlist ${playlistId} with ${uris.length} track(s) from ${rule.source} (${steps.length} write call(s)).`);
+      }, `Refreshed smart playlist "${name}" → ${targetId === null ? 'created' : 'rebuilt'} playlist ${playlistId} with ${uris.length} track(s) from ${rule.source} (${steps.length} write call(s))${poolNote ? `\n${poolNote}` : ''}.`);
     });
 
   // #181 show radar digest
