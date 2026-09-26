@@ -29,7 +29,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import type { SpotifyClient } from '../src/client.js';
+import { SpotifyApiError, type SpotifyClient } from '../src/client.js';
 import { registerSwarm3LibraryTools } from '../src/tools/swarm3_library.js';
 
 // ---------------------------------------------------------------------------
@@ -493,12 +493,15 @@ describe('swarm3_library: cross-source reads (#761)', () => {
     assert.equal(payload.total_saved_tracks, 6);
     assert.equal(payload.coverage_ratio, 0.5, '3 of 6 saved tracks are in no playlist');
     assert.equal(payload.quota_hit_at_playlist, null);
+    assert.equal(payload.playlists_unreadable, 0);
+    assert.deepEqual(payload.unreadable_playlist_ids, []);
     assert.deepEqual(
       (payload.items as unknown as Array<{ uri: string }>).map((i) => i.uri).sort(),
       ['spotify:track:tr-aurora-x', 'spotify:track:tr-beacon', 'spotify:track:tr-ember-song'],
     );
     assert.match(text, /50\.0% of 6 saved track\(s\) appear in at least one of 2 playlist\(s\)/);
     assert.match(text, /Saved tracks in NO playlist: 3/);
+    assert.doesNotMatch(text, /lower bound/);
 
     // Direction-sensitive, both ways: an inverted ratio reads 100% when nothing
     // is covered. With no playlists at all, 5 of the 6 saved tracks are in no
@@ -518,6 +521,31 @@ describe('swarm3_library: cross-source reads (#761)', () => {
     const full = await all.invoke('saved_vs_playlist_coverage', SCAN);
     assert.equal(full.payload.coverage_ratio, 1, 'a fully curated library reads 100%');
     assert.match(full.text, /100\.0% of 6 saved track\(s\) appear in at least one of 1 playlist\(s\)/);
+  });
+
+  it('saved_vs_playlist_coverage flags unreadable playlists and marks coverage a lower bound (#732)', async () => {
+    // pl-1 returns item-shaped rows that cover every non-local saved track, so
+    // without the 403 the ratio would be 1.0. The 403 on pl-2 is the bug we are
+    // preventing: the old reader silently skipped it, so a single 403 could
+    // not depress the ratio. With disclosure, the ratio still reads what was
+    // walked, and the payload names the unreadable id so a 403 cannot
+    // masquerade as full coverage.
+    const h = harness({
+      ...FIXTURE,
+      '/me/playlists': [
+        { id: 'pl-1', name: 'Late Shift' },
+        { id: 'pl-2', name: 'Forbidden Mix' },
+      ],
+      '/playlists/pl-1/items': TRACKS.filter((t) => t.track).map((t) => ({ item: { id: (t.track as TrackPayload).id } })),
+      '/playlists/pl-2/items': () => { throw new SpotifyApiError(403, 'Forbidden'); },
+    });
+    const { payload, text } = await h.invoke('saved_vs_playlist_coverage', SCAN);
+
+    assert.equal(payload.coverage_ratio, 1, 'pl-1 item rows cover every non-local track');
+    assert.equal(payload.playlists_unreadable, 1);
+    assert.deepEqual(payload.unreadable_playlist_ids, ['pl-2']);
+    assert.match(text, /1 playlists could not be read - coverage is a lower bound/);
+    assert.match(text, /Forbidden Mix/);
   });
 });
 

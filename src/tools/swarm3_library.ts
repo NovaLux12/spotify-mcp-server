@@ -862,6 +862,10 @@ export function registerSwarm3LibraryTools(server: McpServer, client: SpotifyCli
       const tracks = await loadSavedTracks(client, cap);
       const playlists = await client.getAllPages<SpotifyPlaylistSimple>('/me/playlists', { limit: '50' }, { maxItems: cap });
       const playlistTrackIds = new Set<string>();
+      // A playlist whose items could not be read is neither empty nor scanned:
+      // recording it keeps a 403 out of the coverage verdict instead of silently
+      // reporting a fully curated library as missing every track (#732).
+      const unreadablePlaylists: Array<{ playlist_id: string; name: string | null; error: string }> = [];
       let quotaAt: string | null = null;
       for (const pl of playlists) {
         if (!pl?.id) continue;
@@ -872,13 +876,9 @@ export function registerSwarm3LibraryTools(server: McpServer, client: SpotifyCli
             { maxItems: cap },
           );
           for (const it of items) {
-            // Rows carry `item` since the Feb-2026 rename (#A7-001); keep the legacy `track`
-            // shape working for older fixtures/snapshots.
-            const row = it as unknown as {
-              item?: { id?: string } | null;
-              track?: { id?: string } | null;
-            };
-            const tr = row.item ?? row.track;
+            // Rows carry `item` since the Feb-2026 rename (#A7-001); keep the
+            // legacy `track` shape working for older fixtures/snapshots.
+            const tr = (it as PlaylistItemObject).item ?? (it as { track?: { id?: string } | null }).track;
             if (tr?.id) playlistTrackIds.add(tr.id);
           }
         } catch (e) {
@@ -886,7 +886,11 @@ export function registerSwarm3LibraryTools(server: McpServer, client: SpotifyCli
             quotaAt = pl.id;
             break;
           }
-          // Skip unreadable playlists; they cannot add coverage.
+          unreadablePlaylists.push({
+            playlist_id: pl.id,
+            name: pl.name ?? null,
+            error: e instanceof Error ? e.message : String(e),
+          });
         }
       }
       const missing = tracks.filter((tr) => tr.id && !playlistTrackIds.has(tr.id) && !tr.is_local);
@@ -898,6 +902,9 @@ export function registerSwarm3LibraryTools(server: McpServer, client: SpotifyCli
         ...t.items.slice(0, 25).map((tr) => `  • ${tr.name} — ${artistNames(tr)}`),
         ...(t.footer ? [`(${t.footer})`] : []),
         ...(quotaAt ? [`Quota hit at playlist ${quotaAt} — partial coverage returned.`] : []),
+        ...(unreadablePlaylists.length > 0
+          ? [`(${unreadablePlaylists.length} playlists could not be read - coverage is a lower bound: ${unreadablePlaylists.map((u) => u.name ?? u.playlist_id).join(', ')})`]
+          : []),
       ];
       const payload: Record<string, unknown> = {
         ...quotaDelta(client, pre.snapshot),
@@ -909,6 +916,8 @@ export function registerSwarm3LibraryTools(server: McpServer, client: SpotifyCli
         coverage_ratio: ratio,
         total_saved_tracks: tracks.length,
         playlists_scanned: playlists.length,
+        playlists_unreadable: unreadablePlaylists.length,
+        unreadable_playlist_ids: unreadablePlaylists.map((u) => u.playlist_id),
         quota_hit_at_playlist: quotaAt,
         truncated: t.truncated,
       };
