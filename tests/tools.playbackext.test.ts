@@ -295,6 +295,22 @@ describe('playbackext', () => {
       assert.equal((await corruptCopies()).length, 1);
     });
 
+    // exhaust2_misc.ts:1759 savePlaybackExtSafe stringifies whatever the loader
+    // returned. A load_error persisted that way must stay inert: it is derived
+    // only from this call's parse failure, never read back out of the file, so
+    // it cannot resurface as a permanent phantom warning.
+    it('ignores a load_error key persisted inside an otherwise valid store', async () => {
+      await writeFileRaw(file(), JSON.stringify({ states: { evening: { name: 'evening', saved_at: 'x', playback: null } }, load_error: 'stale warning from a foreign saver' }), 'utf8');
+      const store = await loadPlaybackExt();
+      assert.equal(store.load_error, undefined, 'load_error must never be echoed out of the parsed JSON');
+      assert.deepEqual(Object.keys(store.states), ['evening'], 'the real store content still loads');
+      const { client } = makeClient();
+      const h = serverHarness(client);
+      const res = await h.invoke('list_playback_states', {});
+      assert.equal((res.structuredContent as Record<string, unknown>).load_error, undefined);
+      assert.doesNotMatch(res.content[0].text, /WARNING/);
+    });
+
     it('reports load_error on a read tool, so an empty listing is never mistaken for a real one', async () => {
       await writeFileRaw(file(), '{oops', 'utf8');
       const { client } = makeClient();
