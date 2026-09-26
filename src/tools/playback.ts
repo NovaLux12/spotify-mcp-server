@@ -203,7 +203,13 @@ export function registerPlaybackTools(server: McpServer, client: SpotifyClient):
       const params: Record<string, string> = { additional_types: types.join(',') };
       if (args.market !== undefined) params.market = args.market;
 
-      const state = await client.get<PlaybackState>('/me/player', params);
+      // A 304 here means the origin confirmed the stored payload is still
+      // current (#601): same answer, no re-download. Say so instead of
+      // letting a watch loop infer a change from an identical payload.
+      let unchanged = false;
+      const state = await client.get<PlaybackState>('/me/player', params, {
+        onNotModified: () => { unchanged = true; },
+      });
 
       if (!state || !state.item) {
         return { content: [{ type: 'text', text: 'Nothing is currently playing.' }] };
@@ -212,7 +218,7 @@ export function registerPlaybackTools(server: McpServer, client: SpotifyClient):
       if (args.response_format === 'json') {
         return {
           content: [{ type: 'text', text: JSON.stringify(state) }],
-          structuredContent: { ...state },
+          structuredContent: unchanged ? { ...state, unchanged: true } : { ...state },
         };
       }
 
@@ -257,6 +263,7 @@ export function registerPlaybackTools(server: McpServer, client: SpotifyClient):
       lines.push(`Shuffle: ${shuffle_state ? 'on' : 'off'} | Repeat: ${repeat_state}`);
       lines.push(`URI: ${item.uri ?? 'unknown'}`);
 
+      if (unchanged) lines.push('Unchanged since your last read (validated by ETag; no re-download).');
       return { content: [{ type: 'text', text: lines.join('\n') }] };
     },
   );
@@ -275,9 +282,11 @@ export function registerPlaybackTools(server: McpServer, client: SpotifyClient):
       const params: Record<string, string> = { additional_types: types.join(',') };
       if (args.market !== undefined) params.market = args.market;
 
+      let unchanged = false;
       const cp = await client.get<CurrentlyPlayingResponse>(
         '/me/player/currently-playing',
         params,
+        { onNotModified: () => { unchanged = true; } },
       );
 
       if (!cp || !cp.item) {
@@ -287,7 +296,7 @@ export function registerPlaybackTools(server: McpServer, client: SpotifyClient):
       if (args.response_format === 'json') {
         return {
           content: [{ type: 'text', text: JSON.stringify(cp) }],
-          structuredContent: { ...cp },
+          structuredContent: unchanged ? { ...cp, unchanged: true } : { ...cp },
         };
       }
 
@@ -300,6 +309,7 @@ export function registerPlaybackTools(server: McpServer, client: SpotifyClient):
         lines.push(`Album: ${cp.item.album.name}`);
       }
 
+      if (unchanged) lines.push('Unchanged since your last read (validated by ETag; no re-download).');
       return { content: [{ type: 'text', text: lines.join('\n') }] };
     },
   );

@@ -25,7 +25,7 @@ process.env.SPOTIFY_MCP_TOKEN_FILE = path.join(infraDir, 'tokens.json');
 
 const { loadConfig, truthyEnv, initConfig, getConfig, DEFAULT_MAX_ITEMS, DEFAULT_FETCH_ALL_CAP } =
   await import('../src/config.ts');
-const { LruTtlCache, shouldBypassCache, cacheKey } = await import('../src/cache.ts');
+const { LruTtlCache, ValidatorStore, shouldBypassCache, cacheKey } = await import('../src/cache.ts');
 const { truncateItems, resolveMaxResults, describeDryRun } = await import('../src/shaping.ts');
 const { SpotifyClient } = await import('../src/client.ts');
 const {
@@ -184,6 +184,56 @@ describe('cache: LruTtlCache', () => {
     cache.clear();
     assert.equal(cache.size, 0);
     assert.equal(cache.get('b'), undefined);
+  });
+});
+
+describe('cache: ValidatorStore (#601)', () => {
+  it('returns the stored payload and ETag it was set with', () => {
+    const store = new ValidatorStore<number>();
+    store.set('a', 1, '"v1"');
+    assert.equal(store.size, 1);
+    assert.deepEqual(store.get('a'), { value: 1, etag: '"v1"' });
+    assert.equal(store.get('missing'), undefined);
+  });
+
+  it('stops offering a validator once its window has passed', async () => {
+    const store = new ValidatorStore<string>(20);
+    store.set('k', 'payload', '"v1"');
+    assert.deepEqual(store.get('k'), { value: 'payload', etag: '"v1"' });
+    await sleep(40);
+    assert.equal(store.get('k'), undefined, 'an expired validator is not re-sent');
+    assert.equal(store.size, 0, 'the expired entry was dropped on read');
+  });
+
+  it('set refreshes the window of an existing key', async () => {
+    const store = new ValidatorStore<string>(60);
+    store.set('k', 'first', '"v1"');
+    await sleep(40);
+    store.set('k', 'second', '"v2"');
+    await sleep(40);
+    assert.deepEqual(store.get('k'), { value: 'second', etag: '"v2"' });
+  });
+
+  it('evicts the least-recently-used entry beyond maxEntries', () => {
+    const store = new ValidatorStore<number>(60_000, 2);
+    store.set('a', 1, '"a"');
+    store.set('b', 2, '"b"');
+    assert.equal(store.get('a')?.etag, '"a"'); // refresh recency: b is now LRU
+    store.set('c', 3, '"c"');
+    assert.equal(store.get('b'), undefined, 'least recently used entry was evicted');
+    assert.equal(store.get('a')?.value, 1);
+    assert.equal(store.size, 2);
+  });
+
+  it('delete and clear remove entries', () => {
+    const store = new ValidatorStore<number>();
+    store.set('a', 1, '"a"');
+    store.delete('a');
+    assert.equal(store.get('a'), undefined);
+    store.set('b', 2, '"b"');
+    store.clear();
+    assert.equal(store.size, 0);
+    assert.equal(store.get('b'), undefined);
   });
 });
 

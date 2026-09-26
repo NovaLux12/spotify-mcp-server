@@ -109,6 +109,21 @@ Safe to run on someone else's account or a shared screen — zero writes.
 4. Narrate the taste: genres, anchors, and clock. Offer recipe 1 as the follow-up — on their own account.
 ```
 
+## 11. Poll near-real-time state cheaply (ETag watch loop)
+
+Live playback state changes constantly but usually not at all between two polls seconds apart. Reads carry the `ETag` Spotify returns, and the next read of the same key sends `If-None-Match`: an unchanged resource comes back **304** with no body, and the server answers with the payload it already holds. The watch loop is the client doing this for you — all you write is the interval and the branch.
+
+```text
+1. Every 5 seconds, call get_now_playing with `response_format: "json"`.
+2. Read `unchanged` from structuredContent. Absent means Spotify sent a fresh
+   body — act on it. `true` means the ETag still matched, nothing moved, and
+   you paid no re-download: stay quiet and poll again.
+3. Escalate only on a fresh body: narrate the track change, and stop the loop
+   when a poll says nothing is playing.
+```
+
+The same applies to `get_currently_playing` (lightweight poll). A 304 never surfaces as an empty result — the payload shape is identical either way, so `unchanged` is the only field to branch on. Catalog reads (`get_album`, `get_artist`, …) are additionally cached for 5 minutes, and a 304 after that window refreshes the cache entry instead of re-downloading it. One caveat for watch loops: any mutation you make (pause, skip, volume) drops the stored validators, so the next poll is a full read — which is the correct answer right after a change you caused.
+
 ## See also
 
 - [stats.fm second source](statsfm.md) — setup, cheat sheet, gotchas
