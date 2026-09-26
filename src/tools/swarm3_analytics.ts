@@ -28,6 +28,7 @@ import {
   truncateItems,
   paginationInfo,
 } from '../shaping.js';
+import { capFor } from '../chunk.js';
 import type { ResponseFormatValue } from '../shaping.js';
 import { spotifyId } from '../refs.js';
 import type {
@@ -852,14 +853,51 @@ export function registerSwarm3AnalyticsTools(server: McpServer, client: SpotifyC
       const weights = [3, 2, 1];
       const ids = new Set(windows.flat().map((a) => a.id));
       if (ids.size === 0) return empty(rf, 'No top artists available for this account.');
-      const idList = [...ids].slice(0, 50);
-      const detail = await client.get<{ artists: Array<{ id: string; genres?: string[] } | null> | null }>(
-        '/artists',
-        { ids: idList.join(',') },
-      );
+      // #801: a census can union up to 3 × TOP_LIMIT ids across the three
+      // windows. /artists?ids= caps at CHUNK_CAPS.artists per call, so walk
+      // every id in chunks; if the batch endpoint 403s on a post-Nov-2024
+      // registration, fall back to per-item GETs.
+      const idList = [...ids];
       const genresById = new Map<string, string[]>();
-      for (const a of detail?.artists ?? []) {
-        if (a?.id) genresById.set(a.id, a.genres ?? []);
+      const unresolvedIds: string[] = [];
+      const batchCap = capFor('artists');
+      for (let i = 0; i < idList.length; i += batchCap) {
+        const chunk = idList.slice(i, i + batchCap);
+        let detail: { artists: Array<{ id: string; genres?: string[] } | null> | null } | null = null;
+        let batchErr: unknown = null;
+        try {
+          detail = await client.get<{ artists: Array<{ id: string; genres?: string[] } | null> | null }>(
+            '/artists',
+            { ids: chunk.join(',') },
+          );
+        } catch (err) {
+          batchErr = err;
+        }
+        if (batchErr != null) {
+          for (const id of chunk) {
+            try {
+              const one = await client.get<{ id: string; genres?: string[] }>(`/artists/${encodeURIComponent(id)}`);
+              if (one?.id) genresById.set(one.id, one.genres ?? []);
+              else unresolvedIds.push(id);
+            } catch {
+              unresolvedIds.push(id);
+            }
+          }
+          continue;
+        }
+        // #1093: null slots are ids the endpoint could not resolve. Account
+        // for them by index so the caller can tell a smaller lookup from a
+        // fully-resolved one.
+        const slots = detail?.artists ?? [];
+        for (let j = 0; j < Math.max(chunk.length, slots.length); j += 1) {
+          const slot = slots[j];
+          if (slot?.id) {
+            genresById.set(slot.id, slot.genres ?? []);
+            continue;
+          }
+          const id = chunk[j];
+          if (id !== undefined) unresolvedIds.push(id);
+        }
       }
       const weighted: Record<string, number> = {};
       const artistCounts: Record<string, number> = {};
@@ -876,16 +914,28 @@ export function registerSwarm3AnalyticsTools(server: McpServer, client: SpotifyC
       });
       const rows = sortedEntries(weighted).map(([genre, score]) => ({ genre, weighted_score: score, artists: artistCounts[genre] ?? 0 }));
       const tr = truncateItems(rows, resolveMaxResults(args.max_results));
+      // #801 / #1093: resolved vs unresolved_ids belong in structuredContent
+      // so the header ("artists_census") cannot be read as "all N were
+      // resolved".
+      const resolved = idList.length - unresolvedIds.length;
       const payload = {
         ok: true,
         artists_census: ids.size,
         artists_with_genres: idList.filter((id) => (genresById.get(id)?.length ?? 0) > 0).length,
+        resolved,
+        unresolved_ids: [...unresolvedIds],
         scoring: 'score = (limit - rank + 1) × window weight (short 3 / medium 2 / long 1) summed per genre',
         items: tr.items,
         pagination: paginationInfo({ total: tr.total, returned: tr.returned }),
       };
       const top = tr.items.slice(0, 5).map((g) => `${g.genre} (${g.weighted_score})`).join(', ');
-      return shape(rf, `Genre census: ${rows.length} genre(s) across ${ids.size} artists. Top: ${top || '—'}.`, payload);
+      let prose = `Genre census: ${rows.length} genre(s) across ${ids.size} artists (${resolved} resolved). Top: ${top || '—'}.`;
+      if (unresolvedIds.length > 0) {
+        const shown = unresolvedIds.slice(0, 10).join(', ');
+        const more = unresolvedIds.length > 10 ? ', …' : '';
+        prose += ` ${unresolvedIds.length} ${unresolvedIds.length === 1 ? 'id' : 'ids'} unresolved: ${shown}${more}`;
+      }
+      return shape(rf, prose, payload);
     },
   );
 
