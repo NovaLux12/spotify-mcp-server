@@ -205,7 +205,7 @@ export function normaliseToId(input: unknown): string {
  * and typed-kind mismatches fail schema validation before a handler can call
  * the Spotify API.
  */
-export function spotifyId(expectedKind?: SpotifyReferenceKind): z.ZodString {
+export function spotifyId(expectedKind?: SpotifyReferenceKind): z.ZodType<string> {
   const description = expectedKind
     ? `Spotify ${expectedKind} ID, spotify:${expectedKind}: URI, or open.spotify.com/${expectedKind} URL`
     : 'Spotify ID, spotify: URI, or open.spotify.com share URL';
@@ -220,10 +220,10 @@ export function spotifyId(expectedKind?: SpotifyReferenceKind): z.ZodString {
         context.addIssue({ code: 'custom', message: parsed.error ?? 'invalid Spotify reference' });
       }
     }).describe(description),
-  ) as unknown as z.ZodString;
+  );
 }
 
 /** Array form of {@link spotifyId}. */
-export function spotifyIdArray(expectedKind?: SpotifyReferenceKind): z.ZodArray<z.ZodString> {
+export function spotifyIdArray(expectedKind?: SpotifyReferenceKind): z.ZodArray<z.ZodType<string>> {
   return z.array(spotifyId(expectedKind));
 }

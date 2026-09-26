@@ -10,6 +10,11 @@ import {
 import { normalizePlaylistReference, resolvePlaylistInput } from '../src/shaping.js';
 import { registerSwarm3RefsTools } from '../src/tools/swarm3_refs.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { McpServer as McpServerImpl } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import { installToolErrorBoundary } from '../src/tools/annotations.js';
+import { registerSwarm3AnalyticsTools } from '../src/tools/swarm3_analytics.js';
 import type { SpotifyClient } from '../src/client.js';
 
 const ID = '4iV5W9uYEdYUVa79Axb7Rh';
@@ -328,6 +333,139 @@ describe('curated reference tool surface', () => {
         expected_kind: 'track',
       })).structuredContent as { rows: Array<{ valid: boolean; canonical_uri: string | null }> };
       assert.deepEqual(canonicalised.rows, [{ input: url, canonical_uri: null, valid: false }], url);
+    }
+  });
+});
+
+// #584: the kind a schema declares is the kind the reference must carry. The
+// resolver, the URI canonicalizer and the Zod schema all have to agree, and the
+// disagreement has to be visible at the tool boundary as a validation error —
+// an agent must never learn about a wrong entity kind by provoking a Spotify
+// 404 (ids share one base62 space, so the request can even succeed).
+describe('expectedKind enforcement (#584)', () => {
+  const ARTIST_ID = '4iV5W9uYEdYUVa79Axb7Rh';
+  const ALBUM_FORMS = [
+    `spotify:album:${ARTIST_ID}`,
+    `spotify://album/${ARTIST_ID}`,
+    `https://open.spotify.com/album/${ARTIST_ID}`,
+    `https://open.spotify.com/intl-de/embed/album/${ARTIST_ID}`,
+  ];
+
+  it('resolveSpotifyId returns null for every wrong-kind reference form', () => {
+    for (const reference of ALBUM_FORMS) {
+      assert.equal(resolveSpotifyId(reference, 'artist'), null, reference);
+      assert.equal(spotifyUri(reference, 'artist'), null, reference);
+      const parsed = classifySpotifyReference(reference, 'artist');
+      assert.equal(parsed.valid, false, reference);
+      assert.match(parsed.error ?? '', /expected artist, received album/, reference);
+    }
+  });
+
+  it('spotifyId(expectedKind) rejects a wrong-kind URL and URI, accepts a bare id', () => {
+    for (const reference of ALBUM_FORMS) {
+      const rejected = spotifyId('artist').safeParse(reference);
+      assert.equal(rejected.success, false, reference);
+      assert.match(rejected.error?.issues[0]?.message ?? '', /expected artist, received album/, reference);
+    }
+    // A bare 22-character id carries no kind evidence, so the declared kind is
+    // a caller constraint rather than a mismatch: it still has to pass.
+    assert.equal(spotifyId('artist').parse(ARTIST_ID), ARTIST_ID);
+    assert.equal(spotifyId('artist').parse(`spotify:artist:${ARTIST_ID}`), ARTIST_ID);
+    assert.equal(spotifyId('artist').parse(`https://open.spotify.com/artist/${ARTIST_ID}`), ARTIST_ID);
+  });
+
+  it('every declared kind rejects every other kind, symmetrically', () => {
+    const kinds = [
+      'track', 'album', 'artist', 'playlist', 'show', 'episode', 'audiobook', 'user',
+    ] as const;
+    for (const expected of kinds) {
+      for (const actual of kinds) {
+        // A well-formed 22-character id in every kind, so the only thing that
+        // can reject these is the kind check and nothing else.
+        assert.equal(spotifyId(expected).parse(`spotify:${expected}:${ARTIST_ID}`), ARTIST_ID);
+        if (expected === actual) continue;
+        assert.equal(
+          spotifyId(expected).safeParse(`spotify:${actual}:${ARTIST_ID}`).success,
+          false,
+          `${expected} must refuse ${actual}`,
+        );
+      }
+    }
+  });
+
+  async function boundaryHarness() {
+    const requests: string[] = [];
+    const client = {
+      async get<T>(path: string): Promise<T | null> {
+        requests.push(path);
+        if (path === '/me/player/recently-played') {
+          return { items: [], cursors: null, next: null } as unknown as T;
+        }
+        if (path === '/me/top/artists') return { items: [] } as unknown as T;
+        return null;
+      },
+      async getAllPages<T>(): Promise<T[]> {
+        requests.push('getAllPages');
+        return [] as unknown as T[];
+      },
+    };
+    const server = new McpServerImpl({ name: 'refs-boundary', version: '0.0.0' });
+    registerSwarm3AnalyticsTools(server, client as unknown as SpotifyClient);
+    installToolErrorBoundary(server);
+    const mcp = new Client({ name: 'refs-boundary-client', version: '0.0.0' });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(serverTransport), mcp.connect(clientTransport)]);
+    return {
+      requests,
+      async deepDive(artist: string) {
+        requests.length = 0;
+        const result = await mcp.callTool({ name: 'deep_dive_report', arguments: { artist } });
+        return {
+          result: result as {
+            isError?: boolean;
+            content: Array<{ text: string }>;
+            structuredContent?: Record<string, unknown>;
+          },
+          spotifyRequests: [...requests],
+        };
+      },
+      async close() {
+        await mcp.close();
+        await server.close();
+      },
+    };
+  }
+
+  it('a tool boundary refuses a wrong-kind reference without calling Spotify', async () => {
+    const harness = await boundaryHarness();
+    try {
+      for (const artist of ALBUM_FORMS) {
+        const { result, spotifyRequests } = await harness.deepDive(artist);
+        assert.equal(result.isError, true, artist);
+        const error = result.structuredContent?.error as Record<string, unknown> | undefined;
+        assert.equal(error?.kind, 'validation', artist);
+        assert.equal(error?.param, 'artist', artist);
+        assert.equal(error?.reason, 'validation_failed', artist);
+        // The decisive half: the handler never ran, so this is a rejection and
+        // not a Spotify 404 for a real-looking but wrong entity.
+        assert.deepEqual(spotifyRequests, [], artist);
+      }
+
+      // The same tool accepts the two forms that carry artist evidence, and
+      // both reach the client — so the guard is discriminating, not a blanket
+      // refusal that would hide the tool.
+      for (const artist of [ARTIST_ID, `spotify:artist:${ARTIST_ID}`, `https://open.spotify.com/artist/${ARTIST_ID}`]) {
+        const { result, spotifyRequests } = await harness.deepDive(artist);
+        assert.notEqual(result.isError, true, artist);
+        assert.equal(
+          (result.structuredContent as { artist_id?: string } | undefined)?.artist_id,
+          ARTIST_ID,
+          artist,
+        );
+        assert.ok(spotifyRequests.length > 0, artist);
+      }
+    } finally {
+      await harness.close();
     }
   });
 });
