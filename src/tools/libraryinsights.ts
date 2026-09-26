@@ -12,8 +12,10 @@ import {
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
-// `readFileSync` used to live here; loadGenreTags now delegates to loadSidecarSync
-// in src/sidecar.ts (#1051).
+import { readFileSync } from 'node:fs';
+// `loadGenreTags` now delegates to loadSidecarSync in src/sidecar.ts (#1051);
+// readFileSync remains for the #1052 inline cap logic (chmodSync, writeFileSync,
+// existsSync are already imported above).
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
 import type { SavedTrackItem, SavedAlbumItem } from '../types/spotify.js';
