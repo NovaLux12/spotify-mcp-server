@@ -103,6 +103,12 @@ const parameterAllowlist = new Set([
   // from a narrow one. These are the structuredContent keys it returns about
   // its own result — not tools, and not parameters of anything.
   'scanned_items', 'scan_truncated', 'items_of_unknown_kind',
+  // #783: the radar scans report the width their fan-out actually ran at, and
+  // which knob supplied it — the request funnel's SPOTIFY_MCP_MAX_CONCURRENCY
+  // or this work's own fallback — so docs/configuration.md can name the
+  // tunable and its precedence. structuredContent keys describing the tool's
+  // own result, not tools and not parameters.
+  'fanout_concurrency', 'fanout_concurrency_source',
 ]);
 /** Registration keys are module names, not tools; docs legitimately name them. */
 const registrationKeyNames = new Set(census.registrationKeyNames ?? []);

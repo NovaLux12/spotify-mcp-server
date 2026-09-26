@@ -4,6 +4,8 @@ import { recordSearch } from './searchhistory.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
 import { ResponseFormat, MaxResults, resolveMaxResults, truncateItems, nextPageLine } from '../shaping.js';
+import { mapLimit } from '../concurrency.js';
+import { getConfig } from '../config.js';
 
 // Feb 2026: Spotify capped /search at limit=10 (400 above it), so agents can't
 // fetch more than 10 rows per type in one call. `search_deep` walks the offset
@@ -167,7 +169,7 @@ async function collectType(
 export function registerSearchDeepTool(server: McpServer, client: SpotifyClient): void {
   server.tool(
     'search_deep',
-    'Paged catalog search that walks past the API limit of 10 results per type. Fetches up to 5 pages of 10 results per requested type server-side from a caller-supplied `offset`, dedupes by id, and returns compact rows. Decision guide: use search_deep when you need >10 results/type or a later window; otherwise use search (single page), search_fresh (new releases), search_by_isrc (ISRC-exact), whats_new (personal follows).',
+    'Paged catalog search that walks past the API limit of 10 results per type. Fetches up to 5 pages of 10 results per requested type server-side from a caller-supplied `offset`, dedupes by id, and returns compact rows. Type walks overlap (width: SPOTIFY_MCP_MAX_CONCURRENCY, else SPOTIFY_MCP_FANOUT_CONCURRENCY, else 4); same request count. Decision guide: use search_deep when you need >10 results/type or a later window; otherwise use search (single page), search_fresh (new releases), search_by_isrc (ISRC-exact), whats_new (personal follows).',
     {
       query: z.string().describe('Search query'),
       types: z
@@ -201,12 +203,32 @@ export function registerSearchDeepTool(server: McpServer, client: SpotifyClient)
       const startOffset = args.offset ?? 0;
 
       const collected = new Map<SearchType, Collected>();
-      for (const type of types) {
-        collected.set(
-          type,
-          await collectType(client, args.query, type, pages, args.market, startOffset),
-        );
-      }
+      // #783: each type's walk is independent of the others, so they run
+      // overlapped under a width bound rather than one type's whole multi-page
+      // walk finishing before the next type starts. The Map is rebuilt in
+      // `types` order below, so section order in the payload and in the prose
+      // is the caller's requested order and not settle order. Within a type
+      // the pages still walk serially: dedupe and the early-stop check both
+      // depend on the previous page.
+      const perType = await mapLimit(
+        types,
+        getConfig().fanoutConcurrency,
+        (type) => collectType(client, args.query, type, pages, args.market, startOffset),
+      );
+      // A type walk that threw is not a partial answer: this tool has never
+      // reported a half-walked type, so the first failure propagates exactly as
+      // the serial loop's `await` did. mapLimit collects rejections instead of
+      // rethrowing them (each radar caller classifies its own), so rethrow here.
+      const firstFailure = perType.errors[0];
+      if (firstFailure) throw firstFailure.error;
+      perType.results.forEach((col, index) => {
+        if (!col) return;
+        collected.set(types[index] as SearchType, col);
+      });
+      // #783: the width this walk used, so a slow search_deep has a tunable to
+      // point at and an operator can see which trade was taken.
+      const fanoutConcurrency = getConfig().fanoutConcurrency;
+      const fanoutConcurrencySource = getConfig().fanoutConcurrencySource;
 
       // #766: feed the sidecar the search_history / search_rerun /
       // search_history_stats readers read. `limit` is the per-request limit
@@ -225,7 +247,13 @@ export function registerSearchDeepTool(server: McpServer, client: SpotifyClient)
       }
 
       if (args.response_format === 'json') {
-        const raw: Record<string, unknown> = {};
+        // #783: the disclosure goes in `raw` itself, not alongside it, so the
+        // JSON text and structuredContent stay the same object — a caller that
+        // diffs the two must not find fields that exist in only one.
+        const raw: Record<string, unknown> = {
+          fanout_concurrency: fanoutConcurrency,
+          fanout_concurrency_source: fanoutConcurrencySource,
+        };
         for (const [type, col] of collected) {
           raw[sectionKey(type)] = col.rows;
         }
@@ -276,7 +304,16 @@ export function registerSearchDeepTool(server: McpServer, client: SpotifyClient)
       if (pageLine) lines.push(pageLine);
       return {
         content: [{ type: 'text', text: lines.join('\n').trim() }],
-        structuredContent: { query: args.query, types, pages, offset: startOffset, sections },
+        structuredContent: {
+          query: args.query,
+          types,
+          pages,
+          offset: startOffset,
+          sections,
+          // #783: the type walks ran overlapped under this width.
+          fanout_concurrency: fanoutConcurrency,
+          fanout_concurrency_source: fanoutConcurrencySource,
+        },
       };
     },
   );

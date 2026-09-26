@@ -29,6 +29,7 @@ The variables below are read at the documented call sites; set them in your MCP 
 | `SPOTIFY_MCP_FRESHNESS_STATE` | `~/.spotify-mcp/freshness.json` | Watermark file powering `whats_new` with `since: "last-check"`. |
 | `SPOTIFY_MCP_FRESHNESS_BUDGET` | `25` | Per-call budget for `whats_new` artist and show lookups. |
 | `SPOTIFY_MCP_SHOWRADAR_BUDGET` | unset (falls back to `SPOTIFY_MCP_FRESHNESS_BUDGET`) | Per-call episode-lookup budget for `show_new_episodes` only. Takes precedence over the shared freshness budget; a `max_shows` argument still wins for one call. |
+| `SPOTIFY_MCP_FANOUT_CONCURRENCY` | `4` | How many requests a freshness-radar fan-out keeps in flight at once: the per-show lookups in `show_new_episodes`, the per-artist album lookups in `check_artist_releases` and `artist_release_digest`, and the per-type walks in `search_deep`. Bounds burst size, not request count — the number of requests a scan makes is unchanged. `1` restores the old strictly-serial walk. Every affected payload reports the width it used as `fanout_concurrency` / `fanout_concurrency_source`. **Yields to `SPOTIFY_MCP_MAX_CONCURRENCY`**: that request-funnel knob (#892) takes precedence for these tools, so the two can never disagree about how much is in flight. It is read here whether or not the bounded funnel has landed, so setting it always has the same effect on the radar scans rather than a different one depending on which build you run. |
 | `SPOTIFY_MCP_SCENES_FILE` | `~/.spotify-mcp/scenes.json` | Playback scene sidecar. |
 | `SPOTIFY_MCP_GENRE_TAGS_FILE` | `~/.spotify-mcp/genre-tags.json` | Artist-to-genre-tags sidecar. |
 | `SPOTIFY_MCP_DATA_DIR` | `~/.spotify-mcp` for watchlists; `~/.spotify-mcp/playlist-snapshots` for playlist-health snapshots | Data directory read by the artist-watchlist, portability-watchlist, and playlist-health call sites. The watchlist default no longer depends on the process working directory. |
@@ -73,6 +74,10 @@ Containment is decided on the *real* path — every component is resolved before
 ### Runtime limits and requests
 
 `SPOTIFY_REQUEST_TIMEOUT_MS` applies an abort timer to every outbound Spotify request and token refresh. `SPOTIFY_MCP_MAX_ITEMS` sets the default list truncation cap; a call can still pass its own `max_results`. `SPOTIFY_MCP_FETCH_ALL_CAP` bounds `fetch_all=true` pagination and related scan walks; page explicitly with `limit`/`offset` when the cap is reached.
+
+`SPOTIFY_MCP_FANOUT_CONCURRENCY` bounds how many of a scan's requests are outstanding at once. The freshness-radar tools used to issue them one at a time, so a 25-show `show_new_episodes` cost 25 serial round trips; they now overlap under this width. It is a concurrency bound and not a rate limiter — it never retries anything, and a 429 still stops the scan rather than being re-sent. The request count is the same either way, so raising it trades latency against burst size without changing what a call costs.
+
+It is a **fallback, not the authority**. If `SPOTIFY_MCP_MAX_CONCURRENCY` is set — the request funnel's own width knob, from #892 — it wins: the radar tools read it first, so their `fanout_concurrency` reports that number and this variable has no effect on them. It is read on every build, merged funnel or not, so the precedence does not change shape when #892 lands; on the current serial client it simply acts as the tool-side width. Two knobs bounding the same quantity from different places would multiply rather than add — the narrower one would win silently, and no payload could report which — so they are deliberately kept in agreement instead. `fanout_concurrency_source` names the variable actually in force, which is how you tell a funnel-derived width from one you chose here.
 
 ### Mutation history
 

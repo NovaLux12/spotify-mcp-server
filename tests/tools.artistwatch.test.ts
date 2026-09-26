@@ -5,6 +5,7 @@ import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { registerArtistWatchTools } from '../src/tools/artistwatch.js';
+import { initConfig } from '../src/config.js';
 type ToolContent = { content: Array<{ type: string; text: string }>; structuredContent?: Record<string, unknown>; isError?: boolean };
 type RegisteredTool = { name: string; description: string; schema: Record<string, { safeParse(a: unknown): { success: boolean } }>; handler: (a: Record<string, unknown>) => Promise<ToolContent> };
 function album(id:string, name:string, type='album', date='2026-08-01'){ return { id, name, uri:`spotify:album:${id}`, album_type:type, release_date:date, total_tracks:10, artists:[{id:'art1',name:'Artist'}] }; }
@@ -30,6 +31,28 @@ async function withTmpDir(fn:(dir:string)=>Promise<void>){
   const prev = process.env.SPOTIFY_MCP_DATA_DIR;
   process.env.SPOTIFY_MCP_DATA_DIR = dir;
   try { await fn(dir); } finally { process.env.SPOTIFY_MCP_DATA_DIR = prev; await rm(dir,{recursive:true,force:true}); }
+}
+/**
+ * Run `fn` with the fan-out width pinned to 1 (#783).
+ *
+ * Several tests below assert *where a scan stopped* — "the 2nd artist hit the
+ * quota wall, so 2 were scanned" — which is only a stable assertion when the
+ * scan is strictly serial. Under the default width the lookups overlap, so
+ * several are already in flight when the wall lands and the counts legitimately
+ * differ. Those tests are about the stop policy, not the width; the width is
+ * pinned here so they keep testing exactly what they were written to test.
+ * The overlapped path is covered on its own in
+ * tests/radar-fanout-concurrency.test.ts.
+ */
+async function withSerialFanout(fn:()=>Promise<void>){
+  const prev = process.env.SPOTIFY_MCP_FANOUT_CONCURRENCY;
+  process.env.SPOTIFY_MCP_FANOUT_CONCURRENCY = '1';
+  initConfig(process.env);
+  try { await fn(); } finally {
+    if (prev === undefined) delete process.env.SPOTIFY_MCP_FANOUT_CONCURRENCY;
+    else process.env.SPOTIFY_MCP_FANOUT_CONCURRENCY = prev;
+    initConfig(process.env);
+  }
 }
 test('get_artist_discography filtered and limit', async () => {
   const { registered } = makeHarness(()=>({ items:[album('a1','Album One','album'),album('a2','Single One','single'),album('a3','Comp','compilation')], total:3, limit:20, offset:0 }));
@@ -218,6 +241,7 @@ test('artist_release_digest reports artists scanned, not artists with hits', asy
 
 test('artist_release_digest counts the quota position, not the number of hits', async () => {
   await withTmpDir(async ()=>{
+    await withSerialFanout(async ()=>{
     let callN = 0;
     const { registered } = makeHarness((path)=>{
       if (path.includes('/artists/')) {
@@ -238,6 +262,7 @@ test('artist_release_digest counts the quota position, not the number of hits', 
     assert.equal(sc.artists_scanned, 2);
     assert.equal(sc.artists_read, 1);
     assert.equal(callN, 2);
+  });
   });
 });
 
@@ -354,6 +379,7 @@ test('artist_release_digest keeps the readable artists when one lookup fails', a
 // scan rather than spend the remaining budget on requests that cannot succeed.
 test('check_artist_releases stops on a burst 429 instead of collecting it as a failure', async () => {
   await withTmpDir(async ()=>{
+    await withSerialFanout(async ()=>{
     let callN = 0;
     const { registered } = makeHarness((path)=>{
       if (path.includes('/artists/')) {
@@ -382,10 +408,12 @@ test('check_artist_releases stops on a burst 429 instead of collecting it as a f
     assert.equal(callN, 2);
     assert.match(text(r), /Rate limited \(429\)/);
   });
+  });
 });
 
 test('check_artist_releases stops on a 401 that survived the token refresh', async ()=>{
   await withTmpDir(async ()=>{
+    await withSerialFanout(async ()=>{
     let callN = 0;
     const { registered } = makeHarness((path)=>{
       if (path.includes('/artists/')) {
@@ -407,10 +435,12 @@ test('check_artist_releases stops on a 401 that survived the token refresh', asy
     assert.match(t, /401/);
     assert.match(t, /spotify-mcp auth/);
   });
+  });
 });
 
 test('artist_release_digest stops on a burst 429 and keeps prior rows', async ()=>{
   await withTmpDir(async ()=>{
+    await withSerialFanout(async ()=>{
     let callN = 0;
     const { registered } = makeHarness((path)=>{
       if (path.includes('/artists/')) {
@@ -430,6 +460,7 @@ test('artist_release_digest stops on a burst 429 and keeps prior rows', async ()
     assert.deepEqual(sc.items.map(i=>i.album.name), ['Digest Before Limit']);
     assert.equal(callN, 2);
     assert.match(text(r), /Rate limited \(429\)/);
+  });
   });
 });
 
