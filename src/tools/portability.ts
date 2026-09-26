@@ -23,7 +23,7 @@ import { getConfig } from '../config.js';
 // own store paths (scenesFilePath(), historyFilePath()) rather than to a
 // caller-supplied destination. chmod is here for the history-file mode
 // enforcement in export_profile_state.
-import { chmod, mkdir, writeFile, readFile, readdir } from 'node:fs/promises';
+import { chmod, mkdir, stat, writeFile, readFile, readdir } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import { exportRootDir, resolveOutputPath, writeOutputFile } from '../paths.js';
@@ -44,7 +44,16 @@ import { scenesFilePath, loadScenes } from './scenes.js';
 import { genreTagsPath } from './libraryinsights.js';
 import { playbackExtFile } from './playbackext.js';
 import { searchHistoryFile } from './searchhistory.js';
-import { HISTORY_DIR_MODE, HISTORY_FILE_MODE, historyFilePath, readHistory } from '../history.js';
+import { backupDir } from './backup.js';
+import {
+  DEFAULT_HISTORY_READ_LIMIT,
+  HISTORY_DIR_MODE,
+  HISTORY_FILE_MODE,
+  historyFilePath,
+  isHistoryEnabled,
+  readHistory,
+} from '../history.js';
+import type { HistoryRecord } from '../history.js';
 
 type ToolOut = {
   content: Array<{ type: 'text'; text: string }>;
@@ -437,12 +446,158 @@ function truncationPayload(plan: SidecarPlan) {
   };
 }
 
+// ---------------------------------------------------------------------------
+// #754: history_search — three local sources, not one directory
+// ---------------------------------------------------------------------------
+
+/** Per-source cap on returned hits. Counts stay whole; only the list truncates. */
+const HISTORY_SEARCH_HIT_LIMIT = 50;
+/** A single ledger record is bounded before it can inflate a reply (#754). */
+const HISTORY_SEARCH_RECORD_MAX_BYTES = 2000;
+
+type HistorySearchSource = 'portability' | 'backups' | 'history';
+type HistorySearchState = 'ok' | 'absent' | 'unread';
+
+interface HistorySearchHit {
+  source: HistorySearchSource;
+  name?: string;
+  [key: string]: unknown;
+}
+
+interface HistorySearchReport {
+  source: HistorySearchSource;
+  state: HistorySearchState;
+  /** What was searched: the directory for a file source, the ledger path for `history`. */
+  path: string;
+  /**
+   * `ok` only. A source that could not be read carries no count at all —
+ * a failed read is unknown, never a zero.
+   */
+  total?: number;
+  matched_count?: number;
+  returned: number;
+  /** True when matches existed beyond the returned list. */
+  truncated: boolean;
+  /** Why the source is not `ok`. Never an error code standing in for a count. */
+  reason?: string;
+  /** `history` only: ledger records the bounded reader actually held. */
+  records_searched?: number;
+  /** `history` only: the reader's own ceiling on records held at once. */
+  records_read_limit?: number;
+  /** `history` only: whether new mutations are being recorded right now. */
+  recording_enabled?: boolean;
+}
+
+interface HistorySearchResult {
+  report: HistorySearchReport;
+  hits: HistorySearchHit[];
+}
+
+/** An unreadable/absent directory is reported as such, never as an empty one. */
+function errnoCode(err: unknown): string | undefined {
+  const code = (err as NodeJS.ErrnoException | undefined)?.code;
+  return typeof code === 'string' ? code : undefined;
+}
+
+async function searchDirectorySource(source: HistorySearchSource, dir: string, q: string): Promise<HistorySearchResult> {
+  let files: string[];
+  try {
+    files = await readdir(dir);
+  } catch (err) {
+    const code = errnoCode(err);
+    return {
+      report: {
+        source,
+        state: code === 'ENOENT' ? 'absent' : 'unread',
+        path: dir,
+        returned: 0,
+        truncated: false,
+        reason: code === 'ENOENT' ? 'no such directory' : (code ?? String(err)),
+      },
+      hits: [],
+    };
+  }
+  const matched = q ? files.filter((f) => f.toLowerCase().includes(q)) : files;
+  const shown = matched.slice(0, HISTORY_SEARCH_HIT_LIMIT);
+  return {
+    report: {
+      source,
+      state: 'ok',
+      path: dir,
+      total: files.length,
+      matched_count: matched.length,
+      returned: shown.length,
+      truncated: matched.length > shown.length,
+    },
+    hits: shown.map((name) => ({ source, name })),
+  };
+}
+
+/** Keep one oversized record from dominating the reply; say that it was cut. */
+function boundedHistoryHit(record: HistoryRecord): HistorySearchHit {
+  const hit: HistorySearchHit = { source: 'history', ...record };
+  if (Buffer.byteLength(JSON.stringify(hit), 'utf8') <= HISTORY_SEARCH_RECORD_MAX_BYTES) return hit;
+  return {
+    source: 'history',
+    ts: record.ts,
+    who: record.who,
+    method: record.method,
+    path: record.path,
+    target: record.target,
+    snapshot_id: record.snapshot_id,
+    record_bytes: Buffer.byteLength(JSON.stringify(record), 'utf8'),
+    record_clipped: true,
+  };
+}
+
+async function searchHistorySource(q: string): Promise<HistorySearchResult> {
+  const file = historyFilePath();
+  const blocked = (state: HistorySearchState, reason: string): HistorySearchResult => ({
+    report: { source: 'history', state, path: file, returned: 0, truncated: false, reason },
+    hits: [],
+  });
+  // Recording being off says nothing about what is already on disk: the
+  // ledger is still read, and the report says so as a fact about the file
+  // rather than a verdict about its contents.
+  const recording = isHistoryEnabled();
+  try {
+    await stat(file);
+  } catch (err) {
+    const code = errnoCode(err);
+    return blocked(code === 'ENOENT' ? 'absent' : 'unread', code === 'ENOENT' ? 'no mutation ledger has been written yet' : (code ?? String(err)));
+  }
+  let records: HistoryRecord[];
+  try {
+    records = await readHistory();
+  } catch (err) {
+    return blocked('unread', errnoCode(err) ?? String(err));
+  }
+  const matched = q ? records.filter((r) => JSON.stringify(r).toLowerCase().includes(q)) : records;
+  const shown = matched.slice(0, HISTORY_SEARCH_HIT_LIMIT).map(boundedHistoryHit);
+  return {
+    report: {
+      source: 'history',
+      state: 'ok',
+      path: file,
+      // No `total`: the reader tails a bounded window, so the ledger's true
+      // record count is not knowable from here and is not invented.
+      matched_count: matched.length,
+      returned: shown.length,
+      truncated: matched.length > shown.length,
+      records_searched: records.length,
+      records_read_limit: DEFAULT_HISTORY_READ_LIMIT,
+      recording_enabled: recording,
+    },
+    hits: shown,
+  };
+}
+
 export function registerPortabilityTools(server: McpServer, client: SpotifyClient): void {
   server.tool(
     'save_discover_weekly',
     'Archive your Discover Weekly into a regular playlist (creates or overwrites the archive). Resolves Discover Weekly via /me/playlists exact match first, falling back to search (unverified); dry_run previews; idempotent if archive already matches. Result echoes source identity (owner, url, verified).',
     {
-      archive_name: z.string().optional().default('Discover Weekly Archive').describe('Archive playlist name (created if missing, overwritten if present)'),
+      archive_name: z.string().optional().default('Discover Weekly Archive').describe('Archive playlist name'),
       dry_run: DryRun,
       response_format: ResponseFormat,
     },
@@ -453,7 +608,7 @@ export function registerPortabilityTools(server: McpServer, client: SpotifyClien
     'save_release_radar',
     'Archive your Release Radar into a regular playlist (creates or overwrites the archive). Resolves Release Radar via /me/playlists exact match first, falling back to search (unverified); dry_run previews; idempotent if archive already matches. Result echoes source identity (owner, url, verified).',
     {
-      archive_name: z.string().optional().default('Release Radar Archive').describe('Archive playlist name (created if missing, overwritten if present)'),
+      archive_name: z.string().optional().default('Release Radar Archive').describe('Archive playlist name'),
       dry_run: DryRun,
       response_format: ResponseFormat,
     },
@@ -550,7 +705,7 @@ export function registerPortabilityTools(server: McpServer, client: SpotifyClien
     'Export your followed artists to a local directory as JSON or CSV. Fields: uri, name, genres. The file\'s exported_at is the export time, not a per-artist follow date (Spotify does not expose followed_at).',
     {
       output_dir: z.string().optional().describe('Local directory to write into, confined to the output root (default ~/.spotify-mcp/portability, set SPOTIFY_MCP_PORTABILITY_DIR to move it)'),
-      format: z.enum(['json', 'csv']).optional().default('json').describe('Output format: json or csv'),
+      format: z.enum(['json', 'csv']).optional().default('json').describe('json or csv'),
       response_format: ResponseFormat,
     },
     async (args) => {
@@ -608,7 +763,7 @@ export function registerPortabilityTools(server: McpServer, client: SpotifyClien
 
   server.tool(
     'export_profile_state',
-    'Export local sidecar stores (scenes, genre-tags, playback-ext, search-history, mutations, artist-watchlist) to a single schema-versioned JSON archive. Note: artist-watchlist defaults to ./data/artist-watchlist.json (cwd-relative, not ~/.spotify-mcp/) — a quirk flagged for future alignment.',
+    'Export local sidecar stores (scenes, genre-tags, playback-ext, search-history, mutations, artist-watchlist) to a single schema-versioned JSON archive. Note: artist-watchlist defaults to ./data/artist-watchlist.json (cwd-relative, not ~/.spotify-mcp/).',
     {
       output_dir: z.string().optional().describe('Directory to write the archive into, confined to the output root (default ~/.spotify-mcp/exports, set SPOTIFY_MCP_EXPORT_DIR to move it)'),
       include_history: z.boolean().optional().default(false).describe('Include mutation history JSONL (can be large)'),
@@ -864,10 +1019,10 @@ export function registerPortabilityTools(server: McpServer, client: SpotifyClien
 
   server.tool(
     'export_listening_history',
-    'Export your listening history (recently played) to a JSON or CSV sidecar by walking /me/player/recently-played with before-cursor pagination. Respects SPOTIFY_MCP_FETCH_ALL_CAP; writes file 0600 and reports path + counts. Analogous to export_library_json.',
+    'Export your listening history (recently played) to a JSON or CSV sidecar by walking /me/player/recently-played with before-cursor pagination. Respects SPOTIFY_MCP_FETCH_ALL_CAP; writes file 0600 and reports path + counts.',
     {
       output_dir: z.string().optional().describe('Local directory to write into, confined to the output root (default ~/.spotify-mcp/portability, set SPOTIFY_MCP_PORTABILITY_DIR to move it)'),
-      format: z.enum(['json', 'csv']).optional().default('json').describe('Output format: json or csv'),
+      format: z.enum(['json', 'csv']).optional().default('json').describe('json or csv'),
       limit: z.number().int().min(1).max(10000).optional().describe('Alias for max_items'),
       max_items: z.number().int().min(1).max(10000).optional().describe('Max history items to export (default: SPOTIFY_MCP_FETCH_ALL_CAP)'),
       before: z.string().optional().describe('Cursor: only return items played before this timestamp (milliseconds since epoch or ISO string)'),
@@ -1062,30 +1217,61 @@ export function registerPortabilityTools(server: McpServer, client: SpotifyClien
     },
   );
 
-  // history_search — search portability sidecar filenames + mutation history
+  // #754: history_search spans every local store the name promises — the
+  // portability sidecars, the backups, and the mutation ledger — and each
+  // source reports its own read state, because "unread" and "empty" are not
+  // the same answer.
   server.tool(
     'history_search',
-    'Search local portability/backups for files matching a query (filename substring). Quota: 🟢 local only (no API).',
+    'Search portability files, backups and the mutation ledger: filename substring in the two directories, content match in the ledger. Quota: 🟢 local only (no API).',
     {
       query: z.string().optional().describe('Substring to match (default: all)'),
+      scope: z.enum(['portability', 'backups', 'history', 'all']).optional().default('all').describe('Which local sources to search'),
       response_format: ResponseFormat,
     },
     async (args) => {
       const rf = args.response_format as ResponseFormatValue;
-      const dir = portabilityDir();
-      let files: string[] = [];
-      try { files = await readdir(dir); } catch { files = []; }
+      const scope = (args.scope ?? 'all') as string;
+      const wanted: HistorySearchSource[] = scope === 'all' ? ['portability', 'backups', 'history'] : [scope as HistorySearchSource];
       const q = (args.query ?? '').toLowerCase();
-      const matched = q ? files.filter((f) => f.toLowerCase().includes(q)) : files;
-      const payload = { ok: true, dir, total: files.length, matched_count: matched.length, files: matched.slice(0, 50) };
-      return shapeResult(rf, `Found ${matched.length}/${files.length} file(s) matching "${args.query ?? ''}" in ${dir}.`, payload);
+      const results = await Promise.all(wanted.map((source) => {
+        if (source === 'portability') return searchDirectorySource(source, portabilityDir(), q);
+        if (source === 'backups') return searchDirectorySource(source, backupDir(), q);
+        return searchHistorySource(q);
+      }));
+      const reports = results.map((r) => r.report);
+      const hits = results.flatMap((r) => r.hits);
+      const ledger = reports.find((r) => r.source === 'history');
+      const notes: string[] = [];
+      for (const r of reports) {
+        if (r.state !== 'ok') notes.push(`${r.source}: ${r.state} (${r.reason ?? 'unknown reason'}) — not searched, so nothing is known about it`);
+        else if (r.truncated) notes.push(`${r.source}: more matches than the ${HISTORY_SEARCH_HIT_LIMIT}-hit return limit; counts are complete, the list is not`);
+      }
+      if (ledger?.state === 'ok') {
+        notes.push(`history: content-matched the ${ledger.records_searched} most recent ledger record(s) (the reader holds at most ${ledger.records_read_limit}), over ts/who/method/redacted-route/target; older records were not searched.`);
+        if (ledger.recording_enabled === false) notes.push('history: SPOTIFY_MCP_HISTORY is off, so no NEW mutations are being recorded — the records above are what is already on disk.');
+      }
+      const detail = reports.map((r) => r.state === 'ok' ? `${r.source} ${r.matched_count}${r.total === undefined ? '' : `/${r.total}`}` : `${r.source} ${r.state}`).join(', ');
+      const prose = `${hits.length} hit(s) for "${args.query ?? ''}" across ${reports.length} source(s) [${detail}].${notes.length > 0 ? ` ${notes.join(' ')}` : ''}`;
+      const payload = {
+        ok: true,
+        query: args.query ?? '',
+        scope,
+        sources: reports,
+        matched_count: hits.length,
+        returned: hits.length,
+        hit_limit: HISTORY_SEARCH_HIT_LIMIT,
+        notes,
+        hits,
+      };
+      return shapeResult(rf, prose, payload);
     },
   );
 
   // import_from_sidecar — additive restore from sidecar (dry_run defaults true)
   server.tool(
     'import_from_sidecar',
-    'Additive restore from a library.json sidecar written by export_library_json: re-adds every missing saved item across all five collections (tracks, albums, shows, episodes, audiobooks) through the unified PUT /me/library endpoint, skipping items the library already holds. Rows whose uri is not a canonical spotify:<kind>:<22-char id> URI are counted as invalid and never sent. Collections the file does not carry are named in absent_keys. The exporter\'s own truncated / cap_reached flags are surfaced as sidecar_truncated + truncated_collections: a capped sidecar restores only the rows it holds and says so, and a file with no flag reports completeness as UNKNOWN rather than complete. dry_run=true by default. Quota: 🟢 local read + 🟡 contains-check + writes when dry_run=false (chunked).',
+    'Additive restore from a library.json sidecar written by export_library_json: re-adds every missing saved item across all five collections (tracks, albums, shows, episodes, audiobooks) via PUT /me/library, skipping items the library already holds. Rows whose uri is not a canonical spotify:<kind>:<22-char id> URI are counted as invalid and never sent. Collections the file does not carry are named in absent_keys. The exporter\'s own truncated / cap_reached flags are surfaced as sidecar_truncated + truncated_collections: a capped sidecar restores only the rows it holds, and a file with no flag reports completeness as UNKNOWN rather than complete. dry_run=true by default. Quota: 🟢 local read + 🟡 contains-check + writes when dry_run=false (chunked).',
     {
       input_path: z.string().optional().describe('Path to sidecar JSON (default: <portability>/library.json)'),
       dry_run: z.boolean().optional().default(true).describe('Preview only, making no API calls at all. Writes happen only when explicitly set to false.'),
