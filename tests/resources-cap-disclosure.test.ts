@@ -44,6 +44,11 @@ const { registerLibraryTools } = await import('../src/tools/library.ts');
 const { registerPlaylistTools } = await import('../src/tools/playlists.ts');
 const { registerAudiobookTools } = await import('../src/tools/audiobooks.ts');
 const { registerFollowingTools } = await import('../src/tools/following.ts');
+// The follower walk's real page size, so the cursor fixture returns a FULL
+// page (a truncated cursor walk is a full page plus a live cursor, not a
+// short one) and the cap below is a cap the walk really hits.
+const { CHUNK_CAPS } = await import('../src/shaping.ts');
+const FOLLOWED_PAGE_LIMIT = CHUNK_CAPS.followed;
 const { Client: McpClient } = await import('@modelcontextprotocol/sdk/client/index.js');
 const { McpServer } = await import('@modelcontextprotocol/sdk/server/mcp.js');
 const { InMemoryTransport } = await import('@modelcontextprotocol/sdk/inMemory.js');
@@ -127,15 +132,48 @@ const CAPPED_RESOURCES: Array<{ uri: string; path: string; row: (n: number) => u
   { uri: 'spotify://me/followed/artists', path: '/me/following', row: followedArtist },
 ];
 
-/** `rows` items on one page for every capped endpoint, so each walk hits the cap. */
+/**
+ * A capped walk on every endpoint, each shaped the way its own API actually
+ * truncates. The offset-paged endpoints hand back one page of `rows` with a
+ * `total` to match, so a cap below `rows` truncates them. `/me/following`
+ * pages by cursor instead, so a capped walk there means a FULL page plus a
+ * live cursor — a short page is that endpoint's end-of-data signal, and
+ * faking one with a cursor would test a walk that ended early rather than one
+ * the cap stopped.
+ */
 function cappedResponder(rows: number): Responder {
   return (requestPath) => {
     if (requestPath === '/me/following') {
       return {
         artists: {
-          items: Array.from({ length: rows }, (_, i) => followedArtist(i)),
+          items: Array.from({ length: FOLLOWED_PAGE_LIMIT }, (_, i) => followedArtist(i)),
+          total: FOLLOWED_PAGE_LIMIT * 4,
           cursors: { after: 'cursor-1' },
           next: 'https://api.spotify.com/v1/me/following?after=cursor-1',
+        },
+      };
+    }
+    const resource = CAPPED_RESOURCES.find((entry) => entry.path === requestPath);
+    return {
+      items: Array.from({ length: rows }, (_, i) => resource!.row(i)),
+      total: rows,
+      limit: 50,
+      offset: 0,
+      next: null,
+    };
+  };
+}
+
+/** A walk that reached the end of the data on every endpoint. */
+function completeResponder(rows: number): Responder {
+  return (requestPath) => {
+    if (requestPath === '/me/following') {
+      return {
+        artists: {
+          items: Array.from({ length: rows }, (_, i) => followedArtist(i)),
+          total: rows,
+          cursors: null,
+          next: null,
         },
       };
     }
@@ -214,7 +252,7 @@ test('a walk stopped at SPOTIFY_MCP_FETCH_ALL_CAP discloses it in prose and JSON
 });
 
 test('a walk that reached the end claims no truncation anywhere', async () => {
-  responder = cappedResponder(1);
+  responder = completeResponder(1);
   const mcp = await connect();
 
   for (const { uri } of CAPPED_RESOURCES) {
@@ -224,28 +262,46 @@ test('a walk that reached the end claims no truncation anywhere', async () => {
     const payload = JSON.parse(await read(mcp, `${uri}?format=json`));
     assert.equal(payload.truncated, false, `${uri} JSON must report a complete walk`);
     assert.equal(payload.truncation_note, undefined, `${uri} JSON carries no truncation note`);
-    assert.equal(payload.total, 1, `${uri} total is the walked count when nothing was dropped`);
+    assert.equal(payload.total, 1, `${uri} total is the API-reported count when nothing was dropped`);
   }
 });
 
 test('a walk that stopped exactly on the cap, having read everything, is not truncation', async () => {
-  // The endpoint reports total === cap, so the cap bound the walk and the
-  // library at the same time: nothing was dropped, and claiming truncation
-  // here would invent a fact the API did not report. (The follower walk pages
-  // by cursor and gets no total to prove completeness against, so it stays
-  // conservatively truncated — that asymmetry is the point of this test.)
-  responder = cappedResponder(CAP);
+  // Every endpoint reports total === cap and ends its data there, so the cap
+  // bounded the walk and the library at the same time: nothing was dropped,
+  // and claiming truncation would invent a fact the API did not report. The
+  // cursor walk is in this test too, and it agrees: a short page with no
+  // cursor is that endpoint's end-of-data signal, so an exhausted follow list
+  // of exactly `cap` rows is complete. `items.length === cap` proves nothing
+  // about whether rows are missing — the walk's own exit reason does.
+  responder = completeResponder(CAP);
   const mcp = await connect();
 
-  for (const { uri } of CAPPED_RESOURCES.filter((entry) => entry.path !== '/me/following')) {
+  for (const { uri } of CAPPED_RESOURCES) {
     const payload = JSON.parse(await read(mcp, `${uri}?format=json`));
     assert.equal(payload.truncated, false, `${uri} read every row the API reported`);
     assert.equal(payload.total, CAP, `${uri} reports the API total, not a guessed one`);
+    assert.equal(payload.truncation_note, undefined, `${uri} discloses nothing when nothing was dropped`);
   }
+});
 
-  const followed = JSON.parse(await read(mcp, 'spotify://me/followed/artists?format=json'));
-  assert.equal(followed.truncated, true, 'a cursor walk with no reported total cannot claim completeness');
-  assert.equal(followed.total, null, 'and it does not pass the walked count off as a total');
+test('a complete follow list of exactly cap rows is not truncation, and says so', async () => {
+  // The array-length heuristic this replaces called this walk truncated:
+  // `items.length >= cap` fires on a follow list that ENDS at the cap. Nothing
+  // was dropped and the cursor is exhausted, so "truncated ... for the rest"
+  // would point at a rest that does not exist.
+  responder = completeResponder(CAP);
+  const mcp = await connect();
+
+  const payload = JSON.parse(await read(mcp, 'spotify://me/followed/artists?format=json'));
+  assert.equal(payload.items.length, CAP, 'precondition: the walk collected exactly cap rows');
+  assert.equal(payload.truncated, false, 'an exhausted follow list of exactly cap rows is complete');
+  assert.equal(payload.total, CAP, 'and it reports the count the API reported');
+
+  const prose = await read(mcp, 'spotify://me/followed/artists');
+  assert.doesNotMatch(prose, /for the rest/, 'there is no rest to point a reader at');
+  assert.doesNotMatch(prose, /truncated/, `${prose}`);
+  assert.match(prose, /Followed artists \(2 total\):/);
 });
 
 test('spotify://me/playlists reports the API total, not the capped row count', async () => {
@@ -264,18 +320,89 @@ test('spotify://me/playlists reports the API total, not the capped row count', a
   assert.match(prose, /Playlists \(7 total, showing 2\)/);
 });
 
-test('an unreadable API total stays unknown instead of becoming the walked count', async () => {
-  // The walk hits the cap and page 1 reports no total at all.
-  responder = (requestPath) =>
-    requestPath === '/me/albums'
-      ? { items: [savedAlbum(0), savedAlbum(1), savedAlbum(2)], limit: 50, offset: 0, next: null }
-      : { items: [], total: 0, limit: 50, offset: 0, next: null };
+test('an unreadable API total stays unknown on every capped resource, not just one', async () => {
+  // The walk hits the cap and NO endpoint reports a total. This is the
+  // headline invariant, and it is per-resource: the three bespoke paths
+  // (playlists' separate first-page read, the audiobooks error-gated walk,
+  // and the shared saved-library helper) each compute their own `total`, so
+  // one of them can be reverted to the walked count without CI noticing.
+  // Every entry in CAPPED_RESOURCES is walked here, not one hand-picked URI.
+  responder = (requestPath) => {
+    if (requestPath === '/me/following') {
+      return {
+        artists: {
+          items: Array.from({ length: FOLLOWED_PAGE_LIMIT }, (_, i) => followedArtist(i)),
+          cursors: { after: 'cursor-1' },
+          next: 'https://api.spotify.com/v1/me/following?after=cursor-1',
+        },
+      };
+    }
+    const resource = CAPPED_RESOURCES.find((entry) => entry.path === requestPath);
+    return {
+      items: Array.from({ length: CAP + 1 }, (_, i) => resource!.row(i)),
+      limit: 50,
+      offset: 0,
+      next: null,
+    };
+  };
   const mcp = await connect();
 
-  const payload = JSON.parse(await read(mcp, 'spotify://me/saved/albums?format=json'));
-  assert.equal(payload.truncated, true);
-  assert.equal(payload.total, null, 'a total nobody reported must not be invented');
-  assert.equal(payload.items.length, CAP);
+  for (const { uri } of CAPPED_RESOURCES) {
+    const payload = JSON.parse(await read(mcp, `${uri}?format=json`));
+    assert.equal(payload.truncated, true, `precondition: ${uri} walk hit the cap`);
+    assert.equal(
+      payload.total,
+      null,
+      `${uri} reported no total and was truncated, so total must be null — not the ${payload.items.length} rows walked`,
+    );
+  }
+});
+
+test('a walk short of the API-reported total is not complete, and does not blame the cap', async () => {
+  // Page 1 is full (50 rows, total 500), page 2 is short. The walk ends on the
+  // short page, which is the normal end-of-data signal — but the server's own
+  // `total` says 500 playlists exist and the walk read 52. `truncated: false`
+  // there would tell a consumer it read everything, and naming the cap as the
+  // cause would blame a ceiling that never bound the walk.
+  let first = true;
+  responder = (requestPath) => {
+    if (requestPath !== '/me/playlists') return { items: [], total: 0, limit: 50, offset: 0, next: null };
+    if (first) {
+      first = false;
+      return {
+        items: Array.from({ length: 50 }, (_, i) => userPlaylist(i)),
+        total: 500,
+        limit: 50,
+        offset: 0,
+        next: 'https://api.spotify.com/v1/me/playlists?offset=50',
+      };
+    }
+    return {
+      items: Array.from({ length: 2 }, (_, i) => userPlaylist(50 + i)),
+      total: 500,
+      limit: 50,
+      offset: 50,
+      next: null,
+    };
+  };
+  // A cap high enough that the walk is bounded by the short page, not the cap.
+  initConfig({ ...process.env, SPOTIFY_MCP_FETCH_ALL_CAP: '500' });
+  try {
+    const mcp = await connect();
+
+    const payload = JSON.parse(await read(mcp, 'spotify://me/playlists?format=json'));
+    assert.equal(payload.items.length, 52, 'precondition: the walk collected 52 of 500');
+    assert.equal(payload.total, 500, 'the API-reported total still outranks the walked count');
+    assert.equal(payload.truncated, true, 'a walk short of the reported total is not a complete read');
+    assert.match(payload.truncation_note, /incomplete: the API reports 500 and this walk read 52/);
+    assert.doesNotMatch(payload.truncation_note, /SPOTIFY_MCP_FETCH_ALL_CAP/, 'the cap never bound this walk');
+
+    const prose = await read(mcp, 'spotify://me/playlists');
+    assert.match(prose, /Playlists \(500 total, showing 52\)/);
+    assert.match(prose, /incomplete: the API reports 500/);
+  } finally {
+    initConfig();
+  }
 });
 
 /** Advice phrase -> the inputSchema property it refers to (truncationAdvice). */
