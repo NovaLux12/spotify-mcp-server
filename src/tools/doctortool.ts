@@ -312,7 +312,11 @@ const SCOPE_OWNER_BY_MODULE: Record<string, string> = {
   following: 'following',
 };
 
-const ALWAYS_REGISTERED_MODULES: readonly string[] = ['spotify_doctor', 'swarm3meta'];
+// Modules that ignore `SPOTIFY_MCP_TOOLSETS` and the scope filter. `receipts`
+// joined them in #688: `verify_receipt` reads an in-process map, so it needs
+// no scope, and a session trimmed to a single toolset could otherwise be told
+// to verify a write and then find no tool to verify it with.
+const ALWAYS_REGISTERED_MODULES: readonly string[] = ['spotify_doctor', 'swarm3meta', 'receipts'];
 
 interface ToolRegistryHolder {
   _registeredTools?: Record<string, { enabled?: boolean }>;

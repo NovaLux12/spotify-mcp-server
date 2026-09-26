@@ -95,7 +95,7 @@ above either ceiling fails CI and server startup.
 | backupdelete | 1 | 959 | 1 | 959 | 2 | 1,055 |
 | restore | 1 | 1,888 | 1 | 1,888 | 2 | 2,077 |
 | undo | 2 | 1,663 | 2 | 1,663 | 3 | 1,830 |
-| receipts | 1 | 315 | 1 | 315 | 2 | 347 |
+| receipts | 1 | 626 | 1 | 626 | 2 | 689 |
 | episodemgmt | 1 | 1,053 | 1 | 1,053 | 2 | 1,159 |
 | freshness | 1 | 2,043 | 1 | 2,043 | 2 | 2,248 |
 | searchdive | 1 | 1,561 | 1 | 1,561 | 2 | 1,718 |
@@ -103,7 +103,7 @@ above either ceiling fails CI and server startup.
 | browse | 3 | 2,634 | 3 | 2,634 | 4 | 2,898 |
 | artistwatch | 6 | 5,934 | 6 | 5,934 | 7 | 6,528 |
 | queueops | 3 | 3,449 | 3 | 3,449 | 4 | 3,794 |
-| playbackext | 13 | 8,039 | 13 | 8,039 | 14 | 8,843 |
+| playbackext | 13 | 8,033 | 13 | 8,033 | 14 | 8,837 |
 | playbackintel | 15 | 11,663 | 15 | 11,663 | 16 | 12,830 |
 | scenes | 7 | 4,456 | 7 | 4,456 | 8 | 4,902 |
 | playlisthealth | 8 | 5,285 | 8 | 5,285 | 9 | 5,814 |
