@@ -1249,7 +1249,7 @@ export function registerBackupTools(server: McpServer, client: SpotifyClient): v
 
   server.tool(
     'list_backups',
-    'List complete and partial library backups (newest first) using bounded metadata sidecar reads, with a bounded prefix fallback for legacy snapshots. Expires snapshots past SPOTIFY_MCP_BACKUP_RETENTION_DAYS (default 30, 0 disables) and reports what it removed, plus the store envelope (dir_bytes, oldest_created, retention_until).',
+    'List complete and partial library backups (newest first) using bounded metadata sidecar reads, with a bounded prefix fallback for legacy snapshots. Expires snapshots past SPOTIFY_MCP_BACKUP_RETENTION_DAYS (default 30, 0 disables) and reports what it removed, plus the store envelope (dir_bytes, oldest_created, oldest_retention_until).',
     { response_format: ResponseFormat },
     async (args) => {
       const dir = backupDir();

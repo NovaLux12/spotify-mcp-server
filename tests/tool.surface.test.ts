@@ -196,6 +196,11 @@ const OUTPUT_FIELD_NAMES = new Set<string>([
   'library_requests',
   'new_entry',
   'oldest_created',
+  // list_backups names the store envelope's oldest-survivor retention key. That
+  // is `oldest_retention_until`, NOT the per-snapshot `_meta.retention_until`
+  // listed further down — the tool description previously named the wrong one
+  // of the pair, so this entry is load-bearing for the corrected prose.
+  'oldest_retention_until',
   'played_at',
   'playlist_era',
   'quietest_hour',
