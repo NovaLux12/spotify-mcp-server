@@ -8,7 +8,12 @@ import type { MutationRecord } from './history.js';
 const BASE_URL = 'https://api.spotify.com/v1';
 import type { TokenData, SpotifyPaged } from './types/spotify.js';
 
-async function fetchWithTimeout(url: string, init: RequestInit): Promise<Response> {
+/**
+ * One fetch wrapper with the spotifyRequestTimeoutMs cap, exported so non-Spotify
+ * callers (cover image fetch from a CDN, etc.) can share the same timeout and
+ * translate a stall into a typed SpotifyApiError (#880).
+ */
+export async function fetchWithTimeout(url: string, init: RequestInit): Promise<Response> {
   const requestTimeoutMs = getConfig().spotifyRequestTimeoutMs;
   try {
     return await fetch(url, { ...init, signal: AbortSignal.timeout(requestTimeoutMs) });
