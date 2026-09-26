@@ -33,6 +33,7 @@ import { getConfig } from '../config.js';
 import { backupDir } from './backup.js';
 import { issueReceipt, type Receipt } from '../receipts.js';
 import { receiptRecords, receiptsLines, replaceVerdict, writeVerdict, type WriteVerdict } from './playlistreceipts.js';
+import { unavailableRowPositions } from './rewritable.js';
 import {
   MaxResults,
   PlaylistId,
@@ -415,7 +416,7 @@ function trackRows(items: readonly PlaylistItemObject[]): OpRow[] {
 
 /** True when any entry lost its playable object — a rewrite would drop it. */
 function hasUnavailable(items: readonly PlaylistItemObject[]): boolean {
-  return items.some((e) => !e.item?.uri);
+  return unavailableRowPositions(items).length > 0;
 }
 
 // --- ordering + set-op helpers ---------------------------------------------

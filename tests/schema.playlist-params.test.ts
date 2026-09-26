@@ -656,7 +656,11 @@ describe('playlist set/diff schema and resolver contract (#912)', () => {
     }
   });
 
-  it('asks when the target holds rows a URI-based replace cannot restore', async () => {
+  it('refuses, rather than prompting, when the target holds rows a URI-based replace cannot restore', async () => {
+    // #860: the old answer here was to ask, and delete the null-URI rows once
+    // the operator said yes. A prompt can NAME a loss and still consent to it,
+    // so a full replace over a target with rows that have no URI is now
+    // refused before any prompt is raised.
     const gate = await makeUnionGateHarness({
       answer: { action: 'accept', confirm: true },
       sourceCount: 1,
@@ -665,9 +669,13 @@ describe('playlist set/diff schema and resolver contract (#912)', () => {
     });
     try {
       const result = await gate.invoke('playlist_union', { playlists: [PLAYLIST_1, PLAYLIST_2], target_playlist_id: TARGET_PLAYLIST });
-      assert.equal(gate.prompts.length, 1, 'dropping null-URI rows must ask even though the URIs match');
-      assert.match(gate.prompts[0] ?? '', /Drop 3 item\(s\) Spotify returned without a URI/);
-      assert.equal(result.structuredContent?.ok, true);
+      assert.equal(result.isError, true, 'a URI-based replace over null-URI rows must be refused');
+      const message = textOf(result);
+      assert.match(message, /contains 3 unavailable item\(s\)/);
+      assert.match(message, /at 1-based position\(s\) 3, 4, 5/);
+      assert.match(message, /remove_unavailable_playlist_items/);
+      assert.deepEqual(gate.prompts, [], 'a refusal must not first ask for permission to lose the rows');
+      assert.deepEqual(gate.calls.filter((call) => call.startsWith('PUT ')), [], 'the atomic replace must not run');
     } finally {
       await gate.close();
     }

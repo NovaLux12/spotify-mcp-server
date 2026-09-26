@@ -13,6 +13,11 @@ import {
   REPLACE_ELICIT_THRESHOLD,
 } from './confirm.js';
 import {
+  assertPlaylistRewritable,
+  unavailableRowNotice,
+  unavailableRowPositions,
+} from './rewritable.js';
+import {
   DryRun,
   PlaylistId,
   PlaylistListFields,
@@ -58,6 +63,22 @@ type ToolResult = { content: TextContent[]; structuredContent?: Record<string, u
  * rejected, so a chunk that reads as a count would be a silent false.
  */
 const LIBRARY_CONTAINS_CHUNK = 40;
+
+/**
+ * #860: what to do when a full-sequence rewrite is refused. The refusal names
+ * the tool that actually removes the rows, so the caller has one next step
+ * instead of a description of the problem.
+ */
+const UNAVAILABLE_REMEDY = 'Run remove_unavailable_playlist_items to delete them first, then retry.';
+
+/**
+ * A dry run that previewed a commit the apply path will refuse is its own
+ * false claim (#860), so the refusal rides along under the plan instead of
+ * replacing it — the caller still sees what it asked for.
+ */
+function planWithNotice(plan: string, notice: string | null): string {
+  return notice === null ? plan : `${plan}\n${notice}`;
+}
 
 /** Build a tool result; attaches structuredContent when provided (#52). */
 function textResult(text: string, structured?: Record<string, unknown>): ToolResult {
@@ -1873,8 +1894,12 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
    * unavailable/local items with a null URI, and a URI-based replace cannot
    * put them back. Callers that decide whether a rewrite is destructive need
    * both numbers to avoid calling a lossy overwrite a no-op.
+   *
+   * #860: `unavailablePositions` names WHERE those rows are, 1-based, so a
+   * caller about to replace the playlist can refuse before the PUT instead of
+   * reporting an impact measured from the rows that survived the filter.
    */
-  async function getPlaylistRows(playlistId: string, options: { limit?: number; scan_cap?: number } = {}): Promise<{ uris: string[]; rowCount: number; truncated: boolean }> {
+  async function getPlaylistRows(playlistId: string, options: { limit?: number; scan_cap?: number } = {}): Promise<{ uris: string[]; rowCount: number; unavailablePositions: number[]; truncated: boolean }> {
     const cap = Math.min(options.scan_cap ?? getConfig().fetchAllCap, getConfig().fetchAllCap);
     const pageLimit = Math.min(options.limit ?? 100, 100);
     // One row past the cap is the only way to tell "exactly cap rows" (the
@@ -1888,7 +1913,12 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
     // more than the cap the confirmation just quoted.
     const truncated = rows.length > cap;
     const kept = truncated ? rows.slice(0, cap) : rows;
-    return { uris: kept.map(i => i.item?.uri).filter((u): u is string => !!u), rowCount: kept.length, truncated };
+    return {
+      uris: kept.map(i => i.item?.uri).filter((u): u is string => !!u),
+      rowCount: kept.length,
+      unavailablePositions: unavailableRowPositions(kept),
+      truncated,
+    };
   }
   async function getAllUris(playlistId: string, options: { limit?: number; scan_cap?: number } = {}): Promise<string[]> {
     return (await getPlaylistRows(playlistId, options)).uris;
@@ -2134,7 +2164,14 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
     const sign = args.sort_by.endsWith('_desc') ? -1 : 1;
     const sorted = keyed.sort((a, b) => (typeof a.k === 'number' && typeof b.k === 'number' ? sign * (a.k - b.k) : sign * String(a.k).localeCompare(String(b.k)))).map(x => x.e);
     const uris = sorted.map(e=>e.uri);
-    if (args.dry_run) return textResult(describeDryRun('sort playlist', playlistId, [`Would sort ${uris.length} items by ${args.sort_by}`, ...uris.slice(0,5)]));
+    // #860: `entries` dropped every row with no URI, so the sorted list is
+    // already lossy — the first PUT below would delete those rows from the
+    // live playlist. Refuse before the write, not after. The plan still
+    // renders, with the refusal appended, so a preview is never blocked and
+    // never promises a commit that will be refused.
+    const unavailable = unavailableRowPositions(items);
+    if (args.dry_run) return textResult(planWithNotice(describeDryRun('sort playlist', playlistId, [`Would sort ${uris.length} items by ${args.sort_by}`, ...uris.slice(0,5)]), unavailableRowNotice(playlistId, unavailable, { remedy: UNAVAILABLE_REMEDY })));
+    assertPlaylistRewritable(playlistId, unavailable, { remedy: UNAVAILABLE_REMEDY });
     const write = await replaceWithUris(playlistId, uris);
     if (!write.ok) {
       const lastUri = write.last_committed_chunk_uris[write.last_committed_chunk_uris.length - 1];
@@ -2149,12 +2186,13 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
   // playlist_shuffle (#288)
   server.tool('playlist_shuffle', 'Fisher-Yates shuffle a playlist (seeded optional). Quota: 🟢 GET all + PUT/POST.', { playlist_id: z.string().describe('Playlist ID, spotify:playlist: URI, or URL'), seed: z.string().optional().describe('Deterministic shuffle seed; omit for a random order'), dry_run: DryRun }, async (args) => {
     const playlistId = normalizePlaylistReference(args.playlist_id);
-    const uris = await getAllUris(playlistId);
+    const { uris, unavailablePositions, truncated } = await getPlaylistRows(playlistId);
     let shuffled = [...uris];
     let rng = Math.random;
     if (args.seed) { let h = 0; for (let i=0;i<args.seed.length;i++) h = (h*31 + args.seed.charCodeAt(i))>>>0; let s=h; rng = () => { s = (s*1664525+1013904223)>>>0; return s/0x100000000; }; }
     for (let i=shuffled.length-1;i>0;i--){ const j=Math.floor(rng()*(i+1)); [shuffled[i],shuffled[j]]=[shuffled[j],shuffled[i]]; }
-    if (args.dry_run) return textResult(describeDryRun('shuffle playlist', playlistId, [`Would shuffle ${uris.length} items`, ...shuffled.slice(0,5)]));
+    if (args.dry_run) return textResult(planWithNotice(describeDryRun('shuffle playlist', playlistId, [`Would shuffle ${uris.length} items`, ...shuffled.slice(0,5)]), unavailableRowNotice(playlistId, unavailablePositions, { truncated, remedy: UNAVAILABLE_REMEDY })));
+    assertPlaylistRewritable(playlistId, unavailablePositions, { truncated, remedy: UNAVAILABLE_REMEDY });
     const write = await replaceWithUris(playlistId, shuffled);
     if (!write.ok) {
       const lastUri = write.last_committed_chunk_uris[write.last_committed_chunk_uris.length - 1];
@@ -2169,9 +2207,10 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
   // playlist_reverse (#289)
   server.tool('playlist_reverse', 'Reverse a playlist in one atomic replace. Quota: 🟢 GET all + PUT/POST. Also covers: reverse_playlist_plan — See also: reverse_playlist_plan.', { playlist_id: z.string().describe('Playlist ID, spotify:playlist: URI, or URL'), dry_run: DryRun }, async (args) => {
     const playlistId = normalizePlaylistReference(args.playlist_id);
-    const uris = await getAllUris(playlistId);
+    const { uris, unavailablePositions, truncated } = await getPlaylistRows(playlistId);
     const rev = [...uris].reverse();
-    if (args.dry_run) return textResult(describeDryRun('reverse playlist', playlistId, [`Would reverse ${uris.length} items`]));
+    if (args.dry_run) return textResult(planWithNotice(describeDryRun('reverse playlist', playlistId, [`Would reverse ${uris.length} items`]), unavailableRowNotice(playlistId, unavailablePositions, { truncated, remedy: UNAVAILABLE_REMEDY })));
+    assertPlaylistRewritable(playlistId, unavailablePositions, { truncated, remedy: UNAVAILABLE_REMEDY });
     const write = await replaceWithUris(playlistId, rev);
     if (!write.ok) {
       const lastUri = write.last_committed_chunk_uris[write.last_committed_chunk_uris.length - 1];
@@ -2192,7 +2231,7 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
     const creatingNew = args.target_name !== undefined;
     const seen = new Set<string>(); const union: string[] = []; let sourceTruncated = false;
     for (const pid of input.values){ const source = await getPlaylistRows(pid, args); sourceTruncated ||= source.truncated; for (const u of source.uris) if (!args.dedupe || !seen.has(u)){ seen.add(u); union.push(u); } }
-    let target: { uris: string[]; rowCount: number } | undefined;
+    let target: { uris: string[]; rowCount: number; unavailablePositions: number[]; truncated: boolean } | undefined;
     let targetImpact: ReplacementImpact | undefined;
     let targetUnrepresentable = 0;
     let targetReadWhole = true;
@@ -2214,11 +2253,17 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
     const identicalNoOp = target !== undefined && targetImpact !== undefined
       && targetImpact.identical && targetReadWhole && targetUnrepresentable === 0 && !sourceTruncated;
     const wouldConfirm = !identicalNoOp && destructive && target !== undefined && targetImpact !== undefined;
+    // #860: a target holding rows with no URI is refused outright rather than
+    // confirmed, so the preview has to say THAT — "would_confirm: true" for a
+    // commit the apply path throws on is the same false claim in a new place.
+    const refuseNotice = target
+      ? unavailableRowNotice(args.target_playlist_id!, target.unavailablePositions, { truncated: target.truncated, remedy: UNAVAILABLE_REMEDY })
+      : null;
     if (args.dry_run) {
       const impactNote = targetImpact
         ? `; target impact: ${targetImpact.removed} removed, ${targetImpact.added} added${targetImpact.reordered ? ', reordered' : ''}`
         : '';
-      const text = describeDryRun('union playlists', args.target_playlist_id ?? args.target_name!, [`Would union ${union.length} uri(s) from ${input.values.length} playlists${impactNote}${sourceTruncated ? `; source walk reached the configured cap of ${effectiveScanCap(args)} rows; totals may be incomplete` : ''}`]);
+      const text = planWithNotice(describeDryRun('union playlists', args.target_playlist_id ?? args.target_name!, [`Would union ${union.length} uri(s) from ${input.values.length} playlists${impactNote}${sourceTruncated ? `; source walk reached the configured cap of ${effectiveScanCap(args)} rows; totals may be incomplete` : ''}`]), refuseNotice);
       const payload = withPlaylistInputMetadata({
         ok: true,
         dry_run: true,
@@ -2233,11 +2278,16 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
         target_unrepresentable: targetUnrepresentable,
         target_read_whole: targetReadWhole,
         source_truncated: sourceTruncated,
-        would_confirm: wouldConfirm,
+        would_confirm: refuseNotice === null && wouldConfirm,
+        would_refuse: refuseNotice !== null,
         impact: targetImpact,
       }, input);
       return textResult(args.response_format === 'json' ? jsonText(payload) : withPlaylistInputNote(text, input), payload);
     }
+    // Refuse before the prompt: an operator who approves "drop 3 items" has
+    // still lost the rows, and the request to delete them is a decision worth
+    // taking deliberately with a tool that deletes rows.
+    if (refuseNotice !== null) throw new Error(refuseNotice);
     // A provably identical, fully read target is a no-op: prompting "replace
     // N items" and then changing nothing is a lie, so that case answers
     // before the prompt. A truncated source walk can never prove it, so it
@@ -2268,7 +2318,8 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
       if (targetImpact.removed > 0) changes.push(`Remove ${targetImpact.removed} existing item(s) absent from the union.`);
       if (targetImpact.reordered) changes.push(`Reorder ${target.uris.length} item(s): the union reorders the rows already there.`);
       if (targetImpact.added > 0) changes.push(`Add ${targetImpact.added} new item(s).`);
-      if (targetUnrepresentable > 0) changes.push(`Drop ${targetUnrepresentable} item(s) Spotify returned without a URI, which a URI-based replace cannot restore.`);
+      // No "drop the rows with no URI" line: #860 refuses the call before this
+      // prompt is built, so there is nothing here that can arrive with one.
       if (!targetReadWhole) changes.push(`Only ${target.rowCount} of ${targetTotal ?? 'an unknown number of'} existing row(s) could be read, so the true impact may be larger.`);
       // The impact above was measured against a union that may be missing rows.
       // Without this the operator is shown a definitive-looking set difference
@@ -2373,8 +2424,12 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
     const removedView = truncateItems(removedUris, resolveMaxResults(args.max_results));
     const keptView = truncateItems(remaining, resolveMaxResults(args.max_results));
     const destructive = sourceTruncated || !impact.identical || unrepresentable > 0 || !readWholePlaylist;
+    // #860: same contract as the union target — a base holding rows with no
+    // URI is refused, not confirmed, so the preview must say so rather than
+    // promising a prompt.
+    const refuseNotice = unavailableRowNotice(basePlaylistId, base.unavailablePositions, { truncated: base.truncated, remedy: UNAVAILABLE_REMEDY });
     if (args.dry_run) {
-      const text = describeDryRun('subtract playlists', basePlaylistId, [`Would remove ${removed} item(s), keep ${remaining.length}${sourceTruncated ? `; source walk reached the configured cap of ${effectiveScanCap(args)} rows; totals may be incomplete` : ''}`]);
+      const text = planWithNotice(describeDryRun('subtract playlists', basePlaylistId, [`Would remove ${removed} item(s), keep ${remaining.length}${sourceTruncated ? `; source walk reached the configured cap of ${effectiveScanCap(args)} rows; totals may be incomplete` : ''}`]), refuseNotice);
       const payload = withPlaylistInputMetadata({
         ok: true,
         dry_run: true,
@@ -2393,17 +2448,22 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
         base_unrepresentable: unrepresentable,
         base_read_whole: readWholePlaylist,
         source_truncated: sourceTruncated,
-        would_confirm: destructive,
+        would_confirm: refuseNotice === null && destructive,
+        would_refuse: refuseNotice !== null,
         impact,
       }, input, positionalNote);
       return textResult(args.response_format === 'json' ? jsonText(payload) : withPlaylistInputNote(text, input, positionalNote), payload);
     }
+    // Refuse before the prompt, for the reason in the union path: approving a
+    // described loss still loses the rows.
+    if (refuseNotice !== null) throw new Error(refuseNotice);
     if (destructive) {
       const changes = [
         `Overwrite ALL ${base.rowCount} existing item(s) with ${remaining.length} URI(s), removing ${removed} URI(s) from subtraction sources.`,
       ];
       if (sourceTruncated) changes.push(`Source walk reached the configured cap of ${effectiveScanCap(args)} rows; the removal set may be incomplete.`);
-      if (unrepresentable > 0) changes.push(`Drop ${unrepresentable} item(s) Spotify returned without a URI, which a URI-based replace cannot restore.`);
+      // No "drop the rows with no URI" line: #860 refuses above, so a prompt
+      // can no longer arrive carrying one.
       if (!readWholePlaylist) changes.push(`Only ${base.rowCount} of ${total ?? 'an unknown number of'} existing row(s) could be read, so the true impact may be larger.`);
       const verdict = await confirmViaElicitation(server, {
         message: describeConfirmation('replace playlist items', basePlaylistId, changes),
@@ -2506,13 +2566,14 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
   // playlist_trim (#293)
   server.tool('playlist_trim', 'Trim playlist to N items (keep first/last/random). Quota: 🟢 GET all + PUT/POST.', { playlist_id: z.string().describe('Playlist ID, spotify:playlist: URI, or URL'), keep: z.number().int().min(1).max(500).describe('How many items to keep'), keep_which: z.enum(['first','last','random']).default('first').describe('Which end of the playlist to keep items from. Default first'), dry_run: DryRun }, async (args) => {
     const playlistId = normalizePlaylistReference(args.playlist_id);
-    const uris = await getAllUris(playlistId);
+    const { uris, unavailablePositions, truncated } = await getPlaylistRows(playlistId);
     if (uris.length <= args.keep) return textResult(`Playlist already ${uris.length} ≤ ${args.keep} — nothing to trim`);
     let kept: string[];
     if (args.keep_which === 'first') kept = uris.slice(0, args.keep);
     else if (args.keep_which === 'last') kept = uris.slice(-args.keep);
     else { const shuffled=[...uris]; for(let i=shuffled.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [shuffled[i],shuffled[j]]=[shuffled[j],shuffled[i]];} kept=shuffled.slice(0,args.keep); }
-    if (args.dry_run) return textResult(describeDryRun('trim playlist', playlistId, [`Would trim ${uris.length} → ${kept.length} (${args.keep_which})`]));
+    if (args.dry_run) return textResult(planWithNotice(describeDryRun('trim playlist', playlistId, [`Would trim ${uris.length} → ${kept.length} (${args.keep_which})`]), unavailableRowNotice(playlistId, unavailablePositions, { truncated, remedy: UNAVAILABLE_REMEDY })));
+    assertPlaylistRewritable(playlistId, unavailablePositions, { truncated, remedy: UNAVAILABLE_REMEDY });
     const write = await replaceWithUris(playlistId, kept);
     if (!write.ok) {
       const lastUri = write.last_committed_chunk_uris[write.last_committed_chunk_uris.length - 1];

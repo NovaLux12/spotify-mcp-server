@@ -27,6 +27,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
 import { getConfig } from '../config.js';
 import { backupDir } from './backup.js';
+import { assertPlaylistRewritable, unavailableRowPositions } from './rewritable.js';
 import {
   ResponseFormat,
   MaxResults,
@@ -291,25 +292,14 @@ function toRows(items: readonly PlaylistItemObject[]): OpRow[] {
   });
 }
 
-/** 1-based positions of unavailable items — a full-sequence rewrite would drop these. */
-function unavailablePositions(items: readonly PlaylistItemObject[]): number[] {
-  return items.map((e, i) => (e.item?.uri ? -1 : i + 1)).filter((p) => p > 0);
-}
-
 /**
  * Guard for every committing tool in this slice: the write path is a full
  * atomic replace, so unavailable items (empty uri) would silently vanish.
+ * The predicate itself is shared with swarm3_playlistops.ts and playlists.ts
+ * (#860) — this is only the LoadedPlaylist-shaped wrapper around it.
  */
 function assertRewritable(p: LoadedPlaylist): void {
-  const bad = unavailablePositions(p.items);
-  if (bad.length > 0) {
-    const shown = bad.slice(0, 10).join(', ');
-    throw new Error(
-      `"${p.name ?? p.id}" contains ${bad.length} unavailable item(s) at 1-based position(s) ${shown}` +
-        `${bad.length > 10 ? '…' : ''}. A full rewrite would drop them from the playlist. ` +
-        `Remove the unavailable items first, then retry.`,
-    );
-  }
+  assertPlaylistRewritable(p.name ?? p.id, unavailableRowPositions(p.items));
 }
 
 /** "Name — Artist" style display label for a row. */

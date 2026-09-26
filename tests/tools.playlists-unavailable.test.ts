@@ -1,0 +1,465 @@
+/**
+ * Regression tests for #860 — full-sequence rewrites of a playlist that holds
+ * unavailable rows.
+ *
+ * Spotify returns a removed, relabelled or region-unavailable row with
+ * `item: null`, so it carries no URI. Every ordered rewrite in playlists.ts
+ * commits through one atomic `PUT /playlists/{id}/items` built from a
+ * URI-filtered list, so the first PUT deleted those rows from the live
+ * playlist — and the counts reported afterwards came from the already-filtered
+ * list, so nothing in the response revealed the loss.
+ *
+ * The rewrite is now REFUSED before the first PUT, naming the count and the
+ * 1-based positions. A dry run still renders its plan; it also says the commit
+ * will be refused, because a preview that promises a write the apply path
+ * throws on is the same false claim in a new place.
+ *
+ * Run: node --import tsx --test tests/tools.playlists-unavailable.test.ts
+ */
+
+import { describe, it } from 'node:test';
+import { z } from 'zod';
+import assert from 'node:assert/strict';
+import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import type { SpotifyClient } from '../src/client.js';
+import type { PlaylistItemObject, SpotifyPaged } from '../src/types/spotify.js';
+import { registerPlaylistTools } from '../src/tools/playlists.js';
+
+type ToolResult = {
+  content: Array<{ type: string; text: string }>;
+  structuredContent?: Record<string, unknown>;
+};
+
+interface RegisteredTool {
+  name: string;
+  description: string;
+  validate: (args: Record<string, unknown>) => Record<string, unknown>;
+  handler: (args: Record<string, unknown>) => Promise<ToolResult>;
+}
+
+interface RecordedCall {
+  method: 'GET' | 'POST' | 'PUT' | 'PUT_RAW' | 'DELETE';
+  path: string;
+  arg?: unknown;
+}
+
+/** Anything that would change Spotify: the first PUT is the atomic replace. */
+const writes = (calls: RecordedCall[]) =>
+  calls.filter((c) => c.method === 'PUT' || c.method === 'POST' || c.method === 'DELETE');
+
+/** Spotify playlist IDs are 22 base62 characters. */
+const BASE = 'A'.repeat(22);
+const SOURCE = 'B'.repeat(22);
+const TARGET = 'C'.repeat(22);
+
+// ---------------------------------------------------------------------------
+// Fixtures
+// ---------------------------------------------------------------------------
+
+const trackRow = (id: string, name: string): PlaylistItemObject =>
+  ({
+    added_at: '2026-01-01T00:00:00Z',
+    item: {
+      type: 'track',
+      uri: `spotify:track:${id}`,
+      name,
+      duration_ms: 200_000,
+      artists: [{ id: `artist-${id}`, name: `Artist ${id}` }],
+      album: { id: `album-${id}`, name: `Album ${id}` },
+    },
+  }) as unknown as PlaylistItemObject;
+
+/** What Spotify actually returns for a row it can no longer serve. */
+const unavailableRow = (): PlaylistItemObject =>
+  ({ added_at: '2026-01-01T00:00:00Z', item: null }) as unknown as PlaylistItemObject;
+
+/** The #860 shape: a healthy playlist with one row Spotify can no longer serve. */
+const playlistWithOneUnavailable = () => [trackRow('a', 'Alpha'), unavailableRow(), trackRow('b', 'Beta')];
+
+// ---------------------------------------------------------------------------
+// Harness: stub MCP server + stub SpotifyClient recording every call
+// ---------------------------------------------------------------------------
+
+function harness(playlists: Record<string, PlaylistItemObject[]>) {
+  const registered: RegisteredTool[] = [];
+  const calls: RecordedCall[] = [];
+  const server = {
+    tool(name: string, description: string, schema: z.ZodRawShape, handler: RegisteredTool['handler']) {
+      registered.push({ name, description, validate: (a) => z.object(schema).parse(a), handler });
+    },
+    registerTool(
+      name: string,
+      config: { description?: string; inputSchema?: z.ZodType },
+      handler: RegisteredTool['handler'],
+    ) {
+      registered.push({
+        name,
+        description: config.description ?? '',
+        validate: (a) => (config.inputSchema as z.ZodType).parse(a),
+        handler,
+      });
+    },
+  } as unknown as McpServer;
+
+  const rowsFor = (path: string): PlaylistItemObject[] | null => {
+    const match = /^\/playlists\/([^/]+)\/items$/.exec(path);
+    if (!match) return null;
+    return playlists[decodeURIComponent(match[1]!)] ?? null;
+  };
+
+  const client = {
+    calls,
+    async get<T>(path: string, params?: Record<string, string>): Promise<T | null> {
+      calls.push({ method: 'GET', path, arg: params });
+      const rows = rowsFor(path);
+      if (rows) {
+        const offset = Number(params?.offset ?? 0);
+        return {
+          items: rows.slice(offset, offset + 100),
+          total: rows.length,
+          limit: 100,
+          offset,
+        } as unknown as T;
+      }
+      const id = decodeURIComponent(path.replace('/playlists/', ''));
+      return { id, name: `Playlist ${id}`, items: { total: playlists[id]?.length ?? 0 } } as unknown as T;
+    },
+    async post<T>(path: string, body?: unknown): Promise<T | null> {
+      calls.push({ method: 'POST', path, arg: body });
+      if (path === '/me/playlists') return { id: 'newPlaylist' } as unknown as T;
+      return { snapshot_id: 'snap-post' } as unknown as T;
+    },
+    async put<T>(path: string, body?: unknown): Promise<T | null> {
+      calls.push({ method: 'PUT', path, arg: body });
+      return { snapshot_id: 'snap-put' } as unknown as T;
+    },
+    async putRaw(): Promise<void> {},
+    async delete<T>(): Promise<T | null> {
+      return null;
+    },
+    // Mirrors SpotifyClient.getAllPages over the stubbed get so the rewrite
+    // tools see the same rows a real walk would, including the one-row probe
+    // the cap test depends on.
+    async getAllPages<T>(
+      path: string,
+      params?: Record<string, string>,
+      opts?: { maxItems?: number; initialOffset?: number },
+    ): Promise<T[]> {
+      const maxItems = opts?.maxItems ?? 500;
+      const all: T[] = [];
+      let offset = opts?.initialOffset ?? 0;
+      for (;;) {
+        const page = await this.get<SpotifyPaged<T>>(path, { ...params, offset: String(offset) });
+        if (!page || !Array.isArray(page.items)) break;
+        all.push(...page.items);
+        if (all.length >= maxItems) return all.slice(0, maxItems);
+        const limit = typeof page.limit === 'number' && page.limit > 0 ? page.limit : page.items.length;
+        offset += limit;
+        if (page.items.length === 0 || page.items.length < limit) break;
+        if (typeof page.total === 'number' && offset >= page.total) break;
+      }
+      return all;
+    },
+  };
+
+  registerPlaylistTools(server, client as unknown as SpotifyClient);
+
+  return {
+    calls,
+    // Schema-validating invoke: mirrors how the MCP server screens args
+    // before a handler ever sees them.
+    async invoke(name: string, args: Record<string, unknown> = {}): Promise<ToolResult> {
+      const tool = registered.find((t) => t.name === name);
+      assert.ok(tool, `tool "${name}" should be registered`);
+      return tool.handler(tool.validate(args));
+    },
+  };
+}
+
+const textOf = (out: ToolResult) => out.content[0].text;
+
+/**
+ * The refusal is an error, not a soft result: an agent that reads
+ * `structuredContent.ok === false` and proceeds is exactly the failure this
+ * guard exists to stop.
+ */
+const assertRefusal = async (run: () => Promise<unknown>, at: number, label: string) => {
+  await assert.rejects(
+    run,
+    (error: unknown) => {
+      const message = error instanceof Error ? error.message : String(error);
+      assert.match(message, /contains 1 unavailable item\(s\)/, 'the count must be named');
+      assert.match(message, new RegExp(`at 1-based position\\(s\\) ${at}\\b`), 'the 1-based position must be named');
+      assert.match(message, /A full rewrite would drop them from the playlist\./);
+      assert.match(message, /remove_unavailable_playlist_items/, 'the refusal must name its remedy');
+      assert.match(message, new RegExp(label), 'the refusal must name the playlist');
+      return true;
+    },
+  );
+};
+
+// ---------------------------------------------------------------------------
+// playlist_sort
+// ---------------------------------------------------------------------------
+
+describe('playlist_sort refuses a playlist with unavailable rows (#860)', () => {
+  it('refuses before the atomic replace and issues no write at all', async () => {
+    const h = harness({ [BASE]: playlistWithOneUnavailable() });
+
+    await assertRefusal(
+      () => h.invoke('playlist_sort', { playlist_id: BASE, sort_by: 'name_asc', dry_run: false }),
+      2,
+      BASE,
+    );
+
+    assert.deepEqual(writes(h.calls), [], 'the atomic replace must not be issued');
+  });
+
+  it('still renders the plan on a dry run, and says the commit will be refused', async () => {
+    const h = harness({ [BASE]: playlistWithOneUnavailable() });
+
+    const out = await h.invoke('playlist_sort', { playlist_id: BASE, sort_by: 'name_asc', dry_run: true });
+
+    assert.deepEqual(writes(h.calls), []);
+    assert.match(textOf(out), /Would sort 2 items by name_asc/, 'a preview is never blocked');
+    assert.match(textOf(out), /contains 1 unavailable item\(s\) at 1-based position\(s\) 2/);
+  });
+
+  it('does not mention unavailable rows when there are none', async () => {
+    // The guard must be a predicate, not a blanket refusal: a healthy
+    // playlist still commits, and its plan carries no warning.
+    const h = harness({ [BASE]: [trackRow('b', 'Beta'), trackRow('a', 'Alpha')] });
+
+    const out = await h.invoke('playlist_sort', { playlist_id: BASE, sort_by: 'name_asc', dry_run: true });
+
+    assert.doesNotMatch(textOf(out), /unavailable/);
+    const committed = await h.invoke('playlist_sort', { playlist_id: BASE, sort_by: 'name_asc', dry_run: false });
+    const put = writes(h.calls).find((c) => c.method === 'PUT');
+    assert.ok(put, 'a healthy playlist still commits');
+    assert.deepEqual(put.arg, { uris: ['spotify:track:a', 'spotify:track:b'] });
+    assert.match(textOf(committed), /Sorted 2 item\(s\) by name_asc/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// playlist_shuffle
+// ---------------------------------------------------------------------------
+
+describe('playlist_shuffle refuses a playlist with unavailable rows (#860)', () => {
+  it('refuses before the atomic replace and issues no write at all', async () => {
+    const h = harness({ [BASE]: playlistWithOneUnavailable() });
+
+    await assertRefusal(() => h.invoke('playlist_shuffle', { playlist_id: BASE, dry_run: false }), 2, BASE);
+
+    assert.deepEqual(writes(h.calls), []);
+  });
+
+  it('still renders the plan on a dry run', async () => {
+    const h = harness({ [BASE]: playlistWithOneUnavailable() });
+
+    const out = await h.invoke('playlist_shuffle', { playlist_id: BASE, dry_run: true });
+
+    assert.deepEqual(writes(h.calls), []);
+    assert.match(textOf(out), /Would shuffle 2 items/);
+    assert.match(textOf(out), /contains 1 unavailable item\(s\) at 1-based position\(s\) 2/);
+  });
+
+  it('says the position list is a lower bound when the item walk hit the cap', async () => {
+    // 501 rows against the default fetch-all cap of 500: the walk stops one
+    // row short of the end, so the refusal must not present its count as the
+    // whole truth the way an unqualified count would.
+    const long = Array.from({ length: 500 }, (_, i) => trackRow(`t${i}`, `Track ${i}`));
+    const h = harness({ [BASE]: [unavailableRow(), ...long] });
+
+    await assert.rejects(
+      () => h.invoke('playlist_shuffle', { playlist_id: BASE, dry_run: false }),
+      (error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error);
+        assert.match(message, /contains 1 unavailable item\(s\) at 1-based position\(s\) 1/);
+        assert.match(message, /stopped at the configured cap/);
+        assert.match(message, /lower bound/);
+        return true;
+      },
+    );
+    assert.deepEqual(writes(h.calls), []);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// playlist_reverse
+// ---------------------------------------------------------------------------
+
+describe('playlist_reverse refuses a playlist with unavailable rows (#860)', () => {
+  it('refuses before the atomic replace and issues no write at all', async () => {
+    const h = harness({ [BASE]: playlistWithOneUnavailable() });
+
+    await assertRefusal(() => h.invoke('playlist_reverse', { playlist_id: BASE, dry_run: false }), 2, BASE);
+
+    assert.deepEqual(writes(h.calls), []);
+  });
+
+  it('still renders the plan on a dry run', async () => {
+    const h = harness({ [BASE]: playlistWithOneUnavailable() });
+
+    const out = await h.invoke('playlist_reverse', { playlist_id: BASE, dry_run: true });
+
+    assert.match(textOf(out), /Would reverse 2 items/);
+    assert.match(textOf(out), /contains 1 unavailable item\(s\) at 1-based position\(s\) 2/);
+    assert.deepEqual(writes(h.calls), []);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// playlist_trim
+// ---------------------------------------------------------------------------
+
+describe('playlist_trim refuses a playlist with unavailable rows (#860)', () => {
+  it('refuses before the atomic replace and issues no write at all', async () => {
+    // keep=1 is below the addressable count of 2, so the trim would have run
+    // — the guard is what stops it, not a no-op comparison.
+    const h = harness({ [BASE]: playlistWithOneUnavailable() });
+
+    await assertRefusal(() => h.invoke('playlist_trim', { playlist_id: BASE, keep: 1, dry_run: false }), 2, BASE);
+
+    assert.deepEqual(writes(h.calls), []);
+  });
+
+  it('still renders the plan on a dry run', async () => {
+    const h = harness({ [BASE]: playlistWithOneUnavailable() });
+
+    const out = await h.invoke('playlist_trim', { playlist_id: BASE, keep: 1, dry_run: true });
+
+    assert.match(textOf(out), /Would trim 2 → 1 \(first\)/);
+    assert.match(textOf(out), /contains 1 unavailable item\(s\) at 1-based position\(s\) 2/);
+    assert.deepEqual(writes(h.calls), []);
+  });
+
+  it('leaves a genuinely shorter playlist alone without mentioning a refusal', async () => {
+    // Nothing to trim is a real no-op and must not be dressed up as a refusal.
+    const h = harness({ [BASE]: [trackRow('a', 'Alpha'), unavailableRow()] });
+
+    const out = await h.invoke('playlist_trim', { playlist_id: BASE, keep: 5, dry_run: false });
+
+    assert.match(textOf(out), /already 1 ≤ 5 — nothing to trim/);
+    assert.deepEqual(writes(h.calls), []);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// playlist_subtract
+// ---------------------------------------------------------------------------
+
+describe('playlist_subtract refuses a base with unavailable rows (#860)', () => {
+  it('refuses before the atomic replace and issues no write at all', async () => {
+    const h = harness({ [BASE]: playlistWithOneUnavailable(), [SOURCE]: [trackRow('b', 'Beta')] });
+
+    await assertRefusal(
+      () => h.invoke('playlist_subtract', { base_playlist_id: BASE, playlists: [SOURCE], dry_run: false }),
+      2,
+      BASE,
+    );
+
+    assert.deepEqual(writes(h.calls), []);
+  });
+
+  it('previews the removal set and flags the refusal rather than promising a prompt', async () => {
+    const h = harness({ [BASE]: playlistWithOneUnavailable(), [SOURCE]: [trackRow('b', 'Beta')] });
+
+    const out = await h.invoke('playlist_subtract', {
+      base_playlist_id: BASE,
+      playlists: [SOURCE],
+      dry_run: true,
+      response_format: 'json',
+    });
+
+    const payload = out.structuredContent as Record<string, unknown>;
+    assert.equal(payload.removed_total, 1, 'the plan still describes the removal');
+    assert.equal(payload.kept_total, 1);
+    // The base is the playlist being overwritten, so it is the one refused.
+    assert.equal(payload.would_refuse, true);
+    assert.equal(payload.would_confirm, false, 'there is no prompt to promise — the call throws');
+    assert.deepEqual(writes(h.calls), []);
+  });
+
+  it('still routes a destructive subtraction with no unavailable rows through the elicitation gate', async () => {
+    // The guard must not swallow the gate it now runs in front of. This host
+    // cannot prompt, so the gate fails closed exactly as it did before #860.
+    const h = harness({ [BASE]: [trackRow('a', 'Alpha'), trackRow('b', 'Beta')], [SOURCE]: [trackRow('b', 'Beta')] });
+
+    const out = await h.invoke('playlist_subtract', {
+      base_playlist_id: BASE,
+      playlists: [SOURCE],
+      dry_run: false,
+      response_format: 'json',
+    });
+
+    const payload = out.structuredContent as Record<string, unknown>;
+    assert.equal(payload.ok, false);
+    assert.equal(payload.reason, 'confirmation_unavailable');
+    assert.doesNotMatch(textOf(out), /unavailable item\(s\)/, 'the #860 guard did not fire');
+    assert.deepEqual(writes(h.calls), [], 'an unconfirmed replace still writes nothing');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// playlist_union
+// ---------------------------------------------------------------------------
+
+describe('playlist_union refuses a target with unavailable rows (#860)', () => {
+  it('refuses the existing target before the atomic replace', async () => {
+    const h = harness({
+      [BASE]: [trackRow('a', 'Alpha')],
+      [SOURCE]: [trackRow('b', 'Beta')],
+      [TARGET]: playlistWithOneUnavailable(),
+    });
+
+    await assertRefusal(
+      () =>
+        h.invoke('playlist_union', {
+          playlists: [BASE, SOURCE],
+          target_playlist_id: TARGET,
+          dry_run: false,
+        }),
+      2,
+      TARGET,
+    );
+
+    assert.deepEqual(writes(h.calls), []);
+  });
+
+  it('still unions into a new playlist — no live rows are being destroyed', async () => {
+    // The guard is about the playlist a replace would overwrite. Creating one
+    // destroys nothing, so the same unreadable source rows must not block it.
+    const h = harness({
+      [BASE]: playlistWithOneUnavailable(),
+      [SOURCE]: [trackRow('b', 'Beta')],
+    });
+
+    const out = await h.invoke('playlist_union', { playlists: [BASE, SOURCE], target_name: 'Fresh', dry_run: false });
+
+    const created = writes(h.calls).filter((c) => c.path === '/me/playlists');
+    assert.equal(created.length, 1, 'the new playlist is still created');
+    assert.match(textOf(out), /Union 2 item\(s\)/);
+  });
+
+  it('previews the union and flags the refusal', async () => {
+    const h = harness({
+      [BASE]: [trackRow('a', 'Alpha')],
+      [SOURCE]: [trackRow('b', 'Beta')],
+      [TARGET]: playlistWithOneUnavailable(),
+    });
+
+    const out = await h.invoke('playlist_union', {
+      playlists: [BASE, SOURCE],
+      target_playlist_id: TARGET,
+      dry_run: true,
+      response_format: 'json',
+    });
+
+    const payload = out.structuredContent as Record<string, unknown>;
+    assert.equal(payload.uri_count, 2, 'the plan still describes the union');
+    assert.equal(payload.would_refuse, true);
+    assert.equal(payload.would_confirm, false);
+    assert.deepEqual(writes(h.calls), []);
+  });
+});
