@@ -27,6 +27,7 @@ import { fileURLToPath } from 'node:url';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { SpotifyClient } from '../src/client.js';
 import {
+  REGISTRY_SCALE_CEILING,
   REGISTRY_SCALE_FLOOR,
   assertFloorIsDrawnCorrectly,
   blankGenerated,
@@ -548,7 +549,7 @@ function census(): Record<string, any> {
  * A throwaway copy of every file the rule reads, taken from the gate's own
  * `scannableFiles` so the test cannot fall behind the gate's scope.
  */
-function withTree(run: (root: string) => string): string {
+function withTree<T>(run: (root: string) => T): T {
   return withTempDir((dir) => {
     const root = join(dir, 'tree');
     for (const file of scannableFiles(ROOT)) {
@@ -600,37 +601,50 @@ describe('registry tool counts stay out of hand-maintained text (#1290)', () => 
     // from. Each is restored into the real file it came from, so the gate has
     // to find a count in hand-written prose and in a `.ts` comment — the two
     // shapes the document rules above never looked at.
-    const cases: { file: string; from: string; to: string; line: number }[] = [
+    const cases: { file: string; from: string; to: string }[] = [
       {
         file: 'src/logout.ts',
         from: 'would join the `tools/list` surface and every host',
         to: 'would join the `tools/list` surface (592 tools today) and every host',
-        line: 40,
       },
       {
         file: 'src/shaping.ts',
         from: 'fragment stays as-is for every other tool;',
         to: 'fragment stays as-is for the other ~590 tools;',
-        line: 203,
       },
       {
         file: 'SPEC.md',
         from: 'the escape hatch for a registry of hundreds of tools',
         to: 'the escape hatch for a 592-tool surface',
-        line: 1702,
       },
     ];
-    for (const { file, from, to, line } of cases) {
-      const { code, output } = withTree((root) => {
-        assert.ok(readFileSync(join(ROOT, file), 'utf8').includes(from), `precondition: ${file} no longer contains "${from}"`);
+    for (const { file, from, to } of cases) {
+      const { code, output, expectedLine } = withTree((root) => {
+        const before = readFileSync(join(ROOT, file), 'utf8');
+        // The anchor has to be present *and* unique. A `replace` that lands on
+        // the wrong occurrence would plant the text somewhere the case does not
+        // mean to check, and the case would still pass.
+        assert.equal(
+          before.split(from).length - 1, 1,
+          `precondition: "${from}" must appear exactly once in ${file}, found ${before.split(from).length - 1}`,
+        );
         editIn(root, file, (source) => source.replace(from, to));
-        return runGate(root);
+        // The expected line is derived from the tree as edited, never typed.
+        // #1316 broke this test by adding lines to SPEC.md above the planted
+        // sentence: a hand-typed `line: 1702` is the same defect as a hand-typed
+        // tool count — a value the code re-derives at runtime, typed into a
+        // place that rots silently until something unrelated breaks.
+        const edited = readFileSync(join(root, file), 'utf8');
+        const occurrences = edited.split(to).length - 1;
+        assert.equal(occurrences, 1, `precondition: the planted text must appear exactly once in ${file}, found ${occurrences}`);
+        const line = edited.slice(0, edited.indexOf(to)).split('\n').length;
+        return { ...runGate(root), expectedLine: line };
       });
       assert.notEqual(code, 0, `restoring "${to}" into ${file} was not rejected`);
-      const firstFinding = output.split('\n').find((line) => line.trim().length > 0)?.trim() ?? '';
+      const firstFinding = output.split('\n').find((found) => found.trim().length > 0)?.trim() ?? '';
       assert.ok(
-        firstFinding.startsWith(`${file}:${line}:`),
-        `expected the gate's first finding to be ${file}:${line}, got "${firstFinding}"\n${output}`,
+        firstFinding.startsWith(`${file}:${expectedLine}:`),
+        `expected the gate's first finding to be ${file}:${expectedLine}, got "${firstFinding}"\n${output}`,
       );
       assert.match(output, /hand-typed registry tool count "~?5\d\d"/, `the gate did not report the figure it found:\n${output}`);
     }
@@ -707,8 +721,8 @@ describe('registry tool counts stay out of hand-maintained text (#1290)', () => 
     const measured = census();
     const largest = Math.max(...Object.values(measured.perModule as Record<string, number>));
     assert.ok(
-      measured.tools >= REGISTRY_SCALE_FLOOR && measured.tools < 1000,
-      `precondition: the registry is ${measured.tools} tools, so "hundreds" in SPEC.md is ${measured.tools < 1000 ? 'true' : 'false'} and the ${REGISTRY_SCALE_FLOOR} floor is meaningful`,
+      measured.tools >= REGISTRY_SCALE_FLOOR && measured.tools < REGISTRY_SCALE_CEILING,
+      `precondition: the registry is ${measured.tools} tools, so "hundreds" in SPEC.md is ${measured.tools < REGISTRY_SCALE_CEILING ? 'true' : 'false'} and the ${REGISTRY_SCALE_FLOOR} floor is meaningful`,
     );
     assert.ok(
       largest < REGISTRY_SCALE_FLOOR,
@@ -783,5 +797,28 @@ describe('registry tool counts stay out of hand-maintained text (#1290)', () => 
       }
     }
     assert.deepEqual(offenders, [], `a registry count sits on a code line the comment mask skips: ${offenders.join(', ')}`);
+    // And the mirror of that limitation, asserted rather than assumed: every
+    // comment *shape* the tree uses is still scanned, including a block
+    // comment written without leading asterisks, whose continuation lines carry
+    // no `*` for a naive prefix strip to key on.
+    for (const shape of [
+      '// 592 tools, measured on the merged tree',
+      '/**\n * 592 tools, measured on the merged tree\n */',
+      '/*\n592 tools, measured on the merged tree\n*/',
+      '/** 592 tools, measured on the merged tree */',
+    ]) {
+      assert.deepEqual(
+        registryScaleToolCounts(maskSource(shape, true)).map((hit) => hit.figure),
+        ['592'],
+        `a comment shape the mask drops: ${JSON.stringify(shape)}`,
+      );
+    }
+    // A code line immediately after a closed block comment is masked again, so
+    // the exemption above does not leak past the `*/`.
+    assert.deepEqual(
+      registryScaleToolCounts(maskSource('/*\ntext\n*/\nconst n = 1; // 592 tools', true)),
+      [],
+      'a trailing comment on the line after a block comment was scanned as a comment',
+    );
   });
 });

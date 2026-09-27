@@ -41,6 +41,14 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 export const REGISTRY_SCALE_FLOOR = 100;
 
 /**
+ * The upper end of the same contract, and the reason `SPEC.md` may say
+ * "hundreds of tools" instead of a count. One constant rather than a `1000`
+ * typed in the gate and again in its test: two copies of a contract is the
+ * same shape as the defect this script exists to catch.
+ */
+export const REGISTRY_SCALE_CEILING = 1000;
+
+/**
  * A count the tree is still entitled to state, as `file` + a whitespace-
  * normalized fragment of the one line that carries it, plus why.
  *
@@ -171,13 +179,17 @@ export function maskToComments(source) {
   return lines
     .map((line) => {
       const trimmed = line.trimStart();
-      if (!inBlockComment && !trimmed.startsWith('//') && !trimmed.startsWith('/*') && !trimmed.startsWith('*')) {
+      const opensBlock = trimmed.startsWith('/*');
+      if (!inBlockComment && !opensBlock && !trimmed.startsWith('//') && !trimmed.startsWith('*')) {
         return ' '.repeat(line.length);
       }
-      if (trimmed.startsWith('/*')) inBlockComment = !trimmed.includes('*/');
+      if (opensBlock) inBlockComment = !trimmed.includes('*/');
       else if (trimmed.startsWith('*/')) inBlockComment = false;
       const prefix = /^\s*(?:\/\*|\/\/|\*)\/?\s?/.exec(line);
-      if (!prefix) return ' '.repeat(line.length);
+      // No prefix to strip on a continuation line of a block comment written
+      // without leading asterisks — the whole line is the comment, so blanking
+      // it would drop a comment rather than the code around it.
+      if (!prefix) return line;
       return ' '.repeat(prefix[0].length) + line.slice(prefix[0].length);
     })
     .join('\n');
@@ -314,7 +326,7 @@ export function assertFloorIsDrawnCorrectly(census) {
   if (census.tools < REGISTRY_SCALE_FLOOR) {
     throw new Error(`the registry is ${census.tools} tools, below the ${REGISTRY_SCALE_FLOOR} floor this rule draws; a count is no longer distinguishable from a module's own count without a redesign`);
   }
-  if (census.tools >= 1000) {
+  if (census.tools >= REGISTRY_SCALE_CEILING) {
     throw new Error(`the registry is ${census.tools} tools, no longer "hundreds"; the floor still separates it from a module, but SPEC.md's "hundreds of tools" is now false`);
   }
   if (largest >= REGISTRY_SCALE_FLOOR) {
