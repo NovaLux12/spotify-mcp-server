@@ -228,11 +228,17 @@ const indexByHash = (entries) => new Map(entries.map((entry) => [entry.hash, ent
 export function proseDrift(manifest, documents) {
   const errors = [];
   const claimed = new Set();
-  const current = new Set();
+  // `${file}:${hash}` -> the unit, so the surplus can be reported with the label
+  // a reader needs instead of a hash they have to look up.
+  const current = new Map();
+  const pinnedKeys = new Set();
+  const missingUnits = [];
 
   for (const [file, source] of Object.entries(documents)) {
     const units = describeDocument(source);
-    for (const unit of units) current.add(`${file}:${unit.hash}`);
+    for (const unit of units) {
+      current.set(`${file}:${unit.hash}`, { file, hash: unit.hash, label: unit.label });
+    }
 
     const pinned = manifest.files?.[file];
     if (!pinned) {
@@ -243,10 +249,12 @@ export function proseDrift(manifest, documents) {
       continue;
     }
     claimed.add(file);
+    for (const entry of pinned) pinnedKeys.add(`${file}:${entry.hash}`);
 
     const present = indexByHash(units);
     const missing = pinned.filter((entry) => !present.has(entry.hash));
     for (const entry of missing) {
+      missingUnits.push({ file, hash: entry.hash, label: entry.label });
       errors.push(
         `${file}: pinned prose block is no longer in the file — "${entry.label}". `
         + 'A reword or a deliberate deletion is legitimate: `npm run count:tools -- --prose-sync --retire "<reason>"` '
@@ -278,6 +286,31 @@ export function proseDrift(manifest, documents) {
     errors,
     currentCount: current.size,
     pinnedCount,
+    // The two counts above, reconciled by direction, so that no caller has to
+    // subtract them and guess which way round the difference goes. The pin is a
+    // subset of what the walk found, and the surplus is one of two opposite
+    // facts: a unit no pin claims is prose the manifest has never seen, which
+    // is ordinary work and must never be red; a pin no unit answers is prose a
+    // file no longer carries, and each of those is already in `errors` above.
+    //
+    // This is reported rather than left to arithmetic because the two are not
+    // the same magnitude — `unpinned.length` is `currentCount - pinnedCount`
+    // only while nothing is missing and every pinned file was scanned — and a
+    // reader given two totals and one difference has to decide which of them
+    // they are looking at. #1460 shipped a test that compared the totals
+    // directly, so adding a paragraph turned the suite red with a message
+    // blaming a deletion, and the misdiagnosis survived into #1412. The
+    // direction is now named here, where the facts are.
+    coverage: {
+      // Prose the walk found that no pin claims. Free by design, so this is
+      // never an error and `--prose-sync` is the only reason to act on it.
+      unpinned: [...current.values()]
+        .filter((unit) => !pinnedKeys.has(`${unit.file}:${unit.hash}`))
+        .sort((a, b) => `${a.file}:${a.hash}`.localeCompare(`${b.file}:${b.hash}`)),
+      // Pins the walk did not find. In the same order as the "pinned prose
+      // block is no longer in the file" entries in `errors`, one for one.
+      missing: missingUnits,
+    },
     // Which documents the comparison actually read. Without this a scan that
     // found nothing at all would report the same clean verdict as one that
     // checked all ten files, and only the count can tell them apart.
