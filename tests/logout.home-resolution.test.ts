@@ -31,7 +31,7 @@
  *
  * The home and the store directory are kept **distinct**, which is what a real
  * machine looks like (`HOME` holds `.spotify-mcp`) and what makes these tests
- * independent of the "directory that holds every other store" rule. It also
+ * independent of the "a directory that contains another store" rule. It also
  * isolates the defect: with the stores *inside* the declared home, the nesting
  * rule keeps that directory and the home-directory refusal is never reached.
  */

@@ -54,6 +54,7 @@ import { homedir } from 'node:os';
 import { basename, dirname, join, parse, resolve } from 'node:path';
 import { promisify } from 'node:util';
 
+import { accountsFile } from './accounts.js';
 import { cachePendingPath, cachePendingPaths, cachePersistPath, cachePersistPaths } from './cachepersist.js';
 import { resolveTokenFile } from './config.js';
 import { historyFilePath, historyFilePaths } from './history.js';
@@ -72,6 +73,7 @@ import { snapshotDir as playlistHealthSnapshotDir } from './tools/playlisthealth
 import { playbackExtFile } from './tools/playbackext.js';
 import { scenesFilePath } from './tools/scenes.js';
 import { searchHistoryFile } from './tools/searchhistory.js';
+import { tasteFeedbackFile } from './tools/statsfm_taste.js';
 import { snapshotDir as swarm3SnapshotDir } from './tools/swarm3_snapshots.js';
 
 const run = promisify(execFile);
@@ -135,12 +137,20 @@ interface StoreDefinition {
  *
  * So the two lists are not redundant and neither subsumes the other, which
  * means the interesting property is that they AGREE. `tests/store-paths.test.ts`
- * asserts it, and asserts the differences by name: `accounts` and
- * `taste-feedback` are real stores logout does not erase (a coverage gap,
- * reported rather than fixed here), and `cache` / `cache-pending-marker`
- * resolve through `getTokenFilePath()` in `auth.ts`, which also reads argv, so
- * `config.ts` cannot own them. A store added to one list and not the other
- * fails the suite rather than waiting to be noticed in a report.
+ * asserts it, and asserts the differences by name: `cache` /
+ * `cache-pending-marker` resolve through `getTokenFilePath()` in `auth.ts`,
+ * which also reads argv, so `config.ts` cannot own them. That difference is a
+ * fact about where a path is DECIDED, and it is permanent.
+ *
+ * The other direction has no permanent answer, so it has no named map.
+ * `accounts` and `taste-feedback` were registered stores that this list did
+ * not erase (#1434) — a coverage gap, not a policy, and the test recorded it
+ * rather than fixing it. A gap recorded in a test is still a gap: the suite
+ * passed on the strength of the difference being DECLARED, so `logout` reported
+ * a clean sweep while leaving behind the record of which accounts exist on this
+ * machine and every stats.fm verdict the user had accumulated. They are erased
+ * here now, and `NOT_ERASED_BY_LOGOUT` in that test is empty; a store added to
+ * one list and not the other now fails the suite instead of being excused.
  */
 const STORE_DEFINITIONS: StoreDefinition[] = [
   {
@@ -150,6 +160,18 @@ const STORE_DEFINITIONS: StoreDefinition[] = [
     envVar: 'SPOTIFY_MCP_TOKEN_FILE',
     erasure: 'shred',
     resolve: (env) => resolveTokenFile(env),
+  },
+  {
+    id: 'accounts',
+    label: 'Account registry',
+    kind: 'file',
+    envVar: 'SPOTIFY_MCP_ACCOUNTS_FILE',
+    // `move`, not `shred`: this file names token-file PATHS and account ids,
+    // never token material, so leaving it recoverable costs nothing and a
+    // user who logs out by mistake can put it back. Only `CREDENTIAL_STORE_ID`
+    // holds a live refresh token, and it is the only store that is shredded.
+    erasure: 'move',
+    resolve: (env) => accountsFile(env),
   },
   {
     id: 'mutations',
@@ -222,6 +244,21 @@ const STORE_DEFINITIONS: StoreDefinition[] = [
     envVar: 'SPOTIFY_MCP_DATA_DIR',
     erasure: 'move',
     resolve: (env) => artistWatchlistPath(env),
+  },
+  {
+    id: 'taste-feedback',
+    label: 'stats.fm taste feedback',
+    kind: 'file',
+    envVar: 'SPOTIFY_MCP_TASTE_FEEDBACK_FILE',
+    // Identity-free, like every other store here: the entries are subject ids,
+    // ratings and timestamps. `move` for the same reason as the account
+    // registry — there is no credential in this file to shred, and the
+    // verdicts are the user's own accumulated data, so a recoverable move is
+    // the right default. It resolves through the data directory, so it is a
+    // CHILD of the kept container and is erased individually by the nesting
+    // rule rather than with it.
+    erasure: 'move',
+    resolve: (env) => tasteFeedbackFile(env),
   },
   {
     id: 'freshness',
@@ -511,11 +548,23 @@ export async function planErasure(
   // Second pass: a directory store that *contains* another store is kept, not
   // erased. This is not hypothetical — `SPOTIFY_MCP_DATA_DIR` is itself the
   // playlist health snapshot directory, so with that variable set that store
-  // resolves to the data directory holding every other store on this list.
-  // Erasing it would take the whole lot, which is the opposite of the
-  // enumerate-then-remove promise this command makes. It is reported under
-  // "Not erased" rather than silently dropped, and it is not a failure: the
-  // container is a directory, and the stores inside it are erased individually.
+  // resolves to the data directory, and the stores that resolve through that
+  // variable sit INSIDE it.
+  //
+  // The relationship is parent-and-child, not superset. The data directory is a
+  // PARENT of the stores `SPOTIFY_MCP_DATA_DIR` relocates; every other store on
+  // this list still resolves under `~/.spotify-mcp/` whatever the variable says.
+  // An earlier version of this comment called it "the data directory holding
+  // every other store", which is false, and the falsehood was copied verbatim
+  // into `docs/configuration.md` from here — which is the argument for not
+  // restating a number in prose at all. The count the user is shown is the
+  // `nested` length below, and that one is computed.
+  //
+  // Erasing the parent would take the children with it, which is the opposite
+  // of the enumerate-then-remove promise this command makes. It is reported
+  // under "Not erased" rather than silently dropped, and it is not a failure:
+  // the container is a directory, and the stores inside it are erased
+  // individually.
   for (let i = 0; i < stores.length; i += 1) {
     if (decisions[i] !== null) continue;
     const store = stores[i]!;
