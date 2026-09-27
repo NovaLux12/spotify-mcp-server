@@ -166,9 +166,56 @@ export class LruTtlCache<V> {
     this.drop(key);
   }
 
+  /**
+   * Drop every key that starts with `prefix`, and report how many were
+   * removed (#893). This is the scoped primitive the client's invalidation
+   * map is built on: a mutation of one resource clears the reads of THAT
+   * resource and leaves every unrelated read cached.
+   *
+   * The prefix is matched verbatim against the stored key, so a caller must
+   * include the boundary itself. Keys are `METHOD PATH PARAMS` (see
+   * {@link cacheKey}) and PATH is always followed by a space, so
+   * `GET /playlists/A ` matches the bare read `GET /playlists/A ` and
+   * `GET /playlists/A/items [...]` needs its own `GET /playlists/A/`. Passing
+   * the un-delimited `GET /playlists/A` would also match `GET /playlists/AB `
+   * — a different playlist — and silently drop a live entry. Use
+   * {@link readKeyPrefixes} to build boundary-correct prefixes from a path.
+   *
+   * Returned count is the number of keys dropped, not bytes; callers that
+   * report invalidation want "how many reads went stale", which is a fact
+   * about the cache and not an estimate of anything.
+   */
+  deleteByPrefix(prefix: string): number {
+    let removed = 0;
+    for (const key of [...this.map.keys()]) {
+      if (!key.startsWith(prefix)) continue;
+      this.drop(key);
+      removed += 1;
+    }
+    return removed;
+  }
+
   clear(): void {
     this.map.clear();
     this._bytes = 0;
+  }
+
+  /**
+   * Every live entry, oldest-use first, for persistence (#893).
+   *
+   * Expired entries are filtered out here rather than handed to the writer:
+   * an expired entry is not a cache entry, it is a row that has not been
+   * reclaimed yet, and writing it would put a deadline that has already passed
+   * into a file whose whole job is to be loaded on the next start.
+   */
+  snapshot(): Array<{ key: string; value: V; expiresAt: number }> {
+    const now = Date.now();
+    const out: Array<{ key: string; value: V; expiresAt: number }> = [];
+    for (const [key, entry] of this.map) {
+      if (entry.expiresAt <= now) continue;
+      out.push({ key, value: entry.value, expiresAt: entry.expiresAt });
+    }
+    return out;
   }
 
   /** Remove a key and release the bytes it was charged (#894). */
@@ -244,6 +291,28 @@ export class ValidatorStore<V> {
 
   delete(key: string): void {
     this.map.delete(key);
+  }
+
+  /**
+   * Drop every key starting with `prefix` and report the count (#893). Same
+   * boundary contract as {@link LruTtlCache.deleteByPrefix} — see
+   * {@link readKeyPrefixes}.
+   *
+   * A surviving validator here is not harmless the way a surviving payload
+   * entry is merely redundant: the payload is only ever returned after the
+   * origin confirms it with a 304, and a validator naming a body from before
+   * a mutation is exactly the tag that lets a stale body be re-served. The
+   * client's invalidation map therefore drives this store with the same
+   * prefixes it drives the payload cache.
+   */
+  deleteByPrefix(prefix: string): number {
+    let removed = 0;
+    for (const key of [...this.map.keys()]) {
+      if (!key.startsWith(prefix)) continue;
+      this.map.delete(key);
+      removed += 1;
+    }
+    return removed;
   }
 
   clear(): void {
@@ -322,4 +391,123 @@ export function cacheKey(method: string, path: string, params?: Record<string, s
     serializedParams = JSON.stringify(pairs);
   }
   return `${method.toUpperCase()} ${cleanPath} ${serializedParams}`;
+}
+
+/**
+ * The exact {@link LruTtlCache.deleteByPrefix} prefixes that cover every read
+ * of `path` and of anything nested under it (#893).
+ *
+ * Keys are `GET <path> <params>`, with `<path>` always followed by a space, so
+ * the resource itself and its sub-resources are two distinct prefixes and a
+ * caller that spells only one of them leaves reads cached that the mutation
+ * just invalidated. The trailing `/` is what keeps `/playlists/AB` out of
+ * `/playlists/A`'s prefix set.
+ *
+ * A query string is ignored, because the key carries params AFTER the space
+ * and they are not part of the path identity.
+ */
+export function readKeyPrefixes(path: string): string[] {
+  const cleanPath = splitQuery(path).path.replace(/\/+$/, '');
+  return [`GET ${cleanPath} `, `GET ${cleanPath}/`];
+}
+
+/**
+ * What a mutation must invalidate (#893).
+ *
+ * - `prefixes` — drop exactly these read keys; everything else survives.
+ * - `all` — blast radius unknown, drop everything. This is the FAIL-CLOSED
+ *   default: a write endpoint nobody has classified is treated as if it could
+ *   have touched anything, because an entry that cannot be invalidated serves
+ *   stale data as if it were fresh.
+ */
+export type InvalidationPlan =
+  | {
+    readonly scope: 'prefixes';
+    /** Prefixes dropped from the payload cache. */
+    readonly payload: readonly string[];
+    /** Prefixes dropped from the ETag validator store. */
+    readonly validators: readonly string[];
+  }
+  | { readonly scope: 'all' };
+
+/** Every cacheable read of user-owned data lives under `/me/`. */
+const ME_READ_PREFIX = 'GET /me/';
+
+/**
+ * Prefixes for a playlist resource, tolerating a percent-encoded id.
+ *
+ * Call sites build both the mutation and the matching read from
+ * `encodeURIComponent(id)`, so the raw segment normally matches verbatim. When
+ * a caller spells the id raw and another spells it encoded, only the encoded
+ * form lands in the key — so both are returned, and whichever the read used is
+ * the one dropped.
+ */
+function playlistPrefixes(rawId: string): string[] {
+  let decoded = rawId;
+  try {
+    decoded = decodeURIComponent(rawId);
+  } catch {
+    // A malformed escape is not a reason to widen the blast radius: the raw
+    // segment is still the best available guess at the key.
+  }
+  const paths = decoded === rawId ? [rawId] : [rawId, decoded];
+  return paths.flatMap((id) => readKeyPrefixes(`/playlists/${id}`));
+}
+
+/**
+ * Which reads a mutation invalidates (#893).
+ *
+ * A pure policy function over the request target — no I/O, no client — so the
+ * mapping is testable on its own and the client's `afterMutation` stays
+ * bookkeeping. Rules, narrowest first:
+ *
+ * 1. `/me/player*` and `/me/top*` — playback commands. These paths bypass the
+ *    payload cache ({@link shouldBypassCache}) so nothing cached can go stale
+ *    through them, and the catalog cache is untouched — which is what stops
+ *    `add_to_queue` from costing an agent their whole cached walk.
+ *
+ *    They are NOT a complete no-op, though, and the issue's suggestion that
+ *    they be one is unsafe. The ETag validator store serves these paths
+ *    deliberately (#601): a 304 there is answered from the stored payload the
+ *    tag names. `POST /me/player/queue` adds a track to the very `queue` array
+ *    `GET /me/player/queue` returns (`QueueObject.queue` in the official
+ *    OpenAPI schema), so leaving that validator in place would let a 304
+ *    resurrect a pre-mutation payload — the exact failure the validator store
+ *    exists to prevent. So the player prefixes are dropped from the VALIDATOR
+ *    store while the payload cache keeps everything.
+ * 2. `/me/*` writes that are not the player — library saves/removes, follows.
+ *    Every cacheable read of user-owned data is under `/me/`, so one prefix
+ *    covers the family. Deliberately coarse: it keeps the whole CATALOG cache
+ *    (the expensive half) while never risking a stale library read.
+ * 3. `/playlists/{id}...` writes — item add/remove/reorder, detail edits,
+ *    cover images. Drops that playlist's own reads plus the user's playlist
+ *    list, whose entries carry the metadata a detail edit changes.
+ * 4. `POST /me/playlists` — a new playlist appears in the list.
+ * 5. Everything else — `all`. Unclassified means unproven, and unproven must
+ *    not mean stale.
+ */
+export function invalidationPlan(method: string, path: string): InvalidationPlan {
+  const cleanPath = splitQuery(path).path;
+  const segments = cleanPath.split('/').filter((s) => s.length > 0);
+  const head = segments[0] ?? '';
+
+  if (head === 'me') {
+    if (segments[1] === 'player' || segments[1] === 'top') {
+      // Nothing cached goes stale through these, but the validator store does
+      // hold them (rule 1 above), so the payload cache is left entirely alone
+      // while the volatile validators are dropped.
+      return { scope: 'prefixes', payload: [], validators: VOLATILE_PATH_PREFIXES.flatMap(readKeyPrefixes) };
+    }
+    // `POST /me/playlists` creates a playlist; the library/following writes
+    // change user-owned reads. Both are covered by the `/me/` read family, and
+    // `/me/playlists` is under it, so one rule serves both.
+    return { scope: 'prefixes', payload: [ME_READ_PREFIX], validators: [ME_READ_PREFIX] };
+  }
+
+  if (head === 'playlists' && segments.length >= 2) {
+    const prefixes = [...playlistPrefixes(segments[1]), ...readKeyPrefixes('/me/playlists')];
+    return { scope: 'prefixes', payload: prefixes, validators: prefixes };
+  }
+
+  return { scope: 'all' };
 }

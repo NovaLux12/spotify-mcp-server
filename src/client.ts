@@ -1,11 +1,53 @@
 import { readFile } from 'node:fs/promises';
 import { loadTokens, saveTokens, TOKEN_FILE } from './auth.js';
-import { LruTtlCache, ValidatorStore, shouldBypassCache, cacheKey } from './cache.js';
+import {
+  LruTtlCache,
+  ValidatorStore,
+  shouldBypassCache,
+  cacheKey,
+  invalidationPlan,
+  type InvalidationPlan,
+} from './cache.js';
+import {
+  cachePersistEnabled,
+  cachePersistPath,
+  isPersistableKey,
+  loadPersistedCache,
+  savePersistedCache,
+  savePersistedCacheSync,
+  type CachePersistOptions,
+  type CachePersistStats,
+  type PersistedEntry,
+} from './cachepersist.js';
 import { getConfig } from './config.js';
 import { appendHistory, currentToolName } from './history.js';
 import type { MutationRecord } from './history.js';
 
 const BASE_URL = 'https://api.spotify.com/v1';
+
+/**
+ * How long a burst of cache writes coalesces into one file write (#893).
+ * Long enough that a paged walk costs one write rather than one per page,
+ * short enough that a session that ends shortly after a read still persists.
+ */
+const CACHE_PERSIST_DEBOUNCE_MS = 250;
+
+/**
+ * How many recent invalidations the read/write race guard can reason about
+ * (#1249 review). A read that raced an invalidation older than this window is
+ * treated as invalidated rather than reasoned about, so the bound trades a
+ * possible lost cache fill for never serving a stale body.
+ */
+const INVALIDATION_LOG_LIMIT = 64;
+
+/** One recorded invalidation: which epoch, and exactly what it dropped. */
+interface InvalidationEvent {
+  readonly epoch: number;
+  /** A full clear — exempts no key. */
+  readonly all: boolean;
+  readonly payload: readonly string[];
+  readonly validators: readonly string[];
+}
 import type { TokenData, SpotifyPaged } from './types/spotify.js';
 
 /**
@@ -266,6 +308,12 @@ interface SpotifyClientOptions {
   /** TTL cache tuning (#54); omit for defaults. */
   cache?: { ttlMs?: number; maxEntries?: number };
   /**
+   * Cross-process cache persistence (#893). Only read when
+   * `SPOTIFY_MCP_CACHE_PERSIST` opts in; `file` overrides the path and
+   * `maxBytes` the cap, which is how tests keep every write under a temp dir.
+   */
+  cachePersist?: { file?: string; maxBytes?: number };
+  /**
    * How long a stored ETag stays usable as an `If-None-Match` validator
    * (#601); omit for the default window. Ignored when `disableCache` is set.
    */
@@ -378,6 +426,15 @@ interface RateLimitStatus {
   cacheBytes?: number;
   cacheMaxBytes?: number;
   cacheSkippedOversize?: number;
+  /** True when `SPOTIFY_MCP_CACHE_PERSIST` is on (#893). Absent when it is not. */
+  cachePersist?: boolean;
+  /** Entries restored from the persisted file at startup (#893). */
+  cacheRestored?: number;
+  /** Persist failures and allowlist refusals, so a dead cache is visible (#893). */
+  cachePersistFailed?: number;
+  cachePersistRefused?: number;
+  /** Entries dropped for exceeding the persisted byte cap (#1249). */
+  cachePersistOversize?: number;
   /** Requests currently open in the funnel (#892). */
   inFlight: number;
   /** The funnel's concurrency ceiling for this process (#892). */
@@ -704,6 +761,234 @@ function classifyTokenTransportFailure(err: unknown): TokenFailure {
   };
 }
 
+/**
+ * Owns the persisted half of the read cache (#893): restores once, and
+ * debounces saves so a burst of reads costs one write.
+ *
+ * Deliberately separate from {@link SpotifyClient} so the persistence policy —
+ * which keys may be written, what happens to a corrupt file — is testable
+ * without a client, a token file, or a network stub.
+ */
+class CachePersistController {
+  private restoredCount = 0;
+  private failed = 0;
+  private refused = 0;
+  private oversize = 0;
+  private loaded: Promise<void> | null = null;
+  private pendingSave: ReturnType<typeof setTimeout> | null = null;
+  /**
+   * The snapshot a pending save would write, or null when nothing is queued.
+   *
+   * Held as state rather than closed over by the timer callback so a flush can
+   * perform exactly the save the timer was going to perform (#1266).
+   */
+  private pendingEntries: PersistedEntry[] | null = null;
+
+  constructor(
+    private readonly file: string,
+    private readonly opts: { file?: string; maxBytes?: number } | undefined,
+    private readonly schedule: (fn: () => void, ms: number) => ReturnType<typeof setTimeout> = setTimeout,
+  ) {}
+
+  /** What the persistence layer did, for `spotify_doctor`. */
+  stats(): { restored: number; failed: number; refused: number; oversize: number } {
+    return { restored: this.restoredCount, failed: this.failed, refused: this.refused, oversize: this.oversize };
+  }
+
+  /**
+   * Restore persisted entries into `cache`, once.
+   *
+   * A load failure is counted and not rethrown HERE — a broken sidecar is an
+   * optimisation that cannot be allowed to stop the server booting — but it is
+   * visible through {@link stats} and `spotify_doctor`, so "the persisted cache
+   * is not loading" is reportable rather than silent. `loadSidecar` preserves
+   * the corrupt bytes, so attempting the load destroys nothing.
+   */
+  load(cache: LruTtlCache<unknown> | null): Promise<void> {
+    if (this.loaded) return this.loaded;
+    if (!cache) return Promise.resolve();
+    this.loaded = loadPersistedCache({ ...this.opts, file: this.file }).then(
+      (entries) => {
+        for (const entry of entries) {
+          if (!isPersistableKey(entry.key)) {
+            this.refused += 1;
+            continue;
+          }
+          // Re-apply the entry's own remaining lifetime rather than restarting
+          // its TTL: persisting an entry must not extend it. `snapshot` already
+          // filtered expired rows, so this is positive.
+          cache.set(entry.key, entry.value, { ttlMs: Math.max(1, entry.expiresAt - Date.now()) });
+          this.restoredCount += 1;
+        }
+      },
+      () => {
+        this.failed += 1;
+      },
+    );
+    return this.loaded;
+  }
+
+  /**
+   * Queue a debounced save of the current cache contents.
+   *
+   * The entries are held here, not captured in the closure, so a {@link flush}
+   * can write exactly what the timer would have written. Both race for that
+   * snapshot and whoever takes it clears the field, so a save happens once and
+   * its stats are counted once.
+   */
+  scheduleSave(cache: LruTtlCache<unknown> | null): void {
+    if (!cache) return;
+    // Snapshot at schedule time and write that, so a later mutation's
+    // invalidation (which the next schedule will capture) is never undone by a
+    // save that was queued before it.
+    this.pendingEntries = cache.snapshot();
+    if (this.pendingSave !== null) clearTimeout(this.pendingSave);
+    this.pendingSave = this.schedule(() => {
+      this.pendingSave = null;
+      this.runSave(savePersistedCache);
+    }, CACHE_PERSIST_DEBOUNCE_MS);
+  }
+
+  /**
+   * Write the pending save now instead of waiting out the debounce (#1266).
+   *
+   * Resolves once the write has landed. Safe to call when nothing is pending,
+   * and safe to call twice: the pending snapshot is taken by whichever of the
+   * timer and this call gets there first, so a flush cannot double-count a save
+   * that already ran.
+   */
+  async flush(): Promise<void> {
+    if (this.pendingSave !== null) {
+      clearTimeout(this.pendingSave);
+      this.pendingSave = null;
+    }
+    await this.runSave(savePersistedCache);
+  }
+
+  /**
+   * The synchronous flush, for the `exit` event and signal handlers (#1266).
+   *
+   * `exit` listeners run synchronously and the process is gone the moment they
+   * return, so this cannot await — see {@link savePersistedCacheSync}. The
+   * counters are still updated, so a caller that inspects `stats()` after a
+   * flush sees a save that actually happened, or a failure that actually
+   * occurred, rather than a silent no-op.
+   */
+  flushSync(): void {
+    if (this.pendingSave !== null) {
+      clearTimeout(this.pendingSave);
+      this.pendingSave = null;
+    }
+    const entries = this.pendingEntries;
+    if (entries === null) return;
+    this.pendingEntries = null;
+    try {
+      const stats = savePersistedCacheSync(entries, { ...this.opts, file: this.file });
+      this.refused += stats.refused;
+      this.oversize += stats.oversize;
+    } catch {
+      this.failed += 1;
+    }
+  }
+
+  /**
+   * Run one save against the pending snapshot, if there still is one.
+   *
+   * Taking the snapshot BEFORE the write is what makes this safe to call from
+   * both the timer and {@link flush}: the second caller finds `null` and does
+   * nothing, so one queued save is never written or counted twice.
+   */
+  private async runSave(
+    save: (entries: PersistedEntry[], opts: CachePersistOptions) => Promise<CachePersistStats>,
+  ): Promise<void> {
+    const entries = this.pendingEntries;
+    if (entries === null) return;
+    this.pendingEntries = null;
+    try {
+      const stats = await save(entries, { ...this.opts, file: this.file });
+      this.refused += stats.refused;
+      this.oversize += stats.oversize;
+    } catch {
+      this.failed += 1;
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Shutdown flush (#1266)
+// ---------------------------------------------------------------------------
+
+/**
+ * The controller whose pending save a terminating process must still write.
+ *
+ * A single slot rather than a set: the server constructs one client per
+ * process, so there is exactly one file to flush. A set would grow for the
+ * lifetime of any process that made several clients (every test run does) and
+ * would then write every one of those files during `exit`.
+ */
+let activePersist: CachePersistController | null = null;
+
+/** Whether the process-level hooks have been installed. */
+let exitFlushInstalled = false;
+
+/**
+ * Flush a pending save when the process is going away (#1266).
+ *
+ * The debounce is a 250 ms timer, and a pending timer keeps the event loop
+ * alive, so a process that simply runs out of work still fires it — the loss
+ * needs a termination that skips the loop, which is exactly what a host that
+ * restarts the server per session does.
+ *
+ * What each hook can and cannot do was measured on this Node rather than
+ * assumed, and the three cases need different mechanisms:
+ *
+ *   - `process.exit()` and an uncaught throw both run `exit` listeners, and
+ *     run them SYNCHRONOUSLY — a promise started there is discarded, never
+ *     awaited. Hence the synchronous write.
+ *   - SIGINT/SIGTERM with Node's default disposition run NO JavaScript at all:
+ *     no `exit` event, no `beforeExit`. A handler has to be installed for the
+ *     process to get a chance to save, and it re-raises afterwards so the
+ *     default termination (and the 128+n exit status a supervisor reads) is
+ *     unchanged.
+ *   - `beforeExit` is deliberately not used. It fires only once the loop has
+ *     drained, and the pending debounce timer is what keeps the loop alive, so
+ *     by the time it could run the save has already happened.
+ */
+function installExitFlush(): void {
+  if (exitFlushInstalled) return;
+  exitFlushInstalled = true;
+
+  process.on('exit', () => {
+    try {
+      activePersist?.flushSync();
+    } catch {
+      // An `exit` listener that throws would replace the real exit reason with
+      // a spurious failure. A cache is an optimisation; losing it must not
+      // change how the process reports why it stopped.
+    }
+  });
+
+  for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+    // `once`, not `on`: the handler re-raises the signal at the end, and a
+    // persistent listener would receive that re-raise and call itself again.
+    // With `once` the second delivery finds no listener, so the default
+    // disposition applies and the process dies of the signal as it would have
+    // without this handler (exit status 128 + signum). This is the same shape
+    // `ensureExitCleanup` in src/tools/scenes.ts uses.
+    process.once(signal, () => {
+      try {
+        activePersist?.flushSync();
+      } catch {
+        // Same reasoning as the `exit` listener: never let the cache change
+        // the termination semantics.
+      }
+      // Re-raise so installing this handler does not turn "SIGTERM stops the
+      // server" into "SIGTERM is ignored".
+      process.kill(process.pid, signal);
+    });
+  }
+}
+
 export class SpotifyClient {
   private tokens: TokenData | null = null;
   private loadPromise: Promise<TokenData> | null = null;
@@ -744,6 +1029,37 @@ export class SpotifyClient {
   // ETag validators for conditional reads (#601) — null when disabled. Holds
   // the payload an ETag identifies so a 304 can be answered without a body.
   readonly validators: ValidatorStore<unknown> | null;
+  /**
+   * Monotonic counter bumped by every invalidation (#893). A read captures it
+   * before it goes to the network and refuses to STORE its body if it moved
+   * while the request was in flight.
+   *
+   * This is the correctness half of scoped invalidation. Dropping keys at
+   * mutation time is not sufficient on its own: the funnel runs up to
+   * `maxConcurrency` requests at once, so a read issued BEFORE a mutation can
+   * complete AFTER it. That read's body describes the pre-mutation world, and
+   * storing it would re-seed the entry the mutation just invalidated — serving
+   * stale data for the full TTL, with the invalidation having already run. A
+   * wholesale `clear()` did not prevent this either; scoping does not make it
+   * worse, but only a generation check actually closes it.
+   *
+   * The read still RETURNS its own body to its caller: it is a truthful
+   * answer to the question that was asked. Only the write into shared state is
+   * suppressed.
+   */
+  private _invalidationEpoch = 0;
+  /**
+   * What the recent invalidations actually dropped, keyed by the epoch that
+   * produced them (#1249). Bounded, and consulted only when the epoch has
+   * moved — see {@link invalidatedSince}, which fails closed.
+   */
+  private readonly _invalidationLog: InvalidationEvent[] = [];
+  /**
+   * Optional cross-process persistence for the catalog cache (#893). Null
+   * unless `SPOTIFY_MCP_CACHE_PERSIST=1`. Only ever holds allowlisted,
+   * non-`/me` catalog reads — see {@link isPersistableKey}.
+   */
+  private readonly _persist: CachePersistController | null;
   private readonly fetchAllCap: number;
   /**
    * Ceiling on requests in flight at once (#892). Read once at construction,
@@ -768,6 +1084,32 @@ export class SpotifyClient {
     this.validators = opts.disableCache
       ? null
       : new ValidatorStore<unknown>(opts.validatorTtlMs, opts.cache?.maxEntries);
+    this._persist = opts.disableCache || !cachePersistEnabled()
+      ? null
+      : new CachePersistController(cachePersistPath(), opts.cachePersist);
+    // Restore before the first read can miss: a load that lands after a read
+    // would make the second process pay the fetch anyway, and the restored
+    // entries are deadline-checked on load so nothing expired is revived.
+    if (this._persist) {
+      // Installed only when persistence is actually on, so a process that
+      // never writes a cache file registers no process-level handlers (#1266).
+      activePersist = this._persist;
+      installExitFlush();
+      void this._persist.load(this.cache);
+    }
+  }
+
+  /**
+   * Write any debounced cache-persist save now, and wait for it (#1266).
+   *
+   * The server installs its own flush on the termination paths, so a host does
+   * not have to call this; it is the explicit seam for a host that ends a
+   * session by other means (a graceful RPC shutdown, a supervisor that closes
+   * stdin and then waits), and for tests. A no-op when persistence is off or
+   * nothing is queued, and calling it twice does not save twice.
+   */
+  async flushCachePersist(): Promise<void> {
+    await this._persist?.flush();
   }
 
   /**
@@ -802,6 +1144,7 @@ export class SpotifyClient {
       requestsLastMinute: this.requestsSince(60_000),
       requestsLastHour: this.requestsSince(3_600_000),
       ...this.cacheStats(),
+      ...this.cachePersistStats(),
       inFlight: this._inFlight,
       maxConcurrency: this._maxConcurrency,
       peakInFlight: this._peakInFlight,
@@ -821,6 +1164,26 @@ export class SpotifyClient {
       cacheBytes: this.cache.bytes,
       cacheMaxBytes: this.cache.limits.maxBytes,
       cacheSkippedOversize: this.cache.skippedOversize,
+    };
+  }
+
+  /**
+   * Persistence counters (#893), or an empty object when persistence is off —
+   * so a caller can report "not enabled" rather than "restored nothing", which
+   * are different facts.
+   */
+  private cachePersistStats(): Pick<
+    RateLimitStatus,
+    'cachePersist' | 'cacheRestored' | 'cachePersistFailed' | 'cachePersistRefused' | 'cachePersistOversize'
+  > {
+    if (!this._persist) return this.cache ? { cachePersist: false } : {};
+    const stats = this._persist.stats();
+    return {
+      cachePersist: true,
+      cacheRestored: stats.restored,
+      cachePersistFailed: stats.failed,
+      cachePersistRefused: stats.refused,
+      cachePersistOversize: stats.oversize,
     };
   }
 
@@ -900,9 +1263,68 @@ export class SpotifyClient {
    * opt-in history JSONL. Never fails the underlying mutation.
    */
   private afterMutation(method: string, path: string, response: unknown): void {
-    this.cache?.clear();
-    this.validators?.clear();
+    this._invalidationEpoch += 1;
+    const plan = invalidationPlan(method, path);
+    if (plan.scope === 'all') {
+      this.cache?.clear();
+      this.validators?.clear();
+    } else {
+      for (const prefix of plan.payload) this.cache?.deleteByPrefix(prefix);
+      for (const prefix of plan.validators) this.validators?.deleteByPrefix(prefix);
+    }
+    this.recordInvalidation(plan);
+    // A mutation also re-shapes what is worth persisting, so a save queued
+    // before it must not write the dropped entries back to disk.
+    this._persist?.scheduleSave(this.cache);
     void this.recordMutation(method, path, response);
+  }
+
+  /**
+   * Remember what this invalidation actually dropped (#1249).
+   *
+   * The epoch alone answers "has anything been invalidated since this request
+   * went out?", which is too blunt to be the whole question: a
+   * `POST /me/player/queue` drops ZERO payload prefixes, and a global answer of
+   * "yes" made it discard catalog reads that landed after it — which is the
+   * exact cost the scoped-invalidation change claims to remove. This log lets
+   * a racing read ask the narrower question instead.
+   */
+  private recordInvalidation(plan: InvalidationPlan): void {
+    this._invalidationLog.push({
+      epoch: this._invalidationEpoch,
+      all: plan.scope === 'all',
+      payload: plan.scope === 'all' ? [] : [...plan.payload],
+      validators: plan.scope === 'all' ? [] : [...plan.validators],
+    });
+    if (this._invalidationLog.length > INVALIDATION_LOG_LIMIT) {
+      this._invalidationLog.splice(0, this._invalidationLog.length - INVALIDATION_LOG_LIMIT);
+    }
+  }
+
+  /**
+   * Did anything invalidate `key` since this read started? FAILS CLOSED.
+   *
+   * The prefixes are the same boundary-aware ones the invalidation itself used
+   * to delete keys, so "would this key have been dropped?" is answered by the
+   * identical comparison rather than by a second, subtler notion of matching.
+   *
+   * Two ways to answer "yes" without evidence, both deliberately:
+   *   - the log no longer reaches back to this read, so an invalidation it
+   *     raced has been evicted and cannot be reasoned about;
+   *   - the invalidation was a full clear, which exempts nothing.
+   * Losing a cache fill is recoverable; serving a stale body is not.
+   */
+  private invalidatedSince(epoch: number, key: string): boolean {
+    if (this._invalidationEpoch === epoch) return false;
+    const log = this._invalidationLog;
+    if (log.length === 0 || log[0].epoch > epoch + 1) return true;
+    for (const event of log) {
+      if (event.epoch <= epoch) continue;
+      if (event.all) return true;
+      if (event.payload.some((prefix) => key.startsWith(prefix))) return true;
+      if (event.validators.some((prefix) => key.startsWith(prefix))) return true;
+    }
+    return false;
   }
 
   private getTokens(): Promise<TokenData> {
@@ -1604,6 +2026,11 @@ export class SpotifyClient {
     // ETag identifies is the answer (#601). Only its freshness is never
     // assumed — it is returned only after the origin confirms it.
     const key = cacheKey('GET', relative);
+    // The world as of before this request goes out (#893). If a mutation
+    // invalidates anything while the request is in flight, this body is a
+    // pre-mutation snapshot and must not be written into shared state — see
+    // `_invalidationEpoch`.
+    const epochAtRequest = this._invalidationEpoch;
     if (cacheable) {
       const hit = this.cache!.get(key);
       if (hit !== undefined) return hit as T;
@@ -1648,8 +2075,15 @@ export class SpotifyClient {
           // window so the next read revalidates against the same ETag. The
           // payload is the same object, so its measured size is still
           // recorded and the byte budget keeps charging it exactly once.
-          if (cacheable) this.cache!.set(key, validator.value, { bytes: this.bodyBytes(validator.value) });
-          this.validators?.set(key, validator.value, validator.etag);
+          //
+          // Epoch-guarded like the store below (#893): a 304 answers "this
+          // body is unchanged", which is only true of the world the validator
+          // was taken from. A mutation that landed mid-request makes the
+          // "unchanged" claim refer to the past.
+          if (!this.invalidatedSince(epochAtRequest, key)) {
+            if (cacheable) this.cache!.set(key, validator.value, { bytes: this.bodyBytes(validator.value) });
+            this.validators?.set(key, validator.value, validator.etag);
+          }
           opts?.onNotModified?.();
           return validator.value as T;
         }
@@ -1677,7 +2111,20 @@ export class SpotifyClient {
       opts?.priority,
     );
     if (servedFrom304) return result;
-    if (cacheable && result !== null) this.cache!.set(key, result, { bytes: this.bodyBytes(result) });
+    // Do not write a body into shared state if anything that could have
+    // changed THIS key was invalidated while the request was in flight (#893).
+    // Without this, a read issued before a mutation re-seeds the entry that
+    // mutation dropped, and the stale body is then served from cache for the
+    // full TTL while looking perfectly fresh. The scope is the plan's own
+    // prefixes (#1249), so a write that drops none of them — a player command,
+    // which is the whole point of scoping — no longer discards a catalog read
+    // that merely overlapped it. The caller still gets `result`: a truthful
+    // answer to the read it made; only the shared-state write is withheld.
+    if (this.invalidatedSince(epochAtRequest, key)) return result;
+    if (cacheable && result !== null) {
+      this.cache!.set(key, result, { bytes: this.bodyBytes(result) });
+      this._persist?.scheduleSave(this.cache);
+    }
     // A body that no longer carries an ETag supersedes any stored validator:
     // keeping the old one would offer a tag whose payload we just replaced.
     if (responseEtag && result !== null) this.validators?.set(key, result, responseEtag);

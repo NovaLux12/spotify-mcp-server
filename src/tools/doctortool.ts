@@ -615,18 +615,44 @@ function staticRows(client: SpotifyClient): DoctorRow[] {
     if (typeof rl.cacheEntries === 'number' && typeof rl.cacheBytes === 'number') {
       const budget = typeof rl.cacheMaxBytes === 'number' ? rl.cacheMaxBytes : null;
       const skipped = rl.cacheSkippedOversize ?? 0;
+      // Persistence counters (#893). Reported only when the feature is on:
+      // a zero here means "nothing was restored", which reads as a broken
+      // cache unless the operator also sees that persistence is enabled.
+      const persistFailed = rl.cachePersistFailed ?? 0;
+      // Entries dropped by the persisted byte cap (#1249). Distinct from an
+      // allowlist refusal: these were eligible and lost to size, and an
+      // operator seeing `cache_persisted=0` needs to know which it was.
+      const persistOversize = rl.cachePersistOversize ?? 0;
+      const persistParts = rl.cachePersist
+        ? [
+          'cache_persist=on',
+          `cache_restored=${rl.cacheRestored ?? 0}`,
+          persistFailed > 0 ? `cache_persist_failed=${persistFailed}` : null,
+          (rl.cachePersistRefused ?? 0) > 0 ? `cache_persist_refused=${rl.cachePersistRefused}` : null,
+          persistOversize > 0 ? `cache_persist_oversize=${persistOversize}` : null,
+        ].filter((p): p is string => p !== null)
+        : ['cache_persist=off'];
       const cacheParts = [
         `cache_entries=${rl.cacheEntries}`,
         `cache_bytes=${rl.cacheBytes}`,
         budget !== null ? `cache_max_bytes=${budget}` : null,
         `cache_skipped_oversize=${skipped}`,
+        ...persistParts,
       ].filter((p): p is string => p !== null);
+      // A persist failure is a warning: the in-memory cache still works, but
+      // the cross-process half is not doing anything and would otherwise be
+      // indistinguishable from one that is.
+      const status: 'pass' | 'warn' = skipped > 0 || persistFailed > 0 ? 'warn' : 'pass';
+      const size = `read cache holds ${rl.cacheEntries} entr${rl.cacheEntries === 1 ? 'y' : 'ies'} / ${rl.cacheBytes} bytes`;
       rows.push({
         id: 'cache',
-        status: skipped > 0 ? 'warn' : 'pass',
-        summary: skipped > 0
-          ? `read cache holds ${rl.cacheEntries} entr${rl.cacheEntries === 1 ? 'y' : 'ies'} / ${rl.cacheBytes} bytes — ${skipped} response(s) were too large to cache`
-          : `read cache holds ${rl.cacheEntries} entr${rl.cacheEntries === 1 ? 'y' : 'ies'} / ${rl.cacheBytes} bytes`,
+        status,
+        summary: status === 'warn'
+          ? `${size} — ${[
+            skipped > 0 ? `${skipped} response(s) were too large to cache` : null,
+            persistFailed > 0 ? `${persistFailed} cache persist write(s) failed` : null,
+          ].filter((p): p is string => p !== null).join('; ')}`
+          : size,
         detail: cacheParts.join(' '),
       });
     } else {
