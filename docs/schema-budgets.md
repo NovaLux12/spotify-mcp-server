@@ -212,3 +212,44 @@ than maintained.
 To change a baseline, measure the real `tools/list` output, update the shared
 manifest, run `npm run count:tools -- --write`, and document the host-session
 payload impact in this page or the PR rationale.
+
+## Response payload cap — a different budget from this one (#895)
+
+This page budgets **one-time** bytes: what a host reads once from `tools/list`
+and then carries for the whole session. #895 added a cap on a different
+quantity — **per-call** bytes, the size of one tool *result* — and the two are
+easy to conflate because both are "how big does a host's context get".
+
+They are sized against each other, and the relationship is worth stating
+plainly because it is the only reason the cap is the number it is:
+
+<!-- BEGIN:generated response-cap -->
+| | what it bounds | how often the host pays | ceiling |
+|---|---|---|---|
+| Schema budget (above) | `tools/list` — every tool's description and input schema | once per session | 620,000B |
+| Response cap (`MAX_RESPONSE_BYTES`) | one `tools/call` result's json text + `structuredContent` | once per **call**, repeatable | 64,000B |
+
+`MAX_RESPONSE_BYTES` is ~1/10 of the schema budget: 10 capped calls cost about what the schema surface cost once. That is the whole argument for the ratio.
+<!-- END:generated response-cap -->
+
+That ratio holds because an
+unbounded result was measured at 124KB (one 500-stream stats.fm page) and up to
+500KB (`diff_playlists` over two 5,000-track playlists), which is a quarter to
+four fifths of the entire schema surface, from a single repeatable call.
+
+Three consequences worth keeping straight:
+
+- **The response cap is not part of any budget measured here.** It is a
+  response-time constant in `src/shaping.ts`. It cannot raise or lower a schema
+  ceiling, because the aggregate gate measures `tools/list` and no tool's
+  description or input schema depends on it. Adding it required no baseline
+  re-measurement and no warrant.
+- **It is a backstop, not the primary control.** A tool declaring `max_results`
+  caps itself at a far finer grain and never reaches the ceiling above. What the
+  response cap guarantees is narrower and still worth having: no tool can
+  return an unbounded payload *even if it forgot to*.
+- **A cap that truncates silently is worse than no cap.** A caller cannot tell a
+  capped result from a complete one, and will report it as complete — the same
+  failure class as #803 and #804. So a capped result always carries a
+  `response_cap` receipt naming every field it dropped and how large each was.
+  See SPEC.md § Shared tool contract for the shape.

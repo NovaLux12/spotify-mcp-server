@@ -659,6 +659,290 @@ export function completenessFooter(options: CompletenessFooterOptions): string {
 
 type JsonObject = Record<string, unknown>;
 
+// ---------------------------------------------------------------------------
+// Response byte cap (#895)
+// ---------------------------------------------------------------------------
+
+/**
+ * Ceiling on ONE tool response's machine-readable channels — the json-mode
+ * text block and `structuredContent` (#895).
+ *
+ * This is a DIFFERENT quantity from the schema budget in `annotations.ts`, and
+ * the two are deliberately sized against each other rather than confused:
+ *
+ *  - `TOOL_SURFACE_BUDGET.defaultMaxBytes` (620,000B) is a ONE-TIME cost. The
+ *    host pays it once per session, reading `tools/list`.
+ *  - A response is a PER-CALL cost, payable again on every call. A single
+ *    unbounded result was measured at 124KB (one 500-stream stats.fm page) and
+ *    up to 500KB (`diff_playlists` over two 5,000-track playlists) — a quarter
+ *    to four fifths of the entire schema surface, from one call, repeatable.
+ *
+ * 64,000B is ~1/10 of the schema budget: ten capped calls cost about what the
+ * schema surface cost once. It is also ~16k tokens, small enough that a host
+ * can absorb the truncated page and page on from it.
+ *
+ * It is a BACKSTOP, not the primary control. A tool that declares
+ * `max_results` caps itself at a far finer grain and never reaches this; what
+ * this guarantees is that no tool can return an unbounded payload even if it
+ * forgot to. Nothing here raises or lowers a schema ceiling — the aggregate
+ * gate measures `tools/list`, which a response-time constant cannot affect.
+ */
+export const MAX_RESPONSE_BYTES = 64_000;
+
+/**
+ * How many omitted field names the receipt enumerates before it reports only
+ * the count. Bounds the receipt so a payload with hundreds of keys cannot
+ * produce a receipt larger than the cap it is explaining.
+ */
+const CAP_LISTED_OMITTED_FIELDS = 24;
+
+/** A payload key that was NOT returned, and what it would have cost. */
+export interface OmittedField {
+  /** The payload key that is absent from this result. */
+  field: string;
+  /** Its serialized size in the uncapped payload, in bytes. */
+  bytes: number;
+}
+
+/**
+ * The machine-readable disclosure that rides with a capped result (#895).
+ *
+ * The rule this encodes is the one §6 is about: a value that could not be
+ * delivered is never coerced into something that looks like the real one. A
+ * payload that returns 200 of 5000 items with nothing said about the other 4800
+ * is not a small answer, it is a wrong one — the caller cannot tell a capped
+ * result from a complete one, and will report it as complete. So an absent
+ * field is always NAMED here, with its size, and the note says in words that
+ * the result is not the full payload.
+ */
+export interface ResponseCapReceipt {
+  /** Discriminator: this payload was capped, and this is why it is smaller. */
+  response_capped: true;
+  /** The ceiling that was applied (`MAX_RESPONSE_BYTES` unless overridden). */
+  cap_bytes: number;
+  /** Size of the payload as it would have been returned, in bytes. */
+  actual_bytes: number;
+  /** Payload keys that ARE present in this result. */
+  retained_fields: string[];
+  /** Payload keys that were NOT returned, largest first. */
+  omitted_fields: OmittedField[];
+  /** How many keys were omitted in total (>= `omitted_fields.length`). */
+  omitted_field_count: number;
+  /** What the caller can do about it. */
+  note: string;
+}
+
+function capNote(cap: number): string {
+  return `Machine-readable payload exceeded the ${cap}-byte response cap. `
+    + `The keys in response_cap.omitted_fields were NOT returned — this result is NOT the full payload. `
+    + `Narrow the query, lower max_results, page with offset, or use a narrower tool.`;
+}
+
+const arrayCapNote = (cap: number, dropped: number) =>
+  `Machine-readable payload exceeded the ${cap}-byte response cap; `
+  + `${dropped} of the entries above were NOT returned. `
+  + `Narrow the query, lower max_results, page with offset, or use a narrower tool.`;
+
+function serializePretty(value: unknown): string | undefined {
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    // A cyclic or otherwise unserializable payload is not a size problem, and
+    // JSON.stringify already threw wherever the tool meant to serialize it.
+    return undefined;
+  }
+}
+
+function prettyBytes(value: unknown): number {
+  const json = serializePretty(value);
+  return json === undefined ? Number.POSITIVE_INFINITY : Buffer.byteLength(json, 'utf8');
+}
+
+function tryParseJson(text: string): unknown {
+  if (!/^\s*[{[]/.test(text)) return undefined;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+}
+
+interface FieldEntry {
+  field: string;
+  value: unknown;
+  bytes: number;
+}
+
+function buildReceipt(
+  dropped: readonly FieldEntry[],
+  retained: readonly string[],
+  actualBytes: number,
+  cap: number,
+): ResponseCapReceipt {
+  return {
+    response_capped: true,
+    cap_bytes: cap,
+    actual_bytes: actualBytes,
+    retained_fields: [...retained],
+    omitted_fields: dropped.slice(0, CAP_LISTED_OMITTED_FIELDS)
+      .map((entry) => ({ field: entry.field, bytes: entry.bytes })),
+    omitted_field_count: dropped.length,
+    note: capNote(cap),
+  };
+}
+
+/**
+ * Choose the largest set of the payload's OWN top-level fields that fits
+ * `budget`, keeping the cheapest.
+ *
+ * Ascending-by-size is the design, not an optimisation. In a shaped result the
+ * cheap fields are exactly the ones that describe what happened — `truncated`,
+ * `returned`, `total`, `pagination`, `counts` — and the expensive one is the
+ * bulk: `groups`, `items`, a 500-stream page. Keeping smallest-first therefore
+ * spends the budget on bulk until it is gone and preserves the tool's own
+ * honest accounting, so a capped result still says how much there was.
+ *
+ * TOP LEVEL ONLY, deliberately. Deep trimming of arbitrary JSON is where
+ * honesty dies: you cannot drop half a nested object without inventing a value
+ * for the other half, which is the `name: string` arriving as `undefined` bug
+ * (#804) one field over. So a field is wholly present or wholly absent, and
+ * absent is reported rather than implied.
+ *
+ * `keep` is swept rather than computed greedily, because the receipt grows as
+ * more fields are omitted and shrinks as more are kept — the two move against
+ * each other, so the fit has to be measured for each candidate. The last
+ * `keep` that fits wins, i.e. the most information that fits.
+ */
+function selectFields(payload: JsonObject, budget: number, totalBytes: number, cap: number) {
+  const entries: FieldEntry[] = [];
+  for (const [field, value] of Object.entries(payload)) {
+    entries.push({
+      field,
+      value,
+      bytes: Buffer.byteLength(`${JSON.stringify(field)}:${serializePretty(value) ?? 'null'}`, 'utf8'),
+    });
+  }
+  entries.sort((a, b) => a.bytes - b.bytes || a.field.localeCompare(b.field));
+
+  let best: { kept: FieldEntry[]; receipt: ResponseCapReceipt; value: JsonObject } | undefined;
+  for (let keep = 0; keep <= entries.length; keep += 1) {
+    const kept = entries.slice(0, keep);
+    const dropped = entries.slice(keep);
+    const receipt = buildReceipt(dropped, kept.map((entry) => entry.field), totalBytes, cap);
+    const value: JsonObject = {
+      ...Object.fromEntries(kept.map((entry) => [entry.field, entry.value])),
+      ...(dropped.length > 0 ? { response_cap: receipt } : {}),
+    };
+    if (prettyBytes(value) <= budget) best = { kept, receipt, value };
+  }
+  return best;
+}
+
+/**
+ * Largest byte-fitting PREFIX of an array — dropping a suffix keeps order
+ * stable, so a caller paging by index still sees the same prefix.
+ *
+ * Found by binary search on the REAL serialization rather than by summing
+ * per-element costs. Pretty-printing re-indents every nested newline, so a
+ * per-element estimate is systematically low and produced an array that was
+ * still over the cap — the cap has to be measured, not modelled. The
+ * serialized size is monotonic in the prefix length, so the search is exact.
+ */
+function capArrayPrefix(items: readonly unknown[], cap: number): { kept: number; dropped: number } {
+  const fits = (count: number): boolean => prettyBytes(items.slice(0, count)) <= cap;
+  if (fits(items.length)) return { kept: items.length, dropped: 0 };
+  let low = 0;
+  let high = items.length;
+  while (low < high) {
+    const mid = Math.ceil((low + high) / 2);
+    if (fits(mid)) low = mid;
+    else high = mid - 1;
+  }
+  return { kept: low, dropped: items.length - low };
+}
+
+/**
+ * The ONE cap, applied to both machine-readable channels (#895).
+ *
+ * json-mode text is not capped separately from `structuredContent` because it
+ * is not a separate payload: `response_format: 'json'` serializes the same
+ * object into the text block, so capping the object caps both and the two
+ * cannot disagree about what was returned. When the text is a bare JSON array
+ * with no `structuredContent` beside it — the one case where there is no shared
+ * object — the array itself is capped and the disclosure follows the JSON in
+ * the same text block, because that block is the only channel available.
+ *
+ * Human prose is NOT touched. Prose is the path tools already cap themselves
+ * on with `max_results` plus a footer, and this is the backstop for the two
+ * machine-readable channels that had none.
+ *
+ * Returns the input result by identity when nothing is over the cap, so the
+ * common case allocates nothing.
+ */
+export function applyResponseCap(result: JsonObject, cap: number = MAX_RESPONSE_BYTES): JsonObject {
+  if (result.isError === true) return result;
+  const content = Array.isArray(result.content) ? result.content : undefined;
+  let textIndex = -1;
+  for (let index = 0; index < (content?.length ?? 0); index += 1) {
+    const block = content![index] as JsonObject | null;
+    if (block != null && typeof block === 'object' && block.type === 'text' && typeof block.text === 'string') {
+      textIndex = index;
+      break;
+    }
+  }
+  const text = textIndex >= 0 ? (content![textIndex] as JsonObject).text as string : undefined;
+  const structured = result.structuredContent != null
+    && typeof result.structuredContent === 'object'
+    && !Array.isArray(result.structuredContent)
+    ? result.structuredContent as JsonObject
+    : undefined;
+
+  let nextStructured: JsonObject | undefined;
+  let nextText: string | undefined;
+
+  if (structured !== undefined) {
+    const full = serializePretty(structured);
+    // Unserializable means the tool is already broken in a way size cannot fix.
+    if (full === undefined) return result;
+    const total = Buffer.byteLength(full, 'utf8');
+    if (total > cap) {
+      // Measured with the SAME serializer the json-mode text block uses, so
+      // "fits" means fits on both channels at once: the pretty text is never
+      // smaller than the compact wire form of the same object.
+      nextStructured = selectFields(structured, cap, total, cap)?.value;
+    }
+    if (nextStructured !== undefined && text !== undefined) {
+      const mirrored = tryParseJson(text);
+      // json-mode text mirrors structuredContent, so it is re-serialized from
+      // the CAPPED object. It needs no appended note: `response_cap` rides
+      // inside the object, so the disclosure is in the text too, and the text
+      // stays valid JSON.
+      if (mirrored != null && typeof mirrored === 'object' && !Array.isArray(mirrored)) {
+        nextText = serializePretty(nextStructured) ?? text;
+      }
+    }
+  } else if (text !== undefined) {
+    const parsed = tryParseJson(text);
+    if (Array.isArray(parsed) && Buffer.byteLength(serializePretty(parsed) ?? '', 'utf8') > cap) {
+      const { kept, dropped } = capArrayPrefix(parsed, cap);
+      if (dropped > 0) {
+        nextText = `${JSON.stringify(parsed.slice(0, kept), null, 2)}\n\n${arrayCapNote(cap, dropped)}`;
+      }
+    }
+  }
+
+  if (nextStructured === undefined && nextText === undefined) return result;
+  let nextContent: JsonObject[] | undefined = content === undefined ? undefined : [...content];
+  if (nextText !== undefined && textIndex >= 0 && nextContent !== undefined) {
+    nextContent[textIndex] = { ...(content![textIndex] as JsonObject), text: nextText };
+  }
+  return {
+    ...result,
+    ...(nextContent !== undefined ? { content: nextContent } : {}),
+    ...(nextStructured !== undefined ? { structuredContent: nextStructured } : {}),
+  };
+}
+
 const CONTINUATION_KEYS: Record<keyof TruncationCapabilities, string> = {
   maxResults: 'max_results',
   maxItems: 'max_items',
@@ -834,8 +1118,12 @@ export function installTruncationBoundary(server: object): TruncationBoundary {
   const shape = (toolName: string, argsValue: unknown, resultValue: unknown): unknown => {
     const capabilities = descriptors.get(toolName);
     if (!capabilities || resultValue == null || typeof resultValue !== 'object') return resultValue;
-    const result = resultValue as JsonObject;
-    if (result.isError === true) return resultValue;
+    // #895: cap BEFORE anything below reads the payload, so every return path
+    // out of this function — including the early ones that carry no truncation
+    // signal — leaves a bounded result. Reassigned rather than returned inline
+    // so the later `return resultValue` exits now hand back the capped object.
+    const result = applyResponseCap(resultValue as JsonObject);
+    if (result.isError === true) return result;
     const content = Array.isArray(result.content) ? result.content : undefined;
     const textBlock = content?.find((block) =>
       block != null && typeof block === 'object'
@@ -933,9 +1221,9 @@ export function installTruncationBoundary(server: object): TruncationBoundary {
     // truncation act here: an explicit marker, a tool-authored footer, a
     // canonical completeness line, or the boundary's own slice.
     const hasTruncationSignal = markedTruncated || footerMatch != null || completeness != null;
-    if (!payload || (!hasTruncationSignal && !itemsWereSliced)) return resultValue;
+    if (!payload || (!hasTruncationSignal && !itemsWereSliced)) return result;
     const metadata = metadataFromPayload(payload, args, capabilities, inferredRemaining, itemsWereSliced, cap, inputKeysByTool.get(toolName) ?? new Set());
-    if (!metadata) return resultValue;
+    if (!metadata) return result;
     const nextPayload: JsonObject = { ...payload, ...metadata };
     if (payload.truncated === true) nextPayload.truncated = true;
     if (capabilities.offset && metadata.remaining > 0 && numberField(nextPayload.next_offset) !== undefined) {
@@ -978,7 +1266,7 @@ export function installTruncationBoundary(server: object): TruncationBoundary {
     const itemsChanged = itemsWereSliced
       && Object.entries(nextPayload).some(([key, value]) => payload[key] !== value);
     const textChanged = nextText !== undefined && nextText !== text;
-    if (!metadataChanged && !itemsChanged && !textChanged) return resultValue;
+    if (!metadataChanged && !itemsChanged && !textChanged) return result;
     const nextResult: JsonObject = { ...result, structuredContent: nextPayload };
     if (nextText !== undefined) {
       nextResult.content = content!.map((block) =>

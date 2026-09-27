@@ -27,7 +27,12 @@
  *
  *   3. THE TWO AGREE WHERE THEY CAN. `spotify-mcp doctor`'s stdout is parsed
  *      back into rows and diffed against the tool's rows for the same config
- *      and token file.
+ *      and token file. "The same" has to mean the same CLOCK too: the `token`
+ *      row's wording embeds the remaining time, and two processes reading
+ *      their own clocks is a comparison that fails about once a minute on a
+ *      correctly-rendered row (#1263). Both surfaces are therefore pinned to
+ *      `FIXED_NOW` — this process directly, the CLI through a preloaded
+ *      `Date.now` — so a text difference means a renderer difference.
  *
  * What the two surfaces CANNOT agree on is stated rather than faked: the
  * registered-tool count, the request counters and the read-cache counters are
@@ -76,10 +81,66 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const FUTURE = Date.UTC(2099, 0, 1, 0, 0, 0);
 
 /**
- * The one field that stays clock-dependent even with a pinned expiry:
- * `seconds_remaining` is computed against the reporting process's `Date.now()`.
- * Normalised for cross-process text comparison and nothing else, so the ISO
- * timestamp and the expiry wording are still compared verbatim.
+ * The one clock BOTH surfaces are made to read, in seconds before `FUTURE`.
+ *
+ * Pinning the expiry was not enough to pin the expiry WORDING, and that is
+ * what made `the CLI stdout contains the shared renderer's own text` a
+ * once-a-minute coin flip rather than a test (#1263, seen on Node 22 and not
+ * on Node 24 — the Node version was a coincidence, the clock was the cause).
+ *
+ * The `token` row's summary carries the remaining time twice — the compat
+ * clause and the `formatTtl` clause — and both come from
+ * `Math.floor(secLeft / 60)`. That is constant across a whole wall-clock
+ * minute and drops by one at the top of the next, so a tool rendered at
+ * 12:00:59 and a CLI spawned at 12:01:00 disagree by a single digit in
+ * `3h 25m` and a byte-exact comparison of a correctly-rendered row fails.
+ * `normaliseClockFields` could not save it: it normalises `seconds_remaining`,
+ * which is only in the DETAIL line, while the minute value the summary repeats
+ * is in the line under test.
+ *
+ * 12_345 s before expiry: comfortably inside the `token valid` branch (so the
+ * branch under test is unchanged), and deliberately NOT a whole number of
+ * hours, so the hour AND the minutes remainder are both non-zero and a summary
+ * that dropped either would not match.
+ */
+const FIXED_NOW = FUTURE - 12_345_000;
+
+/** The env var that carries the pinned clock into the CLI subprocess. */
+const FIXED_NOW_ENV = 'SPOTIFY_MCP_TEST_NOW';
+
+/**
+ * Preload for the CLI subprocess. Written into the fixture's `mkdtemp` home
+ * (never a shared path) and passed as a second `--import`, after `tsx` so the
+ * TypeScript loader is already registered and the freeze lands before
+ * `src/index.ts` runs a single check.
+ *
+ * Only `Date.now` is replaced. Nothing in the doctor path gates on
+ * `Date.now()` as a loop deadline — the client's backoff is real timers via
+ * `sleep()` — so a frozen clock costs the subprocess nothing, and it makes the
+ * two surfaces agree about what time it is instead of hoping they do.
+ */
+const CLOCK_PRELOAD = 'Date.now = () => Number(process.env.SPOTIFY_MCP_TEST_NOW);\n';
+
+/**
+ * The TTL wording the `token` row carries when rendered at `now`.
+ *
+ * Written out here rather than imported from `doctortool.ts`: the assertion it
+ * feeds is about the renderer, so deriving the expected value from the
+ * formatter that produces it would only prove the formatter agrees with
+ * itself. This is the spec of the wording, not a second call to the code.
+ */
+function expectedTokenTtl(now: number): string {
+  const secLeft = Math.round((FUTURE - now) / 1000);
+  const mins = Math.floor(secLeft / 60);
+  const hours = Math.floor(mins / 60);
+  return `in ${hours}h ${mins % 60}m, valid (~${hours}h ${mins % 60}m left)`;
+}
+
+/**
+ * The one field that stays clock-dependent even with a pinned expiry AND a
+ * pinned clock: `seconds_remaining` is rendered from the same read, so this is
+ * belt-and-braces. The ISO timestamp and the expiry wording are compared
+ * verbatim, which is the point of pinning the clock in the first place.
  */
 const normaliseClockFields = (text: string): string =>
   text.replace(/seconds_remaining=-?\d+/g, 'seconds_remaining=<n>');
@@ -184,12 +245,28 @@ interface TokenFile {
   path: string;
   home: string;
   historyDir: string;
+  clock: string;
 }
 
 let fixture: TokenFile | null = null;
 let savedHome: string | undefined;
 let savedUserProfile: string | undefined;
 let savedEnvKeys: string[] = [];
+const realNow = Date.now;
+
+/**
+ * Pin THIS process's clock to `FIXED_NOW`, so the tool half of every
+ * cross-process comparison reads the same instant the CLI half will.
+ * Unpinned in `afterEach` alongside the fixture, so a test that never called
+ * `useTokenFile` cannot inherit a frozen clock from a neighbour.
+ */
+function pinClock(at: number): void {
+  Date.now = () => at;
+}
+
+function unpinClock(): void {
+  Date.now = realNow;
+}
 
 /**
  * Write a token file and align this process's HOME with the one the CLI
@@ -198,21 +275,29 @@ let savedEnvKeys: string[] = [];
  * explicitly as well — the history path is `homedir()`-derived, and a test
  * that depends on the machine's home directory is a test that passes for the
  * wrong reason somewhere else.
+ *
+ * The clock is pinned here too, and the preload for the subprocess is written
+ * beside the token file, because a token-file fixture that leaves the two
+ * surfaces reading their own clocks is a fixture that can fail for a reason
+ * that has nothing to do with either surface.
  */
 function useTokenFile(tokens: Record<string, unknown>): TokenFile {
   const home = mkdtempSync(join(tmpdir(), 'doctor-unify-'));
   const path = join(home, 'tokens.json');
   writeFileSync(path, JSON.stringify(tokens), 'utf8');
   const historyDir = join(home, 'history');
+  const clock = join(home, 'clock.mjs');
+  writeFileSync(clock, CLOCK_PRELOAD, 'utf8');
   process.env.HOME = home;
   process.env.USERPROFILE = home;
   process.env.SPOTIFY_MCP_HISTORY_DIR = historyDir;
   initConfig({ SPOTIFY_MCP_TOKEN_FILE: path, SPOTIFY_MCP_HISTORY_DIR: historyDir });
-  fixture = { path, home, historyDir };
+  pinClock(FIXED_NOW);
+  fixture = { path, home, historyDir, clock };
   return fixture;
 }
 
-/** Subprocess env: the same token file, home and history dir as this process. */
+/** Subprocess env: the same token file, home, history dir and clock as this process. */
 function cliEnv(extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   assert.ok(fixture, 'a token-file fixture must be installed first');
   return {
@@ -221,6 +306,7 @@ function cliEnv(extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
     USERPROFILE: fixture.home,
     SPOTIFY_MCP_TOKEN_FILE: fixture.path,
     SPOTIFY_MCP_HISTORY_DIR: fixture.historyDir,
+    [FIXED_NOW_ENV]: String(FIXED_NOW),
     SPOTIFY_CLIENT_ID: 'test-client-id',
     ...extra,
   };
@@ -233,12 +319,20 @@ function cliEnv(extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
  * CLI reverted to its own inline implementation, which is the bug #581 is.
  */
 function runDoctorCli(extra: NodeJS.ProcessEnv = {}): { stdout: string; stderr: string; status: number | null } {
-  const result = spawnSync(process.execPath, ['--import', 'tsx', 'src/index.ts', 'doctor'], {
-    cwd: ROOT,
-    encoding: 'utf8',
-    timeout: 180_000,
-    env: cliEnv(extra),
-  });
+  assert.ok(fixture, 'a token-file fixture must be installed first');
+  const result = spawnSync(
+    process.execPath,
+    // `tsx` first so the TypeScript loader is registered before the freeze
+    // lands; `--import` modules are evaluated in order, and both run before
+    // the entry point.
+    ['--import', 'tsx', '--import', fixture.clock, 'src/index.ts', 'doctor'],
+    {
+      cwd: ROOT,
+      encoding: 'utf8',
+      timeout: 180_000,
+      env: cliEnv(extra),
+    },
+  );
   return { stdout: result.stdout ?? '', stderr: result.stderr ?? '', status: result.status };
 }
 
@@ -313,6 +407,9 @@ afterEach(() => {
     rmSync(fixture.home, { recursive: true, force: true });
     fixture = null;
   }
+  // Before anything else: a clock left frozen by a test that did not reach
+  // its own cleanup would silently retime every later test in this file.
+  unpinClock();
   for (const key of savedEnvKeys) delete process.env[key];
   if (savedHome === undefined) delete process.env.HOME;
   else process.env.HOME = savedHome;
@@ -508,6 +605,69 @@ describe('#581 — the CLI and the tool, for one config and one token file', () 
       compared += 1;
     }
     assert.ok(compared >= 4, `expected several shared rows to compare, got ${compared}`);
+  });
+
+  /**
+   * The control for the test above, and the regression test for #1263.
+   *
+   * `the CLI stdout contains the shared renderer's own text` asserts a
+   * byte-exact match between two processes. That is only a statement about the
+   * RENDERER if both processes read the same clock — and they did not. The
+   * `token` row's summary repeats the remaining time twice, from
+   * `Math.floor(secLeft / 60)`, which is flat across a wall-clock minute and
+   * decrements at the top of the next. A tool rendered at 12:00:59 and a CLI
+   * spawned at 12:01:00 therefore disagreed by one digit in `3h 25m`, and the
+   * comparison above failed on a correct row, from a correct renderer, about
+   * nothing the doctor is supposed to be reporting.
+   *
+   * It could not be caught by reading the suite: it passed on Node 24 and
+   * failed on Node 22 in the same CI run, which is what sent the first look at
+   * a Node-version difference in `Intl`/`replaceAll`/`util.inspect`. None of
+   * those are on this path — `renderDoctorProse` is a `map` and a `join`. The
+   * Node version was a coincidence; the clock was the cause.
+   *
+   * So the invariant is stated directly, and stated so that it fails EVERY
+   * time the pin is gone rather than once a minute: the expected wording is
+   * computed from `FIXED_NOW`, which is years away from any wall clock, so an
+   * unpinned surface cannot produce it by luck.
+   */
+  it('both surfaces time-stamp the token row from the one pinned clock, not their own', async () => {
+    useTokenFile({ access_token: 'at', refresh_token: 'rt', expires_at: FUTURE, scope: PARTIAL_GRANT });
+
+    const { server, invoke } = fakeServer(3);
+    registerDoctorTool(server, stubClient());
+    const tool = await invoke();
+    const cli = runDoctorCli();
+
+    // The control: the pin names an instant that is inside the `token valid`
+    // branch and is neither a whole hour nor a whole minute, so a row that
+    // reported the wrong unit, or dropped the minutes remainder, cannot match.
+    const expectedTtl = expectedTokenTtl(FIXED_NOW);
+    assert.equal(expectedTtl, 'in 3h 25m, valid (~3h 25m left)', 'the pinned clock moved');
+
+    const toolToken = (rowMap(parseRenderedRows(tool.text)).get('token') ?? [])[0];
+    const cliToken = (rowMap(parseRenderedRows(cli.stdout)).get('token') ?? [])[0];
+    assert.ok(toolToken, `the tool emitted no [token] row:\n${tool.text}`);
+    assert.ok(cliToken, `the CLI emitted no [token] row:\n${cli.stdout}`);
+
+    // Each surface, on its own, must be reporting the PINNED clock.
+    assert.ok(
+      toolToken.summary.includes(expectedTtl),
+      `the tool timed the token row from its own clock, not the fixture's: expected "${expectedTtl}" in ${JSON.stringify(toolToken.summary)}`,
+    );
+    assert.ok(
+      cliToken.summary.includes(expectedTtl),
+      `the CLI timed the token row from its own clock, not the fixture's: expected "${expectedTtl}" in ${JSON.stringify(cliToken.summary)}`,
+    );
+
+    // And therefore the byte-exact comparison the previous test makes is
+    // reachable: same clock in, same text out — with no normalisation at all,
+    // which is the property #1263 was missing.
+    assert.equal(
+      cliToken.summary,
+      toolToken.summary,
+      'the two surfaces produced different token-row text from the same pinned clock',
+    );
   });
 
   it('emits the same non-process-local rows, in the same order, through both surfaces', async () => {
