@@ -474,9 +474,13 @@ describe('tool surface: budget', () => {
     // `Buffer.byteLength(..., 'utf8')`, not `JSON.stringify(tools).length`:
     // the startup gate in src/index.ts budgets UTF-8 bytes via
     // `collectAggregateSurfaceMeasurement`, and `.length` counts UTF-16 code
-    // units. On this surface that undercounts by ~1.5KB, which is more than
-    // the headroom the ceiling has left, so the code-unit measure let a change
-    // pass here that would abort the server (#662).
+    // units. On a surface whose descriptions carry non-ASCII text the code-unit
+    // measure is strictly smaller, so a budget written in it understates what
+    // the host pays — and the two sit close enough that nothing fails while
+    // they disagree, which is what let a change pass here that aborted the
+    // server (#662). How large the gap is today, and how much headroom is
+    // left, is not written here: both move with the surface, and the
+    // assertions below are what re-derive them.
     const bytes = Buffer.byteLength(JSON.stringify(tools), 'utf8');
     assert.ok(
       tools.length <= DEFAULT_MAX_TOOLS,
