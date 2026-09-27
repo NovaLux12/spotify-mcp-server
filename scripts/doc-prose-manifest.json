@@ -2005,11 +2005,11 @@
         "label": "Inputs: | Field | Type | Required | Description | |---|-…"
       },
       {
-        "hash": "2faa3b67da2098a6",
-        "label": "setvolume Set playback volume."
+        "hash": "66e3fb1c786c4502",
+        "label": "setvolume Set playback volume on one device, on a select…"
       },
       {
-        "hash": "6768c82e14144549",
+        "hash": "fc75371744054907",
         "label": "Inputs: | Field | Type | Required | Description | |---|-…"
       },
       {
@@ -2089,11 +2089,11 @@
         "label": "Returns: array of devices with id, name, type (computer/…"
       },
       {
-        "hash": "2135657c32d98771",
-        "label": "transferplayback Move playback to a different device."
+        "hash": "6ddc8b5b4f1387f9",
+        "label": "transferplayback Move playback to a different device, na…"
       },
       {
-        "hash": "b4bd14dafa27f92a",
+        "hash": "9c1e3ac2a2fd9443",
         "label": "Inputs: | Field | Type | Required | Description | |---|-…"
       },
       {
@@ -5499,6 +5499,20 @@
     },
     {
       "file": "SPEC.md",
+      "hash": "2135657c32d98771",
+      "label": "transferplayback Move playback to a different device.",
+      "date": "2026-09-27",
+      "reason": "Reworded by #848: set_volume and transfer_playback became the two union-schema tools for the collapsed transfer and volume families, so each tool's SPEC.md summary line and Inputs table now describes the wider argument space rather than the pre-collapse one."
+    },
+    {
+      "file": "SPEC.md",
+      "hash": "2faa3b67da2098a6",
+      "label": "setvolume Set playback volume.",
+      "date": "2026-09-27",
+      "reason": "Reworded by #848: set_volume and transfer_playback became the two union-schema tools for the collapsed transfer and volume families, so each tool's SPEC.md summary line and Inputs table now describes the wider argument space rather than the pre-collapse one."
+    },
+    {
+      "file": "SPEC.md",
       "hash": "32f6226ccd12e7a5",
       "label": "Before #1401 the server routed around this by depending …",
       "date": "2026-09-27",
@@ -5531,6 +5545,13 @@
       "label": "The affected tools are playlistfliporder, playlistresequ…",
       "date": "2026-09-27",
       "reason": "rewritten by #1388 to disclose playlist_balance's bounded read; both paragraphs extended in place and a new disclosure section added"
+    },
+    {
+      "file": "SPEC.md",
+      "hash": "6768c82e14144549",
+      "label": "Inputs: | Field | Type | Required | Description | |---|-…",
+      "date": "2026-09-27",
+      "reason": "Reworded by #848: set_volume and transfer_playback became the two union-schema tools for the collapsed transfer and volume families, so each tool's SPEC.md summary line and Inputs table now describes the wider argument space rather than the pre-collapse one."
     },
     {
       "file": "SPEC.md",
@@ -5573,6 +5594,13 @@
       "label": "Canonical tools are statsfmtasteprofile, statsfmartistaf…",
       "date": "2026-09-27",
       "reason": "reworded by #889/#607/#908: the curated-default surface, the stats.fm opt-in and the retired taste_* aliases changed these paragraphs; the prose is present in its new form"
+    },
+    {
+      "file": "SPEC.md",
+      "hash": "b4bd14dafa27f92a",
+      "label": "Inputs: | Field | Type | Required | Description | |---|-…",
+      "date": "2026-09-27",
+      "reason": "Reworded by #848: set_volume and transfer_playback became the two union-schema tools for the collapsed transfer and volume families, so each tool's SPEC.md summary line and Inputs table now describes the wider argument space rather than the pre-collapse one."
     },
     {
       "file": "SPEC.md",
@@ -5688,8 +5716,8 @@
     }
   ],
   "provenance": {
-    "head": "6a340a35a9aa5e273efd392609ca7aaed429ee32",
-    "upstream": "6a340a35a9aa5e273efd392609ca7aaed429ee32",
+    "head": "479d11f6f18e2027ac593a24ab2a5f1eb5cdcb55",
+    "upstream": "479d11f6f18e2027ac593a24ab2a5f1eb5cdcb55",
     "behind": false
   }
 }
