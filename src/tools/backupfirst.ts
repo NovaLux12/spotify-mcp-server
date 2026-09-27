@@ -23,34 +23,60 @@ class BackupFirstError extends Error {
   }
 }
 
+/**
+ * Per-collection row counts in the pre-flight file's `_meta`.
+ *
+ * A `type` rather than an `interface` so it is assignable to the wire's
+ * `Record<string, unknown>` without a cast (#1343). Every field is a real
+ * count of rows that were read: `collectSnapshot` returns an array for each
+ * collection even when a walk was truncated, and truncation is reported
+ * separately in the file's own `collections` status. A count is never a
+ * stand-in for a read that did not happen (#803).
+ */
+type PreflightCounts = {
+  liked_tracks: number;
+  saved_albums: number;
+  saved_shows: number;
+  saved_episodes: number;
+  saved_audiobooks: number;
+  followed_artists: number;
+  playlists: number;
+  playlist_items: number;
+};
+
 /** Create a pre-flight snapshot and return its path + counts. Throws on failure. */
 async function createPreflightSnapshot(
   client: SpotifyClient,
   opts?: { notes?: string },
-): Promise<{ file: string; counts: Record<string, unknown>; bytes: number }> {
+): Promise<{ file: string; counts: PreflightCounts; bytes: number }> {
   const cap = getConfig().fetchAllCap;
+  // `SnapshotBody` already declares all seven collections as arrays, so the
+  // lengths are readable without laundering the snapshot through a cast. The
+  // previous `?? 0` fallbacks were guarding a shape the type already
+  // guaranteed, and they had the side effect of publishing a confident 0 for
+  // any collection that ever came back unreadable (#803).
   const collected = await collectSnapshot(client, cap);
   const created = new Date().toISOString();
+  const counts: PreflightCounts = {
+    liked_tracks: collected.liked_tracks.length,
+    saved_albums: collected.saved_albums.length,
+    saved_shows: collected.saved_shows.length,
+    saved_episodes: collected.saved_episodes.length,
+    saved_audiobooks: collected.saved_audiobooks.length,
+    followed_artists: collected.followed_artists.length,
+    playlists: collected.playlists.length,
+    playlist_items: 0,
+  };
   const snapshot = {
     _meta: {
       created,
       ...(opts?.notes ? { notes: opts.notes } : {}),
-      counts: {
-        liked_tracks: (collected as unknown as { liked_tracks: unknown[] }).liked_tracks?.length ?? 0,
-        saved_albums: (collected as unknown as { saved_albums: unknown[] }).saved_albums?.length ?? 0,
-        saved_shows: (collected as unknown as { saved_shows: unknown[] }).saved_shows?.length ?? 0,
-        saved_episodes: (collected as unknown as { saved_episodes: unknown[] }).saved_episodes?.length ?? 0,
-        saved_audiobooks: (collected as unknown as { saved_audiobooks: unknown[] }).saved_audiobooks?.length ?? 0,
-        followed_artists: (collected as unknown as { followed_artists: unknown[] }).followed_artists?.length ?? 0,
-        playlists: (collected as unknown as { playlists: unknown[] }).playlists?.length ?? 0,
-        playlist_items: 0,
-      },
+      counts,
     },
     ...collected,
   };
   // Abort if snapshot is empty when it shouldn't be
-  const c = snapshot._meta.counts as Record<string, number>;
-  const totalCaptured = (c.playlists ?? 0) + (c.liked_tracks ?? 0) + (c.followed_artists ?? 0);
+  const totalCaptured = counts.playlists + counts.liked_tracks + counts.followed_artists;
   if (totalCaptured === 0) {
     // Still write it but caller should treat as warning
   }
@@ -61,7 +87,7 @@ async function createPreflightSnapshot(
   const file = join(dir, `backup-${dateStamp}-${seq}.json`);
   const body = `${JSON.stringify(snapshot, null, 2)}\n`;
   await writeFile(file, body, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
-  return { file, counts: c as unknown as Record<string, unknown>, bytes: Buffer.byteLength(body) };
+  return { file, counts, bytes: Buffer.byteLength(body) };
 }
 
 export function registerBackupFirstTools(server: McpServer, client: SpotifyClient): void {

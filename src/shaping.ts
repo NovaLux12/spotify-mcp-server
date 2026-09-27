@@ -255,6 +255,98 @@ export const DiscoveryResponseFormat = ResponseFormat.describe(
 );
 
 // ---------------------------------------------------------------------------
+// The structuredContent trust boundary (#1343)
+//
+// `structuredContent` is `Record<string, unknown>` to MCP, so every tool that
+// fills it is, at some point, standing in front of untrusted JSON and deciding
+// what type to call it. Historically that decision was made by a cast —
+// `payload as unknown as AnalysisResult` — and a cast is not a check, it is a
+// decision to stop checking. The failure mode is not a compile error: it is a
+// value that is confidently wrong at runtime, because the compiler never saw
+// the payload. That is the same shape as the shipped bugs in `AGENTS.md` §6:
+// a correctly named field carrying a value that was never read (#803), and a
+// field whose declared type the API can contradict, arriving as `undefined`
+// (#804).
+//
+// So this boundary is typed the way the rest of the repo already types its
+// untrusted reads, and it fails **closed** in the same spirit as
+// `classifyToolAnnotations` and `requiredConfirmationRefusal()`: `readString`
+// and `readNumber` check the runtime type and return `undefined` when it does
+// not hold, `asRecord` narrows to a record or nothing, and `structuredContent`
+// is the one way a shaped payload enters the wire. An absent or wrongly-typed
+// field is *unanswered*, which is not the same as `false` or `0`.
+//
+// What this deliberately does NOT do is `toStructuredContent<T>()`. A helper
+// that names `T` once and returns a cast of `unknown` to it changes nothing
+// about the check — it relocates the unverified assertion behind a friendly
+// name and makes the trust decision *harder* to find, which is the opposite of
+// this issue's goal. The value must earn its type at runtime; where it cannot,
+// the honest representation is `T | undefined`, and the caller says "unknown"
+// rather than publishing a number nobody read.
+// ---------------------------------------------------------------------------
+
+/**
+ * A string field read through a dotted path, or `undefined`.
+ *
+ * `undefined` means *unanswered*: the field was absent, or it was not a
+ * string. Both are the caller's to disclose — never a substitute value.
+ */
+export function readString(source: unknown, path: string): string | undefined {
+  const value = readPath(source, path);
+  return typeof value === 'string' ? value : undefined;
+}
+
+/**
+ * A number, or `undefined` when the field is absent or is not a number.
+ *
+ * Deliberately not `Number(v) ?? 0`: a length Spotify did not state is not
+ * zero, and a count that could not be read is not an empty collection. See
+ * `playlistItemTotal` in `types/spotify.ts` for the same rule in the playlist
+ * path.
+ */
+export function readNumber(source: unknown, path: string): number | undefined {
+  const value = readPath(source, path);
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+/**
+ * Narrow an unknown value to a record, or `undefined` when it is not one.
+ *
+ * Arrays and `null` are rejected: both are objects to `typeof`, and admitting
+ * them here is how a list length turns into an object property read.
+ */
+export function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+/** Walk a dotted path off an unknown value; `undefined` at any step. */
+function readPath(source: unknown, path: string): unknown {
+  let cur: unknown = source;
+  for (const part of path.split('.')) {
+    const rec = asRecord(cur);
+    if (rec === undefined) return undefined;
+    cur = rec[part];
+  }
+  return cur;
+}
+
+/**
+ * The single place a shaped payload enters the MCP result.
+ *
+ * Accepts a plain object of any declared shape — including a `type` alias or a
+ * union of them — so no call site needs `payload as unknown as
+ * Record<string, unknown>` to satisfy the wire type. An `interface` still will
+ * not satisfy it (interfaces have no implicit index signature), which is the
+ * point: that gap is what made the cast look necessary, and declaring the
+ * payload as a `type` is the honest way to close it.
+ */
+export function structuredContent<T extends object>(payload: T): Record<string, unknown> {
+  return payload as Record<string, unknown>;
+}
+
+// ---------------------------------------------------------------------------
 // Canonical playlist set-operation inputs (#912)
 // ---------------------------------------------------------------------------
 

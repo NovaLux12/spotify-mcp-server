@@ -22,6 +22,7 @@ import {
   resolveMaxResults,
   completenessFooter,
   truncateItems,
+  structuredContent,
 } from '../shaping.js';
 import type { ResponseFormatValue } from '../shaping.js';
 import { fetchAlbumsPerId, PER_ID_FANOUT_WIDTH } from './catalog.js';
@@ -89,7 +90,16 @@ interface OrphanedSingleFinding {
   reason: string;
 }
 
-interface AnalysisResult {
+/**
+ * What a completed run publishes.
+ *
+ * Declared as a `type`, not an `interface`, and that is load-bearing: an
+ * `interface` has no implicit index signature, so it is not assignable to the
+ * wire's `Record<string, unknown>` (#1343). That gap is why this used to need
+ * `payload as unknown as Record<string, unknown>` on the way out — the cast was
+ * covering up a declaration choice, not a shape the compiler had checked.
+ */
+type AnalysisResult = {
   /** Always true on a completed run. */
   ok: true;
   scanned: {
@@ -129,17 +139,58 @@ interface AnalysisResult {
   groups: AlbumGroup[];
   near_complete: NearCompleteFinding[];
   orphaned_singles: OrphanedSingleFinding[];
-}
+};
+
+/**
+ * The quota-cooldown refusal (#1343).
+ *
+ * This payload was previously cast to `AnalysisResult` to reach the wire, and
+ * the cast is what let the contradiction stand: `AnalysisResult.ok` is the
+ * literal type `true`, and this object says `ok: false`. The compiler was
+ * never allowed to notice. It is now a declared variant of the union, so
+ * `ok: false` is a value the type admits — which is the honest answer,
+ * because the cooldown really does return `ok: false` and a host reading
+ * `ok === true` to mean "the scan completed" must be able to see it.
+ */
+type CooldownResult = {
+  ok: false;
+  cooldown: true;
+  wait_sec: number;
+  requests_made: 0;
+  requests_planned: number;
+};
+
+/**
+ * `dry_run` cost preview (#763). Zero API requests, so it reports neither
+ * `scanned` nor `counts` — the fields a real run fills in are genuinely
+ * absent here rather than zero, and a reader that assumed otherwise would be
+ * reading a scan that never happened (#803).
+ */
+type DryRunResult = {
+  ok: true;
+  dry_run: true;
+  requests_made: 0;
+  album_lookup_cap: number;
+  album_lookup_shrunk: boolean;
+  request_mode: 'per_id';
+  fanout_width: number;
+  track_walk_requests: number;
+  estimated_album_requests: number;
+  estimated_requests: number;
+};
+
+/** Every payload `library_hygiene` can put on the wire. */
+type LibraryHygieneResult = AnalysisResult | CooldownResult | DryRunResult;
 
 type ToolOut = {
   content: Array<{ type: 'text'; text: string }>;
   structuredContent?: Record<string, unknown>;
 };
 
-function shapeResult(rf: ResponseFormatValue, prose: string, payload: AnalysisResult): ToolOut {
+function shapeResult(rf: ResponseFormatValue, prose: string, payload: LibraryHygieneResult): ToolOut {
   return {
     content: [{ type: 'text', text: rf === 'json' ? JSON.stringify(payload, null, 2) : prose }],
-    structuredContent: payload as unknown as Record<string, unknown>,
+    structuredContent: structuredContent(payload),
   };
 }
 
@@ -465,7 +516,7 @@ const DryRunScan = z
   .describe('Preview cost only.');
 
 /** #763: cost preview for `library_hygiene` — issues zero API requests. */
-function renderDryRun(client: SpotifyClient): { prose: string; payload: Record<string, unknown> } {
+function renderDryRun(client: SpotifyClient): { prose: string; payload: DryRunResult } {
   const fetchAllCap = getConfig().fetchAllCap;
   const lookupCap = Math.min(ALBUM_LOOKUP_CAP, quotaWindowRemaining(client));
   const walkPages = Math.max(1, Math.ceil(fetchAllCap / TRACK_PAGE_LIMIT));
@@ -516,7 +567,7 @@ export function registerLibraryHygieneTools(server: McpServer, client: SpotifyCl
       const rf = args.response_format;
       if (args.dry_run) {
         const preview = renderDryRun(client);
-        return shapeResult(rf, preview.prose, preview.payload as unknown as AnalysisResult);
+        return shapeResult(rf, preview.prose, preview.payload);
       }
       const gate = quotaPreflight(client);
       if (gate.blocked) {
@@ -526,7 +577,7 @@ export function registerLibraryHygieneTools(server: McpServer, client: SpotifyCl
           wait_sec: gate.waitSec,
           requests_made: 0,
           requests_planned: ALBUM_LOOKUP_CAP,
-        } as unknown as AnalysisResult);
+        });
       }
       const result = await analyze(client);
       const maxResults = resolveMaxResults(args.max_results, getConfig().maxItems);

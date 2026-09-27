@@ -28,6 +28,8 @@ import {
   batchSummary,
   withPlaylistInputMetadata,
   withPlaylistInputNote,
+  readString,
+  asRecord,
   type ResponseFormatValue,
 } from '../shaping.js';
 import { CHUNK_CAPS, capFor, chunk } from '../chunk.js';
@@ -507,28 +509,39 @@ export function registerExhaustMiscTools(server: McpServer, client: SpotifyClien
     },
     async (args) => {
       const rf = args.response_format as ResponseFormatValue | undefined;
-      const items = await client.getAllPages<PlaylistItemObject & { added_at: string; added_by: { id: string } | null }>(
+      const items = await client.getAllPages<PlaylistItemObject & { added_by?: { id: string } }>(
         `/playlists/${encodeURIComponent(args.playlist_id)}/items`,
         { limit: '50' },
       );
+      // #1343: `added_at` was laundered through a cast per comparison and
+      // defaulted to `''`, which made an unreadable date sort as the OLDEST
+      // row in an `added_asc` listing — a value the API never stated,
+      // presented as a fact about when the track was added (#803). Read it
+      // through the boundary reader, and sort rows whose date could not be
+      // read last in both directions, so "unknown" is visibly not "oldest".
+      const dateOf = (row: (typeof items)[number]): string | undefined =>
+        readString(row, 'added_at');
       const sorted = [...items].sort((a, b) => {
-        const av = (a as unknown as { added_at?: string }).added_at ?? '';
-        const bv = (b as unknown as { added_at?: string }).added_at ?? '';
+        const av = dateOf(a);
+        const bv = dateOf(b);
+        if (av === undefined && bv === undefined) return 0;
+        if (av === undefined) return 1;
+        if (bv === undefined) return -1;
         return args.sort === 'added_desc' ? bv.localeCompare(av) : av.localeCompare(bv);
       });
       const t = truncateItems(sorted, cap(args));
       const pagination = paginationInfo({ total: sorted.length, returned: t.items.length });
       const mapped = t.items.map((row) => {
-        const item = row.item as unknown as Record<string, unknown> | null;
+        const item = asRecord(row.item);
         return {
-          name: item && typeof item.name === 'string' ? (item.name as string) : 'unknown',
-          uri: item && typeof item.uri === 'string' ? (item.uri as string) : null,
-          added_at: (row as unknown as { added_at?: string }).added_at ?? null,
-          added_by: (row as unknown as { added_by?: { id: string } }).added_by?.id ?? null,
+          name: readString(item, 'name') ?? 'unknown',
+          uri: readString(item, 'uri') ?? null,
+          added_at: dateOf(row) ?? null,
+          added_by: readString(row, 'added_by.id') ?? null,
         };
       });
       const structured: Record<string, unknown> = listStructuredContent(
-        mapped as unknown as Record<string, unknown>[],
+        mapped,
         pagination,
         { playlist_id: args.playlist_id },
       );

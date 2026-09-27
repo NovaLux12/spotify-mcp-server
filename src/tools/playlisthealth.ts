@@ -233,8 +233,12 @@ export function registerPlaylistHealthTools(server: McpServer, client: SpotifyCl
       const items = await client.getAllPages<PlaylistItemObject & { added_by?: { id: string } }>(`/playlists/${encId}/items`, { limit: '100' }, { maxItems: getConfig().fetchAllCap });
       const byUser = new Map<string, { count: number; first: string | null; last: string | null }>();
       for (const row of items) {
-        const addedBy = (row as unknown as Record<string, unknown>).added_by as { id?: string } | undefined;
-        const uid = addedBy?.id ?? 'unknown';
+        // #1343: this was a double cast — `row` to `Record<string, unknown>` and
+        // then straight back to a declared shape — for a field the generic
+        // already types as `added_by?: { id: string }`. A row added by nobody
+        // reads as `unknown` here, which is a display label, not a count; the
+        // per-contributor tally is unaffected.
+        const uid = row.added_by?.id ?? 'unknown';
         const ts: string | null = typeof row.added_at === 'string' ? row.added_at : null;
         const entry = byUser.get(uid) ?? { count: 0, first: ts, last: ts };
         entry.count += 1;

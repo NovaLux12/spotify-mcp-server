@@ -35,6 +35,7 @@ import {
   truncateItems,
   describeDryRun,
   DryRunScan,
+  readString,
 } from '../shaping.js';
 import type { ResponseFormatValue } from '../shaping.js';
 import type { PlaybackState } from '../types/spotify.js';
@@ -378,7 +379,7 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
           if (rd && Date.parse(rd) >= since) freshAlbums.push({ artist: a.name, album: alb.name ?? 'unknown', release_date: rd });
         }
       }
-      const shows = await client.getAllPages<{ show?: { name?: string; total_episodes?: number } }>('/me/shows', { limit: '50' }, { maxItems: args.max_shows });
+      const shows = await client.getAllPages<{ show?: { id?: string; name?: string; total_episodes?: number } }>('/me/shows', { limit: '50' }, { maxItems: args.max_shows });
       const newEpisodes: Array<{ show: string; episode: string; released: string }> = [];
       const backlog: Array<{ show: string; total_episodes: number | null }> = [];
       let skippedShows = 0;
@@ -386,10 +387,19 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
         const show = row.show;
         if (!show) continue;
         backlog.push({ show: show.name ?? 'unknown', total_episodes: show.total_episodes ?? null });
+        // #1343: the show id used to be laundered through a cast and
+        // defaulted to `''`, which built the request path `/shows//episodes` —
+        // a URL that is not any show, so the read either 404s or returns
+        // something the briefing then attributes to this show. A show whose id
+        // could not be read is counted as unread and skipped, like a throttled
+        // one, rather than asked about through a path nobody can have meant
+        // (#803: fall back to a value that cannot itself be wrong).
+        const showId = readString(show, 'id');
+        if (showId === undefined) { skippedShows++; continue; }
         let ep: { items?: Array<{ name?: string; release_date?: string; resume_point?: { fully_played?: boolean } }> } | null;
         try {
           ep = await client.get<{ items?: Array<{ name?: string; release_date?: string; resume_point?: { fully_played?: boolean } }> }>(
-            `/shows/${encodeURIComponent(String((show as unknown as { id?: string }).id ?? ''))}/episodes`,
+            `/shows/${encodeURIComponent(showId)}/episodes`,
             { limit: '10' },
           );
         } catch (e) {

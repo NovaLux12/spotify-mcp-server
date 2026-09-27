@@ -41,6 +41,7 @@ import {
   PlaybackDryRun,
   truncateItems,
   describeDryRun,
+  readString,
 } from '../shaping.js';
 import type { ResponseFormatValue } from '../shaping.js';
 import { detectSessions, loadPlaybackExt } from './playbackext.js';
@@ -618,9 +619,15 @@ export function registerExhaust2PlaybackTools(server: McpServer, client: Spotify
         if (!total) return textResult('No saved albums to surprise you with.', { ok: false, error: 'empty_library' });
         const offset = Math.floor(rng() * total);
         const page = await client.get<SpotifyPaged<SavedAlbumItem>>('/me/albums', { limit: '50', offset: String(offset) });
-        const items = (page?.items ?? []).filter((i) => (i as { album?: { uri?: string; name?: string } }).album?.uri);
+        // #1343: `SavedAlbumItem.album` is a `SpotifyAlbumFull`, which already
+        // carries `uri`, `name` and `artists`; the cast was narrowing the
+        // declared type to something it already was, and the filter beside it
+        // re-asserted `album.uri` as optional when the type says otherwise.
+        // Rows whose album has no readable `uri` cannot be played, so they are
+        // dropped by value, not by assertion.
+        const items = (page?.items ?? []).filter((i) => readString(i.album, 'uri') !== undefined);
         if (!items.length) return textResult('No playable saved albums found at a random offset — try again.', { ok: false });
-        const hit = items[Math.floor(rng() * items.length)]! as unknown as { album: { uri: string; name: string; artists?: Array<{ name: string }> } };
+        const hit = items[Math.floor(rng() * items.length)]!;
         pickLabel = `album "${hit.album.name}" by ${(hit.album.artists ?? []).map((a) => a.name).join(', ') || 'unknown'}`;
         playBody = { context_uri: hit.album.uri };
       } else {
