@@ -1849,7 +1849,7 @@
         "label": "Strict rejection, not stripping: a call carrying an unde…"
       },
       {
-        "hash": "d31c370da5da0cbe",
+        "hash": "6a3623334baae931",
         "label": "responseformat ('concile' | 'detailed' | 'json', default…"
       },
       {
@@ -1861,11 +1861,11 @@
         "label": "maxresults (list-type tools; positive integer, ≤ 2000) —…"
       },
       {
-        "hash": "46c5ce02d1cbde05",
+        "hash": "eec41f1a9cb91dc4",
         "label": "Response byte cap (#895) — responseformat: 'json' and st…"
       },
       {
-        "hash": "e5bffe189dce4d58",
+        "hash": "4bea924e972ca055",
         "label": "Row cap and emit-once (#895) — capRowSections and emitOn…"
       },
       {
@@ -5075,6 +5075,13 @@
     },
     {
       "file": "SPEC.md",
+      "hash": "46c5ce02d1cbde05",
+      "label": "Response byte cap (#895) — responseformat: 'json' and st…",
+      "date": "2026-09-27",
+      "reason": "Reworded, not deleted: reconciled the #895 json-mode contract with the measured code. SPEC claimed 'json' returns the raw payload as text and that json-mode text is 're-emitted from the capped object'; both were false for the 46 tools routed through a module's shared emitOnce renderer without a capRowSections call (20 of 24 in swarm3_playlistops.ts, 26 of 27 in exhaust2_misc.ts), which get a summary text block and only the MAX_RESPONSE_BYTES backstop. The row-cap/emit-once bullet also understated capRowSections coverage as 'the swarm3 playlist-diff surfaces' while naming no exhaust2misc site. Paragraphs present and expanded; no prose lost."
+    },
+    {
+      "file": "SPEC.md",
       "hash": "5a1a0046c8f24dc4",
       "label": "playlistbalance is deliberately excluded: it creates new…",
       "date": "2026-09-27",
@@ -5110,6 +5117,13 @@
     },
     {
       "file": "SPEC.md",
+      "hash": "d31c370da5da0cbe",
+      "label": "responseformat ('concile' | 'detailed' | 'json', default…",
+      "date": "2026-09-27",
+      "reason": "Reworded, not deleted: reconciled the #895 json-mode contract with the measured code. SPEC claimed 'json' returns the raw payload as text and that json-mode text is 're-emitted from the capped object'; both were false for the 46 tools routed through a module's shared emitOnce renderer without a capRowSections call (20 of 24 in swarm3_playlistops.ts, 26 of 27 in exhaust2_misc.ts), which get a summary text block and only the MAX_RESPONSE_BYTES backstop. The row-cap/emit-once bullet also understated capRowSections coverage as 'the swarm3 playlist-diff surfaces' while naming no exhaust2misc site. Paragraphs present and expanded; no prose lost."
+    },
+    {
+      "file": "SPEC.md",
       "hash": "d3c12f1f3068b798",
       "label": "Environment variables SPOTIFYCLIENTID= # required — from…",
       "date": "2026-09-27",
@@ -5128,6 +5142,13 @@
       "label": "Returns: per group: track label, occurrence count and ki…",
       "date": "2026-09-27",
       "reason": "rewritten by #885: find_duplicates_in_playlist's SPEC section now documents the shared match_by vocabulary and cross-tool consistency, superseding the per-tool description"
+    },
+    {
+      "file": "SPEC.md",
+      "hash": "e5bffe189dce4d58",
+      "label": "Row cap and emit-once (#895) — capRowSections and emitOn…",
+      "date": "2026-09-27",
+      "reason": "Reworded, not deleted: reconciled the #895 json-mode contract with the measured code. SPEC claimed 'json' returns the raw payload as text and that json-mode text is 're-emitted from the capped object'; both were false for the 46 tools routed through a module's shared emitOnce renderer without a capRowSections call (20 of 24 in swarm3_playlistops.ts, 26 of 27 in exhaust2_misc.ts), which get a summary text block and only the MAX_RESPONSE_BYTES backstop. The row-cap/emit-once bullet also understated capRowSections coverage as 'the swarm3 playlist-diff surfaces' while naming no exhaust2misc site. Paragraphs present and expanded; no prose lost."
     },
     {
       "file": "SPEC.md",

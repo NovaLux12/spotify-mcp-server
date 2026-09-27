@@ -1378,7 +1378,17 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   // to ask for a different bound. MEASURED with `npm run count:tools` on
   // 2026-09-27: 7990 B -> 8582 B (+592 B, 4 x the ~148 B the `MaxResults`
   // fragment costs on the taste module). Tool count unchanged at 10; the
-  // derived ceiling is 8779 B, so this is inside budget with 197 B spare.
+  // derived ceiling is `Math.ceil(8582 * 1.1)` = 9441 B, so this is inside
+  // budget with 859 B spare.
+  //
+  // The ceiling is DERIVED from the baseline by `manifestEntry` (110%), not
+  // chosen: it moves with every baseline edit, so quoting it here is a claim
+  // about a tree this line also has to keep true. An earlier version of this
+  // comment said 8779 B / 197 B spare, which matched neither the old nor the
+  // new derivation — 8779 is not `ceil(7990 * 1.1)` (8789) nor
+  // `ceil(8582 * 1.1)` (9441), and no baseline this module has ever carried
+  // produces it. The number was wrong in the direction that flatters: it
+  // reported 197 B of headroom where there is 859.
   manifestEntry('tastecomposites', 'tastecomposites', lazyModule('./taste_composites.js', 'registerTasteCompositeTools'), [10, 8582], { readOnlySafe: true }),
   // #927: `taste_to_playlist` declares the same optional `statsfm_user`, so it
   // moves with the module it imports the schema from. MEASURED with

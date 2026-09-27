@@ -166,6 +166,19 @@ function summarizeDedupe(payload: Record<string, unknown>): string {
  * `capRowSections`; `response_format: 'json'` is the bulk export and returns
  * the analysis whole. Either way the payload is emitted ONCE, as
  * `structuredContent`, with a bounded text block beside it.
+ *
+ * The `bulk ||` short-circuit is load-bearing and is NOT an optimisation.
+ * #895's AC1 requires json mode to "still return the full analysis", and
+ * SPEC.md's #895 entry states the same for this tool and `library_hygiene`
+ * together. Without it, a json call with an explicit `max_results` was capped —
+ * the bulk export the contract promises was the one path that lost rows. It
+ * also made this module disagree with `libraryhygiene.ts`, which is the
+ * document both are named in, so the two could no longer be read as one
+ * contract; a caller comparing the two tools' json output saw different shapes
+ * for the same documented promise.
+ *
+ * The cap still applies to the two prose modes, which is where the
+ * `max_results` promise in the tool description is written.
  */
 function shapeResult(
   rf: ResponseFormatValue,
@@ -174,7 +187,7 @@ function shapeResult(
   maxResults?: number,
 ): ToolOut {
   const bulk = rf === 'json';
-  const machine = maxResults === undefined || !('groups' in payload)
+  const machine = bulk || maxResults === undefined || !('groups' in payload)
     ? payload
     : capRowSections(payload, ROW_ARRAYS, maxResults);
   if (bulk) return emitOnce(structuredContent(machine), summarizeDedupe);

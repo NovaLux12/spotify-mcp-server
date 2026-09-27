@@ -300,19 +300,48 @@ describe('capRowSections (#895)', () => {
     assert.equal(out.truncated, true);
   });
 
-  it('caps withheld and returned sections under one shared budget, not per-section', () => {
-    // Two sections of 300 rows each at a cap of 10: the budget is the caller's,
-    // spent once. Reporting 10+10 rows while the cap says 10 would be a lie
-    // about the shape of the limit.
+  it('caps each section to max_results independently, and withholds a named key whole', () => {
+    // The name of this test used to say the opposite of what it asserted: it
+    // was called "one shared budget, not per-section" and its comment called
+    // 10+10 rows at a cap of 10 "a lie about the shape of the limit", while
+    // the assertions pinned 10 and 10. The contract is per-section and it is
+    // deliberate — `capRowSections`'s own docstring and SPEC.md:657 both state
+    // that each named array is capped to `max_results` in its own right, which
+    // is what the prose path already renders and what each tool's description
+    // promises. A shared budget would silently starve a section the caller can
+    // see described in full. A test named for the contract it contradicts
+    // invites the next reader to "fix" the helper to match its title.
+    //
+    // So the two properties are pinned together, because they are what the
+    // helper actually promises: a named array is SLICED to the cap, and a
+    // `withhold`-ed key is DELETED whole and reported with its exact total.
     const out = capRowSections(
-      { a: Array.from({ length: 300 }, (_, i) => i), b: Array.from({ length: 300 }, (_, i) => i) },
+      {
+        a: Array.from({ length: 300 }, (_, i) => i),
+        b: Array.from({ length: 300 }, (_, i) => i),
+        raw: Array.from({ length: 300 }, (_, i) => i),
+      },
       ['a', 'b'],
       10,
+      ['raw'],
     );
-    const sections = out.sections as Record<string, { returned: number; total: number }>;
+
+    const sections = out.sections as Record<
+      string,
+      { returned: number; total: number; truncated?: boolean; withheld?: boolean }
+    >;
+    // Per-section, not per-payload: each named array gets the full cap.
     assert.equal(sections.a.returned, 10);
     assert.equal(sections.b.returned, 10);
-    assert.equal(sections.a.total + sections.b.total, 600, 'no row is lost from the totals');
+    assert.equal(rowsOf(out, 'a').length, 10, 'and the rows really are sliced, not just reported');
+    assert.equal(rowsOf(out, 'b').length, 10);
+    // Withheld is a different mechanism: the key is gone, and its true size is
+    // stated. `total: 0` there would read as "the scan found nothing" (#803).
+    assert.equal('raw' in out, false, 'a withheld key is deleted, not sliced');
+    assert.equal(sections.raw.withheld, true);
+    assert.equal(sections.raw.total, 300);
+    // The totals are pre-cap for all three, so no row is lost from the count.
+    assert.equal(sections.a.total + sections.b.total + sections.raw.total, 900);
   });
 });
 
@@ -404,24 +433,46 @@ describe('library_hygiene json mode (#895)', () => {
 });
 
 describe('find_duplicate_saved_tracks json mode (#895)', () => {
-  it('emits the capped payload once and keeps the exact group total', async () => {
+  it('is the bulk export: json mode returns the whole analysis despite max_results', async () => {
+    // #895's AC1: "`response_format: 'json'` still returns the full analysis",
+    // and SPEC.md's #895 entry says the same for this tool and
+    // `library_hygiene` together. The previous version of this test asserted
+    // the OPPOSITE (40 groups in, 5 rows out), which pinned a contract
+    // violation and invited the next agent to "fix" the module back to it.
     const out = await harness(registerSavedDedupeTools, dedupeLibrary(40)).invoke(
       'find_duplicate_saved_tracks',
       { max_results: 5, response_format: 'json' },
     );
 
     const groups = rows(out, 'groups') as Array<{ kind: string }>;
-    assert.equal(groups.length, 5, '40 groups in, 5 rows out — the cap fired');
+    assert.equal(groups.length, 40, 'json mode is the bulk export — every group ships');
     assert.equal(groups.every((g) => g.kind === 'exact'), true, 'the fixture really produced duplicate groups');
+    assert.equal('sections' in out.structuredContent!, false, 'an uncapped bulk export has no cap envelope');
 
+    // The payload still rides once, in structuredContent, beside a bounded
+    // summary. The double-echo this PR removed is the property under test here,
+    // and it is independent of whether the rows were capped.
+    const payload = JSON.stringify(out.structuredContent, null, 2);
+    assert.notEqual(textOf(out), payload, 'no second copy in the text block');
+    assert.throws(() => JSON.parse(textOf(out)), 'the text block is not a second JSON copy');
+    assert.ok(textOf(out).length * 4 < payload.length);
+  });
+
+  it('caps the prose modes to the same max_results, with the pre-cap total disclosed', async () => {
+    // The other half of the contract, and the one the json test above used to
+    // (wrongly) stand in for. The cap is a property of the PROSE modes here:
+    // that is where the `max_results` promise in the tool description is
+    // written, so this is where it has to hold.
+    const out = await harness(registerSavedDedupeTools, dedupeLibrary(40)).invoke(
+      'find_duplicate_saved_tracks',
+      { max_results: 5, response_format: 'detailed' },
+    );
+
+    assert.equal(rows(out, 'groups').length, 5, '40 groups in, 5 rows out — the cap fired');
     const section = (out.structuredContent!.sections as Record<string, { returned: number; total: number }>).groups;
     assert.equal(section.returned, 5);
     assert.equal(section.total, 40, 'the pre-cap group total is disclosed, not dropped');
     assert.equal(out.structuredContent!.truncated, true);
-
-    const payload = JSON.stringify(out.structuredContent, null, 2);
-    assert.notEqual(textOf(out), payload, 'no second copy in the text block');
-    assert.ok(textOf(out).length * 4 < payload.length);
   });
 });
 

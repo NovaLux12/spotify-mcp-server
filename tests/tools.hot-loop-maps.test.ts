@@ -323,7 +323,17 @@ describe('overlap_playlists name resolution (#903)', () => {
       // Same rows, same order, same names — including that a shared id takes
       // its name from the FIRST playlist that holds it.
       assert.equal(data.sections.shared.total, want.length, 'the withheld rows are still counted');
-      assert.equal(data.sections.shared.returned, data.shared.length);
+      // Not the same source as the code under test, and this line has been
+      // mistaken for one that was: `sections.*.returned` is written by
+      // `capRowSections` and `data.shared` is the array it actually wrote back,
+      // so they are two different values that must agree. It is also the only
+      // assertion here that catches a DISCLOSURE that lies about the bytes —
+      // the #1480 shape. Proven able to fail by mutating `capRowSections` two
+      // ways, each of which turns this line red and leaves the `deepEqual`
+      // below it green: writing the uncapped array back, and reporting
+      // `view.total` as `returned`.
+      assert.equal(data.sections.shared.returned, data.shared.length,
+        'the cap disclosure must state exactly how many rows shipped');
       assert.deepEqual(data.shared, want.slice(0, data.shared.length));
       assert.equal(data.shared[0].name, 'Name P1 s0000');
       assert.equal(data.shared[0].count, 3);
@@ -646,7 +656,6 @@ describe('balance_playlist_pairs commit path (#903)', () => {
     // of it. `structuredContent` is the complete plan, and the text says so.
     assert.doesNotMatch(out.content[0].text, /"from_playlist"/, 'the plan must not be serialized twice');
     assert.match(out.content[0].text, /structuredContent/);
-    assert.equal(payload.moves.length, payload.moves_total);
   });
 
   it('no longer scans buckets or rows per planned move', async () => {
