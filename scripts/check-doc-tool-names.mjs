@@ -60,6 +60,12 @@ const parameterAllowlist = new Set([
   // count joins its base counterpart above. Both are structuredContent keys
   // about a call's own result, not parameters and not tools.
   'would_refuse', 'target_unrepresentable',
+  // #1279: the doctor detail key reporting a cache save that a hard-killed
+  // process never wrote. It is a key in the `cache` row's `detail` string, not
+  // a tool and not a request parameter — SPEC.md and docs/configuration.md are
+  // naming the field the doctor emits so an operator can recognise a lost save
+  // rather than a healthy session.
+  'cache_persist_lost',
   // #895: the `response_cap` receipt that rides with a byte-capped result.
   // Every one of these is a structuredContent key describing a call's own
   // output — what the ceiling was, what the payload actually measured, and

@@ -9,8 +9,11 @@ import {
   type InvalidationPlan,
 } from './cache.js';
 import {
+  armPendingMarker,
+  cachePendingPath,
   cachePersistEnabled,
   cachePersistPath,
+  consumePendingMarker,
   isPersistableKey,
   loadPersistedCache,
   savePersistedCache,
@@ -435,6 +438,16 @@ interface RateLimitStatus {
   cachePersistRefused?: number;
   /** Entries dropped for exceeding the persisted byte cap (#1249). */
   cachePersistOversize?: number;
+  /**
+   * Entries a PREVIOUS process had pending when it was killed without running
+   * any JavaScript — SIGKILL, an OOM-kill, a supervisor hard-stop, a power loss
+   * (#1279). Zero when no such death was detected.
+   *
+   * Reported by the process AFTER the one that lost them, from a marker file
+   * that the kill could not remove. It is a count of writes this process knows
+   * it did not make; it is NOT a repair, and the entries are gone.
+   */
+  cachePersistLost?: number;
   /** Requests currently open in the funnel (#892). */
   inFlight: number;
   /** The funnel's concurrency ceiling for this process (#892). */
@@ -774,6 +787,17 @@ class CachePersistController {
   private failed = 0;
   private refused = 0;
   private oversize = 0;
+  /**
+   * Entries a PREVIOUS process had pending when it died without running any
+   * JavaScript (#1279). Zero means no such death was detected.
+   *
+   * Distinct from `failed` on purpose: `failed` is a write this process
+   * attempted and watched fail, which it can describe exactly. This is a write
+   * that never happened, reported by the next process on the only evidence that
+   * survives a SIGKILL — a marker file. Conflating the two would let a silent
+   * hard kill read as a healthy session.
+   */
+  private lostLastSession = 0;
   private loaded: Promise<void> | null = null;
   private pendingSave: ReturnType<typeof setTimeout> | null = null;
   /**
@@ -783,16 +807,29 @@ class CachePersistController {
    * perform exactly the save the timer was going to perform (#1266).
    */
   private pendingEntries: PersistedEntry[] | null = null;
+  /** The `.pending` marker path beside this controller's cache file (#1279). */
+  private readonly pendingMarker: string;
 
   constructor(
     private readonly file: string,
     private readonly opts: { file?: string; maxBytes?: number } | undefined,
     private readonly schedule: (fn: () => void, ms: number) => ReturnType<typeof setTimeout> = setTimeout,
-  ) {}
+  ) {
+    // Derived from the SAME cache path the controller already holds, so the
+    // marker inherits the profile suffix and a second profile resolution —
+    // the thing that would let two accounts share one marker — never happens.
+    this.pendingMarker = cachePendingPath(undefined, { ...opts, file });
+  }
 
   /** What the persistence layer did, for `spotify_doctor`. */
-  stats(): { restored: number; failed: number; refused: number; oversize: number } {
-    return { restored: this.restoredCount, failed: this.failed, refused: this.refused, oversize: this.oversize };
+  stats(): { restored: number; failed: number; refused: number; oversize: number; lost: number } {
+    return {
+      restored: this.restoredCount,
+      failed: this.failed,
+      refused: this.refused,
+      oversize: this.oversize,
+      lost: this.lostLastSession,
+    };
   }
 
   /**
@@ -807,6 +844,12 @@ class CachePersistController {
   load(cache: LruTtlCache<unknown> | null): Promise<void> {
     if (this.loaded) return this.loaded;
     if (!cache) return Promise.resolve();
+    // Report a previous session's hard kill BEFORE the load resolves, and
+    // outside the promise chain: a corrupt cache file must not be able to
+    // swallow the news that entries were lost, and a failed load is exactly
+    // when losing them matters most.
+    const lost = consumePendingMarker({ ...this.opts, file: this.file });
+    if (lost !== null) this.lostLastSession = lost;
     this.loaded = loadPersistedCache({ ...this.opts, file: this.file }).then(
       (entries) => {
         for (const entry of entries) {
@@ -842,6 +885,15 @@ class CachePersistController {
     // invalidation (which the next schedule will capture) is never undone by a
     // save that was queued before it.
     this.pendingEntries = cache.snapshot();
+    // Arm the marker for the window we are about to open (#1279). Written
+    // BEFORE the timer is armed, so there is no instant at which a save is
+    // pending but unannounced — the ordering is the whole mechanism. A hard
+    // kill inside the window then leaves evidence the next process can report.
+    //
+    // Re-armed on every coalescing read rather than only the first, so the
+    // count reflects what is actually pending at the moment of the kill
+    // instead of the size of the first read in the burst.
+    armPendingMarker(this.pendingMarker, this.pendingEntries.length);
     if (this.pendingSave !== null) clearTimeout(this.pendingSave);
     this.pendingSave = this.schedule(() => {
       this.pendingSave = null;
@@ -953,6 +1005,16 @@ let exitFlushInstalled = false;
  *   - `beforeExit` is deliberately not used. It fires only once the loop has
  *     drained, and the pending debounce timer is what keeps the loop alive, so
  *     by the time it could run the save has already happened.
+ *
+ * SIGHUP and SIGQUIT are handled here for the first time (#1279). They were
+ * missing, and the gap was real rather than theoretical: both are ordinary
+ * terminations — SIGHUP from a closing terminal or an ssh session ending, and
+ * under some supervisors a hard-stop after a SIGTERM grace period; SIGQUIT from
+ * a `kill -QUIT`, and the signal behind a terminal's quit key. A process that
+ * handled SIGTERM but not SIGHUP would flush politely on the polite signal and
+ * lose the write on the impolite one. This was confirmed by measurement on this
+ * Node rather than assumed: SIGINT, SIGTERM, SIGHUP and SIGQUIT all reach a
+ * handler when one is installed, and SIGKILL reaches nothing at all.
  */
 function installExitFlush(): void {
   if (exitFlushInstalled) return;
@@ -968,7 +1030,7 @@ function installExitFlush(): void {
     }
   });
 
-  for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+  for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGQUIT'] as const) {
     // `once`, not `on`: the handler re-raises the signal at the end, and a
     // persistent listener would receive that re-raise and call itself again.
     // With `once` the second delivery finds no listener, so the default
@@ -1174,7 +1236,12 @@ export class SpotifyClient {
    */
   private cachePersistStats(): Pick<
     RateLimitStatus,
-    'cachePersist' | 'cacheRestored' | 'cachePersistFailed' | 'cachePersistRefused' | 'cachePersistOversize'
+    | 'cachePersist'
+    | 'cacheRestored'
+    | 'cachePersistFailed'
+    | 'cachePersistRefused'
+    | 'cachePersistOversize'
+    | 'cachePersistLost'
   > {
     if (!this._persist) return this.cache ? { cachePersist: false } : {};
     const stats = this._persist.stats();
@@ -1184,6 +1251,9 @@ export class SpotifyClient {
       cachePersistFailed: stats.failed,
       cachePersistRefused: stats.refused,
       cachePersistOversize: stats.oversize,
+      // Reported only when non-zero, so a healthy session's row is unchanged
+      // and a detected hard kill is the thing that draws the eye (#1279).
+      ...(stats.lost > 0 ? { cachePersistLost: stats.lost } : {}),
     };
   }
 

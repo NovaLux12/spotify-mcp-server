@@ -1243,3 +1243,379 @@ describe('cache: persistence survives process exit (#1266)', () => {
     assert.ok(before !== null, 'the pre-flush status is readable');
   });
 });
+
+// ---------------------------------------------------------------------------
+// #1279: the half that cannot be fixed, and the half that can
+// ---------------------------------------------------------------------------
+
+describe('cache: a hard-killed save is reported, not silently dropped (#1279)', () => {
+  let dir = '';
+  let prevPersist: string | undefined;
+  let prevDataDir: string | undefined;
+  let prevTokenFile: string | undefined;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(path.join(tmpdir(), 'spotify-mcp-persist-kill-'));
+    prevPersist = process.env.SPOTIFY_MCP_CACHE_PERSIST;
+    prevDataDir = process.env.SPOTIFY_MCP_DATA_DIR;
+    prevTokenFile = process.env.SPOTIFY_MCP_TOKEN_FILE;
+    process.env.SPOTIFY_MCP_CACHE_PERSIST = '1';
+    process.env.SPOTIFY_MCP_DATA_DIR = dir;
+    process.env.SPOTIFY_MCP_TOKEN_FILE = path.join(dir, 'tokens.json');
+    await writeFile(
+      process.env.SPOTIFY_MCP_TOKEN_FILE,
+      JSON.stringify({ access_token: 'tok', refresh_token: 'ref', expires_at: Date.now() + 3_600_000 }),
+      'utf8',
+    );
+  });
+
+  afterEach(async () => {
+    if (prevPersist === undefined) delete process.env.SPOTIFY_MCP_CACHE_PERSIST;
+    else process.env.SPOTIFY_MCP_CACHE_PERSIST = prevPersist;
+    if (prevDataDir === undefined) delete process.env.SPOTIFY_MCP_DATA_DIR;
+    else process.env.SPOTIFY_MCP_DATA_DIR = prevDataDir;
+    if (prevTokenFile === undefined) delete process.env.SPOTIFY_MCP_TOKEN_FILE;
+    else process.env.SPOTIFY_MCP_TOKEN_FILE = prevTokenFile;
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  /**
+   * Run one catalog read in a REAL child and SIGKILL it inside the window.
+   *
+   * SIGKILL is the case no in-process code can address: the kernel ends the
+   * process, so no `exit` event, no signal handler, and no pending promise ever
+   * runs. Whatever the parent observes afterwards is therefore the honest
+   * ceiling of this design, not a shortcoming of the harness.
+   */
+  async function readThenSigkill(): Promise<{ cacheWritten: boolean; marker: string | null }> {
+    const child = spawn(
+      process.execPath,
+      ['--import', 'tsx/esm', path.join(REPO_ROOT, 'tests', 'fixtures', 'persist-exit-child.ts')],
+      {
+        cwd: REPO_ROOT,
+        env: {
+          PATH: process.env.PATH,
+          HOME: dir,
+          SPOTIFY_CLIENT_ID: 'test-client-id',
+          SPOTIFY_MCP_CACHE_PERSIST: '1',
+          SPOTIFY_MCP_DATA_DIR: dir,
+          SPOTIFY_MCP_TOKEN_FILE: path.join(dir, 'tokens.json'),
+          SPOTIFY_MCP_PERSIST_EXIT_MODE: 'sigkill',
+        },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      },
+    );
+    const ready = new Promise<void>((resolve) => {
+      let seen = '';
+      child.stdout.on('data', (c: Buffer) => {
+        seen += String(c);
+        if (seen.includes('cached')) resolve();
+      });
+    });
+    await ready;
+    // SIGKILL, not SIGTERM: the whole point is that no JavaScript runs.
+    child.kill('SIGKILL');
+    await new Promise((resolve) => child.on('exit', resolve));
+    const cacheFile = path.join(dir, 'cache.json');
+    const markerFile = path.join(dir, 'cache.json.pending');
+    return {
+      cacheWritten: existsSync(cacheFile),
+      marker: existsSync(markerFile) ? await readFile(markerFile, 'utf8') : null,
+    };
+  }
+
+  it('SIGKILL really does lose the write — the boundary this fix does NOT cross', async () => {
+    // The control for everything below. If a future change made the pending
+    // save survive SIGKILL, this would fail — and it should, because the docs
+    // promise it cannot. It is here so the claim stays measured rather than
+    // asserted from memory.
+    const { cacheWritten } = await readThenSigkill();
+    assert.equal(
+      cacheWritten,
+      false,
+      'a SIGKILLed process runs no JavaScript, so the pending save cannot land; if this ever passes, the durability claim in docs/configuration.md is stale and must be rewritten',
+    );
+  });
+
+  it('leaves a marker naming what was lost, so the NEXT process can report it (#1279)', async () => {
+    const { marker } = await readThenSigkill();
+    assert.notEqual(
+      marker,
+      null,
+      'the marker must be armed before the debounce timer, or a hard kill leaves no evidence at all',
+    );
+    const parsed = JSON.parse(marker ?? '{}') as { pid?: number; count?: number };
+    assert.equal(
+      parsed.count,
+      1,
+      'the marker records how many entries were pending, so the report states a size rather than a bare "something was lost"',
+    );
+    assert.equal(
+      typeof parsed.pid,
+      'number',
+      'the marker names the process that armed it, so a LIVE process\'s pending save is never read as a dead one\'s loss',
+    );
+  });
+
+  it('reports the loss on the next start, and only once (#1279)', async () => {
+    await readThenSigkill();
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ id: 'tr1' }), { status: 200 })) as typeof fetch;
+
+    const first = new SpotifyClient();
+    // The load that consumes the marker is kicked off in the constructor and
+    // is not awaited by it, so drive the queue before reading the status.
+    await first.get('/tracks/tr1', {});
+    const afterFirstStart = first.getRateLimitStatus();
+    assert.equal(
+      afterFirstStart.cachePersistLost,
+      1,
+      'the process after a hard kill must report the entries it never wrote; a silent 0 is the exact failure #1279 describes',
+    );
+
+    const second = new SpotifyClient();
+    await second.get('/tracks/tr1', {});
+    assert.equal(
+      second.getRateLimitStatus().cachePersistLost,
+      undefined,
+      'the marker is consumed on read, so one hard kill is reported once rather than on every subsequent start',
+    );
+  });
+
+  it('a clean SIGTERM is NOT reported as a loss — the flush disarms the marker (#1279)', async () => {
+    // The false-positive guard. A marker left behind by a save that DID land
+    // would report entries as lost that are sitting in the cache file, which
+    // would be worse than the silence it replaced.
+    const child = spawn(
+      process.execPath,
+      ['--import', 'tsx/esm', path.join(REPO_ROOT, 'tests', 'fixtures', 'persist-exit-child.ts')],
+      {
+        cwd: REPO_ROOT,
+        env: {
+          PATH: process.env.PATH,
+          HOME: dir,
+          SPOTIFY_CLIENT_ID: 'test-client-id',
+          SPOTIFY_MCP_CACHE_PERSIST: '1',
+          SPOTIFY_MCP_DATA_DIR: dir,
+          SPOTIFY_MCP_TOKEN_FILE: path.join(dir, 'tokens.json'),
+          SPOTIFY_MCP_PERSIST_EXIT_MODE: 'sigterm',
+        },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      },
+    );
+    const ready = new Promise<void>((resolve) => {
+      let seen = '';
+      child.stdout.on('data', (c: Buffer) => {
+        seen += String(c);
+        if (seen.includes('cached')) resolve();
+      });
+    });
+    await ready;
+    child.kill('SIGTERM');
+    await new Promise((resolve) => child.on('exit', resolve));
+
+    assert.ok(existsSync(path.join(dir, 'cache.json')), 'SIGTERM flushed the write');
+    assert.equal(
+      existsSync(path.join(dir, 'cache.json.pending')),
+      false,
+      'the synchronous shutdown flush must clear the marker; a marker left after a landed write would report entries as lost that are in the file',
+    );
+  });
+
+  it('SIGHUP flushes and still dies of the signal (#1279)', async () => {
+    // SIGHUP was an unhandled gap: the server flushed politely on SIGTERM and
+    // lost the write on the signal a closing terminal or a supervisor's
+    // hard-stop actually sends.
+    const child = spawn(
+      process.execPath,
+      ['--import', 'tsx/esm', path.join(REPO_ROOT, 'tests', 'fixtures', 'persist-exit-child.ts')],
+      {
+        cwd: REPO_ROOT,
+        env: {
+          PATH: process.env.PATH,
+          HOME: dir,
+          SPOTIFY_CLIENT_ID: 'test-client-id',
+          SPOTIFY_MCP_CACHE_PERSIST: '1',
+          SPOTIFY_MCP_DATA_DIR: dir,
+          SPOTIFY_MCP_TOKEN_FILE: path.join(dir, 'tokens.json'),
+          SPOTIFY_MCP_PERSIST_EXIT_MODE: 'sighup',
+        },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      },
+    );
+    const ready = new Promise<void>((resolve) => {
+      let seen = '';
+      child.stdout.on('data', (c: Buffer) => {
+        seen += String(c);
+        if (seen.includes('cached')) resolve();
+      });
+    });
+    const exited = new Promise<{ signal: NodeJS.Signals | null }>((resolve) => {
+      child.on('exit', (_code, signal) => resolve({ signal }));
+    });
+    await ready;
+    child.kill('SIGHUP');
+    const { signal } = await exited;
+
+    const file = path.join(dir, 'cache.json');
+    assert.ok(existsSync(file), 'SIGHUP is an ordinary termination and must flush the pending save');
+    const written = persist.validatePersisted(JSON.parse(await readFile(file, 'utf8')));
+    assert.ok(
+      written.entries.some((e) => e.key.includes('/tracks/')),
+      'the flushed file holds the read that was pending when SIGHUP arrived',
+    );
+    assert.equal(
+      signal,
+      'SIGHUP',
+      'the process must still die OF the signal; a handler that swallowed it would leave the server unkillable by SIGHUP',
+    );
+  });
+});
+
+describe('cache: the pending marker is a description, never a repair (#1279)', () => {
+  let dir = '';
+  let prevDataDir: string | undefined;
+  let prevTokenFile: string | undefined;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(path.join(tmpdir(), 'spotify-mcp-marker-'));
+    prevDataDir = process.env.SPOTIFY_MCP_DATA_DIR;
+    prevTokenFile = process.env.SPOTIFY_MCP_TOKEN_FILE;
+    process.env.SPOTIFY_MCP_DATA_DIR = dir;
+    process.env.SPOTIFY_MCP_TOKEN_FILE = path.join(dir, 'tokens.json');
+  });
+
+  afterEach(async () => {
+    if (prevDataDir === undefined) delete process.env.SPOTIFY_MCP_DATA_DIR;
+    else process.env.SPOTIFY_MCP_DATA_DIR = prevDataDir;
+    if (prevTokenFile === undefined) delete process.env.SPOTIFY_MCP_TOKEN_FILE;
+    else process.env.SPOTIFY_MCP_TOKEN_FILE = prevTokenFile;
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it('an unreadable marker still reports a loss rather than reading as none (#1279)', async () => {
+    // A marker we cannot parse is still evidence that a save was in flight.
+    // Reporting "unknown size" and reporting "nothing was lost" are different
+    // claims, and only the second one is false.
+    const marker = path.join(dir, 'cache.json.pending');
+    await writeFile(marker, 'not-a-number', 'utf8');
+    assert.equal(
+      persist.consumePendingMarker(),
+      0,
+      'an unparseable marker means the size is unknown, not that nothing was lost — 0 keeps the loss reportable',
+    );
+    assert.equal(
+      persist.consumePendingMarker(),
+      null,
+      'the marker is consumed, so the same loss is not reported twice',
+    );
+  });
+
+  it('a marker owned by a LIVE process is not reported as a loss (#1279)', async () => {
+    // The false-positive guard, and the bug this design actually hit: two
+    // clients in one process, the second of which would read the first's
+    // in-flight save as a dead session's loss. Deleting it would be worse
+    // still — it would blind the live process to its own pending save.
+    const marker = path.join(dir, 'cache.json.pending');
+    await writeFile(marker, JSON.stringify({ pid: process.pid, count: 7 }), 'utf8');
+    assert.equal(
+      persist.consumePendingMarker(),
+      null,
+      'a save in flight in this very process is not a loss',
+    );
+    assert.ok(
+      existsSync(marker),
+      'the live process keeps its marker; consuming it would hide its own pending save from the shutdown flush',
+    );
+  });
+
+  it('reports null when there is no marker, so a clean exit is not a loss (#1279)', () => {
+    assert.equal(
+      persist.consumePendingMarker(),
+      null,
+      'no marker means the previous process exited cleanly; null is the signal that there is nothing to report',
+    );
+  });
+
+  it('a lost entry is NOT resurrected: the marker carries a count, not the data', async () => {
+    // The property that stops this being mistaken for a journal. A count can
+    // report a loss; it cannot repair one. If this ever fails, the marker has
+    // started holding payloads and the durability claims in the docs are wrong.
+    const marker = path.join(dir, 'cache.json.pending');
+    // pid -1 cannot name a live process, so this reads as a dead owner.
+    await writeFile(marker, JSON.stringify({ pid: -1, count: 3 }), 'utf8');
+    const lost = persist.consumePendingMarker();
+    assert.equal(lost, 3, 'the count is the whole payload');
+    assert.equal(existsSync(path.join(dir, 'cache.json')), false, 'reading the marker creates no cache file');
+  });
+
+  it('the marker path is derived from the cache file, so profiles cannot share one', () => {
+    // Two accounts must never share a marker, or one profile's hard kill would
+    // be reported against the other's cache.
+    const a = persist.cachePendingPath({ SPOTIFY_MCP_PROFILE: 'work' } as NodeJS.ProcessEnv);
+    const b = persist.cachePendingPath({ SPOTIFY_MCP_PROFILE: 'personal' } as NodeJS.ProcessEnv);
+    assert.notEqual(a, b, 'a profile-specific cache must get its own marker');
+    assert.ok(a.endsWith('.pending'), 'the marker sits beside its cache file');
+  });
+});
+
+describe('cache: the debounced save disarms the marker it armed (#1279)', () => {
+  let dir = '';
+  let prevPersist: string | undefined;
+  let prevDataDir: string | undefined;
+  let prevTokenFile: string | undefined;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(path.join(tmpdir(), 'spotify-mcp-marker-debounce-'));
+    prevPersist = process.env.SPOTIFY_MCP_CACHE_PERSIST;
+    prevDataDir = process.env.SPOTIFY_MCP_DATA_DIR;
+    prevTokenFile = process.env.SPOTIFY_MCP_TOKEN_FILE;
+    process.env.SPOTIFY_MCP_CACHE_PERSIST = '1';
+    process.env.SPOTIFY_MCP_DATA_DIR = dir;
+    process.env.SPOTIFY_MCP_TOKEN_FILE = path.join(dir, 'tokens.json');
+    await writeFile(
+      process.env.SPOTIFY_MCP_TOKEN_FILE,
+      JSON.stringify({ access_token: 'tok', refresh_token: 'ref', expires_at: Date.now() + 3_600_000 }),
+      'utf8',
+    );
+  });
+
+  afterEach(async () => {
+    if (prevPersist === undefined) delete process.env.SPOTIFY_MCP_CACHE_PERSIST;
+    else process.env.SPOTIFY_MCP_CACHE_PERSIST = prevPersist;
+    if (prevDataDir === undefined) delete process.env.SPOTIFY_MCP_DATA_DIR;
+    else process.env.SPOTIFY_MCP_DATA_DIR = prevDataDir;
+    if (prevTokenFile === undefined) delete process.env.SPOTIFY_MCP_TOKEN_FILE;
+    else process.env.SPOTIFY_MCP_TOKEN_FILE = prevTokenFile;
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it('a save that fires on the debounce timer clears the marker (#1279)', async () => {
+    // The ordinary path, and the one the shutdown-flush tests never exercise:
+    // no process is ending here, the 250 ms timer simply fires. If the async
+    // writer left the marker armed, every ordinary session would leave a
+    // marker behind, and the next start would report a loss for a save that
+    // had in fact landed — the false alarm, permanently, on the happy path.
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ id: 'tr1' }), { status: 200 })) as typeof fetch;
+
+    const client = new SpotifyClient();
+    await client.get('/tracks/tr1', {});
+
+    const marker = path.join(dir, 'cache.json.pending');
+    assert.ok(
+      existsSync(marker),
+      'the marker is armed while the save is debouncing, which is the window a hard kill would interrupt',
+    );
+
+    // Outlive the debounce so the timer-driven save resolves.
+    await new Promise((resolve) => setTimeout(resolve, 250 + 400));
+
+    assert.ok(existsSync(path.join(dir, 'cache.json')), 'the debounced save wrote the cache file');
+    assert.equal(
+      existsSync(marker),
+      false,
+      'the timer-driven save must clear the marker it armed; leaving it would make every normal session look like a lost one to the next start',
+    );
+  });
+});

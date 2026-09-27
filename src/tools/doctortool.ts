@@ -624,6 +624,12 @@ function staticRows(client: SpotifyClient): DoctorRow[] {
       // allowlist refusal: these were eligible and lost to size, and an
       // operator seeing `cache_persisted=0` needs to know which it was.
       const persistOversize = rl.cachePersistOversize ?? 0;
+      // Entries a PREVIOUS process lost to a termination that ran no JavaScript
+      // (#1279). Reported by the process after the one that died, read from a
+      // marker file the kill could not remove. This is the only way the loss
+      // becomes visible at all: the process that lost the write had no chance
+      // to report it, and its own counters read a clean zero.
+      const persistLost = rl.cachePersistLost ?? 0;
       const persistParts = rl.cachePersist
         ? [
           'cache_persist=on',
@@ -631,6 +637,7 @@ function staticRows(client: SpotifyClient): DoctorRow[] {
           persistFailed > 0 ? `cache_persist_failed=${persistFailed}` : null,
           (rl.cachePersistRefused ?? 0) > 0 ? `cache_persist_refused=${rl.cachePersistRefused}` : null,
           persistOversize > 0 ? `cache_persist_oversize=${persistOversize}` : null,
+          persistLost > 0 ? `cache_persist_lost=${persistLost}` : null,
         ].filter((p): p is string => p !== null)
         : ['cache_persist=off'];
       const cacheParts = [
@@ -643,7 +650,15 @@ function staticRows(client: SpotifyClient): DoctorRow[] {
       // A persist failure is a warning: the in-memory cache still works, but
       // the cross-process half is not doing anything and would otherwise be
       // indistinguishable from one that is.
-      const status: 'pass' | 'warn' = skipped > 0 || persistFailed > 0 ? 'warn' : 'pass';
+      //
+      // A detected loss from a previous process's hard kill is a warning for a
+      // different reason: nothing is broken NOW, but the cross-process cache is
+      // demonstrably not surviving how this host stops the server, and an
+      // operator who does not see that will conclude the feature works. It is
+      // reported as what it is — entries that were never written — and not as a
+      // failure of the current process, which had no part in it.
+      const status: 'pass' | 'warn' =
+        skipped > 0 || persistFailed > 0 || persistLost > 0 ? 'warn' : 'pass';
       const size = `read cache holds ${rl.cacheEntries} entr${rl.cacheEntries === 1 ? 'y' : 'ies'} / ${rl.cacheBytes} bytes`;
       rows.push({
         id: 'cache',
@@ -652,6 +667,9 @@ function staticRows(client: SpotifyClient): DoctorRow[] {
           ? `${size} — ${[
             skipped > 0 ? `${skipped} response(s) were too large to cache` : null,
             persistFailed > 0 ? `${persistFailed} cache persist write(s) failed` : null,
+            persistLost > 0
+              ? `${persistLost} cached entr${persistLost === 1 ? 'y was' : 'ies were'} lost when a previous process was killed without flushing (SIGKILL, OOM-kill, or power loss — a pending save cannot be written by a process that runs no JavaScript)`
+              : null,
           ].filter((p): p is string => p !== null).join('; ')}`
           : size,
         detail: cacheParts.join(' '),

@@ -326,6 +326,55 @@ describe('spotify_doctor', () => {
     assert.equal(row, undefined);
   });
 
+  it('a persisted cache save lost to a hard kill is reported and warns (#1279)', async () => {
+    // The user-visible half of #1279. `cachePersistFailed` reads 0 across a
+    // SIGKILL, because the process that lost the write never ran the code that
+    // would have counted it — so without this the row reads like a healthy
+    // session and the operator concludes the feature works.
+    const lost = harness({
+      rateLimit: {
+        lastThrottleAt: null,
+        retryAfterSec: null,
+        cooldownRemainingMs: 0,
+        cacheEntries: 7,
+        cacheBytes: 4096,
+        cacheMaxBytes: 8_388_608,
+        cacheSkippedOversize: 0,
+        cachePersist: true,
+        cacheRestored: 3,
+        cachePersistFailed: 0,
+        cachePersistLost: 4,
+      },
+    });
+    const row = (await lost.invoke()).structuredContent?.rows?.find((r) => r.id === 'cache');
+    assert.equal(row?.status, 'warn', 'a lost save must warn, not read as a healthy no-op');
+    assert.match(row!.detail!, /cache_persist_lost=4/);
+    assert.match(row!.summary!, /4 cached entries were lost/);
+    // The summary must name the cause, so the reader knows this is a
+    // termination class rather than a bug in the cache.
+    assert.match(row!.summary!, /SIGKILL|power loss/);
+
+    // And a healthy persisted session is unchanged: the key is absent, not 0,
+    // so a normal report does not grow a permanent extra field.
+    const healthy = harness({
+      rateLimit: {
+        lastThrottleAt: null,
+        retryAfterSec: null,
+        cooldownRemainingMs: 0,
+        cacheEntries: 7,
+        cacheBytes: 4096,
+        cacheMaxBytes: 8_388_608,
+        cacheSkippedOversize: 0,
+        cachePersist: true,
+        cacheRestored: 3,
+        cachePersistFailed: 0,
+      },
+    });
+    const okRow = (await healthy.invoke()).structuredContent?.rows?.find((r) => r.id === 'cache');
+    assert.equal(okRow?.status, 'pass');
+    assert.doesNotMatch(okRow!.detail!, /cache_persist_lost/);
+  });
+
   it('config snapshot row reflects bound config', async () => {
     const file = await writeTokenFile(VALID_TOKENS());
     const { invoke } = harness();
