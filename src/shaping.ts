@@ -3010,6 +3010,18 @@ export type OutputSchemaFamily = keyof typeof OUTPUT_SCHEMA_FAMILIES;
  *   - `renderSingle()` in `concise`/`detailed` — `catalog.ts`, `audiobooks.ts`.
  *   - an early `return { content: [...] }` before the payload exists — the
  *     "No results found." paths in `search.ts` and `statsfm.ts`.
+ *   - a MODULE-LOCAL emitter called without its optional payload argument —
+ *     `statsfm_taste.ts` and `taste_composites.ts` (#1495).
+ *
+ * The last one was invisible to every mechanism above. `textOut(lines,
+ * structured?)` builds the object in one statement and attaches
+ * `structuredContent` conditionally in another, so a marker that recognises
+ * prose-shaped CALLS never sees it: the module matched nothing, and "matched
+ * nothing" is exactly what a safe module also reports. Both entries below are
+ * measured, not assumed — 4 of 10 call sites in `statsfm_taste.ts` (lines 901,
+ * 1112, 1174, 1315) and 11 of 18 in `taste_composites.ts` omit the payload.
+ * `taste_playlist.ts` imports the same emitter and passes a payload at all 7 of
+ * its call sites, which is why it stays pending.
  *
  * "No second argument" is the operative half of the second mechanism, and it
  * is worth stating precisely because getting it wrong is silent in the
@@ -3037,6 +3049,11 @@ export const PROSE_ONLY_MODULES: ReadonlySet<string> = new Set([
   'src/tools/search.ts',
   'src/tools/searchdive.ts',
   'src/tools/statsfm.ts',
+  // #1495 — prose-only through a module-local emitter, not through a shared
+  // one. They were listed as verified-safe pending until the scanner could
+  // account for a construction the shared markers do not describe.
+  'src/tools/statsfm_taste.ts',
+  'src/tools/taste_composites.ts',
 ]);
 
 /**
@@ -3092,7 +3109,6 @@ export const PENDING_OUTPUT_SCHEMA_MODULES: ReadonlySet<string> = new Set([
   'src/tools/searchhistory.ts',
   'src/tools/showradar.ts',
   'src/tools/smart.ts',
-  'src/tools/statsfm_taste.ts',
   'src/tools/undo.ts',
   'src/tools/swarm3_analytics.ts',
   'src/tools/swarm3_discovery.ts',
@@ -3104,7 +3120,6 @@ export const PENDING_OUTPUT_SCHEMA_MODULES: ReadonlySet<string> = new Set([
   'src/tools/swarm3_snapshots.ts',
   'src/tools/swarm3b_discovery.ts',
   'src/tools/swarm4_playlists.ts',
-  'src/tools/taste_composites.ts',
   'src/tools/taste_playlist.ts',
   'src/tools/users.ts',
 ]);
