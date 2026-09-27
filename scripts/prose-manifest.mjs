@@ -669,15 +669,29 @@ export function proseProvenanceVerdict(manifest, { ancestor }) {
     // missing tip is the normal state of this repository after a squash-merge,
     // and saying so is worth one more `--is-ancestor` on a run that has already
     // shelled out to git and booted the server.
-    const tipGone = base && recorded !== base && ancestor(recorded) === false;
+    //
+    // `ancestor` answers three ways, and the third is not silence. A checkout
+    // that cannot walk the history — a `fetch-depth: 1` CI clone, which is how
+    // this repository is always tested — cannot tell "the tip is gone" from "I
+    // have never heard of the tip", and returns null for both. Rendering that
+    // the same as "nothing was lost" is the failure this paragraph exists to
+    // prevent: `verified` then reads as if the branch tip were still reachable,
+    // which is exactly the claim the sentence was added to qualify. So the
+    // unknown is stated, and the tip is named in that statement too.
+    const tipKnown = base && recorded !== base;
+    const tipVerdict = tipKnown ? ancestor(recorded) : null;
     return {
       status: 'verified',
       error: null,
       detail: `generated from a tree on ${short(subject)}, still in this branch's history.`
-        + (tipGone
+        + (tipVerdict === false
           ? ` The branch tip it was generated from (${short(recorded)}) is not in this history, which is what a `
             + 'squash-merge does to a branch; the prose it pinned is reconciled separately, by content.'
-          : ''),
+          : tipVerdict === null && tipKnown
+            ? ` Whether the branch tip it was generated from (${short(recorded)}) is in this history could not be `
+              + 'determined here — a shallow checkout cannot walk back far enough to say — so nothing is claimed '
+              + 'about it either way.'
+            : ''),
     };
   }
   if (verdict === false) {

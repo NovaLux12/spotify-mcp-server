@@ -880,6 +880,65 @@ describe('prose pin provenance (#1440)', () => {
     assert.match(verdict.detail, /--prose-sync/);
   });
 
+  it('distinguishes a tip that is gone from a tip this checkout cannot see', async () => {
+    // A `fetch-depth: 1` clone — which is how CI checks this repository out — has
+    // the branch tip's object nowhere in it, so `merge-base --is-ancestor` exits
+    // 128 and `ancestor` returns null. That is not the same answer as exit 1, and
+    // it is not the absence of an answer about the base either, which is why the
+    // base is still `true` here. Rendering the unknown as silence made `verified`
+    // read as though the tip were still reachable, in exactly the environment
+    // where nobody could tell by looking.
+    const base = 'c'.repeat(40);
+    const tip = 'a'.repeat(40);
+    const manifest = { files: {}, provenance: { head: tip, base, upstream: base, behind: false } };
+    const cannotSee = (sha: string) => (sha === base ? true : null);
+    const verdict = proseProvenanceVerdict(manifest, { ancestor: cannotSee });
+
+    assert.equal(verdict.status, 'verified', 'the base is in this history, so the pin itself is verified');
+    assert.match(
+      verdict.detail,
+      new RegExp(tip.slice(0, 7)),
+      'the tip must still be named when its fate is unknown — omitting the sentence is what reads as "nothing was lost"',
+    );
+    assert.match(
+      verdict.detail,
+      /could not be determined/,
+      'and the reason has to say the answer is unavailable rather than implying the tip is present',
+    );
+
+    // The three-way distinction the paragraph is about: gone, unknown, and
+    // same-commit. A stamp whose head IS its base has no separate tip to ask
+    // about and must not claim to have looked for one.
+    const gone = proseProvenanceVerdict(manifest, { ancestor: (sha) => (sha === base ? true : false) });
+    assert.match(gone.detail, new RegExp(tip.slice(0, 7)));
+    assert.match(gone.detail, /is not in this history/, 'a definite "no" is reported as one');
+    assert.doesNotMatch(gone.detail, /could not be determined/);
+
+    // The reachable tip is the fourth state, and it is the one a check that only
+    // exercises the unhappy paths cannot see: a tip that IS in this history has
+    // nothing to disclose, so neither sentence may appear. Rendering the known
+    // answer as "could not be determined" would be its own kind of false claim.
+    const reachable = proseProvenanceVerdict(manifest, { ancestor: () => true });
+    assert.equal(reachable.status, 'verified');
+    assert.doesNotMatch(
+      reachable.detail,
+      /could not be determined/,
+      'a tip that is in this history must not be reported as an unanswerable question',
+    );
+    assert.doesNotMatch(
+      reachable.detail,
+      /is not in this history/,
+      'nor as one that is missing',
+    );
+
+    const same = proseProvenanceVerdict(
+      { files: {}, provenance: { head: base, base, upstream: base, behind: false } },
+      { ancestor: cannotSee },
+    );
+    assert.doesNotMatch(same.detail, /could not be determined/, 'head === base leaves no tip to ask about');
+    assert.doesNotMatch(same.detail, /is not in this history/);
+  });
+
   it('classifies each staleness case as hard or soft, and only the soft ones are overridable', async () => {
     // The split is the design, so it is pinned directly rather than only
     // through the CLI. Collapsing the two classes into one list is how a guard
