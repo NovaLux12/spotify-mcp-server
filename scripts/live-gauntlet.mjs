@@ -63,7 +63,11 @@
 import { readFileSync } from 'node:fs';
 import { writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
-import { spawnHarnessServer } from './hermetic-home.mjs';
+// #644: the spawn, the JSONL RPC loop, the handshake and the timeout policy all
+// live in scripts/lib/mcp-client.mjs now, along with the preconditions that run
+// BEFORE the spawn. This file previously held its own copy of the transport, its
+// own 120s timeout and its own hard-coded protocol revision.
+import { connect, looksGated } from './lib/mcp-client.mjs';
 import {
   ACCOUNT_PROBES,
   MUTATING,
@@ -114,44 +118,18 @@ const GATED = new Set([
   'check_following_playlist', 'check_following_artists_and_users',
 ]);
 
-// Snippets meaning "tool answered but the underlying endpoint is gated".
-const GATE_SNIFF = /forbidden|\b403\b|removed by spotify|not available for this app|app registration/i;
-
 // --------------------------------------------------------------- JSONL RPC layer
 
 // #1397: the `env` is built by spawnHarnessServer and is NOT optional, not
 // configurable, and not a flag. A sweep must not be able to reach the developer's
 // real ~/.spotify-mcp by any code path, including one added later.
-const { child } = await spawnHarnessServer({
-  label: 'live-gauntlet',
-  args: ['--env-file=.env', 'dist/index.js'],
-  cwd: ROOT,
-});
-let buf = '';
-const pending = new Map();
-child.stdout.on('data', (d) => {
-  buf += d;
-  let i;
-  while ((i = buf.indexOf('\n')) >= 0) {
-    const line = buf.slice(0, i); buf = buf.slice(i + 1);
-    if (!line.trim()) continue;
-    try { const m = JSON.parse(line); if (m.id && pending.has(m.id)) pending.get(m.id)(m); } catch {}
-  }
-});
-let nextId = 1;
-function rpc(method, params, timeoutMs = 120000) {
-  const id = nextId++;
-  return new Promise((res, rej) => {
-    pending.set(id, (m) => (m.error ? rej(new Error(JSON.stringify(m.error))) : res(m.result)));
-    child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id, method, params }) + '\n');
-    setTimeout(() => pending.has(id) && (pending.delete(id), rej(new Error(`timeout: ${method}`))), timeoutMs);
-  });
-}
-
-await rpc('initialize', { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'live-gauntlet', version: '1.0.0' } });
-child.stdin.write(JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }) + '\n');
-
-const textOf = (r) => r.content.map((c) => c.text).join('\n');
+//
+// #644: all of it is now in scripts/lib/mcp-client.mjs. `looksGated` replaces
+// the GATE_SNIFF regex that was duplicated byte-for-byte here and in
+// sweep-finalize.mjs.
+const client = await connect({ label: 'live-gauntlet', name: 'live-gauntlet', cwd: ROOT });
+const { rpc } = client;
+const textOf = client.textOf;
 
 async function callTool(name, args) {
   const t0 = Date.now();
@@ -446,7 +424,7 @@ for (const name of includeMutating) {
 if (audit.errors.length > 0) {
   console.error('\nCLASSIFICATION_AUDIT_FAILED — refusing to run the sweep:');
   for (const error of audit.errors) console.error(`  - ${error}`);
-  child.kill();
+  client.close();
   process.exit(1);
 }
 
@@ -506,7 +484,7 @@ if (remaining.length === 0) {
     callsMade: 0,
   });
   for (const line of renderProofLines(completeProof)) console.log(line);
-  child.kill();
+  client.close();
   process.exit(proofBlocksExit(completeProof) ? 1 : 0);
 }
 if (batchLimit < Infinity) console.log(`batch mode: up to ${batchLimit} calls this run; ${remaining.length} tools pending (${done.size} recorded)`);
@@ -583,7 +561,7 @@ for (const tool of tools.map((t) => t.name)) {
     if (tool === 'get_audiobook_chapters') {
       seed.chapterId = r.structured?.items?.[0]?.id;
     }
-    if (GATE_SNIFF.test(r.text)) {
+    if (looksGated(r.text)) {
       record(tool, cls, 'PASS', r.ms, { gated: true, reason: 'tool answered but snippet suggests app-registration gating (403/Forbidden/removed)' });
     } else {
       record(tool, cls, 'PASS', r.ms);
@@ -612,7 +590,7 @@ if (batchLimit < Infinity) console.log(`batch run finished after ${calls} calls 
 
 // -------------------------------------------------------------------- report
 
-child.kill();
+client.close();
 
 // Cumulative merge: previous runs (done) + this run — the report is the
 // union, so --resume actually accumulates across spaced batches.

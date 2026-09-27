@@ -11,6 +11,12 @@ import { execSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+// #644: GATE_SNIFF was a byte-for-byte copy of the one in live-gauntlet.mjs, applied
+// to the two files' different inputs (a response's text there, a failure's reason
+// here). A drifted copy would have made the filed-issue count disagree with the
+// sweep report about the same run.
+import { looksGated } from './lib/mcp-client.mjs';
+
 const reportPath = process.argv[2] ?? 'memory/live-sweep-report.json';
 const repo = 'NovaLux12/spotify-mcp-server';
 const report = JSON.parse(readFileSync(reportPath, 'utf8'));
@@ -18,7 +24,6 @@ const results = report.results ?? [];
 const summary = report.summary ?? {};
 const discovered = report.tools_discovered ?? results.length;
 
-const GATE_SNIFF = /forbidden|\b403\b|removed by spotify|not available for this app|app registration/i;
 const TIMEOUT = /^timeout:/i;
 
 // --- tool -> issue-template family mapping (best effort; Other fallback) ---
@@ -50,7 +55,7 @@ for (const r of results) {
   if (r.status !== 'FAIL') continue;
   const reason = r.reason ?? '';
   if (TIMEOUT.test(reason)) timeouts.push(r.tool);
-  else if (GATE_SNIFF.test(reason)) gatedFails.push(r.tool);
+  else if (looksGated(reason)) gatedFails.push(r.tool);
   else fails.push(r);
 }
 

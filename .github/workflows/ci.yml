@@ -70,6 +70,16 @@ jobs:
         # Root every mkdtemp under tests/ at os.tmpdir().
         run: node scripts/check-no-repo-root-fixtures.mjs
 
+      - name: Script syntax and import guard
+        # #644. The test glob is `tests/*.test.ts`, so a `.mjs` under `scripts/`
+        # is never loaded by a test that did not already know about it — and the
+        # three live harnesses are the ones a broken script hurts most, because
+        # their failure mode is a `timeout: initialize` that names no file. This
+        # runs `node --check` over every `scripts/**/*.mjs` and import-smokes
+        # `scripts/lib/`, so a typo fails here rather than in an afternoon of
+        # bisecting a two-minute run.
+        run: npm run lint:scripts
+
       - name: Documentation link guard
         # #931. A relative link that does not resolve, and a 403 message that
         # sends a reader to a README section which is not there. Measured: with

@@ -83,7 +83,15 @@ export const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const DIST_ROOT = process.env.SPOTIFY_MCP_DIST_ROOT ?? join(REPO_ROOT, 'dist');
 
 let registry;
-async function storeRegistry() {
+/**
+ * The built store registry, memoised.
+ *
+ * Exported for `scripts/lib/preflight.mjs`, which has to resolve the same
+ * token path this file resolves before it can tell a missing `npm run auth`
+ * from a missing build. One resolver, so the preflight and the spawn it
+ * guards cannot disagree about where the token lives.
+ */
+export async function storeRegistry() {
   if (registry) return registry;
   const entry = join(DIST_ROOT, 'config.js');
   if (!existsSync(entry)) {

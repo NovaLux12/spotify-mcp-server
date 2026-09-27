@@ -43,7 +43,7 @@ import './helpers/hermetic.js';
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -900,6 +900,21 @@ function makeSandbox(cfg: Record<string, boolean>): Sandbox {
   copyFileSync(GAUNTLET_PATH, join(dir, 'scripts', 'live-gauntlet.mjs'));
   copyFileSync(CORE_PATH, join(dir, 'scripts', 'live-gauntlet-core.mjs'));
   copyFileSync(join(ROOT, 'scripts', 'hermetic-home.mjs'), join(dir, 'scripts', 'hermetic-home.mjs'));
+  // #644: the gauntlet routes its spawn, handshake and transport through
+  // `scripts/lib/`, and the sandbox has no `node_modules` by design, so those
+  // files are copied by the same relative path the script imports them at.
+  mkdirSync(join(dir, 'scripts', 'lib'), { recursive: true });
+  for (const support of readdirSync(join(ROOT, 'scripts', 'lib'))) {
+    if (support.endsWith('.mjs')) {
+      copyFileSync(join(ROOT, 'scripts', 'lib', support), join(dir, 'scripts', 'lib', support));
+    }
+  }
+  // #644: a missing token file is now a preflight failure with a named fix
+  // rather than a full-surface sweep of FAIL rows. `HOME` is this sandbox, so
+  // the default store path is `dir/.spotify-mcp/tokens.json`; the fixture has to
+  // look like a machine that has run `npm run auth`.
+  mkdirSync(join(dir, '.spotify-mcp'), { recursive: true });
+  writeFileSync(join(dir, '.spotify-mcp', 'tokens.json'), JSON.stringify({ access_token: 'stub' }), 'utf8');
   const reportPath = join(dir, 'report.json');
   return {
     dir,
