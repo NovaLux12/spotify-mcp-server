@@ -1,9 +1,17 @@
 /**
- * spotify_doctor (#111 idea 9 + #228): the CLI `doctor` command (runDoctor in
- * index.ts) as an in-server TOOL so MCP agents can self-diagnose the most
- * common failure class — missing/expired tokens, scope gaps between the
- * auth-time grant and the write tools exposed by the active toolsets,
- * Premium gating they cannot introspect, and an active rate-limit cooldown.
+ * spotify_doctor (#111 idea 9 + #228): the diagnostic report, as an in-server
+ * TOOL so MCP agents can self-diagnose the most common failure class —
+ * missing/expired tokens, scope gaps between the auth-time grant and the write
+ * tools exposed by the active toolsets, Premium gating they cannot introspect,
+ * and an active rate-limit cooldown.
+ *
+ * #581 made this the SINGLE implementation of the report. `runDoctor` in
+ * index.ts used to re-implement the checks inline, so the CLI subcommand and
+ * this tool answered the same question two different ways and a caller had no
+ * way to tell which to believe. The CLI is now a renderer over
+ * `collectDoctorReport` + `renderDoctorProse`, both exported from here; the
+ * divergence that remains is enumerated in PROCESS_LOCAL_DOCTOR_ROW_IDS below
+ * rather than left to be discovered.
  *
  * A diagnostic: ALWAYS succeeds. Every check becomes a pass/fail/warn/info
  * row; the report is "ok" when no row failed. Network is best-effort for
@@ -33,7 +41,7 @@ import { readOnlyModeEnabled, REGISTRAR_MANIFEST } from './annotations.js';
 
 type DoctorStatus = 'pass' | 'fail' | 'warn' | 'info';
 
-interface DoctorRow {
+export interface DoctorRow {
   /** Stable check id, e.g. 'token', 'scopes', 'premium', 'rate_limit', 'config'. */
   id: string;
   status: DoctorStatus;
@@ -47,14 +55,14 @@ interface DoctorRow {
   message?: string;
 }
 
-interface DoctorReport {
+export interface DoctorReport {
   /** True when no row has status 'fail' (warns/infos don't fail a diagnostic). */
   ok: boolean;
   rows: DoctorRow[];
   surface: DoctorSurface;
 }
 
-interface DoctorSurface {
+export interface DoctorSurface {
   registry_available: boolean;
   registered_tools: number;
   total_modules: number;
@@ -351,8 +359,23 @@ function registeredToolCount(server: McpServer): { available: boolean; count: nu
   };
 }
 
-function surfaceFor(server: McpServer, tokens: ParsedTokens | null): DoctorSurface {
-  const { available, count } = registeredToolCount(server);
+/**
+ * The report's view of the registered surface.
+ *
+ * `server` is the McpServer when the report is produced inside a running
+ * server (the `spotify_doctor` tool) and undefined when it is produced by the
+ * `spotify-mcp doctor` CLI subcommand, which is a separate process with no
+ * registry to read. Everything else on the surface — which modules the
+ * resolved toolsets and overrides activate, which of those the granted scopes
+ * or READONLY hide — is derived from the environment, NOT from the registry,
+ * so it is computed identically in both. Only `registry_available` and
+ * `registered_tools` need a live registry, and they say so rather than
+ * reporting a zero that would read as "no tools are registered".
+ */
+function surfaceFor(server: McpServer | undefined, tokens: ParsedTokens | null): DoctorSurface {
+  const { available, count } = server
+    ? registeredToolCount(server)
+    : { available: false, count: 0 };
   const toolsets = resolveToolsets(process.env.SPOTIFY_MCP_TOOLSETS);
   const overrides = resolveToolOverrides(
     process.env.SPOTIFY_MCP_ENABLE_TOOLS,
@@ -426,16 +449,31 @@ function surfaceRow(surface: DoctorSurface): DoctorRow {
       `unknown_disable_overrides=${surface.unknown_disable_overrides.join(',') || '(none)'}`,
     );
   }
+  // Everything above is env-derived, so the row carries the same verdict in
+  // both surfaces. Whether the toolset spec matched nothing is a real
+  // misconfiguration and fails in either; whether a live registry could be
+  // read is a property of the ENTRY POINT, not of the deployment, so it
+  // downgrades the row to `info` rather than turning a healthy report red —
+  // the CLI subcommand has no registry by construction and used to exit 1 for
+  // that reason alone.
+  const failed = surface.unknown_toolsets.length > 0 && surface.active_sets.length === 0;
+  const verdict = trim + scopes + readonly + unknown > 0 ? 'warn' : 'pass';
+  const counts = `toolset/overrides hide ${trim} module(s), scopes hide ${scopes}, READONLY hides ${readonly}`;
+  const unknownNote = surface.unknown_toolsets.length > 0
+    ? `; unknown toolsets: ${surface.unknown_toolsets.join(',')}`
+    : '';
+  if (!surface.registry_available) {
+    return {
+      id: 'surface',
+      status: failed ? 'fail' : 'info',
+      summary: `module view resolved from the SPOTIFY_MCP_* env (no live registry to count): ${counts}${unknownNote}`,
+      detail: `registry_available=false registered_tools=not-observable — this entry point runs outside the server process; call spotify_doctor in the MCP host for the live count. ${details.join(' ')}`,
+    };
+  }
   return {
     id: 'surface',
-    status: surface.registry_available
-      ? surface.unknown_toolsets.length > 0 && surface.active_sets.length === 0
-        ? 'fail'
-        : trim + scopes + readonly + unknown > 0 ? 'warn' : 'pass'
-      : 'fail',
-    summary: surface.registry_available
-      ? `live registry: ${surface.registered_tools} tool(s); toolset/overrides hide ${trim} module(s), scopes hide ${scopes}, READONLY hides ${readonly}${surface.unknown_toolsets.length > 0 ? `; unknown toolsets: ${surface.unknown_toolsets.join(',')}` : ''}`
-      : 'live registry unavailable — registered tool count cannot be determined',
+    status: failed ? 'fail' : verdict,
+    summary: `live registry: ${surface.registered_tools} tool(s); ${counts}${unknownNote}`,
     detail: details.join(' '),
   };
 }
@@ -527,6 +565,23 @@ function staticRows(client: SpotifyClient): DoctorRow[] {
           ? `read cache holds ${rl.cacheEntries} entr${rl.cacheEntries === 1 ? 'y' : 'ies'} / ${rl.cacheBytes} bytes — ${skipped} response(s) were too large to cache`
           : `read cache holds ${rl.cacheEntries} entr${rl.cacheEntries === 1 ? 'y' : 'ies'} / ${rl.cacheBytes} bytes`,
         detail: cacheParts.join(' '),
+      });
+    } else {
+      // The accessor is here but reports no cache fields, which the client
+      // reserves for "the cache is off" — `cacheStats()` returns an empty
+      // object when `this.cache` is unset, so that a caller can say "no
+      // cache" instead of "cache is empty". That is exactly the CLI
+      // subcommand's position: it builds its probe client with
+      // `disableCache: true`, so it has no read cache and could not answer
+      // this question. Silently dropping the row left the two surfaces
+      // disagreeing about which checks exist; saying so makes the difference
+      // the honest, visible kind. A genuinely empty cache takes the branch
+      // above and reports `cache_entries=0`, so the two are never confused.
+      rows.push({
+        id: 'cache',
+        status: 'info',
+        summary: 'read cache disabled on this reporting path — cache pressure describes a server session, not this process',
+        detail: 'no cache fields reported, which is how the client says the cache is off rather than empty; call spotify_doctor in the MCP host for the live read-cache figures',
       });
     }
   } catch {
@@ -647,32 +702,22 @@ async function accountRows(client: SpotifyClient): Promise<DoctorRow[]> {
   }
 }
 
-/** Run every doctor check. Includes best-effort live account probe when client is network-capable. */
+/**
+ * Run every doctor check. This is the report's only implementation: the
+ * `spotify_doctor` tool and the `spotify-mcp doctor` CLI subcommand both call
+ * it, so the two surfaces cannot report different facts (#581).
+ *
+ * `server` is the live McpServer when the caller is the in-server tool, and
+ * undefined when the caller is the CLI subcommand. Omitting it does NOT
+ * degrade the report to stubs — the whole module view is env-derived and is
+ * resolved either way; see `surfaceFor`.
+ */
 export async function collectDoctorReport(
   client: SpotifyClient,
   server?: McpServer,
 ): Promise<DoctorReport> {
   const tokens = await tokenRows();
-  const surface = server
-    ? surfaceFor(server, tokens.tokens)
-    : {
-      registry_available: false,
-      registered_tools: 0,
-      total_modules: new Set([...allRegistrationKeys, ...ALWAYS_REGISTERED_MODULES]).size,
-      active_modules: [],
-      exposed_modules: [],
-      hidden_by_trim: [],
-      hidden_by_scopes: [],
-      hidden_by_readonly: [],
-      active_sets: [],
-      inactive_sets: Object.keys(TOOLSETS),
-      unknown_toolsets: [],
-      enable_overrides: [],
-      disable_overrides: [],
-      unknown_enable_overrides: [],
-      unknown_disable_overrides: [],
-      read_only: readOnlyEnabled(),
-    } satisfies DoctorSurface;
+  const surface = surfaceFor(server, tokens.tokens);
   const account = await accountRows(client);
   const rows = [
     ...tokens.rows,
@@ -688,7 +733,38 @@ export async function collectDoctorReport(
 // Rendering + registration
 // ---------------------------------------------------------------------------
 
-function renderProse(report: DoctorReport, verbose: boolean): string {
+/**
+ * Row ids whose text describes the REPORTING PROCESS's own in-process state,
+ * and which therefore cannot be byte-identical between the two entry points
+ * even when the config and the token file are identical (#581).
+ *
+ * The two surfaces are one report, but they are one report told by two
+ * processes, and three rows are genuinely about the process doing the telling:
+ *
+ *   - `surface`   the registered-tool COUNT. The tool counts the live registry
+ *                 it is running inside; the CLI is a separate process with no
+ *                 registry and says so instead of reporting zero. The module
+ *                 view on the same row is env-derived and DOES agree.
+ *   - `rate_limit` the cumulative and rolling-window request counters, which
+ *                 count the requests this process has made since it started.
+ *   - `cache`     the read cache's entry/byte counters, which measure a cache
+ *                 that only exists inside a running server process.
+ *
+ * This list is exported, not just commented, because the test that compares
+ * the two surfaces derives the observed difference from the actual rows and
+ * requires the exception to be EXACTLY this set. A new process-local row that
+ * is not declared here fails that test rather than quietly becoming a second
+ * answer to the same question.
+ */
+export const PROCESS_LOCAL_DOCTOR_ROW_IDS: readonly string[] = ['surface', 'rate_limit', 'cache'];
+
+/**
+ * Render the report as prose. Shared by both entry points: the tool picks
+ * `verbose` from its argument, and the CLI subcommand always asks for the
+ * detail lines because its output is the artefact users paste when asking for
+ * help.
+ */
+export function renderDoctorProse(report: DoctorReport, verbose: boolean): string {
   const lines = [`Spotify doctor — ${report.rows.length} check(s), ${report.ok ? 'no failures' : 'FAILURES PRESENT'}`, ''];
   for (const row of report.rows) {
     lines.push(`${GLYPH[row.status]} [${row.id}] ${row.summary}`);
@@ -716,7 +792,7 @@ export function registerDoctorTool(server: McpServer, client: SpotifyClient): vo
       const report = await collectDoctorReport(client, server);
       const text = args.response_format === 'json'
         ? JSON.stringify(report, null, 2)
-        : renderProse(
+        : renderDoctorProse(
           report,
           args.response_format === 'detailed' || args.verbose === true,
         );

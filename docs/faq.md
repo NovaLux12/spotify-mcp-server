@@ -12,7 +12,7 @@ Short answers to the failures people actually hit. Deepest reference first: `doc
 2. Check the Redirect URI in your Spotify app settings matches **character for character**: `http://127.0.0.1:8888/callback` — no trailing slash, `http` not `https`, `127.0.0.1` not `localhost`.
 3. If you changed the port via `SPOTIFY_REDIRECT_URI`, the app settings must carry the same override.
 
-Still looping? Run `npx -y @novalux12/spotify-mcp@latest doctor` and read the token-state section.
+Still looping? Run `npx -y @novalux12/spotify-mcp@latest doctor` and read the `[token]` and `[account_probe]` rows. Since #581 the CLI prints the same report the `spotify_doctor` tool returns, so a `[token]` row here is exactly what the tool would say in your host.
 
 ## Port 8888 already in use
 
