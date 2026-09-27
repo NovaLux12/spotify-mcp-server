@@ -331,6 +331,22 @@ const RANGE_CANDIDATES = new Set([
 /** A line that says these values are *rejected* is not documenting them. */
 const RANGE_REJECTION = /\b400\b|\brejects?\b|rejected\b|not\s+accepted|\bnot\s+valid\b|\binvalid\b/i;
 
+/**
+ * A documented numeric range, in any of the three dashes the docs use for it.
+ * Declared up here with the other patterns because the checks below it run
+ * during module evaluation, before a `const` further down the file would have
+ * been initialized.
+ */
+const DOCUMENTED_RANGE = /\b(\d+)\s*[–—-]\s*(\d+)\b/g;
+
+/**
+ * A documented CEILING in any of the spellings the docs use for one. Only the
+ * upper number is captured, because only the upper number is comparable to a
+ * schema's `maximum`/`maxItems`; a `max 40` is the same claim as a `1–40`
+ * whose floor the schema states elsewhere.
+ */
+const DOCUMENTED_CEILING = /\b(?:max|maximum|cap|capped at|capped|at most|up to|no more than)\s+(\d+)\b/gi;
+
 const markdownFiles = [
   'README.md',
   'SPEC.md',
@@ -378,6 +394,7 @@ function collectDocumentToolContractErrors(source, file, registry) {
     checkInputsTableContracts(file, source, registry);
     checkModuleMapEntries(file, source, registry);
     checkRangeEnumLiterals(file, source, registry);
+    checkDocumentedFieldConstraints(file, source, registry);
   } finally {
     errors.push = originalPush;
   }
@@ -418,12 +435,211 @@ function checkRangeEnumLiterals(file, source, registry = census) {
 }
 
 /**
+ * #929 — the three claims a caller reads off an Inputs table and acts on.
+ *
+ * A documented field can be named correctly and still be wrong in a way that
+ * only fails at the call: a range wider than the schema clamps, an enum member
+ * the schema never accepts, a default that contradicts the schema's own. Each
+ * of the name-shaped checks above passes on exactly those rows, because the
+ * field name, the tool name and the argument all agree — only the constraint
+ * the doc asserts about them is stale.
+ *
+ * Claims are attributed per FIELD, not per line, which is what makes the prose
+ * half of this check safe. A table row describes one field, so its Description
+ * cell is checked whole. A prose `**Inputs:**` line describes several, so it is
+ * split at each backticked field name and each segment is checked only against
+ * the field that opens it — otherwise `get_playlist`'s `1–100` is attributed to
+ * `fetch_all` two clauses later and every table in the repo fails.
+ *
+ * Each class is deliberately narrow about what it can PROVE, because a gate
+ * that guesses is a gate that gets switched off:
+ *
+ *  - Ranges are only read as `A–B` / `A-B` / `A—B` pairs or as a stated
+ *    ceiling (`max 40`, `at most 10`, `cap 200`), and only compared against a
+ *    schema that states `minimum`/`maximum` (or `minItems`/`maxItems` for an
+ *    array). No inference, no "about N". Both spellings are read because all
+ *    of them are in the docs, and reading only the pair form let a planted
+ *    `max 400` against a `maxItems` of 40 through.
+ *  - Defaults are only compared when the schema states a `default` of its own.
+ *    A field with no schema `default` is defaulted in the handler body, which
+ *    this gate cannot read, so a documented default for one is left alone
+ *    rather than guessed at.
+ *  - Enum members are only read out of a Type column, and only for a property
+ *    the schema really declares as an enum. A cell that says `string` beside
+ *    an enum-typed property is not a claim about the members, so it is not
+ *    failed here — `checkInputsTableContracts` owns the shape questions.
+ */
+function checkDocumentedFieldConstraints(file, source, registry = census) {
+  const lines = source.split('\n');
+  let tool = null;
+  let inInputs = false;
+  for (let index = 0; index < lines.length; index += 1) {
+    const heading = /^#{2,4}\s+`([a-z][a-z0-9_]*)`?/.exec(lines[index]);
+    if (heading) {
+      tool = registry.toolNames.includes(heading[1]) ? heading[1] : null;
+      inInputs = false;
+      continue;
+    }
+    // Any other heading ends the tool section. A prose section (`### 5.2
+    // Search`) is not a tool contract and must not inherit the previous
+    // tool's schema, or every claim beneath it is checked against the wrong
+    // tool.
+    if (/^#{1,6}\s/.test(lines[index])) { tool = null; inInputs = false; continue; }
+    // `inInputs` is set and the line FALLS THROUGH rather than continuing: a
+    // prose Inputs block puts its claims on this very line
+    // (``**Inputs:** `limit` (1–50, default 20), `offset` ``), and skipping
+    // it is how a wrong range in prose stays green while the same claim in a
+    // table fails two sections later. A table's `**Inputs:**` line carries no
+    // claims of its own, so falling through costs nothing there.
+    if (/^\*\*Inputs:\*\*/.test(lines[index])) inInputs = true;
+    if (/^\*\*(?:Returns|Notes|Output):\*\*/.test(lines[index])) { inInputs = false; continue; }
+    if (!tool || !inInputs) continue;
+    const properties = registry.toolInputSchemas?.[tool]?.properties;
+    if (!properties || typeof properties !== 'object') continue;
+    const at = relative(ROOT, file);
+    const line = lines[index];
+
+    // A table row: `| \`field\` | type | required | description |`. The
+    // Description cell is that field's and no other field's, so the enum
+    // column is compared whole and the description is scanned whole.
+    const row = /^\|\s*`([a-z][a-z0-9_]*)`\s*\|/.exec(line);
+    if (row) {
+      const field = row[1];
+      const property = properties[field];
+      if (!property) continue;
+      const cells = line.split(/(?<!\\)\|/).slice(1);
+      const typeCell = (cells[1] ?? '').trim().replace(/\\\|/g, '|');
+      const description = cells.slice(3).join('|').trim();
+      checkDocumentedRange(at, index + 1, tool, field, property, description);
+      checkDocumentedDefault(at, index + 1, tool, field, property, description);
+      checkDocumentedEnumMembers(at, index + 1, tool, field, property, typeCell);
+      continue;
+    }
+
+    // Prose: split at each backticked field name so a claim is only ever
+    // compared against the field whose name opens its clause.
+    for (const [field, claim] of clausesOfFieldClaims(properties, line)) {
+      const property = properties[field];
+      checkDocumentedRange(at, index + 1, tool, field, property, claim);
+      checkDocumentedDefault(at, index + 1, tool, field, property, claim);
+    }
+  }
+}
+
+/**
+ * Split a prose line into `[field, text belonging to that field]` pairs. A
+ * segment runs from one backticked field name to the next, so a range written
+ * about `limit` is never read as a claim about the `market` that follows it.
+ */
+function clausesOfFieldClaims(properties, line) {
+  const marks = [...line.matchAll(/`([a-z][a-z0-9_]*)`/g)];
+  const out = [];
+  for (let i = 0; i < marks.length; i += 1) {
+    const field = marks[i][1];
+    if (!Object.hasOwn(properties, field)) continue;
+    const start = marks[i].index + marks[i][0].length;
+    const end = i + 1 < marks.length ? marks[i + 1].index : line.length;
+    out.push([field, line.slice(start, end)]);
+  }
+  return out;
+}
+
+/**
+ * The inclusive bounds the schema states, as `null` for a bound it does not
+ * state. An array's bounds are `minItems`/`maxItems`; a number's are
+ * `minimum`/`maximum`, or the nearest integer either side of an exclusive
+ * bound, since a document states inclusive numbers.
+ */
+function statedBounds(property) {
+  if (property.type === 'array') {
+    return {
+      minimum: typeof property.minItems === 'number' ? property.minItems : null,
+      maximum: typeof property.maxItems === 'number' ? property.maxItems : null,
+    };
+  }
+  return {
+    minimum: typeof property.minimum === 'number'
+      ? property.minimum
+      : typeof property.exclusiveMinimum === 'number' ? property.exclusiveMinimum + 1 : null,
+    maximum: typeof property.maximum === 'number'
+      ? property.maximum
+      : typeof property.exclusiveMaximum === 'number' ? property.exclusiveMaximum - 1 : null,
+  };
+}
+
+function checkDocumentedRange(at, line, tool, field, property, text) {
+  if (!property || typeof property !== 'object' || !text) return;
+  const bounds = statedBounds(property);
+  if (bounds.maximum === null) return;
+  // A ceiling is not only ever written as a pair. `max 40`, `at most 10` and
+  // `cap 200` are the same claim in three spellings, and all three appear in
+  // the docs — reading only the pair form let `save_to_library.uris` be
+  // documented `max 40` against a `maxItems` of 40 and still let a planted
+  // `max 400` through, which is a gate that cannot fail.
+  for (const match of text.matchAll(DOCUMENTED_CEILING)) {
+    const claimed = Number(match[1]);
+    if (claimed > bounds.maximum) {
+      errors.push(`${at}:${line}: \`${tool}\`.\`${field}\` documents "${match[0].trim()}" but the live schema caps it at ${bounds.maximum} — a caller copying the doc is rejected.`);
+    }
+  }
+  if (bounds.minimum === null && bounds.maximum === null) return;
+  for (const match of text.matchAll(DOCUMENTED_RANGE)) {
+    const documentedMin = Number(match[1]);
+    const documentedMax = Number(match[2]);
+    // A document may legitimately describe a SUBSET of what the schema
+    // accepts; what it may not do is promise more than the schema clamps, or
+    // understate a floor the schema enforces. Compare in the direction that
+    // breaks a call.
+    if (bounds.maximum !== null && documentedMax > bounds.maximum) {
+      errors.push(`${at}:${line}: \`${tool}\`.\`${field}\` is documented as \`${match[0]}\`, but the live schema caps it at ${bounds.maximum} — a caller copying the doc is rejected.`);
+    }
+    if (bounds.minimum !== null && documentedMin < bounds.minimum) {
+      errors.push(`${at}:${line}: \`${tool}\`.\`${field}\` is documented as \`${match[0]}\`, but the live schema requires at least ${bounds.minimum} — a caller copying the doc is rejected.`);
+    }
+  }
+}
+
+/**
+ * A documented default is compared only against a schema that STATES one.
+ * Most paging fields default in the handler body (`args.limit ?? 20`) and
+ * declare no `default`, and the schema is the only source this gate reads, so
+ * those are deliberately not guessed at. Where the schema does state a
+ * default, that is the same fact the doc is asserting, and disagreement is
+ * drift.
+ */
+function checkDocumentedDefault(at, line, tool, field, property, text) {
+  if (!property || typeof property !== 'object' || !text) return;
+  if (property.default === undefined) return;
+  if (property.type !== 'number' && property.type !== 'integer' && property.type !== 'string') return;
+  for (const match of text.matchAll(/[Dd]efaults?\s*:?\s*`?(-?\d+)`?/g)) {
+    const documented = Number(match[1]);
+    if (property.default !== documented) {
+      errors.push(`${at}:${line}: \`${tool}\`.\`${field}\` documents default ${documented} but the live schema declares ${JSON.stringify(property.default)}.`);
+    }
+  }
+}
+
+/**
+ * Enum members named in a Type column. Only cells that actually list quoted
+ * members are read, and only against a property the schema declares as an
+ * enum — a cell reading `string` next to an enum-typed property makes no claim
+ * about which members are legal, so it is not this check's business.
+ */
+function checkDocumentedEnumMembers(at, line, tool, field, property, typeCell) {
+  if (!Array.isArray(property?.enum)) return;
+  const listed = [...typeCell.matchAll(/[`'"]([a-z0-9_-]+)[`'"]/g)].map((match) => match[1]);
+  if (listed.length === 0) return;
+  const rejected = listed.filter((value) => !property.enum.includes(value));
+  if (rejected.length === 0) return;
+  errors.push(`${at}:${line}: \`${tool}\`.\`${field}\` documents enum member${rejected.length === 1 ? '' : 's'} ${rejected.map((value) => `\`${value}\``).join(', ')}, which the live schema does not accept (it accepts ${property.enum.map((value) => `\`${value}\``).join(', ')}).`);
+}
+
+/**
  * Module maps (`playlists.ts  # get_playlist, add_to_playlist, …`) are tool
  * contracts too: the tree in SPEC.md §11 listed four tools that no longer
  * exist, and every other matcher missed it because the names appear neither
  * in backticks nor in a json fence nor in an Inputs table.
- */
-function checkModuleMapEntries(file, source, registry = census) {
+ */function checkModuleMapEntries(file, source, registry = census) {
   const knownTools = new Set(registry.toolNames);
   const knownNonTools = new Set([...registry.promptNames, ...registry.resourceUris, ...parameterAllowlist, ...documentedMetadata, ...(registry.registrationKeyNames ?? registrationKeyNames), ...retiredToolNames, ...retiredParameterNames]);
   const lines = source.split('\n');

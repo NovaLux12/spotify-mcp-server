@@ -745,7 +745,7 @@ resolved first.
 |---|---|---|---|
 | `uri` | string | yes | Spotify URI (track/episode/album) |
 | `markets` | string[] | yes | 1–10 market codes to test, e.g. `["US","JP","DE"]` |
-| `response_format` | `"text"` \| `"json"` | no | Output shape |
+| `response_format` | `"concise"` \| `"detailed"` \| `"json"` | no | Output shape — the shared response modes, not this tool's own |
 
 **Returns:** `per_market[]` with one row per probed market, each carrying
 `market`, `available` (the read returned a payload), `is_playable`,
@@ -842,7 +842,9 @@ List an artist's albums and singles.
 |---|---|---|---|
 | `id` | string | yes | Artist ID |
 | `include_groups` | string[] | no | `album`, `single`, `appears_on`, `compilation`. Default: `["album","single"]` |
-| `limit` | number | no | 1–50. Default: 20 |
+| `limit` | number | no | 1–10. Default: 10 |
+
+`GET /artists/{id}/albums` hard-caps `limit` at 10 and answers **400** above it, so 10 is this tool's ceiling, not a local choice. A discography longer than one page is read with `offset`, or whole with `fetch_all` (bounded by `SPOTIFY_MCP_FETCH_ALL_CAP`), both of which disclose what the walk read.
 
 ---
 
@@ -1622,7 +1624,7 @@ Get any Spotify user's public profile.
 
 **Inputs:** `user_id` (string, required)
 
-**Returns:** display name, user ID, URI, follower count, profile image URL, external URL. Uses `GET /users/{user_id}` (no authentication-scoped data — only public fields).
+**Returns:** display name, user ID, URI, profile image URL, external URL. Uses `GET /users/{user_id}` (no authentication-scoped data — only public fields). Spotify removed `followers` from user profiles in February 2026, so on a current registration there is no follower count to report and the line is omitted rather than printed as `0`; a grandfathered registration that still sends one has it printed. The endpoint itself was removed in the same changelog, so a current registration gets a 403 that names the grandfathering requirement instead of a profile.
 
 ---
 
