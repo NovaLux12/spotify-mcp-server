@@ -9,8 +9,17 @@
  * one-liner and the docs blurbs each claimed something different (#655). This
  * file authors the one canonical sentence (see CANONICAL_DESCRIPTION) and every
  * one of those surfaces is asserted to be a mirror of it, plus the registry
- * schema's ServerDetail limits — mirrored offline here, and checked against the
- * real pinned $schema with ajv when it can be fetched.
+ * schema's ServerDetail limits mirrored offline so the checks below need no
+ * network.
+ *
+ * The limits here are a mirror, not the contract. Conformance against the real
+ * published schema is `scripts/check-server-schema.mjs`, driven by both
+ * workflows and by `tests/server-schema.test.ts`. This file used to carry a
+ * second, best-effort ajv check that fetched the same URL; it returned without
+ * asserting whenever the fetch or the ajv import failed, so the one thing the
+ * suite reported — "server.json validates against the schema" — was exactly
+ * the thing it could not promise. See that script's header for the trade-off
+ * that replaced it.
  *
  * Run with: node --import tsx --test tests/registry-meta.test.ts
  */
@@ -22,12 +31,6 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { ErrorObject, ValidateFunction } from 'ajv';
-import type { TestContext } from 'node:test';
-
-/** ajv is a transitive dependency (via @modelcontextprotocol/sdk), never a direct one. */
-const AJV_UNRESOLVED =
-  'ajv/ajv-formats are transitive dependencies of @modelcontextprotocol/sdk and did not resolve here';
 
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const pkg = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8'));
@@ -46,9 +49,11 @@ const readme = readFileSync(path.join(root, 'README.md'), 'utf8');
  * This mirror is deliberately a strict subset of the schema — it omits `name`
  * length bounds, the Repository required url+source pair, the LocalTransport
  * anyOf shape and every KeyValueInput constraint. A subset cannot catch a
- * manifest that already violates the revision it claims, so the ajv gate at
- * the bottom of this file is the real conformance check; this stays as the
- * backstop for environments where that gate cannot run.
+ * manifest that already violates the revision it claims, so it is a backstop
+ * with no network, not the conformance check. The conformance check is
+ * `scripts/check-server-schema.mjs`; this file's contribution to it is the pin
+ * below, which is why the limits here can be trusted to describe the revision
+ * that gate actually validates.
  */
 const MIRRORED_REGISTRY_SCHEMA = 'https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json';
 const REGISTRY_NAME_PATTERN = /^[a-zA-Z0-9.-]+\/[a-zA-Z0-9._-]+$/;
@@ -121,27 +126,6 @@ function readmeAuthoredLines(md: string): string[] {
     if (line.startsWith('<!-- END:generated')) insideGenerated = false;
   }
   return authored;
-}
-/** Bound on the schema fetch so an unreachable host cannot wedge the suite. */
-const SCHEMA_FETCH_TIMEOUT_MS = 10_000;
-
-const errorText = (error: unknown): string => (error instanceof Error ? error.message : String(error));
-
-/** ajv error objects → one readable line per violation. */
-function formatAjvErrors(errors: ErrorObject[] | null | undefined): string {
-  if (!Array.isArray(errors) || errors.length === 0) return 'ajv reported no error detail';
-  return errors.map((error) => `${error.instancePath || '/'} ${error.message}`).join('; ');
-}
-
-/**
- * The ajv gate is the only real conformance check here, but it needs both the
- * network and ajv. `t.skip` would break CI's `pass == test` gate
- * (.github/workflows/ci.yml), turning an unreachable schema host into a red
- * suite, so an unavailable gate is recorded as a diagnostic and the offline
- * mirror stands alone. The reason is printed in the log, never swallowed.
- */
-function gateUnavailable(t: TestContext, reason: string): void {
-  t.diagnostic(`ajv gate NOT RUN: ${reason}; only the mirrored ServerDetail limits were checked`);
 }
 
 describe('registry metadata sync', () => {
@@ -316,48 +300,5 @@ describe('server.json registry schema conformance (#655)', () => {
     assert.equal(npmPackage.identifier, pkg.name);
     assert.equal(npmPackage.version, pkg.version);
     assert.equal(npmPackage.transport?.type, 'stdio');
-  });
-});
-
-describe('server.json against the pinned registry schema, not the mirror (#655)', () => {
-  it('ajv-compiles the pinned $schema and accepts the committed manifest', async (t) => {
-    // Validate the revision the mirror describes, not whatever the manifest
-    // currently claims — a bumped $schema must fail here, not slip through.
-    assert.equal(
-      server.$schema,
-      MIRRORED_REGISTRY_SCHEMA,
-      `server.json $schema (${server.$schema}) must equal the pinned schema (${MIRRORED_REGISTRY_SCHEMA}) so this gate checks the revision the mirror describes`,
-    );
-
-    let schema: unknown;
-    try {
-      const response = await fetch(MIRRORED_REGISTRY_SCHEMA, { signal: AbortSignal.timeout(SCHEMA_FETCH_TIMEOUT_MS) });
-      if (!response.ok) throw new Error(`HTTP ${response.status} ${response.statusText}`);
-      schema = await response.json();
-    } catch (error) {
-      gateUnavailable(t, `could not fetch the pinned registry schema (${errorText(error)})`);
-      return;
-    }
-
-    let validate: ValidateFunction;
-    try {
-      // Loaded dynamically rather than at the top of the file so a resolution
-      // failure neutralises this one gate instead of aborting the whole suite.
-      // strict:false is required because the schema is draft-07 carrying
-      // OpenAPI `example` annotations; addFormats still enforces the
-      // `format: "uri"` keywords that non-strict mode would silently drop.
-      const [{ default: Ajv }, { default: addFormats }] = await Promise.all([import('ajv'), import('ajv-formats')]);
-      const ajv = new Ajv({ strict: false, allErrors: true });
-      addFormats(ajv);
-      validate = ajv.compile(schema);
-    } catch (error) {
-      gateUnavailable(t, `${AJV_UNRESOLVED} (${errorText(error)})`);
-      return;
-    }
-
-    assert.ok(
-      validate(server),
-      `server.json violates the pinned schema ${MIRRORED_REGISTRY_SCHEMA}: ${formatAjvErrors(validate.errors)}`,
-    );
   });
 });

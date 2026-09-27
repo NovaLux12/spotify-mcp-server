@@ -248,9 +248,14 @@ compiled `dist/` is what gets tested), then packs the tarball and asserts its
 `dist/index.js` still starts with the `#!/usr/bin/env node` shebang before
 publishing `@novalux12/spotify-mcp` with provenance (trusted publishing/OIDC or
 the configured `NPM_TOKEN` fallback). A second job then syncs `server.json`'s
-version from the tag and publishes it to the official MCP Registry using GitHub
-OIDC. A rerun is safe after a partial failure: the npm job skips a version that
-is already present and the registry job can be retried.
+version from the tag, validates the synced manifest against the MCP Registry
+schema its own `$schema` names, and publishes it to the official MCP Registry
+using GitHub OIDC. The same schema gate runs in `ci.yml` on every pull request,
+which is where a violation belongs: the registry rejects a non-conforming
+manifest with a 400 that names a property, and by then `npm publish` has
+already made the release public. A rerun is safe after a partial failure: the
+npm job skips a version that is already present and the registry job can be
+retried.
 
 
 ### 3. Verify the published artifacts
