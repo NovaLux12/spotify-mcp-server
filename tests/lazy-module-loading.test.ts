@@ -231,10 +231,14 @@ describe('#906 a trimmed toolset evaluates only the modules it serves', () => {
     // a number that moves for a stated reason is information, and one that
     // moves silently is the failure this tripwire exists to catch.
     //
+    // #602 grew 587 -> 589 by adding `list_accounts` / `switch_account` —
+    // the account registry's two tools, both of which the issue asked for by
+    // name, and neither of which replaces an existing tool.
+    //
     // Measured from the live registry on the post-rebase tree, not derived by
     // subtracting: main moved underneath this branch twice, and the removals
     // did not compose with the other changes to the plain arithmetic.
-    assert.equal(full.toolCount, 587, 'the default surface must be unchanged');
+    assert.equal(full.toolCount, 589, 'the default surface must be unchanged');
     // `annotations.ts` registers verify_receipt itself, so it is in the
     // manifest's file list without being imported through a thunk.
     const missing = REGISTRAR_MANIFEST

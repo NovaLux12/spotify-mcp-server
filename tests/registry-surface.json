@@ -216,6 +216,10 @@
     "doctor": [
       "spotify_doctor"
     ],
+    "accounts": [
+      "list_accounts",
+      "switch_account"
+    ],
     "swarm3meta": [
       "find_tool",
       "inspect_tool",
@@ -954,6 +958,7 @@
     "library_snapshot_diff",
     "library_to_playlist",
     "library_value_summary",
+    "list_accounts",
     "list_all_chapters",
     "list_backups",
     "list_device_presets",
@@ -1249,6 +1254,7 @@
     "statsfm_track_stats",
     "subscribe_to_show",
     "surprise_me",
+    "switch_account",
     "switch_device",
     "tag_listening_session",
     "tag_management",

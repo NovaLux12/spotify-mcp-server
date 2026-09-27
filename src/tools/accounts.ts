@@ -260,9 +260,14 @@ export function registerAccountsTools(server: McpServer, client: SpotifyClient):
         );
       }
       if (!tokenFileIsUsable(target)) {
+        // The `profile` parameter is what the caller passes, so it is what the
+        // message names. The auth step that would create those credentials is
+        // a CLI one and cannot be named in flag syntax without telling the
+        // reader to pass a flag this tool does not accept.
         return textResult(
-          `Cannot switch to "${profile}": ${target} holds no usable Spotify credentials. `
-          + `Run "spotify-mcp auth --profile ${profile}" first.`,
+          `Cannot switch: profile "${profile}" has no usable Spotify credentials at ${target}. `
+          + `Authenticate that profile first (see the profile parameter description), `
+          + `or pass a profile that already has credentials.`,
           { ok: false, changed: false, profile, token_file: target, reason: 'no_credentials' },
         );
       }

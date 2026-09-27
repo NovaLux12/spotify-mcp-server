@@ -1797,6 +1797,14 @@ Every tool result with a `structuredContent` carries `account_id` and `display_n
 
 **When the identity cannot be read, nothing is added** — not `null`, not a placeholder. A present-but-empty field reads as a fact ("this account has no id") when what is true is "we could not find out", and a caller has to be able to tell the two apart. The identity is resolved at most once per account per session and cached against the client's own `tokenFile`, so a switch re-points the key and the previous account's cached identity is simply never looked up again — no code has to remember to clear it. `list_accounts` is exempt: it reports the acting account as its subject.
 
+#### What this does NOT do: the audit trail is still per-directory
+
+The issue's fourth suggestion asks for the history and receipt stores to be keyed by `account_id` so that switching accounts cannot "interleave audit trails". **Only the first half of that is done here.** The read cache is handled — a switch drops it, so no cached read crosses accounts — and the persisted cache file was already per-token-file (#1249). The mutation ledger and the receipt store are not: `historyFilePath()` and the receipts path both resolve a DIRECTORY, not a per-account name, so a session that switches from `personal` to `work` appends both accounts' mutations to the same `mutations.jsonl`, and a receipt id minted under one account can be redeemed by `undo` under the other.
+
+The acting-account echo is not a substitute. It attributes tool RESULTS; a receipt is written on the mutation path and carries no `account_id`. A caller reading the ledger still cannot tell which of two accounts a line belongs to, which is the failure the issue's Impact section describes.
+
+Keying those two stores per `account_id` is left as follow-up work rather than half-done here: both are append-only files with existing rotation/compaction logic and an `undo` path that resolves receipts by id, so re-keying them changes the on-disk format for every existing operator and needs its own migration and its own issue. It is recorded here because the omission is a real gap against the issue's suggestion, not a decision that was made silently.
+
 #### `spotify_doctor`
 The `account` row names the acting account's `account_id`, its `id`, its `display_name`, and **the token file the identity was read through** — a report that named the account but not the file could not answer "which of the accounts on this box am I looking at". An absent `account_id` is reported as `not returned`, never substituted with the `id`: a near-miss built from `id` would look like a registry match.
 

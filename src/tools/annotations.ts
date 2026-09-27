@@ -1183,11 +1183,12 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   // they are on is the question that gate most needs to answer.
   // MEASURED, not estimated: the census drives the built server over stdio,
   // reads back the real tools/list, and applies the budget's own formula to the
-  // finalized description + inputSchema of the two tools. 1644 B across
-  // 2 tools, so the derived ceiling is 3 tools / ceil(1644 * 1.1) = 1809 B —
-  // 10% headroom, unchanged, rather than a ceiling raised to make a breach
-  // pass. Host-session payload impact is +1644 B on top of the measured
-  // origin/main total, recorded in docs/schema-budgets.md.
+  // finalized description + inputSchema of the two tools. The baseline pair
+  // below is that measurement, and the ceiling is DERIVED from it by
+  // `derivePerModuleCeilings` in this file — 10% headroom, unchanged, rather
+  // than a ceiling raised to make a breach pass. The host-session payload
+  // impact is one more tool's worth on top of the measured origin/main total,
+  // recorded in docs/schema-budgets.md.
   manifestEntry('accounts', 'accounts', lazyModule('./accounts.js', 'registerAccountsTools'), [2, 1644], { readOnlySafe: true }),
   // 1624 -> 2023 (#713): toolset_report gained a declared `response_format`, and
   // all three discovery tools now carry the mode-specific description instead of
