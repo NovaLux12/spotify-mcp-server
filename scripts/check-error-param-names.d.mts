@@ -38,6 +38,13 @@ export interface Registration {
    */
   keys: Set<string>;
   /**
+   * The names of the field objects this schema spreads — not their keys, which
+   * live in the declaration each name points at. `parameterVocabulary` resolves
+   * the two: a spread contributes nothing to `keys`, and these names are how it
+   * recovers them.
+   */
+  spreads: string[];
+  /**
    * True when a spread (or a nesting this scan did not follow) makes `keys`
    * incomplete. Rule 1 needs no schema and still runs; rule 2 skips, because
    * claiming a name is undeclared on a lower bound would be guessing.
@@ -65,6 +72,15 @@ export interface ThrownMessage {
   /** The owner's schema keys, or `null` when there is no owner or it is opaque. */
   keys: Set<string> | null;
 }
+
+/**
+ * Every tool name `source` registers, from both registration forms.
+ *
+ * Reads the blanked mask, so a tool name inside a comment or a string is not
+ * counted. This is the vocabulary `collectModuleViolations` excuses a bare
+ * snake_case claim against when the claim names a tool rather than a parameter.
+ */
+export declare function declaredToolNames(source: string): Set<string>;
 
 /**
  * Walks the string literal whose opening quote is at `from`.
@@ -103,11 +119,50 @@ export declare function stringLiterals(
  */
 export declare function collectThrownMessages(source: string): ThrownMessage[];
 
-/** Every parameter name any registered tool in `sources` accepts. */
-export declare function parameterVocabulary(sources: readonly string[]): Set<string>;
+/**
+ * Every parameter name any registered tool in `sources` accepts.
+ *
+ * Takes the `{ file, source }` records the source walk produces, not bare
+ * strings — this walks each `source` and resolves each registration's spread
+ * names through `namedFieldObjectKeys`. `toolNameVocabulary` is the one that
+ * takes strings, so the two are not interchangeable despite the parallel shape.
+ */
+export declare function parameterVocabulary(sources: readonly { source: string }[]): Set<string>;
 
 /** Every tool name registered anywhere in `sources`. */
 export declare function toolNameVocabulary(sources: readonly string[]): Set<string>;
+
+/**
+ * Whether `source` is a command-line entry point, and so exempt from the module
+ * rule.
+ *
+ * Two halves, and both are structural rather than a filename list: the module
+ * reads `process.argv` at all, or it declares a function whose parameter list
+ * names `argv`. A `--flag` in a message that reaches a terminal is good advice,
+ * where the same token in a message shared with tool callers is a mis-named
+ * parameter. Naming `src/index.ts` here is why the first half exists — the
+ * dispatch reads `process.argv[2]` at top level and declares no such function.
+ */
+export declare function isCommandLineModule(source: string): boolean;
+
+/**
+ * Every way `source` misnames a parameter to a caller, for a module rather than
+ * a registered tool's handler, as report lines.
+ *
+ * Returns `[]` for a file under `src/tools` and for a command-line module: the
+ * per-tool rules already cover the former, and the latter is exempt, so running
+ * both over one handler would report a single `--prefix` twice under two
+ * different messages.
+ *
+ * `vocabulary` is the union of parameter names any registered tool accepts;
+ * `toolNames` is the second vocabulary a claim is excused against.
+ */
+export declare function collectModuleViolations(
+  source: string,
+  file: string,
+  vocabulary: Set<string>,
+  toolNames?: Set<string>,
+): string[];
 
 /**
  * Every way `source` misnames a parameter to a caller, as report lines.
