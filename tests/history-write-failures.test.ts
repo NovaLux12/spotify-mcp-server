@@ -24,6 +24,8 @@
  * Run: node --import tsx --test tests/history-write-failures.test.ts
  */
 
+import './helpers/hermetic.js';
+
 import { describe, it, before, after, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { chmod, mkdtemp, rm, writeFile, mkdir } from 'node:fs/promises';

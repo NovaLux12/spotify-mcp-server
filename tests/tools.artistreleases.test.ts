@@ -17,6 +17,8 @@
  * NOTE: TOKEN_FILE is resolved at module-load time inside src/auth.ts, so the
  * env vars MUST be set before the dynamic imports below.
  */
+import './helpers/hermetic.js';
+
 import { describe, it, before, after, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, writeFile, rm } from 'node:fs/promises';

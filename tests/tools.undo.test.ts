@@ -7,6 +7,8 @@
  *
  * Run: node --import tsx --test tests/tools.undo.test.ts
  */
+import './helpers/hermetic.js';
+
 import { describe, it, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';

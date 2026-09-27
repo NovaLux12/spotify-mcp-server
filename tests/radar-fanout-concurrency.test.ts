@@ -23,6 +23,8 @@
  * is the same on every run.
  */
 
+import './helpers/hermetic.js';
+
 import { afterEach, beforeEach, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';

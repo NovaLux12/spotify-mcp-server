@@ -13,6 +13,8 @@
  * on `docs/cookbook.md` via `--check-fixture`, so a future rename of a
  * cookbook-named tool is the only place that needs a recipe update.
  */
+import './helpers/hermetic.js';
+
 import { describe, it } from 'node:test';
 import { execFileSync } from 'node:child_process';
 import { dirname, join } from 'node:path';

@@ -6,6 +6,8 @@
  * produced `device_id=` with an empty value (wrong device / 400) and the plan
  * text printed that empty id for an agent to copy by hand.
  */
+import './helpers/hermetic.js';
+
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { z } from 'zod';

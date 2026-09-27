@@ -8,6 +8,8 @@
  *    ≤5 pages) and surfaces a truncation footer
  *  - ?market passthrough for show/episode single-get endpoints
  */
+import './helpers/hermetic.js';
+
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';

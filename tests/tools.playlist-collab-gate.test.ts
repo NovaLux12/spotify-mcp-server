@@ -12,6 +12,8 @@
  * Run: node --import tsx --test tests/tools.playlist-collab-gate.test.ts
  */
 
+import './helpers/hermetic.js';
+
 import { afterEach, describe, it } from 'node:test';
 import { z } from 'zod';
 import assert from 'node:assert/strict';

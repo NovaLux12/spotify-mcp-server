@@ -13,6 +13,8 @@
  * caller sees.
  */
 
+import './helpers/hermetic.js';
+
 import { afterEach, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';

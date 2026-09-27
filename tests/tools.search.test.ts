@@ -1,3 +1,5 @@
+import './helpers/hermetic.js';
+
 import test, { afterEach, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { registerSearchTools } from '../src/tools/search.js';

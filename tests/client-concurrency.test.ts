@@ -52,6 +52,8 @@
  * Run with: node --import tsx --test tests/client-concurrency.test.ts
  */
 
+import './helpers/hermetic.js';
+
 import { describe, it, before, after, beforeEach, afterEach, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, writeFile, rm } from 'node:fs/promises';

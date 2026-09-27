@@ -43,6 +43,8 @@
  *    does read, so the escape hatch cannot quietly absorb a real knob.
  */
 
+import './helpers/hermetic.js';
+
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';

@@ -6,6 +6,8 @@
  * Run: node --import tsx --test tests/tools.podcastsession.test.ts
  */
 
+import './helpers/hermetic.js';
+
 import { afterEach, beforeEach, describe, it } from 'node:test';
 import { z } from 'zod';
 import assert from 'node:assert/strict';

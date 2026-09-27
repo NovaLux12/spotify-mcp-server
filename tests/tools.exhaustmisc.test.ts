@@ -1,3 +1,5 @@
+import './helpers/hermetic.js';
+
 import { after, before, describe, it, mock } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';

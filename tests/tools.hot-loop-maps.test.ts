@@ -19,6 +19,8 @@
  * the balance_playlist_pairs commit path (src/tools/swarm3_playlistops.ts),
  * and groupSessions de-duplication (src/tools/statsfm_taste.ts).
  */
+import './helpers/hermetic.js';
+
 import { after, before, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';

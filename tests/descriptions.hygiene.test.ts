@@ -27,6 +27,8 @@
  *
  * Run: node --import tsx --test tests/descriptions.hygiene.test.ts
  */
+import './helpers/hermetic.js';
+
 import { before, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 

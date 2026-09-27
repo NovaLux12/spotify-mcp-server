@@ -13,6 +13,8 @@
  *    from the live registrar manifest via tests/live-registry.ts, never
  *    written down (#670)
  */
+import './helpers/hermetic.js';
+
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';

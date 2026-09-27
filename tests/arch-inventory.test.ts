@@ -1,6 +1,8 @@
 /**
  * Generated documentation inventory guard (#924, #925, #930).
  */
+import './helpers/hermetic.js';
+
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';

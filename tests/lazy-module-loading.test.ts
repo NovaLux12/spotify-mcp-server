@@ -44,6 +44,8 @@
  *
  * Run: node --import tsx --test tests/lazy-module-loading.test.ts
  */
+import './helpers/hermetic.js';
+
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';

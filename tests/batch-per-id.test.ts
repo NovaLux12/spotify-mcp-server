@@ -30,6 +30,8 @@
  *
  * Run: node --import tsx --test tests/batch-per-id.test.ts
  */
+import './helpers/hermetic.js';
+
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { z } from 'zod';

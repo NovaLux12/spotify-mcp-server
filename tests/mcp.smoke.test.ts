@@ -7,6 +7,8 @@
  * pointed at a temp file via SPOTIFY_MCP_TOKEN_FILE so the child can NEVER
  * touch ~/.spotify-mcp/tokens.json.
  */
+import './helpers/hermetic.js';
+
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, execFileSync, type ChildProcessWithoutNullStreams } from 'node:child_process';

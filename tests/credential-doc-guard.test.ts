@@ -15,6 +15,8 @@
  * rather than merely checking that a file lacks the word "secret".
  */
 
+import './helpers/hermetic.js';
+
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';

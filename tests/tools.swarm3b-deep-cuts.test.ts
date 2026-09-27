@@ -12,6 +12,8 @@
  *
  * Run: node --import tsx --test tests/tools.swarm3b-deep-cuts.test.ts
  */
+import './helpers/hermetic.js';
+
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { z } from 'zod';

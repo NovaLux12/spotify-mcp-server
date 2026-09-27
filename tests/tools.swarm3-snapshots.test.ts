@@ -7,6 +7,8 @@
  * assert the advertised cap, the applied ceiling, and the truncation disclosure
  * all agree.
  */
+import './helpers/hermetic.js';
+
 import assert from 'node:assert/strict';
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';

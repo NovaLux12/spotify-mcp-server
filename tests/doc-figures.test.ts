@@ -15,6 +15,8 @@
  * makes the same comparison reject a deliberately wrong document. A guard
  * whose negative case was never run is the thing §6 is warning about.
  */
+import './helpers/hermetic.js';
+
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';

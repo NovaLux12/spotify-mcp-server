@@ -18,6 +18,8 @@
  * tool under test calls `SpotifyClient.getAllPages` against a mocked
  * fetch, so the notification stream is fully observable end-to-end.
  */
+import './helpers/hermetic.js';
+
 import { describe, it, before, after, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, writeFile, rm } from 'node:fs/promises';

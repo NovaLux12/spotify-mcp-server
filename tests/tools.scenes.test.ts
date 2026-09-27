@@ -3,6 +3,8 @@
  * local JSON sidecar plus the in-process wind-down ramp with an injectable
  * timer seam (no real timers ever fire here).
  */
+import './helpers/hermetic.js';
+
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import { z } from 'zod';
 import assert from 'node:assert/strict';

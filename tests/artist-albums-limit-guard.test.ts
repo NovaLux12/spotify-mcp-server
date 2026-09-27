@@ -22,6 +22,8 @@
  * above the cap in either would have passed. Coverage that stops at a directory
  * boundary is coverage that stops exactly where the next contributor writes.
  */
+import './helpers/hermetic.js';
+
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readdirSync, readFileSync } from 'node:fs';

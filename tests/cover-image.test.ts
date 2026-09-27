@@ -19,6 +19,8 @@
  * fetch is stubbed to return a never-resolving promise, so the only way the
  * helper can complete is by going through `AbortSignal.timeout`.
  */
+import './helpers/hermetic.js';
+
 import { describe, it, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import {

@@ -17,6 +17,8 @@
  * env vars MUST be set before the dynamic import below.
  */
 
+import './helpers/hermetic.js';
+
 import { describe, it, before, after, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, writeFile, rm } from 'node:fs/promises';

@@ -1,3 +1,5 @@
+import './helpers/hermetic.js';
+
 import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
 import { SpotifyApiError } from '../src/client.js';

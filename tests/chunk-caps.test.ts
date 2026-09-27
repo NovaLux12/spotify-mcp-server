@@ -9,6 +9,8 @@
  *     regression that made this issue, since a literal there is exactly how
  *     two call sites for one endpoint drifted apart.
  */
+import './helpers/hermetic.js';
+
 import { after, before, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';

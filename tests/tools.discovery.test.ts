@@ -12,6 +12,8 @@
  *
  * Run: node --import tsx --test tests/tools.discovery.test.ts
  */
+import './helpers/hermetic.js';
+
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';

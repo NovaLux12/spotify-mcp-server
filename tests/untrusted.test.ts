@@ -17,6 +17,8 @@
  *
  * Run: node --import tsx --test tests/untrusted.test.ts
  */
+import './helpers/hermetic.js';
+
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 

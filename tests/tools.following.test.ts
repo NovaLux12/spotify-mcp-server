@@ -8,6 +8,8 @@
  * Run: node --import tsx --test tests/tools.following.test.ts
  */
 
+import './helpers/hermetic.js';
+
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import { z } from 'zod';
 import assert from 'node:assert/strict';

@@ -12,6 +12,8 @@
  * "did we preserve?" boolean would keep reporting true after the file itself
  * had been rewritten, which is the failure this issue is about.
  */
+import './helpers/hermetic.js';
+
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
