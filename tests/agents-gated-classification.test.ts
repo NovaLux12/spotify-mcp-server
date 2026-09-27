@@ -52,6 +52,31 @@ const AGENTS = 'AGENTS.md';
 const NEVER_CALL_HEADING =
   '**Never call these — no replacement, or superseded with no live call site.**';
 
+const REGISTRATION_DEPENDENT_HEADING = '**Registration-dependent';
+
+/**
+ * The registration-dependent subsection: from its own bold heading to the
+ * never-call heading. Scoped to that range because both of the load-bearing
+ * claims live inside it — the 403-is-disclosed contract that keeps the family
+ * out of the never-call table, and the `200` question.
+ */
+function registrationDependentSection(source: string): string {
+  const from = source.indexOf(REGISTRATION_DEPENDENT_HEADING);
+  assert.ok(
+    from >= 0,
+    `AGENTS.md has no "${REGISTRATION_DEPENDENT_HEADING}…" subsection. If it ` +
+      'was reworded, update this guard to match — otherwise the assertions ' +
+      'below would scan an empty range and pin nothing.',
+  );
+  const to = source.indexOf(NEVER_CALL_HEADING, from);
+  assert.ok(
+    to > from,
+    `the "${REGISTRATION_DEPENDENT_HEADING}…" subsection runs past the ` +
+      'never-call heading, so the range below would be unbounded.',
+  );
+  return source.slice(from, to);
+}
+
 /**
  * Family ids whose endpoints are named in the never-call table while the
  * family still has live call sites. Empty: the `browse-categories` row was
@@ -214,5 +239,86 @@ describe('AGENTS.md agrees with the gated-endpoint classifier (#1338)', () => {
         'it beside the `/users/{id}` readers sent looking for a migration ' +
         'that was never needed.',
     );
+  });
+});
+
+/**
+ * #1338, second half. The first half of this file guards the never-call table
+ * against `GATED_FAMILIES`. This half guards the claim the table moved TO.
+ *
+ * #1355 moved the `/users` family out of that table and justified the move
+ * with a premise this repository cannot support: "a grandfathered
+ * registration still answers 200, so deleting them would remove a path that
+ * works". No probe, fixture, or recorded run in the tree demonstrates a 200 on
+ * either path. The one artefact that was ever cited for the claim — a dated
+ * probe JSON under `memory/`, removed from the working tree in #1260 because
+ * `.gitignore` drops it — records `403 / "message": "Forbidden"` for BOTH
+ * paths when read back out of git history. Every `200` in that same probe is a
+ * `/me/*` or `search` path.
+ *
+ * So the claim was not merely uncited; the cited evidence says the opposite.
+ * That is the same rot §6 of AGENTS.md describes, and it is load-bearing: a
+ * reader who believes it concludes a working path is being removed, and
+ * declines to fix a dead one.
+ */
+describe('AGENTS.md does not assert the unverified grandfathered-200 premise (#1338)', () => {
+  const source = readAgents();
+  const section = registrationDependentSection(source);
+  const lines = section.split('\n');
+
+  it('finds the subsection and its grandfathered question — the scan is not vacuous', () => {
+    assert.ok(
+      /grandfather/i.test(section),
+      'the registration-dependent subsection no longer mentions a grandfathered ' +
+        'registration at all. If that question was resolved rather than dropped, ' +
+        'cite the evidence here and update this guard; do not let it pass because ' +
+        'the words went away.',
+    );
+    assert.ok(
+      /unverified|open question|established nowhere/i.test(section),
+      'the subsection discusses a grandfathered registration but carries no ' +
+        'explicit unverified/open-question marker. An unmarked mention reads as ' +
+        'an assertion, which is the failure this guard exists to catch.',
+    );
+  });
+
+  it('states the 200 only inside the flagged, quoted note', () => {
+    // A grandfathered-200 claim is legitimate ONLY as something explicitly
+    // flagged as unestablished. Flagged == blockquoted: the callout is a
+    // visually separate aside, so a skimming reader cannot take it as part of
+    // the standing contract. Plain prose is an assertion.
+    const asserted = lines.filter(
+      (line) =>
+        /grandfather/i.test(line) &&
+        /(?<![-\w])200(?![-\w])/.test(line) &&
+        !line.trimStart().startsWith('>'),
+    );
+
+    assert.deepEqual(
+      asserted,
+      [],
+      'AGENTS.md asserts, in plain prose, that a grandfathered registration ' +
+        'answers 200 on a gated path. Nothing in this repository establishes ' +
+        'that, and the probe artefact once cited for it records 403 on both ' +
+        '`/users` paths. If the claim is now genuinely verified, cite the run ' +
+        'that demonstrates it and delete this assertion. Offending lines:\n  ' +
+        asserted.join('\n  '),
+    );
+  });
+
+  it('names all three live call sites so a reader can find them', () => {
+    // The keep-it decision is per call site. A reader sent here to check one
+    // tool needs the other two; that is what `GATED_FAMILIES.tools` is for,
+    // and this asserts the prose still agrees with it.
+    const family = GATED_FAMILIES.find((f) => f.id === 'user-profile');
+    assert.ok(family, 'the `user-profile` family is gone from GATED_FAMILIES; update this guard.');
+    for (const tool of family.tools) {
+      assert.ok(
+        section.includes(tool),
+        `AGENTS.md's registration-dependent subsection does not name \`${tool}\`, ` +
+          'one of the three live call sites on the removed /users paths. A reader ' +
+          'auditing the keep-it decision must be able to find every call site.',
+      );
+    }
   });
 });

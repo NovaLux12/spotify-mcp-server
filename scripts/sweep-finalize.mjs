@@ -3,8 +3,10 @@
 // conforming GitHub issues for GENUINE failures (deduped against open issues),
 // classifies quota timeouts + gated 403s separately, and commits the evidence.
 //
-// Usage: node scripts/sweep-finalize.mjs [report.json]
-import { readFileSync, writeFileSync, appendFileSync } from 'node:fs';
+// Usage: node scripts/sweep-finalize.mjs [report.json] [--render-only]
+//   --render-only  rewrite memory/live-sweep-report.md from the JSON and stop
+//                  (no issue filing, no daily-log append, no commit/push).
+import { existsSync, readFileSync, writeFileSync, appendFileSync } from 'node:fs';
 import { execSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -35,22 +37,59 @@ function familyOf(name) {
 }
 
 // --- classify -----------------------------------------------------------------
-const fails = [], timeouts = [], gated = [];
+// #1338: `gatedRows` counts EVERY row the classifier flagged app-registration
+// gated, not just the `status === 'FAIL'` ones. The old loop only ever pushed
+// into `gated` from inside the `FAIL` branch, so a tool that correctly caught
+// its own 403 and disclosed it landed as `PASS (gated)` in the table and then
+// vanished from the "Gated 403s" section — which is how a sweep with 13 gated
+// rows rendered a section headed "Gated 403s (0)". A reader scanning that
+// section concluded the sweep found no gated endpoints at all.
+const fails = [], timeouts = [], gatedFails = [], gatedRows = [];
 for (const r of results) {
+  if (r.gated) gatedRows.push(r);
   if (r.status !== 'FAIL') continue;
   const reason = r.reason ?? '';
   if (TIMEOUT.test(reason)) timeouts.push(r.tool);
-  else if (GATE_SNIFF.test(reason)) gated.push(r.tool);
+  else if (GATE_SNIFF.test(reason)) gatedFails.push(r.tool);
   else fails.push(r);
 }
 
 // --- render markdown report ----------------------------------------------------
 const rows = results.map((r) =>
   `| ${r.tool} | ${r.status}${r.gated ? ' (gated)' : ''} | ${r.latency_ms}ms | ${(r.reason ?? '').slice(0, 140).replace(/\|/g, '\\|')} |`);
+// #1338: the title must date the SWEEP, not the act of re-rendering. A plain
+// `new Date()` is right on the sweep path (finalize runs seconds after the run)
+// but wrong for `--render-only`, which deliberately re-renders an old run to
+// correct a defect in it: that would silently restamp a month-old piece of
+// evidence with today and make it look freshly collected. Preserve the title
+// already in the file when re-rendering.
+const REPORT_MD = 'memory/live-sweep-report.md';
+const existingTitle = existsSync(REPORT_MD)
+  ? readFileSync(REPORT_MD, 'utf8').match(/^# Live sweep report — (.+)$/m)?.[1]
+  : undefined;
+const runStamp =
+  (process.argv.includes('--render-only') ? existingTitle : undefined) ??
+  report.generated_at ??
+  new Date().toISOString();
 const md = [
-  `# Live sweep report — ${new Date().toISOString()}`,
+  `# Live sweep report — ${runStamp}`,
   '',
   `**${discovered} tools discovered** · pass ${summary.pass} · fail ${summary.fail} · skip ${summary.skip} · gated ${summary.gated ?? 0} · mode ${JSON.stringify(report.mode ?? {})}`,
+  '',
+  // #1338: the standing note that stops this report being read as the evidence
+  // it cannot be. `PASS (gated)` means the tool made the call, took a 403, and
+  // disclosed it — the server behaving correctly, not the endpoint answering.
+  // AGENTS.md §2 once asserted "a grandfathered registration still answers
+  // 200" and pointed here; this sweep used one registration, which was itself
+  // gated, so it is evidence for a 403 and for nothing else.
+  `> **How to read \`PASS (gated)\`.** The tool made the call, received a 403`,
+  `> from Spotify, and reported the refusal instead of degrading. That is the`,
+  `> server working as designed — it is **not** a sign the endpoint is alive.`,
+  `> Every gated row in this report is a 403 observed on **this run's single`,
+  `> app registration**. A \`PASS (gated)\` row is therefore never evidence that`,
+  `> a *different*, grandfathered (pre-Nov-2024) registration would answer`,
+  `> \`200\`: this sweep cannot observe one, and nothing in this repository`,
+  `> establishes that it would. Do not cite this report for that claim.`,
   '',
   `| tool | status | latency | reason |`,
   `|---|---|---|---|`,
@@ -62,8 +101,8 @@ const md = [
   `## Quota timeouts (${timeouts.length}) — retry in a later sweep, not tool bugs`,
   ...(timeouts.map((t) => `- \`${t}\``)),
   '',
-  `## Gated 403s (${gated.length}) — app-registration class, tracked in #329`,
-  ...(gated.map((t) => `- \`${t}\``)),
+  `## Gated 403s (${gatedRows.length}) — app-registration class, tracked in #329`,
+  ...(gatedRows.map((r) => `- \`${r.tool}\` (${r.status}) — ${r.reason ?? ''}`)),
   '',
   `## Verdict`,
   fails.length === 0
@@ -71,8 +110,20 @@ const md = [
     : `${fails.length} tool(s) failed and have issues filed.`,
   '',
 ].join('\n');
-writeFileSync('memory/live-sweep-report.md', md);
-console.log(`report → memory/live-sweep-report.md (${results.length} rows)`);
+writeFileSync(REPORT_MD, md);
+console.log(`report → ${REPORT_MD} (${results.length} rows)`);
+
+// #1338: `--render-only` stops here. Re-rendering an already-committed report
+// — to correct a defect in it, without inventing a new sweep — must not file
+// GitHub issues, append to the daily memory log, or `git push origin main`.
+// The header line above ("files template-conforming GitHub issues ... and
+// commits the evidence") describes the sweep path; that path is the wrong tool
+// for amending a checked-in artefact, and a docs fix should not be able to
+// reach a push to `main`.
+if (process.argv.includes('--render-only')) {
+  console.log('render-only: stopped before issue filing, daily log, and commit');
+  process.exit(fails.length ? 1 : 0);
+}
 
 // --- file issues for genuine failures, deduped against open issues -------------
 const openTitles = execSync(
@@ -128,7 +179,7 @@ for (const f of fails) {
   console.log(`filed: ${title} → ${url}`);
   filed++;
 }
-console.log(`\nfinalize: ${fails.length} genuine failures, ${filed} issues filed (rest deduped), ${timeouts.length} quota timeouts, ${gated.length} gated 403s`);
+console.log(`\nfinalize: ${fails.length} genuine failures, ${filed} issues filed (rest deduped), ${timeouts.length} quota timeouts, ${gatedRows.length} gated 403s (${gatedFails.length} of them FAILs)`);
 
 // --- daily memory + commit the evidence ----------------------------------------
 const daily = `memory/${new Date().toISOString().slice(0, 10)}.md`;
@@ -137,7 +188,7 @@ try {
     daily,
     `\n## Live sweep completed (${new Date().toISOString()}) <!-- project: github.com/novalux12/spotify-mcp-server -->\n` +
     `- ${discovered} tools discovered · pass ${summary.pass} · fail ${summary.fail} · skip ${summary.skip} · gated ${summary.gated ?? 0}\n` +
-    `- issues filed this sweep: ${filed}; deduped: ${fails.length - filed}; quota timeouts: ${timeouts.length}; gated 403s: ${gated.length}\n` +
+    `- issues filed this sweep: ${filed}; deduped: ${fails.length - filed}; quota timeouts: ${timeouts.length}; gated 403s: ${gatedRows.length}\n` +
     `- evidence: memory/live-sweep-report.md + memory/live-sweep-report.json\n`,
   );
 } catch { /* daily file may not exist yet — fine */ }

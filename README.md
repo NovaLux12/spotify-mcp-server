@@ -224,7 +224,7 @@ gates that hid modules, and the granted scopes in one call.
 - **Premium** for playback control (play/pause/skip/seek/volume/queue). Free accounts can still use search, library & playlists.
 - Node 22.9+, Spotify app in dev mode (5 users until extended quota).
 - Audiobooks gated by Spotify to US/UK/CA/IE/NZ/AU.
-- A subset of endpoints is **registration-gated** — 403 on current app registrations regardless of scopes or Premium, and 200 on grandfathered ones. This is a property of your app registration, not of the tool. See [Registration-gated endpoints](#registration-gated-endpoints).
+- A subset of endpoints is **registration-gated** — 403 on current app registrations regardless of scopes or Premium. Whether a grandfathered registration still answers `200` is **unverified** (#1338). This is a property of your app registration, not of the tool. See [Registration-gated endpoints](#registration-gated-endpoints).
 
 ### Registration-gated endpoints
 
@@ -234,7 +234,7 @@ Some Web API endpoints are denied **at the app-registration level**: on current 
 
 - Spotify's [February 2026 changelog](https://developer.spotify.com/documentation/web-api/references/changes/february-2026) marks a batch of operations `[REMOVED]`.
 - The [live OpenAPI schema](https://developer.spotify.com/reference/web-api/open-api-schema.yaml) still publishes most of those same paths, carrying `deprecated: true` rather than deleting them — `/artists/{id}/top-tracks` and all seven `Get Several` batch paths among them.
-- The runtime truth is neither document: it is what **your** app registration is allowed to read. A registration without the grant answers `403`/`404`/`410`; a grandfathered one still answers `200`.
+- The runtime truth is neither document: it is what **your** app registration is allowed to read. A registration without the grant answers `403`/`404`/`410`. Whether a grandfathered registration still answers `200` is **unverified** (#1338): no probe in this repository shows it, and the one probe artefact that was once cited for it records `403` on every such path.
 
 So a 403 here is a property of the registration, not of the tool. No tool is hidden for being gated, no gated tool is a zombie: each one either reads a documented replacement and answers, or makes the call and explains the 403 in plain English. The authoritative list is the `GATED_FAMILIES` array in [`src/gating.ts`](src/gating.ts) — `GATED_PATH_PATTERNS` is derived from it, so the classifier and this table cannot drift apart.
 

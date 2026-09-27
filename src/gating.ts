@@ -108,7 +108,9 @@ export interface GatedFamily {
    * Why a 403 is expected. `removal` = Spotify's Feb 2026 changelog marks the
    * operation REMOVED; `gated` = observed 403 on a current registration while
    * the operation is not listed as removed. Both are registration-dependent:
-   * a grandfathered registration may still answer 200.
+   * what a grandfathered registration does is UNVERIFIED (#1338) -- no probe in
+   * this repository shows a 200 on any gated path, and the one probe artefact
+   * that was once cited for it records 403.
    */
   reason: 'removal' | 'gated';
 }
@@ -125,7 +127,8 @@ export interface GatedFamily {
  * `/artists/{id}/top-tracks`, all seven `Get Several` batch paths). Neither
  * source is the runtime truth: the runtime truth is what a *given* app
  * registration is allowed to read. A registration without the grant answers
- * 403/404/410; a grandfathered one still answers 200. That is why every
+ * 403/404/410; whether a grandfathered one still answers 200 is UNVERIFIED
+ * (#1338) -- nothing here probes one. That is why every
  * family here carries a `fallback` -- see the README section generated from
  * this array.
  *

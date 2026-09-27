@@ -130,13 +130,41 @@ code was broken code. Sort a path into one of two buckets before you act on it.
 
 **Registration-dependent — keep calling these, and do not file a bug against
 the callers.** The changelog marks them `[REMOVED]`, but the live OpenAPI
-schema still publishes the same paths carrying `deprecated: true`, and a
-grandfathered app registration still answers `200`. What a request does depends
-on the *registration*, not on the endpoint, so a tool that calls one of these is
-doing its job: a `403` is a gating outcome the server turns into a stated
-reason or a documented replacement read, never a silent wrong answer. A tool
-that calls a gated path and handles the 403 correctly is not degraded, and
-deleting its wrapper makes it worse.
+schema still publishes the same paths carrying `deprecated: true`. What a
+request does depends on the *registration*, not on the endpoint, so a tool that
+calls one of these is doing its job: a `403` is a gating outcome the server
+turns into a stated reason or a documented replacement read, never a silent
+wrong answer. A tool that calls a gated path and handles the 403 correctly is
+not degraded, and deleting its wrapper makes it worse.
+
+> **Unverified — do not build on it.** Whether a *grandfathered* (pre-Nov-2024)
+> registration still answers `200` on these paths is **established nowhere in
+> this repository**, and this section used to assert it. Worse, the artefact it
+> was sourced to says the opposite. That citation was a dated probe JSON under
+> `memory/`, which `.gitignore` drops — so it was removed as an unfalsifiable
+> reference in #1260, leaving the claim standing without its evidence (the rot
+> §6 calls out). It is still recoverable from history, and what it records is
+> `403`:
+>
+> ```
+> $ git show 1a53544:memory/edge-probe-2026-08-26.json
+> {"label":"user-profile-by-id (app-gated?)",    "path":"/v1/users/j.lee12",
+>  "status":403, "cls":"GATED/REMOVED",
+>  "snippet":"{\"error\": {\"status\": 403, \"message\": \"Forbidden\" } }"}
+> {"label":"user-playlists-by-id (app-gated?)", "path":"/v1/users/j.lee12/playlists?limit=3",
+>  "status":403, "cls":"GATED/REMOVED",
+>  "snippet":"{\"error\": {\"status\": 403, \"message\": \"Forbidden\" } }"}
+> ```
+>
+> All thirteen `200`s in that same probe are `/me/*` or `search` paths; neither
+> `/users` path is among them. The 2026-08-27 sweep
+> (`memory/live-sweep-report.md`) is likewise no help: its `PASS (gated)` rows
+> for these two tools are a regex sniff over prose that matched *403*, on a
+> registration that was itself gated. No pre-Nov-2024 registration has ever been
+> exercised here — no client id and no app age is on record. Treat "a
+> grandfathered registration still works" as an **open question**, and do not
+> cite this file or the sweep for it. The keep-it decision below does not rest
+> on it.
 
 **The authoritative list is `GATED_FAMILIES` in `src/gating.ts`** —
 `GATED_PATH_PATTERNS` is derived from it, and the README's
@@ -149,14 +177,19 @@ Verified against the array, not this paragraph.
 
 `/users/{id}` and `/users/{id}/playlists` are the family worth naming here,
 because the obvious reading puts them in the never-call table below instead.
-There is no `/me/*` replacement for them — a tool reading an **arbitrary**
+There is **no `/me/*` replacement** for them — a tool reading an **arbitrary**
 `user_id` has nothing honest to migrate onto, since `/me` is only ever the
-caller — and the `user-profile` family still carries live call sites. What
-keeps it out of that table is not the absence of a replacement but the
-presence of callers: `get_user_profile`, `get_user_playlists_by_id` and
-`get_playlist_followers` disclose a 403 instead of degrading, and a
-grandfathered registration still answers 200, so deleting them would remove a
-path that works rather than fix one that does not. `get_user_playlists` is
+caller — so no migration exists, and repointing a `user_id`-taking tool at
+`/me` would answer "user X's profile" with the caller's own. All three live
+call sites — `get_user_profile` and `get_user_playlists_by_id` in
+`src/tools/users.ts`, and `get_playlist_followers` in
+`src/tools/playlisthealth.ts` (owner profile, behind `include_profiles`) — make
+the call and **disclose a 403 instead of degrading**: `playlisthealth.ts` states
+`owner_profile_error` in both prose and payload rather than dropping the field
+silently. That is the whole of the reason they stay and are not in the
+never-call table. It is a reason to keep an honest failure, **not** a claim
+that the path works for anyone — see the unverified note above. They are
+`fallback: 'explained'` in `GATED_FAMILIES`. `get_user_playlists` is
 deliberately **not** in that family: despite the name it reads
 `GET /me/playlists`, which was never removed.
 
@@ -168,9 +201,10 @@ call sites, and they disclose rather than degrade. `get_category` and
 Feb 2026 removal on a 403/404/410, and `category_resolver`
 (`src/tools/exhaust2_catalog.ts`) returns `{ gated: true }` naming the gate on a
 403 — so no failure is ever smoothed into an empty category list. All three are
-declared by the `browse-categories` family in `GATED_FAMILIES`, and a
-grandfathered registration still answers 200, so deleting them would remove a
-path that works rather than fix one that does not.
+declared by the `browse-categories` family in `GATED_FAMILIES`, which is the
+whole of the reason they are not deleted — a reason to keep an honest
+disclosure, not a claim that the path works for anyone (see the unverified note
+above).
 
 Do not read that as "the endpoint is live". The changelog marks
 `GET /browse/categories` and `GET /browse/categories/{id}` `[REMOVED]`, and it

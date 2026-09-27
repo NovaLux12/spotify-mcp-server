@@ -2,6 +2,15 @@
 
 **224 tools discovered** · pass 61 · fail 0 · skip 163 · gated 13 · mode {"batch_limit":40,"resumed_from":"memory/live-sweep-report.json"}
 
+> **How to read `PASS (gated)`.** The tool made the call, received a 403
+> from Spotify, and reported the refusal instead of degrading. That is the
+> server working as designed — it is **not** a sign the endpoint is alive.
+> Every gated row in this report is a 403 observed on **this run's single
+> app registration**. A `PASS (gated)` row is therefore never evidence that
+> a *different*, grandfathered (pre-Nov-2024) registration would answer
+> `200`: this sweep cannot observe one, and nothing in this repository
+> establishes that it would. Do not cite this report for that claim.
+
 | tool | status | latency | reason |
 |---|---|---|---|
 | get_me | PASS | 157ms |  |
@@ -233,7 +242,20 @@
 
 ## Quota timeouts (0) — retry in a later sweep, not tool bugs
 
-## Gated 403s (0) — app-registration class, tracked in #329
+## Gated 403s (13) — app-registration class, tracked in #329
+- `get_artist_top_tracks` (PASS) — tool answered but snippet suggests app-registration gating (403/Forbidden/removed)
+- `get_available_markets` (PASS) — tool answered but snippet suggests app-registration gating (403/Forbidden/removed)
+- `get_several_tracks` (PASS) — tool answered but snippet suggests app-registration gating (403/Forbidden/removed)
+- `get_several_albums` (PASS) — tool answered but snippet suggests app-registration gating (403/Forbidden/removed)
+- `get_several_artists` (PASS) — tool answered but snippet suggests app-registration gating (403/Forbidden/removed)
+- `get_several_episodes` (PASS) — tool answered but snippet suggests app-registration gating (403/Forbidden/removed)
+- `get_several_shows` (PASS) — tool answered but snippet suggests app-registration gating (403/Forbidden/removed)
+- `get_several_audiobooks` (PASS) — tool answered but snippet suggests app-registration gating (403/Forbidden/removed)
+- `check_following_artists` (PASS) — tool answered but snippet suggests app-registration gating (403/Forbidden/removed)
+- `get_user_profile` (PASS) — tool answered but snippet suggests app-registration gating (403/Forbidden/removed)
+- `get_user_playlists_by_id` (PASS) — tool answered but snippet suggests app-registration gating (403/Forbidden/removed)
+- `check_saved_items` (PASS) — tool answered but snippet suggests app-registration gating (403/Forbidden/removed)
+- `grow_playlist` (PASS) — tool answered but snippet suggests app-registration gating (403/Forbidden/removed)
 
 ## Verdict
 All tested tools passed (or are classified SKIP/gated) — no tool bugs found.
