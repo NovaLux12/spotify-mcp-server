@@ -49,36 +49,90 @@ interface RegisteredTool {
 function makeStubClient(responder: Responder = () => null) {
   const calls: RecordedCall[] = [];
   let respond: Responder = responder;
+  // The client's own request counter and cooldown, so the tool's self-reported
+  // request total can be cross-checked against a second source instead of
+  // against itself: `requests_made` (counted here) and `cost.requests` (summed
+  // in freshness.ts) are produced by different code and must agree.
+  let requestsTotal = 0;
+  let cooldownRemainingMs = 0;
 
   const client = {
     calls,
     setResponder(fn: Responder) {
       respond = fn;
     },
+    setCooldown(ms: number) {
+      cooldownRemainingMs = ms;
+    },
+    getRateLimitStatus() {
+      return { requestsTotal, cooldownRemainingMs };
+    },
     async get<T>(path: string, params?: Record<string, string>): Promise<T | null> {
       calls.push({ method: 'GET', path, arg: params });
+      requestsTotal++;
       return respond(path, params) as T | null;
     },
-    async getAllPages<T>(
+    /**
+     * Mirrors SpotifyClient.getAllPagesWithTruncation (#864) — same cap, same
+     * short-page end-of-data rule, and the same split between "rows are
+     * missing" (truncated) and "the cap is why" (truncatedByCap). whats_new
+     * reads this verdict, so a stub that returned a bare array would hand the
+     * tool a shape it never sees in production.
+     */
+    async getAllPagesWithTruncation<T>(
       path: string,
       params?: Record<string, string>,
-      opts?: { maxItems?: number },
-    ): Promise<T[]> {
+      opts?: { maxItems?: number; initialOffset?: number },
+    ): Promise<{
+      items: T[];
+      truncated: boolean;
+      truncatedByCap: boolean;
+      reportedTotal: number | null;
+      pages: number;
+    }> {
       const maxItems = opts?.maxItems ?? 500;
       const all: T[] = [];
-      let offset = 0;
+      let offset = opts?.initialOffset ?? 0;
+      let lastTotal: number | null = null;
+      let requests = 0;
       for (;;) {
         const page = await this.get<SpotifyPaged<T>>(path, { ...params, offset: String(offset) });
+        requests++;
         if (!page || !Array.isArray(page.items)) break;
+        if (typeof page.total === 'number') lastTotal = page.total;
         all.push(...page.items);
-        if (all.length >= maxItems) return all.slice(0, maxItems);
+        if (all.length >= maxItems) {
+          return {
+            items: all.slice(0, maxItems),
+            truncated:
+              all.length > maxItems
+              || typeof page.total !== 'number'
+              || all.length < page.total,
+            truncatedByCap: true,
+            reportedTotal: lastTotal,
+            pages: requests,
+          };
+        }
         const limit =
           typeof page.limit === 'number' && page.limit > 0 ? page.limit : page.items.length;
         offset += limit;
         if (page.items.length === 0 || page.items.length < limit) break;
         if (typeof page.total === 'number' && offset >= page.total) break;
       }
-      return all;
+      return {
+        items: all,
+        truncated: lastTotal !== null && all.length < lastTotal,
+        truncatedByCap: false,
+        reportedTotal: lastTotal,
+        pages: requests,
+      };
+    },
+    async getAllPages<T>(
+      path: string,
+      params?: Record<string, string>,
+      opts?: { maxItems?: number },
+    ): Promise<T[]> {
+      return (await this.getAllPagesWithTruncation<T>(path, params, opts)).items;
     },
   };
   return client;
@@ -163,6 +217,43 @@ const episodesOf = (showId: string, eps: Array<[string, string, string]>) =>
       show: { id: showId, name: `Show ${showId}` },
     })),
   });
+
+/**
+ * Cursor-paged `/me/following` over `total` artists at the walk's real page
+ * size of 50. `after` is the index the next page starts at, so a 60-artist
+ * library really does take two follow pages — the case the old flat "+1"
+ * undercounted.
+ */
+const followedListing = (total: number) => (after: unknown) => {
+  const start = typeof after === 'string' ? Number(after.replace('cursor-', '')) : 0;
+  const end = Math.min(start + 50, total);
+  return {
+    artists: {
+      items: Array.from({ length: end - start }, (_, i) => {
+        const id = `a${start + i}`;
+        return { id, name: `Artist ${id}`, uri: `spotify:artist:${id}` };
+      }),
+      total,
+      cursors: end < total ? { after: `cursor-${end}` } : null,
+      next: end < total ? 'next' : null,
+    },
+  };
+};
+
+/**
+ * Offset-paged `/me/shows` over `total` saved shows at the walk's page size of
+ * 50, echoing `limit` back the way Spotify does so the walk's offset arithmetic
+ * advances correctly.
+ */
+const showsListing = (total: number) => (offset: unknown) => {
+  const start = typeof offset === 'string' ? Number(offset) : 0;
+  const end = Math.min(start + 50, total);
+  return {
+    items: Array.from({ length: end - start }, (_, i) => showEntry(`s${start + i}`, `Show ${start + i}`)),
+    total,
+    limit: 50,
+  };
+};
 
 /** Restore the process-wide config snapshot after a test rebinds it. */
 async function withEnv(env: Record<string, string>, fn: () => Promise<void>): Promise<void> {
@@ -637,6 +728,9 @@ describe('whats_new', () => {
   // #242 — quota budget & dry_run cost disclosure
   // -----------------------------------------------------------------------
 
+  // #679 — the `N+1` this asserted was the defect: one flat "+1" charged a
+  // single follow page for a walk that issues one per 50 artists. The bound is
+  // now in the walk's own pager, and it says it is a bound.
   it('dry_run reports cost_estimate and max_artists without making API calls', async () => {
     const h = harness(() => { throw new Error('no API call expected'); });
     const out = await h.invoke('whats_new', { since: '2026-08-01', dry_run: true });
@@ -644,9 +738,9 @@ describe('whats_new', () => {
     const payload = out.structuredContent as { cost_estimate: string; max_artists: number; dry_run: boolean };
     assert.equal(payload.dry_run, true);
     assert.ok(typeof payload.cost_estimate === 'string' && payload.cost_estimate.length > 0);
-    assert.match(payload.cost_estimate, /N\+1|N followed artists/i);
+    assert.match(payload.cost_estimate, /at most 25 album lookups \+ at most 1 follow page\(s\) of 50/);
     assert.ok(typeof payload.max_artists === 'number' && payload.max_artists > 0);
-    assert.match(textOf(out), /Cost estimate/i);
+    assert.match(textOf(out), /Cost ESTIMATE \(a budget bound, not a measurement/i);
   });
 
   it('max_artists budget caps lookups independently of fetchAllCap', async () => {
@@ -713,6 +807,322 @@ describe('whats_new', () => {
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #679 — the cost estimate and the per-source scan counters
+// ---------------------------------------------------------------------------
+
+interface SourceScanRow {
+  source: 'albums' | 'podcasts';
+  requested: boolean;
+  walked: boolean;
+  scanned: number;
+  lookups: number;
+  listing_requests: number | null;
+  listing_truncated: boolean;
+  partial: boolean;
+  stopped_by: 'cap' | 'quota' | null;
+}
+
+interface CallPayload {
+  scanned: {
+    artists: number;
+    shows: number;
+    total: number;
+    partial: boolean;
+    sources: SourceScanRow[];
+  };
+  cost: {
+    kind: 'budget_bound' | 'measured' | 'measured_lower_bound';
+    measured: boolean;
+    requests: number | null;
+    requests_floor?: number;
+    requests_note?: string;
+    basis?: string;
+    assumes_full_pages?: boolean;
+    breakdown: {
+      follow_pages: number;
+      album_lookups: number;
+      show_listing_pages: number | null;
+      show_episode_calls: number;
+    };
+    planned?: { max_requests: number };
+    albums?: { max_lookups: number; max_listing_pages: number; max_requests: number; listing_page_size: number } | null;
+    podcasts?: { max_lookups: number; max_listing_pages: number; max_requests: number; listing_page_size: number } | null;
+  };
+  lookups: {
+    artists_seen: number;
+    artist_album_calls: number;
+    follow_pages: number;
+    shows_seen: number;
+    show_episode_calls: number;
+    show_listing_pages: number | null;
+    shows_walked: boolean;
+    shows_listing_truncated: boolean;
+    albums_truncated_by_cap: boolean;
+    shows_truncated_by_cap: boolean;
+  };
+  quota_hit?: boolean;
+  quota_source?: 'albums' | 'podcasts' | null;
+  scanned_artists?: number;
+  requests_made?: number;
+  watermark_advanced: boolean;
+  watermark_held: boolean;
+  watermark_reason?: string;
+}
+
+const rowOf = (payload: CallPayload, source: 'albums' | 'podcasts'): SourceScanRow => {
+  const row = payload.scanned.sources.find((s) => s.source === source);
+  assert.ok(row, `a ${source} source row must be published`);
+  return row;
+};
+
+const quotaError = (retryAfterSec: number) =>
+  Object.assign(new Error('quota'), { status: 429, reason: 'QUOTA_EXCEEDED', retryAfterSec });
+
+describe('whats_new cost estimate and per-source scan counters (#679)', () => {
+  it('charges the follow walk for every page it pages, not a flat +1', async () => {
+    const h = harness(() => { throw new Error('dry_run must make no API call'); });
+
+    const out = await h.invoke('whats_new', { since: '2026-08-01', dry_run: true, max_artists: 60, kinds: ['albums'] });
+    const { cost } = out.structuredContent as CallPayload;
+
+    // Hand arithmetic, not a re-run of the code under test: 60 artists at the
+    // walk's page size of 50 needs ceil(60/50) = 2 follow pages, plus the 60
+    // album lookups the budget allows → 62 requests. The pre-fix estimate said
+    // "N+1 ... at most 61", which is what let a caller budget 3 requests short.
+    assert.equal(cost.albums?.max_listing_pages, 2);
+    assert.equal(cost.albums?.max_lookups, 60);
+    assert.equal(cost.albums?.max_requests, 62);
+    assert.equal(cost.albums?.listing_page_size, 50);
+    assert.equal(cost.max_requests, 62);
+    assert.doesNotMatch(String((out.structuredContent as { cost_estimate: string }).cost_estimate), /N\+1/);
+  });
+
+  it('labels the dry-run figure a bound rather than a measurement', async () => {
+    const h = harness(() => { throw new Error('dry_run must make no API call'); });
+
+    const out = await h.invoke('whats_new', { since: '2026-08-01', dry_run: true, max_artists: 60, kinds: ['albums'] });
+    const { cost } = out.structuredContent as CallPayload;
+
+    assert.equal(cost.kind, 'budget_bound');
+    assert.equal(cost.measured, false);
+    // The one assumption the bound rests on is part of the contract, so a
+    // caller can see what it would take for the figure to be wrong.
+    assert.equal(cost.assumes_full_pages, true);
+    assert.match(String(cost.basis), /unknown until the walk runs/);
+    assert.match(textOf(out), /not a measurement/);
+  });
+
+  it('the dry-run bound covers what the same budget actually spends', async () => {
+    const follow = followedListing(60);
+    const h = harness((path, params) =>
+      path === '/me/following'
+        ? follow(params?.after)
+        : albumsOf(path.match(/^\/artists\/([^/]+)\//)?.[1] ?? '', [['alb', 'LP', '2026-08-10']]),
+    );
+
+    const dry = await h.invoke('whats_new', { since: '2026-08-01', dry_run: true, max_artists: 60, kinds: ['albums'] });
+    const bound = (dry.structuredContent as CallPayload).cost.albums!.max_requests;
+
+    const out = await h.invoke('whats_new', { since: '2026-08-01', max_artists: 60, kinds: ['albums'] });
+    const payload = out.structuredContent as CallPayload;
+
+    // 2 follow pages for 60 artists — the page the flat "+1" did not charge.
+    assert.equal(payload.lookups.follow_pages, 2);
+    assert.equal(h.client.calls.filter((c) => c.path === '/me/following').length, 2);
+    assert.equal(payload.cost.kind, 'measured');
+    assert.equal(payload.cost.requests, 62);
+    // Cross-check against the transport's own record, not against the tool's
+    // own counters: a self-consistent sum would pass even if the sum were wrong.
+    assert.equal(payload.cost.requests, h.client.calls.length);
+    assert.equal(payload.requests_made, h.client.calls.length);
+    // And the bound an agent would have budgeted against must not be short.
+    assert.ok(payload.cost.requests! <= bound, `spent ${payload.cost.requests} against a bound of ${bound}`);
+  });
+
+  it('counts a podcast scan when the quota wall lands mid-podcast walk', async () => {
+    const listing = showsListing(3);
+    const h = harness((path, params) => {
+      if (path === '/me/shows') return listing(params?.offset);
+      if (path === '/shows/s0/episodes') return episodesOf('s0', [['e0', 'Ep 0', '2026-08-20']]);
+      if (path === '/shows/s1/episodes') return episodesOf('s1', [['e1', 'Ep 1', '2026-08-20']]);
+      // Third show hits the wall.
+      if (path === '/shows/s2/episodes') throw quotaError(3600);
+      throw new Error(`unexpected path ${path}`);
+    });
+
+    const out = await h.invoke('whats_new', { since: '2026-08-01', kinds: ['podcasts'] });
+    const payload = out.structuredContent as CallPayload;
+
+    assert.equal(payload.quota_hit, true);
+    assert.equal(payload.quota_source, 'podcasts');
+    // The bug: the podcasts quota catch recorded the ARTIST counter, so a
+    // podcasts-only run published scanned_artists: 0 and read as "nothing was
+    // scanned" — which is what provokes an immediate retry against an
+    // exhausted quota.
+    assert.equal(payload.scanned_artists, 0);
+    assert.equal(payload.scanned.shows, 2, 'two shows were actually read');
+    assert.equal(payload.scanned.artists, 0);
+    assert.equal(payload.scanned.total, 2, 'scanned_artists is not the scan total');
+    const podcasts = rowOf(payload, 'podcasts');
+    assert.equal(podcasts.walked, true);
+    assert.equal(podcasts.scanned, 2);
+    assert.equal(podcasts.stopped_by, 'quota');
+    // The request that threw still cost quota, so it is charged (#818's rule).
+    assert.equal(podcasts.lookups, 3);
+    assert.equal(payload.lookups.show_episode_calls, 3);
+    // And the total is cross-checked against the transport record: 1 listing
+    // page + 3 episode requests, the last of which failed.
+    assert.equal(payload.cost.requests, 4);
+    assert.equal(payload.cost.requests, h.client.calls.length);
+    assert.match(textOf(out), /2 shows scanned/);
+    assert.match(textOf(out), /podcasts leg/);
+  });
+
+  it('never reports an unwalked source as a source that returned nothing', async () => {
+    const h = harness((path) => {
+      if (path === '/me/following') return followedPage(['a1', 'a2'], null);
+      if (path === '/artists/a1/albums') return albumsOf('a1', [['alb', 'LP', '2026-08-20']]);
+      // Second artist hits the wall, so the podcasts leg never runs.
+      throw quotaError(1800);
+    });
+
+    const out = await h.invoke('whats_new', { since: '2026-08-01' });
+    const payload = out.structuredContent as CallPayload;
+
+    assert.equal(payload.quota_source, 'albums');
+    const podcasts = rowOf(payload, 'podcasts');
+    assert.equal(podcasts.requested, true);
+    assert.equal(podcasts.walked, false, 'the podcasts leg never ran');
+    assert.equal(podcasts.scanned, 0);
+    // A skipped source is not a clean zero: nothing about it was read, so it is
+    // not "scanned, found none" and must not read as a completed scan.
+    assert.equal(podcasts.partial, true);
+    assert.equal(payload.scanned.partial, true);
+    assert.equal(payload.scanned.sources.length, 2);
+    assert.match(textOf(out), /podcasts NOT walked/);
+    assert.match(textOf(out), /not a statement about your saved shows/);
+    // No listing request was ever made for podcasts.
+    assert.equal(h.client.calls.some((c) => c.path === '/me/shows'), false);
+  });
+
+  it('marks a clipped saved-shows listing as a partial source and holds the watermark', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'freshness-679-'));
+    const statePath = join(dir, 'freshness.json');
+    try {
+      await writeFile(statePath, JSON.stringify({ last_check: '2026-07-01' }), { mode: 0o600 });
+      // 120 saved shows, budget 2: the listing's first page already carries more
+      // rows than the walk can use, so the read is clipped.
+      const listing = showsListing(120);
+      await withEnv({ SPOTIFY_MCP_FRESHNESS_STATE: statePath }, async () => {
+        const h = harness((path, params) => {
+          if (path === '/me/shows') return listing(params?.offset);
+          if (path.startsWith('/shows/') && path.endsWith('/episodes')) {
+            return episodesOf(path.split('/')[2]!, [['e', 'Ep', '2026-08-20']]);
+          }
+          throw new Error(`unexpected path ${path}`);
+        });
+
+        const out = await h.invoke('whats_new', { since: 'last-check', kinds: ['podcasts'], max_artists: 2 });
+        const payload = out.structuredContent as CallPayload;
+        const look = payload.lookups;
+
+        // The listing's own verdict, not the episode loop's: the two episode
+        // lookups below the cap all succeeded, so nothing but the listing
+        // reveals that 118 of the 120 saved shows were never read.
+        assert.equal(look.shows_listing_truncated, true);
+        assert.equal(look.shows_truncated_by_cap, false);
+        const podcasts = rowOf(payload, 'podcasts');
+        assert.equal(podcasts.listing_truncated, true);
+        assert.equal(podcasts.partial, true);
+        assert.equal(podcasts.stopped_by, 'cap');
+        assert.equal(payload.scanned.partial, true);
+        // The listing was clipped, so the scan did not finish: the watermark
+        // must be held or the unreached shows would be skipped forever.
+        assert.equal(payload.watermark_advanced, false);
+        assert.match(String(payload.watermark_reason), /truncated by cap/i);
+        assert.match(textOf(out), /listing TRUNCATED/);
+        const stored = JSON.parse(await readFile(statePath, 'utf8')) as { last_check: string };
+        assert.equal(stored.last_check, '2026-07-01');
+      });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('degrades the request total to a floor when the saved-shows listing fails', async () => {
+    const h = harness((path) => {
+      if (path === '/me/shows') throw quotaError(900);
+      throw new Error(`unexpected path ${path}`);
+    });
+
+    const out = await h.invoke('whats_new', { since: '2026-08-01', kinds: ['podcasts'] });
+    const payload = out.structuredContent as CallPayload;
+
+    // The page count never came back, so it is unknown — NOT zero, and not a
+    // total. A request was issued and did cost quota, so the floor counts it.
+    assert.equal(payload.lookups.show_listing_pages, null);
+    assert.equal(payload.cost.requests, null);
+    assert.equal(payload.cost.kind, 'measured_lower_bound');
+    assert.equal(payload.cost.requests_floor, 1);
+    assert.equal(h.client.calls.length, 1, 'the failed listing request was really issued');
+    assert.match(String(payload.cost.requests_note), /floor, not a total/);
+    assert.match(textOf(out), /at least 1 request\(s\)/);
+  });
+
+  it('charges an album lookup that threw, so a quota wall is never free', async () => {
+    const h = harness((path) => {
+      if (path === '/me/following') return followedPage(['a1', 'a2'], null);
+      if (path === '/artists/a1/albums') return albumsOf('a1', [['alb', 'LP', '2026-08-20']]);
+      throw quotaError(600);
+    });
+
+    const out = await h.invoke('whats_new', { since: '2026-08-01', kinds: ['albums'] });
+    const payload = out.structuredContent as CallPayload;
+
+    assert.equal(payload.quota_hit, true);
+    // Two album lookups issued, one read. Counting only the one that returned
+    // would report a request the caller never made.
+    assert.equal(payload.lookups.artist_album_calls, 2);
+    assert.equal(payload.scanned.artists, 1);
+    assert.equal(payload.cost.breakdown.album_lookups, 2);
+    assert.equal(payload.cost.requests, h.client.calls.length);
+  });
+
+  it('reports the paged bound, not a flat +1, on the cooldown gate', async () => {
+    const h = harness((path) => {
+      if (path === '/me/following') return followedPage(['a1'], null);
+      throw new Error(`unexpected path ${path}`);
+    });
+    h.client.setCooldown(60_000);
+
+    const out = await h.invoke('whats_new', { since: '2026-08-01', max_artists: 60, kinds: ['albums'] });
+    const payload = out.structuredContent as { cost: CallPayload['cost']; requests_made: number };
+
+    assert.equal(payload.requests_made, 0, 'the gate issues no requests');
+    assert.equal(payload.cost.kind, 'budget_bound');
+    assert.equal(payload.cost.albums?.max_listing_pages, 2);
+    assert.equal(payload.cost.albums?.max_requests, 62);
+    assert.equal(h.client.calls.length, 0);
+  });
+
+  it('restates the planned bound on a real call so the next one can be budgeted', async () => {
+    const follow = followedListing(60);
+    const h = harness((path, params) =>
+      path === '/me/following'
+        ? follow(params?.after)
+        : albumsOf(path.match(/^\/artists\/([^/]+)\//)?.[1] ?? '', [['alb', 'LP', '2026-08-10']]),
+    );
+
+    const out = await h.invoke('whats_new', { since: '2026-08-01', max_artists: 60, kinds: ['albums'] });
+    const payload = out.structuredContent as CallPayload;
+
+    assert.equal(payload.cost.kind, 'measured');
+    assert.equal(payload.cost.planned?.max_requests, 62);
+    assert.equal(payload.cost.requests, 62);
   });
 });
 

@@ -134,6 +134,15 @@ function stubClient(opts: {
       calls.push({ path });
       return opts.getAllPages?.(path) ?? [];
     }),
+    // #679: `whats_new` reads its saved-shows listing through the variant that
+    // CARRIES the truncation verdict, so a stub that only has `getAllPages`
+    // fails the call outright rather than quietly reporting a partial read as
+    // a complete one. Same one page, same rows, verdict for an empty library.
+    getAllPagesWithTruncation: mock.fn(async (path: string) => {
+      calls.push({ path });
+      const items = opts.getAllPages?.(path) ?? [];
+      return { items, truncated: false, truncatedByCap: false, reportedTotal: null, pages: 1 };
+    }),
     get: mock.fn(async (path: string) => {
       calls.push({ path });
       return (opts.get?.(path) ?? null) as null;
@@ -322,7 +331,12 @@ describe('no cooldown preserves budgets exactly (#904 edge case)', () => {
     };
     // fetchAllCap default 500 - 490 spent = 10 remaining < requested 25.
     assert.equal(payload.lookups.cap, 10);
-    assert.equal(payload.requests_planned, 11);
+    // #679: this was a flat `cap + 1`, which charged one follow page and ten
+    // album lookups and nothing else. Both legs page (50 per request) and both
+    // have a listing page ahead of their per-entity calls, so the honest bound
+    // at cap 10 is 1 + 10 + 1 + 10 = 22. The old figure undercounted the
+    // podcasts leg entirely and, past 50 followed artists, the album leg too.
+    assert.equal(payload.requests_planned, 22);
     assert.equal(payload.budget_shrunk, true);
   });
 
