@@ -37,10 +37,9 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { createHash } from 'node:crypto';
 import { open, appendFile, chmod, mkdir, rename, stat } from 'node:fs/promises';
 import type { FileHandle } from 'node:fs/promises';
-import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
-import { truthyEnv } from './config.js';
+import { storePath, truthyEnv } from './config.js';
 import { accountFileName, accountFileNames, accountStoreKey } from './accountkey.js';
 import { getTokenFilePath } from './auth.js';
 
@@ -218,8 +217,17 @@ export function isHistoryEnabled(env: NodeJS.ProcessEnv = process.env): boolean 
   return truthyEnv(env.SPOTIFY_MCP_HISTORY);
 }
 
+/**
+ * The ledger's DIRECTORY, taken from the registry's `mutations` row (#711).
+ *
+ * The row resolves the full path for the DEFAULT account, and `dirname` of that
+ * is the directory for every account — the account key changes the file name,
+ * never the directory. Deriving it here is what keeps the two from disagreeing:
+ * a change to the fallback chain in `config.ts` moves this one too, and a copy
+ * typed out again would not.
+ */
 function historyDir(env: NodeJS.ProcessEnv): string {
-  return env.SPOTIFY_MCP_HISTORY_DIR ?? join(homedir(), '.spotify-mcp', 'history');
+  return dirname(storePath('mutations', env));
 }
 
 /**

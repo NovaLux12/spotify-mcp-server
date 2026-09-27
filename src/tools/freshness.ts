@@ -35,7 +35,7 @@ import {
   listStructuredContent,
 } from '../shaping.js';
 import type { ResponseFormatValue, PaginationInfo } from '../shaping.js';
-import { getConfig } from '../config.js';
+import { getConfig, storePath } from '../config.js';
 import {
   probeArtistReleases,
   ARTIST_RELEASE_PROBE_LIMIT,
@@ -43,7 +43,6 @@ import {
 } from '../artistreleases.js';
 import { readOnlyModeEnabled } from './annotations.js';
 import { chmod, mkdir, rename, rm, writeFile } from 'node:fs/promises';
-import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { ownStoreRoots, readLocalFile } from '../paths.js';
@@ -151,10 +150,7 @@ const SinceArg = z
   });
 
 export function watermarkFilePath(env: NodeJS.ProcessEnv = process.env): string {
-  return (
-    env.SPOTIFY_MCP_FRESHNESS_STATE ??
-    join(homedir(), '.spotify-mcp', 'freshness.json')
-  );
+  return storePath('freshness', env);
 }
 type FreshnessKind = 'albums' | 'podcasts';
 

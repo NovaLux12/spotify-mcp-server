@@ -52,11 +52,11 @@
  * account's cached reads. `switchAccount` clears it for exactly that reason.
  */
 import { chmod, mkdir, readdir, rename, writeFile } from 'node:fs/promises';
-import { homedir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { getTokenFile, isTokenData } from './auth.js';
 import { ownStoreRoots, readLocalFileSync } from './paths.js';
 import type { TokenData } from './types/spotify.js';
+import { storePath } from './config.js';
 
 /**
  * Where the registry lives: beside the token files it points at, so a
@@ -67,9 +67,7 @@ import type { TokenData } from './types/spotify.js';
  * Overrides the location; nothing else about the format changes.
  */
 export function accountsFile(env: NodeJS.ProcessEnv = process.env): string {
-  const explicit = env.SPOTIFY_MCP_ACCOUNTS_FILE?.trim();
-  if (explicit) return explicit;
-  return join(homedir(), '.spotify-mcp', 'accounts.json');
+  return storePath('accounts', env);
 }
 
 /**

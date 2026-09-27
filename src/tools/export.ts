@@ -164,6 +164,24 @@ interface ExportDisclosure {
  * Which cloud-sync root (if any) contains this REAL, symlink-resolved file.
  * A directory that does not exist cannot contain the file, so a failed
  * realpath is simply "not that provider" rather than an error.
+ *
+ * ## Why this `homedir()` is not one of ours (#711)
+ *
+ * Every other `homedir()` in `src/` resolves a `~/.spotify-mcp` store, and
+ * `LOCAL_STORES` in `src/config.ts` is now the single list of those. This one
+ * is deliberately outside it, for two reasons that both point the same way:
+ *
+ *  - It resolves a THIRD PARTY's directory — Dropbox, Google Drive, OneDrive,
+ *    iCloud — to decide whether an export the CALLER chose to write has left
+ *    the machine. It is not a place this server writes.
+ *  - Putting it in the registry would make it a candidate for `logout` to
+ *    erase, and it would put "Dropbox" in a documentation table headed *local
+ *    data stores*. Both are false promises, and the second is the worse one: a
+ *    user reading that table would be told this server manages their cloud
+ *    folders.
+ *
+ * The process home is also the right home here, and is what the user's shell
+ * meant by `~`.
  */
 async function cloudSyncRootOf(file: string): Promise<{ name: string; root: string } | null> {
   const home = homedir();

@@ -124,6 +124,23 @@ interface StoreDefinition {
  * Each `resolve` is the resolver the owning module already uses. A path string
  * retyped here would drift the moment that module changed, and the drift would
  * be silent: logout would report success while a live token stayed on disk.
+ *
+ * ## Relationship to `LOCAL_STORES` (#711)
+ *
+ * The PATH of every store here is decided in `src/config.ts`, which lists all
+ * of them in `LOCAL_STORES`. This table is the *erasure* half: which of them to
+ * delete, in what order, by shredding or by moving aside — decisions no path
+ * registry can make, because "may this be erased" is a policy question and
+ * "where does it live" is a fact about one machine.
+ *
+ * So the two lists are not redundant and neither subsumes the other, which
+ * means the interesting property is that they AGREE. `tests/store-paths.test.ts`
+ * asserts it, and asserts the differences by name: `accounts` and
+ * `taste-feedback` are real stores logout does not erase (a coverage gap,
+ * reported rather than fixed here), and `cache` / `cache-pending-marker`
+ * resolve through `getTokenFilePath()` in `auth.ts`, which also reads argv, so
+ * `config.ts` cannot own them. A store added to one list and not the other
+ * fails the suite rather than waiting to be noticed in a report.
  */
 const STORE_DEFINITIONS: StoreDefinition[] = [
   {

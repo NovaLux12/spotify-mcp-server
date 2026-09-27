@@ -21,12 +21,12 @@ import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { randomBytes } from 'node:crypto';
 import { chmod, mkdir, writeFile } from 'node:fs/promises';
-import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import type { SpotifyClient } from '../client.js';
 import { ResponseFormat } from '../shaping.js';
 import { loadSidecar, SidecarUnreadableError } from '../sidecar.js';
 import { SPOTIFY_SEARCH_MAX_LIMIT } from './search.js';
+import { storePath } from '../config.js';
 
 /**
  * Results-per-request a replay asks for when the sidecar records no usable
@@ -133,7 +133,7 @@ export async function recordSearch(input: RecordSearchInput, env: NodeJS.Process
 }
 
 export function searchHistoryFile(env: NodeJS.ProcessEnv = process.env): string {
-  return env.SPOTIFY_MCP_SEARCH_HISTORY_FILE ?? join(homedir(), '.spotify-mcp', 'search-history.json');
+  return storePath('search-history', env);
 }
 
 /** Retention applied on read and on save. */

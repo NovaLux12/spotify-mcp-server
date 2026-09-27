@@ -19,7 +19,6 @@ import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { randomBytes } from 'node:crypto';
 import { chmod, mkdir, open, rename, rm } from 'node:fs/promises';
-import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import type { SpotifyClient } from '../client.js';
 import { loadSidecar } from '../sidecar.js';
@@ -40,6 +39,7 @@ import {
   resolveStatsfmUserId,
 } from '../lib/statsfm-client.js';
 import { statsfmRangeSchema } from './statsfm.js';
+import { storePath } from '../config.js';
 
 // ---------------------------------------------------------------------------
 // Parsed-payload fixture seam over the shared stats.fm client
@@ -526,8 +526,6 @@ export const MAX_FEEDBACK_LIST_LIMIT = 500;
 export const FEEDBACK_FILE_MODE = 0o600;
 export const FEEDBACK_DIR_MODE = 0o700;
 
-const FEEDBACK_FILENAME = 'taste-feedback.json';
-
 const RATINGS: readonly string[] = ['love', 'like', 'mixed', 'boring', 'dislike'];
 const SUBJECT_TYPES: readonly string[] = ['track', 'artist', 'album', 'genre'];
 
@@ -538,10 +536,8 @@ const SUBJECT_TYPES: readonly string[] = ['track', 'artist', 'album', 'genre'];
  * every other sidecar in the server.
  */
 export function tasteFeedbackFile(env: NodeJS.ProcessEnv = process.env): string {
-  const explicit = env.SPOTIFY_MCP_TASTE_FEEDBACK_FILE?.trim();
-  if (explicit) return explicit;
-  const dir = env.SPOTIFY_MCP_DATA_DIR?.trim();
-  return join(dir ? dir : join(homedir(), '.spotify-mcp'), FEEDBACK_FILENAME);
+  // Directory and file name both come from the registry; see LOCAL_STORES.
+  return storePath('taste-feedback', env);
 }
 
 /** Positive integer from the environment, or the fallback for anything else. */

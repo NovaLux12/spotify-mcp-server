@@ -18,14 +18,13 @@ import { issueReceipt, formatReceipt } from '../receipts.js';
 import { confirmViaElicitation, describeConfirmation, requiredConfirmationRefusal } from './confirm.js';
 // #637: the batch-add gate constant is shared, never re-declared here.
 import { BATCH_ADD_ELICIT_THRESHOLD } from './playlistbatch.js';
-import { getConfig } from '../config.js';
+import { getConfig, storePath } from '../config.js';
 // mkdir/writeFile stay for import_profile_state, which writes to the server's
 // own store paths (scenesFilePath(), historyFilePath()) rather than to a
 // caller-supplied destination. chmod is here for the history-file mode
 // enforcement in export_profile_state.
 import { chmod, copyFile, mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
-import { homedir } from 'node:os';
 import { exportRootDir, READ_ROOTS_ENV_HINT, ownStoreRoots, readLocalFile, readRoots, resolveOutputPath, writeOutputFile } from '../paths.js';
 import { csvTable } from '../csvsafe.js';
 import type {
@@ -67,7 +66,7 @@ function shapeResult(rf: ResponseFormatValue, prose: string, payload: Record<str
 }
 
 export function portabilityDir(env: NodeJS.ProcessEnv = process.env): string {
-  return env.SPOTIFY_MCP_PORTABILITY_DIR ?? join(homedir(), '.spotify-mcp', 'portability');
+  return storePath('portability', env);
 }
 
 // ---------------------------------------------------------------------------
@@ -672,7 +671,9 @@ async function fileExists(path: string): Promise<boolean> {
 // ---------------------------------------------------------------------------
 
 function listeningHistoryDir(env: NodeJS.ProcessEnv = process.env): string {
-  return env.SPOTIFY_MCP_PORTABILITY_DIR ?? join(homedir(), '.spotify-mcp', 'portability');
+  // Was a SECOND copy of the portability default, typed out again (#711). A store's
+  // directory is one fact; the drift is what let the two disagree.
+  return portabilityDir(env);
 }
 
 // ---------------------------------------------------------------------------

@@ -23,7 +23,6 @@ import { capFor } from '../chunk.js';
 import { ARTIST_ALBUM_PAGE_LIMIT, MARKET_CODE } from './catalog.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { chmod, mkdir, writeFile } from 'node:fs/promises';
-import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import type { SpotifyClient } from '../client.js';
 import { SpotifyApiError, quotaPreflight, quotaSnapshot, quotaWindowRemaining, quotaDelta } from '../client.js';
@@ -39,7 +38,7 @@ import {
 } from '../shaping.js';
 import type { ResponseFormatValue } from '../shaping.js';
 import type { PlaybackState } from '../types/spotify.js';
-import { getConfig } from '../config.js';
+import { getConfig, storePath } from '../config.js';
 import { loadTokens } from '../auth.js';
 import { WRITE_SCOPE_REQUIREMENTS, moduleBlockedByScopes, scopesFor } from '../scopefilter.js';
 import { loadScenes, scenesFilePath } from './scenes.js';
@@ -184,7 +183,7 @@ interface MiscStore {
 }
 
 export function miscFilePath(env: NodeJS.ProcessEnv = process.env): string {
-  return env.SPOTIFY_MCP_EXHAUST2_MISC_FILE ?? join(homedir(), '.spotify-mcp', 'exhaust2-misc.json');
+  return storePath('exhaust2-misc', env);
 }
 
 /** Load the slice sidecar; ENOENT yields empty, every other failure throws #1051. */

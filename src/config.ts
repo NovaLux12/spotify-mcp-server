@@ -294,18 +294,375 @@ export function validateProfileName(raw: string | undefined): string | undefined
 }
 
 /**
+ * The token file's PATH, for an already-validated profile name.
+ *
+ * Split from {@link resolveTokenFile} because two callers validate the profile
+ * differently and neither is wrong about its own input: `auth.ts` validates a
+ * name that arrived on argv, and accepts `a..b`; this module validates one that
+ * arrived in the environment, and rejects any `..` at all. Folding the two
+ * would silently change what `--profile a..b` does, which is not this
+ * registry's call to make. The PATH is the same in both, and that is the part
+ * that had drifted — `auth.ts` used to spell `join(homedir(), '.spotify-mcp', …)`
+ * a second time.
+ */
+export function tokenFilePathForProfile(
+  profile: string | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  if (env.SPOTIFY_MCP_TOKEN_FILE) return env.SPOTIFY_MCP_TOKEN_FILE;
+  return join(storeDir(), profile ? `tokens.${profile}.json` : 'tokens.json');
+}
+
+/**
  * Resolve token file path with precedence:
  * SPOTIFY_MCP_TOKEN_FILE (explicit) > SPOTIFY_MCP_PROFILE (namespaced) > default.
  * Exported for auth.ts to share the same resolution.
  */
 export function resolveTokenFile(env: NodeJS.ProcessEnv = process.env): string {
-  if (env.SPOTIFY_MCP_TOKEN_FILE) return env.SPOTIFY_MCP_TOKEN_FILE;
-  const profile = validateProfileName(env.SPOTIFY_MCP_PROFILE);
-  if (profile) {
-    return join(homedir(), '.spotify-mcp', `tokens.${profile}.json`);
-  }
-  return join(homedir(), '.spotify-mcp', 'tokens.json');
+  return tokenFilePathForProfile(validateProfileName(env.SPOTIFY_MCP_PROFILE), env);
 }
+
+// ---------------------------------------------------------------------------
+// Local stores (#711)
+// ---------------------------------------------------------------------------
+
+/**
+ * Every local store this server writes, in ONE list.
+ *
+ * ## Why this exists
+ *
+ * Each store used to be resolved ad hoc, inside the module that happened to own
+ * it: `backupDir` in `src/tools/backup.ts`, `scenesFilePath` in
+ * `src/tools/scenes.ts`, `historyFilePath` in `src/history.ts`, and so on for
+ * fifteen-odd files. Every one of them was the same two-part expression — a
+ * `SPOTIFY_MCP_*` variable, else a `join(homedir(), '.spotify-mcp', …)` — retyped
+ * per module. The consequences were not hypothetical:
+ *
+ *  - **Discovery.** An operator reading the configuration reference could not
+ *    learn that backups, snapshots, portability state or the persisted read
+ *    cache exist, because the list lived only as scattered literals.
+ *  - **Erasure.** `logout` already enumerates every store, and it has to —
+ *    but it could only do that by importing fifteen resolver functions and
+ *    trusting each one. A store added to a tool and forgotten in `logout` would
+ *    be left behind silently, which is the exact failure the command exists to
+ *    prevent. This list is what makes that class of omission checkable rather
+ *    than merely improbable.
+ *  - **Drift.** `portability.ts` resolved its own listening-history directory
+ *    with a second copy of the portability default; `paths.ts` kept a third.
+ *
+ * The fix is to make the path a property of the LIST rather than of the module:
+ * every owning resolver is now a one-line delegation to {@link storePath}, so
+ * the path a tool writes to, the path `logout` erases, and the path the
+ * documentation names are the same value read from one place.
+ *
+ * ## What this is not
+ *
+ * This list says *where* each store is. It does not say *whether* it may be
+ * erased, in what order, or by shredding rather than moving aside — those are
+ * policy, they live in `STORE_DEFINITIONS` in `src/logout.ts`, and no path
+ * registry can decide them. The two lists therefore have to be cross-checked
+ * rather than merged, which is what `tests/store-paths.test.ts` does. The known
+ * differences are named there.
+ *
+ * ## What is deliberately NOT here
+ *
+ * - **Anything that is not a store this server writes.** A caller's own export
+ *   destination, or the `~` expansion in `src/paths.ts`, is not a store and
+ *   putting it here would make the list claim to be an exhaustive inventory of
+ *   local paths when it is an inventory of *our* writes. `logout` must not be
+ *   handed a path it does not own either.
+ * - **The per-account file NAMES.** #1377 keyed the mutation ledger and the
+ *   receipt store by account, so `SPOTIFY_MCP_HISTORY_DIR` holds
+ *   `mutations.jsonl` for the default account and `mutations.<profile>.jsonl`
+ *   for a named one. The DIRECTORY is a store fact and lives here; the file
+ *   NAME inside it depends on the acting account, which reaches this module
+ *   only through `getTokenFilePath()` in `auth.ts` — argv-aware, so
+ *   `config.ts` must not depend on it. The `mutations` and `receipts` rows
+ *   below therefore carry the DEFAULT account's name, and the owning module
+ *   applies the account key on top, exactly as it does for the persisted read
+ *   cache. `tests/store-paths.test.ts` pins that the default-account answer
+ *   agrees, so a change to the keying cannot drift the directory silently.
+ *
+ * ## The `env` argument is not optional at the call sites that matter
+ *
+ * `logout` erases files. A resolver that fell back to `process.env` when handed
+ * an `env` would resolve a path the caller never asked about — the #1358 shape,
+ * where the store paths and the erasure guard disagreed about which home was
+ * real. Every delegating resolver keeps its explicit `env` parameter and passes
+ * it straight through, so a caller that supplies one is answered from it alone.
+ */
+
+/** What kind of thing sits at a store's path. */
+export type LocalStoreKind = 'file' | 'dir';
+
+export interface LocalStoreSpec {
+  /**
+   * Stable key, matching the `id` the owning module and `logout` already use.
+   * A test asserts these agree, so a store cannot be renamed in one place only.
+   */
+  id: string;
+  /** Human name, as the report and the documentation print it. */
+  label: string;
+  /** Whether the path is one file or a directory of files. */
+  kind: LocalStoreKind;
+  /**
+   * The variable that relocates it, or null when there is none. Null is a real
+   * answer — several stores resolve only through the home directory, and the
+   * hermetic test helper relocates those by moving `HOME` itself.
+   */
+  envVar: string | null;
+  /**
+   * How the path reads when nothing is set, for documentation. Always spelled
+   * with `~` so a doc row never leaks the developer's own home.
+   */
+  defaultPath: string;
+  /**
+   * Resolve the store's path from an environment.
+   *
+   * Every implementation must be a pure function of `env` (plus `homedir()`,
+   * which reads `process.env.HOME` on every call). Nothing here may consult
+   * `getConfig()`: a config snapshot is cached for the life of the process, so
+   * reading it here would answer a caller's explicit `env` from state that
+   * caller never supplied — and one of these paths is about to be erased.
+   */
+  resolve: (env: NodeJS.ProcessEnv) => string;
+}
+
+/**
+ * The list. Order is the order `logout` reports stores in, and the order the
+ * documentation table uses, so adding an entry changes all three at once.
+ *
+ * A test asserts this list and `logout`'s store definitions name the same ids,
+ * which is what stops either drifting from the other.
+ */
+export const LOCAL_STORES: readonly LocalStoreSpec[] = [
+  {
+    id: 'token',
+    label: 'OAuth tokens',
+    kind: 'file',
+    envVar: 'SPOTIFY_MCP_TOKEN_FILE',
+    defaultPath: '~/.spotify-mcp/tokens.json',
+    resolve: (env) => resolveTokenFile(env),
+  },
+  {
+    id: 'accounts',
+    label: 'Account registry',
+    kind: 'file',
+    envVar: 'SPOTIFY_MCP_ACCOUNTS_FILE',
+    defaultPath: '~/.spotify-mcp/accounts.json',
+    resolve: (env) => env.SPOTIFY_MCP_ACCOUNTS_FILE?.trim() || join(storeDir(), 'accounts.json'),
+  },
+  {
+    id: 'mutations',
+    label: 'Mutation history',
+    kind: 'file',
+    envVar: 'SPOTIFY_MCP_HISTORY_DIR',
+    defaultPath: '~/.spotify-mcp/history/mutations.jsonl',
+    // The DIRECTORY, with the DEFAULT account's file name. A named profile
+    // appends its own key to the name (#1377); that half is applied by the
+    // owning module, because the key comes from the token file and the token
+    // file is resolved with argv in view.
+    resolve: (env) =>
+      join(env.SPOTIFY_MCP_HISTORY_DIR ?? join(storeDir(), 'history'), HISTORY_FILE),
+  },
+  {
+    id: 'receipts',
+    label: 'Write receipts',
+    kind: 'file',
+    envVar: 'SPOTIFY_MCP_RECEIPTS_DIR',
+    defaultPath: '~/.spotify-mcp/receipts.jsonl',
+    // Two variables, in a documented order: an explicit receipts directory, then
+    // the history directory (so one knob relocates both ledgers), then the store
+    // directory itself. Collapsing this to one variable would be a behaviour
+    // change for an operator who sets SPOTIFY_MCP_HISTORY_DIR today.
+    resolve: (env) =>
+      join(
+        env.SPOTIFY_MCP_RECEIPTS_DIR ?? env.SPOTIFY_MCP_HISTORY_DIR ?? storeDir(),
+        RECEIPT_FILE,
+      ),
+  },
+  {
+    id: 'scenes',
+    label: 'Scenes',
+    kind: 'file',
+    envVar: 'SPOTIFY_MCP_SCENES_FILE',
+    defaultPath: '~/.spotify-mcp/scenes.json',
+    resolve: (env) => env.SPOTIFY_MCP_SCENES_FILE ?? join(storeDir(), 'scenes.json'),
+  },
+  {
+    id: 'genre-tags',
+    label: 'Genre tags',
+    kind: 'file',
+    envVar: 'SPOTIFY_MCP_GENRE_TAGS_FILE',
+    defaultPath: '~/.spotify-mcp/genre-tags.json',
+    resolve: (env) => env.SPOTIFY_MCP_GENRE_TAGS_FILE ?? join(storeDir(), 'genre-tags.json'),
+  },
+  {
+    id: 'playback-extensions',
+    label: 'Playback extensions',
+    kind: 'file',
+    envVar: 'SPOTIFY_MCP_PLAYBACKEXT_FILE',
+    defaultPath: '~/.spotify-mcp/playback-ext.json',
+    resolve: (env) =>
+      env.SPOTIFY_MCP_PLAYBACKEXT_FILE ?? join(storeDir(), 'playback-ext.json'),
+  },
+  {
+    id: 'search-history',
+    label: 'Search history',
+    kind: 'file',
+    envVar: 'SPOTIFY_MCP_SEARCH_HISTORY_FILE',
+    defaultPath: '~/.spotify-mcp/search-history.json',
+    resolve: (env) =>
+      env.SPOTIFY_MCP_SEARCH_HISTORY_FILE ?? join(storeDir(), 'search-history.json'),
+  },
+  {
+    id: 'artist-watchlist',
+    label: 'Artist watchlist',
+    kind: 'file',
+    envVar: 'SPOTIFY_MCP_DATA_DIR',
+    defaultPath: '~/.spotify-mcp/artist-watchlist.json',
+    resolve: (env) => join(dataDirOr(env, storeDir()), 'artist-watchlist.json'),
+  },
+  {
+    id: 'taste-feedback',
+    label: 'stats.fm taste feedback',
+    kind: 'file',
+    envVar: 'SPOTIFY_MCP_TASTE_FEEDBACK_FILE',
+    defaultPath: '~/.spotify-mcp/taste-feedback.json',
+    resolve: (env) => {
+      const explicit = env.SPOTIFY_MCP_TASTE_FEEDBACK_FILE?.trim();
+      if (explicit) return explicit;
+      return join(dataDirOr(env, storeDir()), TASTE_FEEDBACK_FILE);
+    },
+  },
+  {
+    id: 'freshness',
+    label: 'Freshness watermark',
+    kind: 'file',
+    envVar: 'SPOTIFY_MCP_FRESHNESS_STATE',
+    defaultPath: '~/.spotify-mcp/freshness.json',
+    resolve: (env) =>
+      env.SPOTIFY_MCP_FRESHNESS_STATE ?? join(storeDir(), 'freshness.json'),
+  },
+  {
+    id: 'exhaust2-playback',
+    label: 'Extended sidecar (playback)',
+    kind: 'file',
+    envVar: 'SPOTIFY_MCP_EXHAUST2_PLAYBACK_FILE',
+    defaultPath: '~/.spotify-mcp/exhaust2-playback.json',
+    resolve: (env) =>
+      env.SPOTIFY_MCP_EXHAUST2_PLAYBACK_FILE ?? join(storeDir(), 'exhaust2-playback.json'),
+  },
+  {
+    id: 'exhaust2-misc',
+    label: 'Extended sidecar (misc)',
+    kind: 'file',
+    envVar: 'SPOTIFY_MCP_EXHAUST2_MISC_FILE',
+    defaultPath: '~/.spotify-mcp/exhaust2-misc.json',
+    resolve: (env) =>
+      env.SPOTIFY_MCP_EXHAUST2_MISC_FILE ?? join(storeDir(), 'exhaust2-misc.json'),
+  },
+  {
+    id: 'backups',
+    label: 'Backups',
+    kind: 'dir',
+    envVar: 'SPOTIFY_MCP_BACKUP_DIR',
+    defaultPath: '~/.spotify-mcp/backups',
+    resolve: (env) => env.SPOTIFY_MCP_BACKUP_DIR ?? join(storeDir(), 'backups'),
+  },
+  {
+    id: 'playlist-snapshots',
+    label: 'Playlist snapshots',
+    kind: 'dir',
+    envVar: 'SPOTIFY_MCP_SNAPSHOT_DIR',
+    defaultPath: '~/.spotify-mcp/playlist-snapshots',
+    resolve: (env) => env.SPOTIFY_MCP_SNAPSHOT_DIR ?? join(storeDir(), 'playlist-snapshots'),
+  },
+  {
+    id: 'playlist-health-snapshots',
+    label: 'Playlist health snapshots',
+    kind: 'dir',
+    envVar: 'SPOTIFY_MCP_DATA_DIR',
+    // Shares its variable with the artist watchlist, and NOT its default. This
+    // is the one row where a naive `dataDir` field would be actively wrong: it
+    // would resolve to `~/.spotify-mcp` and silently move every playlist-health
+    // snapshot out of `playlist-snapshots/` and into the directory that holds
+    // every other store. See `snapshotDir` in `src/tools/playlisthealth.ts`.
+    defaultPath: '~/.spotify-mcp/playlist-snapshots',
+    resolve: (env) => {
+      const dir = env.SPOTIFY_MCP_DATA_DIR;
+      if (dir && dir.length > 0) return dir;
+      return join(storeDir(), 'playlist-snapshots');
+    },
+  },
+  {
+    id: 'portability',
+    label: 'Portability export/import state',
+    kind: 'dir',
+    envVar: 'SPOTIFY_MCP_PORTABILITY_DIR',
+    defaultPath: '~/.spotify-mcp/portability',
+    resolve: (env) => env.SPOTIFY_MCP_PORTABILITY_DIR ?? join(storeDir(), 'portability'),
+  },
+  {
+    id: 'exports',
+    label: 'Exports',
+    kind: 'dir',
+    envVar: 'SPOTIFY_MCP_EXPORT_DIR',
+    defaultPath: '~/.spotify-mcp/exports',
+    resolve: (env) => env.SPOTIFY_MCP_EXPORT_DIR ?? join(storeDir(), 'exports'),
+  },
+] as const;
+
+const STORES_BY_ID: ReadonlyMap<string, LocalStoreSpec> = new Map(
+  LOCAL_STORES.map((s) => [s.id, s]),
+);
+
+/**
+ * The path of one store, from the environment it is handed.
+ *
+ * An unknown id THROWS rather than returning `undefined`. These paths are used
+ * to erase files, and a typo that resolved to some other store — or to
+ * `undefined`, which a caller would then `join` into a path of its own — is the
+ * kind of mistake that is invisible until the wrong file is gone.
+ */
+export function storePath(id: string, env: NodeJS.ProcessEnv = process.env): string {
+  const store = STORES_BY_ID.get(id);
+  if (!store) {
+    throw new Error(
+      `Unknown local store "${id}". Known stores: ${LOCAL_STORES.map((s) => s.id).join(', ')}`,
+    );
+  }
+  return store.resolve(env);
+}
+
+/**
+ * The `~/.spotify-mcp` directory, evaluated on EVERY call.
+ *
+ * A function, not a constant, and the distinction is load-bearing:
+ * `os.homedir()` reads `process.env.HOME` on every call on POSIX, so evaluating
+ * this once at module load would pin every default to the home that existed
+ * when the module was first imported — before the hermetic test helper had a
+ * chance to redirect `HOME`, and before a test that redirects it mid-process
+ * would take effect. A constant captured at import is the reason the helper has
+ * to redirect `HOME` rather than the individual variables, and the reason a
+ * resolver that must be answerable from a caller's `env` cannot consult one.
+ */
+function storeDir(): string {
+  return join(homedir(), '.spotify-mcp');
+}
+
+/** `SPOTIFY_MCP_DATA_DIR` when it is set to something, else `fallback`. */
+function dataDirOr(env: NodeJS.ProcessEnv, fallback: string): string {
+  const dir = env.SPOTIFY_MCP_DATA_DIR?.trim();
+  return dir ? dir : fallback;
+}
+
+/** The file name inside the history directory, for the DEFAULT account. */
+const HISTORY_FILE = 'mutations.jsonl';
+/** The file name inside the receipts directory, for the DEFAULT account. */
+const RECEIPT_FILE = 'receipts.jsonl';
+/** The file name inside the data directory. */
+const TASTE_FEEDBACK_FILE = 'taste-feedback.json';
 
 /**
  * Parse SPOTIFY_SCOPES: space- or comma-separated, validated against known

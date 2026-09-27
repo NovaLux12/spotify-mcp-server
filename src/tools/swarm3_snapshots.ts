@@ -13,14 +13,13 @@
  */
 import { z } from 'zod';
 import { mkdir, readdir, readFile, stat, unlink, writeFile } from 'node:fs/promises';
-import { homedir } from 'node:os';
 import { chunk } from '../chunk.js';
 import { issueReceipt, type Receipt } from '../receipts.js';
 import { receiptRecords, receiptsLines, writeVerdict } from './playlistreceipts.js';
 import { join } from 'node:path';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
-import { getConfig } from '../config.js';
+import { getConfig, storePath } from '../config.js';
 import {
   ResponseFormat,
   MaxResults,
@@ -68,7 +67,7 @@ interface PlaylistSnapshot {
 
 /** Snapshot dir; SPOTIFY_MCP_SNAPSHOT_DIR overrides the whole directory. */
 export function snapshotDir(env: NodeJS.ProcessEnv = process.env): string {
-  return env.SPOTIFY_MCP_SNAPSHOT_DIR ?? join(homedir(), '.spotify-mcp', 'playlist-snapshots');
+  return storePath('playlist-snapshots', env);
 }
 
 const SNAP_FILE_RE = /^plsnap-([A-Za-z0-9]+)-(\d{4}-\d{2}-\d{2})-(\d+)\.json$/;
