@@ -516,9 +516,6 @@ Quick reference for all endpoints used. All paths are relative to `https://api.s
 | `get_saved_shows` | GET | `/me/shows` |
 | `get_saved_episodes` | GET | `/me/episodes` |
 | `get_saved_audiobooks` | GET | `/me/audiobooks` — market-gated to US/UK/CA/IE/NZ/AU |
-| `save_items` | PUT | partitions URIs by type: `/me/tracks`, `/me/albums`, `/me/episodes` (body `{ids}`); `/me/shows?ids=…`, `/me/audiobooks?ids=…` (query only) |
-| `remove_saved_items` | DELETE | same per-type paths as `save_items`; supports `dry_run` |
-| `check_saved_items` | GET | `/me/{tracks\|albums\|shows\|episodes\|audiobooks}/contains?ids=…` per type |
 | `save_to_library` | PUT | `/me/library?uris=…` — any mix of track/album/episode/show/audiobook/user/playlist URIs |
 | `remove_from_library` | DELETE | `/me/library?uris=…`; supports `dry_run` |
 | `check_in_library` | GET | `/me/library/contains?uris=…` — also covers artist/user/playlist follow state |
@@ -535,9 +532,7 @@ Quick reference for all endpoints used. All paths are relative to `https://api.s
 | `get_playlist_cover` | GET | `/playlists/{id}/images` |
 | `upload_playlist_cover` | PUT | `/playlists/{id}/images` — raw base64 JPEG body; requires optional `ugc-image-upload` scope |
 | `get_followed_artists` | GET | `/me/following?type=artist` — cursor-based pagination: `after` is the artist ID of the last returned item, not a numeric offset |
-| `follow_artists` | PUT | `/me/following?type=artist&ids=…` |
-| `unfollow_artists` | DELETE | `/me/following?type=artist&ids=…` |
-| `check_following_artists` | GET | `/me/following/contains?type=artist&ids=…` — bare artist IDs |
+| `check_following_artists` | GET | `/me/library/contains?uris=spotify:artist:…` — one URI per artist, same order as the input |
 
 ---
 
@@ -1054,7 +1049,7 @@ Compare the `short_term` and `long_term` top-track and top-artist lists, reporti
 
 ### 5.5 Library
 
-> **Feb 2026 note**: Save, remove, and check operations accept **Spotify URIs** (e.g., `spotify:track:abc123`) rather than bare IDs. Two families exist: the legacy trio (`save_items`, `remove_saved_items`, `check_saved_items`) partitions its URIs by type across the per-type `/me/{type}s` endpoints, while the unified trio (`save_to_library`, `remove_from_library`, `check_in_library`) issues a single call against `/me/library`.
+> **Feb 2026 note**: Save, remove, and check operations accept **Spotify URIs** (e.g., `spotify:track:abc123`) rather than bare IDs. There is now only one family. A legacy trio (`save_items`, `remove_saved_items`, `check_saved_items`) partitioned its URIs by type across `PUT`/`DELETE /me/{type}s` and `GET /me/{type}s/contains`; Spotify removed all of those in February 2026, and #638 deleted the three tools. Use `save_to_library`, `remove_from_library` and `check_in_library`, which issue a single call against `/me/library` and accept a wider URI mix.
 
 #### `get_saved_tracks`
 Get tracks saved in the user's Liked Songs.
@@ -1092,38 +1087,17 @@ Get podcast episodes saved in the user's library.
 
 ---
 
-#### `save_items`
-Save one or more items to the user's library. Accepts track, album, show, episode, and audiobook URIs; internally partitions them by type and issues one call per affected type — `PUT /me/tracks` / `PUT /me/albums` / `PUT /me/episodes` (IDs in the JSON body) and `PUT /me/shows?ids=…` / `PUT /me/audiobooks?ids=…` (these two only honour query-parameter IDs).
+#### Retired: the per-type library trio
 
-**Inputs:**
-| Field | Type | Required | Description |
-|---|---|---|---|
-| `uris` | string[] | yes | Spotify URIs to save (e.g., `["spotify:track:abc", "spotify:audiobook:xyz"]`). Max 50. Accepts tracks, albums, shows, episodes, and audiobooks. |
+`save_items`, `remove_saved_items` and `check_saved_items` are **removed** (breaking, #638). They partitioned their URIs by type and called `PUT`/`DELETE /me/{tracks,albums,shows,episodes,audiobooks}` and `GET /me/{type}s/contains`; Spotify's February 2026 changes deleted every one of those endpoints, naming `PUT`/`DELETE /me/library` and `GET /me/library/contains` as the replacements. Their stated purpose — being kept for grandfathered app credentials that lack unified `/me/library` access — described a credential class that can no longer exist: a registration that cannot reach `/me/library` has no per-type endpoint left to fall back to either.
 
----
+| Retired tool | Use instead | Behaviour change |
+|---|---|---|
+| `save_items` | `save_to_library` | max 50 → max 40 URIs; one request instead of one per type |
+| `remove_saved_items` | `remove_from_library` | max 50 → max 40 URIs; one request instead of one per type |
+| `check_saved_items` | `check_in_library` | also accepts artist, user and playlist URIs |
 
-#### `remove_saved_items`
-Remove one or more items from the user's library. Partitions URIs by type and calls `DELETE /me/tracks` / `/me/albums` / `/me/episodes` / `DELETE /me/shows?ids=…` / `DELETE /me/audiobooks?ids=…` per affected type.
-
-**Inputs:**
-| Field | Type | Required | Description |
-|---|---|---|---|
-| `uris` | string[] | yes | Spotify URIs to remove. Max 50. |
-| `dry_run` | boolean | no | Preview exactly which URIs would be removed without calling the API |
-
----
-
-#### `check_saved_items`
-Check whether items are saved in the user's library. Partitions URIs by type and queries the per-type contains endpoints (`GET /me/tracks/contains`, `/me/albums/contains`, `/me/shows/contains`, `/me/episodes/contains`, `/me/audiobooks/contains`).
-
-**Inputs:**
-| Field | Type | Required | Description |
-|---|---|---|---|
-| `uris` | string[] | yes | Spotify URIs to check. Max 50. Accepts tracks, albums, shows, episodes, and audiobooks. |
-
-**Returns:** array of booleans matching input order.
-
----
+All three also had a second defect that the replacement does not inherit: a read or write that failed part-way was reported as a confident, complete answer. `check_saved_items` rendered a short or non-boolean contains body as "✗ not saved" for every row, and the write pair recorded only the committed subset while still reporting the whole batch as done. `check_in_library` now **fails closed** instead — see below.
 
 #### `save_to_library`
 Save one or more items to the user's library via Spotify's unified library endpoint — a single request for any mix of URI types.
@@ -1150,13 +1124,17 @@ Sends `DELETE /me/library?uris=…`.
 ---
 
 #### `check_in_library`
-Check whether items are saved in or followed by the user via the unified contains endpoint. Unlike the legacy `check_saved_items`, this also accepts artist, user, and playlist URIs (follow state) in any mix.
+Check whether items are saved in or followed by the user via the unified contains endpoint. Accepts artist, user, and playlist URIs (follow state) in any mix.
 
 **Inputs:** `uris` (string[], required, max 40 — track, album, episode, show, audiobook, artist, user, or playlist URIs)
 
 Sends `GET /me/library/contains?uris=…`. **Returns:** array of booleans matching input order.
 
-> **The read half accepts more URI types than the write half.** `contains` takes eight kinds including `artist`; `PUT`/`DELETE /me/library` take seven and exclude it. Playlist URIs are accepted by all three, so playlist follow/unfollow is fully expressible and `follow_artists` is not — see [Playlist follow family](#playlist-follow-family-1099).
+The response is **positionally** matched to the request, so a body that is not an array, is not the same length as the request, or holds a non-boolean is rejected rather than padded: a partial read used to render its missing rows as "✗ not saved", which is a failed lookup reported as a confirmed negative. The same guard is applied by `check_following_artists`, `restore_library_snapshot` and the `check_episode_saved` / `remove_saved_episode` pair in the shows module.
+
+> **The read half accepts more URI types than the write half.** `contains` takes eight kinds including `artist`; `PUT`/`DELETE /me/library` take seven and exclude it. Playlist URIs are accepted by all three, so playlist follow/unfollow is fully expressible and an artist follow is not — see [Playlist follow family](#playlist-follow-family-1099).
+
+**Note on following an artist**: this tool *reads* follow state for artist URIs, but nothing can *write* it. `PUT /me/library` does not accept `spotify:artist:` URIs, and Spotify removed `PUT`/`DELETE /me/following` in February 2026 with no replacement, so no endpoint can follow or unfollow an artist. The read half migrating to `/me/library/contains` is what makes this look migrated; the write half has no target.
 
 ---
 
@@ -1542,31 +1520,15 @@ Get all artists the user follows.
 #### `check_following_artists`
 Check if the user follows specific artists.
 
-**Inputs:** `ids` (string[], required, max 50 — bare artist IDs)
+**Inputs:** `ids` (string[], required, max 50 — bare artist IDs or `spotify:artist:` URIs)
 
-**Returns:** array of booleans matching input order. Uses `GET /me/following/contains?type=artist&ids=…`.
+**Returns:** array of booleans matching input order. Uses `GET /me/library/contains` with one `spotify:artist:<id>` URI per input, in input order. `GET /me/following/contains` was removed in February 2026; `/me/library/contains` is its named replacement and is not registration-gated. A response that is not an array, is not the same length as the request, or holds a non-boolean is rejected rather than defaulted to "not followed".
 
----
+#### Retired: `follow_artists`, `unfollow_artists`
 
-#### `follow_artists`
-Follow one or more artists. Requires the `user-follow-modify` scope.
+**Removed** (breaking, #638). Both targeted `PUT`/`DELETE /me/following?type=artist`, which Spotify removed in February 2026 **with no replacement**. `PUT`/`DELETE /me/library` accept track, album, episode, show, audiobook, user and playlist URIs — not `spotify:artist:` — so a `PUT /me/library?uris=spotify:artist:<id>` would look migrated and follow nothing. Following an artist is no longer expressible over this API.
 
-**Inputs:** `ids` (string[], required, 1–50 artist IDs)
-
-Sends `PUT /me/following?type=artist&ids=…` and echoes a batch summary of the followed artists.
-
----
-
-#### `unfollow_artists`
-Unfollow one or more artists. Requires the `user-follow-modify` scope.
-
-**Inputs:**
-| Field | Type | Required | Description |
-|---|---|---|---|
-| `ids` | string[] | yes | Artist IDs to unfollow (1–50) |
-| `dry_run` | boolean | no | Preview which artists would be unfollowed without calling the API |
-
-Sends `DELETE /me/following?type=artist&ids=…`.
+**There is no migration for the write.** `check_following_artists` still answers the read half, and `get_followed_artists` / `following_analytics` still list the followed set. A caller that needs to change follow state must do it outside this server.
 
 ---
 
@@ -1785,7 +1747,7 @@ Rules that hold for every row:
 - On 429: the gate parks all callers for `Retry-After` seconds; the throttled call re-queues once behind the same gate rather than sleeping in place, so the wait is paid once for the whole funnel instead of once per throttled caller. `Retry-After` is read in both RFC 9110 forms — delta-seconds and HTTP-date — so a server asking for minutes is honoured rather than retried after the 1 s fallback. A `Retry-After` above the 10 s in-queue cap, a quota-exhaustion body, and a second 429 on the same call all fail fast with the wait attached in `retryAfterSec` rather than blocking. Three consecutive 429s inside 30 s latch a breaker that refuses new work — without sending it — until the window passes; any request that settles without a throttle clears the streak. The throttle event (retry delay, wait time) is recorded on the client
 - One shared attempt budget (`MAX_ATTEMPTS = 3`) covers the 401-refresh, the 429 re-queue, the 5xx backoff and transport-error retries, so no combination of them can loop. 5xx backoff is jittered, and a transport failure is retried only for an idempotent verb so a mutation is never silently re-sent
 - Throttle visibility: the most recent event is exposed via the `spotify://me/rate-limit` resource, and a "rate-limited by Spotify, waited Ns" notice is appended to the throttled call's result
-- Batch operations issue one API call per affected content type (e.g., `save_items` partitions its URIs across `/me/tracks`, `/me/albums`, …) instead of one call per item
+- Batch operations issue one API call per **batch**, not one call per item and not one call per content type: a 100-URI library write is 3 requests against `/me/library` at the 40-URI library-writes batch cap, not 100 requests and not one per URI type
 
 ---
 
@@ -1799,9 +1761,10 @@ Known limitations to document and handle:
 | **No audio** | API provides metadata and control only — no audio streams |
 | **Search limit** | Max 10 results per type per `/search` request (schema and runtime cap; default 5). Tools needing deeper results must page with successive offsets. |
 | **Queue opacity** | `GET /me/player/queue` returns items but positions are not editable |
-| **Registration-gated reads** | The batch lookup wrappers (`GET /tracks?ids=` family) and `GET /artists/{id}/top-tracks` remain registered, but an app registration without the relevant grant answers `403`. This is registration-dependent, not a per-endpoint property of the tool: a grandfathered registration still answers `200`, and the same paths are still published by Spotify's live OpenAPI schema carrying `deprecated: true` even where the February 2026 changelog marks them `[REMOVED]`. The single runtime classification source is `GATED_FAMILIES` in `src/gating.ts` (`GATED_PATH_PATTERNS` is derived from it, and `src/tools/exhaust2_enggating.ts` re-exports the pair for historical import paths). Each family records the tools it ships and whether a 403 is met by a replacement read or a plain-English explanation. The family list includes `/artists/{id}/top-tracks`, the documented `/me/{type}/contains` checks, and the multi-id batch paths. The README's [Registration-gated endpoints](README.md#registration-gated-endpoints) table is generated from that array, so it cannot name a family the classifier rejects. |
+| **Registration-gated reads** | The batch lookup wrappers (`GET /tracks?ids=` family) and `GET /artists/{id}/top-tracks` remain registered, but an app registration without the relevant grant answers `403`. This is registration-dependent, not a per-endpoint property of the tool: a grandfathered registration still answers `200`, and the same paths are still published by Spotify's live OpenAPI schema carrying `deprecated: true` even where the February 2026 changelog marks them `[REMOVED]`. The single runtime classification source is `GATED_FAMILIES` in `src/gating.ts` (`GATED_PATH_PATTERNS` is derived from it, and `src/tools/exhaust2_enggating.ts` re-exports the pair for historical import paths). Each family records the tools it ships and whether a 403 is met by a replacement read or a plain-English explanation. The family list includes `/artists/{id}/top-tracks` and the multi-id batch paths; `/me/{type}/contains` is still classified but has **no live call site**, because every reader moved onto `/me/library/contains`, which is not gated. The README's [Registration-gated endpoints](README.md#registration-gated-endpoints) table is generated from that array, so it cannot name a family the classifier rejects. |
+| **Removed ≠ gated** | A `[REMOVED]` changelog label is not by itself a single runtime fact, and the two halves must not be confused. A **gated** family has a graceful shape left: the call still happens and the 403 becomes a stated reason or a replacement read, so the tool still answers, and deleting its wrapper makes it worse. An endpoint with **no live call site** must have none, because a 403-tolerant wrapper will happily degrade a removed endpoint into a soft, wrong answer — there the *call* is the bug and the only honest outcomes are to migrate it or delete the tool. #638 removed six tools on that second basis; see [AGENTS.md §2](AGENTS.md#2-endpoints-that-are-blocked-or-deprecated). |
 | **Removed fields** | `popularity`, `followers`, `available_markets` no longer returned on tracks, artists, albums |
-| **Unified library API** | `save_to_library`/`remove_from_library`/`check_in_library` use `PUT/DELETE/GET /me/library` with **URIs** in any mix (including artist/user/playlist follow state on check). The legacy helpers (`save_items`, `remove_saved_items`, `check_saved_items`) partition URIs across the per-type `/me/{type}s` endpoints. |
+| **Unified library API** | `save_to_library`/`remove_from_library`/`check_in_library` use `PUT/DELETE/GET /me/library` with **URIs** in any mix (including artist/user/playlist follow state on check). It is the **only** library write/read path: the per-type `/me/{type}s` write endpoints and the `/me/{type}s/contains` reads were removed by Spotify in February 2026, and the three tools that used them were deleted in #638. The `/me/{type}s` **list** endpoints (`GET /me/tracks` and friends) are unaffected and still live. |
 | **Playlist items path** | All playlist item operations use `/playlists/{id}/items` (not `/tracks`) as of Feb 2026 |
 | **Audiobooks market-gated** | Audiobook endpoints only available in US, UK, Canada, Ireland, New Zealand, Australia |
 | **Dev mode limit** | 5 authorized users max until extended quota approval |
@@ -1832,18 +1795,18 @@ spotify-mcp/
 │   │   ├── audiobooks.ts     # get_audiobook, get_audiobook_chapters, get_chapter, get_saved_audiobooks
 │   │   ├── audiobookcopilot.ts # list_all_chapters, jump_to_chapter, where_was_i
 │   │   ├── backup.ts         # backup_library, list_backups
-│   │   ├── browse.ts         # get_artist_genres, get_categories, get_category_playlists
+│   │   ├── browse.ts         # get_artist_genres
 │   │   ├── catalog.ts        # get_me, get_track, get_several_tracks, get_artist, get_artist_top_tracks, get_artist_albums, get_several_artists, get_album, get_album_tracks, get_several_albums, get_show, get_several_shows, get_episode, get_several_episodes, get_available_markets, get_several_audiobooks, get_several_chapters
 │   │   ├── doctortool.ts     # spotify_doctor
 │   │   ├── episodemgmt.ts    # archive_played_episodes
 │   │   ├── export.ts         # export_playlist (M3U/CSV)
-│   │   ├── following.ts      # get_followed_artists, follow_artists, unfollow_artists, check_following_artists
+│   │   ├── following.ts      # get_followed_artists, check_following_artists, following_analytics
 │   │   ├── freshness.ts      # whats_new (new-release radar)
 │   │   ├── import.ts         # import_playlist (M3U/CSV)
 │   │   ├── libraryanalytics.ts # library_coverage_report, listening_heatmap, library_growth_report, genre_trends_over_time
 │   │   ├── libraryhygiene.ts # library_hygiene
 │   │   ├── libraryinsights.ts # library_genre_report, filter_by_genre, tag_management
-│   │   ├── library.ts        # get_saved_tracks, get_saved_albums, get_saved_shows, get_saved_episodes, save_items, remove_saved_items, check_saved_items, save_to_library, remove_from_library, check_in_library
+│   │   ├── library.ts        # get_saved_tracks, get_saved_albums, get_saved_shows, get_saved_episodes, get_saved_audiobooks, get_saved_counts, save_to_library, remove_from_library, check_in_library
 │   │   ├── personalization.ts # get_top_tracks, get_top_artists, get_recently_played
 │   │   ├── playback.ts       # get_now_playing, get_currently_playing, play, pause, skip_next, skip_previous, seek, set_volume, set_shuffle, set_repeat, get_queue, add_to_queue, get_devices, transfer_playback, play_from_search
 │   │   ├── playbackext.ts    # save_playback_state, restore_playback_state, list_playback_states, rename_device, set_device_volume_preset, apply_device_presets, list_device_presets, tag_listening_session, replay_session, list_sessions, save_smart_playlist_rule, refresh_smart_playlist, save_show_digest
@@ -1940,9 +1903,9 @@ npm run auth   # or: SPOTIFY_CLIENT_ID=xxx npm run auth
 | **Phase 1** | Auth flow + SpotifyClient + playback tools (play, pause, skip, seek, volume, shuffle, repeat, now_playing, devices, transfer) |
 | **Phase 2** | Search + catalog lookup (track, artist, artist albums, album, audio features, audio analysis, show, episode) |
 | **Phase 3** | Personalization (top tracks/artists, recently played, recommendations with full tuning surface, related artists, available genres, featured playlists) |
-| **Phase 4** | Library management (get saved tracks/albums/shows/episodes; save_items, remove_saved_items, check_saved_items accepting URIs, partitioned across the per-type `/me/{type}s` endpoints) |
+| **Phase 4** | Library management (get saved tracks/albums/shows/episodes; save_items, remove_saved_items, check_saved_items accepting URIs, partitioned across the per-type `/me/{type}s` endpoints) — the trio was **retired in #638** when Spotify removed those endpoints; see §5.5 |
 | **Phase 5** | Playlist CRUD + item management (get_user_playlists, get_playlist, create_playlist, add_to_playlist, remove_from_playlist, update_playlist, reorder_playlist_items — all using `/items` endpoints) |
-| **Phase 6** | Following (get_followed_artists, follow_artists, unfollow_artists, check_following_artists via `/me/following` + `/me/following/contains`) |
+| **Phase 6** | Following (get_followed_artists, follow_artists, unfollow_artists, check_following_artists via `/me/following` + `/me/following/contains`) — the write pair was **retired in #638** (no replacement endpoint exists); see §5.7 |
 | **Phase 7** | MCP Resources + Prompts |
 | **Phase 8** | Package for npm (`spotify-mcp`) + README polish |
 | **Phase 9** | Deprecation cleanup + coverage completion (2026-08): removed deprecated endpoints (audio features/analysis, recommendations, related artists, genres, featured playlists, follow/unfollow artist); create_playlist moved to `POST /me/playlists`; added album tracks, show episodes, get_me, audiobook family, get_currently_playing, play_from_search, playlist cover get/upload; fetch_all pagination via client.getAllPages; SPOTIFY_MCP_TOKEN_FILE override |
@@ -1951,4 +1914,5 @@ npm run auth   # or: SPOTIFY_CLIENT_ID=xxx npm run auth
 | **Phase 12** | **v1.22.0 big-release (2026-08-26): catalog/browse and artist-watch, library analytics, playlist health/batch/misc/portability, and playback/queue/search/episode tools — wired centrally with a smoke `FORBIDDEN_TOOLS` guard** |
 | **Phase 13** | **v1.23.0 exhaust-remnants (2026-08-26): typed search, category helpers, catalog batch/validate, library insights, playlist operations, and freshness/scene/market tools** |
 | **Phase 14** | **v1.24.0 exhaust2 swarm (2026-08-27): graceful-403 gating, playback/device/session, portability/analytics/workflow, playlist set-algebra/curation, and catalog typed-search depth** |
+| **Phase 15** | **#638 (2026-09): February-2026 removal cleanup.** Retired `save_items`, `remove_saved_items`, `check_saved_items`, `follow_artists`, `unfollow_artists`, `get_categories` and `get_category_playlists`; migrated every surviving `PUT`/`DELETE /me/{type}s` and `GET /me/{type}s/contains` call site onto `/me/library` and `/me/library/contains`; made the positional `/me/library/contains` reads fail closed instead of defaulting a failed read to "not saved" |
 | **Phase 15** | **v1.26.0 swarm3 push (2026-08-28): playback, playlist operations, discovery, library, podcast/session, listening analytics, Spotify reference, local snapshot, and registry-introspection tools — live gauntlet and `tools/list` verified** |

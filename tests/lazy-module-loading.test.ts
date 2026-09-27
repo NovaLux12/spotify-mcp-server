@@ -221,12 +221,14 @@ describe('#906 a trimmed toolset evaluates only the modules it serves', () => {
   it('evaluates every manifest module for the default install', async () => {
     const full = await recordStartup('all');
     // A tripwire, deliberately a literal: it is here to catch surface growth
-    // nobody intended. #1099 grew it 592 -> 594 by adding the two deprecated
+    // nobody intended. #1099 grew 592 -> 594 by adding the two deprecated
     // `pin_playlist` / `unpin_playlist` aliases beside their canonical
-    // replacements; those aliases go in 2.1 and this number comes back down,
-    // which is the point of writing the change down rather than widening the
-    // assertion to a computed one.
-    assert.equal(full.toolCount, 594, 'the default surface must be unchanged');
+    // replacements; #638 then took it back down by removing the eight tools
+    // whose only endpoint Spotify deleted in February 2026. Writing each change
+    // down rather than widening the assertion to a computed one is the point:
+    // a number that moves for a stated reason is information, and one that
+    // moves silently is the failure this tripwire exists to catch.
+    assert.equal(full.toolCount, 585, 'the default surface must be unchanged');
     // `annotations.ts` registers verify_receipt itself, so it is in the
     // manifest's file list without being imported through a thunk.
     const missing = REGISTRAR_MANIFEST

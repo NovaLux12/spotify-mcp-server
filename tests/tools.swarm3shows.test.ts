@@ -66,6 +66,12 @@ function harness(options: {
   searchPage?: { items: Show[]; total?: number };
   savedEpisodeIds?: ReadonlySet<string>;
   containsFails?: boolean;
+  /**
+   * Replaces the `/me/library/contains` body outright, so a test can hand the
+   * tool a response that is not one boolean per requested URI — the shape that
+   * used to be read positionally as "none of these are saved" (#638).
+   */
+  containsBody?: unknown;
 } = {}) {
   const registered: RegisteredTool[] = [];
   const fakeServer = {
@@ -81,6 +87,7 @@ function harness(options: {
   const episodeRequests: string[] = [];
   const shelfRequests: string[] = [];
   const getCalls: Array<{ path: string; params: Record<string, string> }> = [];
+  const writes: Array<{ method: 'put' | 'delete'; path: string }> = [];
   const client = {
     async getAllPages<T>(path: string): Promise<T[]> {
       shelfRequests.push(path);
@@ -99,10 +106,15 @@ function harness(options: {
         const limit = Number(params?.limit ?? page.items.length);
         return { shows: { items: page.items.slice(offset, offset + limit), total: page.total } } as T;
       }
-      if (path === '/me/episodes/contains') {
+      // #638: `GET /me/episodes/contains` was removed; the library check reads
+      // `GET /me/library/contains` with `spotify:episode:` URIs. Serving the
+      // old path here would have made every migrated read look like a failure
+      // rather than a 404, which is how the two shapes drifted unnoticed.
+      if (path === '/me/library/contains') {
         if (options.containsFails) throw new Error('library check unavailable');
-        const ids = String(params?.ids ?? '').split(',');
-        return ids.map((id) => savedEpisodeIds.has(id)) as T;
+        if ('containsBody' in options) return options.containsBody as T;
+        const uris = String(params?.uris ?? '').split(',').filter(Boolean);
+        return uris.map((uri) => savedEpisodeIds.has(uri.replace(/^spotify:episode:/, ''))) as T;
       }
       const match = /^\/shows\/([^/]+)\/episodes$/.exec(path);
       if (!match) return null;
@@ -117,6 +129,14 @@ function harness(options: {
         total: items.length,
       } as T;
     },
+    async put<T>(path: string): Promise<T | null> {
+      writes.push({ method: 'put', path });
+      return null;
+    },
+    async delete<T>(path: string): Promise<T | null> {
+      writes.push({ method: 'delete', path });
+      return null;
+    },
   };
 
   registerSwarm3ShowsTools(fakeServer, client as unknown as SpotifyClient);
@@ -126,6 +146,7 @@ function harness(options: {
     episodeRequests,
     shelfRequests,
     getCalls,
+    writes,
     async invoke(name: string, args: Record<string, unknown> = {}): Promise<ToolResult> {
       const tool = byName.get(name);
       assert.ok(tool, `${name} is registered`);
@@ -400,7 +421,7 @@ describe('show_recommendation_brief play-state labelling (#818)', () => {
     }
   });
 
-  it('counts a /me/episodes/contains call that failed after being issued', async () => {
+  it('counts a /me/library/contains call that failed after being issued', async () => {
     const h = briefHarness(
       episode(fresh, 'unstarted', '2026-09-20', { fully_played: false, resume_position_ms: 0 }),
       { containsFails: true },
@@ -410,10 +431,10 @@ describe('show_recommendation_brief play-state labelling (#818)', () => {
     const payload = out.structuredContent as BriefPayload & { library_requests: number };
 
     // The call was issued and consumed quota, so the disclosure must survive the throw.
-    assert.equal(h.getCalls.filter((c) => c.path === '/me/episodes/contains').length, 1);
+    assert.equal(h.getCalls.filter((c) => c.path === '/me/library/contains').length, 1);
     assert.equal(payload.library_requests, 1);
     assert.equal(payload.library_checked, false);
-    assert.match(out.content[0].text, /Quota: 1 show lookup\(s\) \+ 1 \/me\/episodes\/contains call\(s\)/);
+    assert.match(out.content[0].text, /Quota: 1 show lookup\(s\) \+ 1 \/me\/library\/contains call\(s\)/);
   });
 
   it('reports an unreadable library check as unavailable rather than as not saved', async () => {
@@ -448,8 +469,8 @@ describe('show_recommendation_brief play-state labelling (#818)', () => {
   });
 
   it('discloses the library-leg request count instead of charging it silently', async () => {
-    // 6 shows x 20 recent episodes each = 120 episode ids, which at 50 ids per
-    // /me/episodes/contains request is 3 library calls on top of 6 show lookups.
+    // 6 shows x 20 recent episodes each = 120 episode ids, which at 50 uris per
+    // /me/library/contains request is 3 library calls on top of 6 show lookups.
     const many = Array.from({ length: 6 }, (_, i) => show(`s${i + 1}`, 'Network'));
     const episodesByShow = Object.fromEntries(
       many.map((s, i) => [
@@ -467,12 +488,19 @@ describe('show_recommendation_brief play-state labelling (#818)', () => {
       library_requests: number;
     };
 
-    const containsCalls = h.getCalls.filter((c) => c.path === '/me/episodes/contains');
+    const containsCalls = h.getCalls.filter((c) => c.path === '/me/library/contains');
     assert.equal(containsCalls.length, 3);
     assert.equal(payload.library_requests, 3);
     assert.equal(payload.shows_checked, 6);
     assert.equal(payload.new_episodes, 120);
-    assert.match(out.content[0].text, /Quota: 6 show lookup\(s\) \+ 3 \/me\/episodes\/contains call\(s\)/);
+    // The read cap is its own policy key (50), and the requests must honour it.
+    for (const call of containsCalls) {
+      assert.ok(
+        (call.params.uris ?? '').split(',').filter(Boolean).length <= 50,
+        `library read of ${call.params.uris} exceeds the 50-uri /me/library/contains cap`,
+      );
+    }
+    assert.match(out.content[0].text, /Quota: 6 show lookup\(s\) \+ 3 \/me\/library\/contains call\(s\)/);
     assert.match(out.content[0].text, /lower max_shows to cut the library leg/);
   });
 
@@ -490,8 +518,15 @@ describe('show_recommendation_brief play-state labelling (#818)', () => {
       'the brief must not read episode state from the music history feed',
     );
     assert.ok(
-      h.getCalls.some((c) => c.path === '/me/episodes/contains'),
-      'library state comes from /me/episodes/contains',
+      h.getCalls.some((c) => c.path === '/me/library/contains'),
+      'library state comes from /me/library/contains',
+    );
+    // The removed per-type read must not come back: a 404 on it in the field
+    // would be reported to the caller as an unreadable library check.
+    assert.deepEqual(
+      h.getCalls.filter((c) => c.path === '/me/episodes/contains'),
+      [],
+      'GET /me/episodes/contains was removed by the Feb 2026 changelog',
     );
   });
 });
@@ -629,5 +664,132 @@ describe('find_show_by_publisher search bound (#822)', () => {
     assert.doesNotMatch(out.content[0].text, /complete page/);
     assert.match(out.content[0].text, /at or past the end of the 25-row catalogue/);
     assert.match(out.content[0].text, /reads as absent/);
+  });
+});
+
+// #638 — the library check is answered through GET /me/library/contains, and
+// every one of its callers turns that answer into a claim about the caller's
+// own library: "saved", "not saved", "nothing to remove". A body that is not
+// one boolean per requested URI cannot support any of those claims — it says
+// nothing at all. So a malformed body must make the tool REJECT, and it must
+// never reach a caller as "not saved" or "removed 0".
+describe('library check is fail-closed on a malformed /me/library/contains body (#638)', () => {
+  // Each shape is one a real response has taken: no body at all, a short array
+  // (a truncated page), a non-boolean element, and an error envelope.
+  const MALFORMED: Array<[label: string, body: unknown]> = [
+    ['null body', null],
+    ['short array', [true]],
+    ['long array', [true, false, true, false]],
+    ['non-boolean element', [true, 'yes', false]],
+    ['error envelope', { error: { status: 403, message: 'Forbidden' } }],
+  ];
+
+  // `spotifyIdArray` rejects anything that is not a 22-character base62 id,
+  // so these are spelled out at the real id width rather than shortened.
+  const ids = ['ep00000000000000000001', 'ep00000000000000000002', 'ep00000000000000000003'];
+  const shortIds = ['e1', 'e2', 'e3'];
+  const showIds = ['sh00000000000000000001', 'sh00000000000000000002'];
+
+  it('check_episode_saved rejects instead of reporting "0 of 3 saved"', async () => {
+    for (const [label, body] of MALFORMED) {
+      const h = harness({ containsBody: body });
+      await assert.rejects(
+        h.invoke('check_episode_saved', { episode_ids: ids }),
+        /not one boolean per requested URI/,
+        label,
+      );
+      // The old `contains?.[i] === true` returned a confident "0 of 3 saved"
+      // for every one of these shapes; the number is the whole claim.
+      assert.deepEqual(h.writes, [], label);
+    }
+  });
+
+  it('remove_saved_episode rejects and removes nothing on an unreadable check', async () => {
+    for (const [label, body] of MALFORMED) {
+      for (const dryRun of [true, false]) {
+        const h = harness({ containsBody: body });
+        await assert.rejects(
+          h.invoke('remove_saved_episode', { episode_ids: ids, dry_run: dryRun }),
+          /not one boolean per requested URI/,
+          `${label} (dry_run=${dryRun})`,
+        );
+        // The old `(contains ?? [])` read every id as not-saved, so the tool
+        // reported "Removed 0 saved episode(s); skipped 3 not-saved id(s)" —
+        // and on the commit path it had just told the caller the truth about
+        // their own library was "none of these are in it".
+        assert.deepEqual(h.writes, [], `${label} (dry_run=${dryRun}): nothing may be removed`);
+      }
+    }
+  });
+
+  it('remove_saved_episode dry run on a well-formed check still names what it would remove', async () => {
+    // The control for the refusals above: a readable check is unaffected, so
+    // the fail-closed assertions cannot be passing vacuously.
+    const h = harness({ savedEpisodeIds: new Set([ids[0], ids[2]]) });
+    const out = await h.invoke('remove_saved_episode', { episode_ids: ids, dry_run: true });
+    const payload = out.structuredContent as { removable: string[]; not_saved: string[] };
+    assert.deepEqual(payload.removable, [ids[0], ids[2]]);
+    assert.deepEqual(payload.not_saved, [ids[1]]);
+    assert.deepEqual(h.writes, []);
+  });
+
+  it('remove_saved_shows rejects on a malformed check rather than skipping every show', async () => {
+    for (const [label, body] of MALFORMED) {
+      const h = harness({ containsBody: body });
+      await assert.rejects(
+        h.invoke('remove_saved_shows', { show_ids: showIds, dry_run: false }),
+        /not one boolean per requested URI/,
+        label,
+      );
+      assert.deepEqual(h.writes, [], label);
+    }
+  });
+
+  it('check_episode_saved still answers from a well-formed body of the right length', async () => {
+    const h = harness({ savedEpisodeIds: new Set([ids[0], ids[2]]) });
+    const out = await h.invoke('check_episode_saved', { episode_ids: ids });
+    const payload = out.structuredContent as {
+      results: Array<{ episode_id: string; saved: boolean }>;
+      saved_count: number;
+    };
+    assert.deepEqual(payload.results, [
+      { episode_id: ids[0], saved: true },
+      { episode_id: ids[1], saved: false },
+      { episode_id: ids[2], saved: true },
+    ]);
+    assert.equal(payload.saved_count, 2);
+  });
+
+  it('the listen-next brief reports a short check as unavailable, never as "not saved"', async () => {
+    // `fetchSavedEpisodeIdSet` catches the throw and reports `library_checked:
+    // false` rather than rejecting — the brief has a disclosed soft answer for
+    // an unreadable leg, and that is the one it must use. A short array used
+    // to be accepted (only `Array.isArray` was checked), which silently
+    // narrowed the saved set and pushed un-read episodes into the queue.
+    const fresh = show('s1', 'Network');
+    const episodes = shortIds.map((id) =>
+      episode(fresh, id, '2026-09-20', { fully_played: false, resume_position_ms: 0 }),
+    );
+    const h = harness({
+      shows: [fresh],
+      episodesByShow: { s1: episodes },
+      containsBody: [true],
+    });
+
+    const out = await h.invoke('show_recommendation_brief', { since: '2026-09-01' });
+    const payload = out.structuredContent as {
+      library_checked: boolean;
+      unlistened: number;
+      brief: Array<{ id: string; saved_in_library: boolean | null; unlistened: boolean }>;
+    };
+
+    assert.equal(payload.library_checked, false, 'a short body is not a readable check');
+    assert.equal(payload.unlistened, 0, 'nothing may enter the listen-next queue on an unread check');
+    assert.equal(payload.brief.length, 3);
+    for (const row of payload.brief) {
+      assert.equal(row.saved_in_library, null, `${row.id}: unknown, not "not saved"`);
+      assert.equal(row.unlistened, false, row.id);
+    }
+    assert.match(out.content[0].text, /library check unavailable/);
   });
 });

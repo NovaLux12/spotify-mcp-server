@@ -61,7 +61,7 @@ interface LiveState {
  *
  * `fetchAllCap` stands in for SPOTIFY_MCP_FETCH_ALL_CAP (default 500).
  */
-function makeClient(state: LiveState, opts: { fetchAllCap?: number } = {}) {
+function makeClient(state: LiveState, opts: { fetchAllCap?: number; containsBody?: unknown } = {}) {
   const calls: Call[] = [];
   const fetchAllCap = opts.fetchAllCap ?? 500;
   const client = {
@@ -69,12 +69,22 @@ function makeClient(state: LiveState, opts: { fetchAllCap?: number } = {}) {
     async get(_path: string, params?: Record<string, string>) {
       calls.push({ method: 'GET', path: _path, params });
       if (_path === '/me/library/contains') {
+        // `containsBody` replaces the answer outright so a test can hand the
+        // tool a body that is not one boolean per requested URI.
+        if ('containsBody' in opts) return opts.containsBody as boolean[];
+        // #638: one endpoint now answers for every URI type, so the stub
+        // decides by the URI's own prefix — an artist URI is follow state,
+        // everything else is library-saved state.
         const uris = (params?.uris ?? '').split(',').filter(Boolean);
-        return uris.map((u) => state.savedUris.includes(u));
+        return uris.map((u) => (u.startsWith('spotify:artist:')
+          ? state.followedArtistIds.includes(u.slice('spotify:artist:'.length))
+          : state.savedUris.includes(u)));
       }
       if (_path === '/me/following/contains') {
-        const ids = (params?.ids ?? '').split(',').filter(Boolean);
-        return ids.map((id) => state.followedArtistIds.includes(id));
+        // Removed by the Feb 2026 changelog (#638). The read half of following
+        // migrated to GET /me/library/contains; answering the old path would
+        // let a regression to it pass here, so it fails as the real API does.
+        throw new Error('GET /me/following/contains was removed, use GET /me/library/contains');
       }
       return null;
     },
@@ -150,9 +160,13 @@ type ElicitVerdict = 'accept' | 'decline' | 'unsupported';
 function harness(
   state: LiveState,
   elicit: ElicitVerdict = 'unsupported',
-  clientOpts: { fetchAllCap?: number } = {},
+  clientOpts: { fetchAllCap?: number; containsBody?: unknown } = {},
 ) {
   const registered: RegisteredTool[] = [];
+  // The exact text the person is asked to authorise. #638 makes this load
+  // bearing: a category the restore cannot apply has to be named at the point
+  // of confirmation, not only in the plan the caller may not have read.
+  const prompts: string[] = [];
   const base = {
     tool(
       name: string,
@@ -175,10 +189,12 @@ function harness(
           ...base,
           server: {
             getClientCapabilities: () => ({ elicitation: {} }),
-            elicitInput: async () =>
-              elicit === 'accept'
+            elicitInput: async (request: { message: string }) => {
+              prompts.push(request.message);
+              return elicit === 'accept'
                 ? { action: 'accept', content: { confirm: true } }
-                : { action: 'decline' },
+                : { action: 'decline' };
+            },
           },
         };
   const client = makeClient(state, clientOpts);
@@ -187,6 +203,7 @@ function harness(
     registered,
     client,
     state,
+    prompts,
     invoke: async (name: string, args: Record<string, unknown> = {}) => {
       const tool = registered.find((t) => t.name === name);
       assert.ok(tool, `tool "${name}" should be registered`);
@@ -492,7 +509,15 @@ describe('restore_library_snapshot strictly additive', () => {
     }
   });
 
-  it('follows only unfollowed artists', async () => {
+  // #638: `PUT /me/following?type=artist` was removed by Spotify's February 2026
+  // changes, and `PUT /me/library` does not accept `spotify:artist:` URIs, so
+  // re-following an artist is no longer expressible at any endpoint. The old
+  // test asserted a `PUT /me/following?type=artist&ids=new1` this tool can no
+  // longer make, so it is replaced by the disclosure the unrecoverable case
+  // requires — plus the "did it keep every live assertion" checks: the
+  // already-followed artist is still recognised, and the non-artist URI is
+  // still skipped.
+  it('discloses un-followable artists instead of writing a follow (#638)', async () => {
     const state = emptyState();
     state.followedArtistIds = ['have1'];
     const path = await snapshotFile({
@@ -510,19 +535,180 @@ describe('restore_library_snapshot strictly additive', () => {
         dry_run: false,
         categories: ['followed_artists'],
       });
-      const puts = h.client.calls.filter(
-        (c) => c.method === 'PUT' && c.path.startsWith('/me/following?'),
-      );
+
+      // No follow write of any kind. `PUT /me/following?type=artist` is gone and
+      // `/me/library` would reject a `spotify:artist:` URI, so a write here
+      // would be either a 404 or a silent no-op the plan then reports as
+      // "restored".
       assert.deepEqual(
-        puts.map((p) => {
-          const params = new URLSearchParams(p.path.split('?')[1] ?? '');
-          return `${p.path.split('?')[0]}?type=${params.get('type')}&ids=${params.get('ids')}`;
-        }),
-        ['/me/following?type=artist&ids=new1'],
+        h.client.calls.filter((c) => c.method === 'PUT' || c.method === 'POST'),
+        [],
+        'a followed-artists restore performs no writes at all',
       );
+
+      // The read half DID migrate, and it is the only half that did. Proving it
+      // with the call itself, not with a field that could pass either way.
+      const contains = h.client.calls.filter((c) => c.path === '/me/library/contains');
+      assert.equal(contains.length, 1);
+      assert.deepEqual(
+        contains[0].params?.uris,
+        'spotify:artist:have1,spotify:artist:new1',
+        'follow state is read through the unified read, with artist URIs',
+      );
+
       const payload = out.structuredContent as Record<string, any>;
-      assert.equal(payload.categories.followed_artists.executed, 1);
-      assert.equal(payload.categories.followed_artists.skipped, 1, 'non-artist URI skipped');
+      const cat = payload.categories.followed_artists as Record<string, any>;
+      assert.equal(cat.total, 3);
+      assert.equal(cat.already_present, 1, 'the already-followed artist is still recognised');
+      assert.equal(cat.unrestorable, 1, 'the un-followed artist is unrestorable');
+      assert.equal(cat.skipped, 1, 'non-artist URI skipped');
+      assert.equal(cat.planned, 0, 'no follow write is planned — no endpoint accepts one');
+      assert.equal(cat.executed, 0, 'nothing was written, so nothing may be reported as written');
+      assert.ok(
+        (cat.notes as string[]).some((n) => /cannot re-follow spotify:artist:new1/.test(n)),
+        `notes must name the unrestorable artist: ${JSON.stringify(cat.notes)}`,
+      );
+    } finally {
+      await rm(join(path, '..'), { recursive: true, force: true });
+    }
+  });
+
+  it('names the unrestorable slice in the dry-run prose and payload (#638)', async () => {
+    const state = emptyState();
+    const path = await snapshotFile({
+      _meta: { created: CREATED },
+      followed_artists: [{ uri: 'spotify:artist:new1', name: 'New' }],
+    });
+    try {
+      const h = harness(state);
+      const out = await h.invoke('restore_library_snapshot', {
+        backup_path: path,
+        categories: ['followed_artists'],
+      });
+      const text = textOf(out);
+      const payload = out.structuredContent as Record<string, any>;
+
+      // Prose: a category that silently drops its rows reads exactly like a
+      // category with nothing to do. The plan must name the difference.
+      assert.match(
+        text,
+        /- followed_artists: .*NOT RESTORABLE — Spotify removed the endpoint that would write them \(#638\)/,
+      );
+      // `unrestorable` is its own field, never folded into `skipped`: a
+      // malformed snapshot row and a platform-removed write are different
+      // failures and a caller has to be able to tell them apart.
+      assert.doesNotMatch(text, /skipped/);
+      assert.equal(writesOf(h.client).length, 0, 'a dry run writes nothing');
+      const cat = payload.categories.followed_artists as Record<string, any>;
+      assert.equal(cat.unrestorable, 1);
+      assert.equal(cat.planned, 0);
+      assert.equal(cat.executed, 0);
+      assert.equal(cat.skipped, 0);
+      assert.equal(payload.status, 'planned', 'a dry run reports a plan, not an outcome');
+    } finally {
+      await rm(join(path, '..'), { recursive: true, force: true });
+    }
+  });
+
+  it('discloses the unrestorable slice in the confirmation prompt (#638)', async () => {
+    // The person authorising the restore is told what will NOT change. A prompt
+    // that lists only what will is how an excluded category disappears without
+    // anyone having decided to exclude it.
+    const state = emptyState();
+    const path = await snapshotFile({
+      _meta: { created: CREATED },
+      liked_tracks: [{ uri: 'spotify:track:t1', name: 'One' }],
+      followed_artists: [{ uri: 'spotify:artist:new1', name: 'New' }],
+    });
+    try {
+      const h = harness(state, 'accept');
+      await h.invoke('restore_library_snapshot', {
+        backup_path: path,
+        dry_run: false,
+      });
+      assert.equal(h.prompts.length, 1, 'the write path prompts exactly once');
+      const prompt = h.prompts[0];
+      assert.match(
+        prompt,
+        /- followed_artists: 1 item\(s\) CANNOT be restored — Spotify removed the endpoint that would write them \(#638\)/,
+      );
+      assert.match(prompt, /They are excluded, not attempted/);
+      // The restorable half is still named, so the disclosure is additive
+      // rather than a replacement for the change list.
+      assert.match(prompt, /- liked_tracks: save 1 item\(s\)/);
+    } finally {
+      await rm(join(path, '..'), { recursive: true, force: true });
+    }
+  });
+
+  it('rejects on a malformed /me/library/contains body instead of planning on it (#638)', async () => {
+    // Follow state is now read through the unified read, which must answer one
+    // boolean per requested URI. A body that does not is unread, not a row of
+    // "not followed" — reading it positionally would mark every already-
+    // followed artist as unrestorable and the plan would be wrong in a way that
+    // looks like a clean result.
+    const state = emptyState();
+    state.followedArtistIds = ['have1', 'have2'];
+    const path = await snapshotFile({
+      _meta: { created: CREATED },
+      followed_artists: [
+        { uri: 'spotify:artist:have1', name: 'Have One' },
+        { uri: 'spotify:artist:have2', name: 'Have Two' },
+      ],
+    });
+    const cases: Array<[string, unknown]> = [
+      ['empty array', []],
+      ['short array', [true]],
+      ['long array', [true, false, true]],
+      ['non-boolean element', [true, 'yes']],
+      ['error envelope', { error: { status: 403, message: 'Forbidden' } }],
+    ];
+    try {
+      for (const [label, body] of cases) {
+        // Both dry run and write path: the plan is computed before either
+        // branches, so an unread follow state must stop the tool outright.
+        for (const dryRun of [true, false]) {
+          const h = harness(state, 'accept', { containsBody: body });
+          await assert.rejects(
+            h.invoke('restore_library_snapshot', { backup_path: path, dry_run: dryRun }),
+            /Could not check current follows/,
+            `${label} (dry_run=${dryRun}) must reject`,
+          );
+          assert.equal(
+            writesOf(h.client).length,
+            0,
+            `${label} (dry_run=${dryRun}) must write nothing`,
+          );
+        }
+      }
+    } finally {
+      await rm(join(path, '..'), { recursive: true, force: true });
+    }
+  });
+
+  it('accepts a well-formed /me/library/contains body (#638 control)', async () => {
+    // The counterpart to the test above. Without it, "rejects on a malformed
+    // body" would also be satisfied by a tool that rejected every body.
+    const state = emptyState();
+    state.followedArtistIds = ['have1'];
+    const path = await snapshotFile({
+      _meta: { created: CREATED },
+      followed_artists: [
+        { uri: 'spotify:artist:have1', name: 'Have One' },
+        { uri: 'spotify:artist:new1', name: 'New One' },
+      ],
+    });
+    try {
+      const h = harness(state, 'accept', { containsBody: [true, false] });
+      const out = await h.invoke('restore_library_snapshot', {
+        backup_path: path,
+        dry_run: false,
+        categories: ['followed_artists'],
+      });
+      const cat = (out.structuredContent as Record<string, any>).categories
+        .followed_artists as Record<string, any>;
+      assert.equal(cat.already_present, 1);
+      assert.equal(cat.unrestorable, 1);
     } finally {
       await rm(join(path, '..'), { recursive: true, force: true });
     }

@@ -46,12 +46,12 @@ Why it works: lifetime gives identity, the current month gives momentum, and the
 
 ## 4. Library hygiene pass
 
-> Risk: bulk-saves missing album tracks to your library and tags outliers; preview first via `dry_run: true` on `save_items` and `tag_management`.
+> Risk: bulk-saves missing album tracks to your library and tags outliers; preview first via `dry_run: true` on `save_to_library` and `tag_management`.
 
 ```text
 1. Call library_hygiene and library_genre_report. When a specific saved genre tag needs checking, call filter_by_genre with a `genre` string and `kind: "tracks"` or `kind: "albums"`.
 2. Report orphaned singles (tracks whose album isn't saved) and near-complete albums.
-3. For each near-complete album, ask whether to save the full album. On yes, preview save_items with the missing track `uris` array and `dry_run: true`, then commit the same arguments without `dry_run` only after confirmation.
+3. For each near-complete album, ask whether to save the full album. On yes, preview save_to_library with the missing track `uris` array and `dry_run: true`, then commit the same arguments without `dry_run` only after confirmation.
 4. To tag an outlier, preview tag_management with `action: "add"`, the exact library `artist` name, a non-empty `tags` array, and `dry_run: true`; commit the same arguments without `dry_run` only after confirmation. filter_by_genre can find those tags next time.
 ```
 

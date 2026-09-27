@@ -10,8 +10,6 @@ import {
   truncateItems,
   paginationInfo,
   listStructuredContent,
-  batchSummary,
-  describeDryRun,
 } from '../shaping.js';
 import type { ResponseFormatValue, PaginationInfo } from '../shaping.js';
 import { CHUNK_CAPS } from '../chunk.js';
@@ -49,33 +47,14 @@ function cap(args: { max_results?: number }): number {
   return resolveMaxResults(args.max_results, getConfig().maxItems);
 }
 
-/** Mutation confirmation (#58): prose plus "{n} items affected: …" echo. */
-function mutationOut(
-  rf: ResponseFormatValue,
-  prose: string,
-  n: number,
-  uris: readonly string[],
-): ToolOut {
-  const payload = { ok: true, affected: n, uris: [...uris] };
-  return shapeResult(rf, `${prose}\n${batchSummary(n, uris)}`, payload);
-}
-
-/** dry_run preview (#57): deterministic diff text, zero mutating calls made. */
-function dryRunOut(
-  rf: ResponseFormatValue,
-  action: string,
-  target: string,
-  changes: readonly string[],
-): ToolOut {
-  const payload = {
-    ok: true,
-    dry_run: true,
-    action,
-    target,
-    would_affect: [...changes],
-  };
-  return shapeResult(rf, describeDryRun(action, target, changes), payload);
-}
+// #638: `mutationOut` and `dryRunOut` were removed with the follow WRITE tools.
+// Every mutating tool this module shipped (`follow_artists`, `unfollow_artists`)
+// targeted `PUT`/`DELETE /me/following?type=artist`, which Spotify removed in
+// February 2026 and for which no endpoint accepts a replacement — PUT/DELETE
+// /me/library take no `spotify:artist:` URI (see LIBRARY_SAVE_TYPES in
+// library.ts, which omits `artist` on purpose). The read half migrated to GET
+// /me/library/contains and survives as `check_following_artists`; the write
+// half has no target, so the helpers that only existed to shape it went too.
 
 /**
  * Pagination footers (#52/#53): the truncation footer when this call sliced
@@ -336,20 +315,43 @@ export function registerFollowingTools(server: McpServer, client: SpotifyClient)
     },
     async (args) => {
       const ids = normalizeArtistIds(args.ids);
-      const result = await client.get<boolean[]>('/me/following/contains', {
-        type: 'artist',
-        ids: ids.join(','),
+      // #638: `GET /me/following/contains` was removed by Spotify's February
+      // 2026 changes. `GET /me/library/contains` is the documented read
+      // replacement and it is the one half of following that did migrate:
+      // the library CHECK types include `artist` even though the library SAVE
+      // types deliberately omit it, because PUT /me/library cannot express
+      // `spotify:artist:` URIs (see `LIBRARY_SAVE_TYPES` in library.ts). So
+      // the read moves to `uris=` and the write has no target at all.
+      //
+      // A response that is not one boolean per requested id is a bad read,
+      // not a row of falses: Spotify's error body for this endpoint has
+      // shipped as a truthy object, and spreading it positionally would
+      // report every artist as not followed.
+      const result = await client.get<boolean[]>('/me/library/contains', {
+        uris: ids.map((id) => `spotify:artist:${id}`).join(','),
       });
-      if (!result) throw new Error('Could not check following status');
+      if (!Array.isArray(result) || result.length !== ids.length) {
+        throw new Error(
+          'Could not check following status: GET /me/library/contains returned '
+          + `${Array.isArray(result) ? `${result.length} booleans` : 'a non-array body'} for ${ids.length} requested URI(s). `
+          + 'Treated as unread rather than as "not followed" — no artist is reported as unfollowed on a response this shape.',
+        );
+      }
+      if (result.some((value) => typeof value !== 'boolean')) {
+        throw new Error(
+          'Could not check following status: GET /me/library/contains returned a non-boolean element. '
+          + 'Treated as unread rather than as "not followed".',
+        );
+      }
 
       // #110 finding 11: rows carry a full URI alongside the id so agents
       // can chain into other tools without reconstructing URIs. `follows`
-      // is the only truthful boolean here — following/contains says nothing
-      // about library-saved state.
+      // is the only truthful boolean here — the library contains read says
+      // nothing about library-SAVED state for these rows beyond follow.
       const checks = ids.map((id, i) => ({
         id,
         uri: `spotify:artist:${id}`,
-        follows: result[i] ?? false,
+        follows: result[i],
       }));
       const t = truncateItems(checks, cap(args));
       const pagination = paginationInfo({ total: checks.length, returned: t.items.length });
@@ -361,65 +363,6 @@ export function registerFollowingTools(server: McpServer, client: SpotifyClient)
       }
       appendPaginationFooters(lines, t, pagination);
       return shapeResult(args.response_format, lines.join('\n'), listStructuredContent(t.items, pagination));
-    },
-  );
-
-  // follow_artists
-  server.tool(
-    'follow_artists',
-    'Follow artists (1–50 IDs, spotify:artist: URIs, or artist URLs). Requires user-follow-modify. dry_run=true previews.',
-    {
-      ids: ArtistIds.describe('Artist IDs, spotify:artist: URIs, or artist URLs; CSV accepted'),
-      dry_run: z
-        .boolean()
-        .optional()
-        .describe('Preview only: show exactly which artists would be followed without calling the API'),
-      response_format: ResponseFormat,
-    },
-    async (args) => {
-      const ids = normalizeArtistIds(args.ids);
-      const artistUris = ids.map((id) => `spotify:artist:${id}`);
-      if (args.dry_run) {
-        return dryRunOut(args.response_format, 'follow_artists', 'followed artists', artistUris);
-      }
-      // Spotify takes ids/type as query parameters on PUT /me/following,
-      // not a request body.
-      await client.put(`/me/following?type=artist&ids=${ids.join(',')}`);
-      return mutationOut(
-        args.response_format,
-        `Followed ${ids.length} artist(s).`,
-        ids.length,
-        artistUris,
-      );
-    },
-  );
-
-  // unfollow_artists
-  server.tool(
-    'unfollow_artists',
-    'Unfollow artists (1–50 IDs, spotify:artist: URIs, or artist URLs). Requires user-follow-modify. dry_run=true previews.',
-    {
-      ids: ArtistIds.describe('Artist IDs, spotify:artist: URIs, or artist URLs; CSV accepted'),
-      dry_run: z
-        .boolean()
-        .optional()
-        .describe('Preview only: show exactly which artists would be unfollowed without calling the API'),
-      response_format: ResponseFormat,
-    },
-    async (args) => {
-      const ids = normalizeArtistIds(args.ids);
-      const artistUris = ids.map((id) => `spotify:artist:${id}`);
-      if (args.dry_run) {
-        return dryRunOut(args.response_format, 'unfollow_artists', 'followed artists', artistUris);
-      }
-      // Symmetric with follow_artists: query parameters, no body.
-      await client.delete(`/me/following?type=artist&ids=${ids.join(',')}`);
-      return mutationOut(
-        args.response_format,
-        `Unfollowed ${ids.length} artist(s).`,
-        ids.length,
-        artistUris,
-      );
     },
   );
 

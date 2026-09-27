@@ -6,7 +6,7 @@
  * ok:true, which was phantom success. Removed per #85 precedent.
  */
 import { z } from 'zod';
-import { capFor } from '../chunk.js';
+import { capFor, chunk } from '../chunk.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
 import { confirmViaElicitation, describeConfirmation, requiredConfirmationRefusal } from './confirm.js';
@@ -257,12 +257,13 @@ export function registerEpisodeMgmtTools(server: McpServer, client: SpotifyClien
         // anything.
         if (refusal) return textResult(refusal.message, { ...refusal.payload, ...deprecation });
       }
+      // #638: `DELETE /me/episodes` was removed by Spotify's February 2026
+      // changes; `DELETE /me/library` is the documented replacement and takes
+      // `spotify:episode:` URIs, 40 per request.
       let removed = 0;
-      const episodeCap = capFor('episodes');
-      for (let i = 0; i < ids.length; i += episodeCap) {
-        const batch = ids.slice(i, i + episodeCap);
-        await client.delete(`/me/episodes?ids=${batch.join(',')}`);
-        removed += batch.length;
+      for (const part of chunk(uris, 'library_writes')) {
+        await client.delete(`/me/library?uris=${part.join(',')}`);
+        removed += part.length;
       }
       // A library removal is not invertible on its own: once the DELETEs land the
       // episodes are gone, so the receipt (resolvable via verify_receipt and

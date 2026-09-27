@@ -45,8 +45,11 @@ const candidates = [
   ['get_artist_top_tracks', { id: artistId }],
   ['get_user_profile', { user_id: uid }],
   ['get_user_playlists_by_id', { user_id: uid }],
-  ['get_categories', { limit: 3 }],
-  ['get_category_playlists', { category_id: 'toplists' }],
+  // #638: `get_categories` / `get_category_playlists` were deleted with
+  // `GET /browse/categories*`, and `check_saved_items` with
+  // `GET /me/{type}s/contains` — no endpoint serves either any more, so there
+  // is nothing to probe. `check_in_library` is the surviving read on the
+  // unified path; it is listed below unchanged.
   ['check_in_library', { type: 'track', ids: [trackId] }],
   ['are_you_following_artist', { ids: [artistId] }],
 ];

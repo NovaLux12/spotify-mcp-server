@@ -1,6 +1,11 @@
 /**
  * Tests for src/tools/library.ts (library tools: saved tracks/albums/shows/
- * episodes, save/remove/check items).
+ * episodes, counts, search, and the unified /me/library save/remove/check).
+ *
+ * #638 removed the three per-type tools — `save_items`, `remove_saved_items`
+ * and `check_saved_items` — because every endpoint they addressed was removed
+ * by Spotify in February 2026. The tests that asserted those endpoints went
+ * with them; what is left here pins the unified surface and the absences.
  *
  * Uses a stub MCP server + stub SpotifyClient (records every call, returns
  * canned data) — no network, no token file access, no global fetch needed.
@@ -15,7 +20,6 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { SpotifyApiError, type SpotifyClient } from '../src/client.js';
 import { registerLibraryTools } from '../src/tools/library.js';
 import { registerUndoTools } from '../src/tools/undo.js';
-import { verifyReceipt } from '../src/receipts.js';
 
 // ---------------------------------------------------------------------------
 // Stub plumbing
@@ -94,6 +98,18 @@ function harness(responder: Responder = () => null, opts: { withUndo?: boolean }
     ) {
       registered.push({ name, description, schema, handler });
     },
+    // The confirmation gate resolves the INNER host, exactly as McpServer does
+    // (#684), so `withUndo` is given a host that advertises elicitation and
+    // accepts — the same stand-in tests/tools.undo.test.ts uses, and the only
+    // shape in which an undo reaches the wire instead of failing closed.
+    ...(opts.withUndo
+      ? {
+          server: {
+            getClientCapabilities: () => ({ elicitation: {} }),
+            elicitInput: async () => ({ action: 'accept', content: { confirm: true } }),
+          },
+        }
+      : {}),
   } as unknown as McpServer;
   const client = makeStubClient(responder);
   registerLibraryTools(fakeServer, client as unknown as SpotifyClient);
@@ -304,152 +320,6 @@ describe('get_saved_* fetch_all mode (getAllPages switch)', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Mutations: save / remove / check
-// ---------------------------------------------------------------------------
-
-describe('save_items / remove_saved_items / check_saved_items', () => {
-  it('save_items sends track/album ids in the PUT body but show ids as ?ids= (#12)', async () => {
-    const h = harness();
-    const uris = ['spotify:track:abc', 'spotify:album:xyz', 'spotify:show:r1'];
-
-    const out = await h.invoke('save_items', { uris });
-
-    assert.deepEqual(wireCalls(h.client.calls), [
-      { method: 'PUT', path: '/me/tracks', arg: { ids: ['abc'] } },
-      { method: 'PUT', path: '/me/albums', arg: { ids: ['xyz'] } },
-      // Shows take ids ONLY as a query param: any body ids are ignored by Spotify.
-      { method: 'PUT', path: '/me/shows?ids=r1', arg: undefined },
-    ]);
-    assert.match(out.content[0].text, /Saved 3 item\(s\) to library/);
-  });
-
-  it('remove_saved_items sends show ids as DELETE ?ids= query param, not body (#12)', async () => {
-    const h = harness();
-
-    const out = await h.invoke('remove_saved_items', { uris: ['spotify:show:r1'] });
-
-    assert.deepEqual(wireCalls(h.client.calls), [
-      { method: 'DELETE', path: '/me/shows?ids=r1', arg: undefined },
-    ]);
-    assert.match(out.content[0].text, /Removed 1 item\(s\) from library\./);
-  });
-
-  it('check_saved_items joins URIs comma-separated against /me/library/contains', async () => {
-    const h = harness((path) => (path === '/me/tracks/contains' ? [true] : [false]));
-
-    const out = await h.invoke('check_saved_items', {
-      uris: ['spotify:track:yep', 'spotify:album:nope'],
-    });
-
-    assert.deepEqual(wireCalls(h.client.calls), [
-      {
-        method: 'GET',
-        path: '/me/tracks/contains',
-        arg: { ids: 'yep' },
-      },
-      {
-        method: 'GET',
-        path: '/me/albums/contains',
-        arg: { ids: 'nope' },
-      },
-    ]);
-
-    const text = out.content[0].text;
-    assert.match(text, /✓ spotify:track:yep/);
-    assert.match(text, /✗ spotify:album:nope/);
-    // Input order preserved in output.
-    assert.ok(text.indexOf('yep') < text.indexOf('nope'));
-  });
-
-  it('check_saved_items reports ✗ for false results without flipping order', async () => {
-    const h = harness((path) => (path === '/me/tracks/contains' ? [true] : [false]));
-    const out = await h.invoke('check_saved_items', {
-      uris: ['spotify:episode:first', 'spotify:track:second'],
-    });
-    const text = out.content[0].text;
-    assert.match(text, /✗ spotify:episode:first/);
-    assert.match(text, /✓ spotify:track:second/);
-  });
-
-  it('save_items routes audiobook ids via PUT /me/audiobooks?ids= (#36)', async () => {
-    const h = harness();
-
-    const out = await h.invoke('save_items', {
-      uris: ['spotify:track:abc', 'spotify:audiobook:a1', 'spotify:audiobook:a2'],
-    });
-
-    assert.deepEqual(wireCalls(h.client.calls), [
-      { method: 'PUT', path: '/me/tracks', arg: { ids: ['abc'] } },
-      // Audiobooks take ids ONLY as a query param, like shows (#12, #36).
-      { method: 'PUT', path: '/me/audiobooks?ids=a1%2Ca2', arg: undefined },
-    ]);
-    assert.match(out.content[0].text, /Saved 3 item\(s\) to library.*2 audiobooks/);
-  });
-
-  it('remove_saved_items sends audiobook ids as DELETE ?ids= query param (#36)', async () => {
-    const h = harness();
-
-    const out = await h.invoke('remove_saved_items', { uris: ['spotify:audiobook:a1'] });
-
-    assert.deepEqual(wireCalls(h.client.calls), [
-      { method: 'DELETE', path: '/me/audiobooks?ids=a1', arg: undefined },
-    ]);
-    assert.match(out.content[0].text, /Removed 1 item\(s\) from library\./);
-  });
-
-  it('check_saved_items checks audiobooks via GET /me/audiobooks/contains (#36)', async () => {
-    const h = harness((path) => (path === '/me/audiobooks/contains' ? [true] : [false]));
-
-    const out = await h.invoke('check_saved_items', {
-      uris: ['spotify:audiobook:hitchhikers'],
-    });
-
-    assert.deepEqual(wireCalls(h.client.calls), [
-      { method: 'GET', path: '/me/audiobooks/contains', arg: { ids: 'hitchhikers' } },
-    ]);
-    assert.match(out.content[0].text, /✓ spotify:audiobook:hitchhikers/);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Zod-enforced max bounds (validation happens at the MCP layer via schema)
-// ---------------------------------------------------------------------------
-
-describe('zod schema bounds (50/50/50)', () => {
-  it('save_items accepts 50 URIs and rejects 51', () => {
-    const h = harness();
-    const shape = h.shape('save_items');
-    const fifty = Array.from({ length: 50 }, (_, i) => `spotify:track:id${i}`);
-    assert.equal(shape.safeParse({ uris: fifty }).success, true);
-    const fiftyOne = [...fifty, 'spotify:track:extra'];
-    assert.equal(shape.safeParse({ uris: fiftyOne }).success, false);
-  });
-
-  it('remove_saved_items accepts 50 URIs and rejects 51', () => {
-    const h = harness();
-    const shape = h.shape('remove_saved_items');
-    const fifty = Array.from({ length: 50 }, (_, i) => `spotify:track:id${i}`);
-    assert.equal(shape.safeParse({ uris: fifty }).success, true);
-    assert.equal(shape.safeParse({ uris: [...fifty, 'x'] }).success, false);
-  });
-
-  it('check_saved_items accepts 50 URIs and rejects 51 (#66)', () => {
-    const h = harness();
-    const shape = h.shape('check_saved_items');
-    const fifty = Array.from({ length: 50 }, (_, i) => `spotify:track:id${i}`);
-    assert.equal(shape.safeParse({ uris: fifty }).success, true);
-    assert.equal(shape.safeParse({ uris: [...fifty, 'x'] }).success, false);
-  });
-
-  it('all three reject empty URI arrays (min 1)', () => {
-    const h = harness();
-    assert.equal(h.shape('save_items').safeParse({ uris: [] }).success, false);
-    assert.equal(h.shape('remove_saved_items').safeParse({ uris: [] }).success, false);
-    assert.equal(h.shape('check_saved_items').safeParse({ uris: [] }).success, false);
-  });
-});
-
-// ---------------------------------------------------------------------------
 // Unified library endpoints (#37): save_to_library / remove_from_library /
 // check_in_library against PUT|DELETE /me/library and GET /me/library/contains
 // ---------------------------------------------------------------------------
@@ -528,6 +398,68 @@ describe('unified library tools (save_to_library / remove_from_library / check_i
     assert.ok(
       text.indexOf('art1') < text.indexOf('wanda') && text.indexOf('wanda') < text.indexOf('p1'),
     );
+  });
+
+  // #638: `contains[i]` is matched POSITIONALLY to `uris[i]`, so a body that is
+  // not one boolean per requested URI is not a partial answer — it is a
+  // mislabelled one. `?? false` used to turn the unmatchable rows into a
+  // confident "✗ not saved", which is the #803 shape: a read that failed
+  // reported as a read that found nothing. It now fails closed.
+  it('check_in_library rejects a body whose length does not match the request, short or long', async () => {
+    const uris = ['spotify:track:a', 'spotify:album:b', 'spotify:playlist:c'];
+    for (const [label, body] of [
+      ['short', [true, false]],
+      ['long', [true, false, true, false]],
+    ] as const) {
+      const h = harness(() => body);
+      await assert.rejects(
+        h.invoke('check_in_library', { uris }),
+        new RegExp(
+          `Could not check library state: GET /me/library/contains returned ${body.length} of ${uris.length} ` +
+            `for ${uris.length} URIs, so the per-URI flags cannot be matched to the request\\.`,
+        ),
+        `${label} body must not be read as per-URI flags`,
+      );
+    }
+  });
+
+  it('check_in_library rejects a non-array body instead of treating it as all-unsaved', async () => {
+    const uris = ['spotify:track:a', 'spotify:album:b', 'spotify:playlist:c'];
+    // A body Spotify would never send, but a proxy or a cached response might:
+    // an object is truthy, so the old `if (!contains) throw` guard passed it.
+    const h = harness(() => ({ items: [] }));
+    await assert.rejects(
+      h.invoke('check_in_library', { uris }),
+      /Could not check library state: GET \/me\/library\/contains returned object for 3 URIs/,
+    );
+  });
+
+  it('check_in_library rejects a body carrying a non-boolean flag', async () => {
+    const uris = ['spotify:track:a', 'spotify:album:b', 'spotify:playlist:c'];
+    // Right length, untyped contents. A truthy 'yes' would read as "saved";
+    // a nullish one would read as "not saved". Neither is an answer.
+    const h = harness(() => [true, 'yes', false]);
+    await assert.rejects(
+      h.invoke('check_in_library', { uris }),
+      /Could not check library state: GET \/me\/library\/contains returned a non-boolean flag\./,
+    );
+  });
+
+  it('check_in_library still reports a well-formed false as "not saved"', async () => {
+    const h = harness(() => [true, false, true]);
+    const out = await h.invoke('check_in_library', {
+      uris: ['spotify:track:a', 'spotify:album:b', 'spotify:playlist:c'],
+    });
+    // The case that must NOT start throwing: `false` is a real answer, and the
+    // fail-closed guard is about a body that cannot be read, not one that
+    // says "no".
+    assert.match(out.content[0].text, /✗ spotify:album:b/);
+    const sc = out.structuredContent as { items: Array<{ uri: string; saved: boolean }> };
+    assert.deepEqual(sc.items, [
+      { uri: 'spotify:track:a', saved: true },
+      { uri: 'spotify:album:b', saved: false },
+      { uri: 'spotify:playlist:c', saved: true },
+    ]);
   });
 
   it('rejects artist URIs on save/remove — PUT/DELETE /me/library do not accept artists', async () => {
@@ -621,7 +553,7 @@ describe('response_format json mode returns machine-readable payloads (#51)', ()
 
   it('mutation json output reports ok/affected/uris', async () => {
     const h = harness();
-    const out = await h.invoke('save_items', {
+    const out = await h.invoke('save_to_library', {
       uris: ['spotify:track:abc'],
       response_format: 'json',
     });
@@ -668,24 +600,6 @@ describe('max_results truncation + pagination info (#52/#53)', () => {
     assert.match(text, /\(1 more — pass max_results to raise this call's cap\)/);
   });
 
-  it('check_saved_items truncates its per-URI listing via max_results', async () => {
-    const h = harness((path) => (path === '/me/tracks/contains' ? [true] : [false]));
-    const out = await h.invoke('check_saved_items', {
-      uris: ['spotify:track:a', 'spotify:album:b', 'spotify:show:c'],
-      max_results: 2,
-    });
-    const text = out.content[0].text;
-    assert.match(text, /✓ spotify:track:a/);
-    assert.match(text, /✗ spotify:album:b/);
-    assert.ok(!text.includes('spotify:show:c'));
-    assert.match(text, /\(1 more — pass offset or fetch_all\)/);
-    const sc = out.structuredContent as { items: Array<{ uri: string; saved: boolean }> };
-    assert.deepEqual(sc.items, [
-      { uri: 'spotify:track:a', saved: true },
-      { uri: 'spotify:album:b', saved: false },
-    ]);
-  });
-
   it('check_in_library truncates identically and keeps input order', async () => {
     const h = harness(() => [true, false, true]);
     const uris = ['spotify:artist:a1', 'spotify:user:wanda', 'spotify:playlist:p1'];
@@ -699,15 +613,15 @@ describe('max_results truncation + pagination info (#52/#53)', () => {
 });
 
 describe('dry_run previews destructive operations without any mutating call (#57)', () => {
-  it('remove_saved_items dry_run makes zero client calls and previews every URI', async () => {
+  it('remove_from_library dry_run makes zero client calls and previews every URI', async () => {
     const h = harness();
     const uris = ['spotify:track:abc', 'spotify:album:xyz'];
 
-    const out = await h.invoke('remove_saved_items', { uris, dry_run: true });
+    const out = await h.invoke('remove_from_library', { uris, dry_run: true });
 
     assert.equal(h.client.calls.length, 0, 'dry_run must not touch the API');
     const text = out.content[0].text;
-    assert.match(text, /^\[dry run\] remove_saved_items on <<untrusted: user library >> — nothing was changed\./);
+    assert.match(text, /^\[dry run\] remove_from_library on <<untrusted: user library >> — nothing was changed\./);
     assert.match(text, /Would affect 2 items:/);
     for (const uri of uris) assert.ok(text.includes(uri));
     const sc = out.structuredContent as Record<string, unknown>;
@@ -715,16 +629,16 @@ describe('dry_run previews destructive operations without any mutating call (#57
     assert.deepEqual(sc.would_affect, uris);
   });
 
-  it('remove_saved_items dry_run still rejects unsupported URI types before previewing', async () => {
+  it('remove_from_library dry_run still rejects unsupported URI types before previewing', async () => {
     const h = harness();
     await assert.rejects(
-      h.invoke('remove_saved_items', { uris: ['https://not-a-uri'], dry_run: true }),
+      h.invoke('remove_from_library', { uris: ['https://not-a-uri'], dry_run: true }),
       /Unsupported URI type/,
     );
     assert.equal(h.client.calls.length, 0);
   });
 
-  it('remove_from_library dry_run makes zero client calls and previews every URI', async () => {
+  it('remove_from_library dry_run previews the playlist/user URI mix without any call', async () => {
     const h = harness();
     const uris = ['spotify:playlist:p1', 'spotify:user:wanda'];
 
@@ -749,10 +663,10 @@ describe('dry_run previews destructive operations without any mutating call (#57
 });
 
 describe('confirmation-friendly batch summaries on mutations (#58)', () => {
-  it('save_items echoes "{n} items affected" with the first URIs', async () => {
+  it('save_to_library echoes "{n} items affected" with the first URIs', async () => {
     const h = harness();
     const uris = ['spotify:track:abc', 'spotify:album:xyz', 'spotify:show:r1'];
-    const out = await h.invoke('save_items', { uris });
+    const out = await h.invoke('save_to_library', { uris });
     assert.match(
       out.content[0].text,
       /3 items affected: spotify:track:abc, spotify:album:xyz, spotify:show:r1/,
@@ -770,9 +684,9 @@ describe('confirmation-friendly batch summaries on mutations (#58)', () => {
     );
   });
 
-  it('remove_saved_items echoes the removed count and URIs', async () => {
+  it('remove_from_library echoes the removed count and URIs', async () => {
     const h = harness();
-    const out = await h.invoke('remove_saved_items', { uris: ['spotify:audiobook:a1'] });
+    const out = await h.invoke('remove_from_library', { uris: ['spotify:audiobook:a1'] });
     assert.match(out.content[0].text, /Removed 1 item\(s\) from library\./);
     assert.match(out.content[0].text, /1 item affected: spotify:audiobook:a1/);
   });
@@ -799,187 +713,15 @@ describe('mutation receipts in json mode (#112 idea 11)', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Partial per-type writes (#748)
+// #748: the write landed, the receipt read did not
+//
+// Promoted out of the `partial per-type writes (#748)` block when that block
+// went with the per-type write tools (#638). The behaviour is the unified
+// path's own: a failed verification read is a missing receipt, never a
+// retracted write.
 // ---------------------------------------------------------------------------
 
-describe('partial per-type writes keep the committed subset visible and invertible (#748)', () => {
-  const MIXED = ['spotify:track:t1', 'spotify:album:a1', 'spotify:audiobook:b1'];
-  const COMMITTED = ['spotify:track:t1', 'spotify:album:a1'];
-  const SCOPE_403 = '/me/audiobooks?ids=b1';
-
-  interface PartialPayload {
-    ok: boolean;
-    partial?: boolean;
-    affected: number;
-    requested?: number;
-    uris: string[];
-    results?: Array<{ type: string; requested: number; ok: boolean; error?: string; status?: number }>;
-    receipt: { receipt_id: string; direction: string; verified: boolean; uris: string[] } | null;
-    receipt_error?: string;
-  }
-
-  it('save_items names the committed groups, the failing group, and receipts only the committed URIs', async () => {
-    const h = harness((path) => {
-      if (path === SCOPE_403) throw new SpotifyApiError(403, 'Insufficient client scope');
-      if (path === '/me/tracks/contains') return [true];
-      if (path === '/me/albums/contains') return [true];
-      return null;
-    });
-
-    const out = await h.invoke('save_items', { uris: MIXED });
-    const sc = out.structuredContent as PartialPayload;
-
-    // The call as a whole did not land — say so, and say how much did.
-    assert.equal(sc.ok, false);
-    assert.equal(sc.partial, true);
-    assert.equal(sc.affected, 2);
-    assert.equal(sc.requested, 3);
-    assert.deepEqual(sc.uris, COMMITTED);
-    assert.deepEqual(
-      sc.results?.map((r) => [r.type, r.ok, r.requested]),
-      [
-        ['track', true, 1],
-        ['album', true, 1],
-        ['audiobook', false, 1],
-      ],
-    );
-    const failed = sc.results![2]!;
-    assert.equal(failed.error, 'Insufficient client scope');
-    assert.equal(failed.status, 403);
-
-    // The receipt is verified through the per-type endpoints these legacy tools
-    // already depend on — never the unified /me/library/contains that a
-    // grandfathered credential, the very credential that 403s here, cannot reach.
-    assert.deepEqual(
-      wireCalls(h.client.calls).filter((c) => c.method === 'GET'),
-      [
-        { method: 'GET', path: '/me/tracks/contains', arg: { ids: 't1' } },
-        { method: 'GET', path: '/me/albums/contains', arg: { ids: 'a1' } },
-      ],
-    );
-    assert.equal(sc.receipt?.direction, 'added');
-    assert.equal(sc.receipt?.verified, true);
-    assert.deepEqual(sc.receipt?.uris, COMMITTED);
-    // Registered in the store, so undo can find it — not a rendered echo.
-    assert.deepEqual(verifyReceipt(sc.receipt!.receipt_id), sc.receipt);
-  });
-
-  it('save_items prose states the partial count and the rejection, not a bare error', async () => {
-    const h = harness((path) => {
-      if (path === SCOPE_403) throw new SpotifyApiError(403, 'Insufficient client scope');
-      if (path === '/me/tracks/contains') return [true];
-      if (path === '/me/albums/contains') return [true];
-      return null;
-    });
-
-    const text = (await h.invoke('save_items', { uris: MIXED })).content[0].text;
-
-    assert.match(text, /^Saved 2 of 3 item\(s\) \(2 of 3 groups landed\) — not saved: /);
-    assert.match(text, /audiobook \(1\): Insufficient client scope\./);
-    // Boot-scoped receipt id (#587): `rcpt_<bootId>-<n>`.
-    assert.match(text, /Receipt rcpt_[a-z0-9]+-\d+: VERIFIED \(library\)/);
-  });
-
-  it('remove_saved_items issues a removed-direction receipt that undo inverts as exactly the committed subset', async () => {
-    const h = harness(
-      (path) => {
-        if (path === SCOPE_403) throw new SpotifyApiError(403, 'Insufficient client scope');
-        if (path === '/me/tracks/contains') return [false];
-        if (path === '/me/albums/contains') return [false];
-        return null;
-      },
-      { withUndo: true },
-    );
-
-    const out = await h.invoke('remove_saved_items', { uris: MIXED });
-    const sc = out.structuredContent as PartialPayload;
-
-    assert.equal(sc.ok, false);
-    assert.equal(sc.affected, 2);
-    assert.deepEqual(sc.uris, COMMITTED);
-    assert.equal(sc.receipt?.direction, 'removed');
-    assert.equal(sc.receipt?.verified, true);
-
-    const undo = await h.invoke('undo_mutation', {
-      receipt_id: sc.receipt!.receipt_id,
-      dry_run: true,
-    });
-    const preview = undo.structuredContent as { direction: string; would: string; uris: string[] };
-    assert.equal(preview.direction, 'removed');
-    assert.equal(preview.would, 'add');
-    // The audiobook that never landed must not be re-added by the undo.
-    assert.deepEqual(preview.uris, COMMITTED);
-
-    // The blind "last mutation" path must reach the same verdict: the partial
-    // receipt is the FIFO head, so undo_last_mutation inverts the committed
-    // subset in the removal's direction — not the whole requested set.
-    const last = await h.invoke('undo_last_mutation', { dry_run: true });
-    const lastPreview = last.structuredContent as {
-      receipt_id: string;
-      direction: string;
-      would: string;
-      uris: string[];
-    };
-    assert.equal(lastPreview.receipt_id, sc.receipt!.receipt_id);
-    assert.equal(lastPreview.direction, 'removed');
-    assert.equal(lastPreview.would, 'add');
-    assert.deepEqual(lastPreview.uris, COMMITTED);
-    assert.match(
-      last.content[0].text,
-      /Would add 2 URI\(s\):\n {2}- spotify:track:t1\n {2}- spotify:album:a1/,
-    );
-  });
-
-  it('still returns the partial result when the receipt verification read itself fails', async () => {
-    const h = harness((path) => {
-      if (path === SCOPE_403) throw new SpotifyApiError(403, 'Insufficient client scope');
-      if (path === '/me/tracks/contains') {
-        throw new SpotifyApiError(403, 'Cannot read saved tracks');
-      }
-      if (path === '/me/albums/contains') return [true];
-      return null;
-    });
-
-    const out = await h.invoke('save_items', { uris: MIXED });
-    const sc = out.structuredContent as PartialPayload;
-
-    // A failed verification read is not an absent item and not a lost write:
-    // the committed subset is still reported, with the receipt marked unavailable.
-    assert.equal(sc.ok, false);
-    assert.equal(sc.affected, 2);
-    assert.deepEqual(sc.uris, COMMITTED);
-    assert.equal(sc.receipt, null);
-    assert.equal(sc.receipt_error, 'Cannot read saved tracks');
-    assert.match(
-      out.content[0].text,
-      /No receipt: verification failed \(Cannot read saved tracks\)/,
-    );
-  });
-
-  it('rethrows the original rejection, status and retry-after intact, when no bucket lands', async () => {
-    const h = harness((path) => {
-      if (path.startsWith('/me/') && !path.includes('/contains')) {
-        throw new SpotifyApiError(429, 'API rate limited', 7);
-      }
-      return null;
-    });
-
-    await assert.rejects(h.invoke('save_items', { uris: MIXED }), (err: unknown) => {
-      assert.ok(err instanceof SpotifyApiError);
-      assert.equal(err.status, 429);
-      assert.equal(err.retryAfterSec, 7);
-      return true;
-    });
-    // Nothing landed, so nothing is reported as landed and no receipt is invented.
-    assert.equal(
-      h.client.calls.filter((c) => c.method === 'GET').length,
-      0,
-      'no verification read, because no write landed',
-    );
-  });
-
-  // Same class, single-request siblings: the write lands before the receipt is
-  // read, so a failed verification read must not read as a failed write.
+describe('a landed write survives a failed receipt read (#748)', () => {
   it('save_to_library keeps reporting the landed write when the receipt read fails', async () => {
     const h = harness((path) => {
       if (path === '/me/library/contains') throw new SpotifyApiError(403, 'No unified library access');
@@ -1000,32 +742,113 @@ describe('partial per-type writes keep the committed subset visible and invertib
     assert.equal(sc.receipt_error, 'No unified library access');
     assert.match(out.content[0].text, /No receipt: verification failed \(No unified library access\)\./);
   });
+});
 
-  it('records per-type writes on the partial receipt so undo routes through them (#1095)', async () => {
-    const h = harness((path) => {
-      if (path === SCOPE_403) throw new SpotifyApiError(403, 'Insufficient client scope');
-      if (path === '/me/tracks/contains') return [true];
-      if (path === '/me/albums/contains') return [true];
-      return null;
-    });
+// ---------------------------------------------------------------------------
+// #638: `save_items` / `remove_saved_items` / `check_saved_items` are gone
+//
+// The first two wrote to `PUT`/`DELETE /me/{tracks,albums,shows,episodes,
+// audiobooks}` and the third read `GET /me/{type}s/contains` — all removed in
+// February 2026, with `/me/library` named as the replacement. What survives is
+// the unified pair — as the mutator and as the only way to invert a library
+// receipt.
+// ---------------------------------------------------------------------------
 
-    const out = await h.invoke('save_items', { uris: MIXED });
-    const sc = out.structuredContent as PartialPayload;
+/** The per-type library paths, matched without their query string. */
+const PER_TYPE_LIBRARY = /^\/me\/(tracks|albums|shows|episodes|audiobooks)(\?|$)/;
 
-    // The receipt records the per-type buckets that actually landed, in the
-    // shape undo uses to replay the same per-type endpoints (#1095). A bucket
-    // that did NOT land is absent — the receipt is exactly the committed set.
-    assert.deepEqual(sc.receipt?.writes, [
-      { type: 'track', ids: ['t1'] },
-      { type: 'album', ids: ['a1'] },
-    ]);
-    // The unified save_to_library path does NOT set writes — older receipts
-    // and unified-tool receipts stay inversable through /me/library.
-    const unified = await h.invoke('save_to_library', { uris: ['spotify:track:u1'] });
-    assert.equal(
-      (unified.structuredContent as { receipt?: { writes?: unknown } }).receipt?.writes,
-      undefined,
-      'save_to_library does not record per-type writes',
+describe('library registration after the per-type endpoint removal (#638)', () => {
+  it('registers the unified tools and no longer registers save_items / remove_saved_items / check_saved_items', () => {
+    const h = harness();
+
+    const names = h.registered.map((t) => t.name);
+    assert.deepEqual(
+      [...names].sort(),
+      [
+        'check_in_library',
+        'get_saved_albums',
+        'get_saved_counts',
+        'get_saved_episodes',
+        'get_saved_shows',
+        'get_saved_tracks',
+        'remove_from_library',
+        'save_to_library',
+        'search_saved_albums',
+        'search_saved_audiobooks',
+        'search_saved_episodes',
+        'search_saved_shows',
+        'search_saved_tracks',
+      ],
+      'the library module registers exactly this set — no per-type library tool survives',
     );
+    // Stated separately so a regression names the tools it lost.
+    for (const removed of ['save_items', 'remove_saved_items', 'check_saved_items']) {
+      assert.equal(
+        names.includes(removed),
+        false,
+        `${removed} addressed per-type endpoints Spotify removed in Feb 2026`,
+      );
+    }
+  });
+
+  it('inverts a library receipt through /me/library only — never a per-type path', async () => {
+    const uris = ['spotify:track:t1', 'spotify:show:s1', 'spotify:audiobook:b1'];
+    const saved = new Set<string>();
+    const h = harness(
+      (path) => (path === '/me/library/contains' ? uris.map((uri) => saved.has(uri)) : undefined),
+      { withUndo: true },
+    );
+
+    // Track the library the way a real account would, so the verification read
+    // that follows each write observes the write that landed.
+    const put = h.client.put.bind(h.client);
+    const del = h.client.delete.bind(h.client);
+    const applyWrite = (add: boolean, path: string) => {
+      if (!path.startsWith('/me/library?')) return;
+      const sent = new URLSearchParams(path.split('?')[1] ?? '').get('uris') ?? '';
+      for (const uri of sent.split(',').filter(Boolean)) {
+        if (add) saved.add(uri); else saved.delete(uri);
+      }
+    };
+    h.client.put = async (path: string, body?: unknown) => { applyWrite(true, path); await put(path, body); };
+    h.client.delete = async (path: string, body?: unknown) => { applyWrite(false, path); await del(path, body); };
+
+    const receiptOf = (out: { structuredContent?: Record<string, unknown> }) => {
+      const receipt = (out.structuredContent as { receipt?: { receipt_id: string; writes?: unknown } } | undefined)?.receipt;
+      assert.ok(receipt?.receipt_id, 'the mutation issued a receipt');
+      // The field undo used to branch on went with the tools that set it, so
+      // there is nothing on a receipt that could route an inversion elsewhere.
+      assert.equal(receipt.writes, undefined, 'a library receipt records no per-type buckets');
+      return receipt.receipt_id;
+    };
+
+    const added = await h.invoke('save_to_library', { uris });
+    const beforeUndo = h.client.calls.length;
+    const undoneAdd = await h.invoke('undo_mutation', { receipt_id: receiptOf(added), dry_run: false });
+    assert.equal(undoneAdd.structuredContent?.ok, true, undoneAdd.content[0]?.text);
+    assert.deepEqual(
+      wireCalls(h.client.calls.slice(beforeUndo)).filter((c) => c.method !== 'GET'),
+      [{ method: 'DELETE', path: `/me/library?uris=${encodeURIComponent(uris.join(','))}`, arg: undefined }],
+      'an added receipt inverts with DELETE /me/library, URI-encoded',
+    );
+
+    const removed = await h.invoke('remove_from_library', { uris });
+    const beforeReAdd = h.client.calls.length;
+    const undoneRemove = await h.invoke('undo_mutation', { receipt_id: receiptOf(removed), dry_run: false });
+    assert.equal(undoneRemove.structuredContent?.ok, true, undoneRemove.content[0]?.text);
+    assert.deepEqual(
+      wireCalls(h.client.calls.slice(beforeReAdd)).filter((c) => c.method !== 'GET'),
+      [{ method: 'PUT', path: `/me/library?uris=${encodeURIComponent(uris.join(','))}`, arg: undefined }],
+      'a removed receipt re-adds with PUT /me/library, URI-encoded',
+    );
+
+    // The regression itself: across the whole mutate-then-undo round trip, no
+    // per-type library path reaches the wire in either direction.
+    assert.deepEqual(
+      h.client.calls.filter((c) => PER_TYPE_LIBRARY.test(c.path)).map((c) => `${c.method} ${c.path}`),
+      [],
+      'undo_mutation has one library write to invert through, and it is /me/library',
+    );
+    assert.deepEqual([...saved].sort(), [...uris].sort(), 'both inversions landed');
   });
 });

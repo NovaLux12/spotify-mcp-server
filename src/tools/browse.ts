@@ -1,71 +1,36 @@
 import { z } from 'zod';
-import { MARKET_CODE } from './catalog.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { SpotifyApiError, type SpotifyClient } from '../client.js';
-import { isRemovedEndpointFailure } from '../gating.js';
-import type { SpotifyArtistFull, SpotifyPlaylistSimple, SpotifyPaged } from '../types/spotify.js';
-import {
-  ResponseFormat,
-  sharedListFields,
-  resolveMaxResults,
-  truncateItems,
-  paginationInfo,
-  listStructuredContent,
-} from '../shaping.js';
-
-interface CategoryItem {
-  id: string;
-  name: string;
-  href: string;
-  icons: Array<{ url: string; height: number | null; width: number | null }>;
-}
-
-function resolveBrowseMarket(
-  market: string | undefined,
-  country: string | undefined,
-): string | undefined {
-  if (market !== undefined && country !== undefined && market !== country) {
-    throw new Error(
-      `Conflicting values: market ("${market}") and deprecated country ("${country}") differ — pass only one.`,
-    );
-  }
-  return market ?? country;
-}
+import type { SpotifyClient } from '../client.js';
+import type { SpotifyArtistFull } from '../types/spotify.js';
+import { ResponseFormat } from '../shaping.js';
 
 /**
- * #1013: Spotify's February 2026 changelog removed GET /browse/categories and
- * GET /browse/categories/{id} outright and lists no replacement, and no
- * surviving endpoint exposes browse categories. The 2026-08-26 gate probe
- * already classifies /browse/categories* as app-registration-gated
- * (src/gating.ts), so a failure here is a dead endpoint — never a missing
- * category, an empty list or a quota problem. Same contract as
- * get_available_markets and get_user_profile: name the removal, and report a
- * response that carried no payload as unreadable rather than as zero.
+ * #638: this module used to ship three tools. `get_categories` and
+ * `get_category_playlists` were deleted with the endpoints they wrapped —
+ * Spotify's February 2026 changelog removed `GET /browse/categories`,
+ * `GET /browse/categories/{id}` and `GET /browse/categories/{id}/playlists`
+ * outright, names no replacement for any of them, and no surviving endpoint
+ * exposes the browse category tree. The two tools were not "degraded" so much
+ * as dead: every call on a current registration failed, and on a grandfathered
+ * one they were the only way to reach the data. Keeping them advertised a
+ * capability the platform no longer serves.
  *
- * `noun` names what could not be read, so the no-payload case reports the same
- * fact as the wire-failure case: nothing was read, so nothing is returned.
+ * `browseCategoriesUnavailable` and `resolveBrowseMarket` went with them. The
+ * former was the #1013 removal-naming error, which existed to make a failing
+ * call honest rather than empty; with no call left to make honest there is
+ * nothing for it to describe, and its two live siblings carry their own copies
+ * (`browseCategoryUnavailable` in catalog.ts for `get_category` and
+ * `browse_category_deepdive`, the gated-shape branch in
+ * `category_resolver` in exhaust2_catalog.ts). The latter existed only for the
+ * market/country alias the two deleted tools declared.
+ *
+ * What replaced them: nothing, and that is the point — `search_saved_playlists`
+ * and the search family read the playlist surface, and a caller that wants a
+ * category id should read it off a playlist URI rather than off a browse tree
+ * that no longer exists.
+ *
+ * `get_artist_genres` stays: `GET /artists/{id}` is a live per-id read.
  */
-function browseCategoriesUnavailable(path: string, noun: string, err?: unknown): Error {
-  // A gated 403 reaches the tool as the #428 graceful-contract Error, so that
-  // text is kept verbatim and the removal is appended to it rather than
-  // replacing a contract the README and other modules depend on.
-  const detail =
-    err === undefined
-      ? `the response carried no ${noun} payload, so nothing was read. `
-      : err instanceof SpotifyApiError
-        ? `Spotify answered ${err.status} — ${err.message} `
-        : err instanceof Error
-          ? `${err.message} `
-          : 'Spotify rejected the request. ';
-  return new Error(
-    `The browse-categories lookup (${path}) could not be answered: ${detail} GET /browse/categories and ` +
-      'GET /browse/categories/{id} were removed by Spotify’s February 2026 Web API changes and have ' +
-      'no replacement endpoint, so no category list can be read from them; run with credentials from a ' +
-      'grandfathered (pre-Nov-2024) app if you need one.',
-    err === undefined ? undefined : { cause: err },
-  );
-}
-
 export function registerBrowseTools(server: McpServer, client: SpotifyClient): void {
   server.tool(
     'get_artist_genres',
@@ -86,114 +51,6 @@ export function registerBrowseTools(server: McpServer, client: SpotifyClient): v
       return {
         content: [{ type: 'text', text: `Genres for "${artist.name}" (${artist.id}): ${line}` }],
         structuredContent: { id: artist.id, name: artist.name, genres, uri: artist.uri },
-      };
-    },
-  );
-
-  server.tool(
-    'get_categories',
-    'List Spotify browse categories. Removed Feb 2026, no replacement endpoint',
-    {
-      limit: z.number().int().min(1).max(50).optional().describe('Results per page, 1\u201350. Default: 20'),
-      offset: z.number().int().min(0).optional().describe('Offset. Default: 0'),
-      market: MARKET_CODE.optional().describe(
-        'Canonical ISO 3166-1 alpha-2 market code, e.g. \'US\'; sent as country.',
-      ),
-      country: MARKET_CODE.optional().describe(
-        'Deprecated compatibility spelling for market. Prefer market; conflicting spellings are rejected.',
-      ),
-      locale: z.string().optional().describe('Locale, e.g. en_US'),
-      ...sharedListFields,
-    },
-    async (args) => {
-      const params: Record<string, string> = {};
-      if (args.limit !== undefined) params.limit = String(args.limit);
-      if (args.offset !== undefined) params.offset = String(args.offset);
-      const market = resolveBrowseMarket(args.market, args.country);
-      if (market) params.country = market;
-      if (args.locale) params.locale = args.locale;
-      let data: { categories: SpotifyPaged<CategoryItem> } | null;
-      try {
-        data = await client.get<{ categories: SpotifyPaged<CategoryItem> }>('/browse/categories', params);
-      } catch (err) {
-        if (isRemovedEndpointFailure(err)) {
-          throw browseCategoriesUnavailable('/browse/categories', 'categories', err);
-        }
-        throw err;
-      }
-      if (!data?.categories) {
-        throw browseCategoriesUnavailable('/browse/categories', 'categories');
-      }
-      if (args.response_format === 'json') {
-        const raw = data as unknown as Record<string, unknown>;
-        return { content: [{ type: 'text', text: JSON.stringify(raw, null, 2) }], structuredContent: raw };
-      }
-      const page = data.categories;
-      const cap = resolveMaxResults(args.max_results);
-      const trunc = truncateItems(page.items, cap);
-      const lines = [`Categories (${page.total} total):`];
-      trunc.items.forEach((c) => lines.push(`  \u2022 ${c.name} (id: ${c.id})`));
-      if (trunc.footer) lines.push('', `(${trunc.footer})`);
-      return {
-        content: [{ type: 'text', text: lines.join('\n') }],
-        structuredContent: listStructuredContent(trunc.items, paginationInfo({ total: page.total, offset: args.offset, limit: args.limit ?? null, returned: trunc.items.length })),
-      };
-    },
-  );
-
-  server.tool(
-    'get_category_playlists',
-    'Get playlists for a browse category. Removed Feb 2026, no replacement endpoint',
-    {
-      category_id: z.string().describe('Category ID'),
-      limit: z.number().int().min(1).max(50).optional().describe('Results per page, 1\u201350. Default: 20'),
-      offset: z.number().int().min(0).optional().describe('Offset. Default: 0'),
-      market: MARKET_CODE.optional().describe(
-        'Canonical ISO 3166-1 alpha-2 market code, e.g. \'US\'; sent as country.',
-      ),
-      country: MARKET_CODE.optional().describe(
-        'Deprecated compatibility spelling for market. Prefer market; conflicting spellings are rejected.',
-      ),
-      ...sharedListFields,
-    },
-    async (args) => {
-      const params: Record<string, string> = {};
-      if (args.limit !== undefined) params.limit = String(args.limit);
-      if (args.offset !== undefined) params.offset = String(args.offset);
-      const market = resolveBrowseMarket(args.market, args.country);
-      if (market) params.country = market;
-      const path = `/browse/categories/${encodeURIComponent(args.category_id)}/playlists`;
-      let data: { playlists: SpotifyPaged<SpotifyPlaylistSimple> } | null;
-      try {
-        data = await client.get<{ playlists: SpotifyPaged<SpotifyPlaylistSimple> }>(path, params);
-      } catch (err) {
-        if (isRemovedEndpointFailure(err)) {
-          throw browseCategoriesUnavailable(path, 'playlists', err);
-        }
-        throw err;
-      }
-      if (!data?.playlists) {
-        throw browseCategoriesUnavailable(path, 'playlists');
-      }
-      if (args.response_format === 'json') {
-        const raw = data as unknown as Record<string, unknown>;
-        return { content: [{ type: 'text', text: JSON.stringify(raw, null, 2) }], structuredContent: raw };
-      }
-      const page = data.playlists;
-      if (page.items.length === 0) {
-        return {
-          content: [{ type: 'text', text: `No playlists found for category "${args.category_id}".` }],
-          structuredContent: listStructuredContent([], paginationInfo({ total: page.total, offset: args.offset, limit: args.limit ?? null, returned: 0 })),
-        };
-      }
-      const cap = resolveMaxResults(args.max_results);
-      const trunc = truncateItems(page.items, cap);
-      const lines = [`Playlists for category "${args.category_id}" (${page.total} total):`];
-      trunc.items.forEach((p) => lines.push(`  \u2022 "${p.name}" by ${(p as SpotifyPlaylistSimple).owner?.display_name ?? (p as SpotifyPlaylistSimple).owner?.id ?? 'unknown'} | URI: ${p.uri}`));
-      if (trunc.footer) lines.push('', `(${trunc.footer})`);
-      return {
-        content: [{ type: 'text', text: lines.join('\n') }],
-        structuredContent: listStructuredContent(trunc.items, paginationInfo({ total: page.total, offset: args.offset, limit: args.limit ?? null, returned: trunc.items.length })),
       };
     },
   );

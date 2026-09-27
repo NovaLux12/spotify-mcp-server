@@ -673,144 +673,81 @@ describe('undo_mutation occurrence targeting (#625)', () => {
   });
 });
 
-describe('undo_mutation routes legacy library receipts through per-type endpoints (#1095)', () => {
-  it('undoes a per-type library SAVE through /me/{tracks,albums,shows,audiobooks} — never /me/library', async () => {
-    const { server, handlers } = stubServer();
-    const { client, calls } = stubClient();
-    registerUndoTools(server, client);
+/**
+ * #638: `undo_mutation` used to branch on a receipt's `writes` field and
+ * replay a library mutation through the same per-type endpoint it was written
+ * with, because `save_items` / `remove_saved_items` existed for credentials
+ * that could not reach `/me/library`. Spotify's February 2026 changes removed
+ * every one of those endpoints, so the branch could only ever produce a
+ * 404/410 — and the field went with the tools that set it. `/me/library` is
+ * now the only library write in the server, for the mutator and its inverse.
+ */
+describe('undo_mutation inverts a library receipt through /me/library only (#638)', () => {
+  /** The per-type write endpoints the removed branch replayed through. */
+  const perTypeWrite = (path: string) =>
+    /^\/me\/(tracks|albums|shows|episodes|audiobooks)(\?|$)/.test(path);
 
-    const receipt = await issueReceipt(client, {
-      kind: 'library',
-      uris: ['spotify:track:t1', 'spotify:album:a1', 'spotify:show:s1', 'spotify:audiobook:b1'],
-      expectPresent: true,
-      // The buckets a legacy `save_items` partial write would have left
-      // behind — the receipt carries them so undo replays the same shape.
-      writes: [
-        { type: 'track', ids: ['t1'] },
-        { type: 'album', ids: ['a1'] },
-        { type: 'show', ids: ['s1'] },
-        { type: 'audiobook', ids: ['b1'] },
-      ],
-    });
-
-    const out = await handlers.get('undo_mutation')!({ receipt_id: receipt.receipt_id, dry_run: false });
-
-    const wire = writes(calls);
-    // Every per-type bucket DELETE fired — and `/me/library` did NOT, which
-    // is the regression: that endpoint is what these legacy tools exist to
-    // avoid on credentials that 403 against it.
-    assert.deepEqual(wire.map((c) => `${c.method} ${c.path.split('?')[0]}`), [
-      'DELETE /me/tracks',
-      'DELETE /me/albums',
-      'DELETE /me/shows',
-      'DELETE /me/audiobooks',
-    ]);
-    // Body form for tracks/albums/episodes; query form for show/audiobook
-    // (any body ids would be ignored by Spotify — see #12, #36).
-    const trackDel = wire.find((c) => c.path === '/me/tracks');
-    assert.deepEqual(trackDel?.arg, { ids: ['t1'] });
-    const albumDel = wire.find((c) => c.path === '/me/albums');
-    assert.deepEqual(albumDel?.arg, { ids: ['a1'] });
-    const showDel = wire.find((c) => c.path.startsWith('/me/shows?'));
-    assert.equal(showDel?.arg, undefined, 'show ids ride ?ids=, no body');
-    assert.match(showDel!.path, /^\/me\/shows\?ids=s1$/);
-    const bookDel = wire.find((c) => c.path.startsWith('/me/audiobooks?'));
-    assert.equal(bookDel?.arg, undefined, 'audiobook ids ride ?ids=, no body');
-    assert.match(bookDel!.path, /^\/me\/audiobooks\?ids=b1$/);
-    assert.equal(
-      wire.filter((c) => c.path.startsWith('/me/library')).length,
-      0,
-      'no /me/library call: that endpoint would 403 on the credential the legacy tools exist for',
-    );
-  });
-
-  it('re-adds through per-type endpoints when a legacy removal receipt is undone', async () => {
-    const { server, handlers } = stubServer();
-    const { client, calls } = stubClient();
-    registerUndoTools(server, client);
-
-    const receipt = await issueReceipt(client, {
-      kind: 'library',
-      uris: ['spotify:track:t1', 'spotify:show:s1'],
-      expectPresent: false,
-      writes: [
-        { type: 'track', ids: ['t1'] },
-        { type: 'show', ids: ['s1'] },
-      ],
-    });
-
-    await handlers.get('undo_mutation')!({ receipt_id: receipt.receipt_id, dry_run: false });
-
-    const wire = writes(calls);
-    assert.deepEqual(wire.map((c) => `${c.method} ${c.path.split('?')[0]}`), [
-      'PUT /me/tracks',
-      'PUT /me/shows',
-    ]);
-    assert.deepEqual(wire.find((c) => c.path === '/me/tracks')?.arg, { ids: ['t1'] });
-    assert.match(wire.find((c) => c.path.startsWith('/me/shows?'))!.path, /^\/me\/shows\?ids=s1$/);
-  });
-
-  it('still routes a receipt without `writes` through /me/library — back-compat (#1095)', async () => {
+  it('undoes an added library receipt with DELETE /me/library and never a per-type path', async () => {
     const { server, handlers } = stubServer();
     const { client, calls, saved } = stubClient();
     registerUndoTools(server, client);
-    for (const uri of ['spotify:track:a', 'spotify:track:b']) saved.add(uri);
+    const uris = ['spotify:track:t1', 'spotify:album:a1', 'spotify:show:s1', 'spotify:episode:e1', 'spotify:audiobook:b1'];
+    for (const uri of uris) saved.add(uri);
 
-    // A receipt issued before #1095 carries no `writes` field, as do receipts
-    // from `save_to_library`. They continue to invert through /me/library.
-    const receipt = await issueReceipt(client, {
-      kind: 'library',
-      uris: ['spotify:track:a', 'spotify:track:b'],
-      expectPresent: true,
-    });
-    assert.equal(receipt.writes, undefined, 'older receipts do not record per-type writes');
-
-    await handlers.get('undo_mutation')!({ receipt_id: receipt.receipt_id, dry_run: false });
-
-    const wire = writes(calls);
-    assert.deepEqual(wire.map((c) => `${c.method} ${c.path.split('?')[0]}`), ['DELETE /me/library']);
-    assert.equal(saved.size, 0, 'every saved URI is removed');
-  });
-
-  it('reports what completed when a per-type bucket fails part-way', async () => {
-    const { server, handlers } = stubServer();
-    const { client, calls } = stubClient();
-    let deletes = 0;
-    const originalDelete = client.delete.bind(client);
-    (client as unknown as { delete: (path: string, arg?: unknown) => Promise<unknown> }).delete = async (path: string, arg?: unknown) => {
-      deletes++;
-      if (deletes === 2) {
-        throw new Error('SENTINEL_UNDO_PER_TYPE_PARTIAL bucket failure');
-      }
-      return originalDelete(path, arg);
-    };
-    registerUndoTools(server, client);
-
-    const receipt = await issueReceipt(client, {
-      kind: 'library',
-      uris: ['spotify:track:t1', 'spotify:album:a1', 'spotify:show:s1'],
-      expectPresent: true,
-      writes: [
-        { type: 'track', ids: ['t1'] },
-        { type: 'album', ids: ['a1'] },
-        { type: 'show', ids: ['s1'] },
-      ],
-    });
+    // A library receipt carries no per-type buckets — there is nothing on it
+    // that could route an inversion anywhere but /me/library.
+    const receipt = await issueReceipt(client, { kind: 'library', uris, expectPresent: true });
+    assert.equal(receipt.direction, 'added');
 
     const out = await handlers.get('undo_mutation')!({ receipt_id: receipt.receipt_id, dry_run: false });
 
-    assert.equal(out.structuredContent?.ok, false);
-    assert.equal(out.structuredContent?.reason, 'partial_write_failure');
-    assert.equal(out.structuredContent?.attempted_requests, 2);
-    assert.equal(out.structuredContent?.completed_requests, 1);
-    // The first DELETE landed; the second threw; the third never ran.
-    const recorded = writes(calls).filter((c) => c.method === 'DELETE');
-    assert.deepEqual(recorded.map((c) => c.path.split('?')[0]), ['/me/tracks'],
-      'only the first per-type bucket reached the wire');
-    // The raw error message must not leak through the structured payload.
-    const publicText = JSON.stringify(out);
-    assert.equal(publicText.includes('SENTINEL_UNDO_PER_TYPE_PARTIAL'), false,
-      'partial per-type undo leaked the raw error message');
+    assert.equal(out.structuredContent?.ok, true, out.content[0]?.text);
+    const wire = writes(calls);
+    assert.deepEqual(
+      wire.map((c) => `${c.method} ${c.path.split('?')[0]}`),
+      ['DELETE /me/library'],
+      'exactly one write, and it is the unified delete',
+    );
+    assert.deepEqual(
+      wire[0]!.arg,
+      undefined,
+      'the uris ride ?uris=, which is the form /me/library documents',
+    );
+    assert.deepEqual(urisParam(wire[0]!.path).sort(), [...uris].sort());
+    assert.equal(saved.size, 0, 'every saved URI is removed');
+    assert.deepEqual(
+      wire.filter((c) => perTypeWrite(c.path)).map((c) => `${c.method} ${c.path}`),
+      [],
+      'no PUT/DELETE against /me/{tracks,albums,shows,episodes,audiobooks}',
+    );
+  });
+
+  it('re-adds a removed library receipt with PUT /me/library and never a per-type path', async () => {
+    const { server, handlers } = stubServer();
+    const { client, calls, saved } = stubClient();
+    registerUndoTools(server, client);
+    const uris = ['spotify:track:t1', 'spotify:album:a1', 'spotify:show:s1', 'spotify:episode:e1', 'spotify:audiobook:b1'];
+
+    const receipt = await issueReceipt(client, { kind: 'library', uris, expectPresent: false });
+    assert.equal(receipt.direction, 'removed');
+
+    const out = await handlers.get('undo_mutation')!({ receipt_id: receipt.receipt_id, dry_run: false });
+
+    assert.equal(out.structuredContent?.ok, true, out.content[0]?.text);
+    const wire = writes(calls);
+    assert.deepEqual(
+      wire.map((c) => `${c.method} ${c.path.split('?')[0]}`),
+      ['PUT /me/library'],
+      'exactly one write, and it is the unified save',
+    );
+    assert.deepEqual(wire[0]!.arg, undefined, 'the uris ride ?uris=, which is the form /me/library documents');
+    assert.deepEqual(urisParam(wire[0]!.path).sort(), [...uris].sort());
+    assert.deepEqual([...saved].sort(), [...uris].sort(), 'every removed URI is back');
+    assert.deepEqual(
+      wire.filter((c) => perTypeWrite(c.path)).map((c) => `${c.method} ${c.path}`),
+      [],
+      'no PUT/DELETE against /me/{tracks,albums,shows,episodes,audiobooks}',
+    );
   });
 });
 

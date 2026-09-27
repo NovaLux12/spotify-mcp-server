@@ -166,12 +166,45 @@ export function registerPlaylistHealthTools(server: McpServer, client: SpotifyCl
       if (!playlist) throw new Error('Playlist not found');
       const total = playlist.followers?.total ?? 0;
       let ownerProfile: unknown = null;
+      // #638: `GET /users/{id}` was removed by Spotify in February 2026 and
+      // 403s on any current registration, so the `include_profiles: true` path
+      // fails on essentially every live credential. That failure used to be
+      // swallowed whole: `catch { ownerProfile = null }` and a `...(ownerProfile
+      // ? {...} : {})` spread meant a caller who explicitly ASKED for the owner
+      // profile got a result identical to one that had declined to fetch it —
+      // an omitted field, not a disclosed failure. The follower count itself is
+      // read from `/playlists/{id}` and is unaffected. The requested-but-
+      // unreadable case is now stated, in both the prose line and the payload,
+      // so a caller can tell "no profile returned" from "profile unavailable".
+      let ownerProfileError: string | null = null;
       if (args.include_profiles) {
-        try { ownerProfile = await client.get(`/users/${encodeURIComponent(playlist.owner.id)}`); } catch { ownerProfile = null; }
+        try {
+          ownerProfile = await client.get(`/users/${encodeURIComponent(playlist.owner.id)}`);
+          if (!ownerProfile) ownerProfileError = 'empty response';
+        } catch (err) {
+          ownerProfileError = err instanceof Error ? err.message : String(err);
+        }
       }
-      const structured: Record<string, unknown> = { playlist_id: playlist.id, name: playlist.name, followers_total: total, owner: playlist.owner, ...(ownerProfile ? { owner_profile: ownerProfile } : {}) };
+      const structured: Record<string, unknown> = {
+        playlist_id: playlist.id,
+        name: playlist.name,
+        followers_total: total,
+        owner: playlist.owner,
+        ...(ownerProfile ? { owner_profile: ownerProfile } : {}),
+        ...(args.include_profiles && !ownerProfile
+          ? {
+              owner_profile_error:
+                `${ownerProfileError ?? 'unavailable'}. GET /users/{id} was removed by Spotify's February 2026 ` +
+                'Web API changes, so the public owner profile cannot be read on a current app registration; ' +
+                'the follower count above is read from GET /playlists/{id} and is unaffected.',
+            }
+          : {}),
+      };
       let text = `Playlist "${playlist.name}" has ${total} follower${total === 1 ? '' : 's'}.`;
       if (ownerProfile) text += `\n${jsonText(ownerProfile)}`;
+      else if (args.include_profiles) {
+        text += `\nOwner profile unavailable: ${ownerProfileError ?? 'unavailable'}. GET /users/{id} was removed by Spotify's February 2026 Web API changes.`;
+      }
       return textResult(text, structured);
     },
   );

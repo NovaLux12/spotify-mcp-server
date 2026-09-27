@@ -432,7 +432,11 @@ describe('exhaustmisc — mop-up 10 tools', () => {
     assert.equal(deleteMock.mock.callCount(), 0);
   });
 
-  it('unsave_orphan_tracks chunks destructive removals at 50 IDs', async () => {
+  // #638 removed `DELETE /me/tracks` (50 ids per request). The chunking
+  // contract survives; the endpoint and the batch size do not, so the old
+  // "chunks at 50 IDs" assertion is replaced rather than repointed:
+  // `/me/library` takes 40 uris, so 51 orphans are 40 + 11.
+  it('unsave_orphan_tracks chunks destructive removals at the 40-uri /me/library cap', async () => {
     let captured: unknown = null;
     const server = {
       tool(_name: string, _desc: string, _shape: unknown, handler: (args: unknown) => Promise<unknown>) {
@@ -451,10 +455,17 @@ describe('exhaustmisc — mop-up 10 tools', () => {
     await handler({ dry_run: false, max_remove: 51, response_format: 'concise' });
     const deleteMock = client.delete as { mock: { callCount(): number; calls: Array<{ arguments: unknown[] }> } };
     assert.equal(deleteMock.mock.callCount(), 2);
-    const firstIds = new URL(`https://example.test${deleteMock.mock.calls[0].arguments[0]}`).searchParams.get('ids')!.split(',');
-    const secondIds = new URL(`https://example.test${deleteMock.mock.calls[1].arguments[0]}`).searchParams.get('ids')!.split(',');
-    assert.equal(firstIds.length, 50);
-    assert.equal(secondIds.length, 1);
+    const batches = deleteMock.mock.calls.map((call) => {
+      const path = recordedPath(call.arguments[0]);
+      assert.match(path, /^\/me\/library\?/, `removal must go through /me/library, got ${path}`);
+      const uris = new URL(`https://example.test${path}`).searchParams.get('uris');
+      assert.ok(uris !== null, `/me/library request must carry a uris query param: ${path}`);
+      return uris.split(',').filter(Boolean);
+    });
+    assert.deepEqual(batches.map((uris) => uris.length), [40, 11]);
+    // Every orphan lands exactly once, in order: a dropped URI is a track the
+    // caller asked to unsave and did not get.
+    assert.deepEqual(batches.flat(), saved.map((s) => s.track.uri));
   });
 
   // #330: the documented /me/tracks/contains is on the #329 registration-gated
@@ -486,8 +497,47 @@ describe('exhaustmisc — mop-up 10 tools', () => {
     assert.ok(!calls.some((c) => c.path.includes('/me/tracks/contains')));
   });
 
-  it('remove_from_library_by_playlist checks saved state via /me/library/contains', async () => {
+  // #638: the WRITE half of the same tool moved too — `PUT /me/tracks` (50 per
+  // request) is gone, and `/me/library` takes 40. 100 tracks is the boundary
+  // that tells the two apart: 2 requests at 50, 3 at 40.
+  it('playlist_to_library saves through PUT /me/library at the 40-uri cap, covering every track once', async () => {
     let captured: unknown = null;
+    const server = {
+      tool(_name: string, _desc: string, _shape: unknown, handler: (args: unknown) => Promise<unknown>) {
+        if (_name === 'playlist_to_library') captured = handler;
+      },
+    } as unknown as McpServer;
+    const tracks = Array.from({ length: 100 }, (_, i) => ({ item: { uri: `spotify:track:t${i}`, name: `T${i}` } }));
+    const client = makeClient({
+      getAllPages: mock.fn(async () => tracks),
+      // The dedupe read finds nothing saved, so every track is written.
+      get: mock.fn(async (path: string, params?: Record<string, string>) => {
+        if (path === '/me/library/contains') {
+          return (params?.uris ?? '').split(',').filter(Boolean).map(() => false);
+        }
+        return null;
+      }),
+      put: mock.fn(async () => null),
+    });
+    registerExhaustMiscTools(server, client);
+    const handler = captured as (args: unknown) => Promise<{ content: Array<{ text: string }>; structuredContent?: Record<string, unknown> }>;
+    const res = await handler({ playlist_id: 'pl1', dry_run: false, response_format: 'concise' });
+
+    const putMock = client.put as { mock: { callCount(): number; calls: Array<{ arguments: unknown[] }> } };
+    assert.equal(putMock.mock.callCount(), 3, '100 uris is 3 requests at the 40-uri cap, not 2 at 50');
+    const batches = putMock.mock.calls.map((call) => {
+      const path = recordedPath(call.arguments[0]);
+      assert.match(path, /^\/me\/library\?/, `save must go through /me/library, got ${path}`);
+      const uris = new URL(`https://example.test${path}`).searchParams.get('uris');
+      assert.ok(uris !== null, `/me/library request must carry a uris query param: ${path}`);
+      return uris.split(',').filter(Boolean);
+    });
+    assert.deepEqual(batches.map((uris) => uris.length), [40, 40, 20]);
+    assert.deepEqual(batches.flat(), tracks.map((t) => t.item.uri), 'every track saved exactly once, in order');
+    assert.equal((res.structuredContent as { to_save: number }).to_save, 100);
+  });
+
+  it('remove_from_library_by_playlist checks saved state via /me/library/contains', async () => {    let captured: unknown = null;
     const server = {
       tool(_name: string, _desc: string, _shape: unknown, handler: (args: unknown) => Promise<unknown>) {
         if (_name === 'remove_from_library_by_playlist') captured = handler;

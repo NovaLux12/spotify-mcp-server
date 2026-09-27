@@ -135,12 +135,13 @@ const WRITE_REQUIREMENTS: readonly WriteRequirement[] = [
     tools: 'save_to_library, remove_from_library',
     scopes: ['user-library-modify'],
   },
-  {
-    key: 'following',
-    label: 'artist follow state',
-    tools: 'follow_artists, unfollow_artists',
-    scopes: ['user-follow-modify'],
-  },
+  // #638: the `following` row is gone with `follow_artists` / `unfollow_artists`.
+  // It existed to warn a caller whose token lacks `user-follow-modify` that
+  // two write tools on the surface would 403. With no write tool left in that
+  // module, the same row reports a scope gap for a capability the module no
+  // longer has -- a false warning is worse than no warning. The scope key
+  // itself stays in `scopefilter.ts`: `freshness` reads `/me/following` and is
+  // still gated by it, so the key is not orphaned by this removal.
 ];
 
 // ---------------------------------------------------------------------------

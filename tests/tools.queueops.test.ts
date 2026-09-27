@@ -67,6 +67,12 @@ function harness(overrides: Partial<{
         : undefined;
       if (queueError) throw queueError;
       if (path.includes('/users/') && path.includes('/playlists')) {
+        // Legacy /users/{user_id}/playlists is retired (#638): the create
+        // targets /me/playlists. Answering it here would let a regression to
+        // the removed endpoint pass, so it fails the way the real API does.
+        throw Object.assign(new Error('POST /users/{user_id}/playlists was removed, use /me/playlists'), { status: 404 });
+      }
+      if (path === '/me/playlists') {
         const created = overrides.createPlaylistResponse ?? { id: 'newPlId', external_urls: { spotify: 'https://open.spotify.com/playlist/newPlId' }, snapshot_id: 'snap1' };
         if (!rows.has(created.id)) rows.set(created.id, []);
         return created as any;
@@ -286,12 +292,21 @@ describe('queueops', () => {
   it('save_queue_as_playlist creates playlist and adds queue URIs', async () => {
     const h = harness({ queueData: { currently_playing: track('cur'), queue: [track('q1'), track('q2')] } });
     const out = await h.invoke('save_queue_as_playlist', { name: 'My Queue' });
-    // First POST creates playlist, second POST adds items via /items (not legacy /tracks, #840).
-    assert.ok(h.posts.some((p) => p.includes('/users/') && p.includes('/playlists')));
+    // #638: the create targets POST /me/playlists. The removed
+    // `POST /users/{user_id}/playlists` needs no user id, and the /me read that
+    // only existed to interpolate one is gone with it.
+    assert.ok(h.posts.some((p) => p === '/me/playlists'), `expected a POST /me/playlists, got ${h.posts.join(', ')}`);
+    assert.ok(!h.posts.some((p) => p.includes('/users/')), 'POST /users/{user_id}/playlists was removed by the Feb 2026 changelog');
+    assert.deepEqual(h.getCalls.filter((p) => p === '/me'), [], 'no /me read is needed to build a /me/playlists request');
+    // Second POST adds items via /items (not legacy /tracks, #840).
     assert.ok(h.posts.some((p) => p.includes('/items')));
     assert.ok(!h.posts.some((p) => p.includes('/playlists/') && p.includes('/tracks')), 'must not POST to legacy /playlists/{id}/tracks');
     assert.match(out.content[0].text, /Saved 3 items/);
     assert.equal((out.structuredContent as any)?.ok, true);
+    // The created id, url and snapshot are read off the /me/playlists response.
+    assert.equal((out.structuredContent as any)?.playlist_id, 'newPlId');
+    assert.equal((out.structuredContent as any)?.playlist_url, 'https://open.spotify.com/playlist/newPlId');
+    assert.equal((out.structuredContent as any)?.is_new, true);
   });
   it('save_queue_as_playlist empty queue returns friendly message', async () => {
     const h = harness({ queueData: { currently_playing: null, queue: [] } });

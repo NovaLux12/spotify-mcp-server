@@ -227,252 +227,26 @@ function parseDateBound(param: string, value: string | undefined): number | unde
   return ms;
 }
 
-const SAVED_URI_TYPES = ['track', 'album', 'show', 'episode', 'audiobook'] as const;
-type SavedUriType = (typeof SAVED_URI_TYPES)[number];
+// #638: `check_saved_items` was deleted here, and with it `SAVED_URI_TYPES`,
+// `SavedUriType`, `ParsedSavedUris` and `partitionSavedUris`. The `canonicalUris`
+// half of `partitionSavedUris` was the only thing that canonicalised a
+// short-id / URI / URL reference before the bucket walk; `canonicalLibraryUris`
+// below does the same job for every remaining caller and is what
+// `check_in_library` uses.
 
-interface ParsedSavedUris {
-  buckets: Record<SavedUriType, string[]>;
-  canonicalUris: string[];
-}
-
-function partitionSavedUris(uris: string[]): ParsedSavedUris {
-  const buckets: Record<SavedUriType, string[]> = {
-    track: [],
-    album: [],
-    show: [],
-    episode: [],
-    audiobook: [],
-  };
-  const canonicalUris: string[] = [];
-  for (const uri of uris) {
-    const parsed = classifySpotifyReference(uri, undefined, { allowShortIds: true });
-    if (!parsed.valid || !parsed.kind || !SAVED_URI_TYPES.includes(parsed.kind as SavedUriType)) {
-      throw new Error(
-        `Unsupported URI type: ${uri} (supported: ${SAVED_URI_TYPES.map((kind) => `spotify:${kind}:`).join(', ')})`,
-      );
-    }
-    const canonical = spotifyUriFromClassification(parsed);
-    if (!canonical) throw new Error(`Invalid Spotify reference: ${uri}`);
-    buckets[parsed.kind as SavedUriType].push(parsed.id!);
-    canonicalUris.push(canonical);
-  }
-  return { buckets, canonicalUris };
-}
-
-// Shows AND audiobooks take `ids` ONLY as a query parameter (#12, #36): when
-// `?ids=` is present any JSON body IDs are ignored, so the body form used by
-// tracks/albums/episodes is a silent no-op for these types.
-const IDS_AS_QUERY: Record<SavedUriType, boolean> = {
-  track: false,
-  album: false,
-  show: true,
-  episode: false,
-  audiobook: true,
-};
-
-function savedItemsPath(type: SavedUriType, ids: string[]): string {
-  if (!IDS_AS_QUERY[type]) return `/me/${type}s`;
-  return `/me/${type}s?ids=${encodeURIComponent(ids.join(','))}`;
-}
-
-/**
- * The wire shape a per-type write takes for the legacy library endpoints
- * (#1095). `path` is the full request path, including `?ids=` for show /
- * audiobook buckets; `body` is the JSON body when one is needed (tracks /
- * albums / episodes) and `undefined` when ids already ride the URL. Exposed
- * so `undo_mutation` can invert a legacy `save_items` / `remove_saved_items`
- * receipt through the same per-type endpoint the mutation used, on
- * credentials that cannot reach `/me/library`.
- */
-export interface SavedBucketWriteTarget {
-  path: string;
-  body?: { ids: string[] };
-}
-
-export function savedBucketWrite(type: SavedUriType, ids: string[]): SavedBucketWriteTarget {
-  if (IDS_AS_QUERY[type]) return { path: savedItemsPath(type, ids) };
-  return { path: `/me/${type}s`, body: { ids } };
-}
-
-/**
- * One per-URI-type bucket outcome from the legacy per-type save/remove loops
- * (#748). These loops write one bucket per type in sequence; a rejection in
- * bucket N used to discard the successes of buckets 1..N-1 behind a bare
- * error — a silent partial mutation with no receipt, so `undo_last_mutation`
- * had nothing to invert. Every bucket is now attempted on its own and reported
- * here, with the rejection's status/retry-after/reason carried through.
- */
-interface SavedBucketOutcome {
-  type: SavedUriType;
-  /** URIs in this bucket, as partitioned from the caller's request. */
-  requested: number;
-  /** Raw ids the bucket sent to Spotify. Recorded so the receipt can replay
-   * the per-type write on undo (#1095), without re-parsing the caller's uris. */
-  ids: string[];
-  ok: boolean;
-  /** Rejection message; absent when the bucket landed. */
-  error?: string;
-  /** HTTP status of the rejection, when the client reported one. */
-  status?: number;
-  /** Retry-after hint of the rejection, when the client reported one. */
-  retry_after_sec?: number;
-  /** Spotify `error.reason` of the rejection, when present. */
-  reason?: string;
-}
-
-interface SavedBucketRun {
-  outcomes: SavedBucketOutcome[];
-  /** Canonical URIs whose bucket landed, in bucket order. */
-  committed: string[];
-  /**
-   * The per-type buckets that landed (#1095). Carried verbatim into the
-   * receipt so `undo_mutation` can replay each bucket through its per-type
-   * endpoint (`/me/tracks`, `/me/albums`, `/me/shows?ids=…`, …) instead of
-   * `/me/library`, which is exactly the endpoint the legacy tools exist to
-   * avoid on grandfathered credentials.
-   */
-  writes: Array<{ type: SavedUriType; ids: string[] }>;
-  /** First rejection, rethrown verbatim when nothing landed. */
-  firstError: unknown;
-}
-
-/**
- * Attempt every non-empty bucket independently so one rejection cannot erase
- * the buckets that already succeeded. `firstError` is the original error
- * object, status/retry-after intact, for the all-failed case.
- */
-async function runSavedBuckets(
-  buckets: Record<SavedUriType, string[]>,
-  write: (type: SavedUriType, ids: string[]) => Promise<unknown>,
-): Promise<SavedBucketRun> {
-  const outcomes: SavedBucketOutcome[] = [];
-  const committed: string[] = [];
-  const writes: Array<{ type: SavedUriType; ids: string[] }> = [];
-  let firstError: unknown;
-  for (const type of SAVED_URI_TYPES) {
-    const ids = buckets[type];
-    if (ids.length === 0) continue;
-    try {
-      await write(type, ids);
-      const copy = [...ids];
-      outcomes.push({ type, requested: ids.length, ids: copy, ok: true });
-      writes.push({ type, ids: copy });
-      committed.push(...copy.map((id) => `spotify:${type}:${id}`));
-    } catch (err) {
-      firstError ??= err;
-      const api = err instanceof SpotifyApiError ? err : undefined;
-      outcomes.push({
-        type,
-        requested: ids.length,
-        ids: [...ids],
-        ok: false,
-        error: err instanceof Error ? err.message : String(err),
-        ...(api ? { status: api.status } : {}),
-        ...(api?.retryAfterSec !== undefined ? { retry_after_sec: api.retryAfterSec } : {}),
-        ...(api?.reason ? { reason: api.reason } : {}),
-      });
-    }
-  }
-  return { outcomes, committed, writes, firstError };
-}
-
-/**
- * `/me/library/contains` is the unified endpoint these legacy per-type tools
- * deliberately do not depend on — a grandfathered credential that cannot use
- * `/me/library` at all is exactly the credential that produces a partial
- * write (#748). Translate the receipt's verification read into the per-type
- * `/me/{type}s/contains` calls `check_saved_items` already uses, so the
- * committed subset is verifiable wherever the buckets themselves are writable.
- * Any rejection propagates unchanged: a failed read is not an absent item.
- */
-function legacyContainsClient(client: SpotifyClient): ReceiptClient {
-  return {
-    async get<T>(path: string, params?: Record<string, string>): Promise<T | null> {
-      const uris = path === '/me/library/contains' ? params?.uris : undefined;
-      if (uris === undefined) return client.get<T>(path, params);
-      const wanted = uris.split(',');
-      const flags = new Array<boolean>(wanted.length).fill(false);
-      const slots: Record<SavedUriType, number[]> = {
-        track: [],
-        album: [],
-        show: [],
-        episode: [],
-        audiobook: [],
-      };
-      wanted.forEach((uri, i) => {
-        const parsed = classifySpotifyReference(uri, undefined, { allowShortIds: true });
-        const type = parsed.kind as SavedUriType | undefined;
-        if (!parsed.valid || !parsed.id || !type || !SAVED_URI_TYPES.includes(type)) return;
-        slots[type].push(i);
-      });
-      for (const type of SAVED_URI_TYPES) {
-        const indexes = slots[type];
-        if (indexes.length === 0) continue;
-        const ids = indexes.map((i) => wanted[i]!.split(':').slice(2).join(':'));
-        const contains = await client.get<boolean[]>(`/me/${type}s/contains`, {
-          ids: ids.join(','),
-        });
-        if (!contains) throw new Error(`Could not check saved ${type}s`);
-        indexes.forEach((uriIndex, j) => {
-          if (contains[j]) flags[uriIndex] = true;
-        });
-      }
-      return flags as T;
-    },
-  };
-}
-
-/**
- * Partial save/remove result (#748). `ok: false` because the requested set did
- * not fully land, `affected` counts only the buckets that did, and `results`
- * names every bucket with its own outcome — an unread or rejected group is
- * reported as such, never counted as saved. The receipt covers exactly the
- * committed URIs so undo inverts the committed subset and nothing else; when
- * even the verification read fails, `receipt` is null with `receipt_error`
- * saying so rather than a fabricated verdict.
- */
-async function savedBucketsPartialOut(
-  rf: ResponseFormatValue,
-  client: SpotifyClient,
-  verb: 'Saved' | 'Removed',
-  outcomes: SavedBucketOutcome[],
-  committed: readonly string[],
-  writes: ReadonlyArray<{ type: SavedUriType; ids: string[] }>,
-  expectPresent: boolean,
-): Promise<ToolOut> {
-  const failed = outcomes.filter((o) => !o.ok);
-  const requestedTotal = outcomes.reduce((a, o) => a + o.requested, 0);
-  const failedText = failed.map((o) => `${o.type} (${o.requested}): ${o.error}`).join('; ');
-  const groups = `${outcomes.length - failed.length} of ${outcomes.length} groups landed`;
-  const { receipt, error: receiptError } = await guardedReceipt(legacyContainsClient(client), {
-    kind: 'library',
-    uris: [...committed],
-    expectPresent,
-    // Record the per-type buckets so undo replays them through the same
-    // endpoints the mutation used — not /me/library, which is the endpoint
-    // these legacy tools exist to avoid (#1095).
-    ...(writes.length > 0 ? { writes: writes.map((w) => ({ type: w.type, ids: [...w.ids] })) } : {}),
-  });
-  const prose =
-    `${verb} ${committed.length} of ${requestedTotal} item(s) (${groups}) — ` +
-    `not ${verb.toLowerCase()}: ${failedText}.\n` +
-    receiptLines(
-      receipt,
-      receiptError,
-      { expectPresent },
-      ' Confirm the committed subset with check_saved_items.',
-    );
-  return shapeResult(rf, prose, {
-    ok: false,
-    partial: true,
-    affected: committed.length,
-    requested: requestedTotal,
-    uris: [...committed],
-    results: outcomes,
-    receipt: receipt as unknown as Record<string, unknown> | null,
-    ...(receiptError ? { receipt_error: receiptError } : {}),
-  });
-}
+// #638: the per-type library WRITE machinery used to live here --
+// `savedItemsPath`, `savedBucketWrite`, `runSavedBuckets`, `legacyContainsClient`
+// and `savedBucketsPartialOut` -- and it went with `save_items` /
+// `remove_saved_items`. It existed for one reason, quoted from those tools'
+// own descriptions: "kept for grandfathered app credentials that lack unified
+// /me/library access". Spotify's February 2026 changes removed every endpoint
+// those helpers addressed (`PUT`/`DELETE /me/{tracks,albums,shows,episodes,
+// audiobooks}`), so the credential class they were written for can no longer
+// exist: a caller that cannot reach `/me/library` now has no per-type write to
+// fall back to either. `save_to_library` and `remove_from_library` are the
+// only remaining path, and the receipt `writes` field that recorded which
+// bucket a mutation used was removed with it -- `undo_mutation` now has one
+// library write to invert through, and it is the one that still exists.
 
 // Unified library endpoints (#37): the modern path accepting any mix of URI
 // types — including artist/user/playlist follow state on contains — in a
@@ -760,125 +534,30 @@ export function registerLibraryTools(server: McpServer, client: SpotifyClient): 
     },
   );
 
-  // save_items
-  server.tool(
-    'save_items',
-    "Legacy per-type variant (kept for grandfathered app credentials that lack unified /me/library access). Prefer save_to_library. Save one or more items to the user's library. Accepts track, album, show, episode, and audiobook URIs (e.g. spotify:track:abc). Max 50. Set dry_run=true to preview.",
-    {
-      uris: z
-        .array(z.string())
-        .min(1)
-        .max(50)
-        .describe('Spotify URIs to save (e.g. ["spotify:track:abc", "spotify:album:xyz"])'),
-      dry_run: DryRun,
-      response_format: ResponseFormat,
-    },
-    async (args) => {
-      const { buckets, canonicalUris: uris } = partitionSavedUris(args.uris);
-      if (args.dry_run) {
-        return dryRunOut(args.response_format, 'save_items', 'user library', uris);
-      }
-      // #748: each bucket stands alone — a rejection in one no longer discards
-      // the buckets that already landed, and the committed subset gets a receipt.
-      const { outcomes, committed, writes, firstError } = await runSavedBuckets(buckets, (type, ids) =>
-        client.put(savedItemsPath(type, ids), IDS_AS_QUERY[type] ? undefined : { ids }),
-      );
-      if (outcomes.some((o) => !o.ok)) {
-        // Nothing landed: the original error still answers, status/retry-after intact.
-        if (committed.length === 0) throw firstError;
-        return savedBucketsPartialOut(args.response_format, client, 'Saved', outcomes, committed, writes, true);
-      }
-      const counts = outcomes.map((o) => `${o.requested} ${o.type}${o.requested === 1 ? '' : 's'}`);
-      return mutationOut(
-        args.response_format,
-        `Saved ${committed.length} item(s) to library (${counts.join(', ')}).`,
-        committed.length,
-        uris,
-      );
-    },
-  );
-
-  // remove_saved_items
-  server.tool(
-    'remove_saved_items',
-    "Legacy per-type variant (kept for grandfathered app credentials that lack unified /me/library access). Prefer remove_from_library. Remove one or more items from the user's library. Accepts track, album, show, episode, and audiobook URIs (e.g. spotify:track:abc). Max 50. Set dry_run=true to preview.",
-    {
-      uris: z.array(z.string()).min(1).max(50).describe('Spotify URIs to remove'),
-      dry_run: z
-        .boolean()
-        .optional()
-        .describe('Preview only: show exactly which URIs would be removed without calling the API'),
-      response_format: ResponseFormat,
-    },
-    async (args) => {
-      const { buckets, canonicalUris: uris } = partitionSavedUris(args.uris);
-      if (args.dry_run) {
-        return dryRunOut(args.response_format, 'remove_saved_items', 'user library', uris);
-      }
-      // #748: mirror of save_items — a rejected bucket must not erase the
-      // removals that already landed, and those removals get a receipt.
-      const { outcomes, committed, writes, firstError } = await runSavedBuckets(buckets, (type, ids) =>
-        client.delete(savedItemsPath(type, ids), IDS_AS_QUERY[type] ? undefined : { ids }),
-      );
-      if (outcomes.some((o) => !o.ok)) {
-        if (committed.length === 0) throw firstError;
-        return savedBucketsPartialOut(
-          args.response_format,
-          client,
-          'Removed',
-          outcomes,
-          committed,
-          writes,
-          false,
-        );
-      }
-      return mutationOut(
-        args.response_format,
-        `Removed ${committed.length} item(s) from library.`,
-        committed.length,
-        uris,
-      );
-    },
-  );
-
-  // check_saved_items
-  server.tool(
-    'check_saved_items',
-    "Legacy per-type variant (kept for grandfathered app credentials that lack unified /me/library access). Prefer check_in_library. Check whether items are saved in the user's library. Returns a boolean per URI. Accepts track, album, show, episode, and audiobook URIs. Max 50.",
-    {
-      uris: z
-        .array(z.string())
-        .min(1)
-        .max(50)
-        .describe(
-          'Spotify URIs to check (accepts tracks, albums, shows, episodes, audiobooks)',
-        ),
-      response_format: ResponseFormat,
-      max_results: MaxResults,
-    },
-    async (args) => {
-      const { buckets, canonicalUris: uris } = partitionSavedUris(args.uris);
-      const savedByUri = new Map<string, boolean>();
-      for (const type of SAVED_URI_TYPES) {
-        const ids = buckets[type];
-        if (ids.length === 0) continue;
-        const contains = await client.get<boolean[]>(`/me/${type}s/contains`, {
-          ids: ids.join(','),
-        });
-        if (!contains) throw new Error(`Could not check saved ${type}s`);
-        ids.forEach((id, i) => savedByUri.set(`spotify:${type}:${id}`, contains[i] ?? false));
-      }
-
-      const checks = uris.map((uri) => ({ uri, saved: savedByUri.get(uri) ?? false }));
-      const t = truncateItems(checks, cap(args));
-      const pagination = paginationInfo({ total: checks.length, returned: t.items.length });
-
-      const lines = ['Library check:'];
-      for (const c of t.items) lines.push(`  ${c.saved ? '✓' : '✗'} ${c.uri}`);
-      appendPaginationFooters(lines, t, pagination);
-      return shapeResult(args.response_format, lines.join('\n'), listStructuredContent(t.items, pagination));
-    },
-  );
+  // #638: `check_saved_items` was deleted here. It read
+  // `GET /me/{tracks,albums,shows,episodes,audiobooks}/contains`, which Spotify
+  // removed in February 2026 with `GET /me/library/contains` named as the
+  // replacement, and its own description gave the same dead rationale as
+  // `save_items` / `remove_saved_items`: it was "kept for grandfathered app
+  // credentials that lack unified /me/library access". A registration that
+  // cannot reach `/me/library` no longer has a per-type read to fall back to
+  // either, so the audience it existed for is empty. It was also a strict
+  // subset of `check_in_library` on the day it shipped -- fewer URI types
+  // (`LIBRARY_CHECK_TYPES` also accepts artist, user and playlist) and a
+  // smaller batch cap (40, not 50) -- so nothing it could answer is now
+  // unanswerable. Its bucket helpers (`SAVED_URI_TYPES`, `SavedUriType`,
+  // `ParsedSavedUris`, `partitionSavedUris`) went with it; they had no other
+  // caller.
+  //
+  // Unlike the write half, this read had a *second*, worse defect: a failed
+  // per-type read was the only thing standing between a caller and a confident
+  // wrong answer. It threw on a null body, but `contains[i] ?? false` and
+  // `savedByUri.get(uri) ?? false` turned a SHORT or non-boolean body into
+  // "✗ not saved" for every row, and a bucket that was never requested at all
+  // produced the same. That is the #803 shape -- a read that failed being
+  // reported as a read that returned nothing -- and it is why removing the
+  // tool was the right move rather than pointing it at `/me/library/contains`:
+  // a migrated copy would have inherited the same silent-false default.
 
   // save_to_library (#37)
   server.tool(
@@ -1207,7 +886,7 @@ export function registerLibraryTools(server: McpServer, client: SpotifyClient): 
   // check_in_library (#37)
   server.tool(
     'check_in_library',
-    "Preferred. Accepts the widest URI mix (track, album, episode, show, audiobook, artist, user, playlist) in one request. Check whether items are saved in or followed by the user — this tests LIBRARY-SAVED/FOLLOWED state, distinct from check_following_artists which only tests artist FOLLOW state. Returns a boolean per URI via Spotify's unified endpoint. Max 40. To follow/unfollow artists use follow_artists/unfollow_artists.",
+    "Preferred. Accepts the widest URI mix (track, album, episode, show, audiobook, artist, user, playlist) in one request. Check whether items are saved in or followed by the user — this tests LIBRARY-SAVED/FOLLOWED state, distinct from check_following_artists which only tests artist FOLLOW state. Returns a boolean per URI via Spotify's unified endpoint. Max 40. Following an artist is no longer expressible: Spotify's February 2026 changes removed PUT/DELETE /me/following, and this endpoint's save side does not accept spotify:artist: URIs, so there is no endpoint that can follow or unfollow an artist. This read still answers the question for artist URIs.",
     {
       uris: z
         .array(z.string())
@@ -1225,9 +904,31 @@ export function registerLibraryTools(server: McpServer, client: SpotifyClient): 
         '/me/library/contains',
         libraryUrisParam(uris),
       );
-      if (!contains) throw new Error('Could not check library state');
+      // #638: the read itself is not gated, but the *shape* of its answer is
+      // load-bearing here — `contains[i]` is positionally matched to `uris[i]`,
+      // so a short, long or non-boolean body is not a partial answer, it is a
+      // mislabelled one. The old guard was `if (!contains) throw`, which let a
+      // 3-element body through for 5 URIs and rendered the two missing rows as
+      // "✗ not saved" via `?? false`. That is the #803 shape (a read that failed
+      // reported as a read that found nothing) wearing a `saved: boolean` type,
+      // and it now fails closed. The same shape is checked by `followsArtistIds`
+      // in following.ts and `libraryContains` in swarm3_shows.ts.
+      if (!Array.isArray(contains) || contains.length !== uris.length) {
+        const got = Array.isArray(contains) ? `${contains.length} of ${uris.length}` : typeof contains;
+        throw new Error(
+          `Could not check library state: GET /me/library/contains returned ${got} ` +
+            `for ${uris.length} URI${uris.length === 1 ? '' : 's'}, so the per-URI flags cannot be ` +
+            'matched to the request. Nothing is reported as saved or unsaved from a partial read.',
+        );
+      }
+      if (contains.some((value) => typeof value !== 'boolean')) {
+        throw new Error(
+          'Could not check library state: GET /me/library/contains returned a non-boolean flag. ' +
+            'Nothing is reported as saved or unsaved from an untyped read.',
+        );
+      }
 
-      const checks = uris.map((uri, i) => ({ uri, saved: contains[i] ?? false }));
+      const checks = uris.map((uri, i) => ({ uri, saved: contains[i] }));
       const t = truncateItems(checks, cap(args));
       const pagination = paginationInfo({ total: checks.length, returned: t.items.length });
 

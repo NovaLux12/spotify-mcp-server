@@ -198,8 +198,29 @@ const registrationKeyNames = new Set(census.registrationKeyNames ?? []);
  * Tool names this release RETIRED. A migration note has to be able to name what
  * it replaces; every other retired name still fails the gate, so this cannot
  * become a graveyard.
+ *
+ * #638 removed the six tools whose only implementation was an endpoint Spotify
+ * deleted in February 2026. The allowlist entry is what lets the migration
+ * table in SPEC.md/AGENTS.md name each retired tool and its replacement; it
+ * does NOT stop the gate from rejecting any *other* unbackticked name, and it
+ * does not make the name callable again.
  */
-const retiredToolNames = new Set(['get_show_episodes']);
+const retiredToolNames = new Set([
+  'get_show_episodes',
+  // #638 — write half, per-type `/me/{type}s` removed; unified replacement.
+  'save_items',
+  'remove_saved_items',
+  // #638 — read half, per-type `/me/{type}s/contains` removed; unified read.
+  'check_saved_items',
+  // #638 — `PUT`/`DELETE /me/following?type=artist` removed with NO replacement
+  // (the library write endpoint does not accept `spotify:artist:` URIs).
+  'follow_artists',
+  'unfollow_artists',
+  // #638 — `GET /browse/categories*` removed with no replacement; the browse
+  // category tree is no longer served by any endpoint.
+  'get_categories',
+  'get_category_playlists',
+]);
 const documentedMetadata = new Set([
   'toolset_trimmed', 'scope_filtered', 'read_only_hidden',
   'deprecated_inputs', 'deprecation_note', 'auth', 'forbidden', 'not_found',

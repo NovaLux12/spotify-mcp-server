@@ -57,6 +57,21 @@ function playedEpisodes(count: number) {
 }
 
 /**
+ * The `uris` carried by a recorded `DELETE /me/library` request (#638).
+ *
+ * The archive writes through the unified library endpoint, so a batch-size
+ * assertion has to read the query string — the old per-type request put bare
+ * ids in an `ids` param that no longer exists, and reading a missing param
+ * would have measured nothing.
+ */
+function libraryUris(path: string): string[] {
+  assert.match(path, /^\/me\/library\?/, `not a /me/library request: ${path}`);
+  const raw = new URLSearchParams(path.split('?')[1] ?? '').get('uris');
+  assert.ok(raw !== null, `/me/library request must carry a uris query param: ${path}`);
+  return raw.split(',').filter(Boolean);
+}
+
+/**
  * `pager` shapes what the library walk does, because #746 is entirely about
  * the scan the tool trusts: 'missing' drops the pager off the client and
  * 'walk_failed' rejects mid-walk. A library longer than `limit` needs no
@@ -220,6 +235,18 @@ describe('episodemgmt', () => {
     assert.equal(out.structuredContent.removed, 51);
     assert.equal(h.promptCount, 1);
     assert.equal(h.dels.length, 2);
+    // #638: 51 uris at the 40-uri /me/library write cap is 40 + 11, and every
+    // episode lands exactly once. The old per-type DELETE /me/episodes took 50
+    // per request and 403s/404s in the field now.
+    assert.deepEqual(h.dels.map(libraryUris).map((uris) => uris.length), [40, 11]);
+    const written = h.dels.flatMap(libraryUris);
+    assert.equal(written.length, 51);
+    assert.equal(new Set(written).size, 51, 'no episode is deleted twice');
+    assert.deepEqual(
+      h.dels.filter((path) => !path.startsWith('/me/library?')),
+      [],
+      'the removed per-type DELETE /me/episodes must not be issued',
+    );
   });
   it('SPOTIFY_MCP_CONFIRM=never explicitly bypasses prompting and archives >50 episodes', async () => {
     process.env.SPOTIFY_MCP_CONFIRM = 'never';
@@ -360,7 +387,11 @@ describe('episodemgmt', () => {
     assert.equal(out.structuredContent.scan_complete, true);
     assert.equal(out.structuredContent.ok, true);
     assert.equal(out.structuredContent.removed, 50);
-    assert.equal(h.dels.length, 1);
+    // #638: 50 episodes is ONE scan but TWO writes, because the archive now
+    // goes through DELETE /me/library (40 uris per request) instead of the
+    // removed per-type DELETE /me/episodes (50 per request).
+    assert.equal(h.dels.length, 2);
+    assert.deepEqual(h.dels.map((path) => libraryUris(path).length), [40, 10]);
   });
 
   it('archives a one-page read whose own response says it is the whole library', async () => {

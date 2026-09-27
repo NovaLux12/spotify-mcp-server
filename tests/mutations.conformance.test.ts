@@ -23,7 +23,7 @@
  * When a sibling slice lands, delete its entries from the list below; the
  * guard then enforces the newly-closed invariant.
  * - dry_run (1): save_artist_new_releases
- *   [artistwatch unit]; follow_artists already fixed via #933/#941.
+ *   [artistwatch unit]; #638 deleted follow_artists with the endpoint it used.
  * - response_format (15): add_to_playlist, create_playlist,
  *   clone_playlist_cover, jump_to_chapter, playlist_collab_toggle,
  *   playlist_reverse, playlist_shuffle, playlist_trim,
