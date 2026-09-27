@@ -15,7 +15,7 @@ import { createRequire } from 'node:module';
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join, relative, resolve, sep } from 'node:path';
+import { dirname, extname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -42,6 +42,46 @@ const args = process.argv.slice(2);
  * from the top-level census run, which reads as a crash rather than a gate.
  */
 const SEVERAL_KINDS = ['tracks', 'albums', 'artists', 'episodes', 'shows', 'audiobooks', 'chapters'];
+
+/**
+ * File extensions that can carry a generated block (#1238).
+ *
+ * An allowlist rather than "read everything": the census is a gate that runs on
+ * every `--check`, and the repository also holds images and a lockfile. A
+ * generated block in some other file type is not a shape this project uses —
+ * `blocks` writes Markdown and one `//`-commented TypeScript module.
+ *
+ * Declared here, beside `SEVERAL_KINDS`, for the reason that comment gives:
+ * `checkDocumentation()` runs at import time and reaches these through
+ * `scanGeneratedMarkers`, so a `const` left beside its only consumer throws a
+ * TDZ `ReferenceError` that reads as a crash rather than a gate.
+ */
+const MARKER_SCAN_EXTENSIONS = new Set([
+  '.md', '.mdx', '.txt', '.ts', '.tsx', '.js', '.mjs', '.cjs', '.json', '.yaml', '.yml',
+]);
+
+/**
+ * Directories skipped wholesale, in addition to every dot-entry (#1238).
+ *
+ * Dot-entries matter beyond tidiness: tests create fixture directories *inside*
+ * the repository (`mkdtemp(join(ROOT, '.census-fixture-'))`) and the test runner
+ * executes test files in parallel, so a scan that did not skip dot-directories
+ * could read a half-written fixture from a sibling test and report a phantom
+ * orphan. Same TDZ reason as above for being module-scope.
+ */
+const MARKER_SCAN_SKIP = new Set(['node_modules', 'dist', 'coverage', 'outbox', 'logs', 'backups']);
+
+/**
+ * A single `BEGIN:generated` / `END:generated` marker line, in whichever of the
+ * two syntaxes the file uses (#1238).
+ *
+ * The trailing ` -->` is optional so a *malformed* marker still registers as a
+ * marker. A stray `<!-- BEGIN:generated foo` with no closer is exactly the
+ * orphan #1238 is about; matching only the well-formed spelling would let it
+ * through unnoticed, which is the defect the issue describes. Module scope for
+ * the same TDZ reason as the two sets above.
+ */
+const MARKER_LINE = /^[ \t]*(?:\/\/[ \t]*|<!--[ \t]*)(BEGIN|END):generated ([a-z0-9][a-z0-9-]*)[ \t]*(?:-->)?[ \t]*$/gm;
 
 if (!process.env.SPOTIFY_MCP_SURFACE_CENSUS) {
   const child = spawnSync(process.execPath, ['--import', 'tsx/esm', fileURLToPath(import.meta.url), ...args], {
@@ -105,6 +145,48 @@ if (markerFixtureIndex >= 0) {
   console.log(JSON.stringify({ error }));
   process.exit(error ? 1 : 0);
 }
+const descriptionFixtureIndex = args.indexOf('--description-fixture');
+if (descriptionFixtureIndex >= 0) {
+  // Drives `firstDescription` directly, so the #1258 regression test can feed
+  // it a header comment and assert what comes back. A test that only re-ran the
+  // generator over the current tree would pass with the bug still present,
+  // because the generator produced the truncated text (AGENTS.md §6).
+  const fixturePath = args[descriptionFixtureIndex + 1];
+  if (!fixturePath) throw new Error('--description-fixture requires a JSON file');
+  const fixture = JSON.parse(readFileSync(resolve(fixturePath), 'utf8'));
+  const description = firstDescription(
+    fixture.source,
+    fixture.fallback ?? 'src/tools/fixture.ts',
+    new Intl.Segmenter('en', { granularity: 'sentence' }),
+  );
+  console.log(JSON.stringify({ description }));
+  process.exit(0);
+}
+const markerTreeFixtureIndex = args.indexOf('--marker-tree-fixture');
+if (markerTreeFixtureIndex >= 0) {
+  const fixturePath = args[markerTreeFixtureIndex + 1];
+  if (!fixturePath) throw new Error('--marker-tree-fixture requires a JSON file');
+  const fixture = JSON.parse(readFileSync(resolve(fixturePath), 'utf8'));
+  const report = markerTreeReport(fixture.markers ?? [], fixture.blocks ?? []);
+  console.log(JSON.stringify({ errors: report.errors, markerCount: report.markerCount, claimedCount: report.claimedCount, files: report.files }));
+  process.exit(report.errors.length > 0 ? 1 : 0);
+}
+/**
+ * Extra roots merged into the marker tree scan, so a test can plant a marker
+ * pair in a scratch directory and drive the *real* `--check` over it (#1238).
+ *
+ * This is the wiring proof. `--marker-tree-fixture` above can only show the
+ * classifier is correct in isolation; nothing about it demonstrates that
+ * `checkDocumentation` calls the classifier at all, which is the failure this
+ * whole issue is about — a correct check that was never reached.
+ */
+const markerTreeExtraIndex = args.indexOf('--marker-tree-extra');
+if (markerTreeExtraIndex >= 0 && !args[markerTreeExtraIndex + 1]) {
+  throw new Error('--marker-tree-extra requires a directory');
+}
+const markerScanRoots = markerTreeExtraIndex >= 0
+  ? [ROOT, resolve(args[markerTreeExtraIndex + 1])]
+  : [ROOT];
 const censusFileIndex = args.indexOf('--census-file');
 if (censusFileIndex >= 0 && !args[censusFileIndex + 1]) {
   throw new Error('--census-file requires a JSON file');
@@ -241,6 +323,22 @@ const blocks = [
 // It excludes its own entry: a list that claimed to contain itself would
 // describe 15 blocks when 14 sit outside it.
 blocks.push(['AGENTS.md', 'generated-blocks', generatedBlockList(blocks)]);
+
+const markerTreeReportIndex = args.indexOf('--marker-tree-report');
+if (markerTreeReportIndex >= 0) {
+  // Reconciles the real tree against the real `blocks` array and prints the
+  // verdict, writing nothing.
+  //
+  // This exists for observability. A non-vacuity test that only asserted
+  // "--check passed" would pass just as happily against a scan that found
+  // nothing at all — and a scan that finds nothing is precisely the #1238
+  // failure, because a gate that inspects an empty set reports green forever
+  // (AGENTS.md §6). Here the marker count is a concrete number a test can pin,
+  // so a scan that silently stopped covering the repository goes red instead.
+  const report = markerTreeReport(scanGeneratedMarkers(markerScanRoots), blocks);
+  console.log(JSON.stringify({ errors: report.errors, markerCount: report.markerCount, claimedCount: report.claimedCount, files: report.files }, null, 2));
+  process.exit(report.errors.length > 0 ? 1 : 0);
+}
 
 const drift = checkDocumentation(blocks);
 if (args.includes('--write')) {
@@ -577,7 +675,53 @@ function firstDescription(source, fallback, segmenter) {
     paragraph.push(line);
   }
   const text = paragraph.join(' ').replace(/\s+/g, ' ').trim();
-  return [...segmenter.segment(text)][0]?.segment.trim() || `Runtime module for ${fallback}.`;
+  if (text === '') return `Runtime module for ${fallback}.`;
+  const first = [...segmenter.segment(text)][0];
+  return first && isSentenceTerminal(text, first) ? first.segment.trim() : text;
+}
+
+/**
+ * Whether a segment boundary is safe to cut a documentation claim at (#1258).
+ *
+ * The old code took the first `Intl.Segmenter` segment unconditionally, so a
+ * boundary the segmenter chose for typographic reasons could land *inside* a
+ * URL and the row would quote half an endpoint. `episodemgmt.ts` header names
+ * the real replacement for a removed call, and the segmenter breaks the run at
+ * the `?` in `PUT /me/episodes?ids= to save` — the row rendered as a claim about
+ * `PUT /me/episodes`, dropping the `ids` parameter that makes it real. A reader
+ * could not tell which endpoint was meant, and `--check` passed forever because
+ * the generator produced exactly that text.
+ *
+ * So a cut is accepted only when it is a real sentence end. Two conditions:
+ *
+ *  1. The segment ends in sentence-terminal punctuation, optionally wrapped in
+ *     closing brackets/quotes.
+ *  2. That punctuation is not glued to a following character. `?` and `!` are
+ *     terminal only when the segmenter was not breaking mid-token — in a query
+ *     string the next character is a word character, not whitespace. This is
+ *     the general form of the defect: the query string is the case that
+ *     happened to occur, and the same break is reachable after any `?` or `!`
+ *     inside a path.
+ *
+ * When a cut is rejected, the whole opening paragraph is returned. A long cell
+ * is a cosmetic cost; a mangled platform claim is a correctness one (AGENTS.md
+ * §6 — "the summary is not the contract"). Note this deliberately does not
+ * touch the source doc comment, which is complete and correct: reordering it
+ * would hide the generator bug rather than fix it.
+ */
+function isSentenceTerminal(text, segment) {
+  // `Intl.Segmenter` includes each segment's trailing whitespace, so the
+  // terminal-punctuation test has to run on the trimmed segment. Skipping this
+  // made every well-formed first sentence look non-terminal and widened the
+  // whole module map — the segmenter cuts cleanly at "…reads (#54). " and the
+  // bug was invisible until the generated table grew 18 rows.
+  const trimmed = segment.segment.trimEnd();
+  if (!/[.!?:][\])}"']*$/.test(trimmed)) return false;
+  if (!/[?!]$/.test(trimmed)) return true;
+  // The offset has to point just past the punctuation, not past the segment's
+  // trailing space, or a genuine "…is it a tool? Yes." would read as glued.
+  const next = text[segment.index + trimmed.length];
+  return next === undefined || /\s/.test(next);
 }
 
 function toolSurface(census) {
@@ -782,6 +926,120 @@ function renderedBlock(file, name, body) {
   return `${start}\n${body}\n${end}`;
 }
 
+/** Repository-relative for files inside the repo, absolute for anything outside it. */
+function markerPathLabel(file) {
+  const rel = relative(ROOT, file);
+  return rel.startsWith('..') ? file : rel;
+}
+
+/**
+ * Every generated-block marker line under each given root (#1238).
+ *
+ * Deliberately scans the *tree*, not the files `blocks` happens to name. The
+ * gate's whole claim is "a stale generated block fails the build", and that
+ * claim is only true for blocks someone remembered to register — a marker pair
+ * in a file no `blocks` entry mentions is precisely the block nobody is
+ * maintaining, and it stays stale and ungated forever while `--check` is green.
+ * Restricting the scan to the registered files would reproduce the same blind
+ * spot one level down, so the scope here is the whole repository.
+ */
+function scanGeneratedMarkers(roots = [ROOT]) {
+  const found = [];
+  const walk = (directory) => {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      if (entry.name.startsWith('.') || MARKER_SCAN_SKIP.has(entry.name)) continue;
+      const file = join(directory, entry.name);
+      if (entry.isDirectory()) {
+        walk(file);
+        continue;
+      }
+      if (!MARKER_SCAN_EXTENSIONS.has(extname(entry.name))) continue;
+      for (const match of readFileSync(file, 'utf8').matchAll(MARKER_LINE)) {
+        found.push({
+          file: markerPathLabel(file),
+          kind: match[1] === 'BEGIN' ? 'begin' : 'end',
+          name: match[2],
+        });
+      }
+    }
+  };
+  for (const root of roots) walk(root);
+  return found;
+}
+
+/**
+ * Reconcile the markers present in the tree against the entries in `blocks`
+ * (#1238). Four failure classes, all previously invisible to `--check`:
+ *
+ *  - **orphan** — a marker pair exists in the tree that no `blocks` entry
+ *    claims. Nothing regenerates it, so it cannot be kept current, and the
+ *    staleness check has nothing to run against.
+ *  - **phantom** — a `blocks` entry names a block that has no marker pair.
+ *    `inspectGeneratedBlock` already counted `0`, but reported it as a marker
+ *    count; this names the direction that went wrong.
+ *  - **unbalanced** — a `BEGIN` with no `END` (or the reverse) in a file that
+ *    does not otherwise have a pair. A half-open block is a file the writer
+ *    would splice across the rest of the document.
+ *  - **double-claimed** — two `blocks` entries for the same file and name.
+ *    They would render different bodies into the same markers; the second write
+ *    would silently win.
+ *
+ * Returns the messages alongside the derived sets so `checkDocumentation` can
+ * suppress `inspectGeneratedBlock`'s blunter "found 0 markers" line for a
+ * phantom it has already reported precisely.
+ */
+export function markerTreeReport(found, blockEntries) {
+  const claims = new Map();
+  for (const [file, name] of blockEntries) {
+    const key = `${file}:${name}`;
+    claims.set(key, (claims.get(key) ?? 0) + 1);
+  }
+
+  const opens = new Map();
+  const closes = new Map();
+  const bump = (map, key) => map.set(key, (map.get(key) ?? 0) + 1);
+  for (const marker of found) {
+    bump(marker.kind === 'begin' ? opens : closes, `${marker.file}:${marker.name}`);
+  }
+
+  const errors = [];
+  const phantoms = new Set();
+
+  for (const [key, count] of claims) {
+    if (count > 1) {
+      errors.push(`blocks array claims generated ${key} by ${count} entries; each block must be claimed exactly once`);
+    }
+    if (!opens.has(key)) {
+      phantoms.add(key);
+      errors.push(`blocks array declares generated ${key} but no BEGIN:generated marker pair exists in the tree (phantom entry — it will make --write throw)`);
+    }
+  }
+
+  for (const key of new Set([...opens.keys(), ...closes.keys()])) {
+    const starts = opens.get(key) ?? 0;
+    const ends = closes.get(key) ?? 0;
+    if (starts !== ends) {
+      errors.push(`${key} has ${starts} BEGIN and ${ends} END marker(s); a generated block needs exactly one of each (unbalanced)`);
+      continue;
+    }
+    if (!claims.has(key)) {
+      errors.push(`${key} is a generated block in the tree that no blocks array entry claims (orphan) — nothing regenerates it, so --check can never report it stale`);
+    }
+  }
+
+  return {
+    errors,
+    phantoms,
+    markerCount: found.length,
+    claimedCount: claims.size,
+    // Which files the scan actually read. A count alone cannot tell "covered
+    // the repository" from "covered three files that happen to hold every
+    // marker" — the coverage claim is the one #1238 is actually about, so the
+    // report has to carry it.
+    files: [...new Set(found.map((marker) => marker.file))].sort(),
+  };
+}
+
 export function inspectGeneratedBlock(source, file, name, body) {
   const [start, end] = markers(file, name);
   const startCount = source.split(start).length - 1;
@@ -798,7 +1056,13 @@ export function inspectGeneratedBlock(source, file, name, body) {
 
 function checkDocumentation(blocks) {
   const errors = [];
+  // #1238: walk the tree, not just `blocks`. Runs first so a phantom/orphan
+  // verdict exists before any per-block staleness comparison, which lets the
+  // loop below stay quiet about a block the tree pass has already named.
+  const tree = markerTreeReport(scanGeneratedMarkers(markerScanRoots), blocks);
+  errors.push(...tree.errors);
   for (const [file, name, body] of blocks) {
+    if (tree.phantoms.has(`${file}:${name}`)) continue;
     const error = inspectGeneratedBlock(readFileSync(join(ROOT, file), 'utf8'), file, name, body);
     if (error) errors.push(error);
   }
@@ -939,7 +1203,19 @@ function writeBlock(file, name, body) {
   const startCount = source.split(start).length - 1;
   const endCount = source.split(end).length - 1;
   if (startCount !== 1 || endCount !== 1) {
-    throw new Error(`${relative(ROOT, file)}: generated ${name} requires exactly one start and end marker (found ${startCount}/${endCount})`);
+    // #1238: the old message was a bare `found 0/0` count, which reads as a
+    // counting bug rather than "this file has no skeleton for this block" — and
+    // it is why a `blocks` entry for a block nobody had added markers for was
+    // invisible until the crash. Name the missing skeleton and the way out.
+    if (startCount === 0 && endCount === 0) {
+      throw new Error(
+        `${relative(ROOT, file)}: no marker skeleton for generated block "${name}" — expected exactly one \`${start}\` and one \`${end}\` in the file, found none.\n`
+        + 'Add the markers around the block, or drop the blocks array entry if this block should not exist.',
+      );
+    }
+    throw new Error(
+      `${relative(ROOT, file)}: generated block "${name}" has ${startCount}/${endCount} markers — expected exactly one \`${start}\` and one \`${end}\`.`,
+    );
   }
   const pattern = new RegExp(`${escapeRegExp(start)}[\\s\\S]*?${escapeRegExp(end)}`);
   writeFileSync(file, source.replace(pattern, expected));
