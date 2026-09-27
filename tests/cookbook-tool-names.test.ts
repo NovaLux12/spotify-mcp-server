@@ -48,11 +48,15 @@ function censusFile(): string {
  * planted claim differs.
  */
 function gateRun(mutate: (source: string) => string): string {
-  const mutated = mutate(readFileSync(COOKBOOK, 'utf8'));
+  return gateRunOn(mutate(readFileSync(COOKBOOK, 'utf8')));
+}
+
+/** Run the gate over one document's source text in a temp fixture. */
+function gateRunOn(source: string): string {
   const dir = mkdtempSync(join(tmpdir(), 'smcp-928-'));
   try {
-    const fixture = join(dir, 'cookbook.md');
-    writeFileSync(fixture, mutated);
+    const fixture = join(dir, 'fixture.md');
+    writeFileSync(fixture, source);
     try {
       return execFileSync(process.execPath, [GATE, '--census-file', censusFile(), '--check-fixture', fixture], {
         cwd: ROOT,
@@ -115,6 +119,13 @@ describe('cookbook tool contract (#712)', () => {
  * Each case plants the claim into the real cookbook and asserts the gate goes
  * red naming it, so a regression that disables either comparison fails here
  * instead of passing green and protecting nothing.
+ *
+ * The last case is the other direction and matters just as much. Widening the
+ * verb list to catch `preview` also widened it onto ordinary prose, and the
+ * feature-sweep skill's "confirm the request budget with the human" was
+ * reported as a call to a tool named `budget` — a false positive that turned
+ * CI red on a tree nobody had changed. A gate that cries wolf is not a gate,
+ * so that sentence has to stay accepted.
  */
 describe('cookbook recipe arguments (#928)', () => {
   it('rejects a preview step that names an argument the tool does not declare', () => {
@@ -159,5 +170,17 @@ describe('cookbook recipe arguments (#928)', () => {
       ),
     );
     assert.doesNotMatch(output, /contract check failed/, `an ISO date is accepted by the live schema and must not turn the gate red:\n${output}`);
+  });
+
+  it('does not read a "request budget with" sentence as a call to a tool named `budget`', () => {
+    // The whole-tree run above is what caught this in CI: the feature-sweep
+    // skill instructs the human to confirm the request budget, and a widened
+    // verb list reported that as an unregistered tool. The sentence is
+    // asserted here against the real skill file so the class stays closed
+    // whichever document it appears in.
+    const skill = readFileSync(join(ROOT, 'skills', 'spotify-exhaustive-feature-sweep', 'SKILL.md'), 'utf8');
+    assert.match(skill, /request budget with/, 'the fixture sentence must still be in the skill, or this test proves nothing');
+    const output = gateRunOn(skill);
+    assert.doesNotMatch(output, /unknown tool `budget`/, `prose must not be reported as an unregistered tool:\n${output}`);
   });
 });

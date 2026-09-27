@@ -379,13 +379,19 @@ const DOCUMENTED_RANGE = /\b(\d+)\s*[–—-]\s*(\d+)\b/g;
 const DOCUMENTED_CEILING = /\b(?:max|maximum|cap|capped at|capped|at most|up to|no more than)\s+(\d+)\b/gi;
 
 /**
- * The verbs a recipe step can use to introduce a tool call. The trigger is
- * the verb rather than the literal word "Call" because the docs write
- * `preview <tool> with ...` for the write half of a recipe, and a matcher
- * that only saw "Call" left every preview step unchecked — a bogus key in a
- * preview step passed the gate silently (#928).
+ * The verbs that introduce a recipe step. `call` and `preview` are the two
+ * the docs actually use — the write half of every recipe is `preview <tool>
+ * with ...` — and a matcher that only saw the literal word "Call" left every
+ * preview step unchecked, so a bogus key in one passed silently (#928).
+ *
+ * The list is deliberately short. A wider one reads ordinary prose: the
+ * feature-sweep skill says "confirm the request budget with the human", where
+ * `request` is a noun, `budget` is not a tool, and the sentence is an
+ * instruction to a human. Widening the verb list without a way to tell a
+ * recipe step from a sentence puts that class of false positive straight back
+ * into the gate, which is worse than the gap it closes.
  */
-const RECIPE_VERB = /^(?:call|preview|run|invoke|use|request|fetch|read|check)$/;
+const RECIPE_VERB = /^(?:call|preview)$/;
 
 const markdownFiles = [
   'README.md',
@@ -782,18 +788,20 @@ function validateArgumentValues(file, line, tool, entries, registry) {
  * key in a preview step passed the gate silently.
  */
 function checkCallRecipes(file, source, registry = census) {
+  // The verb is what makes this a recipe step rather than a sentence, and it
+  // is restricted to `call`/`preview` precisely because those two are what the
+  // docs use to introduce a tool call. A wider verb list reads ordinary prose
+  // — the feature-sweep skill's "confirm the request budget with the human"
+  // is an instruction to a human, not a call to a tool named `budget`.
   const pattern = /\b([A-Za-z]+)\s+`?([a-z][a-z0-9_]*)`?\s+(?:with|using)\s+([^.;\n]+)/g;
   for (const match of source.matchAll(pattern)) {
     if (!RECIPE_VERB.test(match[1].toLowerCase())) continue;
     const [, , tool, tail] = match;
     const line = lineAt(source, match.index);
-    // A backticked word in a sentence is not automatically a tool: SPEC.md
-    // tells a caller to "use `offset` with repeated requests", and `offset` is
-    // a parameter. Only a name that is neither a tool nor a known parameter
-    // is a claim about a tool, so only then can it be an unknown one.
-    const knownParameter = (registry.parameterNames ?? []).includes(tool);
     if (!registry.toolNames.includes(tool)) {
-      if (knownParameter) continue;
+      // A known parameter named here is a caller instruction, not a tool:
+      // SPEC.md says "use `offset` with repeated requests".
+      if ((registry.parameterNames ?? []).includes(tool)) continue;
       errors.push(`${relative(ROOT, file)}:${line}: Call recipe names unknown tool \`${tool}\``);
       continue;
     }
