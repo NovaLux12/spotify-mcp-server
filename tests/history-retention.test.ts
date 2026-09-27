@@ -342,6 +342,58 @@ test('the purge list names every ledger file, including the rotated generation',
   );
 });
 
+test('an undated head line does not shield the ancient records behind it', async () => {
+  // The failure this pins. `oldest_ts` has two plausible spellings — the
+  // oldest LINE, or the oldest line that CARRIES a parseable `ts` — and the
+  // ledger's own header comment says the second, because an undated line is
+  // not a date the report may borrow from the next record. Where the first
+  // spelling was used, a ledger headed by an undated line cached
+  // `oldest_ts: undefined`, and `ledgerNeedsPrune` reads an absent
+  // `oldest_ts` as "nothing can be expired". The undated head therefore
+  // disabled the whole age cap for as long as the cached shape was trusted,
+  // while the very next honest measure of the same bytes named a date 400
+  // days old and expired them.
+  //
+  // The window is WIDE for the seeding sweep and then TIGHTENED, because that
+  // is what isolates the cache: the sweep has to be a genuine no-op (nothing
+  // dropped) for it to write the shape the append later trusts, and it can
+  // only be a no-op while the ancient records are still in window.
+  const { ledger } = await sandbox({ SPOTIFY_MCP_HISTORY_RETENTION_DAYS: '99999' });
+  // Undated head, then two records far outside any 90-day window.
+  await seed(ledger, ['{"who":"hand-written"}\n', line('ancient-1', 400), line('ancient-2', 500)]);
+
+  // A no-op sweep seeds the cached shape exactly as a startup would.
+  const noop = await pruneHistoryLedger(process.env, DEFAULT_TOKEN_FILE, PINNED_NOW);
+  assert.equal(noop.expired, 0, 'precondition: the wide window expires nothing');
+  assert.equal(noop.rows_after, 3, 'precondition: the sweep kept every row');
+  assert.equal(
+    (await rows(ledger)).length,
+    3,
+    'precondition: the seeded shape is the one the append will trust',
+  );
+
+  // The operator tightens retention. The ancient records are now 400 and 500
+  // days past a 90-day window, and an append is the moment the ledger is
+  // re-checked.
+  process.env.SPOTIFY_MCP_HISTORY_RETENTION_DAYS = '90';
+  const before = await historyLedgerStats(process.env, DEFAULT_TOKEN_FILE);
+  assert.ok(
+    typeof before.oldest_ts === 'string' && Date.parse(before.oldest_ts) < PINNED_NOW - 365 * DAY_MS,
+    `precondition: the ledger can date a record older than the window, got ${String(before.oldest_ts)}`,
+  );
+
+  await appendHistory({ method: 'PUT', path: '/playlists/{id}/items', who: 'newest' }, DEFAULT_TOKEN_FILE);
+
+  const kept = await whoList(ledger);
+  assert.equal(
+    kept.includes('ancient-1'),
+    false,
+    `an undated head line must not exempt the ancient records behind it; kept ${kept.join(', ')}`,
+  );
+  assert.equal(kept.includes('ancient-2'), false, 'every out-of-window record must be expired');
+  assert.deepEqual(kept, ['hand-written', 'newest'], 'the undated line and the new record both survive');
+});
+
 test('a prune drops nothing the bounds did not ask it to', async () => {
   // The row cap must not become a second, tighter byte cap. Here every record
   // is inside the window and the ledger is nowhere near the row cap, so a

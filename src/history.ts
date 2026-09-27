@@ -531,6 +531,31 @@ function recordAgeMs(record: HistoryRecord | null | undefined): number | undefin
   return Number.isFinite(ms) ? ms : undefined;
 }
 
+/**
+ * `oldest_ts` for a set of lines, under ONE definition: the `ts` of the
+ * oldest line that actually carries a parseable one.
+ *
+ * Every writer of a `LedgerShape` must go through this. The two obvious
+ * spellings disagree, and the disagreement is not cosmetic: `kept[0]` is the
+ * oldest line whether or not it is dated, so a ledger whose oldest line is a
+ * hand-written record with no `ts` yields `oldest_ts: undefined` — and
+ * `ledgerNeedsPrune` reads an absent `oldest_ts` as "nothing can be expired",
+ * which silently disables the age cap for as long as the cached shape is
+ * trusted. An undated head line would then shield every ancient record behind
+ * it until some other writer changed the file's size. `measureLedger` already
+ * skipped undated lines for exactly the reason stated in its comment: an
+ * undated line is not a date the ledger may borrow from the next record. This
+ * helper is that rule, named once so a second spelling cannot reappear.
+ */
+function oldestDatedTs(lines: readonly HistoryLine[]): string | undefined {
+  for (const { record } of lines) {
+    if (record === null) continue;
+    const ts = record.ts;
+    if (typeof ts === 'string' && Number.isFinite(Date.parse(ts))) return ts;
+  }
+  return undefined;
+}
+
 /** Bytes of a ledger file; 0 when it is not there, which is not an error. */
 async function ledgerFileSize(path: string): Promise<number> {
   try {
@@ -591,10 +616,10 @@ async function measureLedger(file: string): Promise<LedgerShape> {
   // The oldest line the ledger can DATE. An undated line ahead of it (a
   // hand-edited or pre-`ts` file) is not a date the report may borrow, so the
   // field stays absent rather than naming the next record's timestamp.
-  const oldest = lines.find((entry) => recordAgeMs(entry.record) !== undefined);
+  const oldestTs = oldestDatedTs(lines);
   return {
     rows: lines.length,
-    ...(oldest?.record?.ts !== undefined ? { oldest_ts: oldest.record.ts } : {}),
+    ...(oldestTs !== undefined ? { oldest_ts: oldestTs } : {}),
     live_bytes: liveBytes,
     archive_bytes: archiveBytes,
   };
@@ -733,9 +758,10 @@ async function pruneLedger(
   // that has tokens but has never mutated anything. Recompute the cached shape
   // and stop; the surviving layout is already the one rotation would produce.
   if (kept.length === lines.length) {
+    const oldestTs = oldestDatedTs(kept);
     ledgerShapes.set(file, {
       rows: kept.length,
-      ...(kept[0]?.record?.ts !== undefined ? { oldest_ts: kept[0].record.ts } : {}),
+      ...(oldestTs !== undefined ? { oldest_ts: oldestTs } : {}),
       live_bytes: liveBytes,
       archive_bytes: bytes - liveBytes,
     });
@@ -747,9 +773,10 @@ async function pruneLedger(
   await writeLedgerFile(file, kept.slice(split));
   if (split === 0) await rm(archive, { force: true });
 
+  const oldestTs = oldestDatedTs(kept);
   const shape: LedgerShape = {
     rows: kept.length,
-    ...(kept[0]?.record?.ts !== undefined ? { oldest_ts: kept[0].record.ts } : {}),
+    ...(oldestTs !== undefined ? { oldest_ts: oldestTs } : {}),
     live_bytes: liveBytes,
     archive_bytes: bytes - liveBytes,
   };
@@ -848,15 +875,17 @@ async function writeHistoryRecord(
   // mutation.
   const after: LedgerShape = {
     rows: before.rows + 1,
-    // An empty ledger's oldest record after this append is THIS one. Carrying
-    // that forward matters because the cached shape is what the age cap is
-    // checked against, and a ledger that starts empty would otherwise report
-    // no oldest record until something else invalidated the cache.
+    // The oldest DATED record after this append. When `before` named one, it
+    // is still the oldest: this line is newer than every line already there.
+    // When it named none, then no line on disk carried a parseable `ts`, and
+    // the line being written now does — so THIS is the oldest dated record,
+    // whether the ledger was empty or merely headed by undated lines. Gating
+    // that fallback on `rows === 0` (which is what this said before) left a
+    // ledger of undated lines reporting no oldest record at all, and
+    // `ledgerNeedsPrune` reads an absent `oldest_ts` as "nothing can expire".
     ...(before.oldest_ts !== undefined
       ? { oldest_ts: before.oldest_ts }
-      : before.rows === 0
-        ? { oldest_ts: new Date(now).toISOString() }
-        : {}),
+      : { oldest_ts: new Date(now).toISOString() }),
     live_bytes: rotated ? Buffer.byteLength(line) : before.live_bytes + Buffer.byteLength(line),
     archive_bytes: rotated ? before.live_bytes : before.archive_bytes,
   };
