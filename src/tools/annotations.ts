@@ -447,7 +447,7 @@ function applyStableListDefaults(toolName: string, schema: Record<string, unknow
  * Reads can only start with one of these. Being an allowlist is the point: a new
  * mutating tool whose name we failed to anticipate defaults to "write".
  */
-const READ_ONLY_PREFIXES =
+export const READ_ONLY_PREFIXES =
   /^(get|list|search|check|inspect|find|show|describe|report|count|is|has|read|lookup|compare|diff|history|stats|statsfm|summary|summarize|summarise|analyze|analyse|validate|estimate|diagnose|resolve|quiz|census|audit|review|coverage|timeline|heatmap|trends?|insights?|distribution|breakdown|matrix|explorer|probe|digest|briefing|radar|where)/;
 
 /**
@@ -455,11 +455,17 @@ const READ_ONLY_PREFIXES =
  * is not evidence of mutation, so plans are classified by capability via
  * NEVER_MUTATING_PLANS instead.
  */
-const MUTATING_PREFIXES =
+export const MUTATING_PREFIXES =
   /^(apply|start|save|add|create|update|set|replace|import|move|copy|remove|delete|unfollow|unsave|follow|pin|fill|merge|split|sort|shuffle|reorder|transfer|restore|cancel|clean|clear|trim|cull|archive|mark|queue|play|pause|skip|seek|generate|grow|balance|reschedule|migrate|handoff|dj|undo|export|backup|write|upload|rename|retag|sync|dedupe|take|snapshot|volume|sleep|transfer_playback|recently|retry|revert|reset|purge|wipe|drop|erase|revoke|disconnect|logout)/;
 
-/** Irreversible operations: they delete or overwrite user data. */
-const DESTRUCTIVE_PREFIXES =
+/**
+ * Irreversible operations: they delete or overwrite user data.
+ *
+ * Exported so a test can assert the premise behind an OVERRIDES row — that the
+ * name alone does NOT classify as destructive — against this exact regex
+ * rather than a copy of it that could drift from the real policy.
+ */
+export const DESTRUCTIVE_PREFIXES =
   /^(remove|delete|unfollow|unsave|replace|overwrite|purge|wipe|clear|clean|cull|trim|drop|erase|revoke|reset|empty|trash|garbage|strip)/;
 
 /** Names whose behaviour the verb patterns cannot infer. They win outright. */
@@ -497,6 +503,24 @@ const OVERRIDES: Record<string, ToolAnnotations> = {
   restore_playlist_from_snapshot: { destructiveHint: true },
   apply_snapshot_changes: { destructiveHint: true },
   merge_snapshot_changes: { destructiveHint: true },
+  // #1100: unpin_playlist REMOVES a library entry the user may have curated by
+  // hand, but `unpin` matches no entry in DESTRUCTIVE_PREFIXES (which has
+  // `unfollow`, not `unpin`), so the name-driven policy advertised it as
+  // destructiveHint: false. Understating it is the failure mode that matters:
+  // this is the only signal a host gets before deciding to auto-approve.
+  //
+  // It is an override rather than a new DESTRUCTIVE_PREFIXES entry on purpose.
+  // #1099 renames the pair to follow_playlist/unfollow_playlist, and
+  // `unfollow` is ALREADY in DESTRUCTIVE_PREFIXES — so the renamed tool is
+  // classified correctly with no row here at all, and this entry retires with
+  // the old name. Widening the prefix list instead would leave a live `unpin`
+  // rule behind after the rename, encoding a verb the tool no longer has.
+  //
+  // This is a static host hint applied after registration (AGENTS.md §4): it
+  // never prompts and it does not replace the elicitation gate. The gate in
+  // src/tools/confirm.ts is untouched and still fails closed on every verdict
+  // but 'confirmed'.
+  unpin_playlist: { destructiveHint: true },
 };
 
 /**
@@ -509,6 +533,28 @@ const OVERRIDES: Record<string, ToolAnnotations> = {
 export const READ_ONLY_OVERRIDES: ReadonlySet<string> = new Set(
   Object.entries(OVERRIDES)
     .filter(([, annotations]) => annotations.readOnlyHint === true)
+    .map(([name]) => name),
+);
+
+/**
+ * Tools in OVERRIDES whose entry declares destructiveHint: true — the
+ * destructive-side mirror of READ_ONLY_OVERRIDES, and the audited set a name
+ * must appear in to be advertised as destructive without a mutating verb.
+ *
+ * `tests/tool.surface.test.ts` reads this live. It exists because the audit
+ * "every destructive tool has a mutating verb" is a real safety property that
+ * cannot simply be relaxed: without an audited set, a blanket
+ * `destructiveHint: true` in OVERRIDES would silence it wholesale. Deriving the
+ * set from OVERRIDES rather than a second hand-kept list keeps one source of
+ * truth, so a row cannot be added to one and not the other.
+ *
+ * The three snapshot rows predate this set and were already exempted by name
+ * in the test (`/snapshot_changes/`); they are included here so the audit has
+ * exactly one escape rather than two that can drift.
+ */
+export const DESTRUCTIVE_OVERRIDES: ReadonlySet<string> = new Set(
+  Object.entries(OVERRIDES)
+    .filter(([, annotations]) => annotations.destructiveHint === true)
     .map(([name]) => name),
 );
 
@@ -529,6 +575,7 @@ export const READ_ONLY_OVERRIDES: ReadonlySet<string> = new Set(
  * so the disclosure is what the registry acted on rather than a field that
  * could drift from it. `tests/config-readonly.test.ts` pins the two to agree.
  */
+
 export function readOnlyModeEnabled(): boolean {
   return readOnlyEnv();
 }

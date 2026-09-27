@@ -33,6 +33,7 @@ import {
   collectModuleSchemaBudgets,
   NEVER_MUTATING_PLANS,
   READ_ONLY_OVERRIDES,
+  DESTRUCTIVE_OVERRIDES,
   moduleToolNames,
   localModule,
   manifestEntry,
@@ -293,8 +294,37 @@ describe('tool surface: annotations', () => {
 
     const destructive = tools.filter((t) => t.annotations?.destructiveHint === true).map((t) => t.name);
     assert.ok(destructive.length > 0, 'expected at least one destructive tool');
-    const wrong = destructive.filter((t) => !MUTATING_PREFIXES.test(t) && !/snapshot_changes/.test(t));
+    // A destructive tool must be a name the verb patterns recognise as a write,
+    // UNLESS it is an audited OVERRIDES row (DESTRUCTIVE_OVERRIDES, the mirror
+    // of READ_ONLY_OVERRIDES). #1100 added unpin_playlist that way: `unpin` is
+    // in neither MUTATING_PREFIXES nor DESTRUCTIVE_PREFIXES, so the name alone
+    // classified a library removal as a harmless write.
+    //
+    // The audit is NOT relaxed. DESTRUCTIVE_OVERRIDES is derived from OVERRIDES,
+    // so widening it requires a new OVERRIDES row with its own written
+    // justification — the same bar a read-only override already has (#1101) —
+    // rather than a blanket flag that would silence the check entirely.
+    // The pre-existing `/snapshot_changes/` exemption is subsumed: all three
+    // snapshot rows are destructive OVERRIDES entries, so the derived set
+    // covers them and there is now one escape, not two that can drift.
+    const wrong = destructive.filter((t) => !MUTATING_PREFIXES.test(t) && !DESTRUCTIVE_OVERRIDES.has(t));
     assert.deepEqual(wrong, [], `destructive tools outside the mutating verb set: [${wrong.join(', ')}]`);
+
+    // Every escape in that audit must still name a registered tool, so a stale
+    // row cannot quietly widen the allowance for a name that no longer exists.
+    //
+    // Scoped to the rows that actually reach tools/list, and the pre-existing
+    // `merge_snapshot_changes` gap is called out rather than folded in: that
+    // OVERRIDES row names a tool that is not registered (the live one is
+    // `merge_snapshot_changes_plan`, separately audited in
+    // NEVER_MUTATING_PLANS). It is a latent inconsistency in OVERRIDES, not
+    // something #1100 introduced, and folding it into this gate would block on
+    // unrelated debt. The set still cannot mask a *new* stale row, because any
+    // name reaching tools/list is checked above by the `wrong` assertion.
+    const registered = new Set(tools.map((t) => t.name));
+    const stale = [...DESTRUCTIVE_OVERRIDES]
+      .filter((name) => name !== 'merge_snapshot_changes' && !registered.has(name));
+    assert.deepEqual(stale, [], `DESTRUCTIVE_OVERRIDES names unregistered tools: [${stale.join(', ')}]`);
   });
 
   it('local feedback aliases are explicit non-read-only writes', async () => {

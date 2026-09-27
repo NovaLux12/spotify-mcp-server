@@ -112,15 +112,17 @@ export function registerPlaylistFollowTools(server: McpServer, client: SpotifyCl
       const verdict = await confirmViaElicitation(server, {
         message: describeConfirmation('unpin playlist', args.playlist_id, [`Unfollow playlist ${args.playlist_id}`]),
       });
-      if (verdict === 'declined') {
-        return shapeResult(rf, 'Cancelled \u2014 nothing was changed.', { ok: false, cancelled: true });
-      }
-      if (verdict === 'error') {
-        throw new Error('Elicitation failed — refusing to unpin playlist without confirmation');
-      }
-      if (verdict === 'unsupported' && process.env.SPOTIFY_MCP_CONFIRM !== 'never') {
-        throw new Error('Elicitation unavailable — refusing to unpin playlist without confirmation');
-      }
+      // #1100: the shared fail-closed guard, so this half of the pair refuses
+      // in the same shape as pin_playlist. The hand-rolled branches this
+      // replaced threw on 'error' and on an unpromptable host, so a host that
+      // distinguished the two got a machine-readable `reason` from one tool and
+      // a bare exception from its own inverse. BEHAVIOUR CHANGE: 'error' now
+      // RETURNS a refusal result instead of throwing \u2014 a failure to establish
+      // confirmation is a refusal, not an exceptional condition. Nothing about
+      // the gate is weakened: every verdict other than 'confirmed' still stops
+      // the write, and SPOTIFY_MCP_CONFIRM=never remains the only bypass.
+      const refusal = requiredConfirmationRefusal(verdict);
+      if (refusal) return shapeResult(rf, refusal.message, refusal.payload);
       await client.delete(playlistLibraryPath(args.playlist_id));
       return shapeResult(rf, `Unpinned playlist ${args.playlist_id}.`, { ok: true, playlist_id: args.playlist_id, pinned: false });
     },
