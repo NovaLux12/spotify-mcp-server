@@ -155,6 +155,7 @@ That column replaced a per-file line count (#1398), and why is worth keeping: a 
 | `src/resources/uritemplate.ts` | RFC 6570-conformant matching for the URI templates this server advertises (#1401). (0 registered tools) | — |
 | `src/result.ts` | The one place a tool result is built (#582). (0 registered tools) | — |
 | `src/scopefilter.ts` | Scope-aware module gating (#111 item 6). (0 registered tools) | — |
+| `src/serverinstructions.ts` | The `instructions` string a host receives in the `initialize` response (#690), built on the non-affiliation notice #705 put there. (0 registered tools) | — |
 | `src/shaping.ts` | Shared shaping helpers for tool responses (#51/#52/#53/#57/#58): zod schema fragments, truncation math, pagination info, structuredContent emission, mutation batch summaries and dry-run descriptions. (0 registered tools) | — |
 | `src/sidecar.ts` | Shared policy for local JSON sidecars (#839, #1051). (0 registered tools) | — |
 | `src/tools/accounts.ts` | `list_accounts` and `switch_account` (#602). (2 registered tools) | 1,644 |
