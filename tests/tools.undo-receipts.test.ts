@@ -31,6 +31,9 @@
  * `response_format`'s effect, because a passing assertion would enshrine the
  * mismatch. Reported to the maintainers rather than pinned.
  */
+// Must precede every other import: this redirects HOME for the whole process,
+// so anything resolved at module-load time sees the sandbox, not the real one.
+import './helpers/hermetic.js';
 import { describe, it, before, beforeEach, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
