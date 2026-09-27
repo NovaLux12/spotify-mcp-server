@@ -12,15 +12,24 @@
  * and no diagnostic, which on a host where env is the only configuration
  * surface is indistinguishable from a broken deployment.
  *
- * ## What this asserts, and what it deliberately does not
+ * ## What this asserts
  *
- * ONE direction: every advertised variable is read by the server.
+ * TWO directions, because both halves of the contract are operator-visible:
  *
- * The mirror (every read variable is advertised) is NOT asserted here.
- * `SPOTIFY_MCP_BACKUP_RETENTION_DAYS` is read at src/paths.ts and documented by
- * the open PR #1043; enforcing the mirror here would redden this guard for
- * another unit's pending work, or force this file to duplicate a doc row
- * somebody else owns. The mirror becomes enforceable once that row lands.
+ *  - every advertised variable is read by the server (a promise with no code
+ *    behind it changes nothing when the operator sets it);
+ *  - every variable the server reads in src/ is advertised (#1248) — the
+ *    ledger's rotation threshold was live, had a default, and was absent from
+ *    the page AGENTS.md points at as the env-var reference, so an operator
+ *    could not set it from the documentation.
+ *
+ * The mirror is scoped to src/ rather than to src/ + scripts/. scripts/ reads
+ * two build-time knobs (`SPOTIFY_MCP_DIST_ROOT`, `SPOTIFY_MCP_SURFACE_CENSUS`)
+ * that are plumbing for `npm run` commands, not server configuration; an
+ * operator configuring a deployed server never sets them, so listing them in
+ * the configuration reference would be a false promise in the other
+ * direction. Advertising either in the docs still trips the FIRST test, so
+ * they are not left unchecked — only exempt from this one.
  *
  * Two exclusions, both structural rather than hardcoded name lists:
  *
@@ -51,6 +60,8 @@ const ENV_DECLARED =
   /\b(?:const|let|var|function|class|interface|type|enum)\s+(SPOTIFY_[A-Z0-9_]+)\b/g;
 /** An assignment line in .env.example, commented or not. */
 const ENV_ASSIGNED = /^[ \t]*#?[ \t]*(SPOTIFY_[A-Z0-9_]+)[ \t]*=/gm;
+/** A summary-table row in docs/configuration.md: the operator-lookup surface. */
+const ENV_TABLE_ROW = /^\|[ \t]*`(SPOTIFY_[A-Z0-9_]+)`[ \t]*\|/gm;
 
 /** ROOT-anchored read, used at every corpus call site so a path is never built twice. */
 function read(relativePath: string): string {
@@ -86,6 +97,19 @@ function readVariables(): Set<string> {
   const sources = [...filesUnder('src', ['.ts']), ...filesUnder('scripts', ['.mjs', '.js'])];
   const out = new Set<string>();
   for (const file of sources) for (const name of read(file).matchAll(ENV_READ)) out.add(name[1]!);
+  return out;
+}
+
+/**
+ * The src/-only subset: variables a deployed server reads, as opposed to the
+ * build-time knobs scripts/ reads. This is the set the mirror test holds the
+ * configuration reference to account for.
+ */
+function serverReadVariables(): Set<string> {
+  const out = new Set<string>();
+  for (const file of filesUnder('src', ['.ts'])) {
+    for (const name of read(file).matchAll(ENV_READ)) out.add(name[1]!);
+  }
   return out;
 }
 
@@ -152,6 +176,35 @@ describe('advertised environment variables (#590)', () => {
       'These variables are advertised to an operator but read by no code, so setting '
         + 'them changes nothing:\n  ' + unkept.join('\n  ')
         + '\nEither give each one a read path, or stop advertising it.',
+    );
+  });
+
+  it('advertises every variable the server reads (#1248)', () => {
+    // Scoped to the summary table's ROWS, not to any `SPOTIFY_*` token in the
+    // file, and with NO .env.example fallback. Both restrictions are load-
+    // bearing, and each was a vacuity this test actually exhibited first:
+    //
+    //  - matching tokens anywhere let a name surviving only in prose satisfy
+    //    the guard, so a variable discussed in a detail section but absent
+    //    from the table passed. A detail section is not a lookup surface.
+    //  - accepting .env.example as a substitute would not have caught the bug
+    //    this test was written for: SPOTIFY_MCP_HISTORY_MAX_BYTES was present in
+    //    .env.example all along and missing from the table. Any rule that
+    //    treats the example file as sufficient documentation passes it.
+    //
+    // ENV_TABLE_ROW is a global regex and is stateful under .matchAll, so it is
+    // anchored fresh per file.
+    const configDoc = new Set(
+      [...read('docs/configuration.md').matchAll(ENV_TABLE_ROW)].map((m) => m[1]!),
+    );
+    const unadvertised = [...serverReadVariables()].filter((name) => !configDoc.has(name)).sort();
+    assert.deepEqual(
+      unadvertised,
+      [],
+      'The server reads these variables but docs/configuration.md has no summary-table '
+        + 'row for them, so the knob is unsettable from the documentation an operator '
+        + 'is pointed at:\n  ' + unadvertised.join('\n  ')
+        + '\nAdd a summary-table row, or stop reading the variable.',
     );
   });
 

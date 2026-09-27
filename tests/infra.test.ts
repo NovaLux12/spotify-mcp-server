@@ -711,6 +711,36 @@ describe('history: JSONL mutation records', () => {
     assert.equal(historyMaxBytes({ SPOTIFY_MCP_HISTORY_MAX_BYTES: '4096' }), 4096);
   });
 
+  // #1248: docs/configuration.md now states that this threshold is parsed with
+  // parseInt(…, 10) and therefore TRUNCATES a fractional value rather than
+  // falling back to the default — unlike SPOTIFY_MCP_BACKUP_RETENTION_DAYS,
+  // which reads Number() and rejects one. A documented behaviour with no test
+  // is a behaviour that drifts, and the drift here would leave the page
+  // describing a fallback the code never performs.
+  it('truncates a fractional threshold instead of falling back, and tolerates whitespace', () => {
+    assert.equal(
+      historyMaxBytes({ SPOTIFY_MCP_HISTORY_MAX_BYTES: '2.5' }),
+      2,
+      'parseInt truncation is what the configuration page documents',
+    );
+    assert.equal(
+      historyMaxBytes({ SPOTIFY_MCP_HISTORY_MAX_BYTES: '2048.9' }),
+      2048,
+      'the fractional part is dropped, not rejected',
+    );
+    assert.equal(
+      historyMaxBytes({ SPOTIFY_MCP_HISTORY_MAX_BYTES: '  512  ' }),
+      512,
+      'surrounding whitespace is tolerated',
+    );
+    // The contrast that makes the page's claim worth stating at all.
+    assert.notEqual(
+      historyMaxBytes({ SPOTIFY_MCP_HISTORY_MAX_BYTES: '2.5' }),
+      DEFAULT_HISTORY_MAX_BYTES,
+      'if this ever starts falling back to the default, the configuration page is wrong',
+    );
+  });
+
   it('readHistory returns at most limit records for an arbitrarily large ledger', async () => {
     // 5,000 records ≈ 700 KB. Pre-fix, readers did
     // `readFile(...).split('\n')` and materialized every line; the bounded

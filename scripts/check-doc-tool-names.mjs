@@ -254,6 +254,7 @@ function collectDocumentToolContractErrors(source, file, registry) {
     checkJsonToolExamples(file, source, registry);
     checkCallRecipes(file, source, registry);
     checkToolArgumentTables(file, source, registry);
+    checkInputsTableContracts(file, source, registry);
     checkModuleMapEntries(file, source, registry);
     checkRangeEnumLiterals(file, source, registry);
   } finally {
@@ -349,6 +350,98 @@ function checkCallRecipes(file, source, registry = census) {
     }
     const args = Object.fromEntries([...tail.matchAll(/`([a-z][a-z0-9_]*)\s*:/g)].map((arg) => [arg[1], true]));
     if (Object.keys(args).length > 0) validateArgumentKeys(file, line, tool, args, registry);
+  }
+}
+
+/**
+ * An Inputs table is a contract, not prose, so the three things a caller reads
+ * off it are checked against the live schema rather than left to review:
+ *
+ *  - COMPLETENESS (#1243): a field the schema marks required but the table
+ *    omits is a call the table tells a caller to make and the server rejects.
+ *    `remove_from_playlist` documented `uris` and `snapshot_id` and never named
+ *    `playlist_id`, so the documented half of a two-call workflow could not
+ *    succeed.
+ *  - REQUIREDNESS (#1245): a plain `yes` on a property the schema marks
+ *    optional promises a validation error that never comes — the real
+ *    enforcement is a runtime throw inside the handler. `yes (runtime)` is the
+ *    honest spelling, and the check holds it to a property that really is
+ *    optional, so the escape hatch cannot be used to paper over an inverted
+ *    name.
+ *  - SHAPE (#1244): a `string` column over an array schema advertises a value
+ *    the tool rejects. Only array-ness is compared; the type vocabulary in
+ *    these tables is prose, not JSON Schema, so a full type comparison would
+ *    be a false gate.
+ *
+ * Only tools with an actual Inputs *table* are checked. A prose Inputs line is
+ * not a field-by-field contract and is left alone rather than half-checked.
+ */
+function checkInputsTableContracts(file, source, registry = census) {
+  const lines = source.split('\n');
+  for (let index = 0; index < lines.length; index++) {
+    const heading = /^#{3,4}\s+`([a-z][a-z0-9_]*)`/.exec(lines[index]);
+    if (!heading || !registry.toolNames.includes(heading[1])) continue;
+    const tool = heading[1];
+    const schema = registry.toolInputSchemas?.[tool];
+    if (!schema?.properties) continue;
+    // Prose may sit between the heading and the Inputs marker.
+    let inputsAt = -1;
+    for (let k = index + 1; k < lines.length; k++) {
+      if (/^#{1,4}\s/.test(lines[k])) break;
+      if (/^\*\*Inputs:\*\*/.test(lines[k])) { inputsAt = k; break; }
+    }
+    if (inputsAt < 0) continue;
+    const body = [];
+    for (let k = inputsAt + 1; k < lines.length && lines[k].startsWith('|'); k++) body.push(k);
+    // Header + separator and nothing else is not a table of fields.
+    if (body.length < 3) continue;
+
+    const documented = new Map();
+    for (const k of body) {
+      const row = /^\|\s*`([a-z][a-z0-9_]*)`\s*\|/.exec(lines[k]);
+      if (!row) continue;
+      // Split on unescaped pipes so a union type like `string[] \| {…}[]`
+      // keeps its columns.
+      const cells = lines[k].split(/(?<!\\)\|/).slice(1);
+      documented.set(row[1], {
+        type: (cells[1] ?? '').trim().replace(/\\\|/g, '|'),
+        required: (cells[2] ?? '').trim().toLowerCase(),
+      });
+    }
+    const at = relative(ROOT, file);
+    for (const field of schema.required ?? []) {
+      if (documented.has(field)) continue;
+      errors.push(
+        `${at}:${inputsAt + 1}: \`${tool}\`'s Inputs table omits \`${field}\`, which its schema `
+        + 'marks required — a caller building the documented call would be rejected.',
+      );
+    }
+    for (const [field, cell] of documented) {
+      const property = schema.properties[field];
+      if (!property) continue;
+      const schemaRequired = (schema.required ?? []).includes(field);
+      if (cell.required === 'yes' && !schemaRequired) {
+        errors.push(
+          `${at}:${inputsAt + 1}: \`${tool}\`.${field} is documented \`Required: yes\` but is `
+          + 'optional in the live schema. Say `yes (runtime)` if the handler enforces it, so a '
+          + 'caller is not told validation will catch a missing value.',
+        );
+      } else if (cell.required === 'yes (runtime)' && schemaRequired) {
+        errors.push(
+          `${at}:${inputsAt + 1}: \`${tool}\`.${field} is documented \`yes (runtime)\` but the `
+          + 'schema marks it required — plain `yes` is correct.',
+        );
+      }
+      if (!cell.type || /\bshared\b/i.test(cell.type)) continue;
+      const docSaysArray = cell.type.includes('[]');
+      if (docSaysArray !== (property.type === 'array')) {
+        errors.push(
+          `${at}:${inputsAt + 1}: \`${tool}\`.${field} is documented as \`${cell.type}\` but the `
+          + `live schema declares type \`${property.type}\`${property.items?.enum ? ` of ${JSON.stringify(property.items.enum)}` : ''} — `
+          + 'the documented value shape is rejected.',
+        );
+      }
+    }
   }
 }
 

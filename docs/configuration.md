@@ -18,6 +18,7 @@ The variables below are read at the documented call sites; set them in your MCP 
 | `SPOTIFY_MCP_FETCH_ALL_CAP` | `500` | Hard cap for `fetch_all=true` pagination walks. |
 | `SPOTIFY_MCP_HISTORY` | unset | `1`, `true`, `yes`, or `on` logs one JSONL line per agent-driven mutation. |
 | `SPOTIFY_MCP_HISTORY_DIR` | `~/.spotify-mcp/history` | Directory containing `mutations.jsonl`. |
+| `SPOTIFY_MCP_HISTORY_MAX_BYTES` | `1048576` | Size in **bytes** at which `mutations.jsonl` rotates. Only consulted when `SPOTIFY_MCP_HISTORY` is on. Unset, non-numeric, zero, and negative values fall back to the default rather than disabling rotation. |
 | `SPOTIFY_MCP_RECEIPTS` | unset | `1`, `true`, `yes`, or `on` persists mutation receipts to `receipts.jsonl` so `verify_receipt` and `undo_mutation` survive a restart. Unset keeps them in process memory only, and every miss says so. |
 | `SPOTIFY_MCP_RECEIPTS_DIR` | `~/.spotify-mcp` | Directory containing `receipts.jsonl`; falls back to `SPOTIFY_MCP_HISTORY_DIR` when unset. |
 | `SPOTIFY_MCP_RECEIPTS_TTL_HOURS` | `24` | How long a persisted receipt stays resolvable; `0` disables expiry. The newest 100 receipts are kept either way, FIFO. |
@@ -36,12 +37,11 @@ The variables below are read at the documented call sites; set them in your MCP 
 | `SPOTIFY_MCP_DATA_DIR` | `~/.spotify-mcp` for watchlists; `~/.spotify-mcp/playlist-snapshots` for playlist-health snapshots | Data directory read by the artist-watchlist, portability-watchlist, and playlist-health call sites. The watchlist default no longer depends on the process working directory. |
 | `SPOTIFY_MCP_BACKUP_DIR` | `~/.spotify-mcp/backups` | Directory for `backup_library` snapshots. |
 | `SPOTIFY_MCP_BACKUP_RETENTION_DAYS` | `30` | Whole days a `backup_library` snapshot is kept before it is pruned. `0` disables pruning entirely. Any unusable value (empty, non-numeric, negative, fractional) falls back to the default, never to "keep forever"; the smallest enabled window is `1` day. |
-| `SPOTIFY_MCP_PORTABILITY_DIR` | `~/.spotify-mcp/portability` | Output root for the five `export_*` family tools. |
 | `SPOTIFY_MCP_EXPORT_DIR` | `~/.spotify-mcp/exports` | Output root for `export_playlist` and `export_profile_state`. |
+| `SPOTIFY_MCP_PORTABILITY_DIR` | `~/.spotify-mcp/portability` | Default output directory for library/history portability exports; also the output root for the five `export_*` family tools. |
 | `SPOTIFY_MCP_ALLOW_PATHS` | unset | Extra directories `import_playlist` may read from, `:`-separated. The default read roots are `SPOTIFY_MCP_PORTABILITY_DIR`, `SPOTIFY_MCP_BACKUP_DIR` and `SPOTIFY_MCP_EXPORT_DIR`. |
 | `SPOTIFY_MCP_MAX_DOCUMENT_MB` | `32` | Per-document read cap. A larger `input_path` or inline `content` is refused before it is read. |
 | `SPOTIFY_MCP_TIMEZONE` | `UTC` | IANA zone for `listening_heatmap` day/hour buckets. Host time is never used implicitly; the same payload is produced in every host zone. |
-| `SPOTIFY_MCP_PORTABILITY_DIR` | `~/.spotify-mcp/portability` | Default output directory for library/history portability exports. |
 | `SPOTIFY_MCP_SNAPSHOT_DIR` | `~/.spotify-mcp/playlist-snapshots` | Playlist snapshot sidecar directory. |
 | `SPOTIFY_MCP_SEARCH_HISTORY_FILE` | `~/.spotify-mcp/search-history.json` | Local search-history sidecar. |
 | `SPOTIFY_MCP_SEARCH_HISTORY` | unset (enabled) | `0`, `false`, `no`, or `off` (case-insensitive, trimmed) stops the search-history tools from recording or replaying queries. Any other value, including unset, keeps history on. |
@@ -101,6 +101,10 @@ It is a **fallback, not the authority**. If `SPOTIFY_MCP_MAX_CONCURRENCY` is set
 Set `SPOTIFY_MCP_HISTORY=1` to append one JSONL record per agent-driven mutation. `SPOTIFY_MCP_HISTORY_DIR` changes the directory; the file is `mutations.jsonl`. Records contain only the mutation method, path, and receipt/snapshot metadata — never tokens or request bodies.
 
 Each record's `who` field names the tool that issued the mutation (e.g. `add_to_playlist`), falling back to `agent` only when the call did not come through a tool. `history_search` matches on it, and the `spotify_doctor` row `history` reports the resolved ledger path plus how many appends have been lost. A lost append never fails the mutation it describes, but it warns once per process on stderr and turns that doctor row red, because a trail with gaps otherwise reads as complete when it is not.
+
+**Rotation.** The ledger is bounded rather than cumulative. Before each append the live file's size is read, and if the existing size plus the incoming line would exceed `SPOTIFY_MCP_HISTORY_MAX_BYTES` (default **1 MiB**, i.e. `1048576` bytes), `mutations.jsonl` is renamed to `mutations.jsonl.1` and a fresh one is started. `rename(2)` replaces any existing archive atomically, so exactly one generation is kept and total on-disk history is bounded at roughly twice the threshold; the oldest records are what is lost, and the archive's owner-only mode is re-asserted on rotation because `rename` preserves the old inode's mode. The check happens per append, so a record can push the file just past the threshold before the next append rotates it.
+
+A value that is unset, empty, non-numeric, zero, or negative falls back to the default rather than disabling rotation, so a typo cannot turn a bounded ledger into a never-rotating one. This is the same intent as `SPOTIFY_MCP_BACKUP_RETENTION_DAYS`, but the two parse differently and the difference is worth knowing: retention is read with `Number()` and rejects a fractional value, while this threshold is read with `parseInt(…, 10)` and **truncates** it. `"2.5"` therefore means 2 bytes here, not the default, and surrounding whitespace is tolerated. Raise this only deliberately — a value below the size of a single record rotates the ledger on every append.
 
 ### Mutation receipts
 
