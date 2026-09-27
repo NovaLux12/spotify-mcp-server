@@ -20,6 +20,7 @@ import { createRequire } from 'node:module';
 import { installTruncationBoundary } from './shaping.js';
 import { installGatedPathContract } from './gating.js';
 import { installProgressContextBoundary, installProgressNotifications } from './progress.js';
+import { installActingAccountBoundary, resolveActingAccount } from './actingaccount.js';
 import { installCancellationContextBoundary } from './cancellation.js';
 
 const { version } = createRequire(import.meta.url)('../package.json') as { version: string };
@@ -104,6 +105,11 @@ async function startMcpServer(): Promise<void> {
   // server-invented counter. Failures are swallowed so notification hiccups
   // never break a walk.
   installProgressNotifications(client, server);
+
+  // The acting-account echo (#602) installs LAST of the three boundaries, so it
+  // is the outermost wrapper and sees the finished, shaped result. It needs the
+  // client, which is why it cannot sit with the other two above.
+  installActingAccountBoundary(server, resolveActingAccount, client);
 
   // Tool modules load behind the toolset gate (#906). `registerManifestModules`
   // imports only the modules that are about to register — a module whose key is

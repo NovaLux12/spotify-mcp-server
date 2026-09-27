@@ -745,8 +745,17 @@ async function storeRows(): Promise<DoctorRow[]> {
   return [await historyRow(), await tasteFeedbackRow()];
 }
 
-/** Live account probe: report classified failures rather than silently omitting them. */
-async function accountRows(client: SpotifyClient): Promise<DoctorRow[]> {
+/**
+ * Live account probe: report classified failures rather than silently omitting them.
+ *
+ * `tokenFile` is a parameter for the same reason it is in `reportTokenFile`
+ * (#609): the row has to name the file this identity was read through, or it
+ * cannot answer the question an operator is actually asking — which of the
+ * accounts on this box am I looking at. #602 added the parameter, and the
+ * client's own `tokenFile` is the authoritative source, so the row cannot
+ * describe an identity obtained with some other file's credentials.
+ */
+async function accountRows(client: SpotifyClient, tokenFile: string): Promise<DoctorRow[]> {
   try {
     // #639: `product` and `country` were removed from `/me` in Spotify's
     // February 2026 changes (see `src/removed.ts`), so on any registration
@@ -754,6 +763,7 @@ async function accountRows(client: SpotifyClient): Promise<DoctorRow[]> {
     // and the row below says which of them the payload actually carried.
     const me = await client.get<{
       id?: string;
+      account_id?: string;
       display_name?: string;
       product?: string;
       country?: string;
@@ -776,11 +786,18 @@ async function accountRows(client: SpotifyClient): Promise<DoctorRow[]> {
     const country: string | undefined = me.country;
     const name = me.display_name ?? me.id;
     const notReturned = 'not returned (removed from /me in Feb 2026)';
+    // #602: `account_id` is the field Spotify documents for account linking,
+    // and the one `list_accounts` and `switch_account` key on — so a doctor
+    // report that named only `id` could not be matched against the registry
+    // and would not settle "is this the account I think it is". It is reported
+    // as absent when absent: an older registration does not serve it, and a
+    // stand-in built from `id` would look like a real match (§6).
+    const accountId = me.account_id ?? 'not returned (account predates the field)';
     rows.push({
       id: 'account',
       status: 'info',
-      summary: `account: ${name} (${me.id}) product=${product ?? notReturned} country=${country ?? notReturned}`,
-      detail: `display_name=${name} id=${me.id} product=${product ?? notReturned} country=${country ?? notReturned}`,
+      summary: `account: ${name} (${me.id}) account_id=${accountId} product=${product ?? notReturned} country=${country ?? notReturned} token_file=${tokenFile}`,
+      detail: `display_name=${name} id=${me.id} account_id=${accountId} product=${product ?? notReturned} country=${country ?? notReturned} token_file=${tokenFile}`,
     });
     if (product === 'free' || product === 'open') {
       rows.push({
@@ -920,7 +937,7 @@ export async function collectDoctorReport(
   const tokenFile = reportTokenFile(client, opts);
   const tokens = await tokenRows(tokenFile);
   const surface = surfaceFor(server, tokens.tokens);
-  const account = await accountRows(client);
+  const account = await accountRows(client, tokenFile);
   const rows = [
     ...tokens.rows,
     ...scopeRows(tokens.tokens, surface),

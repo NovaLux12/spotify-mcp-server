@@ -130,6 +130,16 @@ interface PersistFile {
 export interface CachePersistOptions {
   /** Override the file path (tests, multi-account homes). */
   file?: string;
+  /**
+   * The token file the cache belongs to (#602), when the caller already knows
+   * it. The client does: it resolved one at construction and re-points it when
+   * a session switches account. Without this, the path below re-resolves from
+   * the environment, which after a switch still names the STARTUP account —
+   * so a switched client would persist its reads into the account it just
+   * left. That is #1249's leak again, one layer out, and it is why the option
+   * exists rather than the client computing a path of its own here.
+   */
+  tokenFile?: string;
   /** Override the byte cap. */
   maxBytes?: number;
 }
@@ -196,10 +206,14 @@ function cacheFileNameFor(tokenFile: string): string {
  *
  * `SPOTIFY_MCP_DATA_DIR` still overrides the DIRECTORY (tests, relocated homes);
  * it does not merge accounts, because the name is still profile-derived.
+ *
+ * #602 adds `opts.tokenFile` for the client that has already switched account:
+ * re-resolving would hand back the account the process STARTED as, so the
+ * switch would persist into the account it just left.
  */
 export function cachePersistPath(env: NodeJS.ProcessEnv = process.env, opts: CachePersistOptions = {}): string {
   if (opts.file) return opts.file;
-  const tokenFile = getTokenFilePath(env);
+  const tokenFile = opts.tokenFile ?? getTokenFilePath(env);
   const dir = env.SPOTIFY_MCP_DATA_DIR?.trim() || dirname(tokenFile);
   return join(dir, cacheFileNameFor(tokenFile));
 }

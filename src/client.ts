@@ -1191,8 +1191,10 @@ export class SpotifyClient {
   private _requestsTotal = 0;
   private _requestTimes: number[] = [];
 
-  // Immutable-read TTL cache (#54) — null when disabled.
-  readonly cache: LruTtlCache<unknown> | null;
+  // Immutable-read TTL cache (#54) — null when disabled. Re-assigned by
+  // `switchAccount` (#602) because a cache keyed by request rather than by
+  // account must not survive a change of account; see that method.
+  cache: LruTtlCache<unknown> | null;
   // Exact wire size of each body this client parsed (#894), keyed by the
   // parsed value, so the cache charges the bytes Spotify actually sent rather
   // than serializing every payload a second time to measure it. Weak, so it
@@ -1200,7 +1202,8 @@ export class SpotifyClient {
   private readonly _bodySizes = new WeakMap<object, number>();
   // ETag validators for conditional reads (#601) — null when disabled. Holds
   // the payload an ETag identifies so a 304 can be answered without a body.
-  readonly validators: ValidatorStore<unknown> | null;
+  // Re-assigned by `switchAccount` (#602) for the same reason as `cache`.
+  validators: ValidatorStore<unknown> | null;
   /**
    * Monotonic counter bumped by every invalidation (#893). A read captures it
    * before it goes to the network and refuses to STORE its body if it moved
@@ -1231,16 +1234,40 @@ export class SpotifyClient {
    * unless `SPOTIFY_MCP_CACHE_PERSIST=1`. Only ever holds allowlisted,
    * non-`/me` catalog reads — see {@link isPersistableKey}.
    */
-  private readonly _persist: CachePersistController | null;
+  private _persist: CachePersistController | null;
   /**
    * The token file this client reads, refreshes and writes (#609). Resolved
    * once, at construction, from the same function `loadTokens` and
    * `saveTokens` call. Public because the doctor reports on the very file the
    * client authenticates with — a diagnostic that named a different one would
    * be diagnosing something nobody is using.
+   *
+   * Not `readonly` any more since #602: `switchAccount` re-points it at the
+   * new account's file. It is still assigned in exactly one place at
+   * construction, so "one resolution per client" still holds for a client that
+   * never switches; a session that DOES switch has one resolution per switch,
+   * which is the point.
    */
-  readonly tokenFile: string;
+  tokenFile: string;
   private readonly fetchAllCap: number;
+  /**
+   * Whether this client has a read cache at all, and the sizing it was built
+   * with. Retained so `switchAccount` (#602) can rebuild an EQUIVALENT cache
+   * rather than either dropping the setting or inventing defaults — a switch
+   * that quietly turned caching on where it was off, or resized it, would
+   * change the client's behaviour in a way the switch tool never mentioned.
+   */
+  private readonly _cacheEnabled: boolean;
+  private readonly _cacheOpts: SpotifyClientOptions['cache'];
+  private readonly _validatorTtlMs: SpotifyClientOptions['validatorTtlMs'];
+  /**
+   * The persist options this client was built with, kept so `switchAccount`
+   * rebuilds an equivalent controller. A caller that pinned
+   * `cachePersist.file` keeps that pin across a switch: it asked for that
+   * exact file, and silently redirecting it would be a worse surprise than
+   * the sharing it might cause. Test hermeticity is the common case.
+   */
+  private readonly _persistOpts: SpotifyClientOptions['cachePersist'];
   /**
    * Ceiling on requests in flight at once (#892). Read once at construction,
    * like fetchAllCap, so one client has one stable bound.
@@ -1261,13 +1288,17 @@ export class SpotifyClient {
     this.fetchAllCap = opts.fetchAllCap ?? getConfig().fetchAllCap;
     this._maxConcurrency = opts.maxConcurrency ?? getConfig().maxConcurrency;
     this.random = opts.random ?? Math.random;
+    this._cacheEnabled = !opts.disableCache;
+    this._cacheOpts = opts.cache;
+    this._validatorTtlMs = opts.validatorTtlMs;
+    this._persistOpts = opts.cachePersist;
     this.cache = opts.disableCache ? null : new LruTtlCache<unknown>(opts.cache);
     this.validators = opts.disableCache
       ? null
       : new ValidatorStore<unknown>(opts.validatorTtlMs, opts.cache?.maxEntries);
     this._persist = opts.disableCache || !cachePersistEnabled()
       ? null
-      : new CachePersistController(cachePersistPath(), opts.cachePersist);
+      : new CachePersistController(cachePersistPath(process.env, { tokenFile: this.tokenFile }), opts.cachePersist);
     // Restore before the first read can miss: a load that lands after a read
     // would make the second process pay the fetch anyway, and the restored
     // entries are deadline-checked on load so nothing expired is revived.
@@ -1294,11 +1325,134 @@ export class SpotifyClient {
   }
 
   /**
+   * Act as a different account for every subsequent call (#602).
+   *
+   * This is the whole of the cross-account isolation guarantee, and it is four
+   * pieces of state that each have to be dropped or re-pointed. Miss any one
+   * and a switched session keeps serving the previous account's data, which
+   * is the failure the issue exists to prevent:
+   *
+   *   1. `tokenFile` re-pointed, so the next token load and the next refresh
+   *      read and write the NEW account's file. `loadTokens`/`saveTokens`
+   *      take it as an argument for exactly this reason — left to re-resolve,
+   *      they would go back to the startup account.
+   *   2. `tokens`/`loadPromise` cleared, so the memoized access token of the
+   *      previous account is not carried into the new one. `getTokens()`
+   *      memoizes its promise, so without this the very first call after a
+   *      switch would send the OLD `Authorization` header to the NEW account
+   *      and get a 401 that looks like bad credentials rather than a switch.
+   *   3. `cache` replaced with a fresh, EMPTY one. The read cache is keyed by
+   *      request — method, path, params — and carries no account component,
+   *      so a surviving entry is a `/me`-scoped or library-scoped response
+   *      being handed to the account that did not fetch it. This is the single
+   *      most important line in the method: the persisted cache was already
+   *      per-profile on disk (#1249), which is why only the IN-MEMORY half
+   *      needed handling.
+   *   4. `validators` replaced too, for the same reason with a sharper edge: a
+   *      conditional read presents an ETag, and a 304 answers from the stored
+   *      payload. A validator from the previous account would therefore
+   *      produce a "not modified" answer carrying the PREVIOUS account's
+   *      bytes, with no request to notice.
+   *
+   * The persist controller is rebuilt against the NEW account's cache file and
+   * the old one is flushed first, so pending writes land in the file that
+   * actually belongs to them. The path comes from `cachePersistPath` with an
+   * explicit `tokenFile` rather than a bare call, because the bare form
+   * re-resolves from the process environment and would hand back the
+   * STARTUP account's `cache.json` — #1249's exact bug, reintroduced one
+   * layer out. The naming stays in `cachepersist.ts` for the same reason it
+   * lives there: one definition, not a second one in the client.
+   *
+   * A switch must not race live requests. One already past
+   * `ensureValidToken` would finish under the old account and then write its
+   * response into the new account's cache, which is the same leak with an
+   * extra step — so the `switch_account` tool calls
+   * {@link SpotifyClient.drainPendingRequests} first, and this method is not
+   * reachable from a path that skips it.
+   */
+  async switchAccount(tokenFile: string): Promise<void> {
+    if (tokenFile === this.tokenFile) return;
+    // Land whatever the previous account had queued in ITS cache file first.
+    await this._persist?.flush();
+    this.tokenFile = tokenFile;
+    this.tokens = null;
+    this.loadPromise = null;
+    this.cache = this._cacheEnabled
+      ? new LruTtlCache<unknown>(this._cacheOpts)
+      : null;
+    this.validators = this._cacheEnabled
+      ? new ValidatorStore<unknown>(this._validatorTtlMs, this._cacheOpts?.maxEntries)
+      : null;
+    this._persist = this._cacheEnabled && cachePersistEnabled()
+      ? new CachePersistController(
+        cachePersistPath(process.env, { tokenFile, ...this._persistOpts }),
+        this._persistOpts,
+      )
+      : null;
+    if (this._persist) {
+      // Same reasoning as the constructor: the process-level flush handlers
+      // are installed once and stay, but the controller they reach through
+      // must be the live one.
+      activePersist = this._persist;
+      void this._persist.load(this.cache);
+    }
+  }
+
+  /**
+   * Wait until the funnel is idle — nothing queued, nothing in flight.
+   *
+   * Used by `switch_account` so the account change lands at a point where no
+   * request can still be holding the previous account's token. Parking on the
+   * scheduler's own change notification rather than polling: this is the same
+   * register-then-re-check dance `_drain` performs, and for the same reason —
+   * the state can change between the check and the registration, and a
+   * notification that arrives with no waiter registered is simply lost, which
+   * would park here forever.
+   *
+   * Bounded on purpose. A queue that never drains — a long walk, a request
+   * parked on a throttle cooldown — is a fact the caller should be told, not a
+   * tool call that hangs until the host gives up.
+   */
+  async drainPendingRequests(timeoutMs = 5_000): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      // Registered BEFORE the idle re-check, and the deadline raced against
+      // the notification rather than merely checked before awaiting it: a
+      // queue that stays busy changes no state and sends no notification, so
+      // a check-then-await would park here for as long as the call takes
+      // instead of for the timeout it promised.
+      const change = this._waitForChange();
+      if (this._inFlight === 0 && this._queued() === 0) {
+        change.cancel();
+        return;
+      }
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) {
+        change.cancel();
+        throw new Error(
+          'switch_account: requests were still in flight after '
+          + `${timeoutMs}ms. Refusing to switch mid-flight — a request already holding the `
+          + "previous account's token would finish against the new one. Retry once the queue settles.",
+        );
+      }
+      // The timer is deliberately NOT unref'd. An unref'd deadline does not
+      // merely fail to hold the loop open — when the in-flight request is the
+      // only other pending work and it is itself blocked, an unref'd timer is
+      // never reached at all and the process exits with this await unsettled.
+      // It cannot outlive the function either way: the race settles within
+      // `remaining` and the timer fires at `remaining`.
+      await Promise.race([
+        change.promise,
+        new Promise<void>((resolve) => { setTimeout(resolve, remaining); }),
+      ]);
+    }
+  }
+
+  /**
    * Install a callback invoked after every page of every getAllPages walk.
    * Callbacks must not throw meaningful errors — they are wrapped, but treat
    * them best-effort. Pass null to remove.
-   */
-  setProgressReporter(fn: ((info: PageProgress) => void) | null): void {
+   */  setProgressReporter(fn: ((info: PageProgress) => void) | null): void {
     this.progressReporter = fn;
   }
 
@@ -1518,7 +1672,7 @@ export class SpotifyClient {
 
   private getTokens(): Promise<TokenData> {
     if (!this.loadPromise) {
-      this.loadPromise = loadTokens().then(
+      this.loadPromise = loadTokens(this.tokenFile).then(
         (t) => {
           this.tokens = t;
           return t;
@@ -1678,7 +1832,7 @@ export class SpotifyClient {
       expires_at: Date.now() + expiresIn * 1000,
     };
 
-    await saveTokens(this.tokens);
+    await saveTokens(this.tokens, this.tokenFile);
     return null;
   }
 

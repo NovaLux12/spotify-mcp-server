@@ -10,7 +10,7 @@ Spotify Web API MCP: playback, library, playlists, search, podcasts. Not affilia
 A broad Spotify Web API tool surface, plus extras most servers skip. Registration-gated wrappers are explained rather than hidden; see [Registration-gated endpoints](#registration-gated-endpoints) for the generated list.
 
 <!-- BEGIN:generated surface-census -->
-The finalized default MCP registry exposes **587 tools**, **16 fixed resources**, **33 resource templates**, and **14 prompts**. Toolsets and production gates can trim a configured host; these totals describe the default production `tools/list` after finalizers.
+The finalized default MCP registry exposes **589 tools**, **16 fixed resources**, **33 resource templates**, and **14 prompts**. Toolsets and production gates can trim a configured host; these totals describe the default production `tools/list` after finalizers.
 <!-- END:generated surface-census -->
 
 ---

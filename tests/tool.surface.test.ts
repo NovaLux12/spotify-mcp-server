@@ -191,6 +191,13 @@ const OUTPUT_FIELD_NAMES = new Set<string>([
   // apart. Both are keys the tool reports about its own result.
   'publisher_facet_available',
   'publisher_matches',
+  // #602: the acting-account echo adds these two keys to EVERY tool result's
+  // structuredContent (src/actingaccount.ts), and list_accounts' description
+  // names them so a caller knows the result names its owner. Output fields a
+  // tool reports about its own result, not tools it routes to — the same
+  // category as `quota_hit_at_playlist` above.
+  'account_id',
+  'display_name',
   // Cursors and caps a call reports back so the next call can continue.
   // #809: create_smart_playlist names the candidate-pool ceiling it reports.
   'pool_capped', 'pool_cap',
