@@ -28,12 +28,27 @@ interface RecordedCall {
 
 type Responder = (path: string, arg: unknown) => unknown;
 
+/**
+ * A tool result, as the users tools actually return it.
+ *
+ * MCP makes `structuredContent` optional, but every tool `registerUsersTools`
+ * registers returns through `shapeResult`, which attaches the payload
+ * unconditionally — so the optional declaration was a lie in both directions:
+ * it hid the field from the reads below and would have let them through as
+ * `undefined` had a tool stopped emitting it. `invoke` proves it per call.
+ */
+interface ToolResult {
+  content: Array<{ type: string; text: string }>;
+  structuredContent: Record<string, unknown>;
+  isError?: boolean;
+}
+
 interface RegisteredTool {
   name: string;
   description: string;
   /** Validates raw args exactly like the MCP SDK would before invoking the handler. */
   validate: (args: Record<string, unknown>) => Record<string, unknown>;
-  handler: (args: Record<string, unknown>) => Promise<{ content: Array<{ type: string; text: string }> }>;
+  handler: (args: Record<string, unknown>) => Promise<ToolResult>;
 }
 
 function makeStubClient(responder: Responder = () => null) {
@@ -74,13 +89,17 @@ function harness(responder: Responder = () => null) {
     },
     registerTool(
       name: string,
-      config: { description?: string; inputSchema?: z.ZodType },
+      // Typed as an OBJECT schema because that is what a tool's `inputSchema`
+      // is: the parsed output is the validated argument record the handler is
+      // called with. A bare `z.ZodType` erases that to `unknown`, which is what
+      // made the cast at the `parse` below necessary.
+      config: { description?: string; inputSchema?: z.ZodType<Record<string, unknown>> },
       handler: RegisteredTool['handler'],
     ) {
       registered.push({
         name,
         description: config.description ?? '',
-        validate: (args) => (config.inputSchema as z.ZodType).parse(args),
+        validate: (args) => (config.inputSchema as z.ZodType<Record<string, unknown>>).parse(args),
         handler,
       });
     },
@@ -95,7 +114,12 @@ function harness(responder: Responder = () => null) {
       const tool = registered.find((t) => t.name === name);
       assert.ok(tool, `tool "${name}" should be registered`);
       // Async so schema-validation throws surface as rejections.
-      return tool.handler(tool.validate(args));
+      const res = await tool.handler(tool.validate(args));
+      assert.ok(
+        res.structuredContent !== undefined,
+        `tool "${name}" returned no structuredContent — every assertion about its payload would be vacuous`,
+      );
+      return res;
     },
   };
 }
@@ -115,7 +139,23 @@ const publicProfile = () => ({
   images: [{ url: 'https://i.scdn.co/image/profile', height: 640, width: 640 }],
 });
 
-const playlistSimple = (id: string, name: string, trackTotal = 3) => ({
+// `display_name` is typed `string | null` because that is what the API sends
+// and what `src/tools/users.ts:71` declares: a playlist owned by a deleted
+// account comes back with no display name, and the tool falls back to
+// `owner.id`. Without the annotation the fixture inferred `string` and the
+// fallback test could not express the case it exists to cover.
+const playlistSimple = (
+  id: string,
+  name: string,
+  trackTotal = 3,
+): {
+  id: string;
+  name: string;
+  uri: string;
+  description: string | null;
+  owner: { id: string; display_name: string | null };
+  items: { total: number };
+} => ({
   id,
   name,
   uri: `spotify:playlist:${id}`,

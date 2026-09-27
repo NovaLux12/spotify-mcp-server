@@ -13,6 +13,7 @@ import { registerExhaustMiscTools } from '../src/tools/exhaustmisc.js';
 import { registerPlaylistBatchTools } from '../src/tools/playlistbatch.js';
 import { registerPlaylistOpsTools } from '../src/tools/playlistops.js';
 import { registerPlaylistTools } from '../src/tools/playlists.js';
+import { asRecord } from '../src/shaping.js';
 import { registerSwarm3PlaylistopsTools } from '../src/tools/swarm3_playlistops.js';
 import { registerSwarm4PlaylistsTools } from '../src/tools/swarm4_playlists.js';
 import type { PlaylistItemObject, SpotifyTrack } from '../src/types/spotify.js';
@@ -176,7 +177,7 @@ const CALL_CASES: Record<ToolName, CallCase> = {
 };
 
 function makeClient(calls: string[]): SpotifyClient {
-  return {
+  const client = {
     async get<T>(path: string): Promise<T | null> {
       calls.push(path);
       // #1004: this used to answer `/playlists/{id}/followers/contains`, a
@@ -191,7 +192,14 @@ function makeClient(calls: string[]): SpotifyClient {
       const id = decodeURIComponent(path.replace('/playlists/', ''));
       return { id, name: `Playlist ${id}` } as T;
     },
-    async getAllPages<T>(path: string): Promise<T[]> {
+    // The real `getAllPages(path, params?, opts?)` — the wrapping walk above
+    // forwards all three, so a double that accepted only `path` was not the
+    // signature the tools actually call.
+    async getAllPages<T>(
+      path: string,
+      _params?: Record<string, string>,
+      _opts?: { maxItems?: number; initialOffset?: number },
+    ): Promise<T[]> {
       calls.push(path);
       return [];
     },
@@ -223,7 +231,12 @@ function makeClient(calls: string[]): SpotifyClient {
     async delete<T>(): Promise<T | null> {
       return { snapshot_id: 'snapshot' } as T;
     },
-  } as unknown as SpotifyClient;
+  };
+  // The cast sits on the RETURN, not on the literal: `({...} as unknown as
+  // SpotifyClient)` gives the object literal the contextual type `unknown`, so
+  // `this` inside its own methods resolved to `{}` and every `this.getAllPages`
+  // read below was an error against a type the fixture never had.
+  return client as unknown as SpotifyClient;
 }
 
 interface PlaylistHarness {
@@ -313,7 +326,11 @@ async function makeUnionGateHarness(options: UnionGateOptions): Promise<UnionGat
       // `items` is the current PlaylistObject field; `tracks` is deprecated.
       return { id, name: 'Playlist', items: { total: targetTotal ?? rows + targetNullUris } } as T;
     },
-    async getAllPages<T>(path: string): Promise<T[]> {
+    async getAllPages<T>(
+      path: string,
+      _params?: Record<string, string>,
+      _opts?: { maxItems?: number; initialOffset?: number },
+    ): Promise<T[]> {
       calls.push(path);
       const first = path.includes(`/${PLAYLIST_1}/items`);
       const second = path.includes(`/${PLAYLIST_2}/items`);
@@ -374,9 +391,9 @@ async function makeUnionGateHarness(options: UnionGateOptions): Promise<UnionGat
     async delete<T>(): Promise<T | null> {
       return null;
     },
-  } as unknown as SpotifyClient;
+  };
   const server = new McpServer({ name: 'union-confirm-contract', version: '0.0.0' });
-  registerPlaylistTools(server, client);
+  registerPlaylistTools(server, client as unknown as SpotifyClient);
   // No error boundary here: this harness exercises the confirmation gate, and
   // the boundary converts a thrown guard into a typed envelope. The retirement
   // refusal is proven against the boundary in the main harness above.
@@ -506,9 +523,14 @@ describe('playlist set/diff schema and resolver contract (#912)', () => {
       // string a caller greps for when they are still sending the old name, so
       // the wrong version here is a real defect, not a cosmetic one.
       assert.match(message, /removed in v3\.0/, `${name} refusal did not state the removal version`);
+      // `asRecord`, not a cast: the refusal envelope is then read the same way
+      // the server writes it, so a refusal that dropped `error` reads as
+      // `undefined` here and fails, rather than type-erroring or silently
+      // comparing equal to a missing field.
       if (structured) {
-        assert.equal(structured.error?.kind, 'validation', `${name} refusal was not a typed validation error`);
-        assert.equal(structured.error?.reason, 'retired_input', `${name} refusal reason was not retired_input`);
+        const error = asRecord(structured.error);
+        assert.equal(error?.kind, 'validation', `${name} refusal was not a typed validation error`);
+        assert.equal(error?.reason, 'retired_input', `${name} refusal reason was not retired_input`);
       }
       assert.deepEqual(harness.calls, [], `${name} reached Spotify before refusing a retired input`);
     }

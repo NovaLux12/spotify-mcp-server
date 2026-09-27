@@ -118,7 +118,10 @@ function validUntil(ms: number, token: string): TokenFile {
 }
 
 /** Drive the resolver as if the process had been launched with `argv`. */
-async function withArgvAsync<T>(argv: string[], fn: () => Promise<T>): Promise<T> {
+// `T | Promise<T>`, not `Promise<T>`: the stores resolve a path from
+// `process.argv` and return it synchronously, and this helper is about the
+// argv swap, not about the callback being async.
+async function withArgvAsync<T>(argv: string[], fn: () => T | Promise<T>): Promise<T> {
   const saved = process.argv;
   process.argv = ['node', 'spotify-mcp', ...argv];
   try {
@@ -226,6 +229,28 @@ describe('getTokenFilePath', () => {
 // 2. The cross-process refresh guard reads the ACTIVE profile's file
 // ---------------------------------------------------------------------------
 
+/**
+ * `RequestInit['headers']` is a union — `Headers`, `[string, string][]`, or a
+ * plain record — so `init.headers?.Authorization` only typechecks against one
+ * of the three. This reads the header the way `fetch` itself would, and
+ * returns `undefined` when it is genuinely absent rather than guessing. The
+ * type is reached through `RequestInit` rather than named as `HeadersInit`,
+ * because the test tree compiles with `lib: ["ES2024"]` and no DOM.
+ */
+function headerValue(headers: RequestInit['headers'], name: string): string | undefined {
+  if (headers === undefined) return undefined;
+  if (Array.isArray(headers)) {
+    const hit = headers.find(([key]) => key.toLowerCase() === name.toLowerCase());
+    return hit?.[1];
+  }
+  if (typeof (headers as Headers).get === 'function') {
+    return (headers as Headers).get(name) ?? undefined;
+  }
+  const record = headers as Record<string, string>;
+  const key = Object.keys(record).find((k) => k.toLowerCase() === name.toLowerCase());
+  return key === undefined ? undefined : record[key];
+}
+
 interface FetchCall {
   url: string;
   auth: string | undefined;
@@ -245,7 +270,7 @@ describe('the refresh guard follows the active profile', () => {
     globalThis.fetch = (async (url: unknown, init: RequestInit) => {
       calls.push({
         url: String(url),
-        auth: init.headers?.Authorization,
+        auth: headerValue(init.headers, 'Authorization'),
         body: typeof init.body === 'string' ? init.body : undefined,
       });
       if (String(url).includes('accounts.spotify.com')) {

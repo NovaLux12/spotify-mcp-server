@@ -31,6 +31,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 
 const tokenDir = await mkdtemp(path.join(tmpdir(), 'spotify-mcp-cancel-test-'));
 process.env.SPOTIFY_MCP_TOKEN_FILE = path.join(tokenDir, 'tokens.json');
@@ -579,7 +580,7 @@ describe('#676 cancellation', () => {
           if (typeof cb === 'function') registered.push(cb as (a: unknown, e: unknown) => unknown);
         },
       };
-      installCancellationContextBoundary(fakeServer);
+      installCancellationContextBoundary(fakeServer as unknown as McpServer);
 
       const seen: (AbortSignal | undefined)[] = [];
       fakeServer.registerTool('walk_thing', { description: 'x' }, async () => {

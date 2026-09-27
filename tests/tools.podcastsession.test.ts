@@ -28,7 +28,10 @@ interface RecordedCall {
   arg?: unknown;
 }
 
-type Responder = (path: string, arg: unknown) => unknown;
+// The harness responder IS the shared stub's `LegacyResponder`. Declaring a
+// narrower local signature instead forced the three `as LegacyResponder` casts
+// at the construction site below — casts of a type the value already had.
+type Responder = LegacyResponder;
 
 interface RegisteredTool {
   name: string;
@@ -42,16 +45,53 @@ interface RegisteredTool {
   }>;
 }
 
+/**
+ * A tool result whose `structuredContent` has been PROVED present.
+ *
+ * Both tools here return through a payload-attaching emitter, so the
+ * optional in {@link RegisteredTool} is MCP's wire shape rather than a fact
+ * about these tools. `byName` proves it once (see `harness`), which is what
+ * lets the payload reads below be reads of a field rather than of a promise
+ * the compiler cannot check.
+ */
+type ToolResult = {
+  content: Array<{ type: string; text: string }>;
+  structuredContent: Record<string, unknown>;
+};
+
+/**
+ * `payload.episodes` as an array, naming the field when it is not one.
+ *
+ * The planner's rows are read with `.length`, `[0]` and `.map`; off an
+ * untyped payload each of those is a read of `unknown`, and a payload that
+ * carried no `episodes` at all would have failed with a `TypeError` naming
+ * nothing. An absent row array is UNANSWERED, not empty (#803).
+ */
+function episodesAt(payload: Record<string, unknown>): unknown[] {
+  const rows = payload.episodes;
+  assert.ok(Array.isArray(rows), `payload.episodes should be an array, got ${typeof rows}`);
+  return rows;
+}
+
+/** Narrow an `unknown` to a record, naming the row when it is not one. */
+function recordOf(value: unknown, label: string): Record<string, unknown> {
+  assert.ok(
+    value !== null && typeof value === 'object' && !Array.isArray(value),
+    `${label} should be an object, got ${value === null ? 'null' : typeof value}`,
+  );
+  return value as Record<string, unknown>;
+}
+
 function makeStubClient(responder: Responder = () => null) {
   // #659: the shared stub. `getAllPages` is INHERITED from SpotifyClient, so the
   // cap comes from `getConfig().fetchAllCap` and the short-page / total breaks
   // are the production ones. This file's hand-copied loop (hardcoded `?? 500`)
   // could not catch a regression in any of that.
-  const client = new StubFromResponder(responder as LegacyResponder, {
+  const client = new StubFromResponder(responder, {
     writes: {
-    POST: responder as LegacyResponder,
-    PUT: responder as LegacyResponder,
-    DELETE: responder as LegacyResponder,
+    POST: responder,
+    PUT: responder,
+    DELETE: responder,
     // The old putRaw recorded the upload and answered nothing — a real 202.
     PUT_RAW: () => undefined,
     },
@@ -78,7 +118,22 @@ function harness(responder: Responder = () => null) {
   } as unknown as McpServer;
   const stub = makeStubClient(responder);
   registerPodcastSessionTools(fakeServer, stub.client);
-  const byName = new Map(registered.map((t) => [t.name, t]));
+  // The map's handlers PROVE `structuredContent` rather than leaving each call
+  // site to write `!`. The field is optional on the wire; it is not optional
+  // here, and a tool that stopped populating it should fail by name.
+  const byName = new Map(
+    registered.map((t) => [
+      t.name,
+      {
+        ...t,
+        handler: async (args: Record<string, unknown>): Promise<ToolResult> => {
+          const res = await t.handler(args);
+          assert.ok(res.structuredContent, `tool "${t.name}" returned no structuredContent`);
+          return { ...res, structuredContent: res.structuredContent };
+        },
+      },
+    ]),
+  );
   return { registered, client: stub.client, byName };
 }
 
@@ -143,8 +198,8 @@ describe('plan_podcast_session', () => {
     );
     const res = await h.byName.get('plan_podcast_session')!.handler({ minutes: 30 });
 
-    const sc = res.structuredContent!;
-    assert.equal(sc.episodes.length, 2); // C (15 min) would overrun 0 left → stop
+    const sc = res.structuredContent;
+    assert.equal(episodesAt(sc).length, 2); // C (15 min) would overrun 0 left → stop
     assert.equal(sc.planned_ms, 30 * MIN);
     assert.equal(sc.fill_percent, 100);
     assert.equal(sc.stopped_reason, 'budget_filled');
@@ -154,9 +209,9 @@ describe('plan_podcast_session', () => {
   it('exact fit consumes the whole budget and reports budget filled', async () => {
     const h = harness(savedEpisodes([ep({ name: 'A', duration_ms: 45 * MIN })]));
     const res = await h.byName.get('plan_podcast_session')!.handler({ minutes: 45 });
-    assert.equal(res.structuredContent!.fill_percent, 100);
-    assert.equal(res.structuredContent!.planned_ms, 45 * MIN);
-    assert.equal(res.structuredContent!.stopped_reason, 'budget_filled');
+    assert.equal(res.structuredContent.fill_percent, 100);
+    assert.equal(res.structuredContent.planned_ms, 45 * MIN);
+    assert.equal(res.structuredContent.stopped_reason, 'budget_filled');
     assert.match(res.content[0].text, /budget filled/i);
     assert.doesNotMatch(res.content[0].text, /exceeds/i);
   });
@@ -170,16 +225,16 @@ describe('plan_podcast_session', () => {
         ep({ name: 'C', duration_ms: 10 * MIN }),
       ]));
       const res = await h.byName.get('plan_podcast_session')!.handler({ minutes: 40 });
-      assert.equal(res.structuredContent!.candidates_truncated, true);
-      assert.equal(res.structuredContent!.stopped_reason, 'scan_cap_reached');
+      assert.equal(res.structuredContent.candidates_truncated, true);
+      assert.equal(res.structuredContent.stopped_reason, 'scan_cap_reached');
       assert.match(res.content[0].text, /stopped at scan cap \(2\)/);
       const fullButNotTruncated = harness(savedEpisodes([
         ep({ name: 'A', duration_ms: 10 * MIN }),
         ep({ name: 'B', duration_ms: 10 * MIN }),
       ]));
       const fullRes = await fullButNotTruncated.byName.get('plan_podcast_session')!.handler({ minutes: 40 });
-      assert.equal(fullRes.structuredContent!.candidates_truncated, false);
-      assert.equal(fullRes.structuredContent!.stopped_reason, 'candidates_exhausted');
+      assert.equal(fullRes.structuredContent.candidates_truncated, false);
+      assert.equal(fullRes.structuredContent.stopped_reason, 'candidates_exhausted');
     } finally {
       initConfig();
     }
@@ -194,11 +249,11 @@ describe('plan_podcast_session', () => {
     );
     const res = await h.byName.get('plan_podcast_session')!.handler({ minutes: 30 });
     assert.deepEqual(
-      res.structuredContent!.episodes.map((e: { name: string }) => e.name),
+      episodesAt(res.structuredContent).map((e) => recordOf(e, 'episodes[]').name),
       ['fresh'],
     );
-    assert.equal(res.structuredContent!.skipped_fully_played, 1);
-    assert.equal(res.structuredContent!.planned_ms, 25 * MIN);
+    assert.equal(res.structuredContent.skipped_fully_played, 1);
+    assert.equal(res.structuredContent.planned_ms, 25 * MIN);
   });
 
   it('subtracts resume position from remaining time', async () => {
@@ -209,11 +264,11 @@ describe('plan_podcast_session', () => {
       ]),
     );
     const res = await h.byName.get('plan_podcast_session')!.handler({ minutes: 30 });
-    const item = res.structuredContent!.episodes[0];
+    const item = recordOf(episodesAt(res.structuredContent)[0], 'episodes[0]');
     assert.equal(item.remaining_ms, 25 * MIN);
     assert.equal(item.resume_position_ms, 15 * MIN);
-    assert.equal(res.structuredContent!.planned_ms, 25 * MIN);
-    assert.equal(res.structuredContent!.fill_percent, 83);
+    assert.equal(res.structuredContent.planned_ms, 25 * MIN);
+    assert.equal(res.structuredContent.fill_percent, 83);
   });
 
   it('stops at the first unplayed episode that overruns the budget', async () => {
@@ -225,8 +280,8 @@ describe('plan_podcast_session', () => {
     );
     const res = await h.byName.get('plan_podcast_session')!.handler({ minutes: 30 });
     // Greedy in-order: big overruns → stop; small-fits is never considered.
-    assert.equal(res.structuredContent!.episodes.length, 0);
-    assert.equal(res.structuredContent!.stopped_reason, 'next_episode_exceeds_budget');
+    assert.equal(episodesAt(res.structuredContent).length, 0);
+    assert.equal(res.structuredContent.stopped_reason, 'next_episode_exceeds_budget');
     assert.match(res.content[0].text, /No playable episodes fit/);
   });
 
@@ -287,7 +342,7 @@ describe('plan_podcast_session', () => {
     assert.ok(seen.includes('/me/shows'));
     assert.ok(seen.includes('/shows/s1/episodes'));
     assert.ok(!seen.includes('/me/episodes'), 'saved episodes must be skipped for kind=shows');
-    assert.equal(res.structuredContent!.episodes[0].name, 'Show Ep');
+    assert.equal(recordOf(episodesAt(res.structuredContent)[0], 'episodes[0]').name, 'Show Ep');
   });
 
   it('makes zero mutating calls', async () => {
@@ -342,9 +397,9 @@ describe('start_podcast_session', () => {
     assert.ok(kinds.indexOf('PUT /me/player/play') < kinds.indexOf('POST /me/player/queue'));
 
     assert.match(res.content[0].text, /resume position/);
-    assert.equal(res.structuredContent!.ok, true);
-    assert.equal(res.structuredContent!.queued, 2);
-    assert.deepEqual(res.structuredContent!.failed, []);
+    assert.equal(res.structuredContent.ok, true);
+    assert.equal(res.structuredContent.queued, 2);
+    assert.deepEqual(res.structuredContent.failed, []);
   });
 
   it('unresumable first episode queues everything without a PUT play', async () => {
@@ -366,9 +421,9 @@ describe('start_podcast_session', () => {
     const h = harness(savedEpisodes(fixtures));
     const res = await h.byName.get('start_podcast_session')!.handler({ minutes: 40 });
     assert.equal(h.client.calls.filter((call) => call.method === 'POST').length, 4);
-    assert.equal(res.structuredContent!.queued, 4);
-    assert.equal(res.structuredContent!.queue_total, 4);
-    assert.deepEqual(res.structuredContent!.failed, []);
+    assert.equal(res.structuredContent.queued, 4);
+    assert.equal(res.structuredContent.queue_total, 4);
+    assert.deepEqual(res.structuredContent.failed, []);
     assert.match(res.content[0].text, /Queue result: 4\/4 queued/);
   });
 
@@ -388,12 +443,12 @@ describe('start_podcast_session', () => {
       return null;
     });
     const res = await h.byName.get('start_podcast_session')!.handler({ minutes: 40 });
-    const failed = res.structuredContent!.failed as Array<{ uri: string; reason: string }>;
+    const failed = res.structuredContent.failed as Array<{ uri: string; reason: string }>;
     assert.equal(h.client.calls.filter((call) => call.method === 'POST').length, 4);
-    assert.equal(res.structuredContent!.queued, 3);
-    assert.equal(res.structuredContent!.queue_total, 4);
-    assert.equal(res.structuredContent!.ok, false);
-    assert.equal(res.structuredContent!.dominant_cause, '429 rate limited');
+    assert.equal(res.structuredContent.queued, 3);
+    assert.equal(res.structuredContent.queue_total, 4);
+    assert.equal(res.structuredContent.ok, false);
+    assert.equal(res.structuredContent.dominant_cause, '429 rate limited');
     assert.deepEqual(failed, [{ uri: failingUri, reason: '429 rate limited: slow down' }]);
     assert.match(res.content[0].text, /Queue result: 3\/4 queued/);
     assert.ok(res.content[0].text.includes(failingUri));
@@ -407,8 +462,8 @@ describe('start_podcast_session', () => {
       dry_run: true,
     });
     for (const c of h.client.calls) assert.equal(c.method, 'GET');
-    assert.equal(res.structuredContent!.ok, true);
-    assert.equal(res.structuredContent!.dry_run, true);
+    assert.equal(res.structuredContent.ok, true);
+    assert.equal(res.structuredContent.dry_run, true);
     assert.match(res.content[0].text, /\[dry run\]/);
     assert.ok(res.content[0].text.includes(`queue ${h.uris[1]}`));
     assert.match(res.content[0].text, /nothing was changed/);
@@ -443,7 +498,7 @@ describe('start_podcast_session', () => {
     const h = harness(savedEpisodes([ep({ name: 'huge', duration_ms: 400 * MIN })]));
     const res = await h.byName.get('start_podcast_session')!.handler({ minutes: 30 });
     assert.equal(h.client.calls.filter((c) => c.method !== 'GET').length, 0);
-    assert.equal(res.structuredContent!.ok, false);
+    assert.equal(res.structuredContent.ok, false);
   });
 });
 
@@ -514,8 +569,8 @@ describe('saved-show market default (#782)', () => {
     // Asserted on what the fake client received, not on a value recomputed
     // from the handler.
     assert.equal(showEpisodeRead(h.client).market, 'GB');
-    assert.equal(res.structuredContent!.market, 'GB');
-    assert.equal(res.structuredContent!.market_source, 'account');
+    assert.equal(res.structuredContent.market, 'GB');
+    assert.equal(res.structuredContent.market_source, 'account');
   });
 
   it('an explicit market argument wins, and does not fall through to the account', async () => {
@@ -529,8 +584,8 @@ describe('saved-show market default (#782)', () => {
     // merely echoed the argument would also have to be the thing that skipped /me.
     assert.equal(showEpisodeRead(h.client).market, 'DE');
     assert.equal(h.client.calls.filter((c) => c.path === '/me').length, 0);
-    assert.equal(res.structuredContent!.market, 'DE');
-    assert.equal(res.structuredContent!.market_source, 'argument');
+    assert.equal(res.structuredContent.market, 'DE');
+    assert.equal(res.structuredContent.market_source, 'argument');
   });
 
   it('prefers SPOTIFY_MCP_MARKET over the account country', async () => {
@@ -542,7 +597,7 @@ describe('saved-show market default (#782)', () => {
 
     assert.equal(showEpisodeRead(h.client).market, 'JP');
     assert.equal(h.client.calls.filter((c) => c.path === '/me').length, 0);
-    assert.equal(res.structuredContent!.market_source, 'config');
+    assert.equal(res.structuredContent.market_source, 'config');
   });
 
   it('with nothing to default from, sends no market and says the plan is unscoped', async () => {
@@ -552,8 +607,8 @@ describe('saved-show market default (#782)', () => {
 
     // The parameter is genuinely absent, not defaulted to a placeholder.
     assert.equal('market' in showEpisodeRead(h.client), false);
-    assert.equal(res.structuredContent!.market, null);
-    assert.equal(res.structuredContent!.market_source, 'none');
+    assert.equal(res.structuredContent.market, null);
+    assert.equal(res.structuredContent.market_source, 'none');
   });
 
   it('reports no market for a saved-episodes-only plan, which reads no gated endpoint', async () => {
@@ -563,7 +618,7 @@ describe('saved-show market default (#782)', () => {
 
     assert.equal(h.client.calls.filter((c) => c.path === '/shows/s1/episodes').length, 0);
     // Echoing GB here would claim a scoping no request carried.
-    assert.equal('market' in res.structuredContent!, false);
+    assert.equal('market' in res.structuredContent, false);
   });
 
   it('start_podcast_session applies the same default on the show walk', async () => {
@@ -574,7 +629,7 @@ describe('saved-show market default (#782)', () => {
       .handler({ minutes: 40, kind: 'shows', dry_run: true });
 
     assert.equal(showEpisodeRead(h.client).market, 'GB');
-    assert.equal(res.structuredContent!.market_source, 'account');
+    assert.equal(res.structuredContent.market_source, 'account');
   });
 
   it('rejects an unassigned market code locally, before any request', async () => {

@@ -1188,6 +1188,12 @@ assert.equal((res.structuredContent as { gaps_flagged: unknown[] }).gaps_flagged
     });
     const res = await handlerFor('episode_context_bundle', client)({ episode_id: 'e2', response_format: 'concise' });
     const structured = res.structuredContent as { previous: { name: string } | null; next: { name: string } | null };
+    // Both are `| null` on the wire (exhaust2_catalog.ts), so each is narrowed
+    // before its name is read. This is stronger than the previous `?.`-free
+    // read: a `previous` of `null` used to reach `.name` and throw a TypeError
+    // rather than failing the assertion that names the expected neighbour.
+    assert.ok(structured.previous, 'the window has a preceding episode');
+    assert.ok(structured.next, 'the window has a following episode');
     assert.equal(structured.previous.name, 'First');
     assert.equal(structured.next.name, 'Last');
     assert.ok(res.content[0].text.includes('← previous: "First"'));

@@ -36,11 +36,29 @@ interface RecordedCall {
 
 type Responder = (path: string, arg: unknown) => unknown;
 
+/**
+ * A registered tool's result, as the handler actually returns it.
+ *
+ * `structuredContent` is declared OPTIONAL because MCP's `CallToolResult`
+ * makes it so, but every tool this harness registers emits it: the library
+ * tools all return through `shapeResult`/`dryRunOut` in `library.ts`, which
+ * attach the payload unconditionally, and `undo_mutation` returns through
+ * `textResult(..., { ok: ... })`. Declaring the field non-optional here is the
+ * honest claim; `invoke` below PROVES it per call with an assertion, so a tool
+ * that ever stopped emitting it fails by name instead of reading `undefined`
+ * off a cast.
+ */
+interface ToolResult {
+  content: Array<{ type: string; text: string }>;
+  structuredContent: Record<string, unknown>;
+  isError?: boolean;
+}
+
 interface RegisteredTool {
   name: string;
   description: string;
   schema: unknown;
-  handler: (args: Record<string, unknown>) => Promise<{ content: Array<{ type: string; text: string }> }>;
+  handler: (args: Record<string, unknown>) => Promise<ToolResult>;
 }
 
 // Compare only method/path/arg; `extra` (putRaw content type) is asserted
@@ -123,10 +141,15 @@ function harness(responder: Responder = () => null, opts: { withUndo?: boolean }
   return {
     registered,
     client,
-    invoke: (name: string, args: Record<string, unknown>) => {
+    invoke: async (name: string, args: Record<string, unknown>) => {
       const tool = registered.find((t) => t.name === name);
       assert.ok(tool, `tool "${name}" should be registered`);
-      return tool.handler(args);
+      const res = await tool.handler(args);
+      assert.ok(
+        res.structuredContent !== undefined,
+        `tool "${name}" returned no structuredContent — every assertion about its payload would be vacuous`,
+      );
+      return res;
     },
     shape: (name: string) => {
       const tool = registered.find((t) => t.name === name);

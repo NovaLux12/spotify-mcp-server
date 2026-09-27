@@ -3,6 +3,7 @@ import { DEFAULT_TOKEN_FILE } from './helpers/hermetic.js';
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { z } from 'zod';
+import { structured } from './helpers/structured.js';
 import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, delimiter, join } from 'node:path';
@@ -60,7 +61,7 @@ function makeStubClient(responder: Responder=()=>null){
 }
 function harness(responder: Responder=()=>null, extraServerKeys?:Record<string,unknown>){
   const registered: RegisteredTool[]=[];
-  const fakeServer={ ...(extraServerKeys??{}), tool(name:string,_d:string,schema:z.ZodRawShape,h:RegisteredTool['handler']){ registered.push({name,validate:(a)=>z.object(schema).parse(a),handler:h}); }, registerTool(name:string,cfg:{description?:string;inputSchema?:z.ZodType},h:RegisteredTool['handler']){ registered.push({name,validate:(a)=>(cfg.inputSchema as z.ZodType).parse(a),handler:h}); } } as unknown as McpServer;
+  const fakeServer={ ...(extraServerKeys??{}), tool(name:string,_d:string,schema:z.ZodRawShape,h:RegisteredTool['handler']){ registered.push({name,validate:(a)=>z.object(schema).parse(a),handler:h}); }, registerTool(name:string,cfg:{description?:string;inputSchema?:z.ZodType<Record<string,unknown>>},h:RegisteredTool['handler']){ registered.push({name,validate:(a)=>(cfg.inputSchema as z.ZodType<Record<string,unknown>>).parse(a),handler:h}); } } as unknown as McpServer;
   const client=makeStubClient(responder);
   registerPortabilityTools(fakeServer, client as unknown as SpotifyClient);
   return { registered, client, invoke: async(name:string,args:Record<string,unknown>)=>{ const t=registered.find(x=>x.name===name); assert.ok(t,`tool ${name} registered`); return t.handler(t.validate(args)); } };
@@ -1298,7 +1299,7 @@ describe('import_profile_state (merge, overwrite and refusal)',()=>{
         await writeFile(env.SPOTIFY_MCP_SCENES_FILE,JSON.stringify({alpha:{tracks:['x']},beta:{tracks:['y']}}));
         const p=await archive(dir,{scenes:{beta:{tracks:['changed']},gamma:{tracks:['z']}}});
         const out=await harness().invoke('import_profile_state',{input_path:p,mode:'merge'});
-        assert.equal(out.structuredContent!.results.scenes,'merged');
+        assert.equal(structured<{results:{scenes:string}}>(out).results.scenes,'merged');
         const merged=JSON.parse(await readFile(env.SPOTIFY_MCP_SCENES_FILE,'utf8'));
         assert.deepEqual(Object.keys(merged).sort(),['alpha','beta','gamma'],'merge must not drop a store the archive did not mention');
         assert.equal(merged.beta.tracks[0],'changed');
@@ -1315,7 +1316,7 @@ describe('import_profile_state (merge, overwrite and refusal)',()=>{
         await writeFile(env.SPOTIFY_MCP_SCENES_FILE,JSON.stringify({alpha:{tracks:['x']}}));
         const p=await archive(dir,{scenes:{gamma:{tracks:['z']}}});
         const out=await harness().invoke('import_profile_state',{input_path:p,mode:'overwrite'});
-        assert.equal(out.structuredContent!.results.scenes,'overwritten');
+        assert.equal(structured<{results:{scenes:string}}>(out).results.scenes,'overwritten');
         const merged=JSON.parse(await readFile(env.SPOTIFY_MCP_SCENES_FILE,'utf8'));
         assert.deepEqual(Object.keys(merged),['gamma']);
       });

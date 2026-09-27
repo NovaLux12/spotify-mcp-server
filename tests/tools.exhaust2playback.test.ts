@@ -97,11 +97,15 @@ function makeHarness(
 const text = (out: ToolContent): string => out.content.map((c) => c.text).join('\n');
 
 function makeFakePlaybackTimers() {
-  const scheduled: Array<{ fn: () => void | Promise<void>; ms: number } & Exhaust2TimerHandle> = [];
+  // The handle carries `unref` because `Exhaust2TimerHandle` declares it: the
+  // real scheduler's handle is a `NodeJS.Timeout`, and the interface is the one
+  // thing that says so. Without it the literal was a disjoint shape and the
+  // handle the production code was handed was not a handle it could type.
+  const scheduled: Array<{ fn: () => void | Promise<void>; ms: number; unref(): void }> = [];
   const cleared: Exhaust2TimerHandle[] = [];
   const scheduler: Exhaust2TimerScheduler = {
     setTimeout(fn, ms) {
-      const handle = { fn, ms };
+      const handle = { fn, ms, unref() {} };
       scheduled.push(handle);
       return handle;
     },
@@ -366,7 +370,11 @@ test('surprise_me with seed plays a deterministic saved track', async () => {
     },
   });
   const out = await h.invoke('surprise_me', { type: 'track', seed: 7, dry_run: false });
-  const structured = out.structuredContent as { pick?: string };
+  // `chosen_type` is emitted by the tool in BOTH the dry-run and the committed
+  // branch (exhaust2_playback.ts) and is the field that says which of the three
+  // media types the seed resolved to — the whole point when `type: 'any'`. The
+  // local payload type had omitted it, so the read below was unchecked.
+  const structured = out.structuredContent as { chosen_type: 'track' | 'album' | 'playlist'; pick?: string };
   assert.match(text(out), /Surprise: playing/);
   assert.equal(structured.chosen_type, 'track');
   const put = h.calls.find((c) => c.method === 'PUT' && c.path.startsWith('/me/player/play'));

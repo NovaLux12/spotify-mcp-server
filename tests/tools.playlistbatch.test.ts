@@ -30,13 +30,31 @@ function makeStubClient(responder: Responder) {
   return { calls: client.calls, client };
 }
 function harness(responder: Responder = () => null, elicitResult?: unknown) {
-  const registered: RegisteredTool[] = []; const fakeServer: Record<string, unknown> = {
-    tool(name: string, desc: string, schema: z.ZodRawShape, handler: RegisteredTool['handler']) { registered.push({ name, description: desc, validate: (a) => z.object(schema).parse(a), handler }); },
-    registerTool(name: string, config: { description?: string; inputSchema?: z.ZodType }, handler: RegisteredTool['handler']) { registered.push({ name, description: config.description ?? '', validate: (a) => (config.inputSchema as z.ZodType).parse(a), handler }); },
+  const registered: RegisteredTool[] = [];
+  // The registrars take a real `McpServer`; this is a capture-only stand-in
+  // that also carries a fake `server` for elicitation, so it can never be one.
+  // The cast is the file's own convention (every registrar harness here does
+  // it) and it is sound: nothing in the registrar can reach past `tool`,
+  // `registerTool` and `server`, all of which are implemented here.
+  // `server` is declared here rather than bolted on: the registrar reaches for
+  // it through `McpServer` only when a gated tool wants to elicit, and a
+  // stand-in that grows the member only at the assignment site is a member the
+  // type never promised. Declaring it optional says what is true — present
+  // when this test wired elicitation, absent otherwise.
+  const fakeServer: {
+    tool(name: string, desc: string, schema: z.ZodRawShape, handler: RegisteredTool['handler']): void;
+    registerTool(name: string, config: { description?: string; inputSchema?: z.ZodType<Record<string, unknown>> }, handler: RegisteredTool['handler']): void;
+    server?: { getClientCapabilities: () => { elicitation: { form: Record<string, never> } }; elicitInput: (args?: unknown) => Promise<unknown> };
+  } = {
+    tool(name, desc, schema, handler) { registered.push({ name, description: desc, validate: (a) => z.object(schema).parse(a), handler }); },
+    registerTool(name, config, handler) { registered.push({ name, description: config.description ?? '', validate: (a) => (config.inputSchema as z.ZodType<Record<string, unknown>>).parse(a), handler }); },
   };
-  if (elicitResult !== undefined) { fakeServer.server = { getClientCapabilities: () => ({ elicitation: { form: {} } }), elicitInput: async () => { if (elicitResult instanceof Error) throw elicitResult; return elicitResult; } } as unknown as typeof fakeServer.server; }
+  if (elicitResult !== undefined) {
+    const elicit = elicitResult;
+    fakeServer.server = { getClientCapabilities: () => ({ elicitation: { form: {} } }), elicitInput: async () => { if (elicit instanceof Error) throw elicit; return elicit; } };
+  }
   const stub = makeStubClient(responder);
-  registerPlaylistBatchTools(fakeServer, stub.client);
+  registerPlaylistBatchTools(fakeServer as unknown as McpServer, stub.client);
   return { registered, client: stub.client, calls: stub.calls, invoke: async (name: string, args: Record<string, unknown>) => { const tool = registered.find((t) => t.name === name); assert.ok(tool, `tool "${name}" should be registered`); return tool.handler(tool.validate(args)); } };
 }
 const textOf = (out: { content: Array<{ text: string }> }) => out.content[0].text;

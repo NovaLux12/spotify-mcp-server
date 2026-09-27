@@ -29,8 +29,16 @@ function harness() {
     tool(name: string, _d: string, schema: z.ZodRawShape, h: RegisteredTool['handler']) {
       registered.push({ name, validate: (a) => z.object(schema).parse(a), handler: h });
     },
-    registerTool(name: string, cfg: { description?: string; inputSchema?: z.ZodType }, h: RegisteredTool['handler']) {
-      registered.push({ name, validate: (a) => (cfg.inputSchema as z.ZodType).parse(a), handler: h });
+    // `inputSchema` is typed as an OBJECT schema because that is what it is:
+    // the parse output is the validated argument record the handler receives.
+    // A bare `z.ZodType` erases the output to `unknown`, which is why this used
+    // to need a cast at the `parse` and failed the assignment to `validate`.
+    registerTool(
+      name: string,
+      cfg: { description?: string; inputSchema?: z.ZodType<Record<string, unknown>> },
+      h: RegisteredTool['handler'],
+    ) {
+      registered.push({ name, validate: (a) => (cfg.inputSchema as z.ZodType<Record<string, unknown>>).parse(a), handler: h });
     },
   } as unknown as McpServer;
   // import_profile_state never calls Spotify; the client is a shape-only stub.
@@ -60,6 +68,22 @@ const { invoke } = harness();
 /** Write a profile-state archive carrying exactly the stores a test needs. */
 const writeArchive = (stores: Record<string, unknown>) => writeFile(archive, `${JSON.stringify({ schema_version: 1, stores })}\n`);
 const readStore = async (path: string) => JSON.parse(await readFile(path, 'utf8')) as Record<string, unknown>;
+/**
+ * A store whose contents are an ARRAY (the search history), read back with the
+ * shape proven rather than asserted.
+ *
+ * `readStore` declares `Record<string, unknown>` because most stores here are
+ * maps, and casting that to an array is the shape of a claim the compiler
+ * cannot check: on a store that had been replaced by a map, `readStore(...) as
+ * unknown[]` would have typed `.length` as a number and `undefined` would have
+ * compared equal to the expected count in a way that reads as a pass. This
+ * checks `Array.isArray` and says which file was not an array.
+ */
+const readStoreArray = async (path: string): Promise<Array<Record<string, unknown>>> => {
+  const parsed: unknown = JSON.parse(await readFile(path, 'utf8'));
+  assert.ok(Array.isArray(parsed), `expected ${path} to hold a JSON array, got ${typeof parsed}`);
+  return parsed as Array<Record<string, unknown>>;
+};
 /** The plan row for one store out of a tool payload. */
 const planRow = (out: { structuredContent?: Record<string, unknown> }, store: string) =>
   ((out.structuredContent?.plan ?? []) as Array<Record<string, unknown>>).find((r) => r.store === store);
@@ -94,11 +118,11 @@ describe('#752 import_profile_state merge semantics', () => {
     await writeArchive({ search_history: [historyEntry('sh_a', 1), historyEntry('sh_b', 2)] });
 
     await invoke({ input_path: archive, mode: 'merge', response_format: 'concise' });
-    const afterFirst = (await readStore(historyFile)) as unknown[];
+    const afterFirst = await readStoreArray(historyFile);
     assert.equal(afterFirst.length, 2, 'first import writes both archive entries');
 
     const second = await invoke({ input_path: archive, mode: 'merge', response_format: 'concise' });
-    const afterSecond = (await readStore(historyFile)) as unknown[];
+    const afterSecond = await readStoreArray(historyFile);
     assert.equal(afterSecond.length, 2, 'a second import of the same archive must not duplicate entries');
     assert.deepEqual(afterSecond, afterFirst, 're-importing is idempotent on the store contents');
     assert.equal(planRow(second, 'search_history')?.dropped_duplicates, 2, 'the merge reports the duplicates it dropped');
@@ -133,7 +157,7 @@ describe('#752 import_profile_state merge semantics', () => {
 
     const out = await invoke({ input_path: archive, mode: 'merge', response_format: 'concise' });
 
-    const kept = (await readStore(historyFile)) as unknown[];
+    const kept = await readStoreArray(historyFile);
     assert.deepEqual(kept.map((e) => (e as { id: string }).id), ['sh_fresh']);
     assert.equal(planRow(out, 'search_history')?.dropped_expired, 1);
   });
@@ -143,7 +167,7 @@ describe('#752 import_profile_state merge semantics', () => {
 
     const out = await invoke({ input_path: archive, mode: 'merge', response_format: 'concise' });
 
-    const kept = (await readStore(historyFile)) as unknown[];
+    const kept = await readStoreArray(historyFile);
     assert.equal(kept.length, 1, 'an unreadable timestamp is not grounds for dropping the entry');
     assert.equal(planRow(out, 'search_history')?.unreadable_timestamps, 1);
   });
@@ -176,7 +200,7 @@ describe('#752 import_profile_state dry_run', () => {
     const out = await invoke({ input_path: archive, mode: 'merge', dry_run: true, response_format: 'concise' });
 
     assert.equal(await readFile(scenesFile, 'utf8'), scenesBefore, 'dry_run leaves the scenes store byte-identical');
-    assert.equal(((await readStore(historyFile)) as unknown[]).length, 1, 'dry_run appends no history entries');
+    assert.equal((await readStoreArray(historyFile)).length, 1, 'dry_run appends no history entries');
     assert.equal((await stat(scenesFile)).mtimeMs, before.mtimeMs, 'dry_run does not even rewrite the store');
     await assert.rejects(() => stat(`${scenesFile}.bak`), 'dry_run writes no backup');
 

@@ -22,6 +22,7 @@ import assert from 'node:assert/strict';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { McpServer, ResourceTemplate } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import type { CallToolResult, ReadResourceResult } from '@modelcontextprotocol/sdk/types.js';
 
 import { registerReadSurfaces } from '../src/resources/register.js';
 import { registerPlaybackTools } from '../src/tools/playback.js';
@@ -201,15 +202,45 @@ async function connect(client: SpotifyClient, withTools = false): Promise<Client
   return mcpClient;
 }
 
-function content(result: { contents: Array<{ mimeType: string; text: string }> }): {
+/**
+ * The first content block of a `readResource` result, narrowed to the text
+ * shape every assertion below reads.
+ *
+ * The parameter used to be a hand-written `{ contents: Array<{ mimeType:
+ * string; text: string }> }`, which is NARROWER than what `readResource`
+ * returns: the SDK's block is a union whose `mimeType` is optional and which
+ * has a blob variant. So the declared type promised a guarantee the real value
+ * does not carry, and every call site was an error. Taking the real
+ * `ReadResourceResult` and proving the two facts each caller depends on — the
+ * block exists, it is a text block, and it declares a mimeType — turns an
+ * unchecked assumption into three assertions that can fail.
+ */
+function content(result: ReadResourceResult): {
   mimeType: string;
   text: string;
 } {
-  return result.contents[0];
+  const first = result.contents[0];
+  assert.ok(first, 'readResource returned no content blocks');
+  assert.ok('text' in first, `expected a text content block, got ${JSON.stringify(first)}`);
+  assert.ok(typeof first.mimeType === 'string', `text content block without a mimeType: ${JSON.stringify(first)}`);
+  return { mimeType: first.mimeType, text: first.text };
 }
 
-function toolText(message: { content: Array<{ type: string; text?: string }> }): string {
-  return message.content[0]?.text ?? '';
+/**
+ * The first text block of a `callTool` result.
+ *
+ * `Client.callTool` returns a UNION — a normal `CallToolResult`, or the
+ * task-augmented `{ toolResult }` shape — so a parameter typed as
+ * `CallToolResult` alone rejects every real call site. The parameter is
+ * therefore derived from the method itself, and the missing-`content` arm is
+ * asserted rather than treated as empty text: a tool result with no content
+ * block would otherwise compare equal to an empty prose rendering, and the
+ * field-for-field comparisons below would pass on both sides being blank.
+ */
+function toolText(message: CallToolResult | { toolResult: unknown; _meta?: Record<string, unknown> }): string {
+  assert.ok('content' in message, `callTool returned no content blocks: ${JSON.stringify(message)}`);
+  const first = message.content[0];
+  return first?.type === 'text' ? first.text : '';
 }
 
 /** Rows of a device listing — the lines the two surfaces must agree on. */

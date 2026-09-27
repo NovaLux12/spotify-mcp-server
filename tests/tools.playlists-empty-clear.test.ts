@@ -93,7 +93,10 @@ async function makeHarness(options: HarnessOptions = {}): Promise<Harness> {
       const total = id === BASE ? 1 : id === TARGET ? targetUris.length : 0;
       return { id, name: 'Playlist', items: { total } } as T;
     },
-    async getAllPages<T>(path: string): Promise<T[]> {
+    // Takes `params` because `getAllPagesWithTruncation` below forwards
+    // them; the real client does too. Ignoring them is this stub's business,
+    // but the parameter has to be declared for the forwarding to type.
+    async getAllPages<T>(path: string, _params?: Record<string, string>): Promise<T[]> {
       if (path.includes(`/${BASE}/items`)) {
         return [{ item: { id: 'a0', uri: BASE_URI, name: 'Track a0' } as SpotifyTrack }] as T[];
       }
@@ -136,10 +139,16 @@ async function makeHarness(options: HarnessOptions = {}): Promise<Harness> {
       calls.push('DELETE');
       return null;
     },
-  } as unknown as SpotifyClient;
+  };
+  // The cast is on the USE, not on the literal. Written as
+  // `({...} as unknown as SpotifyClient)` it gave the object literal the
+  // contextual type `unknown`, and `this` inside its own methods then resolved
+  // to `{}` - so `getAllPagesWithTruncation` delegating to `this.getAllPages`
+  // was a type error, and every `this` in the stub was quietly unchecked.
+  const spotifyClient = client as unknown as SpotifyClient;
 
   const server = new McpServer({ name: 'empty-clear', version: '0.0.0' });
-  registerPlaylistTools(server, client);
+  registerPlaylistTools(server, spotifyClient);
   const caller = new Client(
     { name: 'empty-clear-client', version: '0.0.0' },
     { capabilities: { elicitation: { form: {} } } },

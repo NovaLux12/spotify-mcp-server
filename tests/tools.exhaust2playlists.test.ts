@@ -2,6 +2,8 @@ import { DEFAULT_TOKEN_FILE } from './helpers/hermetic.js';
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import type { SpotifyClient } from '../src/client.js';
 import {
   registerExhaust2PlaylistsTools,
 } from '../src/tools/exhaust2_playlists.js';
@@ -11,6 +13,10 @@ type RegisteredTool = { name: string; description: string; schema: Record<string
 type Call = { method: string; path: string; params?: Record<string, unknown>; body?: unknown };
 
 interface FakeClient {
+  // Mirrored from the real `SpotifyClient.tokenFile: string` (src/client.ts).
+  // A double that omits it is not a client the account stores can key by
+  // (#1385), and the registrar's parameter type says so.
+  tokenFile: string;
   get: (path: string, params?: Record<string, unknown>) => Promise<unknown>;
   post: (path: string, body?: unknown) => Promise<unknown>;
   put: (path: string, body?: unknown) => Promise<unknown>;
@@ -51,10 +57,30 @@ function savedTrack(payload: Record<string, unknown>, addedAt = daysAgo(30)): Re
 }
 
 /**
+ * The registrar's `client` parameter, as the value this file actually hands it.
+ *
+ * `SpotifyClient` is a CLASS with private state (the 429 queue, the TTL cache,
+ * the token loader), so no structural double can satisfy it — and this double
+ * is deliberately structural, because the whole point is to record calls rather
+ * than make them. The two therefore have to meet through a cast, so it is
+ * confined to the one place they meet: the object literal is still built and
+ * checked as a `FakeClient` first, which is what verifies that this double
+ * implements the members the interface claims. `calls` is kept in the return
+ * type so the assertions read the real log rather than a re-declared one.
+ *
+ * What the cast stops catching: any change to the ~65 members of
+ * `SpotifyClient` that this file never invokes. That is most of the class,
+ * and it is the honest cost of a recording double — the alternative was the
+ * cast each of the 22 registration sites would otherwise carry, which is 22
+ * chances to cast the wrong thing instead of one.
+ */
+type RegistrarClient = SpotifyClient & Pick<FakeClient, 'calls'>;
+
+/**
  * Fake client mirroring the surface exhaust2_playlists touches:
  * get (metadata), getAllPages (playlist items), post/put (mutations, logged).
  */
-function makeFakeClient(routes: Record<string, unknown>): FakeClient {
+function makeFakeClient(routes: Record<string, unknown>): RegistrarClient {
   const calls: Call[] = [];
   const self: FakeClient = {
     calls,
@@ -86,14 +112,23 @@ function makeFakeClient(routes: Record<string, unknown>): FakeClient {
       return Array.isArray(out) ? out : [];
     },
   };
-  return self.getAllPages.bind(self) && Object.assign(self.getAllPages, { call: null }), self;
+  return self.getAllPages.bind(self) && Object.assign(self.getAllPages, { call: null }), self as unknown as RegistrarClient;
 }
 
-function makeServer(registered: RegisteredTool[]): unknown {
+/**
+ * The recording double for the registrar's `server` argument.
+ *
+ * It is cast ONCE, here, rather than at every registration site: the cast is a
+ * statement about this file's harness (a `tool()` recorder, not an SDK server),
+ * and repeating it at 20 call sites would make 20 chances to cast the wrong
+ * thing. The recorder's own shape is still checked — the object literal has to
+ * satisfy `RegisteredTool` before it is asserted to be an `McpServer`.
+ */
+function makeServer(registered: RegisteredTool[]): McpServer {
   return {
     tool: (name: string, description: string, schema: Record<string, unknown>, handler: RegisteredTool['handler']) =>
       registered.push({ name, description, schema, handler }),
-  };
+  } as unknown as McpServer;
 }
 
 function find(registered: RegisteredTool[], name: string): RegisteredTool {
@@ -228,13 +263,18 @@ const ERA_GB_ROWS = [
  * Client that records each paged walk with the REAL query params it was handed
  * and serves a different row set per market. The shared makeFakeClient drops
  * params, which would hide whether market ever reached the query string.
+ *
+ * The return type is `RegistrarClient` for the same reason `makeFakeClient`'s
+ * is: a structural double cannot satisfy a class with private members, so the
+ * cast is applied once here rather than at each of the three registration
+ * sites below. The object literal is still checked as a `FakeClient`.
  */
 function makeMarketAwareClient(
   meta: Record<string, unknown>,
   byMarket: Record<string, Array<Record<string, unknown>>>,
-): FakeClient {
+): RegistrarClient {
   const calls: Call[] = [];
-  return {
+  const self: FakeClient = {
     calls,
     // The real SpotifyClient always sets this at construction; a stub that
     // omits it is not a client the stores can key by (#1385).
@@ -251,6 +291,7 @@ function makeMarketAwareClient(
       return byMarket[market] ?? [];
     },
   };
+  return self as unknown as RegistrarClient;
 }
 
 test('playlist_era_profile computes the profile from the market-refetched rows (#874)', async () => {

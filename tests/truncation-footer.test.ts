@@ -11,6 +11,7 @@ import { z } from 'zod';
 import type { SpotifyClient } from '../src/client.js';
 import { initConfig } from '../src/config.js';
 import { installTruncationBoundary, truncateItems, type TruncationBoundary } from '../src/shaping.js';
+import { structured } from './helpers/structured.js';
 
 const REPO_ROOT = join(import.meta.dirname, '..');
 const TOOL_MODULE_DIR = join(REPO_ROOT, 'src/tools');
@@ -147,9 +148,27 @@ describe('production truncation boundary', () => {
     assert.ok(signatures.some((signature) => signature.split(',').includes('scan_cap')), 'fixture must include scan_cap tools');
     assert.ok(signatures.includes('none'), 'fixture must include no-continuation tools');
     assert.ok(signatures.includes('max_items'), 'fixture must include max_items-only tools');
+    // `callTool` resolves to a UNION: the content-bearing result, and the
+    // task-shaped one that carries `toolResult: unknown` and no `content` at
+    // all. Reading `.content` off that union types as `unknown` — which is why
+    // the map below used to need a hand-typed parameter. Narrow on the
+    // discriminant and assert the blocks are there: both are claims the wire
+    // result has to earn before the footer text can be read off it.
+    //
+    // The discriminant is the ABSENCE of `toolResult`, not the presence of
+    // `content`: the task-shaped member carries an index signature, so a
+    // positive `'content' in result` cannot exclude it and narrows nothing.
+    // Asserting on the task handle also states the fact worth stating — this
+    // call took the ordinary result path, so there is a footer to read.
+    assert.ok(!('toolResult' in topTracksResult), `expected a direct tool result, not a task handle: ${JSON.stringify(topTracksResult)}`);
+    assert.ok(Array.isArray(topTracksResult.content), `callTool returned no content blocks: ${JSON.stringify(topTracksResult)}`);
     const clientText = topTracksResult.content.map((block) => 'text' in block ? block.text : '').join('\n');
     assert.match(clientText, /2 more — raise max_results, continue with offset, raise limit/);
-    const clientMetadata = topTracksResult.structuredContent as Record<string, unknown>;
+    // `structured()` rather than a cast: the field is optional on the wire type,
+    // so a cast here would type a possibly-absent payload as a record and let
+    // every read off it be `undefined`. The narrowing above is what makes the
+    // result assignable without one.
+    const clientMetadata = structured<Record<string, unknown>>(topTracksResult);
     assert.equal(clientMetadata.returned, 2);
     assert.equal(clientMetadata.total, 4);
     assert.equal(clientMetadata.remaining, 2);

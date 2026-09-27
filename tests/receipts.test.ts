@@ -162,7 +162,13 @@ describe('issueReceipt playlist_items', () => {
     // window and a count of matched occurrences in the walk reads 0. Post-fix,
     // `after` is the playlist total returned by /items (613).
     const oldRows = Array.from({ length: 600 }, (_, i) => track(`spotify:track:old${i}`));
-    const added = Array.from({ length: 13 }, (_, i) => track(`spotify:track:new${i}`));
+    // The mutation's `uris` are URI STRINGS, which is what `IssueReceiptOpts`
+    // declares and what the walk compares each fetched `item.uri` against.
+    // Passing whole track objects here would have made the per-uri count
+    // unfindable by construction — an object key can never equal a string — so
+    // `missing` came back whole regardless of what the walk actually saw, and
+    // the assertion below could not tell "past the cap" from "compared wrong".
+    const added = Array.from({ length: 13 }, (_, i) => `spotify:track:new${i}`);
     const client = stubClient(() => {
       // Every page reports the playlist total (the 13 added rows are now in
       // the playlist, but the walk is capped before reaching them) and a
@@ -294,6 +300,11 @@ describe('receipt store', () => {
 
 describe('formatReceipt', () => {
   it('is byte-stable for the same receipt', () => {
+    // `uris` (the mutation's own list, kept for undo) is required on `Receipt`
+    // but is NOT read by `formatReceipt` — it renders `missing`, `unmet` and
+    // `windowExceeded`. It is spelled out rather than cast away so these
+    // fixtures stay assignable to the real type, and so a formatter that
+    // started printing it would have to render THIS value.
     const receipt: Receipt = {
       receipt_id: 'rcpt_42',
       kind: 'playlist_items',
@@ -302,6 +313,7 @@ describe('formatReceipt', () => {
       before: 1,
       after: 1,
       missing: ['spotify:track:gone'],
+      uris: ['spotify:track:gone'],
     };
     assert.equal(formatReceipt(receipt), formatReceipt(receipt));
     assert.equal(
@@ -321,6 +333,9 @@ describe('formatReceipt', () => {
       verified: true,
       after: 2,
       missing: [],
+      // Two uris went in and both were confirmed, which is what makes
+      // "all uris confirmed" the honest line here rather than a vacuous one.
+      uris: ['spotify:track:a', 'spotify:track:b'],
     };
     assert.equal(
       formatReceipt(receipt),
@@ -335,24 +350,22 @@ describe('formatReceipt', () => {
 
 describe('playlist_items absence direction (#133-era receipts)', () => {
   it('reports survivors as missing and counts remaining occurrences', async () => {
-    const calls: Array<{ path: string; arg?: Record<string, string> }> = [];
-    const client = {
-      tokenFile: DEFAULT_TOKEN_FILE,
-      get: async (path: string, arg?: Record<string, string>) => {
-        calls.push({ path, arg });
-        // Page shows uri-keep survived (2 occurrences), uri-gone is absent.
-        return {
-          items: [
-            { item: { uri: 'spotify:track:keep' } },
-            { item: { uri: 'spotify:track:keep' } },
-          ],
-          total: 2,
-          limit: 100,
-          offset: 0,
-          next: null,
-        };
-      },
-    };
+    // The file's own `stubClient`, which already declares `get<T>` the way
+    // `ReceiptClient` does. The hand-rolled double this replaced returned one
+    // concrete page literal from a non-generic `get`, which is not assignable
+    // to a generic one; the recorded calls are still available on
+    // `client.calls`, as they are in every other test in this file.
+    const client = stubClient(() => ({
+      // Page shows uri-keep survived (2 occurrences), uri-gone is absent.
+      items: [
+        { item: { uri: 'spotify:track:keep' } },
+        { item: { uri: 'spotify:track:keep' } },
+      ],
+      total: 2,
+      limit: 100,
+      offset: 0,
+      next: null,
+    }));
 
     const receipt = await issueReceipt(client, {
       kind: 'playlist_items',
@@ -369,16 +382,13 @@ describe('playlist_items absence direction (#133-era receipts)', () => {
   });
 
   it('reports verified when every uri is confirmed absent', async () => {
-    const client = {
-      tokenFile: DEFAULT_TOKEN_FILE,
-      get: async () => ({
-        items: [],
-        total: 0,
-        limit: 100,
-        offset: 0,
-        next: null,
-      }),
-    };
+    const client = stubClient(() => ({
+      items: [],
+      total: 0,
+      limit: 100,
+      offset: 0,
+      next: null,
+    }));
     const receipt = await issueReceipt(client, {
       kind: 'playlist_items',
       id: 'pl1',

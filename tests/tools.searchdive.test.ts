@@ -7,6 +7,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { z } from 'zod';
+import { structured } from './helpers/structured.js';
 
 // search_deep records the window it walked (#766); keep that sidecar in a
 // temp dir so the suite never writes to the developer's real home store.
@@ -33,7 +34,7 @@ const HISTORY_ENTRY = z.object({
   offset: z.number().optional(),
 });
 
-async function readHistory({ tokenFile: DEFAULT_TOKEN_FILE }) {
+async function readHistory({ tokenFile }: { tokenFile: string }) {
   return z.array(HISTORY_ENTRY).parse(JSON.parse(await readFile(historyFile, 'utf8')));
 }
 
@@ -181,11 +182,12 @@ test('search_deep dedupes rows by id across pages and keeps first occurrence ord
   });
   const result = await invoke(findTool(registered, 'search_deep'), { query: 'queen', pages: 3 });
   assert.equal(calls.length, 3); // dedupe does not stop the walk
-  const structured = result.structuredContent as {
-    sections: { tracks: { items: unknown[]; unique_count: number } };
-  };
-  assert.equal(structured.sections.tracks.unique_count, 10);
-  assert.equal(structured.sections.tracks.items.length, 10);
+  // `payload`, not `structured`: the helper imported above is called
+  // `structured`, and a local of that name shadows it for the rest of the
+  // block.
+  const payload = structured<{ sections: { tracks: { items: unknown[]; unique_count: number } } }>(result);
+  assert.equal(payload.sections.tracks.unique_count, 10);
+  assert.equal(payload.sections.tracks.items.length, 10);
 });
 
 test('search_deep filters null playlist rows instead of crashing', async () => {
@@ -227,10 +229,10 @@ test('json mode returns raw deduped items keyed by plural section', async () => 
     response_format: 'json',
   });
   const raw = JSON.parse(result.content[0].text) as Record<string, unknown>;
-  const structured = result.structuredContent as Record<string, unknown>;
+  const payload = structured<Record<string, unknown>>(result);
   assert.ok(Array.isArray(raw.tracks));
   assert.equal((raw.tracks as unknown[]).length, 10);
-  assert.deepEqual(raw, structured);
+  assert.deepEqual(raw, payload);
 });
 
 test('no results yields a plain empty message', async () => {
@@ -284,7 +286,7 @@ test('offset walks a later window and the advertised next_offset is accepted (#7
     ['50'],
   );
   // One boundary cast per call, named: the handler's structuredContent shape.
-  const laterWindow = later.structuredContent as SearchDeepStructured;
+  const laterWindow = structured<SearchDeepStructured>(later);
   assert.equal(laterWindow.sections.tracks.next_offset, null, 'a short page with no declared total is the end');
   assert.match(text(later), /Song 50/);
 
@@ -292,7 +294,7 @@ test('offset walks a later window and the advertised next_offset is accepted (#7
   // call must pass, and re-passing it serves rows the first window did not.
   calls.length = 0;
   const firstWindow = await invoke(searchDeep, { query: 'queen', pages: 2 });
-  const firstOut = firstWindow.structuredContent as SearchDeepStructured;
+  const firstOut = structured<SearchDeepStructured>(firstWindow);
   const advertised = firstOut.sections.tracks.next_offset;
   assert.equal(advertised, 20);
   assert.match(text(firstWindow), /Next page: offset=20/);
@@ -301,7 +303,7 @@ test('offset walks a later window and the advertised next_offset is accepted (#7
   calls.length = 0;
   const secondWindow = await invoke(searchDeep, { query: 'queen', offset: advertised ?? 0 });
   assert.equal(calls[0].params?.offset, '20');
-  const secondOut = secondWindow.structuredContent as SearchDeepStructured;
+  const secondOut = structured<SearchDeepStructured>(secondWindow);
   const secondIds = secondOut.sections.tracks.items.map((row) => row.id);
   assert.ok(secondIds.length > 0);
   assert.equal(

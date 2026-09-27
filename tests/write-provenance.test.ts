@@ -171,10 +171,10 @@ function harness(register: (server: McpServer, client: SpotifyClient) => void, o
     },
     registerTool(
       name: string,
-      cfg: { description?: string; inputSchema?: z.ZodType },
+      cfg: { description?: string; inputSchema?: z.ZodType<Record<string, unknown>> },
       handler: RegisteredTool['handler'],
     ) {
-      registered.push({ name, validate: (args) => (cfg.inputSchema as z.ZodType).parse(args), handler });
+      registered.push({ name, validate: (args) => (cfg.inputSchema as z.ZodType<Record<string, unknown>>).parse(args), handler });
     },
     server: {
       getClientCapabilities: () => (elicitMode === 'none' ? {} : { elicitation: { form: {} } }),

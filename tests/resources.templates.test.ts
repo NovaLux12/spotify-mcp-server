@@ -118,6 +118,34 @@ async function connect(client: SpotifyClient): Promise<Client> {
   return mcpClient;
 }
 
+/**
+ * The `text` of a resource read, with the block actually proven to be a text
+ * block.
+ *
+ * `readResource` answers `contents: Array<TextContents | BlobContents>`, so
+ * `.text` is a property of only one arm. The reads here all used
+ * `contents[0]?.text ?? ''` / `?? '{}'`, which type-checks against neither arm
+ * honestly: a missing block became an empty string that `assert.match` would
+ * then fail on for the wrong reason, and a BLOB block would have read as text.
+ * This helper asserts both — there IS a first block, and it carries `text` —
+ * so a template that answers with a blob, or with nothing, fails by name here
+ * instead of three assertions later.
+ */
+function textOf(result: { contents: ReadonlyArray<unknown> }): string {
+  const first = result.contents[0];
+  assert.ok(first, 'readResource returned no content blocks');
+  assert.ok(
+    typeof first === 'object' && first !== null && 'text' in first && typeof first.text === 'string',
+    `expected a text content block, got ${JSON.stringify(first)}`,
+  );
+  return first.text;
+}
+
+/** {@link textOf} parsed as JSON, for the `?format=json` reads. */
+function jsonOf<T>(result: { contents: ReadonlyArray<unknown> }): T {
+  return JSON.parse(textOf(result)) as T;
+}
+
 // ------------------------------------------------------- registration list
 
 test('registers 10 catalog templates, one per entity shape and none of them a {+qs} twin (#685)', async () => {
@@ -161,7 +189,7 @@ test('valid ids route to the correct single-get API paths', async () => {
   const mcp = await connect(client);
 
   const res = await mcp.readResource({ uri: 'spotify://artist/art1' });
-  assert.match(res.contents[0]?.text ?? '', /Artist: Queen/);
+  assert.match(textOf(res), /Artist: Queen/);
   assert.equal(calls[0]?.path, '/artists/art1');
 
   // Encoded id stays encoded end-to-end.
@@ -214,40 +242,40 @@ test('bare URIs render prose; ?format=json returns raw payload per template', as
   // Artist
   const artistProse = await mcp.readResource({ uri: 'spotify://artist/art1' });
   assert.equal(artistProse.contents[0]?.mimeType, 'text/plain');
-  assert.match(artistProse.contents[0]?.text ?? '', /^Artist: Queen\nID: art1\nURI: spotify:artist:art1$/);
+  assert.match(textOf(artistProse), /^Artist: Queen\nID: art1\nURI: spotify:artist:art1$/);
 
   const artistJson = await mcp.readResource({ uri: 'spotify://artist/art1?format=json' });
   assert.equal(artistJson.contents[0]?.mimeType, 'application/json');
-  assert.deepEqual(JSON.parse(artistJson.contents[0]?.text ?? '{}'), artistFull);
+  assert.deepEqual(jsonOf(artistJson), artistFull);
 
   // Album
   const albumProse = await mcp.readResource({ uri: 'spotify://album/alb1' });
   assert.equal(albumProse.contents[0]?.mimeType, 'text/plain');
-  assert.match(albumProse.contents[0]?.text ?? '', /Album: A Night at the Opera/);
-  assert.match(albumProse.contents[0]?.text ?? '', /Bohemian Rhapsody/);
+  assert.match(textOf(albumProse), /Album: A Night at the Opera/);
+  assert.match(textOf(albumProse), /Bohemian Rhapsody/);
 
   const albumJson = await mcp.readResource({ uri: 'spotify://album/alb1?format=json' });
   assert.equal(albumJson.contents[0]?.mimeType, 'application/json');
-  assert.deepEqual(JSON.parse(albumJson.contents[0]?.text ?? '{}'), albumFull);
+  assert.deepEqual(jsonOf(albumJson), albumFull);
 
   // Show
   const showProse = await mcp.readResource({ uri: 'spotify://show/sh1' });
   assert.equal(showProse.contents[0]?.mimeType, 'text/plain');
-  assert.match(showProse.contents[0]?.text ?? '', /Show: The Daily/);
-  assert.match(showProse.contents[0]?.text ?? '', /Publisher: The New York Times/);
+  assert.match(textOf(showProse), /Show: The Daily/);
+  assert.match(textOf(showProse), /Publisher: The New York Times/);
 
   const showJson = await mcp.readResource({ uri: 'spotify://show/sh1?format=json' });
-  assert.deepEqual(JSON.parse(showJson.contents[0]?.text ?? '{}'), showFull);
+  assert.deepEqual(jsonOf(showJson), showFull);
 
   // Episode
   const episodeProse = await mcp.readResource({ uri: 'spotify://episode/ep1' });
   assert.equal(episodeProse.contents[0]?.mimeType, 'text/plain');
-  assert.match(episodeProse.contents[0]?.text ?? '', /Episode: Episode One/);
-  assert.match(episodeProse.contents[0]?.text ?? '', /Show: The Daily/);
-  assert.match(episodeProse.contents[0]?.text ?? '', /Resume point: 5:00/);
+  assert.match(textOf(episodeProse), /Episode: Episode One/);
+  assert.match(textOf(episodeProse), /Show: The Daily/);
+  assert.match(textOf(episodeProse), /Resume point: 5:00/);
 
   const episodeJson = await mcp.readResource({ uri: 'spotify://episode/ep1?format=json' });
-  assert.deepEqual(JSON.parse(episodeJson.contents[0]?.text ?? '{}'), episodeFull);
+  assert.deepEqual(jsonOf(episodeJson), episodeFull);
 });
 
 test('playlist resource prefers canonical items total and falls back to legacy tracks', async () => {
@@ -271,12 +299,12 @@ test('playlist resource prefers canonical items total and falls back to legacy t
   const mcp = await connect(client);
 
   const canonical = await mcp.readResource({ uri: 'spotify://playlist/canonical' });
-  assert.match(canonical.contents[0]?.text ?? '', /Tracks: 42/);
+  assert.match(textOf(canonical), /Tracks: 42/);
   const raw = await mcp.readResource({ uri: 'spotify://playlist/canonical?format=json' });
-  assert.equal((JSON.parse(raw.contents[0]?.text ?? '{}') as { items: { total: number } }).items.total, 42);
+  assert.equal(jsonOf<{ items: { total: number } }>(raw).items.total, 42);
 
   const legacy = await mcp.readResource({ uri: 'spotify://playlist/legacy' });
-  assert.match(legacy.contents[0]?.text ?? '', /Tracks: 7/);
+  assert.match(textOf(legacy), /Tracks: 7/);
 });
 
 test('artist-albums prose lists albums; ?format=json aggregates pages with truncation flag', async () => {
@@ -296,13 +324,13 @@ test('artist-albums prose lists albums; ?format=json aggregates pages with trunc
   const mcp = await connect(client);
 
   const albumsJson = await mcp.readResource({ uri: 'spotify://artist/art1/albums?format=json' });
-  const payload = JSON.parse(albumsJson.contents[0]?.text ?? '{}') as {
+  const payload = jsonOf<{
     id: string;
     total: number;
     retrieved: number;
     truncated: boolean;
     items: SpotifyAlbumItem[];
-  };
+  }>(albumsJson);
   assert.equal(payload.id, 'art1');
   assert.equal(payload.total, 12);
   assert.equal(payload.retrieved, 12);
@@ -311,10 +339,10 @@ test('artist-albums prose lists albums; ?format=json aggregates pages with trunc
 
   const albumsProse = await mcp.readResource({ uri: 'spotify://artist/art1/albums' });
   assert.equal(albumsProse.contents[0]?.mimeType, 'text/plain');
-  assert.match(albumsProse.contents[0]?.text ?? '', /Albums for artist art1/);
-  assert.match(albumsProse.contents[0]?.text ?? '', /showing 12 of 12/);
-  assert.match(albumsProse.contents[0]?.text ?? '', /"Album 1"/);
-  assert.doesNotMatch(albumsProse.contents[0]?.text ?? '', /truncated/);
+  assert.match(textOf(albumsProse), /Albums for artist art1/);
+  assert.match(textOf(albumsProse), /showing 12 of 12/);
+  assert.match(textOf(albumsProse), /"Album 1"/);
+  assert.doesNotMatch(textOf(albumsProse), /truncated/);
 });
 
 // ------------------------------------------------- pagination cap (#111)
@@ -348,7 +376,7 @@ test('artist-albums walks at most 5 pages of limit=10 and stops when complete', 
   );
   for (const c of calls) assert.equal(c.params?.limit, '10');
 
-  const body = res.contents[0]?.text ?? '';
+  const body = textOf(res);
   assert.match(body, /showing 35 of 35/);
   assert.doesNotMatch(body, /truncated/);
 });
@@ -375,7 +403,7 @@ test('artist-albums caps at exactly 5 pages with truncation footer when total ex
     ['0', '10', '20', '30', '40'],
   );
 
-  const body = res.contents[0]?.text ?? '';
+  const body = textOf(res);
   assert.match(body, /showing 50 of 1000/);
   assert.match(body, /\.\.\. and 950 more — truncated at 5 pages × 10 albums/);
 });

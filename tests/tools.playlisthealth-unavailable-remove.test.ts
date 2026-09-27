@@ -62,8 +62,8 @@ function harness(seed: Record<string, SeededPlaylist>, opts: { elicit?: unknown;
     tool(name: string, _description: string, schema: z.ZodRawShape, handler: (a: Record<string, unknown>) => Promise<ToolOut>) {
       registered.push({ name, validate: (a) => z.object(schema).parse(a), handler });
     },
-    registerTool(name: string, config: { description?: string; inputSchema?: z.ZodType }, handler: (a: Record<string, unknown>) => Promise<ToolOut>) {
-      registered.push({ name, validate: (a) => (config.inputSchema as z.ZodType).parse(a), handler });
+    registerTool(name: string, config: { description?: string; inputSchema?: z.ZodType<Record<string, unknown>> }, handler: (a: Record<string, unknown>) => Promise<ToolOut>) {
+      registered.push({ name, validate: (a) => (config.inputSchema as z.ZodType<Record<string, unknown>>).parse(a), handler });
     },
     ...(canElicit
       ? {

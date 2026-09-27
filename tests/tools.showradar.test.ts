@@ -13,6 +13,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../src/client.js';
 import { registerShowRadarTools, resetProfileCountryCache } from '../src/tools/showradar.js';
 import { initConfig } from '../src/config.js';
+import { structured } from './helpers/structured.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -336,7 +337,7 @@ describe('show_new_episodes SPOTIFY_MCP_SHOWRADAR_BUDGET (#590)', () => {
     const h = harness(fiveShows());
     await withEnv({ SPOTIFY_MCP_SHOWRADAR_BUDGET: '2' }, async () => {
       const out = await h.invoke({ days: 7, per_show_limit: 5 });
-      const p = out.structuredContent as BudgetPayload;
+      const p = structured<BudgetPayload>(out);
       assert.equal(p.max_shows, 2);
       assert.equal(p.effective_cap, 2);
       assert.equal(p.budget_source, 'SPOTIFY_MCP_SHOWRADAR_BUDGET');
@@ -352,7 +353,7 @@ describe('show_new_episodes SPOTIFY_MCP_SHOWRADAR_BUDGET (#590)', () => {
   it('yields to a max_shows argument for one call', async () => {
     const h = harness(fiveShows());
     await withEnv({ SPOTIFY_MCP_SHOWRADAR_BUDGET: '4' }, async () => {
-      const p = (await h.invoke({ days: 7, per_show_limit: 5, max_shows: 1 })).structuredContent as BudgetPayload;
+      const p = structured<BudgetPayload>(await h.invoke({ days: 7, per_show_limit: 5, max_shows: 1 }));
       assert.equal(p.max_shows, 1);
       assert.equal(p.budget_source, 'max_shows argument');
       assert.equal(p.shows_scanned, 1);
@@ -367,7 +368,7 @@ describe('show_new_episodes SPOTIFY_MCP_SHOWRADAR_BUDGET (#590)', () => {
     });
     for (const raw of ['0', '-4', 'abc', '']) {
       await withEnv({ SPOTIFY_MCP_SHOWRADAR_BUDGET: raw }, async () => {
-        const p = (await h.invoke({ days: 7, per_show_limit: 5 })).structuredContent as BudgetPayload;
+        const p = structured<BudgetPayload>(await h.invoke({ days: 7, per_show_limit: 5 }));
         assert.equal(p.max_shows, 25, `raw=${JSON.stringify(raw)}`);
         assert.equal(p.budget_source, 'SPOTIFY_MCP_FRESHNESS_BUDGET', `raw=${JSON.stringify(raw)}`);
         assert.equal(p.shows_scanned, 3);
@@ -380,7 +381,7 @@ describe('show_new_episodes SPOTIFY_MCP_SHOWRADAR_BUDGET (#590)', () => {
     const h = harness({ shows: [show('s1')] });
     await withEnv({ SPOTIFY_MCP_SHOWRADAR_BUDGET: '3' }, async () => {
       const out = await h.invoke({ cost_preview: true });
-      const p = out.structuredContent as BudgetPayload;
+      const p = structured<BudgetPayload>(out);
       assert.equal(p.max_shows, 3);
       assert.equal(p.budget_source, 'SPOTIFY_MCP_SHOWRADAR_BUDGET');
       assert.match(textOf(out), /Budget: max_shows=3 \(SPOTIFY_MCP_SHOWRADAR_BUDGET\)/);

@@ -119,7 +119,18 @@ describe('production tool error contract (#921)', () => {
 
   it('maps every required failure kind to a structured one-line tool result', async () => {
     const client = await harness();
-    const cases = [
+    // Annotated rather than left to `as const`: a const tuple makes each row
+    // its own type, so `expected.retryAfterSec` is a property that exists on
+    // the two rate-limited rows and not on the other fourteen — the loop
+    // below reads it from all of them. `reason` is checked the other way
+    // round, with `'reason' in expected`, and that guard still works.
+    const cases: ReadonlyArray<{
+      readonly tool: string;
+      readonly kind: string;
+      readonly status: number | undefined;
+      readonly retryAfterSec?: number;
+      readonly reason?: string;
+    }> = [
       { tool: 'auth_error', kind: 'auth', status: 401 },
       { tool: 'forbidden_error', kind: 'forbidden', status: 403 },
       { tool: 'not_found_error', kind: 'not_found', status: 404 },
@@ -135,7 +146,7 @@ describe('production tool error contract (#921)', () => {
       { tool: 'statsfm_unavailable_error', kind: 'unavailable', status: 503, reason: 'statsfm_unavailable' },
       { tool: 'statsfm_timeout_error', kind: 'unavailable', status: 408, reason: 'statsfm_timeout' },
       { tool: 'statsfm_transport_error', kind: 'internal', status: 0, reason: 'statsfm_error' },
-    ] as const;
+    ];
 
     for (const expected of cases) {
       const error = envelope(await call(client, expected.tool));

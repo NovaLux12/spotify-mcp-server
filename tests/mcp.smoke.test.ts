@@ -87,10 +87,15 @@ const EXPECTED_PROMPTS = ['artist_deep_dive', 'crate_digging', 'discover_weekly_
 // exported. A classification added there must be added here too, or this
 // guard reports a false failure. `not_modified` (#601) was already missing from
 // this mirror and `cancelled` (#676) was added alongside it.
-const KNOWN_ERROR_KINDS = [
+//
+// Typed `readonly string[]` rather than left as a literal tuple: the guard
+// below tests a value narrowed only to `string` (it came off the wire), and
+// `readonly ['auth', …].includes(someString)` does not typecheck — the
+// membership test itself is unchanged, only the element type is not pinned.
+const KNOWN_ERROR_KINDS: readonly string[] = [
   'auth', 'forbidden', 'not_found', 'not_modified', 'rate_limited', 'unavailable',
   'conflict', 'validation', 'unknown_tool', 'unknown_param', 'cancelled', 'output_contract', 'internal',
-] as const;
+];
 
 /**
  * The JSON-RPC client over a spawned server's stdio pipes now lives in

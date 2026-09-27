@@ -64,11 +64,19 @@ function makeHarness(options: FixtureOptions = {}): Harness {
   // offset.
   const savedLibrary: SavedTrackItem[] = Array.from({ length: totalTracks }, (_, i) => ({
     added_at: new Date(2024, 0, 1, 0, 0, totalTracks - i).toISOString(),
+    // Typed as the real `SavedTrackItem`, which means the inner track has to
+    // be a real `SpotifyTrack`: `type`, `explicit` and `album` were simply
+    // absent, so a fixture that claimed to be a saved track was not one.
     track: {
       id: `lib${i}`,
       uri: `spotify:track:lib${i}`,
       name: `Library Track ${i}`,
-      artists: [{ id: `lib-art-${i}`, name: `Library Artist ${i}` }],
+      type: 'track' as const,
+      explicit: false,
+      album: { id: 'lib-al', name: 'Library Album', uri: 'spotify:album:lib-al', images: [] },
+      // `uri` too: `SpotifyArtistSimple` requires it, so an artist row that
+      // lacked one was not the shape the tools read.
+      artists: [{ id: `lib-art-${i}`, name: `Library Artist ${i}`, uri: `spotify:artist:lib-art-${i}` }],
       duration_ms: 200_000,
     },
   }));

@@ -13,9 +13,23 @@ import { SpotifyApiError } from '../src/client.js';
 import { registerPlaylistHealthTools } from '../src/tools/playlisthealth.js';
 interface RegisteredTool { name: string; validate: (args: Record<string, unknown>) => Record<string, unknown>; handler: (args: Record<string, unknown>) => Promise<{ content: Array<{ type: string; text: string }>; structuredContent?: Record<string, unknown> }>; }
 type Responder = (path: string, arg: unknown) => unknown;
+/**
+ * Narrow a validated argument bag to the record the harness's `validate`
+ * contract promises. zod v4 types `ZodType.parse` as returning `unknown`
+ * because a schema can validate to any output; the tools here register object
+ * schemas, so the record IS the output — and asserting it here says so by name
+ * rather than letting an unchecked `unknown` flow into every `args.x` read.
+ */
+const asArgs = (value: unknown, tool: string): Record<string, unknown> => {
+  assert.ok(
+    value !== null && typeof value === 'object' && !Array.isArray(value),
+    `${tool} validated its input to ${value === null ? 'null' : typeof value}, not an argument object`,
+  );
+  return value as Record<string, unknown>;
+};
 function makeHarness(responder: Responder) {
   const registered: RegisteredTool[] = [];
-  const fakeServer = { tool(name: string, _desc: string, schema: z.ZodRawShape, handler: RegisteredTool['handler']) { registered.push({ name, validate: (args) => z.object(schema).parse(args), handler }); }, registerTool(name: string, config: { description?: string; inputSchema?: z.ZodType }, handler: RegisteredTool['handler']) { registered.push({ name, validate: (args) => (config.inputSchema as z.ZodType).parse(args), handler }); }, } as unknown as McpServer;
+  const fakeServer = { tool(name: string, _desc: string, schema: z.ZodRawShape, handler: RegisteredTool['handler']) { registered.push({ name, validate: (args) => z.object(schema).parse(args), handler }); }, registerTool(name: string, config: { description?: string; inputSchema?: z.ZodType }, handler: RegisteredTool['handler']) { registered.push({ name, validate: (args) => asArgs((config.inputSchema as z.ZodType).parse(args), name), handler }); }, } as unknown as McpServer;
   const client = { async get<T>(path: string, params?: Record<string, string>): Promise<T | null> { return responder(path, params) as T | null; }, async getAllPages<T>(path: string, _params?: Record<string, string>): Promise<T[]> { const result = responder(path, _params); if (Array.isArray(result)) return result as T[]; return []; }, // #1310/#1311: the item walk moved to the truncation-aware variant, which
     // is the only way to tell "the playlist has exactly cap rows" from "I
     // stopped at the cap". It delegates to the SAME `getAllPages` above rather
@@ -118,7 +132,20 @@ describe('get_playlist_followers', () => {
   });
 });
 describe('playlist_collaboration_report', () => {
-  it('rolls up contributors with counts and timestamps', async () => { const items: PlaylistItemObject[] = [ { added_at: '2026-01-01T00:00:00Z', added_by: { id: 'alice' } as unknown as PlaylistItemObject['added_by'], item: { type: 'track', id: 't1', name: 'T1', uri: 'spotify:track:t1', duration_ms: 1000, artists: [] } as unknown as PlaylistItemObject extends { item?: infer I } ? I : never } as unknown as PlaylistItemObject, { added_at: '2026-01-02T00:00:00Z', added_by: { id: 'bob' } as unknown as PlaylistItemObject['added_by'], item: { type: 'track', id: 't2', name: 'T2', uri: 'spotify:track:t2', duration_ms: 1000, artists: [] } as unknown as PlaylistItemObject extends { item?: infer I } ? I : never } as unknown as PlaylistItemObject, { added_at: '2026-01-03T00:00:00Z', added_by: { id: 'alice' } as unknown as PlaylistItemObject['added_by'], item: { type: 'track', id: 't3', name: 'T3', uri: 'spotify:track:t3', duration_ms: 1000, artists: [] } as unknown as PlaylistItemObject extends { item?: infer I } ? I : never } as unknown as PlaylistItemObject, ]; const h = makeHarness(() => items); registerPlaylistHealthTools(h.server as unknown as McpServer, h.client); const out = await h.invoke('playlist_collaboration_report', { playlist_id: 'pl1' }); const sc = out.structuredContent as { contributors: Array<{ user_id: string; count: number }>; most_active: string }; assert.equal(sc.contributors.length, 2); assert.equal(sc.contributors[0].user_id, 'alice'); assert.equal(sc.contributors[0].count, 2); assert.equal(sc.most_active, 'alice'); });
+  // `added_by` is a real field of a `GET /playlists/{id}/items` row and the tool
+  // reads it (src/tools/playlisthealth.ts:224 asks the walk for
+  // `PlaylistItemObject & { added_by?: { id: string } }`). The base
+  // `PlaylistItemObject` does not declare it, so the test spelled its own
+  // widening via `PlaylistItemObject['added_by']` — an indexed access on a
+  // property that does not exist, which is why it needed a double cast. Naming
+  // the same widening the source names removes both.
+  type ContributorRow = PlaylistItemObject & { added_by?: { id: string } };
+  const row = (id: string, user: string, addedAt: string): ContributorRow => ({
+    added_at: addedAt,
+    added_by: { id: user },
+    item: { type: 'track', id, name: `T${id}`, uri: `spotify:track:${id}`, duration_ms: 1000, artists: [] },
+  } as unknown as ContributorRow);
+  it('rolls up contributors with counts and timestamps', async () => { const items: ContributorRow[] = [ row('1', 'alice', '2026-01-01T00:00:00Z'), row('2', 'bob', '2026-01-02T00:00:00Z'), row('3', 'alice', '2026-01-03T00:00:00Z') ]; const h = makeHarness(() => items); registerPlaylistHealthTools(h.server as unknown as McpServer, h.client); const out = await h.invoke('playlist_collaboration_report', { playlist_id: 'pl1' }); const sc = out.structuredContent as { contributors: Array<{ user_id: string; count: number }>; most_active: string }; assert.equal(sc.contributors.length, 2); assert.equal(sc.contributors[0].user_id, 'alice'); assert.equal(sc.contributors[0].count, 2); assert.equal(sc.most_active, 'alice'); });
 });
 describe('find_duplicate_playlists dry_run + quota', () => {
   it('dry_run returns cost estimate without calls', async () => {

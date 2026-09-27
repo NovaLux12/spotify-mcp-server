@@ -84,7 +84,7 @@ function sandbox(): { root: string; home: string; env: NodeJS.ProcessEnv } {
     SPOTIFY_MCP_EXPORT_DIR: join(root, 'exports'),
     SPOTIFY_MCP_TASKS_DIR: join(root, 'tasks'),
   };
-  return { root, env };
+  return { root, home, env };
 }
 
 function io(answer = 'y'): { io: LogoutIo; output: () => string } {

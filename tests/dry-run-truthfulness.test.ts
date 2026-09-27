@@ -151,16 +151,21 @@ describe('#896 truthfulness: saved_vs_playlist_coverage bounds the whole walk (#
     const many = pagingClient((p) => (p === '/me/playlists'
       ? { rows: Array.from({ length: 40 }, (_, i) => ({ id: `p${i}`, name: `P${i}` })), limit: 50 }
       : { rows: [], limit: 100 }));
+    // One type for both fields, because the preview emits both
+    // (`swarm3_library.ts`): the request bound and the playlist bound the scan
+    // cap came from. Declaring only the first is what forced the second read
+    // through a second cast.
+    type CoveragePreview = { estimated_requests_max: number; playlists_scanned_max: number };
     const small = (await swarm3('saved_vs_playlist_coverage', one)({ dry_run: true, scan_cap: 200 }))
-      .structuredContent as { estimated_requests_max: number };
+      .structuredContent as CoveragePreview;
     const large = (await swarm3('saved_vs_playlist_coverage', many)({ dry_run: true, scan_cap: 200 }))
-      .structuredContent as { estimated_requests_max: number };
+      .structuredContent as CoveragePreview;
     // Both are worst-case bounds over the SAME cap, so they are equal by
     // construction — and that is the point: the bound is the cap, not the
     // playlist count this particular account happens to have. The preview says
     // so explicitly rather than implying it counted anything.
     assert.equal(small.estimated_requests_max, large.estimated_requests_max);
-    assert.equal((small as { playlists_scanned_max: number }).playlists_scanned_max, 200);
+    assert.equal(small.playlists_scanned_max, 200);
   });
 
   it('a dry run issues zero requests', async () => {

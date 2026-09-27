@@ -217,7 +217,7 @@ describe('delete_backup (#697)', () => {
     try {
       const h = harness();
       const out = await h.invoke('delete_backup', { file: `../${outside.split('/').pop()}`, dry_run: false });
-      const sc = out.structuredContent as { ok: boolean; reason: string; error: string };
+      const sc = out.structuredContent as { ok: boolean; reason: string; error: string; detail: string };
       assert.equal(sc.ok, false);
       assert.equal(sc.reason, 'refused');
       assert.match(sc.error, /is not inside the backup directory/);

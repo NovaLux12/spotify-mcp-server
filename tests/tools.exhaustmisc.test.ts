@@ -12,8 +12,37 @@ import { registerExhaustMiscTools } from '../src/tools/exhaustmisc.js';
 import { __resetSearchHistoryEpisode } from '../src/tools/searchhistory.js';
 import { initConfig } from '../src/config.js';
 
+/**
+ * The `mock.fn` handle `node:test` attaches to a stubbed client method.
+ *
+ * Asserting the client's return type to a bare `SpotifyClient` erases those
+ * handles, which is why each call site had to cast the method back to a
+ * `{ mock: ... }` object - a cast the compiler rejects, because a method is not
+ * that object. `mockedMethod` reads the handle off the value instead, and fails
+ * by name if the stub is not a mock.
+ */
+type MockCall = { callCount(): number; calls: Array<{ arguments: unknown[] }> };
+
+/** A `mock.fn`, as the call sites hold it: callable, with its handle on `.mock`. */
+type MockedMethod = { mock: MockCall };
+
+function mockedMethod(fn: unknown): MockedMethod {
+  // A `mock.fn` IS a function with a `mock` property hung on it, so the guard
+  // has to admit functions as well as objects before the handle can be read.
+  assert.ok(
+    typeof fn === 'function' || (typeof fn === 'object' && fn !== null),
+    'a stubbed client method must be callable',
+  );
+  const handle = (fn as { mock?: unknown }).mock;
+  assert.ok(
+    typeof handle === 'object' && handle !== null,
+    'the stubbed client method must be a mock.fn - without a handle, callCount() reads 0 for a call that happened',
+  );
+  return { mock: handle as MockCall };
+}
+
 function makeClient(overrides: Record<string, unknown> = {}) {
-  return {
+  const client = {
     // The real SpotifyClient always sets this at construction; a stub that
     // omits it is not a client the stores can key by (#1385).
     tokenFile: DEFAULT_TOKEN_FILE,
@@ -32,7 +61,8 @@ function makeClient(overrides: Record<string, unknown> = {}) {
     post: mock.fn(async () => null),
     delete: mock.fn(async () => null),
     ...overrides,
-  } as unknown as import('../src/client.js').SpotifyClient;
+  };
+  return client as unknown as import('../src/client.js').SpotifyClient;
 }
 
 /**
@@ -80,7 +110,10 @@ function registeredTools(client: ReturnType<typeof makeClient>): string[] {
 
 /** Request path from a recorded client call, narrowed rather than assumed. */
 function recordedPath(arg: unknown): string {
-  assert.equal(typeof arg, 'string', `recorded request path must be a string, got ${JSON.stringify(arg)}`);
+  // `assert.ok(typeof arg === 'string', …)`, not `assert.equal`: only the
+  // `assert.ok` form is an assertion FUNCTION, so only it narrows — the
+  // `assert.equal` spelling left `arg` as `unknown` and needed a cast after.
+  assert.ok(typeof arg === 'string', `recorded request path must be a string, got ${JSON.stringify(arg)}`);
   return arg;
 }
 
@@ -287,7 +320,14 @@ describe('exhaustmisc — mop-up 10 tools', () => {
 
   it('search_within_playlist accepts the shared playlist_id / id resolver', async () => {
     const { server, handler } = serverCapturing('search_within_playlist');
-    const walk = mock.fn(async () => ({ items: [], truncated: false, truncatedByCap: false, reportedTotal: 0 }));
+    // The parameters are declared because the assertion below reads them off
+    // `mock.calls[0].arguments` — a double with an empty parameter list types
+    // its own call record as `[]`, so reading argument 0 off it was reading
+    // an element the double had promised not to have.
+    const walk = mock.fn(async (path: string, params?: Record<string, string>, opts?: unknown) => {
+      void path; void params; void opts;
+      return { items: [], truncated: false, truncatedByCap: false, reportedTotal: 0, pages: 0 };
+    });
     registerExhaustMiscTools(server, makeClient({ getAllPagesWithTruncation: walk }));
 
     await handler()({ id: 'pl1', query: 'hello', response_format: 'concise', max_results: 50 });
@@ -499,7 +539,7 @@ describe('exhaustmisc — mop-up 10 tools', () => {
       handler({ dry_run: false, response_format: 'concise' }),
       /Refusing to remove orphan tracks/,
     );
-    const deleteMock = client.delete as { mock: { callCount(): number } };
+    const deleteMock = mockedMethod(client.delete);
     assert.equal(deleteMock.mock.callCount(), 0);
   });
 
@@ -520,7 +560,7 @@ describe('exhaustmisc — mop-up 10 tools', () => {
     registerExhaustMiscTools(server, client);
     const handler = captured.handler as (args: unknown) => Promise<unknown>;
     await handler({ dry_run: false, max_remove: 51, response_format: 'concise' });
-    const deleteMock = client.delete as { mock: { callCount(): number; calls: Array<{ arguments: unknown[] }> } };
+    const deleteMock = mockedMethod(client.delete);
     assert.equal(deleteMock.mock.callCount(), 2);
     const batches = deleteMock.mock.calls.map((call) => {
       const path = recordedPath(call.arguments[0]);
@@ -590,7 +630,7 @@ describe('exhaustmisc — mop-up 10 tools', () => {
     const handler = captured as (args: unknown) => Promise<{ content: Array<{ text: string }>; structuredContent?: Record<string, unknown> }>;
     const res = await handler({ playlist_id: 'pl1', dry_run: false, response_format: 'concise' });
 
-    const putMock = client.put as { mock: { callCount(): number; calls: Array<{ arguments: unknown[] }> } };
+    const putMock = mockedMethod(client.put);
     assert.equal(putMock.mock.callCount(), 3, '100 uris is 3 requests at the 40-uri cap, not 2 at 50');
     const batches = putMock.mock.calls.map((call) => {
       const path = recordedPath(call.arguments[0]);
@@ -738,7 +778,7 @@ describe('exhaustmisc — mop-up 10 tools', () => {
     registerExhaustMiscTools(server, client);
     const handler = captured as (args: unknown) => Promise<unknown>;
     await handler({ playlist_id: 'src', parts: 2, dry_run: false });
-    const postMock = client.post as { mock: { calls: Array<{ arguments: unknown[] }> } };
+    const postMock = mockedMethod(client.post);
     const calls = postMock.mock.calls;
     const paths = calls.map((c) => recordedPath(c.arguments[0]));
     assert.equal(paths.filter((p) => p === '/me/playlists').length, 2);
@@ -786,7 +826,7 @@ describe('exhaustmisc — mop-up 10 tools', () => {
       handler({ playlist_id: 'src', parts: 2, dry_run: false }),
       /Could not read the current user profile/,
     );
-    const postMock = client.post as { mock: { callCount(): number } };
+    const postMock = mockedMethod(client.post);
     assert.equal(postMock.mock.callCount(), 0);
   });
 

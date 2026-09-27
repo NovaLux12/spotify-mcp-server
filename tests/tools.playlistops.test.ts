@@ -10,6 +10,7 @@ import './helpers/hermetic.js';
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { structured } from './helpers/structured.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { StubFromResponder } from './helpers/stub-client.js';
@@ -88,13 +89,18 @@ function harness(responder: Responder = () => null) {
     },
     registerTool(
       name: string,
-      config: { description?: string; inputSchema?: z.ZodType },
+      // `z.ZodType<Record<string, unknown>>`, not a bare `z.ZodType`: these are
+      // OBJECT schemas, so `parse` returns the validated argument record. A
+      // bare `z.ZodType` defaults its output to `unknown`, which is what made
+      // every `validate` below unreadable as the `RegisteredTool` it is stored
+      // in.
+      config: { description?: string; inputSchema?: z.ZodType<Record<string, unknown>> },
       handler: RegisteredTool['handler'],
     ) {
       registered.push({
         name,
         description: config.description ?? '',
-        validate: (args) => (config.inputSchema as z.ZodType).parse(args),
+        validate: (args) => (config.inputSchema as z.ZodType<Record<string, unknown>>).parse(args),
         handler,
       });
     },
@@ -1114,8 +1120,8 @@ describe('#899 bounded array arguments', () => {
 
     assert.equal(textOf(asCsv), textOf(asArray));
     assert.equal(
-      asCsv.structuredContent?.playlists?.length,
-      asArray.structuredContent?.playlists?.length,
+      structured<{ playlists?: unknown[] }>(asCsv).playlists?.length,
+      structured<{ playlists?: unknown[] }>(asArray).playlists?.length,
     );
   });
 

@@ -394,7 +394,11 @@ describe('#906 the startup budget gates still run over lazily loaded modules', (
     // breach its real ceiling instead would mean editing the hand-maintained
     // baselines in annotations.ts, which is explicitly out of scope here.
     const server = new McpServer({ name: 'lazy-over-budget', version: '0.0.0' });
-    const fat = manifestEntry('search', 'search', localModule('src/tools/annotations.ts', 'probeRegistrar', (target) => {
+    // `localModule` takes `ModuleRegistrar | ClientBoundRegistrar`, a union of
+    // two function types, so the arrow's parameter gets no contextual type and
+    // `target` is implicitly any. Annotate it as the McpServer every registrar
+    // receives first — that is the real contract, stated at the call site.
+    const fat = manifestEntry('search', 'search', localModule('src/tools/annotations.ts', 'probeRegistrar', (target: McpServer) => {
       for (let i = 0; i < 50; i++) {
         target.tool(`probe_${i}`, 'probe', {}, async () => ({ content: [] }));
       }

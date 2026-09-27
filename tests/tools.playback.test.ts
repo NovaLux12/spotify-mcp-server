@@ -101,7 +101,10 @@ function playbackStateFixture(item: unknown) {
       is_active: true,
       is_private_session: false,
       is_restricted: false,
-      volume_percent: 42,
+      // `number | null`, as `PlaybackState` declares it: Spotify reports a
+      // null volume on some devices, and the test at line 192 sets exactly
+      // that. Declaring it `number` here made the real case untypeable.
+      volume_percent: 42 as number | null,
       supports_volume: true,
     },
     item,

@@ -92,6 +92,11 @@ interface AuditResult {
   reviewedButNotReadOnly: string[];
   reviewedNotRegistered: string[];
   writeClassifiedSafe: string[];
+  // #1347's census. Present on the real return since that fix; the local
+  // structural type had drifted behind it, so the two assertions that read
+  // them below did not typecheck.
+  uncalledRegistryWrites: string[];
+  uncalledRegistryWriteCount: number;
   verdicts: Map<string, Verdict>;
   errors: string[];
   warnings: string[];
@@ -848,10 +853,59 @@ process.stdin.on('data', (chunk) => {
 });
 `;
 
+/**
+ * One row of the report's `results`: what the sweep did with one tool.
+ *
+ * `extra` on the record side is free-form (`reason`, `gated`,
+ * `verified_no_mutation`, …), so only the three fields the assertions below
+ * read are declared.
+ */
+interface SweepRow {
+  tool: string;
+  status: string;
+}
+
+/**
+ * The JSON report `scripts/live-gauntlet.mjs` writes, as the end-to-end leg
+ * reads it.
+ *
+ * Written out field by field rather than left as an open record because the
+ * assertions below are the point of this file: a report whose `mutation_proof`
+ * were renamed or dropped would otherwise be read as `undefined` and fail
+ * with a TypeError at some arbitrary line, instead of failing to compile here
+ * where the name is written down. The field names are the ones the script
+ * emits — see the `report` object literal at the bottom of
+ * `scripts/live-gauntlet.mjs`.
+ */
+interface GauntletReport {
+  tools_discovered: number;
+  summary: {
+    total_calls: number;
+    calls_this_run: { sweep: number; seeds: number; state_check: number };
+  };
+  classification: {
+    uncalled_registry_writes: string[];
+    uncalled_registry_write_count: number;
+  };
+  mutation_proof: {
+    status: string;
+    state_check: string;
+    mutations_detected: number;
+    mutations_performed: Array<{ field: string; before: unknown; after: unknown; attributable_to: string | null }>;
+    mutating_tools_skipped_by_default: string[];
+    mutating_tools_dry_run_verified: string[];
+    unverified_invocations: Array<{ tool: string; reason: string }>;
+    unaccounted_mutating_tools: Array<{ tool: string; status: string; reason: string }>;
+    pending_mutating_tools: string[];
+    fingerprint: { compared_fields: number };
+  };
+  results: SweepRow[];
+}
+
 interface RunOutcome {
   status: number;
   stdout: string;
-  report: Record<string, never> & Record<string, any>;
+  report: GauntletReport;
 }
 
 const RUN_TIMEOUT_MS = 60_000;
@@ -944,10 +998,22 @@ function makeSandbox(cfg: Record<string, boolean>): Sandbox {
 function runGauntlet(cfg: Record<string, boolean>, extraArgs: string[] = []): RunOutcome {
   const box = makeSandbox(cfg);
   const run = box.run([`--report=${box.reportPath}`, ...extraArgs]);
-  const report = run.status === 0 || run.status === 1
-    ? JSON.parse(readFileSync(box.reportPath, 'utf8')) as RunOutcome['report']
-    : ({} as RunOutcome['report']);
-  return { status: run.status, stdout: run.stdout, report };
+  // The script writes its report before it exits, and it only ever exits 0 or
+  // 1. Any other status means it died first, so there is no report to read.
+  // This used to fall back to `{}`, which typed as a report because the field
+  // was `Record<string, never> & Record<string, any>` and then threw a
+  // TypeError on the first field read — naming neither the run nor the exit.
+  // Asserting here only fires where the caller was already about to fail: every
+  // end-to-end case checks `status` against the captured stdout first.
+  assert.ok(
+    run.status === 0 || run.status === 1,
+    `the gauntlet exited ${run.status} without writing a report:\n${run.stdout}`,
+  );
+  return {
+    status: run.status,
+    stdout: run.stdout,
+    report: JSON.parse(readFileSync(box.reportPath, 'utf8')) as GauntletReport,
+  };
 }
 
 describe('live-gauntlet end to end, against a stub account', () => {
@@ -980,8 +1046,11 @@ describe('live-gauntlet end to end, against a stub account', () => {
     // while the sweep still measures nothing.
     const run = runGauntlet({ mutateOnDryRun: false, proseOnly: false });
     assert.equal(run.status, 0, run.stdout);
-    const byName = new Map<string, any>(
-      (run.report.results as any[]).map((r) => [r.tool, r]),
+    // Typed off the report's own `results`, so a row that is not a sweep row
+    // cannot slip through as `any` and be read as a status that was never
+    // recorded.
+    const byName = new Map<string, SweepRow>(
+      run.report.results.map((r) => [r.tool, r]),
     );
     for (const name of ['library_genre_report', 'filter_by_genre']) {
       const row = byName.get(name);
@@ -1285,9 +1354,14 @@ describe('mutation testing: each guarantee can go red', () => {
       // Then: the mutation must break it. `assert.throws` IS the assertion —
       // if the mutated module still satisfied the guarantee, this fails, which
       // is how a test that cannot detect its own regression gets caught.
+      //
+      // The message is the SECOND argument, not the third behind an explicit
+      // `undefined`: there is no error predicate here — any throw counts, and
+      // that is the whole claim. `assert.throws` overloads on
+      // `(block, message)` and `(block, error, message)`, and a literal
+      // `undefined` fits neither, since the second is not optional.
       assert.throws(
         () => mutation.check(mutated),
-        undefined,
         `mutation "${mutation.label}" did not break its guarantee — the test cannot detect this regression`,
       );
     });

@@ -121,8 +121,11 @@ describe('scope-filtered module registration (#1020)', () => {
     assert.ok(filtered.has('library') && filtered.has('playlists') && filtered.has('following'),
       `expected the three scope-gated registration keys to be scope_filtered, got [${[...filtered].join(', ')}]`);
     assert.ok(moduleToolNames(server, 'library').length > 0, 'a scope_filtered module must own its surviving tools');
+    // `moduleToolNames` returns the server metadata's own `readonly string[]`.
+    // Copy before sorting: `sort()` in place would reorder the array the server
+    // still holds, and the return type has no `sort` for a reason.
     assert.deepEqual(
-      moduleToolNames(server, 'library').sort(),
+      [...moduleToolNames(server, 'library')].sort(),
       ['check_in_library', 'get_saved_albums', 'get_saved_counts', 'get_saved_episodes',
         'get_saved_shows', 'get_saved_tracks', 'search_saved_albums', 'search_saved_audiobooks', 'search_saved_episodes',
         'search_saved_shows', 'search_saved_tracks'],

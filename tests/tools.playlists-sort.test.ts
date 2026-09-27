@@ -86,13 +86,13 @@ function harness(items: PlaylistItemObject[]) {
     },
     registerTool(
       name: string,
-      config: { description?: string; inputSchema?: z.ZodType },
+      config: { description?: string; inputSchema?: z.ZodType<Record<string, unknown>> },
       handler: RegisteredTool['handler'],
     ) {
       registered.push({
         name,
         description: config.description ?? '',
-        validate: (a) => (config.inputSchema as z.ZodType).parse(a),
+        validate: (a) => (config.inputSchema as z.ZodType<Record<string, unknown>>).parse(a),
         handler,
       });
     },

@@ -20,6 +20,7 @@ import {
   registerBackupTools,
   backupDir,
   collectSnapshot,
+  LIBRARY_BACKUP_SCHEMA_VERSION,
   type LibraryBackup,
 } from '../src/tools/backup.js';
 
@@ -33,7 +34,11 @@ interface RecordedCall {
   arg?: unknown;
 }
 
-type Responder = (path: string, params: Record<string, string> | undefined) => unknown;
+// `params` optional, as on the real client: the shared harness calls a
+// responder with the query it has and the per-path fixtures below take
+// only the params, so requiring the second argument made half the table
+// untypable.
+type Responder = (path: string, params?: Record<string, string>) => unknown;
 
 interface RegisteredTool {
   name: string;
@@ -96,7 +101,12 @@ const textOf = (out: { content: Array<{ text: string }> }) => out.content[0].tex
 
 /** Offset-paged fixture generator: `rows` served 2-per-page, then stops. */
 function offsetPages(path: string, rows: unknown[]) {
-  return (params?: Record<string, string>) => {
+  // `(path, params)`, the shape every `Responder` in the table has. The path
+  // is bound by the outer call and never read here, so the parameter is
+  // declared and ignored — but it stays required, because a caller that
+  // dropped it would be passing `params` where the `Responder` contract
+  // promises `path`.
+  return (_path: string, params?: Record<string, string>) => {
     const offset = Number(params?.offset ?? 0);
     const page = rows.slice(offset, offset + 2);
     const next = offset + 2 < rows.length ? `${path}?next` : null;
@@ -112,7 +122,11 @@ function savedRow(key: string, i: number) {
 }
 
 /** Full library fixture: 5 of each saved category, 3 artists, 2 playlists. */
-const responders: Record<string, ReturnType<Responder>> = {
+// `Responder`, not `ReturnType<Responder>`: each entry is the responder
+// itself and is invoked below as `responders[path]!(params)`.
+// `ReturnType` erased that to `unknown`, which is why every one of those
+// call sites read as "not callable".
+const responders: Record<string, Responder> = {
   '/me/tracks': offsetPages('/me/tracks', [0, 1, 2, 3, 4].map((i) => savedRow('track', i))),
   '/me/albums': offsetPages('/me/albums', [0, 1, 2, 3, 4].map((i) => savedRow('album', i))),
   '/me/shows': offsetPages('/me/shows', [0, 1, 2, 3, 4].map((i) => savedRow('show', i))),
@@ -121,7 +135,7 @@ const responders: Record<string, ReturnType<Responder>> = {
 };
 
 function baseResponder(path: string, params?: Record<string, string>): unknown {
-  if (responders[path]) return responders[path]!(params);
+  if (responders[path]) return responders[path]!(path, params);
   if (path === '/me/following') {
     return {
       artists: {
@@ -367,7 +381,7 @@ describe('backup_library', () => {
   it('distinguishes exactly-at-cap from cap-plus-one collection walks', async () => {
     const exact = harness((path, params) =>
       path === '/me/tracks'
-        ? offsetPages('/me/tracks', [0, 1, 2].map((i) => savedRow('track', i)))(params)
+        ? offsetPages('/me/tracks', [0, 1, 2].map((i) => savedRow('track', i)))(path, params)
         : baseResponder(path, params),
     );
     const exactOut = await exact.invoke('backup_library', { response_format: 'json', walk_cap: 3 });
@@ -379,7 +393,7 @@ describe('backup_library', () => {
 
     const over = harness((path, params) =>
       path === '/me/tracks'
-        ? offsetPages('/me/tracks', [0, 1, 2, 3].map((i) => savedRow('track', i)))(params)
+        ? offsetPages('/me/tracks', [0, 1, 2, 3].map((i) => savedRow('track', i)))(path, params)
         : baseResponder(path, params),
     );
     const overOut = await over.invoke('backup_library', { response_format: 'json', walk_cap: 3 });
@@ -433,7 +447,7 @@ describe('backup_library', () => {
         { id: 'a', name: 'A', uri: 'spotify:playlist:a' },
         { id: 'b', name: 'B', uri: 'spotify:playlist:b' },
         { id: 'c', name: 'C', uri: 'spotify:playlist:c' },
-      ])(params) : baseResponder(path, params),
+      ])(path, params) : baseResponder(path, params),
     );
     const out = await h.invoke('backup_library', { response_format: 'concise' });
     const sc = out.structuredContent as Record<string, unknown>;
@@ -511,8 +525,19 @@ describe('list_backups', () => {
     // Pre-seed an older backup, then take two live ones today.
     await mkdir(tmp, { recursive: true });
     const older: LibraryBackup = {
+      // Typed as the real `LibraryBackup`, not as a hand-rolled shape, so this
+      // fixture has to carry every field a file on disk really has. It did not:
+      // `schema_version`, `spotify_data`, `retention_until` and
+      // `reported_totals` were simply absent, and a `list_backups` that only
+      // reads `created` and `counts` never noticed. `reported_totals` is what
+      // Spotify's own page `total` said; a `snapshot_state: 'complete'` walk
+      // that reached the same numbers is the truthful value here, and any other
+      // value would have to be a claim the fixture cannot support.
+      schema_version: LIBRARY_BACKUP_SCHEMA_VERSION,
       _meta: {
         created: '2025-12-01T10:00:00.000Z',
+        spotify_data: true,
+        retention_until: null,
         snapshot_state: 'complete',
         complete: true,
         partial_reasons: [],
@@ -528,6 +553,15 @@ describe('list_backups', () => {
           playlists: { fetched: 0, cap: 500, complete: true, truncated: false },
         },
         playlist_items: { fetched: 0, cap_per_playlist: 500, truncated: false, truncated_playlists: 0 },
+        reported_totals: {
+          liked_tracks: 9,
+          saved_albums: 0,
+          saved_shows: 0,
+          saved_episodes: 0,
+          saved_audiobooks: 0,
+          followed_artists: 1,
+          playlists: 0,
+        },
         counts: {
           liked_tracks: 9,
           saved_albums: 0,

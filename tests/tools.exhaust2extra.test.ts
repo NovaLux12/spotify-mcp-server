@@ -3,6 +3,8 @@ import { DEFAULT_TOKEN_FILE } from './helpers/hermetic.js';
 import test, { describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { z } from 'zod';
+import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import type { SpotifyClient } from '../src/client.js';
 import {
   evalSetExpression,
   parseSetExpression,
@@ -16,6 +18,10 @@ type RegisteredTool = { name: string; description: string; schema: Record<string
 type Call = { method: string; path: string; params?: Record<string, unknown>; body?: unknown };
 
 interface FakeClient {
+  // Mirrored from the real `SpotifyClient.tokenFile: string` (src/client.ts).
+  // The account stores key by it, so a double without it is not a client the
+  // tools can route through (#1385).
+  tokenFile: string;
   get: (path: string, params?: Record<string, unknown>) => Promise<unknown>;
   post: (path: string, body?: unknown) => Promise<unknown>;
   putRaw: (path: string, body: string) => Promise<unknown>;
@@ -35,6 +41,23 @@ interface FakeClient {
 }
 
 /**
+ * The registrar's `client` parameter, as the value this file hands it.
+ *
+ * `SpotifyClient` is a CLASS with private state (the 429 queue, the TTL cache,
+ * the token loader), so no structural double satisfies it — and this double is
+ * deliberately structural, since its job is to record calls rather than make
+ * them. The cast is therefore confined to the one place the two meet: the
+ * object literal is still built and checked as a `FakeClient`, so the members
+ * it claims are verified, and `calls` is kept in the return type so assertions
+ * read the real log.
+ *
+ * What the cast stops catching: changes to the ~65 members of `SpotifyClient`
+ * this file never invokes. The alternative was that cast at each of the 15
+ * registration sites, which is 15 chances to cast the wrong thing.
+ */
+type RegistrarClient = SpotifyClient & Pick<FakeClient, 'calls'>;
+
+/**
  * A paged route: an array is the playlist's WHOLE item list, and this shim
  * pages it the way `SpotifyClient.getAllPagesWithTruncation` does, so a route
  * of 5 rows and a cap of 2 really does stop at 2 and really does report
@@ -43,7 +66,7 @@ interface FakeClient {
  * verdict). `tests/exhaust2extra-fetchcap.test.ts` runs the same slice against
  * the real client so the loop is never only this shim's version of it.
  */
-function makeFakeClient(routes: Record<string, unknown>): FakeClient {
+function makeFakeClient(routes: Record<string, unknown>): RegistrarClient {
   const calls: Call[] = [];
   const self: FakeClient = {
     calls,
@@ -119,14 +142,23 @@ function makeFakeClient(routes: Record<string, unknown>): FakeClient {
       };
     },
   };
-  return self;
+  return self as unknown as RegistrarClient;
 }
 
-function makeServer(registered: RegisteredTool[]): unknown {
+/**
+ * The recording double for the registrar's `server` argument.
+ *
+ * Cast ONCE here rather than at each of the 15 registration sites below: the
+ * cast is a claim about this file's harness (a `tool()` recorder, not an SDK
+ * server), and repeating it would make 15 chances to cast the wrong thing. The
+ * recorder's own shape is still checked — the literal has to satisfy
+ * `RegisteredTool` before it is asserted to be an `McpServer`.
+ */
+function makeServer(registered: RegisteredTool[]): McpServer {
   return {
     tool: (name: string, description: string, schema: Record<string, unknown>, handler: RegisteredTool['handler']) =>
       registered.push({ name, description, schema, handler }),
-  };
+  } as unknown as McpServer;
 }
 
 function find(registered: RegisteredTool[], name: string): RegisteredTool {
@@ -203,11 +235,14 @@ test('pickRoundRobin cycles queries, skips seen, respects target', () => {
 });
 
 test('rankCoverCandidates orders largest first, unknown widths last (stable)', () => {
+  // `height` is required on the real `SpotifyImage` and is carried as `null`
+  // throughout: the ranking reads `width` alone, and a fixture that varied
+  // height too would invite a reader to think it had a bearing on the order.
   const ranked = rankCoverCandidates([
-    { url: 'small', width: 64 },
-    { url: 'unknown-a', width: null },
-    { url: 'big', width: 640 },
-    { url: 'unknown-b', width: null },
+    { url: 'small', width: 64, height: null },
+    { url: 'unknown-a', width: null, height: null },
+    { url: 'big', width: 640, height: null },
+    { url: 'unknown-b', width: null, height: null },
   ]);
   assert.deepEqual(ranked.map((r) => r.url), ['big', 'small', 'unknown-a', 'unknown-b']);
 });
@@ -550,8 +585,12 @@ describe('#899 playlist_fill_from_search bounds', () => {
     // this assertion is what catches that.
     const allGets = client.calls.filter((c) => c.method === 'GET').length;
     assert.equal(payload.requests_read, allGets, 'requests_read must be the total read cost');
+    // Both operands are parenthesised. Without them the trailing `as number`
+    // binds to the COMPARISON, not to the field — `>` is tighter than `as` —
+    // so the line was a `boolean` cast to `number` and the assertion it was
+    // meant to make was not the one being written.
     assert.ok(
-      (payload.requests_read as number) > payload.search_requests_read as number,
+      (payload.requests_read as number) > (payload.search_requests_read as number),
       'the playlist setup reads must be inside the total, not omitted from it',
     );
 

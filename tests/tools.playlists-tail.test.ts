@@ -67,8 +67,8 @@ function harness(
     tool(name: string, description: string, schema: z.ZodRawShape, handler: RegisteredTool['handler']) {
       registered.push({ name, description, validate: (a) => z.object(schema).parse(a), handler });
     },
-    registerTool(name: string, config: { description?: string; inputSchema?: z.ZodType }, handler: RegisteredTool['handler']) {
-      registered.push({ name, description: config.description ?? '', validate: (a) => (config.inputSchema as z.ZodType).parse(a), handler });
+    registerTool(name: string, config: { description?: string; inputSchema?: z.ZodType<Record<string, unknown>> }, handler: RegisteredTool['handler']) {
+      registered.push({ name, description: config.description ?? '', validate: (a) => (config.inputSchema as z.ZodType<Record<string, unknown>>).parse(a), handler });
     },
     ...(canElicit
       ? {

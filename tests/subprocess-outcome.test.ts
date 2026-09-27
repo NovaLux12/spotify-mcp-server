@@ -174,7 +174,11 @@ describe('the shapes above are the shapes Node produces (#1335)', () => {
     // The load-bearing measurement. If this ever stops holding, the bug this
     // file fixes was never the bug, and the helper's header is wrong.
     const missing = spawnSync('/nonexistent/binary/doctor', [], { encoding: 'utf8' });
-    assert.equal(missing.error?.code, 'ENOENT');
+    // `SpawnSyncReturns.error` is typed as a bare `Error`, which has no
+    // `code`. The runtime value is a `NodeJS.ErrnoException`; naming that
+    // type keeps the read checked, where `as any` would have let any
+    // property through.
+    assert.equal((missing.error as NodeJS.ErrnoException | undefined)?.code, 'ENOENT');
     assert.equal(missing.signal, null, 'a child that never ran still reports signal === null');
     assert.equal(classifyChild(missing).kind, 'not-started');
     // So the pre-fix guard would have passed it and returned `undefined` stdout.

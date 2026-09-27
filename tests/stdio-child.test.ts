@@ -322,7 +322,10 @@ describe('a throw inside an event handler is reported, not fatal (#1366)', () =>
       (message, cause) => { reported.push({ message, cause }); },
       'stdout',
       // The exact failure from that incident: `entry.resolve` is undefined.
-      () => { (undefined as unknown as () => void)(); },
+      // Takes the chunk, like a real stdout handler does. Declared with no
+      // parameters, `guardedHandler` inferred a zero-argument handler and the
+      // `handler('chunk')` call below had nothing to pass it to.
+      (_chunk: string) => { (undefined as unknown as () => void)(); },
     );
 
     // Must not throw. If it does, the throw escapes the handler and takes the

@@ -42,6 +42,13 @@ import { mkdtemp, writeFile, readFile, rm, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
+// `SpotifyApiError` is destructured out of the `await import` below, so what
+// this file holds is a VALUE and the class cannot be named in a type position
+// (TS2749). This alias is the same class as a type; being `import type`, it is
+// erased at runtime and so does not disturb the env-before-import ordering the
+// dynamic imports below depend on.
+import type { SpotifyApiError as SpotifyApiErrorType } from '../src/client.ts';
+
 // ---------------------------------------------------------------------------
 // Env setup MUST precede anything that reads a token (getTokenFilePath()
 // resolves per call, so ordering no longer matters for the BINDING — only for
@@ -549,7 +556,7 @@ describe('SpotifyClient', () => {
       await assert.rejects(
         new SpotifyClient().get('/me'),
         (err: unknown) => {
-          const e = err as SpotifyApiError;
+          const e = err as SpotifyApiErrorType;
           return (
             e instanceof SpotifyApiError &&
             e.status === 429 &&
@@ -579,7 +586,7 @@ describe('SpotifyClient', () => {
       await assert.rejects(
         new SpotifyClient().get('/me'),
         (err: unknown) => {
-          const e = err as SpotifyApiError;
+          const e = err as SpotifyApiErrorType;
           return (
             e instanceof SpotifyApiError &&
             e.status === 429 &&
@@ -622,7 +629,7 @@ describe('SpotifyClient', () => {
 
       const client = new SpotifyClient();
       await assert.rejects(client.get('/me'), (err: unknown) => {
-        const e = err as SpotifyApiError;
+        const e = err as SpotifyApiErrorType;
         return (
           e instanceof SpotifyApiError &&
           e.status === 429 &&
@@ -821,7 +828,7 @@ describe('SpotifyClient', () => {
       t.after(() => timer.restore());
 
       await assert.rejects(new SpotifyClient().get('/me'), (err: unknown) => {
-        const e = err as SpotifyApiError;
+        const e = err as SpotifyApiErrorType;
         assert.ok(e instanceof SpotifyApiError);
         assert.equal(e.status, 503);
         // The message must name the long wait, not "try again shortly" —
@@ -891,7 +898,7 @@ describe('SpotifyClient', () => {
             err instanceof SpotifyApiError,
             `expected SpotifyApiError, got ${err?.constructor?.name}: ${err}`,
           );
-          const e = err as SpotifyApiError;
+          const e = err as SpotifyApiErrorType;
           assert.equal(e.status, 503, 'a network blip is unavailable, not internal');
           assert.match(e.message, /^POST https:\/\/api\.spotify\.com\/v1\/me\/player\/queue failed: fetch failed/);
           return true;
@@ -926,7 +933,7 @@ describe('SpotifyClient', () => {
       await releaseBackoffs(t, timer, 2, () => settled);
       await pending;
 
-      const err = thrown as SpotifyApiError;
+      const err = thrown as SpotifyApiErrorType;
       assert.ok(err instanceof SpotifyApiError, `expected SpotifyApiError, got ${err}`);
       assert.equal(err.status, 503);
       assert.match(err.message, /^GET https:\/\/api\.spotify\.com\/v1\/me failed: fetch failed/);
@@ -1152,7 +1159,7 @@ describe('SpotifyClient', () => {
       await releaseBackoffs(t, timer, 2, () => settled);
       await pending;
 
-      const err = thrown as SpotifyApiError;
+      const err = thrown as SpotifyApiErrorType;
       assert.ok(err instanceof SpotifyApiError);
       assert.equal(err.status, 503);
       assert.equal(

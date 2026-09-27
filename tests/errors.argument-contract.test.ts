@@ -145,8 +145,16 @@ function firstText(frame: JsonRpc): string {
   const messages = frame.result?.messages;
   assert.ok(Array.isArray(messages) && messages.length > 0, `expected a rendered prompt, got: ${JSON.stringify(frame)}`);
   const content = (messages[0] as { content?: { text?: unknown } }).content;
-  assert.equal(typeof content?.text, 'string');
-  return content.text as string;
+  // `assert.ok(typeof … === 'string')` rather than `assert.equal(typeof …, 'string')`:
+  // assert.ok is an assertion function, so the guard narrows `content` to a
+  // present block and its `text` to a string. assert.equal proves the same
+  // thing at runtime but tells the compiler nothing, which is why the return
+  // below used to need an `as string`. Same check, no cast.
+  assert.ok(
+    typeof content?.text === 'string',
+    `expected a text message block, got: ${JSON.stringify(messages[0])}`,
+  );
+  return content.text;
 }
 
 describe('prompts/get rejects arguments the prompt does not declare (#689)', () => {

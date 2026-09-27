@@ -103,12 +103,54 @@ function harness(responder: Responder = () => null) {
     invoke: async (name: string, args: Record<string, unknown>) => {
       const tool = registered.find((t) => t.name === name);
       assert.ok(tool, `tool "${name}" should be registered`);
-      return tool.handler(tool.validate(args));
+      const res = await tool.handler(tool.validate(args));
+      // All three tools return through `shapeResult`, which always populates
+      // `structuredContent`; the optional in the wire type is MCP's, not
+      // theirs. Proving it ONCE here replaces the `?.` that stood in for the
+      // proof at every payload read below.
+      assert.ok(res.structuredContent, `tool "${name}" returned no structuredContent`);
+      return { ...res, structuredContent: res.structuredContent };
     },
   };
 }
 
 const textOf = (out: { content: Array<{ text: string }> }) => out.content[0].text;
+
+// ---------------------------------------------------------------------------
+// Payload readers
+//
+// `structuredContent` is `Record<string, unknown>`, so every field read off it
+// is `unknown` until it is checked. These narrow at runtime and THROW naming
+// the field when the check fails: an absent or wrongly-typed field is
+// unanswered, which is not the same as empty (#803). The casts these replace
+// (`out.structuredContent?.library as {...}`) asserted a shape the payload
+// might not carry, and a test that then read `undefined.saved_tracks_total`
+// would have failed with a TypeError naming nothing.
+// ---------------------------------------------------------------------------
+
+/** Narrow an `unknown` to a record, naming the field when it is not one. */
+function recordOf(value: unknown, label: string): Record<string, unknown> {
+  assert.ok(
+    value !== null && typeof value === 'object' && !Array.isArray(value),
+    `${label} should be an object, got ${value === null ? 'null' : typeof value}`,
+  );
+  return value as Record<string, unknown>;
+}
+
+/** `payload[key]` as a record — the one-line form used at most read sites. */
+const objectAt = (payload: Record<string, unknown>, key: string): Record<string, unknown> =>
+  recordOf(payload[key], `payload.${key}`);
+
+/**
+ * The `offset` a GET actually sent, as the string the stub recorded.
+ *
+ * `StubCall.arg` is `unknown` because it also carries POST/PUT bodies; a GET's
+ * arg is the query params, and reading `.offset` off an unchecked `unknown` is
+ * exactly the read that silently yields `undefined` when the argument is not
+ * the object it was assumed to be.
+ */
+const offsetSent = (call: { path: string; arg?: unknown }): unknown =>
+  recordOf(call.arg ?? {}, `${call.path} query`).offset;
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -286,24 +328,22 @@ describe('library_genre_report', () => {
     const out = await h.invoke('library_genre_report', {});
 
     // Pagination walk: /me/tracks offsets 0 then 2 (short final page); same for albums.
-    const trackOffsets = h.client.calls.filter((c) => c.path === '/me/tracks').map((c) => c.arg?.offset);
+    const trackOffsets = h.client.calls.filter((c) => c.path === '/me/tracks').map(offsetSent);
     assert.deepEqual(trackOffsets, ['0', '2']);
-    const albumOffsets = h.client.calls.filter((c) => c.path === '/me/albums').map((c) => c.arg?.offset);
+    const albumOffsets = h.client.calls.filter((c) => c.path === '/me/albums').map(offsetSent);
     assert.deepEqual(albumOffsets, ['0']);
 
-    const rows = out.structuredContent?.items as Array<{
-      genre: string;
-      tracks: number;
-      albums: number;
-      total: number;
-      artists: string[];
-    }>;
+    // The payload really carries every field of a `GenreRow` (src/tools/
+    // libraryinsights.ts:445), so the deepEqual below compares whole rows
+    // rather than a partial the cast happened to name.
+    const rows = out.structuredContent.items;
     assert.deepEqual(rows, [
       { genre: 'pop', tracks: 3, albums: 0, total: 3, artists: ['Aurora'] },
       { genre: 'jazz', tracks: 1, albums: 1, total: 2, artists: ['Nils'] },
     ]);
-    assert.equal(out.structuredContent?.library.saved_tracks_total, 3);
-    assert.equal(out.structuredContent?.library.saved_albums_total, 1);
+    const library = objectAt(out.structuredContent, 'library');
+    assert.equal(library.saved_tracks_total, 3);
+    assert.equal(library.saved_albums_total, 1);
   });
 
   it('dedupes repeated artists within one item: genre counted once even with duplicate artists', async () => {
@@ -317,7 +357,10 @@ describe('library_genre_report', () => {
     h.client.calls.length = 0;
 
     const out = await h.invoke('library_genre_report', {});
-    const rows = out.structuredContent?.items as Array<{ genre: string; tracks: number }>;
+    // `artists` is a real `GenreRow` field (src:358); the local type that
+    // omitted it was narrower than the payload, which is why the read below
+    // could not be checked at all.
+    const rows = out.structuredContent.items as Array<{ genre: string; tracks: number; artists: string[] }>;
     assert.equal(rows[0].tracks, 1);
     assert.deepEqual(rows[0].artists, ['Aurora']); // deduplicated in the artist list too
   });
@@ -357,18 +400,19 @@ describe('library_genre_report', () => {
     const h = harness(pagedResponder({ '/me/tracks': [trackItem('t1', ['Aurora'])], '/me/albums': [] }));
 
     const out = await h.invoke('library_genre_report', { response_format: 'json' });
-    const parsed = JSON.parse(textOf(out));
+    const parsed = recordOf(JSON.parse(textOf(out)), 'json-mode text block');
     assert.deepEqual(parsed, out.structuredContent);
-    assert.equal(parsed.library.saved_tracks_total, 1);
+    assert.equal(objectAt(parsed, 'library').saved_tracks_total, 1);
   });
 
   it('empty library edge: zero saved items yields an empty report, not an error', async () => {
     const h = harness(pagedResponder({}));
     const out = await h.invoke('library_genre_report', {});
     assert.match(textOf(out), /empty/i);
-    assert.deepEqual(out.structuredContent?.items, []);
-    assert.equal(out.structuredContent?.library.saved_tracks_total, 0);
-    assert.equal(out.structuredContent?.library.saved_albums_total, 0);
+    assert.deepEqual(out.structuredContent.items, []);
+    const library = objectAt(out.structuredContent, 'library');
+    assert.equal(library.saved_tracks_total, 0);
+    assert.equal(library.saved_albums_total, 0);
   });
 
   it('non-empty library with no tags lists untagged artists instead of rows', async () => {
@@ -417,6 +461,8 @@ describe('library_genre_report', () => {
 
       // Structured payload carries the same accounting, per collection.
       const library = out.structuredContent?.library as {
+        saved_tracks_total: number;
+        saved_albums_total: number;
         saved_tracks: { fetched: number; cap: number; truncated_by_cap: boolean };
         saved_albums: { fetched: number; cap: number; truncated_by_cap: boolean };
         complete: boolean;
@@ -466,9 +512,9 @@ describe('filter_by_genre', () => {
     h.client.calls.length = 0;
 
     const out = await h.invoke('filter_by_genre', { genre: 'pop', kind: 'tracks' });
-    assert.deepEqual(out.structuredContent?.items, ['spotify:track:t1']);
-    assert.equal(out.structuredContent?.pagination.total, 1);
-    assert.equal(out.structuredContent?.kind, 'tracks');
+    assert.deepEqual(out.structuredContent.items, ['spotify:track:t1']);
+    assert.equal(objectAt(out.structuredContent, 'pagination').total, 1);
+    assert.equal(out.structuredContent.kind, 'tracks');
     // Only the requested collection is walked.
     assert.ok(h.client.calls.every((c) => c.path === '/me/tracks'));
   });
@@ -496,8 +542,8 @@ describe('filter_by_genre', () => {
     h.client.calls.length = 0;
 
     const out = await h.invoke('filter_by_genre', { genre: 'techno', kind: 'tracks' });
-    assert.deepEqual(out.structuredContent?.items, []);
-    assert.equal(out.structuredContent?.pagination.total, 0);
+    assert.deepEqual(out.structuredContent.items, []);
+    assert.equal(objectAt(out.structuredContent, 'pagination').total, 0);
     assert.match(textOf(out), /matching genre "techno": 0/m);
   });
 

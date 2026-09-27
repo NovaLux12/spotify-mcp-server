@@ -390,7 +390,7 @@ describe('#583 — the operator surface prints the resolved caps', () => {
   it('spotify_doctor reports the batch caps on its config row', async () => {
     const server = new McpServer({ name: 'caps-doctor', version: '0.0.0' });
     registerDoctorTool(server, recordingClient().client);
-    const tool = (server as unknown as { _registeredTools: Record<string, { handler: (a: Record<string, never>) => Promise<{ content: Array<{ text: string }>; structuredContent: { rows?: Array<{ id: string; summary: string }> } }> }> })._registeredTools.spotify_doctor;
+    const tool = (server as unknown as { _registeredTools: Record<string, { handler: (a: Record<string, unknown>) => Promise<{ content: Array<{ text: string }>; structuredContent: { rows?: Array<{ id: string; summary: string }> } }> }> })._registeredTools.spotify_doctor;
     const report = await tool.handler({ response_format: 'json' });
     const config = report.structuredContent.rows?.find((row) => row.id === 'config');
     assert.ok(config, 'the doctor report must carry a config row');

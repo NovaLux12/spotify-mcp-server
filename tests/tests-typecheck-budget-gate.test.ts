@@ -77,14 +77,21 @@ function runGate(args: string[] = []) {
 let realTree: { total: number; byFile: Map<string, number> } | undefined;
 function measureRealTree() {
   if (realTree) return realTree;
-  // `tsc` exits 1 when it reports type errors, which is the expected case here,
-  // so this cannot be execFileSync — that throws and discards the output.
+  // `tsc` exits 1 when it reports type errors and 0 when it reports none, and
+  // this cannot be execFileSync either way — it throws on 1 and discards the
+  // output. So the status is asserted to be one of those two rather than
+  // pinned to 1: the tree now measures zero, and pinning it to 1 made this
+  // helper fail the moment the last error was fixed, which says nothing about
+  // the parser.
   const run = spawnSync(
     process.execPath,
     [join(ROOT, 'node_modules', 'typescript', 'bin', 'tsc'), '--noEmit', '--pretty', 'false', '-p', PROJECT],
     { encoding: 'utf8', cwd: ROOT },
   );
-  assert.equal(run.status, 1, `expected tsc to report type errors, got status ${run.status}`);
+  assert.ok(
+    run.status === 0 || run.status === 1,
+    `tsc did not run to completion (status ${run.status}):\n${run.stderr}`,
+  );
   realTree = parseDiagnostics(run.stdout);
   return realTree!;
 }
@@ -205,12 +212,49 @@ describe('#1408 — the tests/ typecheck budget holds the real tree', () => {
     assert.ok(Number.isInteger(reported), `could not read a count from: ${stdout}`);
 
     const measured = measureRealTree();
-    assert.ok(measured.total > 0, 'tsc emitted no diagnostics, so this proves nothing');
     assert.equal(
       reported,
       measured.total,
       'the gate printed a count that does not match the diagnostics tsc emitted',
     );
+  });
+
+  it('reports a NON-ZERO count from real diagnostics, so the comparison above is not 0 === 0', () => {
+    // The tree measures zero errors now, which would let the assertion above
+    // be satisfied by a gate whose parser returned 0 for anything. This drives
+    // the same CLI and the same reporting line against a scratch project
+    // carrying exactly one real type error, so the equality is known to be
+    // able to fail in both directions.
+    const dir = mkdtempSync(join(tmpdir(), 'typecheck-count-'));
+    try {
+      const probe = join(dir, 'one');
+      mkdirSync(probe, { recursive: true });
+      const project = join(probe, 'tsconfig.json');
+      writeFileSync(
+        project,
+        JSON.stringify({
+          compilerOptions: { noEmit: true, strict: true, types: [], rootDir: '.', target: 'ES2022' },
+          include: ['*.ts'],
+        }),
+      );
+      writeFileSync(join(probe, 'bad.ts'), 'export const n: number = "s";\n');
+      // Keyed the way tsc prints it from the CWD the gate runs in, exactly as
+      // `probeKey` does below — otherwise the "not in the baseline" rule
+      // fires instead and this would pass for the wrong reason.
+      const key = relative(ROOT, join(probe, 'bad.ts'));
+      const baseline = join(dir, 'baseline.json');
+      writeFileSync(baseline, JSON.stringify({ total: 1, byFile: { [key]: 1 } }));
+
+      const { code, stdout, stderr } = runGate(['--project', project, '--baseline', baseline]);
+      assert.equal(code, 0, `the gate rejected a tree at its own baseline:\n${stdout}${stderr}`);
+      assert.match(
+        stdout,
+        /within budget: 1 error\(s\)/,
+        'the gate did not report the one diagnostic tsc emitted',
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('the checked-in baseline IS the measurement, entry for entry (#1478)', () => {

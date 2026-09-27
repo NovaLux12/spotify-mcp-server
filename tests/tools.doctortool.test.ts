@@ -54,20 +54,55 @@ interface DoctorSurface {
   prompts_without_resources: boolean;
 }
 
+/**
+ * What `spotify_doctor` actually returns.
+ *
+ * `collectDoctorReport` ends in `{ ok, rows, surface }` and the registration
+ * spreads that whole object into `structuredContent`, so none of the three is
+ * conditional. The test's declaration had all of them OPTIONAL, which is what
+ * made `res.structuredContent?.rows.find(...)` and
+ * `res.structuredContent?.surface.prompts_without_resources` uncompilable —
+ * and the `?` chains that papered over it read `undefined` on a missing
+ * payload rather than failing, so an absent report satisfied a
+ * `rows.find(...)` as "no such row".
+ */
+interface DoctorPayload {
+  ok: boolean;
+  rows: DoctorRow[];
+  surface: DoctorSurface;
+}
+
 interface RegisteredTool {
   name: string;
   description: string;
   validate: (args: Record<string, unknown>) => Record<string, unknown>;
   handler: (args: Record<string, unknown>) => Promise<{
     content: Array<{ type: string; text: string }>;
-    structuredContent?: { ok?: boolean; rows?: DoctorRow[]; surface?: DoctorSurface };
+    structuredContent?: DoctorPayload;
   }>;
 }
 
+/**
+ * The `getRateLimitStatus` half of the client double that the cache rows
+ * read. `RateLimitStatus` is module-private in `src/client.ts`, so this is a
+ * hand-written shadow — and it had drifted: the cache fields the #894/#1279
+ * rows read (`cacheEntries`, `cacheBytes`, `cacheMaxBytes`,
+ * `cacheSkippedOversize`) and the #893 persist fields were missing, so four
+ * fixtures spelling them out were excess properties. Types and optionality are
+ * copied from the interface they shadow, so a rename there breaks here.
+ */
 interface StubRateLimit {
   lastThrottleAt: number | null;
   retryAfterSec: number | null;
   cooldownRemainingMs: number;
+  cacheEntries?: number;
+  cacheBytes?: number;
+  cacheMaxBytes?: number;
+  cacheSkippedOversize?: number;
+  cachePersist?: boolean;
+  cacheRestored?: number;
+  cachePersistFailed?: number;
+  cachePersistLost?: number;
 }
 
 function harness(opts: {
@@ -123,10 +158,19 @@ function harness(opts: {
   return {
     requestedPaths,
     registered,
-    invoke: async (args: Record<string, unknown> = {}) => {
+    invoke: async (
+      args: Record<string, unknown> = {},
+    ): Promise<{
+      content: Array<{ type: string; text: string }>;
+      structuredContent: DoctorPayload;
+    }> => {
       const tool = registered.find((t) => t.name === 'spotify_doctor');
       assert.ok(tool, 'spotify_doctor must be registered');
-      return tool.handler(tool.validate(args));
+      const res = await tool.handler(tool.validate(args));
+      // The report is the tool's whole point, so prove it is there ONCE here
+      // rather than at each of the ~35 `structuredContent?.` reads below.
+      assert.ok(res.structuredContent, 'spotify_doctor returned no structuredContent');
+      return { ...res, structuredContent: res.structuredContent };
     },
   };
 }

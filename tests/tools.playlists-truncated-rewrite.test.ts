@@ -79,8 +79,8 @@ function harness(
     tool(name: string, _d: string, schema: z.ZodRawShape, handler: RegisteredTool['handler']) {
       registered.push({ name, validate: (a) => z.object(schema).parse(a), handler });
     },
-    registerTool(name: string, config: { inputSchema?: z.ZodType }, handler: RegisteredTool['handler']) {
-      registered.push({ name, validate: (a) => (config.inputSchema as z.ZodType).parse(a), handler });
+    registerTool(name: string, config: { inputSchema?: z.ZodType<Record<string, unknown>> }, handler: RegisteredTool['handler']) {
+      registered.push({ name, validate: (a) => (config.inputSchema as z.ZodType<Record<string, unknown>>).parse(a), handler });
     },
     ...(canElicit
       ? {
@@ -330,8 +330,8 @@ describe('#1310 the +1 probe boundary: 500 succeeds, 501 refuses', () => {
       tool(name: string, _d: string, schema: z.ZodRawShape, handler: RegisteredTool['handler']) {
         registered.push({ name, validate: (a) => z.object(schema).parse(a), handler });
       },
-      registerTool(name: string, config: { inputSchema?: z.ZodType }, handler: RegisteredTool['handler']) {
-        registered.push({ name, validate: (a) => (config.inputSchema as z.ZodType).parse(a), handler });
+      registerTool(name: string, config: { inputSchema?: z.ZodType<Record<string, unknown>> }, handler: RegisteredTool['handler']) {
+        registered.push({ name, validate: (a) => (config.inputSchema as z.ZodType<Record<string, unknown>>).parse(a), handler });
       },
     } as unknown as McpServer;
     registerPlaylistTools(fakeServer, client as unknown as SpotifyClient);

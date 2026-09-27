@@ -35,7 +35,10 @@ import {
 // ---------------------------------------------------------------- fixtures
 
 /** Rendered prompt body by prompt name, from the shared registry pass. */
-async function renderAllPrompts(): Promise<Map<string, string>> {
+// `ReadonlyMap`, which is what `promptSurface()` actually returns. Declaring
+// `Map` here promised a `set`/`delete` the registry deliberately does not
+// hand out, and the only way to satisfy that promise was a cast.
+async function renderAllPrompts(): Promise<ReadonlyMap<string, string>> {
   return (await promptSurface()).prompts;
 }
 

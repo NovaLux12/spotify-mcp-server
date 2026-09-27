@@ -784,8 +784,7 @@ export class StatefulPlaylistClient extends StubSpotifyClient {
     this.route('GET', /^\/playlists\/[^/]+\/items$/, {
       respond: (call) => {
         const id = idOf(call.path);
-        const rows = this.rows.get(id);
-        assertSeeded(id, rows !== undefined, this.rows);
+        const rows = requireSeeded(id, this.rows.get(id), this.rows);
         this.logOf(id).itemPageReads++;
         const arg = (call.arg ?? {}) as { offset?: string; limit?: string };
         const offset = Number(arg.offset ?? 0) || 0;
@@ -809,8 +808,7 @@ export class StatefulPlaylistClient extends StubSpotifyClient {
     this.route('GET', /^\/playlists\/[^/]+$/, {
       respond: (call) => {
         const id = idOf(call.path);
-        const rows = this.rows.get(id);
-        assertSeeded(id, rows !== undefined, this.rows);
+        const rows = requireSeeded(id, this.rows.get(id), this.rows);
         const { public: pub, collaborative } = this.visibility.get(id) ?? {};
         return {
           id,
@@ -927,7 +925,26 @@ function readPositions(arg: unknown): number[] {
  */
 function assertSeeded(id: string, present: boolean, known: Map<string, unknown>): void {
   if (present) return;
-  throw new Error(
+  throw unseededError(id, known);
+}
+
+/**
+ * `assertSeeded` for the call sites that then USE the looked-up value.
+ *
+ * `assertSeeded` takes a `present: boolean`, which the compiler cannot carry
+ * forward: after `assertSeeded(id, rows !== undefined, map)` the compiler still
+ * types `rows` as `PlaylistRow[] | undefined`, so every read off it is an
+ * error. This variant takes the VALUE and returns it, so the unseeded case
+ * throws and the seeded case is typed `PlaylistRow[]` — the same guard, with a
+ * type the callers can actually build on.
+ */
+function requireSeeded<T>(id: string, value: T | undefined, known: Map<string, unknown>): T {
+  if (value === undefined) throw unseededError(id, known);
+  return value;
+}
+
+function unseededError(id: string, known: Map<string, unknown>): Error {
+  return new Error(
     `StatefulPlaylistClient: playlist "${id}" was never seeded. ` +
       `Seeded playlists: ${known.size > 0 ? [...known.keys()].join(', ') : '(none)'}. ` +
       `A mock that answered for an unseeded playlist would make "the tool read the wrong id" ` +

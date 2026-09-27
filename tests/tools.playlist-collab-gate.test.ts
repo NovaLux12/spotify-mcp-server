@@ -117,7 +117,12 @@ function makeStubClient(responder: Responder): StubClient {
  * Omitted → the server advertises no elicitation capability at all, which is
  * the fail-closed case.
  */
-function harness(responder: Responder, elicitResult?: unknown): Harness {
+// The responder is optional because one case genuinely has none: the suite
+  // calls this with `undefined` to drive a tool whose whole point is that it
+  // elicits before touching the API. Declaring the parameter required made
+  // that call site an error while saying nothing the harness did not already
+  // do — the stub's own default is `() => null`.
+  function harness(responder: Responder = () => null, elicitResult?: unknown): Harness {
   const registered: RegisteredTool[] = [];
   const elicitCalls: Array<{ message: string }> = [];
   const fakeServer = {
@@ -147,12 +152,12 @@ function harness(responder: Responder, elicitResult?: unknown): Harness {
     // Newer SDK shape: (name, { description, inputSchema: full ZodObject }, handler)
     registerTool(
       name: string,
-      config: { description?: string; inputSchema?: z.ZodType },
+      config: { description?: string; inputSchema?: z.ZodType<Record<string, unknown>> },
       handler: RegisteredTool['handler'],
     ) {
       registered.push({
         name,
-        validate: (args) => (config.inputSchema as z.ZodType).parse(args),
+        validate: (args) => (config.inputSchema as z.ZodType<Record<string, unknown>>).parse(args),
         handler,
       });
     },

@@ -94,7 +94,11 @@ function contentsOf(root: string): string[] {
 
 /** Run `args` with a pristine `HOME`; the child's exit status is the signal. */
 function runWithPristineHome(args: string[], home: string) {
-  const env = { ...process.env, HOME: home, USERPROFILE: home };
+  // `process.env` is `string | undefined` per key, and the two overrides below
+  // are `string`; without the annotation the spread settled on a type with no
+  // index signature, so `delete env[key]` below was reading an index that the
+  // type said could not exist.
+  const env: Record<string, string | undefined> = { ...process.env, HOME: home, USERPROFILE: home };
   // The child must see the *unset* defaults, not a redirect inherited from
   // whatever this process was configured with, or the checks below prove
   // nothing about the fallback path.
