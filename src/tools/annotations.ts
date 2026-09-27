@@ -1085,16 +1085,16 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   // obtained.
   //
   // #1287, RE-MEASURED. Removing the legacy playlist input spellings shrank
-  // this module by 2,353B and `playlistops` by 956B; the four other modules
+  // this module by 2,353B and `playlistops` by 956B; the five other modules
   // that carried a spelling (exhaustmisc, exhaust2playlists, swarm3playlistops,
-  // swarm4playlists) were re-measured the same way — each baseline zeroed, the
-  // startup gate allowed to fail loudly, and the figure it reported written
-  // back. Every one of the six ceilings therefore FELL rather than rose: the
-  // reclaimed bytes are the alias descriptions, and no warrant was needed
-  // because nothing here needed more room. The deltas are the removal itself,
-  // not an estimate: 26,214 -> 23,861, 5,348 -> 4,392, 8,324 -> 7,876,
-  // 23,326 -> 22,423, 31,587 -> 28,891, 22,016 -> 21,084 (-8,288B in total,
-  // which is also the aggregate drop).
+  // swarm4playlists, playlistfollow) were re-measured the same way — each
+  // baseline zeroed, the startup gate allowed to fail loudly, and the figure
+  // it reported written back. Every one of the seven ceilings therefore FELL
+  // rather than rose: the reclaimed bytes are the alias descriptions, and no
+  // warrant was needed because nothing here needed more room. The deltas are
+  // the removal itself, not an estimate: 26,214 -> 23,861, 5,348 -> 4,392,
+  // 8,324 -> 7,876, 23,326 -> 22,423, 31,587 -> 28,891, 22,016 -> 21,084,
+  // 3,065 -> 3,027 (-8,326B in total, which is also the aggregate drop).
   manifestEntry('playlists', 'playlists', lazyModule('./playlists.js', 'registerPlaylistTools'), [26, 23861]),
   manifestEntry('playlistops', 'playlists', lazyModule('./playlistops.js', 'registerPlaylistOpsTools'), [3, 4392]),
   manifestEntry('playlistbatch', 'playlistbatch', lazyModule('./playlistbatch.js', 'registerPlaylistBatchTools'), [3, 4896], { scopeKey: 'playlists' }),
