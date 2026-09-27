@@ -133,6 +133,113 @@ describe('#758 — `as any` is gone from the payload-shape boundary', () => {
   });
 });
 
+describe('#758 — the blanker reads regex literals, not just comments and strings', () => {
+  // Found while building the #663 coverage gate, which reads tool names out of
+  // test sources through this same blanker. `blankNonCode` had no notion of a
+  // regex literal, so a quote character inside one opened a phantom string:
+  //
+  //   const needsQuote = /[",\r\n]/.test(safe); const v = (x as any).y;
+  //
+  // The `"` was read as a string delimiter and the rest of THAT LINE — real
+  // code — was blanked as though it were prose. A phantom string opened by an
+  // odd number of quotes runs to the end of the line; an even number pairs off
+  // and costs nothing, which is why the bug is intermittent and why it can sit
+  // in a tree for years looking like a passing gate. Measured on this tree, 14
+  // of 274 .ts files carried an unpaired quote, three of them under
+  // `src/tools`, the directory this guard protects. A guard that silently stops
+  // reading part of a line is worse than no guard, because it still reports a
+  // number.
+  it('an odd quote count in a regex does not blank the code after it', () => {
+    // The shape that actually occurs in this tree: a regex carrying a quote
+    // character, with real code on the same line behind it.
+    const found = collectExplicitAnyErrors(
+      'const needsQuote = /["\\r\\n]/.test(safe); const album = (track as any).album;',
+      'src/tools/x.ts',
+    );
+    assert.equal(found.length, 1, 'a cast behind a quote-bearing regex must still be found');
+    assert.match(found[0]!, /^src\/tools\/x\.ts:1:/);
+  });
+
+  it('an apostrophe inside a regex does not blank the code after it', () => {
+    const found = collectExplicitAnyErrors(
+      "assert.match(out, /removed by Spotify's February 2026/); const album = (track as any).album;",
+      'src/tools/x.ts',
+    );
+    assert.equal(found.length, 1);
+  });
+
+  it('a regex character class may contain a slash without ending the literal', () => {
+    // `/[a/'b]/` carries both hazards at once: the `/` inside the class must not
+    // be read as the closing delimiter, and the `'` must not open a string. A
+    // naive scan that stops at the inner `/` then meets the apostrophe and eats
+    // the rest of the line, cast included.
+    const found = collectExplicitAnyErrors(
+      "const m = /[a/'b]/.test(s) ? 1 : 0; const album = (track as any).album;",
+      'src/tools/x.ts',
+    );
+    assert.equal(found.length, 1, 'a cast behind a regex whose class holds a quote and a slash must still be found');
+  });
+
+  it('a regex after a keyword is a regex, not a division', () => {
+    // `return /x/` is the shape that appears in this tree; read as a division,
+    // the `/` stays in the output and the regex is scanned as code.
+    const found = collectExplicitAnyErrors(
+      "function f(s: string) { return /a'b/.test(s); const v = (x as any).y; }",
+      'src/tools/x.ts',
+    );
+    assert.equal(found.length, 1);
+  });
+
+  it('a division is left alone — blanking it would hide real code', () => {
+    // The failure mode of the fix, stated: a misread `/` that blanks a run of
+    // real code is the one outcome a gate built on this function cannot have.
+    for (const division of [
+      'const ratio = total / count;',
+      'const half = (a + b) / 2;',
+      'f(x / 2, y);',
+    ]) {
+      const blanked = blankNonCode(`${division} const v = (x as any).y;`);
+      assert.ok(blanked.includes(division), `a division must survive blanking: ${division}`);
+    }
+  });
+
+  it('leaves every quote paired across the real test corpus', () => {
+    // Two files under `src/tools` still report unpaired quotes —
+    // `episodemgmt.ts` and `swarm3_discovery.ts`, both from an unescaped
+    // backtick inside a single-quoted string nested in a template hole. That is
+    // a real, known limitation, so this assertion is scoped to `tests/`, which
+    // is the corpus the #663 coverage gate reads — and that gate fails loudly
+    // on a desynced file rather than absorbing it. Closing the last two needs a
+    // real parser, not a better heuristic.
+    const walkAll = (dir: string): string[] => readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) return walkAll(full);
+      return entry.name.endsWith('.ts') ? [full] : [];
+    });
+    const desynced = walkAll(join(ROOT, 'tests'))
+      .filter((file) => {
+        const blanked = blankNonCode(readFileSync(file, 'utf8'));
+        return [...blanked].filter((c) => c === '"' || c === "'").length % 2 !== 0;
+      })
+      .map((file) => relative(ROOT, file));
+    assert.deepEqual(desynced, [], `these test files are misread by the blanker:\n  ${desynced.join('\n  ')}`);
+  });
+
+  it('the pairing check can actually fail, so the tree-wide assertion means something', () => {
+    // Guard on the assertion above. Two halves: the detector must report a
+    // desync when one is present, and the trigger that motivated the fix must
+    // now come back clean.
+    const unpairedQuotes = (source: string): number =>
+      [...blankNonCode(source)].filter((c) => c === '"' || c === "'").length % 2;
+
+    // An unterminated string leaves an odd count — the detector fires.
+    assert.notEqual(unpairedQuotes("const a = 'one';\nconst b = 'two;\n"), 0);
+
+    // The known trigger: a lone quote inside a regex, with code behind it.
+    assert.equal(unpairedQuotes('const m = /["x]/.test(s); const v = 1;'), 0, 'a quote inside a regex must not desync the line');
+  });
+});
+
 describe('#758 — the guard fails CI on an introduced cast', () => {
   // `describe` bodies run at registration time but the `it` bodies run later,
   // so the fixture directory has to be made in a `before` hook. Creating and
