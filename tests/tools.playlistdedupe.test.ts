@@ -212,12 +212,16 @@ describe('remove_duplicate_playlist_items relinked copies', () => {
     const out = await h.invoke({});
     assert.equal(h.calls.length, 0);
     assert.match(textOf(out), /nothing to remove/);
+    // #885: the default rule is named in the payload, so "nothing to remove"
+    // is a statement about exact URIs and not an unattributable zero.
+    assert.equal((out.structuredContent as { match_by: string }).match_by, 'uri');
   });
 
-  it('collapses relinked same-song entries when include_relinked=true', async () => {
+  it('collapses relinked same-song entries under match_by=name_artist', async () => {
     const h = harness(relinkedLibrary());
-    const out = await h.invoke({ include_relinked: true });
-    const p = out.structuredContent as { removed: number; remaining_duplicates: number };
+    const out = await h.invoke({ match_by: 'name_artist' });
+    const p = out.structuredContent as { removed: number; remaining_duplicates: number; match_by: string };
+    assert.equal(p.match_by, 'name_artist');
     assert.equal(p.removed, 1);
     assert.equal(p.remaining_duplicates, 0);
     const positions = h.calls.map((c) => (c.arg as { tracks: Array<{ positions: number[] }> }).tracks[0].positions[0]);
@@ -225,6 +229,36 @@ describe('remove_duplicate_playlist_items relinked copies', () => {
     // Kept entry is the earliest occurrence (v1), not merely the first URI seen.
     const state = h.currentState();
     assert.ok(state.every((e) => e.item?.uri !== 'spotify:track:v9'));
+  });
+
+  it('collapses them under the retired include_relinked=true too, and says so', async () => {
+    // The boolean stays callable for one release (AGENTS.md §5). It maps onto
+    // name_artist, which is the rule it used to mean, and the result carries
+    // the deprecation so the caller is told which input produced it.
+    const h = harness(relinkedLibrary());
+    const out = await h.invoke({ include_relinked: true });
+    const p = out.structuredContent as {
+      removed: number;
+      remaining_duplicates: number;
+      match_by: string;
+      deprecated_inputs?: string[];
+      deprecation_note?: string;
+    };
+    assert.equal(p.match_by, 'name_artist');
+    assert.equal(p.removed, 1);
+    assert.equal(p.remaining_duplicates, 0);
+    assert.deepEqual(p.deprecated_inputs, ['include_relinked']);
+    assert.match(p.deprecation_note ?? '', /match_by=name_artist/);
+  });
+
+  it('refuses include_relinked alongside a match_by that means something else', async () => {
+    const h = harness(relinkedLibrary());
+    await assert.rejects(
+      () => h.invoke({ include_relinked: true, match_by: 'name' }),
+      /match_by=name[\s\S]*include_relinked/,
+      'a conflicting pair must fail by name rather than silently picking one',
+    );
+    assert.equal(h.calls.length, 0, 'the refusal must land before any Spotify write');
   });
 });
 

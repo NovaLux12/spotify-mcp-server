@@ -12,6 +12,7 @@ import assert from 'node:assert/strict';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../src/client.js';
 import { registerPlaylistTools } from '../src/tools/playlists.js';
+import { DEFAULT_DUPLICATE_MATCH_BY, resolveMatchBy } from '../src/playlistmatch.js';
 
 // ---------------------------------------------------------------------------
 // Stub plumbing
@@ -182,7 +183,14 @@ describe('clean_all_playlists', () => {
     const h = harness([]);
     const tool = h.registered.find((t) => t.name === 'clean_all_playlists');
     assert.equal(tool!.validate({}).apply, false);
-    assert.equal(tool!.validate({}).include_relinked, false);
+    // #885: the duplicate rule is no longer a boolean on the schema. It comes
+    // from the shared resolver, which applies the one published default when
+    // neither input is present — so the default is asserted where it now
+    // lives, not by reading a zod-populated field that no longer exists.
+    assert.equal(resolveMatchBy({}).matchBy, DEFAULT_DUPLICATE_MATCH_BY);
+    assert.equal(resolveMatchBy({ include_relinked: false }).matchBy, 'uri');
+    assert.equal(resolveMatchBy({ include_relinked: true }).matchBy, 'name_artist');
+    assert.equal(tool!.validate({}).include_relinked, undefined, 'the retired input must not be defaulted');
   });
 
   it('reports per-playlist findings without deleting anything by default', async () => {

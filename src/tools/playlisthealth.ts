@@ -7,6 +7,7 @@ import type { SpotifyClient } from '../client.js';
 import { getConfig, storePath } from '../config.js';
 import { SpotifyApiError } from '../client.js';
 import { DryRun, ResponseFormat } from '../shaping.js';
+import { DuplicateMatchByParam, groupDuplicates, matchableFromPlaylistItems, resolveMatchBy } from '../playlistmatch.js';
 import type { PlaylistItemObject } from '../types/spotify.js';
 import {
   confirmViaElicitation,
@@ -93,9 +94,14 @@ async function ensureSnapshotDir(): Promise<void> {
 export function registerPlaylistHealthTools(server: McpServer, client: SpotifyClient): void {
   server.tool(
     'playlist_health_check',
-    'Audit a playlist for unavailable, local, duplicate, and empty issues (read-only)',
+    'Audit a playlist for unavailable, local, duplicate, and empty issues (read-only). Duplicates are '
+      + 'grouped by the same `match_by` rule the other duplicate tools use (`uri` default, `name_artist`, '
+      + '`name`) and the rule is echoed as `match_by`, so this count and '
+      + 'find_duplicates_in_playlist\'s count are the same number. '
+      + 'See the duplicate-matching vocabulary in SPEC section 4.',
     {
       playlist_id: z.string().min(1).describe('Playlist ID'),
+      match_by: DuplicateMatchByParam,
       response_format: ResponseFormat,
     },
     async (args) => {
@@ -110,7 +116,6 @@ export function registerPlaylistHealthTools(server: McpServer, client: SpotifyCl
       }
       const unavailablePositions: number[] = [];
       const localPositions: number[] = [];
-      const uriToPositions = new Map<string, number[]>();
       for (let i = 0; i < items.length; i++) {
         const row = items[i];
         const track = row.item as unknown as Record<string, unknown> | null | undefined;
@@ -121,11 +126,6 @@ export function registerPlaylistHealthTools(server: McpServer, client: SpotifyCl
         const uri = typeof track.uri === 'string' ? (track.uri as string) : null;
         const isLocal = (track as Record<string, unknown>).is_local === true || (uri !== null && uri.startsWith('spotify:local:'));
         if (isLocal) localPositions.push(i);
-        if (uri) {
-          const arr = uriToPositions.get(uri) ?? [];
-          arr.push(i);
-          uriToPositions.set(uri, arr);
-        }
       }
       if (unavailablePositions.length > 0) {
         issues.push({ type: 'unavailable', count: unavailablePositions.length, positions: unavailablePositions, description: `${unavailablePositions.length} unavailable track(s)` });
@@ -133,20 +133,27 @@ export function registerPlaylistHealthTools(server: McpServer, client: SpotifyCl
       if (localPositions.length > 0) {
         issues.push({ type: 'local', count: localPositions.length, positions: localPositions, description: `${localPositions.length} local file(s)` });
       }
-      const dupPositions: number[] = [];
-      const dupGroups: Array<{ uri: string; positions: number[] }> = [];
-      for (const [uri, positions] of uriToPositions) {
-        if (positions.length > 1) {
-          dupGroups.push({ uri, positions });
-          dupPositions.push(...positions);
-        }
-      }
-      dupPositions.sort((a, b) => a - b);
+      // #885: duplicates are grouped by the shared rule, not by a private URI
+      // map. Under the default `uri` rule this is exactly the old behaviour
+      // (a group per repeated URI), but a caller that widens the rule to
+      // `name_artist` now sees the same group count here as in
+      // find_duplicates_in_playlist, instead of a number this tool could not
+      // produce at all.
+      const matchBy = resolveMatchBy(args).matchBy;
+      const dupGroups = groupDuplicates(
+        matchableFromPlaylistItems(items as PlaylistItemObject[]),
+        matchBy,
+      ).map((group) => ({
+        key: group.key,
+        uris: [...new Set(group.occurrences.map((occurrence) => occurrence.uri))],
+        positions: group.occurrences.map((occurrence) => occurrence.position),
+      }));
+      const dupPositions = dupGroups.flatMap((group) => group.positions).sort((a, b) => a - b);
       if (dupPositions.length > 0) {
-        issues.push({ type: 'duplicate', count: dupGroups.length, positions: dupPositions, description: `${dupGroups.length} duplicate URI(s) across ${dupPositions.length} positions` });
+        issues.push({ type: 'duplicate', count: dupGroups.length, positions: dupPositions, description: `${dupGroups.length} duplicate group(s) under match_by=${matchBy} across ${dupPositions.length} positions` });
       }
       const healthy = issues.length === 0;
-      const structured = { playlist_id: playlistId, total: items.length, issues, duplicate_groups: dupGroups, healthy };
+      const structured = { playlist_id: playlistId, match_by: matchBy, total: items.length, issues, duplicate_groups: dupGroups, healthy };
       let text: string;
       if (healthy) text = `Playlist ${playlistId} is healthy: ${items.length} tracks, no issues.`;
       else {

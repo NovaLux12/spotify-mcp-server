@@ -556,6 +556,70 @@ Quick reference for all endpoints used. All paths are relative to `https://api.s
 | `get_followed_artists` | GET | `/me/following?type=artist` — cursor-based pagination: `after` is the artist ID of the last returned item, not a numeric offset |
 | `check_following_artists` | GET | `/me/library/contains?uris=spotify:artist:…` — one URI per artist, same order as the input |
 
+### 4.0.5 Matching vocabulary: duplicates and artist credits (#885)
+
+Sibling playlist tools that agents treat as interchangeable used to apply
+different rules, so one playlist produced a different duplicate count per tool
+and a different artist count per tool, with nothing in the payload saying which
+rule produced it. The vocabulary below is defined once, in
+`src/playlistmatch.ts`, and every tool that reports or collapses duplicates or
+matches a track against an artist goes through it. There is no per-tool
+alternative.
+
+**`match_by` — when two playlist items are the same.** One parameter, declared
+once, accepted by all five duplicate tools: `playlist_health_check`,
+`find_duplicates_in_playlist`, `playlist_dedupe_advanced`,
+`remove_duplicate_playlist_items`, `clean_all_playlists`.
+
+| `match_by` | Rule | Catches |
+|---|---|---|
+| `uri` (default) | exact URI | the same track object added twice |
+| `name_artist` | case-insensitive name + the full set of credited artist names | a relink or remaster published under a new URI |
+| `name` | case-insensitive name only | the widest rule; two different songs sharing a title collapse into one group |
+
+Two consequences are deliberate. `name_artist` **sorts** the artist names before
+comparing, so `"A feat. B"` and `"B feat. A"` do not split one song into two
+groups. And a row with no URI — an unavailable or local item — is never grouped
+or collapsed against anything, because grouping it under an empty key would
+report every unavailable row as a duplicate of every other one.
+
+Every duplicate tool echoes the rule it applied as `match_by` in both
+`structuredContent` and the prose, including when it found nothing. A zero is a
+statement about a named rule; a zero with no rule named is indistinguishable
+from a matcher that matched nothing.
+
+`remove_duplicate_playlist_items` and `clean_all_playlists` also accept the
+retired `include_relinked` boolean for one release. `true` maps to
+`name_artist` and `false` to `uri` — the only two rules it could express. A call
+carrying both inputs where they mean different rules is refused by name rather
+than silently resolved, and a call that used the boolean carries
+`deprecated_inputs` and `deprecation_note` in `structuredContent` plus the same
+one-line note in the text.
+
+**`include_featured` — whether a featured credit counts.** One parameter,
+declared once, accepted by every artist tool: `playlist_artist_heat`,
+`playlist_exclude_artists`, `playlist_remove_artist`, `playlist_keep_artist`,
+`playlist_keep_only`, `playlist_move_to_top`. The default is `true`: count
+every credited artist. `false` credits only the primary (first) credit on each
+track, which is the measurement `playlist_artist_heat` used to produce.
+
+**How an artist reference is matched.** A reference is resolved through the
+shared reference policy (§4.0.4), so a bare 22-character id, a
+`spotify:artist:…` URI and an open.spotify.com artist URL all land on the same
+id, and anything else is treated as a name. A track matches on id **or**
+case-insensitive name, never on a rule that silently excludes one of them — an
+id-shaped reference is tried as an id and, if the row carries no matching id,
+as the literal text the caller passed. `playlist_exclude_artists` additionally
+returns `matched_artists` and `unmatched_artists`, which partition the caller's
+input, so "this artist has no track here" and "this reference was compared
+against the wrong field" are distinguishable from the result alone.
+
+The parity test that holds all of this together is
+`tests/playlistmatch.test.ts`: for one fixture containing a URI repeat, a
+relink, a featured credit and a same-title/different-artist pair, every
+duplicate tool reports the same group count for the same `match_by`, and every
+artist tool agrees on the track count for the same `include_featured`.
+
 ---
 
 ## 5. Tools
@@ -1626,11 +1690,13 @@ Replace ALL items in a playlist with the supplied URIs, overwriting the current 
 ---
 
 #### `find_duplicates_in_playlist`
-Find duplicate tracks in a playlist: exact URI repeats plus relinked copies of the same song appearing under different URIs (matched on normalised name + artists). Walks every page of items via `client.getAllPages`; reported positions are 0-based API indexes that can be fed straight back into `remove_from_playlist`'s `{ uri, positions }` entries.
+Find duplicate tracks in a playlist under one published rule. `match_by` selects which, and defaults to `uri` (exact repeats). Walks every page of items via `client.getAllPages`; reported positions are 0-based API indexes that can be fed straight back into `remove_from_playlist`'s `{ uri, positions }` entries.
 
-**Inputs:** `playlist_id` (string, required), shared response fields (`response_format`, `max_results`)
+**Inputs:** `playlist_id` (string, required), `match_by` (see [§4.0.5](#405-matching-vocabulary-duplicates-and-artist-credits-885); `uri` | `name_artist` | `name`, default `uri`), shared response fields (`response_format`, `max_results`)
 
-**Returns:** per group: track label, occurrence count and kind (`same URI` vs `relinked / different URIs`), the URIs involved, and 0-based positions; structuredContent includes `scanned` item count.
+**Returns:** per group: track label, occurrence count, the rule that produced the group, the URIs involved, and 0-based positions; structuredContent includes `scanned` and the applied `match_by`. The post-removal verification re-applies the same rule, so "no duplicates remain" is a statement about the rule the caller asked for.
+
+Before #885 this tool counted an exact-URI group and a relinked group as two separate groups and reported no rule, so the same playlist yielded a different count here than in `playlist_health_check` or `playlist_dedupe_advanced`.
 
 ---
 

@@ -19,6 +19,14 @@
  *   • No deprecated endpoints (SPEC §9).
  */
 import { z } from 'zod';
+import {
+  DuplicateMatchByParam,
+  IncludeFeaturedParam,
+  classifyArtistReference,
+  dedupeItems,
+  resolveMatchBy,
+  trackMatchesArtist,
+} from '../playlistmatch.js';
 import { capFor } from '../chunk.js';
 import { readFile, readdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
@@ -1069,18 +1077,15 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
   // -----------------------------------------------------------------------
   server.tool(
     'playlist_dedupe_advanced',
-    'Remove duplicate items from a playlist, matching by URI (exact copies) OR by track name '
-      + '(catches re-adds of the same song from different albums/singles when combined with '
-      + 'dedupe by uri). Choose keep-first or keep-last. Written as one atomic replace. '
-      + 'Quota: 2 GETs + 1 PUT.',
+    'Remove duplicate items from a playlist under the `match_by` rule the other duplicate tools use: '
+      + '`uri` (exact copies, the default), `name_artist` (same name and credited artists, catching a '
+      + 're-add of the same song from a different release), or `name` (same title only). Choose '
+      + 'keep-first or keep-last. Written as one atomic replace. Quota: 2 GETs + 1 PUT. '
+      + 'See the duplicate-matching vocabulary in SPEC section 4.',
     {
       playlist_id: z.string().describe('Playlist to dedupe, as ID or spotify:playlist: URI'),
       keep: z.enum(['first', 'last']).optional().default('first').describe('Which occurrence to keep. Default first'),
-      match_by: z
-        .enum(['uri', 'name'])
-        .optional()
-        .default('uri')
-        .describe('Duplicate key: exact URI, or case-insensitive track name (catches same song from different releases). Default uri'),
+      match_by: DuplicateMatchByParam,
       dry_run: DryRunDefault,
       include_full_order: IncludeFullOrder,
       ...sharedListFields,
@@ -1091,39 +1096,35 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
       assertPlaylistReadWhole(p);
       assertRewritable(p);
       const rows = toRows(p.items);
-      const keyOf = (r: OpRow): string | null =>
-        args.match_by === 'uri' ? (r.uri || null) : (r.name.trim().toLowerCase() || null);
-      const seen = new Map<string, number>();
-      const kept: OpRow[] = [];
-      const removed: OpRow[] = [];
-      const order = args.keep === 'first' ? rows : [...rows].reverse();
-      for (const r of order) {
-        const k = keyOf(r);
-        if (k === null || !seen.has(k)) {
-          if (k !== null) seen.set(k, 1);
-          kept.push(r);
-        } else {
-          removed.push(r);
-        }
-      }
-      const finalRows = args.keep === 'first' ? kept : kept.reverse();
+      // #885: one key function, so `groups` here is the same number
+      // find_duplicates_in_playlist reports for the same rule. This tool used
+      // to carry its own `match_by: uri|name` enum with a bare-name key that
+      // no other tool used, and reported no group count at all.
+      const matchBy = resolveMatchBy(args).matchBy;
+      const { kept, removed, groups } = dedupeItems(
+        rows.map((r) => ({ ...r, artistNames: r.artists })),
+        matchBy,
+        args.keep,
+      );
+      const finalRows = kept;
       const uris = finalRows.map((r) => r.uri);
       const max = resolveMaxResults(args.max_results, getConfig().maxItems);
       const orderBudget = budgetedArray(uris, max, 'items', args.include_full_order);
       const removedBudget = budgetedArray(removed.map((r) => r.uri), max, 'removed');
       const prose = [
-        `Dedupe "${p.name ?? p.id}" (match by ${args.match_by}, keep ${args.keep}):`,
-        `  ${removed.length} duplicate(s) would be removed, ${finalRows.length} item(s) kept.`,
+        `Dedupe "${p.name ?? p.id}" (match by ${matchBy}, keep ${args.keep}):`,
+        `  ${removed.length} duplicate(s) in ${groups} group(s) would be removed, ${finalRows.length} item(s) kept.`,
         ...(removed.length > 0 ? ['', 'Removed:', ...renderRows(removed, max, '✗')] : []),
       ];
       const payload = {
         ok: true,
         playlist: p.id,
         playlist_name: p.name,
-        match_by: args.match_by,
+        match_by: matchBy,
         keep: args.keep,
         removed: removedBudget.value,
         removed_count: removed.length,
+        duplicate_groups: groups,
         kept_count: finalRows.length,
         order: orderBudget.value,
         ...removedBudget.disclosure,
@@ -1148,14 +1149,19 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
   // -----------------------------------------------------------------------
   server.tool(
     'playlist_remove_artist',
-    'Remove every track by one artist from a playlist (match by artist name, case-insensitive, '
-      + 'or by artist ID / spotify:artist: URI). Shows exactly what would go. '
-      + 'Quota: 2 GETs + 1 PUT when committing.',
+    'Remove every track by one artist from a playlist. The reference is matched against every credited '
+      + 'artist id AND artist name (case-insensitive), so an id, a spotify:artist: URI, an '
+      + 'open.spotify.com URL and a plain name all work; `include_featured=false` narrows that to the '
+      + 'primary artist. The same rule and the same `include_featured` are used by '
+      + 'playlist_exclude_artists, playlist_keep_only and playlist_artist_heat, so they agree on the '
+      + 'track count. See the artist-matching vocabulary in SPEC section 4. '
+      + 'Shows exactly what would go. Quota: 2 GETs + 1 PUT when committing.',
     {
       playlist_id: z.string().describe('Playlist to edit, as ID or spotify:playlist: URI'),
       artist: z
         .string()
         .describe('Artist name (case-insensitive) or artist ID / spotify:artist: URI'),
+      include_featured: IncludeFeaturedParam,
       dry_run: DryRunDefault,
       include_full_order: IncludeFullOrder,
       ...sharedListFields,
@@ -1166,19 +1172,27 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
       assertPlaylistReadWhole(p);
       assertRewritable(p);
       const rows = toRows(p.items);
-      const artistRef = normalizeArtistRef(args.artist);
-      const looksLikeId = /^[0-9A-Za-z]{22}$/.test(artistRef);
-      const nameLc = looksLikeId ? null : args.artist.trim().toLowerCase();
+      // #885: the shared matcher. This tool used to branch on whether the
+      // reference *looked* like an id — id-shaped meant compare ids only,
+      // anything else compare names only — so a reference that was both (a
+      // numeric artist name) matched nothing, and a valid id was never tried
+      // against the credit names.
+      const reference = classifyArtistReference(args.artist);
       const matches = (r: OpRow): boolean =>
-        looksLikeId ? r.artistIds.includes(artistRef) : r.artists.some((a) => a.toLowerCase() === nameLc);
+        trackMatchesArtist(
+          r.artists.map((name, index) => ({ name, id: r.artistIds[index] })),
+          reference,
+          args.include_featured,
+        ).matched;
       const kept = rows.filter((r) => !matches(r));
       const removed = rows.filter(matches);
       const uris = kept.map((r) => r.uri);
       const max = resolveMaxResults(args.max_results, getConfig().maxItems);
       const orderBudget = budgetedArray(uris, max, 'items', args.include_full_order);
       const removedBudget = budgetedArray(removed.map((r) => r.uri), max, 'removed');
+      const label = reference.id ?? `"${args.artist}"`;
       const prose = [
-        `Remove ${looksLikeId ? `artist ${artistRef}` : `"${args.artist}"`} from "${p.name ?? p.id}":`,
+        `Remove ${label} from "${p.name ?? p.id}":`,
         `  ${removed.length} track(s) would be removed, ${kept.length} kept.`,
         ...(removed.length > 0 ? ['', 'Removed:', ...renderRows(removed, max, '✗')] : []),
       ];
@@ -1186,7 +1200,9 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
         ok: true,
         playlist: p.id,
         playlist_name: p.name,
-        artist: looksLikeId ? artistRef : args.artist,
+        artist: reference.id ?? args.artist,
+        artist_matched_by: reference.form,
+        include_featured: args.include_featured,
         removed_count: removed.length,
         kept_count: kept.length,
         removed_uris: removedBudget.value,
@@ -1199,15 +1215,21 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
         return shape(rf, describeDryRun('remove artist', p.name ?? p.id, prose.slice(1)), payload);
       }
       if (removed.length === 0) {
-        return shape(rf, `No tracks by ${looksLikeId ? artistRef : `"${args.artist}"`} found — playlist unchanged.`, {
-          ...payload,
-          no_op: true,
-        });
+        // #885: a zero-match result has to be attributable. Before, an id-shaped
+        // reference that matched nothing and a name that matched nothing
+        // produced the same sentence, and the caller could not tell a genuine
+        // absence from a reference compared against the wrong field.
+        return shape(
+          rf,
+          `No tracks by ${label} found in "${p.name ?? p.id}" — matched on ${reference.form === 'name' ? 'credited artist name' : 'artist id'}, `
+            + `${args.include_featured ? 'every credit' : 'primary credit only'}. Playlist unchanged.`,
+          { ...payload, no_op: true },
+        );
       }
       const res = await atomicReplace(client, p, uris);
       return shape(
         rf,
-        `Removed ${removed.length} track(s) by ${looksLikeId ? artistRef : `"${args.artist}"`} from "${p.name ?? p.id}".\n`
+        `Removed ${removed.length} track(s) by ${label} from "${p.name ?? p.id}".\n`
           + batchSummary(uris.length, uris),
         { ...payload, dry_run: false, requests: res.requests, snapshot_id: res.snapshot_id ?? null },
       );
@@ -1219,12 +1241,17 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
   // -----------------------------------------------------------------------
   server.tool(
     'playlist_keep_artist',
-    'Inverse filter: keep ONLY tracks by one artist in a playlist and drop everything else. '
+    'Inverse filter: keep ONLY tracks by one artist in a playlist and drop everything else. The '
+      + 'reference is matched against every credited artist id AND artist name (case-insensitive), so an '
+      + 'id, a spotify:artist: URI, an open.spotify.com URL and a plain name all work; '
+      + '`include_featured=false` narrows that to the primary artist. Same rule and same '
+      + '`include_featured` as playlist_remove_artist, so the two agree on the track count. '
       + 'Optionally keep podcast episodes too (they have no artist). One atomic replace. '
-      + 'Quota: 2 GETs + 1 PUT.',
+      + 'Quota: 2 GETs + 1 PUT. See the artist-matching vocabulary in SPEC section 4.',
     {
       playlist_id: z.string().describe('Playlist to edit, as ID or spotify:playlist: URI'),
       artist: z.string().describe('Artist name (case-insensitive) or artist ID / spotify:artist: URI'),
+      include_featured: IncludeFeaturedParam,
       keep_episodes: z
         .boolean()
         .optional()
@@ -1240,18 +1267,21 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
       assertPlaylistReadWhole(p);
       assertRewritable(p);
       const rows = toRows(p.items);
-      const artistRef = normalizeArtistRef(args.artist);
-      const looksLikeId = /^[0-9A-Za-z]{22}$/.test(artistRef);
-      const nameLc = looksLikeId ? null : args.artist.trim().toLowerCase();
+      const reference = classifyArtistReference(args.artist);
+      const label = reference.id ?? `"${args.artist}"`;
       const byArtist = (r: OpRow): boolean =>
-        looksLikeId ? r.artistIds.includes(artistRef) : r.artists.some((a) => a.toLowerCase() === nameLc);
+        trackMatchesArtist(
+          r.artists.map((name, index) => ({ name, id: r.artistIds[index] })),
+          reference,
+          args.include_featured,
+        ).matched;
       const kept = rows.filter((r) => byArtist(r) || (args.keep_episodes && r.kind === 'episode'));
       const removed = rows.filter((r) => !kept.includes(r));
       const uris = kept.map((r) => r.uri);
       const max = resolveMaxResults(args.max_results, getConfig().maxItems);
       const orderBudget = budgetedArray(uris, max, 'items', args.include_full_order);
       const prose = [
-        `Keep only ${looksLikeId ? `artist ${artistRef}` : `"${args.artist}"`} in "${p.name ?? p.id}":`,
+        `Keep only ${label} in "${p.name ?? p.id}":`,
         `  ${kept.length} track(s) kept, ${removed.length} removed${args.keep_episodes ? ' (episodes kept)' : ''}.`,
         ...(kept.length > 0 ? ['', 'Kept:', ...renderRows(kept, max)] : []),
       ];
@@ -1259,7 +1289,9 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
         ok: true,
         playlist: p.id,
         playlist_name: p.name,
-        artist: looksLikeId ? artistRef : args.artist,
+        artist: reference.id ?? args.artist,
+        artist_matched_by: reference.form,
+        include_featured: args.include_featured,
         kept_count: kept.length,
         removed_count: removed.length,
         order: orderBudget.value,
@@ -1272,7 +1304,7 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
       const res = await atomicReplace(client, p, uris);
       return shape(
         rf,
-        `"${p.name ?? p.id}" now holds only ${kept.length} item(s) (kept ${looksLikeId ? artistRef : `"${args.artist}"`}).\n`
+        `"${p.name ?? p.id}" now holds only ${kept.length} item(s) (kept ${label}).\n`
           + batchSummary(uris.length, uris),
         { ...payload, dry_run: false, requests: res.requests, snapshot_id: res.snapshot_id ?? null },
       );

@@ -6,6 +6,18 @@ import { capFor, runChunkedPlaylistWrite } from '../chunk.js';
 import { getConfig } from '../config.js';
 import { fetchCoverJpeg, validateCoverJpegBuffer } from '../cover-image.js';
 import {
+  DEFAULT_DUPLICATE_MATCH_BY,
+  DuplicateMatchByParam,
+  IncludeRelinkedParam,
+  describeMatchableItem as describeOccurrence,
+  groupDuplicates,
+  matchableFromPlaylistItems,
+  resolveMatchBy,
+  withMatchByMetadata,
+  withMatchByNote,
+  type DuplicateMatchBy,
+} from '../playlistmatch.js';
+import {
   confirmViaElicitation,
   describeConfirmation,
   requiredConfirmationRefusal,
@@ -114,14 +126,9 @@ function textResult(text: string, structured?: Record<string, unknown>): ToolRes
   return structured ? { content, structuredContent: structured } : { content };
 }
 
-/** Stable identity key over name + artist names for relinked-duplicate grouping (#63). */
-function trackIdentityKey(track: SpotifyTrack | SpotifyEpisode): string {
-  const artists =
-    'artists' in track && Array.isArray(track.artists)
-      ? track.artists.map((a) => a.name.toLowerCase()).sort().join(',')
-      : '';
-  return `${track.name.toLowerCase()}|${artists}`;
-}
+// #63/#885: the relink identity key (`trackIdentityKey`) that used to live
+// here is now `duplicateKey(item, 'name_artist')` in ../playlistmatch.js, so
+// the read-only and the mutating duplicate tools group on one function.
 
 const jsonText = (data: unknown): string => JSON.stringify(data, null, 2);
 
@@ -415,8 +422,13 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
     {
       ...sharedListFields,
       // #110: canonical `playlist_id`; `id` retained as a documented alias.
+      // #914: both go through the shared resolver, so a `spotify:playlist:`
+      // URI or an open.spotify.com URL reaches the wire as the bare id. Before
+      // this, either form was interpolated into the path verbatim and Spotify
+      // answered 404 for a playlist that exists — the invariant "a reference
+      // works" depended on which module the tool lived in.
       playlist_id: z.string().optional().describe('Playlist ID'),
-      id: z.string().optional().describe("Alias for playlist_id"),
+      id: z.string().optional().describe('Alias for playlist_id'),
       limit: z
         .number()
         .int()
@@ -1346,10 +1358,14 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
   // remove_from_playlist's { uri, positions } entries.
   server.tool(
     'find_duplicates_in_playlist',
-    'Find duplicate tracks in a playlist: repeated URIs plus relinked copies of the same song appearing under different URIs.',
+    'Find duplicate tracks in a playlist under one published matching rule. `match_by` selects the rule '
+      + '(`uri` — the same track object twice; `name_artist` — same name and credited artists, catching '
+      + 'relinks and remasters; `name` — same title only) and the rule is echoed back as `match_by`, so a '
+      + 'group count is never unattributable. See the duplicate-matching vocabulary in SPEC section 4.',
     {
       ...sharedListFields,
       playlist_id: z.string().describe('Playlist ID'),
+      match_by: DuplicateMatchByParam,
     },
     async (args) => {
       const id = encodeURIComponent(args.playlist_id);
@@ -1366,78 +1382,34 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
       const scanCap = getConfig().fetchAllCap;
       const notice = walkTruncationNotice(items.length, scanCap, scanTruncated);
 
-      interface Occurrence {
-        uri: string;
-        position: number;
-        label: string;
-      }
-      const byUri = new Map<string, Occurrence[]>();
-      // Identity key (normalized name+artist) -> distinct URIs -> occurrences
-      const byIdentity = new Map<string, Map<string, Occurrence[]>>();
-
-      let position = 0;
-      for (const item of items) {
-        const track = item.item;
-        if (track?.uri) {
-          const artists =
-            'artists' in track && Array.isArray(track.artists)
-              ? track.artists.map((a) => a.name).join(', ')
-              : ('show' in track && track.show ? track.show.name : '');
-          const occ: Occurrence = {
-            uri: track.uri,
-            position,
-            label: `"${track.name}"${artists ? ` by ${artists}` : ''}`,
-          };
-          const uriOccs = byUri.get(track.uri);
-          if (uriOccs) uriOccs.push(occ);
-          else byUri.set(track.uri, [occ]);
-
-          const key = trackIdentityKey(track);
-          const uriMap = byIdentity.get(key);
-          if (uriMap) {
-            const occs = uriMap.get(track.uri);
-            if (occs) occs.push(occ);
-            else uriMap.set(track.uri, [occ]);
-          } else {
-            byIdentity.set(key, new Map([[track.uri, [occ]]]));
-          }
-        }
-        // Unavailable items still occupy a playlist position.
-        position++;
-      }
+      // #885: one grouping function, shared with playlist_health_check,
+      // remove_duplicate_playlist_items, clean_all_playlists and
+      // playlist_dedupe_advanced, so the same playlist and the same match_by
+      // yield the same group count in all of them. Before this, an exact-URI
+      // group and a relinked group were counted separately here and the rule
+      // was unstated in the payload.
+      const by = resolveMatchBy(args);
+      const matchBy = by.matchBy;
+      const found = groupDuplicates(matchableFromPlaylistItems(items), matchBy);
 
       type DupGroup = {
-        kind: 'exact-uri' | 'relinked-name';
+        kind: DuplicateMatchBy;
         label: string;
         uris: string[];
         positions: number[];
       };
-      const groups: DupGroup[] = [];
-      for (const [uri, occs] of byUri) {
-        if (occs.length > 1) {
-          groups.push({
-            kind: 'exact-uri',
-            label: occs[0].label,
-            uris: [uri],
-            positions: occs.map((o) => o.position),
-          });
-        }
-      }
-      for (const uriMap of byIdentity.values()) {
-        if (uriMap.size < 2) continue; // single-URI repeats are exact-uri groups
-        const occs = [...uriMap.values()].flat();
-        groups.push({
-          kind: 'relinked-name',
-          label: occs[0].label,
-          uris: [...uriMap.keys()],
-          positions: occs.map((o) => o.position),
-        });
-      }
+      const groups: DupGroup[] = found.map((group) => ({
+        kind: matchBy,
+        label: describeOccurrence(group.occurrences[0]!),
+        uris: [...new Set(group.occurrences.map((occurrence) => occurrence.uri))],
+        positions: group.occurrences.map((occurrence) => occurrence.position),
+      }));
 
       const view = truncateItems(groups, resolveMaxResults(args.max_results));
       const pag = paginationInfo({ returned: view.items.length });
       const extra = {
         playlist_id: args.playlist_id,
+        match_by: matchBy,
         scanned: items.length,
         scan_truncated: scanTruncated,
         scan_cap: scanCap,
@@ -1452,8 +1424,8 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
         // only survives a walk that read all of it.
         return textResult(
           notice
-            ? `No duplicate item(s) among the first ${items.length} scanned item(s) — ${notice}`
-            : `No duplicates found across ${items.length} scanned item(s).`,
+            ? `No duplicate item(s) among the first ${items.length} scanned item(s) under match_by=${matchBy} — ${notice}`
+            : `No duplicates found across ${items.length} scanned item(s) under match_by=${matchBy}.`,
           // Always attached, clean scan or not: a field that reads `false` on
           // a truncated scan and `undefined` on a clean one is a footgun for
           // every consumer, and "the scan coverage is on the wire" has to be
@@ -1463,7 +1435,7 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
       }
 
       const lines = [
-        `Found ${groups.length} duplicate group(s) across ${items.length} scanned item(s):`,
+        `Found ${groups.length} duplicate group(s) across ${items.length} scanned item(s) under match_by=${matchBy}:`,
       ];
       // Prefix, not a footnote: the group list below is a lower bound and the
       // reader has to know that before they act on it.
@@ -1471,9 +1443,7 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
       let groupNum = 1;
       for (const g of view.items) {
         lines.push(
-          `${groupNum}. ${g.label} — ${g.positions.length} occurrence(s) [${
-            g.kind === 'exact-uri' ? 'same URI' : 'relinked / different URIs'
-          }]`,
+          `${groupNum}. ${g.label} — ${g.positions.length} occurrence(s) [match_by=${g.kind}]`,
         );
         lines.push(`   ${g.uris.length === 1 ? 'URI' : 'URIs'}: ${g.uris.join(', ')}`);
         lines.push(`   Positions (0-based): ${g.positions.join(', ')}`);
@@ -1488,107 +1458,66 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
 
   // remove_duplicate_playlist_items (#168)
   // One-shot cleanup companion to find_duplicates_in_playlist: pages the
-  // playlist, keeps the FIRST occurrence of every duplicate group (exact URI
-  // repeats always; relinked same-song copies on opt-in) and removes the
-  // rest. Deletions run highest-position-first so indices never shift under
-  // us; bulk removals are elicitation-gated like other destructive ops; a
-  // post-mutation re-scan verifies the playlist is actually clean.
+  // playlist, keeps the FIRST occurrence of every duplicate group under the
+  // `match_by` rule and removes the rest. Deletions run highest-position-first
+  // so indices never shift under us; bulk removals are elicitation-gated like
+  // other destructive ops; a post-mutation re-scan verifies the playlist is
+  // actually clean. See the duplicate-matching vocabulary in SPEC section 4.
 
   /**
-   * Shared keep-first/remove-rest scan (#168/#171): over already-paged items,
-   * returns removal occurrences ordered HIGHEST position first plus the
-   * duplicate-group count. Exact URI repeats always count; relinked same-song
-   * copies join only when includeRelinked.
+   * Shared keep-first/remove-rest scan (#168/#171, #885): over already-paged
+   * items, returns removal occurrences ordered HIGHEST position first plus the
+   * duplicate-group count.
+   *
+   * The grouping is {@link groupDuplicates} — the same function the read-only
+   * tools call — so the count this reports and the count
+   * `find_duplicates_in_playlist` reports for the same rule are the same
+   * number. Before #885 this walked a URI map and a separate identity map and
+   * counted an exact-URI group and a relinked group separately, so a playlist
+   * with one of each reported two groups here while `playlist_health_check`
+   * reported one and `playlist_dedupe_advanced` reported a third number.
    */
   function collectDuplicateRemovals(
     items: readonly PlaylistItemObject[],
-    includeRelinked: boolean,
+    matchBy: DuplicateMatchBy,
   ): { ordered: Array<{ uri: string; position: number; label: string }>; groups: number } {
-    interface Occurrence {
-      uri: string;
-      position: number;
-      label: string;
-    }
-    const byUri = new Map<string, Occurrence[]>();
-    const byIdentity = new Map<string, Map<string, Occurrence[]>>();
-
-    let position = 0;
-    for (const item of items) {
-      const track = item.item;
-      if (track?.uri) {
-        const artists =
-          'artists' in track && Array.isArray(track.artists)
-            ? track.artists.map((a) => a.name).join(', ')
-            : ('show' in track && track.show ? track.show.name : '');
-        const occ: Occurrence = {
-          uri: track.uri,
-          position,
-          label: `"${track.name}"${artists ? ` by ${artists}` : ''}`,
-        };
-        const uriOccs = byUri.get(track.uri);
-        if (uriOccs) uriOccs.push(occ);
-        else byUri.set(track.uri, [occ]);
-
-        if (includeRelinked) {
-          const key = trackIdentityKey(track);
-          const uriMap = byIdentity.get(key);
-          if (uriMap) {
-            const occs = uriMap.get(track.uri);
-            if (occs) occs.push(occ);
-            else uriMap.set(track.uri, [occ]);
-          } else {
-            byIdentity.set(key, new Map([[track.uri, [occ]]]));
-          }
-        }
-      }
-      // Unavailable items still occupy a playlist position.
-      position++;
-    }
-
-    // Keep-first/remove-rest over positions; a Map keyed by position makes
-    // the exact-uri and relinked passes compose without double-removals.
-    const removals = new Map<number, Occurrence>();
-    let groups = 0;
-    for (const occs of byUri.values()) {
-      if (occs.length > 1) {
-        groups++;
-        for (const occ of occs.slice(1)) removals.set(occ.position, occ);
+    const groups = groupDuplicates(matchableFromPlaylistItems(items), matchBy);
+    const removals = new Map<number, { uri: string; position: number; label: string }>();
+    for (const group of groups) {
+      for (const occurrence of group.occurrences.slice(1)) {
+        removals.set(occurrence.position, {
+          uri: occurrence.uri,
+          position: occurrence.position,
+          label: describeOccurrence(occurrence),
+        });
       }
     }
-    if (includeRelinked) {
-      for (const uriMap of byIdentity.values()) {
-        if (uriMap.size < 2) continue;
-        groups++;
-        const all = [...uriMap.values()].flat().sort((a, b) => a.position - b.position);
-        for (const occ of all.slice(1)) removals.set(occ.position, occ);
-      }
-    }
-
     return {
       ordered: [...removals.values()].sort((a, b) => b.position - a.position),
-      groups,
+      groups: groups.length,
     };
   }
 
   server.tool(
     'remove_duplicate_playlist_items',
     'Remove duplicate items from a playlist: keeps the first occurrence of each track and removes '
-      + 'later repeats. Exact URI repeats are always cleaned; pass include_relinked=true to also '
-      + 'collapse same-song entries that appear under different URIs (remasters/relinks). '
-      + 'Supports dry_run; removals of 10+ items ask for confirmation via elicitation.',
+      + 'later repeats, under the `match_by` rule the other duplicate tools use — `uri` (default, exact '
+      + 'repeats), `name_artist` (same name and credited artists, catching remasters and relinks under a '
+      + 'new URI) or `name` (same title only). The rule applied is echoed as `match_by`. '
+      + 'Supports dry_run; removals of 10+ items ask for confirmation via elicitation. '
+      + 'See the duplicate-matching vocabulary in SPEC section 4.',
     {
       playlist_id: z.string().describe('Playlist ID'),
-      include_relinked: z
-        .boolean()
-        .optional()
-        .default(false)
-        .describe(
-          'Also collapse same-song duplicates under different URIs (relinks/remasters). '
-            + 'Default false — only exact URI repeats are removed.',
-        ),
+      match_by: DuplicateMatchByParam,
+      include_relinked: IncludeRelinkedParam,
       dry_run: DryRun,
     },
     async (args) => {
+      // #885: the one rule resolver, shared with every other duplicate tool.
+      // It also maps the retired `include_relinked` boolean this tool used to
+      // take, which the zod default on `match_by` used to make undecidable.
+      const by = resolveMatchBy(args);
+      const matchBy = by.matchBy;
       const id = encodeURIComponent(args.playlist_id);
       const meta = await client.get<{ id?: string; name?: string }>(`/playlists/${id}`);
       if (!meta) throw new Error(`Playlist "${args.playlist_id}" not found`);
@@ -1605,13 +1534,14 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
       const scanCap = getConfig().fetchAllCap;
       const notice = walkTruncationNotice(items.length, scanCap, scanTruncated);
 
-      const { ordered, groups } = collectDuplicateRemovals(items, args.include_relinked);
+      const { ordered, groups } = collectDuplicateRemovals(items, matchBy);
 
       const preview = ordered
         .slice(0, 20)
         .map((o) => `${o.label} @ position ${o.position} (${o.uri})`);
       const extra = {
         playlist_id: args.playlist_id,
+        match_by: matchBy,
         scanned: items.length,
         scan_truncated: scanTruncated,
         scan_cap: scanCap,
@@ -1621,26 +1551,32 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
 
       if (ordered.length === 0) {
         return textResult(
-          notice
-            ? `No duplicate item(s) among the first ${items.length} scanned item(s) — ${notice}`
-            : `No duplicate item(s) found across ${items.length} scanned item(s) — nothing to remove.`,
-          { ...extra, ok: true, removed: 0 },
+          withMatchByNote(
+            notice
+              ? `No duplicate item(s) among the first ${items.length} scanned item(s) under match_by=${matchBy} — ${notice}`
+              : `No duplicate item(s) found across ${items.length} scanned item(s) under match_by=${matchBy} — nothing to remove.`,
+            by,
+          ),
+          withMatchByMetadata({ ...extra, ok: true, removed: 0 }, by),
         );
       }
 
       if (args.dry_run) {
         return textResult(
-          describeDryRun(
-            'remove duplicates from playlist',
-            args.playlist_id,
-            [
-              `Would keep ${items.length - ordered.length} of ${items.length} item(s) and remove ${ordered.length}:`,
-              ...preview,
-              ...(ordered.length > preview.length ? [`(…and ${ordered.length - preview.length} more)`] : []),
-              ...(notice ? [notice] : []),
-            ],
+          withMatchByNote(
+            describeDryRun(
+              'remove duplicates from playlist',
+              args.playlist_id,
+              [
+                `Would keep ${items.length - ordered.length} of ${items.length} item(s) and remove ${ordered.length} under match_by=${matchBy}:`,
+                ...preview,
+                ...(ordered.length > preview.length ? [`(…and ${ordered.length - preview.length} more)`] : []),
+                ...(notice ? [notice] : []),
+              ],
+            ),
+            by,
           ),
-          { ...extra, ok: true, dry_run: true },
+          withMatchByMetadata({ ...extra, ok: true, dry_run: true }, by),
         );
       }
 
@@ -1680,27 +1616,12 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
       // remain" — nor may the payload claim ok:true off the back of it.
       const rescanTruncated = rescan.truncated;
       const rescanNotice = walkTruncationNotice(after.length, scanCap, rescanTruncated);
-      const seenUris = new Set<string>();
-      let remainingExact = 0;
-      const afterIdentity = new Map<string, Set<string>>();
-      let remainingRelinkedGroups = 0;
-      for (const item of after) {
-        const track = item.item;
-        if (!track?.uri) continue;
-        if (seenUris.has(track.uri)) remainingExact++;
-        seenUris.add(track.uri);
-        const key = trackIdentityKey(track);
-        const uris = afterIdentity.get(key);
-        if (uris) {
-          if (!uris.has(track.uri)) remainingRelinkedGroups++;
-          uris.add(track.uri);
-        } else {
-          afterIdentity.set(key, new Set([track.uri]));
-        }
-      }
-      const remainingDuplicates = args.include_relinked
-        ? remainingExact + remainingRelinkedGroups
-        : remainingExact;
+      // #885: the re-scan re-applies the SAME rule the removal used, through
+      // the same grouping function. It previously recomputed a private
+      // exact-URI-plus-relink tally, so it could report "duplicates remain"
+      // for a playlist the call had just cleaned under the rule it was
+      // actually asked to apply.
+      const remainingDuplicates = groupDuplicates(matchableFromPlaylistItems(after), matchBy).length;
 
       const verified = remainingDuplicates === 0;
       const rescanLine = rescanNotice
@@ -1713,7 +1634,7 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
           + `\n${rescanLine}`,
         lastSnapshotId,
       );
-      return textResult(text, {
+      return textResult(withMatchByNote(text, by), withMatchByMetadata({
         ...extra,
         // A truncated re-scan proves nothing about the rows past the cap, so
         // it is never reported as a verified clean result (#864).
@@ -1723,7 +1644,7 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
         remaining_duplicates: remainingDuplicates,
         rescan_truncated: rescanTruncated,
         snapshot_id: lastSnapshotId,
-      });
+      }, by));
     },
   );
 
@@ -1734,17 +1655,13 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
   server.tool(
     'clean_all_playlists',
     'Scan every playlist in your library for duplicate items (repeated URIs, and on opt-in '
-      + 'same-song copies under different URIs). Reports per-playlist findings by default; '
-      + 'pass apply=true to remove them (keeps the first occurrence of each group). Bulk '
-      + 'removals ask for one confirmation before anything is deleted.',
+      + 'same-song copies under different URIs when match_by=name_artist). Reports per-playlist '
+      + 'findings by default; pass apply=true to remove them (keeps the first occurrence of each group). '
+      + 'Bulk removals ask for one confirmation before anything is deleted. '
+      + 'See the duplicate-matching vocabulary in SPEC section 4.',
     {
-      include_relinked: z
-        .boolean()
-        .optional()
-        .default(false)
-        .describe(
-          'Also count/collapse same-song entries under different URIs (relinks/remasters).',
-        ),
+      match_by: DuplicateMatchByParam,
+      include_relinked: IncludeRelinkedParam,
       dry_run: DryRun.describe(
         'Preview only — when true, nothing is changed; when false via dry_run=false or apply=true, executes the cleanup',
       ),
@@ -1759,6 +1676,8 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
       ...sharedListFields,
     },
     async (args) => {
+      const by = resolveMatchBy(args);
+      const matchBy = by.matchBy;
       // dry_run is the canonical flag; apply is a deprecated alias for backwards compat
       const rawDryRun = args.dry_run;
       const rawApply = args.apply;
@@ -1799,7 +1718,7 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
         const items = plScan.items;
         const plTruncated = plScan.truncated;
         if (plTruncated) truncatedPlaylists++;
-        const { ordered, groups } = collectDuplicateRemovals(items, args.include_relinked);
+        const { ordered, groups } = collectDuplicateRemovals(items, matchBy);
         totalRemovable += ordered.length;
         findings.push({
           id: pl.id,
@@ -1836,6 +1755,7 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
         playlists_scanned: playlistsScanned,
         playlists_with_duplicates: dirty.length,
         total_removable_items: totalRemovable,
+        match_by: matchBy,
         applied: effectiveApply,
         scan_truncated: scanTruncated,
         truncated_playlists: truncatedPlaylists,
@@ -1856,8 +1776,8 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
       if (!effectiveApply) {
         if (dirty.length === 0) {
           return textResult(
-            cleanVerdict,
-            { ...extra, ok: true, results: findings },
+            withMatchByNote(cleanVerdict, by),
+            withMatchByMetadata({ ...extra, ok: true, results: findings }, by),
           );
         }
         const lines = [
@@ -1867,18 +1787,22 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
           ...view.items.map(renderRow),
           ...(view.footer ? [view.footer] : []),
           '',
-          args.include_relinked
-            ? 'Report only — re-run with apply=true to remove these items (or dry_run=false).'
-            : 'Report only — re-run with include_relinked=true to widen matching, or apply=true to remove (or dry_run=false).',
+          matchBy === DEFAULT_DUPLICATE_MATCH_BY
+            ? 'Report only — re-run with apply=true to remove these items (or dry_run=false). '
+              + 'Pass match_by=name_artist to also collapse relinks and remasters under a new URI.'
+            : `Report only — re-run with apply=true to remove these items (or dry_run=false) under match_by=${matchBy}.`,
         ];
-        return textResult(lines.join('\n'), listStructuredContent(view.items, pag, extra));
+        return textResult(
+          withMatchByNote(lines.join('\n'), by),
+          withMatchByMetadata(listStructuredContent(view.items, pag, extra), by),
+        );
       }
 
       // Apply mode.
       if (dirty.length === 0) {
         return textResult(
-          cleanVerdict,
-          { ...extra, ok: true, removed_total: 0 },
+          withMatchByNote(cleanVerdict, by),
+          withMatchByMetadata({ ...extra, ok: true, removed_total: 0 }, by),
         );
       }
 
@@ -1918,12 +1842,15 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
         ...(notice ? [notice] : []),
         ...(view.footer ? [view.footer] : []),
       ];
-      return textResult(withSnapshot(lines.join('\n'), lastSnapshotId), {
-        ...extra,
-        ok: true,
-        removed_total: removedTotal,
-        snapshot_id: lastSnapshotId,
-      });
+      return textResult(
+        withMatchByNote(withSnapshot(lines.join('\n'), lastSnapshotId), by),
+        withMatchByMetadata({
+          ...extra,
+          ok: true,
+          removed_total: removedTotal,
+          snapshot_id: lastSnapshotId,
+        }, by),
+      );
     },
   );
 
