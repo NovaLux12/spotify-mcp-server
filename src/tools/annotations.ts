@@ -521,6 +521,17 @@ const OVERRIDES: Record<string, ToolAnnotations> = {
   // src/tools/confirm.ts is untouched and still fails closed on every verdict
   // but 'confirmed'.
   unpin_playlist: { destructiveHint: true },
+  // #896: `playlist_staleness_report` issues only GETs — /me/playlists and then
+  // each playlist's items — and writes nothing, but its name starts with
+  // `playlist`, which carries no read verb, so the name-driven policy
+  // advertised a pure report as a write. Same shape and same reasoning as
+  // `backup_library` above: an override on this one name rather than a change
+  // to the prefixes, which would misclassify the many genuinely-mutating
+  // `playlist_*` tools alongside it. The practical cost of leaving it out is
+  // that SPOTIFY_MCP_READONLY hides a read-only report, and that the #827
+  // dry_run gate cannot mechanically tell a read-only scan preview from a
+  // mutating tool's commit guard.
+  playlist_staleness_report: { readOnlyHint: true, idempotentHint: true },
 };
 
 /**
@@ -1131,7 +1142,14 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   manifestEntry('exhaust2enggating', 'exhaust2enggating', lazyModule('./exhaust2_enggating.js', 'registerExhaust2EnggatingTools'), [0, 0], { readOnlySafe: true, scopeKey: 'catalog' }),
   manifestEntry('exhaust2playback', 'exhaust2playback', lazyModule('./exhaust2_playback.js', 'registerExhaust2PlaybackTools'), [23, 17473], { scopeKey: 'playback' }),
   manifestEntry('exhaust2playlists', 'exhaust2playlists', lazyModule('./exhaust2_playlists.js', 'registerExhaust2PlaylistsTools'), [18, 23326], { scopeKey: 'playlists' }),
-  manifestEntry('exhaust2misc', 'exhaust2misc', lazyModule('./exhaust2_misc.js', 'registerExhaust2MiscTools'), [27, 23866], { scopeKey: 'library' }),
+  // [27, 24316] measured from the real registrar (tools: 592). The +450B over
+  // the previous baseline is #896: `playlist_staleness_report` gained the
+  // shared `DryRunScan` preview and the two scan tools' longer truthful-cost
+  // prose. Tool count is unchanged at 27 — a new INPUT property, not a new
+  // tool — so this is a re-measure of the same surface, not a ceiling raise
+  // to make a breach pass. The derived ceiling follows the baseline
+  // (ceil(24316 * 1.1) = 26748B).
+  manifestEntry('exhaust2misc', 'exhaust2misc', lazyModule('./exhaust2_misc.js', 'registerExhaust2MiscTools'), [27, 24316], { scopeKey: 'library' }),
   // #898: 3,695 -> 4,039 bytes (+344B, +9.3%) for the SAME three tools and the
   // same input schemas — every byte is the two descriptions, which now state
   // what the playlist walk costs per ref and that a capped walk reports

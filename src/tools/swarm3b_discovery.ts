@@ -40,11 +40,12 @@ import {
   truncateItems,
   paginationInfo,
   listStructuredContent,
+  unresolvedIdsNote,
 } from '../shaping.js';
 import type { ResponseFormatValue } from '../shaping.js';
 import { resolveSpotifyId, spotifyId } from '../refs.js';
 import { getConfig } from '../config.js';
-import { ARTIST_ALBUM_PAGE_LIMIT, MARKET_CODE, fetchAlbumsPerId, unresolvedIdsNote, type PerIdUnresolved } from './catalog.js';
+import { ARTIST_ALBUM_PAGE_LIMIT, MARKET_CODE, fetchAlbumsPerId, type PerIdUnresolved } from './catalog.js';
 
 // ---------------------------------------------------------------------------
 // Shared shapes + plumbing

@@ -56,7 +56,7 @@ export function backupRetentionDays(env: NodeJS.ProcessEnv = process.env): numbe
  * directory is still compared by its real location. Any other errno (EACCES,
  * ELOOP) propagates instead of silently passing an unresolved path.
  */
-async function realpathAllowingMissing(target: string): Promise<string> {
+export async function realpathAllowingMissing(target: string): Promise<string> {
   const missing: string[] = [];
   let current = resolve(target);
   for (;;) {
@@ -191,7 +191,7 @@ export async function writeOutputFile(file: string, data: string): Promise<void>
  * its own: the writer rejects naming the root as a file destination, and the
  * reader's regular-file check reports the real reason.
  */
-function isInsideRoot(root: string, target: string): boolean {
+export function isInsideRoot(root: string, target: string): boolean {
   const rel = relative(root, target);
   return rel === '' || (rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
 }

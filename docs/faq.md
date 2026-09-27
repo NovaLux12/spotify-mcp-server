@@ -73,6 +73,40 @@ It prints a URL — open it on any machine with a browser, approve, and paste th
 - Multi-account: `SPOTIFY_MCP_PROFILE=<name>` (or `auth --profile <name>`) stores `tokens.<name>.json` sidecars. Precedence: `SPOTIFY_MCP_TOKEN_FILE` > `SPOTIFY_MCP_PROFILE` > default.
 - "Not authenticated" almost always means: tokens file missing (re-run `auth`), wrong profile selected, or redirect URI mismatch at auth time.
 - Ephemeral home directories (containers): mount a volume and point `SPOTIFY_MCP_TOKEN_FILE` at it, or auth expires with the container.
+- To disconnect, run `spotify-mcp logout`. It erases the local stores and prints where to revoke the token; see [Disconnecting](#how-do-i-revoke-access-and-delete-my-local-data).
+
+## How do I revoke access and delete my local data?
+
+Run `spotify-mcp logout`. It does the two halves that matter, and it is a CLI
+command rather than a tool so no MCP host can trigger it on your behalf.
+
+**Erasing local data.** Every store this build can write is resolved through the
+module that owns it, then removed. Each removed path is printed, so you can
+check the report against your disk.
+
+Stores are moved rather than deleted: to the freedesktop trash where the
+filesystem allows it, otherwise into a `.spotify-mcp-logout-quarantine-<stamp>`
+directory beside the original. Both are recoverable, and the command prints
+where they went. The one exception is the token file, which is overwritten and
+unlinked — a refresh token that Spotify will not let us revoke must not be left
+readable in a trash directory.
+
+**Revoking the token.** Spotify publishes no token-revocation API, so no client
+can do this part for you. The official path is
+[spotify.com/account/apps](https://www.spotify.com/account/apps/) → Connected
+Apps → Remove. Do this yourself; it is the only thing that actually ends the
+access. `logout` prints the address on every run so you cannot finish the job
+without seeing it.
+
+If `SPOTIFY_MCP_DATA_DIR` is set, the playlist-health snapshot store resolves to
+that data directory itself, which holds every other store. Logout keeps the
+directory and erases the stores inside it individually rather than taking the
+whole lot.
+
+Options: `--dry-run` lists what would go and removes nothing, `--keep-backups`
+leaves the `backups/` library in place, and `--profile <name>` targets a named
+profile's token file. In a script with no terminal, logout refuses to erase
+unless `SPOTIFY_MCP_CONFIRM=never` is set.
 
 ## stats.fm questions
 

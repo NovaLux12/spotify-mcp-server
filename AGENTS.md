@@ -413,6 +413,21 @@ table all live in generated blocks. After changing the registry, run
 separately, and the "stale generated block" error is usually the second half
 still missing.
 
+**`--check` reads the working tree, so a green run cannot mean the commit is
+current.** #1262 at `cc3b080` and #1268 at `d1fdcc5` each pushed a commit whose
+regenerated block was never committed, and CI failed on a stale `module-map` and
+a stale `aggregate-budget` block. `699ccb3` did worse: it reached `main` with
+`docs/schema-budgets.md` 730 bytes behind the measured surface (`607,227B`
+committed against a measured `607,957B`) under a message claiming `--check` "is
+then green, which proves the block is byte-stable." It was not, and the block sat
+on `main` red until an unrelated PR's `--write` happened to correct it.
+Regenerate a block and `--check` compares the regenerated tree against itself. A
+rebase makes the omission near-certain: taking upstream's side of a
+generated-block conflict restores upstream's line counts, so the committed table
+is stale the instant the rebased commit lands. The signal that predicts the CI
+failure is not the exit code but `git status --porcelain` coming back empty after
+`--write` — anything it lists is a file the commit does not yet match.
+
 **A correctly named payload field can still lie about its value.** Two shipped
 bugs were the same mistake: a value that could not be read was coerced into a
 plausible number. A throttled or private stats.fm friend's failed stream lookup
@@ -453,10 +468,14 @@ format is.
 ## 7. Before you open a PR
 
 - `npm run build` and `npm test` pass.
-- `npm run count:tools -- --check` and `npm run check:doc-tool-names` pass.
+- `npm run check:doc-tool-names` passes.
 - If you changed what a tool accepts or returns, SPEC.md matches.
-- If you changed the registry, the manifest baselines are updated **and**
-  `--write` has been run.
+- If you changed the registry, the manifest baselines are updated, **and**
+  `npm run count:tools -- --write` has been run, **and `git status --porcelain`
+  is empty afterwards** — commit whatever it listed. `--check` reads the working
+  tree, so it turns green the moment you regenerate and stays green if you never
+  commit the result. An uncommitted diff after `--write` is the only local signal
+  that predicts the CI failure.
 - Behavior changes have a regression test that fails without the fix.
 - Conventional Commit title; a `Closes #NNN` footer per issue you actually
   fixed. The changelog is generated — do not write it.

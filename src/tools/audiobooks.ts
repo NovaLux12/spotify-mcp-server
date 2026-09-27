@@ -13,10 +13,9 @@ import type {
 import {
   ResponseFormat,
   sharedListFields,
-  resolveMaxResults,
-  truncateItems,
-  paginationInfo,
-  listStructuredContent,
+  jsonResult,
+  renderList,
+  renderSingle,
   type ResponseFormatValue,
 } from '../shaping.js';
 import { getConfig } from '../config.js';
@@ -78,82 +77,6 @@ function formatDuration(ms: number): string {
   const minutes = Math.floor(ms / 60000);
   const seconds = Math.floor((ms % 60000) / 1000);
   return `${minutes}:${seconds.toString().padStart(2, '0')}`;
-}
-
-// Thin presentation glue over src/shaping.ts primitives (#51/#52/#53), kept
-// identical to the catalog module's helpers.
-
-type ShapedToolResult = {
-  [key: string]: unknown;
-  content: Array<{ type: 'text'; text: string }>;
-  structuredContent?: Record<string, unknown>;
-};
-
-/** #51 json mode: raw API payload as parseable JSON text plus structuredContent. */
-function jsonResult(raw: Record<string, unknown>): ShapedToolResult {
-  return { content: [{ type: 'text', text: JSON.stringify(raw) }], structuredContent: raw };
-}
-
-/**
- * Single-object rendering (#51): concise keeps the existing prose verbatim;
- * detailed appends fields the prose drops.
- */
-function renderSingle(
-  fmt: ResponseFormatValue | undefined,
-  raw: Record<string, unknown>,
-  concise: string[],
-): ShapedToolResult {
-  if (fmt === 'json') return jsonResult(raw);
-  return { content: [{ type: 'text', text: concise.join('\n') }] };
-}
-
-/**
- * List rendering (#52/#53): truncates to max_results, appends the shared
- * footer, and emits structuredContent with pagination info.
- */
-function renderList<T>(
-  fmt: ResponseFormatValue | undefined,
-  pageItems: readonly T[],
-  opts: {
-    header: string;
-    line: (item: T, index: number) => string;
-    maxResults?: number;
-    total?: number | null;
-    offset?: number;
-    limit?: number | null;
-    continuable?: boolean;
-    /** Extra top-level structuredContent fields (e.g. a walk's cap verdict). */
-    extra?: Record<string, unknown>;
-  },
-): ShapedToolResult {
-  const cap = resolveMaxResults(opts.maxResults);
-  const trunc = truncateItems(pageItems, cap);
-  const lines = [opts.header];
-  trunc.items.forEach((item, i) => lines.push(opts.line(item, i)));
-  if (trunc.footer) lines.push('', `(${trunc.footer})`);
-  const continuable = opts.continuable !== false;
-  const pagination = paginationInfo({
-    total: opts.total ?? trunc.total,
-    offset: opts.offset,
-    limit: opts.limit ?? null,
-    returned: trunc.items.length,
-  });
-  if (!continuable) {
-    pagination.next_offset = null;
-  } else if (!trunc.truncated && pagination.next_offset !== null) {
-    const left =
-      pagination.total !== null ? pagination.total - pagination.next_offset : null;
-    lines.push(
-      '',
-      `More pages available — pass offset=${pagination.next_offset}${
-        left !== null ? ` (${left} items left)` : ''
-      }`,
-    );
-  }
-  return {
-    content: [{ type: 'text', text: lines.join('\n') }],
-    structuredContent: listStructuredContent(trunc.items, pagination, opts.extra),
-  };
 }
 
 export function registerAudiobookTools(server: McpServer, client: SpotifyClient): void {

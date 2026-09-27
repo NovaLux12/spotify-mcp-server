@@ -180,6 +180,26 @@ test('the dead /me lookup is memoised, so a missing country costs one call per p
   assert.equal(callsTo(calls, '/albums/alb1').length, 2);
 });
 
+test('the memo is shared across modules: a catalog and an audiobook call cost one /me between them', async () => {
+  // #788: the two modules used to carry independent copies of the profile
+  // country lookup, so each fired its own /me. The memo now lives once in
+  // src/markets.ts (#782), so two different modules must still share it.
+  // This is the issue's second acceptance criterion, and it fails if either
+  // module grows its own copy of the lookup again.
+  const { registered, calls } = makeHarness((server, client) => {
+    registerCatalogTools(server, client);
+    registerAudiobookTools(server, client);
+  });
+
+  await findTool(registered, 'get_album').handler({ id: 'alb1' });
+  await findTool(registered, 'get_audiobook').handler({ id: 'bk1' });
+
+  assert.equal(callsTo(calls, '/me').length, 1, 'both modules must share one /me round trip');
+  // Neither call is short-circuited: each still reached the wire.
+  assert.equal(callsTo(calls, '/albums/alb1').length, 1);
+  assert.equal(callsTo(calls, '/audiobooks/bk1').length, 1);
+});
+
 test('an unassigned market code is rejected locally, with no /markets round-trip', () => {
   const { registered, calls } = makeHarness(registerCatalogTools);
   const market = findTool(registered, 'get_album').schema.market;

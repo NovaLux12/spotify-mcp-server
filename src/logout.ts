@@ -1,0 +1,830 @@
+/**
+ * `spotify-mcp logout` — disconnect this machine from a Spotify account (#704).
+ *
+ * Before this command there was no supported way to revoke the token and clear
+ * the local sidecars: a user who wanted to disconnect had to find each file
+ * themselves. This module is that path.
+ *
+ * Two halves, and the second is the one that can silently fail:
+ *
+ * 1. **Remote revocation.** Spotify publishes no token-revocation endpoint. The
+ *    Web API OpenAPI schema (70 paths, 96 operationIds) has no revoke path, and
+ *    the word appears once — in an error description stating revocation is an
+ *    event the *user* performs. There is therefore no HTTP call here to make.
+ *    Inventing one would be worse than the gap: an endpoint that does not exist
+ *    returns 404/410 and would read as success. Logout says plainly that the
+ *    token must be revoked by hand at https://www.spotify.com/account/apps/.
+ *
+ * 2. **Local erasure.** Every store this build can write is resolved through
+ *    the module that owns it — no path string is retyped here — and then erased
+ *    under the rules below.
+ *
+ * ## Erasure rules
+ *
+ * - **Refuse, never delete, a path that is not where the owning module says it
+ *   belongs.** Containment is decided on the REAL path (via `realpathAllowingMissing`),
+ *   because a check run on the raw string is bypassable by a symlinked parent —
+ *   the same class as #623. A symlinked store is refused too: the link is not
+ *   ours to follow, and the target is not what the user asked about.
+ * - **Reversible where reversibility is possible.** Sidecars move to the
+ *   freedesktop trash (`gio trash`) or, on filesystems that refuse trashing
+ *   (tmpfs, some network mounts), into a quarantine directory beside the
+ *   original. Nothing is `rm -rf`'d, and no directory is ever removed by
+ *   recursion — the whole directory is *moved*, contents and all.
+ * - **The token file is the exception.** A revoked-nowhere refresh token sitting
+ *   readable in `~/.local/share/Trash/files/` is a live credential, which is the
+ *   failure this whole command exists to prevent. It is overwritten and unlinked
+ *   instead. This is one known file, not a recursive delete.
+ *
+ * `logout` is deliberately a CLI command and not an MCP tool: a destructive
+ * tool would join the `tools/list` surface (592 tools today) and every host
+ * would gain the ability to erase the user's own credentials unattended.
+ */
+
+import { execFile } from 'node:child_process';
+import { promises as fs } from 'node:fs';
+import { homedir } from 'node:os';
+import { basename, dirname, join, parse, resolve } from 'node:path';
+import { promisify } from 'node:util';
+
+import { resolveTokenFile } from './config.js';
+import { historyFilePath } from './history.js';
+import { exportRootDir, isInsideRoot, realpathAllowingMissing } from './paths.js';
+import { receiptsFilePath } from './receipts.js';
+import { artistWatchlistPath } from './tools/artistwatch.js';
+import { backupDir } from './tools/backup.js';
+import { requiredConfirmationRefusal } from './tools/confirm.js';
+import type { ElicitRefusal } from './tools/confirm.js';
+import { miscFilePath } from './tools/exhaust2_misc.js';
+import { exhaust2PlaybackFile } from './tools/exhaust2_playback.js';
+import { watermarkFilePath } from './tools/freshness.js';
+import { genreTagsPath } from './tools/libraryinsights.js';
+import { portabilityDir } from './tools/portability.js';
+import { snapshotDir as playlistHealthSnapshotDir } from './tools/playlisthealth.js';
+import { playbackExtFile } from './tools/playbackext.js';
+import { scenesFilePath } from './tools/scenes.js';
+import { searchHistoryFile } from './tools/searchhistory.js';
+import { snapshotDir as swarm3SnapshotDir } from './tools/swarm3_snapshots.js';
+
+const run = promisify(execFile);
+
+/** Where a user revokes an app by hand, since no API exists. */
+export const MANUAL_REVOCATION_URL = 'https://www.spotify.com/account/apps/';
+
+/** The one store that is overwritten rather than moved — it holds a live credential. */
+const CREDENTIAL_STORE_ID = 'token';
+
+export type StoreErasure = 'shred' | 'move';
+
+export interface LocalStore {
+  /** Stable key used in output and tests. */
+  id: string;
+  /** Human name for the store. */
+  label: string;
+  /** Whether the store is a single file or a directory of files. */
+  kind: 'file' | 'dir';
+  /** Absolute path as this environment resolves it. */
+  path: string;
+  /** The directory the owning module places the store in. */
+  root: string;
+  erasure: StoreErasure;
+  /** Env var that relocates it, for the report. Null when there is none. */
+  envVar: string | null;
+}
+
+interface StoreDefinition {
+  id: string;
+  label: string;
+  kind: LocalStore['kind'];
+  envVar: string | null;
+  erasure: StoreErasure;
+  resolve: (env: NodeJS.ProcessEnv) => string;
+}
+
+/**
+ * Every local store, in the order the report lists them.
+ *
+ * Each `resolve` is the resolver the owning module already uses. A path string
+ * retyped here would drift the moment that module changed, and the drift would
+ * be silent: logout would report success while a live token stayed on disk.
+ */
+const STORE_DEFINITIONS: StoreDefinition[] = [
+  {
+    id: CREDENTIAL_STORE_ID,
+    label: 'OAuth tokens',
+    kind: 'file',
+    envVar: 'SPOTIFY_MCP_TOKEN_FILE',
+    erasure: 'shred',
+    resolve: (env) => resolveTokenFile(env),
+  },
+  {
+    id: 'mutations',
+    label: 'Mutation history',
+    kind: 'file',
+    envVar: 'SPOTIFY_MCP_HISTORY_DIR',
+    erasure: 'move',
+    resolve: (env) => historyFilePath(env),
+  },
+  {
+    id: 'receipts',
+    label: 'Write receipts',
+    kind: 'file',
+    envVar: 'SPOTIFY_MCP_RECEIPTS_DIR',
+    erasure: 'move',
+    resolve: (env) => receiptsFilePath(env),
+  },
+  {
+    id: 'scenes',
+    label: 'Scenes',
+    kind: 'file',
+    envVar: 'SPOTIFY_MCP_SCENES_FILE',
+    erasure: 'move',
+    resolve: (env) => scenesFilePath(env),
+  },
+  {
+    id: 'genre-tags',
+    label: 'Genre tags',
+    kind: 'file',
+    envVar: 'SPOTIFY_MCP_GENRE_TAGS_FILE',
+    erasure: 'move',
+    resolve: (env) => genreTagsPath(env),
+  },
+  {
+    id: 'playback-extensions',
+    label: 'Playback extensions',
+    kind: 'file',
+    envVar: 'SPOTIFY_MCP_PLAYBACKEXT_FILE',
+    erasure: 'move',
+    resolve: (env) => playbackExtFile(env),
+  },
+  {
+    id: 'search-history',
+    label: 'Search history',
+    kind: 'file',
+    envVar: 'SPOTIFY_MCP_SEARCH_HISTORY_FILE',
+    erasure: 'move',
+    resolve: (env) => searchHistoryFile(env),
+  },
+  {
+    id: 'artist-watchlist',
+    label: 'Artist watchlist',
+    kind: 'file',
+    envVar: 'SPOTIFY_MCP_DATA_DIR',
+    erasure: 'move',
+    resolve: (env) => artistWatchlistPath(env),
+  },
+  {
+    id: 'freshness',
+    label: 'Freshness watermark',
+    kind: 'file',
+    envVar: 'SPOTIFY_MCP_FRESHNESS_STATE',
+    erasure: 'move',
+    resolve: (env) => watermarkFilePath(env),
+  },
+  {
+    id: 'exhaust2-misc',
+    label: 'Extended sidecar (misc)',
+    kind: 'file',
+    envVar: 'SPOTIFY_MCP_EXHAUST2_MISC_FILE',
+    erasure: 'move',
+    resolve: (env) => miscFilePath(env),
+  },
+  {
+    id: 'exhaust2-playback',
+    label: 'Extended sidecar (playback)',
+    kind: 'file',
+    envVar: 'SPOTIFY_MCP_EXHAUST2_PLAYBACK_FILE',
+    erasure: 'move',
+    resolve: (env) => exhaust2PlaybackFile(env),
+  },
+  {
+    id: 'backups',
+    label: 'Backups',
+    kind: 'dir',
+    envVar: 'SPOTIFY_MCP_BACKUP_DIR',
+    erasure: 'move',
+    resolve: (env) => backupDir(env),
+  },
+  {
+    id: 'playlist-snapshots',
+    label: 'Playlist snapshots',
+    kind: 'dir',
+    envVar: 'SPOTIFY_MCP_SNAPSHOT_DIR',
+    erasure: 'move',
+    resolve: (env) => swarm3SnapshotDir(env),
+  },
+  {
+    id: 'playlist-health-snapshots',
+    label: 'Playlist health snapshots',
+    kind: 'dir',
+    envVar: 'SPOTIFY_MCP_DATA_DIR',
+    erasure: 'move',
+    resolve: (env) => playlistHealthSnapshotDir(env),
+  },
+  {
+    id: 'portability',
+    label: 'Portability export/import state',
+    kind: 'dir',
+    envVar: 'SPOTIFY_MCP_PORTABILITY_DIR',
+    erasure: 'move',
+    resolve: (env) => portabilityDir(env),
+  },
+  {
+    id: 'exports',
+    label: 'Exports',
+    kind: 'dir',
+    envVar: 'SPOTIFY_MCP_EXPORT_DIR',
+    erasure: 'move',
+    resolve: (env) => exportRootDir(env),
+  },
+];
+
+export interface StorePathsOptions {
+  env?: NodeJS.ProcessEnv;
+  cwd?: string;
+  /** Mirrors `spotify-mcp auth --profile`. */
+  profile?: string;
+}
+
+/**
+ * Resolve every store for an environment.
+ *
+ * The token resolver is `resolveTokenFile` — config.ts is the authority for the
+ * token path in this checkout (there is no `dataDir` field on the config type
+ * yet); every other path comes from the module that writes it.
+ */
+export function localStorePaths(options: StorePathsOptions = {}): LocalStore[] {
+  const cwd = options.cwd ?? process.cwd();
+  const env =
+    options.profile && options.profile.length > 0
+      ? { ...(options.env ?? process.env), SPOTIFY_MCP_PROFILE: options.profile }
+      : (options.env ?? process.env);
+
+  return STORE_DEFINITIONS.map((def) => {
+    const path = resolve(def.resolve(env));
+    return {
+      id: def.id,
+      label: def.label,
+      kind: def.kind,
+      path,
+      root: def.kind === 'dir' ? path : dirname(path),
+      erasure: def.erasure,
+      envVar: def.envVar,
+    };
+  });
+}
+
+export type EraseDecision =
+  | { store: LocalStore; action: 'erase' }
+  | { store: LocalStore; action: 'absent' }
+  | { store: LocalStore; action: 'keep'; reason: string }
+  | { store: LocalStore; action: 'refuse'; reason: string };
+
+export interface PlanOptions {
+  home?: string;
+  /** `--keep-backups`: the backup library is user data, not session state. */
+  keepBackups?: boolean;
+}
+
+/**
+ * Decide, per store, whether it may be erased — without touching it.
+ *
+ * The refusal rule lives here and nowhere else, so every path that could be
+ * erased passes the same check regardless of which code path asked.
+ */
+export async function planErasure(
+  stores: LocalStore[],
+  options: PlanOptions = {},
+): Promise<EraseDecision[]> {
+  const home = options.home ?? homedir();
+  const decisions: (EraseDecision | null)[] = [];
+  // Real path per store, needed by the containment check below even for stores
+  // that turn out to be absent.
+  const reals = new Map<string, string>();
+
+  for (const store of stores) {
+    if (options.keepBackups && store.id === 'backups') {
+      decisions.push({ store, action: 'keep', reason: 'kept by --keep-backups' });
+      continue;
+    }
+
+    const rootReal = await realpathAllowingMissing(store.root);
+    const pathReal = await realpathAllowingMissing(store.path);
+    reals.set(store.id, pathReal);
+
+    let info;
+    try {
+      // lstat, not stat: a symlinked store must be visible as a link here.
+      info = await fs.lstat(store.path);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+        decisions.push({ store, action: 'absent' });
+      } else {
+        decisions.push({
+          store,
+          action: 'refuse',
+          reason: `cannot inspect: ${(err as Error).message}`,
+        });
+      }
+      continue;
+    }
+
+    if (info.isSymbolicLink()) {
+      let target = 'unreadable target';
+      try {
+        target = await fs.realpath(store.path);
+      } catch {
+        /* a broken link is still a link */
+      }
+      decisions.push({
+        store,
+        action: 'refuse',
+        reason: `is a symlink to ${target}; refusing to erase through a link`,
+      });
+      continue;
+    }
+
+    if (!isInsideRoot(rootReal, pathReal)) {
+      decisions.push({
+        store,
+        action: 'refuse',
+        reason: `resolves to ${pathReal}, outside its own store directory ${rootReal}`,
+      });
+      continue;
+    }
+
+    // Belt-and-braces. A misconfigured env var can point a store at a directory
+    // that has no business being erased, and none of the above would catch it
+    // because the path would be inside its own root by construction.
+    const refusal = dangerousEraseTarget(pathReal, rootReal, home);
+    if (refusal) {
+      decisions.push({ store, action: 'refuse', reason: refusal });
+      continue;
+    }
+
+    decisions.push(null); // resolved in the second pass
+  }
+
+  // Second pass: a directory store that *contains* another store is kept, not
+  // erased. This is not hypothetical — `SPOTIFY_MCP_DATA_DIR` is itself the
+  // playlist health snapshot directory, so with that variable set that store
+  // resolves to the data directory holding every other store on this list.
+  // Erasing it would take the whole lot, which is the opposite of the
+  // enumerate-then-remove promise this command makes. It is reported under
+  // "Not erased" rather than silently dropped, and it is not a failure: the
+  // container is a directory, and the stores inside it are erased individually.
+  for (let i = 0; i < stores.length; i += 1) {
+    if (decisions[i] !== null) continue;
+    const store = stores[i]!;
+    const mine = reals.get(store.id)!;
+    const nested = stores
+      .filter((other) => other.id !== store.id)
+      .filter((other) => {
+        const theirs = reals.get(other.id);
+        return theirs !== undefined && (theirs === mine || isInsideRoot(mine, theirs));
+      })
+      .map((other) => other.id);
+
+    decisions[i] =
+      nested.length > 0
+        ? {
+            store,
+            action: 'keep',
+            reason: `is the data directory itself, holding ${nested.length} other store(s); those were erased individually`,
+          }
+        : { store, action: 'erase' };
+  }
+
+  return decisions as EraseDecision[];
+}
+
+/** True when the resolved path is one that must never be erased, whatever the store says. */
+function dangerousEraseTarget(pathReal: string, rootReal: string, home: string): string | null {
+  if (pathReal === parse(pathReal).root) return 'is a filesystem root';
+  if (pathReal === resolve(home)) return 'is the home directory';
+  if (pathReal !== rootReal && isInsideRoot(pathReal, rootReal)) {
+    return `is an ancestor of its own store directory ${rootReal}`;
+  }
+  return null;
+}
+
+export type EraseStatus = 'erased' | 'refused' | 'failed';
+
+export interface EraseOutcome {
+  store: LocalStore;
+  status: EraseStatus;
+  /** How it was removed. */
+  mechanism?: 'shred' | 'gio-trash' | 'quarantine';
+  /** Where a moved store went — the trash, or the quarantine path. */
+  destination?: string;
+  /** Every path the store covered, so the report can name what was removed. */
+  files: string[];
+  reason?: string;
+}
+
+/** Recursively list the files a directory store would take with it. */
+export async function enumerateFiles(target: string): Promise<string[]> {
+  let entries;
+  try {
+    entries = await fs.readdir(target, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  const out: string[] = [];
+  for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+    const full = join(target, entry.name);
+    if (entry.isDirectory()) out.push(...(await enumerateFiles(full)));
+    else out.push(full);
+  }
+  return out;
+}
+
+/** Quarantine directory for stores the filesystem will not let us trash. */
+function quarantineDir(target: string, stamp: string): string {
+  return join(dirname(target), `.spotify-mcp-logout-quarantine-${stamp}`);
+}
+
+/**
+ * Overwrite then unlink a single file.
+ *
+ * Never called on a directory: a recursive delete is the one thing this command
+ * must never do, because a store path can be a directory the user pointed at.
+ */
+async function shredFile(path: string): Promise<string | null> {
+  let handle;
+  try {
+    handle = await fs.open(path, 'r+');
+  } catch (err) {
+    return `could not open for overwrite: ${(err as Error).message}`;
+  }
+  try {
+    const stats = await handle.stat();
+    if (stats.size > 0) {
+      // One pass of zeros. SSD/flash garbage collection makes multi-pass
+      // shredding theatre; the goal is that the bytes are not still readable.
+      await handle.write(Buffer.alloc(stats.size), 0, stats.size, 0);
+      await handle.sync();
+    }
+    await handle.truncate(0);
+    await handle.sync();
+  } catch (err) {
+    await handle.close().catch(() => undefined);
+    return `could not overwrite: ${(err as Error).message}`;
+  }
+  await handle.close().catch(() => undefined);
+  try {
+    await fs.unlink(path);
+  } catch (err) {
+    return `overwrote but could not unlink: ${(err as Error).message}`;
+  }
+  return null;
+}
+
+/**
+ * Move a store out of the way, reversibly.
+ *
+ * Tries the freedesktop trash first, then a quarantine directory beside the
+ * original (same filesystem, so `rename` cannot fail with EXDEV). If both
+ * refuse, the store is left untouched and the failure is reported — there is no
+ * unlink fallback.
+ */
+async function moveAside(
+  store: LocalStore,
+  stamp: string,
+  allowGioTrash: boolean,
+): Promise<{ mechanism: 'gio-trash' | 'quarantine'; destination?: string } | { error: string }> {
+  const files = store.kind === 'dir' ? await enumerateFiles(store.path) : [store.path];
+  let trashFailure: string | null = null;
+
+  if (allowGioTrash) {
+    try {
+      await run('gio', ['trash', '--', store.path]);
+      return { mechanism: 'gio-trash' };
+    } catch (err) {
+      trashFailure = (err as Error).message.split('\n')[0];
+    }
+  }
+
+  try {
+    const qdir = quarantineDir(store.path, stamp);
+    await fs.mkdir(qdir, { recursive: true, mode: 0o700 });
+    const destination = join(qdir, basename(store.path));
+    await fs.rename(store.path, destination);
+    return { mechanism: 'quarantine', destination };
+  } catch (err) {
+    const why = (err as Error).message.split('\n')[0];
+    return {
+      error: trashFailure
+        ? `gio trash failed (${trashFailure}) and quarantine failed (${why}); left in place`
+        : `quarantine failed (${why}); left in place`,
+    };
+  }
+}
+
+export interface EraseOptions {
+  stamp?: string;
+  /** Tests set this false to exercise the quarantine path directly. */
+  allowGioTrash?: boolean;
+}
+
+export async function eraseStore(
+  store: LocalStore,
+  options: EraseOptions = {},
+): Promise<EraseOutcome> {
+  const stamp = options.stamp ?? 'quarantine';
+  const allowGioTrash = options.allowGioTrash ?? true;
+
+  if (store.erasure === 'shred') {
+    const error = await shredFile(store.path);
+    if (error) return { store, status: 'failed', files: [store.path], reason: error };
+    return { store, status: 'erased', mechanism: 'shred', files: [store.path] };
+  }
+
+  const moved = await moveAside(store, stamp, allowGioTrash);
+  if ('error' in moved) {
+    return { store, status: 'failed', files: [store.path], reason: moved.error };
+  }
+  return {
+    store,
+    status: 'erased',
+    mechanism: moved.mechanism,
+    destination: moved.destination,
+    files: store.kind === 'dir' ? await enumerateFiles(moved.destination ?? store.path) : [store.path],
+  };
+}
+
+// ---------------------------------------------------------------------------
+// CLI
+// ---------------------------------------------------------------------------
+
+export interface LogoutOptions {
+  dryRun: boolean;
+  keepBackups: boolean;
+  profile?: string;
+}
+
+export class LogoutUsageError extends Error {}
+
+/**
+ * Parse logout's flags. An unrecognised flag is an error, not a no-op: a
+ * silently ignored `--force` would look like the command honoured it.
+ */
+export function parseLogoutArgs(argv: string[]): LogoutOptions {
+  const opts: LogoutOptions = { dryRun: false, keepBackups: false };
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i];
+    if (arg === '--dry-run') opts.dryRun = true;
+    else if (arg === '--keep-backups') opts.keepBackups = true;
+    else if (arg === '--profile') {
+      const value = argv[i + 1];
+      if (value === undefined || value.startsWith('--')) {
+        throw new LogoutUsageError('--profile requires a profile name');
+      }
+      opts.profile = value;
+      i += 1;
+    } else if (arg.startsWith('--profile=')) {
+      const value = arg.slice('--profile='.length);
+      if (value.length === 0) throw new LogoutUsageError('--profile requires a profile name');
+      opts.profile = value;
+    } else {
+      throw new LogoutUsageError(`unknown argument: ${arg}`);
+    }
+  }
+  return opts;
+}
+
+export const LOGOUT_HELP = `Usage: spotify-mcp logout [options]
+
+Disconnect this machine: erase every local store and tell you how to revoke the
+Spotify access token. Spotify publishes no token-revocation API, so the token
+itself must be revoked by hand — logout prints the address.
+
+Options:
+  --dry-run          List what would be erased; erase nothing
+  --keep-backups     Leave the backups/ library in place
+  --profile <name>   Act on a named profile (as with \`auth --profile\`)`;
+
+/** One line per store, whatever the action. */
+function storeLine(id: string, label: string, action: string, detail: string): string {
+  return `  ${id.padEnd(26)} ${action.padEnd(12)} ${label} — ${detail}`;
+}
+
+/**
+ * Render the report. Returns a string rather than printing so the tests can
+ * assert on exactly what a user is shown.
+ */
+export function renderReport(
+  decisions: EraseDecision[],
+  outcomes: EraseOutcome[],
+  opts: { dryRun: boolean },
+): string {
+  const lines: string[] = [];
+  lines.push('spotify-mcp logout');
+  lines.push('');
+  lines.push(
+    'Spotify has no token-revocation API. Revoke this app by hand, otherwise the',
+    'access it was just granted stays live:',
+    `  ${MANUAL_REVOCATION_URL}  →  Connected Apps  →  Remove`,
+    '',
+  );
+
+  if (opts.dryRun) {
+    lines.push('Dry run — nothing was erased.', '');
+    for (const d of decisions) {
+      if (d.action === 'erase') {
+        lines.push(storeLine(d.store.id, d.store.label, 'would erase', d.store.path));
+      } else if (d.action === 'keep') {
+        lines.push(storeLine(d.store.id, d.store.label, 'kept', d.reason));
+      } else if (d.action === 'absent') {
+        lines.push(storeLine(d.store.id, d.store.label, 'absent', d.store.path));
+      } else {
+        lines.push(storeLine(d.store.id, d.store.label, 'REFUSED', d.reason));
+      }
+    }
+    lines.push('');
+    return lines.join('\n');
+  }
+
+  lines.push('Erased:');
+  for (const o of outcomes) {
+    if (o.status !== 'erased') continue;
+    const how =
+      o.mechanism === 'shred'
+        ? 'overwritten and unlinked'
+        : o.mechanism === 'gio-trash'
+          ? 'moved to trash'
+          : `moved to ${o.destination}`;
+    lines.push(storeLine(o.store.id, o.store.label, 'erased', how));
+    for (const file of o.files) lines.push(`      ${file}`);
+  }
+
+  const notErased = outcomes.filter((o) => o.status !== 'erased');
+  const skipped = decisions.filter(
+    (d) => d.action === 'keep' || d.action === 'refuse' || d.action === 'absent',
+  );
+  if (skipped.length > 0) {
+    lines.push('');
+    lines.push('Not erased:');
+    for (const d of skipped) {
+      if (d.action === 'keep') {
+        lines.push(storeLine(d.store.id, d.store.label, 'kept', d.reason));
+      } else if (d.action === 'absent') {
+        lines.push(storeLine(d.store.id, d.store.label, 'absent', 'not present'));
+      } else {
+        lines.push(storeLine(d.store.id, d.store.label, 'REFUSED', d.reason));
+      }
+    }
+  }
+  if (notErased.some((o) => o.status === 'failed')) {
+    lines.push('');
+    lines.push('Some stores could not be erased and are still on disk:');
+    for (const o of notErased) {
+      if (o.status !== 'failed') continue;
+      lines.push(storeLine(o.store.id, o.store.label, 'FAILED', o.reason ?? 'unknown'));
+    }
+  }
+
+  const quarantined = outcomes.filter((o) => o.mechanism === 'quarantine');
+  if (quarantined.length > 0) {
+    lines.push('');
+    lines.push(
+      'Recoverable copies (empty them once you are sure you do not want them):',
+    );
+    for (const o of quarantined) lines.push(`  ${o.destination}`);
+  }
+
+  lines.push('');
+  lines.push(
+    notErased.length === 0
+      ? 'Local stores cleared. `spotify-mcp auth` reconnects.'
+      : 'Logout incomplete — see the stores above that are still on disk.',
+  );
+  lines.push(`Revoke the Spotify access token at ${MANUAL_REVOCATION_URL}`);
+  lines.push('');
+  return lines.join('\n');
+}
+
+export interface LogoutIo {
+  isInteractive: boolean;
+  ask: (prompt: string) => Promise<string>;
+  write: (text: string) => void;
+}
+
+export const defaultLogoutIo: LogoutIo = {
+  isInteractive: Boolean(process.stdin.isTTY),
+  ask: (prompt) =>
+    new Promise((resolveAnswer) => {
+      process.stdin.setEncoding('utf8');
+      process.stdin.once('data', (chunk) => resolveAnswer(String(chunk)));
+      process.stderr.write(prompt);
+    }),
+  write: (text) => process.stdout.write(text),
+};
+
+/**
+ * Run `logout`. Returns the process exit code; it never calls process.exit, so
+ * a test can drive the whole command.
+ */
+export async function runLogout(
+  argv: string[],
+  io: LogoutIo = defaultLogoutIo,
+  options: { env?: NodeJS.ProcessEnv; cwd?: string; allowGioTrash?: boolean } = {},
+): Promise<number> {
+  let opts: LogoutOptions;
+  try {
+    opts = parseLogoutArgs(argv);
+  } catch (err) {
+    io.write(`${(err as Error).message}\n\n${LOGOUT_HELP}\n`);
+    return 2;
+  }
+
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  let stores: LocalStore[];
+  try {
+    stores = localStorePaths({
+      env: options.env,
+      cwd: options.cwd,
+      profile: opts.profile,
+    });
+  } catch (err) {
+    io.write(`Cannot resolve the Spotify profile: ${(err as Error).message}\n`);
+    return 2;
+  }
+
+  const decisions = await planErasure(stores, { keepBackups: opts.keepBackups });
+  const outcomes: EraseOutcome[] = [];
+
+  if (opts.dryRun) {
+    io.write(renderReport(decisions, outcomes, { dryRun: true }));
+    return 0;
+  }
+
+  const toErase = decisions.filter((d): d is Extract<EraseDecision, { action: 'erase' }> =>
+    d.action === 'erase',
+  );
+
+  if (toErase.length > 0) {
+    const refusal = await confirmErasure(toErase, io);
+    if (refusal) {
+      io.write(`${refusal.message}\n`);
+      return 1;
+    }
+  }
+
+  for (const decision of toErase) {
+    outcomes.push(
+      await eraseStore(decision.store, {
+        stamp,
+        allowGioTrash: options.allowGioTrash,
+      }),
+    );
+  }
+
+  io.write(renderReport(decisions, outcomes, { dryRun: false }));
+  // A refusal or a failure is a non-zero exit: reporting success while a live
+  // token stayed on disk is the exact bug this command was written to close.
+  // Refusals are counted here, not just failures, because a refused store is
+  // precisely a store that is still on disk.
+  const refused = decisions.some((d) => d.action === 'refuse');
+  return refused || outcomes.some((o) => o.status !== 'erased') ? 1 : 0;
+}
+
+/**
+ * Ask before erasing, then hand the verdict to the existing gate.
+ *
+ * The gate is not reimplemented here. A TTY maps to 'confirmed'/'declined', a
+ * non-TTY to 'unsupported', and a read error to 'error' — the same three
+ * answers `confirmViaElicitation` produces — so the fail-closed behaviour and
+ * the `SPOTIFY_MCP_CONFIRM=never` bypass are the ones already in force for
+ * destructive MCP tools. A second mechanism here could drift from that one.
+ */
+async function confirmErasure(
+  toErase: Extract<EraseDecision, { action: 'erase' }>[],
+  io: LogoutIo,
+): Promise<ElicitRefusal | null> {
+  if (process.env.SPOTIFY_MCP_CONFIRM === 'never') {
+    return requiredConfirmationRefusal('unsupported');
+  }
+  if (!io.isInteractive) {
+    return requiredConfirmationRefusal('unsupported');
+  }
+
+  io.write(
+    [
+      'About to erase:',
+      ...toErase.map((d) => `- ${d.store.id}: ${d.store.path}`),
+      '',
+      'Spotify cannot revoke the token for you; you must still do that by hand.',
+      'Proceed? [y/N] ',
+    ].join('\n'),
+  );
+
+  let answer: string;
+  try {
+    answer = await io.ask('');
+  } catch {
+    return requiredConfirmationRefusal('error');
+  }
+  const verdict = /^\s*y(es)?\s*$/i.test(answer) ? 'confirmed' : 'declined';
+  return requiredConfirmationRefusal(verdict);
+}

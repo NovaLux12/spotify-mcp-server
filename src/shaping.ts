@@ -87,6 +87,34 @@ export const DryRunDefault = DryRun.default(true).describe(
 export const isDryRun = (args: { dry_run?: boolean }): boolean => args.dry_run ?? true;
 
 /**
+ * The read-only SCAN contract (#896).
+ *
+ * A scan tool issues no writes, so previewing it is about COST, not safety: the
+ * question a caller asks of a `dry_run` here is "how many requests is this
+ * going to spend", and the answer must come from the ARGUMENTS — never from
+ * performing the scan to find out. `swarm3_library`'s tools already declared
+ * this fragment locally; `playlist_staleness_report` shipped with no preview at
+ * all while defaulting to ~251 requests, and `dead_library_finder` declared one
+ * that ran its whole ~280-request scan BEFORE branching on it. Three modules,
+ * three different ideas of what the flag means — which is the shape of bug
+ * #896, and the reason the fragment lives here once.
+ *
+ * Opt-IN (no default), matching the other read-only scans: these tools change
+ * nothing, so previewing by default would suppress the report rather than
+ * protect anything. The mutating family keeps `DryRunDefault` above, whose
+ * default-TRUE is a safety property, not a cost one.
+ *
+ * A conforming scan preview therefore: issues ZERO requests, reports a request
+ * BOUND derived from the inputs, and says explicitly which part of the answer
+ * is unknown until the scan runs. Reporting `0 items` for a plan it could not
+ * compute is the #803 class of lie, not a cautious answer.
+ */
+export const DryRunScan = z
+  .boolean()
+  .optional()
+  .describe('Preview only: report the request cost of the scan without performing it (default false)');
+
+/**
  * The playback mutation contract (#836). Two contradictory `dry_run` contracts
  * used to ship under one parameter name: `exhaust2_playback.ts` defaulted an
  * omitted field to a preview, while `playback.ts` / `queueops.ts` /
@@ -1027,6 +1055,207 @@ export function listStructuredContent<T>(
       next_offset: pagination.next_offset,
     },
     ...extra,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Presentation: jsonResult / renderSingle / renderList (#788)
+// ---------------------------------------------------------------------------
+
+/**
+ * The MCP result shape the render helpers below return. `structuredContent`
+ * is OPTIONAL here, unlike {@link ShapedResult} above, because the two prose
+ * modes return a bare `{ content }` object and `json` mode is the only one
+ * that rides the payload. Narrowing this to the required-field type would be
+ * a compile error at every `renderSingle` return, not a behaviour change —
+ * but widening `ShapedResult` itself to make them fit would weaken the
+ * contract `shapeDiscoveryResult` publishes, so the optional variant is its
+ * own name.
+ */
+export interface RenderedToolResult {
+  [key: string]: unknown;
+  content: Array<{ type: 'text'; text: string }>;
+  structuredContent?: Record<string, unknown>;
+}
+
+/** Read an (optionally dotted) field off a raw API payload, e.g. 'album.release_date'. */
+function field(payload: unknown, path: string): unknown {
+  let cur: unknown = payload;
+  for (const part of path.split('.')) {
+    if (typeof cur !== 'object' || cur === null) return undefined;
+    cur = (cur as Record<string, unknown>)[part];
+  }
+  return cur;
+}
+
+/**
+ * Prose rendering of a raw API value; null when the API omitted it.
+ *
+ * A nested object stringifies to `[object Object]` — deliberately unchanged.
+ * The `detailed` block is a debug-level echo of whatever the endpoint
+ * returned, and "that is an ugly value" is information the caller can act
+ * on; pretty-printing it would be a visible output change on every tool that
+ * passes an object-valued detail key.
+ */
+function fmtFieldValue(value: unknown): string | null {
+  if (value === undefined || value === null) return null;
+  if (Array.isArray(value)) {
+    const parts = value.map((v) =>
+      typeof v === 'object' && v !== null ? JSON.stringify(v) : String(v),
+    );
+    return parts.join(', ');
+  }
+  return String(value);
+}
+
+/** #51 json mode: raw API payload as parseable JSON text plus structuredContent. */
+export function jsonResult(raw: Record<string, unknown>): RenderedToolResult {
+  return { content: [{ type: 'text', text: JSON.stringify(raw) }], structuredContent: raw };
+}
+
+/**
+ * Single-object rendering (#51): concise keeps the existing prose verbatim;
+ * detailed appends fields the prose drops (popularity, release dates, …).
+ *
+ * `detailedKeys` defaults to empty, and an empty list is exactly equal to
+ * omitting it: with no keys the loop body never runs, so the result is
+ * `concise.join('\n')` in every mode. That is why the two former copies —
+ * the one that had the parameter and the one that did not — can share this
+ * signature without either call site changing.
+ */
+export function renderSingle(
+  fmt: ResponseFormatValue | undefined,
+  raw: Record<string, unknown>,
+  concise: string[],
+  detailedKeys: Array<[path: string, label: string]> = [],
+): RenderedToolResult {
+  if (fmt === 'json') return jsonResult(raw);
+  const lines = [...concise];
+  if (fmt === 'detailed') {
+    let headerPushed = false;
+    for (const [path, label] of detailedKeys) {
+      const rendered = fmtFieldValue(field(raw, path));
+      if (rendered === null) continue;
+      if (!headerPushed) {
+        lines.push('', 'More details:');
+        headerPushed = true;
+      }
+      lines.push(`${label}: ${rendered}`);
+    }
+  }
+  return { content: [{ type: 'text', text: lines.join('\n') }] };
+}
+
+/**
+ * "N ids unresolved: a, b, …" — the batch lookup's account of requested ids
+ * the endpoint could not resolve (#778). Empty when nothing was dropped.
+ */
+export function unresolvedIdsNote(missing: readonly string[]): string {
+  if (missing.length === 0) return '';
+  const shown = missing.slice(0, 10).join(', ');
+  const more = missing.length > 10 ? ', …' : '';
+  return `${missing.length} ${missing.length === 1 ? 'id' : 'ids'} unresolved: ${shown}${more}`;
+}
+
+/**
+ * The `counts` object a batch lookup publishes. `requested` is the id count
+ * the caller asked for, so "nothing was dropped" (`missing_ids: []`) stays
+ * distinguishable from a lookup that never accounted for the request.
+ */
+export function severalCounts(resolved: number, missing: readonly string[]): Record<string, unknown> {
+  return { requested: resolved + missing.length, resolved, missing_ids: [...missing] };
+}
+
+/** Optional per-render structuredContent fields a list call site contributes. */
+export interface RenderListOptions<T> {
+  header: string;
+  line: (item: T, index: number) => string;
+  maxResults?: number;
+  /** Server-side total when the endpoint reports one. */
+  total?: number | null;
+  offset?: number;
+  limit?: number | null;
+  /** False when the list cannot continue server-side (several_* lookups). */
+  continuable?: boolean;
+  /**
+   * Extra top-level structuredContent fields (e.g. a walk's cap verdict).
+   * Spread first, so a call site's own keys keep the position they had when
+   * this was the audiobook module's private copy.
+   */
+  extra?: Record<string, unknown>;
+  /**
+   * Ids the endpoint could not resolve (#778). When present, they are named
+   * in prose and counted in `counts.missing_ids`; an empty array still
+   * publishes `counts`, so "nothing was dropped" is distinguishable from a
+   * lookup that never accounted for the request at all.
+   */
+  unresolved?: readonly string[];
+  /**
+   * #725: present when the lookup fell back from a gated batch endpoint
+   * to per-item GETs. Renders as a `[degraded: ...]` prose footer and
+   * `degraded: true` + `degraded_reason` in structuredContent so callers
+   * can distinguish the per-item round-trip from a clean batch read.
+   */
+  degraded?: { reason: string };
+}
+
+/**
+ * List rendering (#52/#53): truncates to max_results, appends the shared
+ * footer, and emits structuredContent with pagination info.
+ *
+ * #788: this was a private copy in catalog.ts and another in audiobooks.ts.
+ * The two had already drifted — catalog's grew `unresolved` and `degraded`
+ * for the batch-lookup tools (#778/#725) while audiobooks' grew the `extra`
+ * passthrough for its fetch-all walk verdict, and neither had the other's
+ * options. Both option sets are honoured here, and the ORDER of the emitted
+ * fields is pinned: caller `extra` first, then `counts`, then
+ * `degraded`/`degraded_reason`, matching what each former copy emitted for
+ * the call sites that actually passed them.
+ */
+export function renderList<T>(
+  fmt: ResponseFormatValue | undefined,
+  pageItems: readonly T[],
+  opts: RenderListOptions<T>,
+): RenderedToolResult {
+  const cap = resolveMaxResults(opts.maxResults);
+  const trunc = truncateItems(pageItems, cap);
+  const lines = [opts.header];
+  trunc.items.forEach((item, i) => lines.push(opts.line(item, i)));
+  if (trunc.footer) lines.push('', `(${trunc.footer})`);
+  const extra: Record<string, unknown> = { ...opts.extra };
+  if (opts.unresolved) {
+    const missingIds = [...opts.unresolved];
+    extra.counts = severalCounts(pageItems.length, missingIds);
+    const note = unresolvedIdsNote(missingIds);
+    if (note) lines.push('', note);
+  }
+  if (opts.degraded) {
+    extra.degraded = true;
+    extra.degraded_reason = opts.degraded.reason;
+    lines.push('', `[degraded: ${opts.degraded.reason}]`);
+  }
+  const continuable = opts.continuable !== false;
+  const pagination = paginationInfo({
+    total: opts.total ?? trunc.total,
+    offset: opts.offset,
+    limit: opts.limit ?? null,
+    returned: trunc.items.length,
+  });
+  if (!continuable) {
+    pagination.next_offset = null;
+  } else if (!trunc.truncated && pagination.next_offset !== null) {
+    const left =
+      pagination.total !== null ? pagination.total - pagination.next_offset : null;
+    lines.push(
+      '',
+      `More pages available — pass offset=${pagination.next_offset}${
+        left !== null ? ` (${left} items left)` : ''
+      }`,
+    );
+  }
+  return {
+    content: [{ type: 'text', text: lines.join('\n') }],
+    structuredContent: listStructuredContent(trunc.items, pagination, extra),
   };
 }
 

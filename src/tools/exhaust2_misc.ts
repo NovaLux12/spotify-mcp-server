@@ -35,6 +35,7 @@ import {
   resolveMaxResults,
   truncateItems,
   describeDryRun,
+  DryRunScan,
 } from '../shaping.js';
 import type { ResponseFormatValue } from '../shaping.js';
 import type { PlaybackState } from '../types/spotify.js';
@@ -182,7 +183,7 @@ interface MiscStore {
   reports: Record<string, unknown>;
 }
 
-function miscFilePath(env: NodeJS.ProcessEnv = process.env): string {
+export function miscFilePath(env: NodeJS.ProcessEnv = process.env): string {
   return env.SPOTIFY_MCP_EXHAUST2_MISC_FILE ?? join(homedir(), '.spotify-mcp', 'exhaust2-misc.json');
 }
 
@@ -772,11 +773,46 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
   // -----------------------------------------------------------------------
   // #408 dead_library_finder — unsave candidates
   // -----------------------------------------------------------------------
+
+  /**
+   * Worst-case request cost of one `dead_library_finder` scan (#896).
+   *
+   * Exported from the module scope so the cooldown gate, the dry run and the
+   * executed path all quote the SAME number. The previous figures
+   * (`max_playlists + 2`) counted the playlist LIST walk and nothing else, so
+   * every one of them under-reported the real cost by the per-playlist paging
+   * factor — ~280 requests reported as ~52.
+   *
+   * `maxPlaylists` is coerced rather than trusted: handlers are also invoked
+   * directly, with a hand-built args object on which zod's `.default()` has
+   * not run, so `args.max_playlists` can be `undefined` here. `Math.min(
+   * undefined, x)` is `NaN`, and a bound of `NaN` renders as
+   * `Worst-case cost: <=NaN requests` — a preview that is worse than no
+   * preview, so the declared default is applied explicitly.
+   */
+  const DEAD_LIBRARY_DEFAULT_MAX_PLAYLISTS = 50;
+  const positiveOr = (value: unknown, fallback: number): number =>
+    typeof value === 'number' && Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback;
+
+  const deadLibraryRequestBound = (maxPlaylists: unknown): number => {
+    const playlists = positiveOr(maxPlaylists, DEAD_LIBRARY_DEFAULT_MAX_PLAYLISTS);
+    const fetchAllCap = getConfig().fetchAllCap;
+    const SAVED_PAGE = 50;
+    const ITEM_PAGE = 100;
+    const PER_PLAYLIST_ITEM_CAP = 500;
+    return Math.max(1, Math.ceil(fetchAllCap / SAVED_PAGE)) // /me/tracks
+      + Math.max(1, Math.ceil(Math.min(1000, fetchAllCap) / SAVED_PAGE)) // recently-played
+      + Math.max(1, Math.ceil(playlists / SAVED_PAGE)) // /me/playlists
+      + playlists * Math.max(1, Math.ceil(PER_PLAYLIST_ITEM_CAP / ITEM_PAGE)); // each playlist, paged
+  };
+
   server.tool(
     'dead_library_finder',
     'Find saved tracks that never appear in your recent history AND sit in none of your '
       + 'playlists — unsave candidates. Local compute over /me/tracks + playlists + history. '
-      + 'dry_run defaults to true; disabling it actually removes the candidates.',
+      + 'dry_run defaults to true and issues ZERO requests: it reports the request bound and says the '
+      + 'candidate list is unknown, because only the scan can compute it. '
+      + 'disabling it actually removes the candidates.',
     {
       min_age_days: z.number().int().min(1).max(3650).optional().default(30)
         .describe('Only consider tracks saved at least this long ago. Default 30.'),
@@ -792,13 +828,79 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
       if (gate.blocked) {
         return emit(rf, gate.message, {
           ok: false, cooldown: true, wait_sec: gate.waitSec, requests_made: 0,
-          requests_planned: args.max_playlists + 2,
+          // #896: this used to report `max_playlists + 2` (~52), which is not
+          // what the scan costs — each of those playlists is then paged. A
+          // blocked-scan message that names the wrong cost is the same lie as
+          // a preview that under-reports it, in the one place the caller is
+          // already being told to wait.
+          requests_planned: deadLibraryRequestBound(args.max_playlists),
         });
       }
       const snapshot = quotaSnapshot(client);
       const windowRemaining = quotaWindowRemaining(client);
-      const maxPlaylists = Math.min(args.max_playlists, windowRemaining);
-      const shrink = maxPlaylists < args.max_playlists;
+      const maxPlaylists = Math.min(positiveOr(args.max_playlists, DEAD_LIBRARY_DEFAULT_MAX_PLAYLISTS), windowRemaining);
+      const shrink = maxPlaylists < positiveOr(args.max_playlists, DEAD_LIBRARY_DEFAULT_MAX_PLAYLISTS);
+
+      // ---------------------------------------------------------------------
+      // #896 — the dry run must short-circuit BEFORE any read.
+      //
+      // This branch used to sit at the very END of the handler, after
+      // /me/tracks, after up to 1000 recently-played, and after paging up to
+      // `max_playlists` playlists 500 items each — roughly 280 requests. Since
+      // `dry_run` DEFAULTS TO TRUE here, the documented-safe path was the most
+      // expensive call in the module, and preview-then-apply paid it twice.
+      //
+      // The candidate set is genuinely not knowable from the arguments: it is
+      // the set of saved tracks that are neither recently played nor present in
+      // any playlist, and both halves are answers only the scan can produce. So
+      // this preview does NOT invent a count. It reports the request bound, and
+      // says plainly that the candidate list is unknown until the scan runs.
+      // Returning `count: 0` here would be the #803 class of lie — a value that
+      // could not be read, coerced into a plausible one.
+      // ---------------------------------------------------------------------
+      const fetchAllCap = getConfig().fetchAllCap;
+      const SAVED_PAGE = 50;
+      const ITEM_PAGE = 100;
+      const PER_PLAYLIST_ITEM_CAP = 500;
+      const RECENT_CAP = Math.min(1000, fetchAllCap);
+      const savedPages = Math.max(1, Math.ceil(fetchAllCap / SAVED_PAGE));
+      const recentPages = Math.max(1, Math.ceil(RECENT_CAP / SAVED_PAGE));
+      const listPages = Math.max(1, Math.ceil(maxPlaylists / SAVED_PAGE));
+      const itemPagesPerPlaylist = Math.max(1, Math.ceil(PER_PLAYLIST_ITEM_CAP / ITEM_PAGE));
+      // Every one of the `maxPlaylists` playlists the list walk can return is
+      // then paged to the per-playlist cap — the same multiplication #896 caught
+      // in `saved_vs_playlist_coverage`. Shares its math with the cooldown gate.
+      const estimatedRequestsMax = deadLibraryRequestBound(maxPlaylists);
+      const shrinkWarrant = shrink ? { requests_planned: estimatedRequestsMax, budget_shrunk: true } : {};
+
+      if (isDryRun(args)) {
+        const knownPart = savedPages + recentPages + listPages;
+        return emit(rf,
+          `[dry run] dead-library cleanup — nothing was changed, and NO requests were made.\n`
+          + `Commiting (dry_run=false) would walk /me/tracks (up to ${savedPages} page(s) for ${fetchAllCap} saved items), `
+          + `/me/player/recently-played (up to ${recentPages} page(s)), /me/playlists (up to ${listPages} page(s), at most ${maxPlaylists} playlists), `
+          + `then up to ${itemPagesPerPlaylist} item page(s) for EACH of those playlists.\n`
+          + `Worst-case cost: <=${estimatedRequestsMax} requests${shrink ? ` (budget shrunk to ${maxPlaylists} playlists by recent throttling)` : ''}.\n`
+          + `The unsave-candidate list is UNKNOWN from the arguments alone: a track qualifies only if it is in neither your recent 90 days of plays nor any scanned playlist, `
+          + `and neither is knowable without those reads. This preview therefore reports the COST, not a candidate list. `
+          + `Re-run with dry_run=false to compute and commit the candidates.`,
+          {
+            ok: true,
+            dry_run: true,
+            // Explicitly NOT 0 and NOT []: the answer is unknown, not empty.
+            count: null,
+            candidates: null,
+            candidates_known: false,
+            candidates_note: 'unknown until the scan runs — requires /me/tracks + recently-played + per-playlist item reads',
+            estimated_requests_max: estimatedRequestsMax,
+            estimated_requests_known: knownPart,
+            playlists_to_scan_max: maxPlaylists,
+            requests_made: 0,
+            ...quotaDelta(client, snapshot),
+            ...shrinkWarrant,
+          });
+      }
+
       const saved = await client.getAllPages<{ added_at?: string; track?: { uri?: string; name?: string; artists?: Array<{ name: string }> } }>('/me/tracks', { limit: '50' });
       const recent = await loadPlaysBetween(client, Date.now() - 90 * DAY_MS, Date.now(), 1000);
       const playedRecently = new Set(recent.map((p) => p.track.uri));
@@ -827,15 +929,10 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
         candidates: candidates.map((c) => c.uri),
         details: candidates,
         count: candidates.length,
+        estimated_requests_max: estimatedRequestsMax,
         ...quotaDelta(client, snapshot),
-        ...(shrink ? { requests_planned: args.max_playlists + 2, budget_shrunk: true } : {}),
+        ...shrinkWarrant,
       };
-      if (isDryRun(args)) {
-        return emit(rf, describeDryRun('dead-library cleanup', 'your library', [
-          `Would remove ${candidates.length} unplayed, playlist-absent track(s)`,
-          ...candidates.slice(0, 5).map((c) => `${c.name} (saved ${c.added_at || 'unknown'})`),
-        ]), payload);
-      }
       if (candidates.length === 0) return emit(rf, 'No dead tracks found — nothing to remove.', payload);
       await modifyLibrary(client, candidates.map((c) => c.uri).filter((u): u is string => typeof u === 'string'), 'remove');
       const maxResults = resolveMaxResults(args.max_results, getConfig().maxItems);
@@ -1024,42 +1121,96 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
   server.tool(
     'playlist_staleness_report',
     'Per-playlist staleness report: newest/oldest added_at, median item age and count added '
-      + 'in the last 90 days — find playlists rotting in place. Quota: 1 + N reads (N = playlists '
-      + 'scanned), page-capped.',
+      + 'in the last 90 days — find playlists rotting in place. With the default limit=50 and '
+      + 'per_playlist_cap=500 that is up to 1 + 50*5 = 251 requests; pass dry_run=true for that '
+      + 'bound with 0 requests made. A mid-walk 429 returns the rows gathered so far plus '
+      + 'quota_hit_at_playlist rather than throwing.',
     {
       limit: z.number().int().min(1).max(500).optional().default(50)
         .describe('How many playlists to scan. Default 50.'),
       per_playlist_cap: z.number().int().min(10).max(2000).optional().default(500)
         .describe('Max items paged per playlist. Default 500.'),
       sort: z.enum(['median_age', 'oldest', 'name']).optional().default('median_age').describe('Report sort order'),
+      dry_run: DryRunScan,
       max_results: MaxResults,
       response_format: ResponseFormat,
     },
     async (args) => {
       const rf = args.response_format as ResponseFormatValue;
+
+      // #896: the cost of this report is knowable from the arguments alone —
+      // 1 list walk plus, for EACH playlist it returns, the pages needed to
+      // reach per_playlist_cap. Previewing it by performing it was the bug: the
+      // tool had no dry run at all, so the only way to learn the price was to
+      // pay it. Zero requests, bound from inputs.
+      //
+      // Both limits are coerced to their DECLARED defaults first: handlers are
+      // also invoked directly with a hand-built args object that never went
+      // through zod, and an uncoerced `undefined` would render the bound as
+      // `NaN` — a preview that reports a number the scan can never match.
+      const STALENESS_DEFAULT_LIMIT = 50;
+      const STALENESS_DEFAULT_PER_PLAYLIST_CAP = 500;
+      const maxLists = positiveOr(args.limit, STALENESS_DEFAULT_LIMIT);
+      const perPlaylistCap = positiveOr(args.per_playlist_cap, STALENESS_DEFAULT_PER_PLAYLIST_CAP);
+      const stalenessRequestBound = (n: number, perCap: number): number =>
+        Math.max(1, Math.ceil(n / 50)) + n * Math.max(1, Math.ceil(perCap / 100));
+
+      if (args.dry_run) {
+        const bound = stalenessRequestBound(maxLists, perPlaylistCap);
+        return emit(rf,
+          `[dry run] playlist_staleness_report would walk /me/playlists (up to ${Math.max(1, Math.ceil(maxLists / 50))} page(s) for at most ${maxLists} playlists) `
+          + `then page up to ${perPlaylistCap} items for EACH of them (up to ${Math.max(1, Math.ceil(perPlaylistCap / 100))} page(s) each). `
+          + `Worst-case cost: <=${bound} requests (limit=${maxLists}, per_playlist_cap=${perPlaylistCap}); 0 requests made.\n`
+          + `The staleness numbers themselves are UNKNOWN from the arguments — median age, newest/oldest added_at and the 90-day count are all read from each playlist's items. `
+          + `This preview reports the cost, not a report. Re-run with dry_run=false to scan.`,
+          {
+            ok: true,
+            dry_run: true,
+            playlists: null,
+            scanned: null,
+            // Not 0 and not []: the walk never ran, so the count is unknown.
+            scanned_known: false,
+            scanned_note: 'unknown until the scan runs — per-playlist added_at is read, not derived from the arguments',
+            estimated_requests_max: bound,
+            estimated_requests_known: Math.max(1, Math.ceil(maxLists / 50)),
+            playlists_to_scan_max: maxLists,
+            item_pages_per_playlist_max: Math.max(1, Math.ceil(perPlaylistCap / 100)),
+            requests_made: 0,
+          });
+      }
+
       const gate = quotaPreflight(client);
       if (gate.blocked) {
         return emit(rf, gate.message, {
           ok: false, cooldown: true, wait_sec: gate.waitSec, requests_made: 0,
-          requests_planned: args.limit + 1,
+          // #896: was `limit + 1`, which priced the list walk and none of the
+          // per-playlist paging — the real default cost is 251, not 51.
+          requests_planned: stalenessRequestBound(maxLists, perPlaylistCap),
         });
       }
       const snapshot = quotaSnapshot(client);
       const windowRemaining = quotaWindowRemaining(client);
-      const limit = Math.min(args.limit, windowRemaining);
-      const shrink = limit < args.limit;
+      const limit = Math.min(maxLists, windowRemaining);
+      const shrink = limit < maxLists;
       const lists = await client.getAllPages<{ id: string; name: string }>('/me/playlists', { limit: '50' }, { maxItems: limit });
       const rows: Array<{ name: string; items: number; newest: string | null; oldest: string | null; median_age_days: number | null; added_last_90d: number }> = [];
       let skipped = 0;
-      let skippedShows = 0;
+      let quotaAt: string | null = null;
       for (const pl of lists) {
         let items: PlaylistRow[];
         try {
-          items = await client.getAllPages<PlaylistRow>(`/playlists/${encodeURIComponent(pl.id)}/items`, { limit: '100', fields: 'items(added_at),total' }, { maxItems: args.per_playlist_cap });
+          items = await client.getAllPages<PlaylistRow>(`/playlists/${encodeURIComponent(pl.id)}/items`, { limit: '100', fields: 'items(added_at),total' }, { maxItems: perPlaylistCap });
         } catch (e) {
           // 403 = collaborative/unfollowed playlists whose items this token cannot
           // read (playlist-read-private/collaborative gaps) — skip, never crash.
           if (e instanceof SpotifyApiError && e.status === 403) { skipped++; continue; }
+          // 429 mid-walk: this report spends up to 251 requests on one call, so
+          // a throttle part-way through is a normal outcome, not an error worth
+          // throwing away a mostly-complete report over. Degrade to the rows
+          // gathered so far and NAME the playlist we stopped at — the same
+          // branch `saved_vs_playlist_coverage` uses. A partial report that
+          // claims to be complete would be the #803 class of lie.
+          if (e instanceof SpotifyApiError && e.status === 429) { quotaAt = pl.id; break; }
           throw e;
         }
         const ages = items.map((r) => (r?.added_at ? Math.floor((Date.now() - Date.parse(r.added_at)) / DAY_MS) : NaN)).filter((n) => Number.isFinite(n));
@@ -1084,11 +1235,24 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
       const maxResults = resolveMaxResults(args.max_results, getConfig().maxItems);
       const t = truncateItems(rows, maxResults);
       const payload = {
-        ok: true, scanned: rows.length, skipped_unreadable: skipped, playlists: t.items, truncated: t.truncated,
+        ok: true,
+        scanned: rows.length,
+        skipped_unreadable: skipped,
+        playlists: t.items,
+        truncated: t.truncated,
+        quota_hit_at_playlist: quotaAt,
+        // A report that stopped early is NOT a complete report. Say so in the
+        // payload, not only in the prose, so a structured consumer can tell.
+        ...(quotaAt ? { complete: false, stopped_reason: 'quota_hit_at_playlist' } : { complete: true }),
+        estimated_requests_max: stalenessRequestBound(limit, args.per_playlist_cap),
         ...quotaDelta(client, snapshot),
-        ...(shrink ? { requests_planned: args.limit + 1, budget_shrunk: true } : {}),
+        ...(shrink ? { requests_planned: stalenessRequestBound(limit, args.per_playlist_cap), budget_shrunk: true } : {}),
       };
-      const lines = [`Playlist staleness report (${rows.length} playlists${skipped ? `, ${skipped} unreadable skipped` : ''}, sorted by ${args.sort}):`, ''];
+      const lines = [
+        `Playlist staleness report (${rows.length} playlists${skipped ? `, ${skipped} unreadable skipped` : ''}, sorted by ${args.sort}):`,
+        '',
+        ...(quotaAt ? [`Quota hit at playlist ${quotaAt} — PARTIAL report; ${rows.length} of ${lists.length} playlist(s) measured.`] : []),
+      ];
       for (const r of t.items) {
         lines.push(`• ${r.name} — ${r.items} items, median age ${r.median_age_days ?? '?'}d, ${r.added_last_90d} added last 90d (oldest ${r.oldest ?? '?'})`);
       }
