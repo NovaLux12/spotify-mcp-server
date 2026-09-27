@@ -126,6 +126,11 @@ const {
   REGISTRAR_MANIFEST,
   TOOL_SURFACE_BUDGET,
 } = await import('../src/tools/annotations.ts');
+// The per-call response cap (#895). Read from the constant so the doc's figure
+// is generated rather than hand-typed: a prose figure here is exactly what
+// `tests/doc-figures.test.ts` fails on, and a cap that changes must move the
+// doc in the same commit.
+const { MAX_RESPONSE_BYTES } = await import('../src/shaping.ts');
 // `module.name` is the registrar's export name, carried as data since the
 // loader is a thunk with no `.name` to read (#906). Two rows changed here:
 // `statsfm` and `receipts` used to print their module key because their
@@ -242,6 +247,13 @@ const aggregateSurfaceFacts = Object.freeze({
   headroomBytes: AGGREGATE_SURFACE_LIMITS.maxBytes - aggregateSurface.schemaBytes,
   headroomPercent: ((AGGREGATE_SURFACE_LIMITS.maxBytes - aggregateSurface.schemaBytes) / AGGREGATE_SURFACE_LIMITS.maxBytes) * 100,
   verdict: aggregateSurfaceVerdict(AGGREGATE_SURFACE_LIMITS.maxBytes - aggregateSurface.schemaBytes, AGGREGATE_SURFACE_LIMITS.maxBytes),
+  // The per-call response cap (#895) and the ratio that justifies it. Both are
+  // generated so the page cannot drift from the constant: a cap raised in
+  // `src/shaping.ts` must move this table in the same commit, which is what
+  // `tests/doc-figures.test.ts` enforces by forbidding the figure in prose.
+  responseCapBytes: MAX_RESPONSE_BYTES,
+  responseCapRatio: MAX_RESPONSE_BYTES / TOOL_SURFACE_BUDGET.defaultMaxBytes,
+  responseCapCallsForParity: Math.round(TOOL_SURFACE_BUDGET.defaultMaxBytes / MAX_RESPONSE_BYTES),
   // The share of the budgeted payload the per-module table cannot see: tool
   // names, titles, annotations and boundary metadata. The page used to assert
   // "roughly 11.5%" in prose; that is a live ratio, so it is measured here.
@@ -308,6 +320,7 @@ const blocks = [
   ['SPEC.md', 'prompt-surface', promptSurface(result)],
   ['docs/schema-budgets.md', 'schema-budget-table', schemaBudgetTable(result)],
   ['docs/schema-budgets.md', 'aggregate-budget', aggregateBudgetBlock(result)],
+  ['docs/schema-budgets.md', 'response-cap', responseCapBlock(result)],
   ['docs/wave2-composites.md', 'surface-census', wave2Surface(result)],
   ['docs/distribution.md', 'surface-census', distributionSurface(result)],
   ['skills/spotify-exhaustive-feature-sweep/SKILL.md', 'surface-census', skillSurface(result)],
@@ -570,6 +583,18 @@ function aggregateBudgetBlock(census) {
     'figure above stops matching the constants or the live measurement, so a',
     'ceiling raise lands in this file as a diff you can read, not as prose that',
     'quietly keeps describing the old one.',
+  ].join('\n');
+}
+
+function responseCapBlock(census) {
+  const facts = census.aggregateSurface;
+  return [
+    '| | what it bounds | how often the host pays | ceiling |',
+    '|---|---|---|---|',
+    `| Schema budget (above) | \`tools/list\` — every tool's description and input schema | once per session | ${formatInteger(facts.maxCeilingBytes)}B |`,
+    `| Response cap (\`MAX_RESPONSE_BYTES\`) | one \`tools/call\` result's json text + \`structuredContent\` | once per **call**, repeatable | ${formatInteger(facts.responseCapBytes)}B |`,
+    '',
+    `\`MAX_RESPONSE_BYTES\` is ~1/${facts.responseCapCallsForParity} of the schema budget: ${facts.responseCapCallsForParity} capped calls cost about what the schema surface cost once. That is the whole argument for the ratio.`,
   ].join('\n');
 }
 

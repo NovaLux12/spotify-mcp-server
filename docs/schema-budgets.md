@@ -221,15 +221,18 @@ quantity — **per-call** bytes, the size of one tool *result* — and the two a
 easy to conflate because both are "how big does a host's context get".
 
 They are sized against each other, and the relationship is worth stating
-plainly because it is the only reason 64,000 is the number it is:
+plainly because it is the only reason the cap is the number it is:
 
+<!-- BEGIN:generated response-cap -->
 | | what it bounds | how often the host pays | ceiling |
 |---|---|---|---|
 | Schema budget (above) | `tools/list` — every tool's description and input schema | once per session | 620,000B |
 | Response cap (`MAX_RESPONSE_BYTES`) | one `tools/call` result's json text + `structuredContent` | once per **call**, repeatable | 64,000B |
 
-`MAX_RESPONSE_BYTES` is ~1/10 of the schema budget: ten capped calls cost about
-what the schema surface cost once. That is the whole argument for the ratio — an
+`MAX_RESPONSE_BYTES` is ~1/10 of the schema budget: 10 capped calls cost about what the schema surface cost once. That is the whole argument for the ratio.
+<!-- END:generated response-cap -->
+
+That ratio holds because an
 unbounded result was measured at 124KB (one 500-stream stats.fm page) and up to
 500KB (`diff_playlists` over two 5,000-track playlists), which is a quarter to
 four fifths of the entire schema surface, from a single repeatable call.
@@ -242,9 +245,9 @@ Three consequences worth keeping straight:
   description or input schema depends on it. Adding it required no baseline
   re-measurement and no warrant.
 - **It is a backstop, not the primary control.** A tool declaring `max_results`
-  caps itself at a far finer grain and never reaches 64,000B. What the response
-  cap guarantees is narrower and still worth having: no tool can return an
-  unbounded payload *even if it forgot to*.
+  caps itself at a far finer grain and never reaches the ceiling above. What the
+  response cap guarantees is narrower and still worth having: no tool can
+  return an unbounded payload *even if it forgot to*.
 - **A cap that truncates silently is worse than no cap.** A caller cannot tell a
   capped result from a complete one, and will report it as complete — the same
   failure class as #803 and #804. So a capped result always carries a
