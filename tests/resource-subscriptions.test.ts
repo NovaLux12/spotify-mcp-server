@@ -990,6 +990,143 @@ describe('#597 the advertised capability', () => {
   });
 });
 
+/**
+ * #1542 — the production call site has to hand the subscription manager the
+ * SAME registry the read surface populated.
+ *
+ * ## Why this case is here and what the other three in this file cannot see
+ *
+ * `src/index.ts` builds one registry and passes it twice:
+ *
+ * ```ts
+ * const reads = createResourceReadRegistry();
+ * registerReadSurfaces(server, client, reads);
+ * installResourceSubscriptions(server, reads);
+ * ```
+ *
+ * Those two calls must share one object, and the parameter on
+ * `registerReadSurfaces` is DEFAULTED. Deleting that argument therefore
+ * compiles, boots, and advertises the capability exactly as before: the
+ * default builds a second registry, the renderers are recorded into an object
+ * nobody polls, and `resources/subscribe` is accepted forever and never fires.
+ *
+ * Nothing else in this file can see it, for three separate reasons:
+ *
+ *  1. `registerCapabilities({ resources: { subscribe: true } })` is inside
+ *     `installResourceSubscriptions`, which the split does not touch — so the
+ *     `initialize` assertions above still pass.
+ *  2. The two cases above set `NO_POLL` on purpose, and no other spawned case
+ *     lets a poll fire, so the split has no observable effect on the wire.
+ *  3. The in-process cases hand-build the correct wiring (see `makeStub`),
+ *     which is worth having and cannot reach the production call site.
+ *
+ * So this case is the one that spans the two: it drives the real
+ * `src/index.ts` in a child process and lets a poll actually run.
+ *
+ * ## What it asserts, and what it deliberately does not
+ *
+ * A spawned server with a temp token file has no Spotify session, so a read
+ * CANNOT succeed and a `notifications/resources/updated` can never be
+ * provoked — which is why the payload shape is asserted in-process above. A
+ * failed poll discloses its reason on stderr, and that reason is the
+ * observable, because it is where the two wirings part company:
+ *
+ *  - one shared registry → the poll finds the renderer and the READ fails:
+ *    `could not be read (Not authenticated — no token file at …)`;
+ *  - a split registry   → the poll finds nothing at all:
+ *    `could not be read (spotify://… has no registered reader; the poll
+ *    cannot read it)`.
+ *
+ * `spotify://me/rate-limit` is the fourth watchable and it reads from local
+ * throttle bookkeeping, so under the shared wiring it SUCCEEDS and discloses
+ * nothing. That asymmetry is why the assertion is "no poll reported a missing
+ * reader" over every URI, and why the wait below settles on a disclosure count
+ * rather than on a fixed number of lines.
+ */
+describe('#1542 the production wiring shares one registry', () => {
+  const REPO_ROOT = join(import.meta.dirname, '..');
+  // The floor `src/config.ts` clamps to, and the reason this case can exist:
+  // a real poll is a quota knob in production, and a test that needed a faster
+  // one would otherwise have to weaken that floor. One second is already fast.
+  const POLL = '1000';
+  const POLL_MS = Number(POLL);
+  // Measured on this box at load ~12: boot-to-registration 1.5s, first poll
+  // disclosure 1.0s after subscribing, all of them settled by 1.2s. The budget
+  // is ~15x that, so a loaded box costs this case time rather than failing it.
+  const BUDGET_MS = 30_000;
+
+  const spawnServer = (label: string, overrides: Record<string, string>): StdioJsonRpcChild =>
+    StdioJsonRpcChild.spawn({
+      label,
+      command: 'node',
+      args: ['--import', 'tsx', 'src/index.ts'],
+      cwd: REPO_ROOT,
+      env: hermeticServerEnv(overrides, label).env,
+    });
+
+  /** The per-subscription disclosure `poll` writes on its first unreadable read. */
+  const disclosures = (text: string): string[] =>
+    text.split('\n').filter((line) => line.includes('subscription could not be read'));
+
+  /** The exact clause `poll` uses when the registry it was handed has no renderer. */
+  const MISSING_READER = 'has no registered reader';
+
+  it('polls every watchable resource through a reader the read surface registered', async () => {
+    const child = spawnServer('subs-one-registry', { SPOTIFY_MCP_SUBSCRIPTIONS: '1', SPOTIFY_MCP_SUBSCRIPTION_POLL_MS: POLL });
+    try {
+      await child.initialize('subs-test');
+      // Every watchable, not one of them: the split empties the whole registry,
+      // and a single-URI probe would only prove it for whichever URI it picked.
+      for (const watchable of WATCHABLE_RESOURCES) {
+        const accepted = await child.request('resources/subscribe', { uri: watchable.uri });
+        assert.equal(
+          accepted.error,
+          undefined,
+          `${watchable.uri} was refused with subscriptions on: ${JSON.stringify(accepted.error)}`,
+        );
+      }
+
+      // Wait for the polls to SETTLE rather than for a fixed sleep. `poll`
+      // discloses only on its first consecutive failure and backs off after
+      // that, so the count converges: three under the shared wiring (the three
+      // that need a token) and four under a split (all four). Waiting for it to
+      // stop growing is correct under both, and waiting for a line count would
+      // encode the healthy wiring into the harness.
+      let seen = -1;
+      let unchangedSince = Date.now();
+      await until(
+        () => {
+          const count = disclosures(child.stderr).length;
+          if (count !== seen) {
+            seen = count;
+            unchangedSince = Date.now();
+          }
+          return seen > 0 && Date.now() - unchangedSince >= 2 * POLL_MS;
+        },
+        'the subscription polls to disclose their reads and stop disclosing',
+        BUDGET_MS,
+      );
+
+      // `seen > 0` above is the non-vacuity anchor, and it is load-bearing: an
+      // assertion of pure absence would be satisfied just as well by a server
+      // that never polled at all, which is the same silent no-op in a different
+      // costume. Requiring a poll to have run and disclosed first is what makes
+      // the absence below a statement about the registry rather than about the
+      // test's timing.
+      const missing = disclosures(child.stderr).filter((line) => line.includes(MISSING_READER));
+      assert.deepEqual(
+        missing,
+        [],
+        'a poll found no registered reader, so src/index.ts did not hand installResourceSubscriptions '
+          + 'the registry registerReadSurfaces populated — subscriptions would be accepted and never fire (#1542):\n'
+          + missing.join('\n'),
+      );
+    } finally {
+      await child.dispose();
+    }
+  });
+});
+
 // ------------------------------------------------------------- the env vars
 
 /**
