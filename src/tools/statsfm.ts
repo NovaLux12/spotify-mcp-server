@@ -146,6 +146,74 @@ function indicatorArrow(ind: unknown): string {
   return '•';
 }
 
+/**
+ * The most rows a *scoped* top route has been observed to return — #1297.
+ *
+ * Empirical, not documented. stats.fm publishes no maximum for these routes
+ * (their own swagger entry lists no parameters at all), and a response landing
+ * exactly on this many rows cannot be distinguished from a truncated one by any
+ * other signal, because the envelope carries no `total` — the top-level keys
+ * are exactly `["items"]` — and every returned row is self-consistent.
+ * Treating "at the ceiling" as "cardinality unknown" is the safe direction: if
+ * stats.fm raises the cap, the tool under-claims rather than asserting a total
+ * it never read.
+ */
+const SCOPED_TOP_UPSTREAM_CEILING = 100;
+
+/**
+ * What a scoped-route response may honestly be reported as, plus the page the
+ * caller actually asked for.
+ *
+ * `total` is `null` when the response sits on the upstream ceiling: the true
+ * cardinality is at least `received` but was never read, so it is reported as
+ * unknown rather than as the length of whatever happened to come back.
+ */
+type ScopedTopWindow = {
+  items: J[];
+  total: number | null;
+  received: number;
+  note: string | null;
+};
+
+/**
+ * Cut the requested page out of a scoped-route response (#1297).
+ *
+ * The three scoped routes — `/users/{id}/top/artists/{artistId}/{tracks,albums}`
+ * and `/users/{id}/top/albums/{albumId}/tracks` — ignore `limit` and `offset`.
+ * Their swagger entry declares `"parameters": []`, so the bounds were never
+ * part of the contract. Live-verified 2026-09-27 against two public profiles:
+ * the responses for `limit=1`, `limit=5`, `limit=1000` and `offset=40` are
+ * byte-identical to the unbounded read. The four *flat* `/users/{id}/top/{kind}`
+ * routes are unaffected and do honour both — which is why this is a per-route
+ * fact and not a general one.
+ *
+ * The branch is decided by what came back rather than by what was asked for, so
+ * that a stats.fm which later starts honouring the bounds cannot cause a double
+ * slice: a response no larger than the requested `limit` is already the page and
+ * is passed through untouched.
+ */
+function windowScopedTop(rows: J[], limit: number, offset: number): ScopedTopWindow {
+  if (rows.length <= limit) {
+    return { items: rows, total: rows.length, received: rows.length, note: null };
+  }
+  const start = Math.max(0, offset);
+  const items = rows.slice(start, start + limit);
+  if (rows.length >= SCOPED_TOP_UPSTREAM_CEILING) {
+    return {
+      items,
+      total: null,
+      received: rows.length,
+      note:
+        `stats.fm ignores limit/offset on this route and returned its maximum of ${SCOPED_TOP_UPSTREAM_CEILING} rows, `
+        + `so the full ranking holds at least ${rows.length} entries and its exact size could not be read. `
+        + `Showing rows ${start + 1}–${start + items.length}, windowed here rather than upstream.`,
+    };
+  }
+  // Under the ceiling the response IS the complete ranking, so its length is the
+  // real cardinality and may be reported as one.
+  return { items, total: rows.length, received: rows.length, note: null };
+}
+
 /** MCP tool-result envelope (keeps `{ type: 'text' }` literal for tsc). */
 type ToolResult = {
   content: Array<{ type: 'text'; text: string }>;
@@ -159,38 +227,68 @@ function shapeCollection(
   args: { response_format?: string; max_results?: number; limit?: number; offset?: number },
   line: (item: J, i: number) => string,
   detail?: (item: J) => string | null,
+  /**
+   * Set by a caller whose upstream ignored `limit`/`offset` (#1297). The rows
+   * are already the requested page; `window` carries the true cardinality —
+   * `null` when it could not be read — so the header never presents a page as
+   * the whole set.
+   */
+  window?: ScopedTopWindow,
 ): ToolResult {
+  // With a window, the rows in hand are a page, so the honest denominator is
+  // the upstream cardinality, not the page length.
+  const shown = window ? window.items : rawItems;
+  const total = window ? window.total : rawItems.length;
   if (args.response_format === 'json') {
+    const body = window
+      ? { items: shown, pagination: paginationInfo({
+          total: window.total,
+          offset: args.offset ?? 0,
+          limit: args.limit ?? shown.length,
+          returned: shown.length,
+        }) }
+      : { items: shown };
     return {
-      content: [{ type: 'text', text: JSON.stringify({ items: rawItems }) }],
-      structuredContent: { items: rawItems },
+      content: [{ type: 'text', text: JSON.stringify(body) }],
+      structuredContent: body,
     };
   }
-  if (rawItems.length === 0) {
+  if (shown.length === 0) {
     return { content: [{ type: 'text', text: `${title}: no results.` }] };
   }
-  const shaped = truncateItems(rawItems, resolveMaxResults(args.max_results));
+  const shaped = truncateItems(shown, resolveMaxResults(args.max_results));
   const detailed = args.response_format === 'detailed';
-  const lines = [`${title} (showing ${shaped.items.length} of ${rawItems.length}):`];
+  // "of 91" when the size is known; "of at least 100 (exact total unread)"
+  // when it is not — never a bare page length presented as a whole.
+  const denominator = window
+    ? window.total !== null
+      ? ` of ${window.total}`
+      : ` — at least ${window.received}, exact total not readable`
+    : ` of ${rawItems.length}`;
+  const lines = [`${title} (showing ${shaped.items.length}${denominator}):`];
   shaped.items.forEach((item, i) => {
-    lines.push(`  ${i + 1}. ${line(item, i)}`);
+    // Rows are numbered from the caller's offset, so a paged read reads as the
+    // slice of the ranking it is rather than restarting the count at 1.
+    lines.push(`  ${(args.offset ?? 0) + i + 1}. ${line(item, i)}`);
     if (detailed && detail) {
       const extra = detail(item);
       if (extra) lines.push(`      ${extra}`);
     }
   });
   if (shaped.footer) lines.push(`(${shaped.footer})`);
+  if (window?.note) lines.push(`(${window.note})`);
   const pagination = paginationInfo({
-    total: rawItems.length,
+    total: total ?? null,
     offset: args.offset ?? 0,
-    limit: args.limit ?? rawItems.length,
-    returned: rawItems.length,
+    limit: args.limit ?? shown.length,
+    returned: shown.length,
   });
   return {
     content: [{ type: 'text', text: lines.join('\n') }],
     structuredContent: listStructuredContent(shaped.items, pagination, {
       truncated: shaped.truncated,
       remaining: shaped.remaining,
+      ...(window && window.total === null ? { total_unreadable: true, received: window.received } : {}),
     }),
   };
 }
@@ -760,6 +858,11 @@ export function registerStatsfmTools(server: McpServer, client: StatsfmClient = 
   );
 
   // 14–16. scoped tops (tracks from artist / albums from artist / tracks from album).
+  //
+  // These three routes ignore `limit`/`offset` upstream, so the window is
+  // applied here and the response is disclosed for what it is (#1297). Both
+  // parameters are still sent on the wire: they are inert today, and a
+  // stats.fm that starts honouring them must not cause a double slice.
   const scopedTops = [
     { name: 'statsfm_top_tracks_from_artist', desc: "A user's top tracks from one artist", seg: (id: string) => `artists/${encodeURIComponent(id)}/tracks`, label: 'Top tracks from artist' },
     { name: 'statsfm_top_albums_from_artist', desc: "A user's top albums from one artist", seg: (id: string) => `artists/${encodeURIComponent(id)}/albums`, label: 'Top albums from artist' },
@@ -774,24 +877,24 @@ export function registerStatsfmTools(server: McpServer, client: StatsfmClient = 
         user_id: userIdSchema(),
         [isAlbum ? 'album_id' : 'artist_id']: z.union([z.string(), z.number()]).describe(`stats.fm ${isAlbum ? 'album' : 'artist'} id`),
         range: statsfmRangeSchema,
-        limit: limitSchema(),
-        offset: offsetSchema(),
+        limit: limitSchema(100, 10).describe(`1–100. Default: 10. Applied by this server, not by stats.fm — the scoped route ignores it and returns up to ${SCOPED_TOP_UPSTREAM_CEILING} ranked rows (#1297).`),
+        offset: offsetSchema().describe('Start position (0-based). Default: 0. Applied by this server, not by stats.fm (#1297).'),
         response_format: ResponseFormat,
         max_results: MaxResults,
       },
       async (args) => {
         const entityId = String((args as J)[isAlbum ? 'album_id' : 'artist_id']);
-        const body = await client.get<J>(
-          `/users/${encodeURIComponent((args as J).user_id as string)}/top/${cfg.seg(entityId)}`,
-          {
-            range: (args as J).range ?? 'lifetime',
-            limit: String((args as J).limit ?? 10),
-            offset: String((args as J).offset ?? 0),
-          },
-        );
-        const items = collectionItems(body, `/users/${encodeURIComponent((args as J).user_id as string)}/top/${cfg.seg(entityId)}`);
+        const path = `/users/${encodeURIComponent((args as J).user_id as string)}/top/${cfg.seg(entityId)}`;
+        const body = await client.get<J>(path, {
+          range: (args as J).range ?? 'lifetime',
+          limit: String((args as J).limit ?? 10),
+          offset: String((args as J).offset ?? 0),
+        });
+        const items = collectionItems(body, path);
+        const limit = (args as J).limit ?? 10;
+        const window = windowScopedTop(items, limit, (args as J).offset ?? 0);
         const kind = cfg.name.includes('_albums_') ? 'album' : 'track';
-        return shapeCollection(cfg.label, items, args as J, topLine(kind), topDetail(kind));
+        return shapeCollection(cfg.label, items, args as J, topLine(kind), topDetail(kind), window);
       },
     );
   }
