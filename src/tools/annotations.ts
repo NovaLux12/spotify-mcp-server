@@ -1068,7 +1068,12 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   // stats.fm has its own client and the export's default must win, so the
   // adapt drops the client it is handed rather than passing Spotify's into a
   // stats.fm request.
-  manifestEntry('statsfm', 'statsfm', lazyModule('./statsfm.js', 'registerStatsfmTools', (register) => (server) => register(server)), [30, 22917], { readOnlySafe: true }),
+  // #1006: the six per-entity stream tools now read stats.fm's own per-entity
+  // aggregate, and their descriptions say so ("stats.fm's own lifetime stream
+  // total … plus a sample of the individual plays"). Tool count is unchanged
+  // at 30; the 366 bytes are description text. MEASURED by
+  // `npm run count:tools` on 2026-09-27, not estimated.
+  manifestEntry('statsfm', 'statsfm', lazyModule('./statsfm.js', 'registerStatsfmTools', (register) => (server) => register(server)), [30, 23283], { readOnlySafe: true }),
   // #905: record_feedback gained a `limit` (the list page is bounded now, so
   // the response no longer scales with the store) and its description names
   // the store file and the cap. Tool count is unchanged at 16.

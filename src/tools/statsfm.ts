@@ -14,6 +14,13 @@
  *
  * Endpoint paths verified live 2026-09-05; stats.fm envelopes are
  * `{ item }` for singles and `{ items }` for collections.
+ *
+ * Re-verified 2026-09-27 for the per-entity stream totals (#1006). The
+ * aggregate route is plural and nested under `/users/{id}/streams/`:
+ * `/users/{id}/streams/tracks/{trackId}/stats`. The shape that reads as the
+ * obvious one — `/users/{id}/streams/{trackId}` — 404s, which is what made
+ * #1006 conclude no per-entity total existed. One exists, and stats.fm
+ * computes it server-side; see `readEntityTotals`.
  */
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -237,99 +244,260 @@ function streamLine(s: J): string {
   return `"${s.trackName ?? '?'}" (${fmtPlayed(s.playedMs)}) — ${when}`;
 }
 
-/** The per-entity stats tools all summarise the same endpoint. */
+/** The per-entity stats tools all read the same family of endpoints. */
 type EntityFilter = 'track' | 'artist' | 'album';
 
 /**
- * One page of `/users/{id}/streams`, as stats.fm actually serves it.
+ * The path segment each entity kind uses.
  *
- * Verified live 2026-09-25 against a Plus profile: the endpoint answers with
- * at most `limit` of the profile's newest streams and carries no total, no
- * page cursor and no `offset` support, so a page is a slice — never a
- * lifetime figure. The same probe showed the `track`/`artist`/`album`
- * parameter is silently dropped, so the page is narrowed to the requested
- * entity here; a page that came back full means older history exists beyond
- * it (#810).
+ * Verified live 2026-09-27: the per-entity routes are plural and nested under
+ * `/users/{id}/streams/` — `/users/{id}/streams/tracks/{trackId}/stats`.
+ * The flat `/users/{id}/streams/{id}` shape reads as the obvious one and
+ * 404s, which is how #1006 came to conclude no per-entity total existed.
  */
-type StreamPage = { streams: J[]; matching: J[]; pageSize: number; capped: boolean; scope: string };
+const ENTITY_SEGMENT: Record<EntityFilter, string> = {
+  track: 'tracks',
+  artist: 'artists',
+  album: 'albums',
+};
 
-/** Whether one returned stream is a play of `entityId`. */
-function isStreamOf(stream: J, filter: EntityFilter, entityId: string): boolean {
-  if (filter === 'track') return stream.trackId !== undefined && String(stream.trackId) === entityId;
-  if (filter === 'album') return stream.albumId !== undefined && String(stream.albumId) === entityId;
-  const artistIds: unknown[] = Array.isArray(stream.artistIds) ? stream.artistIds : [];
-  return artistIds.some((id) => String(id) === entityId);
+/**
+ * One entity's aggregate, unwrapped from whichever envelope it arrived in.
+ *
+ * Verified live 2026-09-27: this family answers `{ items: {...} }` for tracks
+ * and artists but `{ item: {...} }` for albums, so the envelope is read by
+ * what is present. Assuming one shape would read the album payload's missing
+ * `count` as a total of nothing.
+ */
+function entityStatsPayload(body: unknown, path: string): J {
+  const object = responseObject(body, path);
+  if (Object.prototype.hasOwnProperty.call(object, 'item')) return requiredItem(body, path);
+  if (Object.prototype.hasOwnProperty.call(object, 'items')) {
+    const stats = object.items;
+    if (!stats || typeof stats !== 'object' || Array.isArray(stats)) {
+      invalidResponse(path, 'expected items to be an object');
+    }
+    return stats as J;
+  }
+  invalidResponse(path, 'expected an item or items object');
 }
 
-/** What the query actually selected. A `*_date_stats` call passes an after/before
- *  window, so its read is a windowed slice and must never be described as the
- *  profile's newest page. */
-function streamScope(params: Record<string, string>): string {
-  const from = params.after;
-  const to = params.before;
-  if (from || to) return `the ${from ? `after ${from}` : 'start of history'} → ${to ? `before ${to}` : 'now'} window`;
-  return "this profile's newest streams";
+/**
+ * The two totals every per-entity aggregate carries, or a loud failure.
+ *
+ * `count` and `durationMs` are stats.fm's own figures for the whole entity
+ * over the requested window — not a page of the profile's history. A payload
+ * that omits either, or carries a non-number for one, is refused rather than
+ * read as 0: a total that could not be read must never arrive looking like a
+ * measured one (#803, #804).
+ */
+function entityTotals(
+  stats: J,
+  path: string,
+): { count: number; totalMs: number; cardinality: J | null } {
+  if (typeof stats.count !== 'number' || !Number.isInteger(stats.count) || stats.count < 0) {
+    invalidResponse(path, 'expected count to be a non-negative integer');
+  }
+  if (typeof stats.durationMs !== 'number' || !Number.isFinite(stats.durationMs) || stats.durationMs < 0) {
+    invalidResponse(path, 'expected durationMs to be a non-negative finite number');
+  }
+  const card = stats.cardinality;
+  if (card !== undefined && (!card || typeof card !== 'object' || Array.isArray(card))) {
+    invalidResponse(path, 'expected cardinality to be an object when present');
+  }
+  return { count: stats.count, totalMs: stats.durationMs, cardinality: (card as J | undefined) ?? null };
 }
 
-/** Fetch one page of streams for a query and narrow it to `entity`. The query may be
- *  the profile's newest streams or a `*_date_stats` window, so nothing here may
- *  describe the page as "the profile's newest page". */
-async function readStreamPage(
-  client: StatsfmClient,
-  userId: string,
-  params: Record<string, string>,
-  pageSize: number,
-  entity: { filter: EntityFilter; id: string },
-): Promise<StreamPage> {
-  const path = `/users/${encodeURIComponent(userId)}/streams`;
-  const body = await client.get<J>(path, { ...params, limit: String(pageSize) });
-  const streams = collectionItems(body, path);
+/** ISO form of a window edge, so the scope reads as a date rather than epoch ms. */
+function windowEdge(value: string | undefined): string | null {
+  if (value === undefined) return null;
+  const ms = Number(value);
+  if (!Number.isFinite(ms)) return null;
+  return new Date(ms).toISOString();
+}
+
+/**
+ * What the read covered. No window means the entity's whole recorded history,
+ * so `lifetime` is the claim the prose and the payload both make.
+ */
+function entityScope(params: Record<string, string>): { scope: string; lifetime: boolean } {
+  const from = windowEdge(params.after);
+  const to = windowEdge(params.before);
+  if (!from && !to) return { scope: 'lifetime', lifetime: true };
   return {
-    streams,
-    matching: streams.filter((s) => isStreamOf(s, entity.filter, entity.id)),
-    pageSize,
-    capped: streams.length >= pageSize,
-    scope: streamScope(params),
+    scope: `${from ? `after ${from}` : 'start of history'} → ${to ? `before ${to}` : 'now'}`,
+    lifetime: false,
   };
 }
 
-/** Machine-readable provenance for a summary derived from one page. */
-function pageDisclosure(read: StreamPage): J {
-  return read.capped
-    ? { page_size: read.pageSize, streams_read: read.streams.length, capped: true }
-    : { page_size: read.pageSize, streams_read: read.streams.length };
-}
-
-/** Page-bounded aggregate of the streams actually read. */
-type StreamSummary = {
-  label: string;
-  count: number;
-  totalMs: number;
-  avgMs: number;
+/** The plays read alongside a total. A sample, never the entity's whole history. */
+type EntitySample = {
+  streams: J[];
+  limit: number;
+  returned: number;
+  truncated: boolean;
+  unreadableReason: string | null;
   oldest: string | null;
   newest: string | null;
 };
 
-/** Aggregate the streams actually read into count/playedMs/page bounds. */
-function summarizeStreams(streams: J[], label: string): StreamSummary {
-  const count = streams.length;
-  const totalMs = streams.reduce((sum, s) => sum + (typeof s.playedMs === 'number' ? s.playedMs : 0), 0);
-  const ends = streams.map((s) => s.endTime).filter((t) => typeof t === 'string') as string[];
-  const oldest = ends.length > 0 ? ends.reduce((a, b) => (a < b ? a : b)) : null;
-  const newest = ends.length > 0 ? ends.reduce((a, b) => (a > b ? a : b)) : null;
-  return { label, count, totalMs, avgMs: count > 0 ? Math.round(totalMs / count) : 0, oldest, newest };
+/**
+ * The entity's own stream records, newest first, capped at `limit`.
+ *
+ * Verified live 2026-09-27: unlike `/users/{id}/streams`, this route IS
+ * server-filtered to the entity, honours `limit` and `after`/`before`, and
+ * ignores `offset` — so a short sample is the most recent plays, never a
+ * page of the profile's mixed history.
+ *
+ * A failure here is contained rather than fatal. The total is read separately
+ * and independently, so losing the sample costs the play list and the span,
+ * not the figure. What it must never do is hide a total that was read (#803).
+ */
+async function readEntitySample(
+  client: StatsfmClient,
+  path: string,
+  params: Record<string, string>,
+  limit: number,
+): Promise<EntitySample> {
+  try {
+    const body = await client.get<J>(path, { ...params, limit: String(limit) });
+    const streams = collectionItems(body, path);
+    const ends = streams.map((s) => s.endTime).filter((t) => typeof t === 'string') as string[];
+    return {
+      streams,
+      limit,
+      returned: streams.length,
+      truncated: streams.length >= limit,
+      unreadableReason: null,
+      oldest: ends.length > 0 ? ends.reduce((a, b) => (a < b ? a : b)) : null,
+      newest: ends.length > 0 ? ends.reduce((a, b) => (a > b ? a : b)) : null,
+    };
+  } catch (err) {
+    // A 200-status error is this module's own envelope assertion firing, so it
+    // means the code is wrong rather than the read having failed; filing it as
+    // an upstream problem would bury the defect. Everything else genuinely is
+    // an unreadable sample.
+    if (err instanceof StatsfmApiError && err.status === 200) throw err;
+    return {
+      streams: [],
+      limit,
+      returned: 0,
+      truncated: false,
+      unreadableReason: unreadableLookupReason(err),
+      oldest: null,
+      newest: null,
+    };
+  }
 }
 
-function formatSummary(sum: StreamSummary, read: StreamPage, filter: EntityFilter): string {
-  const span = sum.oldest && sum.newest ? ` | page span: ${sum.oldest} → ${sum.newest}` : '';
-  const line = `${sum.label}: ${sum.count} streams, ${fmtPlayed(sum.totalMs)} total (avg ${fmtPlayed(sum.avgMs)})${span}`;
-  if (read.capped) {
-    return `${line}\nPartial: ${sum.count} of the ${read.streams.length} streams in ${read.scope} are this ${filter}. That read was capped at ${read.pageSize}, so this is not a lifetime total — the read did not cover all of them.`;
+/** A real per-entity total, plus whatever sample of the plays could be read. */
+type EntityRead = {
+  count: number;
+  totalMs: number;
+  cardinality: J | null;
+  scope: string;
+  lifetime: boolean;
+  sample: EntitySample;
+};
+
+/**
+ * The entity's stream total, read from stats.fm's own aggregate.
+ *
+ * #1006 recorded that no per-entity lifetime total was reachable, on the
+ * evidence that `/users/{id}/streams` silently drops the entity filter and
+ * `offset`. Both hold — and both are irrelevant here, because this reads a
+ * different route, one the API documents at
+ * `/api/v1/users/{userId}/streams/{tracks|artists|albums}/{entityId}/stats`
+ * and answers with the entity's real `count` and `durationMs`. Verified live
+ * 2026-09-27 against a 98,101-stream profile: a track the top chart reports
+ * 122 lifetime plays returns `count: 162` here (the chart counts the newest
+ * window it ranks; this is the whole record), and a track the profile has
+ * never played returns `count: 0` — a measured zero, not a failed read.
+ */
+async function readEntityTotals(
+  client: StatsfmClient,
+  userId: string,
+  filter: EntityFilter,
+  entityId: string,
+  params: Record<string, string>,
+  sampleLimit: number,
+): Promise<EntityRead> {
+  const base = `/users/${encodeURIComponent(userId)}/streams/${ENTITY_SEGMENT[filter]}/${encodeURIComponent(entityId)}`;
+  const statsPath = `${base}/stats`;
+  const body = await client.get<J>(statsPath, params);
+  const totals = entityTotals(entityStatsPayload(body, statsPath), statsPath);
+  const sample = await readEntitySample(client, base, params, sampleLimit);
+  return { ...totals, ...entityScope(params), sample };
+}
+
+/** Machine-readable payload. `source` says the total is measured, not derived. */
+function entityPayload(label: string, read: EntityRead): J {
+  return {
+    label,
+    count: read.count,
+    totalMs: read.totalMs,
+    // `null`, not 0. A mean over zero plays does not exist, and 0 is a number
+    // that reads as "the average play lasted 0 ms" — a measurement of a play
+    // that never happened. The prose half of this same read already omits the
+    // mean at zero; reporting 0 here would make the payload contradict it.
+    avgMs: read.count > 0 ? Math.round(read.totalMs / read.count) : null,
+    source: 'stats.fm per-entity aggregate',
+    scope: read.scope,
+    lifetime: read.lifetime,
+    cardinality: read.cardinality,
+    sample_limit: read.sample.limit,
+    sample_returned: read.sample.returned,
+    sample_truncated: read.sample.truncated,
+    sample_unreadable_reason: read.sample.unreadableReason,
+    sample_oldest: read.sample.oldest,
+    sample_newest: read.sample.newest,
+  };
+}
+
+function formatEntitySummary(label: string, read: EntityRead, filter: EntityFilter): string {
+  const { count, totalMs, sample } = read;
+  // The mean of zero plays is undefined, so it is not printed: "avg 0m"
+  // beside a measured zero would read as a measurement of a play that did
+  // not happen.
+  const avg = count > 0 ? ` (avg ${fmtPlayed(Math.round(totalMs / count))})` : '';
+  const lead = `${label}: ${count} stream${count === 1 ? '' : 's'}, ${fmtPlayed(totalMs)} total${avg}`;
+  const origin = read.lifetime
+    ? `Lifetime total for this ${filter}, computed by stats.fm.`
+    : `Total for the ${read.scope} window, computed by stats.fm for this ${filter}.`;
+  if (sample.unreadableReason) {
+    return `${lead}\n${origin}\nThe list of individual plays could not be read (${sample.unreadableReason}); the total above is unaffected.`;
   }
-  if (sum.count === 0) {
-    return `${line}\nComplete: none of the ${read.streams.length} streams in ${read.scope} is this ${filter}.`;
+  if (sample.returned === 0) return `${lead}\n${origin}`;
+  const span = sample.oldest && sample.newest ? ` (sampled span ${sample.oldest} → ${sample.newest})` : '';
+  const what = sample.truncated
+    ? `Sampled the ${sample.returned} most recent of ${count} plays${span}.`
+    : `All ${sample.returned} play${sample.returned === 1 ? '' : 's'}${span}.`;
+  return `${lead}\n${origin}\n${what}`;
+}
+
+/** Shared body of the six per-entity tools, so no one of them can drift. */
+async function runEntityStats(
+  client: StatsfmClient,
+  args: J,
+  filter: EntityFilter,
+  idField: string,
+  defaultLimit: number,
+): Promise<ToolResult> {
+  const entityId = String(args[idField]);
+  const params: Record<string, string> = {};
+  if (args.after !== undefined) params.after = String(args.after);
+  if (args.before !== undefined) params.before = String(args.before);
+  const read = await readEntityTotals(client, args.user_id as string, filter, entityId, params, args.limit ?? defaultLimit);
+  const label = `${filter} ${entityId}`;
+  const payload = entityPayload(label, read);
+  if (args.response_format === 'json') {
+    const body = { ...payload, streams: read.sample.streams };
+    return { content: [{ type: 'text', text: JSON.stringify(body) }], structuredContent: body };
   }
-  return line;
+  return {
+    content: [{ type: 'text', text: formatEntitySummary(label, read, filter) }],
+    structuredContent: { ...payload, streams: read.sample.streams.slice(0, 10) },
+  };
 }
 
 /** Short, non-guessing reason a per-friend stream lookup could not be read. */
@@ -472,44 +640,24 @@ export function registerStatsfmTools(server: McpServer, client: StatsfmClient = 
     },
   );
 
-  // 8–10. per-entity stream aggregates (track / artist / album).
+  // 8–10. per-entity stream totals (track / artist / album), read from
+  // stats.fm's own per-entity aggregate (#1006).
   const entityStats = [
-    { name: 'statsfm_track_stats', desc: 'Stream totals for one track within a user library', filter: 'track' as const, idField: 'track_id' },
-    { name: 'statsfm_artist_stats', desc: 'Stream totals for one artist within a user library', filter: 'artist' as const, idField: 'artist_id' },
-    { name: 'statsfm_album_stats', desc: 'Stream totals for one album within a user library', filter: 'album' as const, idField: 'album_id' },
+    { name: 'statsfm_track_stats', filter: 'track' as const, idField: 'track_id' },
+    { name: 'statsfm_artist_stats', filter: 'artist' as const, idField: 'artist_id' },
+    { name: 'statsfm_album_stats', filter: 'album' as const, idField: 'album_id' },
   ];
   for (const cfg of entityStats) {
     server.tool(
       cfg.name,
-      cfg.desc,
+      `stats.fm's own lifetime stream total for one ${cfg.filter} in a user's history, plus a sample of the individual plays`,
       {
         user_id: userIdSchema(),
         [cfg.idField]: z.union([z.string(), z.number()]).describe(`stats.fm ${cfg.filter} id`),
         limit: limitSchema(100, 50),
         response_format: ResponseFormat,
       },
-      async (args) => {
-        const entityId = String((args as J)[cfg.idField]);
-        const read = await readStreamPage(
-          client,
-          (args as J).user_id as string,
-          { [cfg.filter]: entityId },
-          (args as J).limit ?? 50,
-          { filter: cfg.filter, id: entityId },
-        );
-        const sum = summarizeStreams(read.matching, `${cfg.filter} ${entityId}`);
-        const payload: J = { ...sum, ...pageDisclosure(read) };
-        if ((args as J).response_format === 'json') {
-          return {
-            content: [{ type: 'text', text: JSON.stringify({ ...payload, streams: read.matching }) }],
-            structuredContent: { ...payload, streams: read.matching },
-          };
-        }
-        return {
-          content: [{ type: 'text', text: formatSummary(sum, read, cfg.filter) }],
-          structuredContent: { ...payload, streams: read.matching.slice(0, 10) },
-        };
-      },
+      async (args) => runEntityStats(client, args as J, cfg.filter, cfg.idField, 50),
     );
   }
 
@@ -814,16 +962,16 @@ export function registerStatsfmTools(server: McpServer, client: StatsfmClient = 
     },
   );
 
-  // 25–27. date-windowed per-entity stats (track / artist / album).
+  // 25–27. the same per-entity totals, narrowed to an after/before window.
   const dateStats = [
-    { name: 'statsfm_track_date_stats', desc: 'Stream totals for one track within a date window', filter: 'track' as const, idField: 'track_id' },
-    { name: 'statsfm_artist_date_stats', desc: 'Stream totals for one artist within a date window', filter: 'artist' as const, idField: 'artist_id' },
-    { name: 'statsfm_album_date_stats', desc: 'Stream totals for one album within a date window', filter: 'album' as const, idField: 'album_id' },
+    { name: 'statsfm_track_date_stats', filter: 'track' as const, idField: 'track_id' },
+    { name: 'statsfm_artist_date_stats', filter: 'artist' as const, idField: 'artist_id' },
+    { name: 'statsfm_album_date_stats', filter: 'album' as const, idField: 'album_id' },
   ];
   for (const cfg of dateStats) {
     server.tool(
       cfg.name,
-      cfg.desc,
+      `stats.fm's own stream total for one ${cfg.filter} within an after/before window, plus a sample of the individual plays`,
       {
         user_id: userIdSchema(),
         [cfg.idField]: z.union([z.string(), z.number()]).describe(`stats.fm ${cfg.filter} id`),
@@ -832,34 +980,7 @@ export function registerStatsfmTools(server: McpServer, client: StatsfmClient = 
         limit: limitSchema(500, 100),
         response_format: ResponseFormat,
       },
-      async (args) => {
-        const entityId = String((args as J)[cfg.idField]);
-        const params: Record<string, string> = { [cfg.filter]: entityId };
-        if ((args as J).after !== undefined) params.after = String((args as J).after);
-        if ((args as J).before !== undefined) params.before = String((args as J).before);
-        const read = await readStreamPage(
-          client,
-          (args as J).user_id as string,
-          params,
-          (args as J).limit ?? 100,
-          { filter: cfg.filter, id: entityId },
-        );
-        const window = (args as J).after !== undefined || (args as J).before !== undefined
-          ? ` [${(args as J).after ?? '…'} → ${(args as J).before ?? '…'}]`
-          : '';
-        const sum = summarizeStreams(read.matching, `${cfg.filter} ${entityId}${window}`);
-        const payload: J = { ...sum, ...pageDisclosure(read) };
-        if ((args as J).response_format === 'json') {
-          return {
-            content: [{ type: 'text', text: JSON.stringify({ ...payload, streams: read.matching }) }],
-            structuredContent: { ...payload, streams: read.matching },
-          };
-        }
-        return {
-          content: [{ type: 'text', text: formatSummary(sum, read, cfg.filter) }],
-          structuredContent: { ...payload, streams: read.matching.slice(0, 10) },
-        };
-      },
+      async (args) => runEntityStats(client, args as J, cfg.filter, cfg.idField, 100),
     );
   }
 

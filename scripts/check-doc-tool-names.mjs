@@ -84,6 +84,13 @@ const parameterAllowlist = new Set([
   // #757: restore_library_snapshot documents the snapshot schema version it
   // refuses on. A key inside the file it reads, not a tool or parameter.
   'schema_version',
+  // #1006: the six per-entity stats.fm tools report the measured total
+  // separately from the play sample read beside it, and SPEC.md names both so
+  // a sample's span is never read as the entity's whole history. Every one is
+  // a structuredContent key on those tools — the doc is describing what a call
+  // reports about its own result, not routing to another tool.
+  'sample_limit', 'sample_returned', 'sample_truncated', 'sample_oldest',
+  'sample_newest', 'sample_unreadable_reason',
   // #839: the local-sidecar corruption contract. SPEC.md and
   // docs/configuration.md now say what a caller gets when a sidecar exists but
   // cannot be read — the file and the parse failure, where the bytes were
