@@ -113,7 +113,26 @@ function finish(
   allowShortIds: boolean,
 ): SpotifyReferenceClassification {
   const kind = knownKind(rawKind);
-  if (!kind) return invalid(input, form, `unsupported Spotify entity kind: ${rawKind}`);
+  // #1536: report the kind as unrecognised without echoing it. `rawKind` is a
+  // bare `string` with no length bound, and on the URL path it is
+  // `segments[0]` of a caller-supplied share URL, so interpolating it puts
+  // unbounded caller text into a message that is now relayed to the caller
+  // (#1518). The echo told them nothing they did not already know from their
+  // own input.
+  //
+  // The bound that kept this contained lived in a DIFFERENT mechanism: the
+  // 200-character cap the trusted custom-issue relay applies to an emitter's
+  // message (#1518) limits what a repository AUTHOR may say, not what a
+  // CALLER may inject into that message's format string. That cap is not a
+  // second line of defence for this site, so the fix belongs here rather than
+  // downstream. The same reasoning applies to any emitter added later: the
+  // trust boundary there proves a message came from this repository, not that
+  // the message is free of caller-controlled text.
+  //
+  // The adjacent `unsupported Spotify share URL host: ${url.hostname}` is
+  // deliberately left as it is: `URL` normalises the hostname, so that value
+  // is already bounded by the parser rather than by us.
+  if (!kind) return invalid(input, form, 'unsupported Spotify entity kind');
   if (!validId(id, kind, allowShortIds)) {
     const lengthRule = kind === 'user'
       ? 'one or more URL-safe'

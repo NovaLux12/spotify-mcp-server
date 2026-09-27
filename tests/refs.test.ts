@@ -590,3 +590,82 @@ describe('the kind vocabulary is a closed set (#584)', () => {
     }
   });
 });
+
+// #1536. `finish()` interpolated `rawKind` — a bare `string` with no length
+// bound and no character filter — into the rejection message. On the URL path
+// that string is `segments[0]` of a caller-supplied share URL, so whatever the
+// caller put in the first path segment came back out inside `error`. The bound
+// that kept this contained was the 200-character cap the trusted custom-issue
+// relay applies to an emitter's message (#1518), and that cap is a property of
+// a DIFFERENT mechanism: it limits what a repository AUTHOR may write into an
+// emitter's message, not what a CALLER may inject into that message's format
+// string. The fix drops the echo at the source rather than relying on a
+// downstream cap that was never this site's guarantee.
+describe('a rejected entity kind is not echoed into the message (#1536)', () => {
+  // 336 characters, split by a literal newline, so the assertion below has to
+  // be made about the two runs either side of it.
+  const SEGMENT = `${'x'.repeat(300)}\n${'y'.repeat(35)}`;
+  const RUNS = ['x'.repeat(300), 'y'.repeat(35)];
+
+  it('keeps a 336-character path segment out of the URL rejection message', () => {
+    const parsed = classifySpotifyReference(`https://open.spotify.com/${SEGMENT}/x`);
+    assert.equal(parsed.valid, false);
+    assert.equal(parsed.form, 'url');
+
+    const error = parsed.error ?? '';
+    // The load-bearing assertion, and the one that has to fail against the
+    // bug: the caller's own path segment must not come back in the message.
+    // Asserted as two runs rather than as the whole `SEGMENT` because the
+    // WHATWG URL parser strips the literal newline before the path is split,
+    // so pre-fix the message contained both runs but not the assembled
+    // `SEGMENT` — a `!error.includes(SEGMENT)` assertion would have passed
+    // against the very bug this test exists to catch (AGENTS.md §6).
+    for (const run of RUNS) {
+      assert.ok(!error.includes(run), `rejection message echoed the caller's path segment: ${JSON.stringify(error.slice(0, 80))}…`);
+    }
+    assert.ok(
+      error.includes('unsupported Spotify entity kind'),
+      `rejected for the wrong reason: ${error}`,
+    );
+  });
+
+  it('reproduces the same rejection through the spotify: URI form', () => {
+    // The URI grammar's kind group is `[a-z]+`, so this path cannot carry a
+    // newline — but it carries just as much unbounded caller text, and it
+    // reaches the same interpolation.
+    const parsed = classifySpotifyReference(`spotify:${'x'.repeat(335)}:${'4iV5W9uYEdYUVa79Axb7Rh'}`);
+    assert.equal(parsed.valid, false);
+    assert.equal(parsed.form, 'uri');
+    assert.ok(
+      !(parsed.error ?? '').includes('x'.repeat(335)),
+      `URI rejection message echoed the caller's kind: ${JSON.stringify((parsed.error ?? '').slice(0, 80))}…`,
+    );
+  });
+
+  it('produces a single-line message whatever the caller sends', () => {
+    // A floor, not the load-bearing assertion: the URL parser already removes
+    // ASCII tab and newline from its input, so no control character can reach
+    // this string today by either route. It is asserted because the relay
+    // (#1518) collapses and caps custom messages, and this is one of the
+    // messages it will carry — so "single line" is a property worth pinning
+    // even though the two assertions above are what catch the regression.
+    for (const reference of [
+      `https://open.spotify.com/${SEGMENT}/x`,
+      `spotify:${'x'.repeat(335)}:4iV5W9uYEdYUVa79Axb7Rh`,
+      'spotify:device:4iV5W9uYEdYUVa79Axb7Rh',
+    ]) {
+      const error = classifySpotifyReference(reference).error ?? '';
+      assert.ok(!/[\n\r]/.test(error), `rejection message is not single-line: ${JSON.stringify(error)}`);
+    }
+  });
+
+  it('leaves the bounded share-URL host echo alone', () => {
+    // `URL` normalises the hostname, so this interpolation is already bounded
+    // by the parser. It is pinned deliberately: #1536 removed an unbounded
+    // echo, and this assertion is what stops that from being read as "stop
+    // echoing caller input anywhere".
+    const parsed = classifySpotifyReference('https://open.spotify.com.example.com/track/4iV5W9uYEdYUVa79Axb7Rh');
+    assert.equal(parsed.valid, false);
+    assert.equal(parsed.error, 'unsupported Spotify share URL host: open.spotify.com.example.com');
+  });
+});
