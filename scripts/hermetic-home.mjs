@@ -145,6 +145,11 @@ export function sandboxStorePins(storeDir) {
     // the store dir here reproduces the documented `storeDir/receipts.jsonl`
     // rather than inheriting `history/receipts.jsonl` from the line above.
     SPOTIFY_MCP_RECEIPTS_DIR: storeDir,
+    // #600: the MCP task records directory. Pinned for the same reason as
+    // receipts — a task record is a description of what a bulk operation did
+    // to the account, so a harness child must not be able to inherit or
+    // .env-supply a path outside the sandbox.
+    SPOTIFY_MCP_TASKS_DIR: join(storeDir, 'tasks'),
     SPOTIFY_MCP_SCENES_FILE: join(storeDir, 'scenes.json'),
     SPOTIFY_MCP_GENRE_TAGS_FILE: join(storeDir, 'genre-tags.json'),
     SPOTIFY_MCP_PLAYBACKEXT_FILE: join(storeDir, 'playback-ext.json'),

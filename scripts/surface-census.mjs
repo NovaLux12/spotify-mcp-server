@@ -334,6 +334,7 @@ const {
   aggregateGatedEnvVars,
   declaredGatedToolDelta,
 } = await import('../src/tools/annotations.ts');
+const { applyTaskSupport } = await import('../src/tasks.ts');
 // The per-call response cap (#895). Read from the constant so the doc's figure
 // is generated rather than hand-typed: a prose figure here is exactly what
 // `tests/doc-figures.test.ts` fails on, and a cap that changes must move the
@@ -1594,6 +1595,13 @@ async function attributeToolsToModules(liveToolNames, finalizedTools) {
     assertToolNamingPolicy(registeredNames);
     applyToolOutputSchemas(server);
     applyToolAnnotations(server);
+    // #600: same reason as the two passes above, and it matters the same way.
+    // `collectAggregateSurfaceMeasurement` charges for `execution`, so a census
+    // that skipped the task-support pass would report the eleven task-capable
+    // tools as still `taskSupport: 'forbidden'` and under-report the payload a
+    // host actually receives. The measured figure would be a second,
+    // weaker measurement of the surface startup gates on.
+    applyTaskSupport(server);
     const aggregateSurface = collectAggregateSurfaceMeasurement(server);
     if (aggregateSurface.toolCount !== live.size) {
       throw new Error(`census server measured ${aggregateSurface.toolCount} tools but the finalized stdio registry reported ${live.size}`);
@@ -1672,6 +1680,14 @@ async function measureGatedSurface() {
       assertToolNamingPolicy(names);
       applyToolOutputSchemas(server);
       applyToolAnnotations(server);
+      // And the task-support pass (#600), for the same reason as the two above:
+      // `collectAggregateSurfaceMeasurement` charges for `execution`, so an
+      // off-pass that skipped it would report the eleven task-capable tools as
+      // still `taskSupport: 'forbidden'` and disagree with the ON row by
+      // exactly that field — which is the disagreement the cross-check below
+      // exists to catch, in the one place where a harness measuring a different
+      // surface would be least visible.
+      applyTaskSupport(server);
       return { names, measurement: collectAggregateSurfaceMeasurement(server) };
     } finally {
       await server.close().catch(() => undefined);

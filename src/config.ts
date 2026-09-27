@@ -839,6 +839,20 @@ export const LOCAL_STORES: readonly LocalStoreSpec[] = [
       ),
   },
   {
+    id: 'tasks',
+    label: 'MCP task records',
+    kind: 'dir',
+    envVar: 'SPOTIFY_MCP_TASKS_DIR',
+    // A DIRECTORY, not a file: `src/tasks.ts` keeps one JSON record per task so
+    // a single task's state can be read without parsing the rest, and so a
+    // crash mid-write costs one task rather than every task. `move`, not
+    // `shred`: a record names a tool and its outcome, and the outcome of a bulk
+    // operation is a description of the user's library, but it is the user's own
+    // history to keep if they log out by mistake.
+    defaultPath: '~/.spotify-mcp/tasks',
+    resolve: (env) => env.SPOTIFY_MCP_TASKS_DIR?.trim() || join(storeDir(), 'tasks'),
+  },
+  {
     id: 'scenes',
     label: 'Scenes',
     kind: 'file',

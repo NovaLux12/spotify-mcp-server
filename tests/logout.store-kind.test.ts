@@ -81,6 +81,7 @@ function sandbox(): { root: string; home: string; env: NodeJS.ProcessEnv } {
     SPOTIFY_MCP_SNAPSHOT_DIR: join(root, 'snapshots'),
     SPOTIFY_MCP_PORTABILITY_DIR: join(root, 'portability'),
     SPOTIFY_MCP_EXPORT_DIR: join(root, 'exports'),
+    SPOTIFY_MCP_TASKS_DIR: join(root, 'tasks'),
   };
   return { root, env };
 }

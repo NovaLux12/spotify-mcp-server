@@ -58,6 +58,7 @@ import { receiptsFilePath } from '../src/receipts.js';
 import { resolveTokenFile } from '../src/config.js';
 import { accountsFile } from '../src/accounts.js';
 import { backupRootDir, exportRootDir, readRoots } from '../src/paths.js';
+import { tasksDir } from '../src/tasks.js';
 import { artistWatchlistPath } from '../src/tools/artistwatch.js';
 import { exhaust2PlaybackFile } from '../src/tools/exhaust2_playback.js';
 import { miscFilePath } from '../src/tools/exhaust2_misc.js';
@@ -174,6 +175,7 @@ function sandbox(): Box {
     SPOTIFY_MCP_SNAPSHOT_DIR: join(data, 'playlist-snapshots'),
     SPOTIFY_MCP_PORTABILITY_DIR: join(data, 'portability'),
     SPOTIFY_MCP_EXPORT_DIR: join(data, 'exports'),
+    SPOTIFY_MCP_TASKS_DIR: join(data, 'tasks'),
   };
   return { root, home, data, env };
 }
@@ -344,6 +346,7 @@ describe('the store registry is the only place a store path is spelled', () => {
       'playlist-health-snapshots': healthSnapshotDir,
       portability: portabilityDir,
       exports: exportRootDir,
+      tasks: tasksDir,
     };
 
     for (const [id, owner] of Object.entries(owners)) {

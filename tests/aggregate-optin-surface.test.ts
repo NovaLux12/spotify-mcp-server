@@ -55,6 +55,7 @@ import {
   declaredGatedToolDelta,
   registerManifestModules,
 } from '../src/tools/annotations.js';
+import { applyTaskSupport } from '../src/tasks.js';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const DOC = 'docs/schema-budgets.md';
@@ -114,8 +115,10 @@ function figureMismatches(figures: Record<string, number>, expected: Record<stri
  * for. Skipping the naming policy measures a surface production refuses to
  * serve; skipping `applyToolOutputSchemas` (#687) reads 1,080B low on this
  * tree, which is the disagreement `tests/doc-figures.test.ts` would report
- * against the document this file asserts. The opt-in row would then be measured
- * against a different yardstick than the default row beside it.
+ * against the document this file asserts. Skipping `applyTaskSupport` (#600)
+ * reads 11B high, for the same reason and one field fewer: the aggregate charges
+ * for `execution`. The opt-in row would then be measured against a different
+ * yardstick than the default row beside it.
  *
  * The env flip is in a `finally` because this is a live process, and a leaked
  * `1` would silently resize every figure measured after it.
@@ -130,6 +133,7 @@ async function measureBothSurfaces(): Promise<{ off: Surface; on: Surface }> {
       assertToolNamingPolicy(Object.keys(registered));
       applyToolOutputSchemas(server);
       applyToolAnnotations(server);
+      applyTaskSupport(server);
       return collectAggregateSurfaceMeasurement(server);
     } finally {
       await server.close().catch(() => undefined);
