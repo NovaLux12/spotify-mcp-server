@@ -607,6 +607,35 @@ const OVERRIDES: Record<string, ToolAnnotations> = {
   // `requiredConfirmationRefusal` and still fails closed on every verdict but
   // 'confirmed', with `SPOTIFY_MCP_CONFIRM=never` the only bypass.
   switch_account: { readOnlyHint: false, destructiveHint: true },
+
+  // #1347: two genuine read-only reports whose names carry no read verb, so
+  // the name-driven policy advertised them as writes and the live gauntlet
+  // gated them off. Same shape and same reasoning as `backup_library` and
+  // `playlist_staleness_report` above — an override on these two names rather
+  // than a change to the prefixes, which would misclassify the many genuinely
+  // mutating tools that share their first word.
+  //
+  // Neither issues a Spotify write. `library_genre_report` walks the saved
+  // library with GETs only; `filter_by_genre` issues no Spotify request at all
+  // and returns saved URIs from the same local genre sidecar.
+  //
+  // Stated precisely, because it is not the same claim: both DO have one local
+  // write path. `loadGenreTags` quarantines an already-corrupt sidecar by
+  // copying its bytes into a NEW server-owned slot (`flag: 'wx'`, never
+  // overwriting, original left intact — src/tools/libraryinsights.ts:133). That
+  // is a defensive preservation write, not a mutation of the user's data, and
+  // it is the same category as `backup_library`'s local writes above; but it is
+  // a write, and the row is not claiming otherwise. Nothing here can change
+  // account state, which is the property the gauntlet's mutation proof
+  // measures.
+  //
+  // The cost of leaving them out was concrete: the gauntlet's fail-closed
+  // classifier reads the absence of readOnlyHint as "a write", so both landed
+  // on the gated path and the live sweep stopped calling tools it had called
+  // before #1336. `idempotentHint` is true of both for the same reason — a
+  // report recomputed from the same library is the same report.
+  library_genre_report: { readOnlyHint: true, idempotentHint: true },
+  filter_by_genre: { readOnlyHint: true, idempotentHint: true },
 };
 
 /**

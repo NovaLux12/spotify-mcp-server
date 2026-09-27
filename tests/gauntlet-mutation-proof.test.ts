@@ -375,28 +375,71 @@ describe('live-gauntlet classification, derived from the real registry', () => {
   });
 
   it('records what failing closed costs: registry writes with no dry_run the gauntlet can never call', () => {
-    // The honest price of the fix, pinned so it cannot be forgotten. These
-    // five sit on the MUTATING path (the registry advertises no readOnlyHint)
-    // and declare no `dry_run`, so the gate skips them permanently and the
-    // sweep loses the read-path coverage it had before #643. Every one is a
-    // read or a LOCAL sidecar write; the fix belongs in the OVERRIDES table in
-    // src/tools/annotations.ts, which is outside this harness's territory, so
-    // the gap is asserted here rather than papered over.
+    // The honest price of the fail-closed classifier, pinned so it cannot be
+    // forgotten. These sit on the MUTATING path (the registry advertises no
+    // readOnlyHint) and declare no `dry_run`, so the gate skips them
+    // permanently — "not called this run" is not the claim; NEVER is.
+    //
+    // #1347. Five tools were named here. Two of them — `library_genre_report`
+    // and `filter_by_genre` — were a real regression: their SAFE_ARGS recipes
+    // returned real arguments, so the sweep did call them, and #1336's
+    // fail-closed classifier stopped it. They now carry OVERRIDES rows, and the
+    // assertions below hold them there.
+    //
+    // The other three — `save_scene`, `delete_scene`, `cancel_wind_down` — are
+    // NOT a regression and are deliberately still gated. Their recipes have
+    // returned a skip string since 1.30.1, and the SAFE path records a string
+    // recipe as a skip, so the sweep was already skipping them before #1336.
+    // The coverage they appear to have lost was never coverage. Reclassifying
+    // them read-only to make this list shorter would be a false annotation to
+    // every MCP host: all three write.
     const uncallable = LIVE_ROWS
       .filter((row) => LIVE_AUDIT.verdicts.get(row.name as string)?.class === 'MUTATING')
       .filter((row) => !core.schemaDeclaresDryRun(row.inputSchema))
       .map((row) => row.name as string)
       .sort();
-    const KNOWN = [
-      'cancel_wind_down', 'delete_scene', 'filter_by_genre', 'library_genre_report', 'save_scene',
-    ];
-    for (const name of KNOWN) {
+    const STILL_GATED = ['cancel_wind_down', 'delete_scene', 'save_scene'];
+    for (const name of STILL_GATED) {
       assert.ok(uncallable.includes(name), `${name} is no longer a registry write without dry_run — the coverage note in live-gauntlet.mjs needs updating`);
     }
+    // The two #1347 fixed must have come OFF the list. Without this the rows
+    // could be deleted and the tools silently gated again, which is the exact
+    // failure this issue is about.
+    for (const name of ['filter_by_genre', 'library_genre_report']) {
+      assert.ok(
+        !uncallable.includes(name),
+        `${name} is gated again despite its OVERRIDES readOnlyHint row — the classification is not taking effect`,
+      );
+    }
+    // The audit's own census is derived, not a second hand-kept list: it must
+    // equal what this test computes from the same registry. If the harness
+    // reported a number no one measured, the report would be the thing #1347
+    // is complaining about, one level up.
+    assert.deepEqual(LIVE_AUDIT.uncalledRegistryWrites, uncallable);
+    assert.equal(LIVE_AUDIT.uncalledRegistryWriteCount, uncallable.length);
     // The list is not closed: other registry writes without dry_run exist and
     // are gated for the same reason. What matters is that the named set is
     // still a subset, so the note under-reports rather than over-reports.
-    assert.ok(uncallable.length >= KNOWN.length);
+    assert.ok(uncallable.length >= STILL_GATED.length);
+  });
+
+  it('names the uncalled registry writes on every run, so the gap is visible not silent', () => {
+    // A gate that skips quietly is a check that reports green while measuring
+    // nothing. The census is worthless unless the run actually says it, so
+    // this asserts on the rendered line rather than on the data alone.
+    const lines = core.renderAuditLines(LIVE_AUDIT);
+    const gapLine = lines.find((l: string) => l.startsWith('uncalled registry writes:'));
+    assert.ok(gapLine, `no coverage-gap line was rendered:\n${lines.join('\n')}`);
+    for (const name of ['cancel_wind_down', 'delete_scene', 'save_scene']) {
+      assert.ok(gapLine.includes(name), `${name} is not named in the coverage-gap line: ${gapLine}`);
+    }
+    // The two #1347 restored must NOT be presented as uncovered.
+    for (const name of ['filter_by_genre', 'library_genre_report']) {
+      assert.ok(!gapLine.includes(name), `${name} is called again but is still reported as uncovered: ${gapLine}`);
+    }
+    // The count is read off the list, not typed, so it cannot drift from it.
+    const declared = Number(/^uncalled registry writes: (\d+)/.exec(gapLine)![1]);
+    assert.equal(declared, LIVE_AUDIT.uncalledRegistryWrites.length);
   });
 });
 
@@ -738,6 +781,12 @@ const TOOLS = [
   { name: 'create_playlist', description: 'create', inputSchema: props(DRY), annotations: write },
   { name: 'apply_scene', description: 'apply', inputSchema: props(DRY), annotations: write },
   { name: 'save_scene', description: 'save', inputSchema: props({}), annotations: write },
+  // #1347. The two the live gauntlet used to gate off. Advertised read-only,
+  // with no dry_run — exactly the registry shape the OVERRIDES rows produce —
+  // so this leg goes RED if either row is removed and the tool reverts to
+  // "a write with no commit path", i.e. skipped forever.
+  { name: 'library_genre_report', description: 'genres', inputSchema: props({ max_results: { type: 'number' } }), annotations: { readOnlyHint: true, idempotentHint: true } },
+  { name: 'filter_by_genre', description: 'filter', inputSchema: props({ genre: { type: 'string' }, kind: { type: 'string' }, max_results: { type: 'number' } }), annotations: { readOnlyHint: true, idempotentHint: true } },
 ];
 
 const paged = (items, total) => ({ items, pagination: { total, offset: 0, limit: items.length, next_offset: null } });
@@ -765,6 +814,8 @@ function call(name, args) {
     }
     case 'apply_scene': return { structuredContent: { ok: true } };
     case 'save_scene': return { structuredContent: { ok: true } };
+    case 'library_genre_report': return { structuredContent: { ok: true, genres: [] } };
+    case 'filter_by_genre': return { structuredContent: { ok: true, uris: [] } };
     default: throw new Error('unknown tool ' + name);
   }
 }
@@ -884,6 +935,35 @@ describe('live-gauntlet end to end, against a stub account', () => {
     assert.equal(summary.total_calls, summary.calls_this_run.sweep + summary.calls_this_run.seeds + summary.calls_this_run.state_check);
     assert.equal(summary.calls_this_run.seeds, 4, 'every seed read is counted, including the unrecorded audiobook search');
     assert.match(run.stdout, new RegExp(`= ${summary.total_calls} \\(`));
+  });
+
+  it('proves #1347 coverage is real: the two restored tools are CALLED, not just reclassified', () => {
+    // The registry assertion in the census test can be satisfied by a row that
+    // never reaches a call. This leg runs the real script and asks the report
+    // what actually happened to `library_genre_report` and `filter_by_genre`:
+    // a tool with no SAFE_ARGS recipe is recorded as a SKIP with a different
+    // reason, which is precisely how a reclassification can look like a fix
+    // while the sweep still measures nothing.
+    const run = runGauntlet({ mutateOnDryRun: false, proseOnly: false });
+    assert.equal(run.status, 0, run.stdout);
+    const byName = new Map<string, any>(
+      (run.report.results as any[]).map((r) => [r.tool, r]),
+    );
+    for (const name of ['library_genre_report', 'filter_by_genre']) {
+      const row = byName.get(name);
+      assert.ok(row, `${name} is missing from the sweep report entirely`);
+      assert.equal(row.status, 'PASS', `${name} was not exercised: ${JSON.stringify(row)}`);
+    }
+    // And the run says so in its own output, not only in the JSON.
+    assert.match(run.stdout, /uncalled registry writes: \d+/);
+    const gapLine = run.stdout.split('\n').find((l) => l.startsWith('uncalled registry writes:'))!;
+    for (const name of ['filter_by_genre', 'library_genre_report']) {
+      assert.ok(!gapLine.includes(name), `${name} is called again but still reported as uncovered: ${gapLine}`);
+    }
+    // The report carries the measured census, and the two are absent from it.
+    const gaps: string[] = run.report.classification.uncalled_registry_writes;
+    assert.ok(Array.isArray(gaps) && gaps.length > 0, 'the census is empty — it should list what cannot be called');
+    assert.equal(run.report.classification.uncalled_registry_write_count, gaps.length);
   });
 
   it('proves the proof goes red: a tool that mutates during a "dry run" is detected', () => {
