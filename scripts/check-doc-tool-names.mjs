@@ -338,6 +338,19 @@ const documentedMetadata = new Set([
   // not a parameter — `saved_vs_playlist_coverage` has returned it since #732
   // and `playlist_staleness_report` now does too.
   'quota_hit_at_playlist',
+  // #604: the `spotify://me/genre-heatmap` coverage contract. The heatmap
+  // reports the source it read and how much of that source it could actually
+  // read, so these are the JSON keys a doc must name to describe the payload:
+  // the two `source` values it can emit, the window it reads, and the counts
+  // separating rows read from rows excluded as unreadable. None is a tool or a
+  // parameter.
+  'top_artists_sample', 'medium_term',
+  'artists_counted', 'artists_with_genres',
+  'artists_unreadable', 'unreadable_artists',
+  // #604: the sidecar the heatmap description used to claim and never read.
+  // Named here only so the contract can state the claim was removed; it is
+  // neither a tool nor a parameter, and no code path produces this sidecar.
+  'followed_artists',
 ]);
 /**
  * Range vocabulary (#720). The JSON-example check already rejects a bad

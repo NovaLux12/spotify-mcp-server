@@ -59,6 +59,17 @@ const profile = {
 interface StubOptions {
   getResponse?: (path: string, params?: Record<string, string>) => unknown;
   getAllPagesResponse?: (path: string) => unknown[];
+  /**
+   * Full walk verdict, for the resources that report coverage (#718/#604).
+   * Omitted means a complete walk whose rows are every row returned, which is
+   * what the pre-existing rendering tests assume.
+   */
+  walk?: {
+    items: unknown[];
+    truncated?: boolean;
+    truncatedByCap?: boolean;
+    reportedTotal?: number | null;
+  };
 }
 
 function makeClientStub(opts: StubOptions = {}): SpotifyClient {
@@ -68,13 +79,28 @@ function makeClientStub(opts: StubOptions = {}): SpotifyClient {
       calls.push(params === undefined ? { method: 'GET', path } : { method: 'GET', path, params });
       return opts.getResponse?.(path, params);
     },
-    getAllPages: async (path: string) => opts.getAllPagesResponse?.(path) ?? [],
-    // The saved/playlist resources report the walk's cap verdict (#718); this
-    // seam hands back a complete walk, so the tests below stay about rendering.
-    getAllPagesWithTruncation: async (path: string) => ({
-      items: opts.getAllPagesResponse?.(path) ?? [],
-      truncated: false,
-    }),
+    // Both paging seams are fed from the same rows on purpose: the pre-fix
+    // code walked via `getAllPages` and the fixed code via
+    // `getAllPagesWithTruncation`, so a fixture wired to only one of them
+    // would make these tests fail on an EMPTY result rather than on the
+    // missing disclosure — a green-for-the-wrong-reason red (#6: a test that
+    // cannot fail for the stated reason is worse than no test).
+    getAllPages: async (path: string) =>
+      opts.getAllPagesResponse?.(path) ?? opts.walk?.items ?? [],
+    // The saved/playlist resources report the walk's cap verdict (#718), and
+    // the genre heatmap reports its own coverage (#604); this seam hands back
+    // a complete walk unless a test supplies a verdict, so the tests below
+    // stay about rendering.
+    getAllPagesWithTruncation: async (path: string) => {
+      const rows = opts.walk?.items ?? opts.getAllPagesResponse?.(path) ?? [];
+      return {
+        items: rows,
+        truncated: opts.walk?.truncated ?? false,
+        truncatedByCap: opts.walk?.truncatedByCap ?? false,
+        reportedTotal: opts.walk?.reportedTotal ?? null,
+        pages: 1,
+      };
+    },
     getRateLimitStatus: () => ({
       lastThrottleAt: null as number | null,
       retryAfterSec: null as number | null,
@@ -374,6 +400,143 @@ test('rate-limit resource reports never throttled by default (#56/#59)', async (
 
   const raw = firstContent(await client.readResource({ uri: 'spotify://me/rate-limit?format=json' }));
   assert.deepEqual(JSON.parse(raw.text), { lastThrottleAt: null, retryAfterSec: null, cooldownRemainingMs: 0 });
+});
+
+// ---------------------------------------------------------- genre heatmap
+
+test('genre-heatmap reports the source and the coverage it actually read (#604)', async () => {
+  const client = await connect(makeClientStub({
+    walk: {
+      items: [
+        { id: 'a1', name: 'Radiohead', uri: 'spotify:artist:a1', genres: ['alternative rock', 'art rock'] },
+        { id: 'a2', name: 'Portishead', uri: 'spotify:artist:a2', genres: ['trip hop'] },
+      ],
+    },
+  }));
+
+  const prose = firstContent(await client.readResource({ uri: 'spotify://me/genre-heatmap' }));
+  // The source is named, so a reader cannot mistake a top-artists sample for
+  // the followed-artist set the old description promised.
+  assert.match(prose.text, /source: top_artists_sample/);
+  assert.match(prose.text, /2 artist\(s\) read/);
+  assert.match(prose.text, /not your followed artists/);
+
+  const raw = firstContent(await client.readResource({ uri: 'spotify://me/genre-heatmap?format=json' }));
+  const sc = JSON.parse(raw.text);
+  assert.equal(sc.source, 'top_artists_sample');
+  assert.equal(sc.time_range, 'medium_term');
+  assert.equal(sc.artists_counted, 2);
+  assert.equal(sc.artists_with_genres, 2);
+  assert.equal(sc.artists_unreadable, 0);
+  assert.equal(sc.truncated, false);
+  assert.deepEqual(sc.genres, { 'alternative rock': 1, 'art rock': 1, 'trip hop': 1 });
+  // Nothing unreadable means the omission itself is absent, matching the
+  // stats.fm #803 shape rather than emitting an empty list by default.
+  assert.equal(sc.unreadable_artists, undefined);
+});
+
+test('genre-heatmap reports an artist with no genres field as unreadable, not as zero genres (#604/#804)', async () => {
+  const client = await connect(makeClientStub({
+    walk: {
+      items: [
+        { id: 'a1', name: 'Radiohead', uri: 'spotify:artist:a1', genres: ['alternative rock'] },
+        // `genres` is deprecated and not in ArtistObject's required set, so a
+        // row can arrive without it. That is a row we could not read — NOT an
+        // artist Spotify classified as having no genres.
+        { id: 'a2', name: 'Nameless Read', uri: 'spotify:artist:a2' },
+        // A row that is genuinely genre-less: read, and really zero.
+        { id: 'a3', name: 'Truly Unclassified', uri: 'spotify:artist:a3', genres: [] },
+      ],
+    },
+  }));
+
+  const prose = firstContent(await client.readResource({ uri: 'spotify://me/genre-heatmap' }));
+  assert.match(prose.text, /1 of 3 artist\(s\) could not be read/);
+  assert.match(prose.text, /lower bound/);
+  // Named by id as well as name, and carrying the reason.
+  assert.match(prose.text, /Nameless Read \(a2\)/);
+  assert.match(prose.text, /no genres field/);
+  // The genuinely-empty artist is not reported as unreadable: it was read.
+  assert.doesNotMatch(prose.text, /Truly Unclassified/);
+
+  const raw = firstContent(await client.readResource({ uri: 'spotify://me/genre-heatmap?format=json' }));
+  const sc = JSON.parse(raw.text);
+  assert.equal(sc.artists_counted, 3);
+  assert.equal(sc.artists_with_genres, 2);
+  assert.equal(sc.artists_unreadable, 1);
+  assert.deepEqual(sc.unreadable_artists, [
+    { id: 'a2', name: 'Nameless Read', reason: 'the API returned this artist with no genres field' },
+  ]);
+  // The unreadable row contributed no genre, and the readable one did.
+  assert.deepEqual(sc.genres, { 'alternative rock': 1 });
+});
+
+test('genre-heatmap names an unreadable artist by id when its name is missing too (#804)', async () => {
+  const client = await connect(makeClientStub({
+    walk: { items: [{ id: 'a9', uri: 'spotify:artist:a9' }] },
+  }));
+
+  const raw = firstContent(await client.readResource({ uri: 'spotify://me/genre-heatmap?format=json' }));
+  const sc = JSON.parse(raw.text);
+  assert.deepEqual(sc.unreadable_artists, [
+    { id: 'a9', name: null, reason: 'the API returned this artist with no genres field' },
+  ]);
+
+  // The prose must still identify the row; the id cannot itself be wrong.
+  const prose = firstContent(await client.readResource({ uri: 'spotify://me/genre-heatmap' }));
+  assert.match(prose.text, /a9 \(a9\)/);
+});
+
+test('genre-heatmap says so when every artist in the sample is unreadable (#604)', async () => {
+  const client = await connect(makeClientStub({
+    walk: { items: [{ id: 'a1', name: 'One', uri: 'spotify:artist:a1' }] },
+  }));
+
+  const prose = firstContent(await client.readResource({ uri: 'spotify://me/genre-heatmap' }));
+  // The old code rendered this as "No genre data available." — indistinguishable
+  // from a user who genuinely has no genre tags, which is the #803 mistake.
+  assert.doesNotMatch(prose.text, /No genre data available/);
+  assert.match(prose.text, /no genre was returned for any artist in this sample/);
+  assert.match(prose.text, /1 of 1 artist\(s\) could not be read/);
+});
+
+test('genre-heatmap reports a truncated walk instead of implying full coverage (#604/#864)', async () => {
+  const capped = await connect(makeClientStub({
+    walk: {
+      items: [{ id: 'a1', name: 'Radiohead', uri: 'spotify:artist:a1', genres: ['art rock'] }],
+      truncated: true,
+      truncatedByCap: true,
+      reportedTotal: 180,
+    },
+  }));
+  const prose = firstContent(await capped.readResource({ uri: 'spotify://me/genre-heatmap' }));
+  assert.match(prose.text, /truncated at 50 artists/);
+  assert.match(prose.text, /get_top_artists with offset/);
+
+  // Short of a reported total WITHOUT the cap binding: naming the cap there
+  // would blame a ceiling that never applied.
+  const short = await connect(makeClientStub({
+    walk: {
+      items: [{ id: 'a1', name: 'Radiohead', uri: 'spotify:artist:a1', genres: ['art rock'] }],
+      truncated: true,
+      truncatedByCap: false,
+      reportedTotal: 180,
+    },
+  }));
+  const shortProse = firstContent(await short.readResource({ uri: 'spotify://me/genre-heatmap' }));
+  assert.match(shortProse.text, /the API reports 180 artists and this walk read 1/);
+  assert.doesNotMatch(shortProse.text, /truncated at 50/);
+});
+
+test('genre-heatmap no longer claims a followed_artists sidecar it never read (#604)', async () => {
+  const client = await connect(makeClientStub());
+  const resources = await client.listResources();
+  const heatmap = resources.resources.find((r) => r.uri === 'spotify://me/genre-heatmap');
+  assert.ok(heatmap, 'genre-heatmap resource is registered');
+  // The description promised a sidecar source that no code path reads, which
+  // is the coverage promise #604 exists to remove.
+  assert.doesNotMatch(heatmap.description, /sidecar/);
+  assert.doesNotMatch(heatmap.description, /followed_artists/);
 });
 
 // ---------------------------------------------------------------- prompts

@@ -1100,17 +1100,40 @@ export function registerResources(server: McpServer, client: SpotifyClient): voi
     },
   );
 
-  // spotify://me/genre-heatmap — local sidecar derived
+  // spotify://me/genre-heatmap — live top-artists sample (#604)
+  //
+  // The description used to promise a `followed_artists` sidecar this
+  // resource has never read: nothing in the server writes one, and the walk
+  // below has always been a live `/me/top/artists` fetch. The comment above
+  // it ("read followed_artists.json if present, else live fetch") described a
+  // branch that did not exist, so the sidecar path is removed rather than
+  // implemented — the honest reading is the one that actually runs, and
+  // #604's acceptance criteria explicitly allow dropping the claim.
   registerResourcePair(
     'genre-heatmap',
     'spotify://me/genre-heatmap',
-    "Genre heatmap from followed_artists sidecar ('?format=json' returns raw counts)",
+    "Genre counts over a live sample of your top artists (medium term, up to 50 — not your followed artists); the rendered output names the source and how many artists were read ('?format=json' returns the counts with their coverage)",
     async (url) => {
-      // Best-effort: read followed_artists.json if present, else live fetch
       const genres: Record<string, number> = {};
-      let artists: SpotifyArtistFull[];
+      // An artist whose `genres` could not be read is neither readable nor
+      // zero-genre. `ArtistObject` declares no `required` fields and marks
+      // `genres` deprecated, so a row can arrive without the field; the old
+      // `a.genres ?? []` folded that case into the same bucket as an artist
+      // Spotify genuinely classified as having no genres, and the heatmap
+      // asserted a completeness it had not checked. Recorded with the id as
+      // the fallback label — the one field on the row that cannot itself be
+      // missing in a way that misleads (#804).
+      const unreadableArtists: Array<{ id: string; name: string | null; reason: string }> = [];
+      let walk: { items: SpotifyArtistFull[]; truncated: boolean; truncatedByCap: boolean; reportedTotal: number | null };
       try {
-        artists = await client.getAllPages<SpotifyArtistFull>('/me/top/artists', { limit: '50' }, { maxItems: 50 });
+        // The truncation verdict travels with the walk (#864): a 50-item
+        // sample that stopped at the cap is a partial read, and the bare
+        // array this used to call could not tell that from a complete one.
+        walk = await client.getAllPagesWithTruncation<SpotifyArtistFull>(
+          '/me/top/artists',
+          { limit: '50' },
+          { maxItems: 50 },
+        );
       } catch (error) {
         const expected = resourceError(error);
         if (expected) {
@@ -1125,11 +1148,54 @@ export function registerResources(server: McpServer, client: SpotifyClient): voi
         }
         throw error;
       }
-      for (const a of artists) for (const g of (a.genres ?? [])) genres[g] = (genres[g] ?? 0) + 1;
-      if (wantsJson(url)) return json('spotify://me/genre-heatmap', { genres });
+      for (const a of walk.items) {
+        if (!Array.isArray(a.genres)) {
+          unreadableArtists.push({
+            id: a.id ?? '',
+            name: typeof a.name === 'string' ? a.name : null,
+            reason: 'the API returned this artist with no genres field',
+          });
+          continue;
+        }
+        for (const g of a.genres) genres[g] = (genres[g] ?? 0) + 1;
+      }
+      const artistsCounted = walk.items.length;
+      const coverage = {
+        source: 'top_artists_sample' as const,
+        time_range: 'medium_term' as const,
+        artists_counted: artistsCounted,
+        artists_with_genres: artistsCounted - unreadableArtists.length,
+        artists_unreadable: unreadableArtists.length,
+        truncated: walk.truncated,
+        truncated_by_cap: walk.truncatedByCap,
+        total: walk.reportedTotal,
+      };
+      if (wantsJson(url)) {
+        return json('spotify://me/genre-heatmap', {
+          ...coverage,
+          ...(unreadableArtists.length > 0 ? { unreadable_artists: unreadableArtists } : {}),
+          genres,
+        });
+      }
       const top = Object.entries(genres).sort((a, b) => b[1] - a[1]).slice(0, 10);
-      const lines = top.map(([g, n]) => `  ${g}: ${n}`);
-      return text('spotify://me/genre-heatmap', top.length ? `Top genres:\n${lines.join('\n')}` : 'No genre data available.');
+      const lines = [`Top genres (source: ${coverage.source}, ${coverage.time_range} — ${artistsCounted} artist(s) read, not your followed artists):`];
+      if (top.length > 0) for (const [g, n] of top) lines.push(`  ${g}: ${n}`);
+      else lines.push('  (none — no genre was returned for any artist in this sample)');
+      // Same shape as the #803 stats.fm fix: say what could not be read, name
+      // the rows, and say the counts are a lower bound — never render an
+      // unreadable row as a zero.
+      if (unreadableArtists.length > 0) {
+        lines.push(
+          `(${unreadableArtists.length} of ${artistsCounted} artist(s) could not be read and are excluded from these counts — genre counts are a lower bound: ${unreadableArtists.map((u) => `${u.name ?? u.id} (${u.id}) — ${u.reason}`).join(', ')})`,
+        );
+      }
+      if (walk.truncated) {
+        const cause = walk.truncatedByCap
+          ? 'truncated at 50 artists (this sample is a top-artists window, not a full history)'
+          : `the API reports ${walk.reportedTotal ?? 'an unknown number of'} artists and this walk read ${artistsCounted}`;
+        lines.push(`(... ${cause} — use get_top_artists with offset for more)`);
+      }
+      return text('spotify://me/genre-heatmap', lines.join('\n'));
     },
   );
 
