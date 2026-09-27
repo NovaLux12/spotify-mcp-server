@@ -46,6 +46,53 @@ This server deliberately wraps **only Spotify Web API endpoints that are availab
 
 When adding a tool, verify the endpoint against the official [Spotify Web API reference](https://developer.spotify.com/documentation/web-api/reference) rather than guessing paths or field names. Prefer the current unified endpoints (e.g. `/playlists/{id}/items`, `/me/library`) over their deprecated predecessors.
 
+## Brand marks, wordmarks, and attribution
+
+This is an unofficial third-party client. Two rules pull in opposite
+directions, and both are load-bearing.
+
+**Do not put a third party's mark in this repository.** The
+[Branding Guidelines](https://developer.spotify.com/branding-guidelines) are
+explicit: "Your logo should not include, or look similar to the Spotify logo or
+any of its brand elements (e.g. Spotify Green, the circle, and the waves)." So,
+in any file under `assets/` or any source file under `src/`:
+
+- No Spotify Green — `#1DB954` or `#1ED760` — in any casing or notation.
+- No Spotify circle or waves glyph, redrawn, recoloured, rotated, or partial.
+  Recomposing the mark out of circles and curves is a modification, and the
+  guidelines allow no exceptions for it.
+- No third-party wordmark set as artwork: no rendered `Spotify`, `stats.fm` or
+  `Last.fm` text, and no bar-chart or dot-chain glyph standing in for one.
+- No vendored logo file. Do not commit Spotify's or anyone else's official
+  asset into this MIT-licensed repository.
+
+The same applies to the `User-Agent` this server sends: it carries this
+project's own name and a contact URL, and no third-party product token. Do not
+add one.
+
+`tests/third-party-marks-guard.test.ts` fails the build if any of the above
+returns. It is a source scan, so it sees new files without being edited.
+
+**Do not strip out the nominative references either.** The Terms require the
+attribution, so the following are correct and must stay:
+
+- Plain-text references naming the Spotify Web API, `spotify:` URIs,
+  `open.spotify.com` links, `SPOTIFY_*` environment variables, and the API's own
+  field names. That is describing the platform being integrated, which is the
+  point of the project.
+- The non-affiliation notice, which must read as the opposite of an endorsement
+  claim: this project is not affiliated with, endorsed by, or sponsored by
+  Spotify AB.
+- Attribution *of* Spotify content, where content is displayed.
+
+Deleting the word "Spotify" to avoid a trademark problem would be the actual
+compliance failure. The rule is not "no third-party names" — it is "no
+third-party marks, and keep the required attribution".
+
+If you need to attribute Spotify visually, do not draw it. Reference the
+official full logo by URL, unmodified, and follow the size and exclusion-zone
+rules in [docs/compliance.md](docs/compliance.md).
+
 ## Commit messages: Conventional Commits
 
 All commits must follow [Conventional Commits](https://www.conventionalcommits.org/): `type(scope): description`. Examples:

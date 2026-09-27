@@ -67,8 +67,26 @@ const RETRY_SLEEP_CAP_SEC = 10;
  */
 const RETRYABLE_STATUSES: ReadonlySet<number> = new Set([429, 502, 503, 504]);
 
-/** Sent on every request. stats.fm serves unauthenticated JSON only. */
-const STATSFM_USER_AGENT = 'spotify-mcp/statsfm';
+/**
+ * Sent on every request. stats.fm serves unauthenticated JSON only.
+ *
+ * The product token is this project's own name, and the trailing comment is a
+ * contact URL — the convention RFC 9110 §10.1.5 sets out for a UA that has
+ * nobody to complain to otherwise. It deliberately does NOT name stats.fm
+ * (#698). stats.fm's Terms Sec. 7.1(g) forbids using their name, logo or
+ * trademarks "without our prior written consent", and Sec. 4.3 asserts those
+ * rights over exactly this string. An earlier value here read
+ * `spotify-mcp/statsfm`, which advertised a third party's name on every
+ * outbound request with no recorded consent, and misdescribed the client: the
+ * caller is this server, not stats.fm. Naming the upstream service buys
+ * nothing operationally — every request still arrives with stats.fm's own
+ * response headers — and costs a term.
+ *
+ * No version suffix. Reading `package.json` for one means a relative path that
+ * is correct from `src/lib/` and wrong from `dist/lib/`, and a UA that throws
+ * because a path is off by one directory is worse than a UA without a version.
+ */
+const STATSFM_USER_AGENT = 'spotify-mcp (+https://github.com/NovaLux12/spotify-mcp-server)';
 
 export class StatsfmApiError extends Error {
   constructor(
