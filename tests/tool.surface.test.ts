@@ -193,6 +193,12 @@ const OUTPUT_FIELD_NAMES = new Set<string>([
   // already-present exclusion set is incomplete. A key the tool reports about
   // its own result, not a tool it is routing to.
   'existing_truncated',
+  // #896: playlist_staleness_report's description names the key that says
+  // which playlist a mid-walk 429 stopped it at, because that is the field a
+  // caller reads to decide whether the report is complete. It has been an
+  // output field on saved_vs_playlist_coverage since #732 and is now on this
+  // tool too. A key the tool reports about its own result, not a tool.
+  'quota_hit_at_playlist',
   // Row keys and counters inside a result payload.
   'added_by',
   'album_type',

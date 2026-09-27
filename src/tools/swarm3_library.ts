@@ -29,6 +29,7 @@ import {
   truncateItems,
   paginationInfo,
   listStructuredContent,
+  DryRunScan as ShapedDryRunScan,
 } from '../shaping.js';
 import type { ResponseFormatValue } from '../shaping.js';
 import { getConfig } from '../config.js';
@@ -72,10 +73,11 @@ const TopN = z
   .optional()
   .describe('How many rows/groups to show (default 10)');
 
-const DryRunScan = z
-  .boolean()
-  .optional()
-  .describe('Preview only: report the request cost of the scan without performing it (default false)');
+// #896: the scan preview contract now lives once in ../shaping.ts, with
+// `playlist_staleness_report` and `dead_library_finder` on it. The description
+// string is byte-identical to the local fragment it replaces, so the published
+// `tools/list` schema for this module is unchanged by the move.
+const DryRunScan = ShapedDryRunScan;
 
 // ---------------------------------------------------------------------------
 // Row types + loaders (Feb-2026 field shape: no popularity/markets/genres)
@@ -876,11 +878,37 @@ export function registerSwarm3LibraryTools(server: McpServer, client: SpotifyCli
       const cap = pre.cap;
       const shrink = pre.shrunk ? { requests_planned: walkCap(scan_cap), budget_shrunk: true } : {};
       if (dry_run) {
-        // Cost preview without any calls: playlist count unknown until walk, so estimate at scan_cap pages.
+        // #896: the preview used to add the per-playlist item pages ONCE
+        // (`cap / 100`) instead of once PER PLAYLIST. The real path walks
+        // `/me/playlists` first and then pages each playlist it finds, so the
+        // walk multiplies by a count that is unknown until the list is read.
+        // A preview that under-reports its own worst case by ~100x is worse
+        // than no preview: the caller budgets against the number and then
+        // spends it. Report the true upper bound — which is bounded because
+        // BOTH the list walk and every per-playlist walk are capped at `cap`
+        // — and name the term that is unknown until the list is read.
+        //
+        // `Math.ceil` matters here too: `cap / 100` is fractional for any cap
+        // under 100, so the old field was not even an integer request count.
         const trackPages = Math.max(1, Math.ceil(cap / 50));
         const listPages = Math.max(1, Math.ceil(cap / 50));
-        return shapeResult(rf, `[dry run] saved_vs_playlist_coverage would walk /me/tracks + /me/playlists + up to ${cap / 100} item page(s) per playlist (scan_cap=${cap}). Worst-case cost: ~${trackPages + listPages + cap / 100} requests.`, {
-          dry_run: true, scan_cap: cap, estimated_requests_max: trackPages + listPages + cap / 100,
+        const itemPagesPerPlaylist = Math.max(1, Math.ceil(cap / 100));
+        // Upper bound: every one of the `cap` playlists the list walk can
+        // return is then paged to `cap` items.
+        const estimatedRequestsMax = trackPages + listPages + cap * itemPagesPerPlaylist;
+        return shapeResult(rf, `[dry run] saved_vs_playlist_coverage would walk /me/tracks (up to ${trackPages} page(s)) + /me/playlists (up to ${listPages} page(s), at most ${cap} playlists) + up to ${itemPagesPerPlaylist} item page(s) for EACH of those playlists. `
+          + `Worst-case cost: <=${estimatedRequestsMax} requests (scan_cap=${cap}). `
+          + `The exact cost is 2 list pages + ${trackPages} + sum over the P playlists actually found of min(ceil(items_p/100), ${itemPagesPerPlaylist}); P is unknown until /me/playlists is read, so the bound assumes the worst case P=${cap}.`,
+        {
+          dry_run: true,
+          scan_cap: cap,
+          estimated_requests_max: estimatedRequestsMax,
+          // The part of the cost that cannot be known without the list walk,
+          // broken out so a caller can see WHAT is unknown rather than being
+          // handed a single number that hides it.
+          estimated_requests_known: trackPages + listPages,
+          playlists_scanned_max: cap,
+          item_pages_per_playlist_max: itemPagesPerPlaylist,
         });
       }
       const tracks = await loadSavedTracks(client, cap);
