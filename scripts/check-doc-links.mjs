@@ -93,8 +93,15 @@ export function anchorsOf(source) {
   return anchors;
 }
 
-/** An inline link or image, with its optional title stripped. */
-const LINK = /!?\[[^\]]*\]\(\s*([^)\s]+)(?:\s+"[^"]*")?\s*\)/g;
+/**
+ * An inline link or image, with its optional title stripped.
+ *
+ * `[^)\s]+` cannot span the closing paren, so a destination containing one
+ * (`(foo(bar))`) would be mis-parsed; no link in the tree needs that, and
+ * widening it risks matching across a sentence. Angle-bracket destinations are
+ * unwrapped instead, which is the form a path with a space takes.
+ */
+const LINK = /!?\[[^\]]*\]\(\s*<?([^)\s>]+)>?(?:\s+"[^"]*")?\s*\)/g;
 
 export function walk(directory) {
   const files = [];
