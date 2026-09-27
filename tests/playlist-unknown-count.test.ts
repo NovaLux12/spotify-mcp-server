@@ -106,7 +106,7 @@ function harness(register: Registrar, responder: Responder) {
     assert.ok(tool, `tool ${name} was not registered`);
     return tool.handler(tool.validate(args));
   };
-  return { call, registered };
+  return { call };
 }
 
 // ---------------------------------------------------------------------------
