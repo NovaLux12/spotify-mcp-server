@@ -148,7 +148,7 @@ if you lower the limit to force one.
 | artistwatch | 6 | 6,284 | 6 | 6,284 | 7 | 6,913 |
 | queueops | 3 | 3,536 | 3 | 3,536 | 4 | 3,890 |
 | playbackext | 13 | 8,178 | 13 | 8,178 | 14 | 8,996 |
-| playbackintel | 15 | 11,837 | 15 | 11,837 | 16 | 13,021 |
+| playbackintel | 15 | 11,882 | 15 | 11,882 | 16 | 13,071 |
 | scenes | 7 | 4,514 | 7 | 4,514 | 8 | 4,966 |
 | playlisthealth | 8 | 5,285 | 8 | 5,285 | 9 | 5,814 |
 | playlistdna | 1 | 1,310 | 1 | 1,310 | 2 | 1,442 |

@@ -641,6 +641,46 @@ Search for a track or episode by name and start playing it — combines `search`
 
 ---
 
+#### `market_availability`
+Check whether a track, episode, or album is available in each of 1–10 markets.
+All markets are probed in **one concurrent batch** (`N× GET /{type}/{id}?market=X`);
+the requests pass through the shared request funnel, so the process-wide
+concurrency ceiling and the shared rate-limit gate still bound what goes out.
+Results are reported in the caller's market order regardless of which probe
+resolved first.
+
+**Inputs:**
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `uri` | string | yes | Spotify URI (track/episode/album) |
+| `markets` | string[] | yes | 1–10 market codes to test, e.g. `["US","JP","DE"]` |
+| `response_format` | `"text"` \| `"json"` | no | Output shape |
+
+**Returns:** `per_market[]` with one row per probed market, each carrying
+`market`, `available` (the read returned a payload), `is_playable`,
+`name?`, and `error?` (why the probe failed, when it did), plus
+`available_count`, `playable_count`, and `playable_unknown_count`.
+
+`is_playable` is `true`, `false`, or **`null`**, and the `null` case is
+load-bearing. The current OpenAPI schema publishes `is_playable` on track and
+episode objects but **not on album objects**, and on a track it appears only
+when relinking applied — so an absent field is an unanswered question, and it
+is never coerced to `false` (that would report an unavailability Spotify never
+stated). `playable_unknown_count` counts those markets.
+
+This tool no longer reads `available_markets`, which the schema flags
+`deprecated: true` on every object that carries it. It previously reported
+that field as the authoritative global answer and, when the field came back
+empty, as `Full available_markets: 0` — a degradation the module's own rules
+forbid. The per-market `is_playable` is the API's own answer.
+
+A 404 means "not available in this market"; a 429 or transport failure is a
+statement about the run, not about the market, and is reported as such with
+its reason so a throttled sweep cannot read as a clean sweep of
+unavailability.
+
+---
+
 ### 5.2 Search
 
 #### `search`
