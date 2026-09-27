@@ -455,11 +455,25 @@ missing. Three things follow:
   label, in the same shape as a paragraph that went missing. Ordinary work still
   survives: the repair is `npm run count:tools -- --prose-sync`, which adds the
   key and retires nothing — commit the paragraph, run the sync, commit the pin.
-- **Changing or deleting prose needs `--prose-sync`.** That command **refuses**
-  to drop a pinned entry and names what vanished. Only
-  `--prose-sync --retire "<reason>"` removes one, and it records the reason and
-  the date permanently. Losing prose has to be a named, dated act, not a side
-  effect.
+- **Changing or deleting prose needs `--prose-sync`, and the two are not the
+  same command.** That command **refuses** to drop a pinned entry and names what
+  vanished, because the pin is keyed on content and a reword hashes exactly like
+  a deletion. Losing prose has to be a named, dated act, not a side effect, and
+  the other thing that makes a key disappear needs its own record too. A
+  **deliberate deletion** is `--prose-sync --retire "<reason>"`, which records
+  the reason and the date permanently and names no successor, because there is
+  none. A **reword in place** is `--prose-sync --reanchor "<file>:<hash>" --to
+  "<new prose>" --why "<why>"` ([#1527](https://github.com/NovaLux12/spotify-mcp-server/issues/1527)),
+  which records the old hash, the new hash and the reason, and **refuses unless
+  the replacement is already in the file**. That condition is the whole operation:
+  it is what stops a reanchor being a quiet way to drop a pin, and it is why
+  restoring prose stays hand-work from the ref you dropped rather than becoming a
+  flag. `--to` takes the paragraph's text or its hash, and `--prose-report` names
+  a paragraph that is new to the pin under `coverage.unpinned` — so the hash it
+  prints is the one to hand `--to`. `--prose-report` reads the resulting
+  `reanchored` list too, and fails on a record that contradicts a live
+  retirement, so the two records cannot drift into disagreeing about one
+  paragraph.
 - **A retirement reason is a claim about a tree, and `--prose-sync` records
   which one** ([#1440](https://github.com/NovaLux12/spotify-mcp-server/issues/1440)).
   It refuses before it writes when the tree cannot be attested: a pinned

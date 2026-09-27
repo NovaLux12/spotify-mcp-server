@@ -50,7 +50,7 @@ import './helpers/hermetic.js';
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -100,24 +100,55 @@ const EXPECTED_FILES = [
  */
 const STATSFM_PROSE = 'Spotify is the system of record for playback, library, and catalog.';
 
+/**
+ * The replacement `STATSFM_PROSE` is reworded to in the #1527 tests.
+ *
+ * A real sentence rather than a marker, because the operation checks that the
+ * replacement is a unit of the document as the splitter sees it — a fixture like
+ * `REWORDED` would still be a paragraph, and that is the claim under test, so
+ * the wording itself is free. It is deliberately *longer* than the sentence it
+ * replaces, because "the paragraph is gone and the replacement is also gone" and
+ * "the paragraph was reworded" have to be distinguishable in the manifest as
+ * well as on the command line.
+ */
+const REWORDED_STATSFM = 'Spotify is the system of record for playback, library and catalog, and nothing else is';
+
 /** The reason string the retirement tests record, asserted end to end. */
 const RETIREMENT_REASON = 'removed the stale receipt paragraph';
 
+/** The reason string the reanchor tests record, asserted end to end. */
+const REANCHOR_REASON = 'the second-upstream sentence no longer held on its own; #1527 records the reword';
+
+/**
+ * A *second* reword of the same paragraph, for the chain case.
+ *
+ * Distinct from `REWORDED_STATSFM` and distinct from the paragraph it replaced,
+ * because the chain test's whole claim is that a reanchor of an already-anchored
+ * unit is not silently chained. A replacement that reused either existing text
+ * would be refused by the deduplication in `describeDocument` rather than by the
+ * rule under test.
+ */
+const SECOND_REWORD = 'Spotify is the only system of record for playback, library and catalog, and nothing else is';
+
 type Run = { status: number; stdout: string; stderr: string };
 
+type Reanchored = { file: string; hash: string; to: string; reason: string; date: string; label: string; toLabel?: string };
+
 function runCensus(args: string[]): Run {
-  try {
-    const stdout = execFileSync(process.execPath, ['scripts/surface-census.mjs', ...args], {
-      cwd: ROOT,
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'pipe'],
-      maxBuffer: 64 * 1024 * 1024,
-    });
-    return { status: 0, stdout, stderr: '' };
-  } catch (error) {
-    const failure = error as { status?: number; stdout?: string; stderr?: string };
-    return { status: failure.status ?? 1, stdout: failure.stdout ?? '', stderr: failure.stderr ?? '' };
-  }
+  // `spawnSync` rather than `execFileSync` for one reason, and it is a reason
+  // several assertions depend on: `execFileSync` returns only stdout, so every
+  // `stderr` this helper reported was stderr from a run that had *failed*. A
+  // successful run's stderr — which is where every "--prose-sync wrote N
+  // reanchored, M already recorded" line goes — read as empty, so "the command
+  // said it did nothing" and "the command said nothing" were indistinguishable.
+  // A test that cannot tell those apart is asserting on the exit code twice.
+  const result = spawnSync(process.execPath, ['scripts/surface-census.mjs', ...args], {
+    cwd: ROOT,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+    maxBuffer: 64 * 1024 * 1024,
+  });
+  return { status: result.status ?? 1, stdout: result.stdout ?? '', stderr: result.stderr ?? '' };
 }
 
 /**
@@ -150,6 +181,39 @@ function withoutParagraph(source: string, needle: string): string {
   const kept = lines.filter((line) => !line.includes(needle));
   assert.notEqual(kept.length, lines.length, `the fixture paragraph "${needle}" was not found — this test would prove nothing`);
   return kept.join('\n');
+}
+
+/**
+ * Reword one paragraph **in place**: same position, same line, different words.
+ *
+ * The in-place part is load-bearing rather than cosmetic. The defect #1527 is
+ * about a reword and a deletion hashing identically, and a fixture that moved
+ * the paragraph would differ in more ways than one, so a test built on a move
+ * would still go green against a reanchor that had never been written. Line for
+ * line, one line changed, is what the operation is actually for.
+ */
+function withRewordedParagraph(source: string, from: string, to: string): string {
+  const lines = source.split('\n');
+  const at = lines.findIndex((line) => line.includes(from));
+  assert.notEqual(at, -1, `the fixture paragraph "${from}" was not found — this test would prove nothing`);
+  const kept = [...lines];
+  kept[at] = kept[at].replace(from, to);
+  assert.notEqual(kept[at], lines[at], 'the replacement did not change anything, so there is no reword to record');
+  return kept.join('\n');
+}
+
+/**
+ * The whole prose unit carrying `needle` — the paragraph, not the sentence.
+ *
+ * The pin is keyed on the unit and the unit is the paragraph, so a test that
+ * hashed the sentence would name a key that is in no manifest and prove nothing
+ * at all. Resolved from the live document for the same reason: it is the only
+ * definition of "that paragraph" that cannot drift from what the gate hashes.
+ */
+function paragraphContaining(source: string, needle: string): string {
+  const unit = splitProseUnits(source).find((text) => text.includes(needle));
+  assert.ok(unit, `no prose unit in the document contains "${needle}" — the fixture no longer describes a paragraph`);
+  return unit;
 }
 
 // Every census run boots the MCP server, and the test runner executes test
@@ -186,6 +250,30 @@ function realCheck(dir: string, override?: string): Run {
 
 function realProseReport(): Run {
   return memo(reportCache, 'report', () => runCensus(['--prose-report']));
+}
+
+/**
+ * Drive a real `--prose-sync --reanchor` against a scratch copy of the pin.
+ *
+ * Never the repository's own manifest: `--prose-sync` *writes* the path it is
+ * given, and a test that rewrote the checked-in pin — particularly a test whose
+ * subject is "does this get refused" — would corrupt the artefact it is testing
+ * at exactly the moment the mechanism is broken. The same reason `--census-file`
+ * and `--prose-provenance` exist: the decision code has to be the real one.
+ */
+async function reanchor(dir: string, copy: string, document: string, key: string, to: string): Promise<Run> {
+  return runCensus([
+    '--prose-sync',
+    '--reanchor', key,
+    '--to', to,
+    '--why', REANCHOR_REASON,
+    '--prose-manifest', copy,
+    '--prose-override', `ARCHITECTURE.md=${document}`,
+    // Same reasoning as the retirement tests: this file asserts what a reanchor
+    // does, so it states the tree it is syncing against rather than inheriting
+    // whatever git says about the machine the suite happens to run on.
+    '--prose-provenance', await writeProvenanceFile(dir),
+  ]);
 }
 
 type ProseReport = {
@@ -643,6 +731,387 @@ describe('hand-written prose integrity (#1384)', () => {
       const run = runCensus(['--prose-sync', '--retire', '--prose-manifest', copy]);
       assert.notEqual(run.status, 0, '--retire with no reason should not be accepted');
       assert.match(run.stderr, /--retire requires a reason/);
+    });
+  });
+
+  // ---------------------------------------------------------------------
+  // #1527 — a reword in place is a different fact from a deletion, and it
+  // needs a different record.
+  //
+  // Everything above is what the pin could say. These are the two records it
+  // could not tell apart, and the assertion in each is deliberately narrow: a
+  // reanchor that is accepted but writes a retirement has reproduced the
+  // original defect with extra steps, so the shape of the record is checked
+  // and not merely that the command succeeded.
+  // ---------------------------------------------------------------------
+
+  it('records a reword in place as a reanchor carrying both hashes, not as a retirement (#1527)', async () => {
+    // The positive case, and the one the whole issue is a gap in. A paragraph
+    // fixed in place used to have exactly one thing that could be written about
+    // it — a retirement, i.e. a permanent claim that it is gone — so correcting
+    // a sentence meant asserting a deletion. The record has to name the old hash
+    // AND the new one, or it is the same false record with a friendlier label.
+    //
+    // Driven through the real CLI, for the reason the retirement tests give: an
+    // earlier version of this file called `syncProseManifest` directly and would
+    // have passed against a `--reanchor` the CLI never forwarded.
+    const repoBefore = await readFile(MANIFEST, 'utf8');
+    await withScratchDir(async (dir) => {
+      const copy = join(dir, 'manifest.json');
+      const reworded = join(dir, 'ARCHITECTURE.md');
+      const source = await readFile(join(ROOT, 'ARCHITECTURE.md'), 'utf8');
+      const before = paragraphContaining(source, STATSFM_PROSE);
+      const after = paragraphContaining(withRewordedParagraph(source, STATSFM_PROSE, REWORDED_STATSFM), REWORDED_STATSFM);
+      const oldHash = proseUnitHash(before);
+      const newHash = proseUnitHash(after);
+
+      // Preconditions. A fixture that is not a pinned paragraph, or whose reword
+      // does not change the hash, would make every assertion below pass for free.
+      assert.ok(
+        (JSON.parse(repoBefore).files['ARCHITECTURE.md'] as Array<{ hash: string }>).some((entry) => entry.hash === oldHash),
+        'the fixture paragraph is not pinned, so there is nothing for a reanchor to replace',
+      );
+      assert.notEqual(oldHash, newHash, 'a reword that does not change the content hash is a reword the pin cannot see');
+
+      await writeFile(copy, repoBefore);
+      await writeFile(reworded, withRewordedParagraph(source, STATSFM_PROSE, REWORDED_STATSFM));
+
+      // `--to` takes the replacement's hash, which is the form an author
+      // actually has: `--prose-report` prints the hash of every paragraph the
+      // walk found, and the reworded one is sitting in `unpinned`.
+      const run = await reanchor(dir, copy, reworded, `ARCHITECTURE.md:${oldHash}`, newHash);
+      assert.equal(run.status, 0, `a reword in place must be accepted:\n${run.stderr}`);
+
+      const manifest = JSON.parse(await readFile(copy, 'utf8'));
+      const record = (manifest.reanchored as Reanchored[]).find((entry) => entry.hash === oldHash);
+      assert.ok(record, `the reword was not recorded as a reanchor:\n${JSON.stringify(manifest.reanchored, null, 2)}`);
+      assert.equal(record.file, 'ARCHITECTURE.md', 'the record has to name the file; the same prose can be pinned in two');
+      assert.equal(record.to, newHash, 'the record must carry the NEW hash too. A reanchor that only remembers what it replaced is a retirement wearing a new label');
+      assert.equal(record.reason, REANCHOR_REASON, 'a reanchor without a reason is the same unexplained record a retirement without one is');
+      assert.match(record.date, /^\d{4}-\d{2}-\d{2}$/);
+
+      // The load-bearing negative. This is the defect: one paragraph, one
+      // permanent record, and the two operations are supposed to be
+      // indistinguishable to the tool and *not* interchangeable to the reader.
+      assert.deepEqual(
+        (manifest.retired ?? []).filter((entry: { hash: string }) => entry.hash === oldHash),
+        [],
+        'a reword was recorded as a deletion. That is the false record #1527 exists to stop, and it would read to the next author as a decision.',
+      );
+
+      // The replacement really is pinned now, which is the mechanical half of
+      // "a reanchor asserts both texts are in the tree".
+      assert.ok(
+        (manifest.files['ARCHITECTURE.md'] as Array<{ hash: string }>).some((entry) => entry.hash === newHash),
+        'the replacement paragraph is not pinned, so the reanchor claims a text the pin does not hold',
+      );
+
+      // And the gate is clean — through the real report, over the real manifest
+      // the run wrote, not through a hand-built one. An accepted reanchor that
+      // left the report red would be a reanchor that only moved the failure.
+      const reportRun = runCensus(['--prose-report', '--prose-manifest', copy, '--prose-override', `ARCHITECTURE.md=${reworded}`]);
+      assert.equal(reportRun.status, 0, `the report must be clean after a reanchor:\n${reportRun.stderr}${reportRun.stdout}`);
+      const reportJson = JSON.parse(reportRun.stdout) as {
+        errors: string[];
+        coverage: { missing: unknown[]; unpinned: unknown[] };
+        reanchors: { active: Reanchored[]; contradicted: unknown[]; malformed: unknown[]; cyclic: unknown[] };
+      };
+      assert.deepEqual(reportJson.errors, [], reportJson.errors.join('\n'));
+      assert.equal(reportJson.coverage.missing.length, 0, 'the reworded paragraph is still reported missing after a reanchor');
+      assert.deepEqual(reportJson.reanchors.contradicted, [], 'the record just written must not read as contradicted');
+      assert.deepEqual(reportJson.reanchors.malformed, []);
+      assert.deepEqual(reportJson.reanchors.cyclic, []);
+      assert.ok(
+        reportJson.reanchors.active.some((entry) => entry.hash === oldHash),
+        'the reanchor is not in `active`, so --prose-report is not reading the list it was meant to check',
+      );
+
+      assert.equal(
+        await readFile(MANIFEST, 'utf8'),
+        repoBefore,
+        'this test wrote to the checked-in manifest instead of the copy it was given',
+      );
+    });
+  });
+
+  it('refuses a reanchor whose replacement is not in the file (#1527)', async () => {
+    // The anti-vacuity half, and the reason the operation is allowed to exist at
+    // all. A reanchor that did not require the replacement to be present would be
+    // a way to drop a pin: name any paragraph, point at any text, and the
+    // manifest records a reword where nothing was ever written. So this asserts
+    // the refusal AND that the pin on disk is byte-identical afterwards — a
+    // command that printed a refusal and wrote anyway would satisfy the first.
+    const repoBefore = await readFile(MANIFEST, 'utf8');
+    await withScratchDir(async (dir) => {
+      const copy = join(dir, 'manifest.json');
+      const reworded = join(dir, 'ARCHITECTURE.md');
+      const source = await readFile(join(ROOT, 'ARCHITECTURE.md'), 'utf8');
+      const oldHash = proseUnitHash(paragraphContaining(source, STATSFM_PROSE));
+
+      // The paragraph really is reworded on disk, so the only thing wrong with
+      // this run is the `--to`. Without the reword the tool would refuse for a
+      // different reason and this test would prove nothing about the check.
+      await writeFile(copy, repoBefore);
+      await writeFile(reworded, withRewordedParagraph(source, STATSFM_PROSE, REWORDED_STATSFM));
+
+      const absent = 'A replacement paragraph that was never written into this file at all.';
+      const run = await reanchor(dir, copy, reworded, `ARCHITECTURE.md:${oldHash}`, absent);
+      assert.notEqual(run.status, 0, 'a reanchor was accepted for text that is not in the file — that is a way to drop a pin');
+      assert.match(run.stderr, /replacement-absent/, 'the refusal has to name which check failed');
+      assert.match(run.stderr, /both are in the tree/, 'the refusal has to say what a reanchor asserts, or the reader cannot act on it');
+      assert.equal(
+        await readFile(copy, 'utf8'),
+        repoBefore,
+        'the copy changed on disk even though the command reported a refusal — refusing has to mean not writing',
+      );
+      assert.equal(
+        await readFile(MANIFEST, 'utf8'),
+        repoBefore,
+        'this test wrote to the checked-in manifest instead of the copy it was given',
+      );
+    });
+  });
+
+  it('cannot use a reanchor to bring back a paragraph that was really deleted (#1527)', async () => {
+    // The same check seen from the other direction, and the reason restoring is
+    // `--retire`'s absence rather than this operation's job. There is no text to
+    // point at: the paragraph is gone, so every replacement the tool can be
+    // offered is absent, and the correct answer is a refusal that points at
+    // `git show`. A reanchor that could re-pin a deleted paragraph would make
+    // the record a lie in the strongest available way — it would assert both
+    // texts are in the tree while putting only one there.
+    //
+    // The control at the end is as load-bearing as the refusals: `--retire` is
+    // the right operation for a genuine deletion and this change must not have
+    // made it refuse, or the mechanism has no way to record a deletion at all.
+    const repoBefore = await readFile(MANIFEST, 'utf8');
+    await withScratchDir(async (dir) => {
+      const copy = join(dir, 'manifest.json');
+      const truncated = join(dir, 'ARCHITECTURE.md');
+      const source = await readFile(join(ROOT, 'ARCHITECTURE.md'), 'utf8');
+      const deleted = paragraphContaining(source, STATSFM_PROSE);
+      const oldHash = proseUnitHash(deleted);
+
+      await writeFile(copy, repoBefore);
+      await writeFile(truncated, withoutParagraph(source, STATSFM_PROSE));
+
+      // The obvious attempt: point the reanchor at the text that used to be
+      // there. That is exactly the "restore it with a flag" shape, and it must
+      // be the one that says no.
+      const restoreAttempt = await reanchor(dir, copy, truncated, `ARCHITECTURE.md:${oldHash}`, deleted);
+      assert.notEqual(
+        restoreAttempt.status,
+        0,
+        'a reanchor restored a deleted paragraph. A record that asserts both texts are in the tree must not be the thing that puts one there.',
+      );
+      assert.match(restoreAttempt.stderr, /replacement-absent/);
+      assert.match(restoreAttempt.stderr, /git show <ref>:/, 'the refusal has to say where prose actually comes from, or it is a dead end');
+      assert.equal(
+        await readFile(copy, 'utf8'),
+        repoBefore,
+        'the copy changed on disk even though the command reported a refusal',
+      );
+
+      // And the same check with an unrelated paragraph, so the refusal cannot be
+      // an artefact of the text chosen.
+      const otherAttempt = await reanchor(
+        dir,
+        copy,
+        truncated,
+        `ARCHITECTURE.md:${oldHash}`,
+        'Some other replacement that is equally not in the file.',
+      );
+      assert.notEqual(otherAttempt.status, 0);
+      assert.match(otherAttempt.stderr, /replacement-absent/);
+
+      // The control. A genuine deletion is still recorded by the operation that
+      // is for it, and it is recorded as a deletion with no successor named.
+      const retired = runCensus([
+        '--prose-sync', '--retire', RETIREMENT_REASON,
+        '--prose-manifest', copy,
+        '--prose-override', `ARCHITECTURE.md=${truncated}`,
+        '--prose-provenance', await writeProvenanceFile(dir),
+      ]);
+      assert.equal(retired.status, 0, `--retire must still be the way to record a deletion:\n${retired.stderr}`);
+      const manifest = JSON.parse(await readFile(copy, 'utf8'));
+      assert.ok(
+        (manifest.retired ?? []).some((entry: Reanchored) => entry.hash === oldHash),
+        'the deletion was not recorded',
+      );
+      assert.deepEqual(
+        (manifest.reanchored ?? []).filter((entry: Reanchored) => entry.hash === oldHash),
+        [],
+        'a deletion was recorded as a reanchor',
+      );
+    });
+  });
+
+  it('is idempotent, and does not chain a second record onto a reanchored paragraph (#1527)', async () => {
+    // Two properties that are really one. A reanchor is a permanent record, so
+    // the obvious failure of an easy-to-rerun command is a manifest that grows
+    // a second, near-identical record every time it is run — and the reader
+    // cannot tell which of the two is the one that happened. Re-running must be
+    // a no-op; a genuinely different second reword must be a reanchor of the
+    // *replacement*, so the chain stays a chain.
+    await withScratchDir(async (dir) => {
+      const copy = join(dir, 'manifest.json');
+      const reworded = join(dir, 'ARCHITECTURE.md');
+      const twiceReworded = join(dir, 'twice.md');
+      const source = await readFile(join(ROOT, 'ARCHITECTURE.md'), 'utf8');
+      const first = paragraphContaining(source, STATSFM_PROSE);
+      const second = paragraphContaining(withRewordedParagraph(source, STATSFM_PROSE, REWORDED_STATSFM), REWORDED_STATSFM);
+      const third = paragraphContaining(
+        withRewordedParagraph(withRewordedParagraph(source, STATSFM_PROSE, REWORDED_STATSFM), REWORDED_STATSFM, SECOND_REWORD),
+        SECOND_REWORD,
+      );
+      const firstHash = proseUnitHash(first);
+      const secondHash = proseUnitHash(second);
+      const thirdHash = proseUnitHash(third);
+
+      const repoBefore = await readFile(MANIFEST, 'utf8');
+      await writeFile(copy, repoBefore);
+      await writeFile(reworded, withRewordedParagraph(source, STATSFM_PROSE, REWORDED_STATSFM));
+
+      const firstRun = await reanchor(dir, copy, reworded, `ARCHITECTURE.md:${firstHash}`, secondHash);
+      assert.equal(firstRun.status, 0, `the first reanchor must be accepted:\n${firstRun.stderr}`);
+      const afterFirst = JSON.parse(await readFile(copy, 'utf8'));
+      assert.equal(
+        (afterFirst.reanchored as Reanchored[]).filter((entry) => entry.hash === firstHash).length,
+        1,
+        'the first reanchor did not write exactly one record',
+      );
+
+      // Same command, same arguments, same tree. The paragraph it names has left
+      // the pin on purpose, so this is the case that separates "already done"
+      // from "not a pinned paragraph" — and it must be the first.
+      const secondRun = await reanchor(dir, copy, reworded, `ARCHITECTURE.md:${firstHash}`, secondHash);
+      assert.equal(secondRun.status, 0, `re-running a reanchor must be a no-op, not a failure:\n${secondRun.stderr}`);
+      const afterSecond = JSON.parse(await readFile(copy, 'utf8'));
+      assert.equal(
+        (afterSecond.reanchored as Reanchored[]).filter((entry) => entry.hash === firstHash).length,
+        1,
+        're-running a reanchor wrote a second record. A permanent record that duplicates itself on every run cannot be read.',
+      );
+      assert.deepEqual(afterSecond.reanchored, afterFirst.reanchored, 'a re-run changed the records it was supposed to leave alone');
+      // Last, because it is the weakest of the three: a run that says nothing
+      // and a run that says the wrong thing both leave the file right, and the
+      // line above is the one a reader would act on. Asserted at all because a
+      // silent no-op is indistinguishable from a command that quietly failed.
+      assert.match(secondRun.stderr, /already recorded/, 'the run has to say it recognised the record rather than silently doing nothing');
+
+      // A different replacement for a paragraph that has already been replaced
+      // is refused, not recorded — that is what "does not chain" means.
+      const chained = await reanchor(
+        dir,
+        copy,
+        reworded,
+        `ARCHITECTURE.md:${firstHash}`,
+        'A third text that is not the one the paragraph was actually reworded to.',
+      );
+      assert.notEqual(chained.status, 0, 'a second replacement was recorded for a paragraph that already has one');
+      assert.match(chained.stderr, /replacement-absent/, 'this run names text that is not in the file, so the replacement check is what refuses it');
+
+      // The legitimate second reword: the *replacement* is what gets reanchored,
+      // and the chain reads forward — first record's `to` is second's `hash`.
+      await writeFile(twiceReworded, withRewordedParagraph(
+        withRewordedParagraph(source, STATSFM_PROSE, REWORDED_STATSFM),
+        REWORDED_STATSFM,
+        SECOND_REWORD,
+      ));
+      const thirdRun = await reanchor(dir, copy, twiceReworded, `ARCHITECTURE.md:${secondHash}`, thirdHash);
+      assert.equal(thirdRun.status, 0, `a second reword of the replacement must be accepted:\n${thirdRun.stderr}`);
+      const afterThird = JSON.parse(await readFile(copy, 'utf8'));
+      const records = afterThird.reanchored as Reanchored[];
+      assert.equal(records.filter((entry) => entry.hash === secondHash).length, 1, 'the second reword wrote no record of its own');
+      assert.equal(
+        records.find((entry) => entry.hash === firstHash)?.to,
+        secondHash,
+        'the first record must still point at what it was reworded to, or the chain has a hole in it',
+      );
+    });
+  });
+
+  it('reads the reanchored list back, and fails on records that contradict each other (#1527)', async () => {
+    // A list that is written and never read is a comment. This asserts that
+    // `--prose-report` reaches `reanchorStanding` and that the two failures it
+    // can catch are real: a paragraph carrying BOTH a reanchor and a live
+    // retirement is precisely the false record the operation exists to prevent,
+    // and it arrives by merge rather than by flag — no CLI refuses it, because
+    // no single run ever sees both.
+    const repoBefore = await readFile(MANIFEST, 'utf8');
+    await withScratchDir(async (dir) => {
+      const source = await readFile(join(ROOT, 'ARCHITECTURE.md'), 'utf8');
+      const rewordedSource = withRewordedParagraph(source, STATSFM_PROSE, REWORDED_STATSFM);
+      const oldHash = proseUnitHash(paragraphContaining(source, STATSFM_PROSE));
+      const newHash = proseUnitHash(paragraphContaining(rewordedSource, REWORDED_STATSFM));
+      const base = JSON.parse(repoBefore);
+      const stamp = base.provenance ?? { head: 'a'.repeat(40), base: 'b'.repeat(40), upstream: 'b'.repeat(40), behind: false };
+      // `--prose-override` takes a PATH, and a manifest fixture alone is not
+      // enough: the report compares the pin against the documents, so the
+      // reworded document has to be the one it reads.
+      const rewordedPath = join(dir, 'ARCHITECTURE.md');
+      await writeFile(rewordedPath, rewordedSource);
+      const override = `ARCHITECTURE.md=${rewordedPath}`;
+
+      // The clean direction first, so the failures below cannot be passing
+      // because the report is red for an unrelated reason. Built by hand rather
+      // than by running the CLI, so the fixture is exactly "one good record".
+      const clean = {
+        ...base,
+        provenance: stamp,
+        files: { ...base.files, 'ARCHITECTURE.md': describeDocument(rewordedSource) },
+        reanchored: [{
+          file: 'ARCHITECTURE.md',
+          hash: oldHash,
+          label: proseUnitLabel(paragraphContaining(source, STATSFM_PROSE)),
+          to: newHash,
+          date: '2026-09-27',
+          reason: 'a reword recorded by hand for this fixture',
+        }],
+      };
+      const cleanPath = join(dir, 'clean.json');
+      await writeFile(cleanPath, JSON.stringify(clean, null, 2));
+      const cleanRun = runCensus(['--prose-report', '--prose-manifest', cleanPath, '--prose-override', override]);
+      assert.equal(
+        cleanRun.status,
+        0,
+        `a single well-formed reanchor record must leave the report clean — otherwise the two failures below prove nothing:\n${cleanRun.stderr}${cleanRun.stdout}`,
+      );
+
+      // Contradiction: the same paragraph, recorded as replaced and as deleted.
+      const contradicted = {
+        ...clean,
+        reanchored: clean.reanchored,
+        retired: [...(base.retired ?? []), {
+          file: 'ARCHITECTURE.md', hash: oldHash, label: clean.reanchored[0].label, date: '2026-09-27', reason: 'a deletion that contradicts the reword',
+        }],
+      };
+      const contradictedPath = join(dir, 'contradicted.json');
+      await writeFile(contradictedPath, JSON.stringify(contradicted, null, 2));
+      const contradictedRun = runCensus(['--prose-report', '--prose-manifest', contradictedPath, '--prose-override', override]);
+      assert.notEqual(contradictedRun.status, 0, '--prose-report accepted a paragraph recorded as both reworded and deleted');
+      const contradictedJson = JSON.parse(contradictedRun.stdout) as { reanchors: { contradicted: Array<{ reanchor: string; why: string }> } };
+      assert.equal(contradictedJson.reanchors.contradicted.length, 1, 'the contradiction was not named');
+      assert.equal(
+        contradictedJson.reanchors.contradicted[0].reanchor,
+        `ARCHITECTURE.md:${oldHash}`,
+        'the report must name the paragraph that carries both records, in the form a reader can grep for',
+      );
+
+      // A record with no reason is the same artefact a retirement with no reason
+      // is, and it reaches the file by the same route: a merge that took half of
+      // a hand-edited record.
+      const malformed = {
+        ...clean,
+        reanchored: [{ ...clean.reanchored[0], reason: '' }],
+      };
+      const malformedPath = join(dir, 'malformed.json');
+      await writeFile(malformedPath, JSON.stringify(malformed, null, 2));
+      const malformedRun = runCensus(['--prose-report', '--prose-manifest', malformedPath, '--prose-override', override]);
+      assert.notEqual(malformedRun.status, 0, '--prose-report accepted a reanchor record with no reason');
+      const malformedJson = JSON.parse(malformedRun.stdout) as { reanchors: { malformed: Array<{ reanchor: string; why: string }> } };
+      assert.equal(malformedJson.reanchors.malformed.length, 1, 'the reasonless record was not named');
+      assert.match(malformedJson.reanchors.malformed[0].why, /reason/);
     });
   });
 
