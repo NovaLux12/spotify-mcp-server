@@ -219,7 +219,15 @@ describe('localStorePaths', () => {
       'freshness',
       'artist-watchlist',
     ]) {
-      assert.ok(ids.has(expected), `registry is missing ${expected}`);
+      // A store that `expand`s yields one id per account, each carrying the
+      // file name (#1364 gave the mutation ledger and the receipt trail that
+      // shape, joining the persisted cache). The store is covered by its
+      // base id or by any `base:file` expansion of it, which is the same
+      // shape-tolerant check `logout.cache.test.ts` uses.
+      assert.ok(
+        [...ids].some((id) => id === expected || id.startsWith(`${expected}:`)),
+        `registry is missing ${expected}`,
+      );
     }
   });
 

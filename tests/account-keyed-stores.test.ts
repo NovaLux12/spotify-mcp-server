@@ -50,7 +50,7 @@ import './helpers/hermetic.js';
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 
@@ -67,6 +67,7 @@ import {
   type ReceiptClient,
 } from '../src/receipts.js';
 import { appendHistory, historyFilePath, readHistory } from '../src/history.js';
+import { localStorePaths } from '../src/logout.js';
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -392,5 +393,76 @@ describe('the mutation ledger is account-keyed (#1364)', () => {
       const raw = readFileSync(join(dir, 'mutations.work.jsonl'), 'utf8').trim();
       assert.equal((JSON.parse(raw) as { account?: string }).account, 'work');
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Erasure reaches every account, not just the active one
+// ---------------------------------------------------------------------------
+
+describe('logout covers every account\'s store, not just the active one', () => {
+  /**
+   * A `mkdtemp` home holding two accounts' token files, with no per-store env
+   * overrides — the production layout, where each default is
+   * `join(homedir(), '.spotify-mcp', …)`. No store filename is typed below;
+   * the paths are the ones the store modules report.
+   *
+   * `HOME` is set process-wide because the store defaults are derived from
+   * `homedir()`, which reads the real environment rather than an `env`
+   * argument — the same reason `logout.cache.test.ts` pins it, and the reason
+   * this must not read the developer's real `~/.spotify-mcp`.
+   *
+   * The token files have to exist: the store name is derived from the token
+   * FILE, so an account with no token file is an account with no store to
+   * enumerate, exactly as `cachePersistPaths` treats a missing token file.
+   */
+  function sandbox(): { env: NodeJS.ProcessEnv; restore: () => void } {
+    const root = mkdtempSync(join(tmpdir(), 'acct-keyed-home-'));
+    mkdirSync(join(root, '.spotify-mcp'), { recursive: true, mode: 0o700 });
+    mkdirSync(join(root, '.spotify-mcp', 'history'), { recursive: true, mode: 0o700 });
+    for (const name of ['tokens.json', 'tokens.work.json']) {
+      writeFileSync(
+        join(root, '.spotify-mcp', name),
+        JSON.stringify({ access_token: 'at', refresh_token: 'rt', expires_at: 1 }),
+        { mode: 0o600 },
+      );
+    }
+    const saved = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE };
+    process.env.HOME = root;
+    process.env.USERPROFILE = root;
+    return {
+      env: { HOME: root, USERPROFILE: root },
+      restore: () => {
+        for (const [key, value] of Object.entries(saved)) {
+          if (value === undefined) delete process.env[key];
+          else process.env[key] = value;
+        }
+        rmSync(root, { recursive: true, force: true });
+      },
+    };
+  }
+
+  /** The paths logout's registry carries for one store, across all accounts. */
+  function covered(stores: { id: string; path: string }[], base: string): string[] {
+    return stores
+      .filter((s) => s.id === base || s.id.startsWith(`${base}:`))
+      .map((s) => basename(s.path))
+      .sort();
+  }
+
+  it('lists a ledger and a receipt trail for both accounts', () => {
+    const box = sandbox();
+    try {
+      const stores = localStorePaths({ env: box.env });
+
+      // Without the `expand` these are single-file answers: only the DEFAULT
+      // account's ledger is listed, and every other account's ledger is
+      // orphaned on disk while logout reports success — the failure #1300
+      // found for the persisted read cache.
+      assert.deepEqual(covered(stores, 'mutations'), ['mutations.jsonl', 'mutations.work.jsonl']);
+      assert.deepEqual(covered(stores, 'receipts'), ['receipts.jsonl', 'receipts.work.jsonl']);
+    } finally {
+      box.restore();
+    }
   });
 });
