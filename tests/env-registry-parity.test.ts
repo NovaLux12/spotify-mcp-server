@@ -24,14 +24,26 @@
  * ## What it asserts, and what it deliberately does not
  *
  * Both generated blocks are pinned to the live module: the toolset names to
- * `Object.keys(TOOLSETS)`, the registration keys to `allRegistrationKeys()`.
- * The second is the *validation* set `resolveToolOverrides` accepts, not the
- * wider manifest union the SPEC census prints. That distinction is the whole
- * point of pinning against the module rather than against the other document:
- * `doctor`, `moodexpand` and `receipts` are `ungated` and register
- * unconditionally, so they are real registration keys that the trim variables
- * would reject as unknown. Asserting this list against the SPEC union would
- * have passed a document advertising three names the parser refuses.
+ * `Object.keys(TOOLSETS)`, the registration keys to the vocabulary
+ * `resolveToolOverrides` actually validates.
+ *
+ * That vocabulary is the **union** of the toolset members and
+ * `UNGATED_REGISTRATION_KEYS`, and the union is the whole point. It was
+ * `ALL_KEYS` alone when #1521 landed, which was correct then: the four
+ * `ungated` rows (`doctor`, `swarm3meta`, `moodexpand`, `receipts`) register
+ * whatever the trim says, so #580 gave the resolver a second input and the
+ * keys became nameable — a key the operator cannot name is a key they cannot
+ * use to turn a module off. Pinning the block to `ALL_KEYS` after that would
+ * have asserted the opposite of the truth: the block would stay green while
+ * omitting names the parser accepts, which is #1521's own defect (a document
+ * disagreeing with the resolver) arriving from the other direction.
+ *
+ * So this still pins against the module rather than against the SPEC census's
+ * wider manifest union, and it still holds the property #1521 was built for:
+ * **a name the parser rejects must not be documented.** Only the *direction*
+ * of the disagreement changed. Asserting against the SPEC union instead would
+ * still pass a document advertising keys the parser refuses, and that check is
+ * the one worth keeping.
  *
  * Nothing here re-implements the block renderer. The blocks are owned by
  * `scripts/surface-census.mjs` and `npm run count:tools -- --check` is what
@@ -50,7 +62,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { TOOLSETS, allRegistrationKeys } from '../src/toolsets.ts';
+import { TOOLSETS, allRegistrationKeys, UNGATED_REGISTRATION_KEYS } from '../src/toolsets.ts';
 
 const ROOT = join(fileURLToPath(new URL('..', import.meta.url)));
 const CONFIG_DOC = readFileSync(join(ROOT, 'docs/configuration.md'), 'utf8');
@@ -104,11 +116,14 @@ describe('the documented toolset names are the real ones (#926)', () => {
 });
 
 describe('the documented registration keys are the ones the trim accepts (#926)', () => {
-  // `resolveToolOverrides` validates against ALL_KEYS, which is what
-  // `allRegistrationKeys` re-exports. Sorted and deduped because a key can
-  // belong to more than one set; the doc block is rendered the same way, so the
-  // comparison is over sets rather than declaration order.
-  const real = [...new Set(allRegistrationKeys)].sort();
+  // `resolveToolOverrides` builds its `known` map from `[...ALL_KEYS,
+  // ...UNGATED_REGISTRATION_KEYS]`, so the vocabulary it accepts is that UNION —
+  // `allRegistrationKeys` re-exports only the first term, which is why reading
+  // it alone is what made this block under-report after #580. Sorted and
+  // deduped because a key can belong to more than one set and `swarm3meta` is
+  // both ungated and a toolset member; the doc block is rendered the same way,
+  // so the comparison is over sets rather than declaration order.
+  const real = [...new Set([...allRegistrationKeys, ...UNGATED_REGISTRATION_KEYS])].sort();
   const documented = namesInBlock('env-registration-keys');
 
   it('names every key the trim accepts, and nothing it does not', () => {
@@ -122,25 +137,37 @@ describe('the documented registration keys are the ones the trim accepts (#926)'
     );
   });
 
-  it('does not advertise the ungated keys the parser would reject', () => {
-    // `doctor`, `moodexpand` and `receipts` are real registration keys — the
-    // SPEC census counts them — but they are `ungated` in the manifest and
-    // register whatever the trim says. Printing them next to the trim variables
-    // would promise a name `resolveToolOverrides` reports as unknown, which is
-    // the same defect as a missing name, pointing the other way.
-    const ungated = ['doctor', 'moodexpand', 'receipts'].filter((key) => real.includes(key) === false);
-    // The filter is what makes the loop below able to run out of work: give one
-    // of these a toolset membership and `ungated` shrinks, and if it ever
-    // empties the loop asserts nothing and passes forever. So the emptiness is
-    // itself the failure — it means the premise above no longer holds and the
-    // check needs re-reading, not that there is nothing left to check.
-    assert.ok(
-      ungated.length > 0,
-      'none of doctor/moodexpand/receipts is ungated any more — the check below would run zero times and pass vacuously, so re-read it against the manifest',
-    );
-    for (const key of ungated) {
-      assert.ok(!documented.includes(key), `the env-registration-keys block lists \`${key}\`, which the trim rejects`);
+  it('documents every ungated key, so a module can be turned off by name', () => {
+    // The direction #1521 checked, unchanged in substance: a name an operator
+    // cannot find is a name they cannot use. #580 made these four nameable —
+    // `resolveToolOverrides` accepts them — so omitting one would document a
+    // surface smaller than the one the operator can actually trim. This is the
+    // same defect as a listed key the parser rejects, pointing the other way,
+    // and it is the half a `documented ⊆ real` comparison cannot see.
+    for (const key of UNGATED_REGISTRATION_KEYS) {
+      assert.ok(
+        documented.includes(key),
+        `the env-registration-keys block omits \`${key}\`, which \`resolveToolOverrides\` accepts — `
+        + 'an operator who cannot name the key cannot disable the module through the documented override',
+      );
     }
+  });
+
+  it('advertises no key the parser would reject', () => {
+    // #1521's actual protection, and the reason the block is pinned to the
+    // module rather than to the SPEC census's wider manifest union: a name the
+    // parser refuses is reported "Unknown ... entry ignored" at startup, so
+    // documenting one promises an override that does nothing. The comparison is
+    // driven off the union above, so this holds independently of which keys are
+    // ungated — it fails on a block that grows a name the resolver has never
+    // heard of, which is the failure this file was written for.
+    const bogus = documented.filter((name) => !real.includes(name));
+    assert.deepEqual(
+      bogus,
+      [],
+      'the env-registration-keys block lists keys `resolveToolOverrides` rejects as unknown, '
+      + 'so the page promises an override that silently does nothing:\n  ' + bogus.join('\n  '),
+    );
   });
 
   it('scans a real surface (a broken pattern would make the check vacuous)', () => {
