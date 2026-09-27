@@ -537,6 +537,22 @@ breaking another. A file with no baseline entry is an automatic failure, so a
 new test cannot arrive carrying errors. `--write` refreshes the baseline; the
 diff is the record of what changed.
 
+The baseline is a measurement of the tree **as rebased onto the current
+`origin/main`**, not of whatever the count was when the gate was written. If
+`main` moves and lands test changes of its own, the gate will report those as
+regressions even though your branch touched none of those files — check
+`git diff --name-only origin/main...HEAD -- tests/` before concluding you
+introduced them, and re-`--write` if the drift is `main`'s. Attribute the delta
+per file before widening anything: a rebase that lands on a newer `main` is
+routinely a net *decrease* against the new base, not an increase.
+
+`--baseline <path>` and `--project <path>` point the gate at another config and
+another baseline. The guard test needs them: node:test runs sibling `describe`
+blocks concurrently, so a test that proved the gate fires by writing a doctored
+checked-in baseline would race the sibling asserting the real tree is accepted,
+and a passing run could leave the real baseline silently rewritten. Scratch
+baselines in `mkdtemp`, never the checked-in file.
+
 Two things make it trustworthy, and both are asserted in
 `tests/tests-typecheck-budget-gate.test.ts`:
 
