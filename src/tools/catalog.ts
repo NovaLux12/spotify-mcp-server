@@ -254,28 +254,77 @@ async function fetchSeveral<T>(
  */
 export const ARTIST_FANOUT_WIDTH = 5;
 
-export interface PerIdArtistRead {
-  /** Every artist that resolved, keyed by the id that was requested. */
-  byId: Map<string, SpotifyArtistFull>;
+/**
+ * #1224: the width every per-id fan-out runs at. One constant because
+ * `fetchArtistsPerId` (#1004) and the album/track fan-outs below are the same
+ * mechanism, and a second width constant is how they drift apart.
+ */
+export const PER_ID_FANOUT_WIDTH = ARTIST_FANOUT_WIDTH;
+
+/** An id whose per-id GET could not be read, with why. Never a silent drop. */
+export interface PerIdUnresolved {
+  id: string;
+  reason: string;
+  /** HTTP status when Spotify answered, `null` when the transport failed. */
+  status: number | null;
+  /** Set only on a 429, so the #763 Retry-After degradation stays possible. */
+  retry_after_sec?: number | null;
+}
+
+/**
+ * #1224: the result of a per-id fan-out. `byId` is keyed by the id that was
+ * REQUESTED, not by whatever the payload happened to carry, so a caller can
+ * map its own request list onto the answer without a second lookup.
+ */
+export interface PerIdRead<T> {
+  byId: Map<string, T>;
+  /** Ids that failed, in requested order. Absent from `byId`, named here. */
+  unresolved: PerIdUnresolved[];
   /**
-   * Ids whose per-id GET failed, each with the reason Spotify (or the
-   * transport) gave. In requested order, and never empty-slot-padded: an id
-   * that failed is absent from `byId` and named here.
+   * The first 429 the fan-out hit, if any. `library_hygiene` (#763 point 4)
+   * degrades a rate-limited album pass into a partial with Retry-After
+   * messaging; carrying the first throttle here is what lets the per-id path
+   * keep that behaviour instead of rethrowing it.
    */
-  unresolved: Array<{ id: string; reason: string }>;
-  /**
-   * `GET /artists/{id}` requests issued, counted before the response cache.
-   * Published so a tool that fans out can disclose its real request count
-   * instead of quoting the batch endpoint's "one call".
-   */
+  throttled: { message: string; retry_after_sec: number | null } | null;
+  /** `GET /{kind}/{id}` requests issued, counted before the response cache. */
   requests: number;
 }
 
-export async function fetchArtistsPerId(
+/** The batch types the February 2026 removal took `?ids=` away from. */
+export type PerIdKind = 'artists' | 'albums' | 'tracks';
+
+/**
+ * #1224: read `kind` objects with per-id `GET /{kind}/{id}` requests.
+ *
+ * #1004 established the shape for artists and this generalises it to albums
+ * and tracks, the other two `?ids=` call sites that had no per-id fallback.
+ * The reasoning is the same and worth restating once: the February 2026
+ * changelog removed these batch routes, so whether one answers at all depends
+ * on the app registration — `src/gating.ts` grades them as registration-gated
+ * precisely because a code path cannot know which registration it is talking
+ * to. Trying the batch first and degrading on a 403 would still be the
+ * graceful behaviour for the seven `get_several_*` tools (which keep it,
+ * because those endpoints were graded gated, not removed), but it burns a
+ * request and turns a 404 registration into a silent list of unresolvable ids.
+ * The per-id route is the documented replacement, so the read goes straight
+ * there.
+ *
+ * Cost is the trade: one request per distinct id, not one per 50. The fan-out
+ * is windowed because the client's queue serialises and rate-limits every
+ * call anyway, and an unbounded `Promise.all` over N ids would only enqueue
+ * the same work sooner — a self-inflicted 429 on the very path being fixed.
+ *
+ * A per-id failure is recorded with its reason and never coerced into an empty
+ * result: the callers publish `requested == resolved + missing`, and an id
+ * that could not be read has to be named, not dropped (#803/#1093).
+ */
+export async function fetchCatalogPerId<T extends { id?: string | null }>(
   client: SpotifyClient,
+  kind: PerIdKind,
   ids: readonly string[],
-  opts: { width?: number } = {},
-): Promise<PerIdArtistRead> {
+  opts: { width?: number; params?: Record<string, string> } = {},
+): Promise<PerIdRead<T>> {
   // De-dupe first: a track's album often lists the same artist twice, and the
   // census unions three windows, so the raw list over-counts by a lot.
   const wanted: string[] = [];
@@ -285,20 +334,21 @@ export async function fetchArtistsPerId(
     seen.add(id);
     wanted.push(id);
   }
-  const width = Math.max(1, opts.width ?? ARTIST_FANOUT_WIDTH);
-  const byId = new Map<string, SpotifyArtistFull>();
-  const unresolved: PerIdArtistRead['unresolved'] = [];
+  const width = Math.max(1, opts.width ?? PER_ID_FANOUT_WIDTH);
+  const byId = new Map<string, T>();
+  const unresolved: PerIdUnresolved[] = [];
   let requests = 0;
+  let throttled: PerIdRead<T>['throttled'] = null;
   for (let i = 0; i < wanted.length; i += width) {
     const window = wanted.slice(i, i + width);
     const settled = await Promise.allSettled(
       window.map(async (id) => {
         requests += 1;
         try {
-          const artist = await client.get<SpotifyArtistFull>(`/artists/${encodeURIComponent(id)}`);
-          return { id, artist, error: undefined as unknown };
+          const item = await client.get<T>(`/${kind}/${encodeURIComponent(id)}`, opts.params ?? {});
+          return { id, item, error: undefined as unknown };
         } catch (error) {
-          return { id, artist: null as SpotifyArtistFull | null, error };
+          return { id, item: null as T | null, error };
         }
       }),
     );
@@ -309,30 +359,98 @@ export async function fetchArtistsPerId(
         // The window itself rejected rather than one of its entries, which
         // the per-entry try/catch should have prevented. Reported rather than
         // dropped: a silently shortened roster is the #1093 failure mode.
-        unresolved.push({ id, reason: describeFailure(outcome.reason, 'request failed') });
+        unresolved.push(failureEntry(id, outcome.reason));
         continue;
       }
-      const { artist, error } = outcome.value;
+      const { item, error } = outcome.value;
       if (error !== undefined) {
-        unresolved.push({ id, reason: describeFailure(error, 'request failed') });
+        const entry = failureEntry(id, error);
+        unresolved.push(entry);
+        // #763 point 4: the first 429 is carried out so the caller can degrade
+        // with Retry-After messaging instead of the whole pass throwing.
+        if (entry.status === 429 && throttled === null) {
+          throttled = { message: entry.reason, retry_after_sec: entry.retry_after_sec ?? null };
+        }
         continue;
       }
       // A 200 that carries no id, or a different id than was asked for, is an
-      // unread, not an artist. Keying the map on the requested id would hand
+      // unread, not the object. Keying the map on the requested id would hand
       // the caller a value the payload never confirmed (#804's rule, one field
       // over: never guess a field that could contradict the wire).
-      if (artist == null || artist.id == null) {
-        unresolved.push({ id, reason: 'Spotify returned no artist for this id' });
+      if (item == null || item.id == null) {
+        unresolved.push({ id, reason: `Spotify returned no ${singular(kind)} for this id`, status: null });
         continue;
       }
-      if (artist.id !== id) {
-        unresolved.push({ id, reason: `Spotify returned a different artist (${artist.id}) for the requested id` });
+      if (item.id !== id) {
+        unresolved.push({ id, reason: `Spotify returned a different ${singular(kind)} (${item.id}) for the requested id`, status: null });
         continue;
       }
-      byId.set(id, artist);
+      byId.set(id, item);
     }
   }
-  return { byId, unresolved, requests };
+  return { byId, unresolved, throttled, requests };
+}
+
+/** #1224: a failure entry carries the status, and Retry-After on a 429. */
+function failureEntry(id: string, error: unknown): PerIdUnresolved {
+  const status = error instanceof SpotifyApiError ? error.status : null;
+  return {
+    id,
+    reason: describeFailure(error, 'request failed'),
+    status,
+    ...(status === 429
+      ? { retry_after_sec: error instanceof SpotifyApiError ? error.retryAfterSec ?? null : null }
+      : {}),
+  };
+}
+
+/** #1224: singular label for the fan-out's "Spotify returned no …" reason. */
+function singular(kind: PerIdKind): string {
+  return kind === 'artists' ? 'artist' : kind === 'albums' ? 'album' : 'track';
+}
+
+/**
+ * #1004's artist read kept its own named shape so its three callers keep the
+ * contract they were written against. `throttled` is optional here: only
+ * `library_hygiene` degrades on a 429, and the artist callers do not read it.
+ */
+export interface PerIdArtistRead {
+  byId: Map<string, SpotifyArtistFull>;
+  unresolved: PerIdUnresolved[];
+  throttled?: { message: string; retry_after_sec: number | null } | null;
+  requests: number;
+}
+
+/**
+ * #1004's artist read, kept as the named entry point its three callers use.
+ * The implementation is `fetchCatalogPerId`'s — the artist route was the
+ * first of this family migrated, and leaving a private second copy of the
+ * fan-out in place is how the width and the failure reporting drift.
+ */
+export function fetchArtistsPerId(
+  client: SpotifyClient,
+  ids: readonly string[],
+  opts: { width?: number } = {},
+): Promise<PerIdArtistRead> {
+  return fetchCatalogPerId<SpotifyArtistFull>(client, 'artists', ids, opts);
+}
+
+/** #1224: per-id `GET /albums/{id}` — the ungated replacement for `?ids=`. */
+export function fetchAlbumsPerId<T extends { id?: string | null }>(
+  client: SpotifyClient,
+  ids: readonly string[],
+  opts: { width?: number; params?: Record<string, string> } = {},
+): Promise<PerIdRead<T>> {
+  return fetchCatalogPerId<T>(client, 'albums', ids, opts);
+}
+
+/** #1224: per-id `GET /tracks/{id}` — the ungated replacement for `?ids=`. */
+export function fetchTracksPerId<T extends { id?: string | null }>(
+  client: SpotifyClient,
+  ids: readonly string[],
+  opts: { width?: number; params?: Record<string, string> } = {},
+): Promise<PerIdRead<T>> {
+  return fetchCatalogPerId<T>(client, 'tracks', ids, opts);
 }
 
 /** #1004: an unreadable per-id failure is reported with its reason, never dropped. */
@@ -342,8 +460,12 @@ function describeFailure(err: unknown, fallback: string): string {
   return fallback;
 }
 
-/** #778: one-line disclosure of the ids a batch could not resolve. */
-function unresolvedIdsNote(missing: readonly string[]): string {
+/**
+ * #778: one-line disclosure of the ids a batch could not resolve. Exported
+ * since #1224 because the per-id fan-out sites disclose their unreadable ids
+ * with the same sentence, and a second wording would drift from #1093.
+ */
+export function unresolvedIdsNote(missing: readonly string[]): string {
   if (missing.length === 0) return '';
   const shown = missing.slice(0, 10).join(', ');
   const more = missing.length > 10 ? ', …' : '';

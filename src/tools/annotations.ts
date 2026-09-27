@@ -1050,7 +1050,7 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   manifestEntry('libraryanalytics', 'libraryanalytics', lazyModule('./libraryanalytics.js', 'registerLibraryAnalyticsTools'), [4, 3351], { readOnlySafe: true, scopeKey: 'library' }),
   manifestEntry('portability', 'portability', lazyModule('./portability.js', 'registerPortabilityTools'), [11, 10036], { scopeKey: 'library' }),
   manifestEntry('libraryinsights', 'library', lazyModule('./libraryinsights.js', 'registerLibraryInsightsTools'), [3, 2751], { scopeKey: 'library' }),
-  manifestEntry('libraryhygiene', 'library', lazyModule('./libraryhygiene.js', 'registerLibraryHygieneTools'), [1, 734], { scopeKey: 'library' }),
+  manifestEntry('libraryhygiene', 'library', lazyModule('./libraryhygiene.js', 'registerLibraryHygieneTools'), [1, 754], { scopeKey: 'library' }),
   manifestEntry('showradar', 'library', lazyModule('./showradar.js', 'registerShowRadarTools'), [1, 2125], { readOnlySafe: true, scopeKey: 'library' }),
   manifestEntry('saveddedupe', 'library', lazyModule('./saveddedupe.js', 'registerSavedDedupeTools'), [1, 1438], { scopeKey: 'library' }),
   manifestEntry('podcastsession', 'library', lazyModule('./podcastsession.js', 'registerPodcastSessionTools'), [2, 3427], { scopeKey: 'library' }),
@@ -1103,15 +1103,18 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
 
 
 
-  // [19, 19372] measured post-#1004 (the artist leg reads /artists/{id} now),
-  // of which +226B is #781: `search_by_isrc` and `audiobooks_by_author` gained
-  // the `offset` input their paging signal already pointed at. Not a new tool
-  // and not a wider payload — a control that makes an already-emitted
-  // next_offset actionable, and the truncation boundary keeps it only because
-  // the schema declares it. Then -95B when #922 removed the quota-circle
-  // glyphs and the cross-sell breadcrumbs from this module's descriptions,
-  // which cost nothing and read less to a model that does not weight emoji.
-  manifestEntry('exhaust2catalog', 'exhaust2catalog', lazyModule('./exhaust2_catalog.js', 'registerExhaust2CatalogTools'), [19, 19372], { readOnlySafe: true, scopeKey: 'catalog' }),
+  // Measured post-#1004 (the artist leg reads /artists/{id} now), of which
+  // +226B is #781: `search_by_isrc` and `audiobooks_by_author` gained the
+  // `offset` input their paging signal already pointed at. Not a new tool and
+  // not a wider payload — a control that makes an already-emitted next_offset
+  // actionable, and the truncation boundary keeps it only because the schema
+  // declares it. Then -95B when #922 removed the quota-circle glyphs and the
+  // cross-sell breadcrumbs from this module's descriptions, which cost nothing
+  // and read less to a model that does not weight emoji. #1224 then added 71B
+  // for the same 19 tools: the three read legs now name the per-id fan-out
+  // they perform instead of a batch call Spotify removed.
+  // [19, 19443]
+  manifestEntry('exhaust2catalog', 'exhaust2catalog', lazyModule('./exhaust2_catalog.js', 'registerExhaust2CatalogTools'), [19, 19443], { readOnlySafe: true, scopeKey: 'catalog' }),
   manifestEntry('exhaust2enggating', 'exhaust2enggating', lazyModule('./exhaust2_enggating.js', 'registerExhaust2EnggatingTools'), [0, 0], { readOnlySafe: true, scopeKey: 'catalog' }),
   manifestEntry('exhaust2playback', 'exhaust2playback', lazyModule('./exhaust2_playback.js', 'registerExhaust2PlaybackTools'), [23, 17473], { scopeKey: 'playback' }),
   manifestEntry('exhaust2playlists', 'exhaust2playlists', lazyModule('./exhaust2_playlists.js', 'registerExhaust2PlaylistsTools'), [18, 23326], { scopeKey: 'playlists' }),
@@ -1127,23 +1130,23 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   // walk that issues up to N x (1 + fetchAllCap/100) requests, so the agents
   // paying for that are the ones this sentence is for.
   manifestEntry('exhaust2extra', 'exhaust2extra', lazyModule('./exhaust2_extra.js', 'registerExhaust2ExtraTools'), [3, 4024], { scopeKey: 'playlists' }),
-  // #900: 21,825 -> 22,277 bytes, description text only. Same 24 tools, same
-  // input schemas. Four of the descriptions quoted a per-artist cost
-  // ("1 small albums call per followed artist", "1 small albums call per top
-  // artist", "N small API calls") that is no longer true on a warm read cache,
-  // and each now names the shared canonical probe and what it costs when the
-  // cache already holds it. At the measured value the 10% ceiling (24,505)
-  // leaves 2,228 bytes.
+  // #900 + #1224: descriptions only, same 24 tools and same input schemas.
+  // #900 reworded four descriptions that quoted a per-artist cost that a warm
+  // read cache invalidates, so each now names the shared canonical probe and
+  // what it costs when the cache already holds it. #1224 then reworded those
+  // same descriptions again: the batched `?ids=` read is gone, so they now
+  // describe the per-id `GET /albums/{id}` fan-in these tools actually perform.
   //
-  // RE-MEASURED, and this is the number the rebase nearly got wrong. The
-  // pre-rebase branch carried 22,339, measured before main moved; the value on
-  // the post-rebase tree is 22,277, 62 bytes lower, because main had since
-  // reworded text in this module. Carrying the old figure forward would have
-  // been a 62-byte lie in a hand-maintained baseline that the startup gate
-  // treats as ground truth — within the 24,008 ceiling either way, so no gate
-  // would have caught it. Read off the live registry after the rebase.
-  manifestEntry('swarm3discovery', 'swarm3discovery', lazyModule('./swarm3_discovery.js', 'registerSwarm3DiscoveryTools'), [24, 22277], { readOnlySafe: true, scopeKey: 'catalog' }),
-  manifestEntry('swarm3bdiscovery', 'swarm3bdiscovery', lazyModule('./swarm3b_discovery.js', 'registerSwarm3bDiscoveryTools'), [24, 19919], { readOnlySafe: true, scopeKey: 'catalog' }),
+  // RE-MEASURED on the merged tree carrying both changes. The pre-rebase branch
+  // figure was measured before main moved, and main had since reworded this
+  // module; carrying either side's number forward would be a lie in a
+  // hand-maintained baseline the startup gate treats as ground truth, and a
+  // slightly-stale value usually still sits under its own derived ceiling, so
+  // no gate would catch it. Read off the live registry after the rebase.
+  manifestEntry('swarm3discovery', 'swarm3discovery', lazyModule('./swarm3_discovery.js', 'registerSwarm3DiscoveryTools'), [24, 22286], { readOnlySafe: true, scopeKey: 'catalog' }),
+  // #1224 +33B, same 24 tools: six tool descriptions now quote one
+  // GET /albums/{id} per release rather than a batched /albums lookup.
+  manifestEntry('swarm3bdiscovery', 'swarm3bdiscovery', lazyModule('./swarm3b_discovery.js', 'registerSwarm3bDiscoveryTools'), [24, 19952], { readOnlySafe: true, scopeKey: 'catalog' }),
   manifestEntry('swarm3shows', 'swarm3shows', lazyModule('./swarm3_shows.js', 'registerSwarm3ShowsTools'), [24, 21075], { scopeKey: 'catalog' }),
   manifestEntry('swarm3refs', 'swarm3refs', lazyModule('./swarm3_refs.js', 'registerSwarm3RefsTools'), [6, 4331], { readOnlySafe: true, scopeKey: 'catalog' }),
   // [24, 18951] measured post-#1004 (top_genre_census reads /artists/{id} now).

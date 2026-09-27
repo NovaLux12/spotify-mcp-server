@@ -23,12 +23,13 @@ import {
 } from '../shaping.js';
 import type { ResponseFormatValue } from '../shaping.js';
 import { getConfig } from '../config.js';
-import { ARTIST_ALBUM_PAGE_LIMIT } from './catalog.js';
-import { chunk } from '../chunk.js';
 import { spotifyId, resolveSpotifyId } from '../refs.js';
 import { probeArtistReleases } from '../artistreleases.js';
 import type { ArtistReleaseProbe } from '../artistreleases.js';
-import { MARKET_CODE } from './catalog.js';
+// Two imports from the same module, deliberately: `artist-albums-limit-guard.test.ts`
+// pins the first as an exact statement, and a merged import would silently fail it.
+import { ARTIST_ALBUM_PAGE_LIMIT } from './catalog.js';
+import { MARKET_CODE, fetchAlbumsPerId, unresolvedIdsNote, type PerIdUnresolved } from './catalog.js';
 
 // ---------------------------------------------------------------------------
 // Shared shapes + local plumbing (mirrors exhaust2 house helpers)
@@ -170,21 +171,41 @@ function marketParams(market?: string): Record<string, string> {
   return market ? { market } : {};
 }
 
-/** Fan-in full album payloads (label/copyright/tracks) via chunked /albums?ids=. */
+/**
+ * Fan-in full album payloads (label/copyright/tracks) via per-id
+ * `GET /albums/{id}` requests.
+ *
+ * #1224: this was a chunked `GET /albums?ids=` fan-in, which the February 2026
+ * changelog removed. There was no per-id fallback, so on a registration without
+ * the grant every one of the seven callers here hard-failed rather than
+ * returning the partial it could have read. The per-id route is the documented
+ * replacement; the cost is one request per distinct album, fanned out at a
+ * fixed width instead of the old serial chunk loop.
+ *
+ * An album that could not be read is returned in `unresolved` with its reason
+ * and simply absent from `byId`. Callers must not read a missing entry as
+ * "this album has no label / no tracks" — that is the #803 failure, a failed
+ * lookup recorded as a found-nothing — so each one discloses the ids it could
+ * not read alongside its findings.
+ */
+/**
+ * #1224: the shared one-line disclosure for album reads that failed. Every
+ * caller of `fetchFullAlbums` derives its findings from the albums it did
+ * read, so a silently shorter roster would be read as "there was nothing to
+ * find" — the #803 failure. Same sentence as the #1093 unresolved note so the
+ * wording cannot drift between the two mechanisms.
+ */
+function unreadableNote(unresolved: readonly PerIdUnresolved[]): string {
+  return unresolved.length === 0 ? '' : unresolvedIdsNote(unresolved.map((u) => u.id));
+}
+
 async function fetchFullAlbums(
   client: SpotifyClient,
   ids: string[],
   market?: string,
-): Promise<Map<string, AlbumPayload>> {
-  const out = new Map<string, AlbumPayload>();
-  for (const group of chunk([...new Set(ids)], 'albums')) {
-    const res = await client.get<{ albums: (AlbumPayload | null)[] }>(
-      '/albums',
-      { ids: group.join(','), ...marketParams(market) },
-    );
-    for (const al of res?.albums ?? []) if (al?.id) out.set(al.id, al);
-  }
-  return out;
+): Promise<{ byId: Map<string, AlbumPayload>; unresolved: PerIdUnresolved[] }> {
+  const read = await fetchAlbumsPerId<AlbumPayload>(client, ids, { params: marketParams(market) });
+  return { byId: read.byId, unresolved: read.unresolved };
 }
 
 /** Followed artists via the cursor-paged /me/following endpoint (offset paging does not apply). */
@@ -511,7 +532,7 @@ export function registerSwarm3DiscoveryTools(server: McpServer, client: SpotifyC
     'artist_deep_cuts',
     'Finds an artist\'s deep cuts: tracks whose (normalized) title appears on exactly one release across the '
       + 'artist\'s recent albums and singles, ranked longest-first. '
-      + 'Quota: 2 walks + one chunked /albums?ids= fan-in (1 call per 20 releases).',
+      + 'Quota: 2 walks + one GET /albums/{id} per release (Feb 2026 removed the ?ids= batch fan-in).',
     {
       artist_id: spotifyId('artist'),
       max_releases: z.number().int().min(1).max(100).optional()
@@ -527,7 +548,7 @@ export function registerSwarm3DiscoveryTools(server: McpServer, client: SpotifyC
       const newestFirst = [...releases].sort((a, b) =>
         (b.release_date ?? '').localeCompare(a.release_date ?? '') || a.name.localeCompare(b.name));
       const selected = newestFirst.slice(0, maxRel);
-      const full = await fetchFullAlbums(client, selected.map((r) => r.id));
+      const { byId: full, unresolved: fullUnresolved } = await fetchFullAlbums(client, selected.map((r) => r.id));
       const seen = new Map<string, number>();
       const rows: Array<{ release: ReleaseRow; track: SpotifyTrackSimple }> = [];
       for (const rel of selected) {
@@ -551,9 +572,14 @@ export function registerSwarm3DiscoveryTools(server: McpServer, client: SpotifyC
           `- "${r.track.name}" | from "${r.release.name}" (${r.release.release_date}, ${r.release.album_type}) | ${fmtDur(r.track.duration_ms)} | ${r.track.uri}`),
       ];
       if (trunc.footer) lines.push(`(${trunc.footer})`);
+      // #1224: a release whose album read failed contributes no tracks. Say
+      // so, rather than letting the row count imply it had none.
+      const unreadable = unreadableNote(fullUnresolved);
+      if (unreadable) lines.push(`(${unreadable}; those releases were read without album data)`);
       return emit(rf, lines.join('\n'), {
         artist_id: args.artist_id,
         releases_analyzed: selected.length,
+        album_unresolved: fullUnresolved,
         deep_cuts: trunc.items.map((r) => ({
           id: r.track.id, uri: r.track.uri, name: r.track.name, duration_ms: r.track.duration_ms,
           release: { id: r.release.id, name: r.release.name, release_date: r.release.release_date ?? null, album_type: r.release.album_type ?? null },
@@ -582,7 +608,8 @@ export function registerSwarm3DiscoveryTools(server: McpServer, client: SpotifyC
         .sort((a, b) => (a.release_date ?? '').localeCompare(b.release_date ?? '') || a.name.localeCompare(b.name));
       const first = dated[0];
       if (!first) throw new Error(`No dated releases found for artist "${args.artist_id}"`);
-      const full = (await fetchFullAlbums(client, [first.id])).get(first.id) ?? null;
+      const { byId: firstById, unresolved: firstUnresolved } = await fetchFullAlbums(client, [first.id]);
+      const full = firstById.get(first.id) ?? null;
       const tracks = full?.tracks?.items ?? [];
       const runtime = tracks.reduce((n, t) => n + (t.duration_ms ?? 0), 0);
       const artistName = (first.artists ?? []).map((a) => a.name).join(', ');
@@ -608,6 +635,9 @@ export function registerSwarm3DiscoveryTools(server: McpServer, client: SpotifyC
           tracks: tracks.map((t) => ({ id: t.id, name: t.name, track_number: t.track_number, duration_ms: t.duration_ms })),
         },
         releases_scanned: albums.length,
+        // #1224: an unread album would otherwise publish `label: null` and an
+        // empty track list, which reads exactly like a bare first release.
+        album_unresolved: firstUnresolved,
       });
     },
   );
@@ -635,7 +665,8 @@ export function registerSwarm3DiscoveryTools(server: McpServer, client: SpotifyC
       const latest = chrono[chrono.length - 1];
       if (!latest) throw new Error(`No dated releases found for artist "${args.artist_id}"`);
       const prev = chrono[chrono.length - 2] ?? null;
-      const full = (await fetchFullAlbums(client, [latest.id])).get(latest.id) ?? null;
+      const { byId: latestById, unresolved: latestUnresolved } = await fetchFullAlbums(client, [latest.id]);
+      const full = latestById.get(latest.id) ?? null;
       const tracks = full?.tracks?.items ?? [];
       const runtime = tracks.reduce((n, t) => n + (t.duration_ms ?? 0), 0);
       const latestTs = tsOf(latest.release_date);
@@ -645,7 +676,7 @@ export function registerSwarm3DiscoveryTools(server: McpServer, client: SpotifyC
         : null;
       const lines = [
         `Latest release${prev ? ` (previous was "${prev.name}", ${prev.release_date})` : ''}:`,
-        `  "${latest.name}" | ${latest.release_date} | ${latest.album_group ?? latest.album_type} | ${full?.label ?? 'label unknown'}`,
+        `  "${latest.name}" | ${latest.release_date} | ${latest.album_group ?? latest.album_type} | ${full?.label ?? (latestUnresolved.length > 0 ? 'label UNREAD (album read failed — not an unknown label)' : 'label unknown')}`,
         daysAgo !== null ? `  released ${daysAgo} day${daysAgo === 1 ? '' : 's'} ago` : '',
         gapToPrev !== null ? `  gap since previous release: ${gapToPrev} days` : '',
         tracks.length ? `  runtime: ${fmtDur(runtime)} across ${tracks.length} listed tracks` : '',
@@ -666,6 +697,9 @@ export function registerSwarm3DiscoveryTools(server: McpServer, client: SpotifyC
         gap_days_since_previous: gapToPrev,
         tracks: tracks.map((t) => ({ id: t.id, name: t.name, track_number: t.track_number, duration_ms: t.duration_ms })),
         releases_scanned: albums.length,
+        // #1224: names the album whose read failed, so `label: null` above is
+        // never read as a fact about the release.
+        album_unresolved: latestUnresolved,
       });
     },
   );
@@ -794,7 +828,7 @@ export function registerSwarm3DiscoveryTools(server: McpServer, client: SpotifyC
     'find_collaborations',
     'Finds tracks where two artists appear together: walks artist A\'s releases, matches artist B (name or ID) on '
       + 'release-level credits, then pinpoints the exact shared tracks via full-album payloads. '
-      + 'Quota: 1-2 walks/searches + chunked /albums?ids= fan-in.',
+      + 'Quota: 1-2 walks/searches + 1 GET /albums/{id} per release scanned.',
     {
       artist_a: spotifyId('artist'),
       artist_b: z.string().min(1).describe('Second artist: name, ID, URI or open.spotify.com URL'),
@@ -825,7 +859,8 @@ export function registerSwarm3DiscoveryTools(server: McpServer, client: SpotifyC
         (y.release_date ?? '').localeCompare(x.release_date ?? '') || x.name.localeCompare(y.name));
       const selected = newestFirst.slice(0, args.max_releases ?? 40);
       const releaseHits = selected.filter((r) => (r.artists ?? []).some((ar) => ar.id === bId));
-      const full = await fetchFullAlbums(client, releaseHits.map((r) => r.id), args.market);
+      const { byId: full, unresolved: collabUnresolved } = await fetchFullAlbums(client, releaseHits.map((r) => r.id), args.market);
+      const unreadableCollab = new Set(collabUnresolved.map((u) => u.id));
       const collabTracks: Array<Record<string, unknown>> = [];
       const lines: string[] = [
         `Collaborations between "${aArtist.name}" and "${bName}" (${selected.length} releases scanned):`,
@@ -843,17 +878,23 @@ export function registerSwarm3DiscoveryTools(server: McpServer, client: SpotifyC
               release: { id: rel.id, name: rel.name, release_date: rel.release_date ?? null, album_type: rel.album_type ?? null },
             });
           }
+        } else if (unreadableCollab.has(rel.id)) {
+          // #1224: an unread release is not a release with no collab tracks.
+          lines.push('    (album read FAILED — this release was not checked for collab tracks)');
         } else if ((al?.tracks?.items ?? []).length === 0) {
           lines.push('    (track listing unavailable — release-level credit only)');
         }
       }
       if (releaseHits.length === 0) lines.push('(no shared-credit releases found in the scanned window)');
+      const collabNote = unreadableNote(collabUnresolved);
+      if (collabNote) lines.push(`(${collabNote})`);
       return emit(rf, lines.join('\n'), {
         artist_a: { id: a, name: aArtist.name },
         artist_b: { id: bId, name: bName },
         releases_scanned: selected.length,
         collab_releases: releaseHits.map((r) => ({ id: r.id, name: r.name, release_date: r.release_date ?? null })),
         collab_tracks: collabTracks,
+        album_unresolved: collabUnresolved,
       });
     },
   );
@@ -946,8 +987,8 @@ export function registerSwarm3DiscoveryTools(server: McpServer, client: SpotifyC
   // -------------------------------------------------------- 11. label_explorer
   server.tool(
     'label_explorer',
-    'Census of record labels across your saved albums (label comes from chunked full-album fan-in); pass a label '
-      + 'name to list just that label\'s albums in your library. Quota: 1 walk + 1 /albums?ids= call per 20 albums.',
+    'Census of record labels across your saved albums (label comes from a per-id full-album fan-in); pass a label '
+      + 'name to list just that label\'s albums in your library. Quota: 1 walk + 1 GET /albums/{id} per album.',
     {
       label: z.string().min(1).optional().describe('Exact-ish label name to filter to (case-insensitive)'),
       saved_cap: z.number().int().min(1).max(2000).optional()
@@ -960,9 +1001,14 @@ export function registerSwarm3DiscoveryTools(server: McpServer, client: SpotifyC
       const cap = args.saved_cap ?? 500;
       const saved = await walkSavedAlbums(client, cap);
       if (saved.length === 0) throw new Error('Your saved-album library is empty');
-      const full = await fetchFullAlbums(client, saved.map((r) => r.album.id));
+      const { byId: full, unresolved: censusUnresolved } = await fetchFullAlbums(client, saved.map((r) => r.album.id));
+      const unreadableSaved = new Set(censusUnresolved.map((u) => u.id));
       const census = new Map<string, Array<{ id: string; name: string; release_date: string | null; artists: string[] }>>();
       for (const row of saved) {
+        // #1224: an album whose read failed is EXCLUDED from the census and
+        // named below. Filing it under "(unknown label)" would report a failed
+        // lookup as a real label — the #803 failure, one word away.
+        if (unreadableSaved.has(row.album.id)) continue;
         const lbl = full.get(row.album.id)?.label ?? '(unknown label)';
         const bucket = census.get(lbl) ?? [];
         bucket.push({
@@ -999,8 +1045,17 @@ export function registerSwarm3DiscoveryTools(server: McpServer, client: SpotifyC
         }),
       ];
       if (trunc.footer) lines.push(`(${trunc.footer})`);
+      const censusNote = unreadableNote(censusUnresolved);
+      if (censusNote) {
+        lines.push(
+          `(${censusNote} — those saved albums could not be read and are excluded from the census; `
+            + 'they are not counted as unlabelled.)',
+        );
+      }
       return emit(rf, lines.join('\n'), {
         saved_albums_scanned: saved.length,
+        albums_readable: saved.length - censusUnresolved.length,
+        album_unresolved: censusUnresolved,
         distinct_labels: census.size,
         labels: trunc.items.map((l) => ({
           label: l,
@@ -1410,8 +1465,8 @@ export function registerSwarm3DiscoveryTools(server: McpServer, client: SpotifyC
   server.tool(
     'b_sides_finder',
     'Surfaces an artist\'s b-sides: tracks on singles/compilation releases whose normalized titles never appear on '
-      + 'the artist\'s core album-group releases, found via discography walks + chunked full-album fan-in. '
-      + 'Quota: 2 walks + 1 /albums?ids= call per 20 releases per group.',
+      + 'the artist\'s core album-group releases, found via discography walks + per-id full-album fan-in. '
+      + 'Quota: 2 walks + 1 GET /albums/{id} per release.',
     {
       artist_id: spotifyId('artist'),
       max_per_group: z.number().int().min(1).max(60).optional()
@@ -1434,8 +1489,11 @@ export function registerSwarm3DiscoveryTools(server: McpServer, client: SpotifyC
       if (coreSelected.length === 0 && sideSelected.length === 0) {
         throw new Error(`No releases found for artist "${args.artist_id}"`);
       }
-      const coreFull = await fetchFullAlbums(client, coreSelected.map((r) => r.id));
-      const sideFull = await fetchFullAlbums(client, sideSelected.map((r) => r.id));
+      const [{ byId: coreFull, unresolved: coreUnresolved }, { byId: sideFull, unresolved: sideUnresolved }] =
+        await Promise.all([
+          fetchFullAlbums(client, coreSelected.map((r) => r.id)),
+          fetchFullAlbums(client, sideSelected.map((r) => r.id)),
+        ]);
       const coreNames = new Set<string>();
       for (const rel of coreSelected) {
         for (const t of coreFull.get(rel.id)?.tracks?.items ?? []) coreNames.add(normalizeName(t.name));
@@ -1457,8 +1515,17 @@ export function registerSwarm3DiscoveryTools(server: McpServer, client: SpotifyC
           `- "${b.track.name}" | on "${b.release.name}" (${b.release.release_date}, ${b.release.album_group ?? b.release.album_type}) | ${fmtDur(b.track.duration_ms)} | ${b.track.uri}`),
       ];
       if (trunc.footer) lines.push(`(${trunc.footer})`);
+      // #1224: an unread release contributes neither b-sides nor core names,
+      // so the comparison is incomplete in both directions. Name the ids
+      // rather than letting a smaller track list stand in for the answer.
+      const bsideUnresolved = [...coreUnresolved, ...sideUnresolved];
+      const bsideNote = unreadableNote(bsideUnresolved);
+      if (bsideNote) {
+        lines.push(`(${bsideNote} — those releases were not compared.)`);
+      }
       return emit(rf, lines.join('\n'), {
         artist_id: args.artist_id,
+        album_unresolved: bsideUnresolved,
         // Walk sizes, not selection sizes: "scanned" must mean what the walk
         // actually read, or it under-reports a truncated discography (#816).
         core_releases_scanned: coreRels.length,

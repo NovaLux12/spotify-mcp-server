@@ -14,7 +14,7 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
-import { quotaPreflight, quotaSnapshot, quotaWindowRemaining, quotaDelta, SpotifyApiError } from '../client.js';
+import { quotaPreflight, quotaSnapshot, quotaWindowRemaining, quotaDelta } from '../client.js';
 import type { SavedTrackItem, SpotifyAlbumFull } from '../types/spotify.js';
 import {
   ResponseFormat,
@@ -24,14 +24,11 @@ import {
   truncateItems,
 } from '../shaping.js';
 import type { ResponseFormatValue } from '../shaping.js';
-import { CHUNK_CAPS } from '../chunk.js';
+import { fetchAlbumsPerId, PER_ID_FANOUT_WIDTH } from './catalog.js';
 import { getConfig } from '../config.js';
 
 /** Hard cap on distinct GET /albums/{id} lookups per analysis run (#112 idea 5). */
 const ALBUM_LOOKUP_CAP = 200;
-
-/** Albums per GET /albums?ids= call (#763) — the batch endpoint's per-request id cap. */
-const ALBUM_BATCH_SIZE = CHUNK_CAPS.albums;
 
 /** `/me/tracks` page size used by the walk (see analyze). */
 const TRACK_PAGE_LIMIT = 50;
@@ -107,14 +104,20 @@ interface AnalysisResult {
     tracks_truncated_by_cap: boolean;
   };
   album_lookups: {
-    /** Distinct albums resolved — batches of 20, so this is not the request count. */
+    /** Distinct albums whose per-id read was attempted. */
     made: number;
     cap: number;
     truncated_by_cap: boolean;
-    /** GET /albums?ids= calls actually issued for those albums. */
-    batch_requests: number;
-    batch_size: number;
-    /** True when a batch was rate-limited; analysis degrades to a partial. */
+    /**
+     * `GET /albums/{id}` requests actually issued (#1224: the batch route is
+     * gone, so this is one per album, width-bounded rather than serial).
+     */
+    requests: number;
+    request_mode: 'per_id';
+    fanout_width: number;
+    /** Albums that could not be read, each with the reason. */
+    unresolved: Array<{ id: string; reason: string; status: number | null }>;
+    /** True when a read was rate-limited; analysis degrades to a partial. */
     rate_limited: boolean;
     rate_limit_message?: string;
     retry_after_sec?: number | null;
@@ -148,12 +151,6 @@ const pct = (ratio: number): string => `${Math.round(ratio * 100)}%`;
 
 function buildSuggestion(likedCount: number): string {
   return `save the album and optionally prune the ${likedCount} single${likedCount === 1 ? '' : 's'} you liked individually`;
-}
-
-/** One `/albums?ids=` outcome: resolved albums, or the 429 that replaced them. */
-interface BatchOutcome {
-  throttled: { message: string; retry_after_sec: number | null } | null;
-  albums: SpotifyAlbumFull[];
 }
 
 /**
@@ -222,48 +219,30 @@ async function analyze(
     (a, b) => b.liked_count - a.liked_count || a.album_id.localeCompare(b.album_id),
   );
 
-  // ---- Batched GET /albums?ids= fan-in (cached, capped) -------------------
-  // #763: one GET /albums/{id} per group cost up to 200 serial round trips.
-  // The batch endpoint returns the same album objects (total_tracks,
-  // album_type, embedded track listing), so the analysis is unchanged while
-  // the request count drops to ceil(albums / ALBUM_BATCH_SIZE).
-  const albumCache = new Map<string, SpotifyAlbumFull | null>();
+  // ---- Per-id GET /albums/{id} fan-in (cached, capped) --------------------
+  // #1224: the fan-in used to be `GET /albums?ids=`, which #763 took to
+  // ceil(albums / 20) requests. That route is one of the batch endpoints the
+  // February 2026 changelog removed, and it had no per-id fallback here, so on
+  // a registration without the grant this tool rethrew — the one error that
+  // endpoint is most likely to produce, on the analysis that degrades
+  // gracefully everywhere else. The per-id route is the documented
+  // replacement, so the read goes straight there and the request count goes
+  // back up: the honest number is published in `album_lookups.requests`, the
+  // dry run budgets for it, and the 200-album cap is what bounds it. What is
+  // NOT repeated is the old serial loop: the fan-out is width-bounded.
   const budgeted = groups.slice(0, lookupCap);
   const lookupTruncated = groups.length > budgeted.length;
   const lookups = budgeted.length;
 
-  const idChunks: string[][] = [];
-  for (let i = 0; i < budgeted.length; i += ALBUM_BATCH_SIZE) {
-    idChunks.push(budgeted.slice(i, i + ALBUM_BATCH_SIZE).map((g) => encodeURIComponent(g.album_id)));
-  }
-
-  // A 429 on a batch degrades the run to a partial with Retry-After-aware
-  // messaging instead of aborting the whole analysis (#763 point 4).
-  const batchResults = await Promise.all(
-    idChunks.map(async (chunk): Promise<BatchOutcome> => {
-      try {
-        const res = await client.get<{ albums?: (SpotifyAlbumFull | null)[] }>('/albums', {
-          ids: chunk.join(','),
-        });
-        // Spotify returns null for ids it could not resolve; drop them.
-        return { throttled: null, albums: (res?.albums ?? []).filter((a): a is SpotifyAlbumFull => !!a?.id) };
-      } catch (err) {
-        if (err instanceof SpotifyApiError && err.status === 429) {
-          return {
-            throttled: { message: err.message, retry_after_sec: err.retryAfterSec ?? null },
-            albums: [],
-          };
-        }
-        throw err;
-      }
-    }),
-  );
-
-  // Promise.all preserves chunk order, so cache insertion stays deterministic.
-  for (const outcome of batchResults) {
-    for (const album of outcome.albums) albumCache.set(album.id, album);
-  }
-  const throttled = batchResults.find((b) => b.throttled !== null)?.throttled ?? null;
+  // #763 point 4 survives: a 429 degrades the run to a partial with
+  // Retry-After-aware messaging instead of aborting the whole analysis. The
+  // per-id fan-out records the first throttle rather than throwing, so the
+  // albums that did read are still reported and the rest are named as
+  // unresolved rather than looking like albums with no track total.
+  const albumRead = await fetchAlbumsPerId<SpotifyAlbumFull>(client, budgeted.map((g) => g.album_id));
+  const albumCache = albumRead.byId;
+  const throttled = albumRead.throttled;
+  const unresolvedAlbums = albumRead.unresolved;
 
   for (const group of groups) {
     const full = albumCache.get(group.album_id) ?? null;
@@ -355,8 +334,18 @@ async function analyze(
       made: lookups,
       cap: lookupCap,
       truncated_by_cap: lookupTruncated,
-      batch_requests: batchResults.length,
-      batch_size: ALBUM_BATCH_SIZE,
+      // #1224: one request per album id, and that is the number the caller
+      // pays for — the old `batch_requests`/`batch_size` pair described the
+      // removed `?ids=` route and would now be a false claim.
+      requests: albumRead.requests,
+      request_mode: 'per_id' as const,
+      fanout_width: PER_ID_FANOUT_WIDTH,
+      /**
+       * Albums whose `GET /albums/{id}` failed, with the reason. An album
+       * here is excluded from the near-complete findings because its track
+       * total is unknown — not because it has no tracks, and never silently.
+       */
+      unresolved: unresolvedAlbums,
       rate_limited: throttled !== null,
       ...(throttled
         ? {
@@ -397,17 +386,29 @@ function renderProse(result: AnalysisResult, maxResults: number): string {
       })}.`,
   );
   lines.push(
-    `Album lookups: ${album_lookups.made} made in ${album_lookups.batch_requests} batched `
-      + `GET /albums?ids= call${album_lookups.batch_requests === 1 ? '' : 's'} `
-      + `(batches of ${album_lookups.batch_size}; cap ${album_lookups.cap} `
+    `Album lookups: ${album_lookups.requests} GET /albums/{id} request`
+      + `${album_lookups.requests === 1 ? '' : 's'} for ${album_lookups.made} album`
+      + `${album_lookups.made === 1 ? '' : 's'} (per-id, since Feb 2026 removed the ?ids= batch; `
+      + `fanned out ${album_lookups.fanout_width} at a time; cap ${album_lookups.cap} `
       + `${album_lookups.truncated_by_cap ? 'REACHED — some albums were not checked' : 'not reached'}).`,
   );
   if (album_lookups.rate_limited) {
     lines.push(
-      `  PARTIAL: album batches were rate limited — ${album_lookups.rate_limit_message}. `
+      `  PARTIAL: album lookups were rate limited — ${album_lookups.rate_limit_message}. `
         + `Albums without a resolved total are excluded from the findings below; `
         + `${album_lookups.retry_after_sec != null ? `wait ~${album_lookups.retry_after_sec}s and ` : ''}`
         + 're-run to fill the gaps.',
+    );
+  }
+  // #1224: an album that could not be read is not an album with no tracks.
+  // Name the ids so the gaps above are never read as "nothing to find here".
+  if (album_lookups.unresolved.length > 0) {
+    const shown = album_lookups.unresolved.slice(0, 10).map((u) => u.id).join(', ');
+    const more = album_lookups.unresolved.length > 10 ? ', …' : '';
+    const reasons = [...new Set(album_lookups.unresolved.map((u) => u.reason))].slice(0, 3).join('; ');
+    lines.push(
+      `  ${album_lookups.unresolved.length} album read${album_lookups.unresolved.length === 1 ? '' : 's'} failed `
+        + `(${reasons}): ${shown}${more}. Their track totals are unknown, so they are excluded from the findings below.`,
     );
   }
 
@@ -468,15 +469,17 @@ function renderDryRun(client: SpotifyClient): { prose: string; payload: Record<s
   const fetchAllCap = getConfig().fetchAllCap;
   const lookupCap = Math.min(ALBUM_LOOKUP_CAP, quotaWindowRemaining(client));
   const walkPages = Math.max(1, Math.ceil(fetchAllCap / TRACK_PAGE_LIMIT));
-  const albumBatches = Math.ceil(lookupCap / ALBUM_BATCH_SIZE);
-  const estimatedRequests = walkPages + albumBatches;
+  // #1224: one request per album again, since the `?ids=` batch route is gone.
+  // The upper bound is the cap, not a per-chunk count.
+  const albumLookups = lookupCap;
+  const estimatedRequests = walkPages + albumLookups;
   const prose =
     `[dry run] library_hygiene would walk /me/tracks (up to ${walkPages} page${walkPages === 1 ? '' : 's'} `
     + `for ${fetchAllCap} liked tracks) and fan in up to ${lookupCap} album`
-    + `${lookupCap === 1 ? '' : 's'} via ${albumBatches} batched GET /albums?ids= call`
-    + `${albumBatches === 1 ? '' : 's'} (${ALBUM_BATCH_SIZE} per call). `
+    + `${lookupCap === 1 ? '' : 's'} via per-id GET /albums/{id} request`
+    + `${albumLookups === 1 ? '' : 's'} (fanned out ${PER_ID_FANOUT_WIDTH} at a time; Feb 2026 removed the ?ids= batch). `
     + `Cost: ~${estimatedRequests} requests, 0 made. Album totals for every liked album in the library `
-    + 'are not known without the walk, so the album-batch figure is the budgeted upper bound.';
+    + 'are not known without the walk, so the album-lookup figure is the budgeted upper bound.';
   return {
     prose,
     payload: {
@@ -485,9 +488,10 @@ function renderDryRun(client: SpotifyClient): { prose: string; payload: Record<s
       requests_made: 0,
       album_lookup_cap: lookupCap,
       album_lookup_shrunk: lookupCap < ALBUM_LOOKUP_CAP,
-      batch_size: ALBUM_BATCH_SIZE,
+      request_mode: 'per_id',
+      fanout_width: PER_ID_FANOUT_WIDTH,
       track_walk_requests: walkPages,
-      estimated_album_batch_requests: albumBatches,
+      estimated_album_requests: albumLookups,
       estimated_requests: estimatedRequests,
     },
   };
@@ -502,7 +506,7 @@ export function registerLibraryHygieneTools(server: McpServer, client: SpotifyCl
     'library_hygiene',
     'Read-only album hygiene analysis over your liked tracks: flags near-complete albums '
       + 'worth saving in full and lone singles with nothing else liked from their artist '
-      + '(low confidence). Batched fan-in; never mutates. dry_run previews cost.',
+      + '(low confidence). Per-id album fan-in, width-bounded; never mutates. dry_run previews cost.',
     {
       response_format: ResponseFormat,
       max_results: MaxResults,

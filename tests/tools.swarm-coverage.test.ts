@@ -286,7 +286,10 @@ describe('swarm3b max_results stays consistent across prose and structured outpu
     const full = albums.map((a) => ({ ...a, tracks: { items: [{ id: `track-${a.id}`, name: `Track ${a.name}`, track_number: 1, duration_ms: 1000 }], total: 1 } }));
     const h = makeHarness(registerSwarm3bDiscoveryTools, (path) => {
       if (path === `/artists/${STRICT_ARTIST_ID}/albums`) return { items: albums, total: albums.length, limit: 50, offset: 0, next: null } as unknown;
-      if (path === '/albums') return { albums: full } as unknown;
+      // #1224: the album fan-in is per id, so the fixture serves one album
+      // per request and never sees the bare `/albums` batch path.
+      const one = /^\/albums\/(.+)$/.exec(path);
+      if (one) return (full.find((a) => a.id === decodeURIComponent(one[1])) ?? null) as unknown;
       throw new Error(`unexpected path ${path}`);
     });
     const out = await h.invoke('album_openers_report', { artist_id: STRICT_ARTIST_ID, max_results: 2 });
@@ -532,21 +535,25 @@ function discography(albums: number, sides: number): (path: string, body: unknow
       return { items, limit: 50, total: items.length };
     }
     if (path === '/albums') {
-      const ids = (params.ids ?? '').split(',').filter(Boolean);
+      // #1224: the removed `?ids=` route. Reached at all, the tool has
+      // regressed to the batch fan-in this issue deleted.
+      throw new Error('removed batch route requested: GET /albums?ids=');
+    }
+    const one = /^\/albums\/(.+)$/.exec(path);
+    if (one) {
+      const id = decodeURIComponent(one[1]);
       return {
-        albums: ids.map((id) => ({
-          id,
-          name: `Release ${id}`,
-          // Core releases carry "Alpha"; only the sides carry a non-core title.
-          tracks: {
-            total: 1,
-            items: [{
-              id: `tr-${id}`, uri: `spotify:track:tr-${id}`,
-              name: id.startsWith('core') ? 'Alpha' : 'Beta',
-              track_number: 1, duration_ms: 180_000,
-            }],
-          },
-        })),
+        id,
+        name: `Release ${id}`,
+        // Core releases carry "Alpha"; only the sides carry a non-core title.
+        tracks: {
+          total: 1,
+          items: [{
+            id: `tr-${id}`, uri: `spotify:track:tr-${id}`,
+            name: id.startsWith('core') ? 'Alpha' : 'Beta',
+            track_number: 1, duration_ms: 180_000,
+          }],
+        },
       };
     }
     throw new Error(`unexpected path ${path}`);
