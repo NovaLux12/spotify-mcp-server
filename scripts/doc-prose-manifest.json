@@ -1877,7 +1877,7 @@
         "label": "Strict rejection, not stripping: a call carrying an unde…"
       },
       {
-        "hash": "6a3623334baae931",
+        "hash": "d31c370da5da0cbe",
         "label": "responseformat ('concile' | 'detailed' | 'json', default…"
       },
       {
@@ -1889,12 +1889,8 @@
         "label": "maxresults (list-type tools; positive integer, ≤ 2000) —…"
       },
       {
-        "hash": "eec41f1a9cb91dc4",
+        "hash": "46c5ce02d1cbde05",
         "label": "Response byte cap (#895) — responseformat: 'json' and st…"
-      },
-      {
-        "hash": "4bea924e972ca055",
-        "label": "Row cap and emit-once (#895) — capRowSections and emitOn…"
       },
       {
         "hash": "470609f52057944b",
@@ -5407,13 +5403,6 @@
     },
     {
       "file": "SPEC.md",
-      "hash": "46c5ce02d1cbde05",
-      "label": "Response byte cap (#895) — responseformat: 'json' and st…",
-      "date": "2026-09-27",
-      "reason": "reworded by #895: the Response byte cap paragraph and the response_format table row now state the emitOnce case explicitly (a call routed through emitOnce has no second serialization to cap, so only MAX_RESPONSE_BYTES bounds it unless the handler also called capRowSections), and the row-cap/emit-once paragraph names capRowSections as the primary cap. Both paragraphs are present in the tree in their new form; nothing was deleted."
-    },
-    {
-      "file": "SPEC.md",
       "hash": "5a1a0046c8f24dc4",
       "label": "playlistbalance is deliberately excluded: it creates new…",
       "date": "2026-09-27",
@@ -5477,13 +5466,6 @@
     },
     {
       "file": "SPEC.md",
-      "hash": "d31c370da5da0cbe",
-      "label": "responseformat ('concile' | 'detailed' | 'json', default…",
-      "date": "2026-09-27",
-      "reason": "reworded by #895: the Response byte cap paragraph and the response_format table row now state the emitOnce case explicitly (a call routed through emitOnce has no second serialization to cap, so only MAX_RESPONSE_BYTES bounds it unless the handler also called capRowSections), and the row-cap/emit-once paragraph names capRowSections as the primary cap. Both paragraphs are present in the tree in their new form; nothing was deleted."
-    },
-    {
-      "file": "SPEC.md",
       "hash": "d3c12f1f3068b798",
       "label": "Environment variables SPOTIFYCLIENTID= # required — from…",
       "date": "2026-09-27",
@@ -5533,7 +5515,7 @@
     }
   ],
   "provenance": {
-    "head": "2cc7cc1dbb0994d78788098c32a5069f0dd62e39",
+    "head": "d5fca0f6e93388bb98786e8b9438db489530ae35",
     "upstream": "d5fca0f6e93388bb98786e8b9438db489530ae35",
     "behind": false
   }
