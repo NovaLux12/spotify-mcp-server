@@ -1347,6 +1347,13 @@ const blocks = [
   ['docs/distribution.md', 'surface-census', distributionSurface(result)],
   ['docs/cookbook.md', 'recipe-index', cookbookIntro],
   ['docs/v3-roadmap.md', 'v3-headline', v3Headline],
+  // #926: the two hand-typed name lists in the env reference. Both name what
+  // `SPOTIFY_MCP_TOOLSETS` and `SPOTIFY_MCP_ENABLE_TOOLS`/`DISABLE_TOOLS`
+  // accept, both are hand-maintained, and both had already drifted — see
+  // `toolsetNameList` and `registrationKeyList` for what each one is and why
+  // the key list is NOT the wider manifest union SPEC.md prints.
+  ['docs/configuration.md', 'env-toolsets', toolsetNameList()],
+  ['docs/configuration.md', 'env-registration-keys', registrationKeyList()],
   ['skills/spotify-exhaustive-feature-sweep/SKILL.md', 'surface-census', skillSurface(result)],
   ['skills/spotify-mcp-competitor-comparison/SKILL.md', 'surface-census', skillSurface(result)],
   ['src/toolsets.ts', 'surface-census', [
@@ -1871,6 +1878,49 @@ function allRegistrationKeysFromSource() {
 function toolsetNamesFromSource() {
   const { TOOLSETS } = parseToolsetsModule();
   return Object.keys(TOOLSETS).length;
+}
+
+/**
+ * The `SPOTIFY_MCP_TOOLSETS` set names, rendered for docs/configuration.md (#926).
+ *
+ * This list was hand-typed and had already drifted: `accounts` is a real set in
+ * `TOOLSETS` (added in #602 alongside its `core` membership) and was absent
+ * from the page, so an operator who read the reference could not name the one
+ * set that exists to answer "which account is this?". `resolveToolsets` accepts
+ * a name the documentation does not print, and the startup warning for a
+ * misspelled one names the sets it knows — so the doc was the only surface
+ * where the list could be wrong without anything else noticing.
+ *
+ * The names come from the same `parseToolsetsModule` read that already backs
+ * `toolsetNames` above, so the count in SPEC.md and the list here are two views
+ * of one parse rather than two hand-kept figures.
+ */
+function toolsetNameList() {
+  const { TOOLSETS } = parseToolsetsModule();
+  return Object.keys(TOOLSETS).map((name) => `\`${name}\``).join(', ');
+}
+
+/**
+ * The registration keys `SPOTIFY_MCP_ENABLE_TOOLS` / `SPOTIFY_MCP_DISABLE_TOOLS`
+ * accept, rendered for docs/configuration.md (#926).
+ *
+ * `ALL_KEYS` in src/toolsets.ts is the set `resolveToolOverrides` validates
+ * against, so this is the list of names that actually work — not the wider
+ * manifest-union census prints in SPEC.md, which additionally carries the
+ * `ungated` keys (`doctor`, `moodexpand`, `receipts`) that are not toolset
+ * members and would be reported as unknown here. Printing that wider list would
+ * have been the same drift in a new place: a key documented that the parser
+ * rejects.
+ *
+ * Deduplicated because a key can belong to more than one set (`search` is in
+ * both `core` and `catalog`), and sorted so the rendered block is stable under
+ * a set reordering — the order the names are declared in is not information the
+ * reader needs, and a block that moves when an unrelated set is inserted makes
+ * `--write` look like a real change.
+ */
+function registrationKeyList() {
+  return [...new Set(allRegistrationKeysFromSource())].sort()
+    .map((key) => `\`${key}\``).join(', ');
 }
 
 /**

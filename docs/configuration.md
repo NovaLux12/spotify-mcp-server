@@ -323,7 +323,9 @@ confirmation-gated, dry-run by default, and path-confined to `SPOTIFY_MCP_BACKUP
 
 `SPOTIFY_MCP_TOOLSETS` accepts a comma-separated subset of these toolsets, or `all` for the full surface:
 
-`core`, `playback`, `playbackintel`, `catalog`, `playlists`, `library`, `personalization`, `statsfm`, `portability`, `taste`, `discovery`, `resources`, and `prompts`.
+<!-- BEGIN:generated env-toolsets -->
+`core`, `playback`, `playbackintel`, `catalog`, `playlists`, `library`, `personalization`, `statsfm`, `portability`, `taste`, `discovery`, `resources`, `prompts`, `accounts`
+<!-- END:generated env-toolsets -->
 
 **The default is `core`, not everything (#889).** A server started with no `SPOTIFY_MCP_TOOLSETS` registers the `core` set plus `resources` and `prompts` — the search, playback, playlist, library and following tools, and the three MCP surfaces that cost no tool-schema context. Unset used to mean the whole registry, which cost a host ~600 KB of schema before its first user message; the curated default is about a quarter of that. `SPOTIFY_MCP_TOOLSETS=all` restores the full surface, and the startup log names the default so a trimmed server is never silent about it. The exact tool and byte counts for both surfaces are in the generated surface-census block of [README.md](../README.md).
 
@@ -331,7 +333,9 @@ confirmation-gated, dry-run by default, and path-confined to `SPOTIFY_MCP_BACKUP
 
 `SPOTIFY_MCP_ENABLE_TOOLS` and `SPOTIFY_MCP_DISABLE_TOOLS` take registration keys, not individual tool names. The complete key list is:
 
-`search`, `playback`, `playlists`, `playlistbatch`, `playlistmisc`, `library`, `following`, `users`, `portability`, `statsfm`, `swarm3meta`, `queueops`, `playbackext`, `playbackintel`, `exhaust2playback`, `swarm3playback`, `catalog`, `audiobooks`, `browse`, `artistwatch`, `searchhistory`, `exhaust2catalog`, `exhaust2enggating`, `swarm3discovery`, `swarm3bdiscovery`, `swarm3shows`, `swarm3refs`, `playlisthealth`, `exhaust2playlists`, `exhaust2extra`, `swarm3playlistops`, `swarm3snapshots`, `swarm4playlists`, `libraryanalytics`, `episodemgmt`, `exhaust2misc`, `swarm3library`, `personalization`, `swarm3analytics`, `taste`, `tastecomposites`, `resources`, and `prompts`.
+<!-- BEGIN:generated env-registration-keys -->
+`accounts`, `artistwatch`, `audiobooks`, `browse`, `catalog`, `episodemgmt`, `exhaust2catalog`, `exhaust2enggating`, `exhaust2extra`, `exhaust2misc`, `exhaust2playback`, `exhaust2playlists`, `following`, `library`, `libraryanalytics`, `personalization`, `playback`, `playbackext`, `playbackintel`, `playlistbatch`, `playlisthealth`, `playlistmisc`, `playlists`, `portability`, `prompts`, `queueops`, `resources`, `search`, `searchhistory`, `statsfm`, `swarm3analytics`, `swarm3bdiscovery`, `swarm3discovery`, `swarm3library`, `swarm3meta`, `swarm3playback`, `swarm3playlistops`, `swarm3refs`, `swarm3shows`, `swarm3snapshots`, `swarm4playlists`, `taste`, `tastecomposites`, `users`
+<!-- END:generated env-registration-keys -->
 
 `disable` wins over `enable`, and both are layered on top of set membership. Unknown keys are reported and ignored. `spotify_doctor` and the discovery metadata tools remain available independently of the trim.
 

@@ -165,7 +165,7 @@ All via env vars — no config file. Only `SPOTIFY_CLIENT_ID` is required.
 
 | Variable | Example | Purpose |
 |---|---|---|
-| `SPOTIFY_MCP_TOOLSETS` | `all` | Trim by group for hosts that cap tool counts. Unset registers the curated default surface; `all` registers everything. |
+| `SPOTIFY_MCP_TOOLSETS` | unset | Trim by group for hosts that cap tool counts. Unset registers the curated default surface; `all` registers everything. The tool count for each is in the generated census above. |
 | `SPOTIFY_MCP_STATSFM` | `1` | Register the 49 stats.fm tools. Off by default — they need a separate stats.fm username. |
 | `SPOTIFY_MCP_READONLY` | `1` | Hide write-capable modules; read-only resources and prompts remain available. |
 | `SPOTIFY_MCP_HISTORY` | `1` | Log mutations to JSONL for undo and audit. |
