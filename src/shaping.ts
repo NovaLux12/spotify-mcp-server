@@ -682,16 +682,20 @@ type JsonObject = Record<string, unknown>;
  * This is a DIFFERENT quantity from the schema budget in `annotations.ts`, and
  * the two are deliberately sized against each other rather than confused:
  *
- *  - `TOOL_SURFACE_BUDGET.defaultMaxBytes` (620,000B) is a ONE-TIME cost. The
- *    host pays it once per session, reading `tools/list`.
+ *  - `TOOL_SURFACE_BUDGET.defaultMaxBytes` is a ONE-TIME cost. The host pays it
+ *    once per session, reading `tools/list`.
  *  - A response is a PER-CALL cost, payable again on every call. A single
  *    unbounded result was measured at 124KB (one 500-stream stats.fm page) and
  *    up to 500KB (`diff_playlists` over two 5,000-track playlists) — a quarter
  *    to four fifths of the entire schema surface, from one call, repeatable.
  *
- * 64,000B is ~1/10 of the schema budget: ten capped calls cost about what the
- * schema surface cost once. It is also ~16k tokens, small enough that a host
- * can absorb the truncated page and page on from it.
+ * `MAX_RESPONSE_BYTES` is sized at roughly a tenth of that one-time budget, so
+ * ten capped calls cost about what the schema surface cost once, and small
+ * enough in tokens that a host can absorb the truncated page and page on from
+ * it. Neither value is written out here on purpose: this constant and
+ * `TOOL_SURFACE_BUDGET` are each figure's one home, and a budget quoted in
+ * prose goes stale the day the constant moves — silently, because a comment
+ * that still reads true is not a comment anyone re-reads.
  *
  * It is a BACKSTOP, not the primary control. A tool that declares
  * `max_results` caps itself at a far finer grain and never reaches this; what
