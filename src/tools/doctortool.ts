@@ -32,6 +32,7 @@ import {
 } from '../toolsets.js';
 import { moduleBlockedByScopes } from '../scopefilter.js';
 import { historyWriteStatus, historyLedgerStats } from '../history.js';
+import { BRANDING_NOTICE } from '../branding.js';
 
 /**
  * The taste feedback store lives in the `taste` module, and #906 keeps a tool
@@ -990,7 +991,24 @@ export const PROCESS_LOCAL_DOCTOR_ROW_IDS: readonly string[] = ['surface', 'rate
  * help.
  */
 export function renderDoctorProse(report: DoctorReport, verbose: boolean): string {
-  const lines = [`Spotify doctor — ${report.rows.length} check(s), ${report.ok ? 'no failures' : 'FAILURES PRESENT'}`, ''];
+  // The header is the identity line a reader meets before the first row, and
+  // the doctor output is the artefact users paste into bug threads and issue
+  // reports — so it opens with the non-affiliation notice (#705) rather than
+  // only the product name. Both entry points render through here, so the tool
+  // and the CLI subcommand cannot disagree about it; `src/index.ts` also
+  // prints the notice on its own banner, above the Configuration block, which
+  // is the line a user reads while deciding whether this is an official
+  // Spotify integration.
+  //
+  // The two prints are the same exported constant rather than two authored
+  // sentences, which is what "one constant, no per-surface copies" means: the
+  // duplication is in the output, which is deliberate (the banner is what a
+  // reader sees before scrolling), and not in the source.
+  const lines = [
+    `Spotify doctor — ${report.rows.length} check(s), ${report.ok ? 'no failures' : 'FAILURES PRESENT'}`,
+    BRANDING_NOTICE,
+    '',
+  ];
   for (const row of report.rows) {
     lines.push(`${GLYPH[row.status]} [${row.id}] ${row.summary}`);
     if (verbose && row.detail) lines.push(`    ${row.detail}`);

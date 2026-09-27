@@ -197,6 +197,22 @@ CONTRIBUTING.md §3.
   non-browser path, and it needs a human to paste the redirect URL back — also
   not something a hosted listing can do on the user's behalf.
   `tests/distribution-channel-guard.test.ts` fails if the manifest returns.
+- [ ] **Name re-check, before any new channel goes live** (#705). The product
+  keeps the name "SpotifyMCP" for v2 as a recorded, accepted risk, because
+  Spotify's Developer Policy Sec. VI.2 says an SDA name "should not begin with
+  'Spot'". The decision, its reasoning and the date are in
+  [`docs/compliance.md`](compliance.md#naming-decision-2026-09-18); this
+  checklist item is the enforcement point for it. **Adding a directory,
+  marketplace or listing is a re-check trigger, not a routine release step**:
+  before the listing is submitted, re-read the current text of Sec. VI.2
+  against the name and either confirm the decision still holds or reopen it.
+  A third-party promotion, a paid or Sponsorship conversation with Spotify, or
+  a policy change that names this pattern are the same trigger. Do not submit
+  a listing first and reconcile the naming question afterwards — the
+  non-affiliation notice is the compensating control that makes the decision
+  defensible, and it is a disclosure the listing must carry too. The short
+  blurb above already ends in it, which is why the blurbs are the copy to
+  paste rather than a fresh summary.
 - [ ] Glama: submit via glama.ai/mcp/servers → verify tool list renders
 - [ ] mcp.so / PulseMCP / Cursor directory: use short blurb above
 - [ ] GitHub topic hygiene: `mcp`, `mcp-server`, `spotify`, `model-context-protocol`
