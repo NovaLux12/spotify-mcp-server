@@ -185,6 +185,12 @@ const blocks = [
     `// ${result.tools} tools, ${result.resources} fixed resources, ${result.resourceTemplates} resource templates, and ${result.prompts} prompts.`,
   ].join('\n')],
 ];
+// AGENTS.md §3 used to hand-type a copy of this inventory, which is how it
+// came to say 13 while the array held 14 and to omit a block entirely (#1231).
+// The list is now one of the generated blocks, so it cannot drift from `blocks`.
+// It excludes its own entry: a list that claimed to contain itself would
+// describe 15 blocks when 14 sit outside it.
+blocks.push(['AGENTS.md', 'generated-blocks', generatedBlockList(blocks)]);
 
 const drift = checkDocumentation(blocks);
 if (args.includes('--write')) {
@@ -602,6 +608,25 @@ function gatedCallSites() {
     }
   }
   return hits;
+}
+
+/**
+ * Renders the generated-block inventory as AGENTS.md §3's list, grouped by
+ * file in `blocks` order. `AGENTS.md`/`generated-blocks` is skipped: this is
+ * the block that renders the list, so listing it would make the list claim to
+ * contain its own container.
+ */
+function generatedBlockList(blocks) {
+  const byFile = new Map();
+  for (const [file, name] of blocks) {
+    if (file === 'AGENTS.md' && name === 'generated-blocks') continue;
+    const names = byFile.get(file) ?? [];
+    names.push(name);
+    byFile.set(file, names);
+  }
+  return [...byFile]
+    .map(([file, names]) => `- \`${file}\`: ${names.map((name) => `\`${name}\``).join(', ')}`)
+    .join('\n');
 }
 
 function markers(file, name) {

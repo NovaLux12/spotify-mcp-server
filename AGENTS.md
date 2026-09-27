@@ -173,7 +173,7 @@ assuming the endpoint is live.** `AGENTS.md` previously listed this whole family
 | `npm test` | Builds, then runs the `node:test` suite via `tsx` over `tests/*.test.ts`. |
 | `npm run test:coverage` | Adds `--test-coverage-lines=75 --test-coverage-functions=70 --test-coverage-branches=60`. CI runs this and additionally asserts pass count equals test count. |
 | `npm run count:tools` | `scripts/surface-census.mjs`. Prints JSON: tool names, prompt names, resource URIs, parameter names, per-module measurements. |
-| `npm run count:tools -- --write` | Refreshes the 13 generated documentation blocks listed below. Nothing else. |
+| `npm run count:tools -- --write` | Refreshes the generated documentation blocks listed below. Nothing else. |
 | `npm run count:tools -- --check` | Fails if any generated block is stale. CI runs this. |
 | `npm run check:doc-tool-names` | Fails if any doc names a tool or argument that the finalized registry does not have. CI runs this. |
 | `node scripts/check-no-explicit-any.mjs` | Fails if any `as any` appears under `src/tools`. CI runs this. Comments and string literals are blanked first, so prose about the cast does not trip it; `Record<string, any>` is a type argument, not a cast. |
@@ -189,11 +189,24 @@ feeds the same JSON to both. Do not run them independently in a loop.
 `<!-- ... END -->` markers (and the `// BEGIN:generated` comment form in
 `.ts` files). Those blocks are:
 
-`README.md` (surface-census), `ARCHITECTURE.md` (surface-census, module-map),
-`SPEC.md` (package-contract, tool-surface, resource-surface, prompt-surface),
-`docs/schema-budgets.md` (schema-budget-table), `docs/wave2-composites.md`,
-`docs/distribution.md`, `skills/spotify-exhaustive-feature-sweep/SKILL.md`,
-`skills/spotify-mcp-competitor-comparison/SKILL.md`, `src/toolsets.ts`.
+<!-- BEGIN:generated generated-blocks -->
+- `README.md`: `surface-census`, `gated-endpoints`
+- `ARCHITECTURE.md`: `surface-census`, `module-map`
+- `SPEC.md`: `package-contract`, `tool-surface`, `resource-surface`, `prompt-surface`
+- `docs/schema-budgets.md`: `schema-budget-table`
+- `docs/wave2-composites.md`: `surface-census`
+- `docs/distribution.md`: `surface-census`
+- `skills/spotify-exhaustive-feature-sweep/SKILL.md`: `surface-census`
+- `skills/spotify-mcp-competitor-comparison/SKILL.md`: `surface-census`
+- `src/toolsets.ts`: `surface-census`
+<!-- END:generated generated-blocks -->
+
+That list is itself one of the generated blocks. Its body is rendered from the
+`blocks` array in `scripts/surface-census.mjs` — the same inventory `--write`
+iterates and `--check` verifies — so adding a block there makes this section
+stale until you re-run `--write`, and the list can no longer disagree with the
+blocks it describes. It is excluded from its own body: the entry for
+`AGENTS.md` is deliberately absent above.
 
 **The `[toolCount, schemaBytes]` baselines in `src/tools/annotations.ts` are
 hand-maintained and `--write` does not touch them.** Measure the real

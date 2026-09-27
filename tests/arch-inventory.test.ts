@@ -5,7 +5,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -50,6 +50,27 @@ function runFailure(args: string[], env: NodeJS.ProcessEnv = {}): string {
     return `${result.stdout ?? ''}\n${result.stderr ?? ''}`;
   }
   assert.fail(`expected command to fail: ${args.join(' ')}`);
+}
+
+/** The body between one block's markers, exactly as `inspectGeneratedBlock` slices it. */
+function generatedBlockBody(file: string, name: string): string {
+  const source = readFileSync(file, 'utf8');
+  const start = `<!-- BEGIN:generated ${name} -->`;
+  const end = `<!-- END:generated ${name} -->`;
+  const startAt = source.indexOf(start);
+  const endAt = source.indexOf(end);
+  assert.ok(startAt >= 0 && endAt > startAt, `${file} has no ${name} block`);
+  return source.slice(startAt + start.length, endAt);
+}
+
+/** Repository-relative paths that could carry a generated block, skipping build output. */
+function walkRepository(directory: string, prefix = ''): string[] {
+  const SKIP = new Set(['node_modules', 'dist', '.git', '.tmp']);
+  return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+    if (entry.name.startsWith('.') || SKIP.has(entry.name)) return [];
+    const relative = prefix ? `${prefix}/${entry.name}` : entry.name;
+    return entry.isDirectory() ? walkRepository(join(directory, entry.name), relative) : [relative];
+  });
 }
 
 describe('generated architecture and specification inventory', () => {
@@ -161,6 +182,37 @@ describe('generated architecture and specification inventory', () => {
         assert.match(runFailure(['scripts/check-doc-tool-names.mjs', '--check-fixture', file, '--census-file', censusFile]), fixture.expected);
       }
     });
+  });
+
+  it('AGENTS.md §3 names every generated block that exists in the tree (#1231)', () => {
+    // The expected side is scanned from the tree, not read back out of the
+    // script's `blocks` array, so this cannot pass by restating the code under
+    // test. It fails if a block is added with `--write` skipped, and it fails
+    // if the rendered list is hand-mangled. It does NOT catch the reverse —
+    // a marker pair left in a file with no `blocks` entry is invisible to
+    // `--check`, because `--check` only inspects what `blocks` names.
+    const listed = new Set<string>();
+    for (const line of generatedBlockBody(join(ROOT, 'AGENTS.md'), 'generated-blocks').split('\n')) {
+      const [, file, names] = /^-\s+`([^`]+)`:\s*(.+)$/.exec(line) ?? [];
+      if (!file) continue;
+      for (const name of names.matchAll(/`([^`]+)`/g)) listed.add(`${file}:${name[1]}`);
+    }
+
+    const inTree = new Set<string>();
+    for (const relative of walkRepository(ROOT)) {
+      const source = readFileSync(join(ROOT, relative), 'utf8');
+      for (const marker of source.matchAll(/^\/\/ BEGIN:generated ([a-z0-9-]+)$/gm)) inTree.add(`${relative}:${marker[1]}`);
+      for (const marker of source.matchAll(/^<!-- BEGIN:generated ([a-z0-9-]+) -->$/gm)) inTree.add(`${relative}:${marker[1]}`);
+    }
+    // The list is rendered from `blocks` and deliberately omits its own entry.
+    inTree.delete('AGENTS.md:generated-blocks');
+
+    assert.ok(listed.size > 0, 'AGENTS.md §3 rendered an empty generated-block list');
+    assert.ok(
+      listed.has('README.md:gated-endpoints'),
+      "AGENTS.md §3 no longer names README.md's gated-endpoints block, the entry #1226 added",
+    );
+    assert.deepEqual([...listed].sort(), [...inTree].sort());
   });
 
   it('requires exactly one valid marker pair for every generated block', async () => {
