@@ -21,11 +21,14 @@
 
 import { describe, it, after, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
 import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
+const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const MB = 1024 * 1024;
 
 // ---------------------------------------------------------------------------
@@ -1051,5 +1054,190 @@ describe('cache: cross-process persistence (#893)', () => {
       [small('a').key, small('b').key, small('c').key],
       'the oversize entry is absent and the rest are present, in order',
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1266: the debounced save must survive process termination
+// ---------------------------------------------------------------------------
+
+describe('cache: persistence survives process exit (#1266)', () => {
+  let dir = '';
+  let prevPersist: string | undefined;
+  let prevDataDir: string | undefined;
+  let prevTokenFile: string | undefined;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(path.join(tmpdir(), 'spotify-mcp-persist-exit-'));
+    prevPersist = process.env.SPOTIFY_MCP_CACHE_PERSIST;
+    prevDataDir = process.env.SPOTIFY_MCP_DATA_DIR;
+    prevTokenFile = process.env.SPOTIFY_MCP_TOKEN_FILE;
+    process.env.SPOTIFY_MCP_CACHE_PERSIST = '1';
+    process.env.SPOTIFY_MCP_DATA_DIR = dir;
+    process.env.SPOTIFY_MCP_TOKEN_FILE = path.join(dir, 'tokens.json');
+    await writeFile(
+      process.env.SPOTIFY_MCP_TOKEN_FILE,
+      JSON.stringify({ access_token: 'tok', refresh_token: 'ref', expires_at: Date.now() + 3_600_000 }),
+      'utf8',
+    );
+  });
+
+  afterEach(async () => {
+    if (prevPersist === undefined) delete process.env.SPOTIFY_MCP_CACHE_PERSIST;
+    else process.env.SPOTIFY_MCP_CACHE_PERSIST = prevPersist;
+    if (prevDataDir === undefined) delete process.env.SPOTIFY_MCP_DATA_DIR;
+    else process.env.SPOTIFY_MCP_DATA_DIR = prevDataDir;
+    if (prevTokenFile === undefined) delete process.env.SPOTIFY_MCP_TOKEN_FILE;
+    else process.env.SPOTIFY_MCP_TOKEN_FILE = prevTokenFile;
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  /**
+   * Run one catalog read in a REAL child process and terminate it a given way.
+   *
+   * This has to be a child process. The defect is that the pending save is
+   * dropped when the process ends, so an in-process test could only assert on
+   * a controller method and would pass whether or not the *termination* path
+   * actually flushed. The child is killed or exits while the 250 ms debounce
+   * window is still open, which is the whole case: `SPOTIFY_MCP_CACHE_PERSIST`
+   * is documented for hosts that restart the server per session, so a session
+   * of one quick read is the ordinary shape, not an exotic one.
+   *
+   * Returns the exit status alongside the answer, because how the process DIED
+   * is part of the claim: a fix that made the server survive SIGTERM instead of
+   * stopping would make the file appear and still be wrong.
+   */
+  async function readThenDie(how: 'exit' | 'sigterm' | 'uncaught'): Promise<{ saved: boolean; signal: string | null; code: number | null }> {
+    const child = spawn(
+      process.execPath,
+      ['--import', 'tsx/esm', path.join(REPO_ROOT, 'tests', 'fixtures', 'persist-exit-child.ts')],
+      {
+        cwd: REPO_ROOT,
+        env: {
+          PATH: process.env.PATH,
+          HOME: dir,
+          SPOTIFY_CLIENT_ID: 'test-client-id',
+          SPOTIFY_MCP_CACHE_PERSIST: '1',
+          SPOTIFY_MCP_DATA_DIR: dir,
+          SPOTIFY_MCP_TOKEN_FILE: path.join(dir, 'tokens.json'),
+          SPOTIFY_MCP_PERSIST_EXIT_MODE: how,
+        },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      },
+    );
+
+    // The child prints `cached` the moment the read is in the cache and the
+    // debounce is armed. Waiting for THAT line, rather than a fixed sleep, is
+    // what puts the signal reliably inside the window: module loading under
+    // tsx takes longer than 250 ms on a cold start, so a timer fired at
+    // process spawn would arrive before the read had even happened and would
+    // be testing nothing at all.
+    const ready = new Promise<void>((resolve) => {
+      let seen = '';
+      child.stdout.on('data', (c: Buffer) => {
+        seen += String(c);
+        if (seen.includes('cached')) resolve();
+      });
+    });
+
+    const exited = new Promise<{ signal: string | null; code: number | null }>((resolve) => {
+      child.on('exit', (code, signal) => resolve({ signal, code }));
+    });
+    child.on('error', () => resolve({ signal: null, code: null }));
+
+    if (how === 'sigterm') {
+      await ready;
+      child.kill('SIGTERM');
+    }
+    const { signal, code } = await exited;
+    // Allow an uncaught throw to finish unwinding to the `exit` event.
+    await new Promise((r) => setTimeout(r, 200));
+
+    const file = path.join(dir, 'cache.json');
+    let saved = false;
+    if (existsSync(file)) {
+      const written = persist.validatePersisted(JSON.parse(await readFile(file, 'utf8')));
+      saved = written.entries.some((e) => e.key.includes('/tracks/'));
+    }
+    return { saved, signal, code };
+  }
+
+  it('writes the read even when the process exits inside the debounce window (#1266)', async () => {
+    // The reproduction. `process.exit()` inside the window loses the write
+    // outright: `exit` listeners run synchronously and the debounce timer is
+    // the only thing that would otherwise have performed the save.
+    const { saved } = await readThenDie('exit');
+    assert.equal(
+      saved,
+      true,
+      'a catalog read made just before process.exit() must still reach the cache file, not be dropped by the 250 ms debounce',
+    );
+  });
+
+  it('writes the read when an uncaught throw ends the process inside the window (#1266)', async () => {
+    // The same synchrony applies: an uncaught throw unwinds straight to the
+    // `exit` event with no opportunity to await a pending write.
+    const { saved, code } = await readThenDie('uncaught');
+    assert.equal(
+      saved,
+      true,
+      'an uncaught throw must not discard a save that was already queued',
+    );
+    assert.notEqual(code, 0, 'the throw really did fail the process, so the flush did not just ride a clean exit');
+  });
+
+  it('writes the read on SIGTERM, and still dies of the signal (#1266)', async () => {
+    // SIGTERM is how a host stops a per-session server, and it is the case
+    // Node gives you NO JavaScript for by default: no `exit`, no `beforeExit`.
+    // A handler has to be installed for the process to get a chance to save.
+    const { saved, signal } = await readThenDie('sigterm');
+    assert.equal(
+      saved,
+      true,
+      'SIGTERM is how a host stops a per-session server; the pending save must be flushed, not discarded',
+    );
+    // Installing a handler must not quietly disarm the signal — the process has
+    // to still terminate, and still report the signal to whatever supervises it.
+    assert.equal(
+      signal,
+      'SIGTERM',
+      'the process must still die OF the signal; a handler that swallows it would leave the server unkillable',
+    );
+  });
+
+  it('flush() is idempotent and does not double-count a save that already ran (#1266)', async () => {
+    // The debounce timer and an explicit flush can both reach the same save.
+    // Whichever loses must not count the write twice, or `spotify_doctor`
+    // over-reports a save that happened once.
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ id: 'tr1' }), { status: 200 })) as typeof fetch;
+
+    const client = new SpotifyClient();
+    await client.get('/tracks/tr1', {});
+
+    const before = client.getRateLimitStatus();
+    await (client as unknown as { flushCachePersist(): Promise<void> }).flushCachePersist();
+    const afterFirst = client.getRateLimitStatus();
+    await (client as unknown as { flushCachePersist(): Promise<void> }).flushCachePersist();
+    const afterSecond = client.getRateLimitStatus();
+
+    const file = path.join(dir, 'cache.json');
+    assert.ok(existsSync(file), 'the flush wrote the file');
+    assert.deepEqual(
+      persist.validatePersisted(JSON.parse(await readFile(file, 'utf8'))).entries.map((e) => e.key),
+      [cacheKey('GET', '/tracks/tr1')],
+      'the flushed file holds exactly the cached read',
+    );
+    assert.equal(
+      afterSecond.cachePersistFailed,
+      afterFirst.cachePersistFailed,
+      'a second flush with nothing pending must not count another failure',
+    );
+    assert.equal(
+      afterSecond.cachePersistFailed,
+      0,
+      'a successful flush is not a failure, however many times it is asked for',
+    );
+    assert.ok(before !== null, 'the pre-flush status is readable');
   });
 });
