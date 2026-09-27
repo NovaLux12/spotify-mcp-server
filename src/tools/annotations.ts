@@ -247,8 +247,8 @@ export const TOOL_SURFACE_BUDGET = Object.freeze({
   // behaviour the schema already carried.
   //
   // COST RECORD, NOT A RAISE. #836 needs no ceiling of its own: the aggregate
-  // it lands on sits inside the 620,000B carried by WARRANT SWEEP-2026-09
-  // above, which is a grant sized for the queue rather than for any single
+  // it lands on already sits inside what the SWEEP-2026-09 grant above stands
+  // behind, which is a grant sized for the queue rather than for any single
   // warrant. An earlier cut of this branch raised 607,000 -> 609,000 on its own
   // +1,097B warrant; that raise was withdrawn once the sweep grant landed,
   // because a second raise for bytes a grant already covers is exactly the

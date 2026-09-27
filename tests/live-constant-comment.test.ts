@@ -45,14 +45,32 @@ const FIGURE_FLOOR = 1_000;
 const BYTE_FIGURE = /(\d{1,3}(?:[,_]\d{3})+|\d+)\s*(B\b|bytes?\b|byte\b|KB\b|kB\b|MB\b|GB\b|KiB\b|MiB\b)/g;
 
 /**
- * A comment sentence anchored to a dated tree — a commit sha, or the phrasing
- * the decision logs use (`measured`, `warrant`, `grant`).
+ * A comment sentence anchored to a dated tree — a commit sha, the phrasing the
+ * decision logs use (`measured`), or a warrant/grant ANNOUNCEMENT.
  *
  * The sha arm requires a digit as well as hex letters, because a bare `[0-9a-f]{7}`
  * also matches English (`defaced`, `facaded`) and a false anchor exempts a real
  * defect. Git shas essentially always contain a digit; hex-only words never do.
+ *
+ * WHY `warrant`/`grant` NEED A COLON (#1332). The bare word was an anchor, and
+ * that is what let the defect through: "sits inside the 620,000B carried by
+ * WARRANT SWEEP-2026-09 above" names a warrant in order to *cross-reference*
+ * one, and the gate read the name as proof the sentence was dated. It was
+ * correct by accident — the sentence sits twelve lines from a real warrant
+ * header, and the word did the work the header should have done. Cross-reference
+ * and announcement are opposite claims, so they get opposite arms: a warrant
+ * anchors a figure only where it *opens* one (`WARRANT SWEEP-2026-09: …`), which
+ * is the shape every genuine record in the file already has.
+ *
+ * Measured rather than assumed, on this tree, `620_000` included: the bare-word
+ * anchor found 0 unanchored figures and the colon arm finds 2 — this sentence
+ * and the `10,000B` coincidence at `:273`, which is an unrelated `max(10000)`
+ * in `exhaust2_misc.ts` and earns an `ALLOWED` entry. Dropping the arm outright
+ * was measured too and is not cheaper: it flags the same 2 plus nothing, but it
+ * would also strip the anchor from every `WARRANT #866:`-shaped record, and
+ * those are records this file exists to keep. The colon is the narrower change.
  */
-const DATED_TREE = /\b(?:measured|re-?measur\w*|measuring|warrants?|grants?)\b|(?<![0-9a-z])[0-9a-f]*[0-9][0-9a-f]{6,39}(?![0-9a-z])/i;
+const DATED_TREE = /\b(?:measured|re-?measur\w*|measuring)\b|(?:warrant|grant)s?\b[^.:;]{0,24}:|(?<![0-9a-z])[0-9a-f]*[0-9][0-9a-f]{6,39}(?![0-9a-z])/i;
 
 /**
  * Records the anchoring test cannot reach, because the sentence carrying the
@@ -68,6 +86,12 @@ const ALLOWED: { file: string; contains: string; why: string }[] = [
     contains: 'Then 11,882 -> 11,773B (-109) when #922 reworded this module',
     why:
       'dated: the #922 `playbackintel` re-measure. The figure is the manifest baseline it set; the sentence qualifying it ("The two deltas compose, and neither is measured off the other’s tree — this figure is the merged measurement.") is the NEXT one, so the anchoring test cannot reach it from here.',
+  },
+  {
+    file: 'src/tools/annotations.ts',
+    contains: 'and the first raise was 19x its warrant',
+    why:
+      'NOT a live-constant quote, and the collision is arithmetic coincidence: this is the record of the 19x over-raise the CORRECTIONS note is about, while the 10_000 it matches is `max(10000)` on `min_hours` (backlog hours) in `exhaust2_misc.ts` — a queue-depth bound with no relationship to a byte budget. Surfaced only by the narrowed `warrant` anchor in #1332; the figure is frozen history, so it stays.',
   },
 ];
 
@@ -321,9 +345,62 @@ describe('#1332 — the detector can actually reject', () => {
   it('does not flag the same figure once it is anchored to a dated tree', () => {
     const { quotes } = findLiveConstantQuotes([
       { path: 'src/log.ts', source: `// measured on this tree at b8fa661: 620,000B.\n${CEILING}\n` },
-      { path: 'src/log2.ts', source: `// sits inside the 620,000B carried by WARRANT SWEEP-2026-09 above.\n${CEILING}\n` },
     ]);
     assert.deepEqual(quotes, []);
+  });
+
+  it('accepts a warrant ANNOUNCEMENT, which is a dated record', () => {
+    // The half of the warrant anchor that earns its keep: `WARRANT #866: +112B, …`
+    // opens a record and the figure belongs to it. Narrowing the arm to a colon
+    // must not cost these, or the gate would push every warrant header in
+    // `annotations.ts` into `ALLOWED` — which is the allowlist-growth trap the
+    // header warns about, reached by the opposite road.
+    const { quotes } = findLiveConstantQuotes([
+      { path: 'src/log.ts', source: `// WARRANT SWEEP-2026-09: 620,000B carried by the sweep grant.\n${CEILING}\n` },
+      { path: 'src/log2.ts', source: `// GRANT BACKFILL-2026-09: +620,000B reclaimed from prose.\n${CEILING}\n` },
+    ]);
+    assert.deepEqual(quotes, [], 'a warrant header is a record, not a cross-reference');
+  });
+
+  it('flags a warrant CROSS-REFERENCE that hides a live constant', () => {
+    // #1332, second instance. The shipped gate read the word "WARRANT" in this
+    // sentence as proof it was dated, so the gate passed the defect it was
+    // written for: the sentence points at a warrant, and in doing so quotes the
+    // constant that warrant set. It is the *named* warrant doing the exempting,
+    // which is the whole defect — the name is a pointer, not a date.
+    const { quotes } = findLiveConstantQuotes([
+      { path: 'src/log.ts', source: `// sits inside the 620,000B carried by WARRANT SWEEP-2026-09 above.\n${CEILING}\n` },
+    ]);
+    assert.equal(quotes.length, 1, 'a cross-reference must not exempt a live constant');
+    assert.equal(quotes[0].figure, '620,000');
+  });
+
+  it('keeps the gate clean on the real file — a reintroduction would fail here', () => {
+    // Binds the narrowed anchor to the tree rather than to a fixture, so the
+    // `annotations.ts:250` sentence cannot come back wearing the old wording.
+    // The `deadAllowances` check covers the other direction: an allowance whose
+    // text is gone fails too, so neither the defect nor the pardon can rot.
+    //
+    // The WHOLE `src/` tree, not just `annotations.ts`: the `10,000B` collision
+    // this allowance covers is defined in `exhaust2_misc.ts`, so scanning one
+    // file leaves every allowance dead and fails for the wrong reason. A test
+    // that goes red on a technicality teaches the reader to ignore red.
+    const files = sourceFiles(join(ROOT, 'src')).map((path) => ({
+      path: path.slice(ROOT.length + 1),
+      source: readFileSync(path, 'utf8'),
+    }));
+    const { quotes, deadAllowances } = findLiveConstantQuotes(files, ALLOWED);
+    assert.deepEqual(deadAllowances, []);
+    assert.deepEqual(
+      quotes.map((q) => `${q.file}:${q.line} ${q.figure} — ${q.sentence}`),
+      [],
+      'a comment in src/ restates a live constant',
+    );
+    const annotations = readFileSync(join(ROOT, 'src/tools/annotations.ts'), 'utf8');
+    assert.ok(
+      !/620,000B carried by WARRANT/.test(annotations),
+      'the cross-reference sentence from #1332 is back',
+    );
   });
 
   it('ignores a figure no constant defines, and an unqualified number', () => {
