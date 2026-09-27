@@ -218,8 +218,8 @@ That column replaced a per-file line count (#1398), and why is worth keeping: a 
 | `src/tools/searchhistory.ts` | searchhistory (#205): search_history + search_rerun (90-day expiry, sidecar). (2 registered tools) | 1,096 |
 | `src/tools/showradar.ts` | show_new_episodes (#173): new-episode radar across saved podcast shows. (1 registered tool) | 2,125 |
 | `src/tools/smart.ts` | create_smart_playlist (#172): rule-based playlist generation from the user's OWN listening data — top tracks, recently played, or saved tracks — with optional artist filtering and per-artist uniqueness. (1 registered tool) | 2,364 |
-| `src/tools/statsfm.ts` | stats.fm tools (read-only): listening stats, tops, catalog and social lookups against the public stats.fm API. (30 registered tools) | 29,181 |
-| `src/tools/statsfm_taste.ts` | stats.fm taste-intelligence slice (v2 taste track). (8 registered tools) | 8,224 |
+| `src/tools/statsfm.ts` | stats.fm tools (read-only): listening stats, tops, catalog and social lookups against the public stats.fm API. (30 registered tools) | 29,481 |
+| `src/tools/statsfm_taste.ts` | stats.fm taste-intelligence slice (v2 taste track). (8 registered tools) | 8,308 |
 | `src/tools/swarm3_analytics.ts` | swarm3 analytics slice — 500-tool swarm v1.26.0 (issue #442). (15 registered tools) | 12,030 |
 | `src/tools/swarm3_discovery.ts` | swarm3 discovery slice — 500-tool swarm v1.26.0 (issue #442). (24 registered tools) | 22,483 |
 | `src/tools/swarm3_library.ts` | swarm3 library slice — feature swarm v1.25.0 (500-tool push, branch swarm3-500-tools). (24 registered tools) | 18,283 |
@@ -231,8 +231,8 @@ That column replaced a per-file line count (#1398), and why is worth keeping: a 
 | `src/tools/swarm3_snapshots.ts` | swarm3 snapshots slice — 500-tool swarm v1.26.0 (issue #442). (24 registered tools) | 23,829 |
 | `src/tools/swarm3b_discovery.ts` | swarm3b discovery slice (second discovery builder) — 500-tool swarm v1.26.0 (issue #442). (24 registered tools) | 20,147 |
 | `src/tools/swarm4_playlists.ts` | swarm4 playlists slice — feature swarm v1.25.0 (issues #420–#437). (18 registered tools) | 23,228 |
-| `src/tools/taste_composites.ts` | Wave-2 taste composites: 10 composite tools over the stats.fm PUBLIC API v1 (no auth), shaping taste data into playlist specs, briefs, and reports. (10 registered tools) | 10,242 |
-| `src/tools/taste_playlist.ts` | `taste_to_playlist` — the one writer in the taste composite family (#1009). (1 registered tool) | 1,884 |
+| `src/tools/taste_composites.ts` | Wave-2 taste composites: 10 composite tools over the stats.fm PUBLIC API v1 (no auth), shaping taste data into playlist specs, briefs, and reports. (10 registered tools) | 10,362 |
+| `src/tools/taste_playlist.ts` | `taste_to_playlist` — the one writer in the taste composite family (#1009). (1 registered tool) | 1,896 |
 | `src/tools/undo.ts` | Undo for receipt-driven mutations (#217, #625). (2 registered tools) | 1,663 |
 | `src/tools/users.ts` | Runtime module for src/tools/users.ts. (2 registered tools) | 1,696 |
 | `src/toolsets.ts` | Toolsets (#95): coarse-grained grouping of registration entry points so an operator can trim the server's exposed surface via `SPOTIFY_MCP_TOOLSETS` (e.g. "playback,library" for a car dashboard, or "catalog,personalization" for a read-only recommender). (0 registered tools) | — |

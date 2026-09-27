@@ -1602,7 +1602,15 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   // `statsfmRangeSchema`: this one is resolved locally, while that one is
   // forwarded verbatim to a stats.fm query parameter that answers
   // `400 invalid range` for `year` and every other bucket value.
-  manifestEntry('statsfm', 'statsfm', lazyModule('./statsfm.js', 'registerStatsfmTools', (register) => (server) => register(server)), [30, 29181], { readOnlySafe: true }),
+  //
+  // #1514: the shared `statsfm_user` description shipped a real stats.fm
+  // account handle as its worked example, in bytes every MCP host receives.
+  // The placeholder is 10 B longer than the handle it replaces, and the field
+  // is declared on all 30 of this module's tools. MEASURED with
+  // `npm run count:tools` on 2026-09-27: 29181 B -> 29481 B (+300 B), tool
+  // count unchanged at 30. The `statsfm` ceiling is DERIVED from this baseline
+  // (10% over), so it rises with it.
+  manifestEntry('statsfm', 'statsfm', lazyModule('./statsfm.js', 'registerStatsfmTools', (register) => (server) => register(server)), [30, 29481], { readOnlySafe: true }),
   // #905: record_feedback gained a `limit` (the list page is bounded now, so
   // the response no longer scales with the store) and its description names
   // the store file and the cap. Tool count is unchanged at 16.
@@ -1639,7 +1647,11 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   // against this rebased tree: 7062 B -> 8224 B (+1162 B), tool count unchanged
   // at 8. The eighth tool, `statsfm_record_feedback`, makes no network call and
   // declares no identity argument, so it is untouched by the rename.
-  manifestEntry('taste', 'taste', lazyModule('./statsfm_taste.js', 'registerStatsfmTasteTools'), [8, 8224], { readOnlySafe: true }),
+  //
+  // #1514: the `statsfm_user` example handle moved to a placeholder, +10 B on
+  // the 7 tools here that declare it. MEASURED with `npm run count:tools` on
+  // 2026-09-27: 8224 B -> 8308 B (+84 B), tool count unchanged at 8.
+  manifestEntry('taste', 'taste', lazyModule('./statsfm_taste.js', 'registerStatsfmTasteTools'), [8, 8308], { readOnlySafe: true }),
   // #927: same optional `statsfm_user` default as `taste`, on 10 tools.
   // MEASURED with `npm run count:tools` on 2026-09-27: 8040 B -> 7990 B, the
   // same -50 B for the same reason: out of `required`, shorter description.
@@ -1663,7 +1675,11 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   // shows that tool taking `statsfm_user`); the schema was restored and the
   // baseline re-measured. A baseline measured against a tree where a tool had
   // lost an input is a ratchet that would have locked the loss in.
-  manifestEntry('tastecomposites', 'tastecomposites', lazyModule('./taste_composites.js', 'registerTasteCompositeTools'), [10, 10242], { readOnlySafe: true }),
+  //
+  // #1514: the `statsfm_user` example handle moved to a placeholder, +10 B on
+  // each of this module's 10 tools. MEASURED with `npm run count:tools` on
+  // 2026-09-27: 10242 B -> 10362 B (+120 B), tool count unchanged at 10.
+  manifestEntry('tastecomposites', 'tastecomposites', lazyModule('./taste_composites.js', 'registerTasteCompositeTools'), [10, 10362], { readOnlySafe: true }),
   // #927: `taste_to_playlist` declares the same optional `statsfm_user`, so it
   // moves with the module it imports the schema from. MEASURED with
   // `npm run count:tools` on 2026-09-27: 1723 B -> 1718 B, -5 B. Tool count
@@ -1671,7 +1687,11 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   // #1318: `taste_to_playlist` gains the alias too. MEASURED with
   // `npm run count:tools` on 2026-09-27: 1718 B -> 1884 B (+166 B). Tool
   // count unchanged at 1.
-  manifestEntry('tasteplaylist', 'tastecomposites', lazyModule('./taste_playlist.js', 'registerTastePlaylistTools'), [1, 1884], { scopeKey: 'playlists' }),
+  //
+  // #1514: +10 B from the `statsfm_user` placeholder. MEASURED with
+  // `npm run count:tools` on 2026-09-27: 1884 B -> 1896 B (+12 B), tool count
+  // unchanged at 1.
+  manifestEntry('tasteplaylist', 'tastecomposites', lazyModule('./taste_playlist.js', 'registerTastePlaylistTools'), [1, 1896], { scopeKey: 'playlists' }),
   manifestEntry('doctor', 'doctor', lazyModule('./doctortool.js', 'registerDoctorTool'), [1, 825], { alwaysActive: true, readOnlySafe: true }),
   // #602. `readOnlySafe: true` is a claim about the MODULE, and the module
   // holds a write: what makes that safe is that `readOnlyToolServer` drops
