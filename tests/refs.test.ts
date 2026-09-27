@@ -6,6 +6,7 @@ import {
   classifySpotifyReference,
   normaliseToId,
   resolveSpotifyId,
+  SPOTIFY_REFERENCE_KINDS,
   spotifyId,
   spotifyUri,
 } from '../src/refs.js';
@@ -499,6 +500,93 @@ describe('expectedKind enforcement (#584)', () => {
       }
     } finally {
       await harness.close();
+    }
+  });
+});
+
+// The second half of #584. `knownKind` looked its answer up in a plain object
+// literal, so every key inherited from Object.prototype resolved as though it
+// were a real entity kind. `spotify:constructor:<id>` therefore classified as
+// VALID with a function as its kind, and `spotifyUri` round-tripped it into
+// `spotify:function Object() { [native code] }:<id>`. A kind vocabulary is a
+// closed set: membership must come from the vocabulary itself, never from
+// whatever the host object happens to carry.
+describe('the kind vocabulary is a closed set (#584)', () => {
+  const ARTIST_ID = '4iV5W9uYEdYUVa79Axb7Rh';
+
+  // The Object.prototype members the reference grammar can actually be handed.
+  // SPOTIFY_URI_RE matches a `[a-z]+` kind, so among the prototype's own
+  // lowercase-only members only `constructor` is reachable that way; a
+  // share-URL path segment is a plain path run, so it additionally admits
+  // `__proto__`. Both are listed because both reach `knownKind`.
+  const INHERITED_KINDS = ['constructor', '__proto__'];
+
+  it('rejects every Object.prototype key the grammar can carry as an entity kind', () => {
+    for (const key of INHERITED_KINDS) {
+      for (const reference of [
+        `spotify:${key}:${ARTIST_ID}`,
+        `spotify://${key}/${ARTIST_ID}`,
+        `https://open.spotify.com/${key}/${ARTIST_ID}`,
+      ]) {
+        const parsed = classifySpotifyReference(reference);
+        // `spotify:__proto__:…` fails earlier, in the URI grammar, because
+        // `__proto__` is not `[a-z]+` — so it is rejected as malformed rather
+        // than as an unsupported kind. Either verdict is a rejection; what must
+        // never happen is a valid parse carrying a function or object as kind.
+        assert.equal(parsed.valid, false, reference);
+        assert.equal(parsed.kind, null, reference);
+        assert.equal(parsed.id, null, reference);
+        assert.ok(
+          /unsupported Spotify entity kind|malformed Spotify URI/.test(parsed.error ?? ''),
+          `${reference} rejected for the wrong reason: ${parsed.error}`,
+        );
+        assert.equal(resolveSpotifyId(reference), null, reference);
+        assert.equal(spotifyUri(reference), null, reference);
+      }
+    }
+  });
+
+  it('never reports a function or object as a parsed kind', () => {
+    // The shape assertion, independent of which keys are enumerated above: a
+    // kind is one of the eight strings or null, never a prototype member.
+    for (const key of INHERITED_KINDS) {
+      const parsed = classifySpotifyReference(`spotify:${key}:${ARTIST_ID}`);
+      assert.ok(
+        parsed.kind === null || typeof parsed.kind === 'string',
+        `kind must be a string or null, got ${typeof parsed.kind}`,
+      );
+      if (typeof parsed.kind === 'string') {
+        assert.ok(SPOTIFY_REFERENCE_KINDS.includes(parsed.kind), parsed.kind);
+      }
+    }
+  });
+
+  it('spotifyUri never emits a canonical URI whose kind is not a known kind', () => {
+    // The output side of the same property. `spotifyUri` used to build the URI
+    // by interpolating `parsed.kind`, so a function kind produced
+    // `spotify:function Object() { [native code] }:<id>`. Whatever it returns,
+    // the kind it embeds has to be in the vocabulary.
+    for (const key of INHERITED_KINDS) {
+      const uri = spotifyUri(`https://open.spotify.com/${key}/${ARTIST_ID}`);
+      if (uri === null) continue;
+      const kind = uri.slice('spotify:'.length, uri.lastIndexOf(':'));
+      assert.ok(
+        SPOTIFY_REFERENCE_KINDS.includes(kind),
+        `spotifyUri emitted a non-vocabulary kind ${JSON.stringify(kind)} in ${uri}`,
+      );
+    }
+  });
+
+  it('spotifyId() rejects an inherited-kind reference at the schema boundary', () => {
+    for (const key of INHERITED_KINDS) {
+      for (const kind of SPOTIFY_REFERENCE_KINDS) {
+        const rejected = spotifyId(kind).safeParse(`spotify:${key}:${ARTIST_ID}`);
+        assert.equal(rejected.success, false, `spotifyId('${kind}') accepted spotify:${key}:`);
+        // A bare prototype key is not a Spotify id either, so the untyped
+        // schema must refuse it rather than pass it to the API verbatim.
+        const untyped = spotifyId().safeParse(key);
+        assert.equal(untyped.success, false, `spotifyId() accepted the bare kind ${key}`);
+      }
     }
   });
 });

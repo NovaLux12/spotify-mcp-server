@@ -36,7 +36,7 @@ import {
 } from '../shaping.js';
 import { chunk, capFor, type ChunkCapKind } from '../chunk.js';
 import { recordSearch } from './searchhistory.js';
-import { spotifyId, spotifyIdArray, type SpotifyReferenceKind } from '../refs.js';
+import { spotifyId, spotifyIdArray, SPOTIFY_SEARCHABLE_KINDS, type SpotifyReferenceKind, type SpotifySearchableKind } from '../refs.js';
 import {
   MARKET_CODE,
   getWithMarketFallback,
@@ -1188,7 +1188,7 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
   );
 
   // ----- typed search family (#257-263) via factory -----
-  type TypedSearchKind = 'track' | 'artist' | 'album' | 'playlist' | 'show' | 'episode' | 'audiobook';
+  type TypedSearchKind = SpotifySearchableKind;
   const typedSearchMeta: Record<TypedSearchKind, { tool: string; description: string; key: string }> = {
     track: { tool: 'search_tracks', description: 'Search tracks only (GET /search?type=track). Quota: 1 call.', key: 'tracks' },
     artist: { tool: 'search_artists', description: 'Search artists only (GET /search?type=artist). Quota: 1 call.', key: 'artists' },
@@ -1304,7 +1304,7 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
       },
     );
   }
-  (['track', 'artist', 'album', 'playlist', 'show', 'episode', 'audiobook'] as TypedSearchKind[]).forEach(makeTypedSearchTool);
+  SPOTIFY_SEARCHABLE_KINDS.forEach(makeTypedSearchTool);
 
   // ----- catalog_batch_lookup (#268) -----
   server.tool(

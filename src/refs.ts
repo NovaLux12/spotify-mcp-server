@@ -21,6 +21,31 @@ export const SPOTIFY_REFERENCE_KINDS = [
 ] as const;
 
 export type SpotifyReferenceKind = (typeof SPOTIFY_REFERENCE_KINDS)[number];
+
+/**
+ * The subset of the kind vocabulary that `GET /search` accepts as a `type`.
+ *
+ * `user` is a reference kind but not a searchable one, so this list is one
+ * shorter than {@link SPOTIFY_REFERENCE_KINDS}; `satisfies` makes that
+ * narrowing a compile error the moment a member stops being a real kind. This
+ * is the one definition of "searchable kinds" (#584): the search schemas read
+ * it instead of re-spelling the same seven-element list, which had been
+ * duplicated across search.ts, searchdive.ts, catalog.ts and
+ * exhaust2_catalog.ts. The emitted JSON Schema is unchanged — `z.enum` over a
+ * readonly tuple and over the same literals produce identical bytes.
+ */
+export const SPOTIFY_SEARCHABLE_KINDS = [
+  'track',
+  'artist',
+  'album',
+  'playlist',
+  'show',
+  'episode',
+  'audiobook',
+] as const satisfies readonly SpotifyReferenceKind[];
+
+export type SpotifySearchableKind = (typeof SPOTIFY_SEARCHABLE_KINDS)[number];
+
 type SpotifyReferenceForm = 'id' | 'uri' | 'url' | 'invalid';
 
 export interface SpotifyReferenceClassification {
@@ -46,16 +71,19 @@ const SPOTIFY_ID_RE = /^[A-Za-z0-9]{22}$/;
 // happen after extraction so user identifiers can remain non-fixed length.
 const SPOTIFY_URI_RE = /^spotify:(?:([a-z]+):([^\/?#]+)|\/\/([a-z]+)[/:]([^\/?#]+))$/i;
 const SPOTIFY_USER_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$/;
-const KIND_BY_NAME: Record<string, SpotifyReferenceKind> = {
-  track: 'track',
-  album: 'album',
-  artist: 'artist',
-  playlist: 'playlist',
-  show: 'show',
-  episode: 'episode',
-  audiobook: 'audiobook',
-  user: 'user',
-};
+
+/**
+ * The single definition of the kind vocabulary, as a `Map` rather than an
+ * object literal. A plain object inherits every `Object.prototype` key, so
+ * `KIND_BY_NAME['constructor']` used to resolve to the `Object` constructor:
+ * `spotify:constructor:<id>` classified as a valid reference whose "kind" was
+ * a function, and `spotifyUri` round-tripped it into a
+ * `spotify:function Object() { [native code] }:<id>` URI. A `Map` has no
+ * prototype chain, so membership is exactly the vocabulary above.
+ */
+const KIND_BY_NAME: ReadonlyMap<string, SpotifyReferenceKind> = new Map(
+  SPOTIFY_REFERENCE_KINDS.map((kind) => [kind, kind]),
+);
 
 function invalid(
   input: string,
@@ -66,7 +94,7 @@ function invalid(
 }
 
 function knownKind(value: string): SpotifyReferenceKind | null {
-  return KIND_BY_NAME[value.toLowerCase()] ?? null;
+  return KIND_BY_NAME.get(value.toLowerCase()) ?? null;
 }
 
 function validId(id: string, kind: SpotifyReferenceKind, allowShortIds: boolean): boolean {
