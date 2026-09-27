@@ -1326,7 +1326,13 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   // +151B: import_profile_state's description now says the mutation ledger is
   // export-only, so a caller does not expect its history to be restored (#629).
   // The tool count is unchanged.
-  manifestEntry('portability', 'portability', lazyModule('./portability.js', 'registerPortabilityTools'), [11, 10187], { scopeKey: 'library' }),
+  // #708: descriptions only, same 11 tools and same input schemas. The baseline
+  // in the entry below moved because import_from_sidecar's description now
+  // names the path, the date the sidecar declares (exported_at, or the named
+  // reason it declares none), the row count, the single use, and
+  // consent_note. Measured off the live registry over stdio, not estimated;
+  // the derived ceiling follows that baseline.
+  manifestEntry('portability', 'portability', lazyModule('./portability.js', 'registerPortabilityTools'), [11, 10453], { scopeKey: 'library' }),
   manifestEntry('libraryinsights', 'library', lazyModule('./libraryinsights.js', 'registerLibraryInsightsTools'), [3, 2751], { scopeKey: 'library' }),
   manifestEntry('libraryhygiene', 'library', lazyModule('./libraryhygiene.js', 'registerLibraryHygieneTools'), [1, 754], { scopeKey: 'library' }),
   manifestEntry('showradar', 'library', lazyModule('./showradar.js', 'registerShowRadarTools'), [1, 2125], { readOnlySafe: true, scopeKey: 'library' }),
@@ -1335,7 +1341,13 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   manifestEntry('backupfirst', 'library', lazyModule('./backupfirst.js', 'registerBackupFirstTools'), [1, 513], { readOnlySafe: true, scopeKey: 'library' }),
   manifestEntry('backup', 'library', lazyModule('./backup.js', 'registerBackupTools'), [2, 1632], { readOnlySafe: true, scopeKey: 'library' }),
   manifestEntry('backupdelete', 'library', lazyModule('./backup_delete.js', 'registerBackupDeleteTools'), [1, 959], { readOnlySafe: false, scopeKey: 'library' }),
-  manifestEntry('restore', 'library', lazyModule('./restore.js', 'registerRestoreTools'), [1, 1888], { scopeKey: 'library' }),
+  // #708: descriptions only, same 1 tool and same input schema. The baseline in
+  // the entry below moved because restore_library_snapshot's description now
+  // names the source, the file-declared date, the item count and the single
+  // use, and says explicitly that a missing date is named rather than borrowed
+  // from the mtime. Measured off the live registry over stdio, not estimated;
+  // the derived ceiling follows that baseline.
+  manifestEntry('restore', 'library', lazyModule('./restore.js', 'registerRestoreTools'), [1, 2072], { scopeKey: 'library' }),
   manifestEntry('undo', 'library', lazyModule('./undo.js', 'registerUndoTools'), [2, 1663], { scopeKey: 'library' }),
   manifestEntry('receipts', 'receipts', localModule('src/tools/annotations.ts', 'registerVerifyReceiptTool', registerVerifyReceiptTool), [1, 626], { alwaysActive: true, readOnlySafe: true }),
   manifestEntry('episodemgmt', 'episodemgmt', lazyModule('./episodemgmt.js', 'registerEpisodeMgmtTools'), [1, 1053], { scopeKey: 'library' }),
@@ -1418,7 +1430,14 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   manifestEntry('playlisthealth', 'playlisthealth', lazyModule('./playlisthealth.js', 'registerPlaylistHealthTools'), [8, 5080], { scopeKey: 'playlists' }),
   manifestEntry('playlistdna', 'playlists', lazyModule('./playlistdna.js', 'registerPlaylistDnaTools'), [1, 1310], { readOnlySafe: true, scopeKey: 'playlists' }),
   manifestEntry('export', 'playlists', lazyModule('./export.js', 'registerExportTools'), [1, 1363], { scopeKey: 'playlists' }),
-  manifestEntry('import', 'playlists', lazyModule('./import.js', 'registerImportTools'), [1, 1211], { scopeKey: 'playlists' }),
+  // #708: descriptions only, same 1 tool and same input schema. The baseline in
+  // the entry below moved because import_playlist's description now names the
+  // record it publishes and the fact that a batch under 100 new URIs is not
+  // gated. The detail had to stay out of the description and into SPEC.md §5.6
+  // — this module's derived 110% ceiling is the gate that says a longer version
+  // of that sentence is not worth a ceiling raise. Measured off the live
+  // registry over stdio, not estimated.
+  manifestEntry('import', 'playlists', lazyModule('./import.js', 'registerImportTools'), [1, 1322], { scopeKey: 'playlists' }),
   manifestEntry('smart', 'playlists', lazyModule('./smart.js', 'registerSmartTools'), [1, 2364], { scopeKey: 'playlists' }),
   manifestEntry('exhaustmisc', 'playlists', lazyModule('./exhaustmisc.js', 'registerExhaustMiscTools'), [10, 7876], { scopeKey: 'exhaustmisc' }),
 
@@ -1498,8 +1517,15 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   manifestEntry('swarm3library', 'swarm3library', lazyModule('./swarm3_library.js', 'registerSwarm3LibraryTools'), [24, 18283], { readOnlySafe: true, scopeKey: 'library' }),
   manifestEntry('swarm3playback', 'swarm3playback', lazyModule('./swarm3_playback.js', 'registerSwarm3PlaybackTools'), [24, 14043], { scopeKey: 'playback' }),
   manifestEntry('swarm3playlistops', 'swarm3playlistops', lazyModule('./swarm3_playlistops.js', 'registerSwarm3PlaylistopsTools'), [24, 29163], { scopeKey: 'playlists' }),
-  manifestEntry('swarm3snapshots', 'swarm3snapshots', lazyModule('./swarm3_snapshots.js', 'registerSwarm3SnapshotsTools'), [24, 23449], { scopeKey: 'playlists' }),
-  manifestEntry('swarm4playlists', 'swarm4playlists', lazyModule('./swarm4_playlists.js', 'registerSwarm4PlaylistsTools'), [18, 21432], { scopeKey: 'playlists' }),
+  // #708: descriptions only, same 24 / 18 tools and same input schemas.
+  // restore_playlist_from_snapshot and apply_snapshot_changes now say that
+  // their result records the snapshot source, the file-declared date and the
+  // use — and that neither tool gates — so an agent can tell a recorded
+  // purpose from an approved one. 23,449 -> 23,731B (+282) and
+  // 21,432 -> 21,559B (+127) are the two descriptions, measured off the live
+  // registry over stdio on the merged tree, not estimated.
+  manifestEntry('swarm3snapshots', 'swarm3snapshots', lazyModule('./swarm3_snapshots.js', 'registerSwarm3SnapshotsTools'), [24, 23731], { scopeKey: 'playlists' }),
+  manifestEntry('swarm4playlists', 'swarm4playlists', lazyModule('./swarm4_playlists.js', 'registerSwarm4PlaylistsTools'), [18, 21559], { scopeKey: 'playlists' }),
 
 
 ] as const;

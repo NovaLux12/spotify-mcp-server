@@ -21,6 +21,14 @@ Depending on the tools and settings a host enables, the Server may handle:
 
 The Server requests only the Spotify scopes needed for the enabled tools and the user's configuration. It does not intentionally request or process Spotify passwords. OAuth authorization and token refresh are handled with the Spotify Web API and the local token store described below.
 
+### Purpose limitation when stored data drives a write (#708)
+
+Six tools write Spotify state from data this Server previously stored locally: `restore_library_snapshot` and `playlist_clone_snapshot` (library backups), `restore_playlist_from_snapshot` and `apply_snapshot_changes` (playlist snapshots), `import_from_sidecar` (a `library.json` sidecar), and `import_playlist` (an M3U/CSV document). **This stored data is used for this write only and for no other purpose.** The Server does not retain it for a later purpose, does not reuse it to drive any other action, and does not read a stored file to decide anything except the write the caller asked for.
+
+At the point of confirmation — and again in the tool result — the Server states the same four facts: the file the data came from, the date **the file itself declares** (`_meta.created`, `_meta.taken_at`, or a sidecar's `exported_at`), the number of items in scope, and the single use being made of them. A file that declares no date is reported as declaring none, with the reason named; the Server does not substitute the file's modification time, because a copy resets that and it is not a date the file states about itself. `import_playlist`'s M3U and CSV formats declare no creation date at all, and its record says so.
+
+The Server cannot observe *why* a caller wants stored data written back. The purpose it records is the **operation** — the write that is about to happen — not a claimed motive, and no caller-supplied purpose is accepted or stored. Where a tool's confirmation prompt is skipped (a write under a size threshold) or is bypassed (`SPOTIFY_MCP_CONFIRM=never`), the result's `consent_note` and `provenance.consent` say so explicitly rather than implying a person approved the use. The consent state is one of `confirmed`, `declined`, `not_requested` (with the reason it was not requested), or `bypassed` (naming `SPOTIFY_MCP_CONFIRM=never`).
+
 ## Local stores and paths
 
 Unless an environment-variable override is supplied, the following paths are used. Overrides let an operator place a store elsewhere; the operator is responsible for protecting that location.

@@ -15,6 +15,13 @@
  * Idempotency (#632): URIs already in the target playlist are filtered out, so
  * re-running the same document adds nothing, and an import of 100+ new URIs is
  * elicitation-gated before the first POST.
+ *
+ * Provenance and purpose (#708): when the write goes out, the prompt and the
+ * result both state where the document came from (a path, or plainly "inline,
+ * no file"), that the M3U/CSV format declares no creation date, how many URIs
+ * were parsed from it, and the one use being made of it — plus whether a human
+ * confirmed that use, was asked and declined, was never asked because the
+ * batch was under the threshold, or went through SPOTIFY_MCP_CONFIRM=never.
  */
 import { z } from 'zod';
 import { capFor } from '../chunk.js';
@@ -33,6 +40,8 @@ import { homedir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { backupDir } from './backup.js';
 import { confirmViaElicitation, describeConfirmation, requiredConfirmationRefusal } from './confirm.js';
+import { consentAfterGate, consentFields, provenanceNote, provenancePromptLines, type WriteProvenance } from './provenance.js';
+import type { ElicitVerdict } from './confirm.js';
 import { BATCH_ADD_ELICIT_THRESHOLD } from './playlistbatch.js';
 import type { PlaylistItemObject } from '../types/spotify.js';
 import { classifySpotifyReference, spotifyUriFromClassification } from '../refs.js';
@@ -225,16 +234,23 @@ function allowedReadRoots(env: NodeJS.ProcessEnv = process.env): string[] {
  * The document the caller pointed at, or the inline body. Every file read goes
  * through resolveInputPath: confined to the allowed roots, regular files only,
  * and size-capped by stat() before a byte is read.
+ *
+ * `path` is null for inline content and `source` stays the human label either
+ * way: the provenance record needs to know there was no file, and putting the
+ * label 'inline content' into a field typed as a path would be a lie about the
+ * type (#708).
  */
-async function loadDocument(args: { content?: string; input_path?: string }): Promise<{ body: string; source: string }> {
-  if (args.content !== undefined) return { body: args.content, source: 'inline content' };
+async function loadDocument(
+  args: { content?: string; input_path?: string },
+): Promise<{ body: string; source: string; path: string | null }> {
+  if (args.content !== undefined) return { body: args.content, source: 'inline content', path: null };
   const resolved = await resolveInputPath({
     roots: allowedReadRoots(),
     tool: TOOL,
     target: args.input_path as string,
     envHint: READ_ROOTS_ENV_HINT,
   });
-  return { body: await readInputFile(resolved, TOOL), source: resolved.path };
+  return { body: await readInputFile(resolved, TOOL), source: resolved.path, path: resolved.path };
 }
 
 interface ExistingScan {
@@ -268,7 +284,7 @@ async function scanExistingUris(client: SpotifyClient, id: string): Promise<Exis
 export function registerImportTools(server: McpServer, client: SpotifyClient): void {
   server.tool(
     'import_playlist',
-    "Parse an M3U or CSV document (the inverse of export_playlist) and append its Spotify URIs to a target playlist. Pass the document inline via content, or read it from input_path (a regular file inside the configured read roots). URIs already in the playlist are skipped, so a re-run adds nothing. Adds in batches of 100. Use dry_run=true to preview without writing.",
+    "Parse an M3U or CSV document (the inverse of export_playlist) and append its Spotify URIs to a target playlist. Pass the document inline via content, or read it from input_path (a regular file inside the configured read roots). URIs already in the playlist are skipped, so a re-run adds nothing. Adds in batches of 100. Use dry_run=true to preview without writing. Result records the document source and the use made of it (consent_note); under 100 new URIs nothing is gated.",
     {
       playlist_id: z.string().describe('Target playlist ID, spotify:playlist: URI, or share URL'),
       content: z
@@ -313,7 +329,7 @@ export function registerImportTools(server: McpServer, client: SpotifyClient): v
         throw new Error('Pass either content or input_path, not both');
       }
 
-      const { body, source } = await loadDocument(args);
+      const { body, source, path: documentPath } = await loadDocument(args);
 
       const fmt =
         args.format ??
@@ -367,6 +383,28 @@ export function registerImportTools(server: McpServer, client: SpotifyClient): v
       // on in the first place (#632).
       const duplicatesInDocument = Math.max(0, parsed.duplicates + collapsedByCanonicalisation);
       const target = meta.name ?? args.playlist_id;
+      // #708: the record, built before any gate so the prompt and the result
+      // render the same object. `items` is what the DOCUMENT holds (the parsed
+      // unique URIs), not what survives the idempotency filter — the write
+      // count is its own number and the prompt already states it.
+      //
+      // The date is null for both sources and always will be: M3U and CSV
+      // declare no creation timestamp, so there is nothing for this tool to
+      // read. Saying so by name is the honest record; the file's mtime would
+      // be a date the filesystem guesses about a path, and a copy resets it.
+      const provenanceBase = {
+        source: {
+          kind: 'import_document' as const,
+          path: documentPath,
+          items: canonicalUris.length,
+          created: null,
+          missing_date_reason:
+            `the ${parsed.format.toUpperCase()} document format declares no creation date, `
+            + 'so the document states nothing about when it was written',
+        },
+        purpose: `append the Spotify URIs parsed from this ${parsed.format.toUpperCase()} document to the Spotify playlist "${target}"`,
+      };
+      const prov = (consent: WriteProvenance['consent']): WriteProvenance => ({ ...provenanceBase, consent });
       const basePayload = {
         playlist_id: args.playlist_id,
         playlist_name: meta.name ?? null,
@@ -388,7 +426,16 @@ export function registerImportTools(server: McpServer, client: SpotifyClient): v
             + `. Would append ${toAdd.length} to "${target}"`
             + (skippedExisting > 0 ? ` (${skippedExisting} already present)` : '')
             + '.',
-          { ...basePayload, ok: true },
+          {
+            ...basePayload,
+            ...consentFields(
+              prov({
+                state: 'not_requested',
+                because: 'dry_run=true — nothing was written and no confirmation was requested',
+              }),
+            ),
+            ok: true,
+          },
         );
       }
 
@@ -401,24 +448,61 @@ export function registerImportTools(server: McpServer, client: SpotifyClient): v
       if (toAdd.length === 0) {
         return textResult(
           `All ${canonicalUris.length} URI(s) in the ${parsed.format.toUpperCase()} document are already in "${target}" — nothing added.`,
-          { ...basePayload, added: 0, batches_sent: 0, ok: true },
+          {
+            ...basePayload,
+            ...consentFields(
+              prov({
+                state: 'not_requested',
+                because: 'every URI in the document is already in the playlist, so there was no write to confirm',
+              }),
+            ),
+            added: 0,
+            batches_sent: 0,
+            ok: true,
+          },
         );
       }
 
       // Large bulk writes prompt first, exactly like batch_add_to_playlist
       // (#632) — a 5,000-URI document used to POST with no confirmation at all.
-      if (toAdd.length >= BATCH_ADD_ELICIT_THRESHOLD) {
-        const verdict = await confirmViaElicitation(server, {
+      //
+      // #708: the prompt now also says where the document came from, that the
+      // format declares no date, how many URIs it held, and what use is being
+      // made of it. `verdict` stays null when the batch is under the threshold
+      // and no prompt is issued, which the record reports as such.
+      const gated = toAdd.length >= BATCH_ADD_ELICIT_THRESHOLD;
+      let verdict: ElicitVerdict | null = null;
+      let refusal: ReturnType<typeof requiredConfirmationRefusal> = null;
+      if (gated) {
+        verdict = await confirmViaElicitation(server, {
           message: describeConfirmation('import a document into playlist', target, [
+            ...provenancePromptLines(provenanceBase),
             `Add ${toAdd.length} item(s) from the ${parsed.format.toUpperCase()} document to "${target}":`,
             ...toAdd.slice(0, 10).map((uri) => `  - ${uri}`),
             ...(toAdd.length > 10 ? [`  - …and ${toAdd.length - 10} more`] : []),
             ...(skippedExisting > 0 ? [`(${skippedExisting} already in the playlist, skipped)`] : []),
           ]),
         });
-        const refusal = requiredConfirmationRefusal(verdict);
-        if (refusal) return textResult(refusal.message, refusal.payload);
+        refusal = requiredConfirmationRefusal(verdict);
+        if (refusal) {
+          return textResult(refusal.message, {
+            ...consentFields(
+              prov(
+                consentAfterGate(verdict, {
+                  refusalReason: refusal.reason,
+                  notRequestedBecause: '',
+                }),
+              ),
+            ),
+            ...refusal.payload,
+          });
+        }
       }
+      const consent = consentAfterGate(verdict, {
+        notRequestedBecause:
+          `only ${toAdd.length} of the document's URIs would be added, under the `
+          + `${BATCH_ADD_ELICIT_THRESHOLD}-item confirmation threshold, so no prompt was issued`,
+      });
 
       // Append in batches of 100 (Spotify's per-request URI cap).
       const itemsPath = `/playlists/${id}/items`;
@@ -435,6 +519,7 @@ export function registerImportTools(server: McpServer, client: SpotifyClient): v
 
       const summary = {
         ...basePayload,
+        ...consentFields(prov(consent)),
         added: toAdd.length,
         batches_sent: batchesSent,
         ...(snapshotId ? { snapshot_id: snapshotId } : {}),
@@ -448,7 +533,8 @@ export function registerImportTools(server: McpServer, client: SpotifyClient): v
           + (skippedExisting > 0 ? `; skipped ${skippedExisting} already present` : '')
           + (parsed.skipped_rows > 0 ? `; skipped ${parsed.skipped_rows} unusable row(s)` : '')
           + '.'
-          + truncatedNote,
+          + truncatedNote
+          + `\n#708 ${provenanceNote(prov(consent))}`,
         { ...summary, ok: true },
       );
     },

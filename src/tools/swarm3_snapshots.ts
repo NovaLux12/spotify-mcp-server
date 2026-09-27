@@ -31,6 +31,7 @@ import type { ResponseFormatValue } from '../shaping.js';
 import { spotifyId } from '../refs.js';
 import type { PlaylistItemObject } from '../types/spotify.js';
 import { ownStoreRoots, readLocalFile } from '../paths.js';
+import { consentFields, declaredCreationDate, provenanceNote, provenancePromptLines, type WriteProvenance } from './provenance.js';
 
 // ---------------------------------------------------------------------------
 // On-disk contract
@@ -72,6 +73,15 @@ export function snapshotDir(env: NodeJS.ProcessEnv = process.env): string {
 
 const SNAP_FILE_RE = /^plsnap-([A-Za-z0-9]+)-(\d{4}-\d{2}-\d{2})-(\d+)\.json$/;
 const BUNDLE_FILE_RE = /^snapbundle-(\d{4}-\d{2}-\d{2})-(\d+)\.json$/;
+
+/**
+ * #708: the reason every snapshot-driven write on this module records as its
+ * consent state. These tools have NO confirmation gate — the write is one
+ * explicit caller request, with dry_run defaulting to true — so the honest
+ * record says the use was not individually approved and why, instead of
+ * leaving the field absent or implying a prompt nobody was shown.
+ */
+const NO_GATE = 'this tool asks for no confirmation: the write is the single explicit request the caller already made, and no prompt is issued before it';
 
 // ---------------------------------------------------------------------------
 // Result shaping helpers (exhaust2 house style)
@@ -1071,7 +1081,7 @@ export function registerSwarm3SnapshotsTools(server: McpServer, client: SpotifyC
   // -- 13. restore_playlist_from_snapshot ----------------------------------
   server.tool(
     'restore_playlist_from_snapshot',
-    'Make a live playlist match a snapshot (add missing, remove extra tracks); dry_run=true (default) returns the deterministic PLAN without touching Spotify Snapshot guide: take_playlist_snapshot (create), list_saved_snapshots (list), read_playlist_snapshot (read), diff_playlist_snapshots / snapshot_new_tracks / snapshot_removed_tracks (diff), restore_playlist_from_snapshot / restore_playlist_plan (restore).',
+    'Make a live playlist match a snapshot (add missing, remove extra tracks); dry_run=true (default) returns the deterministic PLAN without touching Spotify. The result records where the snapshot came from, the date the file declares, and the use made of it (consent_note; no confirmation gate) Snapshot guide: take_playlist_snapshot (create), list_saved_snapshots (list), read_playlist_snapshot (read), diff_playlist_snapshots / snapshot_new_tracks / snapshot_removed_tracks (diff), restore_playlist_from_snapshot / restore_playlist_plan (restore).',
     {
       snapshot: z.string().min(1).describe('Snapshot to restore from (id, filename, or path)'),
       playlist: spotifyId('playlist').optional().describe('Target playlist (default: the snapshot’s own playlist_id)'),
@@ -1084,6 +1094,22 @@ export function registerSwarm3SnapshotsTools(server: McpServer, client: SpotifyC
       const targetId = args.playlist ? normalizePlaylistRef(args.playlist) : snap._meta.playlist_id;
       const live = await fetchLivePlaylist(client, targetId);
       const ops = computeRestoreOps(targetId, live.tracks, snap.tracks);
+      // #708: one source object for the plan and for the result.
+      const provenanceBase = {
+        source: {
+          kind: 'playlist_snapshot' as const,
+          path,
+          items: snap.tracks.length,
+          // readSnapshotFile refuses a snapshot without `_meta.taken_at`, so
+          // this is always a declared date — read through the shared helper so
+          // the field is named in the record rather than assumed.
+          ...declaredCreationDate(snap._meta, 'taken_at', '_meta.taken_at'),
+        },
+        purpose:
+          `make the live Spotify playlist "${live.name}" (${targetId}) match the item list this local `
+          + 'playlist snapshot holds, by adding the rows it is missing and removing the extra ones',
+      };
+      const prov = (consent: WriteProvenance['consent']): WriteProvenance => ({ ...provenanceBase, consent });
       if (isDry(args)) {
         const payload: Record<string, unknown> = {
           dry_run: true,
@@ -1094,9 +1120,16 @@ export function registerSwarm3SnapshotsTools(server: McpServer, client: SpotifyC
           add_count: ops.add_uris.length,
           remove_count: ops.remove_uris.length,
           plan: opsPlanLines(ops),
+          ...consentFields(
+            prov({
+              state: 'not_requested',
+              because: 'dry_run=true — nothing was written and no confirmation was requested',
+            }),
+          ),
         };
         const lines = [
           `[dry run] restore_playlist_from_snapshot — ${snap._meta.snapshot_id} → playlist ${targetId} ("${live.name}")`,
+          ...provenancePromptLines(provenanceBase),
           `Live: ${live.tracks.length} rows; snapshot: ${snap.tracks.length} rows.`,
           ...opsPlanLines(ops),
           'Pass dry_run=false to execute.',
@@ -1105,6 +1138,7 @@ export function registerSwarm3SnapshotsTools(server: McpServer, client: SpotifyC
       }
       const res = await applyPlaylistOps(client, targetId, ops.add_uris, ops.remove_uris);
       const after = await fetchLivePlaylist(client, targetId);
+      const consent = prov({ state: 'not_requested', because: NO_GATE });
       // A restore is one contract with two ends: every added uri must be
       // present and every removed one absent (#879).
       const payload: Record<string, unknown> = {
@@ -1116,14 +1150,15 @@ export function registerSwarm3SnapshotsTools(server: McpServer, client: SpotifyC
         requests: res.requests,
         live_track_count_after: after.tracks.length,
         receipts: receiptRecords(res.receipts),
+        ...consentFields(consent),
       };
       const receiptLines = receiptsLines(res.receipts);
-      const prose = `Restore complete: +${res.added} / -${res.removed} on playlist ${targetId} ("${live.name}"); now ${after.tracks.length} rows.`;
-      return shape(
-        args.response_format,
-        receiptLines ? `${prose}\n${receiptLines}` : prose,
-        payload,
-      );
+      const prose = [
+        `Restore complete: +${res.added} / -${res.removed} on playlist ${targetId} ("${live.name}"); now ${after.tracks.length} rows.`,
+        `#708 ${provenanceNote(consent)}`,
+        ...(receiptLines ? [receiptLines] : []),
+      ].join('\n');
+      return shape(args.response_format, prose, payload);
     },
   );
 
@@ -1327,7 +1362,7 @@ export function registerSwarm3SnapshotsTools(server: McpServer, client: SpotifyC
   // -- 19. apply_snapshot_changes ------------------------------------------
   server.tool(
     'apply_snapshot_changes',
-    'Execute a merge plan on the live playlist (replay the changes between two snapshots); dry_run=true (default) only returns the plan Snapshot guide: take_playlist_snapshot (create), list_saved_snapshots (list), read_playlist_snapshot (read), diff_playlist_snapshots / snapshot_new_tracks / snapshot_removed_tracks (diff), restore_playlist_from_snapshot / restore_playlist_plan (restore).',
+    'Execute a merge plan on the live playlist (replay the changes between two snapshots); dry_run=true (default) only returns the plan. The result records both snapshot paths, the date the target-state file declares, and the use made of them (consent_note; no confirmation gate) Snapshot guide: take_playlist_snapshot (create), list_saved_snapshots (list), read_playlist_snapshot (read), diff_playlist_snapshots / snapshot_new_tracks / snapshot_removed_tracks (diff), restore_playlist_from_snapshot / restore_playlist_plan (restore).',
     {
       from_snapshot: z.string().min(1).describe('Older snapshot — the baseline'),
       to_snapshot: z.string().min(1).describe('Newer snapshot — the target state'),
@@ -1349,6 +1384,22 @@ export function registerSwarm3SnapshotsTools(server: McpServer, client: SpotifyC
       const removeUris = mode === 'add_new' ? [] : d.removed
         .map((r) => r.uri)
         .filter((uri) => live.tracks.some((t) => t.uri === uri));
+      // #708: a two-snapshot merge has two sources, so both are named — the
+      // recorded source is the target state (it decides every added row) and
+      // the baseline is recorded as a related path rather than dropped.
+      const provenanceBase = {
+        source: {
+          kind: 'playlist_snapshot' as const,
+          path: toPath,
+          related_paths: [fromPath],
+          items: to.tracks.length,
+          ...declaredCreationDate(to._meta, 'taken_at', '_meta.taken_at of the target-state snapshot'),
+        },
+        purpose:
+          `apply the change between these two local playlist snapshots to the live Spotify playlist `
+          + `"${live.name}" (${targetId}) — add what the later snapshot gained, remove what it lost`,
+      };
+      const prov = (consent: WriteProvenance['consent']): WriteProvenance => ({ ...provenanceBase, consent });
       if (isDry(args)) {
         const ops: RestoreOps = {
           playlist_id: targetId,
@@ -1366,9 +1417,16 @@ export function registerSwarm3SnapshotsTools(server: McpServer, client: SpotifyC
           add_count: addUris.length,
           remove_count: removeUris.length,
           plan: opsPlanLines(ops),
+          ...consentFields(
+            prov({
+              state: 'not_requested',
+              because: 'dry_run=true — nothing was written and no confirmation was requested',
+            }),
+          ),
         };
         const lines = [
           `[dry run] apply_snapshot_changes (${mode}) — ${from._meta.snapshot_id} → ${to._meta.snapshot_id} onto playlist ${targetId} ("${live.name}")`,
+          ...provenancePromptLines(provenanceBase),
           ...opsPlanLines(ops),
           'Pass dry_run=false to execute.',
         ];
@@ -1376,6 +1434,7 @@ export function registerSwarm3SnapshotsTools(server: McpServer, client: SpotifyC
       }
       const res = await applyPlaylistOps(client, targetId, addUris, removeUris);
       const after = await fetchLivePlaylist(client, targetId);
+      const consent = prov({ state: 'not_requested', because: NO_GATE });
       const payload: Record<string, unknown> = {
         ...writeVerdict(res.receipts, res.added + res.removed),
         from: from._meta.snapshot_id,
@@ -1387,14 +1446,15 @@ export function registerSwarm3SnapshotsTools(server: McpServer, client: SpotifyC
         requests: res.requests,
         live_track_count_after: after.tracks.length,
         receipts: receiptRecords(res.receipts),
+        ...consentFields(consent),
       };
       const receiptLines = receiptsLines(res.receipts);
-      const prose = `Applied snapshot changes (${mode}): +${res.added} / -${res.removed} on "${live.name}"; now ${after.tracks.length} rows.`;
-      return shape(
-        args.response_format,
-        receiptLines ? `${prose}\n${receiptLines}` : prose,
-        payload,
-      );
+      const prose = [
+        `Applied snapshot changes (${mode}): +${res.added} / -${res.removed} on "${live.name}"; now ${after.tracks.length} rows.`,
+        `#708 ${provenanceNote(consent)}`,
+        ...(receiptLines ? [receiptLines] : []),
+      ].join('\n');
+      return shape(args.response_format, prose, payload);
     },
   );
 

@@ -157,6 +157,11 @@ const OUTPUT_FIELD_NAMES = new Set<string>([
   // #757: restore_library_snapshot documents the snapshot schema version it
   // now refuses on. A key inside the file it reads, not a tool or parameter.
   'schema_version',
+  // #708: the six tools that write Spotify state from locally stored Spotify
+  // data name the one structuredContent key holding the purpose + provenance
+  // record. It is a key those tools return about their own result — a caller
+  // reads it, it does not route a second call.
+  'consent_note',
   // #639: find_show_by_publisher's description names the two keys that say
   // the search did not run against publisher at all. `publisher_matches` is
   // the count of real matches and is `null` — not 0 — when the facet is

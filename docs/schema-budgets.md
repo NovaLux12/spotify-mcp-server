@@ -123,11 +123,11 @@ until it merges, the honest scope of this gate is the field list above.
 | `TOOL_SURFACE_BUDGET.defaultMaxTools` | 620 tools | code constant, `src/tools/annotations.ts` |
 | `TOOL_SURFACE_BUDGET.defaultMaxBytes` | 620,000B | code constant, `src/tools/annotations.ts` |
 | `AGGREGATE_SURFACE_LIMITS.maxBytes` (enforced) | 621,000B | the ceiling plus 1,000B of post-registration annotation metadata |
-| Measured `tools/list` payload | 592,779B | `collectAggregateSurfaceMeasurement` over the finalized registry, after annotations |
-| Of which outside the per-module table | 67,385B | 11.4% of the payload — tool names, titles, annotations and boundary metadata |
-| Headroom | 28,221B | 4.5% of the enforced limit |
+| Measured `tools/list` payload | 593,749B | `collectAggregateSurfaceMeasurement` over the finalized registry, after annotations |
+| Of which outside the per-module table | 67,385B | 11.3% of the payload — tool names, titles, annotations and boundary metadata |
+| Headroom | 27,251B | 4.4% of the enforced limit |
 
-Headroom is **28,221B** of the 621,000B enforced limit — 4.5% — so the aggregate budget is **tight**.
+Headroom is **27,251B** of the 621,000B enforced limit — 4.4% — so the aggregate budget is **tight**.
 
 Regenerate with `npm run count:tools -- --write`. `--check` fails when any
 figure above stops matching the constants or the live measurement, so a
@@ -186,7 +186,7 @@ than maintained.
 | accounts | 2 | 1,644 | 2 | 1,644 | 3 | 1,809 |
 | swarm3meta | 3 | 2,023 | 3 | 2,023 | 4 | 2,226 |
 | libraryanalytics | 3 | 2,498 | 3 | 2,498 | 5 | 3,687 |
-| portability | 11 | 10,187 | 11 | 10,187 | 12 | 11,206 |
+| portability | 11 | 10,453 | 11 | 10,453 | 12 | 11,499 |
 | libraryinsights | 3 | 2,751 | 3 | 2,751 | 4 | 3,027 |
 | libraryhygiene | 1 | 754 | 1 | 754 | 2 | 830 |
 | showradar | 1 | 2,125 | 1 | 2,125 | 2 | 2,338 |
@@ -195,7 +195,7 @@ than maintained.
 | backupfirst | 1 | 513 | 1 | 513 | 2 | 565 |
 | backup | 2 | 1,632 | 2 | 1,632 | 3 | 1,796 |
 | backupdelete | 1 | 959 | 1 | 959 | 2 | 1,055 |
-| restore | 1 | 1,888 | 1 | 1,888 | 2 | 2,077 |
+| restore | 1 | 2,072 | 1 | 2,072 | 2 | 2,280 |
 | undo | 2 | 1,663 | 2 | 1,663 | 3 | 1,830 |
 | receipts | 1 | 626 | 1 | 626 | 2 | 689 |
 | episodemgmt | 1 | 1,053 | 1 | 1,053 | 2 | 1,159 |
@@ -211,7 +211,7 @@ than maintained.
 | playlisthealth | 8 | 5,080 | 8 | 5,080 | 9 | 5,588 |
 | playlistdna | 1 | 1,310 | 1 | 1,310 | 2 | 1,442 |
 | export | 1 | 1,363 | 1 | 1,363 | 2 | 1,500 |
-| import | 1 | 1,211 | 1 | 1,211 | 2 | 1,333 |
+| import | 1 | 1,322 | 1 | 1,322 | 2 | 1,455 |
 | smart | 1 | 2,364 | 1 | 2,364 | 2 | 2,601 |
 | exhaustmisc | 10 | 7,876 | 10 | 7,876 | 11 | 8,664 |
 | exhaust2catalog | 19 | 19,443 | 19 | 19,443 | 20 | 21,388 |
@@ -228,8 +228,8 @@ than maintained.
 | swarm3library | 24 | 18,283 | 24 | 18,283 | 25 | 20,112 |
 | swarm3playback | 24 | 14,043 | 24 | 14,043 | 25 | 15,448 |
 | swarm3playlistops | 24 | 29,163 | 24 | 29,163 | 25 | 32,080 |
-| swarm3snapshots | 24 | 23,449 | 24 | 23,449 | 25 | 25,794 |
-| swarm4playlists | 18 | 21,432 | 18 | 21,432 | 19 | 23,576 |
+| swarm3snapshots | 24 | 23,731 | 24 | 23,731 | 25 | 26,105 |
+| swarm4playlists | 18 | 21,559 | 18 | 21,559 | 19 | 23,715 |
 <!-- END:generated schema-budget-table -->
 
 To change a baseline, measure the real `tools/list` output, update the shared

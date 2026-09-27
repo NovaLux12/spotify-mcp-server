@@ -1266,6 +1266,39 @@ The *conditions* under which any of these six prompts are unchanged by #1237 —
 
 Annotations are orthogonal to this gate and do not substitute for it. `destructiveHint: true` is a static host hint applied after registration; it never prompts, and a tool carrying it is still gated (and vice versa). `unfollow_playlist` carries it because it removes a library entry the user may have curated by hand, and `unfollow` matches a `DESTRUCTIVE_PREFIXES` entry, so it needs no `OVERRIDES` row. The deprecated `unpin_playlist` alias still does: `unpin` matches no entry in either prefix list, so the hint is stated through `OVERRIDES` rather than by widening a prefix. That row retires in 2.1 with the alias; adding `unpin` to a prefix list instead would leave a live rule behind encoding a verb no tool then has.
 
+#### Purpose and provenance on stored-data writes (#708)
+
+Six tools write Spotify state from data this Server stored locally. Each publishes two top-level `structuredContent` keys on **every** result — planned, executed, cancelled or nothing-to-add — plus the same facts in the confirmation prompt and in the prose:
+
+| Tool | Stored source | Declared date read from |
+|---|---|---|
+| `restore_library_snapshot` | library backup file | `_meta.created` |
+| `playlist_clone_snapshot` | library backup file | `_meta.created` |
+| `restore_playlist_from_snapshot` | playlist snapshot file | `_meta.taken_at` |
+| `apply_snapshot_changes` | two playlist snapshot files | `_meta.taken_at` of the target-state file |
+| `import_from_sidecar` | `library.json` sidecar | `exported_at` |
+| `import_playlist` | M3U/CSV document, or inline content | *(none — the format declares no date)* |
+
+- **`consent_note`** — one sentence: the source, the date (or the named reason there is none), the item count, the single use, the purpose limitation, and the consent outcome. The prompt and this note are rendered from one object, so the words a human approved and the words an audit later reads cannot drift.
+- **`provenance`** — the same facts as fields: `source_kind`, `source_path`, `source_related_paths` (a two-snapshot merge names both files), `source_created`, `source_created_field`, `source_missing_date_reason`, `source_items`, `purpose`, and `consent`.
+
+**Consent is a four-state value, never a boolean.** A write driven by stored data very often has no human in the loop, and a flat `confirmed: true` written in either of those cases would be a fabrication wearing a compliance label:
+
+| `consent.state` | Meaning |
+|---|---|
+| `confirmed` | A prompt was shown and a human accepted it. |
+| `declined` | A prompt was shown and a human refused it; nothing was written. |
+| `not_requested` | No prompt was issued. `because` names why — a size threshold, a dry run, or a tool that has no gate. |
+| `bypassed` | The gate was reached but `SPOTIFY_MCP_CONFIRM=never` let the write through unprompted. `via` names it. |
+
+The state is derived from the guard's own `reason`, not from a fresh read of the environment: an `unsupported` verdict followed by a `confirmation_unavailable` refusal and an `unsupported` verdict followed by the `SPOTIFY_MCP_CONFIRM=never` bypass are the same verdict and opposite facts, and re-deriving that from the environment is how a refused write would end up recorded as an approved one.
+
+**The date is what the file declares, and nothing else.** A snapshot written before the schema that stamps it declares no date; the record carries `source_created: null` and a `source_missing_date_reason` naming which field is absent. The file's mtime is never substituted — copying a file resets it, so an mtime is a date the filesystem guesses about a path, not one the file states about itself. `import_playlist` has no declared date in either mode: the M3U and CSV formats carry no creation timestamp, and its record says exactly that.
+
+**Purpose is the operation, not a motive.** The Server cannot observe why a caller wants stored data written back, and a plausible invented reason would be a fabricated answer reading as a real one. Each `purpose` states the write that is about to happen. No caller-supplied purpose is accepted.
+
+This changes consent *content* and adds no gate. Every threshold, every `dry_run` default, and every `confirmViaElicitation` call is unchanged; the three snapshot tools that have no gate still have none, and now say so in their record.
+
 #### Playlist follow family (#1099)
 
 `follow_playlist` and `unfollow_playlist` save and remove a playlist in the caller's own library. Both gate on `confirmViaElicitation` + `requiredConfirmationRefusal` with **no threshold** — they always ask.
