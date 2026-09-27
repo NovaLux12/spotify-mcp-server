@@ -76,12 +76,11 @@ import './helpers/hermetic.js';
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { SpotifyClient } from '../src/client.js';
+import { wireTools, type WireTool } from './wire-registry.js';
 import {
   AGGREGATE_SURFACE_LIMITS,
   loadManifestRegistrars,
@@ -95,12 +94,6 @@ import {
 
 const REPO_ROOT = join(import.meta.dirname, '..');
 const PIN_PATH = join(REPO_ROOT, 'tests/registry-surface.json');
-
-interface WireTool {
-  name: string;
-  description?: string;
-  inputSchema?: unknown;
-}
 
 interface RegistryPin {
   readonly generatedBy: string;
@@ -131,98 +124,8 @@ async function measureManifestOwnership(): Promise<Map<string, string[]>> {
   return new Map(REGISTRAR_MANIFEST.map((module) => [module.key, [...moduleToolNames(server, module.key)]]));
 }
 
-/**
- * Drive the real production server over stdio and return its `tools/list`
- * payload, in the same hermetic shape `scripts/surface-census.mjs` uses: HOME
- * and the token file both point into a fresh mkdtemp, so a run cannot touch
- * Jack's real `~/.spotify-mcp/`.
- */
-async function listWireTools(): Promise<WireTool[]> {
-  const home = mkdtempSync(join(tmpdir(), 'registry-pin-'));
-  const tokenFile = join(home, 'tokens.json');
-  writeFileSync(tokenFile, JSON.stringify({ access_token: 'registry-pin', refresh_token: 'registry-pin', expires_at: Date.now() + 3_600_000 }), { mode: 0o600 });
-
-  const child = spawn('node', ['--import', 'tsx/esm', 'src/index.ts'], {
-    cwd: REPO_ROOT,
-    env: {
-      PATH: process.env.PATH,
-      HOME: home,
-      SPOTIFY_CLIENT_ID: 'registry-pin',
-      SPOTIFY_MCP_TOOLSETS: 'all',
-      SPOTIFY_MCP_TOKEN_FILE: tokenFile,
-    },
-    stdio: ['pipe', 'pipe', 'pipe'],
-  });
-
-  let buffer = '';
-  let stderr = '';
-  const pending = new Map<number, { resolve: (value: { result?: { tools?: WireTool[] }; error?: unknown }) => void; reject: (reason: Error) => void }>();
-  child.stderr.setEncoding('utf8');
-  child.stderr.on('data', (chunk: string) => { stderr += chunk; });
-  child.stdout.setEncoding('utf8');
-  child.stdout.on('data', (chunk: string) => {
-    buffer += chunk;
-    let index: number;
-    while ((index = buffer.indexOf('\n')) !== -1) {
-      const line = buffer.slice(0, index).trim();
-      buffer = buffer.slice(index + 1);
-      if (!line) continue;
-      const message = JSON.parse(line) as { id?: number };
-      if (typeof message.id !== 'number') continue;
-      pending.get(message.id)?.resolve(message as { result?: { tools?: WireTool[] } });
-      pending.delete(message.id);
-    }
-  });
-
-  let nextId = 0;
-  // A budget breach fails STARTUP, before `initialize` is ever answered: the
-  // aggregate gate in `src/index.ts` throws and the process exits. Waiting out
-  // the request timeout would report "timeout waiting for initialize" and hide
-  // the measured total the gate already computed — which is exactly what
-  // acceptance criterion #3 asks a breach to print. Race every request against
-  // the child's exit and re-throw whatever it printed.
-  const failAll = (reason: string): void => {
-    for (const [, settle] of pending) settle.reject(new Error(reason));
-    pending.clear();
-  };
-  child.on('exit', (code) => {
-    if (pending.size > 0) {
-      failAll(`the server exited with code ${code} before answering\nstderr:\n${stderr.trim() || '(no stderr)'}`);
-    }
-  });
-  child.on('error', (error) => failAll(`the server failed to start: ${error.message}`));
-
-  const request = (method: string, params: Record<string, unknown> = {}): Promise<{ result?: { tools?: WireTool[] }; error?: unknown }> => {
-    const { promise, resolve, reject } = Promise.withResolvers<{ result?: { tools?: WireTool[] }; error?: unknown }>();
-    const id = ++nextId;
-    pending.set(id, { resolve, reject });
-    child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id, method, params })}\n`);
-    setTimeout(() => reject(new Error(`timeout waiting for ${method}\nstderr:\n${stderr}`)), 60_000).unref();
-    return promise;
-  };
-
-  try {
-    const init = await request('initialize', {
-      protocolVersion: '2024-11-05',
-      capabilities: {},
-      clientInfo: { name: 'registry-pin', version: '1.0.0' },
-    });
-    assert.equal(init.error, undefined, `initialize failed: ${JSON.stringify(init.error)}`);
-    child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized', params: {} })}\n`);
-    const listed = await request('tools/list');
-    assert.equal(listed.error, undefined, `tools/list failed: ${JSON.stringify(listed.error)}\nstderr:\n${stderr}`);
-    const tools = listed.result?.tools;
-    assert.ok(Array.isArray(tools), 'tools/list must return an array');
-    return tools;
-  } finally {
-    child.stdin.end();
-    setTimeout(() => child.kill('SIGKILL'), 1_500).unref();
-  }
-}
-
 /** The one wire list, shared by every assertion that needs it. */
-let wireToolsPromise: Promise<WireTool[]> | undefined;
-const wireTools = (): Promise<WireTool[]> => (wireToolsPromise ??= listWireTools());
+const listWireTools = wireTools;
 
 /** Measured ownership, shared by every in-process assertion. */
 let ownershipPromise: Promise<Map<string, string[]>> | undefined;

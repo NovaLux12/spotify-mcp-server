@@ -34,6 +34,94 @@ function templateHoles(source, open, close) {
 }
 
 /**
+ * A copy of the region `[0, at)` with newlines blanked to spaces.
+ *
+ * The two lookups below walk backwards over it, so a newline has to read as
+ * whitespace rather than as a line terminator they must not stop at.
+ */
+function blankToEnd(out, at) {
+  const copy = out.slice(0, at);
+  for (let k = 0; k < copy.length; k++) if (copy[k] === '\n') copy[k] = ' ';
+  return copy;
+}
+
+/**
+ * The last significant character before `at`, ignoring whitespace.
+ *
+ * Read over the blanked prefix rather than the raw source, so a `/` inside a
+ * comment — already blanked by the time the main loop reaches it — is not
+ * mistaken for an operator.
+ */
+function lastSignificant(out, at) {
+  const blanked = blankToEnd(out, at);
+  for (let k = at - 1; k >= 0; k--) {
+    if (blanked[k] !== ' ') return blanked[k];
+  }
+  return '';
+}
+
+/** The identifier ending at `at`, or `''` when a non-identifier precedes it. */
+function wordBefore(out, at) {
+  const blanked = blankToEnd(out, at);
+  let end = at - 1;
+  while (end >= 0 && blanked[end] === ' ') end--;
+  let start = end;
+  while (start >= 0 && /[A-Za-z0-9_$]/.test(blanked[start])) start--;
+  // `out` is a character array, so this slice is an array too — joining is what
+  // makes it comparable against the keyword set.
+  return blanked.slice(start + 1, end + 1).join('');
+}
+
+/** Keywords after which a `/` opens a regex rather than dividing. */
+const REGEX_PRECEDING_KEYWORDS = new Set([
+  'return', 'typeof', 'instanceof', 'in', 'of', 'new', 'delete', 'void', 'throw',
+  'case', 'do', 'else', 'yield', 'await',
+]);
+
+/**
+ * Is the `/` at `at` the start of a regex literal, or a division operator?
+ *
+ * The usual textual heuristic, plus a safety valve: a regex literal cannot
+ * contain a raw line terminator, so a scan that reaches the end of the line
+ * without finding its closing `/` means this was a division after all and the
+ * caller must leave the source alone. Without that valve a misread would blank
+ * a run of real code, which is the one failure mode a gate built on this
+ * function cannot have — it would hide the very pattern it exists to find.
+ */
+function isRegexStart(out, at) {
+  const prev = lastSignificant(out, at);
+  if (prev === '' || /[(,=:[!&|?{};+\-*%^~<>]/.test(prev)) return true;
+  if (/[A-Za-z0-9_$)\]]/.test(prev)) return REGEX_PRECEDING_KEYWORDS.has(wordBefore(out, at));
+  return false;
+}
+
+/**
+ * The offset of the `/` closing a regex literal that starts at `at`, or `-1`
+ * when the literal does not close on the same line.
+ *
+ * A `/` inside a character class is a literal, so `[a/]` closes at the `/` after
+ * the `]` — the mistake that makes a naive scan stop early and re-open a
+ * string on the regex's own tail.
+ */
+function regexEnd(source, at) {
+  let inClass = false;
+  for (let k = at + 1; k < source.length; k++) {
+    const c = source[k];
+    if (c === '\\') { k++; continue; }
+    if (c === '\n') return -1;
+    if (inClass) { if (c === ']') inClass = false; continue; }
+    if (c === '[') { inClass = true; continue; }
+    if (c === '/') {
+      // Consume the flags so they are blanked with the body.
+      let f = k + 1;
+      while (f < source.length && /[a-z]/.test(source[f])) f++;
+      return f - 1;
+    }
+  }
+  return -1;
+}
+
+/**
  * Blank out everything that is not code, so a comment or a doc string that
  * *talks about* a pattern does not fail the gate, while a real one does.
  * Template-literal `${…}` holes are kept — a statement can live inside one,
@@ -60,6 +148,17 @@ export function blankNonCode(source) {
       const end = source.indexOf('*/', i + 2);
       blank(i, end === -1 ? source.length : end + 2);
       i = end === -1 ? source.length : end + 2;
+    } else if (source[i] === '/' && isRegexStart(out, i)) {
+      // A regex body is not code and not a string, but it is full of quotes:
+      // `/Spotify's February 2026/` has an apostrophe that would otherwise open
+      // a phantom string and blank the rest of the file as prose.
+      const end = regexEnd(source, i);
+      if (end !== -1) {
+        blank(i, end + 1);
+        i = end + 1;
+        continue;
+      }
+      i++;
     } else if (source[i] === '"' || source[i] === "'" || source[i] === '`') {
       const quote = source[i];
       let j = i + 1;
