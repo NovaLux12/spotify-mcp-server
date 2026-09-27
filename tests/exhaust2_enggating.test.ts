@@ -7,12 +7,12 @@ import { GATED_PATH_PATTERNS, graceful403Message, installGatedPathContract, isGa
 import { registerExhaust2EnggatingTools } from '../src/tools/exhaust2_enggating.js';
 import { registerExhaust2CatalogTools } from '../src/tools/exhaust2_catalog.js';
 import { registerCatalogTools } from '../src/tools/catalog.js';
-import { spawn } from 'node:child_process';
-import type { ChildProcessWithoutNullStreams } from 'node:child_process';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
+
+import { StdioJsonRpcChild } from './helpers/stdio-child.js';
 
 type ToolContent = { content: Array<{ type: string; text: string }>; structuredContent?: Record<string, unknown> };
 type RegisteredTool = { name: string; description: string; schema: Record<string, unknown>; handler: (a: Record<string, unknown>) => Promise<ToolContent> };
@@ -506,68 +506,6 @@ after(async () => {
   if (stubDir) await rm(stubDir, { recursive: true, force: true });
 });
 
-interface JsonRpcResponse { error?: { code: number; message: string }; result?: Record<string, unknown> }
-
-/** Minimal newline-delimited JSON-RPC client over the spawned server's stdio. */
-class ServerSession {
-  private buffer = '';
-  private nextId = 0;
-  private stderrText = '';
-  private readonly pending = new Map<number, (res: JsonRpcResponse) => void>();
-  readonly child: ChildProcessWithoutNullStreams;
-
-  constructor(child: ChildProcessWithoutNullStreams) {
-    this.child = child;
-    child.stdout.setEncoding('utf8');
-    child.stderr.setEncoding('utf8');
-    child.stdout.on('data', (chunk: string) => this.onStdout(chunk));
-    child.stderr.on('data', (chunk: string) => { this.stderrText += chunk; });
-  }
-
-  private onStdout(chunk: string): void {
-    this.buffer += chunk;
-    let idx: number;
-    while ((idx = this.buffer.indexOf('\n')) !== -1) {
-      const line = this.buffer.slice(0, idx).trim();
-      this.buffer = this.buffer.slice(idx + 1);
-      if (!line) continue;
-      const message = JSON.parse(line) as JsonRpcResponse & { id?: number };
-      if (typeof message.id !== 'number') continue;
-      const resolve = this.pending.get(message.id);
-      if (!resolve) continue;
-      this.pending.delete(message.id);
-      resolve(message);
-    }
-  }
-
-  /** Every request is deadline-bounded: a wedged child must fail, not hang. */
-  request(method: string, params: Record<string, unknown> = {}): Promise<JsonRpcResponse> {
-    const id = ++this.nextId;
-    return new Promise<JsonRpcResponse>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pending.delete(id);
-        this.child.kill('SIGKILL');
-        reject(new Error(`${method} timed out after 20s\nstderr:\n${this.stderrText}`));
-      }, 20_000);
-      this.pending.set(id, (res) => { clearTimeout(timer); resolve(res); });
-      this.child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id, method, params }) + '\n');
-    });
-  }
-
-  notify(method: string, params: Record<string, unknown> = {}): void {
-    this.child.stdin.write(JSON.stringify({ jsonrpc: '2.0', method, params }) + '\n');
-  }
-
-  stderr(): string {
-    return this.stderrText;
-  }
-
-  stop(): void {
-    this.child.stdin.end();
-    setTimeout(() => this.child.kill('SIGKILL'), 2000).unref();
-  }
-}
-
 interface ToolCall { tool: string; args: Record<string, unknown> }
 
 interface Probe {
@@ -579,11 +517,22 @@ interface Probe {
 /** An empty `calls` list probes the registered surface only. */
 async function probeServer(env: Record<string, string>, calls: ToolCall[]): Promise<Probe> {
   const { stub, tokens } = await serverFixture();
-  const child = spawn(
-    'node',
-    ['--import', 'tsx', '--import', pathToFileURL(stub).href, 'src/index.ts'],
-    {
-      cwd: REPO_ROOT,
+  // `helpers/stdio-child.js`, not the `ServerSession` this used to carry
+  // (#1404). That class had a pending map and a 20 s watchdog and *no*
+  // `child.on('exit')`, so a child killed mid-request settled nothing: the
+  // write went to a stdin nobody was reading and the test reported
+  // `tools/call timed out after 20s`, naming a hang when the cause was a crash.
+  // A SIGKILL leaves no stderr, so the captured stderr was the only evidence
+  // and it was not part of the message.
+  const session = StdioJsonRpcChild.spawn({
+    label: 'exhaust2-enggating',
+    command: 'node',
+    args: ['--import', 'tsx', '--import', pathToFileURL(stub).href, 'src/index.ts'],
+    cwd: REPO_ROOT,
+    env: {
+      ...process.env,
+      SPOTIFY_CLIENT_ID: 'enggating-test',
+      SPOTIFY_MCP_TOKEN_FILE: tokens,
       // The baseline is the FULL surface, pinned explicitly rather than left
       // to the default: every canary in this file (category_resolver,
       // market_validate, get_artist_genres) lives outside the curated `core`
@@ -592,28 +541,18 @@ async function probeServer(env: Record<string, string>, calls: ToolCall[]): Prom
       // and prove nothing. A caller that passes its own SPOTIFY_MCP_TOOLSETS
       // still wins — the spread order is unchanged, which is what the
       // SPOTIFY_MCP_TOOLSETS=playlists leg below relies on.
-      env: {
-        ...process.env,
-        SPOTIFY_CLIENT_ID: 'enggating-test',
-        SPOTIFY_MCP_TOKEN_FILE: tokens,
-        SPOTIFY_MCP_TOOLSETS: 'all',
-        ...env,
-      },
-      stdio: ['pipe', 'pipe', 'pipe'],
+      SPOTIFY_MCP_TOOLSETS: 'all',
+      ...env,
     },
-  );
-  const session = new ServerSession(child);
+    // The bound this file has always used, kept so migrating the harness did
+    // not quietly quadruple the worst case for a starved child.
+    requestTimeoutMs: 20_000,
+  });
   try {
-    const init = await session.request('initialize', {
-      protocolVersion: '2024-11-05',
-      capabilities: {},
-      clientInfo: { name: 'enggating-stdio-test', version: '1.0.0' },
-    });
-    assert.equal(init.error, undefined, `initialize failed: ${JSON.stringify(init.error)}\nstderr:\n${session.stderr()}`);
-    session.notify('notifications/initialized');
+    await session.initialize('enggating-stdio-test');
 
     const listed = await session.request('tools/list');
-    assert.equal(listed.error, undefined, `tools/list failed: ${JSON.stringify(listed.error)}\nstderr:\n${session.stderr()}`);
+    assert.equal(listed.error, undefined, `tools/list failed: ${JSON.stringify(listed.error)}\nstderr:\n${session.stderr}`);
     const toolNames = new Set(((listed.result?.tools ?? []) as Array<{ name: string }>).map((t) => t.name));
 
     const results: Record<string, Record<string, unknown>> = {};
@@ -624,7 +563,7 @@ async function probeServer(env: Record<string, string>, calls: ToolCall[]): Prom
     }
     return { toolNames, results };
   } finally {
-    session.stop();
+    await session.dispose();
   }
 }
 
