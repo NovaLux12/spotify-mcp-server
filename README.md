@@ -209,7 +209,7 @@ gates that hid modules, and the granted scopes in one call.
 - [docs/configuration.md](docs/configuration.md) — all env vars
 - [docs/schema-budgets.md](docs/schema-budgets.md) — per-module schema budgets and registration order
 - [docs/statsfm.md](docs/statsfm.md) — stats.fm second source: setup, tool cheat sheet, gotchas
-- [docs/cookbook.md](docs/cookbook.md) — eleven copy-paste agent recipes
+- [docs/cookbook.md](docs/cookbook.md) — copy-paste agent recipes
 - [docs/taste.md](docs/taste.md) — anonymized taste showcase driving a playlist
 - [docs/wave2-composites.md](docs/wave2-composites.md) — read-only taste composites
 - [docs/distribution.md](docs/distribution.md) — distribution and release notes

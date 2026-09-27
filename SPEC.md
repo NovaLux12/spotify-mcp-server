@@ -1699,7 +1699,7 @@ A successful execute returns `ok`, `undone_receipt`, `direction`, `inverted_to`,
 **Known gap (#658).** Both tools declare `response_format` but neither handler reads it, so `json` returns the same prose as `concise` — where the shared controls section above promises a raw API payload. The registry-wide conformance gate in `tests/mutations.conformance.test.ts` checks that a write-capable tool *exposes* `dry_run` and `response_format`, not that it honours them, so this is invisible to it. `tests/tools.undo-receipts.test.ts` deliberately asserts nothing about `response_format`'s effect rather than ratifying the mismatch.
 ### 5.12 Discovery and registry introspection
 
-Three pure-introspection tools register outside toolset trimming (`alwaysActive`, catalog scope key) so they survive a minimal toolset — the escape hatch for a 592-tool surface. They call no Spotify endpoint. `response_format` on these three differs from the shared contract above, because "json = raw API object" is the wrong promise for a tool that never calls the API:
+Three pure-introspection tools register outside toolset trimming (`alwaysActive`, catalog scope key) so they survive a minimal toolset — the escape hatch for a registry of hundreds of tools. `scripts/check-doc-tool-counts.mjs` refuses a registry tool count in hand-maintained text anywhere but a generated block, and fails if the registry ever leaves the three-digit range "hundreds" describes. They call no Spotify endpoint. `response_format` on these three differs from the shared contract above, because "json = raw API object" is the wrong promise for a tool that never calls the API:
 
 | `response_format` | `find_tool` / `inspect_tool` / `toolset_report` emit |
 |---|---|
@@ -1962,7 +1962,23 @@ npm run auth   # or: SPOTIFY_CLIENT_ID=xxx npm run auth
 
 ---
 
-## Implementation Phases
+## Implementation phases (build history)
+
+**This table is a record of build waves, not a statement about the current
+surface.** Nothing in it is authoritative: the tools that exist are the ones
+`tools/list` returns, and the counts are generated into `README.md`,
+`ARCHITECTURE.md` and `docs/schema-budgets.md` by
+`npm run count:tools -- --write` and gated by `--check`. For what shipped in
+each release, read [CHANGELOG.md](CHANGELOG.md) — release-please generates it
+from the Conventional Commits on `main`, and it is never hand-edited. It has a
+section for every tagged release except four: `1.27.0`, `1.27.1`, `1.28.0` and
+`1.28.1` were tagged without release-please's manifest ever naming them, so no
+section exists for them and none ever will.
+`node scripts/check-release-history.mjs` records those four with the commit
+that tagged each, and fails on the next release that loses its section. Adding
+a row per release to the table below would duplicate that generated file by
+hand, which is how this one came to end at v1.26.0 while the project shipped on
+through 2.x (#932).
 
 | Phase | Scope |
 |---|---|
@@ -1981,4 +1997,4 @@ npm run auth   # or: SPOTIFY_CLIENT_ID=xxx npm run auth
 | **Phase 13** | **v1.23.0 exhaust-remnants (2026-08-26): typed search, category helpers, catalog batch/validate, library insights, playlist operations, and freshness/scene/market tools** |
 | **Phase 14** | **v1.24.0 exhaust2 swarm (2026-08-27): graceful-403 gating, playback/device/session, portability/analytics/workflow, playlist set-algebra/curation, and catalog typed-search depth** |
 | **Phase 15** | **#638 (2026-09): February-2026 removal cleanup.** Retired `save_items`, `remove_saved_items`, `check_saved_items`, `follow_artists`, `unfollow_artists`, `get_categories` and `get_category_playlists`; migrated every surviving `PUT`/`DELETE /me/{type}s` and `GET /me/{type}s/contains` call site onto `/me/library` and `/me/library/contains`; made the positional `/me/library/contains` reads fail closed instead of defaulting a failed read to "not saved" |
-| **Phase 15** | **v1.26.0 swarm3 push (2026-08-28): playback, playlist operations, discovery, library, podcast/session, listening analytics, Spotify reference, local snapshot, and registry-introspection tools — live gauntlet and `tools/list` verified** |
+| **Phase 16** | **v1.26.0 swarm3 push (2026-08-28): playback, playlist operations, discovery, library, podcast/session, listening analytics, Spotify reference, local snapshot, and registry-introspection tools — live gauntlet and `tools/list` verified** |

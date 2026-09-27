@@ -69,7 +69,7 @@
 
 import { SpotifyClient } from '../../src/client.js';
 import type { GetAllPagesOptions, GetOptions } from '../../src/client.js';
-import type { SpotifyPaged } from '../../src/types/spotify.js';
+import type { SpotifyPaged, PlaylistItemObject, SpotifyImage } from '../../src/types/spotify.js';
 
 /** HTTP verbs a {@link StubSpotifyClient} records. `PUT_RAW` is a distinct
  *  method because the cover-art upload carries a raw body plus an explicit
@@ -554,3 +554,383 @@ export class StubFromResponder extends StubSpotifyClient {
  * name the options it forwards without importing from `src/`.
  */
 export type { GetAllPagesOptions };
+
+// ---------------------------------------------------------------------------
+// The stateful playlist store (#881)
+// ---------------------------------------------------------------------------
+
+/** One row of a playlist as the mock holds it. `null` is an unavailable row. */
+export type PlaylistRow = string | null;
+
+/** How a seeded playlist answers reads before any write. */
+export interface SeededPlaylist {
+  /** Row URIs in playlist order; `null` is Spotify's `item: null` row. */
+  rows: PlaylistRow[];
+  /** Playlist name, echoed by the metadata read. */
+  name?: string;
+  /** Cover images the `/images` read returns, first one being index 0. */
+  images?: SpotifyImage[];
+  /**
+   * Snapshot ids handed out by each write, in order. The LAST one repeats
+   * forever, so a tool that writes more times than seeded still gets a
+   * receipt — a test that cares about receipt READABILITY wants
+   * `snapshot_id: null` instead, which is a different option
+   * (`receiptReadable: false`).
+   */
+  snapshots?: string[];
+  /** `false` makes every write answer with a body carrying no `snapshot_id`. */
+  receiptReadable?: boolean;
+  /** `public` / `collaborative`, as the metadata read reports them. */
+  public?: boolean;
+  collaborative?: boolean;
+}
+
+/** Per-playlist counters a test asserts against. */
+export interface PlaylistWriteLog {
+  /** `PUT /playlists/{id}/items` bodies, in order. */
+  replaces: Array<{ uris: string[] }>;
+  /** `POST /playlists/{id}/items` bodies, in order. */
+  appends: Array<{ uris: string[] }>;
+  /** `DELETE /playlists/{id}/items` position lists, in the order sent. */
+  deletes: number[][];
+  /** Every `GET /playlists/{id}/items` page the client served. */
+  itemPageReads: number;
+}
+
+const TRACK_FROM_URI = /^(?:spotify:track:|spotify:episode:)?([A-Za-z0-9_-]+)$/;
+
+/**
+ * A plausible track object for a `spotify:track:<id>` row.
+ *
+ * `duration_ms` and the artist name VARY with the numeric tail of the id, on
+ * purpose. A mock whose every row carried one duration would make
+ * `playlist_sort(duration_asc)` a no-op that a broken comparator would pass,
+ * and one whose every row shared an artist would do the same for `artist_asc`.
+ * The variation is what lets a test tell "sorted by duration" from "sorted by
+ * name" — and lets it tell a real sort from a tool that ignored the key.
+ */
+export function trackRowForUri(uri: string, addedAt = '2026-01-01T00:00:00Z'): PlaylistItemObject {
+  const id = TRACK_FROM_URI.exec(uri)?.[1] ?? uri;
+  const n = Number(/(\d+)\s*$/.exec(id)?.[1] ?? 0) || 0;
+  return {
+    added_at: addedAt,
+    item: {
+      type: 'track',
+      id,
+      uri,
+      name: `Track ${id}`,
+      duration_ms: 60_000 + (n % 7) * 30_000,
+      artists: [{ id: `artist-${n % 5}`, name: `Artist ${n % 5}` }],
+      album: { id: `album-${id}`, name: `Album ${id}` },
+    } as unknown as PlaylistItemObject['item'],
+  } as PlaylistItemObject;
+}
+
+/** `n` distinct `spotify:track:t<n>` URIs, for seeding a fixture of any size. */
+export function trackUris(n: number, prefix = 't'): string[] {
+  return Array.from({ length: n }, (_, i) => `spotify:track:${prefix}${i}`);
+}
+
+/**
+ * A {@link StubSpotifyClient} whose playlists are real state: `PUT` replaces,
+ * `POST` appends, `DELETE` splices the named positions out, and the item read
+ * pages the CURRENT rows with the CURRENT count.
+ *
+ * ## Why the plain routes were not enough
+ *
+ * Everything above answers a call with whatever the test decided in advance.
+ * That is the right shape for a tool that makes one call, and the wrong shape
+ * for the destructive-replace family, whose whole contract is a SEQUENCE:
+ * walk the playlist, decide an order, `PUT` the first chunk, `POST` the rest,
+ * re-read to verify. A fixed-response stub can assert the first `PUT` and
+ * nothing after it, so the questions that actually decide whether the tool is
+ * correct — did chunk 2 land, did the clear leave zero rows, does the re-read
+ * see the new total — have no observable subject.
+ *
+ * ## Why this is a mock and not a permissive stub
+ *
+ * The hazard in a hand-rolled stateful mock is the same one the file header
+ * names: it answers a call the test never modelled. Every route here is
+ * registered against a playlist that was seeded by name, so a tool that reads
+ * an unseeded playlist id, or an endpoint outside the family, still throws
+ * {@link UnexpectedCallError} with the registered routes listed. The state is
+ * mutable; the ROUTE TABLE is not. That split is the whole point — the mock
+ * is allowed to be a fake, it is not allowed to be a shrug.
+ *
+ * ## The cap is real here, not copied here
+ *
+ * The item read hands back a genuine {@link SpotifyPaged} whose `total` is the
+ * live row count, so the INHERITED `getAllPages` decides for itself whether it
+ * hit `fetchAllCap`. A fixture of 600 rows against the default cap of 500
+ * therefore truncates the way production truncates, without this file naming
+ * 500 anywhere. Change `SPOTIFY_MCP_FETCH_ALL_CAP` and the mock follows,
+ * because it never knew the number.
+ */
+export class StatefulPlaylistClient extends StubSpotifyClient {
+  private readonly rows = new Map<string, PlaylistRow[]>();
+  private readonly names = new Map<string, string>();
+  private readonly covers = new Map<string, SpotifyImage[]>();
+  private readonly snapshots = new Map<string, string[]>();
+  private readonly receiptReadable = new Map<string, boolean>();
+  private readonly visibility = new Map<string, { public?: boolean; collaborative?: boolean }>();
+  /** Every mutating call, per playlist, in the order the tool issued it. */
+  readonly log = new Map<string, PlaylistWriteLog>();
+  /** Ids handed out by `POST /me/playlists`, in creation order. */
+  readonly created: Array<{ id: string; name: string; public?: boolean }> = [];
+  /** `PUT_RAW` bodies, per playlist path — the cover-art upload. */
+  readonly coverUploads = new Map<string, string>();
+  private nextCreated = 0;
+  /**
+   * The snapshot a read reports. A write moves it, so a test that reads the
+   * metadata AFTER a write sees a different `snapshot_id` than before — which
+   * is what `get_playlist_snapshot` exists to expose.
+   */
+  private readonly current = new Map<string, string>();
+
+  constructor(opts: { fetchAllCap?: number } = {}) {
+    super(opts);
+    this.registerPlaylistRoutes();
+  }
+
+  /**
+   * Add a playlist to the store.
+   *
+   * Rows are copied, so a test can keep mutating the array it passed in
+   * without the store changing underneath it — one accidental alias is enough
+   * to make a later assertion pass for the wrong reason.
+   */
+  seedPlaylist(id: string, seeded: SeededPlaylist): this {
+    this.rows.set(id, [...seeded.rows]);
+    this.names.set(id, seeded.name ?? `Playlist ${id}`);
+    this.covers.set(id, seeded.images ?? []);
+    this.receiptReadable.set(id, seeded.receiptReadable ?? true);
+    // `snapshots[0]` is the id the playlist was created with; the REST are
+    // handed out one per write, in order. The last repeats forever, so a tool
+    // that writes more times than seeded still gets a receipt.
+    const queue = seeded.snapshots ? [...seeded.snapshots] : [`snapshot-${id}-1`];
+    const initial = queue.length > 1 ? queue.shift()! : queue[0]!;
+    this.snapshots.set(id, queue);
+    if (this.receiptReadable.get(id) === false) this.current.delete(id);
+    else this.current.set(id, initial);
+    this.visibility.set(id, { public: seeded.public, collaborative: seeded.collaborative });
+    this.log.set(id, { replaces: [], appends: [], deletes: [], itemPageReads: 0 });
+    return this;
+  }
+
+  /** The live rows of a seeded playlist, `null` entries and all. */
+  rowsOf(id: string): PlaylistRow[] {
+    const rows = this.rows.get(id);
+    assertSeeded(id, rows !== undefined, this.rows);
+    return [...rows!];
+  }
+
+  /** Just the addressable URIs, in order — the shape a replace would carry. */
+  urisOf(id: string): string[] {
+    return this.rowsOf(id).filter((u): u is string => u !== null);
+  }
+
+  /** The write log for a playlist; throws when the id was never seeded. */
+  logOf(id: string): PlaylistWriteLog {
+    const entry = this.log.get(id);
+    assertSeeded(id, entry !== undefined, this.log);
+    return entry!;
+  }
+
+  /**
+   * Every URI the tool ever sent to this playlist's `/items` endpoint, in
+   * order, across `PUT` and `POST`. A destructive replace is one `PUT` with
+   * the whole ordered list followed by `POST`s for the overflow chunks, so the
+   * concatenation is exactly the order the playlist was asked to end up in.
+   */
+  writtenUris(id: string): string[] {
+    const entry = this.logOf(id);
+    return [...entry.replaces.flatMap((r) => r.uris), ...entry.appends.flatMap((a) => a.uris)];
+  }
+
+  // -------------------------------------------------------------------------
+
+  private nextSnapshot(id: string): string | null {
+    if (this.receiptReadable.get(id) === false) return null;
+    const list = this.snapshots.get(id) ?? [`snapshot-${id}-1`];
+    const value = list.length === 1 ? list[0]! : list.shift() ?? null;
+    if (value !== null) this.current.set(id, value);
+    return value ?? null;
+  }
+
+  private registerPlaylistRoutes(): void {
+    // `/playlists/{id}`, `/playlists/{id}/items` and `/playlists/{id}/images`
+    // are three routes over ONE playlist, so they must resolve to the same
+    // id — a cover read that looked up `A.../images` as its own playlist
+    // would be indistinguishable from a tool reading the wrong thing.
+    const idOf = (path: string): string =>
+      decodeURIComponent(path.replace('/playlists/', '').replace(/\/(?:items|images)$/, ''));
+
+    // `POST /me/playlists` is registered FIRST so it wins the "most recently
+    // registered" race against the item/meta routes for the paths it overlaps.
+    this.route('POST', '/me/playlists', {
+      respond: (call) => {
+        const body = (call.arg ?? {}) as { name?: string; public?: boolean };
+        const id = `created${this.nextCreated++}`;
+        const rows: PlaylistRow[] = [];
+        this.seedPlaylist(id, { rows, name: body.name ?? id, public: body.public });
+        this.created.push({ id, name: body.name ?? id, public: body.public });
+        return { id, name: body.name ?? id, snapshot_id: `snapshot-${id}` };
+      },
+    });
+
+    // Item read. The `total` is the LIVE count and the page honours the
+    // `limit` the walk asked for, so the inherited walk's cap arithmetic is
+    // decided by production code reading a real envelope.
+    this.route('GET', /^\/playlists\/[^/]+\/items$/, {
+      respond: (call) => {
+        const id = idOf(call.path);
+        const rows = this.rows.get(id);
+        assertSeeded(id, rows !== undefined, this.rows);
+        this.logOf(id).itemPageReads++;
+        const arg = (call.arg ?? {}) as { offset?: string; limit?: string };
+        const offset = Number(arg.offset ?? 0) || 0;
+        const requested = Number(arg.limit ?? 0);
+        const size = Number.isFinite(requested) && requested > 0 ? Math.min(requested, 100) : 50;
+        const slice = rows.slice(offset, offset + size);
+        const body: SpotifyPaged<PlaylistItemObject> = {
+          items: slice.map((uri) => (uri === null ? ({ added_at: '2026-01-01T00:00:00Z', item: null } as PlaylistItemObject) : trackRowForUri(uri))),
+          total: rows.length,
+          limit: size,
+          offset,
+          next: offset + size < rows.length ? `offset=${offset + size}` : null,
+        };
+        return body;
+      },
+    });
+
+    // Metadata. `items.total` is the current field; `tracks` is the deprecated
+    // one, and a tool reading the wrong one is exactly the sort of thing this
+    // mock is here to make visible.
+    this.route('GET', /^\/playlists\/[^/]+$/, {
+      respond: (call) => {
+        const id = idOf(call.path);
+        const rows = this.rows.get(id);
+        assertSeeded(id, rows !== undefined, this.rows);
+        const { public: pub, collaborative } = this.visibility.get(id) ?? {};
+        return {
+          id,
+          name: this.names.get(id) ?? `Playlist ${id}`,
+          snapshot_id: this.current.get(id) ?? null,
+          public: pub,
+          collaborative,
+          images: this.covers.get(id) ?? [],
+          items: { total: rows.length },
+        };
+      },
+    });
+
+    this.route('GET', /^\/playlists\/[^/]+\/images$/, {
+      respond: (call) => {
+        const id = idOf(call.path);
+        assertSeeded(id, this.covers.has(id), this.rows);
+        return this.covers.get(id) ?? [];
+      },
+    });
+
+    // `PUT ... /items` REPLACES — that is the atomic rewrite the whole
+    // sort/shuffle/reverse/trim/union/subtract family commits through, and
+    // `{ uris: [] }` is the documented clear.
+    this.route('PUT', /^\/playlists\/[^/]+\/items$/, {
+      respond: (call) => {
+        const id = idOf(call.path);
+        const rows = this.rows.get(id);
+        assertSeeded(id, rows !== undefined, this.rows);
+        const uris = readUris(call.arg);
+        this.logOf(id).replaces.push({ uris });
+        this.rows.set(id, [...uris]);
+        return { snapshot_id: this.nextSnapshot(id) };
+      },
+    });
+
+    // `POST ... /items` APPENDS — the overflow chunks of a >100-URI replace.
+    this.route('POST', /^\/playlists\/[^/]+\/items$/, {
+      respond: (call) => {
+        const id = idOf(call.path);
+        const rows = this.rows.get(id);
+        assertSeeded(id, rows !== undefined, this.rows);
+        const uris = readUris(call.arg);
+        this.logOf(id).appends.push({ uris });
+        this.rows.set(id, [...rows!, ...uris]);
+        return { snapshot_id: this.nextSnapshot(id) };
+      },
+    });
+
+    // `DELETE ... /items` takes POSITIONS, and positions shift as rows go —
+    // so the mock splices exactly as the live playlist would. A stub that
+    // ignored the position would make `remove_unavailable_playlist_items`'s
+    // highest-first ordering untestable.
+    this.route('DELETE', /^\/playlists\/[^/]+\/items$/, {
+      respond: (call) => {
+        const id = idOf(call.path);
+        const rows = this.rows.get(id);
+        assertSeeded(id, rows !== undefined, this.rows);
+        const positions = readPositions(call.arg);
+        this.logOf(id).deletes.push(positions);
+        // Highest first within one request, matching Spotify's own semantics
+        // for a multi-position delete, so the mock is right even if a tool
+        // sends them out of order in a single call.
+        const next = [...rows!];
+        for (const position of [...positions].sort((a, b) => b - a)) {
+          if (position >= 0 && position < next.length) next.splice(position, 1);
+        }
+        this.rows.set(id, next);
+        return { snapshot_id: this.nextSnapshot(id) };
+      },
+    });
+
+    this.route('PUT', /^\/playlists\/[^/]+\/images$/, { respond: () => undefined });
+    this.route('PUT_RAW', /^\/playlists\/[^/]+\/images$/, {
+      respond: (call) => {
+        this.coverUploads.set(call.path, String(call.arg ?? ''));
+        return undefined;
+      },
+    });
+    // Metadata PUT: records the body so a test can assert the exact flags.
+    this.route('PUT', /^\/playlists\/[^/]+$/, {
+      respond: (call) => {
+        const id = idOf(call.path);
+        const body = (call.arg ?? {}) as { public?: boolean; collaborative?: boolean; name?: string };
+        this.visibility.set(id, { ...this.visibility.get(id), ...body });
+        return { id, ...body, snapshot_id: this.nextSnapshot(id) };
+      },
+    });
+  }
+}
+
+function readUris(arg: unknown): string[] {
+  const body = arg as { uris?: unknown } | null;
+  if (body === null || typeof body !== 'object' || !Array.isArray(body.uris)) {
+    throw new UnexpectedArgumentError('PUT', '/playlists/<id>/items', `expected a { uris: [...] } body, got ${safeJson(arg)}`);
+  }
+  return body.uris.map(String);
+}
+
+function readPositions(arg: unknown): number[] {
+  const body = arg as { tracks?: Array<{ positions?: unknown }> } | null;
+  const tracks = body !== null && typeof body === 'object' ? body.tracks : undefined;
+  if (!Array.isArray(tracks)) {
+    throw new UnexpectedArgumentError('DELETE', '/playlists/<id>/items', `expected a { tracks: [{ positions: [...] }] } body, got ${safeJson(arg)}`);
+  }
+  return tracks.flatMap((t) => (Array.isArray(t?.positions) ? t.positions.map(Number) : []));
+}
+
+/**
+ * An unseeded id must fail loudly. A mock that invented an empty playlist for
+ * it would make "the tool read the wrong playlist" look like "the tool found
+ * an empty playlist" — the permissive-default bug this file exists to
+ * prevent, in a new outfit.
+ */
+function assertSeeded(id: string, present: boolean, known: Map<string, unknown>): void {
+  if (present) return;
+  throw new Error(
+    `StatefulPlaylistClient: playlist "${id}" was never seeded. ` +
+      `Seeded playlists: ${known.size > 0 ? [...known.keys()].join(', ') : '(none)'}. ` +
+      `A mock that answered for an unseeded playlist would make "the tool read the wrong id" ` +
+      `look like "the tool found an empty playlist".`,
+  );
+}

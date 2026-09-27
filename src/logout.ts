@@ -37,8 +37,10 @@
  *   instead. This is one known file, not a recursive delete.
  *
  * `logout` is deliberately a CLI command and not an MCP tool: a destructive
- * tool would join the `tools/list` surface (592 tools today) and every host
- * would gain the ability to erase the user's own credentials unattended.
+ * tool would join the `tools/list` surface and every host would gain the
+ * ability to erase the user's own credentials unattended. The argument is the
+ * capability, not the size of the surface, so it states no tool count —
+ * `scripts/check-doc-tool-counts.mjs` is what would catch one appearing.
  */
 
 import { execFile } from 'node:child_process';

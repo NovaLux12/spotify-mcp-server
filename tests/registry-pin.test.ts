@@ -28,17 +28,34 @@
  *   3. **Duplicates abort, but opaquely.** The SDK throws
  *      `Tool search is already registered` before any assertion runs, naming
  *      the tool and neither module.
- *   4. **The byte ceiling was measured in the wrong unit.**
- *      `tool.surface.test.ts` asserts `JSON.stringify(tools).length`, which
- *      counts UTF-16 code units; the production startup gate budgets UTF-8
- *      bytes. Measured 2026-09-27 at 606,353 UTF-8 bytes vs 605,175 UTF-16
- *      code units — a 1,178B undercount against a 621,000B ceiling that
- *      leaves 14,647B of real headroom, on a surface where 358 of 587 tools
- *      contain non-ASCII text. That undercount does NOT currently breach the
- *      ceiling, so this is a latent unit error, not a live outage: the two
- *      numbers agree to within 0.2% and the budget is labelled "tight" at
- *      2.36% headroom. The check below exists because the error is silent when
- *      it eventually matters, not because it is breaking something today.
+ *   4. **The byte ceiling was measured in the wrong unit.** At the time this
+ *      file was written, `tool.surface.test.ts` asserted
+ *      `JSON.stringify(tools).length` — UTF-16 code units — while the
+ *      production startup gate in `src/index.ts` budgets UTF-8 bytes via
+ *      `collectAggregateSurfaceMeasurement`. On a surface whose tool
+ *      descriptions carry non-ASCII text the code-unit count is strictly
+ *      smaller, so a budget written in it understates what the host actually
+ *      receives. That is a trap worth a guard whether or not it is currently
+ *      biting: the two measures agree closely enough that nothing fails while
+ *      they disagree, and the error only announces itself once it is large
+ *      enough to matter.
+ *
+ *      #1283 fixed the unit in `tool.surface.test.ts` in the same change that
+ *      wrote this paragraph, so the wrong-unit defect this item describes is
+ *      now fixed everywhere — production measures with `Buffer.byteLength(...,
+ *      'utf8')` and so does that file. What remains here is not the repair but
+ *      two things it does not provide: a SECOND measurement taken against the
+ *      ENFORCED ceiling (`AGGREGATE_SURFACE_LIMITS.maxBytes`, which carries the
+ *      annotation allowance that `tool.surface.test.ts`'s constant does not),
+ *      and the guard below that fails loudly if the two units ever stop
+ *      differing on this surface — which would mean the trap is gone, and would
+ *      be as worth knowing as the trap being live.
+ *
+ *      No figure from that measurement is written here on purpose. Every one of
+ *      them — the byte count, the headroom, the share of tools carrying
+ *      non-ASCII text — moves with the surface, and a number typed into a
+ *      comment is a number that is wrong within one release while nothing
+ *      re-derives it. The assertions below emit all of them on every run.
  *
  * The pinned surface lives in `tests/registry-surface.json`. It is a lockfile,
  * not a second registrar list: every module key in it must match
@@ -354,14 +371,13 @@ describe('registry pin: size budget', () => {
   it('the aggregate surface fits the production ceiling measured in UTF-8 bytes', async () => {
     const tools = await wireTools();
     // The startup gate in `src/index.ts` budgets `Buffer.byteLength(...,
-    // 'utf8')`. Measuring UTF-16 code units here instead undercounts by 1,178B
-    // on today's surface (606,353 vs 605,175, measured 2026-09-27), which is
-    // well inside the 14,647B of headroom — so today the two units disagree
-    // without either one failing. That is the argument for measuring in the
-    // production unit rather than asserting that it matters yet: it is the unit
-    // the gate uses, and a budget expressed in the other one is right by
-    // coincidence until the prose grows. Compare against the live production
-    // constant, never a literal copy of it.
+    // 'utf8')`. Measuring UTF-16 code units instead undercounts this surface,
+    // because tool descriptions carry non-ASCII text — and the two measures sit
+    // close enough together that neither one fails while they disagree. That is
+    // the argument for measuring in the production unit rather than asserting
+    // that it matters yet: a budget expressed in the other unit is right by
+    // coincidence until the descriptions grow. Compare against the live
+    // production constant, never a literal copy of it.
     //
     // This is a SECOND, independent measurement, not the guard. `assertAggregateSurfaceWithinBudget`
     // runs at startup, so a real breach aborts the process before `tools/list` is ever

@@ -2,13 +2,14 @@
 
 ## Supported versions
 
-Only the current release line receives security fixes; every earlier line,
-including the whole 1.x series, is unsupported. Read the current version from
-the `version` field in `package.json`, or ask `npm view @novalux12/spotify-mcp
-version` — this page deliberately carries no hard-coded version, because a
-stale one would tell a reader on a supported release that they are
-unsupported. Upgrade to the latest published release before reporting a
-problem.
+Only the current release line receives security fixes; every earlier line is
+unsupported. Read the current version from the `version` field in
+`package.json`, or ask `npm view @novalux12/spotify-mcp version` — this page
+deliberately carries no hard-coded version or version line, because a stale one
+would tell a reader on a supported release that they are unsupported, and a
+named line goes stale again at the next major. What each release contains is
+[CHANGELOG.md](CHANGELOG.md). Upgrade to the latest published release before
+reporting a problem.
 
 ## Reporting a vulnerability
 
