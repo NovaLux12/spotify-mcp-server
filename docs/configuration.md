@@ -24,7 +24,9 @@ The variables below are read at the documented call sites; set them in your MCP 
 | `SPOTIFY_MCP_RECEIPTS` | unset | `1`, `true`, `yes`, or `on` persists mutation receipts to `receipts.jsonl` so `verify_receipt` and `undo_mutation` survive a restart. Unset keeps them in process memory only, and every miss says so. |
 | `SPOTIFY_MCP_RECEIPTS_DIR` | `~/.spotify-mcp` | Directory containing `receipts.jsonl`; falls back to `SPOTIFY_MCP_HISTORY_DIR` when unset. |
 | `SPOTIFY_MCP_RECEIPTS_TTL_HOURS` | `24` | How long a persisted receipt stays resolvable; `0` disables expiry. The newest 100 receipts are kept either way, FIFO. |
-| `SPOTIFY_MCP_TOOLSETS` | unset (all) | Comma-separated toolsets to register. `all`, empty, or unset registers everything. |
+| `SPOTIFY_MCP_TOOLSETS` | unset (`core,resources,prompts`) | Comma-separated toolsets to register. Unset or empty registers the curated default surface — `core`, plus resources and prompts. `all` registers everything. |
+| `SPOTIFY_MCP_STATSFM` | unset | `1`, `true`, `yes`, or `on` registers the stats.fm families without naming them in `SPOTIFY_MCP_TOOLSETS`. They are off by default because they need a separate stats.fm username (`STATSFM_USER_ID`) and are of no use without one. `SPOTIFY_MCP_DISABLE_TOOLS` still wins over it. |
+| `SPOTIFY_MCP_LEGACY_ALIASES` | unset | `1`, `true`, `yes`, or `on` still dispatches the `taste_*` tool names retired in v3.0 to their canonical `statsfm_*` handlers. Off by default; the retired names are never advertised in `tools/list`, so the compat window costs no schema bytes. Inert unless the `taste` toolset is registered. |
 | `SPOTIFY_MCP_ENABLE_TOOLS` | unset | Comma-separated registration-key overrides forced on. |
 | `SPOTIFY_MCP_DISABLE_TOOLS` | unset | Comma-separated registration-key overrides forced off; disable wins over enable. |
 | `SPOTIFY_MCP_READONLY` | unset | `1`, `true`, `yes`, or `on` (case-insensitive, trimmed) hides Spotify-mutating registration modules. One parser backs this flag, the `spotify_doctor` report, the `whats_new` annotations and the freshness-watermark hold, so they cannot disagree. Read-only modules, resources, and prompts remain subject to their normal gates. |
@@ -179,7 +181,7 @@ Eviction is oldest-first until all three hold, and the lifetime `recorded` and `
 
 **A corrupt or truncated store is preserved, not reset.** Loading follows the shared policy in `src/sidecar.ts` (#839, #1051), the same one the scene, genre-tag and playback-extension sidecars use: a missing file reads as an empty store, and every other read, parse or validation failure preserves the exact bytes at `<file>.corrupt` (or `<file>.corrupt.N`, opened `O_EXCL` so a later corruption cannot clobber an earlier preserved copy) at 0600 and reports the path. The original file is left where it is. Rotation and eviction make a malformed file *more* likely to appear, not less, so the write is built so that it does not create one.
 
-**The write is atomic.** The store is a single JSON document, so a write that truncated the target in place and died mid-write would lose *every* record rather than one line. Instead: a uniquely named temp file in the same directory, `fsync`, then `rename(2)` over the target. The rename is the only mutation of the real path, so a crash before it leaves the previous store whole. The temp name carries the pid and random bytes because a fixed `<path>.tmp` is a race between concurrent `record_feedback` calls (#1135). A write that fails is **reported** as a failure — a verdict that reads as recorded but is not on disk is the #764 watchlist failure.
+**The write is atomic.** The store is a single JSON document, so a write that truncated the target in place and died mid-write would lose *every* record rather than one line. Instead: a uniquely named temp file in the same directory, `fsync`, then `rename(2)` over the target. The rename is the only mutation of the real path, so a crash before it leaves the previous store whole. The temp name carries the pid and random bytes because a fixed `<path>.tmp` is a race between concurrent `statsfm_record_feedback` calls (#1135). A write that fails is **reported** as a failure — a verdict that reads as recorded but is not on disk is the #764 watchlist failure.
 
 `spotify_doctor` reports both stores: the `history` row carries the ledger's sizes, cap and record count, and the taste-feedback row carries the store's path, how many verdicts are retained, and how many the cap has dropped.
 
@@ -222,9 +224,13 @@ confirmation-gated, dry-run by default, and path-confined to `SPOTIFY_MCP_BACKUP
  dcb6adcf111cd0992e9ae4911cf119373a6280a8
 ### Toolsets and registration keys
 
-`SPOTIFY_MCP_TOOLSETS` accepts a comma-separated subset of these toolsets, or `all`/empty/unset for the full surface:
+`SPOTIFY_MCP_TOOLSETS` accepts a comma-separated subset of these toolsets, or `all` for the full surface:
 
 `core`, `playback`, `playbackintel`, `catalog`, `playlists`, `library`, `personalization`, `statsfm`, `portability`, `taste`, `discovery`, `resources`, and `prompts`.
+
+**The default is `core`, not everything (#889).** A server started with no `SPOTIFY_MCP_TOOLSETS` registers the `core` set plus `resources` and `prompts` — the search, playback, playlist, library and following tools, and the three MCP surfaces that cost no tool-schema context. Unset used to mean the whole registry, which cost a host ~600 KB of schema before its first user message; the curated default is about a quarter of that. `SPOTIFY_MCP_TOOLSETS=all` restores the full surface, and the startup log names the default so a trimmed server is never silent about it. The exact tool and byte counts for both surfaces are in the generated surface-census block of [README.md](../README.md).
+
+**The stats.fm families are opt-in (#607).** `statsfm`, `taste` and `tastecomposites` are not in the default: 49 tools that need a separate stats.fm username, advertised to every user whether or not they have one. Set `SPOTIFY_MCP_STATSFM=1`, or name them — `SPOTIFY_MCP_TOOLSETS=core,taste,statsfm` — and read [docs/statsfm.md](statsfm.md) for what they require.
 
 `SPOTIFY_MCP_ENABLE_TOOLS` and `SPOTIFY_MCP_DISABLE_TOOLS` take registration keys, not individual tool names. The complete key list is:
 

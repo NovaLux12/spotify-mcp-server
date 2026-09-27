@@ -4,9 +4,9 @@ An anonymized end-to-end run of the [flagship recipe](cookbook.md#1-taste-profil
 
 ## Tool naming
 
-The eight taste-intelligence tools live under the `taste` toolset with canonical **`statsfm_*`** names. Each has a registered legacy alias pointing to the same handler, so either name in a pair below works.
+The eight taste-intelligence tools live under the `taste` toolset. The `statsfm_*` names are the only ones registered:
 
-| Canonical (preferred) | Legacy alias |
+| Tool | Retired alias (removed in v3.0) |
 |---|---|
 | `statsfm_taste_profile` | `taste_profile` |
 | `statsfm_artist_affinity` | `artist_affinity` |
@@ -17,7 +17,9 @@ The eight taste-intelligence tools live under the `taste` toolset with canonical
 | `statsfm_taste_recommendations` | `taste_recommendations` |
 | `statsfm_record_feedback` | `record_feedback` |
 
-Network-backed taste tools require an explicit `statsfm_user` string. The local-only `statsfm_record_feedback` / `record_feedback` pair is the identity-free exception: it never contacts stats.fm, and it persists each verdict to a local sidecar at `~/.spotify-mcp/taste-feedback.json` rather than keeping it in memory. Where `range` is accepted, taste tools use the same three values as the endpoint tools — `weeks`, `months`, and `lifetime` — because they send the same stats.fm query parameter. User-scoped endpoint tools require `user_id`; see the [stats.fm tool reference](statsfm.md#ranges).
+The right-hand column is a migration table, not a menu: those names were each a duplicate registration of the tool to their left and are no longer advertised (#908). `SPOTIFY_MCP_LEGACY_ALIASES=1` still dispatches them for a release.
+
+Network-backed taste tools require an explicit `statsfm_user` string. The local-only `statsfm_record_feedback` is the identity-free exception: it never contacts stats.fm, and it persists each verdict to a local sidecar at `~/.spotify-mcp/taste-feedback.json` rather than keeping it in memory. Where `range` is accepted, taste tools use the same three values as the endpoint tools — `weeks`, `months`, and `lifetime` — because they send the same stats.fm query parameter. User-scoped endpoint tools require `user_id`; see the [stats.fm tool reference](statsfm.md#ranges).
 
 `statsfm_taste_profile` with `response_format: "json"` returns raw stats.fm payloads under exactly these top-level keys: `topArtists`, `topGenres`, `topTracks`, and `recentStreams`. The server does not translate that JSON mode into the summary fields used by its concise and detailed modes.
 

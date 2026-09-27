@@ -501,6 +501,35 @@ if (gatedCallsIndex >= 0) {
 const census = censusFileIndex >= 0
   ? JSON.parse(readFileSync(resolve(args[censusFileIndex + 1]), 'utf8'))
   : await readProductionRegistry();
+/**
+ * The DEFAULT surface, measured rather than derived (#889).
+ *
+ * Since #889 an unset `SPOTIFY_MCP_TOOLSETS` no longer means "everything", so
+ * every generated sentence that called the full surface "the default" became a
+ * claim about a surface no session actually gets. The fix is a second real
+ * handshake with the key DELETED, not arithmetic over the full list: filtering
+ * the 581 measured names by the default sets would be a second, weaker
+ * implementation of the gate that `src/index.ts` owns, and it would report
+ * whatever that filter says even if the server disagreed.
+ *
+ * The bytes figure is the same projection `assertAggregateSurfaceBudget`
+ * budgets — name, title, description, inputSchema, annotations, execution and
+ * _meta — so "the default costs a host N bytes" means the same thing here as
+ * it does at the startup gate.
+ */
+const defaultSurface = await readProductionRegistry({ SPOTIFY_MCP_TOOLSETS: undefined });
+const defaultSurfaceBytes = Buffer.byteLength(
+  JSON.stringify(defaultSurface.toolDefinitions.map((tool) => ({
+    name: tool.name,
+    title: tool.title,
+    description: tool.description,
+    inputSchema: tool.inputSchema,
+    annotations: tool.annotations,
+    execution: tool.execution,
+    _meta: tool._meta,
+  }))),
+  'utf8',
+);
 const { namesByModule: moduleNames, manifestToolNames, schemaMeasurements, aggregateSurface } = await attributeToolsToModules(census.toolNames, census.toolDefinitions);
 const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'));
 
@@ -608,6 +637,11 @@ const aggregateSurfaceFacts = Object.freeze({
 const measuredGatedToolNames = await measureGatedToolNames();
 const result = {
   tools: census.toolNames.length,
+  // #889: the curated surface a server registers with no env set. Reported
+  // beside the full-surface `tools` figure so neither can be read as the other.
+  defaultTools: defaultSurface.toolNames.length,
+  defaultBytes: defaultSurfaceBytes,
+  defaultToolNames: defaultSurface.toolNames,
   toolModuleFiles,
   registrationKeys: registrationKeyNames.length,
   resources: census.resourceUris.length,
@@ -651,7 +685,7 @@ const packageExcerpt = JSON.stringify({
   devDependencies: pkg.devDependencies,
   scripts: pkg.scripts,
 }, null, 2);
-const shortSurface = `The finalized default MCP registry exposes **${result.tools} tools**, **${result.resources} fixed resources**, **${result.resourceTemplates} resource templates**, and **${result.prompts} prompts**. Toolsets and production gates can trim a configured host; these totals describe the default production \`tools/list\` after finalizers.`;
+const shortSurface = `A server started with no \`SPOTIFY_MCP_TOOLSETS\` registers **${result.defaultTools} tools** (${result.defaultBytes.toLocaleString('en-US')} bytes of schema) — the curated default surface (#889). \`SPOTIFY_MCP_TOOLSETS=all\` registers all **${result.tools} tools**, along with **${result.resources} fixed resources**, **${result.resourceTemplates} resource templates**, and **${result.prompts} prompts**. Toolsets and production gates can trim a configured host further; both figures describe a real production \`tools/list\` after finalizers.`;
 /**
  * #1241 did NOT generate the README's 2.0-upgrade tool count, and the reason
  * is worth keeping: the sentence lives inside a numbered list item, and a
@@ -744,7 +778,18 @@ if (args.includes('--write')) {
 console.log(JSON.stringify(result, null, 2));
 if (process.exitCode) process.exit(process.exitCode);
 
-async function readProductionRegistry() {
+/**
+ * One real stdio handshake against `src/index.ts`, returning exactly what a
+ * host receives.
+ *
+ * `overrides` is applied AFTER {@link CENSUS_ENV} and an `undefined` value
+ * DELETES the key rather than blanking it. That distinction is load-bearing:
+ * `SPOTIFY_MCP_TOOLSETS` set-but-empty and unset are the same spec, but
+ * `SPOTIFY_SCOPES` set-but-empty has been a hard startup error since #617, and
+ * a helper that could only set values would have no way to express "the caller
+ * did not configure this".
+ */
+async function readProductionRegistry(overrides = {}) {
   const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
   const { StdioClientTransport } = await import('@modelcontextprotocol/sdk/client/stdio.js');
   const tempDir = mkdtempSync(join(tmpdir(), 'spotify-mcp-census-'));
@@ -754,17 +799,22 @@ async function readProductionRegistry() {
     refresh_token: 'surface-census',
     expires_at: Date.now() + 60 * 60 * 1000,
   }), { mode: 0o600 });
+  const env = {
+    PATH: process.env.PATH,
+    HOME: tempDir,
+    ...CENSUS_ENV,
+    SPOTIFY_MCP_TOKEN_FILE: tokenFile,
+  };
+  for (const [key, value] of Object.entries(overrides)) {
+    if (value === undefined) delete env[key];
+    else env[key] = value;
+  }
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: ['--import', 'tsx/esm', 'src/index.ts'],
     cwd: ROOT,
     stderr: 'pipe',
-    env: {
-      PATH: process.env.PATH,
-      HOME: tempDir,
-      ...CENSUS_ENV,
-      SPOTIFY_MCP_TOKEN_FILE: tokenFile,
-    },
+    env,
   });
   const client = new Client({ name: 'surface-census-client', version: '0.0.0' });
   let stderr = '';
@@ -1192,7 +1242,7 @@ function isSentenceTerminal(text, segment) {
 }
 
 function toolSurface(census) {
-  return `The finalized default MCP registry exposes **${census.tools} tools** (all ${census.tools} attributed to the ${census.toolModuleFiles} files under \`src/tools/\`), organized by ${census.registrationKeys} registration keys and ${census.toolsetNames} named toolsets. Registration keys: ${census.registrationKeyNames.map((key) => `\`${key}\``).join(', ')}. \`node scripts/surface-census.mjs\` derives the authoritative inventory by starting the real \`src/index.ts\` stdio entry and calling \`tools/list\`, \`resources/list\`, \`resources/templates/list\`, and \`prompts/list\` after production gates and finalizers, without network access.`;
+  return `The full MCP registry exposes **${census.tools} tools** (all ${census.tools} attributed to the ${census.toolModuleFiles} files under \`src/tools/\`), organized by ${census.registrationKeys} registration keys and ${census.toolsetNames} named toolsets; the curated default surface a server registers with no \`SPOTIFY_MCP_TOOLSETS\` is **${census.defaultTools} tools** / ${Number(census.defaultBytes).toLocaleString('en-US')} bytes (#889), and \`SPOTIFY_MCP_TOOLSETS=all\` restores the full one. Registration keys: ${census.registrationKeyNames.map((key) => `\`${key}\``).join(', ')}. \`node scripts/surface-census.mjs\` derives the authoritative inventory by starting the real \`src/index.ts\` stdio entry and calling \`tools/list\`, \`resources/list\`, \`resources/templates/list\`, and \`prompts/list\` after production gates and finalizers, without network access — twice, once for the full surface and once with \`SPOTIFY_MCP_TOOLSETS\` unset, so neither figure is inferred from the other.`;
 }
 
 function resourceSurface(census) {

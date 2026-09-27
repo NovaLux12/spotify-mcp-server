@@ -323,10 +323,11 @@ describe('the advertised max_results default is the one actually applied (#780)'
   let agreeingTools = 0;
 
   // Every way a tool gets registered in this tree. `server.tool(` alone was not
-  // enough: statsfm_taste.ts reaches the server through a `dualRegister`
-  // helper, and a marker set that misses it makes the whole scan blind to that
-  // module while still reporting a healthy count (the trap this test bit on).
-  const REGISTRATION = /server\s*\.\s*(?:tool|registerTool)\s*\(|\bdualRegister\s*\(/g;
+  // enough: statsfm_taste.ts reaches the server through a
+  // `registerCanonicalTool` helper, and a marker set that misses it makes the
+  // whole scan blind to that module while still reporting a healthy count (the
+  // trap this test bit on).
+  const REGISTRATION = /server\s*\.\s*(?:tool|registerTool)\s*\(|\bregisterCanonicalTool\s*\(/g;
   const LITERAL_FALLBACK = /resolveMaxResults\(\s*[^,()]+,\s*(\d+)\s*\)/g;
 
   for (const file of readdirSync(join(ROOT, 'src', 'tools')).filter((f) => f.endsWith('.ts')).sort()) {

@@ -795,6 +795,10 @@
         "label": "A broad Spotify Web API tool surface, plus extras most s…"
       },
       {
+        "hash": "35867ae1bf2eaf6f",
+        "label": "What you get by default, and what to do about the rest. …"
+      },
+      {
         "hash": "cb3f91d54eee30e5",
         "label": ""
       },
@@ -935,7 +939,7 @@
         "label": "All via env vars — no config file. Only SPOTIFYCLIENTID …"
       },
       {
-        "hash": "e29b2c3d2727ae67",
+        "hash": "68e827271600b9b2",
         "label": "| Variable | Example | Purpose | |---|---|---| | SPOTIFY…"
       },
       {
@@ -3065,7 +3069,7 @@
         "label": "Second upstream: long-range listening history, cross-ran…"
       },
       {
-        "hash": "19fcf320a679a642",
+        "hash": "8515c523b806c0cb",
         "label": "Identity. stats.fm has no OAuth: a user-scoped read need…"
       },
       {
@@ -3085,8 +3089,12 @@
         "label": "Taste-intelligence tools (statsfm canonical names; taste…"
       },
       {
-        "hash": "b1e3950f484ccc49",
+        "hash": "3f2db01a933feb7c",
         "label": "Canonical tools are statsfmtasteprofile, statsfmartistaf…"
+      },
+      {
+        "hash": "61e2aac6a9aa086e",
+        "label": "The legacy taste names were retired in v3.0 (#908). tast…"
       },
       {
         "hash": "b21d50b6f8290c51",
@@ -3751,7 +3759,7 @@
         "label": "Cookbook — copy-paste agent recipes"
       },
       {
-        "hash": "77c086349fb258ca",
+        "hash": "4749428a7c7e6971",
         "label": "Conventions: JSON tool args are shown inline; replace PL…"
       },
       {
@@ -4765,6 +4773,13 @@
     },
     {
       "file": "docs/cookbook.md",
+      "hash": "77c086349fb258ca",
+      "label": "Conventions: JSON tool args are shown inline; replace PL…",
+      "date": "2026-09-27",
+      "reason": "reworded by #889/#607/#908: the curated-default surface, the stats.fm opt-in and the retired taste_* aliases changed these paragraphs; the prose is present in its new form"
+    },
+    {
+      "file": "docs/cookbook.md",
       "hash": "bc40b051aa9710e4",
       "label": "1. Set SPOTIFYMCPREADONLY=1 (or use a host config with i…",
       "date": "2026-09-27",
@@ -4792,11 +4807,32 @@
       "reason": "reworded by upstream #1402 (two README claims the tree contradicted)"
     },
     {
+      "file": "README.md",
+      "hash": "e29b2c3d2727ae67",
+      "label": "| Variable | Example | Purpose | |---|---|---| | SPOTIFY…",
+      "date": "2026-09-27",
+      "reason": "reworded by #889/#607/#908: the curated-default surface, the stats.fm opt-in and the retired taste_* aliases changed these paragraphs; the prose is present in its new form"
+    },
+    {
+      "file": "SPEC.md",
+      "hash": "19fcf320a679a642",
+      "label": "Identity. stats.fm has no OAuth: a user-scoped read need…",
+      "date": "2026-09-27",
+      "reason": "reworded by #889/#607/#908: the curated-default surface, the stats.fm opt-in and the retired taste_* aliases changed these paragraphs; the prose is present in its new form"
+    },
+    {
       "file": "SPEC.md",
       "hash": "7b610616c97ccf11",
       "label": "spotify-mcp/ ├── src/ │ ├── index.ts # MCP server entry …",
       "date": "2026-09-27",
       "reason": "manifest was generated against a tree older than fb324933; the prose is present in the current files in a reworded layout, and README.md and docs/cookbook.md are byte-identical to fb324933"
+    },
+    {
+      "file": "SPEC.md",
+      "hash": "b1e3950f484ccc49",
+      "label": "Canonical tools are statsfmtasteprofile, statsfmartistaf…",
+      "date": "2026-09-27",
+      "reason": "reworded by #889/#607/#908: the curated-default surface, the stats.fm opt-in and the retired taste_* aliases changed these paragraphs; the prose is present in its new form"
     },
     {
       "file": "SPEC.md",

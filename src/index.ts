@@ -2,7 +2,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { runAuthFlow, loadTokens, getTokenFilePath, parseAuthArgs } from './auth.js';
 import { SpotifyClient } from './client.js';
-import { initConfig, renderEnvHelp } from './config.js';
+import { initConfig, renderEnvHelp, statsfmEnv } from './config.js';
 import {
   applyToolAnnotations,
   assertAggregateSurfaceBudget,
@@ -14,7 +14,7 @@ import {
   registerManifestModules,
   readOnlyModeEnabled,
 } from './tools/annotations.js';
-import { TOOLSETS, resolveToolsets, assertToolsetsUsable, isModuleActive, resolveToolOverrides, toolsetEnvHelp } from './toolsets.js';
+import { TOOLSETS, resolveToolsets, assertToolsetsUsable, isModuleActive, resolveToolOverrides, toolsetEnvHelp, STATSFM_REGISTRATION_KEYS, DEFAULT_TOOLSETS } from './toolsets.js';
 import { moduleBlockedByScopes, scopesFor } from './scopefilter.js';
 import { DERIVED_ANALYTICS_TOOLS, derivedAnalyticsEnabled } from './derivedanalytics.js';
 import { createRequire } from 'node:module';
@@ -77,7 +77,8 @@ async function startMcpServer(): Promise<void> {
   installTruncationBoundary(server);
 
   // Toolset segmentation (#95): SPOTIFY_MCP_TOOLSETS=playlists,player,... trims
-  // the registered surface for clients that cap tool counts. Default: all.
+  // the registered surface for clients that cap tool counts. Default: the
+  // curated `core` surface (#889); `all` is the whole thing.
   const toolsetsSpec = process.env.SPOTIFY_MCP_TOOLSETS;
   const { sets: activeSets, unknown } = resolveToolsets(toolsetsSpec);
   // Unknown-only specs fail loud (#910); mixed specs keep starting.
@@ -94,12 +95,33 @@ async function startMcpServer(): Promise<void> {
   for (const name of unknownOverrides.disable) {
     console.error(`[spotify-mcp] Unknown SPOTIFY_MCP_DISABLE_TOOLS entry ignored: ${name}`);
   }
+  // The stats.fm families are off by default (#607): 49 tools across the
+  // `statsfm`, `taste` and `tastecomposites` keys that need a separate
+  // stats.fm username, advertised to every user whether or not they have one.
+  // SPOTIFY_MCP_STATSFM=1 is the one-word opt-in, and it rides the ENABLE path
+  // rather than inventing a second gate, so an explicit
+  // SPOTIFY_MCP_DISABLE_TOOLS=statsfm still wins over it — the same precedence
+  // every other registration key obeys.
+  if (statsfmEnv()) {
+    for (const key of STATSFM_REGISTRATION_KEYS) enable.add(key);
+    console.error('[spotify-mcp] SPOTIFY_MCP_STATSFM is set — the stats.fm families are registered');
+  }
   const overrides = { enable, disable };
   if (unknown.length > 0) {
     console.error(`[spotify-mcp] unknown toolset(s) ignored: ${unknown.join(', ')} — registered ${activeSets.size} toolset(s): ${[...activeSets].sort().join(', ')} — ${toolsetEnvHelp()}`);
   }
   if (activeSets.size < Object.keys(TOOLSETS).length) {
     console.error(`[spotify-mcp] active toolsets: ${[...activeSets].sort().join(', ')}`);
+  }
+  // The curated default is a change an operator has to be able to see, not a
+  // silent trim: without this line, a user whose integration lost a tool has
+  // nothing in the startup log to grep for. `spotify_doctor` reports the same
+  // thing to a running session, but stderr is what gets pasted into a bug.
+  if ((toolsetsSpec ?? '').trim() === '') {
+    console.error(
+      `[spotify-mcp] SPOTIFY_MCP_TOOLSETS is unset — registering the default surface ` +
+      `(${DEFAULT_TOOLSETS.join(', ')}). Set SPOTIFY_MCP_TOOLSETS=all for every tool.`,
+    );
   }
 
   const client = new SpotifyClient();

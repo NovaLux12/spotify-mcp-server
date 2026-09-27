@@ -2,8 +2,13 @@
  * Toolsets (#95): coarse-grained grouping of registration entry points so an
  * operator can trim the server's exposed surface via
  * `SPOTIFY_MCP_TOOLSETS` (e.g. "playback,library" for a car dashboard, or
- * "catalog,personalization" for a read-only recommender). Unset/empty/'all'
- * keeps today's behaviour — everything registered.
+ * "catalog,personalization" for a read-only recommender).
+ *
+ * The DEFAULT is curated, not everything (#889): unset used to register the whole
+ * registry — ~600 KB of schema — before the host's first user message. Unset now
+ * registers {@link DEFAULT_TOOLSETS}; `SPOTIFY_MCP_TOOLSETS=all` is the
+ * documented way back to the full surface, so this is a default change and not
+ * a removal.
  *
  * A set maps to REGISTRATION KEYS (the registerXxx call sites in index.ts),
  * not individual tool names: gating happens at registration time.
@@ -15,7 +20,7 @@
 
 // BEGIN:generated surface-census
 // Production surface (generated; run `npm run count:tools -- --write` after registry changes):
-// 578 tools, 17 fixed resources, 47 resource templates, and 14 prompts.
+// 570 tools, 17 fixed resources, 47 resource templates, and 14 prompts.
 // END:generated surface-census
 
 /**
@@ -54,7 +59,7 @@
  *                     tools/exhaust2_misc.ts, tools/swarm3_library.ts (library hygiene)
  *   personalization → tools/personalization.ts (top artists/tracks/recently played) + tools/swarm3_analytics.ts (listening analytics)
  *   statsfm         → tools/statsfm.ts          (third-party stats.fm API, read-only)
- *   taste           → tools/statsfm_taste.ts    (canonical statsfm_taste_* tools + legacy taste_* aliases: stats.fm taste intelligence, read-only, no auth)
+ *   taste           → tools/statsfm_taste.ts    (canonical statsfm_taste_* tools: stats.fm taste intelligence, read-only, no auth)
  *                     tools/taste_composites.ts (composites, no auth; read-only except taste_to_playlist, which writes only when dry_run=false)
  *   discovery       → tools/swarm3_meta.ts      (find_tool, inspect_tool, toolset_report) — also in catalog for compat
  *   accounts        → tools/accounts.ts         (list_accounts + switch_account) — also in core
@@ -63,10 +68,16 @@
  */
 export const TOOLSETS: Record<string, readonly string[]> = {
   // The day-to-day surface: search, playback controls, playlist read/write,
-  // library read/write, following — the practical answer to the 153 KB payload
-  // (#565) until the default flips in v2. Discovery tools and spotify_doctor
-  // register unconditionally.
-  core: ['search', 'playback', 'playlists', 'playlistbatch', 'playlistmisc', 'library', 'following', 'users', 'portability', 'statsfm', 'swarm3meta', 'accounts'],
+  // library read/write, following. This is the DEFAULT (#889) — a server started
+  // with no env registers this and nothing else. Discovery tools and
+  // spotify_doctor register unconditionally.
+  //
+  // `statsfm` was here until #607. It is a third-party API needing a separate
+  // stats.fm username, and it was 30 tools of the default list that fail or
+  // return nothing for every user who has not configured STATSFM_USER_ID.
+  // `SPOTIFY_MCP_TOOLSETS=taste,statsfm` or `SPOTIFY_MCP_STATSFM=1` brings it
+  // back.
+  core: ['search', 'playback', 'playlists', 'playlistbatch', 'playlistmisc', 'library', 'following', 'users', 'portability', 'swarm3meta', 'accounts'],
   playback: ['playback', 'queueops', 'playbackext', 'playbackintel', 'exhaust2playback', 'swarm3playback'],
   playbackintel: ['playbackintel'],
   catalog: ['search', 'catalog', 'audiobooks', 'browse', 'artistwatch', 'searchhistory', 'exhaust2catalog', 'exhaust2enggating', 'swarm3discovery', 'swarm3bdiscovery', 'swarm3shows', 'swarm3refs', 'swarm3meta'],
@@ -89,6 +100,45 @@ export const TOOLSETS: Record<string, readonly string[]> = {
 /** Every registration key covered by at least one set ('all' semantics). */
 const ALL_KEYS: readonly string[] = Object.values(TOOLSETS).flat();
 
+/**
+ * The sets registered when `SPOTIFY_MCP_TOOLSETS` is unset, empty, or
+ * whitespace (#889).
+ *
+ * Unset used to mean "everything", which meant the first `tools/list` a host
+ * saw carried the entire registry — ~600 KB of schema — before the user had
+ * typed anything. `SPOTIFY_MCP_TOOLSETS=all` is the documented way back to the
+ * full surface, so this is a default change and not a removal: nothing an
+ * operator can reach today becomes unreachable, and the payload a host pays per
+ * session drops by roughly three quarters.
+ *
+ * `resources` and `prompts` are in the default because they cost no tool-schema
+ * context — they are separate MCP surfaces, none of which appear in the tool
+ * budget. Trimming them would take away real capabilities and buy back nothing.
+ * Their counts are the generated block above, not a hand-typed figure: main
+ * moves them, and this comment once went stale quoting a fork-point number.
+ *
+ * The set names are validated against {@link TOOLSETS} rather than trusted, so
+ * a typo here fails a test instead of silently registering less than intended.
+ */
+export const DEFAULT_TOOLSETS: readonly string[] = Object.freeze(['core', 'resources', 'prompts']);
+
+/**
+ * The registration keys that make up the stats.fm surface (#607).
+ *
+ * Listed here rather than in `index.ts` because this is a property of the
+ * toolset map — the names are only valid because they appear in
+ * {@link TOOLSETS} — and `tests/toolsets.test.ts` checks every entry against
+ * `allRegistrationKeys`. A key that drifts out of the map fails there.
+ *
+ * `taste_playlist` is absent because it is not a registration key: its manifest
+ * entry registers under `tastecomposites`, so enabling that key brings it along.
+ */
+export const STATSFM_REGISTRATION_KEYS: readonly string[] = Object.freeze([
+  'statsfm',
+  'taste',
+  'tastecomposites',
+]);
+
 /** Reverse index: registration key → the sets that enable it. */
 const KEY_TO_SETS: Record<string, readonly string[]> = (() => {
   const map: Record<string, string[]> = {};
@@ -105,7 +155,7 @@ const KEY_TO_SETS: Record<string, readonly string[]> = (() => {
  * any unrecognized names. Never throws: unknown names are collected so the
  * caller can warn; they simply don't activate anything.
  *
- * - undefined / empty / whitespace-only → every set
+ * - undefined / empty / whitespace-only → {@link DEFAULT_TOOLSETS} (#889)
  * - 'all' alone or mixed in ("catalog,all") → every set
  * - matching is case-insensitive ("Playback, LIBRARY" works)
  */
@@ -116,8 +166,15 @@ export function resolveToolsets(spec: string | undefined): { sets: Set<string>; 
     .map((t) => t.trim().toLowerCase())
     .filter((t) => t.length > 0);
 
-  if (tokens.length === 0 || tokens.includes('all')) {
+  // `all` is checked BEFORE the empty case, not after: "catalog,all" must still
+  // be the whole surface, and it is the only way back to it now that unset
+  // means the curated default.
+  if (tokens.includes('all')) {
     return { sets: new Set(names), unknown: [] };
+  }
+
+  if (tokens.length === 0) {
+    return { sets: new Set(DEFAULT_TOOLSETS), unknown: [] };
   }
 
   const known: Record<string, true> = {};
@@ -228,7 +285,7 @@ export function toolsetEnvHelp(): string {
   const names = Object.keys(TOOLSETS).join(',');
   return (
     `SPOTIFY_MCP_TOOLSETS=<sets> — comma-separated subsets of ${names}; ` +
-    `'all' or unset registers everything. ` +
+    `unset registers the default (${DEFAULT_TOOLSETS.join(',')}), 'all' registers everything. ` +
     `Unknown-only specs fail startup; mixed specs ignore unknown names.`
   );
 }

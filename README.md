@@ -9,8 +9,10 @@ Spotify Web API MCP: playback, library, playlists, search, podcasts. Not affilia
 
 A broad Spotify Web API tool surface, plus extras most servers skip. Registration-gated wrappers are explained rather than hidden; see [Registration-gated endpoints](#registration-gated-endpoints) for the generated list.
 
+**What you get by default, and what to do about the rest.** A server started with no environment registers a curated surface — search, playback, playlists, library, following — sized so the tool list does not dominate the context window before you have typed anything. `SPOTIFY_MCP_TOOLSETS=all` registers the entire registry instead, and the stats.fm tools are opt-in with `SPOTIFY_MCP_STATSFM=1`. Both are one line in [docs/configuration.md](docs/configuration.md#toolsets-and-registration-keys).
+
 <!-- BEGIN:generated surface-census -->
-The finalized default MCP registry exposes **578 tools**, **17 fixed resources**, **47 resource templates**, and **14 prompts**. Toolsets and production gates can trim a configured host; these totals describe the default production `tools/list` after finalizers.
+A server started with no `SPOTIFY_MCP_TOOLSETS` registers **128 tools** (139,718 bytes of schema) — the curated default surface (#889). `SPOTIFY_MCP_TOOLSETS=all` registers all **570 tools**, along with **17 fixed resources**, **47 resource templates**, and **14 prompts**. Toolsets and production gates can trim a configured host further; both figures describe a real production `tools/list` after finalizers.
 <!-- END:generated surface-census -->
 
 ---
@@ -150,7 +152,8 @@ All via env vars — no config file. Only `SPOTIFY_CLIENT_ID` is required.
 
 | Variable | Example | Purpose |
 |---|---|---|
-| `SPOTIFY_MCP_TOOLSETS` | `playback,catalog` | Trim by group for hosts that cap tool counts; unset or `all` registers everything. |
+| `SPOTIFY_MCP_TOOLSETS` | `all` | Trim by group for hosts that cap tool counts. Unset registers the curated default surface; `all` registers everything. |
+| `SPOTIFY_MCP_STATSFM` | `1` | Register the 49 stats.fm tools. Off by default — they need a separate stats.fm username. |
 | `SPOTIFY_MCP_READONLY` | `1` | Hide write-capable modules; read-only resources and prompts remain available. |
 | `SPOTIFY_MCP_HISTORY` | `1` | Log mutations to JSONL for undo and audit. |
 | `SPOTIFY_MCP_RECEIPTS` | `1` | Persist mutation receipts so `verify_receipt`/`undo_mutation` survive a restart. |

@@ -8,6 +8,9 @@ import { fileURLToPath } from 'node:url';
 
 import {
   TOOLSETS,
+  DEFAULT_TOOLSETS,
+  STATSFM_REGISTRATION_KEYS,
+  allRegistrationKeys,
   assertToolsetsUsable,
   resolveToolsets,
   resolveToolOverrides,
@@ -231,17 +234,35 @@ describe('TOOLSETS coverage', () => {
 describe('resolveToolsets', () => {
   const allSets = new Set(Object.keys(TOOLSETS));
 
-  it('defaults to every set for undefined', () => {
-    assert.deepEqual(resolveToolsets(undefined).sets, allSets);
+  // #889: unset used to mean "every set", which meant a host with no env paid
+  // for all 581 tools. The default is now the curated surface, and `all` is the
+  // way back. Both directions are asserted: a test that only checked the
+  // default would keep passing if someone restored the old behaviour, and one
+  // that only checked `all` would keep passing if someone broke the opt-out and
+  // made the curated set the only surface there is.
+  it('defaults to the curated surface for undefined', () => {
+    assert.deepEqual(resolveToolsets(undefined).sets, new Set(DEFAULT_TOOLSETS));
     assert.deepEqual(resolveToolsets(undefined).unknown, []);
+    assert.notDeepEqual(resolveToolsets(undefined).sets, allSets);
   });
 
-  it('defaults to every set for empty/whitespace specs', () => {
+  it('defaults to the curated surface for empty/whitespace specs', () => {
     for (const spec of ['', '   ', ',,,']) {
       const { sets, unknown } = resolveToolsets(spec);
-      assert.deepEqual(sets, allSets, `spec: ${JSON.stringify(spec)}`);
+      assert.deepEqual(sets, new Set(DEFAULT_TOOLSETS), `spec: ${JSON.stringify(spec)}`);
       assert.deepEqual(unknown, []);
     }
+  });
+
+  it('names only sets that exist, and keeps the default out of `all`', () => {
+    for (const name of DEFAULT_TOOLSETS) {
+      assert.ok(Object.hasOwn(TOOLSETS, name), `default toolset ${name} is not in TOOLSETS`);
+    }
+    // The default must be a strict subset: if it covered every set the
+    // `SPOTIFY_MCP_TOOLSETS=all` opt-out would be a lie, since the docs promise
+    // it restores tools the default leaves out.
+    assert.ok(DEFAULT_TOOLSETS.length < Object.keys(TOOLSETS).length);
+    for (const name of DEFAULT_TOOLSETS) assert.ok(allSets.has(name));
   });
 
   it("'all' alone yields every set", () => {
@@ -377,6 +398,52 @@ describe('resolveToolOverrides', () => {
     );
     assert.deepEqual([...enable], ['personalization']);
     assert.deepEqual(unknown.enable.sort(), ['constructor', 'tostring']);
+  });
+});
+
+describe('stats.fm opt-in (#607)', () => {
+  const keys = allRegistrationKeys;
+  const defaultSets = resolveToolsets(undefined).sets;
+
+  it('names only real registration keys', () => {
+    // Otherwise `SPOTIFY_MCP_STATSFM=1` would enable nothing and the
+    // configuration would fail silently — the failure mode #910 exists to
+    // prevent for toolset names, applied here to the flag that replaced them.
+    for (const key of STATSFM_REGISTRATION_KEYS) {
+      assert.ok(keys.includes(key), `${key} is not a registration key in TOOLSETS`);
+    }
+  });
+
+  it('registers no stats.fm family by default', () => {
+    for (const key of STATSFM_REGISTRATION_KEYS) {
+      assert.equal(
+        isModuleActive(key, defaultSets, resolveToolOverrides(undefined, undefined)),
+        false,
+        `${key} is active in the default surface`,
+      );
+    }
+  });
+
+  it('brings every family back through the enable path alone', () => {
+    const overrides = resolveToolOverrides(STATSFM_REGISTRATION_KEYS.join(','), undefined);
+    assert.deepEqual(overrides.unknown.enable, []);
+    for (const key of STATSFM_REGISTRATION_KEYS) {
+      assert.equal(isModuleActive(key, defaultSets, overrides), true);
+    }
+  });
+
+  it('lets an explicit disable beat the opt-in', () => {
+    // SPOTIFY_MCP_STATSFM=1 rides the ordinary enable path, so it inherits the
+    // same precedence. An operator who turns the family on and then disables
+    // one key must get the disable, or the flag would be a bypass of a gate
+    // rather than a use of it.
+    const overrides = resolveToolOverrides(STATSFM_REGISTRATION_KEYS.join(','), 'taste');
+    assert.equal(isModuleActive('statsfm', defaultSets, overrides), true);
+    assert.equal(isModuleActive('taste', defaultSets, overrides), false);
+  });
+
+  it('is not reachable through `core`', () => {
+    assert.equal(isModuleActive('statsfm', resolveToolsets('core').sets), false);
   });
 });
 
