@@ -75,9 +75,11 @@ import {
   OUTPUT_SCHEMA_FAMILIES,
   PENDING_OUTPUT_SCHEMA_MODULES,
   PROSE_ONLY_MODULES,
+  installTruncationBoundary,
   listStructuredContent,
   paginationInfo,
 } from '../src/shaping.js';
+import { requiredConfirmationRefusal } from '../src/tools/confirm.js';
 import { withMarketSource } from '../src/markets.js';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -465,26 +467,62 @@ describe('#687 the declared families describe what the emitters really produce',
     // `installTruncationBoundary`, not by a tool module, so a type drift there
     // would break every declared list tool at once and would not show up in a
     // test that only fed it `listStructuredContent` output.
-    const parsed = await safeParseAsync(ListOutput, {
-      items: [{ uri: 'spotify:track:1' }],
-      truncated: true,
-      returned: 20,
-      total: 57,
-      remaining: 37,
-    });
+    //
+    // The payload below is therefore produced BY the boundary rather than typed
+    // out beside it. The first version of this test parsed a hand-written
+    // literal, which is the exact copy this repository's notes call out: it
+    // asserted that a shape someone imagined matches a schema, and a change to
+    // `installTruncationBoundary` — the very thing the test is named for —
+    // would have left it green.
+    const server = new McpServer({ name: 'output-schema-list-boundary', version: '0.0.0' });
+    const boundary = installTruncationBoundary(server);
+    server.registerTool(
+      'probe_boundary_list',
+      { inputSchema: { max_results: z.number().optional() } },
+      async () => ({ content: [{ type: 'text', text: '' }] }),
+    );
+
+    const items = Array.from({ length: 57 }, (_, index) => ({ uri: `spotify:track:${index}` }));
+    const shaped = boundary.shape(
+      'probe_boundary_list',
+      { max_results: 20 },
+      {
+        content: [{ type: 'text', text: 'ok' }],
+        structuredContent: listStructuredContent(items, { total: 57, offset: 0, limit: 20, returned: 20, next_offset: null }),
+      },
+    ) as { structuredContent?: Record<string, unknown> };
+
+    // The boundary must actually have done the work, or the assertion below is
+    // testing a payload nobody produced.
+    assert.equal(shaped.structuredContent?.truncated, true, 'the boundary did not truncate');
+    assert.equal(shaped.structuredContent?.total, 57);
+
+    const parsed = await safeParseAsync(ListOutput, shaped.structuredContent);
     assert.ok(parsed.success, `boundary metadata rejected: ${JSON.stringify(parsed)}`);
   });
 
-  it('MutationOutput accepts a real confirmation refusal', async () => {
-    // The payload `requiredConfirmationRefusal` builds for every gated write
+  it('MutationOutput accepts every real confirmation refusal', async () => {
+    // The payloads `requiredConfirmationRefusal` builds for every gated write
     // (`src/tools/confirm.ts`), which is the most common non-success result a
-    // declared mutation tool returns.
-    const parsed = await safeParseAsync(MutationOutput, {
-      ok: false,
-      cancelled: true,
-      reason: 'confirmation_unavailable',
-    });
-    assert.ok(parsed.success, `refusal payload rejected: ${JSON.stringify(parsed)}`);
+    // declared mutation tool returns. Driven from the real function across all
+    // three refusing verdicts: a hand-written literal here proved nothing about
+    // the emitter, because mutating `refusalFor`'s payload left the test green.
+    const previous = process.env.SPOTIFY_MCP_CONFIRM;
+    delete process.env.SPOTIFY_MCP_CONFIRM;
+    try {
+      for (const verdict of ['unsupported', 'declined', 'error'] as const) {
+        const refusal = requiredConfirmationRefusal(verdict);
+        assert.ok(refusal, `${verdict} must refuse — it is not a confirmation`);
+        const parsed = await safeParseAsync(MutationOutput, refusal.payload);
+        assert.ok(parsed.success, `${verdict} refusal rejected: ${JSON.stringify(parsed)}`);
+      }
+      // `confirmed` is the one verdict that is not a refusal, and a family that
+      // accepted it would be asserting nothing about the refusal shape.
+      assert.equal(requiredConfirmationRefusal('confirmed'), null);
+    } finally {
+      if (previous === undefined) delete process.env.SPOTIFY_MCP_CONFIRM;
+      else process.env.SPOTIFY_MCP_CONFIRM = previous;
+    }
   });
 
   it('MutationOutput rejects a wrong-typed receipt', async () => {
@@ -766,8 +804,6 @@ describe('#687 the acceptance criterion the issue states', () => {
     // at all — silently, with the tool counted as declared. Asserting the
     // family type is what closes that hole without calling the projection.
     for (const [name, family] of Object.entries(OUTPUT_SCHEMA_FAMILIES)) {
-      const parsed = z.object({}).safeParse;
-      assert.equal(typeof parsed, 'function', `precondition: ${name} is a zod schema`);
       assert.ok(
         family instanceof z.ZodType,
         `${name} must be a zod schema; anything else projects to no outputSchema at all`,
