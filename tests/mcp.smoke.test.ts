@@ -11,11 +11,12 @@ import './helpers/hermetic.js';
 
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
 import { mkdtemp, writeFile, readFile, rm, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { armFileDeadline } from './helpers/file-deadline.js';
 import { hermeticServerEnv, StdioJsonRpcChild } from './helpers/stdio-child.js';
+import { execFileBounded } from './helpers/subprocess-outcome.js';
 
 const REPO_ROOT = join(import.meta.dirname, '..');
 
@@ -104,17 +105,103 @@ const KNOWN_ERROR_KINDS = [
  *     `SPOTIFY_MCP_TOKEN_FILE` or `SPOTIFY_MCP_READONLY` can no longer reach a
  *     child, and the real `~/.spotify-mcp` is unreachable by construction
  *     rather than by a token file happening to point elsewhere.
+ *
+ * ## And what #1365 added, after all of that
+ *
+ * The watchdog above was armed in `before()` and cleared in `after()`, so it
+ * bounded the handshake and nothing else — and `npm test` passes no
+ * `--test-timeout`, so the runner's own default is unbounded. Four runs of this
+ * file were reported sitting at 0.0 % CPU for 47–60 minutes. Two independent
+ * causes, both fixed rather than papered over:
+ *
+ *   1. **A reaped child still held its pipes.** `dispose()` ended the child and
+ *      released none of its stdio streams, so an inherited descriptor kept a
+ *      `PipeWrap` in the event loop forever and the file could not drain. Fixed
+ *      in `StdioJsonRpcChild.dispose()`, and reproduced and pinned in
+ *      `tests/file-deadline.test.ts`.
+ *   2. **Nothing bounded the file.** Now `armFileDeadline` at module scope, with
+ *      no way to clear it, plus a `timeout` on the synchronous `npm pack` that a
+ *      timer cannot reach. Details and measurements at the `FILE_BUDGET_MS`
+ *      comment below and in `tests/helpers/file-deadline.ts`.
  */
 
 let client: StdioJsonRpcChild;
 let tokenFile = '';
 let tempDir = '';
-// Hard watchdog: the server under test is a separate OS process whose internal
-// timers cannot be faked from here, so a real deadline is required to fail
-// fast instead of hanging CI if the child wedges. Kept as a whole-file bound on
-// top of the per-request one the helper installs; on fire it kills the child by
-// PID, so the harness reports the death by signal instead of by timer.
-let watchdog: NodeJS.Timeout | undefined;
+
+/**
+ * Every child this file spawns, live or reaped, so the whole-file deadline can
+ * name and reap all of them rather than only the one from `before()`.
+ *
+ * The old watchdog held a single `client` and was cleared by `after()`; the two
+ * children spawned inside tests below (the packed entry and the read-only
+ * surface) were outside its reach entirely.
+ */
+const spawned: StdioJsonRpcChild[] = [];
+
+/** Spawn a child and register it with the whole-file deadline. */
+function spawnTracked(options: Parameters<typeof StdioJsonRpcChild.spawn>[0]): StdioJsonRpcChild {
+  const child = StdioJsonRpcChild.spawn(options);
+  spawned.push(child);
+  return child;
+}
+
+/**
+ * The whole-file bound (#1365).
+ *
+ * ## Why this replaced the 30 s watchdog rather than being raised
+ *
+ * The watchdog this replaces was armed in `before()` and cleared at the top of
+ * `after()`, so it bounded the handshake and nothing else — and `npm test` runs
+ * the runner with no `--test-timeout`, so nothing else bounded the file either.
+ * Four runs were reported sitting here for 47–60 minutes at **0.0 % CPU**:
+ * blocked, not slow.
+ *
+ * The fix is not a bigger number. The repo's own measurement is `initialize:
+ * 2046ms` / `tools/list: 2125ms` under load ~48, so 30 s is already ~14x the real
+ * cost and the slack is deliberate; raising it adds no information and would
+ * still have been cleared by the same `after()`. What was missing was a bound
+ * that covers the whole file and that **nothing can switch off** — which is why
+ * this is armed here, at module scope, before any hook runs, and why
+ * `armFileDeadline` returns `void`: the old code's `clearTimeout(watchdog)` line
+ * *was* the bug, so there is deliberately nothing to clear.
+ *
+ * ## Why the budget is 5 minutes and not 30 seconds
+ *
+ * This file runs `npm pack`, whose `prepack` is a full `tsc`, and boots three
+ * real registry servers. Measured on this box: the whole file 3.75 s wall, of
+ * which `npm pack` is 1.08 s — but that same `npm pack` took 4.3 s minutes
+ * earlier at load ~48, and a `tsc` is exactly the kind of work whose cost
+ * multiplies under load. 5 minutes is ~80x the file's measured wall and ~13x
+ * the worst `npm pack` observed here, so it cannot fire on a slow-but-
+ * progressing run; it exists for the case where the event loop cannot drain
+ * *at all*, which no amount of patience distinguishes from a hang.
+ *
+ * The deadline cannot fire during `npm pack` — a synchronous child blocks the
+ * event loop, so no timer runs — which is why that call carries its own
+ * `timeout` in `PACK_TIMEOUT_MS` below. Two bounds because one mechanism cannot
+ * cover both; see `tests/helpers/file-deadline.ts`.
+ */
+const FILE_BUDGET_MS = 5 * 60_000;
+
+/**
+ * `npm pack`'s own budget, in addition to the whole-file one.
+ *
+ * `execFileSync` blocks the event loop, so the deadline above cannot run while
+ * it is on the stack (measured: a 200 ms timer did not fire until a 1.5 s
+ * `execFileSync` returned). `prepack` is a full `tsc`, so this is the only bound
+ * that covers it. It is deliberately the same 5 minutes as `FILE_BUDGET_MS`:
+ * the two bounds do not stack, because the whole-file timer cannot run while
+ * this call is blocking. Total wall time for the file is therefore bounded by
+ * roughly the larger of the two rather than by their sum.
+ */
+const PACK_TIMEOUT_MS = 5 * 60_000;
+
+armFileDeadline({
+  label: 'tests/mcp.smoke.test.ts',
+  budgetMs: FILE_BUDGET_MS,
+  children: () => spawned,
+});
 
 before(async () => {
   tempDir = await mkdtemp(join(tmpdir(), 'spotify-mcp-smoke-'));
@@ -127,7 +214,7 @@ before(async () => {
   tokenFile = join(tempDir, 'tokens.json');
   await writeFile(tokenFile, JSON.stringify(tokenFixture), { mode: 0o600 });
 
-  client = StdioJsonRpcChild.spawn({
+  client = spawnTracked({
     label: 'mcp-smoke',
     command: 'node',
     args: ['--import', 'tsx', 'src/index.ts'],
@@ -135,13 +222,11 @@ before(async () => {
     env: hermeticServerEnv({ SPOTIFY_MCP_TOKEN_FILE: tokenFile }, 'smoke').env,
   });
 
-  watchdog = setTimeout(() => {
-    // Kill rather than fail: a real child-death then produces a named failure
-    // (signal, pid, stderr, host pressure) instead of a bare timeout.
-    client.killNow();
-  }, 30_000);
-
   // Handshake: initialize → initialized notification → protocol ready.
+  //
+  // No file-level timer guards this any more. The per-request watchdog the
+  // helper installs bounds it, and a child that dies during the handshake
+  // rejects this call naming the signal and PID rather than being timed out.
   const init = await client.initialize('mcp-smoke-test');
   assert.equal(
     (init.result?.serverInfo as { name?: string } | undefined)?.name,
@@ -152,10 +237,18 @@ before(async () => {
 });
 
 after(async () => {
-  clearTimeout(watchdog);
-  if (client) {
-    client.notify('notifications/exit'); // polite shutdown hint; ignored by older servers
-    await client.dispose();
+  // Every child, not just the one from `before()`: the packed entry and the
+  // read-only surface are spawned inside tests, and either could be the one
+  // still holding the event loop open. `dispose()` is idempotent and releases
+  // each child's streams, so the file drains instead of lingering on a
+  // `PipeWrap` (#1365).
+  for (const child of spawned) {
+    try {
+      child.notify('notifications/exit'); // polite shutdown hint; ignored by older servers
+    } catch {
+      // stdin already closed, or the child is gone. Nothing to be polite about.
+    }
+    await child.dispose();
   }
   await rm(tempDir, { recursive: true, force: true }).catch(() => {});
 });
@@ -284,13 +377,22 @@ describe('MCP stdio smoke (real src/index.ts)', () => {
 
 describe('npm package artifact', () => {
   it('packs a shebanged dist entry that starts and initializes', async () => {
-    const packOutput = execFileSync('npm', ['pack', '--json', '--pack-destination', tempDir], {
-      cwd: REPO_ROOT,
-      encoding: 'utf8',
-    });
+    // Bounded on both legs, and reported through #1335's vocabulary: a `tsc` that
+    // overruns here has to read as a killed subprocess, not as an opaque
+    // `spawnSync … ETIMEDOUT`. Neither call can be bounded by the file deadline,
+    // because a synchronous child blocks the event loop the deadline timer needs.
+    const packOutput = execFileBounded(
+      'npm',
+      ['pack', '--json', '--pack-destination', tempDir],
+      { label: 'npm pack', timeoutMs: PACK_TIMEOUT_MS, cwd: REPO_ROOT },
+    );
     const [{ filename }] = JSON.parse(packOutput) as Array<{ filename: string }>;
     const packageDir = join(tempDir, 'package');
-    execFileSync('tar', ['-xzf', join(tempDir, filename), '-C', tempDir]);
+    execFileBounded(
+      'tar',
+      ['-xzf', join(tempDir, filename), '-C', tempDir],
+      { label: 'tar -xzf (npm pack output)', timeoutMs: PACK_TIMEOUT_MS, cwd: REPO_ROOT },
+    );
 
     const packedEntry = join(packageDir, 'dist', 'index.js');
     const firstLine = (await readFile(packedEntry, 'utf8')).split('\n', 1)[0];
@@ -300,7 +402,7 @@ describe('npm package artifact', () => {
     // installed dependencies so this test remains offline while exercising the
     // actual packed entry point.
     await symlink(join(REPO_ROOT, 'node_modules'), join(packageDir, 'node_modules'), 'dir');
-    const packagedClient = StdioJsonRpcChild.spawn({
+    const packagedClient = spawnTracked({
       label: 'mcp-package-smoke',
       command: process.execPath,
       args: [packedEntry],
@@ -324,7 +426,7 @@ describe('npm package artifact', () => {
 
 describe('SPOTIFY_MCP_READONLY hides write-capable modules (#579)', () => {
   it('exposes no writer tools and a strictly smaller surface', async () => {
-    const readOnlyClient = StdioJsonRpcChild.spawn({
+    const readOnlyClient = spawnTracked({
       label: 'mcp-readonly-smoke',
       command: 'node',
       args: ['--import', 'tsx', 'src/index.ts'],
