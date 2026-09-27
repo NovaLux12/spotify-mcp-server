@@ -1875,8 +1875,73 @@ The `account` row names the acting account's `account_id`, its `id`, its `displa
 MCP Resources expose read-only data as URIs Claude can reference. Fixed resources and template inventories are generated from the live registry:
 
 <!-- BEGIN:generated resource-surface -->
-The finalized default registry contains **16 fixed resources** and **33 resource templates**. Fixed URIs: `spotify://me`, `spotify://me/followed/artists`, `spotify://me/genre-heatmap`, `spotify://me/listening-history`, `spotify://me/playlists`, `spotify://me/rate-limit`, `spotify://me/recently-played`, `spotify://me/saved/albums`, `spotify://me/saved/audiobooks`, `spotify://me/saved/episodes`, `spotify://me/saved/shows`, `spotify://me/saved/tracks`, `spotify://me/top/artists`, `spotify://me/top/tracks`, `spotify://player/queue`, `spotify://player/state`. Template URIs: `spotify://album/{id}`, `spotify://album/{id}{+qs}`, `spotify://artist/{id}`, `spotify://artist/{id}/albums`, `spotify://artist/{id}/albums{+qs}`, `spotify://artist/{id}{+qs}`, `spotify://episode/{id}`, `spotify://episode/{id}{+qs}`, `spotify://me/followed/artists{?format}`, `spotify://me/genre-heatmap{?format}`, `spotify://me/listening-history{?format}`, `spotify://me/playlists{?format}`, `spotify://me/rate-limit{?format}`, `spotify://me/recently-played{?format}`, `spotify://me/saved/albums{?format}`, `spotify://me/saved/audiobooks{?format}`, `spotify://me/saved/episodes{?format}`, `spotify://me/saved/shows{?format}`, `spotify://me/saved/tracks{+qs}`, `spotify://me/saved/tracks{?format,offset,limit}`, `spotify://me/top/artists{?format}`, `spotify://me/top/tracks{?format}`, `spotify://me{?format}`, `spotify://player/queue{?format}`, `spotify://player/state{?format}`, `spotify://playlist/{id}`, `spotify://playlist/{id}/tracks`, `spotify://playlist/{id}/tracks{+qs}`, `spotify://playlist/{id}{+qs}`, `spotify://show/{id}`, `spotify://show/{id}{+qs}`, `spotify://track/{id}`, `spotify://track/{id}{+qs}`.
+The finalized default registry contains **17 fixed resources** and **47 resource templates**. Fixed URIs: `spotify://me`, `spotify://me/followed/artists`, `spotify://me/genre-heatmap`, `spotify://me/listening-history`, `spotify://me/playlists`, `spotify://me/rate-limit`, `spotify://me/recently-played`, `spotify://me/saved/albums`, `spotify://me/saved/audiobooks`, `spotify://me/saved/episodes`, `spotify://me/saved/shows`, `spotify://me/saved/tracks`, `spotify://me/top/artists`, `spotify://me/top/tracks`, `spotify://player/devices`, `spotify://player/queue`, `spotify://player/state`. Template URIs: `spotify://album/{id}`, `spotify://album/{id}{+qs}`, `spotify://artist/{id}`, `spotify://artist/{id}/albums`, `spotify://artist/{id}/albums{+qs}`, `spotify://artist/{id}{+qs}`, `spotify://audiobook/{id}`, `spotify://audiobook/{id}/chapters`, `spotify://audiobook/{id}/chapters{+qs}`, `spotify://audiobook/{id}{+qs}`, `spotify://chapter/{id}`, `spotify://chapter/{id}{+qs}`, `spotify://episode/{id}`, `spotify://episode/{id}{+qs}`, `spotify://me/followed/artists{?format}`, `spotify://me/genre-heatmap{?format}`, `spotify://me/listening-history{?format}`, `spotify://me/playlists{?format}`, `spotify://me/rate-limit{?format}`, `spotify://me/recently-played{+qs}`, `spotify://me/recently-played{?format,limit,after,before}`, `spotify://me/saved/albums{+qs}`, `spotify://me/saved/albums{?format,limit,offset}`, `spotify://me/saved/audiobooks{+qs}`, `spotify://me/saved/audiobooks{?format,limit,offset}`, `spotify://me/saved/episodes{+qs}`, `spotify://me/saved/episodes{?format,limit,offset}`, `spotify://me/saved/shows{+qs}`, `spotify://me/saved/shows{?format,limit,offset}`, `spotify://me/saved/tracks{+qs}`, `spotify://me/saved/tracks{?format,offset,limit}`, `spotify://me/top/artists{+qs}`, `spotify://me/top/artists{?format,time_range,limit,offset}`, `spotify://me/top/tracks{+qs}`, `spotify://me/top/tracks{?format,time_range,limit,offset}`, `spotify://me{?format}`, `spotify://player/devices{?format}`, `spotify://player/queue{?format}`, `spotify://player/state{?format}`, `spotify://playlist/{id}`, `spotify://playlist/{id}/tracks`, `spotify://playlist/{id}/tracks{+qs}`, `spotify://playlist/{id}{+qs}`, `spotify://show/{id}`, `spotify://show/{id}{+qs}`, `spotify://track/{id}`, `spotify://track/{id}{+qs}`.
 <!-- END:generated resource-surface -->
+
+### 6.1 Query parameters on paged resources
+
+A fixed resource that reads a paged endpoint accepts its window in the URI. The window travels on the URI because a resource read has no arguments field — the URI is the only thing a host controls — and because a host that polls `spotify://me/top/tracks?time_range=short_term&limit=5` can cache the answer against the URI it asked for.
+
+Each parameterised resource registers three entries, not one: the bare URI, a form-style template naming the parameters (`{?format,time_range,limit,offset}`), and a `{+qs}` catch-all.
+
+**The `{+qs}` catch-all is what routes the read; the `{?…}` template advertises it.** The MCP SDK's `UriTemplate` compiles a form-style expression to a *conjunctive, ordered* regex, which is stricter than RFC 6570:
+
+```
+spotify://me/top/tracks{?format,time_range,limit,offset}
+  →  ^spotify://me/top/tracks\?format=([^&]+)&time_range=([^&]+)&limit=([^&]+)&offset=([^&]+)$
+```
+
+Every named parameter must be present, and in declaration order. RFC 6570 would expand the expression with whatever is present; this implementation requires the whole set. So `spotify://me/top/tracks?time_range=short_term&limit=5` matches **neither** that template **nor** the bare URI, and a resource registered without a catch-all is unreachable. `{+qs}` compiles to `(.+)` and matches.
+
+The `{?…}` template is still registered and still earns its place: it is what `resources/templates/list` advertises, and its description is where the parameter set is documented for a host reading the listing. `tests/resources-603.test.ts` pins the SDK behaviour directly, so an SDK that relaxes this to true RFC 6570 turns that test red rather than making the difference quietly.
+
+**Pre-existing, not introduced here.** `spotify://me/saved/tracks` advertised `{?format,offset,limit}` and has only ever routed through its own `{+qs}` twin, for the same reason. Its advertised template was already decorative before #603.
+
+
+| Resource | Parameters | Upstream endpoint |
+|---|---|---|
+| `spotify://me/top/tracks` | `time_range`, `limit`, `offset` | `GET /me/top/tracks` |
+| `spotify://me/top/artists` | `time_range`, `limit`, `offset` | `GET /me/top/artists` |
+| `spotify://me/recently-played` | `limit`, `after`, `before` | `GET /me/player/recently-played` |
+| `spotify://me/saved/albums` | `limit`, `offset` | `GET /me/albums` |
+| `spotify://me/saved/shows` | `limit`, `offset` | `GET /me/shows` |
+| `spotify://me/saved/episodes` | `limit`, `offset` | `GET /me/episodes` |
+| `spotify://me/saved/audiobooks` | `limit`, `offset` | `GET /me/audiobooks` |
+| `spotify://me/saved/tracks` | `offset`, `limit` | `GET /me/tracks` (pre-existing) |
+
+**`spotify://me/recently-played` has no `offset`, and advertising one would break the read.** `GET /me/player/recently-played` is a cursor endpoint: the OpenAPI schema gives it `limit`, `after` and `before` and no `offset`. Spotify rejects an undeclared query parameter with a 400, so a resource that offered `?offset` here would fail rather than page. The forward cursor is the earliest `played_at` on the page just read, and the prose names it when a full page comes back — a full page means the walk stopped on `limit`, not that the history ended.
+
+**`time_range` is validated, not forwarded.** The schema carries no `enum` for it, only a description naming `long_term` / `medium_term` / `short_term`. A value outside that set is not sent: Spotify would answer 400, and a resource read failing on a typo is worse than one that reads the default.
+
+**A window is not a truncated walk, and does not borrow its disclosure.** The saved-library resources default to walking the whole library up to `SPOTIFY_MCP_FETCH_ALL_CAP` and reporting the walk's own verdict (`total`, `truncated`, `truncation_note`). Supplying `?limit` or `?offset` switches the read to a single paged request instead. The walk stays the default precisely because it is the reading that carries the #718 disclosure; a one-page read is not a truncated library, so the window path reports the API's own `total` and a continuation hint rather than a cap verdict it did not earn.
+
+`limit` is bounded to 1–50 and `offset` to ≥0 before forwarding, matching the tool schemas and the OpenAPI maxima. An unparseable value falls back to the endpoint default rather than failing the read.
+
+### 6.2 Audiobook and chapter templates
+
+`spotify://audiobook/{id}`, `spotify://audiobook/{id}/chapters` and `spotify://chapter/{id}` close the gap between a complete audiobook **tool** surface and a resource surface that had no audiobook URI at all.
+
+| Template | Endpoint | Parameters |
+|---|---|---|
+| `spotify://audiobook/{id}` | `GET /audiobooks/{id}` | `?market`, `?format=json` |
+| `spotify://audiobook/{id}/chapters` | `GET /audiobooks/{id}/chapters` | `?market`, `?limit` (1–50), `?offset`, `?format=json` |
+| `spotify://chapter/{id}` | `GET /chapters/{id}` | `?market`, `?format=json` |
+
+**The chapters pair registers before the bare audiobook pair.** `spotify://audiobook/{id}{+qs}` compiles to `(.+)`, so registered first it would swallow `spotify://audiobook/{id}/chapters`. This is the same ordering constraint that puts `artist-albums` ahead of `artist`, and it is why registration order in `src/resources/templates.ts` is a correctness property rather than a cosmetic one.
+
+`{id}` completions come from `/me/audiobooks` for the audiobook template, following the `artist-albums`/`show`/`episode` pattern. The chapter template has no suggester: `/me/audiobooks` yields audiobook ids, and a chapter's id is only reachable through `spotify://audiobook/{id}/chapters`.
+
+**The cards are the tool's cards.** The prose comes from `src/audiobookview.ts` — `audiobookDetailLines`, `chapterDetailLines`, `chapterListLine` — which `get_audiobook`, `get_chapter` and `get_audiobook_chapters` also call. The field reads that matter are not duplicated: the #639 removal of `publisher` (fall back to the edition, never print `Unknown publisher`), the #787 fact that the embedded `chapters` array is a fixed ten-row preview rather than the book's chapter list, and an absent or empty `narrators` array.
+
+`spotify://audiobook/{id}/chapters` reads **one page**, bounded to `limit` ≤ 50. The full-book walk is `get_audiobook_chapters` with `fetch_all`, and the prose footer says so when a page came back full.
+
+### 6.3 `spotify://player/devices`
+
+`spotify://player/devices` lists the Spotify Connect devices available to the account, live, with the active one flagged. It exists because device discovery is ambient state: without it, every playback command on a toolset-trimming host started with a `get_devices` call that cost a turn and quota to learn something that does not change between commands.
+
+It renders `id`, `name`, `type`, `is_active` and `volume_percent` through `deviceLine` in `src/devices.ts`, which `get_devices` also calls — so the two surfaces cannot drift on the #855 `volume_percent` guard, where the field is omitted on some devices and `null` on others. A volume-capable device with no reported level prints `volume: unknown`; one that cannot report volume at all prints no volume.
+
+The endpoint takes no query parameters (the OpenAPI schema declares none), so this resource has no `{?…}` template beyond the standard `?format=json` twin. `get_devices`'s tool description names the resource, so an agent that has the tool list can discover the cheaper read.
 
 
 ---

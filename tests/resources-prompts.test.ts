@@ -128,6 +128,7 @@ test('registers all #59 resource URIs plus format/json twins and templates', asy
     'spotify://me/saved/tracks',
     'spotify://me/top/artists',
     'spotify://me/top/tracks',
+    'spotify://player/devices',
     'spotify://player/queue',
     'spotify://player/state',
   ]);
@@ -136,9 +137,19 @@ test('registers all #59 resource URIs plus format/json twins and templates', asy
 
   const templates = await client.listResourceTemplates();
   const templateUris = templates.resourceTemplates.map((t) => t.uriTemplate).sort();
-  // Every fixed URI has a {?format} twin…
+  // Every fixed URI has a query twin. #603 widened the saved-library twins
+  // from {?format} to {?format,limit,offset} — the parameterised form that
+  // actually documents the set a host may build a URI from. `spotify://me`
+  // takes no parameters, so its twin is still the bare {?format}.
   assert.equal(templateUris.filter((u) => u === 'spotify://me{?format}').length, 1);
-  assert.equal(templateUris.filter((u) => u === 'spotify://me/saved/shows{?format}').length, 1);
+  assert.equal(templateUris.filter((u) => u === 'spotify://me/saved/shows{?format,limit,offset}').length, 1);
+  // #603: each parameterised resource also carries a {+qs} catch-all. The MCP
+  // SDK compiles {?a,b,c} to a CONJUNCTIVE, ORDERED regex, so
+  // `?limit=5` alone matches neither the {?…} template nor the bare URI — the
+  // {+qs} twin is the routing mechanism, not a belt-and-braces duplicate.
+  assert.equal(templateUris.filter((u) => u === 'spotify://me/saved/shows{+qs}').length, 1);
+  assert.equal(templateUris.filter((u) => u === 'spotify://me/top/tracks{+qs}').length, 1);
+  assert.equal(templateUris.filter((u) => u === 'spotify://me/top/tracks{?format,time_range,limit,offset}').length, 1);
   // …and playlist tracks exists bare + query-absorbing.
   assert.ok(templateUris.includes('spotify://playlist/{id}/tracks'));
   assert.ok(templateUris.includes('spotify://playlist/{id}/tracks{+qs}'));

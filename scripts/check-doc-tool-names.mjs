@@ -66,8 +66,10 @@ const parameterAllowlist = new Set([
   'releases_labelled', 'releases_without_label',
   // `time_range` enum members of the /me/top/* personalization tools. #807's
   // SPEC entry names them as the windows taste_shift_report compares, and as
-  // the two halves of the `window_sizes` it returns.
-  'short_term', 'long_term',
+  // the two halves of the `window_sizes` it returns. #603's resource
+  // parameters section names `medium_term` for the same reason: it is the
+  // documented default of the `?time_range` resource parameter, not a tool.
+  'short_term', 'long_term', 'medium_term',
   // #602: the account registry's own vocabulary. `account_id` and
   // `display_name` are the two keys the acting-account echo adds to EVERY
   // tool result; the rest are `list_accounts` / `switch_account`
@@ -78,6 +80,15 @@ const parameterAllowlist = new Set([
   'active_token_file', 'acting_account_id', 'acting_display_name',
   'registry_file', 'token_file', 'identity_note', 'registration_warning',
   'last_used',
+  // #603: Spotify API field names the new resource contracts name, and one
+  // structuredContent key. `played_at` is the field the
+  // `spotify://me/recently-played` cursor is derived from; `is_active` is the
+  // `SpotifyDevice` flag the player-devices resource prints; `truncation_note`
+  // is the key the capped-walk JSON payload has carried since #718. None is a
+  // tool and none is a request parameter — a doc naming a response field is
+  // describing the wire format, which is the thing this gate exists to keep
+  // consistent with the schema.
+  'played_at', 'is_active', 'truncation_note',
   // StructuredContent field names, not parameters: the documented count split.
   'removed_total', 'kept_total', 'source_truncated', 'target_truncated',
   'would_confirm', 'base_read_whole', 'base_unrepresentable',

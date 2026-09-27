@@ -120,7 +120,7 @@ async function connect(client: SpotifyClient): Promise<Client> {
 
 // ------------------------------------------------------- registration list
 
-test('registers 8 catalog templates plus their {+qs} query twins', async () => {
+test('registers 11 catalog templates plus their {+qs} query twins', async () => {
   const { client } = makeClientStub();
   const mcp = await connect(client);
   const templates = await mcp.listResourceTemplates();
@@ -133,6 +133,12 @@ test('registers 8 catalog templates plus their {+qs} query twins', async () => {
     'spotify://artist/{id}/albums',
     'spotify://artist/{id}/albums{+qs}',
     'spotify://artist/{id}{+qs}',
+    'spotify://audiobook/{id}',
+    'spotify://audiobook/{id}/chapters',
+    'spotify://audiobook/{id}/chapters{+qs}',
+    'spotify://audiobook/{id}{+qs}',
+    'spotify://chapter/{id}',
+    'spotify://chapter/{id}{+qs}',
     'spotify://episode/{id}',
     'spotify://episode/{id}{+qs}',
     'spotify://playlist/{id}',

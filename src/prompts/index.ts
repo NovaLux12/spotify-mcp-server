@@ -89,7 +89,7 @@ export function registerPrompts(server: McpServer): void {
           role: 'user',
           content: {
             type: 'text',
-            text: `Summarize my music taste ${scope}. Call ${calls}. Then write a detailed summary of my taste: genres I gravitate toward, artists I keep coming back to, how my taste has shifted over time${isAll ? '' : ' within this window'}, and what that says about my listening habits. If any range returns 0 items, note it as 'not enough history for this window' rather than inventing genres. For a quick medium_term snapshot without tool calls, read spotify://me/top/tracks and spotify://me/top/artists. If a tool is unavailable (toolset-trimmed), skip that range with a one-line note. ${STANDARD_FOOTER}`,
+            text: `Summarize my music taste ${scope}. Call ${calls}. Then write a detailed summary of my taste: genres I gravitate toward, artists I keep coming back to, how my taste has shifted over time${isAll ? '' : ' within this window'}, and what that says about my listening habits. If any range returns 0 items, note it as 'not enough history for this window' rather than inventing genres. For a quick medium_term snapshot without tool calls, read spotify://me/top/tracks and spotify://me/top/artists; those two resources take ?time_range (long_term, medium_term, short_term), ?limit and ?offset, so read spotify://me/top/tracks?time_range=short_term&limit=5 for a recent snapshot. If a tool is unavailable (toolset-trimmed), skip that range with a one-line note. ${STANDARD_FOOTER}`,
           },
         }],
       };
