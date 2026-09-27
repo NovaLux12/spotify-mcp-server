@@ -762,7 +762,7 @@ describe('tool surface: budget', () => {
       'search_saved_audiobooks', 'check_in_library', 'search_saved_tracks',
       'get_now_playing', 'get_currently_playing', 'play_from_search', 'play', 'pause', 'skip_next',
       'skip_previous', 'seek', 'set_volume', 'set_shuffle', 'set_repeat', 'get_queue', 'add_to_queue',
-      'get_devices', 'transfer_playback', 'handoff',
+      'get_devices', 'transfer_playback',
     ]);
     assert.equal(new Set(names).size, names.length);
     assert.equal(new Set(REGISTRAR_MANIFEST.map((module) => module.key)).size, REGISTRAR_MANIFEST.length);

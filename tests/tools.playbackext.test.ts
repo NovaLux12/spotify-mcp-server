@@ -127,12 +127,13 @@ describe('playbackext', () => {
   // fail — the title promised a floor of 13, the bound allowed 12, so losing
   // one registration entirely still passed. Pin the exact set: a dropped tool
   // is a silent feature loss and an added one is drift.
-  it('registers exactly the 13 playback-extension tools', () => {
+  // #848: `apply_device_presets` became `set_volume { op: 'preset' }`, so this
+  // module keeps the tools that MANAGE presets and set_volume applies them.
+  it('registers exactly the 12 playback-extension tools', () => {
     const { client } = makeClient(); const h = serverHarness(client);
     assert.deepEqual(
       h.registered.map((r: { name: string }) => r.name).sort(),
       [
-        'apply_device_presets',
         'list_device_presets',
         'list_playback_states',
         'list_sessions',
@@ -173,43 +174,10 @@ describe('playbackext', () => {
       '1 device preset(s):\n- dev1: label="Kitchen" vol=42',
       'list_device_presets must report dev1 carrying both its label and its volume',
     );
-    const dry = await h.invoke('apply_device_presets', { dry_run: true });
-    assert.equal(
-      dry.content[0].text,
-      '[dry run] Would apply 1 preset(s):\n  - dev1: volume 42',
-      'a dry run must name the device and the volume it would write',
-    );
-    assert.equal(puts.length, 0, 'a dry run must not reach the API');
-    const applied = await h.invoke('apply_device_presets', {});
-    assert.equal(applied.content[0].text, 'Applied 1/1 volume presets.');
-    assert.deepEqual(puts, ['/me/player/volume?volume_percent=42&device_id=dev1']);
-  });
-  // #830: Spotify declares volume_percent as the required query parameter; the
-  // `volume` spelling is silently rejected, so every preset write was a no-op.
-  it('apply_device_presets writes volume_percent, not volume', async () => {
-    const { client, puts } = makeClient(); const h = serverHarness(client);
-    await h.invoke('set_device_volume_preset', { device_id: 'dev1', volume_percent: 42 });
-    await h.invoke('set_device_volume_preset', { device_id: 'dev2', volume_percent: 7 });
-    await h.invoke('apply_device_presets', {});
-    const vol = puts.filter((p) => p.startsWith('/me/player/volume'));
-    assert.equal(vol.length, 2, JSON.stringify(puts));
-    const parsed = vol.map((p) => new URLSearchParams(p.split('?')[1]));
-    assert.deepEqual(parsed.map((q) => q.get('volume_percent'))!.sort(), ['42', '7']);
-    for (const q of parsed) {
-      assert.equal(q.get('volume'), null, 'Spotify does not accept `volume`');
-      assert.ok(q.get('device_id'));
-    }
-  });
-  it('apply_device_presets reports ok:false when a write is rejected', async () => {
-    const { client } = makeClient({ failPut: (p: string) => p.startsWith('/me/player/volume') });
-    const h = serverHarness(client);
-    await h.invoke('set_device_volume_preset', { device_id: 'dev1', volume_percent: 42 });
-    const out = await h.invoke('apply_device_presets', {});
-    const sc = out.structuredContent as Record<string, unknown>;
-    assert.equal(sc.ok, false, 'a rejected preset write must not report success');
-    assert.equal(sc.applied, 0);
-    assert.deepEqual(sc.failed, ['dev1']);
-    assert.match(out.content[0].text, /failed: dev1/);
+    // Applying them is `set_volume { op: 'preset' }` as of #848, and is
+    // asserted in tests/tools.playback-collapse.test.ts. What stays here is
+    // this module's half of the round trip: the store the preset is read from.
+    assert.equal(puts.length, 0, 'storing a preset writes nothing to the API');
   });
   it('listening sessions tag/list/replay queue', async () => {
     const recent = [

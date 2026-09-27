@@ -34,7 +34,7 @@ import { StubFromResponder } from './helpers/stub-client.js';
 import type { LegacyResponder, StubCall } from './helpers/stub-client.js';
 import { initConfig } from '../src/config.js';
 import { registerSwarm3LibraryTools } from '../src/tools/swarm3_library.js';
-import { registerSwarm3PlaybackTools } from '../src/tools/swarm3_playback.js';
+import { registerPlaybackTools } from '../src/tools/playback.js';
 import { registerPlaylistBatchTools } from '../src/tools/playlistbatch.js';
 import { registerSwarm3DiscoveryTools } from '../src/tools/swarm3_discovery.js';
 import { registerSwarm3bDiscoveryTools } from '../src/tools/swarm3b_discovery.js';
@@ -138,11 +138,16 @@ describe('swarm3_library dry_run previews make zero API calls', () => {
   });
 });
 
-// swarm3_playback — dry_run previews device plans without PUTs
+// playback — dry_run previews device plans without PUTs
+//
+// #848 moved the volume-plan tools out of swarm3_playback and into
+// `set_volume`'s fan-out, so these cases drive the survivor. What they protect
+// is unchanged: an omitted `dry_run` commits, an explicit one writes nothing,
+// and a fan-out writes once per device rather than once in total.
 
-describe('swarm3_playback dry_run previews', () => {
-  it('apply_volume_plan dry_run returns plan lines without PUT', async () => {
-    const h = makeHarness(registerSwarm3PlaybackTools, (path) => {
+describe('set_volume fan-out dry_run previews', () => {
+  it('a level fan-out dry_run returns plan lines without PUT', async () => {
+    const h = makeHarness(registerPlaybackTools, (path) => {
       if (path === '/me/player/devices') {
         return { devices: [{ id: 'd1', name: 'Speaker', type: 'Speaker', is_active: true, is_restricted: false, is_private_session: false, volume_percent: 30, supports_volume: true }] } as unknown;
       }
@@ -151,7 +156,7 @@ describe('swarm3_playback dry_run previews', () => {
     });
     // #836: an omitted dry_run COMMITS across the playback set, so the preview
     // is requested explicitly here rather than relied on as an implicit default.
-    const out = await h.invoke('apply_volume_plan', { volume: 42, dry_run: true } as Record<string, unknown>);
+    const out = await h.invoke('set_volume', { op: 'level', volume_percent: 42, all_devices: true, dry_run: true } as Record<string, unknown>);
     const sc = out.structuredContent as { dry_run: boolean; steps: string[] };
     assert.equal(sc.dry_run, true);
     assert.ok(Array.isArray(sc.steps) && sc.steps.length === 1);
@@ -159,22 +164,22 @@ describe('swarm3_playback dry_run previews', () => {
     assert.equal(h.client.calls.filter((c) => c.method === 'PUT').length, 0, 'dry_run must not PUT');
   });
 
-  it('apply_volume_plan with dry_run omitted commits (#836)', async () => {
-    const h = makeHarness(registerSwarm3PlaybackTools, (path) => {
+  it('a level fan-out with dry_run omitted commits (#836)', async () => {
+    const h = makeHarness(registerPlaybackTools, (path) => {
       if (path === '/me/player/devices') {
         return { devices: [{ id: 'd1', name: 'Speaker', type: 'Speaker', is_active: true, is_restricted: false, is_private_session: false, volume_percent: 30, supports_volume: true }] } as unknown;
       }
       if (path.startsWith('/me/player/volume')) return null as unknown;
       throw new Error(`unexpected GET ${path}`);
     });
-    const out = await h.invoke('apply_volume_plan', { volume: 42 } as Record<string, unknown>);
+    const out = await h.invoke('set_volume', { op: 'level', volume_percent: 42, all_devices: true } as Record<string, unknown>);
     const sc = out.structuredContent as { applied: boolean };
     assert.equal(sc.applied, true, 'an omitted dry_run must commit, not preview');
     assert.equal(h.client.calls.filter((c) => c.method === 'PUT').length, 1);
   });
 
-  it('apply_volume_plan dry_run=false issues one PUT per device', async () => {
-    const h = makeHarness(registerSwarm3PlaybackTools, (path) => {
+  it('a level fan-out with dry_run=false issues one PUT per device', async () => {
+    const h = makeHarness(registerPlaybackTools, (path) => {
       if (path === '/me/player/devices') {
         return { devices: [
           { id: 'd1', name: 'Speaker', type: 'Speaker', is_active: true, is_restricted: false, is_private_session: false, volume_percent: 30, supports_volume: true },
@@ -184,7 +189,7 @@ describe('swarm3_playback dry_run previews', () => {
       if (path.startsWith('/me/player/volume')) return null as unknown;
       return null as unknown;
     });
-    const out = await h.invoke('apply_volume_plan', { volume: 25, dry_run: false } as Record<string, unknown>);
+    const out = await h.invoke('set_volume', { op: 'level', volume_percent: 25, all_devices: true, dry_run: false } as Record<string, unknown>);
     assert.equal(h.client.calls.filter((c) => c.method === 'PUT').length, 2);
     assert.match(h.text(out), /Volume set to 25%/);
   });

@@ -411,6 +411,21 @@ const retiredToolNames = new Set([
   'forgotten_favorites',
   'taste_recommendations',
   'record_feedback',
+  // #848 — the transfer and volume tool families, collapsed onto one tool each.
+  // Each name still FORWARDS to its survivor with the flags its behaviour
+  // needed (`handoff` → `transfer_playback` with `preserve_position: true`), so
+  // a migration table can name what it replaced; the names are simply not
+  // registered any more, which is what this list records.
+  'handoff',
+  'switch_device',
+  'transfer_playback_with_state',
+  'volume_step',
+  'mute',
+  'unmute',
+  'room_level',
+  'apply_device_presets',
+  'apply_volume_plan',
+  'plan_volume_level_across_devices',
 ]);
 /**
  * #1287 — parameter names this server published under a deprecation notice and

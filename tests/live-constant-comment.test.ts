@@ -83,12 +83,6 @@ const DATED_TREE = /\b(?:measured|re-?measur\w*|measuring)\b|(?:warrant|grant)s?
 const ALLOWED: { file: string; contains: string; why: string }[] = [
   {
     file: 'src/tools/annotations.ts',
-    contains: 'Then 11,882 -> 11,773B (-109) when #922 reworded this module',
-    why:
-      'dated: the #922 `playbackintel` re-measure. The figure is the manifest baseline it set; the sentence qualifying it ("The two deltas compose, and neither is measured off the other’s tree — this figure is the merged measurement.") is the NEXT one, so the anchoring test cannot reach it from here.',
-  },
-  {
-    file: 'src/tools/annotations.ts',
     contains: 'and the first raise was 19x its warrant',
     why:
       'NOT a live-constant quote, and the collision is arithmetic coincidence: this is the record of the 19x over-raise the CORRECTIONS note is about, while the 10_000 it matches is `max(10000)` on `min_hours` (backlog hours) in `exhaust2_misc.ts` — a queue-depth bound with no relationship to a byte budget. Surfaced only by the narrowed `warrant` anchor in #1332; the figure is frozen history, so it stays.',

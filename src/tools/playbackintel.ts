@@ -15,18 +15,14 @@ import { playlistItemTotal } from '../types/spotify.js';
 import { ResponseFormat, PlaybackDryRun, MaxResults, resolveMaxResults, truncateItems, parseSpotifyUri, describeDryRun, validateUris } from '../shaping.js';
 import { loadPlaybackExt, detectSessions } from './playbackext.js';
 import { textResult, emit, formatDuration } from '../result.js';
+// One resolver for the whole server (#848). This module had a third copy, and it
+// matched device names case-SENSITIVELY while its two siblings did not.
+import { resolveDeviceHint } from '../playbackstores.js';
 
 function formatItem(it: any): string {
   if (!it) return '—';
   if ('artists' in it) return `"${it.name}" by ${(it.artists??[]).map((a:any)=>a.name).join(', ')}`;
   return `"${it.name}" — ${it.show?.name ?? 'episode'}`;
-}
-async function resolveDeviceHint(client: SpotifyClient, hint: string): Promise<{ deviceId: string | null; devices: SpotifyDevice[] }> {
-  const res = await client.get<GetDevicesResponse>('/me/player/devices');
-  const devices = res?.devices ?? [];
-  const exact = devices.find((d) => d.id === hint);
-  const found = exact ?? devices.find((d) => d.name.toLowerCase().includes(hint.toLowerCase()));
-  return { deviceId: found?.id ?? null, devices };
 }
 function parsePosition(input: string): number | null {
   const s = input.trim();
@@ -99,7 +95,8 @@ export function registerPlaybackIntelTools(server: McpServer, client: SpotifyCli
       response_format: ResponseFormat, dry_run: PlaybackDryRun,
     },
     async (args) => {
-      const { deviceId, devices } = await resolveDeviceHint(client, args.device as string);
+      const { device, devices } = await resolveDeviceHint(client, args.device as string);
+      const deviceId = device?.id ?? null;
       if (!deviceId) {
         const names = devices.map(d=>d.name).join(', ') || 'no devices';
         return textResult(`No device matches "${args.device}". Available: ${names}`, { ok:false, error:'device_not_found', available: devices.map(d=>({id:d.id,name:d.name})) });
@@ -496,20 +493,7 @@ export function registerPlaybackIntelTools(server: McpServer, client: SpotifyCli
     });
 
   // volume_step — relative volume nudge
-  server.tool('volume_step',
-    'Nudge volume up/down by a step (reads current volume via GET /me/player, then PUT /me/player/volume clamped 0-100). Quota: 1 read + 1 write.',
-    { step: z.number().int().min(-100).max(100).describe('Delta, e.g. +10 or -10'), device_id: z.string().optional().describe('Target device id (else active)'), response_format: ResponseFormat, dry_run: PlaybackDryRun },
-    async (args) => {
-      const player:any = await client.get('/me/player');
-      const cur = typeof player?.device?.volume_percent === 'number' ? player.device.volume_percent : 50;
-      const target = Math.max(0, Math.min(100, cur + (args.step as number)));
-      if (args.dry_run) return { content:[{type:'text', text: describeDryRun('volume_step', `${args.step>0?'+':''}${args.step}`, [`Volume ${cur} → ${target}`])}], structuredContent:{ ok:true, dry_run:true, from: cur, step: args.step, to: target } };
-      const qs = new URLSearchParams({ volume_percent: String(target) });
-      if (args.device_id) qs.set('device_id', args.device_id as string);
-      else if (player?.device?.id) qs.set('device_id', player.device.id);
-      await client.put(`/me/player/volume?${qs}`);
-      return emit(args.response_format as string, `Volume ${cur} → ${target} (step ${args.step>0?'+':''}${args.step}).`, { ok:true, from: cur, step: args.step, to: target });
-    });
+  ;
 
   // market_availability — per-entity multi-market check
   server.tool('market_availability',

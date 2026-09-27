@@ -194,16 +194,22 @@ test('computeRampPlan: even steps, last step lands on target', () => {
 
 // ---------------------------------------------------------------- registration
 
-test('all 23 exhaust2 playback tools are registered with quota notes', () => {
+// #848 moved `mute`, `unmute`, `switch_device` and `room_level` into
+// `set_volume` and `transfer_playback` in playback.ts, where the four
+// duplicate volume/transfer writers used to be spread across three modules.
+// The timer/ramp family stayed here because its semantics ARE distinct: a
+// scheduled ramp is a different operation from a level change, not a
+// differently-spelled one.
+test('all 19 exhaust2 playback tools are registered with quota notes', () => {
   const { tools } = makeHarness(registerExhaust2PlaybackTools);
   const expected = [
-    'sleep_timer', 'mute', 'unmute', 'switch_device', 'surprise_me',
+    'sleep_timer', 'surprise_me',
     'skip_n', 'pause_everywhere', 'volume_ramp', 'playback_timer_status',
     'episode_bookmark', 'episode_resume', 'queue_next_episode', 'queue_replace_via_playlist',
     'session_stats', 'most_replayed', 'last_heard',
     'weekday_heatmap', 'queue_profile',
     'checkpoint_playback', 'continue_last',
-    'room_level', 'volume_report', 'daily_pick',
+    'volume_report', 'daily_pick',
   ];
   for (const name of expected) {
     const t = tools.get(name);
@@ -326,73 +332,7 @@ test('sleep_timer exposes a rejected pause instead of swallowing it', async () =
   assert.match(text(readable), /step 1 \(pause, \+5m\): 403 Premium required/);
 });
 
-// ---------------------------------------------------------------- mute / unmute
-
-test('mute remembers the previous volume and zeroes it', async () => {
-  const { invoke, calls } = makeHarness(registerExhaust2PlaybackTools, { getResponse: (p) => (p === '/me/player' ? playbackState() : undefined) });
-  const out = await invoke('mute', { dry_run: false });
-  assert.match(text(out), /Muted Kitchen \(was 55% — remembered for unmute\)/);
-  const put = calls.find((c) => c.method === 'PUT' && c.path.includes('/me/player/volume'));
-  assert.ok(put);
-  assert.match(put!.path, /volume_percent=0/);
-  const store = await loadExhaust2Store();
-  assert.equal(store.muteMemory.dev1?.volume, 55);
-});
-
-test('mute that fails to write volume persists no memory, so unmute cannot restore a volume that was never muted (#843)', async () => {
-  await resetSidecar();
-  const { invoke, calls } = makeHarness(registerExhaust2PlaybackTools, {
-    getResponse: (p) => (p === '/me/player' ? playbackState() : undefined),
-    putError: (path) => (path.includes('/me/player/volume') ? new Error('403 Premium required') : undefined),
-  });
-  await assert.rejects(invoke('mute', { dry_run: false }), /403 Premium required/);
-  const store = await loadExhaust2Store();
-  assert.deepEqual(store.muteMemory, {});
-  // A later unmute must not resurrect the never-muted level: it falls back to 50%.
-  const later = makeHarness(registerExhaust2PlaybackTools);
-  const out = await later.invoke('unmute', { device_id: 'dev1', dry_run: false });
-  assert.match(text(out), /volume 50% \(no memory — default 50%\)/);
-  const put = calls.concat(later.calls).find((c) => c.method === 'PUT' && c.path.includes('/me/player/volume'));
-  assert.match(put!.path, /volume_percent=0/);
-});
-
-test('unmute restores the remembered level; default is 50% without memory', async () => {
-  await resetSidecar();
-  const store = await loadExhaust2Store();
-  store.muteMemory.dev1 = { volume: 33, muted_at: new Date().toISOString(), device_id: 'dev1', device_name: 'Kitchen' };
-  await saveExhaust2Store(store);
-  const { invoke, calls } = makeHarness(registerExhaust2PlaybackTools);
-  const out = await invoke('unmute', { device_id: 'dev1', dry_run: false });
-  assert.match(text(out), /volume 33% \(remembered by mute\)/);
-  const put = calls.find((c) => c.method === 'PUT' && c.path.includes('/me/player/volume'));
-  assert.match(put!.path, /volume_percent=33/);
-
-  const { invoke: invoke2 } = makeHarness(registerExhaust2PlaybackTools);
-  await clearSidecar();
-  const out2 = await invoke2('unmute', { dry_run: false });
-  assert.match(text(out2), /no memory — default 50%/);
-});
-
 // ---------------------------------------------------------------- switch_device
-
-test('switch_device resolves fuzzy name, exact id and sidecar label', async () => {
-  const options: ClientOptions = { getResponse: (p) => (p === '/me/player/devices' ? { devices: [device(), device({ id: 'dev2', name: 'Study', volume_percent: 20 })] } : undefined) };
-  const h1 = makeHarness(registerExhaust2PlaybackTools, options);
-  const out1 = await h1.invoke('switch_device', { device_name: 'stud', dry_run: false });
-  assert.match(text(out1), /Study/);
-  const put1 = h1.calls.find((c) => c.method === 'PUT' && c.path === '/me/player');
-  assert.deepEqual(put1!.body, { device_ids: ['dev2'], play: true });
-
-  const h2 = makeHarness(registerExhaust2PlaybackTools, options);
-  const out2 = await h2.invoke('switch_device', { device_name: 'dev1', play: false, dry_run: false });
-  assert.match(text(out2), /paused/);
-  assert.deepEqual(h2.calls.find((c) => c.method === 'PUT' && c.path === '/me/player')!.body, { device_ids: ['dev1'], play: false });
-
-  const h3 = makeHarness(registerExhaust2PlaybackTools, options);
-  const out3 = await h3.invoke('switch_device', { device_name: 'nope', dry_run: false });
-  assert.match(text(out3), /No device matches "nope"/);
-  assert.match(text(out3), /Kitchen/);
-});
 
 // ---------------------------------------------------------------- surprise_me
 
@@ -905,17 +845,6 @@ test('continue_last guards no-checkpoints and no-item states', async () => {
 
 // ---------------------------------------------------------------- room_level / volume_report
 
-test('room_level applies the active volume to every other live device', async () => {
-  const h = makeHarness(registerExhaust2PlaybackTools, {
-    getResponse: (p) => (p === '/me/player/devices' ? { devices: [device({ is_active: true, volume_percent: 50 }), device({ id: 'dev2', name: 'Study', volume_percent: 10 }), device({ id: 'dev3', name: 'Kids', is_restricted: true })] } : undefined),
-  });
-  const out = await h.invoke('room_level', { dry_run: false });
-  assert.match(text(out), /Room levelled: 1\/1 device\(s\) → 50%/);
-  const vol = h.calls.find((c) => c.method === 'PUT' && c.path.includes('/me/player/volume'));
-  assert.match(vol!.path, /volume_percent=50/);
-  assert.match(vol!.path, /device_id=dev2/);
-});
-
 test('volume_report snapshots live volumes vs sidecar presets', async () => {
   const ext = await loadPlaybackExtForTest();
   ext.devicePresets.dev1 = { label: 'Kitchen speaker', volume: 35 };
@@ -964,10 +893,7 @@ test('omitted dry_run commits: a PUT/POST reaches the stub call log (#836)', asy
     // that no `dry_run: true` plan came back and a timer was registered.
     const cases: Array<{ tool: string; args: Record<string, unknown>; deferred?: boolean }> = [
       { tool: 'sleep_timer', args: { duration_min: 5 }, deferred: true },
-      { tool: 'mute', args: {} },
-      { tool: 'unmute', args: { device_id: 'dev1' } },
       { tool: 'skip_n', args: { n: 2 } },
-      { tool: 'switch_device', args: { device_name: 'Kitchen' } },
       { tool: 'surprise_me', args: { type: 'track', seed: 1 } },
       { tool: 'pause_everywhere', args: {} },
       { tool: 'volume_ramp', args: { target_percent: 20, minutes: 2, step_minutes: 1 }, deferred: true },
@@ -1010,10 +936,7 @@ test('dry_run: true still previews the same mutations with zero writes (#836)', 
   });
   const cases: Array<{ tool: string; args: Record<string, unknown> }> = [
     { tool: 'sleep_timer', args: { duration_min: 5 } },
-    { tool: 'mute', args: {} },
-    { tool: 'unmute', args: { device_id: 'dev1' } },
     { tool: 'skip_n', args: { n: 2 } },
-    { tool: 'switch_device', args: { device_name: 'Kitchen' } },
     { tool: 'surprise_me', args: { type: 'track', seed: 1 } },
     { tool: 'pause_everywhere', args: {} },
     { tool: 'volume_ramp', args: { target_percent: 20, minutes: 2, step_minutes: 1 } },
