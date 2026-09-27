@@ -127,6 +127,48 @@ describe('a killed child is reported as killed (#1366)', () => {
     }
   });
 
+  it('rejects a request made after the child already died, without waiting out the watchdog', async () => {
+    // The door the exit listener does not cover. `failAll` settles what was in
+    // flight at the moment of death; a request issued *afterwards* had nothing
+    // to reject it, was written to a stdin nobody reads, and surfaced a full
+    // watchdog later as "timed out waiting for tools/list".
+    //
+    // Not hypothetical: caught in this repo's own final run. A long-lived
+    // `mcp-smoke` child (spawned in `before()`) was SIGKILLed mid-file under
+    // load 139, and a *later* test in the same file asked it for `tools/list`.
+    // The message said "timed out", with the SIGKILL visible only in a
+    // provenance line the reader has no reason to prefer over the headline.
+    // The signal was therefore reported, but under the wrong name, 30s late —
+    // the same defect the issue describes, through a different path.
+    const child = spawnIdleChild('post-mortem-probe', RED_PROOF_TIMEOUT_MS);
+    try {
+      // In flight when the signal lands, so `failAll` has something to reject
+      // and we prove the latch is what settles the *second* request.
+      const inFlight = child.request('tools/list');
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      process.kill(child.pid!, 'SIGKILL');
+      await rejectionMessage(() => inFlight);
+      assert.ok(await child.waitForExit(2_000), 'the child must be observed dead before asking it anything');
+
+      // Now the request that used to become a 30-second timeout.
+      const started = Date.now();
+      const message = await rejectionMessage(() => child.request('tools/list'));
+      const elapsed = Date.now() - started;
+
+      assert.match(message, /SIGKILL/, 'the failure must still name the signal, not merely "the child is gone"');
+      assert.doesNotMatch(message, /timed out/, 'a dead child is not a timeout — that is the mislabel this closes');
+      // "never sent" distinguishes this from a request that was transmitted and
+      // lost, which is a different (and more suspicious) thing to go looking for.
+      assert.match(message, /never sent/, 'the report must say the request was never put on the wire');
+      assert.ok(
+        elapsed < RED_PROOF_TIMEOUT_MS,
+        `the rejection must be immediate, not the watchdog (took ${elapsed}ms of a ${RED_PROOF_TIMEOUT_MS}ms budget)`,
+      );
+    } finally {
+      await child.dispose();
+    }
+  });
+
   it('rejects every in-flight request, not just the one that was sent first', async () => {
     // The `failAll` half. A child that dies with three requests outstanding
     // must reject all three, or the other two sit until their own watchdogs
@@ -217,6 +259,46 @@ describe('a killed child is reported as killed (#1366)', () => {
     assert.match(killed, /host pressure:/, 'a signal-kill message must carry the host pressure line');
     const clean = describeExit('env-switch', 4242, 0, null, '');
     assert.match(clean, /host pressure:/, 'the pressure line belongs to every child death, not only kills');
+  });
+
+  it('reports a child death once, not twice with two different load readings', async () => {
+    // Caught in this repo's own full-suite run: a post-mortem message printed
+    // `child stderr:` and `host pressure:` twice, and the two load figures
+    // disagreed. `describeExit` is self-contained and `provenance()` embedded it
+    // whole before adding its own copy of both. A reader given two pressure
+    // readings cannot tell which is current — which undermines the one line
+    // this whole file exists to make trustworthy.
+    //
+    // Driven on the post-mortem path on purpose. An *in-flight* rejection
+    // carries only `describeExit` and never renders `provenance()`, so a test
+    // written against it passes with the duplication restored — which is
+    // exactly what the first draft of this test did, and exactly the kind of
+    // green that asserts nothing. The duplication is only visible where
+    // `provenance()` is composed into a message that already has a report.
+    const child = spawnIdleChild('dup-probe', RED_PROOF_TIMEOUT_MS);
+    try {
+      const inFlight = child.request('tools/list');
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      process.kill(child.pid!, 'SIGKILL');
+      await rejectionMessage(() => inFlight);
+      assert.ok(await child.waitForExit(2_000), 'the child must be observed dead before asking it anything');
+
+      // This message is `dead.message` (the full report) PLUS `provenance()`.
+      const message = await rejectionMessage(() => child.request('tools/list'));
+      assert.ok(
+        message.includes('never sent'),
+        'this assertion is only meaningful on the post-mortem path',
+      );
+
+      const occurrences = (needle: string): number => message.split(needle).length - 1;
+      assert.equal(occurrences('host pressure:'), 1, `host pressure must be reported exactly once:\n${message}`);
+      assert.equal(occurrences('child stderr:'), 1, `child stderr must be reported exactly once:\n${message}`);
+      // The signal still survives the de-duplication, which is the thing that
+      // would actually be lost if this were fixed by trimming too much.
+      assert.match(message, /SIGKILL/, 'the report must still name the signal after de-duplication');
+    } finally {
+      await child.dispose();
+    }
   });
 });
 

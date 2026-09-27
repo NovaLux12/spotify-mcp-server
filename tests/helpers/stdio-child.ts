@@ -282,6 +282,23 @@ export class StdioJsonRpcChild {
   private outcome: string | undefined;
   /** A handler failure, latched so it can never be reported zero times. */
   private fatal: Error | undefined;
+  /**
+   * The child's death, latched for the same reason `failAll` is not enough on
+   * its own. `failAll` settles what was in flight *at the moment of death*; a
+   * request issued afterwards lands in `pending` with nothing left to reject
+   * it, is written to a stdin nobody is reading, and is reported a full
+   * watchdog later as a timeout. That is the #1366 misreport arriving through
+   * the one door the exit listener does not cover, and it is not rare: a
+   * suite that boots a long-lived server in `before()` and keeps using it from
+   * later tests will do this whenever the child dies mid-file. Observed for
+   * real here — a SIGKILLed `mcp-smoke` child, then a `tools/list` on it from
+   * a *different* test 30s later, reported as "timed out waiting for
+   * tools/list" with the SIGKILL visible only in a provenance line the reader
+   * has no reason to trust over the headline.
+   */
+  private dead: Error | undefined;
+  /** The signal that killed the child, kept so a later message can classify the death. */
+  private deadSignal: NodeJS.Signals | null = null;
   private nextId = 0;
 
   static spawn(options: StdioChildOptions): StdioJsonRpcChild {
@@ -311,21 +328,37 @@ export class StdioJsonRpcChild {
 
     // ---- the three load-bearing listeners. See the header. ----------------
     this.child.on('error', this.guard('spawn', (err: Error) => {
-      this.failAll(new Error(`${this.label}: spawn failed: ${err.message}`));
+      this.die(new Error(`${this.label}: spawn failed: ${err.message}`));
     }));
     this.child.on('exit', this.guard('exit', (code: number | null, signal: NodeJS.Signals | null) => {
-      this.outcome = describeExit(this.label, this.child.pid, code, signal, this.stderrText);
+      // Two forms on purpose: `outcome` is the one line `provenance()` quotes
+      // (so it must not repeat stderr or pressure), while the rejection below
+      // carries the full self-contained `describeExit` report.
+      this.outcome = exitSummary(this.label, this.child.pid, code, signal, this.stderrText);
+      this.deadSignal = signal;
       // A signal is the whole point: `code` is null and only `signal` says the
       // child was killed. Reporting `code=null` alone would file an OOM kill
       // under "exited with no status", which is the misreport this closes.
-      this.failAll(new Error(this.outcome));
+      this.die(new Error(describeExit(this.label, this.child.pid, code, signal, this.stderrText)));
     }));
     // Writing to a dead child's stdin raises EPIPE on the *stream*, not on the
     // process. Unhandled, that 'error' event takes down the test process
     // itself, so a killed child would abort the run instead of failing one case.
     this.child.stdin.on('error', this.guard('stdin', (err: Error) => {
-      this.failAll(new Error(`${this.label}: stdin broke (${err.message}) — the child is gone\n${this.provenance()}`));
+      this.die(new Error(`${this.label}: stdin broke (${err.message}) — the child is gone\n${this.provenance()}`));
     }));
+  }
+
+  /**
+   * Record the child's death, then reject everything in flight. Latched before
+   * `failAll` so a request racing the exit event cannot observe a window where
+   * the child is gone but nothing rejects it. First cause wins: a stdin EPIPE
+   * that follows a SIGKILL is a symptom of the kill, not a second cause, and
+   * replacing the signal with `EPIPE` would undo the whole point.
+   */
+  private die(error: Error): void {
+    this.dead ??= error;
+    this.failAll(this.dead);
   }
 
   /**
@@ -373,6 +406,12 @@ export class StdioJsonRpcChild {
 
   /** What is known about the child right now, for any failure message. */
   private provenance(): string {
+    // `this.outcome` is deliberately the SHORT line, not `describeExit`'s full
+    // report. `describeExit` is self-contained — it already carries its own
+    // stderr and its own host-pressure reading — so embedding it here printed
+    // both of those a second time, with a *different* load figure each time.
+    // A reader faced with two pressure readings has no way to tell which is
+    // current, which is worse than not printing pressure at all.
     return [
       // `pid=` rather than `pid `, so it reads the same as `describeExit` and one
       // grep finds the child in either message.
@@ -440,6 +479,24 @@ export class StdioJsonRpcChild {
     // A latched handler failure rejects the *next* request too, so a throw that
     // happened while nothing was in flight still cannot pass unnoticed.
     if (this.fatal !== undefined) return Promise.reject(this.fatal);
+    // Same reasoning for a child that is already gone. Rejecting here — with
+    // the recorded cause and the word "dead" — is what keeps this a killed-child
+    // report rather than a 30-second "timeout waiting for <method>" whose only
+    // clue is a provenance line below it.
+    if (this.dead !== undefined) {
+      return Promise.reject(new Error([
+        `${this.label}: ${method} was requested on a child that is already dead — the request was never sent`,
+        // `this.dead.message` is deliberately NOT spliced in here: it is the
+        // full `describeExit` report, which already carries stderr and a host
+        // pressure reading. `provenance()` below carries its own copy of both,
+        // so quoting the report too printed each of them twice — with two
+        // different load figures, leaving the reader unable to tell which is
+        // current. `provenance()` quotes the one-line summary; the paragraph
+        // that classifies the death is added here so it survives exactly once.
+        explainExit(this.deadSignal),
+        this.provenance(),
+      ].join('\n')));
+    }
     const id = ++this.nextId;
     return new Promise<JsonRpcResponse>((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -573,7 +630,7 @@ export class StdioJsonRpcChild {
  * `code=` and `signal=` are added because `describeOutcome` reports one or the
  * other and a reader chasing a flake wants both.
  */
-export function describeExit(
+export function exitSummary(
   label: string,
   pid: number | undefined,
   code: number | null,
@@ -581,14 +638,34 @@ export function describeExit(
   stderr: string,
 ): string {
   const outcome = describeOutcome(classifyChild({ signal, status: code, stderr }));
+  return `${label}: the server process ${outcome} (code=${code} signal=${signal} pid=${pid ?? 'unknown'})`;
+}
+
+/**
+ * The paragraph that says what kind of death this is, separate from the facts
+ * so that a message carrying both a summary and a `provenance()` block can say
+ * it exactly once. Composing the two without this is how a reader ends up with
+ * two `child stderr:` blocks and two disagreeing load readings in one message.
+ */
+export function explainExit(signal: NodeJS.Signals | null): string {
+  return signal
+    ? 'This is a resource/process failure, NOT a product failure. Nothing the server could have said'
+      + ' was lost — a signal takes its stderr with it. Check the host pressure line below, and the'
+      + ' load on the machine, before reading anything into the product.'
+    : 'The child ended on its own; the assertion that would have run here never got a result to judge.';
+}
+
+export function describeExit(
+  label: string,
+  pid: number | undefined,
+  code: number | null,
+  signal: NodeJS.Signals | null,
+  stderr: string,
+): string {
   const tail = stderr.trim().slice(-2000);
   return [
-    `${label}: the server process ${outcome} (code=${code} signal=${signal} pid=${pid ?? 'unknown'})`,
-    signal
-      ? 'This is a resource/process failure, NOT a product failure. Nothing the server could have said'
-        + ' was lost — a signal takes its stderr with it. Check the host pressure line below, and the'
-        + ' load on the machine, before reading anything into the product.'
-      : 'The child ended on its own; the assertion that would have run here never got a result to judge.',
+    exitSummary(label, pid, code, signal, stderr),
+    explainExit(signal),
     `host pressure: ${describeHostPressure()}`,
     `child stderr:\n${tail || '<nothing on stderr>'}`,
   ].join('\n');
