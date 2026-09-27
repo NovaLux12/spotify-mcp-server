@@ -3313,6 +3313,10 @@
         "label": "Endpoint tools (statsfm)"
       },
       {
+        "hash": "e94ef172cf855b2a",
+        "label": "statsfmrecentstreams also takes a named range of today|w…"
+      },
+      {
         "hash": "f377b6fbbba34445",
         "label": "statsfmresolveuser — customId/display name → canonical u…"
       },
@@ -5511,8 +5515,8 @@
     }
   ],
   "provenance": {
-    "head": "81d76e48e79ffa4e1b5b645cef91d37f1e4d1b99",
-    "upstream": "77f35a7af8113ff3c71f9f8b6beae1b9da537eb9",
+    "head": "db4ea03de337a54aa4fd97b369574e7828458b6e",
+    "upstream": "70ba245bbe0a35562e6372be82be83e49543abb0",
     "behind": false
   }
 }
