@@ -1673,7 +1673,14 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   // the derived ceiling follows that baseline.
   manifestEntry('portability', 'portability', lazyModule('./portability.js', 'registerPortabilityTools'), [11, 10453], { scopeKey: 'library' }),
   manifestEntry('libraryinsights', 'library', lazyModule('./libraryinsights.js', 'registerLibraryInsightsTools'), [3, 2751], { scopeKey: 'library' }),
-  manifestEntry('libraryhygiene', 'library', lazyModule('./libraryhygiene.js', 'registerLibraryHygieneTools'), [1, 754], { scopeKey: 'library' }),
+  // +50B: #897 changed only the description, and only to say where the album
+  // totals come from — off the /me/tracks walk, with the per-id fan-in as the
+  // fallback — because that is now the actual request behaviour. Same 1 tool,
+  // same input schema. Host-session impact: +50 B of a 144,943 B default
+  // `tools/list` payload (0.03%), on a tool that is NOT in the default
+  // toolset, so the always-on session cost is zero. The description was
+  // trimmed to fit rather than the ceiling raised beyond the derived 110%.
+  manifestEntry('libraryhygiene', 'library', lazyModule('./libraryhygiene.js', 'registerLibraryHygieneTools'), [1, 804], { scopeKey: 'library' }),
   manifestEntry('showradar', 'library', lazyModule('./showradar.js', 'registerShowRadarTools'), [1, 2125], { readOnlySafe: true, scopeKey: 'library' }),
   manifestEntry('saveddedupe', 'library', lazyModule('./saveddedupe.js', 'registerSavedDedupeTools'), [1, 1438], { scopeKey: 'library' }),
   manifestEntry('podcastsession', 'library', lazyModule('./podcastsession.js', 'registerPodcastSessionTools'), [2, 3427], { scopeKey: 'library' }),

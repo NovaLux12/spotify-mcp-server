@@ -640,7 +640,7 @@ artist tool agrees on the track count for the same `include_featured`.
 ## 5. Tools
 
 <!-- BEGIN:generated tool-surface -->
-The full MCP registry exposes **556 tools** (all 556 attributed to the 68 files under `src/tools/`), organized by 47 registration keys and 14 named toolsets; the curated default surface a server registers with no `SPOTIFY_MCP_TOOLSETS` is **128 tools** / 144,870 bytes (#889), and `SPOTIFY_MCP_TOOLSETS=all` restores the full one. Registration keys: `accounts`, `artistwatch`, `audiobooks`, `browse`, `catalog`, `doctor`, `episodemgmt`, `exhaust2catalog`, `exhaust2enggating`, `exhaust2extra`, `exhaust2misc`, `exhaust2playback`, `exhaust2playlists`, `following`, `library`, `libraryanalytics`, `moodexpand`, `personalization`, `playback`, `playbackext`, `playbackintel`, `playlistbatch`, `playlisthealth`, `playlistmisc`, `playlists`, `portability`, `prompts`, `queueops`, `receipts`, `resources`, `search`, `searchhistory`, `statsfm`, `swarm3analytics`, `swarm3bdiscovery`, `swarm3discovery`, `swarm3library`, `swarm3meta`, `swarm3playback`, `swarm3playlistops`, `swarm3refs`, `swarm3shows`, `swarm3snapshots`, `swarm4playlists`, `taste`, `tastecomposites`, `users`. `node scripts/surface-census.mjs` derives the authoritative inventory by starting the real `src/index.ts` stdio entry and calling `tools/list`, `resources/list`, `resources/templates/list`, and `prompts/list` after production gates and finalizers, without network access — twice, once for the full surface and once with `SPOTIFY_MCP_TOOLSETS` unset, so neither figure is inferred from the other.
+The full MCP registry exposes **556 tools** (all 556 attributed to the 68 files under `src/tools/`), organized by 47 registration keys and 14 named toolsets; the curated default surface a server registers with no `SPOTIFY_MCP_TOOLSETS` is **128 tools** / 144,920 bytes (#889), and `SPOTIFY_MCP_TOOLSETS=all` restores the full one. Registration keys: `accounts`, `artistwatch`, `audiobooks`, `browse`, `catalog`, `doctor`, `episodemgmt`, `exhaust2catalog`, `exhaust2enggating`, `exhaust2extra`, `exhaust2misc`, `exhaust2playback`, `exhaust2playlists`, `following`, `library`, `libraryanalytics`, `moodexpand`, `personalization`, `playback`, `playbackext`, `playbackintel`, `playlistbatch`, `playlisthealth`, `playlistmisc`, `playlists`, `portability`, `prompts`, `queueops`, `receipts`, `resources`, `search`, `searchhistory`, `statsfm`, `swarm3analytics`, `swarm3bdiscovery`, `swarm3discovery`, `swarm3library`, `swarm3meta`, `swarm3playback`, `swarm3playlistops`, `swarm3refs`, `swarm3shows`, `swarm3snapshots`, `swarm4playlists`, `taste`, `tastecomposites`, `users`. `node scripts/surface-census.mjs` derives the authoritative inventory by starting the real `src/index.ts` stdio entry and calling `tools/list`, `resources/list`, `resources/templates/list`, and `prompts/list` after production gates and finalizers, without network access — twice, once for the full surface and once with `SPOTIFY_MCP_TOOLSETS` unset, so neither figure is inferred from the other.
 <!-- END:generated tool-surface -->
 
 ### Shared tool contract
@@ -1293,6 +1293,39 @@ payloads. One contract covers all of them:
   from `album_lookups` in favour of `requests`, `request_mode: 'per_id'`,
   `fanout_width` and `unresolved`; its `dry_run` reports `request_mode`,
   `fanout_width` and `estimated_album_requests`.
+
+#### `library_hygiene` shares the walk instead of re-reading it (#897)
+
+`library_hygiene` is the one tool on the list above whose per-id fan-in was
+reading a field it already had. It walks `GET /me/tracks`, groups the rows by
+`track.album.id`, and the album on a walk row is a `SimplifiedAlbumObject` —
+`AlbumBase` plus artists, and `album_type` and `total_tracks` are **required**
+members of `AlbumBase`. The fan-in was issued for every album in the library
+purely to copy those two fields out of a full `AlbumObject` the walk had already
+delivered on every row. The repository's own `SpotifyAlbumSimple` declared only
+`{id, name, uri, images}`, which is what hid the redundancy from the type
+system; it now declares the two fields as optional, and every reader checks at
+runtime.
+
+- **The read is a fallback, not the expectation.** An album is read only when
+  the walk could not answer its total, or when it is a *single-candidate* — a
+  single, or three tracks or fewer. The second case is not an optimisation
+  concession: the orphaned-singles rollup compares a release's full
+  `tracks.items` against the liked set, and a simplified album carries no track
+  list at all, so a single is read for its listing whether or not the walk
+  supplied its total. A group that is neither is skipped by that check before it
+  ever looks at a listing, so reading it was the waste.
+- **A zero-request run is complete, and says so.** `album_lookups` gains
+  `shared_from_walk`: the number of album groups whose total came from the walk.
+  Without it, `requests: 0` is indistinguishable from "found nothing", which is
+  the #803 shape. On a current registration the figure is normally the whole
+  library and `requests` is `0`.
+- **The dry-run figure is an upper bound, and is labelled one.** How many albums
+  fall back is not knowable before the walk runs, so `estimated_album_requests`
+  still budgets the cap. Its prose now says the cost is a worst case and why.
+- **Nothing else moved.** Per-id shape, `PER_ID_FANOUT_WIDTH`, the 200-album
+  cap, `truncated_by_cap`, the `unresolved` disclosure, and the 429
+  degradation are unchanged for every album still read.
 
 ---
 
