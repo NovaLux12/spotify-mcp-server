@@ -30,6 +30,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -257,6 +258,126 @@ describe('generated-block marker tree (#1238)', () => {
       });
       const run = censusFailure(['--marker-fixture', file]);
       assert.match(run.stdout, /stale/);
+    });
+  });
+});
+
+/**
+ * The one generated block that is not in a document (#1438).
+ *
+ * `src/toolsets.ts` carries a `// BEGIN:generated surface-census` block — the
+ * registry totals, as a comment, at the top of a source file. Everything else
+ * the census generates lands in Markdown, and the *prose* pin (#1384) is
+ * Markdown-only by design, so this block sits in the one file class that
+ * neither of the documentation gates was built to think about. That made it
+ * look ungated, and #1438 was filed on the reading that `--check` does not
+ * compare it.
+ *
+ * It does. The two mechanisms are separate and it is worth saying which does
+ * what, because conflating them is what produced the issue:
+ *
+ *  - **Staleness** is `checkDocumentation()`'s per-block loop, and it reads the
+ *    `blocks` array — *any* extension, `src/toolsets.ts` included. A count in
+ *    that file goes stale when the registry moves, and `--check` reports it:
+ *    `src/toolsets.ts: generated surface-census block is stale`.
+ *  - **Prose loss** is the `doc-prose-manifest.json` reconciliation, and it is
+ *    Markdown-only because pinning source code as though it were documentation
+ *    is not the same hazard. That exclusion is enumerated and asserted on the
+ *    other side, by `EXPECTED_FILES` in `tests/doc-prose-integrity.test.ts`,
+ *    so this file joining the prose scope would go red there rather than
+ *    passing by default.
+ *
+ * The tree pass already pins the *structural* claim — `EXPECTED_FILES` above
+ * names `src/toolsets.ts`, so dropping the file from `blocks` reports it as an
+ * orphan. What was missing is the body claim for this file specifically, and
+ * that is what the test below adds: it drives the real `inspectGeneratedBlock`
+ * over a truncated copy of the real file, in the `//`-comment syntax, which is
+ * the shape a `--theirs` conflict resolution actually leaves behind.
+ */
+describe('the generated block in src/toolsets.ts (#1438)', () => {
+  const FILE = 'src/toolsets.ts';
+  const NAME = 'surface-census';
+  const start = `// BEGIN:generated ${NAME}`;
+  const end = `// END:generated ${NAME}`;
+
+  /**
+   * The real file's block, split into the body and the rendered whole.
+   *
+   * Every assertion here is a precondition, and each one says what it would
+   * mean if it failed: a fixture built from a mis-sliced block would still
+   * "prove" the gate rejects *something*, which is the shape of a test that
+   * cannot fail (AGENTS.md §6). Note the two newlines: the body sits between
+   * two markers that each own a line, so exactly one newline is stripped from
+   * each side and the middle is left alone.
+   *
+   * Whether the checked-in body is *current* is a different claim, and it is
+   * asserted where it can be measured rather than reconstructed — by
+   * `checkDocumentation` comparing this file against the real registry in
+   * `tests/arch-inventory.test.ts`, and in CI.
+   */
+  function realBlock(): { body: string; rendered: string } {
+    const source = readFileSync(join(ROOT, FILE), 'utf8');
+    const startAt = source.indexOf(start);
+    const endAt = source.indexOf(end);
+    assert.ok(startAt >= 0 && endAt > startAt, `precondition: ${FILE} has no ${NAME} block`);
+    assert.equal(source.split(start).length - 1, 1, `precondition: ${FILE} must carry exactly one ${start} marker`);
+    assert.equal(source.split(end).length - 1, 1, `precondition: ${FILE} must carry exactly one ${end} marker`);
+    const between = source.slice(startAt + start.length, endAt);
+    assert.ok(
+      between.startsWith('\n') && between.endsWith('\n'),
+      `precondition: the ${NAME} body must sit between the markers on their own lines; found ${JSON.stringify(between.slice(0, 40))}`,
+    );
+    const body = between.slice(1, -1);
+    assert.match(
+      body,
+      /\d+ tools, \d+ fixed resources, \d+ resource templates, and \d+ prompts\./,
+      `precondition: the ${FILE} block states no registry totals; a fixture built from it would prove nothing`,
+    );
+    return { body, rendered: source.slice(startAt, endAt + end.length) };
+  }
+
+  it('rejects a truncated block, and accepts the real one', async () => {
+    // The wiring proof, and the claim #1438's premise denies. Two halves, and
+    // both have to hold:
+    //
+    //  - `blocks` *claims* this file. The tree pass above reports no orphan
+    //    for it, which means the `blocks` array declares
+    //    `['src/toolsets.ts', 'surface-census', …]` — and it is that
+    //    declaration which makes `checkDocumentation` loop over the file at
+    //    all. A file no `blocks` entry names is never staleness-checked, so
+    //    this precondition is the half that turns the fixture below into a
+    //    statement about the real gate rather than about a classifier.
+    //  - `inspectGeneratedBlock` — the exact function that loop calls, with
+    //    this exact file and name — rejects a body that has drifted. The
+    //    `//`-comment syntax is used rather than the `<!-- -->` the Markdown
+    //    fixtures use, because that is the spelling in this file.
+    const { body, rendered } = realBlock();
+    const report = realTreeReport();
+    assert.deepEqual(report.errors, [], `precondition: the tree pass must report nothing:\n${report.errors.join('\n')}`);
+    assert.ok(
+      report.files.includes(FILE),
+      `precondition: the tree pass must read ${FILE}; a file it does not reach has no staleness gate`,
+    );
+
+    await withScratchDir(async (dir) => {
+      // The real source first, so a gate that reports *every* fixture as stale
+      // cannot satisfy the assertion below.
+      const clean = await writeFixture(dir, 'toolsets-current.json', {
+        source: rendered, file: FILE, name: NAME, body,
+      });
+      const accepted = runCensus(['--marker-fixture', clean]);
+      assert.equal(accepted.status, 0, `the real ${FILE} block was rejected as stale:\n${accepted.stdout}`);
+      assert.deepEqual(JSON.parse(accepted.stdout), { error: null });
+
+      // Then the shape a rebase conflict leaves behind: the markers survive,
+      // the body they enclose does not. This is the drift the generated-block
+      // gate exists to catch, in a `.ts` file rather than a document.
+      const truncated = `${start}\n${NAME} block body lost to a --theirs resolution\n${end}`;
+      const stale = await writeFixture(dir, 'toolsets-truncated.json', {
+        source: truncated, file: FILE, name: NAME, body,
+      });
+      const run = censusFailure(['--marker-fixture', stale]);
+      assert.match(run.stdout, new RegExp(`${FILE.replace('.', '\\.')}: generated ${NAME} block is stale`), run.stdout);
     });
   });
 });

@@ -13,6 +13,22 @@ import { dirname, isAbsolute, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
+
+type Run = { status: number; stdout: string; stderr: string };
+
+/** One subprocess, with its status kept rather than thrown. */
+function execRun(argv: string[], env: NodeJS.ProcessEnv = {}): Run {
+  try {
+    const stdout = execFileSync(process.execPath, argv, {
+      cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 32 * 1024 * 1024, env: { ...process.env, ...env },
+    });
+    return { status: 0, stdout, stderr: '' };
+  } catch (error) {
+    const failure = error as { status?: number; stdout?: string; stderr?: string };
+    return { status: failure.status ?? 1, stdout: failure.stdout ?? '', stderr: failure.stderr ?? '' };
+  }
+}
+
 const census = JSON.parse(execFileSync(process.execPath, ['scripts/surface-census.mjs'], {
   cwd: ROOT,
   encoding: 'utf8',
@@ -90,14 +106,55 @@ function scratchOutsideRepo(path: string): boolean {
 }
 
 function runFailure(args: string[], env: NodeJS.ProcessEnv = {}): string {
-  try {
-    execFileSync(process.execPath, args, { cwd: ROOT, encoding: 'utf8', stdio: 'pipe', maxBuffer: 32 * 1024 * 1024, env: { ...process.env, ...env } });
-  } catch (error) {
-    const result = error as { stdout?: string; stderr?: string };
-    return `${result.stdout ?? ''}\n${result.stderr ?? ''}`;
-  }
-  assert.fail(`expected command to fail: ${args.join(' ')}`);
+  const run = execRun(args, env);
+  assert.notEqual(run.status, 0, `expected command to fail: ${args.join(' ')}`);
+  return `${run.stdout}\n${run.stderr}`;
 }
+
+/**
+ * A census run with its status kept, because whether it failed is the thing
+ * under test in #1436 — `runFailure` cannot be used where the verdict is the
+ * assertion.
+ */
+function runGate(args: string[]): Run {
+  return execRun(['scripts/surface-census.mjs', ...args]);
+}
+
+/** The label `--no-prose`'s fixture pins, so the assertion can name it exactly. */
+const PLANTED_PROSE_LABEL = 'a paragraph no document in this repository contains (#1436 fixture)';
+
+/**
+ * The checked-in pin with one impossible entry added (#1436).
+ *
+ * A *phantom* pin — a paragraph no document contains — rather than a deleted
+ * one, so the fixture does not have to remove anything from a document to be
+ * out of date. The real pin is copied, never edited: `--prose-sync` writes
+ * `scripts/doc-prose-manifest.json`, and a test that pointed the gate at the
+ * real file would rewrite a checked-in artifact exactly when the gate is
+ * broken.
+ */
+function driftedProseManifest(): unknown {
+  const pin = JSON.parse(readFileSync(join(ROOT, 'scripts', 'doc-prose-manifest.json'), 'utf8')) as {
+    files: Record<string, Array<{ hash: string; label: string }>>;
+  };
+  return {
+    ...pin,
+    files: {
+      ...pin.files,
+      // The hash is content-addressed, so a value no document hashes to can
+      // only ever be reported as missing — which is what makes this a pin that
+      // is out of date by construction rather than by deletion.
+      'ARCHITECTURE.md': [...(pin.files['ARCHITECTURE.md'] ?? []), { hash: '1436notacontenthash', label: PLANTED_PROSE_LABEL }],
+    },
+  };
+}
+
+/** The `--check` findings, one per line of the diagnostics block. */
+const findings = (run: { stderr: string }): string[] =>
+  run.stderr.split('\n').filter((line) => line.startsWith('- '));
+
+/** The three shapes `proseDrift` reports, and nothing else. */
+const PROSE_VERDICT = /pinned prose block is no longer|carries hand-written prose|manifest pins prose/;
 
 /** The body between one block's markers, exactly as `inspectGeneratedBlock` slices it. */
 function generatedBlockBody(file: string, name: string): string {
@@ -122,11 +179,86 @@ function walkRepository(directory: string, prefix = ''): string[] {
 
 describe('generated architecture and specification inventory', () => {
   it('passes the offline documentation drift guard', async () => {
+    // `--no-prose` is load-bearing, and the reason is #1436. This test asserts
+    // the *architecture* — which modules register, which keys exist, that the
+    // generated counts are current. It used to shell out to a bare `--check`,
+    // which also reconciles `scripts/doc-prose-manifest.json`: a hand-maintained
+    // documentation pin whose job is catching prose lost to a `--theirs`. So a
+    // reworded ARCHITECTURE.md reddened a test that reads no documentation, and
+    // the reflex on a red you cannot explain is to re-run it or relax it rather
+    // than to look. A check's input set should be no wider than the thing it
+    // checks.
+    //
+    // The flag removes nothing this test is here for: every gate in
+    // `checkDocumentation()` except the prose reconciliation still runs, and
+    // `prose-integrity is severed from this gate` below proves that by showing
+    // the difference is *exactly* the prose verdicts. The prose pin keeps its
+    // own full `--check` assertion in `tests/doc-prose-integrity.test.ts`, so
+    // moving the edge out of this file drops no coverage.
     await withFixtures(async (dir) => {
       const file = join(dir, 'census.json');
       await writeFile(file, JSON.stringify(census));
-      execFileSync(process.execPath, ['scripts/surface-census.mjs', '--check', '--census-file', file], { cwd: ROOT, stdio: 'pipe', maxBuffer: 32 * 1024 * 1024 });
-      execFileSync('npm', ['run', 'check:docs-counts'], { cwd: ROOT, stdio: 'pipe', maxBuffer: 32 * 1024 * 1024 });
+      execFileSync(process.execPath, ['scripts/surface-census.mjs', '--check', '--no-prose', '--census-file', file], { cwd: ROOT, stdio: 'pipe', maxBuffer: 32 * 1024 * 1024 });
+      execFileSync('npm', ['run', 'check:docs-counts', '--', '--no-prose'], { cwd: ROOT, stdio: 'pipe', maxBuffer: 32 * 1024 * 1024 });
+    });
+  });
+
+  it('prose-integrity is severed from this gate (#1436)', async () => {
+    // The evidence for the claim in the comment above, and the test that fails
+    // if `--no-prose` is ever removed or silently turned into a no-op.
+    //
+    // It is a *differential*, not an "exits 0" assertion. `--check` is red on
+    // this tree for a reason that has nothing to do with either flag — the
+    // checked-in prose pin is stale (#1439) — so asserting a clean exit here
+    // would be asserting something about the repository's health and nothing
+    // about the flag. Instead: run the same command twice over the same
+    // deliberately-drifted pin and compare the two error sets. The flag must
+    // remove the prose verdicts and nothing else.
+    //
+    // The pin is drifted in a scratch copy rather than the real manifest,
+    // because `--prose-sync` *writes* the checked-in pin — a test that pointed
+    // at it would rewrite a repository artifact precisely when the gate is
+    // broken, which is the one moment it must not move. Hence `--prose-manifest`.
+    await withFixtures(async (dir) => {
+      const censusFile = join(dir, 'census.json');
+      await writeFile(censusFile, JSON.stringify(census));
+      const pinFile = join(dir, 'doc-prose-manifest.json');
+      await writeFile(pinFile, JSON.stringify(driftedProseManifest()));
+
+      const withProse = runGate(['--check', '--census-file', censusFile, '--prose-manifest', pinFile]);
+      const withoutProse = runGate(['--check', '--no-prose', '--census-file', censusFile, '--prose-manifest', pinFile]);
+
+      // The planted pin is really out of date, and the real gate says so.
+      assert.ok(
+        withProse.stderr.includes(PLANTED_PROSE_LABEL),
+        `precondition: the planted pin was not reported by the real --check:\n${withProse.stderr}`,
+      );
+
+      // The comparison is a set difference in both directions rather than an
+      // "exits 0" assertion, because a tree can be red for reasons that have
+      // nothing to do with either flag — and because a classifier that decides
+      // which findings are "prose ones" is a second thing that can be wrong.
+      const before = findings(withProse);
+      const after = findings(withoutProse);
+      const removed = before.filter((line) => !after.includes(line));
+      const added = after.filter((line) => !before.includes(line));
+
+      assert.ok(removed.length > 0, 'the flag removed no finding at all, so nothing was severed');
+      assert.ok(
+        removed.some((line) => line.includes(PLANTED_PROSE_LABEL)),
+        `the flag did not remove the planted pin's own verdict; it removed:\n${removed.join('\n')}`,
+      );
+      // Every removed verdict is a prose one, and every verdict that has
+      // nothing to do with prose survives the flag byte for byte. Together
+      // these two say the flag's entire effect is to drop the prose
+      // reconciliation — not the staleness comparison, not the schema budgets,
+      // not the gated-endpoint scan.
+      assert.deepEqual(
+        removed.filter((line) => !PROSE_VERDICT.test(line)),
+        [],
+        'the flag removed a verdict that is not about prose',
+      );
+      assert.deepEqual(added, [], 'the flag changed or added a verdict that has nothing to do with prose');
     });
   });
 

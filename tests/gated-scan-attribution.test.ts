@@ -135,7 +135,11 @@ async function checkWithInnocentFixtures(): Promise<Run> {
   cleanRun ??= await withScratchDir(async (dir) => {
     await writeFile(join(dir, 'innocent.ts'), fixture('planted_control_probe', '/me/playlists'));
     await writeFile(join(dir, 'statsfm-shaped.ts'), fixture('planted_statsfm_probe', '/users/user-id', 'StatsfmClient'));
-    const run = runCensus(['--check', '--gated-scan-extra', dir]);
+    // `--no-prose` for the reason given in `checkWithViolations` below. This
+    // run's whole claim is that *these fixtures* are innocent, and it is the
+    // one that asserts a clean exit — so it is the run a documentation
+    // reword could redden for a reason having nothing to do with call sites.
+    const run = runCensus(['--check', '--no-prose', '--gated-scan-extra', dir]);
     assert.equal(run.status, 0, `innocent fixtures must not fail --check:\n${run.stderr}`);
     return run;
   });
@@ -156,7 +160,15 @@ async function checkWithViolations(): Promise<Run> {
     await writeFile(join(dir, 'undeclared.ts'), fixture('planted_market_probe', '/markets'));
     await writeFile(join(dir, 'unreachable.ts'), unreachableHelperFixture());
     await writeFile(join(dir, 'statsfm-twin.ts'), fixture('planted_statsfm_twin_probe', '/users/user-id'));
-    const run = runCensus(['--check', '--gated-scan-extra', dir]);
+    // `--no-prose` drops the `scripts/doc-prose-manifest.json` reconciliation
+    // from `checkDocumentation()` (#1436). Nothing here reads prose — every
+    // assertion below is about call-site attribution against planted fixtures —
+    // so the pin is a file this test has no business being sensitive to. It is
+    // the same edge `tests/arch-inventory.test.ts` had, and the same measure:
+    // three of this file's tests were red on a tree whose only defect was a
+    // stale prose pin, every one of them reporting the pin's five verdicts
+    // instead of anything about call sites.
+    const run = runCensus(['--check', '--no-prose', '--gated-scan-extra', dir]);
     assert.notEqual(run.status, 0, 'planted violations must fail --check');
     return run;
   });
