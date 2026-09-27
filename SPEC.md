@@ -133,6 +133,8 @@ Spotify Web API (api.spotify.com)
 6. Tokens saved to `~/.spotify-mcp/tokens.json` (mode 600)
 7. On each API call: if access token is expired, silently refresh and persist
 
+Steps 2–4 are bounded by `SPOTIFY_AUTH_TIMEOUT_MS` (default `300000`). On expiry the listener is closed, the port released, and the failure names the redirect, the port and the elapsed bound. A listener that could not bind fails earlier and differently: the message names `EADDRINUSE`, the port, and the default redirect, because the common cause is a previous auth run that is still holding the port.
+
 ### OAuth scopes requested
 
 ```
@@ -185,6 +187,7 @@ ugc-image-upload
 SPOTIFY_CLIENT_ID      — from developer.spotify.com app dashboard
 SPOTIFY_REDIRECT_URI   — http://127.0.0.1:8888/callback (default)
 SPOTIFY_MCP_TOKEN_FILE — optional; overrides the token storage path (default ~/.spotify-mcp/tokens.json)
+SPOTIFY_AUTH_TIMEOUT_MS — optional; bounds the browser callback wait (default 300000)
 ```
 
 > Note: `SPOTIFY_CLIENT_SECRET` is **not used** with the PKCE flow. Only `SPOTIFY_CLIENT_ID` is needed in code. The client secret exists in the Spotify dashboard but is never sent by this application.
