@@ -30,10 +30,12 @@ The finalized default MCP registry exposes **589 tools**, **17 fixed resources**
 > 2. Clone and build:
 >    git clone https://github.com/NovaLux12/spotify-mcp-server.git
 >    cd spotify-mcp-server && npm ci && npm run build
-> 3. Show me which file my MCP host reads server environment from (the host's server
->    config, or a local .env — Node >=22.9 loads it via --env-file-if-exists) and
->    print the exact line to add. I will type the Client ID in myself. Do not ask me
->    for it and never echo it back.
+> 3. Show me which file my MCP host reads server environment from. The host's server
+>    config is the one that always works; a local .env is read only when you launch
+>    through this repo's npm run dev or npm start, which pass --env-file-if-exists
+>    on Node >=22.9 — the published binary does not read it. Print the exact line to
+>    add. I will type the Client ID in myself. Do not ask me for it and never echo
+>    it back.
 > 4. Start the server and run the auth command yourself, then finish the browser login
 >    when it opens. This server uses PKCE, so there is no client secret and no
 >    credential to fetch beyond the Client ID.
@@ -46,7 +48,7 @@ The finalized default MCP registry exposes **589 tools**, **17 fixed resources**
 
 | | |
 |---|---|
-| **Complete** | Playback, search, catalog, library, playlists, following, plus extras like duplicate cleanup, M3U/CSV import-export, podcast sessions, snapshot diffing, listening analytics, market checks, stats.fm taste imports, and taste composite briefs, playlists, and reports. |
+| **Complete** | Playback, search, catalog, library, playlists, following, plus extras like duplicate cleanup, M3U/CSV import-export, podcast sessions, snapshot diffing, listening analytics, market checks, stats.fm taste reads, and taste composite briefs, playlists, and reports. |
 | **Safe** | `dry_run` previews on writes, receipts that prove what landed, human confirmation for bulk deletes, and `READONLY` to hide write-capable modules. |
 | **Honest** | No tool claims to work when it cannot. Gated endpoints keep their wrappers, read replacements where one exists, and explain the 403 in plain English instead of crashing — see [Registration-gated endpoints](#registration-gated-endpoints), generated from `src/gating.ts`. |
 | **Polished** | Paginated (up to 500), podcasts first-class, device-aware playback, `spotify_doctor` self-diagnosis, real test suite. |
