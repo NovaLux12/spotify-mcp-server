@@ -46,10 +46,44 @@ const { version } = createRequire(import.meta.url)('../package.json') as { versi
  */
 const SERVER_INSTRUCTIONS = BRANDING_NOTICE;
 
-async function startMcpServer(): Promise<void> {
-  // Read the SPOTIFY_MCP_* env family once; everything else consumes
-  // getConfig() from here on.
-  initConfig();
+/**
+ * The registration half of `startMcpServer`, as a factory.
+ *
+ * Extracted for #599 so the opt-in HTTP transport can build one fully
+ * registered `McpServer` per session — the MCP SDK's `Server` holds exactly
+ * one transport, so a multi-session listener cannot reuse a single instance.
+ *
+ * ## What did and did not move into it
+ *
+ * Everything that must run for EVERY session moved: the three boundaries, the
+ * gated-path contract, the progress reporter, the acting-account echo, the
+ * manifest registration, the naming policy, the annotations and both budget
+ * gates. Those are per-server by construction, and a session that skipped one
+ * would serve tools without the truncation cap or the closed input schemas.
+ *
+ * What stayed in `startMcpServer` is the process-level derivation: the toolset
+ * resolution, the granted-scope read and the read-only gate. All three read
+ * `process.env` or the token file once, and all three are identical for every
+ * session of one process — recomputing them per session would multiply the
+ * token-file reads and could, in principle, produce two sessions that disagree
+ * about which tools exist.
+ *
+ * The HTTP path is NOT a parallel registration: it goes through this same
+ * function, so the schema-budget gate and the annotation coverage check that
+ * fail startup over stdio fail it identically over HTTP. That is the whole
+ * reason the factory exists rather than a second, HTTP-specific registrar.
+ *
+ * `announce` suppresses the two advisory startup lines on the second and later
+ * sessions. The gates themselves still run and still throw — a session whose
+ * annotations did not apply is a real defect, it just does not need to be
+ * reported once per connected client.
+ */
+async function buildMcpServer(
+  client: SpotifyClient,
+  scope: ServerScope,
+  options: { announce: boolean },
+): Promise<McpServer> {
+  const { activeSets, overrides, grantedScopes, readOnly } = scope;
 
   const server = new McpServer(
     {
@@ -76,56 +110,6 @@ async function startMcpServer(): Promise<void> {
   installProgressContextBoundary(server);
   installTruncationBoundary(server);
 
-  // Toolset segmentation (#95): SPOTIFY_MCP_TOOLSETS=playlists,player,... trims
-  // the registered surface for clients that cap tool counts. Default: the
-  // curated `core` surface (#889); `all` is the whole thing.
-  const toolsetsSpec = process.env.SPOTIFY_MCP_TOOLSETS;
-  const { sets: activeSets, unknown } = resolveToolsets(toolsetsSpec);
-  // Unknown-only specs fail loud (#910); mixed specs keep starting.
-  assertToolsetsUsable(toolsetsSpec, { sets: activeSets, unknown });
-  // Per-tool opt-in/opt-out (#111 item 7): SPOTIFY_MCP_ENABLE_TOOLS /
-  // SPOTIFY_MCP_DISABLE_TOOLS take registration keys; disable > enable > set.
-  const { enable, disable, unknown: unknownOverrides } = resolveToolOverrides(
-    process.env.SPOTIFY_MCP_ENABLE_TOOLS,
-    process.env.SPOTIFY_MCP_DISABLE_TOOLS,
-  );
-  for (const name of unknownOverrides.enable) {
-    console.error(`[spotify-mcp] Unknown SPOTIFY_MCP_ENABLE_TOOLS entry ignored: ${name}`);
-  }
-  for (const name of unknownOverrides.disable) {
-    console.error(`[spotify-mcp] Unknown SPOTIFY_MCP_DISABLE_TOOLS entry ignored: ${name}`);
-  }
-  // The stats.fm families are off by default (#607): 49 tools across the
-  // `statsfm`, `taste` and `tastecomposites` keys that need a separate
-  // stats.fm username, advertised to every user whether or not they have one.
-  // SPOTIFY_MCP_STATSFM=1 is the one-word opt-in, and it rides the ENABLE path
-  // rather than inventing a second gate, so an explicit
-  // SPOTIFY_MCP_DISABLE_TOOLS=statsfm still wins over it — the same precedence
-  // every other registration key obeys.
-  if (statsfmEnv()) {
-    for (const key of STATSFM_REGISTRATION_KEYS) enable.add(key);
-    console.error('[spotify-mcp] SPOTIFY_MCP_STATSFM is set — the stats.fm families are registered');
-  }
-  const overrides = { enable, disable };
-  if (unknown.length > 0) {
-    console.error(`[spotify-mcp] unknown toolset(s) ignored: ${unknown.join(', ')} — registered ${activeSets.size} toolset(s): ${[...activeSets].sort().join(', ')} — ${toolsetEnvHelp()}`);
-  }
-  if (activeSets.size < Object.keys(TOOLSETS).length) {
-    console.error(`[spotify-mcp] active toolsets: ${[...activeSets].sort().join(', ')}`);
-  }
-  // The curated default is a change an operator has to be able to see, not a
-  // silent trim: without this line, a user whose integration lost a tool has
-  // nothing in the startup log to grep for. `spotify_doctor` reports the same
-  // thing to a running session, but stderr is what gets pasted into a bug.
-  if ((toolsetsSpec ?? '').trim() === '') {
-    console.error(
-      `[spotify-mcp] SPOTIFY_MCP_TOOLSETS is unset — registering the default surface ` +
-      `(${DEFAULT_TOOLSETS.join(', ')}). Set SPOTIFY_MCP_TOOLSETS=all for every tool.`,
-    );
-  }
-
-  const client = new SpotifyClient();
-
   // Cross-cutting error contract for Spotify's app-registration-gated
   // endpoints (#791): installed here, next to the progress reporter, because
   // it must hold in every host configuration. It used to be installed by the
@@ -133,32 +117,8 @@ async function startMcpServer(): Promise<void> {
   // the graceful 403 mapping for every other module's tools too.
   installGatedPathContract(client);
 
-  // Scope-aware hiding (#111 item 6): granted scopes come from the persisted
-  // token file; fail-open (empty set blocks nothing) for pre-scope files.
-  const grantedScopes = await loadTokens()
-    .then((t) => scopesFor(t.scope))
-    .catch(() => scopesFor(undefined));
-
-  // SPOTIFY_MCP_READONLY=1 hides every write-capable module regardless of
-  // granted scopes — for users who want hard guarantees, not conventions.
-  const readOnly = readOnlyModeEnabled();
-  if (readOnly) {
+  if (options.announce && readOnly) {
     console.error('[spotify-mcp] SPOTIFY_MCP_READONLY is set — write-capable modules are hidden');
-  }
-
-  // #695: the derived-listening-analytics opt-in, disclosed on every start in
-  // the direction that matters. Saying nothing when the flag is OFF would let
-  // an operator believe the analytics are there and find eleven tools missing
-  // with no explanation — so the OFF case prints, and it names the flag rather
-  // than a bare count. The ON case prints too, because a host that opted in
-  // should be able to see in a log that the extra surface is what it asked for.
-  // This is a separate mechanism from SPOTIFY_MCP_READONLY and the two lines
-  // are independent: read-only mode says nothing about analytics, and a
-  // read-only host can still hold derived metrics.
-  if (derivedAnalyticsEnabled()) {
-    console.error(`[spotify-mcp] SPOTIFY_MCP_EXPERIMENTAL_ANALYTICS is set — ${DERIVED_ANALYTICS_TOOLS.size} derived listening-analytics tools are registered (${[...DERIVED_ANALYTICS_TOOLS].sort().join(', ')})`);
-  } else {
-    console.error(`[spotify-mcp] derived listening analytics are OFF — ${DERIVED_ANALYTICS_TOOLS.size} tools (${[...DERIVED_ANALYTICS_TOOLS].sort().join(', ')}) are not registered. Set SPOTIFY_MCP_EXPERIMENTAL_ANALYTICS=1 to register them.`);
   }
 
   // Forward long-walk pagination progress (#65) as MCP progress
@@ -218,7 +178,7 @@ async function startMcpServer(): Promise<void> {
   // rather than at 500+ call sites; assert coverage below so a silent no-op (SDK
   // registry shape change) is visible in the startup log instead of a host.
   const annotations = applyToolAnnotations(server);
-  if (annotations.total === 0 || annotations.annotated < annotations.total) {
+  if (options.announce && (annotations.total === 0 || annotations.annotated < annotations.total)) {
     console.error(
       `[spotify-mcp] warning: tool annotations applied to ${annotations.annotated}/${annotations.total} registered tools`,
     );
@@ -228,8 +188,152 @@ async function startMcpServer(): Promise<void> {
   // error envelopes for all production tools.
   installToolErrorBoundary(server);
   assertAggregateSurfaceBudget(collectAggregateSurfaceMeasurement(server));
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
+  return server;
+}
+
+/** The per-process derivations every session of one server shares. */
+interface ServerScope {
+  // Typed as the mutable `Set` the resolvers hand back, not `ReadonlySet`:
+  // `isModuleActive` and `moduleBlockedByScopes` take a `Set`, and widening the
+  // parameter type of a function that does not mutate would be a wider change
+  // than this refactor is.
+  readonly activeSets: Set<string>;
+  readonly overrides: { enable: Set<string>; disable: Set<string> };
+  readonly grantedScopes: Set<string>;
+  readonly readOnly: boolean;
+}
+
+async function startMcpServer(): Promise<void> {
+  // Read the SPOTIFY_MCP_* env family once; everything else consumes
+  // getConfig() from here on.
+  initConfig();
+
+  // Resolved BEFORE any registration work, and it throws rather than warns.
+  // A refusal here means the process exits 1 having registered nothing, which
+  // is the only outcome that cannot be mistaken for a healthy server (#599).
+  const { resolveHttpConfig } = await import('./http.js');
+  const httpConfig = resolveHttpConfig(process.env);
+
+  // Toolset segmentation (#95): SPOTIFY_MCP_TOOLSETS=playlists,player,... trims
+  // the registered surface for clients that cap tool counts. Default: the
+  // curated `core` surface (#889); `all` is the whole thing.
+  const toolsetsSpec = process.env.SPOTIFY_MCP_TOOLSETS;
+  const { sets: activeSets, unknown } = resolveToolsets(toolsetsSpec);
+  // Unknown-only specs fail loud (#910); mixed specs keep starting.
+  assertToolsetsUsable(toolsetsSpec, { sets: activeSets, unknown });
+  // Per-tool opt-in/opt-out (#111 item 7): SPOTIFY_MCP_ENABLE_TOOLS /
+  // SPOTIFY_MCP_DISABLE_TOOLS take registration keys; disable > enable > set.
+  const { enable, disable, unknown: unknownOverrides } = resolveToolOverrides(
+    process.env.SPOTIFY_MCP_ENABLE_TOOLS,
+    process.env.SPOTIFY_MCP_DISABLE_TOOLS,
+  );
+  for (const name of unknownOverrides.enable) {
+    console.error(`[spotify-mcp] Unknown SPOTIFY_MCP_ENABLE_TOOLS entry ignored: ${name}`);
+  }
+  for (const name of unknownOverrides.disable) {
+    console.error(`[spotify-mcp] Unknown SPOTIFY_MCP_DISABLE_TOOLS entry ignored: ${name}`);
+  }
+  // The stats.fm families are off by default (#607): 49 tools across the
+  // `statsfm`, `taste` and `tastecomposites` keys that need a separate
+  // stats.fm username, advertised to every user whether or not they have one.
+  // SPOTIFY_MCP_STATSFM=1 is the one-word opt-in, and it rides the ENABLE path
+  // rather than inventing a second gate, so an explicit
+  // SPOTIFY_MCP_DISABLE_TOOLS=statsfm still wins over it — the same precedence
+  // every other registration key obeys.
+  if (statsfmEnv()) {
+    for (const key of STATSFM_REGISTRATION_KEYS) enable.add(key);
+    console.error('[spotify-mcp] SPOTIFY_MCP_STATSFM is set — the stats.fm families are registered');
+  }
+  const overrides = { enable, disable };
+  if (unknown.length > 0) {
+    console.error(`[spotify-mcp] unknown toolset(s) ignored: ${unknown.join(', ')} — registered ${activeSets.size} toolset(s): ${[...activeSets].sort().join(', ')} — ${toolsetEnvHelp()}`);
+  }
+  if (activeSets.size < Object.keys(TOOLSETS).length) {
+    console.error(`[spotify-mcp] active toolsets: ${[...activeSets].sort().join(', ')}`);
+  }
+  // The curated default is a change an operator has to be able to see, not a
+  // silent trim: without this line, a user whose integration lost a tool has
+  // nothing in the startup log to grep for. `spotify_doctor` reports the same
+  // thing to a running session, but stderr is what gets pasted into a bug.
+  if ((toolsetsSpec ?? '').trim() === '') {
+    console.error(
+      `[spotify-mcp] SPOTIFY_MCP_TOOLSETS is unset — registering the default surface ` +
+      `(${DEFAULT_TOOLSETS.join(', ')}). Set SPOTIFY_MCP_TOOLSETS=all for every tool.`,
+    );
+  }
+
+  // #695: the derived-listening-analytics opt-in, disclosed once per process.
+  // Saying nothing when the flag is OFF would let an operator believe the
+  // analytics are there and find eleven tools missing with no explanation — so
+  // the OFF case prints, and it names the flag rather than a bare count. The ON
+  // case prints too, because a host that opted in should be able to see in a log
+  // that the extra surface is what it asked for. This is a separate mechanism
+  // from SPOTIFY_MCP_READONLY and the two lines are independent: read-only mode
+  // says nothing about analytics, and a read-only host can still hold derived
+  // metrics.
+  //
+  // It sits here, beside the toolset derivation it is disclosed next to, rather
+  // than inside buildMcpServer: `derivedAnalyticsEnabled()` reads process.env and
+  // every session of one process sees the same answer, so printing it per
+  // session would repeat one line once per connected client (#599).
+  if (derivedAnalyticsEnabled()) {
+    console.error(`[spotify-mcp] SPOTIFY_MCP_EXPERIMENTAL_ANALYTICS is set — ${DERIVED_ANALYTICS_TOOLS.size} derived listening-analytics tools are registered (${[...DERIVED_ANALYTICS_TOOLS].sort().join(', ')})`);
+  } else {
+    console.error(`[spotify-mcp] derived listening analytics are OFF — ${DERIVED_ANALYTICS_TOOLS.size} tools (${[...DERIVED_ANALYTICS_TOOLS].sort().join(', ')}) are not registered. Set SPOTIFY_MCP_EXPERIMENTAL_ANALYTICS=1 to register them.`);
+  }
+
+  // Scope-aware hiding (#111 item 6): granted scopes come from the persisted
+  // token file; fail-open (empty set blocks nothing) for pre-scope files.
+  const grantedScopes = await loadTokens()
+    .then((t) => scopesFor(t.scope))
+    .catch(() => scopesFor(undefined));
+
+  // SPOTIFY_MCP_READONLY=1 hides every write-capable module regardless of
+  // granted scopes — for users who want hard guarantees, not conventions.
+  const readOnly = readOnlyModeEnabled();
+  const scope: ServerScope = { activeSets, overrides, grantedScopes, readOnly };
+
+  if (!httpConfig.enabled) {
+    // The default, and the path every current host uses. Byte-for-byte the
+    // same sequence of registrations and gates as before #599: the only thing
+    // added on this branch is the config read above, which cannot throw for a
+    // stdio process because it returns before inspecting any HTTP variable.
+    const client = new SpotifyClient();
+    const server = await buildMcpServer(client, scope, { announce: true });
+    const transport = new StdioServerTransport();
+    await server.connect(transport);
+    return;
+  }
+
+  // Opt-in network transport (#599). One McpServer AND one SpotifyClient per
+  // session: sharing the client would give the second session a single
+  // progress-reporter slot and redirect the first session's notifications onto
+  // the second session's stream (see src/http.ts's header).
+  const { startHttpTransport } = await import('./http.js');
+  const handle = await startHttpTransport({
+    config: httpConfig,
+    createServer: async () => buildMcpServer(new SpotifyClient(), scope, { announce: false }),
+  });
+  console.error(
+    `[spotify-mcp] Streamable HTTP transport listening on ${handle.url} `
+    + '(bearer auth required; loopback-only by default — see docs/configuration.md)',
+  );
+
+  // The process now outlives the request that started it, so the two signals a
+  // supervisor actually sends have to close the listener and every live
+  // session rather than leaving the socket bound to a dead registry.
+  let shuttingDown = false;
+  const shutdown = (signal: NodeJS.Signals): void => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.error(`[spotify-mcp] ${signal} received — closing the HTTP transport`);
+    void handle.close().then(
+      () => process.exit(0),
+      () => process.exit(1),
+    );
+  };
+  process.once('SIGINT', shutdown);
+  process.once('SIGTERM', shutdown);
 }
 
 /**
@@ -325,6 +429,11 @@ Usage:
                         [--profile <name>]
   spotify-mcp --help                   Show this message
   spotify-mcp --version                Print the version
+
+  SPOTIFY_MCP_TRANSPORT=http serves the same server over Streamable HTTP
+  instead. It is opt-in, requires a bearer token, binds loopback unless you say
+  otherwise, and is still single-user — see docs/configuration.md before
+  exposing it to anything other than this machine.
 
   auth --profile <name> is the CLI form of SPOTIFY_MCP_PROFILE and selects
   ~/.spotify-mcp/tokens.<name>.json. It applies to the whole invocation and

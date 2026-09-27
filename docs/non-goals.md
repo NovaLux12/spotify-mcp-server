@@ -108,19 +108,28 @@ no account pooling, and no billing, quota or tenancy surface.
 loopback host — `src/auth.ts` throws on anything else when the redirect is
 resolved — so a hosted deployment cannot complete a login without a design this
 project has not built. Tokens live in one per-process file, and the transport
-proposal
-([#599](https://github.com/NovaLux12/spotify-mcp-server/issues/599)) is scoped as
+added by
+[#599](https://github.com/NovaLux12/spotify-mcp-server/issues/599) is scoped as
 single-user by design, explicitly so that it does not land against this entry.
 
 **Instead.** A user who needs several accounts runs one process per account, via
 `--profile` or `SPOTIFY_MCP_PROFILE`. Remote *access* to your own single account
-is a separate question, tracked in
-[#599](https://github.com/NovaLux12/spotify-mcp-server/issues/599), and its
-absence here is not a decision against it.
+is a separate question, and [#599](https://github.com/NovaLux12/spotify-mcp-server/issues/599)
+now ships an answer to it: an opt-in Streamable HTTP transport
+(`SPOTIFY_MCP_TRANSPORT=http`) with a pre-provisioned bearer token, loopback by
+default. That is *access*, not *tenancy* — one user, one process, one account,
+one token, and no per-caller identity anywhere in the design. What it does not
+do is the thing this entry rules out: there is no account pooling, no per-caller
+authorization, and no way for one deployment to serve several people. The
+resource-server OAuth design that would be needed for that remains unbuilt, and
+the loopback redirect check above is still the reason a hosted process cannot
+finish a Spotify login on its own.
 
-**Sources.** `src/auth.ts` (the loopback redirect check); the scope statement in
-[#599](https://github.com/NovaLux12/spotify-mcp-server/issues/599), whose threat
-model names multi-user hosting as out of scope.
+**Sources.** `src/auth.ts` (the loopback redirect check); `src/http.ts` (the
+per-session `McpServer` and `SpotifyClient`, and the single shared bearer token
+every session authenticates with); the threat model in
+[`docs/configuration.md`](configuration.md) § "Streamable HTTP transport
+(opt-in)", which names multi-user hosting as out of scope.
 
 ---
 
