@@ -60,6 +60,13 @@ const parameterAllowlist = new Set([
   // count joins its base counterpart above. Both are structuredContent keys
   // about a call's own result, not parameters and not tools.
   'would_refuse', 'target_unrepresentable',
+  // #895: the `response_cap` receipt that rides with a byte-capped result.
+  // Every one of these is a structuredContent key describing a call's own
+  // output — what the ceiling was, what the payload actually measured, and
+  // which top-level fields were withheld. None is a tool and none is a request
+  // parameter; SPEC.md is naming the fields the cap emits, which is the point.
+  'response_cap', 'response_capped', 'cap_bytes', 'actual_bytes',
+  'retained_fields', 'omitted_fields', 'omitted_field_count',
   'removed_uris', 'scan_cap', 'base_playlist', 'target_playlist',
   // #902: merge_playlists' result shape, documented in SPEC.md §5.6 so a
   // merge that read a fraction of its sources says how large that fraction is.
