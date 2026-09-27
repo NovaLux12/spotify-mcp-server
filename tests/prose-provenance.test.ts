@@ -91,9 +91,11 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import {
+  contradictedByUpstream,
   gitProvenanceIn,
   proseProvenanceVerdict,
   proseSyncRefusals,
+  proseUnitHash,
   stampProvenance,
 } from '../scripts/prose-manifest.mjs';
 import { CLEAN_TREE, writeProvenanceFile } from './helpers/prose-tree.js';
@@ -312,6 +314,93 @@ describe('prose pin provenance (#1440)', () => {
         'the refusal must still say which paragraph is at stake, or the author cannot act on it',
       );
     });
+  });
+
+  it('names the retirements the branch it merges into contradicts, not just that it is behind', async () => {
+    // #1440's second definition-of-done item, and the part a generic "your tree
+    // is behind" refusal cannot do on its own: it says *which* of the retirements
+    // this run would have recorded are contradicted by the branch they are being
+    // merged into.
+    //
+    // Driven with this repository's real `origin/main` SHA rather than a
+    // fabricated one, because the evidence is read out of that ref with
+    // `git show` — a fake SHA would make the read fail and the check would pass
+    // for the wrong reason, which is the failure mode this file keeps testing
+    // for. Nothing is written to the ref and no ref is moved.
+    await withScratchDir(async (dir) => {
+      const upstream = execFileSync('git', ['-C', ROOT, 'rev-parse', 'origin/main'], { encoding: 'utf8' }).trim();
+      const copy = join(dir, 'manifest.json');
+      const truncated = join(dir, 'ARCHITECTURE.md');
+      const source = await readFile(join(ROOT, 'ARCHITECTURE.md'), 'utf8');
+      const kept = source.split('\n').filter((line) => !line.includes('Spotify is the system of record'));
+      assert.notEqual(kept.length, source.split('\n').length, 'the fixture paragraph was not found — this test would prove nothing');
+      await writeFile(copy, await readFile(MANIFEST, 'utf8'));
+      await writeFile(truncated, kept.join('\n'));
+      await writeProvenanceFile(dir, { ...CLEAN_TREE, head: 'a'.repeat(40), upstream, behind: true });
+
+      const run = runCensus([
+        '--prose-sync', '--retire', RETIREMENT_REASON,
+        '--prose-manifest', copy,
+        '--prose-override', `ARCHITECTURE.md=${truncated}`,
+        '--prose-provenance', join(dir, 'provenance.json'),
+      ]);
+
+      assert.notEqual(run.status, 0, '--prose-sync retired a paragraph that is still present upstream');
+      assert.match(
+        run.stderr,
+        /still present in their file at d0b690f|still present in their file at [0-9a-f]{7}/,
+        `the refusal must cite the ref the paragraph is still present in:\n${run.stderr}`,
+      );
+      assert.match(
+        run.stderr,
+        /Spotify is the system of record/,
+        'the contradiction must name the paragraph it is about — "something is wrong" is not actionable',
+      );
+      assert.equal(await readFile(copy, 'utf8'), await readFile(MANIFEST, 'utf8'), 'the manifest copy changed on a refusal');
+    });
+  });
+
+  it('does not call a paragraph contradicted when upstream no longer has it', async () => {
+    // The other direction, and it is the one that decides whether this check is
+    // usable at all. A reworded or deleted paragraph is absent upstream, and
+    // that is exactly the case a retirement is *for*.
+    //
+    // The fixture is a *partial* reword on purpose. The manifest stores a
+    // 56-character label next to every hash, and that label survives the opening
+    // of a reword — so an implementation that matched on the label would fire
+    // here and refuse every legitimate retirement of reworded prose. The first
+    // assertion below is the one that rules that out, and it is the assertion
+    // that failed when this was tried against a label-matching implementation.
+    const paragraph = 'Spotify is the system of record for playback, library, and catalog.\n';
+    const reworded = 'Spotify is the system of record for playback, library, and history.\n';
+    const dropped = [{ file: 'ARCHITECTURE.md', hash: proseUnitHash(paragraph), label: 'Spotify is the system of record for playback, library, a…' }];
+
+    assert.notEqual(
+      proseUnitHash(reworded),
+      dropped[0].hash,
+      'the fixture is supposed to be a reword of the pinned paragraph, not the same text',
+    );
+    assert.ok(
+      dropped[0].label.startsWith('Spotify is the system of record for playback, library, a'),
+      'the fixture label no longer shares the opening a label-matching implementation would match on, so this test would pass for the wrong reason',
+    );
+
+    assert.deepEqual(
+      contradictedByUpstream(dropped, { 'ARCHITECTURE.md': paragraph }),
+      dropped,
+      'a paragraph still in the upstream file must be reported as contradicted',
+    );
+    assert.deepEqual(
+      contradictedByUpstream(dropped, { 'ARCHITECTURE.md': reworded }),
+      [],
+      'a paragraph upstream has reworded is what a retirement is for, and must not be reported as contradicted — '
+      + 'the label prefix still matches it, so matching on the label would refuse this',
+    );
+    assert.deepEqual(
+      contradictedByUpstream(dropped, { 'README.md': paragraph }),
+      [],
+      'a document that does not exist upstream cannot contradict anything — it must be skipped, not read as empty',
+    );
   });
 
   it('records the tree the pin was generated from', async () => {

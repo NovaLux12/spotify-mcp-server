@@ -415,7 +415,10 @@ missing. Three things follow:
   second refusal is the one that matters: a branch that predates a docs PR sees
   that PR's reworded paragraphs as *absent*, retires them, and records a reason
   describing a change the tree never saw — which is what #1439 shipped. Rebase
-  or merge `origin/main` and re-run. `--check` then confirms the pin's recorded
+  or merge `origin/main` and re-run. That refusal also names any pending
+  retirement whose paragraph is **still present upstream**, matched by content
+  hash: a reason like "reworded by #NNNN" cannot be true of a paragraph sitting
+  in the branch you are merging into. `--check` then confirms the pin's recorded
   commit is still an ancestor of `HEAD`, and reports `verified` / `rewritten` /
   `unverifiable` from `--prose-report`; `unverifiable` is the normal state of a
   `fetch-depth: 1` CI checkout and is deliberately not an error.

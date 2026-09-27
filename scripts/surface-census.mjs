@@ -19,10 +19,13 @@ import { dirname, extname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import {
+  contradictedByUpstream,
   gitProvenanceIn,
   proseDrift,
   proseProvenanceVerdict,
   proseSyncRefusals,
+  readFilesAtRef,
+  short,
   stampProvenance,
   syncProseManifest,
 } from './prose-manifest.mjs';
@@ -585,6 +588,20 @@ if (args.includes('--prose-sync')) {
   const provenance = provenanceUnderTest(Object.keys(documents));
   const refusals = proseSyncRefusals(provenance, { allowStale });
   if (refusals.hard.length > 0 || refusals.soft.length > 0) {
+    // Evidence, not a second gate. A retirement reason is a claim about *why* a
+    // paragraph left; when that claim is "upstream reworded it" and the paragraph
+    // is still sitting unchanged in the file on the branch this merges into, the
+    // claim cannot be true — the change it names is not in this tree yet. That is
+    // #1439 exactly, and it is worth showing the author which of their pending
+    // retirements are contradicted rather than letting them pass `--allow-stale`
+    // over all of them. Matched by content hash, so a genuine partial reword
+    // upstream — same opening, new tail — is not flagged.
+    const contradicted = provenance.upstream
+      ? contradictedByUpstream(
+        result.dropped,
+        readFilesAtRef(ROOT, provenance.upstream, [...new Set(result.dropped.map((entry) => entry.file))]),
+      )
+      : [];
     console.error(
       `Refusing to rewrite the prose manifest: this tree cannot be attested (#1440).\n\n`
       + [...refusals.hard, ...refusals.soft].map((line) => `${line}\n`).join('\n')
@@ -592,6 +609,14 @@ if (args.includes('--prose-sync')) {
         ? `\nThis run would have retired ${result.dropped.length} pinned prose block(s):\n`
           + result.dropped.map((entry) => `- ${entry.file}: "${entry.label}"`).join('\n')
           + '\nThey are still pinned, and still in the gate. Resolve the tree question first, then re-run.\n'
+        : '')
+      + (contradicted.length > 0
+        ? `\nAnd ${contradicted.length} of them are still present in their file at ${short(provenance.upstream)}:\n`
+          + contradicted.map((entry) => `- ${entry.file}: "${entry.label}"`).join('\n')
+          + '\nA retirement whose reason is about something *else* — a reword upstream, a conflict resolved on\n'
+          + 'another branch — cannot be true of a paragraph that is sitting in the branch you are merging into.\n'
+          + 'Merge or rebase, then re-run; if the paragraph really is gone once you have, `--allow-stale` is\n'
+          + 'not what you want, `--retire "<the real reason>"` is.\n'
         : ''),
     );
     process.exit(1);

@@ -568,3 +568,43 @@ export function proseProvenanceVerdict(manifest, { ancestor }) {
       + 'This is expected on a shallow CI clone; it is not evidence either way.',
   };
 }
+
+/**
+ * Read documents as they are at a ref, for the evidence half of the `--prose-sync`
+ * refusal (#1440).
+ *
+ * A file absent at that ref is **omitted**, not returned as an empty string: a
+ * document that does not exist upstream is a different fact from one that exists
+ * and is empty, and the caller has to be able to tell them apart.
+ */
+export function readFilesAtRef(dir, ref, files) {
+  const out = {};
+  for (const file of files) {
+    const result = spawnSync('git', ['-C', dir, 'show', `${ref}:${file}`], { encoding: 'utf8' });
+    if (result.error || result.status !== 0) continue;
+    out[file] = result.stdout;
+  }
+  return out;
+}
+
+/**
+ * Which of the paragraphs a run is about to retire are *still present upstream*.
+ *
+ * A retirement reason is a claim about why a paragraph left. When the reason is
+ * "upstream reworded it", that claim is false if the paragraph is sitting
+ * unchanged in the file on the branch this will merge into — it cannot have been
+ * removed here by a change that is not here yet.
+ *
+ * Matched by **content hash**, not by label prefix: a partial reword keeps the
+ * opening and changes the tail, and matching the label would report that
+ * legitimate retirement as contradicted — refusing the tool's actual job.
+ */
+export function contradictedByUpstream(dropped, upstreamDocuments) {
+  const contradicted = [];
+  for (const entry of dropped) {
+    const source = upstreamDocuments[entry.file];
+    if (source === undefined) continue;
+    if (describeDocument(source).some((unit) => unit.hash === entry.hash)) contradicted.push(entry);
+  }
+  return contradicted;
+}
