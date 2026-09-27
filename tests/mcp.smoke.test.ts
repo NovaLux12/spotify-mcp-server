@@ -11,11 +11,11 @@ import './helpers/hermetic.js';
 
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawn, execFileSync, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { mkdtemp, writeFile, readFile, rm, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { once } from 'node:events';
+import { hermeticServerEnv, StdioJsonRpcChild } from './helpers/stdio-child.js';
 
 const REPO_ROOT = join(import.meta.dirname, '..');
 
@@ -81,80 +81,39 @@ const KNOWN_ERROR_KINDS = [
   'conflict', 'validation', 'unknown_tool', 'unknown_param', 'cancelled', 'internal',
 ] as const;
 
-interface JsonRpcResponse {
-  id?: number | string | null;
-  result?: Record<string, unknown>;
-  error?: { code: number; message: string; data?: unknown };
-}
+/**
+ * The JSON-RPC client over a spawned server's stdio pipes now lives in
+ * `tests/helpers/stdio-child.ts`, shared with `tests/env-switch-registry.test.ts`
+ * and `tests/tool.surface.test.ts` (#1366).
+ *
+ * The class that used to live here was the only copy in the repo that settled
+ * pending requests when the child died — `on('error')` and `on('exit')` both
+ * called `failAll`. That is the behaviour the rest of this file is written
+ * around, and its reasoning is preserved in the helper's header. What was
+ * missing everywhere else was this: a child that is *killed* never rejects its
+ * in-flight promise, so the two other files reported a reaped server as a
+ * 30-second "timeout waiting for tools/list" and threw the cause away. `stderr`
+ * cannot fill the gap — a SIGKILL leaves none.
+ *
+ * The promotions this file gained, rather than merely keeping:
+ *   - every request now has its own watchdog (this file previously had only a
+ *     file-level one armed in `before()`);
+ *   - children are reaped by PID and awaited, not left to an `unref`'d timer
+ *     that orphaned them whenever the file finished first;
+ *   - the spawn env is the shared hermetic one, so a developer's exported
+ *     `SPOTIFY_MCP_TOKEN_FILE` or `SPOTIFY_MCP_READONLY` can no longer reach a
+ *     child, and the real `~/.spotify-mcp` is unreachable by construction
+ *     rather than by a token file happening to point elsewhere.
+ */
 
-/** Minimal JSON-RPC client over the spawned server's stdio pipes. */
-class StdioClient {
-  private buffer = '';
-  private nextId = 0;
-  private readonly pending = new Map<number, { resolve: (v: JsonRpcResponse) => void; reject: (e: Error) => void }>();
-  private stderrText = '';
-  readonly child: ChildProcessWithoutNullStreams;
-
-  constructor(child: ChildProcessWithoutNullStreams) {
-    this.child = child;
-    // @modelcontextprotocol/sdk@1.29 StdioServerTransport frames messages as
-    // newline-delimited JSON (its ReadBuffer splits on '\n') — no
-    // Content-Length headers.
-    this.child.stdout.setEncoding('utf8');
-    this.child.stderr.setEncoding('utf8');
-    this.child.stdout.on('data', (chunk: string) => this.onStdout(chunk));
-    this.child.stderr.on('data', (chunk: string) => {
-      this.stderrText += chunk;
-    });
-    this.child.on('error', (err) => this.failAll(new Error(`spawn failed: ${err.message}`)));
-    this.child.on('exit', (code, signal) =>
-      this.failAll(new Error(`server exited early (code=${code} signal=${signal})\nstderr:\n${this.stderrText}`)),
-    );
-  }
-
-  private onStdout(chunk: string): void {
-    this.buffer += chunk;
-    let idx: number;
-    while ((idx = this.buffer.indexOf('\n')) !== -1) {
-      const line = this.buffer.slice(0, idx).trim();
-      this.buffer = this.buffer.slice(idx + 1);
-      if (!line) continue;
-      const message = JSON.parse(line) as JsonRpcResponse;
-      if (typeof message.id !== 'number') continue;
-      const entry = this.pending.get(message.id);
-      if (!entry) continue;
-      this.pending.delete(message.id);
-      if (message.error !== undefined) {
-        entry.reject(new Error(`JSON-RPC error ${message.error.code}: ${message.error.message}`));
-      } else {
-        entry.resolve(message);
-      }
-    }
-  }
-
-  private failAll(err: Error): void {
-    for (const entry of this.pending.values()) entry.reject(err);
-    this.pending.clear();
-  }
-
-  request(method: string, params: Record<string, unknown> = {}): Promise<JsonRpcResponse> {
-    const id = ++this.nextId;
-    return new Promise<JsonRpcResponse>((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
-      this.child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id, method, params }) + '\n');
-    });
-  }
-
-  notify(method: string, params: Record<string, unknown> = {}): void {
-    this.child.stdin.write(JSON.stringify({ jsonrpc: '2.0', method, params }) + '\n');
-  }
-}
-
-let client: StdioClient;
+let client: StdioJsonRpcChild;
+let tokenFile = '';
 let tempDir = '';
 // Hard watchdog: the server under test is a separate OS process whose internal
 // timers cannot be faked from here, so a real deadline is required to fail
-// fast instead of hanging CI if the child wedges.
+// fast instead of hanging CI if the child wedges. Kept as a whole-file bound on
+// top of the per-request one the helper installs; on fire it kills the child by
+// PID, so the harness reports the death by signal instead of by timer.
 let watchdog: NodeJS.Timeout | undefined;
 
 before(async () => {
@@ -165,50 +124,38 @@ before(async () => {
     refresh_token: 'smoke-test-refresh-token',
     expires_at: Date.now() + 60 * 60 * 1000,
   };
-  const tokenFile = join(tempDir, 'tokens.json');
+  tokenFile = join(tempDir, 'tokens.json');
   await writeFile(tokenFile, JSON.stringify(tokenFixture), { mode: 0o600 });
 
-  const child = spawn('node', ['--import', 'tsx', 'src/index.ts'], {
+  client = StdioJsonRpcChild.spawn({
+    label: 'mcp-smoke',
+    command: 'node',
+    args: ['--import', 'tsx', 'src/index.ts'],
     cwd: REPO_ROOT,
-    env: {
-      ...process.env,
-      SPOTIFY_CLIENT_ID: 'test-client-id',
-      SPOTIFY_MCP_TOKEN_FILE: tokenFile,
-    },
-    stdio: ['pipe', 'pipe', 'pipe'],
+    env: hermeticServerEnv({ SPOTIFY_MCP_TOKEN_FILE: tokenFile }, 'smoke').env,
   });
-  client = new StdioClient(child);
 
   watchdog = setTimeout(() => {
-    client.failAll(new Error(`smoke test exceeded 30s watchdog — killing server\nstderr:\n${client['stderrText']}`));
-    child.kill('SIGKILL');
+    // Kill rather than fail: a real child-death then produces a named failure
+    // (signal, pid, stderr, host pressure) instead of a bare timeout.
+    client.killNow();
   }, 30_000);
 
   // Handshake: initialize → initialized notification → protocol ready.
-  const init = await client.request('initialize', {
-    protocolVersion: '2024-11-05',
-    capabilities: {},
-    clientInfo: { name: 'mcp-smoke-test', version: '1.0.0' },
-  });
+  const init = await client.initialize('mcp-smoke-test');
   assert.equal(
     (init.result?.serverInfo as { name?: string } | undefined)?.name,
     'spotify-mcp',
     `unexpected serverInfo.name in ${JSON.stringify(init.result?.serverInfo)}`,
   );
   assert.equal(init.result?.protocolVersion, '2024-11-05');
-  client.notify('notifications/initialized');
 });
 
 after(async () => {
   clearTimeout(watchdog);
   if (client) {
     client.notify('notifications/exit'); // polite shutdown hint; ignored by older servers
-    client.child.stdin.end();
-    const exited = Promise.race([
-      once(client.child, 'exit'),
-      new Promise<'kill'>((resolve) => setTimeout(() => resolve('kill'), 3000)),
-    ]);
-    if ((await exited) === 'kill') client.child.kill('SIGKILL');
+    await client.dispose();
   }
   await rm(tempDir, { recursive: true, force: true }).catch(() => {});
 });
@@ -287,10 +234,10 @@ describe('MCP stdio smoke (real src/index.ts)', () => {
     //
     // One neighbouring guarantee is deliberately NOT re-asserted here because
     // the harness already fails the run before any assertion could: a dead
-    // process. StdioClient's `exit` handler calls failAll, which rejects every
+    // process. The harness's `exit` handler calls failAll, which rejects every
     // in-flight request, so a `process.exit` inside the tool rejects this call
     // with "server exited early" rather than returning a payload to assert on.
-    // A malformed CallToolResult is NOT in that category: StdioClient does no
+    // A malformed CallToolResult is NOT in that category: the harness does no
     // result validation of its own, so such a payload would resolve and be
     // caught by the `assert.ok(failure, …)` guard below instead.
     const meRes = await client.request('tools/call', {
@@ -353,56 +300,42 @@ describe('npm package artifact', () => {
     // installed dependencies so this test remains offline while exercising the
     // actual packed entry point.
     await symlink(join(REPO_ROOT, 'node_modules'), join(packageDir, 'node_modules'), 'dir');
-    const child = spawn(process.execPath, [packedEntry], {
+    const packagedClient = StdioJsonRpcChild.spawn({
+      label: 'mcp-package-smoke',
+      command: process.execPath,
+      args: [packedEntry],
       cwd: packageDir,
-      env: {
-        ...process.env,
-        SPOTIFY_CLIENT_ID: 'test-client-id',
-        SPOTIFY_MCP_TOKEN_FILE: join(tempDir, 'tokens.json'),
-      },
-      stdio: ['pipe', 'pipe', 'pipe'],
+      env: hermeticServerEnv({ SPOTIFY_MCP_TOKEN_FILE: tokenFile }, 'packaged').env,
     });
-    const packagedClient = new StdioClient(child);
     try {
-      const init = await packagedClient.request('initialize', {
-        protocolVersion: '2024-11-05',
-        capabilities: {},
-        clientInfo: { name: 'mcp-package-smoke', version: '1.0.0' },
-      });
+      const init = await packagedClient.initialize('mcp-package-smoke');
       assert.equal(
         (init.result?.serverInfo as { name?: string } | undefined)?.name,
         'spotify-mcp',
       );
-      packagedClient.notify('notifications/initialized');
     } finally {
-      packagedClient.child.stdin.end();
-      if (packagedClient.child.exitCode === null && packagedClient.child.signalCode === null) {
-        await once(packagedClient.child, 'exit');
-      }
+      // Bounded, and reaped by PID. The old `await once(child, 'exit')` here had
+      // no bound at all: a packed entry that did not exit on stdin EOF hung the
+      // suite forever, and `--test-timeout` is off, so nothing else would catch it.
+      await packagedClient.dispose();
     }
   });
 });
 
 describe('SPOTIFY_MCP_READONLY hides write-capable modules (#579)', () => {
   it('exposes no writer tools and a strictly smaller surface', async () => {
-    const child = spawn('node', ['--import', 'tsx', 'src/index.ts'], {
+    const readOnlyClient = StdioJsonRpcChild.spawn({
+      label: 'mcp-readonly-smoke',
+      command: 'node',
+      args: ['--import', 'tsx', 'src/index.ts'],
       cwd: REPO_ROOT,
-      env: {
-        ...process.env,
-        SPOTIFY_CLIENT_ID: 'test-client-id',
-        SPOTIFY_MCP_TOKEN_FILE: join(tempDir, 'tokens.json'),
-        SPOTIFY_MCP_READONLY: '1',
-      },
-      stdio: ['pipe', 'pipe', 'pipe'],
+      env: hermeticServerEnv(
+        { SPOTIFY_MCP_TOKEN_FILE: tokenFile, SPOTIFY_MCP_READONLY: '1' },
+        'readonly-smoke',
+      ).env,
     });
-    const readOnlyClient = new StdioClient(child);
     try {
-      const init = await readOnlyClient.request('initialize', {
-        protocolVersion: '2024-11-05',
-        capabilities: {},
-        clientInfo: { name: 'mcp-readonly-smoke', version: '1.0.0' },
-      });
-      readOnlyClient.notify('notifications/initialized');
+      await readOnlyClient.initialize('mcp-readonly-smoke');
 
       const roRes = await readOnlyClient.request('tools/list');
       const roNames = new Set(((roRes.result?.tools ?? []) as Array<{ name: string }>).map((t) => t.name));
@@ -416,8 +349,9 @@ describe('SPOTIFY_MCP_READONLY hides write-capable modules (#579)', () => {
         `read-only surface (${roNames.size}) must be smaller than the full surface (${fullNames})`,
       );
     } finally {
-      readOnlyClient.child.stdin.end();
-      setTimeout(() => readOnlyClient.child.kill('SIGKILL'), 2000).unref();
+      // Reaped and awaited, replacing an `unref`'d kill timer that orphaned the
+      // child whenever this file finished before it fired.
+      await readOnlyClient.dispose();
     }
   });
 });

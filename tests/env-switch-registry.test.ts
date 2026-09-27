@@ -46,9 +46,6 @@ import './helpers/hermetic.js';
 
 import { after, before, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
-import { once } from 'node:events';
-import { mkdtempSync } from 'node:fs';
 import { join } from 'node:path';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import {
@@ -62,7 +59,14 @@ import {
   resolveToolsets,
 } from '../src/toolsets.js';
 import { SpotifyClient } from '../src/client.js';
-import { HERMETIC_ROOT } from './helpers/hermetic.js';
+import {
+  FALSY_ENV_VALUES,
+  TRUTHY_ENV_VALUES,
+  readOnlyEnv,
+  unrecognisedBooleanEnv,
+} from '../src/config.js';
+import { classifyChild, describeOutcome } from './helpers/subprocess-outcome.js';
+import { hermeticServerEnv, StdioJsonRpcChild, type JsonRpcResponse } from './helpers/stdio-child.js';
 
 const REPO_ROOT = join(import.meta.dirname, '..');
 
@@ -164,30 +168,14 @@ interface SpawnedSurface {
 
 /**
  * The environment a child starts from, minus every `SPOTIFY_*` variable the
- * developer's shell happens to carry. Without this strip, a case's result
- * depends on whether the person running it exported `SPOTIFY_MCP_READONLY`
- * or `SPOTIFY_MCP_TOOLSETS` — the failure would then look like a product bug
- * in whatever machine happened to fail.
+ * developer's shell happens to carry, is built by `hermeticServerEnv` in
+ * `tests/helpers/stdio-child.ts`. Without the strip, a case's result depends on
+ * whether the person running it exported `SPOTIFY_MCP_READONLY` or
+ * `SPOTIFY_MCP_TOOLSETS` — the failure would then look like a product bug in
+ * whatever machine happened to fail.
  */
-function baseChildEnv(): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = { ...process.env };
-  // Strip every SPOTIFY_* inherited variable. Setting one to '' is not the same
-  // as unsetting it — since #617 a set-but-empty `SPOTIFY_SCOPES` is a startup
-  // error — so these are deleted, not blanked.
-  for (const key of Object.keys(env)) {
-    if (key.startsWith('SPOTIFY_')) delete env[key];
-  }
-  return env;
-}
 
 const spawnCache = new Map<string, Promise<SpawnedSurface>>();
-
-/** Raw JSON-RPC, so a `-32601` (method not advertised) is observable, not swallowed. */
-interface JsonRpc {
-  id?: number;
-  result?: Record<string, unknown>;
-  error?: { code: number; message: string };
-}
 
 async function runSurface(env: Record<string, string | undefined>): Promise<SpawnedSurface> {
   const cacheKey = JSON.stringify(env, Object.keys(env).sort());
@@ -198,84 +186,30 @@ async function runSurface(env: Record<string, string | undefined>): Promise<Spaw
   return promise;
 }
 
+/** Names a `*_list` result carries, so a `-32601` is observable, not swallowed. */
+function namesOf(result: JsonRpcResponse, key: string, field: 'name' | 'uri' | 'uriTemplate'): string[] {
+  const value = result.result?.[key];
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((entry) => (entry as Record<string, unknown>)[field])
+    .filter((v): v is string => typeof v === 'string')
+    .sort();
+}
+
 async function spawnSurface(env: Record<string, string | undefined>): Promise<SpawnedSurface> {
-  const home = mkdtempSync(join(HERMETIC_ROOT, 'env-switch-'));
-  const base = { ...baseChildEnv(), HOME: home, USERPROFILE: home };
-  for (const [key, value] of Object.entries(env)) {
-    if (value === undefined) delete base[key];
-    else base[key] = value;
-  }
-  // Always explicit, always inside the disposable home: the child must never
-  // be able to reach the developer's real ~/.spotify-mcp/tokens.json.
-  base.SPOTIFY_CLIENT_ID = 'env-switch-test';
-  base.SPOTIFY_MCP_TOKEN_FILE = join(home, 'tokens.json');
-
-  const child = spawn('node', ['--import', 'tsx/esm', 'src/index.ts'], {
+  const child = StdioJsonRpcChild.spawn({
+    label: `env-switch ${JSON.stringify(env)}`,
+    command: 'node',
+    args: ['--import', 'tsx/esm', 'src/index.ts'],
     cwd: REPO_ROOT,
-    env: base,
-    stdio: ['pipe', 'pipe', 'pipe'],
+    env: hermeticServerEnv(env, 'env-switch').env,
   });
-  let buffer = '';
-  let stderr = '';
-  const pending = new Map<number, (v: JsonRpc) => void>();
-  child.stdout.setEncoding('utf8');
-  child.stderr.setEncoding('utf8');
-  child.stderr.on('data', (chunk: string) => { stderr += chunk; });
-  child.stdout.on('data', (chunk: string) => {
-    buffer += chunk;
-    let idx: number;
-    while ((idx = buffer.indexOf('\n')) !== -1) {
-      const line = buffer.slice(0, idx).trim();
-      buffer = buffer.slice(idx + 1);
-      if (!line) continue;
-      const msg = JSON.parse(line) as JsonRpc;
-      if (typeof msg.id !== 'number') continue;
-      const resolve = pending.get(msg.id);
-      if (resolve) { pending.delete(msg.id); resolve(msg); }
-    }
-  });
-
-  let id = 0;
-  const request = (method: string, params: Record<string, unknown> = {}): Promise<JsonRpc> => {
-    const { promise, resolve, reject } = Promise.withResolvers<JsonRpc>();
-    const myId = ++id;
-    pending.set(myId, resolve);
-    child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id: myId, method, params })}\n`);
-    // Watchdog only. The server is a separate OS process whose timers cannot be
-    // faked from here, so a real deadline is the only way to fail fast instead
-    // of hanging the run. The wait itself is event-driven.
-    setTimeout(
-      () => reject(new Error(`timeout waiting for ${method}\nstderr:\n${stderr}`)),
-      30_000,
-    ).unref();
-    return promise;
-  };
-
-  const namesOf = (result: JsonRpc, key: string, field: 'name' | 'uri'): string[] => {
-    const value = result.result?.[key];
-    if (!Array.isArray(value)) return [];
-    return value
-      .map((entry) => (entry as Record<string, unknown>)[field])
-      .filter((v): v is string => typeof v === 'string')
-      .sort();
-  };
-
   try {
-    const init = await request('initialize', {
-      protocolVersion: '2024-11-05',
-      capabilities: {},
-      clientInfo: { name: 'env-switch-test', version: '1.0.0' },
-    });
-    assert.equal(init.error, undefined, `initialize failed: ${JSON.stringify(init.error)}\nstderr:\n${stderr}`);
-    child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized', params: {} })}\n`);
-
-    const listed = await request('tools/list');
-    assert.equal(listed.error, undefined, `tools/list failed: ${JSON.stringify(listed.error)}`);
-    const tools = listed.result?.tools;
-    assert.ok(Array.isArray(tools) && tools.length > 0, 'tools/list must return a non-empty array');
+    const init = await child.initialize('env-switch-test');
+    const tools = await child.toolNames();
 
     const surface: SpawnedSurface = {
-      tools: tools.map((t) => (t as Record<string, unknown>).name as string).sort(),
+      tools,
       prompts: [],
       resources: [],
       resourceTemplates: [],
@@ -287,44 +221,72 @@ async function spawnSurface(env: Record<string, string | undefined>): Promise<Sp
     // capability at all and answers -32601 rather than an empty list; an empty
     // array here therefore means "advertised, and empty", which is a different
     // claim from "not served" and is checked through `capabilities` instead.
-    const prompts = await request('prompts/list');
+    const prompts = await child.request('prompts/list');
     surface.prompts = prompts.error ? [] : namesOf(prompts, 'prompts', 'name');
-    const resources = await request('resources/list');
+    const resources = await child.request('resources/list');
     surface.resources = resources.error ? [] : namesOf(resources, 'resources', 'uri');
-    const templates = await request('resources/templates/list');
+    const templates = await child.request('resources/templates/list');
     // Templates carry `uriTemplate`, not `uri` — reading the wrong field yields
     // an empty array that looks exactly like "no templates registered".
     surface.resourceTemplates = templates.error ? [] : namesOf(templates, 'resourceTemplates', 'uriTemplate');
-    surface.stderr = stderr;
+    surface.stderr = child.stderr;
     return surface;
   } finally {
-    child.stdin.end();
-    setTimeout(() => child.kill('SIGKILL'), 1500).unref();
+    // Reaped by PID and awaited, rather than left to a `setTimeout(...).unref()`
+    // that never fires if this file finishes first. That timer used to leave a
+    // booted registry resident for 1.5s after every case, and orphaned the
+    // child outright when the file outran it — twenty overlapping boots' worth
+    // of memory on a box that is already the reason children get killed.
+    await child.dispose();
   }
 }
 
-/** Run a server that is expected to refuse to start, and capture why. */
+/**
+ * Run a server that is expected to refuse to start, and capture why.
+ *
+ * A signal-killed child is **not** a refusal. `code` is `null` for one, and
+ * `assert.notEqual(code, 0)` is satisfied by `null` — so the pre-fix harness
+ * would have reported a startup refusal for a server the OOM killer took before
+ * it read its config. #1335's classifier is what keeps the two apart.
+ */
 async function runExpectingStartupFailure(env: Record<string, string | undefined>) {
-  const home = mkdtempSync(join(HERMETIC_ROOT, 'env-switch-fail-'));
-  const base = { ...baseChildEnv(), HOME: home, USERPROFILE: home };
-  for (const [key, value] of Object.entries(env)) {
-    if (value === undefined) delete base[key];
-    else base[key] = value;
-  }
-  base.SPOTIFY_CLIENT_ID = 'env-switch-test';
-  base.SPOTIFY_MCP_TOKEN_FILE = join(home, 'tokens.json');
-
-  const child = spawn('node', ['--import', 'tsx/esm', 'src/index.ts'], {
+  const child = StdioJsonRpcChild.spawn({
+    label: `env-switch-startup ${JSON.stringify(env)}`,
+    command: 'node',
+    args: ['--import', 'tsx/esm', 'src/index.ts'],
     cwd: REPO_ROOT,
-    env: base,
-    stdio: ['pipe', 'pipe', 'pipe'],
+    env: hermeticServerEnv(env, 'env-switch-fail').env,
   });
-  let stderr = '';
-  child.stderr.setEncoding('utf8');
-  child.stderr.on('data', (chunk: string) => { stderr += chunk; });
-  child.stdin.end();
-  const [code] = (await once(child, 'exit')) as [number | null];
-  return { code, stderr };
+  try {
+    child.closeStdin();
+    const exited = await child.waitForExit(10_000);
+    // Read the stderr AFTER the exit, not before. `child.stderr` is a snapshot
+    // of what has arrived so far, and a server that refuses to start prints its
+    // reason as it does so — sampling on the way in reads the empty string, and
+    // the test then fails against a child that said exactly the right thing.
+    const stderr = child.stderr;
+    const outcome = classifyChild({
+      status: child.child.exitCode,
+      signal: child.child.signalCode,
+      stderr,
+    });
+    if (!exited) {
+      assert.fail(
+        `the server neither started nor exited within 10s, so it never reached the startup check. `
+        + `This is a resource failure, not a product one. child stderr:\n${stderr || '<nothing>'}`,
+      );
+    }
+    if (outcome.kind !== 'exited') {
+      assert.fail(
+        `the server ${describeOutcome(outcome)} instead of refusing to start, so its verdict is unknown. `
+        + 'A killed child must not be read as a startup refusal. child stderr:\n'
+        + `${stderr.trim() || '<nothing on stderr>'}`,
+      );
+    }
+    return { code: outcome.code, stderr };
+  } finally {
+    await child.dispose();
+  }
 }
 
 after(() => {
@@ -490,20 +452,60 @@ describe('env switches at the registry (#661)', () => {
     });
 
     it('treats every documented truthy spelling as on and everything else as off', async () => {
-      // `readOnlyModeEnabled()` parses the value; a spawn proves the parse
-      // reaches the registry rather than stopping at the config module.
-      const full = expectedToolNames({}).size;
-      const readOnly = expectedToolNames({ readOnly: true }).size;
-      const on: string[] = ['1', 'true', 'on', 'YES', '  yes  '];
-      const off: string[] = ['0', 'false', 'off', 'banana', ''];
-      for (const value of on) {
-        const surface = await runSurface({ SPOTIFY_MCP_READONLY: value });
-        assert.equal(surface.tools.length, readOnly, `SPOTIFY_MCP_READONLY=${JSON.stringify(value)} should be on; got ${surface.tools.length} tools`);
+      // Two questions, and they do not need the same instrument.
+      //
+      // **Which strings parse which way** is a pure function of the value, so it
+      // is checked exhaustively in process, against the exported lists rather
+      // than a hand-copied subset. That covers *more* than the ten spellings
+      // this test used to walk: every entry in TRUTHY_ENV_VALUES and
+      // FALSY_ENV_VALUES, plus the uppercase, whitespace-padded, unrecognised
+      // and empty cases, and it asserts the boolean rather than a tool count, so
+      // a spelling that mapped to the right answer for the wrong reason cannot
+      // pass.
+      for (const value of TRUTHY_ENV_VALUES) {
+        assert.equal(readOnlyEnv({ SPOTIFY_MCP_READONLY: value }), true, `${JSON.stringify(value)} is a documented truthy spelling`);
       }
-      for (const value of off) {
-        const surface = await runSurface({ SPOTIFY_MCP_READONLY: value });
-        assert.equal(surface.tools.length, full, `SPOTIFY_MCP_READONLY=${JSON.stringify(value)} should be off; got ${surface.tools.length} tools`);
+      for (const value of FALSY_ENV_VALUES) {
+        assert.equal(readOnlyEnv({ SPOTIFY_MCP_READONLY: value }), false, `${JSON.stringify(value)} is a documented falsy spelling`);
       }
+      // The spellings that are not simply list members: case, padding, a typo,
+      // and the empty string. `unrecognisedBooleanEnv` is the other half of the
+      // contract — a typo must warn, and an unset flag must not.
+      assert.equal(readOnlyEnv({ SPOTIFY_MCP_READONLY: 'YES' }), true, 'the parse is case-insensitive');
+      assert.equal(readOnlyEnv({ SPOTIFY_MCP_READONLY: '  yes  ' }), true, 'the parse trims');
+      assert.equal(readOnlyEnv({ SPOTIFY_MCP_READONLY: 'banana' }), false, 'an unrecognised value is off, not on');
+      assert.equal(unrecognisedBooleanEnv('banana'), true, 'a typo must be recognisable as one, so it can warn');
+      assert.equal(readOnlyEnv({ SPOTIFY_MCP_READONLY: '' }), false, 'an empty value is off');
+      assert.equal(unrecognisedBooleanEnv(''), false, 'empty and unset are complete answers and must not warn');
+      assert.equal(readOnlyEnv({}), false, 'an unset flag is off');
+
+      // **Whether the parse reaches the registry** is the claim only a spawned
+      // server can settle: the unit suites around `readOnlyEnv` all stayed green
+      // while the wiring that feeds it was wrong, which is why this file exists
+      // at all. So one spelling of each answer goes over the wire — an
+      // unrecognised value that must come back OFF with its warning, and a
+      // non-canonical one that must come back ON.
+      //
+      // That is two full registry boots instead of ten. The other eight are
+      // pinned above to an exact boolean, which is a strictly stronger claim
+      // than "the tool count matched", so the coverage goes up as the spawn
+      // pressure comes down. Spawn pressure is not a free variable: `node
+      // --test` runs files in parallel, and a herd of full boots is the most
+      // plausible reason a child gets reaped mid-run.
+      const offSurface = await runSurface({ SPOTIFY_MCP_READONLY: 'banana' });
+      assert.equal(
+        offSurface.tools.length,
+        expectedToolNames({}).size,
+        `SPOTIFY_MCP_READONLY="banana" should be off; got ${offSurface.tools.length} tools`,
+      );
+      assert.match(offSurface.stderr, /names no boolean/, 'an unrecognised value must warn and say so it was read as OFF');
+
+      const onSurface = await runSurface({ SPOTIFY_MCP_READONLY: 'YES' });
+      assert.equal(
+        onSurface.tools.length,
+        expectedToolNames({ readOnly: true }).size,
+        `SPOTIFY_MCP_READONLY="YES" should be on; got ${onSurface.tools.length} tools`,
+      );
     });
 
     it('leaves resources and prompts to their own gates', async () => {

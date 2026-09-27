@@ -21,7 +21,6 @@ import './helpers/hermetic.js';
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
 import { join } from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
@@ -49,6 +48,7 @@ import {
   toolNamingMetadata,
 } from '../src/tools/annotations.js';
 import { SpotifyClient } from '../src/client.js';
+import { hermeticServerEnv, StdioJsonRpcChild } from './helpers/stdio-child.js';
 
 const REPO_ROOT = join(import.meta.dirname, '..');
 
@@ -70,65 +70,38 @@ interface Tool {
 interface JsonRpc { id?: number; result?: { tools?: Tool[] }; error?: { code: number; message: string } }
 
 async function listTools(env: Record<string, string>): Promise<Tool[]> {
-  const baseEnv: NodeJS.ProcessEnv = { ...process.env, SPOTIFY_CLIENT_ID: 'surface-test', SPOTIFY_MCP_TOOLSETS: 'all', ENABLE_TOOLS: '', DISABLE_TOOLS: '' };
-  // SPOTIFY_SCOPES must be absent, not empty: since #617 a set-but-empty value
-  // is a startup error, so the harness can no longer "unset" it by assigning ''.
-  delete baseEnv.SPOTIFY_SCOPES;
-  const child = spawn('node', ['--import', 'tsx/esm', 'src/index.ts'], {
+  const child = StdioJsonRpcChild.spawn({
+    label: `tool-surface ${JSON.stringify(env)}`,
+    command: 'node',
+    args: ['--import', 'tsx/esm', 'src/index.ts'],
     cwd: REPO_ROOT,
-    env: { ...baseEnv, ...env },
-    stdio: ['pipe', 'pipe', 'pipe'],
+    // `hermeticServerEnv` deletes every inherited `SPOTIFY_*` and points HOME at
+    // a disposable root, so a developer's exported SPOTIFY_MCP_READONLY or
+    // SPOTIFY_MCP_TOKEN_FILE can no longer decide what this asserts — or, worse,
+    // hand a child the path to a real tokens.json. SPOTIFY_SCOPES is passed as
+    // `undefined` explicitly to keep the #617 rule visible at the call site: a
+    // set-but-empty value is a startup error, so it must be deleted, not blanked.
+    env: hermeticServerEnv(
+      { SPOTIFY_MCP_TOOLSETS: 'all', ENABLE_TOOLS: '', DISABLE_TOOLS: '', SPOTIFY_SCOPES: undefined, ...env },
+      'surface',
+    ).env,
   });
-  let buffer = '';
-  const pending = new Map<number, (v: JsonRpc) => void>();
-  let stderr = '';
-  child.stdout.setEncoding('utf8');
-  child.stderr.setEncoding('utf8');
-  child.stderr.on('data', (c: string) => { stderr += c; });
-  child.stdout.on('data', (chunk: string) => {
-    buffer += chunk;
-    let idx: number;
-    while ((idx = buffer.indexOf('\n')) !== -1) {
-      const line = buffer.slice(0, idx).trim();
-      buffer = buffer.slice(idx + 1);
-      if (!line) continue;
-      const msg = JSON.parse(line) as JsonRpc;
-      if (typeof msg.id !== 'number') continue;
-      const resolve = pending.get(msg.id);
-      if (resolve) { pending.delete(msg.id); resolve(msg); }
-    }
-  });
-  let id = 0;
-  const request = (method: string, params: Record<string, unknown> = {}): Promise<JsonRpc> => {
-    const { promise, resolve, reject } = Promise.withResolvers<JsonRpc>();
-    const myId = ++id;
-    pending.set(myId, resolve);
-    child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id: myId, method, params })}\n`);
-    // Watchdog only: the server under test is a separate OS process whose internal
-    // timers cannot be faked from here, so a real deadline is the only way to fail
-    // fast instead of hanging CI if the child wedges. The wait itself is event-driven.
-    setTimeout(() => reject(new Error(`timeout waiting for ${method}\nstderr:\n${stderr}`)), 20_000).unref();
-    return promise;
-  };
-
   try {
-    const init = await request('initialize', {
-      protocolVersion: '2024-11-05',
-      capabilities: {},
-      clientInfo: { name: 'surface-test', version: '1.0.0' },
-    });
-    assert.equal(init.error, undefined, `initialize failed: ${JSON.stringify(init.error)}`);
-    child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized', params: {} })}\n`);
-    const listed = await request('tools/list');
-    assert.equal(listed.error, undefined, `tools/list failed: ${JSON.stringify(listed.error)}`);
+    await child.initialize('surface-test');
+    const listed = await child.request('tools/list');
+    if (listed.error !== undefined) {
+      throw new Error(`tools/list failed: ${JSON.stringify(listed.error)}`);
+    }
     const tools = listed.result?.tools;
-    assert.ok(Array.isArray(tools) && tools.length > 0, 'tools/list must return a non-empty array');
-    return tools;
+    if (!Array.isArray(tools) || tools.length === 0) {
+      throw new Error('tools/list must return a non-empty array');
+    }
+    return tools as Tool[];
   } finally {
-    child.stdin.end();
-    // Cleanup backstop for the same reason: the child is external, so give it a
-    // moment to exit on stdin EOF, then force-kill so the test runner cannot hang.
-    setTimeout(() => child.kill('SIGKILL'), 1500).unref();
+    // Reaped by PID and awaited. The `setTimeout(() => child.kill('SIGKILL'),
+    // 1500).unref()` this replaces orphaned the child whenever the file finished
+    // before the timer fired, because an unref'd timer never holds the loop open.
+    await child.dispose();
   }
 }
 
