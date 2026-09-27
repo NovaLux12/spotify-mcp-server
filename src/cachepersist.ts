@@ -237,7 +237,11 @@ export function cachePersistPath(env: NodeJS.ProcessEnv = process.env, opts: Cac
 export function cachePersistPaths(env: NodeJS.ProcessEnv = process.env): string[] {
   const active = cachePersistPath(env);
   const dir = dirname(active);
-  const tokenDir = dirname(getTokenFile(undefined, env));
+  // The same call {@link cachePersistPath} makes, so the directory this
+  // enumerates is derived by the same rule that named the active file rather
+  // than by a second one that could drift. Which profile argv selects changes
+  // the token file, never the directory holding them.
+  const tokenDir = dirname(getTokenFilePath(env));
   const names = new Set<string>([basename(active)]);
 
   let entries: string[];
