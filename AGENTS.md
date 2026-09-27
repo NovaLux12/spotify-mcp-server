@@ -106,48 +106,72 @@ variants are the legacy path; every playlist tool here already uses `/items`.
 ### Blocked for post-Nov-2024 apps — deliberately not wrapped
 
 These fail at runtime on app registrations created after November 2024. This
-server ships no tools for them and you should not add any:
+server ships no tools for them and you should not add any. A struck-through row
+is the exception: it is a different state (removed outright, or gated) and its
+Status cell says so — see the next section before reading one as "never
+wrapped":
 
 | Endpoint | Status |
 |---|---|
 | `GET /recommendations`, `GET /recommendations/available-genre-seeds` | Blocked for post-Nov-2024 apps |
 | `GET /artists/{id}/related-artists` | Blocked for post-Nov-2024 apps |
 | `GET /audio-features/{id}`, `GET /audio-analysis/{id}` | Blocked for post-Nov-2024 apps |
-| ~~`GET /browse/categories`~~ | **REMOVED Feb 2026** — `get_categories` / `get_category_playlists` are broken shipped tools (#638) |
+| ~~`GET /browse/categories`~~ | **REMOVED Feb 2026** — `get_categories` / `get_category_playlists` still ship and name the removal rather than returning a silent empty list; #638 owns deleting them |
 | `GET /browse/new-releases`, `GET /browse/featured-playlists` | Blocked/removed — do not use |
 | Lyrics endpoints | Not available via the Web API — do not use |
 
-### REMOVED by Spotify in February 2026 — do not call these
+### February 2026: two different states, and the label is not one of them
 
-Spotify removed a large batch of endpoints in the
-[February 2026 changelog](https://developer.spotify.com/documentation/web-api/references/changes/february-2026).
-The graceful-403 wrappers do **not** make these safe: a removed endpoint returns
-an error that a 403-tolerant wrapper will happily degrade into a soft, wrong
-answer. Any tool still calling one of these is broken, not merely degraded.
+Spotify's
+[February 2026 changelog](https://developer.spotify.com/documentation/web-api/references/changes/february-2026)
+marks a batch of operations `[REMOVED]`. That label is not a single runtime
+fact, and reading it as one is how this section used to tell you that correct
+code was broken code. Sort a path into one of two buckets before you act on it.
 
-| Removed endpoint | Replacement | Issue |
-|---|---|---|
-| `GET /artists/{id}/top-tracks` | per-album reads via `GET /artists/{id}/albums` | #594 |
-| Batch `GET /albums\|artists\|episodes\|shows\|audiobooks\|chapters?ids=` | per-id `GET /{type}/{id}` | #638 |
-| `PUT/DELETE /me/{tracks,albums,shows,episodes,audiobooks}` and `GET /me/{type}s/contains` | `PUT/DELETE /me/library`, `GET /me/library/contains` | #37 (shipped) |
-| `GET /me/following/contains` | `GET /me/library/contains` with `spotify:artist:` URIs | #594 |
-| `PUT/DELETE /me/following?type=artist` | **no replacement — unrecoverable, see below** | #594 |
-| `PUT/DELETE /playlists/{id}/followers` | `PUT/DELETE /me/library` with a `spotify:playlist:` URI | #594 |
-| `GET /playlists/{id}/followers/contains` | `GET /me/library/contains` | #594 |
-| `POST/GET/PUT/DELETE /playlists/{id}/tracks` | the `/items` equivalents | #638 |
-| `POST /users/{user_id}/playlists`, `GET /users/{id}/playlists`, `GET /users/{id}` | `/me/*` equivalents | #638 |
-| `GET /markets`, `GET /browse/categories`, `GET /browse/new-releases` | none | #638 |
+**Registration-dependent — keep calling these, and do not file a bug against
+the callers.** The changelog marks them `[REMOVED]`, but the live OpenAPI
+schema still publishes the same paths carrying `deprecated: true`, and a
+grandfathered app registration still answers `200`. What a request does depends
+on the *registration*, not on the endpoint, so a tool that calls one of these is
+doing its job: a `403` is a gating outcome the server turns into a stated
+reason or a documented replacement read, never a silent wrong answer. A tool
+that calls a gated path and handles the 403 correctly is not degraded, and
+deleting its wrapper makes it worse.
+
+**The authoritative list is `GATED_FAMILIES` in `src/gating.ts`** —
+`GATED_PATH_PATTERNS` is derived from it, and the README's
+[Registration-gated endpoints](README.md#registration-gated-endpoints) table is
+generated from that array. Read the array instead of a list restated here: it
+records, per family, `reason` (what the changelog says) and `fallback` (whether
+a 403 is met by a replacement read or a plain-English explanation), and those
+two fields are why "removed" and "registration-dependent" are not synonyms.
+Verified against the array, not this paragraph.
+
+**Never call these — no replacement, or superseded with no live call site.**
+Nothing in this table is a runtime classifier, because there is no graceful
+shape left to give the failure:
+
+| Endpoint | Status |
+|---|---|
+| `PUT/DELETE /me/following?type=artist` | **No replacement — unrecoverable, see below.** `follow_artists` and `unfollow_artists` still ship and still call it (#594, #638 own the removal) |
+| `PUT/DELETE /me/{tracks,albums,shows,episodes,audiobooks}` | Replaced by `PUT/DELETE /me/library`; shipped call sites still use the old path (#594, #638) |
+| `PUT/DELETE /playlists/{id}/followers` | Replaced by `PUT/DELETE /me/library` with a `spotify:playlist:` URI (#594) |
+| `POST/GET/PUT/DELETE /playlists/{id}/tracks` | Superseded by the `/items` equivalents; no shipped tool calls it (#638) |
+
+Where a shipped tool still meets one of these — `isRemovedEndpointFailure` in
+`src/gating.ts` is the shared predicate — name the removal rather than passing
+on a status that reads as a missing object, an empty page, or a scope problem.
+That is the whole contract for this bucket: the call is the bug, not the
+handling.
 
 **Following an artist is no longer expressible, and there is no migration.**
 `PUT`/`DELETE /me/library` accept track, album, episode, show, audiobook, user
 and playlist URIs — **not** `spotify:artist:`. `GET /me/library/contains` *does*
 accept artist URIs, so the read half migrated cleanly and the write half has no
 target. A `PUT /me/library?uris=spotify:artist:<id>` would look migrated and
-follow nothing. The repo already encoded this: `LIBRARY_SAVE_TYPES`
-(`library.ts:228`) omits `artist` while `LIBRARY_CHECK_TYPES` (`:237`) includes
-it. `follow_artists` and `unfollow_artists` are being **removed** rather than
-left permanently failing. Verified against the endpoint reference pages, not
-the changelog summary.
+follow nothing. The repo already encoded this: `LIBRARY_SAVE_TYPES` in
+`src/tools/library.ts` omits `artist` while `LIBRARY_CHECK_TYPES` adds it.
+Verified against the endpoint reference pages, not the changelog summary.
 
 `/me/library` authorises three alternative scopes — `user-library-modify`,
 `user-follow-modify`, **or** `playlist-modify-public`. Check which one a
@@ -159,8 +183,10 @@ get wrong. `GET /search`'s `limit` maximum also dropped from 50 to **10** and it
 default from 20 to **5**.
 
 **When you touch a tool that calls any endpoint above, check the changelog before
-assuming the endpoint is live.** `AGENTS.md` previously listed this whole family as
-"verified operational", which was true when written and false within months.
+assuming the endpoint is live — and check `GATED_FAMILIES` before assuming a
+`403` means the tool is broken.** `AGENTS.md` has now been wrong about this
+family twice in the same direction: first by listing the whole set as "verified
+operational", then by listing it as uniformly broken. Both were true of neither.
 
 ---
 
