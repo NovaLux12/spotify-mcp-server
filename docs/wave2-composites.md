@@ -1,6 +1,6 @@
 # Wave 2 composites — shipped taste tools (read-only except `taste_to_playlist`)
 <!-- BEGIN:generated surface-census -->
-Current default production surface: **558 tools**, including the shipped taste composites documented below. Earlier release totals in this page's history are not current registry truth; regenerate this block with `npm run count:tools -- --write`.
+Current default production surface: **559 tools**, including the shipped taste composites documented below. Earlier release totals in this page's history are not current registry truth; regenerate this block with `npm run count:tools -- --write`.
 <!-- END:generated surface-census -->
 
 Eleven of the tools behind the `taste` toolset come from two composite registrar rows: ten read-only composites in `taste_composites.ts`, plus `taste_to_playlist` in `taste_playlist.ts`, which previews by default and writes only when a caller passes `dry_run: false`. They are separate rows because `readOnlySafe` is a per-ROW flag — one row holding both would either expose the writer to `SPOTIFY_MCP_READONLY` sessions or hide the ten readers with it (#1009). The `taste` toolset is larger than that: `src/toolsets.ts` maps it to the registration keys `taste` and `tastecomposites`, and the `taste` key is a third manifest row — `src/tools/statsfm_taste.ts` — documented in [statsfm.md](statsfm.md), not on this page. Earlier release totals are historical context, not current registry truth.

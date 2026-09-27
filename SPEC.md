@@ -2325,6 +2325,37 @@ Ten composites register in `src/tools/taste_composites.ts` and an eleventh, `tas
 
 `action=list` takes an optional `limit` (default 20, max 500) and returns a bounded page of the newest verdicts plus `returned`, `retained`, `truncated`, the retained, recorded, evicted and cap counts; it no longer returns the whole store. A store that cannot be read is returned as `{ok: false, reason: 'store_unreadable', error}` with the corrupt bytes preserved at `<file>.corrupt[N]` (shared `src/sidecar.ts` policy, #839/#1051) rather than reset, and a write that cannot land is returned as `{ok: false, reason: 'store_unwritable', path, error}` rather than reported as a recorded verdict. Writes are atomic (unique temp file, `fsync`, `rename(2)`) and serialised, because the store is a single JSON document: an in-place rewrite that died mid-write would lose every record, not one line. `spotify_doctor` reports both this store and the mutation-history ledger's sizes, cap and record count.
 
+#### `statsfm_jukebox` (`tastejukebox` key; `src/tools/statsfm_jukebox.ts`)
+
+One tool that refreshes a Spotify playlist from a stats.fm user's rotation. It was a client-side cron, so every host carried its own agent loop and its own idea of which rows count as stale — while both halves it needs (the stats.fm evidence, the Spotify playlist write) are things this server already reaches.
+
+| Input | Meaning |
+|---|---|
+| `playlist_id` | Spotify playlist ID, `spotify:playlist:` URI, or open.spotify.com URL. Normalized by the shared `normalizePlaylistReference`, so a lane or URL accepted here is the same one every playlist tool takes. |
+| `replacements`, `appends` | 0–50 each, default 5. Bounded because every one is a position-indexed removal or an added URI shown to a human in a confirmation prompt. |
+| `window_days` | 1–365, default 90. Applied to the rows in hand, and `after` is also sent on `/users/{id}/streams`, which honours it. |
+| `dry_run` | **Defaults to `true`.** An omitted flag is a plan and writes nothing. |
+| `statsfm_user` | The identity argument above, with the same deprecated `user_id` alias. |
+| `response_format` | `concise` (default) / `detailed` / `json`. |
+
+`replacements` and `appends` draw from disjoint pools by construction — a candidate is an in-window track the playlist does **not** hold, a replacement is a row it **does** — so `5` and `5` really is ten proposals. When the window cannot supply what was asked for, the response names the shortfall per half and the list is **not** padded: a list silently shorter than requested reads as the whole answer.
+
+**Staleness is a claim about the sampled page, and says so.** stats.fm returns a bounded recent page, not the account's whole history. The response carries `streams.page_oldest`, `page_newest` and `page_may_not_cover_window`, computed from every row the page carried with a readable play time — including the rows that fell *outside* the window, since those are the rows that prove the page reaches back to the window start at all. When the page cannot reach that far, "absent from the window" is stated as "absent from the rows this page carried", because a track played before `page_oldest` is not distinguishable here from one never played at all. A playlist larger than the items walk cap discloses the same way through `playlist_walk_truncated` / `playlist_walk_truncated_reason`.
+
+**A value that could not be read is counted, never absorbed** (#803/#804):
+
+| Count | What it holds, and what the module does instead |
+|---|---|
+| `streams.unreadable_timestamps` | Rows with no readable play time. A window is a filter, and a row that cannot be placed in or out of it is evidence for neither claim — excluded from both, and it is never filed under 1970 and called stale. |
+| `streams.unresolved_track_ids` | In-window rows with no usable 22-char track id. Counted, and never rendered as a URI. `normalizeStreams` would borrow the track **name** into the id field, which is right for a text report and wrong here: this module's output is a `spotify:track:` URI, and a borrowed name would go to Spotify as though it had been read. They still count toward the rotation — a listen is a listen whatever it is addressed by. |
+| `playlist_rows_unreadable` | Playlist rows with no readable URI. A row that cannot be named cannot be matched against the streams or removed by position; it is left alone. |
+
+A failed read is a failed read: a playlist read that throws returns `{ok: false, reason: 'plan_unavailable', read_failure}` with no `proposed` key at all, rather than degrading to "0 stale rows, 0 candidates" about a playlist nobody managed to look at. The failure reason is the HTTP status and Spotify's own reason code, never `err.message`, which an upstream body can fill with private ids.
+
+**The write half.** `dry_run: false` removes the stale rows by position and adds the picks. It elicits **unconditionally, with no threshold** — the removal half deletes rows, and "fewer than ten rows" is not a defence for deleting rows. This is a deliberate deviation from the four threshold-gated families in `confirm.ts`, documented in the module header. `requiredConfirmationRefusal` fails closed, so a client that cannot prompt, a decline, and a prompt that fails mid-flight each return `ok: false` with **zero** writes. `SPOTIFY_MCP_READONLY` refuses before the prompt. Removals run **descending** by position, because once a chunk lands every lower index has shifted; they are chunked at `capFor('playlist_writes')`.
+
+Two **receipts** are issued, not one: the removals and the additions are separate mutations with separate inverses, and a single receipt could only describe one of them. `undo_mutation` walks receipts newest-first, so reversing a commit is two calls in that order and the response names both ids. `playlist_total_after` is the last receipt's **measured** `after`, never a number computed from the plan; when the verification walk carried no total the field is `null`, `playlist_total_after_unreadable` is `true`, and the prose says the figure is unknown rather than computed.
+
 ### 5.11 Mutation receipts (`verify_receipt`, `undo_mutation`, `undo_last_mutation`)
 
 A mutation that can be reverted issues a receipt; the three receipt tools below are the undo surface and none of them touch Spotify until a human approves the rollback. `verify_receipt` is the only read-only one, and since #688 it registers **unconditionally** — outside `SPOTIFY_MCP_TOOLSETS` trimming and the scope filter — so a session trimmed to a single toolset can still look up a receipt its own mutation issued. It reads an in-process `Map`, so it requires no Spotify scope.

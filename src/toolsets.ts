@@ -20,7 +20,7 @@
 
 // BEGIN:generated surface-census
 // Production surface (generated; run `npm run count:tools -- --write` after registry changes):
-// 558 tools, 17 fixed resources, 28 resource templates, and 14 prompts.
+// 559 tools, 17 fixed resources, 28 resource templates, and 14 prompts.
 // END:generated surface-census
 
 /**
@@ -62,6 +62,7 @@
  *   statsfm         → tools/statsfm.ts          (third-party stats.fm API, read-only)
  *   taste           → tools/statsfm_taste.ts    (canonical statsfm_taste_* tools: stats.fm taste intelligence, read-only, no auth)
  *                     tools/taste_composites.ts (composites, no auth; read-only except taste_to_playlist, which writes only when dry_run=false)
+ *                     tools/statsfm_jukebox.ts  (statsfm_jukebox: refresh a playlist from a stats.fm rotation; dry_run defaults to true)
  *   discovery       → tools/swarm3_meta.ts      (find_tool, inspect_tool, toolset_report) — also in catalog for compat
  *   accounts        → tools/accounts.ts         (list_accounts + switch_account) — also in core
  *   resources       → resources/index.ts        (template and standard resources)
@@ -87,7 +88,7 @@ export const TOOLSETS: Record<string, readonly string[]> = {
   personalization: ['personalization', 'swarm3analytics'],
   statsfm: ['statsfm'],
   portability: ['portability'],
-  taste: ['taste', 'tastecomposites'],
+  taste: ['taste', 'tastecomposites', 'tastejukebox'],
   discovery: ['swarm3meta'],
   resources: ['resources'],
   prompts: ['prompts'],
@@ -159,13 +160,15 @@ export const DEFAULT_TOOLSETS: readonly string[] = Object.freeze(['core', 'resou
  * {@link TOOLSETS} — and `tests/toolsets.test.ts` checks every entry against
  * `allRegistrationKeys`. A key that drifts out of the map fails there.
  *
- * `taste_playlist` is absent because it is not a registration key: its manifest
- * entry registers under `tastecomposites`, so enabling that key brings it along.
+ * `taste_playlist` and `statsfm_jukebox` are absent because they are not
+ * registration keys: their manifest entries register under `tastecomposites`
+ * and `tastejukebox` respectively, so enabling those keys brings them along.
  */
 export const STATSFM_REGISTRATION_KEYS: readonly string[] = Object.freeze([
   'statsfm',
   'taste',
   'tastecomposites',
+  'tastejukebox',
 ]);
 
 /** Reverse index: registration key → the sets that enable it. */

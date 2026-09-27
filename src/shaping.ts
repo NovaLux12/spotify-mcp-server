@@ -3141,6 +3141,16 @@ export const PENDING_OUTPUT_SCHEMA_MODULES: ReadonlySet<string> = new Set([
   'src/tools/searchhistory.ts',
   'src/tools/showradar.ts',
   'src/tools/smart.ts',
+  'src/tools/statsfm_taste.ts',
+  // #726. Verified prose-safe on all five return paths — the plan, the applied
+  // summary, the read-only refusal, the confirmation refusal, and the no-op all
+  // attach `structuredContent` — so an output schema would not break a prose-only
+  // branch here. It is absent on budget grounds with the rest of this set, and
+  // additionally because the payload is a mutation shape, not a `list` one: the
+  // two arrays a host acts on are `proposed.replacements` and `proposed.appends`,
+  // and publishing `MutationOutput` would assert a commit that a dry run did not
+  // make. The three unreadable counts are the other reason not to declare one.
+  'src/tools/statsfm_jukebox.ts',
   'src/tools/undo.ts',
   'src/tools/swarm3_analytics.ts',
   'src/tools/swarm3_discovery.ts',

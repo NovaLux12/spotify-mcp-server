@@ -441,10 +441,15 @@ export const TOOL_SURFACE_BUDGET = Object.freeze({
     // `list_lanes` reads the lane manifest and issues one
     // `GET /playlists/{id}` per lane — the same read cost as the
     // `list_scenes` / `list_backups` registry listings above it.
+    // `statsfm` 38 -> 39 for `statsfm_jukebox` (#726). Same decision as the
+    // `list` raise above: the tool reads a stats.fm account and refreshes a
+    // Spotify playlist from it, so `statsfm_` is what it does and a new verb
+    // family for one tool would cost a host a prefix to learn. The budget table
+    // exists to make that choice visible, not to be routed around.
     filter: 4, find: 11, get: 59, library: 8, list: 13, listening: 17,
     play: 4, playback: 4, playlist: 54, queue: 8, remove: 9, restore: 4,
     save: 11, saved: 11, search: 22, set: 4, show: 8, snapshot: 12,
-    split: 5, statsfm: 38, taste: 16, top: 6, track: 4, uri: 4,
+    split: 5, statsfm: 39, taste: 16, top: 6, track: 4, uri: 4,
   }),
 });
 
@@ -585,6 +590,24 @@ const OVERRIDES: Record<string, ToolAnnotations> = {
   // never consults it, so a future tool that happens to be named
   // `record_feedback` would silently inherit someone else's annotation.
   statsfm_record_feedback: { destructiveHint: false },
+  // #726: `statsfm_jukebox` reads a stats.fm account AND, on `dry_run: false`,
+  // removes playlist rows and adds others. The `statsfm` verb prefix is
+  // allowlisted as a READ, so without this row the classifier advertises a
+  // writer as read-only and a host that auto-approves on `readOnlyHint` waves a
+  // playlist mutation through with no prompt at all. The name is not a plan, so
+  // NEVER_MUTATING_PLANS is the wrong table — that set makes names read-only.
+  //
+  // `destructiveHint: false`, not `true`, and the reason is the NAME rather than
+  // the behaviour: #726 specifies `statsfm_jukebox` and the naming policy
+  // reserves `destructiveHint: true` for names a verb pattern already calls a
+  // write. Advertising a read-prefixed name as destructive would train hosts to
+  // distrust an annotation that is supposed to mean something. What actually
+  // carries the safety is in the handler, and it is not the annotation:
+  // `dry_run` defaults to true, the commit path elicits with NO threshold, and
+  // `requiredConfirmationRefusal` fails closed, so a client that never prompts
+  // gets zero writes rather than an unprompted one. The row is what stops the
+  // tool being advertised as a read, which is the half that was actually wrong.
+  statsfm_jukebox: { destructiveHint: false },
   export_playlist: { destructiveHint: false },
   // backup_library makes no Spotify write — every call is a GET, and the only
   // writes are to the local backup directory. Its name starts with `backup`,
@@ -1762,6 +1785,19 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   // `npm run count:tools` on 2026-09-27: 1884 B -> 1896 B (+12 B), tool count
   // unchanged at 1.
   manifestEntry('tasteplaylist', 'tastecomposites', lazyModule('./taste_playlist.js', 'registerTastePlaylistTools'), [1, 1896], { scopeKey: 'playlists' }),
+  // #726: `statsfm_jukebox` — one tool that proposes playlist replacements and
+  // appends from a stats.fm rotation, and applies them only on `dry_run=false`.
+  // `scopeKey: 'playlists'` because the commit path writes playlist items, so
+  // the playlists scope gate (and the read-only gate, via the module's
+  // non-readOnlySafe default) both apply. NOT `readOnlySafe`: the module holds a
+  // write, and a read-only session must not see it at all rather than see it and
+  // have it refuse.
+  //
+  // MEASURED, not estimated: the baseline below was zeroed, the server started,
+  // and the figure came from the startup budget gate's own report. Writing an
+  // estimate here would have set a ceiling that the first real `tools/list` on
+  // any host either clears by luck or breaches.
+  manifestEntry('tastejukebox', 'tastejukebox', lazyModule('./statsfm_jukebox.js', 'registerStatsfmJukeboxTools'), [1, 2359], { scopeKey: 'playlists' }),
   manifestEntry('doctor', 'doctor', lazyModule('./doctortool.js', 'registerDoctorTool'), [1, 825], { alwaysActive: true, readOnlySafe: true }),
   // #602. `readOnlySafe: true` is a claim about the MODULE, and the module
   // holds a write: what makes that safe is that `readOnlyToolServer` drops

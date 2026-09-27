@@ -636,6 +636,15 @@ export interface SpotifyPlaylistPage {
   items?: { total?: number } | null;
   /** Upstream-deprecated since Feb 2026; read only as a fallback. */
   tracks?: { total?: number } | null;
+  /**
+   * The playlist's display name. Declared here rather than widened at the call
+   * site: `tests/types.ownership.test.ts` rule 2 requires a module that needs a
+   * field this shape lacks to add it to the owner, so every tool that reports a
+   * playlist by name reads the SAME optional field rather than each growing its
+   * own local intersection. Optional because a payload is not obliged to carry
+   * it, and a tool must treat a missing name as unknown rather than empty.
+   */
+  name?: string;
 }
 
 /**

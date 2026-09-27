@@ -598,6 +598,18 @@ const documentedMetadata = new Set([
   // Named here only so the contract can state the claim was removed; it is
   // neither a tool nor a parameter, and no code path produces this sidecar.
   'followed_artists',
+  // #726: `statsfm_jukebox`'s structuredContent keys that SPEC.md has to name
+  // in order to SAY THE THING they exist for — which values could not be read,
+  // and whether the after-count is a measurement. `playlist_rows_unreadable` is
+  // the count of playlist rows with no addressable URI; the two
+  // `playlist_walk_truncated*` keys say a playlist was only partly walked, so
+  // "stale" counts the rows that were read; and `playlist_total_after` with its
+  // `_unreadable` companion is the measured count or an explicit null, never a
+  // number computed from the plan. Response fields, not tools and not
+  // parameters — the same category as `unreadable_lane_count` above.
+  'playlist_rows_unreadable', 'playlist_walk_truncated',
+  'playlist_walk_truncated_reason', 'playlist_total_after',
+  'playlist_total_after_unreadable',
 ]);
 /**
  * Range vocabulary (#720). The JSON-example check already rejects a bad
