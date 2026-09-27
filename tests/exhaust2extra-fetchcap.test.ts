@@ -21,7 +21,7 @@
  *
  * Run with: node --import tsx --test tests/exhaust2extra-fetchcap.test.ts
  *
- * NOTE: TOKEN_FILE resolves at module-load time inside src/auth.ts, so the env
+ * NOTE: the token path is resolved per call by getTokenFilePath(), so the env
  * vars MUST be set before the dynamic imports below.
  */
 

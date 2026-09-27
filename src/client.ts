@@ -1,4 +1,4 @@
-import { loadTokens, saveTokens, TOKEN_FILE } from './auth.js';
+import { loadTokens, saveTokens, getTokenFilePath } from './auth.js';
 import {
   LruTtlCache,
   ValidatorStore,
@@ -324,6 +324,14 @@ interface SpotifyClientOptions {
   /** Disable the read cache entirely (tests, special flows). */
   disableCache?: boolean;
   /**
+   * The token file this client loads, refreshes and persists (#609). Defaults
+   * to `getTokenFilePath()` — argv profile included. Override only where a
+   * test needs a fixture; a client pointed at one account's file while the
+   * process runs as another is exactly the split this option exists to make
+   * explicit and impossible to do by accident.
+   */
+  tokenFile?: string;
+  /**
    * Jitter source for the 5xx/transport backoff (#675). Defaults to
    * `Math.random`; injectable so a test can pin the sequence and assert the
    * jitter is a real spread rather than an accident of the base doubling.
@@ -572,9 +580,13 @@ interface TokenFailure {
 }
 
 /** Append the token file to a failure message: a multi-profile install cannot
- *  otherwise tell which of several token files is the broken one (#677). */
-function withTokenFile(message: string): string {
-  return `${message} (token file: ${TOKEN_FILE})`;
+ *  otherwise tell which of several token files is the broken one (#677).
+ *
+ *  The path is the CALLER's, resolved from the argv profile (#609). It used to
+ *  be a module-level env-only constant, so a `--profile work` failure pointed
+ *  the operator at `tokens.json` — the file that was not involved. */
+function withTokenFile(message: string, tokenFile: string): string {
+  return `${message} (token file: ${tokenFile})`;
 }
 
 /**
@@ -608,6 +620,7 @@ function classifyTokenResponse(
   retryAfterHeader: string | null,
   body: unknown,
   bodyReadable: boolean,
+  tokenFile: string,
 ): TokenFailure {
   const reason = (category: TokenFailureCategory): string => TOKEN_FAILURE_REASONS[category];
 
@@ -629,6 +642,7 @@ function classifyTokenResponse(
           // server did not verify is still quoted, but it cannot inject a line
           // break into a message that reaches a log and an agent.
           `(Retry-After: ${retryAfterHeader === null ? `absent, so the ${RETRY_AFTER_FALLBACK_SEC}s floor applies` : oneLine(retryAfterHeader, 40)})`,
+        tokenFile,
       ),
     };
   }
@@ -647,6 +661,7 @@ function classifyTokenResponse(
         `Spotify's token endpoint returned HTTP ${status}` +
           `${retryAfterHeader ? ` with Retry-After: ${oneLine(retryAfterHeader, 40)}` : ''} ` +
           '— a server-side failure at Spotify, not a local configuration fault',
+        tokenFile,
       ),
     };
   }
@@ -663,7 +678,10 @@ function classifyTokenResponse(
       status: 401,
       rideOut: false,
       retry: false,
-      message: withTokenFile('Token refresh failed — re-run "spotify-mcp auth" (refresh token rejected: invalid_grant)'),
+      message: withTokenFile(
+        'Token refresh failed — re-run "spotify-mcp auth" (refresh token rejected: invalid_grant)',
+        tokenFile,
+      ),
     };
   }
 
@@ -682,6 +700,7 @@ function classifyTokenResponse(
         'Token refresh rejected — SPOTIFY_CLIENT_ID was refused by Spotify (invalid_client); '
           + 'set it to the Client ID of your app in the Spotify Developer Dashboard and re-run '
           + '"spotify-mcp auth" (PKCE uses no client secret)',
+        tokenFile,
       ),
     };
   }
@@ -699,6 +718,7 @@ function classifyTokenResponse(
       message: withTokenFile(
         `Token refresh rejected by the token endpoint with error "${oneLine(grantError, 60)}" — this server has `
           + 'no fix for that code and asserts no cause; read the code above',
+        tokenFile,
       ),
     };
   }
@@ -718,6 +738,7 @@ function classifyTokenResponse(
     message: withTokenFile(
       `Token refresh failed with HTTP ${status} and ${bodyDesc} — the cause could not be classified `
         + 'from the response',
+      tokenFile,
     ),
   };
 }
@@ -751,7 +772,7 @@ function networkCauseLabel(err: unknown): string {
  * read here, so the class comes from the shape of the thrown error alone and
  * is deliberately kept separate from every response-borne class above.
  */
-function classifyTokenTransportFailure(err: unknown): TokenFailure {
+function classifyTokenTransportFailure(err: unknown, tokenFile: string): TokenFailure {
   // fetchWithTimeout owns the abort signal, so an abort arriving from it can
   // only be the timeout it armed — that is a fact about the call, not a guess.
   const isOurTimeout = err instanceof SpotifyApiError && err.status === 408;
@@ -770,6 +791,7 @@ function classifyTokenTransportFailure(err: unknown): TokenFailure {
           'no HTTP response was received (raise SPOTIFY_REQUEST_TIMEOUT_MS if this is a slow link)'
         : `Token refresh could not reach accounts.spotify.com — no HTTP response was received ` +
           `(${networkCauseLabel(err)}); this is a local network, DNS or TLS failure, not a Spotify outage`,
+      tokenFile,
     ),
   };
 }
@@ -1122,6 +1144,14 @@ export class SpotifyClient {
    * non-`/me` catalog reads — see {@link isPersistableKey}.
    */
   private readonly _persist: CachePersistController | null;
+  /**
+   * The token file this client reads, refreshes and writes (#609). Resolved
+   * once, at construction, from the same function `loadTokens` and
+   * `saveTokens` call. Public because the doctor reports on the very file the
+   * client authenticates with — a diagnostic that named a different one would
+   * be diagnosing something nobody is using.
+   */
+  readonly tokenFile: string;
   private readonly fetchAllCap: number;
   /**
    * Ceiling on requests in flight at once (#892). Read once at construction,
@@ -1139,6 +1169,7 @@ export class SpotifyClient {
   private walkCounter = 0;
 
   constructor(opts: SpotifyClientOptions = {}) {
+    this.tokenFile = opts.tokenFile ?? getTokenFilePath();
     this.fetchAllCap = opts.fetchAllCap ?? getConfig().fetchAllCap;
     this._maxConcurrency = opts.maxConcurrency ?? getConfig().maxConcurrency;
     this.random = opts.random ?? Math.random;
@@ -1438,8 +1469,12 @@ export class SpotifyClient {
       // not be buffered. A refusal is simply "no fresher token" — the same
       // outcome as an unreadable file, which is what this catch has always
       // meant, so a guard refusal falls through to a normal refresh.
+      // The ACTIVE profile's file, resolved once at construction (#609). This
+      // read used to consult a module-level env-only constant, so under
+      // `--profile work` the guard compared the work profile's tokens against
+      // the default profile's and adopted the other account outright.
       const stored = JSON.parse(
-        await readLocalFile({ roots: ownStoreRoots(TOKEN_FILE), tool: 'token refresh', target: TOKEN_FILE }),
+        await readLocalFile({ roots: ownStoreRoots(this.tokenFile), tool: 'token refresh', target: this.tokenFile }),
       ) as TokenData;
       if (Number.isFinite(stored.expires_at) && stored.expires_at > tokens.expires_at) {
         this.loadPromise = Promise.resolve(stored);
@@ -1505,7 +1540,7 @@ export class SpotifyClient {
       // No response arrived, so there is no status and no body to classify
       // from — the thrown error's own shape is the only evidence there is,
       // and it is never merged with the response-borne classes (#677).
-      return classifyTokenTransportFailure(err);
+      return classifyTokenTransportFailure(err, this.tokenFile);
     }
 
     if (!res.ok) {
@@ -1519,7 +1554,7 @@ export class SpotifyClient {
       } catch {
         bodyReadable = false;
       }
-      return classifyTokenResponse(res.status, res.headers.get('Retry-After'), errorBody, bodyReadable);
+      return classifyTokenResponse(res.status, res.headers.get('Retry-After'), errorBody, bodyReadable, this.tokenFile);
     }
 
     // A 2xx whose body will not parse. Rides out a transient failure exactly
@@ -1539,6 +1574,7 @@ export class SpotifyClient {
         retry: false,
         message: withTokenFile(
           'Spotify token service returned an unreadable response — no valid access token to continue with',
+          this.tokenFile,
         ),
       };
     }

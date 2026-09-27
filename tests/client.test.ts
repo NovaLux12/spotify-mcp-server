@@ -1,5 +1,5 @@
 /**
- * Tests for src/client.ts (SpotifyClient, SpotifyApiError) and the TOKEN_FILE
+ * Tests for src/client.ts (SpotifyClient, SpotifyApiError) and the tokenPath
  * contract from src/auth.ts.
  *
  * Covers:
@@ -29,7 +29,7 @@
  *
  * Run with: node --import tsx --test tests/client.test.ts
  *
- * NOTE: TOKEN_FILE is resolved at module-load time inside src/auth.ts, so the
+ * NOTE: the token path is resolved per CALL by getTokenFilePath(), so env
  * env vars MUST be set before the dynamic import below. Tokens are only ever
  * written under os.tmpdir().
  */
@@ -43,7 +43,9 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 // ---------------------------------------------------------------------------
-// Env setup MUST precede importing src modules (TOKEN_FILE binds at load time)
+// Env setup MUST precede anything that reads a token (getTokenFilePath()
+// resolves per call, so ordering no longer matters for the BINDING — only for
+// the value read).
 // ---------------------------------------------------------------------------
 
 const tokenDir = await mkdtemp(path.join(tmpdir(), 'spotify-mcp-client-test-'));
@@ -51,19 +53,20 @@ process.env.SPOTIFY_MCP_TOKEN_FILE = path.join(tokenDir, 'tokens.json');
 process.env.SPOTIFY_CLIENT_ID = 'test-client-id';
 
 const { SpotifyClient, SpotifyApiError, selectNextLaneTask, parseRetryAfter } = await import('../src/client.ts');
-const { TOKEN_FILE } = await import('../src/auth.ts');
+const { getTokenFilePath } = await import('../src/auth.ts');
+const tokenPath = getTokenFilePath();
 const { initConfig } = await import('../src/config.ts');
 
-// Guard the isolation contract: if TOKEN_FILE ever resolved outside tmpdir
+// Guard the isolation contract: if tokenPath ever resolved outside tmpdir
 // (e.g. a static import racing ahead of the env var), fail loudly instead of
 // touching ~/.spotify-mcp/tokens.json.
-describe('TOKEN_FILE contract', () => {
+describe('tokenPath contract', () => {
   it('resolves inside os.tmpdir(), never the real ~/.spotify-mcp home', () => {
     assert.ok(
-      TOKEN_FILE.startsWith(tmpdir()),
-      `TOKEN_FILE must live under ${tmpdir()}, got: ${TOKEN_FILE}`,
+      tokenPath.startsWith(tmpdir()),
+      `tokenPath must live under ${tmpdir()}, got: ${tokenPath}`,
     );
-    assert.ok(!TOKEN_FILE.includes('.spotify-mcp'), 'must not target the default token path');
+    assert.ok(!tokenPath.includes('.spotify-mcp'), 'must not target the default token path');
   });
 });
 
@@ -260,7 +263,7 @@ async function seedTokens(
     expires_at: Date.now() + 3600_000,
     ...overrides,
   };
-  await writeFile(TOKEN_FILE, JSON.stringify(tokens), 'utf8');
+  await writeFile(tokenPath, JSON.stringify(tokens), 'utf8');
 }
 
 describe('SpotifyClient', () => {
@@ -268,7 +271,7 @@ describe('SpotifyClient', () => {
     calls = [];
     responder = () => jsonResponse({});
     // Never touch anything outside tmpdir; start each test from a clean slate.
-    await rm(TOKEN_FILE, { force: true });
+    await rm(tokenPath, { force: true });
     globalThis.fetch = (async (url: unknown, init: RequestInit) => {
       const call: FetchCall = { url: String(url), init };
       calls.push(call);
@@ -343,7 +346,7 @@ describe('SpotifyClient', () => {
       assert.equal(authHeaderOf(calls[1]), 'Bearer tok-refreshed');
 
       // Refreshed tokens persisted back to the temp file.
-      const persisted = JSON.parse(await readFile(TOKEN_FILE, 'utf8')) as {
+      const persisted = JSON.parse(await readFile(tokenPath, 'utf8')) as {
         access_token: string;
         refresh_token: string;
         expires_at: number;

@@ -384,11 +384,35 @@ export function getTokenFile(cliProfile?: string, env: NodeJS.ProcessEnv = proce
 }
 
 /**
- * Resolved token-file path. Override with SPOTIFY_MCP_TOKEN_FILE (e.g. to
- * point tests at a temp file); defaults to ~/.spotify-mcp/tokens.json.
- * For profile-aware resolution, use getTokenFile().
+ * THE token-file path for this process (#609).
+ *
+ * One resolver, argv included, and the only one callers should use. Three
+ * resolvers were live at once and they disagreed: `loadTokens`/`saveTokens`
+ * asked for the argv profile, while a module-level env-only `getTokenFile()`
+ * constant and `getConfig().tokenFile` (also env-only) each answered
+ * something else. A server started as `spotify-mcp --profile work` therefore read
+ * `tokens.work.json` and then, on every refresh, consulted `tokens.json`. If
+ * the default profile's `expires_at` was higher, the refresh guard adopted that
+ * file's `TokenData` verbatim and every later request carried the *other*
+ * account's access token — silently, with nothing raised. The same misread
+ * defeats the guard it was written to be (#109): both processes refresh, and
+ * Spotify can invalidate the older refresh token.
+ *
+ * Precedence is {@link getTokenFile}'s and deliberately unchanged:
+ * `SPOTIFY_MCP_TOKEN_FILE` > `--profile` > `SPOTIFY_MCP_PROFILE` > default.
+ * An explicit CLI profile still outranks the env one, which is what
+ * `getTokenFile(cliProfile)` has always done and what the CLI documents.
+ *
+ * `env` and `argv` are parameters so a test can resolve a specific launch
+ * without mutating the live process; the defaults are the live process, which
+ * is the only correct answer at runtime.
  */
-export const TOKEN_FILE = getTokenFile();
+export function getTokenFilePath(
+  env: NodeJS.ProcessEnv = process.env,
+  argv: string[] = process.argv.slice(2),
+): string {
+  return getTokenFile(parseAuthArgs(argv).profile, env);
+}
 
 /**
  * Returns true when SPOTIFY_HEADLESS is truthy, indicating the auth flow
@@ -431,7 +455,7 @@ function corruptedTokensError(tokenFile: string): Error {
 }
 
 export async function loadTokens(): Promise<TokenData> {
-  const tokenFile = getTokenFile(parseAuthArgs().profile);
+  const tokenFile = getTokenFilePath();
   try {
     // The token file is a server-owned store, so the root is its own
     // directory. The checks that earn their keep here are the regular-file
@@ -462,7 +486,7 @@ const tightenedTokenDirectories = new Set<string>();
  * Mode bits are ignored on Windows, matching the platform's existing behavior.
  */
 export async function saveTokens(tokens: TokenData): Promise<void> {
-  const tokenFile = getTokenFile(parseAuthArgs().profile);
+  const tokenFile = getTokenFilePath();
   const tokenDirectory = dirname(tokenFile);
   await mkdir(tokenDirectory, { recursive: true, mode: 0o700 });
   if (process.platform !== 'win32') {

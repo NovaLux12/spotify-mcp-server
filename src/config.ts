@@ -14,7 +14,13 @@ export interface SpotifyMcpConfig {
   maxItems: number;
   /** "Fetch everything" pagination cap (#55). */
   fetchAllCap: number;
-  /** Token file path (same default as src/auth.ts TOKEN_FILE). */
+  /**
+   * Token file path. ENV-derived on purpose — this snapshot describes the
+   * environment, so it knows nothing about `--profile`. Anything that must
+   * honour the command line resolves through `getTokenFilePath()` in
+   * src/auth.ts instead; using this field there is what made the doctor
+   * report on the default account under a named profile (#609).
+   */
   tokenFile: string;
   /** Active profile name (SPOTIFY_MCP_PROFILE). */
   profile: string | undefined;

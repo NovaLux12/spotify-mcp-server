@@ -21,7 +21,7 @@
  *   6. Every token-failure message names the token file, so a multi-profile
  *      install can tell which install is broken.
  *
- * NOTE: TOKEN_FILE is resolved at module-load time inside src/auth.ts, so the
+ * NOTE: the token path is resolved per CALL by getTokenFilePath(), so env
  * env vars MUST be set before the dynamic import below. Tokens are only ever
  * written under os.tmpdir().
  *
@@ -41,7 +41,8 @@ process.env.SPOTIFY_MCP_TOKEN_FILE = path.join(tokenDir, 'tokens.json');
 process.env.SPOTIFY_CLIENT_ID = 'test-client-id';
 
 const { SpotifyClient, SpotifyApiError, isTokenFailureReason } = await import('../src/client.ts');
-const { TOKEN_FILE } = await import('../src/auth.ts');
+const { getTokenFilePath } = await import('../src/auth.ts');
+const tokenPath = getTokenFilePath();
 const { installToolErrorBoundary } = await import('../src/tools/annotations.ts');
 const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
 const { InMemoryTransport } = await import('@modelcontextprotocol/sdk/inMemory.js');
@@ -86,7 +87,7 @@ function tokenCalls(): FetchCall[] {
  */
 async function seedTokens(expiresAt = Date.now() - 1000): Promise<void> {
   await writeFile(
-    TOKEN_FILE,
+    tokenPath,
     JSON.stringify({
       access_token: 'tok-initial',
       refresh_token: 'ref-initial',
@@ -120,7 +121,7 @@ async function captureRefreshFailure(): Promise<Classified> {
 /** Assert the failure names the token file, as issue item 2 requires. */
 function assertNamesTokenFile(message: string): void {
   assert.ok(
-    message.includes(TOKEN_FILE),
+    message.includes(tokenPath),
     `token-failure message must name the token file for multi-profile installs; got: ${message}`,
   );
 }
@@ -137,7 +138,7 @@ function assertNotAnOutageClaim(message: string): void {
 beforeEach(async () => {
   calls = [];
   tokenEndpoint = () => jsonResponse({ error: 'invalid_grant' }, 400);
-  await rm(TOKEN_FILE, { force: true });
+  await rm(tokenPath, { force: true });
   globalThis.fetch = (async (url: unknown, init: RequestInit) => {
     const call: FetchCall = { url: String(url), init };
     calls.push(call);
@@ -491,7 +492,7 @@ describe('the classification distinguishes the failures it claims to (#677)', ()
 
     const seen: Classified[] = [];
     for (const shape of shapes) {
-      await rm(TOKEN_FILE, { force: true });
+      await rm(tokenPath, { force: true });
       await seedTokens();
       shape.setup();
       const failure = await captureRefreshFailure();

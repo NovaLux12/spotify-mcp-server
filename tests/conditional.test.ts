@@ -13,7 +13,7 @@
  *
  * Run with: node --import tsx --test tests/conditional.test.ts
  *
- * NOTE: TOKEN_FILE is resolved at module-load time inside src/auth.ts, so the
+ * NOTE: the token path is resolved per CALL by getTokenFilePath(), so env
  * env vars MUST be set before the dynamic import below.
  */
 
@@ -33,10 +33,11 @@ process.env.SPOTIFY_MCP_TOKEN_FILE = path.join(tokenDir, 'tokens.json');
 process.env.SPOTIFY_CLIENT_ID = 'test-client-id';
 
 const { SpotifyClient, SpotifyApiError } = await import('../src/client.ts');
-const { TOKEN_FILE } = await import('../src/auth.ts');
+const { getTokenFilePath } = await import('../src/auth.ts');
+const tokenPath = getTokenFilePath();
 const { registerPlaybackTools } = await import('../src/tools/playback.ts');
 // annotations.ts reaches client.ts reaches auth.ts, so it must be imported
-// dynamically too — TOKEN_FILE binds at load time, above.
+// dynamically too — the env must be in place before the first token read.
 const { installToolErrorBoundary } = await import('../src/tools/annotations.ts');
 
 // Real short waits, matching the TTL tests in tests/infra.test.ts: the clock
@@ -73,7 +74,7 @@ function headerOf(init: RequestInit | undefined, name: string): string | null {
 
 async function seedTokens(): Promise<void> {
   await writeFile(
-    TOKEN_FILE,
+    tokenPath,
     JSON.stringify({ access_token: 'tok-1', refresh_token: 'ref-1', expires_at: Date.now() + 3600_000 }),
     'utf8',
   );
@@ -83,7 +84,7 @@ describe('conditional reads (#601)', () => {
   beforeEach(async () => {
     calls = [];
     responder = () => jsonResponse({});
-    await rm(TOKEN_FILE, { force: true });
+    await rm(tokenPath, { force: true });
     globalThis.fetch = (async (url: unknown, init: RequestInit) => {
       const record: FetchCall = {
         url: String(url),

@@ -16,14 +16,17 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 // ---------------------------------------------------------------------------
-// Env setup MUST precede importing src modules (TOKEN_FILE binds at load time)
+// Env setup MUST precede anything that reads a token (getTokenFilePath()
+// resolves per call, so ordering no longer matters for the BINDING — only for
+// the value read).
 // ---------------------------------------------------------------------------
 
 const tokenDir = await mkdtemp(path.join(tmpdir(), 'spotify-mcp-auth-hardening-'));
 process.env.SPOTIFY_MCP_TOKEN_FILE = path.join(tokenDir, 'tokens.json');
 process.env.SPOTIFY_CLIENT_ID = 'test-client-id';
 
-const { isTokenData, loadTokens, saveTokens, TOKEN_FILE } = await import('../src/auth.ts');
+const { isTokenData, loadTokens, saveTokens, getTokenFilePath } = await import('../src/auth.ts');
+const tokenPath = getTokenFilePath();
 const { SpotifyClient, SpotifyApiError } = await import('../src/client.ts');
 const { initConfig, getConfig } = await import('../src/config.ts');
 
@@ -74,7 +77,7 @@ async function seedTokens(
     expires_at: Date.now() + 3600_000,
     ...overrides,
   };
-  await writeFile(TOKEN_FILE, JSON.stringify(tokens), 'utf8');
+  await writeFile(tokenPath, JSON.stringify(tokens), 'utf8');
 }
 
 async function storedTokens(): Promise<{
@@ -82,7 +85,7 @@ async function storedTokens(): Promise<{
   refresh_token: string;
   expires_at: number;
 }> {
-  return JSON.parse(await readFile(TOKEN_FILE, 'utf8'));
+  return JSON.parse(await readFile(tokenPath, 'utf8'));
 }
 
 afterEach(() => {
@@ -95,7 +98,7 @@ after(async () => {
 
 describe('atomic token persistence (#109)', () => {
   afterEach(async () => {
-    await rm(TOKEN_FILE, { force: true });
+    await rm(tokenPath, { force: true });
   });
 
   it('saveTokens writes the target and leaves no .tmp behind', async () => {
@@ -105,9 +108,9 @@ describe('atomic token persistence (#109)', () => {
       expires_at: Date.now() + 1000,
     });
 
-    const st = await stat(TOKEN_FILE);
+    const st = await stat(tokenPath);
     assert.equal(st.mode & 0o777, 0o600, 'tokens file must be owner-only');
-    await assert.rejects(stat(`${TOKEN_FILE}.tmp`), { code: 'ENOENT' }, 'no .tmp may survive');
+    await assert.rejects(stat(`${tokenPath}.tmp`), { code: 'ENOENT' }, 'no .tmp may survive');
 
     const stored = await storedTokens();
     assert.equal(stored.access_token, 'tok-a');
@@ -115,7 +118,7 @@ describe('atomic token persistence (#109)', () => {
 
   it('saveTokens atomically replaces a pre-existing (looser) file', async () => {
     // Pre-existing file with loose permissions, as an older release may have left.
-    await writeFile(TOKEN_FILE, '{"access_token":"stale"}', { mode: 0o644 });
+    await writeFile(tokenPath, '{"access_token":"stale"}', { mode: 0o644 });
 
     await saveTokens({
       access_token: 'tok-b',
@@ -123,44 +126,44 @@ describe('atomic token persistence (#109)', () => {
       expires_at: Date.now() + 1000,
     });
 
-    const st = await stat(TOKEN_FILE);
+    const st = await stat(tokenPath);
     assert.equal(st.mode & 0o777, 0o600, 'replacement tightens permissions too');
     const stored = await storedTokens();
     assert.equal(stored.access_token, 'tok-b');
-    await assert.rejects(stat(`${TOKEN_FILE}.tmp`), { code: 'ENOENT' });
+    await assert.rejects(stat(`${tokenPath}.tmp`), { code: 'ENOENT' });
   });
 
   it('normalizes a pre-existing loose directory and legacy sidecar', async () => {
     await chmod(tokenDir, 0o755);
-    await writeFile(`${TOKEN_FILE}.tmp`, 'attacker-controlled', { mode: 0o644 });
+    await writeFile(`${tokenPath}.tmp`, 'attacker-controlled', { mode: 0o644 });
     await saveTokens({
       access_token: 'tok-permissions',
       refresh_token: 'ref-permissions',
       expires_at: Date.now() + 1000,
     });
     assert.equal((await stat(tokenDir)).mode & 0o777, 0o700);
-    assert.equal((await stat(TOKEN_FILE)).mode & 0o777, 0o600);
-    await assert.rejects(stat(`${TOKEN_FILE}.tmp`), { code: 'ENOENT' });
+    assert.equal((await stat(tokenPath)).mode & 0o777, 0o600);
+    await assert.rejects(stat(`${tokenPath}.tmp`), { code: 'ENOENT' });
   });
 
   it('does not follow a pre-existing legacy sidecar symlink', async () => {
     const target = path.join(tokenDir, 'symlink-target');
     await writeFile(target, 'unchanged', 'utf8');
-    await symlink(target, `${TOKEN_FILE}.tmp`);
+    await symlink(target, `${tokenPath}.tmp`);
     await saveTokens({
       access_token: 'tok-symlink-safe',
       refresh_token: 'ref-symlink-safe',
       expires_at: Date.now() + 1000,
     });
     assert.equal(await readFile(target, 'utf8'), 'unchanged');
-    await assert.rejects(lstat(`${TOKEN_FILE}.tmp`), { code: 'ENOENT' });
+    await assert.rejects(lstat(`${tokenPath}.tmp`), { code: 'ENOENT' });
   });
 
   it('loadTokens turns a corrupted tokens.json into an actionable error', async () => {
-    await writeFile(TOKEN_FILE, '{not json at all', 'utf8');
+    await writeFile(tokenPath, '{not json at all', 'utf8');
     await assert.rejects(
       loadTokens(),
-      { message: `Saved Spotify tokens are corrupted at ${TOKEN_FILE} — run \`npm run auth\` again.` },
+      { message: `Saved Spotify tokens are corrupted at ${tokenPath} — run \`npm run auth\` again.` },
     );
   });
 
@@ -170,7 +173,7 @@ describe('atomic token persistence (#109)', () => {
       { access_token: 'a', refresh_token: 'r', expires_at: 'soon' },
       { access_token: 'a', refresh_token: 'r', expires_at: Number.POSITIVE_INFINITY },
     ]) {
-      await writeFile(TOKEN_FILE, JSON.stringify(malformed), 'utf8');
+      await writeFile(tokenPath, JSON.stringify(malformed), 'utf8');
       assert.equal(isTokenData(malformed), false);
       await assert.rejects(loadTokens(), /Saved Spotify tokens are corrupted/);
     }
@@ -183,14 +186,14 @@ describe('atomic token persistence (#109)', () => {
       expires_at: Date.now() + 60_000,
       scope: 'user-read-email',
     };
-    await writeFile(TOKEN_FILE, JSON.stringify(valid), 'utf8');
+    await writeFile(tokenPath, JSON.stringify(valid), 'utf8');
     assert.deepEqual(await loadTokens(), valid);
   });
 });
 
 describe('refresh resilience (#109)', () => {
   afterEach(async () => {
-    await rm(TOKEN_FILE, { force: true });
+    await rm(tokenPath, { force: true });
   });
 
   it('adopts a fresher on-disk token and skips the network entirely', async () => {
@@ -221,7 +224,7 @@ describe('refresh resilience (#109)', () => {
       return jsonResponse({ ok: true });
     };
     await writeFile(
-      TOKEN_FILE,
+      tokenPath,
       JSON.stringify({
         access_token: 'tok-fresher',
         refresh_token: 'ref-fresher',

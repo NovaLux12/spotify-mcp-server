@@ -14,7 +14,7 @@
  *
  * Run with: node --import tsx --test tests/cache.test.ts
  *
- * NOTE: TOKEN_FILE is resolved at module-load time inside src/auth.ts, so the
+ * NOTE: the token path is resolved per CALL by getTokenFilePath(), so env
  * env vars MUST be set before the dynamic import below. Tokens are only ever
  * written under os.tmpdir().
  */
@@ -34,7 +34,9 @@ const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..
 const MB = 1024 * 1024;
 
 // ---------------------------------------------------------------------------
-// Env setup MUST precede importing src modules (TOKEN_FILE binds at load time)
+// Env setup MUST precede anything that reads a token (getTokenFilePath()
+// resolves per call, so ordering no longer matters for the BINDING — only for
+// the value read).
 // ---------------------------------------------------------------------------
 
 const tokenDir = await mkdtemp(path.join(tmpdir(), 'spotify-mcp-cache-test-'));
@@ -43,7 +45,8 @@ process.env.SPOTIFY_CLIENT_ID = 'test-client-id';
 
 const { LruTtlCache, cacheKey } = await import('../src/cache.ts');
 const { SpotifyClient } = await import('../src/client.ts');
-const { TOKEN_FILE, getTokenFile } = await import('../src/auth.ts');
+const { getTokenFilePath, getTokenFile } = await import('../src/auth.ts');
+const tokenPath = getTokenFilePath();
 const persist = await import('../src/cachepersist.ts');
 
 const { basename, dirname, join } = path;
@@ -252,7 +255,7 @@ describe('cache: SpotifyClient reads (#894)', () => {
   beforeEach(async () => {
     calls = [];
     await writeFile(
-      TOKEN_FILE,
+      tokenPath,
       JSON.stringify({ access_token: 'tok', refresh_token: 'ref', expires_at: Date.now() + 3_600_000 }),
       'utf8',
     );
@@ -339,7 +342,7 @@ describe('cache: scoped invalidation (#893)', () => {
   beforeEach(async () => {
     calls = [];
     await writeFile(
-      TOKEN_FILE,
+      tokenPath,
       JSON.stringify({ access_token: 'tok', refresh_token: 'ref', expires_at: Date.now() + 3_600_000 }),
       'utf8',
     );
@@ -513,7 +516,7 @@ describe('cache: scoped invalidation (#893)', () => {
     // that body re-seeds the entry the write just invalidated, and the stale
     // value is then served for the full TTL while looking fresh.
     await writeFile(
-      TOKEN_FILE,
+      tokenPath,
       JSON.stringify({ access_token: 'tok', refresh_token: 'ref', expires_at: Date.now() + 3_600_000 }),
       'utf8',
     );
@@ -576,7 +579,7 @@ describe('cache: scoped invalidation (#893)', () => {
     // catalog fill away anyway — `cacheEntries === 0` after the raced read,
     // which is the exact cost scoped invalidation claims to remove.
     await writeFile(
-      TOKEN_FILE,
+      tokenPath,
       JSON.stringify({ access_token: 'tok', refresh_token: 'ref', expires_at: Date.now() + 3_600_000 }),
       'utf8',
     );
@@ -612,7 +615,7 @@ describe('cache: scoped invalidation (#893)', () => {
     // enters the payload cache, so the validator store is the only place the
     // guard's verdict is observable — hence asserting on `If-None-Match`.
     await writeFile(
-      TOKEN_FILE,
+      tokenPath,
       JSON.stringify({ access_token: 'tok', refresh_token: 'ref', expires_at: Date.now() + 3_600_000 }),
       'utf8',
     );
@@ -671,7 +674,7 @@ describe('cache: scoped invalidation (#893)', () => {
     // truthful "unchanged" and its refresh is worth keeping. A blanket global
     // epoch would discard it.
     await writeFile(
-      TOKEN_FILE,
+      tokenPath,
       JSON.stringify({ access_token: 'tok', refresh_token: 'ref', expires_at: Date.now() + 3_600_000 }),
       'utf8',
     );

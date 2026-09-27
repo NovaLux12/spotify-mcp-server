@@ -38,7 +38,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
-import { getTokenFile } from './auth.js';
+import { getTokenFilePath } from './auth.js';
 import { loadSidecar } from './sidecar.js';
 import { truthyEnv } from './config.js';
 
@@ -159,7 +159,7 @@ export function cachePersistEnabled(env: NodeJS.ProcessEnv = process.env): boole
  * The cache file's NAME, derived from the token file it belongs to.
  *
  * Deriving beats re-resolving: the profile is read out of the very path
- * `getTokenFile()` produced, so the two stores cannot disagree about which
+ * `getTokenFilePath()` produced, so the two stores cannot disagree about which
  * account is active. A second, hand-rolled profile lookup here is precisely
  * how this function came to ignore `--profile` (#1249 review) and left every
  * account on the machine sharing one `cache.json` — last writer wins, and a
@@ -182,15 +182,23 @@ function cacheFileNameFor(tokenFile: string): string {
  * The cache is per-account state, so it is named after the account the same way
  * the token file is: `~/.spotify-mcp/cache.<profile>.json` beside
  * `~/.spotify-mcp/tokens.<profile>.json` (#1249 review). Both come from one
- * `getTokenFile()` call, which is what makes the two provably agree rather than
- * merely similar — see {@link cacheFileNameFor}.
+ * `getTokenFilePath()` call, which is what makes the two provably agree rather
+ * than merely similar — see {@link cacheFileNameFor}.
+ *
+ * #609: this asked for `getTokenFile(undefined, env)`, and that `undefined` is
+ * the whole defect. Passing no CLI profile to a resolver that also reads argv
+ * looks like "default", but it silently DISCARDED `--profile work`, so a
+ * named-profile server persisted its reads into the default account's
+ * `cache.json` — the same cross-account read leak #1249 was closed for, one
+ * layer out. The argument is gone rather than threaded so the next reader
+ * cannot repeat it.
  *
  * `SPOTIFY_MCP_DATA_DIR` still overrides the DIRECTORY (tests, relocated homes);
  * it does not merge accounts, because the name is still profile-derived.
  */
 export function cachePersistPath(env: NodeJS.ProcessEnv = process.env, opts: CachePersistOptions = {}): string {
   if (opts.file) return opts.file;
-  const tokenFile = getTokenFile(undefined, env);
+  const tokenFile = getTokenFilePath(env);
   const dir = env.SPOTIFY_MCP_DATA_DIR?.trim() || dirname(tokenFile);
   return join(dir, cacheFileNameFor(tokenFile));
 }
