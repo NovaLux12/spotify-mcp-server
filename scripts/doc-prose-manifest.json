@@ -2065,7 +2065,7 @@
         "label": "Response byte cap (#895) — responseformat: 'json' and st…"
       },
       {
-        "hash": "d6f6074447d29264",
+        "hash": "1bd9ce1b66814558",
         "label": "Row cap and emit-once (#895) — capRowSections and emitOn…"
       },
       {
@@ -7002,9 +7002,9 @@
     }
   ],
   "provenance": {
-    "head": "cd33d7fc6e2e9e4ce5bca51541134c7f19e612c5",
-    "base": "b6d1203b338fcb6f28e08b2b897efa8e45b1d0e5",
-    "upstream": "b6d1203b338fcb6f28e08b2b897efa8e45b1d0e5",
+    "head": "8d1fcdd1648ae9f3e9a618434563957419cc61f4",
+    "base": "76aad008e240cd657a8b0d40150c0c21793c0395",
+    "upstream": "76aad008e240cd657a8b0d40150c0c21793c0395",
     "behind": false
   },
   "reanchored": [
@@ -7024,6 +7024,15 @@
       "to": "6c6f555af6553868",
       "toLabel": "Pruning runs on every append and once at startup, across…",
       "reason": "#606 reworded the pruning paragraph in place ('once at server startup' -> 'once at startup, across the CLI and stdio entry points'). Counted on both trees: 1 on main, 1 on the branch, same paragraph, nothing deleted.",
+      "date": "2026-09-27"
+    },
+    {
+      "file": "SPEC.md",
+      "hash": "d6f6074447d29264",
+      "label": "Row cap and emit-once (#895) — capRowSections and emitOn…",
+      "to": "1bd9ce1b66814558",
+      "toLabel": "Row cap and emit-once (#895) — capRowSections and emitOn…",
+      "reason": "rebase onto 76aad008: 1 missing / 1 unpinned, same file, same label, 1 reword; the row occurs once on main and once on the branch",
       "date": "2026-09-27"
     }
   ]
