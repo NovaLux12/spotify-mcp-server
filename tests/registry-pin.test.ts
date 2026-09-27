@@ -128,7 +128,7 @@ async function listWireTools(): Promise<WireTool[]> {
 
   let buffer = '';
   let stderr = '';
-  const pending = new Map<number, (value: { result?: { tools?: WireTool[] }; error?: unknown }) => void>();
+  const pending = new Map<number, { resolve: (value: { result?: { tools?: WireTool[] }; error?: unknown }) => void; reject: (reason: Error) => void }>();
   child.stderr.setEncoding('utf8');
   child.stderr.on('data', (chunk: string) => { stderr += chunk; });
   child.stdout.setEncoding('utf8');
@@ -141,16 +141,33 @@ async function listWireTools(): Promise<WireTool[]> {
       if (!line) continue;
       const message = JSON.parse(line) as { id?: number };
       if (typeof message.id !== 'number') continue;
-      pending.get(message.id)?.(message as { result?: { tools?: WireTool[] } });
+      pending.get(message.id)?.resolve(message as { result?: { tools?: WireTool[] } });
       pending.delete(message.id);
     }
   });
 
   let nextId = 0;
+  // A budget breach fails STARTUP, before `initialize` is ever answered: the
+  // aggregate gate in `src/index.ts` throws and the process exits. Waiting out
+  // the request timeout would report "timeout waiting for initialize" and hide
+  // the measured total the gate already computed — which is exactly what
+  // acceptance criterion #3 asks a breach to print. Race every request against
+  // the child's exit and re-throw whatever it printed.
+  const failAll = (reason: string): void => {
+    for (const [, settle] of pending) settle.reject(new Error(reason));
+    pending.clear();
+  };
+  child.on('exit', (code) => {
+    if (pending.size > 0) {
+      failAll(`the server exited with code ${code} before answering\nstderr:\n${stderr.trim() || '(no stderr)'}`);
+    }
+  });
+  child.on('error', (error) => failAll(`the server failed to start: ${error.message}`));
+
   const request = (method: string, params: Record<string, unknown> = {}): Promise<{ result?: { tools?: WireTool[] }; error?: unknown }> => {
     const { promise, resolve, reject } = Promise.withResolvers<{ result?: { tools?: WireTool[] }; error?: unknown }>();
     const id = ++nextId;
-    pending.set(id, resolve);
+    pending.set(id, { resolve, reject });
     child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id, method, params })}\n`);
     setTimeout(() => reject(new Error(`timeout waiting for ${method}\nstderr:\n${stderr}`)), 60_000).unref();
     return promise;
