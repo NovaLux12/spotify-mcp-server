@@ -275,26 +275,49 @@ export function textOut(lines: string[], structured?: Record<string, unknown>): 
  * 124 KB `recentStreams` page was charged twice per call.
  */
 function jsonUpstream(raw: Record<string, unknown>, cap: number, title: string): ToolOut {
-  // The upstream collections arrive as `{ items: [...] }` wrappers, not as
-  // bare arrays, and `capRowSections` caps by top-level key. Handing it the
-  // wrappers therefore reported every collection as `unreadable` and returned
-  // zero rows — the #804 discipline applied in the wrong place. So the arrays
-  // are lifted into a flat payload, capped in ONE call, and written back into
-  // their own wrappers. The section keys stay the wrapper names (`topTracks`),
-  // because that is the field the caller sees, not the internal `items`.
+  // The upstream collections arrive mostly as `{ items: [...] }` wrappers, and
+  // `capRowSections` caps by top-level key. Handing it the wrappers therefore
+  // reported every collection as `unreadable` and returned zero rows — the #804
+  // discipline applied in the wrong place. So the arrays are lifted into a flat
+  // payload, capped in ONE call, and written back into the shape each key
+  // arrived in. The section keys stay the wrapper names (`topTracks`), because
+  // that is the field the caller sees, not the internal `items`.
+  //
+  // `wrapped` records which keys arrived as wrappers, because the writeback has
+  // to put each capped value back where the caller will look for it (#1480). A
+  // BARE array has no `.items`, so it is lifted unchanged and capped at the top
+  // level like any other array — and it must be capped back onto ITSELF.
   const flat: Record<string, unknown> = {};
+  const wrapped = new Set<string>();
   for (const [key, value] of Object.entries(raw)) {
     const items = (value as { items?: unknown } | null | undefined)?.items;
     // A wrapper with no array `items` is passed through whole, so the helper
     // reports it `unreadable` instead of this function dropping it silently.
     flat[key] = Array.isArray(items) ? items : value;
+    if (Array.isArray(items)) wrapped.add(key);
   }
   const capped = capRowSections<Record<string, unknown>>(flat, Object.keys(flat), cap);
   const sections = capped.sections as Record<string, SectionCap>;
   const shaped: Record<string, unknown> = { ...raw };
   for (const key of Object.keys(flat)) {
+    // A key the helper could not read is passed through EXACTLY as the handler
+    // produced it — never coerced to `[]` (#804). That discipline is unchanged
+    // by #1480 and is the reason the two shapes below are the only two.
     if (sections[key]?.unreadable) continue;
-    (shaped[key] as { items: unknown[] }).items = capped[key] as unknown[];
+    if (wrapped.has(key)) {
+      // The wrapper keeps its own shape (and any sibling fields it carried):
+      // only its `items` is the row array, so only `items` is replaced.
+      shaped[key] = { ...(shaped[key] as Record<string, unknown>), items: capped[key] };
+    } else {
+      // The BARE ARRAY is the payload at this key, so the capped array replaces
+      // it outright. This branch used to assign `.items` onto the array, which
+      // sets a non-index property that `JSON.stringify` DROPS: the cap was
+      // computed, published in `sections`, and then discarded — so the tool
+      // claimed `{"returned":10,"total":500,"truncated":true}` while shipping
+      // all 500 rows (#1480). `asItems` in this file and in `statsfm_taste.ts`
+      // both accept a bare array, so this is a shape the module really receives.
+      shaped[key] = capped[key];
+    }
   }
   shaped.sections = sections;
   shaped.truncated = capped.truncated;

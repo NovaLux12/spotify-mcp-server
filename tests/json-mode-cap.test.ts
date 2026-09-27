@@ -678,3 +678,172 @@ describe('taste composite json mode (#895)', () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// #1480 — `sections` must describe the payload that actually ships.
+//
+// The #895 test above is GREEN on the #1480 tree, and that is the whole point:
+// its fixture wraps every collection in `{ items: [...] }`, which is the one
+// shape the writeback happened to handle. stats.fm can also answer with a BARE
+// array — `asItems` in `taste_composites.ts` and in `statsfm_taste.ts` both
+// accept one, so the module's own standards treat it as expected — and against
+// that shape `jsonUpstream` assigned the capped array onto a `.items` property
+// of the original array. `JSON.stringify` drops non-index properties, so the
+// cap was computed, published in `sections`, and thrown away: the tool claimed
+// `{"returned":10,"total":500,"truncated":true}` while shipping all 500 rows.
+//
+// Every assertion below reads the JSON-SERIALIZED payload, not the object. That
+// is the wire the host receives, and it is the only view in which the bug is
+// visible at all: on the raw object the uncapped rows and the discarded
+// `items` property are both still there, so a length check against the object
+// would pass on the broken tree.
+// ---------------------------------------------------------------------------
+
+describe('taste composite json mode — the capped value is what ships (#1480)', () => {
+  const streamRow = (i: number) => ({
+    track: { id: `t${i}`, name: `Track ${i}` },
+    artists: [{ id: `ar${i}`, name: `Artist ${i}` }],
+    playedAt: 1_700_000_000_000 + i,
+    duration: 200_000,
+    platform: 'spotify',
+  });
+  const streamRows = (n: number) => Array.from({ length: n }, (_, i) => streamRow(i));
+
+  interface Section { returned: number; total: number; truncated: boolean; unreadable?: boolean }
+
+  /**
+   * The rows a caller can actually count at `key` in the serialized payload: the
+   * key itself when the collection shipped bare, its `items` when it shipped
+   * wrapped. The two shapes are the whole class, so the row count has to be
+   * read the same way for both or the test only ever exercises one.
+   */
+  function shippedRows(wire: Record<string, unknown>, key: string): unknown[] {
+    const value = wire[key];
+    if (Array.isArray(value)) return value;
+    const items = (value as { items?: unknown } | null)?.items;
+    return Array.isArray(items) ? items : [];
+  }
+
+  it('caps a BARE-ARRAY collection, which it previously computed and then discarded', async () => {
+    // `/streams` answers with a bare array — no `{ items: [...] }` wrapper. The
+    // other two stay wrapped so one call covers both shapes.
+    __setStatsfmFetchImpl(async (url: string) => {
+      if (url.includes('/streams')) return streamRows(500);
+      if (url.includes('/top/tracks')) return { items: streamRows(50) };
+      return { items: streamRows(20) };
+    });
+    try {
+      const out = await tasteInvoke('taste_daily_brief', {
+        statsfm_user: 'alice', max_results: 10, response_format: 'json',
+      });
+      const wire = JSON.parse(JSON.stringify(out.structuredContent)) as Record<string, unknown>;
+      const sections = wire.sections as Record<string, Section>;
+
+      // The disclosure is the thing that used to lie, so it is stated first and
+      // exactly: the section still reports the pre-cap total, and `truncated`
+      // still means "rows were withheld from THIS payload".
+      assert.deepEqual(
+        { returned: sections.recentStreams.returned, total: sections.recentStreams.total, truncated: sections.recentStreams.truncated },
+        { returned: 10, total: 500, truncated: true },
+        'the section discloses the cap it claims to have applied',
+      );
+      assert.equal(wire.truncated, true);
+
+      // Then the claim is checked against the wire. Pre-fix this is 500.
+      assert.ok(Array.isArray(wire.recentStreams), 'a bare array stays a bare array');
+      assert.equal(shippedRows(wire, 'recentStreams').length, 10, 'the bare array ships 10 of 500 rows');
+      assert.equal(
+        shippedRows(wire, 'recentStreams').length, sections.recentStreams.returned,
+        'the wire and the section agree — the disclosure is not a claim about a payload that did not happen',
+      );
+      assert.equal(shippedRows(wire, 'topTracks').length, 10, 'the wrapped collection is still capped');
+      assert.equal(
+        shippedRows(wire, 'topArtists').length, 10, 'the sibling wrapped collection is still capped',
+      );
+      assert.ok(
+        JSON.stringify(wire).length < 10_000,
+        `the capped payload must stay bounded, got ${JSON.stringify(wire).length} B`,
+      );
+    } finally {
+      __resetStatsfmFetchImpl();
+    }
+  });
+
+  it('holds the wire to every section across all three upstream shapes', async () => {
+    // The general defect is "a cap that was computed and not applied", so the
+    // invariant is asserted for EVERY key rather than for the one that broke:
+    // whatever a section claims to have returned is what the caller can count.
+    // This is the check the issue asks for, and it is the one that catches the
+    // NEXT call site that lifts a value out of a wrapper and forgets to put the
+    // capped one back.
+    const shapes = [
+      { label: 'bare array', page: (n: number) => streamRows(n) },
+      { label: '{ items: [] }', page: (n: number) => ({ items: streamRows(n) }) },
+      { label: '{ data: [] }', page: (n: number) => ({ data: streamRows(n) }) },
+    ] as const;
+
+    for (const { label, page } of shapes) {
+      __setStatsfmFetchImpl(async (url: string) => {
+        if (url.includes('/streams')) return page(500);
+        if (url.includes('/top/tracks')) return page(50);
+        return page(20);
+      });
+      try {
+        const out = await tasteInvoke('taste_daily_brief', {
+          statsfm_user: 'alice', max_results: 10, response_format: 'json',
+        });
+        const wire = JSON.parse(JSON.stringify(out.structuredContent)) as Record<string, unknown>;
+        const sections = wire.sections as Record<string, Section>;
+        const keys = Object.keys(sections);
+        assert.ok(keys.length > 0, `${label}: the payload carries sections`);
+
+        for (const key of keys) {
+          if (sections[key].unreadable) continue;
+          assert.equal(
+            shippedRows(wire, key).length, sections[key].returned,
+            `${label}: ${key} ships ${sections[key].returned} rows and claims to ship that many`,
+          );
+        }
+      } finally {
+        __resetStatsfmFetchImpl();
+      }
+    }
+  });
+
+  it('passes a collection it could not read through WHOLE rather than as []', async () => {
+    // #804, and the reason the fix is a shape switch rather than a coercion.
+    // `{ data: [...] }` is not a shape `jsonUpstream` lifts, so the helper calls
+    // it unreadable — and unreadable means untouched: the rows stay, the
+    // wrapper stays, and nothing claims a cap was applied to them. Rewriting
+    // this to `[]` would be the #803 bug in a different costume.
+    __setStatsfmFetchImpl(async (url: string) => {
+      if (url.includes('/streams')) return { data: streamRows(500) };
+      if (url.includes('/top/tracks')) return streamRows(50);
+      return { items: streamRows(20) };
+    });
+    try {
+      const out = await tasteInvoke('taste_daily_brief', {
+        statsfm_user: 'alice', max_results: 10, response_format: 'json',
+      });
+      const wire = JSON.parse(JSON.stringify(out.structuredContent)) as Record<string, unknown>;
+      const sections = wire.sections as Record<string, Section>;
+
+      const unreadable = wire.recentStreams as { data?: unknown[] };
+      assert.ok(Array.isArray(unreadable.data), 'the wrapper is not collapsed to an array');
+      assert.equal(unreadable.data.length, 500, 'the unread rows are not dropped');
+      assert.equal(sections.recentStreams.unreadable, true, 'and they are reported unreadable');
+      assert.equal(sections.recentStreams.returned, 0, 'an unreadable key claims no rows, because it read none');
+      assert.equal(
+        sections.recentStreams.truncated, false,
+        'no cap was applied, so nothing claims one was',
+      );
+      // The keys that WERE readable are still capped — one unreadable
+      // collection must not disarm the cap on its siblings.
+      assert.equal(shippedRows(wire, 'topTracks').length, 10);
+      assert.equal(shippedRows(wire, 'topArtists').length, 10);
+      assert.equal(wire.truncated, true, 'the top-level flag tracks the capped siblings');
+    } finally {
+      __resetStatsfmFetchImpl();
+    }
+  });
+});
