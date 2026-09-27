@@ -31,7 +31,7 @@ Every tool below is registered. The common `response_format` argument accepts `c
 | `statsfm_top_artists` | A user's top artists for a supported `range`. |
 | `statsfm_top_albums` | A user's top albums for a supported `range`. |
 | `statsfm_top_genres` | A user's genre ranking for a supported `range`. |
-| `statsfm_recent_streams` | Recent individual streams, with optional Unix-ms `after`/`before` bounds. |
+| `statsfm_recent_streams` | Recent individual streams, optionally narrowed by a named UTC window (`range`: `today`/`week`/`month`/`year`/`lifetime`) or explicit Unix-ms `after`/`before` bounds. See [Stream windows](#stream-windows-on-statsfm_recent_streams-today--week--month--year--lifetime). |
 | `statsfm_now_playing` | The user's current stream, or `null` when idle. |
 | `statsfm_track_stats` | stats.fm's own lifetime stream total for one track, plus a sample of the individual plays (`limit` sizes the sample, never the total). |
 | `statsfm_artist_stats` | stats.fm's own lifetime stream total for one artist, plus a sample of the individual plays (`limit` sizes the sample, never the total). |
@@ -90,7 +90,9 @@ To remove the store, run `spotify-mcp logout` (which moves it aside recoverably 
 
 ## Ranges
 
-Every tool that takes a `range` accepts the same three values, and only these three: **`weeks`**, **`months`**, and **`lifetime`** (lowercase, defaulting to `lifetime`). This holds for the endpoint top-list tools, the taste-intelligence tools, and the taste composites alike — they all send `range` to the same stats.fm query parameter, so there is one vocabulary across the whole surface, exported once as `statsfmRangeSchema` in `src/tools/statsfm.ts`.
+### Ranking ranges (`weeks` / `months` / `lifetime`)
+
+Every tool that sends a ranking `range` upstream accepts the same three values, and only these three: **`weeks`**, **`months`**, and **`lifetime`** (lowercase, defaulting to `lifetime`). This holds for the endpoint top-list tools, the taste-intelligence tools, and the taste composites alike — they all send `range` to the same stats.fm query parameter, so there is one vocabulary across the whole surface, exported once as `statsfmRangeSchema` in `src/tools/statsfm.ts`.
 
 The singular spellings `week` and `month` are not accepted. stats.fm rejects them with `400 invalid range`; so are `6months`, `year`, and `all-time`. Because `range` is optional with a `lifetime` default, a rejected value is worth catching before the call rather than discovering from a silent lifetime answer.
 
@@ -98,6 +100,22 @@ The singular spellings `week` and `month` are not accepted. stats.fm rejects the
 - `weeks` and `months` reflect current rotation. Compare a short window against `lifetime` to separate phases from identity.
 - `statsfm_streams_stats` and date-windowed tools use Unix-millisecond `after`/`before` bounds instead of a named `range`.
 - `statsfm_recaps` uses an optional calendar `year`, not a range.
+
+### Stream windows on `statsfm_recent_streams` (`today` / `week` / `month` / `year` / `lifetime`)
+
+`statsfm_recent_streams` takes a second, **separate** vocabulary: `today`, `week`, `month`, `year` and `lifetime`. These are calendar buckets resolved to **UTC** boundaries and are **not** the ranking values above — `weeks`/`months` are rejected by this tool, and `today`/`year` are rejected by the ranking tools, because the two are sent to different things. stats.fm rejects the ranking spellings upstream with `400 invalid range`, so the two vocabularies cannot be one enum; that is why this section is separate rather than a footnote on the one above.
+
+| Bucket | Window starts at |
+|---|---|
+| `today` | 00:00 UTC today |
+| `week` | Monday 00:00 UTC (ISO week) |
+| `month` | the 1st, 00:00 UTC |
+| `year` | 1 January, 00:00 UTC |
+| `lifetime` | no lower bound |
+
+The lower bound is inclusive. An explicit `after`/`before` **wins** over `range`; supply both and the explicit bound is what applies, with the bucket filling only whichever edge you left open (`range: 'month'` plus `before` alone reads as "this month, up to that instant"). The applied window comes back in `range_resolved` (`requested`, `applied`, `after`, `before`, `timezone`, `label`) so you can check what was used.
+
+**The window filters a fixed recent page, not your whole history.** `/users/{id}/streams/recent` ignores `after`, `before`, `limit` and `offset` — a bound in the year 2100 and one in 2001 both return the unfiltered page (verified 2026-09-27; the same bounds *are* honoured on `/users/{id}/streams`, `/users/{id}/top/*` and the per-entity `/stats` aggregate). So a bucket is applied to the rows stats.fm returned, and when that page is narrower than the window you asked for, the result carries `page_may_not_cover_window: true` with `page_oldest` and `page_newest`. Treat such a result as "every stream in the recent page that falls in this window", not as a total for the window — for a full-history count use `statsfm_streams_stats`, which does take `after`/`before` upstream. Rows whose play time cannot be read are excluded and counted in `unreadable_timestamps` rather than assumed to be inside the window.
 
 ## Limits
 

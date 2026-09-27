@@ -401,14 +401,19 @@ describe('this file delegates its child harnesses instead of owning them (#1379)
 describe('non-affiliation notice: the runtime surfaces (#705)', () => {
   it('a host-only agent receives the notice in its initialize instructions', async () => {
     const instructions = await initializeInstructions();
-    assert.equal(
-      instructions,
-      BRANDING_NOTICE,
-      'the initialize response must carry the exported BRANDING_NOTICE verbatim. This is the ' +
+    // `startsWith`, not `===`. #690 appends the host guidance (the discovery
+    // trio, the dry_run convention, the toolset knobs, the receipt lifetime)
+    // to this string, so equality would fail the moment guidance is added and
+    // would have had to be deleted to add it. The claim this test exists to
+    // make is that the notice REACHES the host verbatim and cannot be skipped
+    // — which is position, not identity: a host that trims a long string
+    // keeps the start, so a notice demoted to the last paragraph of a prompt
+    // is exactly the failure #705 was filed to prevent.
+    assert.ok(
+      instructions?.startsWith(BRANDING_NOTICE),
+      'the initialize response must lead with the exported BRANDING_NOTICE. This is the ' +
         'only surface a host-only agent sees — no README, no npm page, no repository — and a ' +
-        'notice that exists only in documents does not reach one. Pass it as ' +
-        '{ instructions } to the McpServer constructor (src/index.ts); a string computed but ' +
-        'not handed over fails here and nowhere else.',
+        `notice that exists only in documents does not reach one. Got: ${JSON.stringify(instructions)}`,
     );
   });
 
@@ -767,6 +772,9 @@ describe('the stdio path fails with a cause (#1366)', () => {
     // harness that rejects unconditionally and instantly, which is the shape a
     // "fix" written as `fail()` in the spawn would take.
     const instructions = await initializeFrom('src/index.ts');
-    assert.equal(instructions, BRANDING_NOTICE, 'precondition: the real server still answers initialize');
+    assert.ok(
+      instructions?.startsWith(BRANDING_NOTICE),
+      'precondition: the real server still answers initialize; got ' + JSON.stringify(instructions),
+    );
   });
 });

@@ -3313,6 +3313,10 @@
         "label": "Endpoint tools (statsfm)"
       },
       {
+        "hash": "e94ef172cf855b2a",
+        "label": "statsfmrecentstreams also takes a named range of today|w…"
+      },
+      {
         "hash": "f377b6fbbba34445",
         "label": "statsfmresolveuser — customId/display name → canonical u…"
       },
@@ -3583,6 +3587,46 @@
       {
         "hash": "ab62052951deebeb",
         "label": "The other spotify:-shaped patterns in src/ are not a sec…"
+      },
+      {
+        "hash": "01c495efa531b454",
+        "label": "5.15 Mood expansion (expandmoodtoqueries, #598)"
+      },
+      {
+        "hash": "4d56cdccd07154a9",
+        "label": "One tool in the moodexpand module. It is alwaysActive (r…"
+      },
+      {
+        "hash": "f014981c3c143b6a",
+        "label": "Inputs: mood (string, required, ≥1 char — free text, e.g…"
+      },
+      {
+        "hash": "febc8be672c9ea3c",
+        "label": "Two paths, one output shape. The tool returns { mood, so…"
+      },
+      {
+        "hash": "1acdd257c113ca3d",
+        "label": "| source | When | model / attempts | |---|---|---| | \"sa…"
+      },
+      {
+        "hash": "4f1eba0856af7a2c",
+        "label": "Why the gate is this server's own. In SDK 1.30 Server.cr…"
+      },
+      {
+        "hash": "6931562532ce61fe",
+        "label": "The model contract. One createMessage per attempt, maxTo…"
+      },
+      {
+        "hash": "eada901b8aea5acd",
+        "label": "Failures are structured, and never a guess. An unreadabl…"
+      },
+      {
+        "hash": "c9c35701a78635ce",
+        "label": "The static map is a fallback, not a stand-in. MOODEXPANS…"
+      },
+      {
+        "hash": "58b6a5c1df2a3e34",
+        "label": "Prompt reuse. dj, playlistfrommood, discoverweeklyaltern…"
       },
       {
         "hash": "f3e70de12e2dc0f1",
@@ -5471,8 +5515,8 @@
     }
   ],
   "provenance": {
-    "head": "696b8e3598bca7022024d15e0d6984ca1e5b1a2f",
-    "upstream": "696b8e3598bca7022024d15e0d6984ca1e5b1a2f",
+    "head": "db4ea03de337a54aa4fd97b369574e7828458b6e",
+    "upstream": "70ba245bbe0a35562e6372be82be83e49543abb0",
     "behind": false
   }
 }
