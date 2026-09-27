@@ -1253,7 +1253,7 @@ export function registerPortabilityTools(server: McpServer, client: SpotifyClien
 
       // mutations history (optional) — bounded tail read (#628)
       if (args.include_history) {
-        const records = await readHistory();
+        const records = await readHistory({ tokenFile: client.tokenFile });
         stores.mutations_history = records.length > 0 ? records : null;
         counts.mutations_history = records.length;
       }
@@ -1462,7 +1462,7 @@ export function registerPortabilityTools(server: McpServer, client: SpotifyClien
         assertArchiveLedgerRecords(value);
         plan.push({
           store: 'mutations_history',
-          path: historyFilePath(),
+          path: historyFilePath(process.env, client.tokenFile),
           action: 'skipped',
           summary: `mutations_history: export-only store — the local mutation ledger is neither appended to nor replaced (${LEDGER_SKIP_REASON})`,
           data: null,
@@ -1931,7 +1931,7 @@ export function registerPortabilityTools(server: McpServer, client: SpotifyClien
       }
 
       if (searched('history')) {
-        const file = historyFilePath();
+        const file = historyFilePath(process.env, client.tokenFile);
         const state: StoreState = await stat(file).then(
           () => 'ok',
           (err: NodeJS.ErrnoException) => (err.code === 'ENOENT' ? 'absent' : 'unreadable'),
@@ -1978,7 +1978,7 @@ export function registerPortabilityTools(server: McpServer, client: SpotifyClien
         ok: true,
         query: args.query ?? '',
         scope,
-        dirs: { portability: portabilityDir(), backups: backupDir(), history: historyFilePath() },
+        dirs: { portability: portabilityDir(), backups: backupDir(), history: historyFilePath(process.env, client.tokenFile) },
         total,
         matched_count: matchedCount,
         sources,

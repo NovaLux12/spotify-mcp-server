@@ -525,8 +525,8 @@ function surfaceRow(surface: DoctorSurface): DoctorRow {
  * ledger sitting just under its rotation cap looked exactly like an empty one,
  * so a user could not tell that the oldest records were about to be dropped.
  */
-async function historyRow(): Promise<DoctorRow> {
-  const history = historyWriteStatus();
+async function historyRow(tokenFile: string): Promise<DoctorRow> {
+  const history = historyWriteStatus(process.env, tokenFile);
   if (!history.enabled) {
     return {
       id: 'history',
@@ -534,7 +534,7 @@ async function historyRow(): Promise<DoctorRow> {
       summary: `mutation history disabled — no audit trail is being written (${history.path})`,
     };
   }
-  const stats = await historyLedgerStats();
+  const stats = await historyLedgerStats(process.env, tokenFile);
   const growth = `${stats.bytes} B live + ${stats.archive_bytes} B archive of a ${stats.cap_bytes} B cap; ${stats.records}${stats.records_capped ? '+' : ''} record(s)`;
   if (history.failures > 0) {
     return {
@@ -747,8 +747,8 @@ function staticRows(client: SpotifyClient, tokenFile: string): DoctorRow[] {
  * store that cannot be read is itself a result worth reporting rather than a
  * row to omit.
  */
-async function storeRows(): Promise<DoctorRow[]> {
-  return [await historyRow(), await tasteFeedbackRow()];
+async function storeRows(tokenFile: string): Promise<DoctorRow[]> {
+  return [await historyRow(tokenFile), await tasteFeedbackRow()];
 }
 
 /**
@@ -949,7 +949,7 @@ export async function collectDoctorReport(
     ...scopeRows(tokens.tokens, surface),
     ...account,
     ...staticRows(client, tokenFile),
-    ...(await storeRows()),
+    ...(await storeRows(tokenFile)),
     surfaceRow(surface),
   ];
   return { ok: rows.every((row) => row.status !== 'fail'), rows, surface };

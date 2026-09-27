@@ -1597,7 +1597,11 @@ export class SpotifyClient {
       who: currentToolName(),
       snapshot_id: snapshotId,
     };
-    return appendHistory(record);
+    // `this.tokenFile` selects whose ledger this lands in (#1364). It is read
+    // here, on the request that caused the write, rather than captured once:
+    // `switchAccount` re-points the field, so a switch between two mutations
+    // files each under the account that actually made it.
+    return appendHistory(record, this.tokenFile);
   }
 
   /**
