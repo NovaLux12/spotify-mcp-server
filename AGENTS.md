@@ -992,6 +992,38 @@ name, and it makes the trust decision *harder* to find, not easier. The value ha
 to earn its type at runtime; when it cannot, the honest representation is
 `T | undefined`.
 
+**A scanner that cannot see a thing must not report it as safe.** Two blind
+spots in the same gate, and the second one is the lesson. The `outputSchema`
+classifier infers "this module registers no tools" from a source regex; a module
+registering through a module-local helper was invisible, and a
+`filter(m => m.registers > 0)` then DROPPED it from the check entirely — the
+check did not pass, it did not run. Broadening the matcher fixes that one. But
+the module it had exempted then *still* matched no prose-only marker, because its
+emitter was module-local too, so it went on to sit in
+`PENDING_OUTPUT_SCHEMA_MODULES` as "verified safe, awaiting headroom" — a claim
+nothing checked. Declaring it took four live prose-only call sites past a green
+suite.
+
+The transferable part is not either regex. It is that **"I found nothing" and
+"I looked and it is clear" were the same value**, so a gate only ever shown the
+correct input reported a confident wrong answer. Three attempts to close the gap
+with a wider marker list all failed, structurally: the property is semantic —
+*does this call site attach a payload?* — and the scanner answers it
+syntactically. So the scanner has a third verdict now. A result it cannot account
+for is **unclassified**, unclassified is a **failure by name**, and the rules are
+fed the shapes they exist to catch through the same code path the real tree
+uses, because a guard that has only ever met the correct input has not been shown
+to work. Same shape of mistake as the `withinBudget` flag and as an assertion
+computed from the fields it is checking.
+
+**The floor is arithmetic, not meaning.** The arity rule that closes the loop is
+`calls.filter(n => n <= emitter.payloadIndex)` — a count, with no analysis of
+what was actually passed — so a call site handing over a present-but-empty
+`undefined`, `null` or `{}` reads as carrying a payload. No `textOut(` call site
+in the tree has that shape, so this is a known floor rather than a live miss, and
+it is written down here so the next author reads the limit instead of
+rediscovering it the hard way.
+
 ---
 
 ## 7. Before you open a PR

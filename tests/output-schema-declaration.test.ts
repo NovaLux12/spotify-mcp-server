@@ -44,6 +44,32 @@
  *    `z.object({}).passthrough()` would pass everything, which is a schema that
  *    cannot fail.
  *
+ * ## "I could not classify this" must not read as "safe" (#1495)
+ *
+ * Rules 1–3 all depend on the scanner UNDERSTANDING a module, and until #1495
+ * there was no statement anywhere that it had. A module whose prose-only path
+ * was built by a module-local emitter (`textOut` in `statsfm_taste.ts`) matched
+ * none of the markers, so the scanner reported `proseOnly: false` — the same
+ * verdict it gives a module it has genuinely cleared — and the module sat in
+ * `PENDING_OUTPUT_SCHEMA_MODULES` as "verified safe, awaiting headroom", a
+ * claim no test checked. Move it to `OUTPUT_SCHEMA_BY_MODULE` and the suite
+ * stayed green with four prose-only call sites declared as structured.
+ *
+ * So the scanner now has a THIRD verdict, and it is the one that matters:
+ *
+ *   - `prose-only` — a marker was found;
+ *   - `safe` — every result the scanner can see is accounted for;
+ *   - **`unclassified` — the scanner cannot account for a result.** A module in
+ *     this state FAILS, by name, instead of defaulting to safe.
+ *
+ * A gate that cannot tell "clear" from "never looked" is not a weak gate, it is
+ * a confident wrong answer — the same failure AGENTS.md §6 records for a
+ * schema-budget check that trusted a precomputed flag. The distinction is
+ * enforced from both sides: `scanToolSources` refuses to report a module as
+ * prose-safe while anything in it is unattributed, and the fixtures below feed
+ * it the shapes it must recognise, so the rules have met the cases they exist
+ * to catch rather than only the cases the tree happens to contain.
+ *
  * Run: node --import tsx --test tests/output-schema-declaration.test.ts
  */
 import './helpers/hermetic.js';
@@ -188,26 +214,401 @@ function argumentCount(code: string, open: number): number {
   return 0;
 }
 
+/** Index of the bracket matching the one at `open`, or -1 when unbalanced. */
+function spanEnd(code: string, open: number): number {
+  const pairs: Record<string, string> = { '(': ')', '[': ']', '{': '}' };
+  const stack: string[] = [];
+  for (let i = open; i < code.length; i++) {
+    const c = code[i]!;
+    if (c === '(' || c === '[' || c === '{') { stack.push(pairs[c]!); continue; }
+    if (c === ')' || c === ']' || c === '}') {
+      if (stack.pop() !== c) return -1;
+      if (stack.length === 0) return i;
+    }
+  }
+  return -1;
+}
+
+/**
+ * The parameter names of `(a: T, b?: U)`, splitting on TOP-LEVEL commas only.
+ *
+ * `<` and `>` count as brackets here — `Record<string, unknown>` is one
+ * parameter, not two — but `=>` must not, and the naive version got that wrong
+ * and reported every parameter after the first arrow function at the wrong
+ * depth. That is not a cosmetic bug: an emitter whose payload parameter was
+ * dropped is an emitter whose optional payload the scanner cannot see, and
+ * #1495 is precisely that failure arriving by another route.
+ */
+function parameterNames(params: string): string[] {
+  const names: string[] = [];
+  let depth = 0;
+  let current = '';
+  for (let i = 0; i < params.length; i++) {
+    const c = params[i]!;
+    const prev = i > 0 ? params[i - 1]! : '';
+    const opensAngle = c === '<' && /[\w$>]/.test(prev) && params[i + 1] !== '=' && params[i + 1] !== '<';
+    const closesAngle = c === '>' && prev !== '=' && /[\w$)\]]/.test(prev);
+    if (c === '(' || c === '[' || c === '{' || opensAngle) { depth++; current += c; continue; }
+    if (c === ')' || c === ']' || c === '}' || closesAngle) { depth--; current += c; continue; }
+    if (c === ',' && depth === 0) { names.push(current); current = ''; continue; }
+    current += c;
+  }
+  if (current.trim()) names.push(current);
+  return names
+    .map((p) => p.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/\/\/[^\n]*/g, ' ').trim())
+    // `b?: U` — the `?` sits BEFORE the annotation, so it has to come off
+    // after the `:` split, not before it.
+    .map((p) => p.split(':')[0]!.replace(/\?$/, '').split('=')[0]!.trim())
+    .filter((p) => /^[A-Za-z_$][\w$]*$/.test(p));
+}
+
+/**
+ * The `{` that opens a function BODY, skipping an object-literal RETURN TYPE.
+ *
+ * `function f(): { content: Foo[] } { return {…} }` — the first brace after the
+ * parameter list is the return type, and reading it for the body silently hides
+ * every result the function builds. `moodexpand.samplingFailed` is written that
+ * way, and taking its annotation for its body left its real body unattributed:
+ * a blind spot in the fix for blind spots.
+ */
+function bodyBrace(code: string, paramsEnd: number): number {
+  let i = paramsEnd + 1;
+  while (i < code.length) {
+    if (code[i] === '(' || code[i] === '[') {
+      const end = spanEnd(code, i);
+      if (end < 0) return -1;
+      i = end + 1;
+      continue;
+    }
+    if (code[i] === '{') {
+      let back = i - 1;
+      while (back >= 0 && /\s/.test(code[back]!)) back--;
+      if (back >= 0 && code[back] === ':') {
+        const end = spanEnd(code, i);
+        if (end < 0) return -1;
+        i = end + 1;
+        continue;
+      }
+      return i;
+    }
+    i++;
+  }
+  return -1;
+}
+
+interface BraceSpan { readonly start: number; readonly end: number; readonly keys: readonly string[] }
+
+/**
+ * Every balanced `{…}` in `code`, with its TOP-LEVEL keys, in one pass.
+ *
+ * The question the emitter rules ask is "are `content` and `structuredContent`
+ * keys of the SAME object literal?", and that cannot be answered by searching
+ * outward from one key: a decorator returns `{…output, structuredContent:
+  payload, …(cond ? { content: output.content.map(…) } : {})}`, where the
+ * `content` key and the `structuredContent` key are in different literals and
+ * the enclosing one is a statement, not a value. A backward `lastIndexOf('{')`
+ * answers that question with a different question's answer.
+ */
+function braceSpans(code: string): BraceSpan[] {
+  const spans: BraceSpan[] = [];
+  const stack: number[] = [];
+  for (let i = 0; i < code.length; i++) {
+    if (code[i] === '{') { stack.push(i); continue; }
+    if (code[i] !== '}') continue;
+    const start = stack.pop();
+    if (start === undefined) continue;
+    const body = code.slice(start + 1, i);
+    const keys: string[] = [];
+    let depth = 0;
+    let token = '';
+    const flush = (): void => {
+      if (token.trim()) {
+        const m = /^\s*['"`]?([A-Za-z_$][\w$]*)['"`]?\s*:/.exec(token);
+        if (m) keys.push(m[1]!);
+      }
+      token = '';
+    };
+    for (let k = 0; k < body.length; k++) {
+      const c = body[k]!;
+      const prev = k > 0 ? body[k - 1]! : '';
+      const opensAngle = c === '<' && /[\w$>]/.test(prev) && body[k + 1] !== '=' && body[k + 1] !== '<';
+      const closesAngle = c === '>' && prev !== '=' && /[\w$)\]]/.test(prev);
+      if (c === '(' || c === '[' || c === '{' || opensAngle) { depth++; token += c; continue; }
+      if (c === ')' || c === ']' || c === '}' || closesAngle) { depth--; token += c; continue; }
+      if (depth === 0 && (c === ',' || c === ';' || /\s/.test(c))) { flush(); continue; }
+      token += c;
+    }
+    flush();
+    spans.push({ start, end: i, keys });
+  }
+  return spans.sort((a, b) => (a.start - b.start) || (b.end - a.end));
+}
+
+/**
+ * Anything that can make a `structuredContent` write conditional.
+ *
+ * Matched against one STATEMENT at a time rather than the whole body, because a
+ * `?` three statements away says nothing about the one being classified. Every
+ * one of these routes is a place where a payload can be withheld, so a
+ * statement containing any of them is treated as conditional even when the
+ * route turns out not to reach this particular write. Erring that way keeps a
+ * module reported; erring the other way declares a module that breaks on its
+ * prose path.
+ */
+const CONDITIONAL_STATEMENT =
+  /\?|&&|\|\||\?\?|\b(?:if|else|while|for|switch|catch|do)\b/;
+
+/**
+ * The statement containing offset `at`, walking outward with bracket depth so
+ * the `;` and `}` inside a literal are not mistaken for the end of it.
+ *
+ * The backward walk deliberately does not stop at a `(`: in
+ * `structured && (out.structuredContent = structured)` that paren opens AFTER
+ * the `&&`, so stopping there would hide the only guard in the statement and
+ * report a conditional write as an unconditional one — the exact inversion this
+ * rule exists to prevent. Running the depth negative instead keeps the `&&` in
+ * the returned text, where `CONDITIONAL_STATEMENT` can see it.
+ */
+function statementBounds(code: string, at: number): { start: number; end: number } {
+  let start = 0;
+  let depth = 0;
+  for (let i = at - 1; i >= 0; i--) {
+    const c = code[i]!;
+    if (c === ')' || c === ']' || c === '}') { depth++; continue; }
+    if (c === '(' || c === '[' || c === '{') {
+      // A `{` at depth 0 opens a block the statement starts inside.
+      if (depth === 0 && c === '{') { start = i + 1; break; }
+      depth--;
+      continue;
+    }
+    if (depth <= 0 && c === ';') { start = i + 1; break; }
+  }
+  let end = code.length;
+  depth = 0;
+  for (let i = at; i < code.length; i++) {
+    const c = code[i]!;
+    if (c === '(' || c === '[' || c === '{') { depth++; continue; }
+    if (c === ')' || c === ']' || c === '}') {
+      if (depth === 0) { end = i; break; }
+      depth--;
+      continue;
+    }
+    if (depth === 0 && c === ';') { end = i; break; }
+  }
+  return { start, end };
+}
+
+/** Whether `body` binds `name` to a literal it can point at as a whole. */
+function boundToLiteral(body: string, name: string): boolean {
+  for (const m of body.matchAll(new RegExp(`\\b(?:const|let|var)\\s+${name}\\b[^=]*=\\s*`, 'g'))) {
+    const value = body.slice(m.index + m[0].length);
+    const open = value.length - value.trimStart().length;
+    if (value[open] !== '{' && value[open] !== '[') continue;
+    const end = spanEnd(value, open);
+    // `const payload = cond ? {a: 1} : undefined` is a literal in the source and
+    // no payload at all at runtime; the ternary is the whole difference, and it
+    // is the same distinction this rule makes on the right-hand side.
+    if (CONDITIONAL_STATEMENT.test(end < 0 ? value : value.slice(open, end + 1))) continue;
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Whether the body attaches a payload it has already built, at a site nothing
+ * guards — the `const out = { content: … }; out.structuredContent = { … };`
+ * shape that is the most ordinary thing a new tool module can look like.
+ *
+ * This is a SECOND route to `always`, not a weaker one. `always` already means
+ * "no call site of this emitter is prose-only", and the shared-literal route
+ * established that meaning by asking whether `content` and `structuredContent`
+ * are keys of one literal. That question has a false answer for the
+ * two-statement form, where the two keys are in different literals and neither
+ * is conditional: the emitter writes a payload on every single call, and the
+ * arity rule has no question to ask. Left as `conditional`, `payloadIndex`
+ * finds no parameter to name and the module is reported as unclassifiable —
+ * which is what made this shape a false positive, and what made "0
+ * unclassified of 73" an accident of current style rather than a result.
+ *
+ * The guard test is what keeps the blindness fix intact. `if (structured)
+ * out.structuredContent = structured` is the `textOut` shape, its write IS
+ * conditional, and it has to stay in the `conditional` bucket so the arity rule
+ * can find its parameter. A rule that only asked "is there a literal here?" would
+ * reclassify that emitter as `always` and every payload-less call site in the
+ * tree would read as prose-safe, which is #1495 arriving by another route.
+ */
+function attachesBuiltPayload(body: string): boolean {
+  for (const m of body.matchAll(/\bstructuredContent\s*[:=]\s*/g)) {
+    const at = m.index;
+    const { start, end } = statementBounds(body, at);
+    if (CONDITIONAL_STATEMENT.test(body.slice(start, end))) continue;
+    const value = body.slice(at + m[0].length, end).trim();
+    if (value.startsWith('{') || value.startsWith('[')) return true;
+    if (/^[A-Za-z_$][\w$]*$/.test(value) && boundToLiteral(body, value)) return true;
+  }
+  return false;
+}
+
+/**
+ * A module-local function that builds a tool result, and whether the payload
+ * it attaches is optional.
+ *
+ * `never` attaches no payload at all, so every call site is prose-only.
+ * `always` attaches a payload on every call, so no call site is prose-only —
+ * whether it shares one literal with `content` (the `return { content,
+ * structuredContent }` form) or writes the payload as a literal of its own
+ * (`attachesBuiltPayload`). `conditional` — the `textOut` shape, and the one
+ * #1495 is about — attaches the payload from a PARAMETER, so a call that omits
+ * that parameter returns prose.
+ */
+interface LocalEmitter {
+  readonly name: string;
+  readonly exported: boolean;
+  readonly declStart: number;
+  /** Offset of the function NAME — the one match that is not a call site. */
+  readonly nameStart: number;
+  readonly declEnd: number;
+  readonly kind: 'never' | 'always' | 'conditional';
+  /** Index of the parameter that decides `structuredContent`, when conditional. */
+  readonly payloadIndex: number;
+}
+
+function localEmitters(code: string, spans: readonly BraceSpan[]): LocalEmitter[] {
+  const emitters: LocalEmitter[] = [];
+  for (const m of code.matchAll(/(?<![\w$.])function\s+([A-Za-z_$][\w$]*)\s*\(/g)) {
+    const paramsOpen = code.indexOf('(', m.index);
+    const paramsEnd = bracketEnd(code, paramsOpen);
+    if (paramsEnd < 0) continue;
+    const brace = bodyBrace(code, paramsEnd);
+    if (brace < 0) continue;
+    const bodyEnd = spanEnd(code, brace);
+    if (bodyEnd < 0) continue;
+    const own = spans.filter((s) => s.start >= brace && s.end <= bodyEnd);
+    // A result CONSTRUCTOR: a literal whose `content` is an array literal.
+    // `content: output.content.map(…)` is a decorator rewriting somebody
+    // else's result, and reading it as an emitter is how a prose-safe module
+    // gets misfiled the other way.
+    const builds = own.some(
+      (s) => s.keys.includes('content') && /\bcontent\s*:\s*\[/.test(code.slice(s.start, s.end + 1)),
+    );
+    if (!builds) continue;
+    const body = code.slice(brace, bodyEnd + 1);
+    const sharesLiteral = own.some((s) => s.keys.includes('content') && s.keys.includes('structuredContent'));
+    const kind: LocalEmitter['kind'] = !/structuredContent/.test(body)
+      ? 'never'
+      : sharesLiteral || attachesBuiltPayload(body)
+        ? 'always'
+        : 'conditional';
+    let payloadIndex = -1;
+    if (kind === 'conditional') {
+      // The identifier the body hands to `structuredContent`. When it is a
+      // parameter, a call that omits it cannot have a payload to attach.
+      const assigned = new Set<string>();
+      for (const a of body.matchAll(/structuredContent\s*=\s*([A-Za-z_$][\w$]*)/g)) assigned.add(a[1]!);
+      for (const a of body.matchAll(/structuredContent\s*:\s*([A-Za-z_$][\w$]*)/g)) assigned.add(a[1]!);
+      payloadIndex = parameterNames(code.slice(paramsOpen + 1, paramsEnd)).findIndex((p) => assigned.has(p));
+    }
+    const name = m[1]!;
+    const exported = new RegExp(`(?:^|[;}\\s])export\\s+function\\s+${name}\\s*\\(`)
+      .test(code.slice(Math.max(0, m.index - 8), m.index + name.length + 12));
+    emitters.push({
+      name,
+      exported,
+      declStart: m.index,
+      nameStart: code.indexOf(name, m.index),
+      declEnd: bodyEnd,
+      kind,
+      payloadIndex,
+    });
+  }
+  return emitters;
+}
+
+/** Named imports of a SIBLING `src/tools` module, as local name -> `src/tools/x.ts`. */
+function siblingImports(source: string): Map<string, string> {
+  // Module specifiers are string literals, and `scrubCode` blanks those, so
+  // the import graph is read from a comments-only scrub.
+  const code = scrubComments(source);
+  const imports = new Map<string, string>();
+  for (const m of code.matchAll(/import\s*(?:type\s*)?\{([^}]*)\}\s*from\s*'\.\/([\w$]+)\.js'/g)) {
+    for (const raw of m[1]!.split(',')) {
+      const name = raw.trim().split(/\s+as\s+/).pop()!.trim();
+      if (name) imports.set(name, `src/tools/${m[2]}.ts`);
+    }
+  }
+  return imports;
+}
+
+/** Blank comments only, preserving byte offsets. */
+function scrubComments(source: string): string {
+  const out = source.split('');
+  const blank = (from: number, to: number): void => {
+    for (let i = from; i < to; i++) if (out[i] !== '\n') out[i] = ' ';
+  };
+  let i = 0;
+  while (i < source.length) {
+    const c = source[i];
+    const next = source[i + 1];
+    if (c === '/' && next === '/') { let j = i; while (j < source.length && source[j] !== '\n') j++; blank(i, j); i = j; continue; }
+    if (c === '/' && next === '*') {
+      let j = i + 2;
+      while (j < source.length && !(source[j] === '*' && source[j + 1] === '/')) j++;
+      blank(i, Math.min(j + 2, source.length));
+      i = j + 2;
+      continue;
+    }
+    i++;
+  }
+  return out.join('');
+}
+
 interface ModuleMarkers {
   readonly file: string;
   readonly registers: number;
   readonly proseOnly: boolean;
   readonly reasons: string[];
+  /**
+   * Results the scanner could not account for — the third verdict (#1495).
+   *
+   * Non-empty means "I could not classify this module", which is NOT the same
+   * as `proseOnly: false` and must never be allowed to read as it. A module
+   * listed here fails by name.
+   */
+  readonly unclassified: string[];
+}
+
+interface SourceScan {
+  readonly file: string;
+  readonly source: string;
+  readonly code: string;
+  readonly spans: readonly BraceSpan[];
+  readonly emitters: readonly LocalEmitter[];
+  readonly registers: number;
+  readonly reasons: string[];
+  readonly unclassified: string[];
 }
 
 /**
- * Every `src/tools` module that registers a tool, with the prose-only markers
- * found in it.
+ * Every module, with the prose-only markers found in it and — the part #1495 is
+ * about — a verdict for every result it could not account for.
  *
- * The markers are the four mechanisms this tree actually uses to build a
- * result with no `structuredContent`. Each is a necessary-not-sufficient
- * signal, and the union is used as a superset: over-reporting costs a module
- * its declaration, under-reporting costs a production call.
+ * The markers are the mechanisms this tree uses to build a result with no
+ * `structuredContent`. Each is a necessary-not-sufficient signal, and the union
+ * is used as a superset: over-reporting costs a module its declaration,
+ * under-reporting costs a production call.
+ *
+ * ## Why this takes sources and not a directory
+ *
+ * Because the rules below have to be shown the shapes they exist to catch.
+ * Scanning a directory proves they work on today's tree, which is the same
+ * mistake as a guard that has only ever been shown the correct input. Passing
+ * a synthetic module through the SAME code path is what turns "the regex looks
+ * right" into "the regex has met this case" — see the fixtures below.
  */
-function scanToolModules(): ModuleMarkers[] {
-  const files = readdirSync(TOOLS_DIR).filter((f) => f.endsWith('.ts')).sort();
-  return files.map((file) => {
-    const code = scrubCode(readFileSync(join(TOOLS_DIR, file), 'utf8'));
+function scanToolSources(sources: ReadonlyMap<string, string>): ModuleMarkers[] {
+  const scans: SourceScan[] = [...sources].map(([name, source]) => {
+    const code = scrubCode(source);
+    const spans = braceSpans(code);
     const reasons: string[] = [];
     // Both registration APIs count, and the RECEIVER does not have to be named
     // `server`. The positional `x.tool(name, …)` and the config-object
@@ -235,8 +636,97 @@ function scanToolModules(): ModuleMarkers[] {
         break;
       }
     }
-    return { file: `src/tools/${file}`, registers, proseOnly: reasons.length > 0, reasons };
+    return {
+      file: `src/tools/${name}`,
+      source,
+      code,
+      spans,
+      emitters: localEmitters(code, spans),
+      registers,
+      reasons,
+      unclassified: [] as string[],
+    };
   });
+  const byFile = new Map(scans.map((s) => [s.file, s]));
+
+  for (const scan of scans) {
+    // Emitters this module can reach: its own, plus the ones it IMPORTS. The
+    // second half is the same blind spot one level up — `taste_playlist.ts`
+    // calls `textOut` from `taste_composites.ts`, and a scanner that resolved
+    // emitters per file would check the seven call sites it can see and say
+    // nothing about the other half of the contract.
+    const reachable: Array<{ emitter: LocalEmitter; from: string | null }> =
+      scan.emitters.map((emitter) => ({ emitter, from: null }));
+    for (const [local, target] of siblingImports(scan.source)) {
+      const found = byFile.get(target)?.emitters.find((e) => e.name === local && e.exported);
+      if (found) reachable.push({ emitter: found, from: target });
+    }
+
+    for (const { emitter, from } of reachable) {
+      const label = `${from ? 'imported emitter' : 'local emitter'} ${emitter.name}()`;
+      if (emitter.kind === 'never') {
+        scan.reasons.push(`${label} attaches no payload`);
+        continue;
+      }
+      if (emitter.kind !== 'conditional') continue;
+      if (emitter.payloadIndex < 0) {
+        // The body attaches `structuredContent` from somewhere this scanner
+        // cannot name, so it cannot say which call sites lose it. Reporting
+        // "I cannot classify this" is the whole point (#1495).
+        scan.unclassified.push(`${label} attaches structuredContent from no parameter the scanner can name`);
+        continue;
+      }
+      const calls: number[] = [];
+      for (const c of scan.code.matchAll(new RegExp(`(?<![\\w$.])${emitter.name}\\s*\\(`, 'g'))) {
+        // The declaration's own name is not a call site. Matching on the NAME
+        // offset rather than `declStart` is what makes this exact: a recursive
+        // call inside the body is a real call site, and skipping to `declEnd`
+        // would drop it.
+        if (!from && c.index === emitter.nameStart) continue;
+        const open = scan.code.indexOf('(', c.index);
+        if (open < 0) continue;
+        calls.push(argumentCount(scan.code, open) + 1);
+      }
+      const prose = calls.filter((n) => n <= emitter.payloadIndex);
+      if (prose.length) {
+        scan.reasons.push(`${label} prose-only at ${prose.length}/${calls.length} call site(s)`);
+      }
+    }
+
+    // Attribution: every result literal must sit inside a function this scanner
+    // resolved. One that does not is a construction shape nobody has taught the
+    // scanner, and the honest answer is "I cannot classify this", not "safe".
+    for (const s of scan.spans) {
+      if (!s.keys.includes('content')) continue;
+      if (!/\bcontent\s*:\s*\[/.test(scan.code.slice(s.start, s.end + 1))) continue;
+      const owned = scan.emitters.some((e) => e.declStart < s.start && s.end < e.declEnd);
+      if (!owned) {
+        scan.unclassified.push(`a content literal is in no function this scanner resolved as an emitter`);
+      }
+    }
+  }
+
+  return scans.map((s) => ({
+    file: s.file,
+    registers: s.registers,
+    proseOnly: s.reasons.length > 0,
+    reasons: s.reasons,
+    unclassified: s.unclassified,
+  }));
+}
+
+/** The real tree: every `.ts` under `src/tools`, keyed by file name. */
+function readToolSources(): Map<string, string> {
+  return new Map(
+    readdirSync(TOOLS_DIR)
+      .filter((f) => f.endsWith('.ts'))
+      .sort()
+      .map((f) => [f, readFileSync(join(TOOLS_DIR, f), 'utf8')] as const),
+  );
+}
+
+function scanToolModules(): ModuleMarkers[] {
+  return scanToolSources(readToolSources());
 }
 
 // ---------------------------------------------------------------------------
@@ -439,6 +929,279 @@ describe('#687 the prose-only classification matches the sources', () => {
       if (found?.proseOnly) offenders.push(`${file} (${found.reasons.join(', ')})`);
     }
     assert.deepEqual(offenders, [], 'a module publishing an outputSchema must never have a prose-only path');
+  });
+});
+
+/**
+ * The fixtures below are the point of the whole block.
+ *
+ * Everything above proves the scanner agrees with the classification on TODAY'S
+ * tree. That is the same claim as "the regex looks right", and #1495 is what
+ * that claim is worth: the tree already contained a module with four prose-only
+ * paths that matched nothing, and every assertion in the file read it as safe.
+ * So each rule is fed the shape it exists to catch, through the SAME
+ * `scanToolSources` the real tree goes through, and a rule that stops
+ * recognising its own case fails here.
+ */
+describe('#1495 "I could not classify this" is a failure, not a safe verdict', () => {
+  /** One synthetic module, scanned exactly as a real one is. */
+  const only = (name: string, source: string): ModuleMarkers[] =>
+    scanToolSources(new Map([[name, source]]));
+
+  it('a module-local emitter called without its payload is prose-only', () => {
+    // The shape that hid `statsfm_taste.ts`: the object is built in one
+    // statement and `structuredContent` is attached conditionally in another,
+    // so no shared-emitter marker can see it. The call site is the only place
+    // the answer lives, which is why the rule is about ARITY and not shape.
+    const [found] = only('local-emitter.ts', `
+      function textOut(lines: string[], structured?: Record<string, unknown>): ToolOut {
+        const out: ToolOut = { content: [{ type: 'text', text: lines.join('\\n') }] };
+        if (structured) out.structuredContent = structured;
+        return out;
+      }
+      function handler(arg: string): ToolOut {
+        if (!arg) return textOut(['nothing to show']);
+        return textOut([arg], { ok: true });
+      }
+    `);
+    assert.ok(found);
+    assert.equal(found.proseOnly, true, 'an emitter called with no payload argument returns prose');
+    assert.match(found.reasons.join(' '), /local emitter textOut\(\) prose-only at 1\/2 call site/);
+    assert.deepEqual(found.unclassified, [], 'this module IS classifiable, and the scanner must say so');
+  });
+
+  it('the same emitter called with its payload everywhere is NOT prose-only', () => {
+    // The other half, and the reason the rule is not "any local emitter". A
+    // module that always passes the payload keeps its declaration; if this
+    // ever goes red the scanner has started flagging emitters wholesale, which
+    // is the over-eager failure that would quietly gut the rollout.
+    const [found] = only('local-emitter-safe.ts', `
+      function textOut(lines: string[], structured: Record<string, unknown>): ToolOut {
+        return { content: [{ type: 'text', text: lines.join('\\n') }], structuredContent: structured };
+      }
+      function handler(arg: string): ToolOut {
+        return textOut([arg], { ok: true });
+      }
+    `);
+    assert.ok(found);
+    assert.equal(found.proseOnly, false);
+    assert.deepEqual(found.unclassified, []);
+  });
+
+  it('an IMPORTED optional-payload emitter is checked in the importing module', () => {
+    // The same blind spot one level up. `taste_playlist.ts` calls `textOut`
+    // from `taste_composites.ts`; a scanner that resolved emitters per file
+    // would check the definition and say nothing about the seven call sites it
+    // does not own — and "the definition is safe" is how a caller with a
+    // payload-less call site reads as safe.
+    const sources = new Map([
+      ['emitter.ts', `
+        export function textOut(lines: string[], structured?: Record<string, unknown>): ToolOut {
+          const out: ToolOut = { content: [{ type: 'text', text: lines.join('\\n') }] };
+          if (structured) out.structuredContent = structured;
+          return out;
+        }
+      `],
+      ['caller.ts', `
+        import { textOut } from './emitter.js';
+        function handler(arg: string): ToolOut {
+          if (!arg) return textOut(['nothing to show']);
+          return textOut([arg], { ok: true });
+        }
+      `],
+    ]);
+    const byFile = new Map(scanToolSources(sources).map((m) => [m.file, m]));
+    const caller = byFile.get('src/tools/caller.ts');
+    assert.ok(caller, 'the importing module is scanned');
+    assert.equal(caller.proseOnly, true, 'the payload-less call site is in the CALLER, not the definition');
+    assert.match(caller.reasons.join(' '), /imported emitter textOut\(\) prose-only/);
+  });
+
+  it('a result built where the scanner cannot see an emitter is unclassified, not safe', () => {
+    // The general tripwire. An arrow emitter is a construction shape the
+    // emitter resolver does not parse, so a module that grows one today would
+    // read as prose-safe — the exact failure #1495 reports, wearing new
+    // syntax. It has to be loud, and it has to be loud HERE, on a module the
+    // scanner has never been shown, rather than only on the two it happened
+    // to get right in the tree.
+    const [found] = only('arrow-emitter.ts', `
+      const textOut = (lines: string[]): ToolOut => ({ content: [{ type: 'text', text: lines.join('\\n') }] });
+      function handler(arg: string): ToolOut {
+        if (!arg) return textOut(['nothing to show']);
+        return textOut([arg]);
+      }
+    `);
+    assert.ok(found);
+    assert.notDeepEqual(
+      found.unclassified,
+      [],
+      'a result in an unresolved construction must be reported as unclassified',
+    );
+    assert.equal(
+      found.proseOnly,
+      false,
+      'note the trap: proseOnly is false here, which is EXACTLY the verdict a '
+      + 'safe module gets — which is why unclassified has to be its own failing answer',
+    );
+  });
+
+  it('an emitter whose payload the scanner cannot name is unclassified', () => {
+    // The same principle from the other side: the body attaches
+    // `structuredContent` from something that is not a parameter, so no
+    // arity rule can say which call sites lose it. Guessing would be the
+    // under-reporting that costs a production call.
+    const [found] = only('opaque-payload.ts', `
+      function textOut(lines: string[], structured?: Record<string, unknown>): ToolOut {
+        const out: ToolOut = { content: [{ type: 'text', text: lines.join('\\n') }] };
+        if (structured) out.structuredContent = shape(structured);
+        return out;
+      }
+      function handler(arg: string): ToolOut {
+        return textOut([arg]);
+      }
+    `);
+    assert.ok(found);
+    assert.notDeepEqual(found.unclassified, []);
+    assert.match(found.unclassified.join(' '), /no parameter the scanner can name/);
+  });
+
+  // -------------------------------------------------------------------------
+  // The `unclassified` arm must not fire on ordinary code.
+  //
+  // An earlier cut of this file classified an emitter `conditional` whenever
+  // `content` and `structuredContent` were not keys of the SAME literal. That
+  // missed the most ordinary shape a new tool module can have — build the
+  // result, then attach the payload in a second statement — and sent it down the
+  // `payloadIndex` arm, which found no parameter to name and reported the module
+  // as unclassifiable. The identical module with the payload inlined into the
+  // `return` literal was silent, so the only difference was one intermediate
+  // `const`, and "0 unclassified of 73" measured the tree's current style rather
+  // than the scanner's reach. That is the gate AGENTS.md §3 warns about: one
+  // that punishes ordinary work gets routed around within a week, and a
+  // routed-around gate catches nothing.
+  //
+  // Every fixture below is a module that attaches a payload on EVERY call. The
+  // last one is the load-bearing half — it differs from the others only by a
+  // guard, and it is the shape #1495 exists for. Fixing the false positive by
+  // asking "is there a literal?" rather than "is this write guarded?" would turn
+  // that module prose-safe, so both halves are asserted here rather than one.
+  // -------------------------------------------------------------------------
+
+  it('a module that attaches its payload in a second statement is classified, not unclassified', () => {
+    const [found] = only('attached-payload.ts', `
+      export function registerProbeTools(server: McpServer): void {
+        server.tool('get_probe', 'gets a probe.', {}, async (args: { name: string }): ToolOut => {
+          const rows = [{ name: args.name }];
+          const out: ToolOut = { content: [{ type: 'text' as const, text: rows.map((r) => r.name).join('\\n') }] };
+          out.structuredContent = { probes: rows };
+          return out;
+        });
+      }
+    `);
+    assert.ok(found);
+    assert.deepEqual(
+      found.unclassified,
+      [],
+      'a module that plainly attaches a payload is classifiable; reporting it as unclassifiable is a false '
+      + 'positive that teaches authors to route around this gate',
+    );
+    assert.equal(found.proseOnly, false, 'every call attaches a payload, so there is no prose-only path');
+  });
+
+  it('the same payload written through a local const, or spread, is still classifiable', () => {
+    // Two more spellings of the same fact, each of which a rule keyed only on
+    // "a literal appears after `=`" would get wrong in opposite directions: the
+    // const is a literal the scanner has to resolve one step, and the spread is
+    // a literal that is not the first character.
+    const sources = new Map([
+      ['via-const.ts', `
+        export function registerProbeTools(server: McpServer): void {
+          server.tool('get_probe', 'gets a probe.', {}, async (args: { name: string }): ToolOut => {
+            const rows = [{ name: args.name }];
+            const payload = { probes: rows };
+            const out: ToolOut = { content: [{ type: 'text' as const, text: rows.map((r) => r.name).join('\\n') }] };
+            out.structuredContent = payload;
+            return out;
+          });
+        }
+      `],
+      ['via-spread.ts', `
+        export function registerProbeTools(server: McpServer): void {
+          server.tool('get_probe', 'gets a probe.', {}, async (args: { name: string }): ToolOut => {
+            const rows = [{ name: args.name }];
+            const meta = { total: rows.length };
+            const out: ToolOut = { content: [{ type: 'text' as const, text: rows.map((r) => r.name).join('\\n') }] };
+            out.structuredContent = { ...meta, probes: rows };
+            return out;
+          });
+        }
+      `],
+    ]);
+    for (const [name, source] of sources) {
+      const [found] = scanToolSources(new Map([[name, source]]));
+      assert.ok(found, `${name} is scanned`);
+      assert.deepEqual(found.unclassified, [], `${name} attaches a payload on every call`);
+      assert.equal(found.proseOnly, false, `${name} has no prose-only path`);
+    }
+  });
+
+  it('a GUARDED literal payload is still unclassified — the fix may not reach this', () => {
+    // Identical to the fixture above, plus `if (rows.length)`. The payload can
+    // be withheld, the condition is a local rather than a parameter, so no arity
+    // rule can say which call sites lose it, and the honest answer is the
+    // failing one. This is the assertion that keeps the false positive above
+    // from being closed by weakening the gate instead of by reading the guard.
+    const [found] = only('guarded-literal-payload.ts', `
+      export function registerProbeTools(server: McpServer): void {
+        server.tool('get_probe', 'gets a probe.', {}, async (args: { name: string }): ToolOut => {
+          const rows = [{ name: args.name }];
+          const out: ToolOut = { content: [{ type: 'text' as const, text: rows.map((r) => r.name).join('\\n') }] };
+          if (rows.length) out.structuredContent = { probes: rows };
+          return out;
+        });
+      }
+    `);
+    assert.ok(found);
+    assert.notDeepEqual(
+      found.unclassified,
+      [],
+      'a conditional write of a literal is still a payload the scanner cannot trace to a parameter',
+    );
+    assert.match(found.unclassified.join(' '), /no parameter the scanner can name/);
+  });
+
+  it('a payload built by a call is still unclassified, guarded or not', () => {
+    // `shape(rows)` is a literal to nobody. Whether it can return nothing is a
+    // question about `shape`, and the scanner reads one file at a time, so it
+    // cannot answer it. Widening the match to "anything after `=`" would answer
+    // it by guessing, which is the under-reporting that costs a production call.
+    const [found] = only('called-payload.ts', `
+      export function registerProbeTools(server: McpServer): void {
+        server.tool('get_probe', 'gets a probe.', {}, async (args: { name: string }): ToolOut => {
+          const rows = [{ name: args.name }];
+          const out: ToolOut = { content: [{ type: 'text' as const, text: rows.map((r) => r.name).join('\\n') }] };
+          out.structuredContent = shape(rows);
+          return out;
+        });
+      }
+    `);
+    assert.ok(found);
+    assert.notDeepEqual(found.unclassified, [], 'a call the scanner cannot resolve is not a payload it can vouch for');
+  });
+
+  it('the real tree has no module the scanner cannot classify', () => {
+    // The gate. If this is green because nothing in the tree is unclassified,
+    // that is a measurement; if it is green because the check is not running,
+    // it is a lie. Both arms are asserted — the count is reported so a future
+    // reader can tell "zero unclassified" from "the loop found no modules".
+    const scanned = scanToolModules();
+    assert.ok(scanned.length > 60, `precondition: the real tree was scanned (got ${scanned.length} modules)`);
+    const unclassified = scanned.flatMap((m) => m.unclassified.map((why) => `${m.file} — ${why}`));
+    assert.deepEqual(
+      unclassified,
+      [],
+      'a module the source scanner cannot classify; it is NOT prose-safe, and reporting it as such is the bug',
+    );
   });
 });
 

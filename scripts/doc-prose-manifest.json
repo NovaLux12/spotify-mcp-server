@@ -675,6 +675,18 @@
         "label": "A helper that names T once is not a check. The issue thi…"
       },
       {
+        "hash": "971b522859fef1a0",
+        "label": "A scanner that cannot see a thing must not report it as …"
+      },
+      {
+        "hash": "60bdeb285758c295",
+        "label": "The transferable part is not either regex. It is that \"I…"
+      },
+      {
+        "hash": "adf1f3cb8a3692b7",
+        "label": "The floor is arithmetic, not meaning. The arity rule tha…"
+      },
+      {
         "hash": "77f20653a6cfb278",
         "label": "7. Before you open a PR"
       },
@@ -6901,9 +6913,9 @@
     }
   ],
   "provenance": {
-    "head": "63521db53c5be90a5262fabf4006d6605fd8f47d",
-    "base": "3ad74650ccfb4da31eda2b276963844253089dc0",
-    "upstream": "3ad74650ccfb4da31eda2b276963844253089dc0",
+    "head": "6803440e80b3aaef0319fa42abc59b01754087c1",
+    "base": "43b325472102cdb310553ecf9bb7f75cd919530b",
+    "upstream": "43b325472102cdb310553ecf9bb7f75cd919530b",
     "behind": false
   }
 }
