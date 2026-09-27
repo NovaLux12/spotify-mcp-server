@@ -31,9 +31,14 @@
  *   4. **The byte ceiling was measured in the wrong unit.**
  *      `tool.surface.test.ts` asserts `JSON.stringify(tools).length`, which
  *      counts UTF-16 code units; the production startup gate budgets UTF-8
- *      bytes. Measured 602,272 vs 603,766 — a 1,494B undercount against a
- *      ceiling with 234B of real headroom, on a surface where 404 tools
- *      already contain non-ASCII text.
+ *      bytes. Measured 2026-09-27 at 606,353 UTF-8 bytes vs 605,175 UTF-16
+ *      code units — a 1,178B undercount against a 621,000B ceiling that
+ *      leaves 14,647B of real headroom, on a surface where 358 of 587 tools
+ *      contain non-ASCII text. That undercount does NOT currently breach the
+ *      ceiling, so this is a latent unit error, not a live outage: the two
+ *      numbers agree to within 0.2% and the budget is labelled "tight" at
+ *      2.36% headroom. The check below exists because the error is silent when
+ *      it eventually matters, not because it is breaking something today.
  *
  * The pinned surface lives in `tests/registry-surface.json`. It is a lockfile,
  * not a second registrar list: every module key in it must match
@@ -46,6 +51,12 @@
  *
  * Run: node --import tsx --test tests/registry-pin.test.ts
  */
+// Redirects HOME to a disposable temp root so a store default resolved
+// through homedir() cannot land in the real $HOME (#1274). Side effect only,
+// and it must precede every other import so anything resolved at module-load
+// time sees the sandbox.
+import './helpers/hermetic.js';
+
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
@@ -343,11 +354,22 @@ describe('registry pin: size budget', () => {
   it('the aggregate surface fits the production ceiling measured in UTF-8 bytes', async () => {
     const tools = await wireTools();
     // The startup gate in `src/index.ts` budgets `Buffer.byteLength(...,
-    // 'utf8')`. Measuring UTF-16 code units here instead would undercount by
-    // 1,494B on today's surface — larger than the headroom the ceiling has
-    // left, so a change adding non-ASCII prose could pass this test and still
-    // abort the server. Compare against the live production constant, never a
-    // literal copy of it.
+    // 'utf8')`. Measuring UTF-16 code units here instead undercounts by 1,178B
+    // on today's surface (606,353 vs 605,175, measured 2026-09-27), which is
+    // well inside the 14,647B of headroom — so today the two units disagree
+    // without either one failing. That is the argument for measuring in the
+    // production unit rather than asserting that it matters yet: it is the unit
+    // the gate uses, and a budget expressed in the other one is right by
+    // coincidence until the prose grows. Compare against the live production
+    // constant, never a literal copy of it.
+    //
+    // This is a SECOND, independent measurement, not the guard. `assertAggregateSurfaceWithinBudget`
+    // runs at startup, so a real breach aborts the process before `tools/list` is ever
+    // answered — verified by forcing the ceiling to 1,000B, which made this suite fail with
+    // "the server exited with code 1 before answering" rather than reaching the assertion
+    // below. What this test adds is a failure that names the byte count and the headroom
+    // instead of a spawn error, and a unit that is pinned in a test rather than only in
+    // production.
     const bytes = Buffer.byteLength(JSON.stringify(tools), 'utf8');
     assert.ok(
       bytes <= AGGREGATE_SURFACE_LIMITS.maxBytes,
@@ -370,6 +392,18 @@ describe('registry pin: size budget', () => {
     assert.ok(nonAscii.length > 0, `expected non-ASCII text in descriptions, found none across ${tools.length} tools`);
     const undercount = Buffer.byteLength(json, 'utf8') - json.length;
     assert.ok(undercount > 0, `UTF-8 must exceed UTF-16 here; the two measures are identical, so a code-unit budget is passing unnoticed`);
+
+    // Report the size of the trap rather than just its existence: what makes the
+    // undercount dangerous is its size against the headroom left, so that
+    // comparison is the assertion rather than a printed line. A print cannot
+    // fail, and #664's guard is right to reject one.
+    const utf8Bytes = Buffer.byteLength(json, 'utf8');
+    const headroom = AGGREGATE_SURFACE_LIMITS.maxBytes - utf8Bytes;
+    assert.ok(
+      headroom > 0,
+      `tools/list is ${utf8Bytes}B against a ${AGGREGATE_SURFACE_LIMITS.maxBytes}B ceiling — no headroom left, `
+        + `and a code-unit budget would undercount it by a further ${undercount}B`,
+    );
   });
 
   it('every manifest module stays inside its own derived ceiling', async () => {
@@ -414,6 +448,13 @@ describe('registry pin: the lockfile itself', () => {
       const built = await buildPin();
       writeFileSync(PIN_PATH, `${JSON.stringify(built, null, 2)}\n`);
       cachedPin = built;
+
+      // Write mode verifies its own write instead of printing that it happened.
+      // A regeneration that silently wrote the wrong shape would otherwise look
+      // exactly like a successful one until the next reader ran the suite.
+      const written = JSON.parse(readFileSync(PIN_PATH, 'utf8')) as RegistryPin;
+      assert.deepEqual(written.modules, built.modules, 'the regenerated pin did not round-trip');
+      assert.deepEqual(written.flat, built.flat, 'the regenerated pin did not round-trip');
       return;
     }
     const built = await buildPin();
