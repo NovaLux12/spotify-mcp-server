@@ -24,12 +24,12 @@
  *    could not set it from the documentation.
  *
  * The mirror is scoped to src/ rather than to src/ + scripts/. scripts/ reads
- * two build-time knobs (`SPOTIFY_MCP_DIST_ROOT`, `SPOTIFY_MCP_SURFACE_CENSUS`)
- * that are plumbing for `npm run` commands, not server configuration; an
- * operator configuring a deployed server never sets them, so listing them in
- * the configuration reference would be a false promise in the other
- * direction. Advertising either in the docs still trips the FIRST test, so
- * they are not left unchecked — only exempt from this one.
+ * three build-time knobs (`SPOTIFY_MCP_DIST_ROOT`, `SPOTIFY_MCP_SURFACE_CENSUS`,
+ * `SPOTIFY_MCP_WIRE_EQUIVALENCE`) that are plumbing for `npm run` commands, not
+ * server configuration; an operator configuring a deployed server never sets
+ * them, so listing them in the configuration reference would be a false promise
+ * in the other direction. Advertising any of them in the docs still trips the
+ * FIRST test, so they are not left unchecked — only exempt from this one.
  *
  * Two exclusions, both structural rather than hardcoded name lists:
  *
