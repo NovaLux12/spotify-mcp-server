@@ -31,7 +31,7 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { ProgressNotificationSchema } from '@modelcontextprotocol/sdk/types.js';
 
 // ---------------------------------------------------------------------------
-// Env setup MUST precede importing src modules (TOKEN_FILE binds at load time)
+// Env setup MUST precede any token read (getTokenFilePath() resolves per call)
 // ---------------------------------------------------------------------------
 const tokenDir = await mkdtemp(path.join(tmpdir(), 'spotify-mcp-index-test-'));
 process.env.SPOTIFY_MCP_TOKEN_FILE = path.join(tokenDir, 'tokens.json');

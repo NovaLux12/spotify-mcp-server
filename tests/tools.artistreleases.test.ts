@@ -14,7 +14,7 @@
  *
  * Run with: node --import tsx --test tests/tools.artistreleases.test.ts
  *
- * NOTE: TOKEN_FILE is resolved at module-load time inside src/auth.ts, so the
+ * NOTE: the token path is resolved per CALL by getTokenFilePath(), so env
  * env vars MUST be set before the dynamic imports below.
  */
 import './helpers/hermetic.js';
@@ -35,7 +35,8 @@ process.env.SPOTIFY_MCP_FRESHNESS_STATE = path.join(stateDir, 'freshness.json');
 process.env.SPOTIFY_MCP_READONLY = '';
 
 const { SpotifyClient } = await import('../src/client.ts');
-const { TOKEN_FILE } = await import('../src/auth.ts');
+const { getTokenFilePath } = await import('../src/auth.ts');
+const tokenPath = getTokenFilePath();
 const { LruTtlCache, cacheKey } = await import('../src/cache.ts');
 const {
   probeArtistReleases,
@@ -83,7 +84,7 @@ beforeEach(async () => {
   fetchUrls = [];
   respond = () => ({ body: { items: [] } });
   await writeFile(
-    TOKEN_FILE,
+    tokenPath,
     JSON.stringify({ access_token: 'tok', refresh_token: 'ref', expires_at: Date.now() + 3_600_000 }),
     'utf8',
   );

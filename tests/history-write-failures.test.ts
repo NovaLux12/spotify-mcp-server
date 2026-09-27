@@ -36,18 +36,18 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import type { HistoryRecord } from '../src/history.ts';
 
-// Static imports of src/ cannot work here: the token-file path binds at
-// module-load time in src/auth.ts, so the env below must be set first.
+// Static imports of src/ cannot work here: getTokenFilePath() reads the env
+// on every call, so the env below must be set before the first token read.
 const root = await mkdtemp(path.join(tmpdir(), 'spotify-mcp-history-591-'));
-const TOKEN_FILE = path.join(root, 'tokens.json');
+const tokenPath = path.join(root, 'tokens.json');
 const HISTORY_DIR = path.join(root, 'history');
-process.env.SPOTIFY_MCP_TOKEN_FILE = TOKEN_FILE;
+process.env.SPOTIFY_MCP_TOKEN_FILE = tokenPath;
 process.env.SPOTIFY_CLIENT_ID = 'test-client-id';
 process.env.SPOTIFY_MCP_HISTORY = '1';
 process.env.SPOTIFY_MCP_HISTORY_DIR = HISTORY_DIR;
 
 await writeFile(
-  TOKEN_FILE,
+  tokenPath,
   JSON.stringify({
     access_token: 'tok-initial',
     refresh_token: 'ref-initial',

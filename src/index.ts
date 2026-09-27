@@ -1,6 +1,6 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { runAuthFlow, loadTokens } from './auth.js';
+import { runAuthFlow, loadTokens, getTokenFilePath, parseAuthArgs } from './auth.js';
 import { SpotifyClient } from './client.js';
 import { initConfig, renderEnvHelp } from './config.js';
 import {
@@ -167,12 +167,22 @@ async function startMcpServer(): Promise<void> {
  */
 async function runDoctor(): Promise<void> {
   const cfg = initConfig();
+  // #609: one resolution, argv profile included, used for BOTH the printed
+  // Configuration block and the report below. `cfg.tokenFile` is
+  // `resolveTokenFile(env)` and knows nothing about `--profile`, so under
+  // `spotify-mcp doctor --profile work` this printed the DEFAULT account's
+  // file, then inspected `tokens.work.json` through loadTokens — the report
+  // meant to explain "wrong account" pointing at the wrong file, with no
+  // profile row at all.
+  const tokenFile = getTokenFilePath();
+  // The CLI profile outranks the env one, matching the token path above.
+  const profile = parseAuthArgs().profile ?? cfg.profile;
 
   console.log(`spotify-mcp ${version}`);
   console.log('');
   console.log('Configuration:');
-  console.log(`  token file        ${cfg.tokenFile}`);
-  if (cfg.profile) console.log(`  profile           ${cfg.profile}`);
+  console.log(`  token file        ${tokenFile}`);
+  if (profile) console.log(`  profile           ${profile}`);
   console.log(`  redirect URI      ${cfg.redirectUri}`);
   console.log(`  headless          ${cfg.headless ? 'yes' : 'no'}`);
   console.log(`  max items         ${cfg.maxItems}`);
@@ -191,7 +201,7 @@ async function runDoctor(): Promise<void> {
   const { collectDoctorReport, renderDoctorProse } = await import('./tools/doctortool.js');
   // `disableCache` as before: the CLI process reads the profile once and exits,
   // so caching the one live request would only hide it from the report.
-  const report = await collectDoctorReport(new SpotifyClient({ disableCache: true }));
+  const report = await collectDoctorReport(new SpotifyClient({ disableCache: true }), undefined, { tokenFile });
   // Always verbose. This output is the artefact users paste when asking for
   // help, and the detail lines are where the token path, the granted scopes
   // and the resolved sets live.
@@ -212,6 +222,7 @@ Usage:
   spotify-mcp auth [--profile <name>]  Run the OAuth PKCE flow and save tokens
                         [--scopes <list>]
   spotify-mcp doctor                   Check config, token state, and live API access (#62)
+                        [--profile <name>]
   spotify-mcp logout [--dry-run]       Erase local stores; print how to revoke the
                         [--keep-backups]   Spotify token by hand (#704)
                         [--profile <name>]
@@ -219,9 +230,11 @@ Usage:
   spotify-mcp --version                Print the version
 
   auth --profile <name> is the CLI form of SPOTIFY_MCP_PROFILE and selects
-  ~/.spotify-mcp/tokens.<name>.json. auth --scopes <list> overrides
-  SPOTIFY_SCOPES for that run; both reject an empty value rather than
-  silently falling back to the default token file and the full 17-scope grant.
+  ~/.spotify-mcp/tokens.<name>.json. It applies to the whole invocation and
+  not just to auth: the server, doctor and logout all act on the named
+  account. auth --scopes <list> overrides SPOTIFY_SCOPES for that run; both
+  reject an empty value rather than silently falling back to the default token
+  file and the full 17-scope grant.
 
   logout erases every local store it can find and names each path it removed.
   Spotify publishes no token-revocation API, so the token must still be revoked

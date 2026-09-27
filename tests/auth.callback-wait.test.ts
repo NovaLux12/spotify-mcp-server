@@ -52,7 +52,7 @@ import { fileURLToPath } from 'node:url';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 
-// Env MUST be set before importing src/auth.ts: TOKEN_FILE binds at load time.
+// Env MUST be set before any token read: getTokenFilePath() resolves per call.
 const dataDir = mkdtempSync(path.join(tmpdir(), 'spotify-mcp-auth-wait-'));
 process.env.SPOTIFY_MCP_TOKEN_FILE = path.join(dataDir, 'tokens.json');
 process.env.SPOTIFY_CLIENT_ID = 'test-client-id';

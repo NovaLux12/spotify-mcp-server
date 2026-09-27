@@ -21,7 +21,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
-// Env MUST be set before src modules load: TOKEN_FILE binds at import time.
+// Env MUST be set before any token read: getTokenFilePath() resolves per call.
 const tokenDir = await mkdtemp(path.join(tmpdir(), 'spotify-mcp-refresh-class-'));
 process.env.SPOTIFY_MCP_TOKEN_FILE = path.join(tokenDir, 'tokens.json');
 process.env.SPOTIFY_CLIENT_ID = 'test-client-id';

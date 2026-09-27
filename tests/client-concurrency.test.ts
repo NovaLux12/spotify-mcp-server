@@ -60,13 +60,14 @@ import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
-// Env MUST be set before the dynamic import: TOKEN_FILE binds at module load.
+// Env MUST be set before any token read: getTokenFilePath() resolves per call.
 const tokenDir = await mkdtemp(path.join(tmpdir(), 'spotify-mcp-concurrency-test-'));
 process.env.SPOTIFY_MCP_TOKEN_FILE = path.join(tokenDir, 'tokens.json');
 process.env.SPOTIFY_CLIENT_ID = 'test-client-id';
 
 const { SpotifyClient, SpotifyApiError } = await import('../src/client.ts');
-const { TOKEN_FILE } = await import('../src/auth.ts');
+const { getTokenFilePath } = await import('../src/auth.ts');
+const tokenPath = getTokenFilePath();
 const { loadConfig, DEFAULT_MAX_CONCURRENCY, MAX_CONCURRENCY_CEILING } =
   await import('../src/config.ts');
 
@@ -86,7 +87,7 @@ function jsonResponse(body: unknown, status = 200, headers?: Record<string, stri
 
 async function seedTokens(expiresAt: number): Promise<void> {
   await writeFile(
-    TOKEN_FILE,
+    tokenPath,
     JSON.stringify({ access_token: 'tok', refresh_token: 'ref', expires_at: expiresAt }),
     'utf8',
   );
@@ -132,7 +133,7 @@ describe('request funnel — bounded concurrency and the shared start gate (#892
   beforeEach(async () => {
     calls = [];
     responder = (url) => jsonResponse({ url });
-    await rm(TOKEN_FILE, { force: true });
+    await rm(tokenPath, { force: true });
     globalThis.fetch = (async (url: unknown) => {
       const href = String(url);
       if (href.startsWith('https://accounts.spotify.com/')) {

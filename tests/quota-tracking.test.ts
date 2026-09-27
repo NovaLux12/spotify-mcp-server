@@ -19,7 +19,7 @@ import { join } from 'node:path';
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 
-// Env setup MUST precede importing src modules (TOKEN_FILE binds at load time).
+// Env setup MUST precede any token read (getTokenFilePath() resolves per call).
 const tokenDir = await mkdtemp(join(tmpdir(), 'spotify-mcp-quota-test-'));
 process.env.SPOTIFY_MCP_TOKEN_FILE = join(tokenDir, 'tokens.json');
 process.env.SPOTIFY_CLIENT_ID = 'test-client-id';

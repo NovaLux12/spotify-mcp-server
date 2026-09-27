@@ -22,6 +22,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { ownStoreRoots, readLocalFile } from '../paths.js';
 import { SpotifyApiError, type SpotifyClient } from '../client.js';
 import { getConfig } from '../config.js';
+import { parseAuthArgs } from '../auth.js';
 import {
   TOOLSETS,
   allRegistrationKeys,
@@ -168,9 +169,20 @@ interface ParsedTokens {
 // Checks
 // ---------------------------------------------------------------------------
 
-/** Token + expiry + refresh-token check. Returns parsed JSON for downstream checks. */
-async function tokenRows(): Promise<{ rows: DoctorRow[]; tokens: ParsedTokens | null }> {
-  const tokenFile = getConfig().tokenFile;
+/**
+ * Token + expiry + refresh-token check, against the token file this run is
+ * actually about. Returns parsed JSON for downstream checks.
+ *
+ * `tokenFile` is a parameter, not a lookup (#609). This used to read
+ * `getConfig().tokenFile`, which is `resolveTokenFile(env)` and therefore
+ * env-only: under `spotify-mcp doctor --profile work` it opened
+ * `tokens.json` and reported on the DEFAULT account. The two misdiagnoses
+ * that produced were both silent — a valid `tokens.work.json` reported as
+ * "no token file, run spotify-mcp auth first", and an expired one reported as
+ * healthy — and the report is the tool an operator reaches for when the answer
+ * is "why am I the wrong account".
+ */
+async function tokenRows(tokenFile: string): Promise<{ rows: DoctorRow[]; tokens: ParsedTokens | null }> {
   let raw: string;
   try {
     // #623: the token file is a server-owned store — confined to its own
@@ -579,7 +591,7 @@ async function tasteFeedbackRow(): Promise<DoctorRow> {
   return { id: 'taste_feedback', status: 'pass', summary };
 }
 
-function staticRows(client: SpotifyClient): DoctorRow[] {
+function staticRows(client: SpotifyClient, tokenFile: string): DoctorRow[] {
   const rows: DoctorRow[] = [];
 
   rows.push({
@@ -702,13 +714,16 @@ function staticRows(client: SpotifyClient): DoctorRow[] {
 
   const cfg = getConfig();
   const parts = [
-    `token_file=${cfg.tokenFile}`,
+    // The report's own token file, not whatever the env snapshot resolves to
+    // (#609) — the two disagree whenever argv named a profile.
+    `token_file=${tokenFile}`,
     `fetch_all_cap=${cfg.fetchAllCap}`,
     `max_items=${cfg.maxItems}`,
     `history=${cfg.historyEnabled ? 'enabled' : 'disabled'}`,
     `batch_caps=${Object.entries(CHUNK_CAPS).map(([kind, cap]) => `${kind}:${cap}`).join(',')}`,
   ];
-  if (cfg.profile) parts.push(`profile=${cfg.profile}`);
+  const profile = argvProfile() ?? cfg.profile;
+  if (profile) parts.push(`profile=${profile}`);
   if (cfg.market) parts.push(`market=${cfg.market}`);
   if (cfg.scopes) parts.push(`scopes_override=${cfg.scopes.join(',')}`);
   rows.push({
@@ -842,6 +857,46 @@ async function accountRows(client: SpotifyClient): Promise<DoctorRow[]> {
   }
 }
 
+export interface DoctorReportOptions {
+  /**
+   * The token file to report on (#609). Omit it in production: the client's own
+   * `tokenFile` is the right answer, because it is the file the client
+   * authenticates with. Tests pass a fixture.
+   */
+  tokenFile?: string;
+}
+
+/**
+ * The `--profile` on this process's command line, if it named one.
+ *
+ * The profile row is a DISCLOSURE, so it is the last thing allowed to be
+ * wrong: a flag this function cannot parse costs the report its `profile=`
+ * field, not the report. Parsing the token path does raise on a malformed
+ * `--profile` (#617 — a flag present with no value is an error, not a
+ * fall-through), and that happens before this runs; the guard is here so a
+ * caller that scoped the report explicitly still gets one.
+ */
+function argvProfile(): string | undefined {
+  try {
+    return parseAuthArgs().profile;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Which token file this report is about, in one place (#609).
+ *
+ * An explicit option wins, then the client's own, then the config snapshot.
+ * The last step exists for the partial clients the suite passes
+ * (`{ get, getRateLimitStatus } as unknown as SpotifyClient`), which carry
+ * neither; the real class always sets `tokenFile` at construction.
+ */
+function reportTokenFile(client: SpotifyClient, opts: DoctorReportOptions): string {
+  const fromClient = (client as { tokenFile?: string }).tokenFile;
+  return opts.tokenFile ?? fromClient ?? getConfig().tokenFile;
+}
+
 /**
  * Run every doctor check. This is the report's only implementation: the
  * `spotify_doctor` tool and the `spotify-mcp doctor` CLI subcommand both call
@@ -851,19 +906,26 @@ async function accountRows(client: SpotifyClient): Promise<DoctorRow[]> {
  * undefined when the caller is the CLI subcommand. Omitting it does NOT
  * degrade the report to stubs — the whole module view is env-derived and is
  * resolved either way; see `surfaceFor`.
+ *
+ * `opts.tokenFile` names the token file this run is about (#609). The default
+ * is the client's own, so a report can never describe a file the client is not
+ * authenticating with; the CLI passes the same value explicitly because it
+ * prints the path before the report exists.
  */
 export async function collectDoctorReport(
   client: SpotifyClient,
   server?: McpServer,
+  opts: DoctorReportOptions = {},
 ): Promise<DoctorReport> {
-  const tokens = await tokenRows();
+  const tokenFile = reportTokenFile(client, opts);
+  const tokens = await tokenRows(tokenFile);
   const surface = surfaceFor(server, tokens.tokens);
   const account = await accountRows(client);
   const rows = [
     ...tokens.rows,
     ...scopeRows(tokens.tokens, surface),
     ...account,
-    ...staticRows(client),
+    ...staticRows(client, tokenFile),
     ...(await storeRows()),
     surfaceRow(surface),
   ];
