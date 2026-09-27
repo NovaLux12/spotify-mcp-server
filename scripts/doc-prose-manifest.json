@@ -1905,7 +1905,7 @@
         "label": "| Tool | Method | Path | |---|---|---| | getnowplaying |…"
       },
       {
-        "hash": "8d91e983df3b8c08",
+        "hash": "68c3e9ff9ff5e7d3",
         "label": "/artists/{id}/top-tracks status (#901). The two platform…"
       },
       {
@@ -2725,12 +2725,20 @@
         "label": "For a single playlist there is also the always-gated unf…"
       },
       {
-        "hash": "6a3adde9d86fe740",
+        "hash": "c0be5e8d0a5e09dd",
         "label": "Inputs: | Field | Type | Required | Description | |---|-…"
       },
       {
         "hash": "a7dba085b4b2f1ab",
         "label": "Sends DELETE /me/library?uris=…."
+      },
+      {
+        "hash": "5618fc40961b4823",
+        "label": "Preview by default, and a gate at 10 (#1550). dryrun is …"
+      },
+      {
+        "hash": "3edf3fdfc0fac235",
+        "label": "With dryrun=false, a removal of 10 or more URIs (REMOVEE…"
       },
       {
         "hash": "f19d39def71199a5",
@@ -2755,6 +2763,70 @@
       {
         "hash": "f3f715efac0531cc",
         "label": "Note on following an artist: this tool reads follow stat…"
+      },
+      {
+        "hash": "6aefb26697726de3",
+        "label": "The library-removal family is gated at 10 (#1550)"
+      },
+      {
+        "hash": "525ac3cb48101a92",
+        "label": "removefromlibrary was one of seven tools that issue DELE…"
+      },
+      {
+        "hash": "e6aa72a60ccbc2de",
+        "label": "The family is defined by the endpoint, not by the module…"
+      },
+      {
+        "hash": "094d16a04c953005",
+        "label": "removefromlibrary (library.ts) — dryrun was the opt-in D…"
+      },
+      {
+        "hash": "5f5725a10233b407",
+        "label": "unsaveorphantracks (exhaustmisc.ts) — dryrun was the opt…"
+      },
+      {
+        "hash": "d56a2708c01767c2",
+        "label": "removefromlibrarybyplaylist (exhaustmisc.ts) — same opt-…"
+      },
+      {
+        "hash": "a9531d134b5fbb93",
+        "label": "removesavedshows (swarm3shows.ts) — DryRunDefault (#827)…"
+      },
+      {
+        "hash": "eb8e1e0b99d2cba6",
+        "label": "removesavedepisode (swarm3shows.ts) — same, for episodes…"
+      },
+      {
+        "hash": "e5bcd92885bd4706",
+        "label": "archiveplayedepisodes (episodemgmt.ts) — dryrun was the …"
+      },
+      {
+        "hash": "2b33077ce1ba51b4",
+        "label": "deadlibraryfinder (exhaust2misc.ts) — DryRunDefault (#82…"
+      },
+      {
+        "hash": "eaba108fb62b1db3",
+        "label": "Three properties are load-bearing and shared by all seve…"
+      },
+      {
+        "hash": "bfe74bf08fabcc16",
+        "label": "The threshold counts what would actually be removed, not…"
+      },
+      {
+        "hash": "bfc8575a06938e11",
+        "label": "The gate is a prompt, not a preview. It fires only on th…"
+      },
+      {
+        "hash": "b0e0c52d92ef0143",
+        "label": "ARCHIVEELICITTHRESHOLD stays at 50 and is the one thresh…"
+      },
+      {
+        "hash": "57a707f48e772006",
+        "label": "Two classification defects surfaced in the same audit an…"
+      },
+      {
+        "hash": "2785a7762dc22d4a",
+        "label": "Scope: the library endpoint, not the removal verbs. Play…"
       },
       {
         "hash": "d1b72671578d6539",
@@ -7030,9 +7102,9 @@
     }
   ],
   "provenance": {
-    "head": "3c306cee69dc68e25a3972e92f2e9c81581fa1fa",
-    "base": "f56b950a510ec5900c575788fa4a81db93ad6089",
-    "upstream": "f56b950a510ec5900c575788fa4a81db93ad6089",
+    "head": "36af21414a43d95f5046fddb69a1c162685481e2",
+    "base": "44d395ddeaab2395d4dd5ae0621bee59774a17a7",
+    "upstream": "44d395ddeaab2395d4dd5ae0621bee59774a17a7",
     "behind": false
   },
   "reanchored": [
@@ -7052,6 +7124,24 @@
       "to": "6c6f555af6553868",
       "toLabel": "Pruning runs on every append and once at startup, across…",
       "reason": "#606 reworded the pruning paragraph in place ('once at server startup' -> 'once at startup, across the CLI and stdio entry points'). Counted on both trees: 1 on main, 1 on the branch, same paragraph, nothing deleted.",
+      "date": "2026-09-27"
+    },
+    {
+      "file": "SPEC.md",
+      "hash": "6a3adde9d86fe740",
+      "label": "Inputs: | Field | Type | Required | Description | |---|-…",
+      "to": "c0be5e8d0a5e09dd",
+      "toLabel": "Inputs: | Field | Type | Required | Description | |---|-…",
+      "reason": "The #1550 change reworded the remove_from_library Inputs row in place: dry_run moved from opt-in to defaulting to true, so the row now states the default and how to commit.",
+      "date": "2026-09-27"
+    },
+    {
+      "file": "SPEC.md",
+      "hash": "8d91e983df3b8c08",
+      "label": "/artists/{id}/top-tracks status (#901). The two platform…",
+      "to": "68c3e9ff9ff5e7d3",
+      "toLabel": "/artists/{id}/top-tracks status (#901). The two platform…",
+      "reason": "The #1550 change reworded the remove_from_library row of the endpoint summary in place: dry_run now defaults to true and a removal of 10 or more URIs requires elicitation confirmation. Same paragraph, new words.",
       "date": "2026-09-27"
     },
     {

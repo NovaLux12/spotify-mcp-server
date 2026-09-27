@@ -180,7 +180,7 @@ describe('episodemgmt', () => {
     assert.ok(tool.schema.confirm, 'legacy confirm input must still be accepted');
     // ...but it must not stand in for a human: with no elicitation capability
     // the write is refused exactly as it would be without the flag.
-    const out = await h.invoke('archive_played_episodes', { confirm: true });
+    const out = await h.invoke('archive_played_episodes', { confirm: true, dry_run: false });
     assert.equal(out.structuredContent?.ok, false);
     assert.equal(out.structuredContent?.reason, 'confirmation_unavailable');
     assert.deepEqual(h.dels, [], 'confirm:true must not authorise the delete');
@@ -188,9 +188,31 @@ describe('episodemgmt', () => {
   });
   it('archive_played_episodes reports no played when none fully_played', async () => {
     const h = harness({ episodes: [{ episode: { id: 'x', uri: 'spotify:episode:x', name: 'X', resume_point: { fully_played: false } }, added_at: '2026-01-01' }] });
-    const out = await h.invoke('archive_played_episodes', {});
+    const out = await h.invoke('archive_played_episodes', { dry_run: false });
     assert.match(out.content[0].text, /No fully-played/i);
   });
+  // #1550: this tool declared the OPT-IN `DryRun` fragment, so an omitted
+  // flag was falsy and the bulk archive committed. `limit` reaches 500, so
+  // one call could delete 500 saved episodes with no preview. The harness
+  // parses through the real schema, so this asserts the PARSED default, not
+  // a handler-side fallback.
+  it('archive_played_episodes with NO dry_run key previews and deletes nothing', async () => {
+    const h = harness({ episodes: playedEpisodes(51) });
+    const out = await h.invoke('archive_played_episodes', {});
+    assert.equal(out.structuredContent?.dry_run, true, 'an omitted flag must preview');
+    assert.equal(h.promptCount, 0, 'a preview must not prompt');
+    assert.deepEqual(h.dels, [], 'an omitted dry_run deleted 51 episodes');
+  });
+
+  it('archive_played_episodes publishes default:true for dry_run', async () => {
+    const h = harness();
+    const tool = h.registered[0];
+    assert.ok(tool);
+    const shape = z.object(tool.schema as z.ZodRawShape);
+    assert.equal(shape.parse({}).dry_run, true, 'the schema must default the flag to true');
+    assert.equal(shape.parse({ dry_run: false }).dry_run, false, 'an explicit false must survive');
+  });
+
   it('archive_played_episodes dry_run previews without prompting or writing', async () => {
     const h = harness({ episodes: playedEpisodes(51), answer: new Error('must not prompt') });
     const out = await h.invoke('archive_played_episodes', { dry_run: true });
@@ -200,7 +222,7 @@ describe('episodemgmt', () => {
   });
   it('refuses >50 episodes without elicitation support and performs zero writes', async () => {
     const h = harness({ episodes: playedEpisodes(51) });
-    const out = await h.invoke('archive_played_episodes', {});
+    const out = await h.invoke('archive_played_episodes', { dry_run: false });
     assert.equal(out.structuredContent.ok, false);
     assert.equal(out.structuredContent.cancelled, true);
     assert.equal(out.structuredContent.reason, 'confirmation_unavailable');
@@ -209,7 +231,7 @@ describe('episodemgmt', () => {
   });
   it('refuses a declined confirmation and performs zero writes', async () => {
     const h = harness({ episodes: playedEpisodes(51), answer: { action: 'decline' } });
-    const out = await h.invoke('archive_played_episodes', {});
+    const out = await h.invoke('archive_played_episodes', { dry_run: false });
     assert.equal(out.structuredContent.ok, false);
     assert.equal(out.structuredContent.cancelled, true);
     assert.equal(h.promptCount, 1);
@@ -217,7 +239,7 @@ describe('episodemgmt', () => {
   });
   it('treats accept without confirm=true as declined and performs zero writes', async () => {
     const h = harness({ episodes: playedEpisodes(51), answer: { action: 'accept', content: {} } });
-    const out = await h.invoke('archive_played_episodes', {});
+    const out = await h.invoke('archive_played_episodes', { dry_run: false });
     assert.equal(out.structuredContent.ok, false);
     assert.equal(out.structuredContent.cancelled, true);
     assert.equal(h.promptCount, 1);
@@ -225,7 +247,7 @@ describe('episodemgmt', () => {
   });
   it('refuses a transport error and performs zero writes', async () => {
     const h = harness({ episodes: playedEpisodes(51), answer: new Error('elicitation transport failed') });
-    const out = await h.invoke('archive_played_episodes', {});
+    const out = await h.invoke('archive_played_episodes', { dry_run: false });
     assert.equal(out.structuredContent.ok, false);
     assert.equal(out.structuredContent.cancelled, true);
     assert.equal(out.structuredContent.reason, 'elicitation_failed');
@@ -234,7 +256,7 @@ describe('episodemgmt', () => {
   });
   it('archives >50 episodes only after an explicit accepted confirmation', async () => {
     const h = harness({ episodes: playedEpisodes(51), answer: { action: 'accept', content: { confirm: true } } });
-    const out = await h.invoke('archive_played_episodes', {});
+    const out = await h.invoke('archive_played_episodes', { dry_run: false });
     assert.equal(out.structuredContent.ok, true);
     assert.equal(out.structuredContent.removed, 51);
     assert.equal(h.promptCount, 1);
@@ -255,7 +277,7 @@ describe('episodemgmt', () => {
   it('SPOTIFY_MCP_CONFIRM=never explicitly bypasses prompting and archives >50 episodes', async () => {
     process.env.SPOTIFY_MCP_CONFIRM = 'never';
     const h = harness({ episodes: playedEpisodes(51), answer: { action: 'decline' } });
-    const out = await h.invoke('archive_played_episodes', {});
+    const out = await h.invoke('archive_played_episodes', { dry_run: false });
     assert.equal(out.structuredContent.ok, true);
     assert.equal(out.structuredContent.removed, 51);
     assert.equal(h.promptCount, 0);
@@ -263,7 +285,7 @@ describe('episodemgmt', () => {
   });
   it('a successful archive issues a removal receipt verify_receipt can resolve', async () => {
     const h = harness({ episodes: playedEpisodes(3) });
-    const out = await h.invoke('archive_played_episodes', {});
+    const out = await h.invoke('archive_played_episodes', { dry_run: false });
     const receipt = out.structuredContent.receipt as { receipt_id?: string };
     assert.ok(receipt?.receipt_id, 'successful archive must surface a receipt id');
     // Same process, same in-module store: this is what verify_receipt reads.
@@ -274,7 +296,7 @@ describe('episodemgmt', () => {
   });
   it('the archive receipt records the episodes as expected ABSENT', async () => {
     const h = harness({ episodes: playedEpisodes(3) });
-    const out = await h.invoke('archive_played_episodes', {});
+    const out = await h.invoke('archive_played_episodes', { dry_run: false });
     const receipt = out.structuredContent.receipt as Record<string, unknown>;
     // A removal receipt: direction removed (so undo re-adds) and no still-present
     // uris once the refetch confirms they are gone.
@@ -285,7 +307,7 @@ describe('episodemgmt', () => {
   });
   it('an archive that only partly landed reports the still-present uri', async () => {
     const h = harness({ episodes: playedEpisodes(3), stillPresent: ['spotify:episode:ep1'] });
-    const out = await h.invoke('archive_played_episodes', {});
+    const out = await h.invoke('archive_played_episodes', { dry_run: false });
     const receipt = out.structuredContent.receipt as Record<string, unknown>;
     assert.equal(receipt.verified, false);
     assert.deepEqual(receipt.missing, ['spotify:episode:ep1']);
@@ -293,7 +315,7 @@ describe('episodemgmt', () => {
   });
   it('json response_format keeps the text parseable and carries the receipt in structuredContent', async () => {
     const h = harness({ episodes: playedEpisodes(3) });
-    const out = await h.invoke('archive_played_episodes', { response_format: 'json' });
+    const out = await h.invoke('archive_played_episodes', { response_format: 'json', dry_run: false });
     // json stays machine-parseable: no receipt prose leaks into the text
     // (same contract as library.ts mutationOutVerified).
     const parsed = JSON.parse(out.content[0].text) as { removed: number };
@@ -305,7 +327,7 @@ describe('episodemgmt', () => {
   });
   it('issues no receipt on any refused or dry-run path', async () => {
     const refused = harness({ episodes: playedEpisodes(51) });
-    const r = await refused.invoke('archive_played_episodes', {});
+    const r = await refused.invoke('archive_played_episodes', { dry_run: false });
     assert.equal(r.structuredContent.ok, false);
     assert.equal(r.structuredContent.receipt, undefined);
     const dry = harness({ episodes: playedEpisodes(3) });
@@ -318,7 +340,7 @@ describe('episodemgmt', () => {
 
   it('reports a walk that failed as a partial scan carrying the reason', async () => {
     const h = harness({ episodes: playedEpisodes(51), pager: 'walk_failed', answer: { action: 'accept', content: { confirm: true } } });
-    const out = await h.invoke('archive_played_episodes', {});
+    const out = await h.invoke('archive_played_episodes', { dry_run: false });
     assert.equal(out.structuredContent.scan_complete, false);
     assert.equal(out.structuredContent.partial_scan, true);
     assert.equal(out.structuredContent.scan_failure, 'walk_failed');
@@ -344,7 +366,7 @@ describe('episodemgmt', () => {
 
   it('refuses the destructive path on a failed walk and performs zero writes', async () => {
     const h = harness({ episodes: playedEpisodes(51), pager: 'walk_failed', answer: { action: 'accept', content: { confirm: true } } });
-    const out = await h.invoke('archive_played_episodes', {});
+    const out = await h.invoke('archive_played_episodes', { dry_run: false });
     assert.equal(out.structuredContent.ok, false);
     assert.equal(out.structuredContent.reason, 'scan_incomplete');
     assert.deepEqual(h.dels, [], 'a failed scan must never authorise a delete');
@@ -359,7 +381,7 @@ describe('episodemgmt', () => {
     // 60 saved, asked for 50: the walk is capped, so 51 rows come back and the
     // remaining 9 were never read.
     const h = harness({ episodes: playedEpisodes(60), answer: { action: 'accept', content: { confirm: true } } });
-    const out = await h.invoke('archive_played_episodes', { limit: 50 });
+    const out = await h.invoke('archive_played_episodes', { limit: 50, dry_run: false });
     assert.equal(out.structuredContent.scan_failure, 'limit_reached');
     assert.equal(out.structuredContent.scan_complete, false);
     assert.match(String(out.structuredContent.partial_scan_reason), /requested limit of 50/);
@@ -387,7 +409,7 @@ describe('episodemgmt', () => {
     // exactly `cap` is genuinely complete and must still be archivable. Guards
     // against a `>=` truncation check that would gate every at-limit caller.
     const h = harness({ episodes: playedEpisodes(50) });
-    const out = await h.invoke('archive_played_episodes', { limit: 50 });
+    const out = await h.invoke('archive_played_episodes', { limit: 50, dry_run: false });
     assert.equal(out.structuredContent.scan_complete, true);
     assert.equal(out.structuredContent.ok, true);
     assert.equal(out.structuredContent.removed, 50);
@@ -405,7 +427,7 @@ describe('episodemgmt', () => {
     // page holds that many rows the read did cover the library and refusing
     // would be refusing an archive the tool can vouch for.
     const h = harness({ episodes: playedEpisodes(3), pager: 'missing', answer: { action: 'accept', content: { confirm: true } } });
-    const out = await h.invoke('archive_played_episodes', {});
+    const out = await h.invoke('archive_played_episodes', { dry_run: false });
     assert.equal(out.structuredContent.scan_complete, true);
     assert.equal(out.structuredContent.scan_failure, undefined);
     assert.equal(out.structuredContent.scanned, 3);
@@ -418,7 +440,7 @@ describe('episodemgmt', () => {
     // IS an observation (120 reported, 3 delivered), so the partial report and
     // the refusal are both warranted.
     const h = harness({ episodes: playedEpisodes(3), pager: 'missing', libraryTotal: 120, answer: { action: 'accept', content: { confirm: true } } });
-    const out = await h.invoke('archive_played_episodes', {});
+    const out = await h.invoke('archive_played_episodes', { dry_run: false });
     assert.equal(out.structuredContent.scan_failure, 'no_pager');
     assert.equal(out.structuredContent.scan_complete, false);
     assert.equal(out.structuredContent.scanned, 3);
@@ -438,7 +460,7 @@ describe('episodemgmt', () => {
     // the clause: the walk-failed tests all use a reason that carries no
     // library size, so none of them can expose the contradiction.
     const h = harness({ episodes: [], pager: 'missing', libraryTotal: 120, answer: { action: 'accept', content: { confirm: true } } });
-    const out = await h.invoke('archive_played_episodes', {});
+    const out = await h.invoke('archive_played_episodes', { dry_run: false });
     assert.equal(out.structuredContent.scan_failure, 'no_pager');
     assert.equal(out.structuredContent.scan_complete, false);
     assert.equal(out.structuredContent.scanned, 0);
@@ -455,7 +477,7 @@ describe('episodemgmt', () => {
     // the only thing the reason may say: asserting "the rest of the library was
     // never scanned" here is the unobserved claim this branch used to make.
     const h = harness({ episodes: playedEpisodes(3), pager: 'missing', libraryTotal: null, answer: { action: 'accept', content: { confirm: true } } });
-    const out = await h.invoke('archive_played_episodes', {});
+    const out = await h.invoke('archive_played_episodes', { dry_run: false });
     assert.equal(out.structuredContent.scan_failure, 'no_pager');
     assert.equal(out.structuredContent.scan_complete, false);
     const reason = String(out.structuredContent.partial_scan_reason);
@@ -507,7 +529,7 @@ describe('episodemgmt', () => {
     // The new early return must not swallow the deprecation notice a legacy
     // caller needs to learn that `confirm: true` authorised nothing.
     const h = harness({ episodes: playedEpisodes(60) });
-    const out = await h.invoke('archive_played_episodes', { limit: 50, confirm: true });
+    const out = await h.invoke('archive_played_episodes', { limit: 50, confirm: true, dry_run: false });
     assert.equal(out.structuredContent.reason, 'scan_incomplete');
     assert.deepEqual(out.structuredContent.deprecated_inputs, ['confirm']);
     assert.match(out.content[0].text, /no longer authorises the delete/);
@@ -516,7 +538,7 @@ describe('episodemgmt', () => {
 
   it('an untruncated scan reports a total and still deletes with a receipt', async () => {
     const h = harness({ answer: new Error('must not prompt') });
-    const out = await h.invoke('archive_played_episodes', {});
+    const out = await h.invoke('archive_played_episodes', { dry_run: false });
     assert.equal(out.structuredContent.scan_complete, true);
     assert.equal(out.structuredContent.ok, true);
     assert.equal(out.structuredContent.scanned, 3);
@@ -531,7 +553,7 @@ describe('episodemgmt', () => {
     // Control for the refusals above: if this ever stops passing, the partial
     // assertions could be passing vacuously.
     const h = harness({ episodes: [{ episode: { id: 'x', uri: 'spotify:episode:x', name: 'X', resume_point: { fully_played: false } }, added_at: '2026-01-01' }] });
-    const out = await h.invoke('archive_played_episodes', {});
+    const out = await h.invoke('archive_played_episodes', { dry_run: false });
     assert.equal(out.structuredContent.scan_complete, true);
     assert.equal(out.structuredContent.played, 0);
     assert.match(out.content[0].text, /No fully-played episodes in library \(scanned 1\)/);

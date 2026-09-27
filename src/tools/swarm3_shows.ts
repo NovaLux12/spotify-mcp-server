@@ -28,6 +28,12 @@ import { getConfig } from '../config.js';
 import { facetCoverageNote, facetGroups, facetUnavailableReason } from '../removed.js';
 import { spotifyId, spotifyIdArray } from '../refs.js';
 import {
+  confirmViaElicitation,
+  describeConfirmation,
+  requiredConfirmationRefusal,
+  REMOVE_ELICIT_THRESHOLD,
+} from './confirm.js';
+import {
   DryRun,
   MaxResults,
   ResponseFormat,
@@ -899,7 +905,7 @@ export function registerSwarm3ShowsTools(server: McpServer, client: SpotifyClien
   server.tool(
     'remove_saved_shows',
     'Bulk-remove shows from your library via DELETE /me/library (the Feb 2026 replacement for the removed DELETE /me/shows) — removal verb family: also see unsubscribe_from_show (single), remove_saved_episode (episodes). After cross-checking which of the '
-      + 'given IDs are actually saved — previews a PLAN by default; pass dry_run=false to commit.',
+      + 'given IDs are actually saved — previews a PLAN by default; pass dry_run=false to commit. Removing 10+ saved shows additionally requires elicitation confirmation (or SPOTIFY_MCP_CONFIRM=never for automation).',
     {
       show_ids: spotifyIdArray('show').min(1).max(50).describe('Show IDs/URIs to remove (1–50)'),
       response_format: ResponseFormat,
@@ -931,6 +937,22 @@ export function registerSwarm3ShowsTools(server: McpServer, client: SpotifyClien
         });
       }
       if (removable.length > 0) {
+        // #1550: preview-default was already correct here; the missing half was
+        // the gate. A single explicit `dry_run=false` on 50 ids unsaved 50
+        // shows with nothing between the caller and the DELETE. Same threshold
+        // and same fail-closed guard as every other removal in the server.
+        if (removable.length >= REMOVE_ELICIT_THRESHOLD) {
+          const verdict = await confirmViaElicitation(server, {
+            message: describeConfirmation('remove from library', 'your saved shows', [
+              `Remove ${removable.length} saved show(s) from your library:`,
+              ...removable.slice(0, 10),
+              ...(removable.length > 10 ? [`(…and ${removable.length - 10} more)`] : []),
+            ]),
+            confirmLabel: 'Remove saved shows',
+          });
+          const refusal = requiredConfirmationRefusal(verdict);
+          if (refusal) return emit(args.response_format, refusal.message, refusal.payload);
+        }
         // #638: `DELETE /me/shows` was removed; see subscribe_to_show. The
         // 50-id input cap is under `/me/library`'s 40-uri write cap, so this
         // is still a single request — the two caps happen to nest correctly
@@ -1055,7 +1077,7 @@ export function registerSwarm3ShowsTools(server: McpServer, client: SpotifyClien
   server.tool(
     'remove_saved_episode',
     'Remove episodes from your library via DELETE /me/library (the Feb 2026 replacement for the removed DELETE /me/episodes) — removal verb: also see remove_saved_shows (shows), delete_playlist_snapshot (local). After cross-checking which are '
-      + 'actually saved — previews a PLAN by default; pass dry_run=false to commit.',
+      + 'actually saved — previews a PLAN by default; pass dry_run=false to commit. Removing 10+ saved episodes additionally requires elicitation confirmation (or SPOTIFY_MCP_CONFIRM=never for automation).',
     {
       episode_ids: spotifyIdArray('episode').min(1).max(50).describe('Episode IDs/URIs to remove (1–50)'),
       response_format: ResponseFormat,
@@ -1085,6 +1107,19 @@ export function registerSwarm3ShowsTools(server: McpServer, client: SpotifyClien
         });
       }
       if (removable.length > 0) {
+        // #1550: the missing gate — see remove_saved_shows above.
+        if (removable.length >= REMOVE_ELICIT_THRESHOLD) {
+          const verdict = await confirmViaElicitation(server, {
+            message: describeConfirmation('remove from library', 'your saved episodes', [
+              `Remove ${removable.length} saved episode(s) from your library:`,
+              ...removable.slice(0, 10),
+              ...(removable.length > 10 ? [`(…and ${removable.length - 10} more)`] : []),
+            ]),
+            confirmLabel: 'Remove saved episodes',
+          });
+          const refusal = requiredConfirmationRefusal(verdict);
+          if (refusal) return emit(args.response_format, refusal.message, refusal.payload);
+        }
         // #638: `DELETE /me/episodes` was removed; see subscribe_to_show.
         await client.delete(`/me/library?uris=${removable.map((id) => `spotify:episode:${id}`).join(',')}`);
       }
