@@ -1244,19 +1244,22 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   // prefers the zero-tool-call read over a call that costs a turn and quota.
   // Re-measure with `npm run count:tools` before raising it again.
   //
-  // #848 re-measured this at 15 tools / 13,588B, same 16→15 count change: the
-  // four transfer and eight volume writers became `transfer_playback` and
-  // `set_volume`, whose schemas carry the union of the flags they replaced.
+  // #848: the four transfer and eight volume writers became `transfer_playback`
+  // and `set_volume`, whose two schemas carry the union of the flags they
+  // replaced. Count and bytes are the measured baseline on the line below.
   //
-  // Host-session payload impact: the AGGREGATE tools/list went DOWN, 598,816 →
-  // 592,245 B across 570 → 560 tools, so headroom against the AGGREGATE_SURFACE_LIMITS
-  // ceiling (see TOOL_SURFACE_BUDGET above for the current value) rose 13,184 →
-  // 19,755 B (2.154% → 3.227%). That is the number a host session pays, and it
-  // improved. This module's own ceiling rises 14,720 → 14,947 B because two
-  // schemas now describe what ten did, and a caller that loads the `playback`
-  // toolset in a trimmed session reads the larger of the two by +207 B against
-  // the ceiling it was measured under.
-  manifestEntry('playback', 'playback', lazyModule('./playback.js', 'registerPlaybackTools'), [15, 13588]),
+  // Host-session payload impact, measured on the post-rebase tree against
+  // `origin/main` rather than derived: the AGGREGATE tools/list went DOWN by ten
+  // tools and 5,564 B of per-module schema (533,869 → 528,305 B), so headroom
+  // against the AGGREGATE_SURFACE_LIMITS ceiling rose 11,526 → 18,166 B
+  // (1.883% → 2.968%). That is the number a host session pays, and it improved.
+  // The tool counts themselves are in the generated census block, not here.
+  //
+  // This module's own ceiling FELL, because it derives from the baseline and the
+  // collapsed pair is smaller than the ten tools it replaced — so a caller that
+  // loads the `playback` toolset in a trimmed session reads a smaller payload
+  // under a smaller bound. Both halves of the ratio improved.
+  manifestEntry('playback', 'playback', lazyModule('./playback.js', 'registerPlaybackTools'), [15, 13519]),
   manifestEntry('following', 'following', lazyModule('./following.js', 'registerFollowingTools'), [3, 2502]),
   manifestEntry('users', 'users', lazyModule('./users.js', 'registerUsersTools'), [2, 1696]),
   manifestEntry('audiobooks', 'audiobooks', lazyModule('./audiobooks.js', 'registerAudiobookTools'), [4, 3715]),

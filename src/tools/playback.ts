@@ -785,7 +785,7 @@ export function registerPlaybackTools(server: McpServer, client: SpotifyClient):
       delta_step: z.number().int().min(-100).max(100).optional().describe('Signed nudge, e.g. +10 or -10, clamped to 0–100. Mutually exclusive with volume_percent.'),
       device_id: z.string().optional().describe('Device ID for a single-device write (default: the active device)'),
       device_ids: z.array(z.string().min(1)).optional().describe('For op "level" with volume_percent: fan out to these device ids or names. Mutually exclusive with all_devices.'),
-      all_devices: z.boolean().optional().describe('For op "level" with volume_percent: set every volume-capable device, not a named selection. This is what `apply_volume_plan` did when its selection was omitted.'),
+      all_devices: z.boolean().optional().describe('For op "level" with volume_percent: set every volume-capable device, not a named selection.'),
       exclude_device_id: z.string().optional().describe('For op "level" with no volume_percent: leave this device untouched while levelling the rest'),
       response_format: ResponseFormat,
       dry_run: PlaybackDryRun,

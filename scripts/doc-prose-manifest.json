@@ -2001,12 +2001,16 @@
         "label": "Inputs: | Field | Type | Required | Description | |---|-…"
       },
       {
-        "hash": "2faa3b67da2098a6",
-        "label": "setvolume Set playback volume."
+        "hash": "eb99ed41aabeb987",
+        "label": "setvolume Set, nudge, mute, unmute, or preset playback v…"
       },
       {
-        "hash": "6768c82e14144549",
+        "hash": "2cbfdbbf3dd3a141",
         "label": "Inputs: | Field | Type | Required | Description | |---|-…"
+      },
+      {
+        "hash": "94555d199f032b43",
+        "label": "Nothing in the schema is required: a request that carrie…"
       },
       {
         "hash": "a2acf049cde25ef3",
@@ -2061,12 +2065,16 @@
         "label": "Returns: array of devices with id, name, type (computer/…"
       },
       {
-        "hash": "2135657c32d98771",
-        "label": "transferplayback Move playback to a different device."
+        "hash": "ee0bc3ed9a71f060",
+        "label": "transferplayback Move playback to a different device, an…"
       },
       {
-        "hash": "b4bd14dafa27f92a",
+        "hash": "349861a4cfc151f5",
         "label": "Inputs: | Field | Type | Required | Description | |---|-…"
+      },
+      {
+        "hash": "2f15a29fb7fe1728",
+        "label": "Name resolution is one resolver (matchDevice in src/play…"
       },
       {
         "hash": "8b520f842dcc888b",
@@ -5396,6 +5404,20 @@
     },
     {
       "file": "SPEC.md",
+      "hash": "2135657c32d98771",
+      "label": "transferplayback Move playback to a different device.",
+      "date": "2026-09-27",
+      "reason": "#848 collapsed the transfer and volume families onto one tool each, so the SPEC.md inputs tables for set_volume and transfer_playback no longer describe the shipped schemas: the new fields are listed, and volume_percent is documented as runtime-enforced rather than schema-required"
+    },
+    {
+      "file": "SPEC.md",
+      "hash": "2faa3b67da2098a6",
+      "label": "setvolume Set playback volume.",
+      "date": "2026-09-27",
+      "reason": "#848 collapsed the transfer and volume families onto one tool each, so the SPEC.md inputs tables for set_volume and transfer_playback no longer describe the shipped schemas: the new fields are listed, and volume_percent is documented as runtime-enforced rather than schema-required"
+    },
+    {
+      "file": "SPEC.md",
       "hash": "455ba684a6f018a0",
       "label": "statsfmuser is the identity argument on all eleven, and …",
       "date": "2026-09-27",
@@ -5414,6 +5436,13 @@
       "label": "The affected tools are playlistfliporder, playlistresequ…",
       "date": "2026-09-27",
       "reason": "rewritten by #1388 to disclose playlist_balance's bounded read; both paragraphs extended in place and a new disclosure section added"
+    },
+    {
+      "file": "SPEC.md",
+      "hash": "6768c82e14144549",
+      "label": "Inputs: | Field | Type | Required | Description | |---|-…",
+      "date": "2026-09-27",
+      "reason": "#848 collapsed the transfer and volume families onto one tool each, so the SPEC.md inputs tables for set_volume and transfer_playback no longer describe the shipped schemas: the new fields are listed, and volume_percent is documented as runtime-enforced rather than schema-required"
     },
     {
       "file": "SPEC.md",
@@ -5449,6 +5478,13 @@
       "label": "Canonical tools are statsfmtasteprofile, statsfmartistaf…",
       "date": "2026-09-27",
       "reason": "reworded by #889/#607/#908: the curated-default surface, the stats.fm opt-in and the retired taste_* aliases changed these paragraphs; the prose is present in its new form"
+    },
+    {
+      "file": "SPEC.md",
+      "hash": "b4bd14dafa27f92a",
+      "label": "Inputs: | Field | Type | Required | Description | |---|-…",
+      "date": "2026-09-27",
+      "reason": "#848 collapsed the transfer and volume families onto one tool each, so the SPEC.md inputs tables for set_volume and transfer_playback no longer describe the shipped schemas: the new fields are listed, and volume_percent is documented as runtime-enforced rather than schema-required"
     },
     {
       "file": "SPEC.md",
@@ -5515,8 +5551,8 @@
     }
   ],
   "provenance": {
-    "head": "d5fca0f6e93388bb98786e8b9438db489530ae35",
-    "upstream": "d5fca0f6e93388bb98786e8b9438db489530ae35",
+    "head": "cb13b499e0905bb2792c8b74d35f4df48ac970c4",
+    "upstream": "fd5e09163a10ee4abd99eef2a66d836e6666546a",
     "behind": false
   }
 }

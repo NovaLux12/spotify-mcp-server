@@ -241,7 +241,19 @@ describe('#906 a trimmed toolset evaluates only the modules it serves', () => {
     // lands in EVERY trimmed surface, not only the default one. Stated rather
     // than absorbed, because the next person to add a helper will hit the same
     // number and should know they will.
-    assert.equal(playback.toolCount, 107, 'the playback surface itself must not change');
+    //
+    // 107 -> 97 (#848). A DELIBERATE collapse, not surface loss: four
+    // transfer tools and eight volume writers of `PUT /me/player/volume`
+    // became one `transfer_playback` and one `set_volume`. Each retired name
+    // still resolves — `RETIRED_TOOL_FORWARDS` in `src/shaping.ts` forwards it
+    // to the survivor with the flags that made it itself, for one release —
+    // so a caller of an old name keeps working, but it is a registration
+    // rather than a tool, and tools are what this number counts. The two
+    // behaviour differences the collapse does make (a device that resolved
+    // only by id now also resolves by its sidecar label, and a resume that
+    // silently landed at 0:00 is now seek-corrected) are additive and
+    // narrowing respectively, never a removed capability.
+    assert.equal(playback.toolCount, 97, 'the playback surface itself must not change');
   });
 
   it('never evaluates a module whose registration key is inactive', async () => {
@@ -294,7 +306,13 @@ describe('#906 a trimmed toolset evaluates only the modules it serves', () => {
     // asserting a number this tripwire has never measured.
     // 570 -> 571 (#598): `expand_mood_to_queries`, one `alwaysActive` read-only
     // tool. Same choice, and the same trade, as the `playback` figure above.
-    assert.equal(full.toolCount, 571, 'the full (TOOLSETS=all) surface must be unchanged');
+    //
+    // 571 -> 561 (#848): the same collapse, measured on the post-rebase tree
+    // rather than derived by subtracting the 10 from 571. The removals did not
+    // compose with the arithmetic — the playback module gave up more tools
+    // than the family names suggest, because the behaviour they carried
+    // moved into the two survivors rather than disappearing.
+    assert.equal(full.toolCount, 561, 'the full (TOOLSETS=all) surface must be unchanged');
     // `annotations.ts` registers verify_receipt itself, so it is in the
     // manifest's file list without being imported through a thunk.
     const missing = REGISTRAR_MANIFEST
