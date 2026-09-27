@@ -53,6 +53,7 @@ import {
   TRUTHY_ENV_VALUES,
 } from '../src/config.ts';
 import { readOnlyModeEnabled } from '../src/tools/annotations.ts';
+import { assertChildRan } from './helpers/subprocess-outcome.js';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 
@@ -232,6 +233,16 @@ describe('the CLI doctor reports the flag (#611)', () => {
    * even when everything else is broken. Asserting on the process's stdout
    * rather than on a function return is deliberate; a test that called the
    * row-builder directly would still pass with the row deleted from the CLI.
+   *
+   * #1335: the exit *code* is not checked, because a non-zero one is normal
+   * here. What has to be checked is that the child RAN, and the old
+   * `assert.equal(result.signal, null)` did not establish that — `spawnSync`
+   * reports `signal: null` for a child that never started at all. On a loaded
+   * box that produced `''` here, the regex below did not match, and the
+   * failure was reported as `doctor misreported SPOTIFY_MCP_READONLY="ON" as
+   * off` — a claim about the product, standing on a subprocess that never
+   * printed anything. `assertChildRan` separates the two and keeps the child's
+   * stderr, which is where the real reason was being lost.
    */
   function runDoctor(env: NodeJS.ProcessEnv): string {
     const home = mkdtempSync(path.join(tmpdir(), 'spotify-mcp-doctor-'));
@@ -248,8 +259,7 @@ describe('the CLI doctor reports the flag (#611)', () => {
           env: { ...process.env, HOME: home, USERPROFILE: home, SPOTIFY_CLIENT_ID: 'test-client-id', ...env },
         },
       );
-      assert.equal(result.signal, null, `doctor must exit, not be killed (${result.signal})`);
-      return result.stdout;
+      return assertChildRan(result, 'spotify-mcp doctor');
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
@@ -279,6 +289,11 @@ describe('the CLI doctor reports the flag (#611)', () => {
   it('accepts the spellings the shared table accepts, in the real CLI', () => {
     // The in-process tests prove the parse; this proves the REPORT carries it.
     // `on` is the spelling the original inline parser silently ignored.
+    //
+    // #1334 landed the `${out}` interpolation in the message below. #1335 adds
+    // the `assertChildRan` call in `runDoctor` above, which is what makes the
+    // output this message now carries a report the child actually produced,
+    // rather than whatever it managed to print before dying.
     for (const raw of ['on', 'ON', ' yes ']) {
       const out = runDoctor({ SPOTIFY_MCP_READONLY: raw });
       assert.match(

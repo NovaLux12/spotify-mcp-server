@@ -45,6 +45,7 @@ import {
   collectAggregateSurfaceMeasurement,
   registerManifestModules,
 } from '../src/tools/annotations.js';
+import { childExitCode } from './helpers/subprocess-outcome.js';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -61,12 +62,21 @@ function withTempDir<T>(run: (dir: string) => T): T {
   }
 }
 
-/** Run a command expected to fail and return its combined output. */
+/**
+ * Run a command expected to fail and return its combined output.
+ *
+ * #1335: a child that was killed or never started used to fall into the same
+ * catch as one that ran and rejected, and returned its (empty) output as if it
+ * were a verdict. `childExitCode` throws for those instead, so "the gate said
+ * no" can no longer be reported by a gate that never answered.
+ */
 function runFailure(args: string[]): string {
   try {
     execFileSync(process.execPath, args, { cwd: ROOT, encoding: 'utf8', stdio: 'pipe', maxBuffer: 32 * 1024 * 1024 });
   } catch (error) {
-    const result = error as { stdout?: string; stderr?: string };
+    const result = error as { stdout?: string; stderr?: string; status?: number | null; signal?: string | null };
+    // Establish that the child ran before treating its exit as the verdict.
+    childExitCode(result, `expected-failure run of ${args.join(' ')}`);
     return `${result.stdout ?? ''}\n${result.stderr ?? ''}`;
   }
   assert.fail(`expected command to fail: ${args.join(' ')}`);
@@ -574,6 +584,17 @@ function editIn(root: string, file: string, mutate: (source: string) => string):
  * Drive the real gate against a mutated tree and return its combined output
  * plus the exit status. A clean tree exits 0; every mutation below asserts on
  * what the script printed, not on a re-derivation of it.
+ *
+ * #1335: `result.status ?? 1` used to be the whole verdict. A child killed by
+ * a signal reports `status: null`, so `?? 1` mapped "the gate never answered"
+ * onto "the gate exited 1" — indistinguishable, at this line, from a gate that
+ * ran and correctly rejected a document. The three `assert.notEqual(code, 0)`
+ * callers below each follow up with an `assert.match` on the output, so a dead
+ * child did not produce a silent false pass here; what it produced was a
+ * failure naming a stale line number against an empty string, which is the
+ * same "product is wrong" misreport this issue is about. `childExitCode`
+ * throws for that case, so the exit code reaching an assertion always belongs
+ * to a gate that ran.
  */
 function runGate(root: string): { code: number; output: string } {
   const args = ['scripts/check-doc-tool-counts.mjs', '--root', root, '--census-file', censusJson()];
@@ -581,8 +602,8 @@ function runGate(root: string): { code: number; output: string } {
     const stdout = execFileSync(process.execPath, args, { cwd: ROOT, encoding: 'utf8', stdio: 'pipe', maxBuffer: 32 * 1024 * 1024 });
     return { code: 0, output: stdout };
   } catch (error) {
-    const result = error as { status?: number; stdout?: string; stderr?: string };
-    return { code: result.status ?? 1, output: `${result.stdout ?? ''}\n${result.stderr ?? ''}` };
+    const result = error as { status?: number | null; signal?: string | null; stdout?: string; stderr?: string };
+    return { code: childExitCode(result, `check-doc-tool-counts against ${root}`), output: `${result.stdout ?? ''}\n${result.stderr ?? ''}` };
   }
 }
 
