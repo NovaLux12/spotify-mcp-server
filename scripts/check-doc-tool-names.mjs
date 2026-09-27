@@ -378,6 +378,15 @@ const DOCUMENTED_RANGE = /\b(\d+)\s*[–—-]\s*(\d+)\b/g;
  */
 const DOCUMENTED_CEILING = /\b(?:max|maximum|cap|capped at|capped|at most|up to|no more than)\s+(\d+)\b/gi;
 
+/**
+ * The verbs a recipe step can use to introduce a tool call. The trigger is
+ * the verb rather than the literal word "Call" because the docs write
+ * `preview <tool> with ...` for the write half of a recipe, and a matcher
+ * that only saw "Call" left every preview step unchecked — a bogus key in a
+ * preview step passed the gate silently (#928).
+ */
+const RECIPE_VERB = /^(?:call|preview|run|invoke|use|request|fetch|read|check)$/;
+
 const markdownFiles = [
   'README.md',
   'SPEC.md',
@@ -708,16 +717,102 @@ function visitJsonToolExamples(value, file, line, registry) {
   for (const entry of Object.values(value)) visitJsonToolExamples(entry, file, line, registry);
 }
 
+/**
+ * A recipe step is an executable claim, so both halves of it are checked: the
+ * tool it names and the arguments it passes. #928 is the case that makes the
+ * second half necessary — the cookbook said `whats_new` with
+ * `since: "last Monday"`, a value the tool's own schema rejects, so the step
+ * failed validation instead of returning a result.
+ *
+ * The trigger is an imperative verb rather than the literal word "Call": the
+ * docs write `preview <tool> with ...` for the write half of a recipe, and a
+ * matcher that only saw "Call" left every preview step unchecked — a bogus
+ * key in a preview step passed the gate silently.
+ *
+ * Values are compared only where the schema constrains them (enum, const,
+ * pattern). A free-form string such as `playlist_id: "PLAYLIST_ID"` is a
+ * placeholder the schema cannot falsify, and a gate that failed on it would
+ * be a gate nobody trusts.
+ */
+
+/**
+ * A schema node is a union when it lists `anyOf`/`oneOf`; each branch is
+ * checked and the value is accepted if any branch accepts it. `whats_new`'s
+ * `since` is exactly this shape (`const: 'last-check'` OR an ISO-date
+ * pattern), which is why `last Monday` is a value no branch accepts.
+ */
+function schemaAcceptsValue(value, schema) {
+  if (!schema || typeof schema !== 'object') return true;
+  if (Array.isArray(schema.anyOf) || Array.isArray(schema.oneOf)) {
+    return (schema.anyOf ?? schema.oneOf).some((branch) => schemaAcceptsValue(value, branch));
+  }
+  if ('const' in schema) return value === schema.const;
+  if (Array.isArray(schema.enum) && !schema.enum.includes(value)) return false;
+  if (typeof schema.pattern === 'string' && typeof value === 'string') {
+    if (!new RegExp(schema.pattern).test(value)) return false;
+  }
+  return true;
+}
+
+/**
+ * A backticked value that parses as a JSON literal is a claim about the
+ * schema, so it is checked; prose (``the `uris` array``) is not a literal and
+ * is left alone.
+ */
+function parseRecipeValue(raw) {
+  const text = raw.trim().replace(/,\s*$/, '');
+  if (text === 'true') return true;
+  if (text === 'false') return false;
+  if (text === 'null') return null;
+  if (/^-?\d+(?:\.\d+)?$/.test(text)) return Number(text);
+  if (/^["[{]/.test(text)) {
+    try {
+      return JSON.parse(text);
+    } catch {
+      return undefined;
+    }
+  }
+  return undefined; // prose, a placeholder fragment, or a bare identifier
+}
+
+function validateArgumentValues(file, line, tool, entries, registry) {
+  const properties = registry.toolInputSchemas?.[tool]?.properties;
+  if (!properties || typeof properties !== 'object') return;
+  for (const [key, value] of entries) {
+    const property = properties[key];
+    if (!property) continue; // an unknown key is validateArgumentKeys' report
+    if (value === undefined) continue; // a bare `key` with no value is prose
+    if (schemaAcceptsValue(value, property)) continue;
+    errors.push(`${relative(ROOT, file)}:${line}: \`${tool}\` recipe passes \`${key}: ${JSON.stringify(value)}\`, which the live inputSchema does not accept`);
+  }
+}
+
 function checkCallRecipes(file, source, registry = census) {
-  for (const match of source.matchAll(/\b(?:Call|call)\s+`?([a-z][a-z0-9_]*)`?\s+with\s+([^\n.;]+)/g)) {
-    const [, tool, tail] = match;
+  const pattern = /\b([A-Za-z]+)\s+`?([a-z][a-z0-9_]*)`?\s+(?:with|using)\s+([^.;\n]+)/g;
+  for (const match of source.matchAll(pattern)) {
+    if (!RECIPE_VERB.test(match[1].toLowerCase())) continue;
+    const [, , tool, tail] = match;
     const line = lineAt(source, match.index);
+    // A backticked word in a sentence is not automatically a tool: SPEC.md
+    // tells a caller to "use `offset` with repeated requests", and `offset` is
+    // a parameter. Only a name that is neither a tool nor a known parameter
+    // is a claim about a tool, so only then can it be an unknown one.
+    const knownParameter = (registry.parameterNames ?? []).includes(tool);
     if (!registry.toolNames.includes(tool)) {
+      if (knownParameter) continue;
       errors.push(`${relative(ROOT, file)}:${line}: Call recipe names unknown tool \`${tool}\``);
       continue;
     }
-    const args = Object.fromEntries([...tail.matchAll(/`([a-z][a-z0-9_]*)\s*:/g)].map((arg) => [arg[1], true]));
-    if (Object.keys(args).length > 0) validateArgumentKeys(file, line, tool, args, registry);
+    // The colon is what makes a backticked word an argument. Without it the
+    // word is prose (or a value the sentence is naming), and cookbook.md
+    // names a *prompt's* arguments in the same breath as a tool call.
+    const pairs = [...tail.matchAll(/`([a-z][a-z0-9_]*)\s*:\s*([^`]+)`/g)];
+    if (pairs.length === 0) continue;
+    validateArgumentKeys(file, line, tool, Object.fromEntries(pairs.map(([, key]) => [key, true])), registry);
+    const values = pairs
+      .map(([, key, raw]) => [key, parseRecipeValue(raw)])
+      .filter(([, value]) => value !== undefined);
+    if (values.length > 0) validateArgumentValues(file, line, tool, values, registry);
   }
 }
 
