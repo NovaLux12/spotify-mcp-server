@@ -43,7 +43,7 @@ import {
   type ServerResult,
 } from '@modelcontextprotocol/sdk/types.js';
 import { getObjectShape, getSchemaDescription, safeParseAsync, type AnySchema } from '@modelcontextprotocol/sdk/server/zod-compat.js';
-import { finalInputSchema, finalOutputSchema, RETIRED_PLAYLIST_INPUTS, retiredInputMessage, retiredInputsOnCall, resolveLegacyToolAlias, retiredToolAliasMessage } from '../shaping.js';
+import { finalInputSchema, finalOutputSchema, RETIRED_PLAYLIST_INPUTS, retiredInputMessage, retiredInputsOnCall, resolveLegacyToolAlias, retiredToolAliasMessage, resolveStatsfmUserInput, withPlaylistInputMetadata, withPlaylistInputNote, STATSFM_USER_INPUT, STATSFM_LEGACY_USER_INPUT } from '../shaping.js';
 import { SpotifyApiError, isTokenFailureReason, CANCELLED_STATUS } from '../client.js';
 
 /**
@@ -1326,6 +1326,18 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   // variable is unset", which the thrown error states better and the schema
   // does not need.
   //
+  // #1318: `user_id` is now a DEPRECATED ALIAS beside the canonical
+  // `statsfm_user`, so the 25 tools in this module that took the old spelling
+  // gained a second field rather than renaming one. Both are optional strings
+  // with a one-line description, so the cost is the added field alone.
+  // MEASURED with `npm run count:tools` on 2026-09-27: 24073 B -> 28623 B
+  // (+4550 B, +18.9%). Tool count unchanged at 30. That is a real
+  // host-session cost and is stated as one rather than absorbed: a host that
+  // reads the schema to choose a field now pays for the notice. The
+  // alternative — advertising only the canonical name while still accepting
+  // the legacy one — would save these bytes but make a working argument
+  // invisible, which is worse than a documented cost.
+  //
   // #1297: the three scoped-top tools' `limit`/`offset` descriptions say the
   // bound is applied by this server rather than by stats.fm, because those
   // three routes ignore both parameters upstream. No parameter was added or
@@ -1334,7 +1346,7 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   // (+292 B) and 23283 B -> 23781 B for #1297 (+498 B), and the two overlap
   // on the same three tools rather than adding, so the merged figure is not
   // their sum. MEASURED with `npm run count:tools` on 2026-09-27.
-  manifestEntry('statsfm', 'statsfm', lazyModule('./statsfm.js', 'registerStatsfmTools', (register) => (server) => register(server)), [30, 24073], { readOnlySafe: true }),
+  manifestEntry('statsfm', 'statsfm', lazyModule('./statsfm.js', 'registerStatsfmTools', (register) => (server) => register(server)), [30, 28623], { readOnlySafe: true }),
   // #905: record_feedback gained a `limit` (the list page is bounded now, so
   // the response no longer scales with the store) and its description names
   // the store file and the cap. Tool count is unchanged at 16.
@@ -1365,17 +1377,29 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   // entry's own baseline; the before/after above is prose on purpose, so
   // `tests/manifest-comment-baseline.test.ts` cannot mistake a superseded
   // figure for a claim about the current surface.)
-  manifestEntry('taste', 'taste', lazyModule('./statsfm_taste.js', 'registerStatsfmTasteTools'), [8, 7062], { readOnlySafe: true }),
+  //
+  // #1318: the seven network-backed tools gain the deprecated `user_id` alias
+  // beside `statsfm_user`. MEASURED with `npm run count:tools` on 2026-09-27
+  // against this rebased tree: 7062 B -> 8224 B (+1162 B), tool count unchanged
+  // at 8. The eighth tool, `statsfm_record_feedback`, makes no network call and
+  // declares no identity argument, so it is untouched by the rename.
+  manifestEntry('taste', 'taste', lazyModule('./statsfm_taste.js', 'registerStatsfmTasteTools'), [8, 8224], { readOnlySafe: true }),
   // #927: same optional `statsfm_user` default as `taste`, on 10 tools.
   // MEASURED with `npm run count:tools` on 2026-09-27: 8040 B -> 7990 B, the
   // same -50 B for the same reason: out of `required`, shorter description.
   // Tool count unchanged at 10.
-  manifestEntry('tastecomposites', 'tastecomposites', lazyModule('./taste_composites.js', 'registerTasteCompositeTools'), [10, 7990], { readOnlySafe: true }),
+  // #1318: the same deprecated alias on 10 composites. MEASURED with
+  // `npm run count:tools` on 2026-09-27: 7990 B -> 9650 B (+1660 B). Tool
+  // count unchanged at 10.
+  manifestEntry('tastecomposites', 'tastecomposites', lazyModule('./taste_composites.js', 'registerTasteCompositeTools'), [10, 9650], { readOnlySafe: true }),
   // #927: `taste_to_playlist` declares the same optional `statsfm_user`, so it
   // moves with the module it imports the schema from. MEASURED with
   // `npm run count:tools` on 2026-09-27: 1723 B -> 1718 B, -5 B. Tool count
   // unchanged at 1.
-  manifestEntry('tasteplaylist', 'tastecomposites', lazyModule('./taste_playlist.js', 'registerTastePlaylistTools'), [1, 1718], { scopeKey: 'playlists' }),
+  // #1318: `taste_to_playlist` gains the alias too. MEASURED with
+  // `npm run count:tools` on 2026-09-27: 1718 B -> 1884 B (+166 B). Tool
+  // count unchanged at 1.
+  manifestEntry('tasteplaylist', 'tastecomposites', lazyModule('./taste_playlist.js', 'registerTastePlaylistTools'), [1, 1884], { scopeKey: 'playlists' }),
   manifestEntry('doctor', 'doctor', lazyModule('./doctortool.js', 'registerDoctorTool'), [1, 750], { alwaysActive: true, readOnlySafe: true }),
   // #602. `readOnlySafe: true` is a claim about the MODULE, and the module
   // holds a write: what makes that safe is that `readOnlyToolServer` drops
@@ -2537,6 +2561,86 @@ function retiredAliasResult(requested: string) {
   }, `retired tool alias ${JSON.stringify(requested)}`);
 }
 
+/**
+ * The stats.fm identity conflict gate (#1318).
+ *
+ * `undefined` when the call is not a conflicting-identity call, which is every
+ * call on a tool that declares no identity argument and every call that sends
+ * at most one spelling.
+ *
+ * It runs HERE, ahead of the handler and therefore ahead of any stats.fm
+ * request, because AGENTS.md §5 requires an incomplete or conflicting input to
+ * fail before the upstream call — a refusal that arrives after the request has
+ * been made is not a refusal, it is a wasted round trip plus a confusing
+ * error. It is the first line; {@link resolveStatsfmUserInput} in the handler
+ * is the second, for a handler invoked directly (which is what a test drives).
+ *
+ * A tool that declares NO identity argument is not consulted: a tool with a
+ * `user_id` of its own (the two Spotify `get_user_*` tools) must keep meaning
+ * whatever it means, so the gate is scoped by asking the tool's own schema
+ * whether it carries the canonical field.
+ */
+function statsfmIdentityConflict(tool: string, shape: Record<string, AnySchema> | undefined, args: Readonly<Record<string, unknown>>) {
+  if (!shape || !Object.hasOwn(shape, STATSFM_USER_INPUT)) return undefined;
+  if (!Object.hasOwn(args, STATSFM_USER_INPUT) || !Object.hasOwn(args, STATSFM_LEGACY_USER_INPUT)) return undefined;
+  try {
+    resolveStatsfmUserInput(args);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : 'the two spellings disagree';
+    return errorResult(tool, {
+      kind: 'validation',
+      reason: 'conflicting_input',
+      fix: `Remove ${safeIdentifier(STATSFM_LEGACY_USER_INPUT)} and pass only ${safeIdentifier(STATSFM_USER_INPUT)}.`,
+      text: `${tool} rejected the call: ${detail}`,
+      param: `${STATSFM_USER_INPUT}, ${STATSFM_LEGACY_USER_INPUT}`,
+    }, `conflicting stats.fm identity ${JSON.stringify([STATSFM_USER_INPUT, STATSFM_LEGACY_USER_INPUT])}`);
+  }
+  return undefined;
+}
+
+/**
+ * Attach the identity deprecation notice to one successful result (#1318).
+ *
+ * Applied HERE, at the single place every tool result passes, rather than in
+ * the 43 handlers: a notice threaded by hand is a notice that is missing on
+ * whichever tool someone forgot, and a caller that reads `deprecated_inputs`
+ * off one tool has no way to tell a missing key from an absent deprecation.
+ * The repo already resolves the same problem the same way for the retired
+ * playlist spellings — {@link retiredInputResult} lives in this file.
+ *
+ * A result with no `structuredContent` is left alone. Adding the metadata to
+ * prose alone would put a machine-readable claim in one channel and not the
+ * other; a tool that publishes structured output gets both or neither.
+ */
+function applyStatsfmIdentityDeprecation(
+  result: unknown,
+  shape: Record<string, AnySchema> | undefined,
+  args: Readonly<Record<string, unknown>>,
+): unknown {
+  if (!shape || !Object.hasOwn(shape, STATSFM_USER_INPUT)) return result;
+  if (!Object.hasOwn(args, STATSFM_LEGACY_USER_INPUT)) return result;
+  if (result === null || typeof result !== 'object') return result;
+  const output = result as { content?: unknown; structuredContent?: unknown };
+  if (output.structuredContent === undefined || typeof output.structuredContent !== 'object') return result;
+
+  const resolution = resolveStatsfmUserInput(args);
+  if (resolution.deprecatedInputs.length === 0) return result;
+  const payload = withPlaylistInputMetadata(output.structuredContent as Record<string, unknown>, resolution);
+  return {
+    ...output,
+    structuredContent: payload,
+    ...(Array.isArray(output.content)
+      ? {
+        content: output.content.map((part) => (
+          part !== null && typeof part === 'object' && (part as { type?: unknown }).type === 'text'
+            ? { ...part, text: withPlaylistInputNote(String((part as { text?: unknown }).text ?? ''), resolution) }
+            : part
+        )),
+      }
+      : {}),
+  };
+}
+
 function unknownParamResult(tool: string, param: string, candidates: string[]) {
 
   let suggestions = nearestNames(param, candidates);
@@ -2760,7 +2864,11 @@ export function installToolErrorBoundary(server: McpServer): number {
     // refused input must fail.
     const retired = retiredInputResult(tool, resolved, args);
     if (retired) return retired;
-
+    // #1318: a stats.fm identity sent under both spellings with different
+    // values is refused here, before the handler runs and therefore before any
+    // stats.fm request, naming both fields.
+    const identityConflict = statsfmIdentityConflict(tool, shape, args);
+    if (identityConflict) return identityConflict;
     const unknown = Object.keys(args).find((param) => !knownParams.includes(param));
     if (unknown) return unknownParamResult(tool, unknown, knownParams);
 
@@ -2778,7 +2886,7 @@ export function installToolErrorBoundary(server: McpServer): number {
     try {
       const result = await invokeHandler(entry, parsedArgs, extra);
       await validateOutput(entry, result, tool, request.params.task !== undefined);
-      return result as ServerResult;
+      return applyStatsfmIdentityDeprecation(result, shape, args) as ServerResult;
     } catch (error) {
       return errorResult(tool, publicFailure(tool, error), error) as ServerResult;
     }

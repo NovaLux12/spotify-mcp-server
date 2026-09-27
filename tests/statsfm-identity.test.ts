@@ -267,7 +267,9 @@ test('ACCEPTANCE: with the variable unset and no argument, the call fails naming
 
   await assert.rejects(
     () => tools.get('statsfm_top_genres')!.handler({ response_format: 'json' }),
-    /no stats\.fm user id: pass user_id or set STATSFM_USER_ID/,
+    // #1318: the message names the CANONICAL field. Sending the reader to a
+    // deprecated spelling is a message that outlives its own advice.
+    /no stats\.fm user id: pass statsfm_user or set STATSFM_USER_ID/,
   );
   // And it must fail BEFORE the network: a refusal that still issued a request
   // is not a refusal.
@@ -372,15 +374,22 @@ test('the identity argument is optional in the published schema, and the descrip
     properties?: Record<string, { description?: string }>;
   };
 
-  assert.ok(
-    !(jsonSchema.required ?? []).includes('user_id'),
-    `user_id must not be advertised as required: ${JSON.stringify(jsonSchema.required)}`,
-  );
+  // #1318: `statsfm_user` is canonical and `user_id` is the deprecated alias
+  // beside it. BOTH must stay out of `required` — `STATSFM_USER_ID` supplies
+  // the default for either spelling, and a required field would put the SDK's
+  // own error in front of the one that names the variable.
+  for (const field of ['statsfm_user', 'user_id'] as const) {
+    assert.ok(
+      !(jsonSchema.required ?? []).includes(field),
+      `${field} must not be advertised as required: ${JSON.stringify(jsonSchema.required)}`,
+    );
+  }
 
   // The reason a caller has to look past the schema for the requirement is
-  // recorded where the host actually reads it.
+  // recorded where the host actually reads it. Asserted on the CANONICAL
+  // field: it is the one a host choosing between two names will read.
   assert.match(
-    jsonSchema.properties?.user_id?.description ?? '',
+    jsonSchema.properties?.statsfm_user?.description ?? '',
     /STATSFM_USER_ID/,
     'the published description must name the default, or the host cannot know why the argument is optional',
   );
