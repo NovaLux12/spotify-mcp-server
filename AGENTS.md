@@ -418,8 +418,12 @@ does the generated half, and the sequence ends green. That is the common case.
 
 When it names a paragraph, **nothing in that sequence turns it green**: `--write`
 exits 1 for exactly as long as the paragraph is missing, and the pin is keyed on
-content, so a reworded paragraph reads the same as a deleted one. No command here
-restores it — the generator only ever held the text between the markers, so those
+content, so a reworded paragraph reads the same as a deleted one. (One reading
+of "names a paragraph" is not this one: a paragraph the pin has *never* seen is
+named as `unpinned` rather than `missing`, and `--prose-sync` is the step that
+ends it. See "Adding prose is free" below — the sequence above is already green
+for that case, and the fix is one command.) No command here
+restores a *lost* paragraph — the generator only ever held the text between the markers, so those
 bytes live in exactly one place, the ref you are about to drop. Take them from
 it:
 
@@ -437,10 +441,20 @@ prose block outside the generated regions, keyed by content hash.
 file, naming the paragraph, and `--write` refuses to report success while one is
 missing. Three things follow:
 
-- **Adding prose is free.** A new tool adds a contract paragraph; the pin is
-  keyed on content, so a key that was never pinned cannot be missing. This is
-  deliberate — a gate that punishes ordinary work gets routed around within a
-  week, and a routed-around gate catches nothing.
+- **Adding prose is free for `--check`, and named by `--prose-report`.** A new
+  tool adds a contract paragraph; the pin is keyed on content, so a key that was
+  never pinned cannot be missing, and `--check` stays green. That is deliberate —
+  a gate that punishes ordinary work gets routed around within a week, and a
+  routed-around gate catches nothing. What the argument does not reach is the
+  *next* edit: an unpinned paragraph is precisely the one whose later deletion or
+  reword the guard cannot report, because there is no key for it to lose. Four
+  `AGENTS.md` lessons merged that way in #1523 — the four newest entries in the
+  file that records this repository's hard-won ones, all four invisible to the
+  guard, and `--prose-report` still exited 0 while naming them. So
+  `--prose-report` **exits 1 and names every unpinned paragraph**, by file and by
+  label, in the same shape as a paragraph that went missing. Ordinary work still
+  survives: the repair is `npm run count:tools -- --prose-sync`, which adds the
+  key and retires nothing — commit the paragraph, run the sync, commit the pin.
 - **Changing or deleting prose needs `--prose-sync`.** That command **refuses**
   to drop a pinned entry and names what vanished. Only
   `--prose-sync --retire "<reason>"` removes one, and it records the reason and

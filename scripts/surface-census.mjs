@@ -787,6 +787,22 @@ function proseDocumentsUnderTest() {
 }
 
 /**
+ * The error line for one prose paragraph the pin has never seen.
+ *
+ * Shaped like `proseDrift`'s own messages, and for the same reason: the reader
+ * is looking at a red exit code and needs the file, the label, and the one
+ * command that ends it. The hash is deliberately absent — it is in
+ * `coverage.unpinned` for a consumer that keys on it, and it is the one thing a
+ * human cannot act on.
+ */
+function unpinnedProseError(unit) {
+  return `${unit.file}: hand-written prose the pin has never seen — "${unit.label}". `
+    + 'A paragraph the pin does not claim cannot be reported missing when it is later reworded or deleted, so the guard '
+    + 'is blind to it for exactly as long as it stays unpinned. Pin it with `npm run count:tools -- --prose-sync`: that '
+    + 'adds the key, retires nothing, and is the ordinary cost of adding a paragraph.';
+}
+
+/**
  * Print the prose-integrity verdict without writing anything (#1384).
  *
  * Exists for the same reason as `--marker-tree-report`: a test that only
@@ -794,6 +810,27 @@ function proseDocumentsUnderTest() {
  * that read no documents at all. The unit count and the file list are what
  * make "covered the repository" distinguishable from "found nothing", and a
  * scan that quietly stopped covering a file loses an entry here and goes red.
+ *
+ * ## An unpinned paragraph is a failure of this report, not of `proseDrift`
+ *
+ * `proseDrift` calls an unpinned paragraph coverage rather than an error, and
+ * that stays true: its two error classes are the two ways a *pin* can be wrong,
+ * and `--check` must not go red because a contributor added a contract
+ * paragraph. This report's exit code used to be indifferent to the surplus as
+ * well, and that indifference is how four AGENTS.md lessons reached `main`
+ * unpinned in #1523 — the four newest entries in the file that records this
+ * repository's hard-won ones, none of them visible to the guard.
+ *
+ * The argument that made additions free is "a key that was never pinned cannot
+ * be missing", and it is true; it is also the whole gap. An unpinned paragraph
+ * is precisely the paragraph whose later deletion *or reword* the guard cannot
+ * report, because there is no key for it to lose. So the two facts are kept
+ * apart rather than merged: `proseDrift` keeps its contract, `--check` keeps
+ * treating an addition as ordinary work, and this command — whose entire job is
+ * to say whether the pin covers the tree — exits 1 and names each one, in the
+ * same shape as a paragraph that went missing. The repair is the ordinary one,
+ * and no `--retire` reason is involved: a paragraph the manifest never claimed
+ * cannot be retired, because retirement is for a pin that went away.
  */
 const proseReportIndex = args.indexOf('--prose-report');
 if (proseReportIndex >= 0) {
@@ -802,15 +839,26 @@ if (proseReportIndex >= 0) {
   const report = proseDrift(manifest, documents);
   const provenance = proseProvenanceVerdict(manifest, { ancestor: headContains });
   const retirements = retirementStanding(manifest);
+  const unpinned = report.coverage.unpinned;
+  const unpinnedErrors = unpinned.map(unpinnedProseError);
   console.log(JSON.stringify({
-    errors: report.errors,
+    // The gate's whole failure list, in one key. `proseDrift` answers "how does
+    // the pin disagree with the tree"; an unpinned paragraph is a third answer
+    // to a question this command exists to settle, and a reader given two
+    // parallel lists has to know which one made the exit code what it is. So
+    // the surplus is folded in here, at the reporting layer, and each is named
+    // the way the paragraphs that went missing are named.
+    errors: [...report.errors, ...unpinnedErrors],
     currentCount: report.currentCount,
     pinnedCount: report.pinnedCount,
     // Which way round the two counts differ. `errors` above already says which
-    // paragraphs are gone; this says which are new, and that "new" is not a
-    // finding. Without it a reader is left to subtract the totals, and the
-    // sign of that subtraction is exactly the guess #1460 was about.
+    // paragraphs are gone and which are new; this is the structured form of the
+    // same two facts. Without it a reader is left to subtract the totals, and
+    // the sign of that subtraction is exactly the guess #1460 was about.
     coverage: report.coverage,
+    // Whether the surplus is empty, as its own key, so a consumer does not have
+    // to read the exit code to learn whether there is work to do.
+    unpinnedCount: unpinned.length,
     files: report.files,
     // Which tree the pin was generated from, and whether this checkout can
     // still confirm it. A reader who is told "verified" can trust the pin; one
@@ -829,7 +877,7 @@ if (proseReportIndex >= 0) {
     retirements,
   }, null, 2));
   process.exit(
-    report.errors.length > 0 || provenance.error || retirements.unknown.length > 0 || retirements.cyclic.length > 0
+    report.errors.length > 0 || unpinnedErrors.length > 0 || provenance.error || retirements.unknown.length > 0 || retirements.cyclic.length > 0
       ? 1
       : 0,
   );

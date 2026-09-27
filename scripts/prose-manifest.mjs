@@ -42,6 +42,21 @@
  * makes addition free, and makes a missing key mean exactly one thing: a
  * paragraph that was in the manifest is not in the file any more.
  *
+ * ## And where the surplus *is* a finding: `--prose-report`
+ *
+ * "Must never be red" is a claim about `errors` and about `--check`, and both
+ * still hold. It is not a claim that the surplus goes unreported. An unpinned
+ * paragraph is prose the guard cannot watch: no key, so a later deletion or
+ * reword of *that* paragraph raises nothing — which is how four `AGENTS.md`
+ * lessons reached `main` unpinned in #1523 while the gate read clean.
+ *
+ * So the surplus is reported by `coverage.unpinned` here, and
+ * `scripts/surface-census.mjs` turns it into a non-zero exit for
+ * `--prose-report` alone. One command clears it (`--prose-sync`, which adds the
+ * key and retires nothing), which is the property that keeps this a report
+ * rather than a barrier: the cost of the finding is one command, paid in the
+ * same commit as the paragraph.
+ *
  * ## Why the label is stored next to the hash
  *
  * A bare hash would answer *that* prose went missing and not *which*, which
