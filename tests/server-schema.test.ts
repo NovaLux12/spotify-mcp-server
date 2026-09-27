@@ -90,16 +90,34 @@ function runGate(args: string[] = []): Run {
 }
 
 /**
- * The real registry schema, fetched once for this file.
+ * The outcome of the live fetch: a schema, or the reason there is none.
  *
- * Resolved to `null` on failure so the live cases can record a diagnostic
- * instead of failing on somebody else's outage. The hermetic cases do not use
- * it, so a network-less run still exercises the fail-closed behaviour.
+ * Tagged rather than nullable, because a bare `null` cannot be told apart from
+ * a schema that is present and empty. `fetchSchema` used to hand one back for a
+ * `200` whose body was JSON `null` (#1491), so an outage read as a schema.
  */
-const realSchema = fetchSchema(SCHEMA_URL).then(
-  (schema) => schema as Record<string, any>,
-  () => null,
-);
+type LiveSchema = { ok: true; schema: Record<string, any>; reason: string } | { ok: false; schema: null; reason: string };
+
+/**
+ * Fetch the real registry schema, resolving rather than rejecting so a live
+ * case can record a diagnostic instead of failing on somebody else's outage.
+ *
+ * The hermetic cases do not use it, so a network-less run still exercises the
+ * fail-closed behaviour. `options` is threaded through so the guard below can
+ * be driven against planted bodies rather than only against whatever the host
+ * happens to answer.
+ */
+function resolveLiveSchema(
+  url: string,
+  options: { fetchImpl?: typeof fetch; timeoutMs?: number } = {},
+): Promise<LiveSchema> {
+  return fetchSchema(url, options).then(
+    (schema) => ({ ok: true, schema: schema as Record<string, any>, reason: '' }),
+    (error: unknown) => ({ ok: false, schema: null, reason: errorText(error) }),
+  );
+}
+
+const realSchema: LiveSchema = await resolveLiveSchema(SCHEMA_URL);
 
 /** Write a copy of the committed manifest, mutated, to a scratch dir. Never touches `server.json`. */
 async function malformedCopy(dir: string, name: string, mutate: (manifest: any) => any): Promise<string> {
@@ -109,16 +127,28 @@ async function malformedCopy(dir: string, name: string, mutate: (manifest: any) 
   return path;
 }
 
-function networkUnavailable(t: TestContext, reason: string): boolean {
-  if (realSchema) return false;
-  t.diagnostic(`live registry schema not fetched (${reason}); the hermetic cases below still ran`);
-  return true;
+/**
+ * The live schema, or `null` after recording why there is not one.
+ *
+ * A caller that receives `null` returns early, so an outage skips its live
+ * cases instead of running them against no schema at all. One value makes one
+ * decision, so there is no second condition here that could disagree with this
+ * one. The previous version answered a separate boolean over `if (realSchema)`,
+ * where `realSchema` was a *promise* — always truthy, so the guard could not
+ * fire for any outcome at all, including a rejection (#1491). A guard that
+ * cannot return "outage" is not an outage guard, and the suite read somebody
+ * else's outage as four manifest failures.
+ */
+function liveSchemaOrSkip(t: TestContext, live: LiveSchema, reason: string): Record<string, any> | null {
+  if (live.ok) return live.schema;
+  t.diagnostic(`live registry schema not fetched (${live.reason || reason}); the hermetic cases below still ran`);
+  return null;
 }
 
 describe('server.json against the registry schema it declares (#655)', () => {
   it('validates the committed manifest against the schema its $schema names', async (t) => {
-    const schema = await realSchema;
-    if (networkUnavailable(t, SCHEMA_URL)) return;
+    const schema = liveSchemaOrSkip(t, realSchema, SCHEMA_URL);
+    if (!schema) return;
     // The fetched document must be the real registry schema, not an error page
     // or an empty object that happens to accept everything — without this, the
     // "0 violations" below would be a statement about a 404 body.
@@ -138,8 +168,8 @@ describe('server.json against the registry schema it declares (#655)', () => {
   });
 
   it('goes red on a description past the registry cap, and green once restored', async (t) => {
-    const schema = await realSchema;
-    if (networkUnavailable(t, SCHEMA_URL)) return;
+    const schema = liveSchemaOrSkip(t, realSchema, SCHEMA_URL);
+    if (!schema) return;
     const dir = await scratch();
     const schemaFile = join(dir, 'schema.json');
     await writeFile(schemaFile, JSON.stringify(schema));
@@ -171,8 +201,8 @@ describe('server.json against the registry schema it declares (#655)', () => {
   });
 
   it('goes red on a name the registry will not accept as reverse-DNS', async (t) => {
-    const schema = await realSchema;
-    if (networkUnavailable(t, SCHEMA_URL)) return;
+    const schema = liveSchemaOrSkip(t, realSchema, SCHEMA_URL);
+    if (!schema) return;
     const dir = await scratch();
     const schemaFile = join(dir, 'schema.json');
     await writeFile(schemaFile, JSON.stringify(schema));
@@ -184,8 +214,8 @@ describe('server.json against the registry schema it declares (#655)', () => {
   });
 
   it('goes red on a transport type the registry does not define', async (t) => {
-    const schema = await realSchema;
-    if (networkUnavailable(t, SCHEMA_URL)) return;
+    const schema = liveSchemaOrSkip(t, realSchema, SCHEMA_URL);
+    if (!schema) return;
     const dir = await scratch();
     const schemaFile = join(dir, 'schema.json');
     await writeFile(schemaFile, JSON.stringify(schema));
@@ -197,6 +227,79 @@ describe('server.json against the registry schema it declares (#655)', () => {
     const failure = await runGate(['--manifest', bad, '--schema-file', schemaFile]);
     assert.equal(failure.status, 1, 'an undefined transport type must fail the gate');
     assert.match(failure.output, /\/packages\/0\/transport/, `the failure must locate the bad transport: ${failure.output}`);
+  });
+});
+
+describe('the live-schema outage guard fires, on every failure mode (#1491)', () => {
+  // The guard exists so somebody else's outage does not land as a manifest
+  // failure. It could not do that: it read `if (realSchema)` on a *promise*,
+  // which is always truthy, so it never returned `true` for anything —
+  // including a rejected fetch, which the file's own header claimed was
+  // covered. "Only rejections were covered" was not the state of the code.
+  const answering = (body: string) =>
+    ({ ok: true, status: 200, statusText: 'OK', text: () => Promise.resolve(body) }) as unknown as Response;
+
+  it('records a fetch that threw as an outage, with no schema', async () => {
+    const live = await resolveLiveSchema('https://example.test/server.schema.json', {
+      fetchImpl: () => Promise.reject(new Error('getaddrinfo ENOTFOUND')),
+      timeoutMs: 50,
+    });
+    assert.equal(live.ok, false, 'a fetch that threw is an outage, not a schema');
+    assert.equal(live.schema, null, 'an outage must not hand the live cases a schema to run against');
+    assert.match(live.reason, /was NOT validated/, 'the diagnostic must say the fetch did not run, not that it passed');
+  });
+
+  it('records a 200 whose body is JSON null as an outage, with no schema', async () => {
+    // The shape that actually happened: the host answered, and the answer was
+    // nothing. A resolved `null` used to sail through the truthiness check.
+    const live = await resolveLiveSchema('https://example.test/server.schema.json', {
+      fetchImpl: () => Promise.resolve(answering('null')),
+      timeoutMs: 50,
+    });
+    assert.equal(live.ok, false, 'a body that parsed to no schema is an outage, however cleanly it fetched');
+    assert.equal(live.schema, null);
+  });
+
+  it('records a 200 that is not a schema at all as an outage', async () => {
+    const live = await resolveLiveSchema('https://example.test/server.schema.json', {
+      fetchImpl: () => Promise.resolve(answering('<html>maintenance</html>')),
+      timeoutMs: 50,
+    });
+    assert.equal(live.ok, false, 'an HTML error page served with 200 is an outage, not a schema');
+    assert.equal(live.schema, null);
+  });
+
+  it('yields the schema when the host really answered with one', async () => {
+    // The direction that matters for the guard being trustworthy: a guard that
+    // cannot return `false` would skip every live case and this file would
+    // report green without ever having read the schema.
+    const document = { definitions: { ServerDetail: { properties: { description: { maxLength: 100 } } } } };
+    const live = await resolveLiveSchema('https://example.test/server.schema.json', {
+      fetchImpl: () => Promise.resolve(answering(JSON.stringify(document))),
+      timeoutMs: 50,
+    });
+    assert.equal(live.ok, true, 'a real schema document is not an outage');
+    assert.deepEqual(live.schema, document);
+  });
+
+  it('yields no schema for an outage and records a diagnostic; yields the schema otherwise', () => {
+    const diagnostics: string[] = [];
+    const t = { diagnostic: (message: string) => void diagnostics.push(message) } as unknown as TestContext;
+    const outage: LiveSchema = { ok: false, schema: null, reason: 'could not fetch … server.json was NOT validated' };
+
+    assert.equal(liveSchemaOrSkip(t, outage, 'https://example.test/s.json'), null, 'an outage must skip the live case');
+    assert.equal(diagnostics.length, 1, 'the skip must be recorded, not silent');
+    assert.match(diagnostics[0], /was NOT validated/, 'the diagnostic must carry the fetch failure reason');
+    assert.match(diagnostics[0], /hermetic cases below still ran/, 'the diagnostic must say what still ran');
+
+    diagnostics.length = 0;
+    const present: LiveSchema = { ok: true, schema: { definitions: {} }, reason: '' };
+    assert.deepEqual(
+      liveSchemaOrSkip(t, present, 'https://example.test/s.json'),
+      present.schema,
+      'a fetched schema must run the case with the schema itself',
+    );
+    assert.deepEqual(diagnostics, [], 'a live case that runs must not claim the network was unavailable');
   });
 });
 
@@ -267,6 +370,39 @@ describe('the gate fails closed when it cannot run', () => {
       fetchSchema('https://example.test/server.schema.json', { fetchImpl: () => Promise.resolve(html), timeoutMs: 50 }),
       /did not return JSON \(.*\); server\.json was NOT validated/,
     );
+  });
+
+  it('reports a body that parsed but is not a schema as "NOT validated" (#1491)', async () => {
+    // `JSON.parse('null')` succeeds, so a `200` carrying an empty body used to
+    // return from `fetchSchema` as a *successful* fetch. The null then reached
+    // `ajv.compile`, which cannot compile it, and that was reported as "the
+    // registry schema did not compile" — a fault in `server.json`, which is
+    // the one file not at fault. Every body that parses to a non-object is the
+    // same outage shape, so every one of them must be rejected here.
+    const bodies: [string, string][] = [
+      ['null', 'null'],
+      ['an array', '[]'],
+      ['a number', '42'],
+      ['a string', '"maintenance"'],
+      ['a boolean', 'true'],
+    ];
+    for (const [label, body] of bodies) {
+      const response = { ok: true, status: 200, statusText: 'OK', text: () => Promise.resolve(body) } as unknown as Response;
+      await assert.rejects(
+        fetchSchema('https://example.test/server.schema.json', { fetchImpl: () => Promise.resolve(response), timeoutMs: 50 }),
+        (error: Error) => {
+          assert.match(error.message, /did not return a JSON Schema document/, `a body of ${label} must not count as a fetched schema`);
+          assert.match(error.message, /was NOT validated/, 'the message must distinguish "not checked" from "passed"');
+          assert.match(
+            error.message,
+            /the body was (JSON null|a JSON (array|number|string|boolean))/,
+            `the message must name what arrived, not only what was wanted: ${error.message}`,
+          );
+          return true;
+        },
+        `a 200 whose body is ${label} must be reported as an outage`,
+      );
+    }
   });
 
   it('reports a schema that will not compile as unavailable, not as a manifest violation', async () => {
