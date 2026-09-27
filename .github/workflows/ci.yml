@@ -102,9 +102,25 @@ jobs:
         run: node scripts/check-release-history.mjs
 
       - name: Generate finalized surface census
+        # #1473. This step *writes* the artifact the gates below it read, so it
+        # and they have to agree about when they run. They carry
+        # `!cancelled()` so a documentation-inventory failure cannot silence a
+        # correctness gate; with this step unguarded, an unrelated red above
+        # skipped it. In run `36313342863` that red was the typecheck budget:
+        # this step and `Check generated documentation inventory` were both
+        # skipped, `.surface-census.json` was never written, and
+        # `Check documented tool names` — which is guarded — kept running and
+        # failed with `ENOENT: no such file or directory, open
+        # '…/.surface-census.json'`. One real failure, and a second that named
+        # a documentation regression that was not there.
+        if: ${{ !cancelled() }}
         run: node scripts/surface-census.mjs > .surface-census.json
 
       - name: Check generated documentation inventory
+        # The other half of the same pair: a reader of the census. A step with
+        # no `if:` is skipped as soon as anything above it fails, so this gate
+        # would stop reporting for the rest of the run without saying so.
+        if: ${{ !cancelled() }}
         run: npm run check:docs-counts -- --census-file .surface-census.json
 
       - name: Check documented tool names
