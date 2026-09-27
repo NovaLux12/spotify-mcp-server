@@ -187,7 +187,7 @@ guarantee tightened:
    |---|---|---|
    | A/B pair | `playlist_a`, `playlist_b` | `a`/`b`, or `playlist_id_a`/`playlist_id_b`, or `playlist_a_id`/`playlist_b_id` — one of them, per tool |
    | ordered list | `playlists` | `playlist_ids`, or `source_playlist_ids`, or `sources` — one of them, per tool |
-   | subtraction | `base_playlist_id` + `playlists` | the positional form `playlists: [base, ...sources]` |
+   | subtraction | `base_playlist_id` + `playlists` | `subtract_playlist_ids`, or the positional form `playlists: [base, ...sources]` — one of them, per tool |
 
    `base_playlist_id` is required again: with the positional form gone there is
    no longer a base for a caller to omit. A name the tool does not declare, and
@@ -261,7 +261,7 @@ grep -n "id: '" src/gating.ts        # the families, with tools and fallback per
 
 Notes:
 
-- A family in that list is a runtime **classifier**, not a promise that a tool calls it. Two families (`browse-new-releases`, `playlist-followers-contains`) have no live call site left — the tools that used them were migrated onto replacements — and their patterns are retained so a future caller is still covered by the 403 contract rather than silently losing it.
+- A family in that list is a runtime **classifier**, not a promise that a tool calls it. Three families (`browse-new-releases`, `me-type-contains`, `playlist-followers-contains`) have no live call site left — the tools that used them were migrated onto replacements — and their patterns are retained so a future caller is still covered by the 403 contract rather than silently losing it.
 - `GET /me/library/contains` is **not** gated (it returned 200 on the same probe) and backs the saved-state reads behind `check_playlist_following`, `restore_library_snapshot` and receipt verification. The `contains` families above are the *documented* per-type checks, which the changelog marks removed in favour of this one. (The playlist duplicate-cleanup tools are not in that set — they page `/playlists/{id}/items`.)
 - **Batch fallback ([#725](https://github.com/NovaLux12/spotify-mcp-server/issues/725)).** When a `Get Several` batch endpoint answers 403, `fetchSeveral` retries through per-id `GET /<kind>/{id}` calls on the client's existing queue/backoff. Per-id paths are not in the gated class, so the read still succeeds. The response carries `degraded: true` and a `[degraded: batch endpoint returned 403; … fetched individually]` footer in prose, plus `degraded_reason` in `structuredContent`, so a caller can tell a per-item round-trip from a clean batch read.
 - Endpoints Spotify lists as removed that this server does **not** wrap at all (no shipped tool, so nothing to explain): `/recommendations`, `/recommendations/available-genre-seeds`, `/me/apps`, `/me/chapters`, the `/artists/{id}/related-artists`, `/audio-features`, `/audio-analysis` and `/browse/featured-playlists` reads, and the `/playlists/{id}/tracks` family (superseded by `/playlists/{id}/items`). These are absent from the table above because absence of a tool is the honest answer for them — there is no 403 to explain.
