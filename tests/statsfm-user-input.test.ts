@@ -77,7 +77,7 @@ type Call = { path: string; params?: Record<string, string> };
  * touches the network, so `calls.length` is exactly "how many upstream
  * requests this call caused" — the quantity the conflict tests assert on.
  */
-function makeHarness(responder: (path: string) => unknown = () => ({ items: [] })) {
+function makeHarness(responder: (path: string, params?: Record<string, string>) => unknown = () => ({ items: [] })) {
   const calls: Call[] = [];
   const client = {
     get: async (path: string, params?: Record<string, string>) => {
