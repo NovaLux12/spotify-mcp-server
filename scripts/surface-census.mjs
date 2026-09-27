@@ -319,12 +319,20 @@ const {
   loadManifestRegistrars,
   registerManifestModule,
   applyToolAnnotations,
+  // #687. The gated harness below has to run this pass too — see
+  // `measureGatedSurface`, where the cross-check against this very measurement
+  // is what proves both harnesses measure the same thing.
   applyToolOutputSchemas,
   assertToolNamingPolicy,
   collectAggregateSurfaceMeasurement,
   AGGREGATE_SURFACE_LIMITS,
   REGISTRAR_MANIFEST,
   TOOL_SURFACE_BUDGET,
+  // #1493: the aggregate-level counterpart of the per-module `gatedSurface`.
+  // Both are read off the manifest rather than retyped here, so the census
+  // cannot name a gate the manifest no longer declares.
+  aggregateGatedEnvVars,
+  declaredGatedToolDelta,
 } = await import('../src/tools/annotations.ts');
 // The per-call response cap (#895). Read from the constant so the doc's figure
 // is generated rather than hand-typed: a prose figure here is exactly what
@@ -1095,6 +1103,20 @@ function readCookbookRecipes(fixtureSource) {
  * a doc figure derived that way would be a number nobody ever enforced.
  */
 const perModuleSchemaBytesTotal = schemaMeasurements.reduce((total, row) => total + row.schemaBytes, 0);
+/**
+ * The opt-in surface, measured (#695, #1493) — registered twice, diffed.
+ *
+ * Hoisted to module scope, and now ABOVE `aggregateSurfaceFacts`, because the
+ * opt-in measurement is an input to them. It lives here rather than beside the
+ * other aggregate figures because the gated scan also needs it: eleven tools are
+ * written literally in their module and registered only under the flag, so a
+ * static scan of `src/tools` finds a `server.tool('x', …)` the default
+ * `tools/list` this script reads never served. The measurement is the
+ * authority for "that registration is real, it is conditional", computed once
+ * so the emitted census and the gate cannot disagree.
+ */
+const gatedSurface = await measureGatedSurface();
+const optInBytes = gatedSurface.optedIn.schemaBytes;
 const aggregateSurfaceFacts = Object.freeze({
   maxTools: AGGREGATE_SURFACE_LIMITS.maxTools,
   maxCeilingBytes: TOOL_SURFACE_BUDGET.defaultMaxBytes,
@@ -1105,6 +1127,44 @@ const aggregateSurfaceFacts = Object.freeze({
   headroomBytes: AGGREGATE_SURFACE_LIMITS.maxBytes - aggregateSurface.schemaBytes,
   headroomPercent: ((AGGREGATE_SURFACE_LIMITS.maxBytes - aggregateSurface.schemaBytes) / AGGREGATE_SURFACE_LIMITS.maxBytes) * 100,
   verdict: aggregateSurfaceVerdict(AGGREGATE_SURFACE_LIMITS.maxBytes - aggregateSurface.schemaBytes, AGGREGATE_SURFACE_LIMITS.maxBytes),
+  // ---- #1493: the same budget as an opted-in install actually faces ----
+  //
+  // `assertAggregateSurfaceBudget` is a STARTUP gate, so which surface it
+  // measures is decided by the operator's env, not by this script. Reporting
+  // only the off pass told a maintainer how much room they had and it was the
+  // wrong room for anyone who set the flag.
+  //
+  // `gatedBy` is read off the manifest's `gatedSurface` entries rather than
+  // typed here. `aggregateGatedEnvVars()` throws if more than one flag is ever
+  // declared, because a second opt-in means a third surface and these figures
+  // would be describing an installation that does not exist.
+  optInGatedBy: aggregateGatedEnvVars(),
+  // The gated harness's own opt-in-OFF pass, kept so `checkAggregateSurfaceTruth`
+  // can prove the two harnesses agree. Without it the opt-in row is a number
+  // from a second, unverified measurement and the default row is a number from
+  // the first, side by side, with nothing tying them.
+  offBytes: gatedSurface.off.schemaBytes,
+  offToolCount: gatedSurface.off.toolCount,
+  optInToolCount: gatedSurface.optedIn.toolCount,
+  optInBytes,
+  optInHeadroomBytes: AGGREGATE_SURFACE_LIMITS.maxBytes - optInBytes,
+  optInHeadroomPercent: ((AGGREGATE_SURFACE_LIMITS.maxBytes - optInBytes) / AGGREGATE_SURFACE_LIMITS.maxBytes) * 100,
+  optInVerdict: aggregateSurfaceVerdict(AGGREGATE_SURFACE_LIMITS.maxBytes - optInBytes, AGGREGATE_SURFACE_LIMITS.maxBytes),
+  optInDeltaTools: gatedSurface.optedIn.toolCount - gatedSurface.off.toolCount,
+  optInDeltaBytes: optInBytes - gatedSurface.off.schemaBytes,
+  // What the manifest's own per-module deltas would predict, and why the byte
+  // figure above is measured rather than summed. `declaredGatedToolDelta` is
+  // exact — it is a property of the manifest alone. The byte sum is NOT, because
+  // the per-module budget charges description + inputSchema + outputSchema while
+  // the aggregate charges every tool's name, title, annotations, execution and
+  // `_meta` too. Carrying the shortfall as a figure is what stops the next
+  // reader from "simplifying" the measurement back into a sum and publishing a
+  // headroom nobody has.
+  declaredGatedToolDelta: declaredGatedToolDelta(),
+  derivedGatedSchemaBytes: REGISTRAR_MANIFEST.reduce(
+    (total, entry) => total + (entry.gatedSurface ? entry.gatedSurface.schemaBytes - entry.baseline.schemaBytes : 0),
+    0,
+  ),
   // The per-call response cap (#895) and the ratio that justifies it. Both are
   // generated so the page cannot drift from the constant: a cap raised in
   // `src/shaping.ts` must move this table in the same commit, which is what
@@ -1119,17 +1179,6 @@ const aggregateSurfaceFacts = Object.freeze({
   metadataOverheadBytes: aggregateSurface.schemaBytes - perModuleSchemaBytesTotal,
   metadataOverheadPercent: ((aggregateSurface.schemaBytes - perModuleSchemaBytesTotal) / aggregateSurface.schemaBytes) * 100,
 });
-/**
- * The opt-in surface, measured (#695) — registered twice, diffed.
- *
- * Hoisted to module scope because the gated scan needs it too: eleven tools are
- * written literally in their module and registered only under the flag, so a
- * static scan of `src/tools` finds a `server.tool('x', …)` the default
- * `tools/list` this script reads never served. The measurement is the
- * authority for "that registration is real, it is conditional", computed once
- * so the emitted census and the gate cannot disagree.
- */
-const measuredGatedToolNames = await measureGatedToolNames();
 const result = {
   tools: census.toolNames.length,
   // #889: the curated surface a server registers with no env set. Reported
@@ -1146,8 +1195,8 @@ const result = {
   manifestToolNames,
   // Measured, never declared (#695). The default surface is what every table
   // above reports, so the opt-in's eleven names have to be derived by
-  // registering both ways; see `measureGatedToolNames`.
-  gatedToolNames: measuredGatedToolNames,
+  // registering both ways; see `measureGatedSurface`.
+  gatedToolNames: gatedSurface.toolNames,
   parameterNames: census.parameterNames,
   toolInputSchemas: census.toolInputSchemas,
   toolDefinitions: census.toolDefinitions,
@@ -1171,6 +1220,36 @@ const result = {
   cookbookRecipes: { count: cookbook.count, ordinals: cookbook.ordinals },
   registrySource: 'src/index.ts via stdio tools/list after production finalizers',
 };
+
+/**
+ * `--aggregate-fixture <file>` — drive `checkAggregateSurfaceTruth` with an
+ * `aggregateSurface` of the caller's choosing (#1493).
+ *
+ * The third fixture route, and it exists for the same reason as `--marker-fixture`
+ * and `--description-fixture`: a guard that has only ever been run against truth
+ * is a guard whose failing path is a claim rather than a demonstration. Every
+ * figure in these facts is MEASURED, so the other routes cannot reach it —
+ * `--census-file` re-registers the live registry and recomputes all of them, which
+ * is right for replaying a census and useless for asking "would this check notice
+ * if the two surfaces measured the same?". That is precisely the failure this
+ * issue is about: a check that cannot distinguish the surfaces would publish the
+ * default headroom as the opt-in's without saying so.
+ *
+ * The fixture MERGES over the live facts rather than replacing them, so a case
+ * cannot be made to pass — or to fail for a different reason — by a field the
+ * fixture happened to leave out. `{}` must therefore exit 0, and that is the
+ * precondition every negative case in `tests/aggregate-optin-surface.test.ts`
+ * asserts before the case that is actually under test.
+ */
+const aggregateFixtureIndex = args.indexOf('--aggregate-fixture');
+if (aggregateFixtureIndex >= 0) {
+  const fixturePath = args[aggregateFixtureIndex + 1];
+  if (!fixturePath) throw new Error('--aggregate-fixture requires a JSON file');
+  const fixture = JSON.parse(readFileSync(resolve(fixturePath), 'utf8'));
+  const errors = checkAggregateSurfaceTruth({ ...result, aggregateSurface: { ...aggregateSurfaceFacts, ...fixture } });
+  console.log(JSON.stringify({ errors }, null, 2));
+  process.exit(errors.length > 0 ? 1 : 0);
+}
 
 const architecture = moduleInventory(result);
 const packageExcerpt = JSON.stringify({
@@ -1445,8 +1524,8 @@ async function attributeToolsToModules(liveToolNames, finalizedTools) {
 }
 
 /**
- * MEASURE which tool names the SPOTIFY_MCP_EXPERIMENTAL_ANALYTICS opt-in adds
- * (#695), rather than reading them off a list.
+ * MEASURE the SPOTIFY_MCP_EXPERIMENTAL_ANALYTICS opt-in: both which tool NAMES
+ * it adds (#695) and what the whole AGGREGATE surface costs with it on (#1493).
  *
  * The census deliberately blanks every SPOTIFY_* variable, so the surface it
  * reports — and every generated table built from it — is the DEFAULT one. That
@@ -1462,8 +1541,27 @@ async function attributeToolsToModules(liveToolNames, finalizedTools) {
  * with the opt-in off and once with it on, and take the difference. The env
  * flip is restored in a `finally` because the census runs in-process and a
  * leaked `1` would silently resize every number printed after this.
+ *
+ * #1493: the same double registration now also yields the opted-in AGGREGATE
+ * measurement, and it is the very same harness rather than a second one, for a
+ * reason that is easy to state and expensive to learn. `assertAggregateSurfaceBudget`
+ * is a STARTUP gate: it measures whichever surface the process actually
+ * registered, so an opted-in install is the one that can be refused a boot. The
+ * published figure came only from the off pass, so a maintainer reading
+ * `docs/schema-budgets.md` saw the default surface's headroom — more than twice
+ * the real constraint for an install that opted in. Measuring the ON surface
+ * here is what makes the reported number the number the gate enforces.
+ *
+ * The off pass of THIS harness is also cross-checked against the separately
+ * published `aggregateSurface` below (`checkAggregateSurfaceTruth`). Two
+ * harnesses that disagree by even a few hundred bytes would make the ON row
+ * comparable to nothing, and a number that cannot be compared to the figure it
+ * is meant to qualify is the defect one level down. That check earned its place
+ * on its first run against the tree that added `applyToolOutputSchemas` (#687):
+ * the harness was missing that pass and read 1,080B low, which the cross-check
+ * reported before any figure was published.
  */
-async function measureGatedToolNames() {
+async function measureGatedSurface() {
   const { McpServer } = await import('@modelcontextprotocol/sdk/server/mcp.js');
   const clientStub = {
     get: async () => null,
@@ -1474,13 +1572,26 @@ async function measureGatedToolNames() {
     getRateLimitStatus: () => ({ lastThrottleAt: null, retryAfterSec: null, cooldownRemainingMs: 0 }),
   };
   const censusContext = { readOnly: false, isModuleActive: () => true, scopeBlocked: () => false };
-  const namesFor = async () => {
+  const measurePass = async () => {
     const server = new McpServer({ name: 'gated-census', version: '0.0.0' });
     try {
       for (const module of await loadManifestRegistrars(REGISTRAR_MANIFEST, censusContext)) {
         registerManifestModule(server, clientStub, module, censusContext);
       }
-      return Object.keys(server._registeredTools ?? {});
+      const names = Object.keys(server._registeredTools ?? {});
+      // Same three finalizers `src/index.ts` runs, in the same order, before the
+      // aggregate measurement — and all three, because each one is something
+      // `collectAggregateSurfaceMeasurement` charges for. Skip the naming policy
+      // and this harness measures a surface production refuses to serve; skip
+      // `applyToolOutputSchemas` (#687) and it measures 1,080B short on this
+      // tree, which is exactly the disagreement the off-pass cross-check below
+      // exists to catch. A harness that measured before the annotation pass
+      // would report a surface no host is ever served, and the ON row would be
+      // measured against a different yardstick than the OFF row it qualifies.
+      assertToolNamingPolicy(names);
+      applyToolOutputSchemas(server);
+      applyToolAnnotations(server);
+      return { names, measurement: collectAggregateSurfaceMeasurement(server) };
     } finally {
       await server.close().catch(() => undefined);
     }
@@ -1491,17 +1602,22 @@ async function measureGatedToolNames() {
   let off;
   try {
     delete process.env.SPOTIFY_MCP_EXPERIMENTAL_ANALYTICS;
-    off = new Set(await namesFor());
+    off = await measurePass();
     process.env.SPOTIFY_MCP_EXPERIMENTAL_ANALYTICS = '1';
-    optedIn = new Set(await namesFor());
+    optedIn = await measurePass();
   } finally {
     if (prior === undefined) delete process.env.SPOTIFY_MCP_EXPERIMENTAL_ANALYTICS;
     else process.env.SPOTIFY_MCP_EXPERIMENTAL_ANALYTICS = prior;
   }
+  const offNames = new Set(off.names);
   // Only names the opt-in ADDS are gated. A name missing from both passes is a
   // manifest bug and is reported by the attribution cross-check above, not
   // silently absorbed into this list.
-  return [...optedIn].filter((name) => !off.has(name)).sort();
+  return {
+    toolNames: optedIn.names.filter((name) => !offNames.has(name)).sort(),
+    off: off.measurement,
+    optedIn: optedIn.measurement,
+  };
 }
 
 function serializedFinalizedSchemaBytes(tool) {
@@ -1562,13 +1678,18 @@ function aggregateSurfaceVerdict(headroomBytes, maxBytes) {
 }
 
 /**
- * The `docs/schema-budgets.md` aggregate block (#1241).
+ * The `docs/schema-budgets.md` aggregate block (#1241, #1493).
  *
  * Every figure here is read from code or measured — the ceiling and the
  * enforced limit are the exported constants, the payload is
  * `collectAggregateSurfaceMeasurement`, and the conclusion is a band over the
  * headroom ratio. Nothing in the surrounding prose quotes a number, because
  * prose is not gated and a quoted number is stale within one release.
+ *
+ * The second table is the opted-in surface (#1493). Same enforced limit, same
+ * measurement call, registered with the flag set — so the headroom an operator
+ * who set it actually has is a measured number beside the default one rather
+ * than an assumption that the default covers them.
  */
 function aggregateBudgetBlock(census) {
   const facts = census.aggregateSurface;
@@ -1580,12 +1701,39 @@ function aggregateBudgetBlock(census) {
     `| Of which outside the per-module table | ${formatInteger(facts.metadataOverheadBytes)}B | ${facts.metadataOverheadPercent.toFixed(1)}% of the payload — tool names, titles, annotations and boundary metadata |`,
     `| Headroom | ${formatInteger(facts.headroomBytes)}B | ${facts.headroomPercent.toFixed(1)}% of the enforced limit |`,
   ];
+  // The byte figures lead the value column in all three rows, which is what lets
+  // `tests/doc-figures.test.ts`'s shared row parser read them: it matches a
+  // leading `| <label> | <digits>B |`. A `+9,988B, +11 tools` cell parses as
+  // nothing there, so the tool count moves to the source column.
+  const optInRows = [
+    `| \`${facts.optInGatedBy.join('`, `')}=1\` | ${formatInteger(facts.optInBytes)}B | ${formatInteger(facts.optInToolCount)} tools — the same measurement, registered with the opt-in on |`,
+    `| Added by the opt-in | ${formatInteger(facts.optInDeltaBytes)}B | +${formatInteger(facts.optInDeltaTools)} tools over the default surface, measured rather than summed (see below) |`,
+    `| Headroom with the opt-in | ${formatInteger(facts.optInHeadroomBytes)}B | ${facts.optInHeadroomPercent.toFixed(1)}% of the enforced limit — **${facts.optInVerdict}** |`,
+  ];
+  // Only stated when both numbers are positive — a breached or exhausted opt-in
+  // surface has no meaningful ratio, and printing `Infinity` into a generated
+  // block would be the kind of figure nobody can act on.
+  const headroomComparison = facts.headroomBytes > 0 && facts.optInHeadroomBytes > 0
+    ? `The default surface reports ${(facts.headroomBytes / facts.optInHeadroomBytes).toFixed(2)}× as much room — ${formatInteger(facts.headroomBytes)}B against the opt-in's ${formatInteger(facts.optInHeadroomBytes)}B. Neither surface breaches the limit today; an opted-in install is simply the one with less room to grow.`
+    : `The default surface reports ${formatInteger(facts.headroomBytes)}B against the opt-in's ${formatInteger(facts.optInHeadroomBytes)}B. The opt-in surface is **${facts.optInVerdict}**.`;
   return [
     '| Figure | Value | Where it comes from |',
     '|---|---:|---|',
     ...rows,
     '',
     `Headroom is **${formatInteger(facts.headroomBytes)}B** of the ${formatInteger(facts.maxEnforcedBytes)}B enforced limit — ${facts.headroomPercent.toFixed(1)}% — so the aggregate budget is **${facts.verdict}**.`,
+    '',
+    'The limit above is enforced at startup against whichever surface the process',
+    'registered, so the figure that matters is the one for the surface you run.',
+    `With \`${facts.optInGatedBy.join('`, `')}\` set, that is:`,
+    '',
+    '| Opted-in surface (`tools/list`) | Value | Where it comes from |',
+    '|---|---:|---|',
+    ...optInRows,
+    '',
+    headroomComparison,
+    '',
+    `The byte figure is measured, not derived from the manifest. The per-module \`gatedSurface\` byte deltas sum to **${formatInteger(facts.derivedGatedSchemaBytes)}B** against a measured **${formatInteger(facts.optInDeltaBytes)}B**, a ${formatInteger(facts.optInDeltaBytes - facts.derivedGatedSchemaBytes)}B shortfall: the per-module budget charges description + input schema + output schema, while the aggregate charges every tool's name, title, annotations, execution and \`_meta\` as well. A derived ceiling would under-report by more than a kilobyte. The tool count has no such gap — the manifest declares ${formatInteger(facts.declaredGatedToolDelta)} and the measurement finds ${formatInteger(facts.optInDeltaTools)} — so it is cross-checked rather than measured twice.`,
     '',
     'Regenerate with `npm run count:tools -- --write`. `--check` fails when any',
     'figure above stops matching the constants or the live measurement, so a',
@@ -1631,6 +1779,23 @@ function checkSchemaBudgetTruth(census) {
  * verdict band was derived from. A code change that breaks any of those fails
  * here rather than shipping a doc block that is internally consistent and
  * wrong.
+ *
+ * The opt-in arm (#1493) is the aggregate counterpart of the per-module
+ * `gatedSurface`, and it carries the three relationships that make the opt-in
+ * figure trustworthy rather than merely present:
+ *
+ *  - the gated harness's OWN off pass must equal the independently published
+ *    `measuredBytes`. Two harnesses that disagree would make the opt-in row
+ *    comparable to nothing;
+ *  - the opt-in surface must be strictly larger. A measurement that cannot tell
+ *    the two surfaces apart has stopped measuring the thing it is named for,
+ *    and it would report the default headroom as the opt-in's without failing;
+ *  - the opt-in must still fit the enforced limit, because that limit is what
+ *    startup refuses a boot over.
+ *
+ * Plus one against the manifest: `optInDeltaTools` must equal the tool-count
+ * delta the manifest's `gatedSurface` entries declare, so a module that gains
+ * or loses a gated tool cannot do so without its declaration moving too.
  */
 function checkAggregateSurfaceTruth(census) {
   const facts = census.aggregateSurface;
@@ -1649,6 +1814,25 @@ function checkAggregateSurfaceTruth(census) {
   }
   if (facts.verdict !== aggregateSurfaceVerdict(facts.headroomBytes, facts.maxEnforcedBytes)) {
     errors.push(`docs/schema-budgets.md: verdict "${facts.verdict}" does not match the measured headroom ratio`);
+  }
+  // --- #1493: the opted-in surface ---
+  if (facts.offBytes !== facts.measuredBytes || facts.offToolCount !== facts.measuredToolCount) {
+    errors.push(`docs/schema-budgets.md: the gated harness's opt-in-off pass measured ${formatInteger(facts.offBytes)}B/${formatInteger(facts.offToolCount)} tools but the finalized registry measured ${formatInteger(facts.measuredBytes)}B/${formatInteger(facts.measuredToolCount)} tools — the two harnesses disagree, so the opt-in figure is not comparable`);
+  }
+  if (facts.optInBytes <= facts.measuredBytes || facts.optInToolCount <= facts.measuredToolCount) {
+    errors.push(`docs/schema-budgets.md: the opted-in surface (${formatInteger(facts.optInBytes)}B/${formatInteger(facts.optInToolCount)} tools) is not larger than the default surface (${formatInteger(facts.measuredBytes)}B/${formatInteger(facts.measuredToolCount)} tools) — the opt-in measurement is not seeing ${facts.optInGatedBy.join(', ') || 'the gated modules'}`);
+  }
+  if (facts.optInBytes > facts.maxEnforcedBytes) {
+    errors.push(`src/tools/annotations.ts: the opted-in surface is ${formatInteger(facts.optInBytes)}B, over the ${formatInteger(facts.maxEnforcedBytes)}B enforced limit — an install with ${facts.optInGatedBy.join(', ') || 'the opt-in'} set would be refused at startup`);
+  }
+  if (facts.optInDeltaTools !== facts.declaredGatedToolDelta) {
+    errors.push(`src/tools/annotations.ts: gated entries declare ${formatInteger(facts.declaredGatedToolDelta)} extra tools, the opt-in measurement registers ${formatInteger(facts.optInDeltaTools)}`);
+  }
+  if (facts.optInDeltaTools !== census.gatedToolNames.length) {
+    errors.push(`scripts/surface-census.mjs: the gated name list has ${census.gatedToolNames.length} names but the aggregate measurement grew by ${formatInteger(facts.optInDeltaTools)} tools`);
+  }
+  if (facts.optInToolCount > facts.maxTools) {
+    errors.push(`src/tools/annotations.ts: the opted-in surface registers ${formatInteger(facts.optInToolCount)} tools, over the ${formatInteger(facts.maxTools)}-tool ceiling`);
   }
   return errors;
 }
@@ -2736,7 +2920,7 @@ function checkGatedScanCoverage(hits) {
   // renamed tool cannot linger here as a stale exception. An `excepted` list
   // would be exactly the hand-typed copy this avoids elsewhere.
   const registered = new Set(census.toolNames);
-  const conditionallyRegistered = new Set(measuredGatedToolNames);
+  const conditionallyRegistered = new Set(gatedSurface.toolNames);
   const files = readdirSync(toolsDir).filter((name) => name.endsWith('.ts')).sort();
   let registrations = 0;
   const phantoms = [];

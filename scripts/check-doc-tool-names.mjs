@@ -31,7 +31,7 @@ const resources = new Set(census.resourceUris);
  * README must be able to stop naming them.
  *
  * The list is MEASURED, not declared: the census registers every module twice
- * and diffs the two name sets (see `measureGatedToolNames`). A hand-typed copy
+ * and diffs the two name sets (see `measureGatedSurface`). A hand-typed copy
  * would outlive a rename and keep validating a name for a tool that no longer
  * exists — the same failure mode `parameterAllowlist` was rebuilt to avoid
  * (#1283), which is why real parameters come from `census.parameterNames`.
