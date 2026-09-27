@@ -1,6 +1,7 @@
 /**
  * #929 — documented ranges, ceilings, defaults and enum members must agree
- * with the live tool schemas.
+ * with the live tool schemas. #1476 — and the two claims a document makes
+ * about a contract no single tool owns.
  *
  * The name-shaped checks in `scripts/check-doc-tool-names.mjs` pass a
  * document that names the right tool, the right argument, and then lies about
@@ -258,6 +259,137 @@ describe('documented constraints agree with the live schemas (#929)', () => {
         '| `offset` | number | no | Index of the first result to return, 0–1000 — use with `limit` to page through results |',
         '| `offset` | number | no | Index of the first result to return, 0–1000 — use with `limit` to page through results |\n| `market` | string | no | ISO 3166-1 alpha-2 country code, 1–99 |',
       ),
+      /^$/,
+    );
+  });
+});
+
+/**
+ * #1476 — a documented constant that drifted from the constant it documents,
+ * with nothing comparing the two.
+ *
+ * Both shipped defects were unreachable by the checks above for the same
+ * reason, and it is worth naming precisely rather than as "a gap": neither
+ * claim is attributed to a TOOL. The `response_format` bullet describes a
+ * field the whole surface accepts, and the aggregate ceiling is a property of
+ * the registry rather than of any one schema — so
+ * `checkDocumentedFieldConstraints`, which needs a tool heading before it has
+ * anything to compare against, never entered either. The census renders both
+ * constants into `docs/schema-budgets.md`, but that is a GENERATED block:
+ * `--check` proves the generator is reproducible, not that the hand-written
+ * prose elsewhere agrees with it.
+ *
+ * The anchors below are exact current text, so a fixture that stops matching
+ * fails loudly in `replaceOnce` rather than planting into nothing and
+ * asserting the gate is quiet about a document it never read.
+ */
+describe('documented constants agree with the live code (#1476)', () => {
+  it('is green on the tree as it stands', () => {
+    assert.match(gateAcceptsTree(), /match the finalized production registry/);
+  });
+
+  // -- the shipped instances ------------------------------------------------
+
+  it('rejects a shared-contract enum whose members no live schema declares', () => {
+    // The shipped line read `'concile'` against a schema whose first member
+    // is `concise`. Note the misspelling was ONE CHARACTER, not a different
+    // word: the issue filed it as `reconcile`, and the file never contained
+    // that string. A checker written against the issue text would have passed.
+    const output = gateRejects(
+      'SPEC.md',
+      (source) => replaceOnce(
+        source,
+        "- **`response_format`** (`'concise' | 'detailed' | 'json'`, default `'concise'`)",
+        "- **`response_format`** (`'concile' | 'detailed' | 'json'`, default `'concile'`)",
+      ),
+      /shared contract documents `response_format` as `concile \| detailed \| json`/,
+    );
+    assert.match(output, /A caller copying the documented list is rejected at validation/);
+  });
+
+  it('rejects a shared-contract default the live schema contradicts', () => {
+    const output = gateRejects(
+      'SPEC.md',
+      (source) => replaceOnce(
+        source,
+        "- **`response_format`** (`'concise' | 'detailed' | 'json'`, default `'concise'`)",
+        "- **`response_format`** (`'concise' | 'detailed' | 'json'`, default `'json'`)",
+      ),
+      /shared contract documents `response_format` as defaulting to `json`, but the live schema defaults to `concise`/,
+    );
+    assert.match(output, /a caller who omits the field gets the other one/);
+  });
+
+  it('rejects a documented byte figure that contradicts a live constant', () => {
+    // The shipped line said 620,000B where `TOOL_SURFACE_BUDGET.defaultMaxBytes`
+    // is 611,000. The direction is the point: the document overstated the
+    // headroom by 9,000B, so the reader who trusted it believed a raise was
+    // available that the startup gate would have refused.
+    const output = gateRejects(
+      'SPEC.md',
+      (source) => replaceOnce(
+        source,
+        '(`TOOL_SURFACE_BUDGET.defaultMaxBytes`, 611,000B)',
+        '(`TOOL_SURFACE_BUDGET.defaultMaxBytes`, 620,000B)',
+      ),
+      /documents `TOOL_SURFACE_BUDGET\.defaultMaxBytes` as 620,000B, but the live constant is 611,000B/,
+    );
+    assert.match(output, /wrong by 9,000B/);
+  });
+
+  it('rejects a documented figure for the enforced limit and the response cap', () => {
+    // Both constants are reachable the same way, and neither is reachable
+    // today: the cap is written `(64,000) serialized bytes`, which this
+    // matcher deliberately does not read. Asserting the arm works for a
+    // constant nothing currently states is what keeps it from being a
+    // one-name special case written around the defect that shipped.
+    for (const [name, wrong, expected] of [
+      ['AGGREGATE_SURFACE_LIMITS.maxBytes', '613,000B', /documents `AGGREGATE_SURFACE_LIMITS\.maxBytes` as 613,000B, but the live constant is 612,000B/],
+      ['MAX_RESPONSE_BYTES', '65,000B', /documents `MAX_RESPONSE_BYTES` as 65,000B, but the live constant is 64,000B/],
+    ] as const) {
+      const output = gateRejects(
+        'SPEC.md',
+        (source) => `${source}\nA budget line: \`${name}\` is ${wrong} today.\n`,
+        expected,
+      );
+      assert.match(output, /a reader sizing against the document is wrong by 1,000B/);
+    }
+  });
+
+  // -- the boundaries, so the arms are not narrower than they claim ---------
+
+  it('accepts a shared contract documenting ONE of several live variants', () => {
+    // `mode` has seven live member lists. A gate demanding the
+    // intersection would fail this correct line; one demanding a specific
+    // tool's list would fail the next tool that reuses the name. This is the
+    // false positive that would get the check switched off, so it is
+    // asserted rather than assumed.
+    gateRejects(
+      'SPEC.md',
+      (source) => `${source}\n- **\`mode\`** (\`'copy' | 'move'\`, default \`'copy'\`) — one of seven live variants.\n`,
+      /^$/,
+    );
+  });
+
+  it('ignores a field no live schema types as an enum', () => {
+    // `max_results` is a real parameter with no `enum`. Nothing can prove
+    // this line wrong, and inventing an enum for it would make the gate a
+    // liar rather than a gate.
+    gateRejects(
+      'SPEC.md',
+      (source) => `${source}\n- **\`max_results\`** (\`'alpha' | 'beta'\`, default \`'alpha'\`) — not enum-typed anywhere.\n`,
+      /^$/,
+    );
+  });
+
+  it('does not read a figure from the NEXT sentence as the constant’s value', () => {
+    // The same failure §6 records in a different guise: a matcher that
+    // crosses a sentence boundary attributes an unrelated measurement to the
+    // constant named two clauses earlier, and the first false positive is
+    // how a gate dies.
+    gateRejects(
+      'SPEC.md',
+      (source) => `${source}\nThe \`TOOL_SURFACE_BUDGET.defaultMaxBytes\` budget is not a target. The measured surface reached 598,816B on the tree this was written against.\n`,
       /^$/,
     );
   });
