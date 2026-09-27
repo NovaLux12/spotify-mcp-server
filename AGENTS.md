@@ -116,7 +116,7 @@ wrapped":
 | `GET /recommendations`, `GET /recommendations/available-genre-seeds` | Blocked for post-Nov-2024 apps |
 | `GET /artists/{id}/related-artists` | Blocked for post-Nov-2024 apps |
 | `GET /audio-features/{id}`, `GET /audio-analysis/{id}` | Blocked for post-Nov-2024 apps |
-| ~~`GET /browse/categories`~~ | **REMOVED Feb 2026** — `get_categories` / `get_category_playlists` were **deleted** (#638). No endpoint serves the browse category tree; nothing replaced them |
+| ~~`GET /browse/categories`~~ | **REMOVED Feb 2026** — `get_categories` / `get_category_playlists` were **deleted** (#638). No endpoint serves the browse category tree; nothing replaced them. The family still has live callers — see the registration-dependent section below before concluding the path is dead |
 | `GET /browse/new-releases`, `GET /browse/featured-playlists` | Blocked/removed — do not use |
 | Lyrics endpoints | Not available via the Web API — do not use |
 
@@ -160,6 +160,28 @@ path that works rather than fix one that does not. `get_user_playlists` is
 deliberately **not** in that family: despite the name it reads
 `GET /me/playlists`, which was never removed.
 
+`/browse/categories*` is the second family worth naming here, and it is the
+clearer case of the two, because **the table used to contain it** (it was
+removed under #1359). What keeps it out is the same reason: the family has live
+call sites, and they disclose rather than degrade. `get_category` and
+`browse_category_deepdive` (`src/tools/catalog.ts`) throw a message naming the
+Feb 2026 removal on a 403/404/410, and `category_resolver`
+(`src/tools/exhaust2_catalog.ts`) returns `{ gated: true }` naming the gate on a
+403 — so no failure is ever smoothed into an empty category list. All three are
+declared by the `browse-categories` family in `GATED_FAMILIES`, and a
+grandfathered registration still answers 200, so deleting them would remove a
+path that works rather than fix one that does not.
+
+Do not read that as "the endpoint is live". The changelog marks
+`GET /browse/categories` and `GET /browse/categories/{id}` `[REMOVED]`, and it
+names **no** `[REMOVED]` entry for `GET /browse/categories/{id}/playlists` at
+all — the label appears in the page's endpoint index but never in its removal
+list. The live OpenAPI schema still publishes all three paths carrying
+`deprecated: true` with documented 200 responses. So what a call does depends on
+the registration, which is the definition of this section, and it is why the
+honest per-tool behaviour is a disclosure rather than either a deletion or a
+silent empty shape.
+
 **Never call these — no replacement, or superseded with no live call site.**
 Nothing in this table is a runtime classifier, because there is no graceful
 shape left to give the failure:
@@ -169,7 +191,6 @@ shape left to give the failure:
 | `PUT/DELETE /me/following?type=artist` | **No replacement — unrecoverable, see below.** `follow_artists` / `unfollow_artists` were **deleted** (#638); the read half survives as `check_following_artists` on `GET /me/library/contains` |
 | `PUT/DELETE /me/{tracks,albums,shows,episodes,audiobooks}` | Replaced by `PUT/DELETE /me/library`. Every call site migrated and `save_items` / `remove_saved_items` were **deleted** (#638) |
 | `GET /me/{tracks,albums,shows,episodes,audiobooks,following}/contains` | Replaced by `GET /me/library/contains`. Every call site migrated and `check_saved_items` was **deleted** (#638) |
-| `GET /browse/categories`, `GET /browse/categories/{id}`, `GET /browse/categories/{id}/playlists` | **No replacement.** `get_categories` / `get_category_playlists` were **deleted** (#638) |
 | `PUT/DELETE /playlists/{id}/followers` | Replaced by `PUT/DELETE /me/library` with a `spotify:playlist:` URI (#594) — already migrated, no live call site |
 | `GET /playlists/{id}/followers/contains` | Replaced by `GET /me/library/contains` (#862) — already migrated, no live call site |
 | `POST/GET/PUT/DELETE /playlists/{id}/tracks` | Superseded by the `/items` equivalents; no shipped tool calls it (#638) |

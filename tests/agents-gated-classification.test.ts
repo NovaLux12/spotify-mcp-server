@@ -28,14 +28,12 @@
  * and the **prose** had drifted away from it, and AGENTS.md is not in the
  * doc-name gate's scan set at all. A guard on the prose is the missing half.
  *
- * Scope: the general assertion below is deliberately general, and it still
- * finds one further violation the report to the issue author leaves unfixed —
- * the `browse-categories` row, whose family also has live call sites
- * (`get_category`, `browse_category_deepdive`, `category_resolver`). It is
- * named in `REPORTED_NOT_FIXED` and the assertion requires the detected set
- * to *equal* that list, so it cannot rot into a graveyard and cannot be
- * widened quietly. Fixing that row means deleting its entry, which is the
- * intended pressure.
+ * Scope: the general assertion below is deliberately general, and it also found
+ * a second violation, the `browse-categories` row, whose family has live call
+ * sites (`get_category`, `browse_category_deepdive`, `category_resolver`). That
+ * row was fixed under #1359 and its `REPORTED_NOT_FIXED` entry deleted, so the
+ * set is now empty. It stays a named constant rather than an inline `[]` so a
+ * future violation is recorded deliberately instead of being papered over.
  */
 import './helpers/hermetic.js';
 
@@ -56,9 +54,11 @@ const NEVER_CALL_HEADING =
 
 /**
  * Family ids whose endpoints are named in the never-call table while the
- * family still has live call sites. One entry, reported and not fixed here.
+ * family still has live call sites. Empty: the `browse-categories` row was
+ * fixed under #1359. A new entry means a row was found that the table's own
+ * heading excludes, and it must be resolved here rather than added.
  */
-const REPORTED_NOT_FIXED: ReadonlySet<string> = new Set(['browse-categories']);
+const REPORTED_NOT_FIXED: ReadonlySet<string> = new Set<string>();
 
 function readAgents(): string {
   return readFileSync(join(ROOT, AGENTS), 'utf8');
@@ -153,8 +153,42 @@ describe('AGENTS.md agrees with the gated-endpoint classifier (#1338)', () => {
         'deleting its tools would remove a path that works on a ' +
         'grandfathered registration rather than fix one that does not. ' +
         `Offending families: ${violations.join(', ') || '(none)'}. ` +
-        '`browse-categories` is a known, reported, unfixed row — fix it and ' +
-        'delete its entry from REPORTED_NOT_FIXED.',
+        'Fix the row and delete its entry from REPORTED_NOT_FIXED.',
+    );
+  });
+
+  // #1359 — the second violation this guard found, and the one that proves it
+  // is not decoration. `browse-categories` WAS in the table, and the guard
+  // passed only because `browse-categories` sat in REPORTED_NOT_FIXED. The
+  // table's own heading is "no replacement, or superseded with no live call
+  // site", and this family had three live call sites the whole time, so the
+  // row was excluded by the rule the table states. The fix moved the row above
+  // the table and emptied the allowlist; these two assertions then failed
+  // without the doc change and passed with it.
+  it('no longer names browse-categories in the never-call table (#1359)', () => {
+    const offending = paths.filter((path) => GATED_FAMILIES[0].pattern.test(path));
+    assert.deepEqual(
+      offending,
+      [],
+      'the never-call table names a /browse/categories path again. That family ' +
+        'still has live call sites (`get_category`, `browse_category_deepdive`, ' +
+        '`category_resolver`), so by the table\'s own heading it is ' +
+        'registration-dependent and belongs in the section above the table.',
+    );
+  });
+
+  it('still documents the browse-categories family above the table (#1359)', () => {
+    // The removal must not read as "nobody calls this". Guard the direction the
+    // fix could have failed in: dropping the row without replacing the claim
+    // would leave the family undocumented, and the census's per-tool
+    // cross-check would still pass because it reads the array, not this prose.
+    const at = source.indexOf(NEVER_CALL_HEADING);
+    const above = source.slice(0, at);
+    assert.match(
+      above,
+      /\/browse\/categories/,
+      'the section above the never-call table no longer mentions /browse/categories, ' +
+        'so the three live call sites are undocumented. Restore the paragraph.',
     );
   });
 

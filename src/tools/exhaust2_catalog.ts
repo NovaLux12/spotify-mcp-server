@@ -1005,6 +1005,13 @@ max_results: z.number().int().positive().max(2000).optional().describe('Max item
     async (args) => {
       const rf = args.response_format;
       let categories: Array<{ id: string; name: string }> = [];
+      // #1359: a page that came back without a usable `categories` payload is a
+      // read that did not happen, not an empty catalog. Tracked separately from
+      // `categories.length` so the no-payload case is reported as unreadable
+      // rather than as "this market has no categories" — the #803 class. A 204
+      // and a 200 carrying no `categories` key are the two shapes that used to
+      // collapse into that claim.
+      let unreadablePage: string | null = null;
       try {
         const cap = 200;
         for (let offset = 0; offset < cap; offset += 50) { // cap-exempt: /browse/categories PAGE size, not a request batch cap
@@ -1012,7 +1019,13 @@ max_results: z.number().int().positive().max(2000).optional().describe('Max item
             '/browse/categories',
             { limit: '50', offset: String(offset), ...(args.country ? { country: args.country } : {}), ...(args.locale ? { locale: args.locale } : {}) },
           );
-          const items = data?.categories?.items ?? [];
+          if (!data || !Array.isArray(data.categories?.items)) {
+            unreadablePage = data === null
+              ? 'the response carried no body (HTTP 204)'
+              : 'the response carried no `categories.items` array';
+            break;
+          }
+          const items = data.categories.items;
           categories.push(...items);
           if (items.length < 50) break;
         }
@@ -1021,7 +1034,39 @@ max_results: z.number().int().positive().max(2000).optional().describe('Max item
           const msg = gatedEndpointMessage('/browse/categories');
           return emit(rf, msg, { gated: true, endpoint: '/browse/categories' });
         }
+        // #1359: a 404/410 on this path is not a missing category, and the bare
+        // status said nothing at all. The gated 403 is handled above. The status
+        // is reported as observed; the changelog's [REMOVED] label is named as
+        // what the documentation says rather than asserted as the cause, because
+        // the live schema still publishes this path as deprecated and only the
+        // status distinguishes the cases.
+        if (err instanceof SpotifyApiError && (err.status === 404 || err.status === 410)) {
+          throw new Error(
+            `The browse-category lookup (/browse/categories) could not be answered: Spotify answered ` +
+              `${err.status} — ${err.message} That is not a missing category: Spotify's February 2026 ` +
+              'changelog marks GET /browse/categories [REMOVED], while the published schema still carries it ' +
+              'as deprecated, so this path is not served on this registration. No endpoint serves the browse ' +
+              'category tree; a grandfathered (pre-Nov-2024) app registration may still read it.',
+            { cause: err },
+          );
+        }
         throw err;
+      }
+      if (unreadablePage !== null) {
+        // States only what was observed. The endpoint's runtime status is not
+        // established by this response — the Feb 2026 changelog marks it
+        // [REMOVED] while the live schema still publishes it deprecated — so
+        // naming the removal here would assert a cause the read does not show,
+        // which is the #6 "a name is not a fact" failure in the other
+        // direction. A 404/410 is the removal answering; an empty 200 is not.
+        throw new Error(
+          `The browse-category lookup (/browse/categories) could not be answered: ${unreadablePage}, so ` +
+            'nothing was read. An unreadable page is not an empty category tree. GET /browse/categories is ' +
+            'listed [REMOVED] in Spotify\'s February 2026 changelog while the published schema still carries it ' +
+            'as deprecated, so whether this is a dead endpoint or a changed response shape cannot be told from ' +
+            'the response alone; a 403 here is an app-registration gate, and a grandfathered (pre-Nov-2024) ' +
+            'registration may still read it.',
+        );
       }
       if (categories.length === 0) throw new Error('No browse categories returned (empty catalog for this market)');
       const target = normalizeName(args.text);
