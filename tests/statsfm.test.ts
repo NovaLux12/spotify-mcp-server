@@ -415,13 +415,39 @@ test('statsfm_top_genres renders genre rows', async () => {
 // ---------------------------------------------------------------- streams
 
 test('statsfm_recent_streams forwards after/before cursors', async () => {
+  // The bounds still go on the wire — verified here — and they are ALSO applied
+  // to the returned rows as of #730, because `/users/{id}/streams/recent`
+  // ignores them upstream. This test used to assert the rows came back
+  // unfiltered while passing `after: 1000, before: 2000` against a fixture
+  // dated 2026; that passed only because the bounds did nothing. It now uses
+  // bounds the fixture actually falls inside, so the forwarding assertion and
+  // the filtering assertion no longer contradict each other. The filtering
+  // itself — including the empty-result case — is covered in
+  // `statsfm-stream-window.test.ts`.
+  const after = Date.parse('2026-05-14T00:00:00.000Z');
+  const before = Date.parse('2026-05-15T00:00:00.000Z');
   const h = makeHarness((_path, params) => {
-    assert.equal(params?.after, '1000');
-    assert.equal(params?.before, '2000');
+    assert.equal(params?.after, String(after));
+    assert.equal(params?.before, String(before));
     return streamsFixture();
   });
-  const out = await h.find('statsfm_recent_streams').handler({ user_id: 'u', after: 1000, before: 2000 });
+  const out = await h.find('statsfm_recent_streams').handler({ user_id: 'u', after, before });
   assert.match(h.text(out), /Ya Sonra/);
+});
+
+test('statsfm_recent_streams applies after/before to the rows it returns', async () => {
+  // The other half of the same fact, asserted where the previous test used to
+  // paper over it: a bound that excludes the fixture must exclude the row.
+  const h = makeHarness(() => streamsFixture());
+  const out = await h.find('statsfm_recent_streams').handler({
+    user_id: 'u',
+    after: 1000,
+    before: 2000,
+    response_format: 'json',
+  });
+  assert.deepEqual(out.structuredContent?.items, [], 'a 1970 window excludes 2026 rows');
+  assert.equal(out.structuredContent?.returned_before_window, 2, 'the page still arrived intact');
+  assert.equal(out.structuredContent?.excluded_by_window, 2, 'and both rows are counted as excluded');
 });
 
 test('statsfm_now_playing reports idle when item is null', async () => {

@@ -36,6 +36,7 @@ import {
   spotifyUriFromClassification,
   type SpotifyReferenceKind,
 } from '../refs.js';
+import { formatDuration } from '../result.js';
 
 // ---------------------------------------------------------------------------
 // Shared result shaping (#51/#52/#58 helpers composed locally per file)
@@ -186,12 +187,6 @@ function appendPaginationFooters(
   } else if (pagination.next_offset !== null) {
     lines.push(`(More available — pass offset=${pagination.next_offset} for the next page)`);
   }
-}
-
-function formatDuration(ms: number): string {
-  const minutes = Math.floor(ms / 60000);
-  const seconds = Math.floor((ms % 60000) / 1000);
-  return `${minutes}:${seconds.toString().padStart(2, '0')}`;
 }
 
 /**

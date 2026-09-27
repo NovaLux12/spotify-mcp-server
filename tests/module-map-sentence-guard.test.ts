@@ -106,7 +106,13 @@ async function moduleMapRows(): Promise<Array<{ file: string; description: strin
   assert.ok(start >= 0 && end > start, 'ARCHITECTURE.md has no module-map block');
   const rows: Array<{ file: string; description: string }> = [];
   for (const line of architecture.slice(start, end).split('\n')) {
-    const match = /^\| `([^`]+\.ts)` \| (.*) \(\d+ registered tools?\) \| \d+ \|$/.exec(line);
+    // The third cell is `Schema bytes` since #1398 — a measured figure or an
+    // em dash for a runtime module that registers nothing. It was a line count
+    // before, and this regex is a fence around the whole table: a renderer that
+    // changed the shape of a cell would make every row fail to match, and the
+    // `rows.length > 50` assertion below would catch that rather than quietly
+    // iterating over nothing.
+    const match = /^\| `([^`]+\.ts)` \| (.*) \(\d+ registered tools?\) \| (?:\d[\d,]*|—) \|$/.exec(line);
     if (match) rows.push({ file: match[1], description: match[2].replaceAll('\\|', '|') });
   }
   return rows;

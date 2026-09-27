@@ -4,7 +4,7 @@
 **11** recipes you can paste to an agent (or run turn by turn) against SpotifyMCP. Each states the tools it uses and what you get. Recipe 1 is the flagship: stats.fm taste in, Spotify playlist out.
 <!-- END:generated recipe-index -->
 
-Conventions: JSON tool args are shown inline; replace `PLAYLIST_ID` and IDs with yours. Which identity argument a stats.fm tool takes is a property of the tool, not of its prefix: the endpoint tools take `user_id`, the seven network-backed taste tools in `src/tools/statsfm_taste.ts` take `statsfm_user`, and the `taste_*` composites follow their own schema (most take `statsfm_user`; `taste_shift_report` and `taste_checkpoint` read your Spotify top lists and take none). Catalog/search tools and the local `statsfm_record_feedback` are identity-free. Check the tool's own schema rather than inferring from the name. Identity is per call unless you set `STATSFM_USER_ID` to supply the default (an explicit argument still wins; with neither, the call fails rather than guessing a profile) — never infer it from the Spotify account. Preview Spotify writes with `dry_run: true` when the tool supports it, show the human what will change, and get explicit confirmation immediately before every write or destructive action.
+Conventions: JSON tool args are shown inline; replace `PLAYLIST_ID` and IDs with yours. Every user-scoped stats.fm tool takes `statsfm_user`; `user_id` is a deprecated alias until v2.2. Catalog/search tools and the local `statsfm_record_feedback` are identity-free, and `taste_shift_report` / `taste_checkpoint` read your Spotify top lists and take none. Identity is per call unless you set `STATSFM_USER_ID` to supply the default (an explicit argument still wins; with neither, the call fails rather than guessing a profile) — never infer it from the Spotify account. Preview Spotify writes with `dry_run: true` when the tool supports it, show the human what will change, and get explicit confirmation immediately before every write or destructive action.
 
 ## 1. Taste profile → playlist (flagship)
 
@@ -13,9 +13,9 @@ Build a playlist that sounds like you, from stats.fm evidence instead of vibes.
 > Risk: creates a new playlist and bulk-adds tracks to it; preview first via `dry_run: true` on both `create_playlist` and `add_to_playlist`.
 
 ```text
-1. Call statsfm_streams_stats with `user_id: "<your-statsfm-user-id>"`; if the imported history is thin, say so and stop.
+1. Call statsfm_streams_stats with `statsfm_user: "<your-statsfm-user-id>"`; if the imported history is thin, say so and stop.
 2. Call statsfm_taste_profile with `statsfm_user: "<your-statsfm-user-id>"`, `range: "lifetime"`, and `response_format: "json"`.
-3. Call statsfm_top_genres with `user_id: "<your-statsfm-user-id>"` and `range: "months"`; note which genres are surging versus the lifetime baseline.
+3. Call statsfm_top_genres with `statsfm_user: "<your-statsfm-user-id>"` and `range: "months"`; note which genres are surging versus the lifetime baseline.
 4. Ask the human to approve the playlist name, then preview `create_playlist` with `name: "Taste Profile — YYYY-MM"`, `public: false`, and `dry_run: true`; commit the same arguments without `dry_run` only after confirmation.
 5. For each of the top 3 genres, pick a seed artist for that genre from the taste profile, then call `search_tracks` with that artist as `query` and `limit: 2`: one anchor (a top artist) and one discovery (an artist not in the top artists). `search_tracks` takes free text only — it is `GET /search?type=track&q=…` and has no genre facet, so a genre has to reach it as an artist name, not as a genre name.
 6. Preview add_to_playlist with the created `playlist_id`, the selected track `uris` array, and `dry_run: true`; commit the same arguments without `dry_run` only after the human confirms.
@@ -30,7 +30,7 @@ Why it works: lifetime gives identity, the current month gives momentum, and the
 
 ```text
 1. Call whats_new with `since: "last-check"` and `dry_run: true` to preview the lookup budget.
-2. Call statsfm_recent_streams with `user_id: "<your-statsfm-user-id>"` and `limit: 10` for overnight context.
+2. Call statsfm_recent_streams with `statsfm_user: "<your-statsfm-user-id>"` and `limit: 10` for overnight context.
 3. Summarize new releases from followed artists and what actually got played overnight.
 4. If asked to queue a result, first preview add_to_queue with the selected track or episode `uri`, the confirmed active `device_id`, and `dry_run: true`; commit the same arguments without `dry_run` only after explicit confirmation.
 ```
@@ -89,7 +89,7 @@ Why it works: lifetime gives identity, the current month gives momentum, and the
 
 ```text
 1. Call grow_playlist with `playlist_id: "PLAYLIST_ID"`; it finds tracks co-occurring in your OTHER playlists.
-2. Cross-check each candidate with statsfm_top_tracks using `user_id: "<your-statsfm-user-id>"` and `range: "lifetime"`; demote anything already overplayed.
+2. Cross-check each candidate with statsfm_top_tracks using `statsfm_user: "<your-statsfm-user-id>"` and `range: "lifetime"`; demote anything already overplayed.
 3. Preview add_to_playlist with `playlist_id: "PLAYLIST_ID"`, the top 5 surviving track `uris` array, and `dry_run: true`, then commit the same arguments without `dry_run` only after confirmation.
 4. Report the evidence chain per track: which playlists it co-occurred in.
 ```
@@ -101,8 +101,8 @@ There is no cross-user taste-comparison tool. Use the registered social and per-
 > Risk: read-only — no Spotify or sidecar writes.
 
 ```text
-1. Call statsfm_friends for each explicit public `user_id`, then call statsfm_top_artists with `user_id` set to each of the two public stats.fm IDs.
-2. Call statsfm_top_genres with each of those two explicit `user_id` values if the overlap needs explaining.
+1. Call statsfm_friends for each explicit public `statsfm_user`, then call statsfm_top_artists with `statsfm_user` set to each of the two public stats.fm IDs.
+2. Call statsfm_top_genres with each of those two explicit `statsfm_user` values if the overlap needs explaining.
 3. Report shared artists and genre overlap, clearly separating observed overlap from your interpretation.
 4. If asked, build a playlist from your own profile with recipe 1 and share it.
 ```
@@ -128,7 +128,7 @@ Safe to run on someone else's account or a shared screen — zero writes.
 
 ```text
 1. Set SPOTIFY_MCP_READONLY=1 (or use a host config with it set) before starting.
-2. Call get_me; resolve the guest's public stats.fm identity with `statsfm_resolve_user`, passing their stats.fm user id or customId as `user_id`; then call statsfm_taste_profile with `statsfm_user` set to that same id.
+2. Call get_me; resolve the guest's public stats.fm identity with `statsfm_resolve_user`, passing their stats.fm user id or customId as `statsfm_user`; then call statsfm_taste_profile with `statsfm_user` set to that same id.
 3. Call get_recently_played and preview whats_new with `dry_run: true` for live color; neither step writes.
 4. Narrate the taste: genres, anchors, and clock. Offer recipe 1 as the follow-up — on their own account.
 ```

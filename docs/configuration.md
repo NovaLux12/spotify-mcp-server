@@ -17,6 +17,16 @@ The variables below are read at the documented call sites; set them in your MCP 
 | `SPOTIFY_HEADLESS` | unset | `1`, `true`, `yes`, or `on` enables browserless paste-flow authentication. |
 | `SPOTIFY_AUTH_TIMEOUT_MS` | `300000` | How long the browser flow waits for the OAuth callback before giving up and closing the listener. |
 | `SPOTIFY_REQUEST_TIMEOUT_MS` | `30000` | Per-request timeout for Spotify API calls and token refresh. |
+| `SPOTIFY_MCP_TRANSPORT` | `stdio` | `http` serves the same server over MCP Streamable HTTP instead of stdio. Opt-in and unchanged by default: with the variable unset, the process reads none of the other `SPOTIFY_MCP_HTTP_*` variables. An unrecognised value is a startup error, never a silent fall back to stdio. |
+| `SPOTIFY_MCP_HTTP_TOKEN` | none (required for `SPOTIFY_MCP_TRANSPORT=http`) | The bearer token the HTTP endpoint requires. There is no default and no anonymous mode. At least 16 printable-ASCII characters with no spaces. Mutually exclusive with `SPOTIFY_MCP_HTTP_TOKEN_FILE`; setting both is a startup error. |
+| `SPOTIFY_MCP_HTTP_TOKEN_FILE` | unset | Read the HTTP bearer token from a file instead, so the secret is not in the process environment. One trailing newline is trimmed. The file is warned about (not refused) if it is group- or other-readable. |
+| `SPOTIFY_MCP_HTTP_BIND` | `127.0.0.1` | HTTP listen address. A non-loopback value is **refused** unless `SPOTIFY_MCP_HTTP_ALLOW_NON_LOOPBACK` is also set — two settings, so a typo cannot publish the server. `0.0.0.0` and `::` are not loopback. |
+| `SPOTIFY_MCP_HTTP_PORT` | `9871` | HTTP listen port. Not 8888: that is the OAuth callback redirect's. `0` binds a kernel-assigned port and prints it in the startup line. |
+| `SPOTIFY_MCP_HTTP_PATH` | `/mcp` | Path the MCP endpoint is served on. Any other path is a 404, so an unauthenticated caller cannot walk paths to find one that skips the credential check. |
+| `SPOTIFY_MCP_HTTP_MAX_BODY_BYTES` | `1048576` | Ceiling on one HTTP request body. Counted on the stream, so a chunked body that declares no length is bounded too. |
+| `SPOTIFY_MCP_HTTP_RATE_LIMIT` | `600` | Requests per minute per client address. Applied **before** authentication, so guessing the token is throttled rather than being an unlimited oracle. |
+| `SPOTIFY_MCP_HTTP_MAX_SESSIONS` | `8` | Live HTTP sessions allowed at once; past it a new session gets a 503. Each session holds its own tool registry, so this is a memory bound rather than a throughput claim. |
+| `SPOTIFY_MCP_HTTP_ALLOW_NON_LOOPBACK` | unset | The second, separate opt-in required before `SPOTIFY_MCP_HTTP_BIND` may name a non-loopback address. Setting it alone changes nothing: the bind stays loopback. |
 | `SPOTIFY_MCP_MAX_ITEMS` | `50` | Default per-call item cap for list tools; `max_results` overrides per call. |
 | `SPOTIFY_MCP_FETCH_ALL_CAP` | `500` | Hard cap for `fetch_all=true` pagination walks. |
 | `SPOTIFY_MCP_HISTORY` | unset | `1`, `true`, `yes`, or `on` logs one JSONL line per agent-driven mutation. |
@@ -174,6 +184,60 @@ It is a **fallback, not the authority**, and the authority is the request funnel
 | unset | unset | `3` | `default` |
 
 So setting this variable has no effect on the radar tools while `SPOTIFY_MCP_MAX_CONCURRENCY` is set, and governs their width when it is not. With **neither** set the width is the funnel's own resolved default, `3` — not this variable's own constant. `DEFAULT_FANOUT_CONCURRENCY` (`4`) survives in `src/config.ts` for reference only; falling through to it would report a fan-out of 4 while the funnel permitted 3, in the unconfigured case, with nothing set to explain the disagreement. Two knobs bounding the same quantity from different places would multiply rather than add — the narrower one would win silently, and no payload could report which — so they are deliberately kept in agreement instead. `fanout_concurrency_source` names the variable actually in force, which is how you tell a funnel-derived width from one you chose here.
+
+### Streamable HTTP transport (opt-in)
+
+`SPOTIFY_MCP_TRANSPORT=http` serves the same MCP server over the Streamable HTTP transport instead of stdio. It is off by default and the stdio path is unchanged: with the variable unset, `resolveHttpConfig` returns immediately and reads none of the variables below it, so a stdio host cannot be affected by a stale `SPOTIFY_MCP_HTTP_*` in its environment.
+
+```sh
+SPOTIFY_MCP_TRANSPORT=http \
+SPOTIFY_MCP_HTTP_TOKEN="$(openssl rand -hex 24)" \
+node dist/index.js
+# [spotify-mcp] Streamable HTTP transport listening on http://127.0.0.1:9871/mcp
+```
+
+The startup line carries the port, because with `SPOTIFY_MCP_HTTP_PORT=0` there is no other way to learn it. It never carries a token, and neither credential is written to stdout or stderr anywhere in the transport.
+
+#### The authentication scheme, and why it is this one
+
+A **pre-provisioned static bearer token**, compared in constant time. There is no default, no anonymous mode, and no way to start the listener without one — a refusal exits non-zero having registered nothing.
+
+The alternative would be a resource-server OAuth design, and it is deliberately not here: it needs an authorization server, a token endpoint, and per-caller identity, and it collides with a decision this repo has already made. `src/auth.ts` refuses any non-loopback `SPOTIFY_REDIRECT_URI`, so a hosted process cannot complete a Spotify login at all without a separate design. Shipping half of that would put a token endpoint on a server nobody has threat-modelled. A shared secret is the smallest thing that makes the socket non-world-readable, and it is honest about its scope: **one user, one process, one account, one token**. It is a network credential guarding a network transport; it is not a Spotify credential and grants no Spotify scope.
+
+The token guards the endpoint; it does not replace the Spotify token in the profile's token file. Both are needed, for different reasons, and neither is ever sent to the other.
+
+#### Threat model
+
+- **Single user.** Every session of one process acts on the same account, chosen by `SPOTIFY_MCP_PROFILE`. There is no per-caller identity and no tenancy.
+- **Per-session isolation.** The MCP SDK's `Server` holds one transport, so each session gets its own `McpServer` **and its own `SpotifyClient`**. Sharing the client would give the second session the single `setProgressReporter` slot and redirect the first session's progress notifications onto the second session's stream.
+- **No cross-session token sharing.** No session can name another's `mcp-session-id` into anything but a 404, and a client that lost its session state cannot mint a new registry per request.
+- **Loopback unless deliberately opened twice.** `SPOTIFY_MCP_HTTP_BIND` off loopback needs `SPOTIFY_MCP_HTTP_ALLOW_NON_LOOPBACK` as well. On a loopback bind the `Host` header is also required to be a loopback name, which is the DNS-rebinding defence: a browser page that resolves its own domain to 127.0.0.1 cannot get a 401 it can read, and cannot get a 200 at all.
+- **Bounded input.** Bodies are capped on the stream, requests are rate-limited per address before authentication, live sessions are capped, and past the tracking cap unseen addresses share one bucket so flooding cannot grow the limiter's memory.
+- **Multi-user and SaaS hosting is a non-goal** — see [`docs/non-goals.md`](non-goals.md) § "Multi-tenant or hosted operation". A user who needs several accounts runs one process per account.
+
+#### What is refused, and how it fails
+
+Every one of these is a startup error with a non-zero exit, not a warning:
+
+| Situation | What happens |
+| --- | --- |
+| `SPOTIFY_MCP_TRANSPORT=http`, no token set | exit 1, naming both ways to set one |
+| A token under 16 characters, or containing a space, CR or LF | exit 1 — a space cannot be sent in an `Authorization` header, and CR/LF is request splitting |
+| Both token variables set | exit 1 — two sources for one secret means the wrong one can win silently |
+| `SPOTIFY_MCP_HTTP_TOKEN_FILE` unreadable | exit 1, naming the path |
+| `SPOTIFY_MCP_HTTP_BIND` off loopback without the second opt-in | exit 1, naming `SPOTIFY_MCP_HTTP_ALLOW_NON_LOOPBACK` |
+| `SPOTIFY_MCP_TRANSPORT` set to anything but `stdio`/`http` | exit 1 — never a silent fall back to stdio |
+| A request with no, or a wrong, `Authorization` header | 401 before any MCP work, disclosing no tool, session or count |
+| A `Host` header that is not loopback, on a loopback bind | 403 |
+| A body over `SPOTIFY_MCP_HTTP_MAX_BODY_BYTES` | 413 |
+| More than `SPOTIFY_MCP_HTTP_RATE_LIMIT` requests per minute from one address | 429 with `Retry-After` |
+| More than `SPOTIFY_MCP_HTTP_MAX_SESSIONS` live sessions | 503 with `Retry-After` |
+
+The 401 and the 429 body are deliberately identical for a wrong token and for no token: a difference would be an oracle telling an attacker which half of the guess was right.
+
+#### Exposing it beyond this machine
+
+If you set `SPOTIFY_MCP_HTTP_ALLOW_NON_LOOPBACK`, you have taken responsibility for the boundary this server does not build: TLS termination, and a real network policy in front of the listener. The bearer token is sent in a header on every request, so it crosses that boundary in the clear unless something terminates TLS first. Do not put this listener directly on a public interface.
 
 ### Mutation history
 
@@ -352,7 +416,7 @@ Two limits on that report, so it is not read as more than it is:
 
 ## Registration-gated endpoints
 
-Some Spotify Web API endpoints are denied at the app-registration level: on current app registrations they return `403 Forbidden` regardless of the OAuth scopes granted or the account's subscription tier. Verified by live probe on 2026-08-27 ([#329](https://github.com/NovaLux12/spotify-mcp-server/issues/329)):
+Some Spotify Web API endpoints are denied at the app-registration level: on current app registrations they return `403 Forbidden` regardless of the OAuth scopes granted or the account's subscription tier. The table below records the observed runtime behaviour rather than a verdict, because the sources that describe this class do not agree: Spotify's [February 2026 changelog](https://developer.spotify.com/documentation/web-api/references/changes/february-2026) marks a batch of operations `[REMOVED]`, while the [live OpenAPI schema](https://developer.spotify.com/reference/web-api/open-api-schema.yaml) still publishes most of those same paths carrying `deprecated: true`. The README [explains the disagreement in full](../README.md#registration-gated-endpoints). The classifier that decides which family is gated is `GATED_FAMILIES` in `src/gating.ts`. The `403` rows below come from a dated edge probe (recoverable as `git show 1a53544:memory/edge-probe-2026-08-26.json`; the file itself is dropped by `.gitignore`, which is why it is named here rather than linked) reported in [#329](https://github.com/NovaLux12/spotify-mcp-server/issues/329).
 
 | Response | Endpoints |
 |---|---|
@@ -360,7 +424,7 @@ Some Spotify Web API endpoints are denied at the app-registration level: on curr
 | `404 Not Found` | `/recommendations`, `/recommendations/available-genre-seeds` |
 | `410 Gone` | `/me/apps`, `/me/chapters` |
 
-Tools wrapping these endpoints remain exposed for legacy registrations and return a plain-English 403 explanation on current registrations. The undocumented `/me/library/contains` check is not gated and powers duplicate-cleanup tooling. Batch lookup and top-tracks tools are wrapped, but registration-gated families are listed above rather than described as generally available.
+Tools wrapping these endpoints stay registered and return a plain-English 403 explanation on current registrations. They are kept for a reason that is checkable in this tree — their callers disclose the 403 rather than degrading into a wrong answer — not because they are known to work elsewhere. Whether a *grandfathered* (pre-Nov-2024) registration answers `200` on any of these paths is **unverified** (#1338, #1399): no pre-Nov-2024 client id or app age is on record here, and the one probe artefact that was once cited for it records `403` for both `/users` paths. The authoritative list of gated families is `GATED_FAMILIES` in `src/gating.ts`, which is what the [README table](../README.md#registration-gated-endpoints) is generated from. The undocumented `/me/library/contains` check is not gated and powers duplicate-cleanup tooling. Batch lookup and top-tracks tools are wrapped, but registration-gated families are listed above rather than described as generally available.
 
 ## Not used
 

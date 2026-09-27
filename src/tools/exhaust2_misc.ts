@@ -59,17 +59,11 @@ import {
   receiptRetentionLabel,
   MAX_RECEIPTS,
 } from '../receipts.js';
+import { emit as emitBase, textResult } from '../result.js';
 
 // ---------------------------------------------------------------------------
 // Shared shapes + result helpers
 // ---------------------------------------------------------------------------
-
-type TextContent = { type: 'text'; text: string };
-type ToolResult = { content: TextContent[]; structuredContent?: Record<string, unknown> };
-
-function textResult(text: string, structured?: Record<string, unknown>): ToolResult {
-  return { content: [{ type: 'text', text }], ...(structured ? { structuredContent: structured } : {}) };
-}
 
 /**
  * Prose or JSON body; `structuredContent` is always attached (#52).
@@ -78,14 +72,19 @@ function textResult(text: string, structured?: Record<string, unknown>): ToolRes
  * all 56 call sites charged the host twice for one payload. The text block is
  * now a bounded summary of the sections beside it. The prose modes are
  * untouched — their text is already prose, so there is no second copy.
+ *
+ * The prose arm is `textResult` from `../result.js`, not a hand-built object
+ * (#582/#1477): one place decides when `structuredContent` rides along. The
+ * json arm is the module's own because #895 changed what that arm *emits* —
+ * `emitBase` still prints the whole payload, which is the double charge.
  */
 function emit(
   fmt: ResponseFormatValue | string | undefined,
   prose: string,
   payload: Record<string, unknown>,
-): ToolResult {
+): ReturnType<typeof emitBase> {
   if (fmt === 'json') return emitOnce(payload, summarizeExhaust2);
-  return { content: [{ type: 'text', text: prose }], structuredContent: payload };
+  return textResult(prose, payload);
 }
 
 /**

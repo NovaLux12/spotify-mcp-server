@@ -216,6 +216,9 @@
       "inspect_tool",
       "toolset_report"
     ],
+    "moodexpand": [
+      "expand_mood_to_queries"
+    ],
     "libraryanalytics": [
       "genre_trends_over_time",
       "library_coverage_report",
@@ -821,6 +824,7 @@
     "episode_runtime_report",
     "era_distribution_report",
     "era_preference_report",
+    "expand_mood_to_queries",
     "explicit_content_ratio",
     "export_all_playlists",
     "export_followed_artists",

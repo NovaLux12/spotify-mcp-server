@@ -32,6 +32,7 @@ import { spotifyId } from '../refs.js';
 import type { PlaylistItemObject } from '../types/spotify.js';
 import { ownStoreRoots, readLocalFile } from '../paths.js';
 import { consentFields, declaredCreationDate, provenanceNote, provenancePromptLines, type WriteProvenance } from './provenance.js';
+import { emit } from '../result.js';
 
 // ---------------------------------------------------------------------------
 // On-disk contract
@@ -88,18 +89,9 @@ const NO_GATE = 'this tool asks for no confirmation: the write is the single exp
 // ---------------------------------------------------------------------------
 
 type TextContent = { type: 'text'; text: string };
-type ToolResult = { content: TextContent[]; structuredContent?: Record<string, unknown> };
-
-const jsonText = (data: unknown): string => JSON.stringify(data, null, 2);
+;
 
 /** json mode stringifies the payload; payload always rides as structuredContent. */
-function shape(rf: ResponseFormatValue, prose: string, payload: Record<string, unknown>): ToolResult {
-  return {
-    content: [{ type: 'text', text: rf === 'json' ? jsonText(payload) : prose }],
-    structuredContent: payload,
-  };
-}
-
 /** `dry_run` fragment defaulting to TRUE (repo convention: previews are the default). */
 const DryRunDefault = z
   .boolean()
@@ -512,7 +504,7 @@ export function registerSwarm3SnapshotsTools(server: McpServer, client: SpotifyC
           `Would write ${snapshotDir()}/plsnap-<playlistId>-<today>-<seq>.json (dir 0700, file 0600).`,
           `Pass dry_run=false to take the snapshot.`,
         ].join('\n');
-        return shape(args.response_format, prose, payload);
+        return emit(args.response_format, prose, payload);
       }
       const live = await fetchLivePlaylist(client, playlistId, { maxItems: cap });
       const taken = new Date().toISOString();
@@ -561,7 +553,7 @@ export function registerSwarm3SnapshotsTools(server: McpServer, client: SpotifyC
           ? [`- TRUNCATED: item walk stopped at the cap of ${live.item_walk_cap} items; the playlist is larger — raise max_results to cover more.`]
           : []),
       ].join('\n');
-      return shape(args.response_format, prose, payload);
+      return emit(args.response_format, prose, payload);
     },
   );
 
@@ -609,7 +601,7 @@ export function registerSwarm3SnapshotsTools(server: McpServer, client: SpotifyC
         lines.push(`- ${r.snapshot_id} — ${bits.join(' · ')}${'error' in r ? ` [ERROR: ${(r as { error: string }).error}]` : ''}`);
       }
       if (footer) lines.push(footer);
-      return shape(args.response_format, lines.join('\n'), payload);
+      return emit(args.response_format, lines.join('\n'), payload);
     },
   );
 
@@ -645,7 +637,7 @@ export function registerSwarm3SnapshotsTools(server: McpServer, client: SpotifyC
         ...items.map((t, i) => `${i + 1}. ${t.name || t.uri} — ${t.uri}${t.added_at ? ` (added ${t.added_at})` : ''}`),
       ];
       if (footer) lines.push(footer);
-      return shape(args.response_format, lines.join('\n'), payload);
+      return emit(args.response_format, lines.join('\n'), payload);
     },
   );
 
@@ -663,7 +655,7 @@ export function registerSwarm3SnapshotsTools(server: McpServer, client: SpotifyC
       const stem = snapFileStem(path.split('/').pop() ?? path);
       if (isDry(args)) {
         const payload: Record<string, unknown> = { dry_run: true, snapshot_id: stem, file: path };
-        return shape(
+        return emit(
           args.response_format,
           `[dry run] delete_playlist_snapshot — would remove local file ${path}. Pass dry_run=false to delete.`,
           payload,
@@ -671,7 +663,7 @@ export function registerSwarm3SnapshotsTools(server: McpServer, client: SpotifyC
       }
       await unlink(path);
       const payload: Record<string, unknown> = { ok: true, deleted: true, snapshot_id: stem, file: path };
-      return shape(args.response_format, `Deleted snapshot file ${path}.`, payload);
+      return emit(args.response_format, `Deleted snapshot file ${path}.`, payload);
     },
   );
 
@@ -709,7 +701,7 @@ export function registerSwarm3SnapshotsTools(server: McpServer, client: SpotifyC
         `Diff ${from._meta.snapshot_id} (${from._meta.taken_at}) → ${to._meta.snapshot_id} (${to._meta.taken_at})`,
         ...diffLines(d, maxResults),
       ];
-      return shape(args.response_format, lines.join('\n'), payload);
+      return emit(args.response_format, lines.join('\n'), payload);
     },
   );
 
@@ -745,7 +737,7 @@ export function registerSwarm3SnapshotsTools(server: McpServer, client: SpotifyC
       ];
       if (d.added_count === 0) lines.length = 1;
       if (footer) lines.push(footer);
-      return shape(args.response_format, lines.join('\n'), payload);
+      return emit(args.response_format, lines.join('\n'), payload);
     },
   );
 
@@ -781,7 +773,7 @@ export function registerSwarm3SnapshotsTools(server: McpServer, client: SpotifyC
       ];
       if (d.removed_count === 0) lines.length = 1;
       if (footer) lines.push(footer);
-      return shape(args.response_format, lines.join('\n'), payload);
+      return emit(args.response_format, lines.join('\n'), payload);
     },
   );
 
@@ -820,7 +812,7 @@ export function registerSwarm3SnapshotsTools(server: McpServer, client: SpotifyC
         ...sorted.map(([month, count]) => `- ${month}: ${count}`),
         ...(undated > 0 ? [`- (undated/unparseable): ${undated}`] : []),
       ];
-      return shape(args.response_format, lines.join('\n'), payload);
+      return emit(args.response_format, lines.join('\n'), payload);
     },
   );
 
@@ -838,7 +830,7 @@ export function registerSwarm3SnapshotsTools(server: McpServer, client: SpotifyC
       const loaded = await loadSnapshots(playlistId);
       const valid = loaded.filter((l) => l.snap);
       if (valid.length === 0) {
-        return shape(
+        return emit(
           args.response_format,
           `No valid snapshots found for playlist ${playlistId} in ${snapshotDir()}.`,
           { ok: true, playlist_id: playlistId, entries: [] },
@@ -896,7 +888,7 @@ export function registerSwarm3SnapshotsTools(server: McpServer, client: SpotifyC
           );
         }
       }
-      return shape(args.response_format, lines.join('\n'), payload);
+      return emit(args.response_format, lines.join('\n'), payload);
     },
   );
 
@@ -945,7 +937,7 @@ export function registerSwarm3SnapshotsTools(server: McpServer, client: SpotifyC
           ? [`- Top duplicates: ${dups.slice(0, 5).map(([u, n]) => `${nameByUri.get(u) || u} ×${n}`).join(', ')}`]
           : []),
       ];
-      return shape(args.response_format, lines.join('\n'), payload);
+      return emit(args.response_format, lines.join('\n'), payload);
     },
   );
 
@@ -1008,7 +1000,7 @@ export function registerSwarm3SnapshotsTools(server: McpServer, client: SpotifyC
           ? invalid.map((r) => `- ${r.file}: ${r.issues.join('; ')}`)
           : []),
       ];
-      return shape(args.response_format, lines.join('\n'), payload);
+      return emit(args.response_format, lines.join('\n'), payload);
     },
   );
 
@@ -1056,7 +1048,7 @@ export function registerSwarm3SnapshotsTools(server: McpServer, client: SpotifyC
           ...(doomed.length > 20 ? [`… ${doomed.length - 20} more`] : []),
           'Pass dry_run=false to delete.',
         ];
-        return shape(args.response_format, lines.join('\n'), payload);
+        return emit(args.response_format, lines.join('\n'), payload);
       }
       let deleted = 0;
       const errors: Array<{ file: string; error: string }> = [];
@@ -1074,7 +1066,7 @@ export function registerSwarm3SnapshotsTools(server: McpServer, client: SpotifyC
         error_count: errors.length,
         errors,
       };
-      return shape(args.response_format, `Pruned ${deleted} snapshot file(s); ${errors.length} error(s).`, payload);
+      return emit(args.response_format, `Pruned ${deleted} snapshot file(s); ${errors.length} error(s).`, payload);
     },
   );
 
@@ -1134,7 +1126,7 @@ export function registerSwarm3SnapshotsTools(server: McpServer, client: SpotifyC
           ...opsPlanLines(ops),
           'Pass dry_run=false to execute.',
         ];
-        return shape(args.response_format, lines.join('\n'), payload);
+        return emit(args.response_format, lines.join('\n'), payload);
       }
       const res = await applyPlaylistOps(client, targetId, ops.add_uris, ops.remove_uris);
       const after = await fetchLivePlaylist(client, targetId);
@@ -1158,7 +1150,7 @@ export function registerSwarm3SnapshotsTools(server: McpServer, client: SpotifyC
         `#708 ${provenanceNote(consent)}`,
         ...(receiptLines ? [receiptLines] : []),
       ].join('\n');
-      return shape(args.response_format, prose, payload);
+      return emit(args.response_format, prose, payload);
     },
   );
 
@@ -1196,7 +1188,7 @@ export function registerSwarm3SnapshotsTools(server: McpServer, client: SpotifyC
         `Live ${live.tracks.length} rows vs snapshot ${snap.tracks.length} rows: +${ops.add_uris.length} to add, -${ops.remove_uris.length} to remove.`,
         ...opsPlanLines(ops),
       ];
-      return shape(args.response_format, lines.join('\n'), payload);
+      return emit(args.response_format, lines.join('\n'), payload);
     },
   );
 
@@ -1226,7 +1218,7 @@ export function registerSwarm3SnapshotsTools(server: McpServer, client: SpotifyC
       };
       const sample = (rows: SnapTrackRow[]) => rows.slice(0, 3).map((t) => t.name || t.uri).join(', ') || '—';
       const prose = `${from._meta.snapshot_id} → ${to._meta.snapshot_id}: +${d.added_count} / -${d.removed_count} (${d.unchanged_count} unchanged). Recently added: ${sample(d.added)}. Recently removed: ${sample(d.removed)}.`;
-      return shape(args.response_format, prose, payload);
+      return emit(args.response_format, prose, payload);
     },
   );
 
@@ -1263,7 +1255,7 @@ export function registerSwarm3SnapshotsTools(server: McpServer, client: SpotifyC
       ];
       if (d.added_count === 0) lines.length = 1;
       if (footer) lines.push(footer);
-      return shape(args.response_format, lines.join('\n'), payload);
+      return emit(args.response_format, lines.join('\n'), payload);
     },
   );
 
@@ -1300,7 +1292,7 @@ export function registerSwarm3SnapshotsTools(server: McpServer, client: SpotifyC
       ];
       if (d.removed_count === 0) lines.length = 1;
       if (footer) lines.push(footer);
-      return shape(args.response_format, lines.join('\n'), payload);
+      return emit(args.response_format, lines.join('\n'), payload);
     },
   );
 
@@ -1355,7 +1347,7 @@ export function registerSwarm3SnapshotsTools(server: McpServer, client: SpotifyC
         `Merge plan (${mode}): replay ${from._meta.snapshot_id} → ${to._meta.snapshot_id} onto live playlist ${targetId} ("${live.name}", ${live.tracks.length} rows).`,
         ...opsPlanLines(ops),
       ];
-      return shape(args.response_format, lines.join('\n'), payload);
+      return emit(args.response_format, lines.join('\n'), payload);
     },
   );
 
@@ -1430,7 +1422,7 @@ export function registerSwarm3SnapshotsTools(server: McpServer, client: SpotifyC
           ...opsPlanLines(ops),
           'Pass dry_run=false to execute.',
         ];
-        return shape(args.response_format, lines.join('\n'), payload);
+        return emit(args.response_format, lines.join('\n'), payload);
       }
       const res = await applyPlaylistOps(client, targetId, addUris, removeUris);
       const after = await fetchLivePlaylist(client, targetId);
@@ -1454,7 +1446,7 @@ export function registerSwarm3SnapshotsTools(server: McpServer, client: SpotifyC
         `#708 ${provenanceNote(consent)}`,
         ...(receiptLines ? [receiptLines] : []),
       ].join('\n');
-      return shape(args.response_format, prose, payload);
+      return emit(args.response_format, prose, payload);
     },
   );
 
@@ -1504,7 +1496,7 @@ export function registerSwarm3SnapshotsTools(server: McpServer, client: SpotifyC
         ...(drop.length > 20 ? [`… ${drop.length - 20} more`] : []),
         'Nothing was deleted — use prune_old_snapshots with dry_run=false to execute this policy.',
       ];
-      return shape(args.response_format, lines.join('\n'), payload);
+      return emit(args.response_format, lines.join('\n'), payload);
     },
   );
 
@@ -1549,7 +1541,7 @@ export function registerSwarm3SnapshotsTools(server: McpServer, client: SpotifyC
         ...perList.slice(0, 15).map((p) => `- ${p.playlist_name ?? p.playlist_id} (${p.playlist_id}): ${p.files} file(s), ${formatBytes(p.bytes)}`),
         ...(perList.length > 15 ? [`… ${perList.length - 15} more playlists`] : []),
       ];
-      return shape(args.response_format, lines.join('\n'), payload);
+      return emit(args.response_format, lines.join('\n'), payload);
     },
   );
 
@@ -1602,7 +1594,7 @@ export function registerSwarm3SnapshotsTools(server: McpServer, client: SpotifyC
           ? [`⚠ ${corrupt.length} corrupt file(s): ${corrupt.map((c) => c.file).join(', ')}`]
           : []),
       ];
-      return shape(args.response_format, lines.join('\n'), payload);
+      return emit(args.response_format, lines.join('\n'), payload);
     },
   );
 
@@ -1635,7 +1627,7 @@ export function registerSwarm3SnapshotsTools(server: McpServer, client: SpotifyC
           .map((l) => ({ file: l.file, path: l.path, snap: l.snap as PlaylistSnapshot }));
       }
       if (selected.length === 0) {
-        return shape(
+        return emit(
           args.response_format,
           'No snapshots selected — pass snapshots: [...] or playlist, or take a snapshot first.',
           { ok: false, selected_count: 0 },
@@ -1659,7 +1651,7 @@ export function registerSwarm3SnapshotsTools(server: McpServer, client: SpotifyC
           ...selected.map((s) => `- ${s.snap._meta.snapshot_id} (${s.snap._meta.track_count} tracks)`),
           'Pass dry_run=false to write the bundle.',
         ];
-        return shape(args.response_format, lines.join('\n'), payload);
+        return emit(args.response_format, lines.join('\n'), payload);
       }
       const bundle = {
         _meta: {
@@ -1680,7 +1672,7 @@ export function registerSwarm3SnapshotsTools(server: McpServer, client: SpotifyC
         snapshot_count: selected.length,
         sources: selected.map((s) => s.snap._meta.snapshot_id),
       };
-      return shape(
+      return emit(
         args.response_format,
         `Bundle written → ${outPath} (${formatBytes(payload.bytes as number)}), ${selected.length} snapshot(s).`,
         payload,
@@ -1736,7 +1728,7 @@ export function registerSwarm3SnapshotsTools(server: McpServer, client: SpotifyC
         }),
         ...(anomalies.length > 0 ? [`⚠ Unrecognized JSON files: ${anomalies.join(', ')}`] : []),
       ];
-      return shape(args.response_format, lines.join('\n'), payload);
+      return emit(args.response_format, lines.join('\n'), payload);
     },
   );
 

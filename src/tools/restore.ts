@@ -30,7 +30,6 @@ import {
   parseSpotifyUri,
   completenessFooter,
   truncateItems,
-  LIBRARY_WRITE_CHUNK,
 } from '../shaping.js';
 import type { ResponseFormatValue } from '../shaping.js';
 import { getConfig } from '../config.js';
@@ -47,6 +46,7 @@ import {
 import { issueReceipt, type Receipt } from '../receipts.js';
 import { receiptRecords, receiptsLines, writeVerdict } from './playlistreceipts.js';
 import { LIBRARY_BACKUP_SCHEMA_VERSION } from './backup.js';
+import { chunk } from '../chunk.js';
 
 // ---------------------------------------------------------------------------
 // Snapshot shape (#159 BackupBuilder contract)
@@ -135,16 +135,6 @@ const LIBRARY_CATEGORIES = [
 ] as const satisfies readonly RestoreCategory[];
 
 /**
- * `/me/library/contains` (read-only verification) accepts 50 uris per call —
- * a different, larger cap than the WRITE endpoint, which takes
- * `LIBRARY_WRITE_CHUNK` (40). The two are kept apart on purpose: conflating
- * them is what let the write path drift to an over-cap batch (#624).
- */
-const LIBRARY_CONTAINS_CHUNK = 50;
-const FOLLOW_CHUNK = 50;
-const ADD_ITEMS_CHUNK = 100;
-
-/**
  * A well-formed Spotify object URI (#624). Snapshot rows are caller-supplied
  * and go straight into a request query string, so a row like
  * `spotify:track:a&market=XX` would inject a parameter and a `#…` would
@@ -175,12 +165,6 @@ const RESERVATION_SCAN_FLOOR = 2000;
 /** Cap for the reservation walk: the floor, or snapshot size + headroom. */
 function reservationScanCap(snapshotPlaylistCount: number): number {
   return Math.max(RESERVATION_SCAN_FLOOR, snapshotPlaylistCount + getConfig().fetchAllCap);
-}
-
-function chunk<T>(items: readonly T[], size: number): T[][] {
-  const out: T[][] = [];
-  for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
-  return out;
 }
 
 /**
@@ -457,7 +441,7 @@ async function containsLibraryUris(
   uris: readonly string[],
 ): Promise<boolean[]> {
   const flags: boolean[] = [];
-  for (const part of chunk(uris, LIBRARY_CONTAINS_CHUNK)) {
+  for (const part of chunk(uris, 'library_reads')) {
     const res = await client.get<boolean[]>('/me/library/contains', { uris: part.join(',') });
     if (!res) throw new Error('Could not check current library state (/me/library/contains)');
     flags.push(...res);
@@ -470,7 +454,7 @@ async function followsArtistIds(
   ids: readonly string[],
 ): Promise<boolean[]> {
   const flags: boolean[] = [];
-  for (const part of chunk(ids, FOLLOW_CHUNK)) {
+  for (const part of chunk(ids, 'followed')) {
     // #638: `GET /me/following/contains` was removed by Spotify's February
     // 2026 changes; `GET /me/library/contains` is the documented read
     // replacement and it is the half of following that DID migrate — it
@@ -787,7 +771,7 @@ async function executeRestore(
     if (!catPlan || catPlan.planned === 0) continue;
 
     if ((LIBRARY_CATEGORIES as readonly string[]).includes(category)) {
-      const parts = chunk(catPlan.plannedUris, LIBRARY_WRITE_CHUNK);
+      const parts = chunk(catPlan.plannedUris, 'library_writes');
       const r = await writeChunked(parts, async (uris) => {
         // `LIBRARY_WRITE_CHUNK` (40) is the documented write cap, and
         // URLSearchParams keeps a snapshot-supplied URI from reshaping the
@@ -852,7 +836,7 @@ async function executeRestore(
           });
           continue;
         }
-        const r = await writeChunked(chunk(creation.itemUris, ADD_ITEMS_CHUNK), async (uris) => {
+        const r = await writeChunked(chunk(creation.itemUris, 'playlist_writes'), async (uris) => {
           await client.post(`/playlists/${created!.id}/items`, { uris });
         });
         addedTotal += r.itemsWritten;

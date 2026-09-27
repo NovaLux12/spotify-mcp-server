@@ -54,6 +54,7 @@ import {
 } from '../shaping.js';
 import type { ResponseFormatValue, PaginationInfo } from '../shaping.js';
 import { getConfig } from '../config.js';
+import { emit } from '../result.js';
 
 // ---------------------------------------------------------------------------
 // Shared shapes + plumbing
@@ -74,13 +75,6 @@ type ToolOut = {
   content: Array<{ type: 'text'; text: string }>;
   structuredContent?: Record<string, unknown>;
 };
-
-function emit(rf: ResponseFormatValue, prose: string, payload: Record<string, unknown>): ToolOut {
-  return {
-    content: [{ type: 'text', text: rf === 'json' ? JSON.stringify(payload, null, 2) : prose }],
-    structuredContent: payload,
-  };
-}
 
 /** m:ss duration formatting for prose rows; h:mm:ss once an hour or more. */
 function fmtDur(ms: number): string {

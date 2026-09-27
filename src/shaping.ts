@@ -15,6 +15,7 @@ import { runInToolContext } from './history.js';
 import { normalizeObjectSchema } from '@modelcontextprotocol/sdk/server/zod-compat.js';
 import { toJsonSchemaCompat } from '@modelcontextprotocol/sdk/server/zod-json-schema-compat.js';
 import { CHUNK_CAPS } from './chunk.js';
+import { resolveStatsfmUserId } from './lib/statsfm-client.js';
 
 /** Exact root input schema projected onto the production tools/list boundary. */
 export function finalInputSchema(input: unknown): Record<string, unknown> {
@@ -642,6 +643,138 @@ interface PlaylistInputResolution {
   deprecationNote: string | null;
 }
 
+// ---------------------------------------------------------------------------
+// stats.fm identity (#1318)
+// ---------------------------------------------------------------------------
+
+/** Canonical spelling of the stats.fm identity argument, for every tool. */
+export const STATSFM_USER_INPUT = 'statsfm_user';
+
+/**
+ * The legacy spelling, kept callable for one release and removed in the next
+ * minor (AGENTS.md §5).
+ *
+ * It is named ONCE here rather than at 43 call sites, because the whole point
+ * of the rename is that there is now one name to migrate to — a second list of
+ * "tools that still say user_id" is exactly the thing the rename removes.
+ */
+export const STATSFM_LEGACY_USER_INPUT = 'user_id';
+
+/**
+ * The release that removes `user_id` (#1318).
+ *
+ * Named once for the same reason `RETIRED_PLAYLIST_INPUTS_REMOVED_IN` is: the
+ * deprecation note, the SPEC table and the census must not be able to promise
+ * three different versions. The next minor from this branch removes it.
+ */
+export const STATSFM_USER_INPUT_REMOVED_IN = 'v2.2';
+
+/**
+ * A blank id is not an answer.
+ *
+ * `resolveStatsfmUserId` already declines to treat `""` or `"   "` as a
+ * supplied id, and this does the same before the alias comparison — otherwise a
+ * caller sending `user_id: ""` alongside a real `statsfm_user` would be told
+ * the two conflict, which is a claim about a value they never gave.
+ */
+function presentStatsfmUser(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  return value.trim() === '' ? undefined : value;
+}
+
+/**
+ * The identity argument, declared identically by every user-scoped stats.fm
+ * tool (#1318).
+ *
+ * One declaration for all four modules, so the two spellings cannot drift apart
+ * again — a per-module copy is what produced the split this issue removes. Each
+ * tool spreads it into its own shape, which is why it is a raw shape record
+ * rather than a `z.object`: the SDK's `server.tool` takes the inner shape, and
+ * exporting a wrapper would force every call site to unwrap it again.
+ *
+ * Both fields are `.optional()`: `STATSFM_USER_ID` supplies the default, which
+ * is what gives up the SDK's own "Required" error. `resolveStatsfmUserId` (via
+ * {@link resolveStatsfmUserInput}) owes the caller a better message in its
+ * place, and it is not optional bookkeeping — it is the replacement.
+ *
+ * The legacy field is still advertised for one release, so its description
+ * says what it is rather than reading like a peer: a host choosing between two
+ * optional fields with similar names has to be told which one is current.
+ */
+export const StatsfmUserInputFields = {
+  [STATSFM_USER_INPUT]: z
+    .string()
+    .min(1)
+    .optional()
+    .describe(
+      'stats.fm user id or customId (e.g. "martijn"). Defaults to STATSFM_USER_ID.',
+    ),
+  [STATSFM_LEGACY_USER_INPUT]: z
+    .string()
+    .min(1)
+    .optional()
+    .describe(
+      `Deprecated alias for ${STATSFM_USER_INPUT}; removed in ${STATSFM_USER_INPUT_REMOVED_IN}. `
+      + 'Send one spelling only — both with different values is an error.',
+    ),
+} as const;
+
+/**
+ * Resolve the stats.fm identity argument, accepting both spellings (#1318).
+ *
+ * Returns the SAME `PlaylistInputResolution` the playlist deprecation returns,
+ * so `withPlaylistInputMetadata` / `withPlaylistInputNote` carry the metadata
+ * for this deprecation without a second mechanism. That reuse is the reason
+ * this lives here and not in a statsfm-local helper: a caller parsing
+ * `deprecation_note` off any tool must not have to learn a new key.
+ *
+ * The conflict rule is AGENTS.md §5's, applied to a scalar:
+ *
+ *   canonical only            → no metadata
+ *   legacy only                → the value, plus a note naming the canonical field
+ *   both, agreeing            → the value, plus a note (the caller DID send a
+ *                               deprecated name, so the notice is owed even
+ *                               though the call is unambiguous)
+ *   both, disagreeing         → throw, naming BOTH fields, before any request
+ *   neither                   → `resolveStatsfmUserId` (STATSFM_USER_ID or throw)
+ *
+ * The disagreement test compares the values as normalized (trimmed), because
+ * that is the comparison that decides whether the call is ambiguous at all. A
+ * caller sending `"martijn"` and `" martijn "` has sent one answer twice, and
+ * refusing that would be a refusal a reader cannot act on.
+ */
+export function resolveStatsfmUserInput(
+  args: Readonly<Record<string, unknown>>,
+): PlaylistInputResolution & { userId: string } {
+  const canonical = presentStatsfmUser(args[STATSFM_USER_INPUT]);
+  const legacy = presentStatsfmUser(args[STATSFM_LEGACY_USER_INPUT]);
+
+  if (canonical !== undefined && legacy !== undefined) {
+    if (canonical.trim() !== legacy.trim()) {
+      throw new Error(
+        `conflicting stats.fm identity: ${STATSFM_USER_INPUT}="${canonical}" and `
+        + `${STATSFM_LEGACY_USER_INPUT}="${legacy}" are different; pass only ${STATSFM_USER_INPUT}.`,
+      );
+    }
+  }
+
+  const supplied = canonical ?? legacy;
+  const deprecatedInputs = legacy === undefined ? [] : [STATSFM_LEGACY_USER_INPUT];
+
+  return {
+    values: supplied === undefined ? [] : [supplied],
+    deprecatedInputs,
+    deprecationNote: deprecatedInputs.length === 0
+      ? null
+      : `${STATSFM_LEGACY_USER_INPUT} is deprecated; use ${STATSFM_USER_INPUT}. `
+        + `(${STATSFM_LEGACY_USER_INPUT} is removed in ${STATSFM_USER_INPUT_REMOVED_IN}.)`,
+    // The env fallback and the missing-identity throw stay with
+    // `resolveStatsfmUserId`, which owns that contract (#927). Re-implementing
+    // the precedence here would be a second copy that could drift.
+    userId: resolveStatsfmUserId(supplied, STATSFM_USER_INPUT),
+  };
+}
+
 function normalizeResolvedPlaylistValue(value: unknown): string {
   return normalizePlaylistReference(String(value));
 }
@@ -759,6 +892,73 @@ export function withPlaylistInputNote(text: string, resolved: PlaylistInputResol
 // ---------------------------------------------------------------------------
 // Truncation math (#53)
 // ---------------------------------------------------------------------------
+
+/**
+ * The names a bounded-read disclosure uses, repo-wide (#1423).
+ *
+ * A tool that reads a collection under a cap and must say so discloses it
+ * with THIS pair and nothing else:
+ *
+ * - `rows_read` — rows the bounded walk actually returned. The cap is a cap on
+ *   rows (pagination is per-row), so this counts rows, not requests and not
+ *   entities of some other type.
+ * - `reported_total` — the collection's OWN reported size, or `null` when the
+ *   server's count was not readable. Never the read size echoed back, and
+ *   never rounded down to `rows_read` when the total is unknown.
+ *
+ * with `truncated` beside them, `truncated_by_cap` when the cap is the reason
+ * rather than a walk that ended on a short page, and whichever cap was in
+ * force (`scan_cap` / `fetch_all_cap` / `item_walk_cap`).
+ *
+ * Full members: `merge_playlists`, `remove_unavailable_playlist_items`,
+ * `playlist_balance`. `take_playlist_snapshot` reports the same
+ * `reported_total` but names its read side `track_count` and its verdict
+ * `cap_reached` rather than `truncated`, because it writes a snapshot file
+ * rather than answering a question about a live read.
+ *
+ * ## Why this is a constant and not a convention in prose
+ *
+ * The read counter was spelled `rows_read` on two tools and `items_read` on
+ * two others, and `items_read` meant two unrelated things. A caller cannot
+ * check for a partial read generically when the key carrying the disclosure has
+ * to be guessed, and that is the same §6 shape as a value that lies: the count
+ * is real, the field that would have carried it is simply absent under the name
+ * the caller looked for.
+ *
+ * ## The one exception, and why it is not renamed
+ *
+ * `listening_streaks` reports `items_read` for LISTENING-HISTORY ENTRIES, not
+ * collection rows. That is a different quantity on a different collection —
+ * it is a cap on a cursor walk of `/me/player/recently-played`, with no
+ * reported total to sit beside — and it SHIPPED, in v2.1.0 and every release
+ * since. The repo's deprecation path (`resolvePlaylistInput` /
+ * `withPlaylistInputMetadata` / `withPlaylistInputNote`) is shaped around tool
+ * INPUTS; there is no output-field equivalent, so renaming a released output
+ * field would be a silent break with no migration behind it. It keeps its name
+ * and is listed in `RELEASED_DISCLOSURE_EXCEPTIONS` so the gate below can
+ * hold the exception open deliberately instead of by oversight.
+ */
+export const ROWS_READ_FIELD = 'rows_read';
+export const REPORTED_TOTAL_FIELD = 'reported_total';
+
+/**
+ * Tools permitted to disclose a bounded read under a name other than
+ * {@link ROWS_READ_FIELD}, each with the reason it is exempt.
+ *
+ * A new entry is a claim that the name is *correct* for that tool, not that
+ * the tool was missed. Both current entries are counted in a different unit
+ * from a collection walk.
+ *
+ * These two constants are what `tests/truncation-disclosure.test.ts` asserts
+ * emitted payloads against. The tools write their keys as plain literals
+ * rather than computed ones, because a payload a reader cannot grep is the
+ * problem this whole change exists to remove; the constant is the single
+ * source of truth the gate checks those literals against.
+ */
+export const RELEASED_DISCLOSURE_EXCEPTIONS: Readonly<Record<string, string>> = Object.freeze({
+  // Listening-history entries, not collection rows. Shipped in v2.1.0.
+  listening_streaks: 'counts /me/player/recently-played history entries, has no reported total, and is a released field name',
+});
 
 export interface TruncationCapabilities {
   maxResults?: boolean;
@@ -2008,6 +2208,28 @@ export function validateUris(
 }
 
 /**
+ * `untrusted()`, applied only to text that is not already delimited (#1422).
+ *
+ * A change list routinely mixes server-authored lines with values a caller
+ * marked at the point it formatted them — `swarm4_playlists.ts` marks a row
+ * label once, inside `rowLabel`, and every plan that renders it inherits that.
+ * Re-wrapping an already-delimited value cannot break it, because `neutralise`
+ * strips the inner angle brackets, but it renders `<<untrusted: untrusted: Track
+ * 1  >>`, which reads as a corrupted name rather than as a labelled one.
+ *
+ * The "already delimited" test is unforgeable for the same reason the marker
+ * itself is: `untrusted()` removes every `<` and `>` from its input, so no
+ * attacker-supplied name can arrive already shaped like this module's own
+ * output. Anything already reading `<<untrusted: … >>` was put there by
+ * `untrusted()`.
+ */
+function delimit(text: string): string {
+  return text.startsWith(`${UNTRUSTED_OPEN} `) && text.endsWith(` ${UNTRUSTED_CLOSE}`)
+    ? text
+    : untrusted(text);
+}
+
+/**
  * Deterministic description of what a destructive operation WOULD do (#57).
  * Rendered by tools when dry_run is set — no mutating endpoint is called.
  *
@@ -2018,12 +2240,17 @@ export function validateUris(
  * rendered as if this server had written it, on the surface where a model
  * decides whether a destructive operation is safe to commit. `action` is
  * server-authored at every call site and is left alone.
+ *
+ * `changes` goes through {@link delimit} rather than `untrusted` directly, so a
+ * change a caller already delimited keeps its single marker (#1422). For every
+ * call site that exists today — all of which pass raw text — the two are
+ * byte-identical.
  */
 export function describeDryRun(action: string, target: string, changes: readonly string[]): string {
-  const lines = [`[dry run] ${action} on ${untrusted(target)} — nothing was changed.`];
+  const lines = [`[dry run] ${action} on ${delimit(target)} — nothing was changed.`];
   if (changes.length > 0) {
     lines.push(`Would affect ${changes.length} item${changes.length === 1 ? '' : 's'}:`);
-    for (const change of changes) lines.push(`  - ${untrusted(change)}`);
+    for (const change of changes) lines.push(`  - ${delimit(change)}`);
   }
   return lines.join('\n');
 }

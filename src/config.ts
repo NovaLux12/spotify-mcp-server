@@ -1384,6 +1384,77 @@ export const DOCUMENTED_ENV_VARS: readonly DocumentedEnvVar[] = [
     default: String(DEFAULT_REQUEST_TIMEOUT_MS),
     inHelp: true,
   },
+  // #599: the opt-in Streamable HTTP transport. These six are in `--help`
+  // because they are what an operator has to know to USE the transport at all;
+  // the four tuning knobs below them are in the full reference only, which is
+  // where `docs/configuration.md` holds every read variable.
+  {
+    name: 'SPOTIFY_MCP_TRANSPORT',
+    summary: '`http` serves Streamable HTTP instead of stdio. Opt-in; `stdio` is the default and an unset value is not this.',
+    default: 'stdio',
+    inHelp: true,
+  },
+  {
+    name: 'SPOTIFY_MCP_HTTP_TOKEN',
+    summary: 'Bearer token the HTTP endpoint requires. Required for `SPOTIFY_MCP_TRANSPORT=http`; there is no default and no anonymous mode.',
+    default: null,
+    inHelp: true,
+  },
+  {
+    name: 'SPOTIFY_MCP_HTTP_TOKEN_FILE',
+    summary: 'Read the HTTP bearer token from a file instead. Wins over nothing — set exactly one of it and SPOTIFY_MCP_HTTP_TOKEN.',
+    default: null,
+    inHelp: true,
+  },
+  {
+    name: 'SPOTIFY_MCP_HTTP_BIND',
+    summary: 'HTTP listen address. A non-loopback value is refused unless SPOTIFY_MCP_HTTP_ALLOW_NON_LOOPBACK is also set.',
+    default: '127.0.0.1',
+    inHelp: true,
+  },
+  {
+    name: 'SPOTIFY_MCP_HTTP_PORT',
+    summary: 'HTTP listen port. Not 8888, which is the OAuth callback redirect.',
+    default: '9871',
+    inHelp: true,
+  },
+  {
+    name: 'SPOTIFY_MCP_HTTP_ALLOW_NON_LOOPBACK',
+    summary: `Second, separate opt-in required before SPOTIFY_MCP_HTTP_BIND may name a non-loopback address (${TRUTHY_ENV_VALUES.join('/')}).`,
+    default: null,
+    inHelp: true,
+  },
+  // `default: null` on the four `inHelp: false` rows is not a missing default.
+  // The field means "the value `--help` prints for this variable", and these
+  // four are not in `--help`, so there is nothing to print — and
+  // `tests/docs.env-parity.test.ts` requires every non-null default to appear
+  // in the rendered block. Their real defaults are in the
+  // `docs/configuration.md` summary table, which is the full reference and
+  // states every one of them.
+  {
+    name: 'SPOTIFY_MCP_HTTP_PATH',
+    summary: 'Path the HTTP MCP endpoint is served on; anything else is a 404.',
+    default: null,
+    inHelp: false,
+  },
+  {
+    name: 'SPOTIFY_MCP_HTTP_MAX_BODY_BYTES',
+    summary: 'Ceiling on one HTTP request body. Counted on the stream, not trusted from content-length.',
+    default: null,
+    inHelp: false,
+  },
+  {
+    name: 'SPOTIFY_MCP_HTTP_RATE_LIMIT',
+    summary: 'Requests per minute per client address. Applied BEFORE authentication, so guessing the token is throttled too.',
+    default: null,
+    inHelp: false,
+  },
+  {
+    name: 'SPOTIFY_MCP_HTTP_MAX_SESSIONS',
+    summary: 'Live HTTP sessions allowed at once. Each holds its own tool registry, so this is a memory bound.',
+    default: null,
+    inHelp: false,
+  },
 ] as const;
 
 /** Render the registry as the `Environment:` block of `--help`. */

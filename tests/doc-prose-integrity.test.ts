@@ -30,6 +30,14 @@
  *    asserting the manifest file is byte-identical afterwards.
  *  - **Normal work stays free.** Adding prose is what a tool-addition PR does.
  *    A gate that punishes it gets disabled, so that direction is asserted too.
+ *    It is asserted in two places, and they failed for different reasons. The
+ *    `errors` assertion held from the start; the *count* comparison did not.
+ *    This file compared `currentCount` to `pinnedCount`, and while the pin was
+ *    in sync those were equal, so the comparison looked like a second,
+ *    redundant check on the same fact. It was not: it also failed the moment a
+ *    paragraph was added, which is the one direction the gate is documented to
+ *    let through, and it said so with a message about a paragraph that had gone
+ *    missing. #1412 spent a diagnosis on it, and #1460 is the cleanup.
  */
 import './helpers/hermetic.js';
 
@@ -42,7 +50,8 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { describeDocument, proseDrift, proseUnitHash, splitProseUnits } from '../scripts/prose-manifest.mjs';
+import { describeDocument, proseDrift, proseUnitHash, proseUnitLabel, splitProseUnits } from '../scripts/prose-manifest.mjs';
+import { writeProvenanceFile } from './helpers/prose-tree.js';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const MANIFEST = join(ROOT, 'scripts', 'doc-prose-manifest.json');
@@ -65,6 +74,7 @@ const EXPECTED_FILES = [
   'docs/cookbook.md',
   'docs/distribution.md',
   'docs/schema-budgets.md',
+  'docs/v3-roadmap.md',
   'docs/wave2-composites.md',
   'skills/spotify-exhaustive-feature-sweep/SKILL.md',
   'skills/spotify-mcp-competitor-comparison/SKILL.md',
@@ -168,7 +178,13 @@ function realProseReport(): Run {
   return memo(reportCache, 'report', () => runCensus(['--prose-report']));
 }
 
-type ProseReport = { errors: string[]; currentCount: number; pinnedCount: number; files: string[] };
+type ProseReport = {
+  errors: string[];
+  currentCount: number;
+  pinnedCount: number;
+  coverage: { unpinned: Array<{ file: string; hash: string; label: string }>; missing: Array<{ file: string; hash: string; label: string }> };
+  files: string[];
+};
 const report = (): ProseReport => JSON.parse(realProseReport().stdout) as ProseReport;
 
 describe('hand-written prose integrity (#1384)', () => {
@@ -180,10 +196,40 @@ describe('hand-written prose integrity (#1384)', () => {
     const result = report();
     assert.deepEqual(result.errors, [], result.errors.join('\n'));
     assert.deepEqual(result.files, EXPECTED_FILES);
-    assert.equal(result.currentCount, result.pinnedCount, 'every pinned paragraph must be present, and the count is the pin itself');
+    // Every *pinned* paragraph is present. That is the one-directional fact,
+    // and `errors` above is where it is established — it names every way a pin
+    // can go missing and which paragraph did.
+    //
+    // It used to assert `currentCount === pinnedCount` instead, which is a
+    // different and stronger claim — that the pin covers every prose unit in
+    // the tree — wearing this message. It fires on the one direction where
+    // nothing is wrong: a contributor adding a contract paragraph to a pinned
+    // document turned the suite red with a message blaming a deletion, and
+    // nothing was missing. #1412 hit it (`1195 !== 1192`) and was first
+    // diagnosed as a stale gate, which was wrong; the count was the only
+    // evidence offered and it did not say which way round it differed.
+    //
+    // The claim it contradicted was never in doubt. "Adding prose is free" is
+    // stated as deliberate in AGENTS.md ("The gate (#1384)"), in this file's
+    // own header, and in `scripts/prose-manifest.mjs` ("adding prose is the
+    // normal case ... and must never be red"). Three documents said additions
+    // are free; this one assertion said otherwise, and it has said so since
+    // #1431 introduced it. The assertion was the outlier, not the design.
+    // Keeping the equality instead would be option (b) in #1460 — making
+    // `--prose-sync` mandatory for any prose addition — which is a behaviour
+    // change for contributors and has to be a deliberate choice made in the
+    // open, not an accident of a comparison operator.
+    //
+    // So the surplus is left free, and the reach check below stays where it
+    // was. `currentCount > 1000` is the non-vacuity claim: a walk that found
+    // nothing would have reported the same clean `errors: []` as a walk that
+    // read every document `EXPECTED_FILES` names, and only the count tells
+    // them apart. It is deliberately `currentCount` and not `pinnedCount` —
+    // the walk's reach is the thing under test here, and asserting the pin
+    // instead would let a walk that collected too few units look complete.
     assert.ok(
       result.currentCount > 1000,
-      `expected the pin to cover over a thousand prose blocks, found ${result.currentCount} — the walk is not covering what it claims to cover`,
+      `expected the walk to cover over a thousand prose blocks, found ${result.currentCount} — the walk is not covering what it claims to cover`,
     );
   });
 
@@ -314,11 +360,105 @@ describe('hand-written prose integrity (#1384)', () => {
     // gate would be routed around within a week, and a routed-around gate
     // catches nothing. Additions are free by construction — the pin is keyed on
     // content, so a key that was never pinned cannot be missing.
+    //
+    // The next test is where the *reporting* of that freedom is pinned. This one
+    // is the behaviour: `errors` stays empty. That was never the part that
+    // broke — `errors` always ignored additions. What broke was a caller
+    // comparing the two counts, which this file did.
     const source = await readFile(join(ROOT, 'README.md'), 'utf8');
     const manifest = { files: { 'README.md': describeDocument(source) } };
     const added = `${source}\nA brand-new paragraph that no pin has ever seen.\n`;
     const report = proseDrift(manifest, { 'README.md': added });
     assert.deepEqual(report.errors, [], 'adding prose must be free, or the gate punishes ordinary work');
+  });
+
+  it('reports a new paragraph and a lost one in different places, so neither can be read as the other (#1460)', async () => {
+    // The defect was not that `errors` ignored additions — it always did, and
+    // correctly. The defect was that `proseDrift` handed a caller two totals
+    // and nothing else, so the only way to learn that they differed was to
+    // subtract them, and the difference has two opposite meanings:
+    //
+    //     currentCount > pinnedCount   prose the manifest has never seen
+    //     currentCount < pinnedCount   prose a file no longer carries
+    //
+    // A caller comparing the totals directly cannot tell which it is looking
+    // at. This file did exactly that, with a message describing only the second
+    // row, so an addition was reported as a loss — see the coverage test above
+    // for what that cost (#1412, `1195 !== 1192`, first diagnosed as a stale
+    // gate because the count was the only evidence there was).
+    //
+    // So the direction is now named, and this asserts the naming in both
+    // directions against the same manifest. It is written to fail on the
+    // plausible wrong implementation too: reporting the unsigned difference
+    // satisfies neither row, which is what a reader would have guessed a bare
+    // `count` meant.
+    //
+    // Synthetic rather than taken from a real document, because the claim is
+    // about which bucket a unit lands in, not about any particular paragraph —
+    // and a fixture lifted from `README.md` would make this test go red the
+    // next time a sentence is reworded, for a reason that has nothing to do
+    // with what it is pinning. The neighbouring "reports a pin whose document
+    // is not scanned" case is synthetic for the same reason.
+    const first = 'The first paragraph, which the manifest does pin.\n';
+    const second = 'The second paragraph, which the manifest also pins.\n';
+    const third = 'A third paragraph that no pin has ever seen.\n';
+    const manifest = { files: { 'README.md': describeDocument(`${first}\n${second}`) } };
+
+    // Addition. The surplus is one unit, it is named, and it is on the
+    // `unpinned` side — where "not yet pinned" lives, a fact that is never a
+    // finding.
+    const withAddition = proseDrift(manifest, { 'README.md': `${first}\n${second}\n${third}` });
+    assert.deepEqual(withAddition.errors, [], 'precondition: an addition reports no error');
+    assert.equal(withAddition.coverage.unpinned.length, 1, 'the added paragraph must be reported as unpinned');
+    assert.equal(withAddition.coverage.missing.length, 0, 'a paragraph nobody pinned cannot be one that went missing');
+    assert.equal(
+      withAddition.coverage.unpinned[0].file,
+      'README.md',
+      'the unpinned entry must name the file it was found in, or a reader cannot act on it',
+    );
+    assert.equal(
+      withAddition.coverage.unpinned[0].label,
+      proseUnitLabel(third),
+      'the unpinned entry must name the paragraph, or `--prose-sync` is a command with nothing to act on',
+    );
+
+    // Loss. The same manifest, one paragraph removed, and the count now runs
+    // the *other* way — the pin promises a unit the file no longer has. The
+    // error already names it; the point is that the surplus side stays empty,
+    // which is what a difference with a sign could never have told you.
+    const withLoss = proseDrift(manifest, { 'README.md': `${first}\n${third}` });
+    // One error, not two. The added paragraph is right there in the same
+    // document and contributes nothing to `errors` — the whole point, and the
+    // reason a count comparison over this document was wrong in the first
+    // place.
+    assert.equal(
+      withLoss.errors.length,
+      1,
+      'precondition: only the removed paragraph is a finding. The added one sits in the same document and must not be one',
+    );
+    assert.equal(withLoss.coverage.missing.length, 1, 'the lost paragraph must be reported as missing');
+    assert.equal(withLoss.coverage.unpinned.length, 1, 'the added paragraph is still an addition, not part of the loss');
+    assert.equal(
+      withLoss.coverage.missing[0].label,
+      proseUnitLabel(second),
+      'the missing entry must carry the label the error names, so the two cannot disagree about which paragraph',
+    );
+    assert.deepEqual(
+      withLoss.errors,
+      withLoss.errors.filter((line) => line.includes(proseUnitLabel(second))),
+      'every error must be about a paragraph listed in `coverage.missing` — the two report the same loss and must not be able to drift apart',
+    );
+
+    // The counts themselves are unchanged and still worth reading; they are
+    // what tells a scan that found nothing apart from one that read every
+    // file. What is new is only that their difference no longer has to be
+    // interpreted — and note that the second case carries a surplus *and* a
+    // loss at once, which is precisely the case a single count comparison
+    // could not describe at all.
+    assert.equal(withAddition.currentCount, 3);
+    assert.equal(withAddition.pinnedCount, 2);
+    assert.equal(withLoss.currentCount, 2);
+    assert.equal(withLoss.pinnedCount, 2);
   });
 
   it('refuses to rewrite the pin when a pinned paragraph is gone', async () => {
@@ -349,6 +489,12 @@ describe('hand-written prose integrity (#1384)', () => {
         '--prose-sync',
         '--prose-manifest', copy,
         '--prose-override', `ARCHITECTURE.md=${truncated}`,
+        // #1440: `--prose-sync` now refuses to write from a tree it cannot
+        // vouch for. This test is about the *drop* refusal, so it states the
+        // tree it is syncing against rather than inheriting whatever git says
+        // about the machine the suite happens to run on — otherwise a
+        // contributor with a document open would see a different message.
+        '--prose-provenance', await writeProvenanceFile(dir),
       ]);
       assert.notEqual(run.status, 0, '--prose-sync rewrote the pin over a deleted paragraph');
       assert.match(run.stderr, /Refusing to rewrite the prose manifest/);
@@ -391,6 +537,9 @@ describe('hand-written prose integrity (#1384)', () => {
         '--prose-sync', '--retire', RETIREMENT_REASON,
         '--prose-manifest', copy,
         '--prose-override', `ARCHITECTURE.md=${truncated}`,
+        // #1440: same reasoning as above — this test asserts the *retirement*
+        // is recorded, so it names a tree a retirement is allowed to come from.
+        '--prose-provenance', await writeProvenanceFile(dir),
       ]);
       assert.equal(run.status, 0, `an acknowledged deletion must be accepted:\n${run.stderr}`);
 

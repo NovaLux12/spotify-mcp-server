@@ -39,28 +39,13 @@ import type {
   SpotifyVolumeTarget,
 } from '../types/spotify.js';
 import { ownStoreRoots, readLocalFile } from '../paths.js';
+import { textResult, emit } from '../result.js';
 
-type TextContent = { type: 'text'; text: string };
-type ToolResult = { content: TextContent[]; structuredContent?: Record<string, unknown> };
 type PlayableItem = SpotifyTrack | SpotifyEpisode;
 
 // ---------------------------------------------------------------------------
 // Shared shaping helpers
 // ---------------------------------------------------------------------------
-
-const textResult = (text: string, structured?: Record<string, unknown>): ToolResult => ({
-  content: [{ type: 'text', text }],
-  ...(structured ? { structuredContent: structured } : {}),
-});
-
-const jsonText = (data: unknown): string => JSON.stringify(data, null, 2);
-
-function shape(rf: ResponseFormatValue, prose: string, payload: Record<string, unknown>): ToolResult {
-  return {
-    content: [{ type: 'text', text: rf === 'json' ? jsonText(payload) : prose }],
-    structuredContent: payload,
-  };
-}
 
 /**
  * `dry_run` for the playback mutations (#836). This module used to declare its
@@ -396,7 +381,7 @@ export function registerSwarm3PlaybackTools(server: McpServer, client: SpotifyCl
         `  Shuffle: ${state.shuffle_state} · Repeat: ${state.repeat_state}`,
         `  Context: ${state.context ? `${state.context.type} ${state.context.uri}` : 'none'}`,
       ].join('\n');
-      return shape(rf, prose, payload);
+      return emit(rf, prose, payload);
     },
   );
 
@@ -436,7 +421,7 @@ export function registerSwarm3PlaybackTools(server: McpServer, client: SpotifyCl
         `Bookmark captured → ${dir}/${bookmarkPath(id)}`,
         `  "${bookmark.track_name}" at ${formatMs(bookmark.position_ms)} on "${bookmark.device_name ?? bookmark.device_id ?? 'unknown device'}"`,
       ].join('\n');
-      return shape(rf, prose, structured);
+      return emit(rf, prose, structured);
     },
   );
 
@@ -485,7 +470,7 @@ export function registerSwarm3PlaybackTools(server: McpServer, client: SpotifyCl
       ];
       if (isDry(args)) {
         const prose = describeDryRun('resume playback position', `bookmark ${bookmark.id}`, steps);
-        return shape(rf, prose, { dry_run: true, bookmark, steps });
+        return emit(rf, prose, { dry_run: true, bookmark, steps });
       }
       if (!targetId) {
         return textResult('Bookmark has no device id and no matching device is available — cannot resume.', { resumed: false });
@@ -513,7 +498,7 @@ export function registerSwarm3PlaybackTools(server: McpServer, client: SpotifyCl
         // Seek can race the transfer on slow devices; retry once after the transfer settles.
         await client.put(`/me/player/seek?position_ms=${bookmark.position_ms}&device_id=${encodeURIComponent(targetId)}`);
       }
-      return shape(rf, `Resumed "${bookmark.track_name}" at ${formatMs(bookmark.position_ms)} on "${device?.name ?? targetId}".`, {
+      return emit(rf, `Resumed "${bookmark.track_name}" at ${formatMs(bookmark.position_ms)} on "${device?.name ?? targetId}".`, {
         resumed: true,
         bookmark,
       });
@@ -550,7 +535,7 @@ export function registerSwarm3PlaybackTools(server: McpServer, client: SpotifyCl
         ...(lines.length ? lines : ['  (none yet — use capture_playback_position while something is playing)']),
         ...(cut.footer ? [`(${cut.footer})`] : []),
       ].join('\n');
-      return shape(rf, prose, { items: cut.items, pagination: { total: cut.total, returned: cut.returned, truncated: cut.truncated } });
+      return emit(rf, prose, { items: cut.items, pagination: { total: cut.total, returned: cut.returned, truncated: cut.truncated } });
     },
   );
 
@@ -575,10 +560,10 @@ export function registerSwarm3PlaybackTools(server: McpServer, client: SpotifyCl
       const file = `${dir}/${bookmarkPath(args.bookmark_id)}`;
       if (isDry(args)) {
         const prose = describeDryRun('delete playback bookmark', file, [`"${bookmark.track_name}" @ ${formatMs(bookmark.position_ms)}`]);
-        return shape(rf, prose, { dry_run: true, bookmark });
+        return emit(rf, prose, { dry_run: true, bookmark });
       }
       await unlink(file);
-      return shape(rf, `Deleted bookmark ${args.bookmark_id} (${file}).`, { deleted: true, bookmark });
+      return emit(rf, `Deleted bookmark ${args.bookmark_id} (${file}).`, { deleted: true, bookmark });
     },
   );
 
@@ -597,7 +582,7 @@ export function registerSwarm3PlaybackTools(server: McpServer, client: SpotifyCl
         `${devices.length} device(s) available:`,
         ...(lines.length ? lines : ['  (none — open Spotify on a device first)']),
       ].join('\n');
-      return shape(rf, prose, { items: devices, total: devices.length });
+      return emit(rf, prose, { items: devices, total: devices.length });
     },
   );
 
@@ -619,7 +604,7 @@ export function registerSwarm3PlaybackTools(server: McpServer, client: SpotifyCl
         `Volume report for ${devices.length} device(s) — active: ${active ? `"${active.name}" at ${volumeDisplay(active)}` : 'none'}:`,
         ...(lines.length ? lines : ['  (none)']),
       ].join('\n');
-      return shape(rf, prose, {
+      return emit(rf, prose, {
         items: devices.map((d) => ({
           id: d.id,
           name: d.name,
@@ -653,7 +638,7 @@ export function registerSwarm3PlaybackTools(server: McpServer, client: SpotifyCl
         `[plan] Set volume to ${args.volume}% on ${selected.length} device(s)${skippedNoIdNote(skippedNoId)}:`,
         ...(steps.length ? steps.map((s) => `  - ${s}`) : ['  (no volume-capable devices with a device id matched)']),
       ].join('\n');
-      return shape(rf, prose, {
+      return emit(rf, prose, {
         volume: args.volume,
         steps,
         devices: selected.map((d) => d.id),
@@ -685,7 +670,7 @@ export function registerSwarm3PlaybackTools(server: McpServer, client: SpotifyCl
           `${selected.length} device(s) → ${args.volume}%${skippedNoIdNote(skippedNoId)}`,
           steps,
         );
-        return shape(rf, prose, { dry_run: true, volume: args.volume, steps, skipped_no_id: skippedNoId });
+        return emit(rf, prose, { dry_run: true, volume: args.volume, steps, skipped_no_id: skippedNoId });
       }
       const applied: string[] = [];
       const failed: string[] = [];
@@ -698,7 +683,7 @@ export function registerSwarm3PlaybackTools(server: McpServer, client: SpotifyCl
         }
       }
       const prose = `Volume set to ${args.volume}% on ${applied.length}/${selected.length} device(s)${skippedNoIdNote(skippedNoId)}${failed.length ? ` — failed: ${failed.join(', ')}` : ''}.`;
-      return shape(rf, prose, {
+      return emit(rf, prose, {
         applied: true,
         volume: args.volume,
         applied_devices: applied,
@@ -731,7 +716,7 @@ export function registerSwarm3PlaybackTools(server: McpServer, client: SpotifyCl
         ...(lines.length ? lines : ['  (queue is empty)']),
         ...(cut.footer ? [`(${cut.footer})`] : []),
       ].join('\n');
-      return shape(rf, prose, {
+      return emit(rf, prose, {
         currently_playing: q.currently_playing ? { uri: q.currently_playing.uri, name: itemTitle(q.currently_playing) } : null,
         items: cut.items,
         total: entries.length,
@@ -774,7 +759,7 @@ export function registerSwarm3PlaybackTools(server: McpServer, client: SpotifyCl
         `  Shortest: ${shortest ? `"${shortest.name}" (${formatMs(shortest.duration_ms)})` : '—'}`,
         `  Current track remaining: ${formatMs(currentRemaining)} · est. total wait ${formatLong(payload.estimated_total_wait_ms)}`,
       ].join('\n');
-      return shape(rf, prose, payload);
+      return emit(rf, prose, payload);
     },
   );
 
@@ -832,7 +817,7 @@ export function registerSwarm3PlaybackTools(server: McpServer, client: SpotifyCl
           describeDryRun('split queue into playlist chunks', `${chunkPlans.length} chunk(s) of ≤${args.chunk_minutes ?? 30}m`, lines),
           steps.length ? '\nCalls that dry_run=false would make:\n' + steps.map((s) => `  - ${s}`).join('\n') : '',
         ].filter(Boolean).join('\n');
-        return shape(rf, prose, { dry_run: true, chunks: chunkPlans });
+        return emit(rf, prose, { dry_run: true, chunks: chunkPlans });
       }
 
       const me = await client.get<{ id?: string }>('/me');
@@ -865,7 +850,7 @@ export function registerSwarm3PlaybackTools(server: McpServer, client: SpotifyCl
       }
       const receiptLines = receiptsLines(allReceipts);
       const prose = `Created ${created.length} playlist(s) from the queue.`;
-      return shape(rf, receiptLines ? `${prose}\n${receiptLines}` : prose, { ...writeVerdict(allReceipts, expectedItems), created: true, chunks: created, receipts: receiptRecords(allReceipts) });
+      return emit(rf, receiptLines ? `${prose}\n${receiptLines}` : prose, { ...writeVerdict(allReceipts, expectedItems), created: true, chunks: created, receipts: receiptRecords(allReceipts) });
     },
   );
 
@@ -903,7 +888,7 @@ export function registerSwarm3PlaybackTools(server: McpServer, client: SpotifyCl
           : 'No duplicates in the upcoming queue.',
         ...groups.map((g) => `  - "${g.name}" ×${g.occurrences} at positions ${g.positions.join(', ')} (${formatMs(g.wasted_runtime_ms)} wasted)`),
       ].join('\n');
-      return shape(rf, prose, { duplicate_groups: groups, total_redundant: groups.reduce((n, g) => n + g.occurrences - 1, 0), wasted_runtime_ms: wasted });
+      return emit(rf, prose, { duplicate_groups: groups, total_redundant: groups.reduce((n, g) => n + g.occurrences - 1, 0), wasted_runtime_ms: wasted });
     },
   );
 
@@ -938,7 +923,7 @@ export function registerSwarm3PlaybackTools(server: McpServer, client: SpotifyCl
         ...(lines.length ? lines : ['  (nothing to prune — queue is already clean)']),
         keep.length ? `\nClean re-queue list (${keep.length} items):\n  ${keep.map((e) => e.uri).join('\n  ')}` : '',
       ].filter(Boolean).join('\n');
-      return shape(rf, prose, { drop: drop.map((e) => e.uri), keep: keep.map((e) => e.uri), dropped_count: drop.length });
+      return emit(rf, prose, { drop: drop.map((e) => e.uri), keep: keep.map((e) => e.uri), dropped_count: drop.length });
     },
   );
 
@@ -958,7 +943,7 @@ export function registerSwarm3PlaybackTools(server: McpServer, client: SpotifyCl
       const ctx = state.context;
       const base = snapshotOf(state, new Date(state.timestamp).toISOString());
       if (!ctx) {
-        return shape(rf, `Playing "${itemTitle(state.item)}" with no context (single track / autoplay).`, { ...base, context_enumerated: false });
+        return emit(rf, `Playing "${itemTitle(state.item)}" with no context (single track / autoplay).`, { ...base, context_enumerated: false });
       }
       let positionInContext: number | null = null;
       let contextTotal: number | null = null;
@@ -1099,7 +1084,7 @@ export function registerSwarm3PlaybackTools(server: McpServer, client: SpotifyCl
         `  Current: "${itemTitle(state.item)}" at ${formatMs(state.progress_ms ?? 0)}`,
         `  ${positionText}`,
       ].join('\n');
-      return shape(rf, prose, {
+      return emit(rf, prose, {
         ...base,
         context_enumerated: positionInContext !== null,
         position_in_context: positionInContext,
@@ -1147,7 +1132,7 @@ export function registerSwarm3PlaybackTools(server: McpServer, client: SpotifyCl
         `Next ${withEta.length} item(s) from the queue:`,
         ...(lines.length ? lines : ['  (queue is empty — predictions unavailable)']),
       ].join('\n');
-      return shape(rf, prose, { items: withEta, current_track_remaining_ms: currentRemaining });
+      return emit(rf, prose, { items: withEta, current_track_remaining_ms: currentRemaining });
     },
   );
 
@@ -1177,7 +1162,7 @@ export function registerSwarm3PlaybackTools(server: McpServer, client: SpotifyCl
         `  Device: ${state.device ? `"${state.device.name}" [${state.device.type}]` : 'unknown'}`,
         `  Context: ${state.context?.uri ?? 'none'} · ${state.is_playing ? 'playing' : 'paused'}`,
       ].join('\n');
-      return shape(rf, prose, payload);
+      return emit(rf, prose, payload);
     },
   );
 
@@ -1231,7 +1216,7 @@ export function registerSwarm3PlaybackTools(server: McpServer, client: SpotifyCl
         `Playback health check: ${healthy ? 'HEALTHY' : 'DEGRADED'}`,
         ...probes.map((p) => `  ${p.ok ? '✓' : '✗'} ${p.probe}: ${p.detail}`),
       ].join('\n');
-      return shape(rf, prose, { healthy, probes });
+      return emit(rf, prose, { healthy, probes });
     },
   );
 
@@ -1259,7 +1244,7 @@ export function registerSwarm3PlaybackTools(server: McpServer, client: SpotifyCl
       await writeSession(dir, session);
       const playing = state ? `"${itemTitle(state.item)}" on "${state.device?.name ?? '?'}"` : 'nothing playing';
       const prose = `Listening session started (${id}) — ${playing}.\nLog: ${dir}/${sessionPath(id)}`;
-      return shape(rf, prose, { started: true, session });
+      return emit(rf, prose, { started: true, session });
     },
   );
 
@@ -1298,7 +1283,7 @@ export function registerSwarm3PlaybackTools(server: McpServer, client: SpotifyCl
         `  Started: "${start.track_name ?? '?'}" → ended ${state ? `"${itemTitle(state.item)}" on "${state.device?.name ?? '?'}"` : 'nothing playing'}`,
         `  Log: ${dir}/${sessionPath(session.id)}`,
       ].join('\n');
-      return shape(rf, prose, { closed: true, session: closed });
+      return emit(rf, prose, { closed: true, session: closed });
     },
   );
 
@@ -1337,7 +1322,7 @@ export function registerSwarm3PlaybackTools(server: McpServer, client: SpotifyCl
             ]
           : []),
       ].join('\n');
-      return shape(rf, prose, payload);
+      return emit(rf, prose, payload);
     },
   );
 
@@ -1386,7 +1371,7 @@ export function registerSwarm3PlaybackTools(server: McpServer, client: SpotifyCl
       ];
       if (isDry(args)) {
         const prose = describeDryRun('transfer playback with state', `"${target.name}" [${target.type}]`, steps);
-        return shape(rf, prose, { dry_run: true, target: { id: target.id, name: target.name }, captured, steps });
+        return emit(rf, prose, { dry_run: true, target: { id: target.id, name: target.name }, captured, steps });
       }
       const failed: string[] = [];
       await client.put('/me/player', { device_ids: [target.id], play: args.play ?? true }).catch(() => { failed.push('transfer'); });
@@ -1415,7 +1400,7 @@ export function registerSwarm3PlaybackTools(server: McpServer, client: SpotifyCl
         await client.put(`/me/player/repeat?state=${captured.repeat_state}${qsAmp}`).catch(() => { failed.push('repeat'); });
       }
       const prose = `Transferred playback to "${target.name}" with state restored${failed.length ? ` (failed steps: ${failed.join(', ')})` : ''}.`;
-      return shape(rf, prose, { transferred: failed.length === 0, target: { id: target.id, name: target.name }, captured, failed_steps: failed });
+      return emit(rf, prose, { transferred: failed.length === 0, target: { id: target.id, name: target.name }, captured, failed_steps: failed });
     },
   );
 
@@ -1459,7 +1444,7 @@ export function registerSwarm3PlaybackTools(server: McpServer, client: SpotifyCl
         ...picked.map((e, i) => `  ${i + 1}. "${e.name}" (${formatMs(e.duration_ms)})`),
         `  Then: PUT /me/player/pause — after queue position ${lastPosition}`,
       ].join('\n');
-      return shape(rf, prose, payload);
+      return emit(rf, prose, payload);
     },
   );
 
@@ -1495,7 +1480,7 @@ export function registerSwarm3PlaybackTools(server: McpServer, client: SpotifyCl
         `Device census — ${devices.length} device(s) across ${groups.length} type(s):`,
         ...groups.map((g) => `  ${g.type}: ×${g.count} — ${g.names.map((n) => `"${n}"`).join(', ')}${g.volume_min !== null ? ` (vol ${g.volume_min}–${g.volume_max}%)` : ''}`),
       ].join('\n');
-      return shape(rf, prose, { groups, total_devices: devices.length });
+      return emit(rf, prose, { groups, total_devices: devices.length });
     },
   );
 }

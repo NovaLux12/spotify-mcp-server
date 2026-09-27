@@ -18,7 +18,17 @@ import { tmpdir } from 'node:os';
 import { dirname, extname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { proseDrift, syncProseManifest } from './prose-manifest.mjs';
+import {
+  contradictedByUpstream,
+  gitProvenanceIn,
+  proseDrift,
+  proseProvenanceVerdict,
+  proseSyncRefusals,
+  readFilesAtRef,
+  short,
+  stampProvenance,
+  syncProseManifest,
+} from './prose-manifest.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const requireFromRoot = createRequire(join(ROOT, 'package.json'));
@@ -66,17 +76,26 @@ const MARKER_SCAN_EXTENSIONS = new Set([
  * Directories skipped wholesale, in addition to every dot-entry (#1238).
  *
  * Dot-entries are skipped because they are VCS and tool metadata (`.git`,
- * `.github`, `.gitignore`) that is not authored prose, and because the #1383
- * census fixture used to be created *inside* the repository as
- * `.census-fixture-…`, where a scan running beside a parallel test could read a
- * half-written file and report a phantom orphan. That fixture is now rooted at
- * `os.tmpdir()` (#1417), so the parallel-read argument no longer has a call site
- * — it is kept because the skip is a *name* rule and the class of leak it was
- * added for is the class most likely to come back, not because any current test
- * does it. A future non-dot fixture directory in the repository is NOT covered
- * by this rule and will be walked; see the residual-risk note in
- * `check-no-repo-root-fixtures.mjs`. Same TDZ reason as above for being
- * module-scope.
+ * `.github`, `.gitignore`) that is not authored prose, and because the hazard
+ * they carry is concurrent-write safety, not any particular fixture (#1238).
+ * This scan is a gate that other processes write to underneath it: any
+ * directory the repository does not version — a fixture root, a scratch tree,
+ * an editor's swap directory — can be created and populated by a sibling
+ * process while the scan is walking, so reading one can observe a half-written
+ * file and report a marker pair that does not exist, or miss one that does. Test
+ * files here run in parallel against a shared working tree, which is one
+ * instance of that; it is not the only one, and a justification that named a
+ * single call site would go stale the moment that call site moved.
+ *
+ * The invariant, then, is: *skip everything the repository does not version.*
+ * A dot-entry is untracked by construction, so it is skipped for that reason
+ * and not because a particular test once wrote into one. The named directories
+ * below are the tracked-but-generated ones — a dependency tree, a build
+ * output, a coverage report — which are unversioned in the same way even
+ * though their names do not begin with a dot. That is also why a *future*
+ * non-dot fixture directory in the repository is NOT covered by this rule and
+ * will be walked; see the residual-risk note in `check-no-repo-root-fixtures.mjs`.
+ * Same TDZ reason as above for being module-scope.
  */
 const MARKER_SCAN_SKIP = new Set(['node_modules', 'dist', 'coverage', 'outbox', 'logs', 'backups']);
 
@@ -232,6 +251,37 @@ if (descriptionFixtureIndex >= 0) {
   process.exit(0);
 }
 /**
+ * Drives `moduleMapRow` against a supplied source (#1398).
+ *
+ * The #1398 regression is that the module map's rendered row must not depend on
+ * how long the file is — a comment-only edit under `src/` has to leave the
+ * generated block byte-identical. Asserting that against the repository's own
+ * `ARCHITECTURE.md` proves nothing, because `--write` is what keeps that block
+ * current: a test comparing the shipped block to itself would pass against the
+ * exact renderer that produced the defect, which is AGENTS.md §6's "a test that
+ * cannot fail". So the row is rendered here, over a caller-supplied source, and
+ * two sources that differ only in a comment line can be compared.
+ *
+ * The schema-byte figure is supplied rather than measured: it is registry
+ * state, and the point of the fixture is to vary the *source* while holding the
+ * registry fixed.
+ */
+const moduleRowFixtureIndex = args.indexOf('--module-row-fixture');
+if (moduleRowFixtureIndex >= 0) {
+  const fixturePath = args[moduleRowFixtureIndex + 1];
+  if (!fixturePath) throw new Error('--module-row-fixture requires a JSON file');
+  const fixture = JSON.parse(readFileSync(resolve(fixturePath), 'utf8'));
+  const row = moduleMapRow(
+    fixture.file ?? 'src/tools/fixture.ts',
+    fixture.source,
+    fixture.registered ?? 0,
+    fixture.schemaBytes,
+    new Intl.Segmenter('en', { granularity: 'sentence' }),
+  );
+  console.log(JSON.stringify({ row }));
+  process.exit(0);
+}
+/**
  * Drives `readCookbookRecipes` against a supplied cookbook source (#1288), so
  * the recipe-count measurement can be shown to reject a gapped or repeated set
  * of recipe headings.
@@ -301,6 +351,122 @@ function proseRetireReason() {
     );
   }
   return reason;
+}
+
+/**
+ * The `--allow-stale "<why>"` argument, or undefined when the flag is absent (#1440).
+ *
+ * Same validation as `--retire` for the same reason: a flag that is easy to pass
+ * with an empty value is a flag that gets passed with one. The difference is
+ * what it is allowed to unlock — `proseSyncRefusals` splits its refusals into
+ * hard and soft, and this only reaches the soft ones.
+ */
+function proseAllowStale() {
+  const index = args.indexOf('--allow-stale');
+  if (index < 0) return undefined;
+  const why = args[index + 1];
+  if (!why || why.startsWith('-')) {
+    throw new Error(
+      '--allow-stale requires a reason, e.g. --allow-stale "docs PR #1402 landed after this branch started; '
+      + 'these paragraphs are gone from the merged result too".\n'
+      + 'The reason is written into the manifest\'s provenance block. An acknowledgement with no reason is '
+      + 'indistinguishable from having not looked.',
+    );
+  }
+  return why;
+}
+
+/**
+ * Provenance of the tree the pin is being written from, or read against (#1440).
+ *
+ * `--prose-provenance <file>` substitutes a captured reading, for the same
+ * reason `--census-file` exists: `gitProvenanceIn` shells out, and a test that
+ * wants to observe the *refusal* — the branch of the code that only runs when
+ * the tree is behind or dirty — cannot arrange a real repository to be behind
+ * without moving the real `origin/main`. The substitute has to reach the real
+ * decision code, not a test-only copy of it, or the test proves the wrong
+ * function refuses.
+ */
+function provenanceUnderTest(docFiles) {
+  const index = args.indexOf('--prose-provenance');
+  if (index >= 0) {
+    if (!args[index + 1]) throw new Error('--prose-provenance requires a JSON file');
+    return JSON.parse(readFileSync(resolve(args[index + 1]), 'utf8'));
+  }
+  return gitProvenanceIn(ROOT, {
+    docFiles,
+    manifestPath: relative(ROOT, PROSE_MANIFEST),
+  });
+}
+
+/**
+ * Is `sha` provably an ancestor of `HEAD`? `null` when git cannot tell.
+ *
+ * The null is load-bearing, and it is wider than it first looks.
+ * `git merge-base --is-ancestor` exits 0 for "yes", 1 for "no", and 128 for "no
+ * such object" — and this repository's CI checks out with `fetch-depth: 1`, so
+ * the obvious reading ("only 128 is uncertain") is wrong in exactly the case
+ * that matters.
+ *
+ * **A shallow checkout whose `HEAD` is a graft point answers 1 for commits it
+ * cannot see.** The walk stops at the shallow boundary and reports "not an
+ * ancestor" rather than admitting it ran out of history, so exit 1 there means
+ * "not provable", not "no". Verified against this repository's own CI shape: a
+ * `fetch-depth: 1` checkout of `pull/<n>/merge` has the merge commit as a
+ * shallow root, so `git rev-list --count HEAD` is 1, and a pin stamped on the
+ * branch is a real ancestor of that merge commit in a full clone (exit 0) while
+ * the same query in the shallow clone exits 1.
+ *
+ * Collapsing either 128 or a grafted-1 into "no" turns every shallow CI run
+ * red, and a gate that is always red is a gate nobody reads. So: exit 0 is
+ * "yes"; anything else is a yes/no only when this checkout can actually walk
+ * the history, and `null` — unverifiable, not an error — when it cannot.
+ */
+function headContains(sha) {
+  const result = spawnSync('git', ['-C', ROOT, 'merge-base', '--is-ancestor', sha, 'HEAD'], {
+    encoding: 'utf8',
+  });
+  if (result.error) return null;
+  if (result.status === 0) return true;
+  if (result.status !== 1) return null;
+  // Exit 1 is only a real "no" if the walk could have reached the answer. A
+  // shallow repository whose HEAD is a graft point cannot, so a "no" from one
+  // is the absence of evidence rather than evidence of absence.
+  if (shallowHeadCannotWalk()) return null;
+  return false;
+}
+
+/**
+ * Is this checkout a shallow clone whose `HEAD` is a graft point — the state in
+ * which an `--is-ancestor` walk is truncated at `HEAD` and cannot answer "no"?
+ *
+ * `git rev-parse --is-shallow-repository` alone is not enough: a shallow clone
+ * that *has* fetched past the commit in question answers correctly. What breaks
+ * the walk is `HEAD` itself sitting on the shallow boundary, so this asks
+ * whether `HEAD` is listed in the shallow-boundary file.
+ *
+ * That file is read from the **common** git dir, not the per-worktree one: a
+ * linked worktree's `--absolute-git-dir` is `.git/worktrees/<name>`, which has
+ * no `shallow` file of its own, so reading it there would report every
+ * worktree as a full clone and reintroduce the false "no" on exactly the
+ * checkouts this repository is developed in.
+ */
+let shallowHeadCached;
+function shallowHeadCannotWalk() {
+  if (shallowHeadCached !== undefined) return shallowHeadCached;
+  const commonDir = spawnSync('git', ['-C', ROOT, 'rev-parse', '--path-format=absolute', '--git-common-dir'], { encoding: 'utf8' });
+  if (commonDir.error || commonDir.status !== 0) return (shallowHeadCached = false);
+  let boundary;
+  try {
+    boundary = readFileSync(join(commonDir.stdout.trim(), 'shallow'), 'utf8');
+  } catch {
+    // No shallow-boundary file at all: a full clone, so a "no" is a real "no".
+    return (shallowHeadCached = false);
+  }
+  const head = spawnSync('git', ['-C', ROOT, 'rev-parse', 'HEAD'], { encoding: 'utf8' });
+  if (head.error || head.status !== 0) return (shallowHeadCached = false);
+  const onBoundary = boundary.split('\n').some((line) => line.trim() === head.stdout.trim());
+  return (shallowHeadCached = onBoundary);
 }
 
 function readProseManifest({ required = true } = {}) {
@@ -447,13 +613,27 @@ if (proseReportIndex >= 0) {
   const documents = proseDocumentsUnderTest();
   const manifest = readProseManifest();
   const report = proseDrift(manifest, documents);
+  const provenance = proseProvenanceVerdict(manifest, { ancestor: headContains });
   console.log(JSON.stringify({
     errors: report.errors,
     currentCount: report.currentCount,
     pinnedCount: report.pinnedCount,
+    // Which way round the two counts differ. `errors` above already says which
+    // paragraphs are gone; this says which are new, and that "new" is not a
+    // finding. Without it a reader is left to subtract the totals, and the
+    // sign of that subtraction is exactly the guess #1460 was about.
+    coverage: report.coverage,
     files: report.files,
+    // Which tree the pin was generated from, and whether this checkout can
+    // still confirm it. A reader who is told "verified" can trust the pin; one
+    // told "unverifiable" knows the answer was not produced rather than found.
+    provenance: {
+      ...(manifest.provenance ?? {}),
+      status: provenance.status,
+      detail: provenance.detail,
+    },
   }, null, 2));
-  process.exit(report.errors.length > 0 ? 1 : 0);
+  process.exit(report.errors.length > 0 || provenance.error ? 1 : 0);
 }
 
 /**
@@ -472,11 +652,63 @@ if (args.includes('--prose-sync')) {
   // manifest. Passing only the flag produced retirement records with no reason
   // on them, which is the one field the record exists to carry.
   const reason = proseRetireReason();
-  const result = syncProseManifest(readProseManifest({ required: false }), documents, {
+  const allowStale = proseAllowStale();
+  const previous = readProseManifest({ required: false });
+
+  // Computed before the provenance decision, not after it, and the ordering is
+  // load-bearing. `syncProseManifest` is pure — it returns the manifest it would
+  // have written and writes nothing — so running it first costs nothing, and it
+  // is the only way the refusal below can name the paragraphs the author was
+  // about to retire. A refusal that says "this tree cannot be attested" and
+  // stops there tells the reader nothing about what was at stake, and the path
+  // of least resistance from there is `--allow-stale` without reading anything.
+  const result = syncProseManifest(previous, documents, {
     retire: reason,
     reason,
     date: new Date().toISOString().slice(0, 10),
   });
+
+  // #1440: refuse before the pin is rewritten, not after. A manifest that has
+  // already been written with a false reason is worse than one that was not
+  // written at all, because the false reason is then indistinguishable from a
+  // true one to everyone downstream.
+  const provenance = provenanceUnderTest(Object.keys(documents));
+  const refusals = proseSyncRefusals(provenance, { allowStale });
+  if (refusals.hard.length > 0 || refusals.soft.length > 0) {
+    // Evidence, not a second gate. A retirement reason is a claim about *why* a
+    // paragraph left; when that claim is "upstream reworded it" and the paragraph
+    // is still sitting unchanged in the file on the branch this merges into, the
+    // claim cannot be true — the change it names is not in this tree yet. That is
+    // #1439 exactly, and it is worth showing the author which of their pending
+    // retirements are contradicted rather than letting them pass `--allow-stale`
+    // over all of them. Matched by content hash, so a genuine partial reword
+    // upstream — same opening, new tail — is not flagged.
+    const contradicted = provenance.upstream
+      ? contradictedByUpstream(
+        result.dropped,
+        readFilesAtRef(ROOT, provenance.upstream, [...new Set(result.dropped.map((entry) => entry.file))]),
+      )
+      : [];
+    console.error(
+      `Refusing to rewrite the prose manifest: this tree cannot be attested (#1440).\n\n`
+      + [...refusals.hard, ...refusals.soft].map((line) => `${line}\n`).join('\n')
+      + (result.dropped.length > 0
+        ? `\nThis run would have retired ${result.dropped.length} pinned prose block(s):\n`
+          + result.dropped.map((entry) => `- ${entry.file}: "${entry.label}"`).join('\n')
+          + '\nThey are still pinned, and still in the gate. Resolve the tree question first, then re-run.\n'
+        : '')
+      + (contradicted.length > 0
+        ? `\nAnd ${contradicted.length} of them are still present in their file at ${short(provenance.upstream)}:\n`
+          + contradicted.map((entry) => `- ${entry.file}: "${entry.label}"`).join('\n')
+          + '\nA retirement whose reason is about something *else* — a reword upstream, a conflict resolved on\n'
+          + 'another branch — cannot be true of a paragraph that is sitting in the branch you are merging into.\n'
+          + 'Merge or rebase, then re-run; if the paragraph really is gone once you have, `--allow-stale` is\n'
+          + 'not what you want, `--retire "<the real reason>"` is.\n'
+        : ''),
+    );
+    process.exit(1);
+  }
+
   if (result.refused) {
     console.error(
       `Refusing to rewrite the prose manifest: ${result.dropped.length} pinned prose block(s) are no longer in their file.\n`
@@ -491,11 +723,23 @@ if (args.includes('--prose-sync')) {
     );
     process.exit(1);
   }
-  writeFileSync(PROSE_MANIFEST, `${JSON.stringify(result.manifest, null, 2)}\n`);
+  // Stamped last, from the same reading that was just accepted, so the recorded
+  // tree and the recorded pins cannot disagree. `allowStale` is carried in the
+  // block rather than in the retirement reason, because it qualifies the tree
+  // and not the prose: a reviewer asking "why might this reason be wrong" looks
+  // at the retirement, and this is what answers it.
+  const stamped = stampProvenance(result.manifest, {
+    head: provenance.head,
+    upstream: provenance.upstream,
+    behind: Boolean(provenance.behind),
+  });
+  if (allowStale) stamped.provenance.allowStale = allowStale;
+  writeFileSync(PROSE_MANIFEST, `${JSON.stringify(stamped, null, 2)}\n`);
   console.error(
-    `Wrote ${PROSE_MANIFEST}: ${Object.keys(result.manifest.files).length} file(s), `
-    + `${reportUnitCount(result.manifest)} pinned unit(s)`
-    + (result.retired.length > 0 ? `, ${result.retired.length} retired with a recorded reason` : ''),
+    `Wrote ${PROSE_MANIFEST}: ${Object.keys(stamped.files).length} file(s), `
+    + `${reportUnitCount(stamped)} pinned unit(s)`
+    + (result.retired.length > 0 ? `, ${result.retired.length} retired with a recorded reason` : '')
+    + (allowStale ? `, synced from a tree behind origin/main (acknowledged: ${allowStale})` : ''),
   );
   process.exit(0);
 }
@@ -772,6 +1016,21 @@ const shortSurface = `A server started with no \`SPOTIFY_MCP_TOOLSETS\` register
  */
 const cookbookIntro = `**${cookbook.count}** recipes you can paste to an agent (or run turn by turn) against SpotifyMCP. Each states the tools it uses and what you get. Recipe 1 is the flagship: stats.fm taste in, Spotify playlist out.`;
 
+/**
+ * The 3.0 headline, rendered for `docs/v3-roadmap.md`.
+ *
+ * A "what's coming" page is exactly where a hand-typed figure rots, because
+ * the default surface moves with almost every registry change and the page
+ * would go stale without anybody noticing until a reader counted the tools
+ * themselves. So the figures are measured here, in the same run that measures
+ * everything else, and the block is regenerated on any registry change.
+ *
+ * The gap between the two tool counts is a subtraction of two figures measured
+ * in this same run — not a figure reconstructed from anywhere else, which is
+ * the distinction that matters when a number is published as fact.
+ */
+const v3Headline = `Measured on this branch, just now: a default 3.0 session puts **${result.defaultTools} tools** in front of the model — ${result.defaultBytes.toLocaleString('en-US')} bytes of schema — drawn from **${result.tools}** this server knows how to register. The other ${result.tools - result.defaultTools} are one environment variable away, waiting behind \`SPOTIFY_MCP_TOOLSETS\` alongside **${result.resourceTemplates}** resource templates and **${result.prompts}** prompts.`;
+
 const blocks = [
   ['README.md', 'surface-census', shortSurface],
   ['README.md', 'gated-endpoints', gatedEndpointTable()],
@@ -787,6 +1046,7 @@ const blocks = [
   ['docs/wave2-composites.md', 'surface-census', wave2Surface(result)],
   ['docs/distribution.md', 'surface-census', distributionSurface(result)],
   ['docs/cookbook.md', 'recipe-index', cookbookIntro],
+  ['docs/v3-roadmap.md', 'v3-headline', v3Headline],
   ['skills/spotify-exhaustive-feature-sweep/SKILL.md', 'surface-census', skillSurface(result)],
   ['skills/spotify-mcp-competitor-comparison/SKILL.md', 'surface-census', skillSurface(result)],
   ['src/toolsets.ts', 'surface-census', [
@@ -1214,19 +1474,68 @@ function parseToolsetsModule() {
   };
 }
 
+/**
+ * The module map's third column, measured (#1398).
+ *
+ * This used to be `source.split('\n').length - 1` — a per-file line count. It is
+ * replaced by the bytes that file's tools add to a host's `tools/list` payload,
+ * because a line count made this block red for edits that change nothing it
+ * documents: any comment, blank line, reformat or unrelated fix in a file moved
+ * the number, and `--check` reported "generated module-map block is stale" for
+ * a surface that was byte-for-byte identical. That put `main` red twice
+ * (#1360, #1380) and cost three agents two `--write` cycles each. The coupling
+ * was strictly wider than the block's subject matter.
+ *
+ * The replacement is measured rather than declared, and it is the figure this
+ * repository already budgets: `schemaMeasurements` is the same per-module
+ * measurement `docs/schema-budgets.md` renders and the same one the startup
+ * budget gate enforces, taken from the finalized production `tools/list`. So
+ * the column now moves exactly when the documented surface moves, and it
+ * answers the question a reader actually has of a module map — which module
+ * costs a host context — instead of how much TypeScript it took to write.
+ * `src/client.ts` is the 2,923-line module that registers nothing and costs
+ * every host zero bytes; `src/tools/swarm3_playlistops.ts` is 2,054 lines and
+ * costs 29,163. LOC ranked those backwards.
+ *
+ * A file that is not in `REGISTRAR_MANIFEST` registers no tools, so it has no
+ * measurement at all. `undefined` renders as an em dash rather than `0`, which
+ * would read as a measurement of zero taken rather than a measurement not
+ * available.
+ */
+function schemaBytesCell(schemaBytes) {
+  return schemaBytes === undefined ? '—' : formatInteger(schemaBytes);
+}
+
+/**
+ * One module-map row.
+ *
+ * Split out of {@link moduleInventory} so a test can drive the renderer over a
+ * supplied source through `--module-row-fixture` rather than re-deriving the
+ * row shape in test code. The #1398 regression is a property of this
+ * function — that its output does not depend on how long the file is — and a
+ * test that re-implemented the comparison would pass against a renderer that
+ * had gone blank (AGENTS.md §6).
+ */
+function moduleMapRow(file, source, registered, schemaBytes, segmenter) {
+  const description = firstDescription(source, file, segmenter)
+    .replaceAll('|', '\\|')
+    .replace(/\s+/g, ' ');
+  const noun = registered === 1 ? 'tool' : 'tools';
+  return `| \`${file}\` | ${description} (${registered} registered ${noun}) | ${schemaBytesCell(schemaBytes)} |`;
+}
+
 function moduleInventory(census) {
   const files = inventoryFiles();
   const sentenceSegmenter = new Intl.Segmenter('en', { granularity: 'sentence' });
-  const rows = files.map((file) => {
-    const source = readFileSync(join(ROOT, file), 'utf8');
-    const description = firstDescription(source, file, sentenceSegmenter)
-      .replaceAll('|', '\\|')
-      .replace(/\s+/g, ' ');
-    const registered = census.perModule[file] ?? 0;
-    const noun = registered === 1 ? 'tool' : 'tools';
-    return `| \`${file}\` | ${description} (${registered} registered ${noun}) | ${source.split('\n').length - 1} |`;
-  });
-  return ['| File | Responsibility | LOC |', '|---|---|---:|', ...rows].join('\n');
+  const schemaBytesByFile = new Map(census.schemaMeasurements.map((row) => [row.file, row.schemaBytes]));
+  const rows = files.map((file) => moduleMapRow(
+    file,
+    readFileSync(join(ROOT, file), 'utf8'),
+    census.perModule[file] ?? 0,
+    schemaBytesByFile.get(file),
+    sentenceSegmenter,
+  ));
+  return ['| File | Responsibility | Schema bytes |', '|---|---|---:|', ...rows].join('\n');
 }
 
 function inventoryFiles() {
@@ -1235,12 +1544,74 @@ function inventoryFiles() {
     .map((file) => normalizeRepoPath(relative(ROOT, file))).sort()
 }
 
+/**
+ * A file's leading comment region, split into the two things it can offer: the
+ * first `/** … *\/` doc block and the run of `//` lines at the very top.
+ *
+ * The region ends at the first line that is neither blank nor a comment, so a
+ * doc comment sitting *below* an import is not a header comment and cannot be
+ * promoted into the module map by this. The `//` run is sliced off before the
+ * doc block is searched, so a `/**` quoted inside a line comment cannot be
+ * mistaken for one.
+ */
+function leadingCommentRegion(source) {
+  const header = [];
+  for (const line of source.split('\n')) {
+    // Trimmed, not raw: a doc comment's continuation lines are indented (` *
+    // …`), so testing the raw line stops the region at the `/**` that opened
+    // it and every module falls through to the "Runtime module for …" filler.
+    const trimmed = line.trim();
+    if (trimmed === '' || trimmed.startsWith('//') || trimmed.startsWith('/*') || trimmed.startsWith('*')) {
+      header.push(line);
+      continue;
+    }
+    break;
+  }
+  const text = header.join('\n');
+  // The trailing `\n` is required to be optional: `header` is a slice of the
+  // file, and a `//` comment that is the *entire* header has no newline after
+  // it. Requiring one silently killed the fallback for exactly the files that
+  // write a single summary line and no doc block (`src/types/spotify.ts`).
+  const lineRun = /^(?:\/\/[^\n]*(?:\n|$))+/.exec(text)?.[0] ?? '';
+  const rest = text.slice(lineRun.length);
+  // The one-line `/** … */` form first, then the multi-line block. The one-line
+  // pattern is deliberately newline-hostile (`[^\n]*?`, `[ \t]*`) so it cannot
+  // match a multi-line block and capture its body with the leading `*` intact.
+  // Four modules open with a one-line summary above their real doc block
+  // (`swarm3_discovery`, `swarm3_playback`, `swarm3_shows`, `swarm3_snapshots`);
+  // the old anchored multi-line-only pattern missed all four and published the
+  // "Runtime module for …" filler for each.
+  const doc = /^\/\*\*[ \t]*([^\n]*?)[ \t]*\*\//.exec(rest)?.[1]
+    ?? /\/\*\*\s*\n([\s\S]*?)\n\s*\*\//.exec(rest)?.[1]
+    ?? null;
+  return { doc, lineRun };
+}
+
+/**
+ * A module's one-line responsibility, for the module map's second column.
+ *
+ * #1398: this used to take a `/** … *\/` doc comment only when it was the very
+ * first thing in the file, and fall back to a run of `//` lines otherwise. So
+ * adding one `//` line *above* an existing doc comment demoted that doc comment
+ * to second choice and promoted the new line to the module's stated
+ * responsibility — the same false red the LOC column caused, by a second route,
+ * and with a worse result: the block recorded whatever comment happened to be
+ * first, so `// TODO: refactor` above a doc comment is a claim the module map
+ * would publish and `--check` would then hold someone to. Scanning the leading
+ * comment region and preferring the doc comment removes it.
+ *
+ * It changes four rows on the way in, all of them repairs: `swarm3_discovery`,
+ * `swarm3_playback`, `swarm3_shows` and `swarm3_snapshots` each open with a
+ * one-line `/** … *\/` summary above their real doc block, which the old
+ * position-0-only pattern could not read, so all four were published as the
+ * `Runtime module for …` filler. They now carry the same summary their sibling
+ * swarm modules already did.
+ */
 function firstDescription(source, fallback, segmenter) {
-  const doc = /^\/\*\*\s*\n([\s\S]*?)\n\s*\*\//.exec(source);
-  const leadingComments = /^(?:\/\/[^\n]*\n)+/.exec(source)?.[0];
-  const lines = doc
-    ? doc[1].split('\n').map((line) => line.replace(/^\s*\* ?/, '').trim())
-    : (leadingComments ?? '').split('\n').map((line) => line.replace(/^\/\/ ?/, '').trim());
+  const { doc, lineRun } = leadingCommentRegion(source);
+  const lines = doc !== null
+    ? doc.split('\n').map((line) => line.replace(/^\s*\* ?/, '').trim())
+    : lineRun.split('\n').map((line) => line.replace(/^\/\/ ?/, '').trim());
   while (lines.length > 0 && lines[0] === '') lines.shift();
   const paragraph = [];
   for (const line of lines) {
@@ -2054,8 +2425,22 @@ function checkDocumentation(blocks) {
   // Skipped by `--no-prose` (#1436), which is the whole reason that flag
   // exists: `scripts/doc-prose-manifest.json` is a documentation artifact, and
   // a caller asserting the *architecture* must not go red because somebody
-  // reworded ARCHITECTURE.md. See `checkProse` at the flag's declaration.
-  if (checkProse) errors.push(...proseDrift(readProseManifest(), proseDocumentsUnderTest()).errors);
+  // reworded ARCHITECTURE.md. See `checkProse` at the flag's declaration. The
+  // provenance verdict below is scoped with it, because it is a question about
+  // the same file: answering it under `--no-prose` would reintroduce exactly
+  // the coupling #1436 removed.
+  if (checkProse) {
+    const proseManifest = readProseManifest();
+    errors.push(...proseDrift(proseManifest, proseDocumentsUnderTest()).errors);
+    // #1440: the pin says which tree it was generated from, so a rebase or amend
+    // after the sync is a check-time error rather than a fact the next reader has
+    // to reconstruct. Only the `rewritten` verdict fires the gate; `unverifiable`
+    // is the normal state of a `fetch-depth: 1` checkout and is reported by
+    // `--prose-report` instead, because a gate that is red whenever the clone is
+    // shallow is a gate that gets ignored.
+    const provenance = proseProvenanceVerdict(proseManifest, { ancestor: headContains });
+    if (provenance.error) errors.push(provenance.error);
+  }
   for (const [file, name, body] of blocks) {
     if (tree.phantoms.has(`${file}:${name}`)) continue;
     const error = inspectGeneratedBlock(readFileSync(join(ROOT, file), 'utf8'), file, name, body);

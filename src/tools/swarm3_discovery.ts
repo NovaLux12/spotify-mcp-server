@@ -32,6 +32,7 @@ import type { ArtistReleaseProbe } from '../artistreleases.js';
 // pins the first as an exact statement, and a merged import would silently fail it.
 import { ARTIST_ALBUM_PAGE_LIMIT } from './catalog.js';
 import { MARKET_CODE, fetchAlbumsPerId, type PerIdUnresolved } from './catalog.js';
+import { emit } from '../result.js';
 
 // ---------------------------------------------------------------------------
 // Shared shapes + local plumbing (mirrors exhaust2 house helpers)
@@ -45,17 +46,7 @@ const SearchLimitFragment = z
   .optional()
   .describe('Results per page, 1-10 (Feb-2026 /search cap). Default: 5');
 
-type ToolOut = {
-  content: Array<{ type: 'text'; text: string }>;
-  structuredContent?: Record<string, unknown>;
-};
-
-function emit(rf: ResponseFormatValue, prose: string, payload: Record<string, unknown>): ToolOut {
-  return {
-    content: [{ type: 'text', text: rf === 'json' ? JSON.stringify(payload, null, 2) : prose }],
-    structuredContent: payload,
-  };
-}
+;
 
 /** m:ss duration formatting; h:mm:ss once an hour or more. */
 function fmtDur(ms: number): string {

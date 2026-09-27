@@ -221,6 +221,60 @@ export function realSleep(ms) {
 }
 
 /**
+ * Publish a token store atomically (#1459).
+ *
+ * A probe refresh is not a side effect of reading — it is the one place a probe
+ * script writes to the operator's LIVE credential store, and the value it writes
+ * may carry a refresh token Spotify has just rotated. A bare `writeFileSync`
+ * straight onto that path can therefore leave a truncated file behind, and a
+ * truncated `tokens.json` is an unreadable one: the operator is left needing a
+ * full `npm run auth` re-run to recover a credential the old file still held.
+ *
+ * The shape is the one `src/auth.ts` already uses for this exact file, and the
+ * one `src/receipts.ts`, `src/cachepersist.ts`, `src/tools/libraryinsights.ts`,
+ * `src/tools/freshness.ts` and `src/tools/statsfm_taste.ts` use for their own
+ * stores: write a temp file in the SAME directory, fsync it, then `rename(2)`
+ * over the target. The rename is the only mutation of the real path, so a crash
+ * before it leaves the previous store intact rather than a half-written one.
+ *
+ * The temp name carries the pid, so two probes refreshing at once cannot collide
+ * on one sidecar, and it is removed in a `finally` so a failed write cannot
+ * strand a partial file for the next run to trip over.
+ */
+export async function writeTokenStore(tokenFile, tokens) {
+  const { open, rename, unlink, chmod } = await import('node:fs/promises');
+  const { basename, dirname, join } = await import('node:path');
+  const directory = dirname(tokenFile);
+  const tmpFile = join(
+    directory,
+    `.${basename(tokenFile, '.json')}.${process.pid}.tmp`,
+  );
+  let created = false;
+  try {
+    // 'wx' fails rather than following a pre-existing symlink at the temp path,
+    // and 0o600 keeps a rotated refresh token off other accounts on the host.
+    const handle = await open(tmpFile, 'wx', 0o600);
+    created = true;
+    try {
+      await handle.writeFile(`${JSON.stringify(tokens, null, 2)}\n`, 'utf8');
+      // Durable before the rename can publish it: without the sync, a crash
+      // after the rename can leave the new NAME over old bytes.
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    await rename(tmpFile, tokenFile);
+    if (process.platform !== 'win32') await chmod(tokenFile, 0o600);
+  } finally {
+    if (created) {
+      await unlink(tmpFile).catch((err) => {
+        if (err?.code !== 'ENOENT') throw err;
+      });
+    }
+  }
+}
+
+/**
  * Run the probe sweep and return the report object. Never throws for an HTTP
  * status — a probe that cannot be sent is recorded, because a sweep that dies
  * halfway leaves a report that lies about how far it got.

@@ -2,7 +2,7 @@
  * Playlist batch operations — Stream D (#183, #189, #200).
  */
 import { z } from 'zod';
-import { capFor, runChunkedPlaylistWrite } from '../chunk.js';
+import { capFor, runChunkedPlaylistWrite, chunk } from '../chunk.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { SpotifyApiError, type SpotifyClient } from '../client.js';
 import { getConfig } from '../config.js';
@@ -13,10 +13,7 @@ import { walkTruncationNotice } from './playlists.js';
 import { resolveRequestMarket, withMarketSource } from '../markets.js';
 import { isGatedError } from '../gating.js';
 import type { PlaylistItemObject, SpotifyTrack, SpotifyEpisode } from '../types/spotify.js';
-type TextContent = { type: 'text'; text: string };
-type ToolResult = { content: TextContent[]; structuredContent?: Record<string, unknown> };
-function textResult(text: string, structured?: Record<string, unknown>): ToolResult { const content: TextContent[] = [{ type: 'text', text }]; return structured ? { content, structuredContent: structured } : { content }; }
-const jsonText = (data: unknown): string => JSON.stringify(data, null, 2);
+import { textResult, jsonText } from '../result.js';
 export const BATCH_ADD_ELICIT_THRESHOLD = 100;
 const MOVE_ELICIT_THRESHOLD = 50;
 const FETCH_ALL_CAP = () => getConfig().fetchAllCap;

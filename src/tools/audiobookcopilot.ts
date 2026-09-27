@@ -28,25 +28,15 @@ import {
   paginationInfo,
 } from '../shaping.js';
 import { getConfig } from '../config.js';
-
+import { formatDuration } from '../result.js';
 
 const CHAPTERS_PAGE_LIMIT = 50; // endpoint cap, verified live
-
-function formatDuration(ms: number): string {
-  const totalSeconds = Math.floor(ms / 1000);
-  const hours = Math.floor(totalSeconds / 3600);
-  const minutes = Math.floor((totalSeconds % 3600) / 60);
-  const seconds = totalSeconds % 60;
-  if (hours > 0) return `${hours}h ${minutes}m`;
-  if (minutes > 0) return `${minutes}m ${seconds}s`;
-  return `${seconds}s`;
-}
 
 function describeResumePoint(chapter: SpotifyChapterRow): string {
   const rp = chapter.resume_point;
   if (!rp) return 'no resume point';
   if (rp.fully_played) return 'fully played';
-  return `resume at ${formatDuration(rp.resume_position_ms)}`;
+  return `resume at ${formatDuration(rp.resume_position_ms, 'words')}`;
 }
 
 /** Structured row per chapter (1-based position). */
@@ -142,7 +132,7 @@ export function registerAudiobookCopilotTools(server: McpServer, client: Spotify
           : `Chapters of audiobook ${args.audiobook_id} (${chapters.length} total):`,
         ...chapters.map(
           (c, i) =>
-            `  ${i + 1}. "${c.name}" (${formatDuration(c.duration_ms)}) | ${describeResumePoint(c)} | URI: ${c.uri}`,
+            `  ${i + 1}. "${c.name}" (${formatDuration(c.duration_ms, 'words')}) | ${describeResumePoint(c)} | URI: ${c.uri}`,
         ),
       ];
       if (truncatedByCap) {
@@ -191,7 +181,7 @@ export function registerAudiobookCopilotTools(server: McpServer, client: Spotify
       }
       const target = chapters[args.chapter - 1];
       const contextUri = `spotify:audiobook:${args.audiobook_id}`;
-      const detail = `"${target.name}" (${formatDuration(target.duration_ms)})`;
+      const detail = `"${target.name}" (${formatDuration(target.duration_ms, 'words')})`;
 
       // dry_run (#57): the chapter lookup above resolved the concrete target;
       // stop here instead of overwriting playback via PUT /me/player/play.
@@ -273,11 +263,11 @@ export function registerAudiobookCopilotTools(server: McpServer, client: Spotify
           // Never "This audiobook has N chapters" from a capped prefix (#786).
           lines.push(
             `Only the first ${chapters.length} chapters of this audiobook were fetched (fetch-all cap ${cap} reached), so the book is longer than this.`,
-            `Next up when you start: Chapter 1 "${first.name}" (${formatDuration(first.duration_ms)}). The ${chapters.length} fetched chapters hold ${formatDuration(fetchedMs)} of listening time — the book's own total was not fetched.`,
+            `Next up when you start: Chapter 1 "${first.name}" (${formatDuration(first.duration_ms, 'words')}). The ${chapters.length} fetched chapters hold ${formatDuration(fetchedMs, 'words')} of listening time — the book's own total was not fetched.`,
           );
         } else {
           lines.push(
-            `This audiobook has ${chapters.length} chapters. Next up when you start: Chapter 1 "${first.name}" (${formatDuration(first.duration_ms)}), ${formatDuration(fetchedMs)} of listening time in total.`,
+            `This audiobook has ${chapters.length} chapters. Next up when you start: Chapter 1 "${first.name}" (${formatDuration(first.duration_ms, 'words')}), ${formatDuration(fetchedMs, 'words')} of listening time in total.`,
           );
         }
         return {
@@ -356,13 +346,13 @@ export function registerAudiobookCopilotTools(server: McpServer, client: Spotify
         truncatedByCap
           ? `Chapter ${idx + 1} of the first ${chapters.length} chapters fetched (fetch-all cap ${cap} reached): "${current.name}"`
           : `Chapter ${idx + 1} of ${chapters.length}: "${current.name}"`,
-        `Position in chapter: ${formatDuration(progressMs)} of ${formatDuration(current.duration_ms)} (${remainingInChapter === 0 ? 'chapter finished' : `${formatDuration(remainingInChapter)} left`})`,
+        `Position in chapter: ${formatDuration(progressMs, 'words')} of ${formatDuration(current.duration_ms, 'words')} (${remainingInChapter === 0 ? 'chapter finished' : `${formatDuration(remainingInChapter, 'words')} left`})`,
         truncatedByCap
           ? `${remaining} chapters remaining after this one within the fetched prefix — "${args.audiobook_id}" has more chapters than the ${cap} fetched.`
           : `${remaining} chapters remaining after this one.`,
         truncatedByCap
-          ? `Listening time left: ${formatDuration(remainingTotalMs)} within the fetched prefix — a lower bound, since later chapters were never fetched.`
-          : `Listening time left: ${formatDuration(remainingTotalMs)}.`,
+          ? `Listening time left: ${formatDuration(remainingTotalMs, 'words')} within the fetched prefix — a lower bound, since later chapters were never fetched.`
+          : `Listening time left: ${formatDuration(remainingTotalMs, 'words')}.`,
       ];
 
       return {

@@ -10,6 +10,7 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { ResourceTemplate } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { ReadResourceResult } from '@modelcontextprotocol/sdk/types.js';
+import { Rfc6570UriTemplate } from './uritemplate.js';
 import type { SpotifyClient } from '../client.js';
 import type {
   SpotifyArtistFull,
@@ -32,6 +33,7 @@ import {
   chapterDetailLines,
   chapterListLine,
 } from '../audiobookview.js';
+import { formatDuration } from '../result.js';
 
 type ResourceContents = ReadResourceResult;
 
@@ -47,13 +49,6 @@ function json(uri: string, payload: unknown): ResourceContents {
 
 function wantsJson(url: URL): boolean {
   return url.searchParams.get('format') === 'json';
-}
-
-function formatDuration(ms: number): string {
-  const totalSeconds = Math.round(ms / 1000);
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = String(totalSeconds % 60).padStart(2, '0');
-  return `${minutes}:${seconds}`;
 }
 
 // Feb-2026 platform cap: artist-albums pages top out at limit=10, so we walk
@@ -121,7 +116,7 @@ export function registerTemplateResources(server: McpServer, client: SpotifyClie
     );
     server.resource(
       `${name}-query`,
-      new ResourceTemplate(`${pattern}{+qs}`, { list: undefined }),
+      new ResourceTemplate(new Rfc6570UriTemplate(`${pattern}{+qs}`), { list: undefined }),
       {
         description: `Query-string variant of ${pattern}${suffix}`,
         mimeType: 'text/plain',
@@ -130,11 +125,14 @@ export function registerTemplateResources(server: McpServer, client: SpotifyClie
     );
   };
 
-  // Registration ORDER matters here: the SDK matches read requests against
-  // templates in insertion order, and `{+qs}` compiles to `(.+)` — so the
-  // artist {+qs} twin would also swallow `spotify://artist/{id}/albums`
-  // URIs. The nested albums pair is therefore registered before the bare
-  // artist pair so the more specific pattern always wins.
+  // Registration ORDER still matters here — the SDK matches read requests
+  // against templates in insertion order — but it is no longer load-bearing for
+  // correctness. `spotify://artist/{id}{+qs}` used to compile to a bare `(.+)`,
+  // so it would swallow `spotify://artist/{id}/albums` and the more specific
+  // pattern only won because the nested pair was registered first. #1401
+  // anchors the `{+qs}` matcher to a real query string, so the nested entry
+  // wins on its own; registering it first is kept as defence in depth, not
+  // because the order repairs the match.
 
   // spotify://artist/{id}/albums — GET /artists/{id}/albums?limit=10, walked
   // client-side up to ARTIST_ALBUMS_MAX_PAGES pages (Feb-2026 page cap).
@@ -230,7 +228,7 @@ export function registerTemplateResources(server: McpServer, client: SpotifyClie
         lines.push('Tracks:');
         album.tracks.items.forEach((track) => {
           const trackArtists = track.artists.map((a) => a.name).join(', ');
-          lines.push(`  ${track.track_number}. "${track.name}" — ${trackArtists} (${formatDuration(track.duration_ms)})`);
+          lines.push(`  ${track.track_number}. "${track.name}" — ${trackArtists} (${formatDuration(track.duration_ms, 'rounded')})`);
         });
       }
       return text(uri, lines.join('\n'));
@@ -327,13 +325,13 @@ export function registerTemplateResources(server: McpServer, client: SpotifyClie
       const lines: string[] = [
         `Episode: ${episode.name}`,
         `Show: ${episode.show.name}`,
-        `Duration: ${formatDuration(episode.duration_ms)} | Released: ${episode.release_date.slice(0, 10)}`,
+        `Duration: ${formatDuration(episode.duration_ms, 'rounded')} | Released: ${episode.release_date.slice(0, 10)}`,
       ];
       if (episode.resume_point) {
         lines.push(
           episode.resume_point.fully_played
             ? 'Resume point: fully played'
-            : `Resume point: ${formatDuration(episode.resume_point.resume_position_ms)}`,
+            : `Resume point: ${formatDuration(episode.resume_point.resume_position_ms, 'rounded')}`,
         );
       }
       lines.push(`Description: ${episode.description}`);
@@ -348,10 +346,11 @@ export function registerTemplateResources(server: McpServer, client: SpotifyClie
   // had nothing, so an audiobook-first host could not get one page of a book
   // without spending a tool call. These three close that gap.
   //
-  // Registration order is load-bearing, for the same reason artist-albums is
-  // registered before artist: the bare audiobook pair's `{+qs}` twin compiles
-  // to `(.+)`, so `spotify://audiobook/<id>{+qs}` would otherwise swallow
-  // `spotify://audiobook/<id>/chapters`. The nested pair goes first.
+  // Registration order is kept for the same reason artist-albums is registered
+  // before artist, but is no longer load-bearing: since #1401 the bare
+  // audiobook pair's `{+qs}` twin requires a real query string, so
+  // `spotify://audiobook/<id>{+qs}` no longer swallows
+  // `spotify://audiobook/<id>/chapters`. The nested pair still goes first.
 
   // Bounded page size for the chapters list. GET /audiobooks/{id}/chapters
   // takes limit/offset (verified against the Feb-2026 OpenAPI schema: limit

@@ -12,6 +12,7 @@ import type { SpotifyClient } from '../client.js';
 import { confirmViaElicitation, describeConfirmation, requiredConfirmationRefusal } from './confirm.js';
 import { formatReceipt, issueReceipt, type Receipt } from '../receipts.js';
 import { DryRun, describeDryRun, ResponseFormat } from '../shaping.js';
+import { textResult, emit, type ToolResult } from '../result.js';
 
 /**
  * Above this many fully-played episodes the bulk archive asks a human through
@@ -129,13 +130,6 @@ async function scanSavedEpisodes(client: SpotifyClient, cap: number): Promise<Ep
   }
 }
 
-type ToolResult = { content: Array<{ type: 'text'; text: string }>; structuredContent?: Record<string, unknown> };
-function textResult(text: string, s?: Record<string, unknown>): ToolResult { return { content: [{ type: 'text', text }], ...(s ? { structuredContent: s } : {}) }; }
-function emit(fmt: string | undefined, echo: Record<string, unknown>, text: string): ToolResult {
-  if (fmt === 'json') return { content: [{ type: 'text', text: JSON.stringify(echo, null, 2) }], structuredContent: echo };
-  return { content: [{ type: 'text', text }], structuredContent: echo };
-}
-
 /**
  * Success path for the archive: the delete is not invertible on its own, so the
  * receipt (resolvable via verify_receipt, revertible via undo_mutation) rides
@@ -147,7 +141,7 @@ function emitWithReceipt(
   text: string,
   receipt: Receipt,
 ): ToolResult {
-  const base = emit(fmt, echo, text);
+  const base = emit(fmt, text, echo);
   return {
     content: [{ type: 'text', text: fmt === 'json' ? base.content[0].text : `${base.content[0].text}\n${formatReceipt(receipt, { expectPresent: false })}` }],
     structuredContent: { ...(base.structuredContent ?? {}), receipt: receipt as unknown as Record<string, unknown> },

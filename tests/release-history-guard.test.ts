@@ -281,6 +281,93 @@ describe('release history: every tag has a CHANGELOG section (#932)', () => {
 });
 
 // ---------------------------------------------------------------------------
+// The CI wiring that makes the gate's input real
+// ---------------------------------------------------------------------------
+
+/**
+ * One workflow step, parsed out of `ci.yml` by name.
+ *
+ * A guard here is a real fix only if the *step* carries it, and a step is a
+ * block of lines — so this slices the block rather than searching the file for
+ * a string. Grepping the whole workflow for `if: ${{ !cancelled() }}` would
+ * pass as soon as any unrelated step had one, which is exactly the state the
+ * bug was found in: three steps carried the guard and the two that mattered
+ * did not.
+ */
+function workflowStep(workflow: string, name: string): string {
+  const lines = workflow.split('\n');
+  const start = lines.findIndex((line) => line.trim() === `- name: ${name}`);
+  assert.notEqual(start, -1, `ci.yml has no step named ${JSON.stringify(name)}`);
+  // A step ends where the next step begins, or at the end of the job.
+  const rest = lines.slice(start + 1);
+  const end = rest.findIndex((line) => /^\s{6}- name: /.test(line));
+  return [lines[start], ...(end === -1 ? rest : rest.slice(0, end))].join('\n');
+}
+
+/** Whether a step runs even after an earlier step failed. */
+function runsUnlessCancelled(step: string): boolean {
+  return /^\s*if:\s*\$\{\{[^}]*!cancelled\(\)/m.test(step);
+}
+
+/** Remove a step's `if:` line, which is the shape the step had before #932. */
+function withoutGuard(step: string): string {
+  return step
+    .split('\n')
+    .filter((line) => !/^\s*if:/.test(line))
+    .join('\n');
+}
+
+describe('ci.yml fetches the tags the release-history gate compares (#932)', () => {
+  it('the tag-fetch step and the gate run even when an earlier step failed', () => {
+    const workflow = readFileSync(join(ROOT, '.github/workflows/ci.yml'), 'utf8');
+
+    // A step with no `if:` is skipped as soon as any earlier step fails. The
+    // tag fetch had no `if:`, so an unrelated red upstream of it — the
+    // typecheck budget, in the run that reported this — dropped the tag list,
+    // and the gate below it was skipped with it. The test step that depends on
+    // those tags *did* carry `if: ${{ !cancelled() }}`, so it kept running and
+    // reported eight failures that all named a missing clone instead of the
+    // skipped fetch that caused them.
+    for (const name of ['Fetch release tags', 'Release-history check (every tag has a CHANGELOG section)']) {
+      assert.ok(
+        runsUnlessCancelled(workflowStep(workflow, name)),
+        `ci.yml step ${JSON.stringify(name)} is skipped when an earlier step fails, so the tags it needs never arrive`,
+      );
+    }
+  });
+
+  it('detects the step that lost its guard, rather than the workflow that kept one', () => {
+    // The regression sat next to three steps that already carried the guard,
+    // so "this workflow contains a `!cancelled()` step" is not the property
+    // being asserted — that check passed on the broken file. Slicing by step
+    // name is what makes it specific, and the mutation below is the proof: put
+    // the broken shape back and the same predicate has to reject it.
+    const workflow = readFileSync(join(ROOT, '.github/workflows/ci.yml'), 'utf8');
+    const fetchStep = workflowStep(workflow, 'Fetch release tags');
+
+    assert.equal(
+      runsUnlessCancelled(withoutGuard(fetchStep)),
+      false,
+      'the guard check accepts a step whose guard was removed, so it cannot detect this regression',
+    );
+
+    // And the same holds when the file itself is mutated rather than a slice
+    // of it — otherwise the rejection above could be an artefact of the
+    // slice boundary rather than of the missing line.
+    const brokenWorkflow = workflow.replace(
+      /^(\s*)if:\s*\$\{\{[^}]*!cancelled\(\)[^\n]*\n(?=[\s\S]*?^\s*run: git fetch --tags)/m,
+      '',
+    );
+    assert.notEqual(brokenWorkflow, workflow, 'precondition: the mutation changed nothing');
+    assert.equal(
+      runsUnlessCancelled(workflowStep(brokenWorkflow, 'Fetch release tags')),
+      false,
+      'the check still finds a guard on a step that no longer has one',
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
 // SECURITY.md
 // ---------------------------------------------------------------------------
 

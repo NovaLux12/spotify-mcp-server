@@ -322,6 +322,7 @@ outcome.
 - `docs/wave2-composites.md`: `surface-census`
 - `docs/distribution.md`: `surface-census`
 - `docs/cookbook.md`: `recipe-index`
+- `docs/v3-roadmap.md`: `v3-headline`
 - `skills/spotify-exhaustive-feature-sweep/SKILL.md`: `surface-census`
 - `skills/spotify-mcp-competitor-comparison/SKILL.md`: `surface-census`
 - `src/toolsets.ts`: `surface-census`
@@ -406,6 +407,27 @@ missing. Three things follow:
   `--prose-sync --retire "<reason>"` removes one, and it records the reason and
   the date permanently. Losing prose has to be a named, dated act, not a side
   effect.
+- **A retirement reason is a claim about a tree, and `--prose-sync` records
+  which one** ([#1440](https://github.com/NovaLux12/spotify-mcp-server/issues/1440)).
+  It refuses before it writes when the tree cannot be attested: a pinned
+  document with uncommitted changes (no override), or a branch that does not
+  contain `origin/main` / a checkout where `origin/main` does not resolve
+  (`--allow-stale "<why>"`, recorded in the manifest's `provenance` block). The
+  second refusal is the one that matters: a branch that predates a docs PR sees
+  that PR's reworded paragraphs as *absent*, retires them, and records a reason
+  describing a change the tree never saw — which is what #1439 shipped. Rebase
+  or merge `origin/main` and re-run. That refusal also names any pending
+  retirement whose paragraph is **still present upstream**, matched by content
+  hash: a reason like "reworded by #NNNN" cannot be true of a paragraph sitting
+  in the branch you are merging into. `--check` then confirms the pin's recorded
+  commit is still an ancestor of `HEAD`, and reports `verified` / `rewritten` /
+  `unverifiable` from `--prose-report`; `unverifiable` is the normal state of a
+  `fetch-depth: 1` CI checkout and is deliberately not an error.
+  **Rebasing invalidates the stamp** — the recorded commit is no longer an
+  ancestor of `HEAD` — so after a rebase or an amend, re-run `--prose-sync` on
+  the rebased tree and commit the result. Squash-merging a branch whose stamp
+  names one of its own commits has the same effect; the stamp must be committed
+  *after* the commit it names, which is why it lands as a second commit.
 - **The pin is hand-maintained on purpose.** It is not in a generated block
   because `--write` would refresh it, and `--write` is the generated-block step
   of the documented recovery above: a generated pin would have gone green one

@@ -1,0 +1,920 @@
+/**
+ * Provenance of the hand-written prose pin (#1440), and the shape of the
+ * justification that keeps the marker scan's skip list honest (#1427).
+ *
+ * ## The failure this exists for
+ *
+ * `scripts/doc-prose-manifest.json` records a *reason* for every paragraph that
+ * left a document. That reason is a claim about why, and it is permanent: it is
+ * written once, it is hand-maintained afterwards, and nothing ever re-checks it.
+ *
+ * PR #1439 shipped two of them that were false. The shape of the mistake is
+ * specific and worth stating, because it is not "someone typed a wrong reason":
+ *
+ *  1. A branch started before a documentation PR landed.
+ *  2. That PR reworded two paragraphs in `README.md`.
+ *  3. The branch's tree does not contain the reworded paragraphs, because the
+ *     branch has not merged the PR.
+ *  4. `--prose-sync` compared the branch's tree against the pin and concluded
+ *     the paragraphs had been *removed*.
+ *  5. The author wrote the reason that was true **on their machine** —
+ *     "reworded by upstream #1402" — and that reason is wrong, because the
+ *     reword had not reached their tree. The paragraph was never reworded here;
+ *     it had simply not arrived yet.
+ *
+ * The record is indistinguishable from a true one afterwards. The merge that
+ * would have made it true is the merge the branch was still waiting for.
+ *
+ * ## Why the guard is a refusal and not a warning
+ *
+ * A warning that still lets the false reason be written fixes nothing: the
+ * artefact is already in the file by the time the warning is read, and the
+ * artefact is the thing that is wrong. So `--prose-sync` refuses to write, and
+ * names what to do instead.
+ *
+ * ## What "stale" means here, enumerated
+ *
+ * A guard written for the case that was observed stops working on the next one,
+ * so each condition is named separately and each has its own test below:
+ *
+ *  - **The tree is behind `origin/main`.** The #1439 case, and the one a
+ *    "did you mean to delete this?" prompt cannot catch — from inside the stale
+ *    tree the deletion is real.
+ *  - **A pinned document or the manifest has uncommitted changes.** The sync
+ *    reads bytes that are in no commit, so the retirement describes a tree that
+ *    never existed, whether or not the author goes on to commit them.
+ *  - **`origin/main` cannot be resolved** — a shallow checkout, a clone with no
+ *    remote, a source tarball. "Cannot exclude behind" is not "not behind".
+ *  - **There is no usable tree at all** — no git, no commits.
+ *  - **The branch was rebased or amended after the sync.** Nothing is wrong at
+ *    the moment of writing, so this is caught on the *read* side: the pin names
+ *    the commit it was generated from, and `--check` asks whether that commit
+ *    is still an ancestor of `HEAD`.
+ *
+ * ## Why the override is narrower than the guard
+ *
+ * Two of these are *situations* rather than defects — a feature branch genuinely
+ * may not have merged a docs PR yet — and a gate with no way to proceed gets
+ * switched off. `--allow-stale "<why>"` exists for those, and it does not
+ * silence anything: the acknowledgement is written into the manifest's
+ * `provenance` block, where a reviewer reads it next to the retirement it
+ * qualifies. The uncommitted-changes refusal has no override, because there is
+ * no commit to stamp and inventing one is the false record the pin exists to
+ * prevent. A single escape hatch covering both would be a documented bypass of
+ * the case it was written for.
+ *
+ * ## Test-shape rules this file follows
+ *
+ *  - **The refusals are driven through the real CLI**, via
+ *    `--prose-provenance`, because a correct check that is never reached is the
+ *    failure this whole issue is about — the one #1238 had to fix in this repo
+ *    already. The substitute supplies the *reading*, not the decision.
+ *  - **Refusing is asserted on the file.** A command that printed a refusal and
+ *    wrote anyway would pass an exit-code assertion, and that is precisely the
+ *    failure mode.
+ *  - **The git reading is tested against a real repository**, built under
+ *    `os.tmpdir()`, not against a mock. `gitProvenanceIn` is the only place
+ *    that knows what `git status --porcelain` and `--is-ancestor` actually
+ *    return, and a hand-written fixture would encode the author's assumption
+ *    rather than git's behaviour.
+ *  - **Nothing here writes to the checked-in manifest.** Every CLI run gets
+ *    `--prose-manifest <copy>`, because `--prose-sync` *writes* that path.
+ */
+import './helpers/hermetic.js';
+
+import { describe, it } from 'node:test';
+import assert from 'node:assert/strict';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+import {
+  contradictedByUpstream,
+  gitProvenanceIn,
+  proseProvenanceVerdict,
+  proseSyncRefusals,
+  proseUnitHash,
+  stampProvenance,
+} from '../scripts/prose-manifest.mjs';
+import { CLEAN_TREE, writeProvenanceFile } from './helpers/prose-tree.js';
+
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
+const MANIFEST = join(ROOT, 'scripts', 'doc-prose-manifest.json');
+const CENSUS = join(ROOT, 'scripts', 'surface-census.mjs');
+
+/**
+ * Is this checkout one where an `--is-ancestor` walk is truncated at `HEAD`?
+ *
+ * Mirrors `shallowHeadCannotWalk` in `scripts/surface-census.mjs`, which is not
+ * exported. The duplication is deliberate and bounded, because the test below
+ * branches on the answer and its two branches assert **opposite** outcomes: a
+ * probe that drifts from the census sends the test down the branch the gate
+ * contradicts, and it fails loudly. It cannot pass by being wrong quietly.
+ *
+ * This is the condition that made the test un-runnable in CI rather than
+ * merely strict there. `actions/checkout` defaults to `fetch-depth: 1`, so
+ * `HEAD` sits on the shallow boundary; git reports "not an ancestor" for a
+ * commit created in this clone, but the walk that produced that answer never
+ * reached past `HEAD`, so the census correctly returns `null` — the verdict is
+ * `unverifiable`, not `rewritten` — and the gate stays silent *on purpose*.
+ * Asserting a non-zero exit in that environment asserts the bug away.
+ */
+function headIsGraftPoint(): boolean {
+  const commonDir = spawnSync('git', ['-C', ROOT, 'rev-parse', '--path-format=absolute', '--git-common-dir'], {
+    encoding: 'utf8',
+  });
+  if (commonDir.error || commonDir.status !== 0) return false;
+  let boundary: string;
+  try {
+    boundary = readFileSync(join(commonDir.stdout.trim(), 'shallow'), 'utf8');
+  } catch {
+    // No boundary file at all: a full clone, so a "no" really is a "no".
+    return false;
+  }
+  const head = spawnSync('git', ['-C', ROOT, 'rev-parse', 'HEAD'], { encoding: 'utf8' });
+  if (head.error || head.status !== 0) return false;
+  return boundary.split('\n').some((line) => line.trim() === head.stdout.trim());
+}
+
+/** The reason string the retirement tests record. */
+const RETIREMENT_REASON = 'reworded by upstream #1402';
+
+type Run = { status: number; stdout: string; stderr: string };
+
+function runCensus(args: string[]): Run {
+  try {
+    const stdout = execFileSync(process.execPath, ['scripts/surface-census.mjs', ...args], {
+      cwd: ROOT,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      maxBuffer: 64 * 1024 * 1024,
+    });
+    return { status: 0, stdout, stderr: '' };
+  } catch (error) {
+    const failure = error as { status?: number; stdout?: string; stderr?: string };
+    return { status: failure.status ?? 1, stdout: failure.stdout ?? '', stderr: failure.stderr ?? '' };
+  }
+}
+
+/**
+ * Scratch directories live under `os.tmpdir()`, never inside the repository and
+ * never at a fixed shared path: the test runner executes test files in parallel
+ * and other agents work in sibling worktrees, so a fixed path would be
+ * clobbered out from under a run. This also keeps `mkdtemp` clear of
+ * `scripts/check-no-repo-root-fixtures.mjs`, which fails any `mkdtemp` under
+ * `tests/` that does not root at `os.tmpdir()` (#1383/#1417).
+ */
+async function withScratchDir<T>(run: (dir: string) => Promise<T>): Promise<T> {
+  const dir = await mkdtemp(join(tmpdir(), 'spotify-mcp-provenance-'));
+  try {
+    return await run(dir);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+/** Run `git` in `dir`, letting a non-zero exit throw — a fixture that cannot be built is a bug. */
+function git(dir: string, ...argv: string[]): string {
+  return execFileSync('git', ['-C', dir, ...argv], { encoding: 'utf8' }).replace(/\n$/, '');
+}
+
+/**
+ * A real git repository under `dir`, with a real `refs/remotes/origin/main`.
+ *
+ * The remote is a plain ref, not a configured remote: `gitProvenanceIn` asks
+ * `rev-parse --verify refs/remotes/origin/main` and nothing more, so a ref set
+ * with `update-ref` is a faithful fixture and costs no network. `behind` is
+ * produced the way it actually happens — a sibling commit that `HEAD` does not
+ * contain — rather than by pointing the ref at a SHA that was never committed.
+ */
+async function scratchRepo(dir: string): Promise<{ path: string; head: string; originMain: string }> {
+  const path = join(dir, 'repo');
+  await mkdir(path, { recursive: true });
+  git(path, 'init', '--quiet', '--initial-branch=main');
+  git(path, 'config', 'user.email', 'provenance@example.invalid');
+  git(path, 'config', 'user.name', 'Provenance Fixture');
+  git(path, 'config', 'commit.gpgsign', 'false');
+  await writeFile(join(path, 'README.md'), 'A pinned paragraph that only exists in the first commit.\n');
+  git(path, 'add', 'README.md');
+  git(path, 'commit', '--quiet', '-m', 'first');
+  const first = git(path, 'rev-parse', 'HEAD');
+
+  await writeFile(join(path, 'README.md'), 'A pinned paragraph, and a second one added upstream.\n');
+  git(path, 'add', 'README.md');
+  git(path, 'commit', '--quiet', '-m', 'second');
+  const head = git(path, 'rev-parse', 'HEAD');
+
+  // A commit on a side branch: it descends from `first`, and `HEAD` does not
+  // contain it. That is precisely what "this branch is behind" means, and it is
+  // why the real failure was a reword this branch never saw.
+  const side = git(path, 'commit-tree', `${first}^{tree}`, '-p', first, '-m', 'upstream moved on');
+  git(path, 'update-ref', 'refs/remotes/origin/main', side);
+  return { path, head, originMain: side };
+}
+
+describe('prose pin provenance (#1440)', () => {
+  it('refuses to retire prose from a tree that is behind origin/main', async () => {
+    // The #1439 case, driven through the real command. Before the fix this run
+    // exited 0 and wrote a retirement whose reason described a change this tree
+    // had never seen; the manifest copy below is asserted byte-identical, so a
+    // fix that warns and writes anyway fails here.
+    const repoBefore = await readFile(MANIFEST, 'utf8');
+    await withScratchDir(async (dir) => {
+      const copy = join(dir, 'manifest.json');
+      const truncated = join(dir, 'ARCHITECTURE.md');
+      const source = await readFile(join(ROOT, 'ARCHITECTURE.md'), 'utf8');
+      const kept = source.split('\n').filter((line) => !line.includes('Spotify is the system of record'));
+      assert.notEqual(kept.length, source.split('\n').length, 'the fixture paragraph was not found — this test would prove nothing');
+      await writeFile(copy, repoBefore);
+      await writeFile(truncated, kept.join('\n'));
+      await writeProvenanceFile(dir, { ...CLEAN_TREE, behind: true });
+
+      const run = runCensus([
+        '--prose-sync', '--retire', RETIREMENT_REASON,
+        '--prose-manifest', copy,
+        '--prose-override', `ARCHITECTURE.md=${truncated}`,
+        '--prose-provenance', join(dir, 'provenance.json'),
+      ]);
+
+      assert.notEqual(run.status, 0, '--prose-sync retired prose from a tree that is behind origin/main');
+      assert.match(run.stderr, /Refusing to rewrite the prose manifest/);
+      assert.match(run.stderr, /behind the branch it will merge into/);
+      assert.match(run.stderr, /Rebase or merge origin\/main/, 'a refusal that does not say what to do next gets routed around');
+      assert.equal(
+        await readFile(copy, 'utf8'),
+        repoBefore,
+        'the manifest changed on disk even though the command reported a refusal — refusing has to mean not writing',
+      );
+      assert.equal(
+        await readFile(MANIFEST, 'utf8'),
+        repoBefore,
+        'this test wrote to the checked-in manifest instead of the copy it was given',
+      );
+    });
+  });
+
+  it('refuses when origin/main cannot be resolved at all', async () => {
+    // A separate case with the same wrong answer, and it is separate because
+    // "I could not find upstream" is not the same fact as "upstream is ahead".
+    // Collapsing the two would let a shallow checkout retire prose, which is
+    // the #1439 failure with the check quietly unable to run.
+    await withScratchDir(async (dir) => {
+      const copy = join(dir, 'manifest.json');
+      await writeFile(copy, await readFile(MANIFEST, 'utf8'));
+      await writeProvenanceFile(dir, { ...CLEAN_TREE, upstream: null, behind: false, note: 'refs/remotes/origin/main does not resolve.' });
+
+      const run = runCensus([
+        '--prose-sync',
+        '--prose-manifest', copy,
+        '--prose-provenance', join(dir, 'provenance.json'),
+      ]);
+      assert.notEqual(run.status, 0, 'a tree that cannot be compared against upstream was accepted');
+      assert.match(run.stderr, /behind the branch it will merge into/);
+      assert.match(run.stderr, /does not resolve/);
+    });
+  });
+
+  it('refuses when there is no usable tree to record provenance against', async () => {
+    // No git, no commits, a source tarball. There is nothing to stamp, and
+    // stamping a guess is the false record the pin exists to prevent, so this
+    // one has no override either.
+    await withScratchDir(async (dir) => {
+      const copy = join(dir, 'manifest.json');
+      await writeFile(copy, await readFile(MANIFEST, 'utf8'));
+      await writeProvenanceFile(dir, {
+        usable: false, head: null, upstream: null, behind: false, detached: false, dirty: [],
+        note: '/tmp/x is not a git working tree (or has no commits), so there is no tree to record provenance against.',
+      });
+
+      const run = runCensus([
+        '--prose-sync',
+        '--prose-manifest', copy,
+        '--prose-provenance', join(dir, 'provenance.json'),
+        '--allow-stale', 'I really need this to go through',
+      ]);
+      assert.notEqual(run.status, 0, 'a sync with no tree to attest was accepted, even with an acknowledgement');
+      assert.match(run.stderr, /not a git working tree/);
+    });
+  });
+
+  it('refuses when a document the pin depends on has uncommitted changes', async () => {
+    // A retirement decided against bytes that are in no commit describes a tree
+    // that never existed. Note this is the *hard* class: it is asserted with an
+    // acknowledgement present, because an override that reached it would let a
+    // half-finished edit become a permanent record.
+    await withScratchDir(async (dir) => {
+      const copy = join(dir, 'manifest.json');
+      await writeFile(copy, await readFile(MANIFEST, 'utf8'));
+      await writeProvenanceFile(dir, { ...CLEAN_TREE, dirty: ['README.md'] });
+
+      const run = runCensus([
+        '--prose-sync',
+        '--prose-manifest', copy,
+        '--prose-provenance', join(dir, 'provenance.json'),
+        '--allow-stale', 'the docs PR has not landed yet',
+      ]);
+      assert.notEqual(run.status, 0, 'an uncommitted document was accepted, even with an acknowledgement');
+      assert.match(run.stderr, /Uncommitted changes/);
+      assert.match(run.stderr, /README\.md/, 'the refusal must name the file — a bare "dirty" sends the reader hunting');
+      assert.match(run.stderr, /no override for this/, 'the message has to say the flag will not help, or it will be tried');
+    });
+  });
+
+  it('names the paragraphs it refused over, so no coverage is silently discarded', async () => {
+    // The other half of "the fix must not silently discard coverage". A refusal
+    // that only said "stale" would leave the author with no idea which prose is
+    // in question, and the path of least resistance would be to pass
+    // `--allow-stale` without reading anything.
+    await withScratchDir(async (dir) => {
+      const copy = join(dir, 'manifest.json');
+      const truncated = join(dir, 'ARCHITECTURE.md');
+      const source = await readFile(join(ROOT, 'ARCHITECTURE.md'), 'utf8');
+      const kept = source.split('\n').filter((line) => !line.includes('Spotify is the system of record'));
+      await writeFile(copy, await readFile(MANIFEST, 'utf8'));
+      await writeFile(truncated, kept.join('\n'));
+      await writeProvenanceFile(dir, { ...CLEAN_TREE, behind: true });
+
+      const run = runCensus([
+        '--prose-sync', '--retire', RETIREMENT_REASON,
+        '--prose-manifest', copy,
+        '--prose-override', `ARCHITECTURE.md=${truncated}`,
+        '--prose-provenance', join(dir, 'provenance.json'),
+      ]);
+      assert.match(
+        run.stderr,
+        /Spotify is the system of record/,
+        'the refusal must still say which paragraph is at stake, or the author cannot act on it',
+      );
+    });
+  });
+
+  it('names the retirements the branch it merges into contradicts, not just that it is behind', async () => {
+    // #1440's second definition-of-done item, and the part a generic "your tree
+    // is behind" refusal cannot do on its own: it says *which* of the retirements
+    // this run would have recorded are contradicted by the branch they are being
+    // merged into.
+    //
+    // Driven with this repository's real `origin/main` SHA rather than a
+    // fabricated one, because the evidence is read out of that ref with
+    // `git show` — a fake SHA would make the read fail and the check would pass
+    // for the wrong reason, which is the failure mode this file keeps testing
+    // for. Nothing is written to the ref and no ref is moved.
+    await withScratchDir(async (dir) => {
+      const upstream = execFileSync('git', ['-C', ROOT, 'rev-parse', 'origin/main'], { encoding: 'utf8' }).trim();
+      const copy = join(dir, 'manifest.json');
+      const truncated = join(dir, 'ARCHITECTURE.md');
+      const source = await readFile(join(ROOT, 'ARCHITECTURE.md'), 'utf8');
+      const kept = source.split('\n').filter((line) => !line.includes('Spotify is the system of record'));
+      assert.notEqual(kept.length, source.split('\n').length, 'the fixture paragraph was not found — this test would prove nothing');
+      await writeFile(copy, await readFile(MANIFEST, 'utf8'));
+      await writeFile(truncated, kept.join('\n'));
+      await writeProvenanceFile(dir, { ...CLEAN_TREE, head: 'a'.repeat(40), upstream, behind: true });
+
+      const run = runCensus([
+        '--prose-sync', '--retire', RETIREMENT_REASON,
+        '--prose-manifest', copy,
+        '--prose-override', `ARCHITECTURE.md=${truncated}`,
+        '--prose-provenance', join(dir, 'provenance.json'),
+      ]);
+
+      assert.notEqual(run.status, 0, '--prose-sync retired a paragraph that is still present upstream');
+      assert.match(
+        run.stderr,
+        /still present in their file at d0b690f|still present in their file at [0-9a-f]{7}/,
+        `the refusal must cite the ref the paragraph is still present in:\n${run.stderr}`,
+      );
+      assert.match(
+        run.stderr,
+        /Spotify is the system of record/,
+        'the contradiction must name the paragraph it is about — "something is wrong" is not actionable',
+      );
+      assert.equal(await readFile(copy, 'utf8'), await readFile(MANIFEST, 'utf8'), 'the manifest copy changed on a refusal');
+    });
+  });
+
+  it('does not call a paragraph contradicted when upstream no longer has it', async () => {
+    // The other direction, and it is the one that decides whether this check is
+    // usable at all. A reworded or deleted paragraph is absent upstream, and
+    // that is exactly the case a retirement is *for*.
+    //
+    // The fixture is a *partial* reword on purpose. The manifest stores a
+    // 56-character label next to every hash, and that label survives the opening
+    // of a reword — so an implementation that matched on the label would fire
+    // here and refuse every legitimate retirement of reworded prose. The first
+    // assertion below is the one that rules that out, and it is the assertion
+    // that failed when this was tried against a label-matching implementation.
+    const paragraph = 'Spotify is the system of record for playback, library, and catalog.\n';
+    const reworded = 'Spotify is the system of record for playback, library, and history.\n';
+    const dropped = [{ file: 'ARCHITECTURE.md', hash: proseUnitHash(paragraph), label: 'Spotify is the system of record for playback, library, a…' }];
+
+    assert.notEqual(
+      proseUnitHash(reworded),
+      dropped[0].hash,
+      'the fixture is supposed to be a reword of the pinned paragraph, not the same text',
+    );
+    assert.ok(
+      dropped[0].label.startsWith('Spotify is the system of record for playback, library, a'),
+      'the fixture label no longer shares the opening a label-matching implementation would match on, so this test would pass for the wrong reason',
+    );
+
+    assert.deepEqual(
+      contradictedByUpstream(dropped, { 'ARCHITECTURE.md': paragraph }),
+      dropped,
+      'a paragraph still in the upstream file must be reported as contradicted',
+    );
+    assert.deepEqual(
+      contradictedByUpstream(dropped, { 'ARCHITECTURE.md': reworded }),
+      [],
+      'a paragraph upstream has reworded is what a retirement is for, and must not be reported as contradicted — '
+      + 'the label prefix still matches it, so matching on the label would refuse this',
+    );
+    assert.deepEqual(
+      contradictedByUpstream(dropped, { 'README.md': paragraph }),
+      [],
+      'a document that does not exist upstream cannot contradict anything — it must be skipped, not read as empty',
+    );
+  });
+
+  it('records the tree the pin was generated from', async () => {
+    // The read side has nothing to check without this, and the DoD for #1440 is
+    // that a stale manifest is diagnosable *without* a bisect. A reason string
+    // cannot be checked against anything; a commit can.
+    await withScratchDir(async (dir) => {
+      const copy = join(dir, 'manifest.json');
+      await writeFile(copy, await readFile(MANIFEST, 'utf8'));
+      await writeProvenanceFile(dir, CLEAN_TREE);
+
+      const run = runCensus([
+        '--prose-sync',
+        '--prose-manifest', copy,
+        '--prose-provenance', join(dir, 'provenance.json'),
+      ]);
+      assert.equal(run.status, 0, `a clean, current tree must be accepted:\n${run.stderr}`);
+
+      const manifest = JSON.parse(await readFile(copy, 'utf8'));
+      assert.deepEqual(
+        manifest.provenance,
+        { head: CLEAN_TREE.head, upstream: CLEAN_TREE.upstream, behind: false },
+        'the pin must name the tree it was generated from, or the retirement reasons in it are unfalsifiable',
+      );
+    });
+  });
+
+  it('records an override as an acknowledgement, not as a quiet pass', async () => {
+    // The escape hatch has to cost something permanent, or it becomes the
+    // default within a month. The acknowledgement goes in `provenance` beside
+    // the retirement it qualifies — not into the retirement's own reason, which
+    // is the field that is already the thing that went wrong in #1439.
+    await withScratchDir(async (dir) => {
+      const copy = join(dir, 'manifest.json');
+      const truncated = join(dir, 'ARCHITECTURE.md');
+      const source = await readFile(join(ROOT, 'ARCHITECTURE.md'), 'utf8');
+      const kept = source.split('\n').filter((line) => !line.includes('Spotify is the system of record'));
+      await writeFile(copy, await readFile(MANIFEST, 'utf8'));
+      await writeFile(truncated, kept.join('\n'));
+      const acknowledgement = 'the #1402 reword is already in this tree, verified by hand';
+      await writeProvenanceFile(dir, { ...CLEAN_TREE, behind: true });
+
+      const run = runCensus([
+        '--prose-sync', '--retire', RETIREMENT_REASON,
+        '--allow-stale', acknowledgement,
+        '--prose-manifest', copy,
+        '--prose-override', `ARCHITECTURE.md=${truncated}`,
+        '--prose-provenance', join(dir, 'provenance.json'),
+      ]);
+      assert.equal(run.status, 0, `an acknowledged stale tree must be accepted:\n${run.stderr}`);
+
+      const manifest = JSON.parse(await readFile(copy, 'utf8'));
+      assert.equal(
+        manifest.provenance.allowStale,
+        acknowledgement,
+        'the acknowledgement was not recorded, so a reviewer cannot tell that this retirement was written from a tree that could not vouch for itself',
+      );
+      const entry = (manifest.retired ?? []).find((row: { label: string }) => row.label.startsWith('Spotify is the system of record'));
+      assert.ok(entry, 'the retirement itself was not recorded');
+      assert.equal(entry.reason, RETIREMENT_REASON, 'the override must not rewrite the reason — that is the field that was already wrong');
+    });
+  });
+
+  it('requires a reason before it will accept a stale tree', async () => {
+    // The same argument `--retire` already makes, for the same reason: a flag
+    // that is easy to pass with an empty value is a flag that gets passed with
+    // one, and an acknowledgement with no reason is indistinguishable from
+    // having not looked.
+    await withScratchDir(async (dir) => {
+      const copy = join(dir, 'manifest.json');
+      await writeFile(copy, await readFile(MANIFEST, 'utf8'));
+      await writeProvenanceFile(dir, { ...CLEAN_TREE, behind: true });
+
+      const run = runCensus([
+        '--prose-sync', '--allow-stale',
+        '--prose-manifest', copy,
+        '--prose-provenance', join(dir, 'provenance.json'),
+      ]);
+      assert.notEqual(run.status, 0, '--allow-stale with no reason was accepted');
+      assert.match(run.stderr, /--allow-stale requires a reason/);
+    });
+  });
+
+  it('reads the real working tree when no substitute is given', async () => {
+    // Proves the substitute reaches the *decision* and not a test-only copy of
+    // it. The reading this test asserts is the one `gitProvenanceIn(ROOT)`
+    // returns, so the git plumbing is exercised for real.
+    //
+    // Deliberately tolerant of a refusal: this repository has ~20 agents working
+    // in sibling worktrees, and asserting success would make the suite depend
+    // on whether somebody happens to have a document dirty right now. Both
+    // outcomes are asserted, and each one is meaningful.
+    await withScratchDir(async (dir) => {
+      const copy = join(dir, 'manifest.json');
+      await writeFile(copy, await readFile(MANIFEST, 'utf8'));
+      const realHead = execFileSync('git', ['-C', ROOT, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+
+      const run = runCensus(['--prose-sync', '--prose-manifest', copy]);
+      if (run.status !== 0) {
+        assert.match(
+          run.stderr,
+          /this tree cannot be attested/,
+          `--prose-sync refused for a reason other than provenance:\n${run.stderr}`,
+        );
+        return;
+      }
+      const manifest = JSON.parse(await readFile(copy, 'utf8'));
+      assert.equal(
+        manifest.provenance.head,
+        realHead,
+        'the default reading did not come from this working tree, so the substitute and the real path are not the same code',
+      );
+    });
+  });
+
+  it('refuses a pin naming an absent commit where that is answerable, and stays silent where it is not', async () => {
+    // The wiring proof for the read side, and the reason it exists separately
+    // from the verdict test below. `proseProvenanceVerdict` returning a correct
+    // error proves nothing if `checkDocumentation` never asks for it — which is
+    // the exact failure #1238 had to fix in this repository, where a check was
+    // written and never reached. So this drives the real gate.
+    //
+    // The commit is made with `commit-tree`, which writes an object that exists
+    // in this clone and is *not* an ancestor of `HEAD`. Nothing is moved: no ref
+    // is updated, no branch is created, and the worktree is untouched, so a
+    // parallel test running against the same repository cannot observe this.
+    await withScratchDir(async (dir) => {
+      const repoBefore = await readFile(MANIFEST, 'utf8');
+      const tree = execFileSync('git', ['-C', ROOT, 'rev-parse', 'HEAD^{tree}'], { encoding: 'utf8' }).trim();
+      // Identity comes from the environment rather than from `git config`,
+      // because this worktree may or may not have one and a test must not depend
+      // on whose checkout it is running in. Nothing here is ever pushed, signed,
+      // or attributed to a person.
+      const dangling = execFileSync(
+        'git',
+        ['-C', ROOT, 'commit-tree', tree, '-m', 'a commit this branch does not contain'],
+        {
+          encoding: 'utf8',
+          env: {
+            ...process.env,
+            GIT_AUTHOR_NAME: 'Provenance Fixture',
+            GIT_AUTHOR_EMAIL: 'provenance@example.invalid',
+            GIT_COMMITTER_NAME: 'Provenance Fixture',
+            GIT_COMMITTER_EMAIL: 'provenance@example.invalid',
+          },
+        },
+      ).trim();
+
+      // Confirm the fixture is the shape it claims before relying on it. An
+      // object git does not know about exits 128 from `--is-ancestor`, and the
+      // verdict that produces is `unverifiable`, not `rewritten` — so a typo
+      // here would make this test pass for a reason that has nothing to do
+      // with the gate.
+      const ancestry = spawnSync('git', ['-C', ROOT, 'merge-base', '--is-ancestor', dangling, 'HEAD']);
+      assert.equal(ancestry.status, 1, `the fixture commit must exist and NOT be an ancestor of HEAD (git said ${ancestry.status})`);
+
+      const copy = join(dir, 'manifest.json');
+      const manifest = JSON.parse(repoBefore);
+      manifest.provenance = { head: dangling, upstream: null, behind: false };
+      await writeFile(copy, JSON.stringify(manifest, null, 2));
+
+      const run = runCensus(['--check', '--prose-manifest', copy]);
+
+      // Which of the two documented behaviours applies is a property of the
+      // checkout, not of the code under test, and asserting the wrong one is
+      // asserting a bug away. On a full clone the walk reaches an answer, the
+      // verdict is `rewritten`, and the gate must fail naming the commit. On a
+      // `fetch-depth: 1` CI checkout `HEAD` is a graft point, the walk is
+      // truncated before it can answer, the verdict is `unverifiable`, and the
+      // gate is silent on purpose — the census documents that as "expected on a
+      // shallow CI clone; it is not evidence either way".
+      //
+      // Both branches are real assertions, and they are opposite: a `headIs-
+      // GraftPoint()` that disagreed with the census would land here in the
+      // branch the gate contradicts, so this cannot pass by mis-detecting.
+      if (headIsGraftPoint()) {
+        assert.equal(
+          run.status,
+          0,
+          'the gate failed on a pin this checkout provably cannot judge. Ancestry is '
+            + 'unanswerable at a shallow boundary, so the verdict is `unverifiable` and the '
+            + 'gate is silent by design; a failure here means it invented an answer:\n' + run.stderr,
+        );
+      } else {
+        assert.notEqual(run.status, 0, 'the documentation gate passed a pin that describes prose this branch does not have');
+        assert.match(run.stderr, /not an ancestor of HEAD/, 'the failure must name the rewritten-history condition, not just fail');
+        assert.match(run.stderr, new RegExp(dangling.slice(0, 7)), 'the failure must name the commit the pin claims, so a reader can go and look at it');
+      }
+
+      assert.equal(
+        await readFile(MANIFEST, 'utf8'),
+        repoBefore,
+        'this test wrote to the checked-in manifest instead of the copy it was given',
+      );
+    });
+  });
+
+  it('passes the real --check when the pin names a commit this branch does contain', async () => {
+    // The other direction over the same code path. Every negative assertion in
+    // this file is satisfied by a gate that reports an error unconditionally,
+    // and this is the only thing that rules that out. Stamping with this
+    // branch's own `HEAD` is the "verified" case, which must be silent.
+    await withScratchDir(async (dir) => {
+      const repoBefore = await readFile(MANIFEST, 'utf8');
+      const realHead = execFileSync('git', ['-C', ROOT, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+      const copy = join(dir, 'manifest.json');
+      const manifest = JSON.parse(repoBefore);
+      manifest.provenance = { head: realHead, upstream: realHead, behind: false };
+      await writeFile(copy, JSON.stringify(manifest, null, 2));
+
+      const run = runCensus(['--check', '--prose-manifest', copy]);
+      assert.equal(run.status, 0, `a pin stamped with this branch's own HEAD must pass the gate:\n${run.stderr}`);
+    });
+  });
+
+  it('reports the provenance verdict from --prose-report, so "clean" is distinguishable from "unchecked"', async () => {
+    // `--prose-report` exists so a reader can tell "checked ten files and found
+    // nothing" from "found nothing at all". A provenance verdict that only ever
+    // prints on failure has the same defect, so the status is in the JSON.
+    // Three states, and the third is the one a naive implementation drops: this
+    // repository's CI checks out with `fetch-depth: 1`, so a pin stamped before
+    // that checkout names a commit the clone does not have.
+    await withScratchDir(async (dir) => {
+      const realHead = execFileSync('git', ['-C', ROOT, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+      const unknown = 'f'.repeat(40);
+      const copy = join(dir, 'manifest.json');
+      const manifest = JSON.parse(await readFile(MANIFEST, 'utf8'));
+
+      const verdictFor = async (provenance: Record<string, unknown>) => {
+        await writeFile(copy, JSON.stringify({ ...manifest, provenance }, null, 2));
+        const run = runCensus(['--prose-report', '--prose-manifest', copy]);
+        return { status: run.status, body: JSON.parse(run.stdout) as { provenance: { status: string } } };
+      };
+
+      const verified = await verdictFor({ head: realHead, upstream: realHead, behind: false });
+      assert.equal(verified.body.provenance.status, 'verified');
+      assert.equal(verified.status, 0);
+
+      const unverifiable = await verdictFor({ head: unknown, upstream: realHead, behind: false });
+      assert.equal(unverifiable.body.provenance.status, 'unverifiable', 'a commit the checkout does not have is unverifiable, not rewritten');
+      assert.equal(unverifiable.status, 0, 'a shallow CI clone must not fail the documentation gate');
+    });
+  });
+
+  it('reports a pin whose recorded commit is no longer in the branch history', async () => {
+    // The rebased-branch case, and the reason the pin records a commit at all.
+    // Nothing is wrong at write time here, so the guard cannot be a refusal; it
+    // is a check-time error, and `--check` is the gate that has to carry it.
+    const rewritten = { provenance: { head: 'c'.repeat(40), upstream: 'b'.repeat(40), behind: false } };
+    const verdict = proseProvenanceVerdict(rewritten, { ancestor: () => false });
+    assert.equal(verdict.status, 'rewritten');
+    assert.ok(verdict.error, 'a rewritten history must produce an error, not a note');
+    assert.match(verdict.error!, /not an ancestor of HEAD/);
+    assert.match(verdict.error!, /--prose-sync/, 'the error has to say what to do');
+  });
+
+  it('does not fail a checkout that cannot answer the question', async () => {
+    // The honest verdicts are three, not two. `git merge-base --is-ancestor`
+    // exits 128 for "no such object", this repository's CI checks out with
+    // `fetch-depth: 1`, and a manifest stamped before that checkout names a
+    // commit that is simply not in the clone. Collapsing 128 into "no" would
+    // turn every shallow CI run red, and a gate that is always red is a gate
+    // nobody reads. Asserted because the *cheaper* implementation is the wrong
+    // one, and it is the one that looks like a fix.
+    const recorded = { provenance: { head: 'c'.repeat(40), upstream: 'b'.repeat(40), behind: false } };
+    const verdict = proseProvenanceVerdict(recorded, { ancestor: () => null });
+    assert.equal(verdict.status, 'unverifiable');
+    assert.equal(verdict.error, null, 'a shallow checkout must not fail a documentation gate');
+    assert.match(verdict.detail, /not evidence either way/, 'an unverifiable answer has to say it is not a clean one');
+  });
+
+  it('reports a pin that predates provenance rather than failing it', async () => {
+    // The manifest checked in today has no `provenance` block, and requiring one
+    // would make the very first run of this change red on `main`. A missing
+    // record is a fact to surface, not a violation to enforce — the sentence
+    // that surfaces it is what gets it stamped on the next legitimate sync.
+    const verdict = proseProvenanceVerdict({ files: {} }, { ancestor: () => true });
+    assert.equal(verdict.status, 'unrecorded');
+    assert.equal(verdict.error, null, 'a pin with no recorded tree must not fail the gate');
+    assert.match(verdict.detail, /--prose-sync/);
+  });
+
+  it('classifies each staleness case as hard or soft, and only the soft ones are overridable', async () => {
+    // The split is the design, so it is pinned directly rather than only
+    // through the CLI. Collapsing the two classes into one list is how a guard
+    // ends up with a documented bypass that applies to the case it was written
+    // for, and no CLI test above can tell that apart.
+    const behind = proseSyncRefusals({ ...CLEAN_TREE, behind: true });
+    assert.equal(behind.hard.length, 0, 'being behind is a situation, not a defect — it must be overridable');
+    assert.equal(behind.soft.length, 1);
+    assert.deepEqual(proseSyncRefusals({ ...CLEAN_TREE, behind: true }, { allowStale: 'because' }).soft, []);
+
+    const dirty = proseSyncRefusals({ ...CLEAN_TREE, dirty: ['README.md'] }, { allowStale: 'because' });
+    assert.equal(dirty.hard.length, 1, 'uncommitted bytes are not a situation, and an override must not reach them');
+    assert.deepEqual(proseSyncRefusals({ ...CLEAN_TREE, dirty: ['README.md'] }, { allowStale: 'because' }).soft, []);
+
+    const usable = proseSyncRefusals(CLEAN_TREE);
+    assert.deepEqual([usable.hard, usable.soft], [[], []], 'a clean, current, on-branch tree must produce no refusals at all');
+  });
+
+  it('carries the reading through the stamp rather than re-deriving it', async () => {
+    // `stampProvenance` takes the reading that was already accepted rather than
+    // re-reading the tree. If it re-read, a tree that moved between the refusal
+    // and the write would be stamped with a different commit than the one the
+    // decision was made against, and the two would silently disagree.
+    const manifest = { files: { 'README.md': [] } };
+    const stamped = stampProvenance(manifest, { head: 'a'.repeat(40), upstream: 'b'.repeat(40), behind: true });
+    assert.deepEqual(stamped.provenance, { head: 'a'.repeat(40), upstream: 'b'.repeat(40), behind: true });
+    assert.deepEqual(stamped.files, manifest.files, 'stamping must not disturb the pins it is recorded beside');
+  });
+});
+
+describe('git provenance readings (#1440)', () => {
+  it('reads a real repository as clean when nothing the pin depends on is uncommitted', async () => {
+    // A real repository, not a fixture object shaped like what the author
+    // expects git to return. `gitProvenanceIn` is the only place that knows
+    // what `status --porcelain` and `--is-ancestor` actually say.
+    await withScratchDir(async (dir) => {
+      const { path, head, originMain } = await scratchRepo(dir);
+      const prov = gitProvenanceIn(path, { docFiles: ['README.md'], manifestPath: 'scripts/pin.json' });
+      assert.equal(prov.usable, true);
+      assert.equal(prov.head, head);
+      assert.equal(prov.upstream, originMain);
+      assert.equal(prov.behind, true, 'HEAD does not contain the sibling commit this ref names');
+      assert.equal(prov.detached, false);
+      assert.deepEqual(prov.dirty, []);
+      assert.deepEqual(proseSyncRefusals(prov).soft.length, 1, 'a real behind-reading must be a soft refusal, so the CLI test and this one agree');
+    });
+  });
+
+  it('reports a tree behind a ref it *does* contain as not behind', async () => {
+    // The other direction, and the one that matters most: an implementation
+    // that treated any ref mismatch as "behind" would refuse every ordinary
+    // branch push and be switched off within a week. `HEAD` here is a
+    // descendant of the ref, which is what a normal feature branch looks like.
+    await withScratchDir(async (dir) => {
+      const { path, head, originMain } = await scratchRepo(dir);
+      git(path, 'update-ref', 'refs/remotes/origin/main', originMain);
+      const first = execFileSync('git', ['-C', path, 'rev-list', '--max-parents=0', 'HEAD'], { encoding: 'utf8' }).trim();
+      git(path, 'update-ref', 'refs/remotes/origin/main', first);
+
+      const prov = gitProvenanceIn(path, { docFiles: ['README.md'] });
+      assert.equal(prov.behind, false, 'a branch that contains origin/main is not behind it');
+      assert.equal(prov.head, head);
+      assert.deepEqual(proseSyncRefusals(prov), { hard: [], soft: [] }, 'an ordinary branch must sync without an override');
+    });
+  });
+
+  it('reports only the uncommitted files the pin actually depends on', async () => {
+    // A dirty `src/tools/foo.ts` cannot make a prose retirement false, and
+    // refusing on it would train people to pass `--allow-stale` out of habit
+    // until the flag stops meaning anything. This is also the assertion that
+    // would catch a regression to "refuse on any dirty tree at all" — which
+    // would be strictly more cautious and strictly less usable.
+    await withScratchDir(async (dir) => {
+      const { path } = await scratchRepo(dir);
+      await writeFile(join(path, 'README.md'), 'An uncommitted edit to a pinned document.\n');
+      await writeFile(join(path, 'src.ts'), 'An uncommitted edit to something else.\n');
+
+      const prov = gitProvenanceIn(path, { docFiles: ['README.md'], manifestPath: 'scripts/pin.json' });
+      assert.deepEqual(prov.dirty, ['README.md'], 'a file the pin does not depend on must not block a sync');
+      assert.equal(proseSyncRefusals(prov).hard.length, 1);
+    });
+  });
+
+  it('reports no usable tree for a directory that is not a repository', async () => {
+    // A source tarball, or `npm pack` output. The reading has to degrade with
+    // an explanation rather than throw, because the caller's job is to refuse
+    // with a reason the author can act on — not to crash before it gets there.
+    await withScratchDir(async (dir) => {
+      const prov = gitProvenanceIn(dir, { docFiles: ['README.md'] });
+      assert.equal(prov.usable, false);
+      assert.match(prov.note, /not a git working tree/);
+      assert.equal(proseSyncRefusals(prov).hard.length, 1);
+      assert.equal(proseSyncRefusals(prov, { allowStale: 'because' }).hard.length, 1, 'this one has no override either');
+    });
+  });
+
+  it('reports a detached HEAD, which is overridable but not silent', async () => {
+    // A checkout of a tag or a SHA is a normal thing to do and produces a
+    // manifest nobody can trace back to a branch, so it is worth saying — and
+    // unlike the uncommitted case there is a legitimate reason to be there.
+    //
+    // The scratch repository is deliberately left behind `origin/main` as well,
+    // so this asserts the detached reason is *among* the soft refusals rather
+    // than that it is the only one. A test that counted refusals would have had
+    // to make the fixture artificially clean, and the count is not the claim.
+    await withScratchDir(async (dir) => {
+      const { path, head } = await scratchRepo(dir);
+      git(path, 'checkout', '--quiet', '--detach', head);
+      const prov = gitProvenanceIn(path, { docFiles: ['README.md'] });
+      assert.equal(prov.detached, true);
+      const refusals = proseSyncRefusals(prov);
+      assert.equal(refusals.hard.length, 0, 'a detached checkout is a situation, not a defect');
+      assert.ok(
+        // `prose-manifest.mjs` is untyped JavaScript (see the import above), so
+        // `soft` arrives as `any` and this callback parameter needs saying. The
+        // annotation is the claim under test: every refusal is a rendered line.
+        refusals.soft.some((line: string) => /detached/.test(line)),
+        `the detached reason is missing from the refusal:\n${refusals.soft.join('\n')}`,
+      );
+      assert.deepEqual(proseSyncRefusals(prov, { allowStale: 'checking out a tag on purpose' }).soft, []);
+    });
+  });
+});
+
+describe('the marker scan skip list states its reason (#1427)', () => {
+  /**
+   * Extract the block comment immediately above `MARKER_SCAN_SKIP`'s
+   * declaration.
+   *
+   * Scoped to the declaration rather than the file, because the file is 2,250
+   * lines and a whole-file assertion about "no call sites" would be satisfied
+   * by a test that found the wrong comment.
+   */
+  async function skipDocstring(): Promise<string> {
+    const source = await readFile(CENSUS, 'utf8');
+    const at = source.indexOf('const MARKER_SCAN_SKIP');
+    assert.notEqual(at, -1, 'MARKER_SCAN_SKIP is gone; this test is guarding a constant that no longer exists');
+    const before = source.slice(0, at);
+    const start = before.lastIndexOf('/**');
+    assert.notEqual(start, -1, 'MARKER_SCAN_SKIP has no docstring, so there is no reason left to go stale');
+    return before.slice(start);
+  }
+
+  it('does not justify the skip by naming a call site', async () => {
+    // The defect #1427 is about. The old docstring justified skipping every
+    // dot-directory by pointing at `mkdtemp(join(ROOT, '.census-fixture-'))`
+    // in a test file. PR #1417 moved that fixture out of the repository root,
+    // which left a correct skip resting on a sentence about a line that no
+    // longer exists — and a justification that cites a location is a
+    // justification that a later commit can invalidate without anyone noticing
+    // the reasoning went with it.
+    const docstring = await skipDocstring();
+    assert.doesNotMatch(
+      docstring,
+      /\.census-fixture/,
+      'the skip is justified by citing a fixture path that #1417 removed; the reasoning has to survive the call site moving',
+    );
+    assert.doesNotMatch(
+      docstring,
+      /mkdtemp\s*\(\s*join\s*\(\s*ROOT/,
+      'the skip is justified by quoting a call expression rather than the hazard it guards against',
+    );
+  });
+
+  it('names the invariant the skip protects, so it survives the next refactor', async () => {
+    // The replacement has to carry the reason forward, not just delete the stale
+    // citation. What makes the skip correct is concurrent-write safety — a
+    // sibling process can populate an untracked directory while the scan is
+    // walking it — and that is true whether or not any test still writes inside
+    // the repository.
+    const docstring = await skipDocstring();
+    assert.match(
+      docstring,
+      /untracked|does not version|does not track/i,
+      'the docstring must state the invariant (skip what the repository does not version), not an example of it',
+    );
+    assert.match(
+      docstring,
+      /#1238/,
+      'the issue that established the hazard is the durable citation; a line number is not',
+    );
+    assert.match(
+      docstring,
+      /half-written|concurrent|sibling process/i,
+      'the hazard is a torn read from a directory being written under the scan, and the docstring has to say so',
+    );
+  });
+
+  it('still skips the tracked-but-generated directories the census would otherwise walk', async () => {
+    // The other direction, and the reason this is not a test that only ever
+    // fails. A docstring that "explains" the skip is worthless if the set itself
+    // regressed, and the set is the part that has behaviour.
+    const source = await readFile(CENSUS, 'utf8');
+    const at = source.indexOf('const MARKER_SCAN_SKIP');
+    const declaration = source.slice(at, source.indexOf(';', at));
+    for (const dir of ['node_modules', 'dist', 'coverage']) {
+      assert.match(declaration, new RegExp(`'${dir}'`), `${dir} is no longer skipped, so a census walk reads generated output as hand-written content`);
+    }
+  });
+});

@@ -34,17 +34,7 @@ import type {
   SpotifyTrack,
   SpotifyEpisode,
 } from '../types/spotify.js';
-
-type TextContent = { type: 'text'; text: string };
-type ToolResult = { content: TextContent[]; structuredContent?: Record<string, unknown> };
-
-function textResult(text: string, structured?: Record<string, unknown>): ToolResult {
-  const content: TextContent[] = [{ type: 'text', text }];
-  return structured ? { content, structuredContent: structured } : { content };
-}
-
-/** Raw-JSON rendering for response_format='json' (#51); shared by all three tools. */
-const jsonText = (data: unknown): string => JSON.stringify(data, null, 2);
+import { textResult, jsonText } from '../result.js';
 
 /**
  * The row arrays `diff_playlists` publishes (#895), capped per section.

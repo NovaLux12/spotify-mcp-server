@@ -8,7 +8,7 @@ Stats.fm-backed calls never write to Spotify, with one exception: `taste_to_play
 
 1. **Create a stats.fm account** at [stats.fm](https://stats.fm) and log in.
 2. **Import your Spotify history.** In stats.fm, open Settings → Import, connect Spotify, and request your extended history. Lifetime results are only as complete as that import. `statsfm_streams_stats` reports aggregate totals for the history visible to stats.fm, and `statsfm_recaps` provides per-calendar-year views; neither proves import completeness.
-3. **Find your stats.fm user ID.** Open your profile page and copy the `<id>` out of the `stats.fm/user/<id>` URL. It is a string, not a number — the tool schema's own example is the handle `"martijn"`. Most user-scoped endpoint tools take it as `user_id`; the seven network-backed taste tools in `src/tools/statsfm_taste.ts` take it as `statsfm_user`. Both parameters accept a stats.fm user id or a customId, so either form works. Which one a given tool takes is a property of its schema, not of its name — the `taste_*` wave-2 composites below take `statsfm_user`, and `taste_shift_report` / `taste_checkpoint` read Spotify's own top lists and take no identity argument at all.
+3. **Find your stats.fm user ID.** Open your profile page and copy the `<id>` out of the `stats.fm/user/<id>` URL. It is a string, not a number — the tool schema's own example is the handle `"martijn"`. Every user-scoped stats.fm tool takes it as `statsfm_user` — the endpoint tools, the network-backed taste tools, and the `taste_*` wave-2 composites alike. `user_id` is a deprecated alias, still accepted until v2.2; a call that uses it gets a `deprecation_note`. Both accept a stats.fm user id or a customId. Send `statsfm_user`; sending both with different values is refused. `taste_shift_report` / `taste_checkpoint` read Spotify's own top lists and take no identity argument at all.
 
 There is no stats.fm OAuth dance: public profile data needs no token. Private profiles need the profile owner's cooperation (see [Privacy](#privacy)). To stop repeating the id on every call, set `STATSFM_USER_ID` to it — an explicit per-call argument always wins, and with the variable unset the argument is required exactly as it was before. With neither, the call fails naming both ways to supply the id; it never guesses one, because a guess would return a well-formed answer about the wrong public profile. See [stats.fm identity](configuration.md#statsfm-identity). Catalog searches and catalog-entity lookups do not require an identity argument.
 
@@ -31,7 +31,7 @@ Every tool below is registered. The common `response_format` argument accepts `c
 | `statsfm_top_artists` | A user's top artists for a supported `range`. |
 | `statsfm_top_albums` | A user's top albums for a supported `range`. |
 | `statsfm_top_genres` | A user's genre ranking for a supported `range`. |
-| `statsfm_recent_streams` | Recent individual streams, with optional Unix-ms `after`/`before` bounds. |
+| `statsfm_recent_streams` | Recent individual streams, optionally narrowed by a named UTC window (`range`: `today`/`week`/`month`/`year`/`lifetime`) or explicit Unix-ms `after`/`before` bounds. See [Stream windows](#stream-windows-on-statsfm_recent_streams-today--week--month--year--lifetime). |
 | `statsfm_now_playing` | The user's current stream, or `null` when idle. |
 | `statsfm_track_stats` | stats.fm's own lifetime stream total for one track, plus a sample of the individual plays (`limit` sizes the sample, never the total). |
 | `statsfm_artist_stats` | stats.fm's own lifetime stream total for one artist, plus a sample of the individual plays (`limit` sizes the sample, never the total). |
@@ -74,7 +74,7 @@ Typical flow: `statsfm_streams_stats` (how much history is visible?) → `statsf
 
 **The legacy aliases were removed in v3.0 (#908).** Each of these eight used to be registered a second time under a bare name — `taste_profile`, `artist_affinity`, `exposure_check`, `listening_eras`, `listening_sessions`, `forgotten_favorites`, `taste_recommendations`, `record_feedback` — with identical parameters and an identical handler. That cost roughly 7.7 KB of schema in every session and gave a model choosing between two identical tools a coin flip. Calling one now returns an error naming its replacement. Set `SPOTIFY_MCP_LEGACY_ALIASES=1` to keep dispatching the old names for a release; nothing is added to `tools/list`, so the compat window is free.
 
-`statsfm_record_feedback` defaults to `action: "record"`, which requires `subject_type`, `subject`, and `rating`; `action: "list"` returns the stored entries. It accepts no `user_id` or `statsfm_user` because it never makes a network call. For example:
+`statsfm_record_feedback` defaults to `action: "record"`, which requires `subject_type`, `subject`, and `rating`; `action: "list"` returns the stored entries. It accepts no `statsfm_user` because it never makes a network call. For example:
 
 ```json
 { "tool": "statsfm_record_feedback", "action": "record", "subject_type": "track", "subject": "Anchor Song", "rating": "love" }
@@ -90,7 +90,9 @@ To remove the store, run `spotify-mcp logout` (which moves it aside recoverably 
 
 ## Ranges
 
-Every tool that takes a `range` accepts the same three values, and only these three: **`weeks`**, **`months`**, and **`lifetime`** (lowercase, defaulting to `lifetime`). This holds for the endpoint top-list tools, the taste-intelligence tools, and the taste composites alike — they all send `range` to the same stats.fm query parameter, so there is one vocabulary across the whole surface, exported once as `statsfmRangeSchema` in `src/tools/statsfm.ts`.
+### Ranking ranges (`weeks` / `months` / `lifetime`)
+
+Every tool that sends a ranking `range` upstream accepts the same three values, and only these three: **`weeks`**, **`months`**, and **`lifetime`** (lowercase, defaulting to `lifetime`). This holds for the endpoint top-list tools, the taste-intelligence tools, and the taste composites alike — they all send `range` to the same stats.fm query parameter, so there is one vocabulary across the whole surface, exported once as `statsfmRangeSchema` in `src/tools/statsfm.ts`.
 
 The singular spellings `week` and `month` are not accepted. stats.fm rejects them with `400 invalid range`; so are `6months`, `year`, and `all-time`. Because `range` is optional with a `lifetime` default, a rejected value is worth catching before the call rather than discovering from a silent lifetime answer.
 
@@ -98,6 +100,22 @@ The singular spellings `week` and `month` are not accepted. stats.fm rejects the
 - `weeks` and `months` reflect current rotation. Compare a short window against `lifetime` to separate phases from identity.
 - `statsfm_streams_stats` and date-windowed tools use Unix-millisecond `after`/`before` bounds instead of a named `range`.
 - `statsfm_recaps` uses an optional calendar `year`, not a range.
+
+### Stream windows on `statsfm_recent_streams` (`today` / `week` / `month` / `year` / `lifetime`)
+
+`statsfm_recent_streams` takes a second, **separate** vocabulary: `today`, `week`, `month`, `year` and `lifetime`. These are calendar buckets resolved to **UTC** boundaries and are **not** the ranking values above — `weeks`/`months` are rejected by this tool, and `today`/`year` are rejected by the ranking tools, because the two are sent to different things. stats.fm rejects the ranking spellings upstream with `400 invalid range`, so the two vocabularies cannot be one enum; that is why this section is separate rather than a footnote on the one above.
+
+| Bucket | Window starts at |
+|---|---|
+| `today` | 00:00 UTC today |
+| `week` | Monday 00:00 UTC (ISO week) |
+| `month` | the 1st, 00:00 UTC |
+| `year` | 1 January, 00:00 UTC |
+| `lifetime` | no lower bound |
+
+The lower bound is inclusive. An explicit `after`/`before` **wins** over `range`; supply both and the explicit bound is what applies, with the bucket filling only whichever edge you left open (`range: 'month'` plus `before` alone reads as "this month, up to that instant"). The applied window comes back in `range_resolved` (`requested`, `applied`, `after`, `before`, `timezone`, `label`) so you can check what was used.
+
+**The window filters a fixed recent page, not your whole history.** `/users/{id}/streams/recent` ignores `after`, `before`, `limit` and `offset` — a bound in the year 2100 and one in 2001 both return the unfiltered page (verified 2026-09-27; the same bounds *are* honoured on `/users/{id}/streams`, `/users/{id}/top/*` and the per-entity `/stats` aggregate). So a bucket is applied to the rows stats.fm returned, and when that page is narrower than the window you asked for, the result carries `page_may_not_cover_window: true` with `page_oldest` and `page_newest`. Treat such a result as "every stream in the recent page that falls in this window", not as a total for the window — for a full-history count use `statsfm_streams_stats`, which does take `after`/`before` upstream. Rows whose play time cannot be read are excluded and counted in `unreadable_timestamps` rather than assumed to be inside the window.
 
 ## Limits
 
@@ -121,7 +139,7 @@ The singular spellings `week` and `month` are not accepted. stats.fm rejects the
 - **stats.fm ≠ Spotify counts.** Totals come from stats.fm's stream log, not Spotify's API — expect mismatches against `get_recently_played` (or `listening_report`, if the host sets `SPOTIFY_MCP_EXPERIMENTAL_ANALYTICS`) or Spotify Wrapped. Different counters, different windows.
 - **Genres are stats.fm's own taxonomy.** `statsfm_top_genres` labels come from stats.fm, not Spotify. Use them as search seeds, not Spotify genre IDs.
 - **Clock buckets are UTC in the taste tools.** Exact-hour claims depend on the timestamps returned by stats.fm.
-- **Identity is per call by default.** User-scoped endpoint tools take `user_id`; network-backed taste tools take `statsfm_user`. Setting `STATSFM_USER_ID` supplies the default for both, but an explicit per-call argument always wins and, with neither, the call fails rather than assuming a profile. Catalog search and entity-lookup tools need no user identity either way.
+- **Identity is per call by default.** Every user-scoped stats.fm tool takes `statsfm_user`; `user_id` is a deprecated alias until v2.2. Setting `STATSFM_USER_ID` supplies the default, but an explicit per-call argument always wins and, with neither, the call fails rather than assuming a profile. Catalog search and entity-lookup tools need no user identity either way.
 
 ## See also
 

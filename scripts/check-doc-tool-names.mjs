@@ -162,16 +162,43 @@ const parameterAllowlist = new Set([
   'created_new_playlist', 'duplicates_skipped',
   'unavailable_items_skipped', 'batches_sent',
   'rows_read', 'reported_total',
-  // #1388: playlist_balance's coverage fields. The tool splits what its bounded
-  // walk returned, so it reports how much it read (`items_read`), how large the
-  // source playlist is (`items_total`, `null` when Spotify's own count was
-  // unreadable) and whether the two are the same. The description names them so
-  // a host can tell a partial split from a whole one without reading prose —
-  // which is the whole point of the disclosure, and the reason they belong here
-  // rather than being described in words only. structuredContent keys on that
-  // tool, on the same reasoning as `rows_read` above and `truncated_by_cap`
-  // below.
-  'items_read', 'items_total',
+  // #1423: the neighbours of the bounded-read disclosure that are NOT part of
+  // it, named in SPEC.md §5 so a new tool does not reinvent one of them as a
+  // fourth spelling. All four are structuredContent keys naming a result the
+  // call reports about its own work — `item_walk_cap` is take_playlist_snapshot's
+  // ceiling beside `reported_total`; the three `<entity>_scanned` keys count
+  // entities a scan examined and carry no total beside them, which is exactly
+  // why they are not `rows_read`.
+  'item_walk_cap',
+  // `cap_reached` is take_playlist_snapshot's truncation verdict, named beside
+  // `reported_total` because the tool writes a snapshot file rather than
+  // answering a question about a live read, so it says "the cap was reached"
+  // instead of carrying a `truncated` flag. A structuredContent key on that
+  // tool, on the same reasoning as `item_walk_cap` above.
+  'cap_reached',
+  'playlists_scanned', 'saved_albums_scanned', 'releases_scanned',
+  // #1423 again, for the family the same paragraph rules out: fifteen
+  // `swarm4_playlists` tools emit `<field>_total` / `_returned` / `_withheld`
+  // / `_truncated` through `budgetedArray`, which builds the key by computation
+  // so no literal for it exists anywhere in the tree. `items_total` is the
+  // common one and is a released structuredContent key. `swarm4_playlists` is
+  // the MODULE those tools live in — a source file, named because the
+  // distinction only matters to someone editing that file. Neither is a tool or
+  // a parameter.
+  'items_total', 'swarm4_playlists',
+  // #1388, RENAMED by #1423: playlist_balance's coverage fields. The tool
+  // splits what its bounded walk returned, so it reports how much it read and
+  // how large the source playlist is. It shipped `items_read` / `items_total`;
+  // #1423 moved it onto the repo-wide pair `rows_read` / `reported_total`
+  // (allowlisted above) so one name means the same thing everywhere, and
+  // dropped `items_total` entirely — it is now a dead spelling.
+  //
+  // `items_read` stays allowlisted for exactly one tool: `listening_streaks`,
+  // which counts /me/player/recently-played history entries rather than
+  // collection rows, carries no reported total, and shipped in v2.1.0 — so it
+  // is a released wire-contract key that #1423 deliberately did not rename.
+  // A new appearance of this name in a doc is the thing to look at.
+  'items_read',
   // #1311: remove_unavailable_playlist_items' bounded-verdict fields. The
   // tool reports `verification: partial` over a walk that stopped at the cap
   // and names where the unread region starts, so a caller can tell a bounded
@@ -203,6 +230,17 @@ const parameterAllowlist = new Set([
   // reports about its own result, not routing to another tool.
   'sample_limit', 'sample_returned', 'sample_truncated', 'sample_oldest',
   'sample_newest', 'sample_unreadable_reason',
+  // #730: the keys `statsfm_recent_streams` reports about the window it
+  // applied. `range_resolved` echoes the applied UTC edges so a caller can
+  // verify them; the counts separate what stats.fm returned from what the
+  // window kept, so a filtered page is not read as a count for the period; and
+  // the two page keys carry the observed span, because the route returns a
+  // fixed unpaged recent page and a bucket wider than that page is a filter
+  // rather than a measurement. Every one is a structuredContent key on that
+  // tool — a call describing its own result, not a tool or a request parameter.
+  'range_resolved', 'returned_before_window', 'returned_after_window',
+  'excluded_by_window', 'unreadable_timestamps',
+  'page_oldest', 'page_newest', 'page_may_not_cover_window',
   // #839: the local-sidecar corruption contract. SPEC.md and
   // docs/configuration.md now say what a caller gets when a sidecar exists but
   // cannot be read — the file and the parse failure, where the bytes were
@@ -404,6 +442,14 @@ const documentedMetadata = new Set([
   // that separates "we never had that name" (unknown_param) from "we did, and
   // we took it away". It is a refusal shape, not a tool or a parameter.
   'retired_input',
+  // #1318: the `reason` a refusal carries when a stats.fm identity arrives
+  // under both spellings with different values. Same category as
+  // `retired_input` — a refusal shape a host parses, not a tool, a parameter
+  // or a metadata key. `kind` is already `validation`; this separates "you
+  // sent one field twice and it did not match" from any other validation
+  // failure, which is exactly the routing decision a host cannot make from
+  // prose alone.
+  'conflicting_input',
   // #896: `quota_hit_at_playlist` is the key a paged scan reports to say WHICH
   // playlist a mid-walk 429 stopped it at, so a caller can tell a partial
   // result from a complete one. It is a structuredContent key, not a tool and

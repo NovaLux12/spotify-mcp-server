@@ -1,11 +1,20 @@
 #!/usr/bin/env node
 // Edge probe: undocumented / deprecated / app-registration-gated Spotify Web
-// API surface. READ-ONLY — every probe is a GET, including the three
-// wrong-method rows whose 405 is the evidence that the endpoint still exists.
-// Refreshes the access token via the PKCE refresh flow, then records status +
-// a redacted snippet for each endpoint so we can tell "dead" (404), "exists
-// but wrong method" (405), "app-gated / removed for this app" (403/401) from
-// "actually alive".
+// API surface. Every PROBE is a read — all of them are GETs, including the
+// three wrong-method rows whose 405 is the evidence that the endpoint still
+// exists.
+//
+// The one write is the token refresh, and it is not optional: an expired access
+// token is refreshed through the PKCE flow, and the response — which may carry
+// a ROTATED refresh token — is published back to the live token store
+// atomically (scripts/probe-lib.mjs, #1459). A probe run therefore DOES mutate
+// ~/.spotify-mcp/tokens.json, so "read-only" here describes the probe surface
+// and not this script. Point SPOTIFY_MCP_TOKEN_FILE at a scratch copy to run a
+// probe without touching the real store; see resolveTokenPath.
+//
+// Records status + a redacted snippet for each endpoint so we can tell "dead"
+// (404), "exists but wrong method" (405), "app-gated / removed for this app"
+// (403/401) from "actually alive".
 //
 // The report is a shareable artifact: the account id, display name and email
 // are redacted out of it (scripts/probe-lib.mjs, #646), it is written 0600
@@ -21,7 +30,7 @@ import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { parseRetryAfterSeconds, resolveReportPath, runProbes } from './probe-lib.mjs';
+import { parseRetryAfterSeconds, resolveReportPath, runProbes, writeTokenStore } from './probe-lib.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -150,7 +159,11 @@ async function refresh() {
   }
   const t = await res.json();
   tokens = { ...tokens, ...t, [EXP]: Date.now() + (t.expires_in ?? 3600) * 1000 };
-  writeFileSync(tokenPath, JSON.stringify(tokens, null, 2), { mode: 0o600 });
+  // Atomic (#1459). This is the only write this script makes to the operator's
+  // live token store, and a refresh response may carry a ROTATED refresh token,
+  // so a non-atomic write that lands half-way destroys the only copy of a
+  // credential Spotify has already invalidated.
+  await writeTokenStore(tokenPath, tokens);
   console.log(`token refreshed (expires in ${t.expires_in ?? 3600}s)`);
 }
 if ((tokens[EXP] ?? 0) < Date.now() + 60_000) await refresh();

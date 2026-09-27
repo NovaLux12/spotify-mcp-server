@@ -42,18 +42,11 @@ import type {
   SpotifyEpisodeSimple,
   SpotifyPaged,
 } from '../types/spotify.js';
+import { textResult } from '../result.js';
 
 // Re-exported so this module's tests import the market cache hook the same way
 // the catalog and audiobooks suites do (#782).
 export { resetProfileCountryCache };
-
-type TextContent = { type: 'text'; text: string };
-type ToolResult = { content: TextContent[]; structuredContent?: Record<string, unknown> };
-
-const textResult = (text: string, structured?: Record<string, unknown>): ToolResult => ({
-  content: [{ type: 'text', text }],
-  ...(structured ? { structuredContent: structured } : {}),
-});
 
 /** The show/episode lookups this module makes are market-gated, so a hint that
  *  names the family is more use than the generic wording (#782). */

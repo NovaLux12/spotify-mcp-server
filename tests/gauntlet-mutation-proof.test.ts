@@ -878,6 +878,15 @@ interface Sandbox {
  * and imports its core module as `./live-gauntlet-core.mjs`, so the copies have
  * to land at those two paths. `HOME` is pointed at the sandbox too, so a server
  * that reached for a token file would find an empty one.
+ *
+ * `scripts/hermetic-home.mjs` is copied for the same reason, and for a second
+ * one: since #1397 the gauntlet starts its server through it, in a fresh
+ * `mkdtemp` home of its own rather than the one this sandbox hands down. That is
+ * a second layer over the same property, and it needs the REAL store registry
+ * rather than the stub — hence `SPOTIFY_MCP_DIST_ROOT` below. The isolation
+ * itself is asserted directly, and end to end, in
+ * `tests/harness-hermetic-home.test.ts`; this file is about the proof the sweep
+ * makes, not about where its bytes land.
  */
 function makeSandbox(cfg: Record<string, boolean>): Sandbox {
   const dir = sandbox('gauntlet-e2e-');
@@ -890,6 +899,7 @@ function makeSandbox(cfg: Record<string, boolean>): Sandbox {
   writeFileSync(join(dir, 'dist', 'index.js'), STUB_SERVER, 'utf8');
   copyFileSync(GAUNTLET_PATH, join(dir, 'scripts', 'live-gauntlet.mjs'));
   copyFileSync(CORE_PATH, join(dir, 'scripts', 'live-gauntlet-core.mjs'));
+  copyFileSync(join(ROOT, 'scripts', 'hermetic-home.mjs'), join(dir, 'scripts', 'hermetic-home.mjs'));
   const reportPath = join(dir, 'report.json');
   return {
     dir,
@@ -899,7 +909,16 @@ function makeSandbox(cfg: Record<string, boolean>): Sandbox {
         cwd: dir,
         encoding: 'utf8',
         timeout: RUN_TIMEOUT_MS,
-        env: { ...process.env, STUB_CONFIG: configPath, HOME: dir, USERPROFILE: dir },
+        env: {
+          ...process.env,
+          STUB_CONFIG: configPath,
+          HOME: dir,
+          USERPROFILE: dir,
+          // The hermetic-home helper checks the real store registry before it
+          // spawns, and this sandbox's `dist/` holds the STUB server rather than
+          // a build. Point it at the real one — see the makeSandbox comment.
+          SPOTIFY_MCP_DIST_ROOT: join(ROOT, 'dist'),
+        },
       });
       return { status: result.status ?? -1, stdout: `${result.stdout ?? ''}${result.stderr ?? ''}` };
     },

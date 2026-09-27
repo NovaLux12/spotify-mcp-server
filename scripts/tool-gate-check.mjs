@@ -1,10 +1,18 @@
 #!/usr/bin/env node
 // Tool-level gate check: spawn the real server, discover tools, and call the
 // candidates that sit on the app-registration-gated surface. Read-only args.
-import { spawn } from 'node:child_process';
+//
+// #1397: this used to spawn with no `env` at all, so the server inherited the
+// developer's real $HOME and its local stores. The spawn is now unconditional and
+// hermetic; see scripts/hermetic-home.mjs.
 import { once } from 'node:events';
+import { spawnHarnessServer } from './hermetic-home.mjs';
 
-const child = spawn('node', ['--env-file=.env', 'dist/index.js'], { cwd: new URL('..', import.meta.url).pathname, stdio: ['pipe', 'pipe', 'inherit'] });
+const { child } = await spawnHarnessServer({
+  label: 'tool-gate-check',
+  args: ['--env-file=.env', 'dist/index.js'],
+  cwd: new URL('..', import.meta.url).pathname,
+});
 let buf = '';
 const pending = new Map();
 child.stdout.on('data', (d) => {
