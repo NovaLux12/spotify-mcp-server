@@ -1063,7 +1063,7 @@
         "label": "All via env vars — no config file. Only SPOTIFYCLIENTID …"
       },
       {
-        "hash": "2e3d06a072a38658",
+        "hash": "6973c3744bebfcda",
         "label": "| Variable | Example | Purpose | |---|---|---| | SPOTIFY…"
       },
       {
@@ -1741,6 +1741,18 @@
         "label": "Tool result format — every tool handler must return: { c…"
       },
       {
+        "hash": "1f976412938fe40f",
+        "label": "Cross-cutting boundaries — src/index.ts wraps every regi…"
+      },
+      {
+        "hash": "593aa1fc44e079fe",
+        "label": "| Installed | Boundary | What it does to a result | |---…"
+      },
+      {
+        "hash": "722c5faa55d3336a",
+        "label": "The last two are disjoint — one writes structuredContent…"
+      },
+      {
         "hash": "44a883d4c2483a17",
         "label": "Local sidecar corruption (#839). The JSON sidecars under…"
       },
@@ -1959,6 +1971,10 @@
       {
         "hash": "e19989a52a9d8c0d",
         "label": "structuredContent — every result attaches its machine-re…"
+      },
+      {
+        "hash": "c15d2fb4fbdc3a22",
+        "label": "Attribution and the link back to Spotify (#696) — every …"
       },
       {
         "hash": "71b72ae6df9918b9",
@@ -3897,6 +3913,46 @@
         "label": "These six are deliberately NOT reachable through SPOTIFY…"
       },
       {
+        "hash": "afe2e95d924280f8",
+        "label": "5.17 Attribution and the link back to Spotify (#696)"
+      },
+      {
+        "hash": "ed8792a1cbcc6d02",
+        "label": "This is a rendered-output contract, and it is the only o…"
+      },
+      {
+        "hash": "00d3ceea28dee604",
+        "label": "| Applies to | Result | |---|---| | The text block of ev…"
+      },
+      {
+        "hash": "6c61c64eeda1149b",
+        "label": "Why the two policy clauses, and why they land in differe…"
+      },
+      {
+        "hash": "8953ef7064e9a60f",
+        "label": "The row link is emitted INLINE, not collected at the end…"
+      },
+      {
+        "hash": "e6ba7e550629ac41",
+        "label": "json mode is untouched, and that is the contract rather …"
+      },
+      {
+        "hash": "fb4476a5c4ceacfa",
+        "label": "An error result carries no footer. A validation refusal …"
+      },
+      {
+        "hash": "e41484acff9dbccd",
+        "label": "A URI that cannot be resolved is left exactly as it was.…"
+      },
+      {
+        "hash": "c2a69b05c3c4b0e0",
+        "label": "SPOTIFYMCPATTRIBUTION turns both off, and it is the one …"
+      },
+      {
+        "hash": "d5aeecd5eb605e63",
+        "label": "One boundary, not sixty edits. installAttributionBoundar…"
+      },
+      {
         "hash": "f3e70de12e2dc0f1",
         "label": "6. Resources"
       },
@@ -4343,7 +4399,7 @@
         "label": "Summary"
       },
       {
-        "hash": "b7b1883c226db2e1",
+        "hash": "e4f064144096b51e",
         "label": "| Variable | Default | Purpose | | --- | --- | --- | | S…"
       },
       {
@@ -4785,6 +4841,46 @@
       {
         "hash": "248c7138b0fd6b5c",
         "label": "For confirmation-gated destructive operations, a missing…"
+      },
+      {
+        "hash": "d3566e21bf87cd7a",
+        "label": "Attribution on rendered rows (#696)"
+      },
+      {
+        "hash": "cd8150ba7e355a50",
+        "label": "Every rendered tool result carries two things, both requ…"
+      },
+      {
+        "hash": "e2e13364c955a4cb",
+        "label": "The footer is the single line Music data supplied by Spo…"
+      },
+      {
+        "hash": "d4e183da8d96df1c",
+        "label": "Each row's spotify:<kind>:<id> is followed by the matchi…"
+      },
+      {
+        "hash": "989ed733a6556cdd",
+        "label": "structuredContent is not modified. It keeps the bare spo…"
+      },
+      {
+        "hash": "c5b862e89580c21a",
+        "label": "responseformat: 'json' is left byte-identical. That mode…"
+      },
+      {
+        "hash": "839352dbc85109eb",
+        "label": "An error result carries no footer. A validation refusal …"
+      },
+      {
+        "hash": "b8fb20bb42305cd1",
+        "label": "A URI this server cannot resolve gets no link and is lef…"
+      },
+      {
+        "hash": "0822cd30b0e29aa9",
+        "label": "SPOTIFYMCPATTRIBUTION=0 (also false, no or off; case-ins…"
+      },
+      {
+        "hash": "db65871a96056bc8",
+        "label": "spotifydoctor reports the resolved state as its attribut…"
       },
       {
         "hash": "7503b80954a305d8",
@@ -6248,6 +6344,13 @@
       "reason": "reworded the module-map introduction for #1398: it described the removed LOC column, and the replacement explains what Schema bytes measures and why a line count was the wrong signal"
     },
     {
+      "file": "docs/configuration.md",
+      "hash": "b7b1883c226db2e1",
+      "label": "| Variable | Default | Purpose | | --- | --- | --- | | S…",
+      "date": "2026-09-27",
+      "reason": "Both tables are pinned as one content-hashed unit each, so adding the SPOTIFY_MCP_ATTRIBUTION row retires the old hash in README.md and in docs/configuration.md. Nothing was removed: each table grows by exactly one row (README 8->9, configuration 68->69) and no SPOTIFY_* row is deleted on either side, verified by counting the tables on both trees rather than by reading the diff. The rebase that produced this also brought in #1521's changes to the same two tables, so the pre-rebase pins were superseded regardless."
+    },
+    {
       "file": "docs/cookbook.md",
       "hash": "06d58c6b9c65cbe8",
       "label": "1. Call tastelisteningclock with statsfmuser: \"<your-sta…",
@@ -6323,6 +6426,13 @@
       "label": "| | | |---|---| | Complete | Playback, search, catalog, …",
       "date": "2026-09-27",
       "reason": "manifest was generated against a tree older than fb324933; the prose is present in the current files in a reworded layout, and README.md and docs/cookbook.md are byte-identical to fb324933"
+    },
+    {
+      "file": "README.md",
+      "hash": "2e3d06a072a38658",
+      "label": "| Variable | Example | Purpose | |---|---|---| | SPOTIFY…",
+      "date": "2026-09-27",
+      "reason": "Both tables are pinned as one content-hashed unit each, so adding the SPOTIFY_MCP_ATTRIBUTION row retires the old hash in README.md and in docs/configuration.md. Nothing was removed: each table grows by exactly one row (README 8->9, configuration 68->69) and no SPOTIFY_* row is deleted on either side, verified by counting the tables on both trees rather than by reading the diff. The rebase that produced this also brought in #1521's changes to the same two tables, so the pre-rebase pins were superseded regardless."
     },
     {
       "file": "README.md",
@@ -6627,9 +6737,9 @@
     }
   ],
   "provenance": {
-    "head": "1e0f642af0355ea7aca608ef5a1e3ea29600fc17",
-    "base": "f2790fdf35210f1ee383250c737944e15c22c101",
-    "upstream": "f2790fdf35210f1ee383250c737944e15c22c101",
+    "head": "01258537645725d553a9c14ab0b678813b10cf85",
+    "base": "b1a30af2dc643b88e7430af1c9285e7040881f7f",
+    "upstream": "b1a30af2dc643b88e7430af1c9285e7040881f7f",
     "behind": false
   }
 }
