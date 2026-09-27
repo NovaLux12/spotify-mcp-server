@@ -76,6 +76,17 @@
  * spawns 20 of them, that is 20 registry boots' worth of memory overlapping
  * the next one), and because the timer is `unref`'d it never fires at all if
  * the test file finishes first — so the child was *orphaned*, not reaped.
+ *
+ * ## Reaping the child is not the same as reaping its handles (#1365)
+ *
+ * The three load-bearing listeners above settle every in-flight request when a
+ * child dies, so a killed server produces a *named* failure rather than a
+ * timeout. That is the async half. `dispose()` owns the other half, and it was
+ * missing: a child that is reaped still leaves a `PipeWrap` registered per stdio
+ * stream, and a grandchild holding the inherited write end keeps it alive
+ * forever. The symptom was `mcp.smoke.test.ts` runs reported sitting at 0.0 %
+ * CPU for 47–60 minutes — blocked, not slow — and `dispose()` was the last thing
+ * that ran before the file stopped making progress. See `dispose()`.
  */
 
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
@@ -271,7 +282,16 @@ export function guardedHandler<A extends unknown[]>(
 
 export class StdioJsonRpcChild {
   readonly child: ChildProcessWithoutNullStreams;
-  private readonly label: string;
+  /**
+   * Public so this class structurally satisfies `DeadlineChild`
+   * (`file-deadline.ts`), which needs a label to put in a breach report. A
+   * `childLabel` getter was tried first and does not work: `label` is an
+   * instance property, and a same-named prototype accessor would either shadow
+   * it or be shadowed by it, depending on assignment order. Widening the field
+   * is the honest fix and costs nothing — this is a test helper, and the
+   * constructor already takes the label from the caller.
+   */
+  readonly label: string;
   private readonly requestTimeoutMs: number;
   private readonly exitGraceMs: number;
   private readonly pending = new Map<number, Pending>();
@@ -552,27 +572,95 @@ export class StdioJsonRpcChild {
   }
 
   /**
-   * End stdin, then make sure the child is actually gone.
+   * End stdin, reap the child, then release its pipes.
    *
    * Bounded on both legs, and the kill is aimed at the PID this session
    * spawned. Idempotent.
+   *
+   * ## Why the stream teardown is not optional (#1365)
+   *
+   * This used to stop at "the child is gone", and that left the reported
+   * 47–60 minute hangs in place: four `npm test` runs on `mcp.smoke.test.ts` sat
+   * at **0.0 % CPU** and never exited.
+   *
+   * A child being reaped does not close a descriptor it *inherited*. Node
+   * registers a `PipeWrap` for each stdio stream it hands out, and that handle
+   * stays in the event loop until the stream is destroyed — not until the
+   * process that wrote the last byte closes its end. So a grandchild, or any
+   * survivor holding the write end, keeps the parent's read end from ever
+   * reaching EOF, and the test file's event loop can never drain. Measured
+   * against this class:
+   *
+   * ```
+   * dispose() returned. active handles now: ["PipeWrap","PipeWrap","ProcessWrap"]
+   * ```
+   *
+   * and the process sat there until something else killed it.
+   *
+   * So `dispose()` ends with `releaseStreams()`. Destroying a `PipeWrap` is what
+   * makes the handle unref'd, and the loop then drains normally.
+   *
+   * This cannot truncate a child's diagnostics: `stderr` is accumulated in the
+   * `data` handler above into `stderrText`, and Node's libuv reads what is
+   * available before the `exit` event is delivered. Measured both ways on a
+   * child writing 200 KB to stderr and exiting — 146 176 bytes captured with the
+   * streams destroyed and 146 176 bytes with them left open. The destruction
+   * costs nothing in fidelity and everything in liveness.
    */
   async dispose(): Promise<void> {
     this.closed = true;
-    if (this.child.exitCode !== null || this.child.signalCode !== null) return;
-    this.child.stdin.end();
-    if (await this.waitForExit(this.exitGraceMs)) return;
-    const pid = this.child.pid;
-    // Scoped to the PID `spawn` returned. A pattern match here would reach other
-    // agents' processes on this shared box; see the header.
-    if (pid !== undefined && pid !== process.pid && isOwnChild(pid)) {
-      try {
-        process.kill(pid, 'SIGKILL');
-      } catch {
-        // ESRCH: it exited between the check and the signal. Nothing to reap.
+    if (this.child.exitCode === null && this.child.signalCode === null) {
+      this.child.stdin.end();
+      if (!(await this.waitForExit(this.exitGraceMs))) {
+        const pid = this.child.pid;
+        // Scoped to the PID `spawn` returned. A pattern match here would reach
+        // other agents' processes on this shared box; see the header.
+        if (pid !== undefined && pid !== process.pid && isOwnChild(pid)) {
+          try {
+            process.kill(pid, 'SIGKILL');
+          } catch {
+            // ESRCH: it exited between the check and the signal. Nothing to reap.
+          }
+          await this.waitForExit(this.exitGraceMs);
+        }
       }
-      await this.waitForExit(this.exitGraceMs);
     }
+    this.releaseStreams();
+  }
+
+  /**
+   * Destroy all three stdio streams so no handle outlives the child.
+   *
+   * Unconditional and idempotent, and it runs on every `dispose()` path
+   * including the one where the child had already exited on its own — which is
+   * precisely the case the inherited-descriptor leak survives.
+   */
+  private releaseStreams(): void {
+    for (const stream of [this.child.stdin, this.child.stdout, this.child.stderr]) {
+      if (!stream.destroyed) stream.destroy();
+    }
+  }
+
+  /**
+   * Has this child been reaped? `false` once `dispose()` has released it.
+   *
+   * `DeadlineChild` in `file-deadline.ts` needs this without reaching through
+   * `child`, and the distinction matters there: a child that is *not* running
+   * because it exited cleanly is not the same as one this deadline had to kill.
+   */
+  isRunning(): boolean {
+    return !this.closed && this.child.exitCode === null && this.child.signalCode === null;
+  }
+
+  /**
+   * How the child ended, as latched by the `exit` handler.
+   *
+   * `undefined` while it is still running, which is what lets a breach report
+   * distinguish "died on its own, here is how" from "was alive when the budget
+   * expired, and was killed".
+   */
+  get outcomeDescription(): string | undefined {
+    return this.outcome;
   }
 
   /**

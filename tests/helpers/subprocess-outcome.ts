@@ -73,6 +73,7 @@
  */
 
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 
 /** How a child process ended, as reported by `spawnSync`/`execFileSync`. */
 export type ChildOutcome =
@@ -180,4 +181,73 @@ export function childExitCode(result: RawChildResult, label: string): number {
     + 'A killed or never-started child must not be read as a gate that ran and rejected.\n'
     + `child stderr:\n${stderrTail(outcome.stderr)}`,
   );
+}
+
+export interface BoundedExecOptions {
+  readonly label: string;
+  /** Wall-clock budget. A synchronous child is bounded by this or by nothing. */
+  readonly timeoutMs: number;
+  readonly cwd?: string;
+  readonly env?: NodeJS.ProcessEnv;
+  /** Defaults to `SIGKILL`: a timeout must not be negotiable by the child. */
+  readonly killSignal?: NodeJS.Signals;
+}
+
+/**
+ * `execFileSync` with a deadline, reported through this file's vocabulary.
+ *
+ * ## Why this exists rather than a `setTimeout` around a call (#1365)
+ *
+ * A `setTimeout` **cannot** bound a synchronous child, and that is a measured
+ * fact rather than an inference. While `execFileSync` is on the stack the event
+ * loop does not run, so a timer armed for 200 ms did not fire until a 1.5 s
+ * `execFileSync` had returned:
+ *
+ * ```
+ * execFileSync returned at 1522 | timer fired during it? false
+ * timer fired at 1523
+ * ```
+ *
+ * This matters because `tests/mcp.smoke.test.ts` runs `npm pack`, whose
+ * `prepack` is a full `tsc`. A whole-file watchdog, however it is armed, is
+ * inert for the duration of that call — so the only bound that covers a
+ * synchronous child is the `timeout` option on the call itself.
+ *
+ * The error is then classified rather than propagated raw, because a timeout
+ * arrives as `code: 'ETIMEDOUT'` **and** `signal: 'SIGKILL'` with `status: null`
+ * (Node 24.21.0, this function's own test drives it). Left raw, the caller sees
+ * an opaque `spawnSync … ETIMEDOUT` and cannot tell a slow `tsc` from a killed
+ * one.
+ */
+export function execFileBounded(
+  file: string,
+  args: readonly string[],
+  options: BoundedExecOptions,
+): string {
+  try {
+    return execFileSync(file, [...args], {
+      encoding: 'utf8',
+      timeout: options.timeoutMs,
+      killSignal: options.killSignal ?? 'SIGKILL',
+      ...(options.cwd !== undefined ? { cwd: options.cwd } : {}),
+      ...(options.env !== undefined ? { env: options.env } : {}),
+    });
+  } catch (error) {
+    const result = error as RawChildResult;
+    const timedOut = (error as { code?: string }).code === 'ETIMEDOUT';
+    // `ETIMEDOUT` wins over the generic "never started" reading: the child *did
+    // start* and was killed by our own deadline, and a report that says
+    // otherwise sends the reader looking for a missing binary.
+    const outcome: ChildOutcome = timedOut
+      ? { kind: 'signalled', signal: result.signal ?? options.killSignal ?? 'SIGKILL', stdout: result.stdout ?? '', stderr: result.stderr ?? '' }
+      : classifyChild(result);
+    assert.fail(
+      `${options.label}: the subprocess ${describeOutcome(outcome)}`
+      + `${timedOut ? ` after exceeding its ${options.timeoutMs}ms budget` : ''}, so it produced no output to check.\n`
+      + 'This is a subprocess/resource failure, NOT a product failure. A synchronous child is not\n'
+      + 'bounded by a timer — the event loop is blocked while it runs — so this budget is the only\n'
+      + 'thing that can end it, and the load on the machine is the first thing to check.\n'
+      + `child stderr:\n${stderrTail(outcome.stderr)}`,
+    );
+  }
 }
