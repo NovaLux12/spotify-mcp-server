@@ -102,10 +102,15 @@ const markdownBlock = (name: string, body = 'body') =>
   `<!-- BEGIN:generated ${name} -->\n${body}\n<!-- END:generated ${name} -->\n`;
 
 // Each full census run spawns the whole MCP server, and the test runner executes
-// test files in parallel. Three separate `--check` runs to cover three planted
-// defects was enough extra load to tip `tests/infra.test.ts`'s wall-clock
-// ValidatorStore test over its 60ms TTL, so the planted-defect run is done once
-// and shared. The assertions stay separate; only the subprocess is shared.
+// test files in parallel, so three separate `--check` runs to cover three planted
+// defects is three servers' worth of startup for one shared input. The
+// planted-defect run is done once and shared. The assertions stay separate; only
+// the subprocess is shared.
+//
+// This used to be justified by a specific flake — enough extra load to tip
+// `tests/infra.test.ts`'s wall-clock ValidatorStore test over its 60ms TTL, which
+// is now driven by an injected clock and cannot fail that way (#1386). The
+// sharing stands on its own cost, not on that test.
 let realReport: Report | undefined;
 function realTreeReport(): Report {
   realReport ??= JSON.parse(runCensus(['--marker-tree-report']).stdout) as Report;

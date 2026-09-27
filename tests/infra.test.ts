@@ -190,6 +190,17 @@ describe('cache: LruTtlCache', () => {
 });
 
 describe('cache: ValidatorStore (#601)', () => {
+  /**
+   * A clock the test owns, so the TTL cases below assert on elapsed time
+   * rather than on scheduling luck (#1386). The wall-clock version of this
+   * block slept 40 ms against a 60 ms TTL and left 20 ms of slack — a false
+   * red on a loaded box, and a green that proved nothing about the boundary.
+   */
+  const fakeClock = (start = 1_000) => {
+    let t = start;
+    return { now: () => t, advance: (ms: number) => { t += ms; } };
+  };
+
   it('returns the stored payload and ETag it was set with', () => {
     const store = new ValidatorStore<number>();
     store.set('a', 1, '"v1"');
@@ -198,22 +209,60 @@ describe('cache: ValidatorStore (#601)', () => {
     assert.equal(store.get('missing'), undefined);
   });
 
-  it('stops offering a validator once its window has passed', async () => {
-    const store = new ValidatorStore<string>(20);
+  it('defaults to the wall clock when no clock is injected', async () => {
+    // The one case that has to touch real time, because what it pins is the
+    // DEFAULT rather than a TTL: every other test here injects a clock, so a
+    // default that stopped reading `Date.now` would pass all of them. Only the
+    // production path depends on it. The assertion is one-directional — it
+    // needs 5ms elapsed and the sleep guarantees at least 30 — so event-loop
+    // overshoot can only make it more expired, never less.
+    const store = new ValidatorStore<string>(5);
     store.set('k', 'payload', '"v1"');
     assert.deepEqual(store.get('k'), { value: 'payload', etag: '"v1"' });
-    await sleep(40);
+    await sleep(30);
+    assert.equal(store.get('k'), undefined, 'the real clock advanced past a 5ms window');
+  });
+
+  it('stops offering a validator once its window has passed', () => {
+    const clock = fakeClock();
+    const store = new ValidatorStore<string>(20, undefined, clock.now);
+    store.set('k', 'payload', '"v1"');
+    assert.deepEqual(store.get('k'), { value: 'payload', etag: '"v1"' });
+    clock.advance(20);
     assert.equal(store.get('k'), undefined, 'an expired validator is not re-sent');
     assert.equal(store.size, 0, 'the expired entry was dropped on read');
   });
 
-  it('set refreshes the window of an existing key', async () => {
-    const store = new ValidatorStore<string>(60);
+  it('treats the TTL boundary as expired, not as still live', () => {
+    // The exact edges the sleeping version could only approximate. `>=` on the
+    // TTL is the contract: one millisecond before the window is still open,
+    // at it and after it the entry is gone. A test that slept would have to
+    // pick one of these three and hope the clock agreed.
+    const clock = fakeClock();
+    const store = new ValidatorStore<string>(20, undefined, clock.now);
+    store.set('k', 'payload', '"v1"');
+    clock.advance(19);
+    assert.deepEqual(store.get('k'), { value: 'payload', etag: '"v1"' }, '1ms before the TTL is still live');
+    clock.advance(1);
+    assert.equal(store.get('k'), undefined, 'at exactly the TTL the entry is expired');
+    clock.advance(1);
+    assert.equal(store.get('k'), undefined, '1ms past the TTL the entry is still expired');
+  });
+
+  it('set refreshes the window of an existing key', () => {
+    const clock = fakeClock();
+    const store = new ValidatorStore<string>(60, undefined, clock.now);
     store.set('k', 'first', '"v1"');
-    await sleep(40);
+    clock.advance(40);
     store.set('k', 'second', '"v2"');
-    await sleep(40);
+    clock.advance(40);
     assert.deepEqual(store.get('k'), { value: 'second', etag: '"v2"' });
+    // The refresh is what kept it: measured from the FIRST set, t=100 is 40ms
+    // past a 60ms window, and this assertion could not hold.
+    clock.advance(19);
+    assert.deepEqual(store.get('k'), { value: 'second', etag: '"v2"' }, 'the window restarts on set');
+    clock.advance(1);
+    assert.equal(store.get('k'), undefined, 'and expires one full TTL after the refresh, not after the first set');
   });
 
   it('evicts the least-recently-used entry beyond maxEntries', () => {

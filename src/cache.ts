@@ -254,10 +254,23 @@ export class ValidatorStore<V> {
   private readonly map = new Map<string, ValidatorEntry<V>>();
   private readonly ttlMs: number;
   private readonly maxEntries: number;
+  private readonly now: () => number;
 
-  constructor(ttlMs: number = DEFAULT_VALIDATOR_TTL_MS, maxEntries: number = DEFAULT_CACHE_MAX_ENTRIES) {
+  /**
+   * @param now Clock source, defaulting to the wall clock (#1386). Injecting
+   *   one is what makes the TTL boundaries testable: a test that drives real
+   *   time has to sleep long enough to clear the TTL and short enough not to
+   *   overshoot it, and the window between those two is however wide the
+   *   machine's event loop left free. Production never passes this.
+   */
+  constructor(
+    ttlMs: number = DEFAULT_VALIDATOR_TTL_MS,
+    maxEntries: number = DEFAULT_CACHE_MAX_ENTRIES,
+    now: () => number = Date.now,
+  ) {
     this.ttlMs = ttlMs;
     this.maxEntries = maxEntries;
+    this.now = now;
   }
 
   get size(): number {
@@ -268,7 +281,7 @@ export class ValidatorStore<V> {
   get(key: string): { value: V; etag: string } | undefined {
     const entry = this.map.get(key);
     if (!entry) return undefined;
-    if (Date.now() - entry.savedAt >= this.ttlMs) {
+    if (this.now() - entry.savedAt >= this.ttlMs) {
       this.map.delete(key);
       return undefined;
     }
@@ -281,7 +294,7 @@ export class ValidatorStore<V> {
   /** Store (or refresh the window of) a payload and the ETag that identifies it. */
   set(key: string, value: V, etag: string): void {
     if (this.map.has(key)) this.map.delete(key);
-    this.map.set(key, { value, etag, savedAt: Date.now() });
+    this.map.set(key, { value, etag, savedAt: this.now() });
     while (this.map.size > this.maxEntries) {
       const oldest = this.map.keys().next().value;
       if (oldest === undefined) break;
