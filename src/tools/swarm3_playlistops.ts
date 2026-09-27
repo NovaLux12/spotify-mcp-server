@@ -61,7 +61,9 @@ import type {
 } from '../types/spotify.js';
 import { playlistItemTotal, type SpotifyPlaylistPage } from '../types/spotify.js';
 import { positionDesc, positionSchema } from '../positionbase.js';
-import { emit, type EmitOptions } from '../result.js';
+import { emit, textResult, type EmitOptions } from '../result.js';
+import { confirmViaElicitation, describeConfirmation, requiredConfirmationRefusal, REMOVE_ELICIT_THRESHOLD } from './confirm.js';
+import { MOVE_ELICIT_THRESHOLD } from './playlistbatch.js';
 import { spotifyRef } from '../refs.js';
 
 type TextContent = { type: 'text'; text: string };
@@ -1188,6 +1190,24 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
           ...doomed.slice(0, 10).map((r) => `  - pos ${r.position + 1}: ${r.uri} "${r.name}"`),
         ]), { ok: true, dry_run: true, playlist: p.id, range: [from, to], removals: doomed.length, remaining: keptCount });
       }
+      // #1568: this is the largest removal in the module and it asked nothing
+      // at any size, while `remove_from_playlist` next door gates at 10. The
+      // count named here is `doomed.length` — the exact number of rows the
+      // chunked DELETEs below will act on, computed before the first write —
+      // so the prompt and the write can never disagree (#803). The gate runs
+      // BEFORE the backup so a refusal leaves no artefact at all; the backup
+      // still precedes every DELETE, which is all backup-first means.
+      if (doomed.length >= REMOVE_ELICIT_THRESHOLD) {
+        const verdict = await confirmViaElicitation(server, {
+          message: describeConfirmation('remove playlist range', p.name ?? p.id, [
+            `Remove ${doomed.length} item(s) at positions [${from},${to}) of ${total}; ${keptCount} remain:`,
+            ...doomed.slice(0, 10).map((r) => `  - pos ${r.position + 1}: ${r.uri} "${r.name}"`),
+            ...(doomed.length > 10 ? [`(…and ${doomed.length - 10} more)`] : []),
+          ]),
+        });
+        const refusal = requiredConfirmationRefusal(verdict);
+        if (refusal) return textResult(refusal.message, refusal.payload);
+      }
       const backupFile = await backupItemsBeforeWrite(p.id, p.name, p.items);
       // Positions are indices into the CURRENT playlist, so removals must run from the tail
       // backwards: chunking ascending positions deletes the wrong rows once a chunk lands
@@ -1859,6 +1879,29 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
           view.footer ? `(${view.footer})` : '',
         ]), { ok: true, dry_run: true, source: src.id, destination: dst.id, moved: moving.length, plan: uris });
       }
+      // #1568: a move of up to 2000 tracks deletes every one of them from the
+      // source, and it prompted at no size. This is the playlist MOVE family,
+      // so it reuses playlistbatch's MOVE_ELICIT_THRESHOLD rather than
+      // introducing a second number. The count is `moving.length` — exactly
+      // the rows the DELETEs below remove. The gate runs before the backup, so
+      // a refusal leaves nothing behind at all.
+      if (moving.length >= MOVE_ELICIT_THRESHOLD) {
+        const verdict = await confirmViaElicitation(server, {
+          message: describeConfirmation(
+            'move tracks between playlists',
+            `${src.name ?? src.id} → ${dst.name ?? dst.id}`,
+            [
+              `Move ${moving.length} track(s) out of "${src.name ?? src.id}"; each is deleted from the source and appended to "${dst.name ?? dst.id}":`,
+              // Rows are sliced from `moving`, not from the capped `view`, so
+              // the previewed list and the stated count cannot drift apart.
+              ...moving.slice(0, 10).map((r) => `  - ${r.name} — ${r.artistNames.join(', ')}`),
+              ...(moving.length > 10 ? [`(…and ${moving.length - 10} more)`] : []),
+            ],
+          ),
+        });
+        const refusal = requiredConfirmationRefusal(verdict);
+        if (refusal) return textResult(refusal.message, refusal.payload);
+      }
       const backupFile = await backupItemsBeforeWrite(src.id, src.name, src.items);
       // Same tail-first rule as remove_playlist_range (#A6-003): the destination add is
       // independent, but the source delete must not shift rows still queued for deletion.
@@ -2028,6 +2071,24 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
         const list = outboundBySrc.get(m.from_playlist) ?? [];
         if (list.length === 0) outboundBySrc.set(m.from_playlist, list);
         list.push(row);
+      }
+      // #1568: this plan deletes from up to 10 playlists at once and asked
+      // nothing at any size. MOVE_ELICIT_THRESHOLD again — the same family as
+      // the other move tool. The count is summed from `outboundBySrc`, the map
+      // the loop below deletes from, so the prompt names the number of rows the
+      // writes will actually remove rather than a plan size that could differ
+      // from it (#803).
+      const removalCount = [...outboundBySrc.values()].reduce((n, rows) => n + rows.length, 0);
+      if (removalCount >= MOVE_ELICIT_THRESHOLD) {
+        const donors = [...outboundBySrc.keys()].map((id) => bucketById.get(id)?.name ?? id);
+        const verdict = await confirmViaElicitation(server, {
+          message: describeConfirmation('balance playlists', `${buckets.length} playlists by ${metric}`, [
+            `Move ${removalCount} track(s) out of ${donors.length} donor playlist(s); each is deleted from its donor and appended to a receiver:`,
+            ...donors.map((name) => `  - from "${name}"`),
+          ]),
+        });
+        const refusal = requiredConfirmationRefusal(verdict);
+        if (refusal) return textResult(refusal.message, refusal.payload);
       }
       for (const [srcId, rows] of outboundBySrc) {
         const origItems = loadedById.get(srcId);
