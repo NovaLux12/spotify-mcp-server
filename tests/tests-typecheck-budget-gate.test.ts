@@ -130,21 +130,14 @@ describe('#1408 — the gate fails when the count goes up', () => {
   // A gate that only ever passes proves nothing. These drive the real CLI
   // through its failure paths, and each asserts a NON-ZERO exit.
   let dir: string;
-  const BASELINE_BACKUP = join(tmpdir(), `tsc-baseline-backup-${process.pid}.json`);
+  let scratchBaseline: string;
 
   before(() => {
     dir = mkdtempSync(join(tmpdir(), 'typecheck-budget-'));
-    writeFileSync(BASELINE_BACKUP, readFileSync(BASELINE, 'utf8'));
+    scratchBaseline = join(dir, 'baseline.json');
   });
 
-  after(() => {
-    // Always restore, even if an assertion above threw: a gate test that
-    // leaves a doctored baseline behind turns the next run red for a reason
-    // that has nothing to do with the change under test.
-    writeFileSync(BASELINE, readFileSync(BASELINE_BACKUP, 'utf8'));
-    rmSync(BASELINE_BACKUP, { force: true });
-    rmSync(dir, { recursive: true, force: true });
-  });
+  after(() => rmSync(dir, { recursive: true, force: true }));
 
   /**
    * A two-file scratch project: one file carrying exactly one type error, one
@@ -168,9 +161,20 @@ describe('#1408 — the gate fails when the count goes up', () => {
     return project;
   }
 
-  /** Point the baseline at a scratch project's measurement, then re-arm it. */
+  /**
+   * Write a baseline for the scratch project into the scratch directory.
+   *
+   * Deliberately NOT the checked-in `tsconfig.tests-baseline.json`. node:test
+   * runs sibling describes concurrently, so an earlier version of this file
+   * that doctored the real baseline to prove the gate fires raced the
+   * "the real tree is accepted" describe, which then read whichever write
+   * landed last and failed on a baseline of 0. Sharing mutable state between
+   * concurrently-running tests is the defect, not the restore hook that papered
+   * over it — the `--baseline` flag removes the sharing entirely.
+   */
   function withBaseline(total: number, byFile: Record<string, number>) {
-    writeFileSync(BASELINE, JSON.stringify({ total, byFile }, null, 2));
+    writeFileSync(scratchBaseline, JSON.stringify({ total, byFile }, null, 2));
+    return ['--baseline', scratchBaseline];
   }
 
   /**
@@ -192,9 +196,9 @@ describe('#1408 — the gate fails when the count goes up', () => {
     // is a genuine regression rather than a new-file case.
     const project = writeProbe('one-below', { 'bad.ts': 'export const n: number = "s";\n' });
     const key = probeKey('one-below');
-    withBaseline(0, { [key]: 0 });
+    const args = ['--project', project, ...withBaseline(0, { [key]: 0 })];
 
-    const { code, stderr } = runGate(['--project', project]);
+    const { code, stderr } = runGate(args);
     assert.notEqual(code, 0, 'the gate returned success on a tree above its own baseline');
     assert.match(stderr, /budget exceeded/);
     assert.ok(stderr.includes(key), `the failure must name the regressing file:\n${stderr}`);
@@ -208,9 +212,9 @@ describe('#1408 — the gate fails when the count goes up', () => {
     // The total is set to match what the probe measures, so the total rule
     // cannot be what fires.
     const project = writeProbe('new-file', { 'broken.ts': 'export const n: number = "s";\n' });
-    withBaseline(1, {});
+    const args = ['--project', project, ...withBaseline(1, {})];
 
-    const { code, stderr } = runGate(['--project', project]);
+    const { code, stderr } = runGate(args);
     assert.notEqual(code, 0, 'the gate accepted a project with a type error in a new file');
     assert.match(stderr, /not in the baseline/);
     assert.match(stderr, /broken\.ts/);
@@ -222,9 +226,9 @@ describe('#1408 — the gate fails when the count goes up', () => {
     // is not a rule; without this, "exits non-zero" could be satisfied by the
     // gate failing for any reason at all.
     const project = writeProbe('clean', { 'ok.ts': 'export const n: number = 1;\n' });
-    withBaseline(0, {});
+    const args = ['--project', project, ...withBaseline(0, {})];
 
-    const { code, stdout, stderr } = runGate(['--project', project]);
+    const { code, stdout, stderr } = runGate(args);
     // A clean project measures 0 errors, at its baseline, so the gate passes —
     // proving the per-file rule keys on the error, not on the file simply
     // being unfamiliar to the baseline.
@@ -239,9 +243,9 @@ describe('#1408 — the gate fails when the count goes up', () => {
     // pass this, and the file would be named by neither.
     const project = writeProbe('grew', { 'bad.ts': 'export const n: number = "s";\n' });
     const key = probeKey('grew');
-    withBaseline(1, { [key]: 0 });
+    const args = ['--project', project, ...withBaseline(1, { [key]: 0 })];
 
-    const { code, stderr } = runGate(['--project', project]);
+    const { code, stderr } = runGate(args);
     assert.notEqual(code, 0, 'the gate accepted a file with more errors than its baseline allows');
     assert.ok(
       stderr.includes(`${key}: 1 error(s), baseline allows 0`),
@@ -254,7 +258,7 @@ describe('#1408 — the gate fails when the count goes up', () => {
     // Fail-closed. A budget gate handed a config it cannot parse has not
     // measured anything, and reporting that as "within budget" is precisely
     // the defect this gate exists to prevent.
-    const { code, stderr } = runGate(['--project', join(dir, 'does-not-exist.json')]);
+    const { code, stderr } = runGate(['--project', join(dir, 'does-not-exist.json'), ...withBaseline(0, {})]);
     assert.notEqual(code, 0, 'the gate passed on a project it could not read');
     assert.ok(stderr.length > 0, 'a failed measurement must say so, not exit quietly');
   });

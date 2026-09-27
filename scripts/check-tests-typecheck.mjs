@@ -32,8 +32,13 @@
  * - `--write` refreshes the baseline from the current measurement. It is a
  *   deliberate act: the diff is the record of what changed.
  *
- * `--project <path>` runs the same comparison against another config, so the
- * guard test can drive the real CLI rather than an in-process reimplementation.
+ * `--project <path>` and `--baseline <path>` run the same comparison against
+ * another config and another baseline, so the guard test can drive the real CLI
+ * rather than an in-process reimplementation. `--baseline` exists so a test can
+ * exercise the failure paths without editing the checked-in baseline: node:test
+ * runs sibling describes concurrently, so a test that doctored the real file to
+ * prove the gate fires would race the tests that assert the real tree is
+ * accepted, and both would read whichever write landed last.
  */
 import { spawnSync } from 'node:child_process';
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
@@ -90,15 +95,15 @@ export function parseDiagnostics(output) {
   return { total, byFile, globalErrors };
 }
 
-function readBaseline() {
-  if (!existsSync(BASELINE_PATH)) {
+function readBaseline(path) {
+  if (!existsSync(path)) {
     throw new Error(
-      `missing baseline ${BASELINE_PATH}. A budget gate with no baseline has nothing to compare against and would pass on any measurement. Create it with --write.`,
+      `missing baseline ${path}. A budget gate with no baseline has nothing to compare against and would pass on any measurement. Create it with --write.`,
     );
   }
-  const parsed = JSON.parse(readFileSync(BASELINE_PATH, 'utf8'));
+  const parsed = JSON.parse(readFileSync(path, 'utf8'));
   if (typeof parsed.total !== 'number' || typeof parsed.byFile !== 'object' || parsed.byFile === null) {
-    throw new Error(`malformed baseline ${BASELINE_PATH}: expected { "total": number, "byFile": {…} }`);
+    throw new Error(`malformed baseline ${path}: expected { "total": number, "byFile": {…} }`);
   }
   return parsed;
 }
@@ -124,6 +129,10 @@ const projectIndex = process.argv.indexOf('--project');
 const project = projectIndex >= 0 ? process.argv[projectIndex + 1] : DEFAULT_PROJECT;
 if (!project) throw new Error('--project requires a config path');
 
+const baselineIndex = process.argv.indexOf('--baseline');
+const baselinePath = baselineIndex >= 0 ? process.argv[baselineIndex + 1] : BASELINE_PATH;
+if (!baselinePath) throw new Error('--baseline requires a path');
+
 const measured = parseDiagnostics(runTsc(project));
 
 // Fail closed. A run-level error means `tsc` never produced a verdict, so
@@ -138,12 +147,12 @@ if (measured.globalErrors.length > 0) {
   process.exit(1);
 } else if (process.argv.includes('--write')) {
   const byFile = Object.fromEntries([...measured.byFile].sort(([a], [b]) => (a < b ? -1 : 1)));
-  writeFileSync(BASELINE_PATH, `${JSON.stringify({ total: measured.total, byFile }, null, 2)}\n`);
-  console.log(`Wrote ${BASELINE_PATH}: ${measured.total} error(s) across ${measured.byFile.size} file(s).`);
+  writeFileSync(baselinePath, `${JSON.stringify({ total: measured.total, byFile }, null, 2)}\n`);
+  console.log(`Wrote ${baselinePath}: ${measured.total} error(s) across ${measured.byFile.size} file(s).`);
   process.exit(0);
 }
 
-const baseline = readBaseline();
+const baseline = readBaseline(baselinePath);
 const regressions = [];
 if (measured.total > baseline.total) {
   regressions.push(`total: ${measured.total} errors, baseline allows ${baseline.total} (+${measured.total - baseline.total})`);
