@@ -101,11 +101,11 @@ per-module table excludes. Size a raise against the aggregate number.
 | `TOOL_SURFACE_BUDGET.defaultMaxTools` | 620 tools | code constant, `src/tools/annotations.ts` |
 | `TOOL_SURFACE_BUDGET.defaultMaxBytes` | 620,000B | code constant, `src/tools/annotations.ts` |
 | `AGGREGATE_SURFACE_LIMITS.maxBytes` (enforced) | 621,000B | the ceiling plus 1,000B of post-registration annotation metadata |
-| Measured `tools/list` payload | 609,786B | `collectAggregateSurfaceMeasurement` over the finalized registry, after annotations |
-| Of which outside the per-module table | 69,191B | 11.3% of the payload — tool names, titles, annotations and boundary metadata |
-| Headroom | 11,214B | 1.8% of the enforced limit |
+| Measured `tools/list` payload | 610,254B | `collectAggregateSurfaceMeasurement` over the finalized registry, after annotations |
+| Of which outside the per-module table | 69,209B | 11.3% of the payload — tool names, titles, annotations and boundary metadata |
+| Headroom | 10,746B | 1.7% of the enforced limit |
 
-Headroom is **11,214B** of the 621,000B enforced limit — 1.8% — so the aggregate budget is **tight**.
+Headroom is **10,746B** of the 621,000B enforced limit — 1.7% — so the aggregate budget is **tight**.
 
 Regenerate with `npm run count:tools -- --write`. `--check` fails when any
 figure above stops matching the constants or the live measurement, so a
@@ -195,7 +195,7 @@ than maintained.
 | exhaust2enggating | 0 | 0 | 0 | 0 | 1 | 0 |
 | exhaust2playback | 23 | 17,473 | 23 | 17,473 | 24 | 19,221 |
 | exhaust2playlists | 18 | 23,326 | 18 | 23,326 | 19 | 25,659 |
-| exhaust2misc | 27 | 23,866 | 27 | 23,866 | 28 | 26,253 |
+| exhaust2misc | 27 | 24,316 | 27 | 24,316 | 28 | 26,748 |
 | exhaust2extra | 3 | 4,024 | 3 | 4,024 | 4 | 4,427 |
 | swarm3discovery | 24 | 22,286 | 24 | 22,286 | 25 | 24,515 |
 | swarm3bdiscovery | 24 | 19,952 | 24 | 19,952 | 25 | 21,948 |
