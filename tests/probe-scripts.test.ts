@@ -37,8 +37,8 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync, type SpawnSyncReturns } from 'node:child_process';
 import {
-  chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync,
-  rmSync, statSync, writeFileSync,
+  chmodSync, closeSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync,
+  readSync, readdirSync, rmSync, statSync, writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -88,6 +88,16 @@ globalThis.fetch = async (rawUrl, init = {}) => {
   };
 
   if (url.startsWith('https://accounts.spotify.com/')) {
+    // #1459: the refresh is the ONE write this script makes to the operator's
+    // live token store, and until the token endpoint can be made to answer 200
+    // no test here ever reached it. \`refreshBody\` is what Spotify returns on a
+    // successful refresh; the default stays invalid_grant so every pre-existing
+    // test keeps its "no refresh happened" precondition.
+    const refreshBody = JSON.parse(process.env.PROBE_STUB_REFRESH || 'null');
+    if (refreshBody) {
+      record(200);
+      return json(200, refreshBody);
+    }
     return json(400, { error: 'invalid_grant' });
   }
   // /v1/me is setup, not a probe: it answers from the stub's own data and must
@@ -126,6 +136,8 @@ type Sandbox = {
   dir: string;
   home: string;
   log: string;
+  /** The sandbox's own token store — never the operator's real one. */
+  tokenFile: string;
   run(script: 'edge-probe' | 'contains-check', args: string[], plan: Step[], env?: Record<string, string>): Run;
   reportDir(): string;
   /** Requests recorded so far across every run in this sandbox. */
@@ -151,8 +163,9 @@ function sandbox(): Sandbox {
   const libPath = join(ROOT, 'scripts/probe-lib.mjs');
   if (existsSync(libPath)) copyFileSync(libPath, join(dir, 'scripts/probe-lib.mjs'));
   writeFileSync(join(dir, '.env'), 'SPOTIFY_CLIENT_ID=stub-client-id\n');
+  const tokenFile = join(home, '.spotify-mcp/tokens.json');
   writeFileSync(
-    join(home, '.spotify-mcp/tokens.json'),
+    tokenFile,
     JSON.stringify({ access_token: 'stub-access', refresh_token: 'stub-refresh', expires_at: Date.now() + 3_600_000 }),
   );
   writeFileSync(join(dir, 'stub.mjs'), STUB);
@@ -162,6 +175,7 @@ function sandbox(): Sandbox {
     dir,
     home,
     log,
+    tokenFile,
     reportDir: () => join(dir, 'memory'),
     callsMade: () => (existsSync(log) ? readFileSync(log, 'utf8').split('\n').filter(Boolean).length : 0),
     run: (script, args, plan, env = {}) => {
@@ -808,5 +822,171 @@ describe('edge-probe.mjs subprocess behaviour (#646)', () => {
     assert.match(run.output, /SPOTIFY_MCP_PROFILE/);
     assert.doesNotMatch(run.output, /escape/);
     assert.deepEqual(run.calls, []);
+  });
+});
+
+/**
+ * The token refresh is the one write `edge-probe.mjs` makes, and it lands on
+ * the operator's LIVE credential store (#1459).
+ *
+ * It was invisible to the suite for a structural reason rather than an
+ * oversight: the stub answered `400 invalid_grant` to every call to
+ * `accounts.spotify.com`, and the refresh only fires when the stored token is
+ * within 60s of expiry. Every run therefore took the "token is still fresh"
+ * branch, and the `writeFileSync` at the end of `refresh()` was never reached.
+ * The stub can now answer 200, and the token store is seeded expired, so the
+ * real script really performs the write.
+ *
+ * Why atomicity is asserted on an open file descriptor rather than on the
+ * bytes at the path: the failure this issue describes is not "the new contents
+ * are wrong", it is "the operator's only copy of a refresh token Spotify has
+ * already rotated is destroyed mid-write". Holding an fd open across the write
+ * models the crash exactly — the fd is a reader that was already looking at the
+ * old document when the rename happened. Under `writeFileSync` that reader
+ * watches the document it opened get truncated and rewritten underneath it; under
+ * temp-file + `rename(2)` it keeps reading the complete previous document, and
+ * the path swaps to a new inode atomically. The two are distinguished by inode
+ * identity and by what the pre-existing fd can still read, both of which are
+ * deterministic — no timing, no polling, nothing that can pass for the wrong
+ * reason on a slow machine.
+ */
+describe('edge-probe.mjs token refresh (#1459)', () => {
+  /** A token store that is already expired, so `refresh()` is not optional. */
+  function seedExpired(box: Sandbox): string {
+    const before = `${JSON.stringify({ access_token: 'stub-access', refresh_token: 'stub-refresh', expires_at: Date.now() - 60_000 }, null, 2)}\n`;
+    writeFileSync(box.tokenFile, before);
+    return before;
+  }
+
+  /** What Spotify returns on a successful refresh — note the ROTATED token. */
+  const REFRESHED = { access_token: 'rotated-access', refresh_token: 'rotated-refresh', expires_in: 3600 };
+
+  it('never truncates the live token store: a reader holding the old document keeps it', () => {
+    const box = sandbox();
+    const before = seedExpired(box);
+    // A reader that opened the store before the write — the crash model.
+    const fd = openSync(box.tokenFile, 'r');
+    try {
+      const run = box.run('edge-probe', ['--only', 'markets', '--interval-ms', '0'], [{ status: 200 }], {
+        PROBE_STUB_REFRESH: JSON.stringify(REFRESHED),
+      });
+
+      assert.equal(run.status, 0, run.output);
+      assert.match(run.output, /token refreshed/, `the refresh never ran, so nothing was written:\n${run.output}`);
+      // The whole point: this fd was opened on the pre-refresh document, and it
+      // must still be able to read it in full. A truncating write destroys it.
+      const stillOpen = Buffer.alloc(before.length);
+      const read = readSync(fd, stillOpen, 0, stillOpen.length, 0);
+      assert.equal(
+        stillOpen.subarray(0, read).toString('utf8'),
+        before,
+        'the document a reader already had open was rewritten underneath it — the write is not atomic',
+      );
+    } finally {
+      closeSync(fd);
+    }
+
+    // And the new store really is published, with the rotated refresh token.
+    const after = JSON.parse(readFileSync(box.tokenFile, 'utf8')) as Record<string, unknown>;
+    assert.equal(after['refresh_token'], REFRESHED.refresh_token, 'the rotated refresh token must reach the store');
+    assert.equal(after['access_token'], REFRESHED.access_token);
+    assert.equal(statSync(box.tokenFile).mode & 0o777, 0o600, 'a rotated credential is not world-readable');
+  });
+
+  it('replaces the store by rename, so the path is never the file being written', () => {
+    const box = sandbox();
+    seedExpired(box);
+    const before = statSync(box.tokenFile).ino;
+
+    const run = box.run('edge-probe', ['--only', 'markets', '--interval-ms', '0'], [{ status: 200 }], {
+      PROBE_STUB_REFRESH: JSON.stringify(REFRESHED),
+    });
+
+    assert.equal(run.status, 0, run.output);
+    assert.match(run.output, /token refreshed/, run.output);
+    // An in-place `writeFileSync` keeps the same inode; temp + rename(2) does
+    // not. This is the signal that distinguishes the two implementations.
+    assert.notEqual(
+      statSync(box.tokenFile).ino,
+      before,
+      'the store kept its inode, so it was truncated in place rather than replaced by a rename',
+    );
+  });
+
+  it('leaves no staging file behind, on the success path or when the write cannot land', () => {
+    const box = sandbox();
+    seedExpired(box);
+
+    const run = box.run('edge-probe', ['--only', 'markets', '--interval-ms', '0'], [{ status: 200 }], {
+      PROBE_STUB_REFRESH: JSON.stringify(REFRESHED),
+    });
+    assert.equal(run.status, 0, run.output);
+    assert.deepEqual(
+      readdirSync(join(box.home, '.spotify-mcp')),
+      ['tokens.json'],
+      'a partial temp file must not survive for the next run to trip over',
+    );
+
+    // Now make the publish fail: a directory at the target path makes the
+    // rename fail with EISDIR/ENOTEMPTY on every platform Node supports.
+    const blocked = sandbox();
+    seedExpired(blocked);
+    const blockedPath = join(blocked.home, '.spotify-mcp/tokens.json');
+    rmSync(blockedPath);
+    mkdirSync(blockedPath, { recursive: true });
+
+    const failed = blocked.run('edge-probe', ['--only', 'markets', '--interval-ms', '0'], [{ status: 200 }], {
+      PROBE_STUB_REFRESH: JSON.stringify(REFRESHED),
+    });
+    assert.notEqual(failed.status, 0, `a failed publish must not report success:\n${failed.output}`);
+    assert.deepEqual(
+      readdirSync(join(blocked.home, '.spotify-mcp')).filter((name) => name !== 'tokens.json'),
+      [],
+      'a failed write must clean up its own temp file',
+    );
+  });
+
+  it('does not claim to be read-only while it writes the live token store', () => {
+    const source = readFileSync(EDGE_PROBE, 'utf8');
+    const header = source.slice(0, source.indexOf('\nimport '));
+
+    // The claim has to be about the PROBES. A bare "READ-ONLY" covering the
+    // whole script is what misled a reader deciding whether it was safe to run
+    // against a real account, so it may not reappear unscoped.
+    assert.doesNotMatch(
+      header,
+      /READ-ONLY/,
+      `the header still claims the script is read-only, but refresh() writes ~/.spotify-mcp/tokens.json:\n${header}`,
+    );
+    // ...and the write has to be admitted rather than merely un-claimed.
+    assert.match(
+      header,
+      /token store/,
+      `the header must say the refresh writes the token store:\n${header}`,
+    );
+    assert.match(header, /SPOTIFY_MCP_TOKEN_FILE/, 'the safe way to run it must be discoverable from the header');
+  });
+
+  it('still refreshes into the file the operator pointed it at, not the home default', () => {
+    // The escape hatch only means something if the write follows it. A probe
+    // aimed at a scratch store must leave the real one untouched.
+    const box = sandbox();
+    seedExpired(box);
+    const explicit = join(box.dir, 'scratch-tokens.json');
+    writeFileSync(explicit, `${JSON.stringify({ access_token: 'a', refresh_token: 'scratch-rt', expires_at: Date.now() - 60_000 }, null, 2)}\n`);
+    const homeBefore = readFileSync(box.tokenFile, 'utf8');
+
+    const run = box.run('edge-probe', ['--only', 'markets', '--interval-ms', '0'], [{ status: 200 }], {
+      PROBE_STUB_REFRESH: JSON.stringify(REFRESHED),
+      SPOTIFY_MCP_TOKEN_FILE: explicit,
+    });
+
+    assert.equal(run.status, 0, run.output);
+    assert.equal(
+      (JSON.parse(readFileSync(explicit, 'utf8')) as Record<string, unknown>)['refresh_token'],
+      REFRESHED.refresh_token,
+      'the rotated token must land in the file the operator named',
+    );
+    assert.equal(readFileSync(box.tokenFile, 'utf8'), homeBefore, 'the home store was written despite the override');
   });
 });
