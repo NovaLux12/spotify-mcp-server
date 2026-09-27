@@ -28,7 +28,7 @@ The variables below are read at the documented call sites; set them in your MCP 
 | `SPOTIFY_MCP_DISABLE_TOOLS` | unset | Comma-separated registration-key overrides forced off; disable wins over enable. |
 | `SPOTIFY_MCP_READONLY` | unset | `1`, `true`, `yes`, or `on` (case-insensitive, trimmed) hides Spotify-mutating registration modules. One parser backs this flag, the `spotify_doctor` report, the `whats_new` annotations and the freshness-watermark hold, so they cannot disagree. Read-only modules, resources, and prompts remain subject to their normal gates. |
 | `SPOTIFY_MCP_CONFIRM` | unset | `never` is the only explicit bypass for confirmation-gated destructive operations; callers that require confirmation otherwise fail closed when the client cannot elicit. |
-| `SPOTIFY_MCP_FRESHNESS_STATE` | `~/.spotify-mcp/freshness.json` | Watermark file powering `whats_new` with `since: "last-check"`. |
+| `SPOTIFY_MCP_FRESHNESS_STATE` | `~/.spotify-mcp/freshness.json` | Per-kind watermark file powering `whats_new` with `since: "last-check"`. Written by that tool, mode 0600. |
 | `SPOTIFY_MCP_FRESHNESS_BUDGET` | `25` | Per-call budget for `whats_new` artist and show lookups. |
 | `SPOTIFY_MCP_MAX_CONCURRENCY` | `3` | **The one concurrency knob**: the ceiling on Spotify requests in flight at once for the whole process. Every request passes through the funnel, including those a single tool fans out, so this is the width that applies everywhere. Starts are still paced a minimum 100 ms apart and still stop entirely during a `Retry-After` cooldown; `1` restores the strictly serial funnel. Clamped to 32 — a larger value is not honoured, so unbounded concurrency cannot be configured by accident. |
 | `SPOTIFY_MCP_SHOWRADAR_BUDGET` | unset (falls back to `SPOTIFY_MCP_FRESHNESS_BUDGET`) | Per-call episode-lookup budget for `show_new_episodes` only. Takes precedence over the shared freshness budget; a `max_shows` argument still wins for one call. |
@@ -221,6 +221,35 @@ For confirmation-gated destructive operations, a missing MCP elicitation capabil
 ### Freshness and local sidecars
 
 `SPOTIFY_MCP_FRESHNESS_STATE` is the `whats_new` watermark. `SPOTIFY_MCP_FRESHNESS_BUDGET` limits artist album and show episode lookups; `max_artists` or the relevant per-call argument overrides it for one call. A truncated or quota-hit scan holds the watermark so a later `since: "last-check"` does not skip unseen items — and "truncated" includes a saved-shows listing that stopped short of the library even when every episode lookup below the budget succeeded, which is the case where nothing else in the payload would otherwise show that shows were never read. The saved-show radar (`show_new_episodes`) uses this same budget unless `SPOTIFY_MCP_SHOWRADAR_BUDGET` is set, in which case that variable replaces it for that tool; a `max_shows` argument still wins for a single call, and the response states in prose which of the three was in force.
+
+#### The watermark is per kind, and an explicit `since` never moves it
+
+`whats_new` is registered as a read, so its writes to this sidecar are disclosed here, in the prose it emits, and in `PRIVACY.md` rather than only in the source.
+
+The file holds one checkpoint per kind:
+
+```json
+{
+  "last_check": "2026-09-27",
+  "kinds": { "albums": "2026-09-27", "podcasts": "2026-09-18" }
+}
+```
+
+A kind is recorded in `kinds` **only after that kind's own scan ran to the end** — no cap truncation, no quota wall, READONLY off. A `kinds: ["albums"]` call therefore cannot move the mark a `kinds: ["podcasts"]` call reads, which is what previously made a podcast scan report "nothing new" purely because an album scan had run first. `last_check` is a derived compatibility field (the most recent day any kind holds) that an older build still reads; the current code does not read it for a kind that has a `kinds` entry, and never copies it into `kinds` for a kind that has not completed a scan.
+
+**An explicit `since` date never writes this file at all.** An explicit window is a question about the past, not a claim that everything released up to today has been seen, so moving the incremental mark forward on one would hide genuinely new items from the next `since: "last-check"` call. `since: "last-check"` and a plain `days_back` window both still advance, because both return everything released since the mark.
+
+Reading `since: "last-check"` uses the **oldest** mark among the requested kinds. Taking the newest would hide everything released since it, for whichever requested kind is furthest behind. If any requested kind has no mark of its own, the whole call falls back to `days_back` for the same reason, and says so in `cutoff_reason`.
+
+##### Migrating a pre-2.2 flat watermark
+
+Files written before the per-kind change hold a single `{"last_check": "YYYY-MM-DD"}`. Reading one **uses that mark as the cutoff for kinds that have no entry of their own**, so the position a user had before the upgrade is preserved rather than reset — and the response reports it as `legacy_watermark_migrated_from`.
+
+What it deliberately does **not** do is copy the flat mark into `kinds` for a kind that has not completed a scan. A flat mark cannot say which kinds the scan that wrote it actually covered — with the old code an `albums`-only call wrote it just as readily as a both-kinds call — so adopting it as a per-kind checkpoint would mark an unscanned kind as caught up to a date its items were never filtered against, and that window would never reappear. That is the same permanent, silent loss this change exists to prevent.
+
+The first write that advances a kind replaces the flat file with the per-kind shape, after which the legacy fallback no longer applies. A kind that has not yet been re-scanned therefore falls back to `days_back` on its next `last-check` call — a **wider** window, not a narrower one. Widening is recoverable and self-healing; hiding is neither, and a one-time re-read of a few weeks of a followed artist's discography is a far smaller cost than episodes that silently never appear again. `logout` erases this file along with the other local sidecars, and deleting it by hand resets every kind to `days_back`.
+
+An older build reading the new shape finds no top-level `last_check`-only record, falls back to `days_back`, and shows a wider window. It cannot read the per-kind map, so downgrade is lossy in precision rather than in data — the dates themselves stay in the file.
 
 `SPOTIFY_MCP_SCENES_FILE` stores named device/volume/shuffle/repeat/context presets. `SPOTIFY_MCP_GENRE_TAGS_FILE` stores user-declared artist genre tags. `SPOTIFY_MCP_SEARCH_HISTORY_FILE`, `SPOTIFY_MCP_PLAYBACKEXT_FILE`, `SPOTIFY_MCP_EXHAUST2_PLAYBACK_FILE`, and `SPOTIFY_MCP_EXHAUST2_MISC_FILE` override their respective local sidecars.
 

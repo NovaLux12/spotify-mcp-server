@@ -77,7 +77,7 @@ Why it works: lifetime gives identity, the current month gives momentum, and the
 4. Call overlap_playlists with `playlists: ["SOURCE_A", "SOURCE_B", "DESTINATION_ID"]` to inspect convergence.
 ```
 
-`whats_new` accepts `since` only as `YYYY-MM-DD` or the literal `last-check`; relative phrases are invalid.
+`whats_new` accepts `since` only as `YYYY-MM-DD` or the literal `last-check`; relative phrases are invalid. Its watermark is tracked per kind, so an `albums`-only call never moves the mark a `podcasts` call reads, and an explicit `YYYY-MM-DD` `since` never writes the watermark at all — use `last-check` (or a plain `days_back` window) when the call is meant to move the incremental mark. See `docs/configuration.md` § Freshness and local sidecars.
 
 ## 7. Discovery injection (no recommendations endpoint)
 

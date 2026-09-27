@@ -1197,7 +1197,22 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   //   unchanged by either issue; the delta is description text only. Derived
   //   ceiling: 1 + 1 = 2 tools, ceil(2,499 * 1.1) = 2,749B. No ceiling raised
   //   above what the measurement warrants.
-  manifestEntry('freshness', 'following', lazyModule('./freshness.js', 'registerFreshnessTools'), [1, 2499], { readOnlySafe: true, scopeKey: 'following' }),
+  //
+  //   #724 is a third issue on the same module key, and the same rule applies
+  //   to it: its own `since` description text is the only thing that moved, and
+  //   it moved because the watermark is now per kind and an explicit date no
+  //   longer writes the file — a host picks arguments from the schema, not from
+  //   docs/configuration.md, so the sentence has to be there. Re-measured on
+  //   the tree this lands in, not carried from the branch: 2,499 -> 2,672.
+  //   Tool count still 1; derived ceiling still 2 tools, now
+  //   ceil(2,672 * 1.1) = 2,940B.
+  //
+  //   This one needed no raise to get in: 2,672 clears the 2,749 ceiling that
+  //   the pre-#724 baseline of 2,499 already derived, by 77 bytes. The
+  //   re-baseline to the measured 2,672 is the same bookkeeping as #900/#679 —
+  //   the row must keep meaning "measured" — so 2,940 is headroom for a future
+  //   change, not an admission of this one.
+  manifestEntry('freshness', 'following', lazyModule('./freshness.js', 'registerFreshnessTools'), [1, 2672], { readOnlySafe: true, scopeKey: 'following' }),
   manifestEntry('searchdive', 'search', lazyModule('./searchdive.js', 'registerSearchDeepTool'), [1, 1683], { readOnlySafe: true, scopeKey: 'search' }),
   manifestEntry('searchhistory', 'searchhistory', lazyModule('./searchhistory.js', 'registerSearchHistoryTools'), [2, 1096], { readOnlySafe: true, scopeKey: 'search' }),
   manifestEntry('browse', 'browse', lazyModule('./browse.js', 'registerBrowseTools'), [1, 436], { readOnlySafe: true, scopeKey: 'catalog' }),

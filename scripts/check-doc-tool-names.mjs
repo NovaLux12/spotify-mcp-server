@@ -86,6 +86,11 @@ const parameterAllowlist = new Set([
   'response_cap', 'response_capped', 'cap_bytes', 'actual_bytes',
   'retained_fields', 'omitted_fields', 'omitted_field_count',
   'removed_uris', 'scan_cap', 'base_playlist', 'target_playlist',
+  // #724: the whats_new watermark is per kind, so these are the on-disk key
+  // the sidecar carries and the two structuredContent keys a call uses to say
+  // where its cutoff came from and that it read a pre-2.2 flat file. They name
+  // a call's own state and a file's own shape — not tools, not parameters.
+  'last_check', 'cutoff_reason', 'legacy_watermark_migrated_from',
   // #902: merge_playlists' result shape, documented in SPEC.md §5.6 so a
   // merge that read a fraction of its sources says how large that fraction is.
   // structuredContent keys on that tool, not parameters and not tools.
