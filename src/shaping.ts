@@ -208,15 +208,73 @@ export const PlaylistRef = z
 interface PlaylistListLimits {
   readonly min?: number;
   readonly max?: number;
+  /**
+   * Names the caller and the cost the bound buys, so an over-limit rejection
+   * says WHY the ceiling exists rather than just how big it is (#899).
+   *
+   * REQUIRED, and there is deliberately no default. Every consumer of these
+   * helpers walks its list, but not the same way: `check_playlist_following`
+   * batches ids into 40-URI `GET /me/library/contains` requests, so a message
+   * claiming "each one is a separate paged read" there would be false. A
+   * required field makes each call site state a reason its own handler can
+   * back up, which is the only way this stays true as tools are added.
+   */
+  readonly limitReason: string;
+}
+
+/**
+ * The reason for every tool that reads each listed playlist in full — the
+ * whole `PlaylistListFields` family. Exported so those tools name a cost they
+ * have actually verified rather than re-typing the sentence (and so a change
+ * to it lands everywhere at once).
+ */
+export const PAGED_WALK_LIST_REASON =
+  'each listed playlist is read in full, so this is a read-cost ceiling: one paged walk per playlist';
+
+/**
+ * A bounded array of playlist references (#899).
+ *
+ * Two things a bare `z.array(PlaylistRef).min(n).max(m)` did not do:
+ *
+ *  - It accepted only a JSON array. A host that can only send a scalar — a
+ *    line-oriented or CLI-driven caller — had no way to pass more than one
+ *    source at all, so the bound was only reachable by the hosts least likely
+ *    to respect it anyway.
+ *  - Its over-limit message read `Too big: expected array to have <=10 items`.
+ *    That names the number and nothing else. The reader is left guessing
+ *    whether 10 is a Spotify limit, a schema typo, or the size of the read
+ *    this argument is about to cost them.
+ *
+ * The second is the one that matters, and it is why `limitReason` is
+ * mandatory: the ceiling exists to bound requests, so the message has to say
+ * which requests.
+ *
+ * Both behaviours are free at the schema-budget level. `z.preprocess` unwraps
+ * to the same array schema under the SDK's `pipeStrategy: 'input'`, so the
+ * advertised `maxItems` is unchanged and hosts validate against exactly the
+ * bound the handler enforces — the CSV form normalises BEFORE the bound is
+ * applied, so it cannot smuggle a longer list past a limit the array form
+ * enforces.
+ */
+type BoundedPlaylistArray = z.ZodType<string[], unknown>;
+
+function boundedPlaylistArray(min: number, max: number, reason: string) {
+  return z.preprocess(
+    (value) =>
+      typeof value === 'string'
+        ? value.split(',').map((part) => part.trim()).filter(Boolean)
+        : value,
+    z
+      .array(PlaylistRef)
+      .min(min, { error: `At least ${min} playlist reference(s) required` })
+      .max(max, { error: `${reason}: max ${max} per call` }),
+  );
 }
 
 /** Canonical ordered collection with an operation-specific cardinality. */
-function playlistListFields({ min = 2, max = 10 }: PlaylistListLimits = {}) {
+function playlistListFields({ min = 2, max = 10, limitReason }: PlaylistListLimits) {
   return {
-    playlists: z
-      .array(PlaylistRef)
-      .min(min)
-      .max(max)
+    playlists: boundedPlaylistArray(min, max, limitReason)
       .optional()
       .describe(`Canonical ordered playlists (${min}–${max}), or provide the complete documented legacy alias accepted by this tool`),
   } as const;
@@ -225,7 +283,12 @@ function playlistListFields({ min = 2, max = 10 }: PlaylistListLimits = {}) {
 export const PlaylistId = PlaylistRef;
 
 /** Canonical plural input; exactly one canonical/legacy collection is required. */
-export const PlaylistListFields = playlistListFields();
+/**
+ * The canonical 2–10 playlist list. Every tool that spreads this reads each
+ * listed playlist in full, which is why it carries {@link PAGED_WALK_LIST_REASON}
+ * rather than a neutral size cap (#899).
+ */
+export const PlaylistListFields = playlistListFields({ limitReason: PAGED_WALK_LIST_REASON });
 
 /** Canonical A-then-B pair; provide both fields or one complete documented legacy pair. */
 export const PlaylistPairFields = {
@@ -254,14 +317,13 @@ type PlaylistPairAlias = readonly [PlaylistPairSide, PlaylistPairSide];
 /** Legacy aliases are supported through v2.0 and removed in v2.1. */
 export function legacyPlaylistListFields<const A extends PlaylistListAlias>(
   aliases: readonly A[],
-  limits: PlaylistListLimits = {},
-): Record<A, z.ZodOptional<z.ZodArray<typeof PlaylistRef>>> {
-  const schema = z.array(PlaylistRef).min(limits.min ?? 2).max(limits.max ?? 10)
+  limits: PlaylistListLimits,
+): Record<A, z.ZodOptional<BoundedPlaylistArray>> {
+  const schema = boundedPlaylistArray(limits.min ?? 2, limits.max ?? 10, limits.limitReason)
     .describe('Deprecated one-release alias supported through v2.0; removed in v2.1. Provide this complete alias or canonical playlists.');
-  return Object.fromEntries(aliases.map((name) => [name, schema.optional()])) as Record<
-    A,
-    z.ZodOptional<z.ZodArray<typeof PlaylistRef>>
-  >;
+  const out = {} as Record<A, z.ZodOptional<BoundedPlaylistArray>>;
+  for (const name of aliases) out[name] = schema.optional();
+  return out;
 }
 
 
@@ -282,7 +344,7 @@ export function legacyPlaylistPairFields<const P extends PlaylistPairSide>(
 /** Canonical and legacy list spellings share one cardinality contract. */
 export function playlistListInputFields<const A extends PlaylistListAlias>(
   aliases: readonly A[],
-  limits: PlaylistListLimits = {},
+  limits: PlaylistListLimits,
 ) {
   return {
     ...playlistListFields(limits),

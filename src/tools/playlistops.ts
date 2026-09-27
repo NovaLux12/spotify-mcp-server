@@ -69,22 +69,26 @@ function trackKey(track: SpotifyTrack | SpotifyEpisode): string | null {
 
 /**
  * Page every item of a playlist through client.getAllPages, capped by the
- * configured fetch-all cap. Returns items in playlist order.
+ * configured fetch-all cap. Returns items in playlist order, plus the number
+ * of HTTP GETs the walk actually spent (#899) — a walk that stops on a short
+ * page has read fewer rows than requests, and the caller is told the cost, not
+ * a number derived from the row count.
  */
 async function fetchAllItems(
   client: SpotifyClient,
   ref: string,
   options: { limit?: number; scan_cap?: number } = {},
-): Promise<{ items: PlaylistItemObject[]; truncated: boolean }> {
+): Promise<{ items: PlaylistItemObject[]; truncated: boolean; requests: number }> {
   const id = encodeURIComponent(normalizePlaylistRef(ref));
   const cap = Math.min(options.scan_cap ?? FETCH_ALL_CAP(), FETCH_ALL_CAP());
   const pageLimit = Math.min(options.limit ?? 100, 100);
-  const rows = await client.getAllPages<PlaylistItemObject>(
+  const walk = await client.getAllPagesWithTruncation<PlaylistItemObject>(
     `/playlists/${id}/items`,
     { limit: String(pageLimit) },
     { maxItems: cap + 1 },
   );
-  return { items: rows.slice(0, cap), truncated: rows.length > cap };
+  const rows = walk.items;
+  return { items: rows.slice(0, cap), truncated: rows.length > cap, requests: walk.pages };
 }
 
 export function registerPlaylistOpsTools(server: McpServer, client: SpotifyClient): void {
@@ -100,7 +104,7 @@ export function registerPlaylistOpsTools(server: McpServer, client: SpotifyClien
       description:
         'Merge multiple playlists into one. Deduplicates tracks across sources (first-seen order wins) and adds them in batches of 100. Pass target_playlist_id to append to an existing playlist (it is NOT cleared) or new_name to create a fresh playlist.',
       inputSchema: z.object({
-        ...playlistListInputFields(['sources'], { min: 1, max: 10 }),
+        ...playlistListInputFields(['sources'], { min: 1, max: 10, limitReason: 'merge_playlists pages every source before it writes' }),
         target_playlist_id: PlaylistRef.optional().describe('Existing playlist to APPEND into (never cleared)'),
         new_name: z.string().optional().describe('Name for a newly created target playlist'),
         public: z.boolean().optional().describe('Visibility of a NEW playlist. Default: false'),
@@ -121,10 +125,15 @@ export function registerPlaylistOpsTools(server: McpServer, client: SpotifyClien
       const sourceRefs = input.values;
       const sourceLists: PlaylistItemObject[][] = [];
       let sourceTruncated = false;
+      // #899: the read phase is the expensive half of a merge, and it is
+      // counted as it happens so the reported cost is the requests actually
+      // spent, not rows retained.
+      let requestsRead = 0;
       for (const ref of sourceRefs) {
         const walk = await fetchAllItems(client, ref, args);
         sourceLists.push(walk.items);
         sourceTruncated ||= walk.truncated;
+        requestsRead += walk.requests;
       }
       const sourceCap = Math.min(args.scan_cap ?? FETCH_ALL_CAP(), FETCH_ALL_CAP());
       const truncated = sourceTruncated;
@@ -171,10 +180,14 @@ export function registerPlaylistOpsTools(server: McpServer, client: SpotifyClien
           withPlaylistInputNote(
             `[dry run] merge_playlists — nothing was changed.\n${changes.join('\n')}` +
               (duplicates > 0 ? `\n(${duplicates} duplicate(s) across sources would be skipped)` : '') +
-              (truncated ? `\n(Source walk reached the configured cap of ${sourceCap} rows; totals may be incomplete.)` : ''),
+              (truncated ? `\n(Source walk reached the configured cap of ${sourceCap} rows; totals may be incomplete.)` : '') +
+              // #899: a dry run walks every source for real, so it spends the
+              // read budget a real merge would. A preview that hid that would
+              // understate the cost of the call it is previewing.
+              `\n(Read cost: ${requestsRead} paged read request(s) across ${sourceRefs.length} source playlist(s).)`,
             input,
           ),
-          withPlaylistInputMetadata({ ok: true, dry_run: true, changes, playlists: sourceRefs, truncated, scan_cap: sourceCap }, input),
+          withPlaylistInputMetadata({ ok: true, dry_run: true, changes, playlists: sourceRefs, truncated, scan_cap: sourceCap, requests_read: requestsRead }, input),
         );
       }
 
@@ -226,6 +239,7 @@ export function registerPlaylistOpsTools(server: McpServer, client: SpotifyClien
         duplicates_skipped: duplicates,
         unavailable_items_skipped: unavailable,
         batches_sent: requestCount,
+        requests_read: requestsRead,
         ...(snapshotId ? { snapshot_id: snapshotId } : {}),
       };
 
@@ -239,7 +253,7 @@ export function registerPlaylistOpsTools(server: McpServer, client: SpotifyClien
           ` across ${requestCount} batch request(s)` +
           (duplicates > 0 ? `; skipped ${duplicates} duplicate(s)` : '') +
           (unavailable > 0 ? `, ${unavailable} unavailable item(s)` : '') +
-          '.',
+          `. Read cost: ${requestsRead} paged read request(s) across ${sourceRefs.length} source playlist(s).`,
         batchSummary(merged.length, merged.map((t) => t.uri)),
       ];
       const view = truncateItems(
@@ -284,6 +298,8 @@ export function registerPlaylistOpsTools(server: McpServer, client: SpotifyClien
       const bItems = bWalk.items;
       const sourceCap = Math.min(args.scan_cap ?? FETCH_ALL_CAP(), FETCH_ALL_CAP());
       const truncated = aWalk.truncated || bWalk.truncated;
+      // #899: both sides are walked in parallel, so the cost is their sum.
+      const requestsRead = aWalk.requests + bWalk.requests;
 
       // First-occurrence position map over track IDs.
       const posA = new Map<string, number>();
@@ -333,6 +349,7 @@ export function registerPlaylistOpsTools(server: McpServer, client: SpotifyClien
           only_in_b: onlyInB,
           moved,
           truncation,
+          requests_read: requestsRead,
         }, input);
         return textResult(jsonText(payload), payload);
       }
@@ -357,6 +374,7 @@ export function registerPlaylistOpsTools(server: McpServer, client: SpotifyClien
         ),
       ];
       if (truncated) lines.push(`(Source walk reached the configured cap of ${sourceCap} rows; totals may be incomplete.)`);
+      lines.push(`(Read cost: ${requestsRead} paged read request(s) across both playlists.)`);
       return textResult(withPlaylistInputNote(lines.join('\n'), input), withPlaylistInputMetadata({
         ok: true,
         dry_run: args.dry_run ?? false,
@@ -370,6 +388,7 @@ export function registerPlaylistOpsTools(server: McpServer, client: SpotifyClien
         only_in_b: onlyInB,
         moved,
         truncation,
+        requests_read: requestsRead,
       }, input));
     },
   );
@@ -404,10 +423,13 @@ export function registerPlaylistOpsTools(server: McpServer, client: SpotifyClien
       // One full paging pass keeps both the presence sets and display names.
       const itemLists: PlaylistItemObject[][] = [];
       let walkTruncated = false;
+      // #899: this tool is read-only, so the walk IS the cost of the call.
+      let requestsRead = 0;
       for (const ref of refs) {
         const walk = await fetchAllItems(client, ref, args);
         itemLists.push(walk.items);
         walkTruncated ||= walk.truncated;
+        requestsRead += walk.requests;
       }
       const sourceCap = Math.min(args.scan_cap ?? FETCH_ALL_CAP(), FETCH_ALL_CAP());
       const truncated = walkTruncated;
@@ -468,6 +490,7 @@ export function registerPlaylistOpsTools(server: McpServer, client: SpotifyClien
           total_shared: shared.length,
           shared: shared.map(({ id, name, count }) => ({ id, name, count })),
           truncation,
+          requests_read: requestsRead,
         }, input);
         return textResult(jsonText(payload), payload);
       }
@@ -478,6 +501,8 @@ export function registerPlaylistOpsTools(server: McpServer, client: SpotifyClien
       ];
       if (view.footer) lines.push(`(${view.footer})`);
       if (truncated) lines.push(`(Source walk reached the configured cap of ${sourceCap} rows; totals may be incomplete.)`);
+      // #899: read-only, so this is the whole cost of the call.
+      lines.push(`(Read cost: ${requestsRead} paged read request(s) across ${refs.length} playlist(s).)`);
       return textResult(withPlaylistInputNote(lines.join('\n'), input), withPlaylistInputMetadata({
         ok: true,
         dry_run: args.dry_run ?? false,
@@ -488,6 +513,7 @@ export function registerPlaylistOpsTools(server: McpServer, client: SpotifyClien
         total_shared: shared.length,
         shared: shared.map(({ id, name, count }) => ({ id, name, count })),
         truncation,
+        requests_read: requestsRead,
       }, input));
     },
   );

@@ -168,6 +168,25 @@ function makeClient(playlists: Record<string, PlaylistItemObject[]>, pageSize = 
       }
       return all;
     },
+    /** #899: playlistops reports its read cost off this walk's request count.
+     *  Delegates to the stub above rather than re-implementing the loop, so the
+     *  paged fixtures and the recorded GETs stay defined in one place. Forwards
+     *  `params` and `opts`: dropping `maxItems` here silently caps every walk at
+     *  the stub's 500-row default, which reads as a source-side regression. */
+    async getAllPagesWithTruncation<T>(
+      path: string,
+      params?: Record<string, string>,
+      opts?: { maxItems?: number; initialOffset?: number },
+    ): Promise<{
+      items: T[];
+      truncated: boolean;
+      truncatedByCap: boolean;
+      reportedTotal: number | null;
+      pages: number;
+    }> {
+      const items = await this.getAllPages<T>(path, params, opts);
+      return { items, truncated: false, truncatedByCap: false, reportedTotal: null, pages: 1 };
+    },
   };
   return client;
 }
