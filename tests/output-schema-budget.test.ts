@@ -149,6 +149,50 @@ describe('#1376 the schema budget counts outputSchema', () => {
     assert.equal(measured, expected, 'per-module bytes must equal the wire payload for the same tool');
   });
 
+  it('the census per-module formula agrees with the gate on a schema-bearing tool', async () => {
+    // `serializedFinalizedSchemaBytes` in `scripts/surface-census.mjs` is a
+    // second implementation of the same measurement, and it was blind to
+    // `outputSchema` for the same reason. It is not exported and the census
+    // runs on import, so it cannot be called directly — but its expression can
+    // be reproduced here against a real wire tool, and compared to the gate.
+    //
+    // Without this, the census fix is unverified: the census only produces a
+    // number when the whole registry boots, and on today's tree no tool
+    // declares a schema, so `--check` passes identically whether or not the
+    // field is counted. The two implementations drifting apart is precisely
+    // how the original bug stayed invisible.
+    const server = new McpServer({ name: 'census-parity', version: '0.0.0' });
+    server.registerTool('budget_probe', { description: 'probe', inputSchema: {}, outputSchema: ProbeOutput }, async () => ({
+      content: [{ type: 'text', text: 'x' }],
+      structuredContent: { ok: true, affected: 0, items: [], pagination: { total: null, next_offset: null } },
+    }));
+    const registry = (server as unknown as {
+      _registeredTools: Record<string, { description?: string; inputSchema?: unknown; outputSchema?: unknown }>;
+    })._registeredTools;
+
+    const [wireTool] = await listWireTools(server);
+    // The census expression, verbatim.
+    const censusBytes = Buffer.byteLength(JSON.stringify({
+      description: String(wireTool.description ?? ''),
+      inputSchema: (wireTool.inputSchema ?? {}) as unknown,
+      ...((wireTool as { outputSchema?: unknown }).outputSchema === undefined
+        ? null
+        : { outputSchema: (wireTool as { outputSchema?: unknown }).outputSchema }),
+    }), 'utf8');
+    // What the census expression reported before #1376, i.e. the bug.
+    const censusBeforeFix = Buffer.byteLength(JSON.stringify({
+      description: String(wireTool.description ?? ''),
+      inputSchema: (wireTool.inputSchema ?? {}) as unknown,
+    }), 'utf8');
+
+    const gateBytes = serializedSchemaBytes(registry.budget_probe, 'budget_probe');
+    assert.equal(censusBytes, gateBytes, 'the census formula and the gate must measure the same tool identically');
+    assert.ok(
+      censusBeforeFix < censusBytes,
+      'precondition: the pre-fix census expression really did under-report this tool',
+    );
+  });
+
   it('a tool with no output schema measures exactly as it did before', () => {
     // The fix must be invisible on the current surface. The pre-#1376 payload
     // is the `{description, inputSchema}` literal with the SAME finalized
