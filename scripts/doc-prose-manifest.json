@@ -3621,7 +3621,7 @@
         "label": "Eight registered tools read GET /me/player/queue. Two ar…"
       },
       {
-        "hash": "15958b39063cb1d3",
+        "hash": "506b2b63abfcd761",
         "label": "| Retired name | Call that replaces it | What moved | |-…"
       },
       {
@@ -5372,6 +5372,13 @@
       "label": "user-read-private user-read-email user-read-playback-sta…",
       "date": "2026-09-27",
       "reason": "rewritten by #700: the flat 'OAuth scopes requested' list is replaced by an OAuth scope profiles section, since the default profile no longer requests every scope"
+    },
+    {
+      "file": "SPEC.md",
+      "hash": "15958b39063cb1d3",
+      "label": "| Retired name | Call that replaces it | What moved | |-…",
+      "date": "2026-09-27",
+      "reason": "#847 corrected the describe_queue row of the migration table after its behaviour probe showed three of that tool's fields with no counterpart in get_queue: queue_length, insertion and workaround. The row had said only 'context_label and total_remaining_ms', which reads as 'everything else moved' and is not what the probe found. The three are named so the omission is on the page."
     },
     {
       "file": "SPEC.md",
