@@ -1520,9 +1520,9 @@ Move a range of items within a playlist. Uses `PUT /playlists/{id}/items`.
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `playlist_id` | string | yes | |
-| `range_start` | number | yes | Index of first item to move |
+| `range_start` | number | yes | Index of the first item to move. 0-based index into the playlist's current item order (0 = the first item). |
 | `range_length` | number | no | Number of items to move. Default: 1 |
-| `insert_before` | number | yes | Index to insert before |
+| `insert_before` | number | yes | Index to insert the range before. 0-based index into the playlist's current item order (0 = the first item). |
 
 ---
 

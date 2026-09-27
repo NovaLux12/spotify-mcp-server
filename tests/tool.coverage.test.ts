@@ -158,7 +158,7 @@ const KNOWN_UNTESTED: readonly {
     reason:
       'Playlist-operation composites, untested as a family (epic #575). This group contains the *_plan tools that take a commit path, so an untested plan handler is a write path with no regression test behind it.',
     tools: [
-      'dedupe_playlist_apply', 'dedupe_playlist_plan', 'extract_playlist_range',
+      'dedupe_playlist_apply', 'dedupe_playlist_plan',
       'filter_playlist_by_artist', 'filter_playlist_by_duration', 'filter_playlist_by_era',
       'interleave_playlists_plan', 'move_tracks_between_playlists',
       'playlist_difference_plan', 'playlist_edit_journal', 'playlist_intersection',
@@ -186,10 +186,10 @@ const KNOWN_UNTESTED: readonly {
     reason:
       'The fourth-wave playlist family is 14/18 untested, including the clone, dedupe-apply and snapshot-detail operations (epic #575).',
     tools: [
-      'playlist_balance', 'playlist_chunk_preview', 'playlist_clone_snapshot',
+      'playlist_balance', 'playlist_clone_snapshot',
       'playlist_dedupe_advanced', 'playlist_diff', 'playlist_filter_runtime', 'playlist_flip_order',
       'playlist_history', 'playlist_keep_artist', 'playlist_remove_artist', 'playlist_rotate',
-      'playlist_seed_shuffle', 'playlist_snapshot_detail', 'playlist_swap_positions',
+      'playlist_seed_shuffle', 'playlist_snapshot_detail',
     ],
   },
 ];

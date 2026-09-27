@@ -57,6 +57,7 @@ import type {
   SpotifyEpisode,
   SpotifyTrack,
 } from '../types/spotify.js';
+import { positionDesc, positionSchema } from '../positionbase.js';
 
 type TextContent = { type: 'text'; text: string };
 type ToolResult = { content: TextContent[]; structuredContent?: Record<string, unknown> };
@@ -1024,8 +1025,12 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
       'dry_run defaults to TRUE. Quota: GET + create + chunked adds when committing.',
     {
       playlist_id: z.string().describe('Source playlist (ID or spotify:playlist: URI)'),
-      start: z.number().int().optional().describe('0-based inclusive start; negative = from end. Default 0'),
-      end: z.number().int().optional().describe('0-based EXCLUSIVE end; negative = from end. Default: all items'),
+      start: z.number().int().optional().describe(
+        positionDesc('Inclusive start; negative = from end. Default 0', 'zero'),
+      ),
+      end: z.number().int().optional().describe(
+        positionDesc('EXCLUSIVE end; negative = from end. Default: all items', 'zero'),
+      ),
       name: z.string().describe('Name for the new extract playlist'),
       public: PublicFlag,
       dry_run: DryRunDefault,
@@ -1078,8 +1083,12 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
       'positions + uris. dry_run defaults to TRUE. Quota: GET + chunked deletes when committing.',
     {
       playlist_id: z.string().describe('Playlist to trim (ID or spotify:playlist: URI)'),
-      start: z.number().int().optional().describe('0-based inclusive start; negative = from end. Default 0'),
-      end: z.number().int().optional().describe('0-based EXCLUSIVE end; negative = from end. Default: all items'),
+      start: z.number().int().optional().describe(
+        positionDesc('Inclusive start; negative = from end. Default 0', 'zero'),
+      ),
+      end: z.number().int().optional().describe(
+        positionDesc('EXCLUSIVE end; negative = from end. Default: all items', 'zero'),
+      ),
       dry_run: DryRunDefault,
       response_format: ResponseFormatArgName,
     },

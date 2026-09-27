@@ -56,6 +56,7 @@ import type {
   SpotifyTrack,
 } from '../types/spotify.js';
 import { ownStoreRoots, readLocalFile } from '../paths.js';
+import { positionSchema } from '../positionbase.js';
 
 type TextContent = { type: 'text'; text: string };
 type ToolResult = { content: TextContent[]; structuredContent?: Record<string, unknown> };
@@ -911,8 +912,12 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
     {
       playlist_id: z.string().describe('Source playlist (ID or spotify:playlist: URI)'),
       mode: z.enum(['first', 'last', 'range', 'added_between']).describe('Slice mode'),
-      start: z.number().int().min(0).optional().describe('range: 0-based inclusive start (default 0)'),
-      end: z.number().int().min(0).optional().describe('range: 0-based EXCLUSIVE end'),
+      // #883: a slice range, 0-based like every other index into the item
+      // order. `start` is inclusive and `end` is exclusive, which the shared
+      // clause does not restate — the two halves of the range are described
+      // here and the base is stated once, identically, by `positionSchema`.
+      start: positionSchema('zero', 'range: inclusive start', { optional: true }),
+      end: positionSchema('zero', 'range: EXCLUSIVE end', { optional: true }),
       count: z.number().int().min(1).optional().describe('first/last: how many items (default 10)'),
       date_from: z.string().optional().describe('added_between: inclusive YYYY-MM-DD'),
       date_to: z.string().optional().describe('added_between: inclusive YYYY-MM-DD'),
