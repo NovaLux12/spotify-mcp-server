@@ -251,6 +251,37 @@ if (descriptionFixtureIndex >= 0) {
   process.exit(0);
 }
 /**
+ * Drives `moduleMapRow` against a supplied source (#1398).
+ *
+ * The #1398 regression is that the module map's rendered row must not depend on
+ * how long the file is — a comment-only edit under `src/` has to leave the
+ * generated block byte-identical. Asserting that against the repository's own
+ * `ARCHITECTURE.md` proves nothing, because `--write` is what keeps that block
+ * current: a test comparing the shipped block to itself would pass against the
+ * exact renderer that produced the defect, which is AGENTS.md §6's "a test that
+ * cannot fail". So the row is rendered here, over a caller-supplied source, and
+ * two sources that differ only in a comment line can be compared.
+ *
+ * The schema-byte figure is supplied rather than measured: it is registry
+ * state, and the point of the fixture is to vary the *source* while holding the
+ * registry fixed.
+ */
+const moduleRowFixtureIndex = args.indexOf('--module-row-fixture');
+if (moduleRowFixtureIndex >= 0) {
+  const fixturePath = args[moduleRowFixtureIndex + 1];
+  if (!fixturePath) throw new Error('--module-row-fixture requires a JSON file');
+  const fixture = JSON.parse(readFileSync(resolve(fixturePath), 'utf8'));
+  const row = moduleMapRow(
+    fixture.file ?? 'src/tools/fixture.ts',
+    fixture.source,
+    fixture.registered ?? 0,
+    fixture.schemaBytes,
+    new Intl.Segmenter('en', { granularity: 'sentence' }),
+  );
+  console.log(JSON.stringify({ row }));
+  process.exit(0);
+}
+/**
  * Drives `readCookbookRecipes` against a supplied cookbook source (#1288), so
  * the recipe-count measurement can be shown to reject a gapped or repeated set
  * of recipe headings.
@@ -1438,19 +1469,68 @@ function parseToolsetsModule() {
   };
 }
 
+/**
+ * The module map's third column, measured (#1398).
+ *
+ * This used to be `source.split('\n').length - 1` — a per-file line count. It is
+ * replaced by the bytes that file's tools add to a host's `tools/list` payload,
+ * because a line count made this block red for edits that change nothing it
+ * documents: any comment, blank line, reformat or unrelated fix in a file moved
+ * the number, and `--check` reported "generated module-map block is stale" for
+ * a surface that was byte-for-byte identical. That put `main` red twice
+ * (#1360, #1380) and cost three agents two `--write` cycles each. The coupling
+ * was strictly wider than the block's subject matter.
+ *
+ * The replacement is measured rather than declared, and it is the figure this
+ * repository already budgets: `schemaMeasurements` is the same per-module
+ * measurement `docs/schema-budgets.md` renders and the same one the startup
+ * budget gate enforces, taken from the finalized production `tools/list`. So
+ * the column now moves exactly when the documented surface moves, and it
+ * answers the question a reader actually has of a module map — which module
+ * costs a host context — instead of how much TypeScript it took to write.
+ * `src/client.ts` is the 2,923-line module that registers nothing and costs
+ * every host zero bytes; `src/tools/swarm3_playlistops.ts` is 2,054 lines and
+ * costs 29,163. LOC ranked those backwards.
+ *
+ * A file that is not in `REGISTRAR_MANIFEST` registers no tools, so it has no
+ * measurement at all. `undefined` renders as an em dash rather than `0`, which
+ * would read as a measurement of zero taken rather than a measurement not
+ * available.
+ */
+function schemaBytesCell(schemaBytes) {
+  return schemaBytes === undefined ? '—' : formatInteger(schemaBytes);
+}
+
+/**
+ * One module-map row.
+ *
+ * Split out of {@link moduleInventory} so a test can drive the renderer over a
+ * supplied source through `--module-row-fixture` rather than re-deriving the
+ * row shape in test code. The #1398 regression is a property of this
+ * function — that its output does not depend on how long the file is — and a
+ * test that re-implemented the comparison would pass against a renderer that
+ * had gone blank (AGENTS.md §6).
+ */
+function moduleMapRow(file, source, registered, schemaBytes, segmenter) {
+  const description = firstDescription(source, file, segmenter)
+    .replaceAll('|', '\\|')
+    .replace(/\s+/g, ' ');
+  const noun = registered === 1 ? 'tool' : 'tools';
+  return `| \`${file}\` | ${description} (${registered} registered ${noun}) | ${schemaBytesCell(schemaBytes)} |`;
+}
+
 function moduleInventory(census) {
   const files = inventoryFiles();
   const sentenceSegmenter = new Intl.Segmenter('en', { granularity: 'sentence' });
-  const rows = files.map((file) => {
-    const source = readFileSync(join(ROOT, file), 'utf8');
-    const description = firstDescription(source, file, sentenceSegmenter)
-      .replaceAll('|', '\\|')
-      .replace(/\s+/g, ' ');
-    const registered = census.perModule[file] ?? 0;
-    const noun = registered === 1 ? 'tool' : 'tools';
-    return `| \`${file}\` | ${description} (${registered} registered ${noun}) | ${source.split('\n').length - 1} |`;
-  });
-  return ['| File | Responsibility | LOC |', '|---|---|---:|', ...rows].join('\n');
+  const schemaBytesByFile = new Map(census.schemaMeasurements.map((row) => [row.file, row.schemaBytes]));
+  const rows = files.map((file) => moduleMapRow(
+    file,
+    readFileSync(join(ROOT, file), 'utf8'),
+    census.perModule[file] ?? 0,
+    schemaBytesByFile.get(file),
+    sentenceSegmenter,
+  ));
+  return ['| File | Responsibility | Schema bytes |', '|---|---|---:|', ...rows].join('\n');
 }
 
 function inventoryFiles() {
@@ -1459,12 +1539,74 @@ function inventoryFiles() {
     .map((file) => normalizeRepoPath(relative(ROOT, file))).sort()
 }
 
+/**
+ * A file's leading comment region, split into the two things it can offer: the
+ * first `/** … *\/` doc block and the run of `//` lines at the very top.
+ *
+ * The region ends at the first line that is neither blank nor a comment, so a
+ * doc comment sitting *below* an import is not a header comment and cannot be
+ * promoted into the module map by this. The `//` run is sliced off before the
+ * doc block is searched, so a `/**` quoted inside a line comment cannot be
+ * mistaken for one.
+ */
+function leadingCommentRegion(source) {
+  const header = [];
+  for (const line of source.split('\n')) {
+    // Trimmed, not raw: a doc comment's continuation lines are indented (` *
+    // …`), so testing the raw line stops the region at the `/**` that opened
+    // it and every module falls through to the "Runtime module for …" filler.
+    const trimmed = line.trim();
+    if (trimmed === '' || trimmed.startsWith('//') || trimmed.startsWith('/*') || trimmed.startsWith('*')) {
+      header.push(line);
+      continue;
+    }
+    break;
+  }
+  const text = header.join('\n');
+  // The trailing `\n` is required to be optional: `header` is a slice of the
+  // file, and a `//` comment that is the *entire* header has no newline after
+  // it. Requiring one silently killed the fallback for exactly the files that
+  // write a single summary line and no doc block (`src/types/spotify.ts`).
+  const lineRun = /^(?:\/\/[^\n]*(?:\n|$))+/.exec(text)?.[0] ?? '';
+  const rest = text.slice(lineRun.length);
+  // The one-line `/** … */` form first, then the multi-line block. The one-line
+  // pattern is deliberately newline-hostile (`[^\n]*?`, `[ \t]*`) so it cannot
+  // match a multi-line block and capture its body with the leading `*` intact.
+  // Four modules open with a one-line summary above their real doc block
+  // (`swarm3_discovery`, `swarm3_playback`, `swarm3_shows`, `swarm3_snapshots`);
+  // the old anchored multi-line-only pattern missed all four and published the
+  // "Runtime module for …" filler for each.
+  const doc = /^\/\*\*[ \t]*([^\n]*?)[ \t]*\*\//.exec(rest)?.[1]
+    ?? /\/\*\*\s*\n([\s\S]*?)\n\s*\*\//.exec(rest)?.[1]
+    ?? null;
+  return { doc, lineRun };
+}
+
+/**
+ * A module's one-line responsibility, for the module map's second column.
+ *
+ * #1398: this used to take a `/** … *\/` doc comment only when it was the very
+ * first thing in the file, and fall back to a run of `//` lines otherwise. So
+ * adding one `//` line *above* an existing doc comment demoted that doc comment
+ * to second choice and promoted the new line to the module's stated
+ * responsibility — the same false red the LOC column caused, by a second route,
+ * and with a worse result: the block recorded whatever comment happened to be
+ * first, so `// TODO: refactor` above a doc comment is a claim the module map
+ * would publish and `--check` would then hold someone to. Scanning the leading
+ * comment region and preferring the doc comment removes it.
+ *
+ * It changes four rows on the way in, all of them repairs: `swarm3_discovery`,
+ * `swarm3_playback`, `swarm3_shows` and `swarm3_snapshots` each open with a
+ * one-line `/** … *\/` summary above their real doc block, which the old
+ * position-0-only pattern could not read, so all four were published as the
+ * `Runtime module for …` filler. They now carry the same summary their sibling
+ * swarm modules already did.
+ */
 function firstDescription(source, fallback, segmenter) {
-  const doc = /^\/\*\*\s*\n([\s\S]*?)\n\s*\*\//.exec(source);
-  const leadingComments = /^(?:\/\/[^\n]*\n)+/.exec(source)?.[0];
-  const lines = doc
-    ? doc[1].split('\n').map((line) => line.replace(/^\s*\* ?/, '').trim())
-    : (leadingComments ?? '').split('\n').map((line) => line.replace(/^\/\/ ?/, '').trim());
+  const { doc, lineRun } = leadingCommentRegion(source);
+  const lines = doc !== null
+    ? doc.split('\n').map((line) => line.replace(/^\s*\* ?/, '').trim())
+    : lineRun.split('\n').map((line) => line.replace(/^\/\/ ?/, '').trim());
   while (lines.length > 0 && lines[0] === '') lines.shift();
   const paragraph = [];
   for (const line of lines) {
